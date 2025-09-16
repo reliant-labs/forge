@@ -1,0 +1,238 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: "{{.GoVersion | default "1.25"}}"
+
+jobs:
+{{- if .Lint}}
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+
+      - name: Buf lint
+        run: buf lint
+
+      - name: Setup Node.js
+        if: hashFiles('frontends/*/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Lint frontends
+        if: hashFiles('frontends/*/package.json') != ''
+        run: |
+          for dir in frontends/*/; do
+            if [ -f "$dir/package.json" ]; then
+              echo "Linting $dir"
+              (cd "$dir" && npm ci && npm run lint)
+            fi
+          done
+{{- end}}
+
+{{- if .Test}}
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+
+      - name: Go tests
+        run: go test -race -count=1 ./...
+
+      - name: Setup Node.js
+        if: hashFiles('frontends/*/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Test frontends
+        if: hashFiles('frontends/*/package.json') != ''
+        run: |
+          for dir in frontends/*/; do
+            if [ -f "$dir/package.json" ]; then
+              echo "Testing $dir"
+              (cd "$dir" && npm ci && npx vitest run)
+            fi
+          done
+{{- end}}
+
+{{- if .Build}}
+  build:
+    name: Build
+{{- if and .Lint .Test}}
+    needs: [lint, test]
+{{- else if .Lint}}
+    needs: [lint]
+{{- else if .Test}}
+    needs: [test]
+{{- end}}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+
+      - name: Go build
+        run: go build ./...
+
+      - name: Setup Node.js
+        if: hashFiles('frontends/*/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build frontends
+        if: hashFiles('frontends/*/package.json') != ''
+        run: |
+          for dir in frontends/*/; do
+            if [ -f "$dir/package.json" ]; then
+              echo "Building $dir"
+              (cd "$dir" && npm ci && NODE_ENV=production npm run build)
+            fi
+          done
+{{- end}}
+
+{{- if .Deploy}}
+  docker-build:
+    name: Docker Build
+{{- if .Build}}
+    needs: build
+{{- end}}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build project image
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "Building {{.ProjectName}}"
+            docker buildx build --load -f Dockerfile -t "{{.ProjectName}}/{{.ProjectName}}:ci" .
+          fi
+
+      - name: Build frontend images
+        run: |
+          for dockerfile in frontends/*/Dockerfile; do
+            if [ -f "$dockerfile" ]; then
+              fe_dir=$(dirname "$dockerfile")
+              fe_name=$(basename "$fe_dir")
+              echo "Building $fe_name"
+              docker buildx build --load -f "$dockerfile" -t "{{.ProjectName}}/$fe_name:ci" "$fe_dir"
+            fi
+          done
+{{- end}}
+
+  validate-kcl:
+    name: Validate KCL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KCL
+        run: |
+          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+          echo "$HOME/.kcl/bin" >> $GITHUB_PATH
+
+      - name: Validate dev manifests
+        run: kcl run deploy/kcl/dev/main.k > /dev/null
+
+      - name: Validate staging manifests
+        run: kcl run deploy/kcl/staging/main.k > /dev/null
+
+      - name: Validate prod manifests
+        run: kcl run deploy/kcl/prod/main.k > /dev/null
+
+  verify-generated:
+    name: Verify Generated Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+
+      - name: Install forge
+        run: go install github.com/reliant-labs/forge/cmd/forge@latest
+
+      - name: Generate code
+        run: forge generate
+
+      - name: Check for uncommitted changes
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated code is out of date. Run 'forge generate' and commit the changes."
+            exit 1
+          fi
+
+{{- if .VulnScan}}
+  vuln-scan:
+    name: Vulnerability Scan
+{{- if and .Lint .Test}}
+    needs: [lint, test]
+{{- else if .Lint}}
+    needs: [lint]
+{{- else if .Test}}
+    needs: [test]
+{{- end}}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Go vulnerability check
+        run: govulncheck ./...
+
+      - name: Setup Node.js
+        if: hashFiles('frontends/*/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: NPM audit
+        if: hashFiles('frontends/*/package.json') != ''
+        run: |
+          for dir in frontends/*/; do
+            if [ -f "$dir/package.json" ]; then
+              echo "Auditing $dir"
+              (cd "$dir" && npm ci && npm audit --audit-level=high)
+            fi
+          done
+{{- end}}

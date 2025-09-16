@@ -1,0 +1,45 @@
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  # Atomic binary replacement: build to .tmp then mv
+  bin = "./tmp/{{.Name}}"
+  cmd = "CGO_ENABLED=0 go build -gcflags='all=-N -l' -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
+  delay = 1000
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "web", "dist", "node_modules", "e2e", "gen"]
+  exclude_file = ["_test.go"]
+  exclude_regex = ["_test\\.go$"]
+  exclude_unchanged = false
+  follow_symlink = false
+  full_bin = "dlv exec --headless --listen=:2345 --api-version=2 --accept-multiclient --continue ./tmp/{{.Name}} -- server"
+  include_ext = ["go", "yaml"]
+  include_file = []
+  kill_delay = "5s"
+  log = "build-errors.log"
+  poll = false
+  poll_interval = 0
+  post_cmd = []
+  pre_cmd = []
+  rerun = false
+  rerun_delay = 500
+  send_interrupt = true
+  stop_on_error = false
+
+[color]
+  app = ""
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  main_only = false
+  time = false
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

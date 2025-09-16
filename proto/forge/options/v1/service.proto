@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package forge.options.v1;
+
+option go_package = "github.com/reliant-labs/forge/gen/forge/options/v1;optionsv1";
+
+import "google/protobuf/descriptor.proto";
+
+// Service-level options for Connect RPC service definitions.
+// These annotations control code generation for service scaffolding,
+// dependency injection, and authentication.
+extend google.protobuf.ServiceOptions {
+  ServiceOptions service_options = 50000;
+}
+
+// ServiceOptions defines metadata and behavior for a service.
+message ServiceOptions {
+  // Human-readable service name used in code generation and logging.
+  string name = 1;
+
+  // API version string (e.g., "v1", "v2beta1").
+  string version = 2;
+
+  // Brief description of the service's purpose.
+  string description = 3;
+
+  // Controls how the service is exposed.
+  ServiceVisibility visibility = 4;
+
+  // Other services this service depends on for dependency injection.
+  repeated string dependencies = 5;
+
+  // Authentication configuration for the service.
+  AuthConfig auth = 6;
+}
+
+// ServiceVisibility determines how a service is exposed.
+enum ServiceVisibility {
+  SERVICE_VISIBILITY_UNSPECIFIED = 0;
+  // Exposed via HTTP/Connect gateway.
+  SERVICE_VISIBILITY_API = 1;
+  // Only accessible for inter-service communication.
+  SERVICE_VISIBILITY_INTERNAL = 2;
+}
+
+// AuthConfig defines service-wide authentication defaults.
+message AuthConfig {
+  // Whether authentication is required for this service by default.
+  // Individual methods can override via MethodOptions.auth_required.
+  bool auth_required = 1;
+
+  // Authentication provider identifier (e.g., "jwt", "api_key", "oauth2").
+  string auth_provider = 2;
+}

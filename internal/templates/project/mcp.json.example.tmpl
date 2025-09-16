@@ -1,0 +1,20 @@
+{
+  "_description": "Additional MCP servers you may want to enable for this Forge project. To use one, copy its entry into the mcpServers object in .mcp.json (remove the leading underscore in the key name if present). This file is not loaded by Claude Code or Reliant — it is documentation only.",
+  "_description_url": "https://modelcontextprotocol.io/",
+  "mcpServers": {
+    "forge-mcp": {
+      "_comment": "The forge-mcp binary exposes forge project tools (generate, test, debug, etc.) as MCP tools. Build it from the forge repo's cmd/forge-mcp and ensure the binary is on your PATH, then copy this entry into .mcp.json.",
+      "command": "forge-mcp",
+      "args": []
+    },
+    "postgres": {
+      "_comment": "Read-only SQL inspection against the dev database. Requires the @modelcontextprotocol/server-postgres package. DSN matches the default docker-compose postgres; adjust if yours differs.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://postgres:postgres@localhost:5432/{{.Name}}"
+      ]
+    }
+  }
+}

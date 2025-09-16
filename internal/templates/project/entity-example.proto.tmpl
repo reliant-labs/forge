@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package {{.Package}}.db.v1;
+
+import "forge/options/v1/entity.proto";
+import "forge/options/v1/field.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/{{.Package}}/gen/db/v1;dbv1";
+
+// Example entity with transitional Forge DB annotations.
+//
+// Migration-first workflow:
+//   1. Author and review SQL migrations in db/migrations/.
+//   2. Apply migrations to a target database.
+//   3. Sync or validate proto DB entities against the migrated schema.
+//   4. Regenerate code and use the resulting CRUD helpers in service code.
+//
+// Note: DB annotations are now owned by the ORM codegen (pkg/orm). The
+// forge.options.v1 annotations remain here as a compatibility layer during
+// that transition.
+message ExampleEntity {
+  // Message-level options define table-level metadata used by ORM codegen.
+  option (forge.options.v1.entity_options) = {
+    table_name: "example_entities"
+    soft_delete: true
+    timestamps: true
+    indexes: [
+      {
+        name: "idx_status_created"
+        fields: ["status", "created_at"]
+      },
+      {
+        name: "idx_email"
+        fields: ["email"]
+        unique: true
+      }
+    ]
+  };
+
+  // Primary key field
+  string id = 1 [(forge.options.v1.field_options) = {
+    primary_key: true
+    not_null: true
+  }];
+
+  // Required text field
+  string name = 2 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  // Email field with unique index (defined above)
+  string email = 3 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  // Status field with default
+  string status = 4 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "'pending'"
+  }];
+
+  // JSON metadata (stored as JSONB in PostgreSQL)
+  string metadata = 5 [(forge.options.v1.field_options) = {
+    column_type: "JSONB"
+  }];
+
+  // Timestamps
+  google.protobuf.Timestamp created_at = 6 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp updated_at = 7 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  // Soft-delete timestamp (nullable)
+  google.protobuf.Timestamp deleted_at = 8;
+}
+
+// Usage in service code:
+//
+//   entity := &dbv1.ExampleEntity{Id: "123", Name: "Example"}
+//   err := exampleentity.Create(ctx, client.DB(), entity)
+//
+//   entity, err := exampleentity.GetByID(ctx, client.DB(), "some-id")
+//
+//   entities, err := exampleentity.List(ctx, client.DB(), orm.ListOptions{
+//       Where:   "status = $1",
+//       Args:    []any{"active"},
+//       OrderBy: "created_at DESC",
+//       Limit:   10,
+//   })
+//
+//   err := orm.RunInTx(ctx, pool, func(tx pgx.Tx) error {
+//       txClient := client.WithTx(tx)
+//       if err := exampleentity.Create(ctx, txClient.DB(), entity); err != nil {
+//           return err
+//       }
+//       return nil
+//   })

@@ -1,0 +1,45 @@
+version: '3'
+
+# ┌─────────────────────────────────────────────────────────┐
+# │ Standard operations — use the forge CLI:             │
+# │                                                         │
+# │   forge run              Dev server (hot-reload)     │
+# │   forge run --debug      Dev + Delve on :2345        │
+# │   forge build            Build production binary     │
+# │   forge build --debug    Build with debug symbols    │
+# │   forge test             Run tests                   │
+# │   forge lint             Run linters                 │
+# │   forge deploy           Deploy to k3d / cloud       │
+# │   forge debug start      Interactive Delve session   │
+# │   forge db migrate up    Run database migrations     │
+# │   forge generate         Codegen from proto files    │
+# │                                                         │
+# │ Add project-specific automation below.                  │
+# └─────────────────────────────────────────────────────────┘
+
+vars:
+  GEN_DIR: gen
+
+tasks:
+  proto:
+    desc: Generate protobuf code using buf
+    cmds:
+      - buf generate
+    sources:
+      - proto/**/*.proto
+      - buf.gen.yaml
+    generates:
+      - "{{`{{.GEN_DIR}}`}}/**/*.go"
+
+  clean:
+    desc: Clean generated files and build artifacts
+    cmds:
+      - rm -rf {{`{{.GEN_DIR}}`}}
+      - rm -rf bin
+      - rm -rf coverage.out
+      - rm -rf .forge/debug
+
+  dev-psql:
+    desc: Open psql shell to development database
+    cmds:
+      - docker compose exec postgres psql -U postgres -d {{.ProjectName}}

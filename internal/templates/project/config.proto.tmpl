@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package config.v1;
+
+option go_package = "{{.Module}}/gen/config/v1;configv1";
+
+import "forge/options/v1/config.proto";
+
+// AppConfig defines the application's runtime configuration.
+// Each field maps to an environment variable and/or CLI flag via
+// forge.options.v1.config_field annotations. Running `forge generate`
+// produces a typed Go config loader in pkg/config/config.go.
+message AppConfig {
+  int32 port = 1 [(forge.options.v1.config_field) = {
+    env_var: "PORT",
+    flag: "port",
+    default_value: "8080",
+    description: "HTTP server port"
+  }];
+
+  string log_level = 2 [(forge.options.v1.config_field) = {
+    env_var: "LOG_LEVEL",
+    flag: "log-level",
+    default_value: "info",
+    description: "Log level (debug, info, warn, error)"
+  }];
+
+  string database_url = 3 [(forge.options.v1.config_field) = {
+    env_var: "DATABASE_URL",
+    flag: "database-url",
+    description: "PostgreSQL connection string"
+  }];
+
+  string cors_origins = 4 [(forge.options.v1.config_field) = {
+    env_var: "CORS_ORIGINS",
+    flag: "cors-origins",
+    description: "Comma-separated list of allowed CORS origins"
+  }];
+}

@@ -1,0 +1,144 @@
+/* Responsive Figure Styles */
+.responsive-figure {
+  margin: 2.5rem 0;
+  text-align: left;
+}
+
+.responsive-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  background: #fff;
+}
+
+.responsive-figure img:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
+}
+
+.responsive-figure figcaption {
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: #666;
+  text-align: center;
+  font-style: italic;
+}
+
+/* Dark mode support */
+[data-dark-mode] .responsive-figure img {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: #1a1a1a;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+[data-dark-mode] .responsive-figure img:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+[data-dark-mode] .responsive-figure figcaption {
+  color: #aaa;
+}
+
+/* Size variants */
+.responsive-figure.small img {
+  max-width: 400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.responsive-figure.inline img {
+  display: inline-block;
+  max-width: 300px;
+  vertical-align: middle;
+}
+
+/* Print styles */
+@media print {
+  .responsive-figure img {
+    max-height: 6in;
+    page-break-inside: avoid;
+    box-shadow: none;
+    border: 1px solid #ccc;
+  }
+}
+
+/* Card styles */
+.card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+.card-icon {
+  font-size: 2.5rem;
+  color: var(--primary-color, #007bff);
+}
+
+[data-dark-mode] .card {
+  background: #1e1e1e;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Code blocks */
+pre {
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+code {
+  font-family: 'Fira Code', monospace;
+  font-size: 0.9em;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  margin: 1.5rem 0;
+  border-collapse: collapse;
+}
+
+table th,
+table td {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+}
+
+table th {
+  background: #f8f9fa;
+  font-weight: 600;
+}
+
+[data-dark-mode] table th {
+  background: #2a2a2a;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-dark-mode] table td {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Badges */
+.badge {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+/* Responsive utilities */
+@media (max-width: 768px) {
+  .responsive-figure {
+    margin: 1.5rem 0;
+  }
+
+  .responsive-figure img {
+    border-radius: 8px;
+  }
+}

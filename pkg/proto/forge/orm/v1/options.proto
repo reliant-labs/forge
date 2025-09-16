@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package forge.orm.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/reliant-labs/forge/pkg/gen/forge/orm/v1;ormv1";
+
+// FieldOptions defines database-specific options for protobuf fields
+message FieldOptions {
+  // primary_key marks this field as the primary key
+  bool primary_key = 1;
+
+  // unique creates a unique constraint on this field
+  bool unique = 2;
+
+  // not_null adds a NOT NULL constraint
+  bool not_null = 3;
+
+  // index specifies the index name for composite indexes
+  // Fields with the same index name will be part of the same composite index
+  string index = 4;
+
+  // column overrides the default column name (default: snake_case of field name)
+  string column = 5;
+
+  // auto_increment enables auto-increment for integer fields (PostgreSQL uses SERIAL)
+  bool auto_increment = 6;
+
+  // default_value specifies a SQL default value (e.g., "NOW()", "'active'")
+  string default_value = 7;
+}
+
+// MessageOptions defines database-specific options for protobuf messages
+message MessageOptions {
+  // table overrides the default table name (default: snake_case pluralized message name)
+  string table = 1;
+
+  // skip_orm prevents ORM code generation for this message
+  bool skip_orm = 2;
+
+  // indexes defines composite indexes that span multiple fields
+  repeated IndexOption indexes = 3;
+}
+
+// IndexOption defines a composite index
+message IndexOption {
+  // name is the index name
+  string name = 1;
+
+  // fields are the field names to include in the index (in order)
+  repeated string fields = 2;
+
+  // unique makes this a unique index
+  bool unique = 3;
+}
+
+// Extend google.protobuf.FieldOptions with our custom options
+extend google.protobuf.FieldOptions {
+  FieldOptions field = 50001;
+}
+
+// Extend google.protobuf.MessageOptions with our custom options
+extend google.protobuf.MessageOptions {
+  MessageOptions message = 50001;
+}

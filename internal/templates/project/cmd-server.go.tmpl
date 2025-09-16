@@ -1,0 +1,174 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
+
+	"github.com/spf13/cobra"
+
+	"{{.Module}}/pkg/app"
+	"{{.Module}}/pkg/config"
+	"{{.Module}}/pkg/middleware"
+)
+
+var serverCmd = &cobra.Command{
+	Use:   "server [services...]",
+	Short: "Start the HTTP/Connect server",
+	Long:  "Start the HTTP/Connect server. Optionally specify service names to register only a subset.",
+	RunE:  runServer,
+}
+
+func init() {
+	config.RegisterFlags(serverCmd)
+	rootCmd.AddCommand(serverCmd)
+}
+
+func runServer(cmd *cobra.Command, args []string) error {
+	// Load config from env vars and flags
+	cfg, err := config.Load(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Configure logging
+	var level slog.Level
+	if uerr := level.UnmarshalText([]byte(cfg.LogLevel)); uerr != nil {
+		return fmt.Errorf("invalid log level %q: %w", cfg.LogLevel, uerr)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	slog.SetDefault(logger)
+
+	// OTel is optional — degrade gracefully if not configured.
+	ctx := context.Background()
+	shutdownOTel, err := setupOTel(ctx)
+	if err != nil {
+		logger.Error("failed to initialize OpenTelemetry", "error", err)
+		// Continue without telemetry — this is intentional.
+	}
+
+	mux := http.NewServeMux()
+
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		logger.Error("failed to create otelconnect interceptor", "error", err)
+	}
+
+	interceptors := []connect.Interceptor{
+		middleware.RecoveryInterceptor(logger),
+		middleware.AuditInterceptor(logger),
+		middleware.LoggingInterceptor(logger),
+	}
+	if otelInterceptor != nil {
+		interceptors = append([]connect.Interceptor{otelInterceptor}, interceptors...)
+	}
+
+	opts := []connect.HandlerOption{
+		connect.WithInterceptors(interceptors...),
+	}
+
+	// Bootstrap packages and services
+	var ready atomic.Bool
+	var application *app.App
+	if len(args) > 0 {
+		application = app.BootstrapOnly(mux, logger, cfg, args, opts...)
+		logger.Info("started with service filter", "services", args)
+	} else {
+		application = app.Bootstrap(mux, logger, cfg, opts...)
+	}
+	ready.Store(true)
+
+	// Liveness probe: always 200 if the process is alive
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, "ok")
+	})
+
+	// Readiness probe: 200 only after bootstrap completes
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !ready.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, "ok")
+	})
+
+	var handler http.Handler = mux
+	// CORS: parse comma-separated origins from config.
+	var corsOrigins []string
+	if cfg.CorsOrigins != "" {
+		for _, o := range strings.Split(cfg.CorsOrigins, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				corsOrigins = append(corsOrigins, o)
+			}
+		}
+	}
+	if len(corsOrigins) > 0 {
+		handler = middleware.CORSMiddleware(corsOrigins)(handler)
+	}
+	handler = h2c.NewHandler(handler, &http2.Server{})
+
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	// Graceful shutdown
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("server starting", "addr", addr)
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		logger.Error("server error", "error", err)
+		return fmt.Errorf("server failed: %w", err)
+	case <-ctx.Done():
+	}
+	logger.Info("shutting down...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := application.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown error", "error", err)
+	}
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("server shutdown error", "error", err)
+	}
+	if shutdownOTel != nil {
+		if err := shutdownOTel(shutdownCtx); err != nil {
+			logger.Error("otel shutdown error", "error", err)
+		}
+	}
+	return nil
+}

@@ -1,0 +1,21 @@
+package app
+
+import "{{.Module}}/pkg/config"
+
+// Setup is called by the generated Bootstrap function after all services are
+// constructed. Use this function to wire custom dependencies, add fields to
+// service Deps structs, or perform any post-bootstrap initialization.
+//
+// This file is YOUR code — forge generate will never overwrite it.
+//
+// Example:
+//
+//	func Setup(app *App, cfg *config.Config) {
+//	    // Wire a shared dependency into a service:
+//	    // app.Services.Billing.SetStripeClient(stripe.New(cfg.StripeSecret))
+//	}
+//
+//forge:allow
+func Setup(app *App, cfg *config.Config) {
+	// Add your custom wiring here.
+}

@@ -1,0 +1,65 @@
+"""
+Production environment configuration for {{.ProjectName}}.
+"""
+
+import deploy.kcl.schema
+import deploy.kcl.base
+import deploy.kcl.render
+
+env = schema.Environment {
+    name = "prod"
+    namespace = "{{.ProjectName}}-prod"
+    image_registry = "registry.example.com"
+    image_tag = "stable"
+    network_policies = True
+    applications = {
+        "{{.ProjectName}}" = schema.Application {
+            name = "{{.ProjectName}}"
+            image = "{{.ProjectName}}"
+            replicas = 3
+            ports = [
+                schema.ServicePort {
+                    name = "http"
+                    port = 80
+                    target_port = 8080
+                }
+            ]
+            resources = schema.Resources {
+                cpu_request = "500m"
+                memory_request = "512Mi"
+                cpu_limit = "2000m"
+                memory_limit = "1Gi"
+            }
+            env_vars = base.COMMON_ENV + [
+                schema.EnvVar {
+                    name = "SERVICE_NAME"
+                    value = "{{.ProjectName}}"
+                }
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{.ProjectName}}"
+                }
+                schema.EnvVar {
+                    name = "LOG_LEVEL"
+                    value = "warn"
+                }
+            ]
+            health_check = schema.HealthCheck {
+                http_path = "/healthz"
+                http_port = 8080
+            }
+            autoscaling = schema.AutoScaling {
+                enabled = True
+                min_replicas = 3
+                max_replicas = 10
+                cpu_target = 80
+            }
+            pdb = schema.PodDisruptionBudget {
+                enabled = True
+                min_available = 2
+            }
+        }
+    }
+}
+
+manifests = render.render_environment(env)

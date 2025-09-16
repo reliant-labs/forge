@@ -1,0 +1,30 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: {{.ProjectName}}
+servers: 1
+agents: 0
+registries:
+  create:
+    name: {{.ProjectName}}-registry
+    host: "0.0.0.0"
+    hostPort: "5050"
+ports:
+  - port: 8080:80
+    nodeFilters:
+      - loadbalancer
+  - port: 8443:443
+    nodeFilters:
+      - loadbalancer
+options:
+  k3d:
+    wait: true
+    timeout: "60s"
+  k3s:
+    extraArgs:
+      - arg: --disable=traefik,metrics-server
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+
+# Build stage
+FROM golang:{{.GoVersionMinor}}-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy go workspace files
+COPY go.work go.work.sum* ./
+COPY go.mod go.sum ./
+COPY gen/go.mod gen/go.sum ./gen/
+
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build with optimizations
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /app/bin/{{.Name}} ./cmd
+
+# Debug build — full symbols, no inlining
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 go build -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd
+
+# Install Delve
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    go install github.com/go-delve/delve/cmd/dlv@latest
+
+# ── Debug stage (use with: docker build --target debug) ──
+FROM alpine:3.21 AS debug
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /app/bin/{{.Name}}-debug ./{{.Name}}
+COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
+
+EXPOSE {{.ServicePort}} 2345
+
+# Delve headless server — IDEs connect on :2345
+CMD ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./{{.Name}}", "--", "server"]
+
+# ── Production stage (default) ──
+FROM alpine:3.21 AS production
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/bin/{{.Name}} .
+
+# Use non-root user
+USER 65532:65532
+
+EXPOSE {{.ServicePort}}
+
+CMD ["./{{.Name}}", "server"]

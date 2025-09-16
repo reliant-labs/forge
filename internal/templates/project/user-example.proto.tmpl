@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package services.{{.ServiceName}}.v1;
+
+import "google/protobuf/timestamp.proto";
+import "forge/options/v1/service.proto";
+import "forge/options/v1/method.proto";
+
+option go_package = "{{.Module}}/gen/services/{{.ServiceName}}/v1;{{.ServiceName}}v1";
+
+// {{.Name}} service with basic CRUD operations
+service {{.ServiceName | pascalCase}}Service {
+  option (forge.options.v1.service_options) = {
+    name: "{{.ServiceName | pascalCase}}Service"
+    version: "1.0.0"
+    description: "{{.ServiceName | pascalCase}} management service"
+  };
+
+  // Create a new record
+  rpc Create(CreateRequest) returns (CreateResponse) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+    };
+  }
+
+  // Get record by ID
+  rpc Get(GetRequest) returns (GetResponse) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+      cache: { key_template: "{{.ServiceName | singular | pascalCase}}:{request.id}" }
+    };
+  }
+
+  // Update record
+  rpc Update(UpdateRequest) returns (UpdateResponse) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+    };
+  }
+
+  // Delete record
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+    };
+  }
+
+  // List records with pagination
+  rpc List(ListRequest) returns (ListResponse) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+    };
+  }
+}
+
+// Main entity
+message {{.ServiceName | singular | pascalCase}} {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bool active = 4;
+
+  // Timestamp fields
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  google.protobuf.Timestamp deleted_at = 7;
+}
+
+// Request/Response messages
+message CreateRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreateResponse {
+  {{.ServiceName | singular | pascalCase}} item = 1;
+}
+
+message GetRequest {
+  string id = 1;
+}
+
+message GetResponse {
+  {{.ServiceName | singular | pascalCase}} item = 1;
+}
+
+message UpdateRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string description = 3;
+  optional bool active = 4;
+}
+
+message UpdateResponse {
+  {{.ServiceName | singular | pascalCase}} item = 1;
+}
+
+message DeleteRequest {
+  string id = 1;
+  bool hard_delete = 2;
+}
+
+message DeleteResponse {}
+
+message ListRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+
+  // Filters
+  optional bool active = 3;
+  optional string search = 4;
+
+  // Sorting
+  string order_by = 5;
+  bool descending = 6;
+}
+
+message ListResponse {
+  repeated {{.ServiceName | singular | pascalCase}} items = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}

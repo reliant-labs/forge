@@ -1,0 +1,61 @@
+"""
+Staging environment configuration for {{.ProjectName}}.
+"""
+
+import deploy.kcl.schema
+import deploy.kcl.base
+import deploy.kcl.render
+
+env = schema.Environment {
+    name = "staging"
+    namespace = "{{.ProjectName}}-staging"
+    image_registry = "registry.example.com"
+    image_tag = "staging"
+    network_policies = True
+    applications = {
+        "{{.ProjectName}}" = schema.Application {
+            name = "{{.ProjectName}}"
+            image = "{{.ProjectName}}"
+            replicas = 2
+            ports = [
+                schema.ServicePort {
+                    name = "http"
+                    port = 80
+                    target_port = 8080
+                }
+            ]
+            resources = schema.Resources {
+                cpu_request = "250m"
+                memory_request = "256Mi"
+                cpu_limit = "1000m"
+                memory_limit = "512Mi"
+            }
+            env_vars = base.COMMON_ENV + [
+                schema.EnvVar {
+                    name = "SERVICE_NAME"
+                    value = "{{.ProjectName}}"
+                }
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{.ProjectName}}"
+                }
+                schema.EnvVar {
+                    name = "LOG_LEVEL"
+                    value = "info"
+                }
+            ]
+            health_check = schema.HealthCheck {
+                http_path = "/healthz"
+                http_port = 8080
+            }
+            autoscaling = schema.AutoScaling {
+                enabled = True
+                min_replicas = 2
+                max_replicas = 5
+                cpu_target = 80
+            }
+        }
+    }
+}
+
+manifests = render.render_environment(env)

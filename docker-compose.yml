@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  forge:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - CGO_ENABLED=0
+      - GOOS=linux
+      - GOARCH=amd64
+    ports:
+      - "8080:8080"   # HTTP API Gateway
+      - "9090:9090"   # gRPC Gateway
+      - "50051:50051" # Primary gRPC port
+    command: make dev
+    networks:
+      - forge-network
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - forge-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - forge-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Example of a generated service running
+  example-service:
+    build:
+      context: ./examples/generated-service
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: postgres://forge:forge@postgres:5432/forge_dev
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "50052:50051"
+    networks:
+      - forge-network
+    profiles:
+      - examples
+
+volumes:
+  postgres_data:
+
+networks:
+  forge-network:
+    driver: bridge

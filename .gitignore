@@ -1,0 +1,89 @@
+# Binaries for programs and plugins
+protoc-gen-forge-orm
+atlas-provider-forge
+forge-mcp
+contractlint
+protomethod
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories (remove the comment below if you want to commit your vendor dir)
+vendor/
+
+# Build directories
+dist/
+build/
+bin/
+
+# Generated code
+gen/
+
+# Buf lock file
+buf.lock
+
+# IDE specific files
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+*.sublime-*
+.claude/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+__debug_bin*
+
+# Temporary files
+tmp/
+*.tmp
+*.bak
+*.backup
+*.log
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Coverage reports
+coverage.txt
+coverage.html
+*.cover
+*.prof
+
+# Go module download cache
+/go/pkg/mod/
+
+# Test application directory
+test-app/demo-project/
+
+# Local sandbox apps
+.dev/
+.dev/

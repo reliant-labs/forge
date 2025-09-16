@@ -1,0 +1,59 @@
+package {{.ServiceName | lower}}
+
+import (
+	"log/slog"
+	"net/http"
+
+	"connectrpc.com/connect"
+
+	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
+	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
+	"{{.Module}}/pkg/config"
+)
+
+// Deps holds dependencies for the {{.ServiceName}} service.
+type Deps struct {
+	Logger *slog.Logger
+	Config *config.Config
+	// Add your dependencies here.
+	// Example: Auth auth.Service  // from internal/auth
+	// Example: Cache cache.Service // from internal/cache
+}
+
+// Service implements the {{.ServiceName}} Connect RPC service.
+type Service struct {
+	{{.ProtoConnectPackage}}.Unimplemented{{.HandlerName}}Handler
+	deps Deps
+}
+
+// New creates a new {{.ServiceName}} service instance.
+func New(deps Deps) *Service {
+	return &Service{deps: deps}
+}
+
+// Name returns the service name for logging and registry.
+func (s *Service) Name() string {
+	return "{{.ServiceName}}"
+}
+
+// Register registers the service handlers with the HTTP mux.
+func (s *Service) Register(mux *http.ServeMux, opts ...connect.HandlerOption) {
+	path, handler := {{.ProtoConnectPackage}}.New{{.HandlerName}}Handler(s, opts...)
+	mux.Handle(path, handler)
+}
+
+// RegisterHTTP registers plain HTTP handlers (webhooks, callbacks, REST endpoints)
+// with the given mux. The stack middleware provides recovery, logging, and audit.
+// Auth is handled separately per-route since REST endpoints may use different
+// auth mechanisms (e.g., webhook signatures vs JWT).
+//
+// Override this method when your service needs HTTP endpoints outside Connect RPC.
+func (s *Service) RegisterHTTP(_ *http.ServeMux, _ func(http.Handler) http.Handler) {
+	// No HTTP endpoints by default. Override to add webhook handlers, etc.
+	// Example:
+	//   mux.Handle("POST /api/webhooks/stripe", stack(http.HandlerFunc(s.HandleStripeWebhook)))
+	//   mux.Handle("POST /api/callbacks/oauth", stack(http.HandlerFunc(s.HandleOAuthCallback)))
+}
+
+// Ensure the generated protobuf package import remains referenced even before methods exist.
+var _ = pb.{{.ProtoFileSymbol}}

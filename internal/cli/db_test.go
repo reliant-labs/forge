@@ -1,0 +1,83 @@
+package cli
+
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+func TestDBCommandIncludesExpectedTopLevelSubcommands(t *testing.T) {
+	command := newDBCmd()
+
+	if subcommand := command.Commands()[0]; subcommand == nil {
+		t.Fatal("expected db command to have subcommands")
+	}
+
+	// Add to a root so CommandPath works correctly
+	root := &cobra.Command{Use: "forge"}
+	root.AddCommand(command)
+
+	if command.CommandPath() != "forge db" {
+		t.Fatalf("db command path = %q, want %q", command.CommandPath(), "forge db")
+	}
+
+	for _, subcommand := range []string{"migration", "migrate", "introspect", "proto", "codegen"} {
+		if got := commandName(command, subcommand); got == nil {
+			t.Fatalf("expected db command to include %q subcommand", subcommand)
+		}
+	}
+}
+
+func TestDBMigrationNewCommandRequiresName(t *testing.T) {
+	dbCmd := newDBCmd()
+	migrationCmd := commandName(dbCmd, "migration")
+	if migrationCmd == nil {
+		t.Fatal("migration command not found")
+	}
+
+	newCmd := commandName(migrationCmd, "new")
+	if newCmd == nil {
+		t.Fatal("migration new command not found")
+	}
+
+	if err := newCmd.Args(newCmd, nil); err == nil {
+		t.Fatal("expected error when migration name is missing")
+	}
+}
+
+func TestDBMigrateCommandIncludesExpectedLifecycleCommands(t *testing.T) {
+	dbCmd := newDBCmd()
+	migrateCmd := commandName(dbCmd, "migrate")
+	if migrateCmd == nil {
+		t.Fatal("migrate command not found")
+	}
+
+	for _, subcommand := range []string{"up", "down", "status", "version", "force"} {
+		if got := commandName(migrateCmd, subcommand); got == nil {
+			t.Fatalf("expected migrate command to include %q", subcommand)
+		}
+	}
+}
+
+func TestDBProtoCommandIncludesExpectedSubcommands(t *testing.T) {
+	dbCmd := newDBCmd()
+	protoCmd := commandName(dbCmd, "proto")
+	if protoCmd == nil {
+		t.Fatal("proto command not found")
+	}
+
+	for _, subcommand := range []string{"sync-from-db", "check"} {
+		if got := commandName(protoCmd, subcommand); got == nil {
+			t.Fatalf("expected proto command to include %q", subcommand)
+		}
+	}
+}
+
+func commandName(parent *cobra.Command, use string) *cobra.Command {
+	for _, command := range parent.Commands() {
+		if command.Name() == use {
+			return command
+		}
+	}
+	return nil
+}

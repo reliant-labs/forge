@@ -1,0 +1,58 @@
+version: 2
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags: []
+  skip-dirs:
+    - gen
+    - vendor
+    - testdata
+    - test_lint_output
+    - handlers/example
+
+linters-settings:
+  govet:
+    enable-all: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - gocritic
+  disable:
+    - unused  # Disabled due to planned features (destroy, recreate commands, etc)
+
+issues:
+  exclude-dirs:
+    - gen
+    - vendor
+    - test_lint_output
+    - handlers/example
+  exclude-files:
+    - ".*\\.pb\\.go$"
+    - ".*_grpc\\.pb\\.go$"
+  exclude-dirs-use-default: false
+  path-exclude:
+    - "test_lint_output/.*"
+    - "handlers/example/.*"
+  exclude-rules:
+    - linters:
+        - errcheck
+      text: "Error return value"
+    - linters:
+        - unused
+      text: "(newDestroyCommand|destroyService|destroyTestApp|newRecreateCommand|recreateService|recreateTestApp|hasProtoFiles|extractOptionsFromComments|buildDate|gitCommit)"

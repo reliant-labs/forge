@@ -1,0 +1,88 @@
+# {{.Name}}
+
+A Connect RPC service project built with [Forge](https://github.com/reliant-labs/forge).
+
+## Quick Start
+
+### 1. Install dependencies
+```bash
+task deps
+```
+
+### 2. Add a service
+```bash
+forge add service myservice
+```
+
+### 3. Define your proto
+Edit the generated proto file in `proto/services/myservice/v1/myservice.proto`:
+```protobuf
+syntax = "proto3";
+
+package myservice.v1;
+
+option go_package = "{{.Module}}/gen/myservice/v1;myservicev1";
+
+service MyService {
+  rpc SayHello(HelloRequest) returns (HelloResponse);
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloResponse {
+  string message = 1;
+}
+```
+
+### 4. Generate code from protos
+```bash
+forge generate
+```
+
+### 5. Build and run
+```bash
+task build
+task dev
+```
+
+## CLI Commands
+
+| Command | Description |
+|---|---|
+| `forge new` | Create a new project |
+| `forge add service <name>` | Add a Go service |
+| `forge add frontend <name>` | Add a Next.js frontend app |
+| `forge generate` | Generate code from proto files |
+| `forge lint` | Lint proto and Go code |
+| `forge build` | Build the project |
+| `forge run` | Run the dev environment |
+| `forge deploy <env>` | Deploy to an environment |
+| `forge test` | Run tests |
+| `forge db` | Database commands |
+
+## Task Commands
+
+| Command | Description |
+|---|---|
+| `task proto` | Generate protobuf code via buf |
+| `task build` | Build service binaries |
+| `task test` | Run tests with coverage |
+| `task lint` | Run linters |
+| `task dev` | Start services with Air hot-reload |
+| `task dev-up` | Create k3d cluster, build, and deploy |
+| `task dev-down` | Delete k3d development cluster |
+| `task clean` | Clean generated files and build artifacts |
+
+## Project Structure
+
+```
+{{.Name}}/
+├── proto/       # Protocol buffer definitions
+├── handlers/    # Service implementations
+├── gen/         # Generated protobuf code
+├── frontends/   # Frontend applications
+├── cmd/         # Application entrypoints
+└── deploy/      # KCL deployment manifests
+```

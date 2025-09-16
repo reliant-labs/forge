@@ -1,0 +1,89 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - revive
+    - noctx
+    - misspell
+    - cyclop
+    - funlen
+    - gocognit
+    - nestif
+    - interfacebloat
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: unexported-return
+        - name: argument-limit
+          arguments: [5]
+        - name: function-result-limit
+          arguments: [3]
+        - name: max-public-structs
+          arguments: [5]
+        - name: max-control-nesting
+          arguments: [4]
+    cyclop:
+      max-complexity: 12
+      package-average: 5.0
+      skip-tests: true
+    funlen:
+      lines: 60
+      statements: 35
+    gocognit:
+      min-complexity: 15
+    nestif:
+      min-complexity: 4
+    interfacebloat:
+      max: 7
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+  exclusions:
+    paths:
+      - gen
+      - ".*\\.pb\\.go$"
+      - ".*\\.connect\\.go$"
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - funlen
+          - cyclop
+          - gocognit
+      - path: cmd/
+        linters:
+          - cyclop
+          - gocognit
+          - funlen
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com

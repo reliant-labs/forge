@@ -1,0 +1,206 @@
+version: '3'
+
+includes:
+  docs:
+    taskfile: ./docs/Taskfile.yml
+    dir: ./docs
+
+vars:
+  BINARY_NAME: forge
+  VERSION:
+    sh: git describe --tags --always --dirty
+  DOCKER_IMAGE: reliantlabs/forge
+  DOCKER_TAG: "{{.VERSION}}"
+
+tasks:
+  default:
+    desc: Run lint, test, and build
+    cmds:
+      - task: lint
+      - task: test
+      - task: build
+
+  help:
+    desc: Display this help message
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the forge binary
+    cmds:
+      - echo "Building {{.BINARY_NAME}}..."
+      - go build -ldflags "-X main.Version={{.VERSION}}" -o dist/{{.BINARY_NAME}} ./cmd/forge
+
+  install:
+    desc: Install forge to GOPATH/bin
+    deps: [build]
+    cmds:
+      - echo "Installing {{.BINARY_NAME}}..."
+      - cp dist/{{.BINARY_NAME}} {{.GOPATH}}/bin/{{.BINARY_NAME}}
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - echo "Cleaning..."
+      - rm -rf dist/
+      - rm -f {{.BINARY_NAME}}
+
+  test:
+    desc: Run all tests
+    cmds:
+      - echo "Running tests..."
+      - go test -v -race -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+
+  test-short:
+    desc: Run short tests
+    cmds:
+      - echo "Running short tests..."
+      - go test -short -v ./...
+
+  lint:
+    desc: Run linters
+    cmds:
+      - echo "Running linters..."
+      - golangci-lint run ./...
+      - buf lint
+
+  fmt:
+    desc: Format code
+    cmds:
+      - echo "Formatting code..."
+      - go fmt ./...
+      - goimports -w {{.GO_FILES}}
+      - buf format -w
+    vars:
+      GO_FILES:
+        sh: find . -name '*.go' -type f -not -path './vendor/*'
+
+  proto:
+    desc: Generate code from proto files
+    cmds:
+      - echo "Generating proto code..."
+      - buf generate
+
+  proto-breaking:
+    desc: Check for breaking proto changes
+    cmds:
+      - echo "Checking for breaking changes..."
+      - buf breaking --against '.git#branch=main'
+
+  deps:
+    desc: Download dependencies
+    cmds:
+      - echo "Downloading dependencies..."
+      - go mod download
+      - go mod tidy
+
+  tools:
+    desc: Install required tools
+    cmds:
+      - echo "Installing tools..."
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - go install golang.org/x/tools/cmd/goimports@latest
+      - go install github.com/bufbuild/buf/cmd/buf@latest
+      - go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+      - go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+      - go install github.com/go-task/task/v3/cmd/task@latest
+      - go install github.com/air-verse/air@latest
+
+  lint-protomethod:
+    desc: Run only the protomethod linter
+    cmds:
+      - echo "Running protomethod linter..."
+      - go run ./cmd/protomethod ./...
+
+  docker-build:
+    desc: Build Docker image
+    cmds:
+      - echo "Building Docker image..."
+      - docker build -t {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} -t {{.DOCKER_IMAGE}}:latest .
+
+  docker-push:
+    desc: Push Docker image to registry
+    deps: [docker-build]
+    cmds:
+      - echo "Pushing Docker image..."
+      - docker push {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}}
+      - docker push {{.DOCKER_IMAGE}}:latest
+
+  run:
+    desc: Run forge locally
+    deps: [build]
+    cmds:
+      - ./dist/{{.BINARY_NAME}}
+
+  dev:
+    desc: Run with hot reload for development
+    cmds:
+      - air -c .air.toml
+
+  release:
+    desc: Create a new release
+    deps: [clean, lint, test, build]
+    cmds:
+      - echo "Creating release {{.VERSION}}..."
+      - mkdir -p releases
+      - tar -czf releases/{{.BINARY_NAME}}-{{.VERSION}}-darwin-amd64.tar.gz -C dist {{.BINARY_NAME}}
+      - GOOS=linux GOARCH=amd64 go build -ldflags "-X main.Version={{.VERSION}}" -o dist/{{.BINARY_NAME}}-linux ./cmd/forge
+      - tar -czf releases/{{.BINARY_NAME}}-{{.VERSION}}-linux-amd64.tar.gz -C dist {{.BINARY_NAME}}-linux
+      - GOOS=windows GOARCH=amd64 go build -ldflags "-X main.Version={{.VERSION}}" -o dist/{{.BINARY_NAME}}.exe ./cmd/forge
+      - cd dist && zip -j ../releases/{{.BINARY_NAME}}-{{.VERSION}}-windows-amd64.zip {{.BINARY_NAME}}.exe
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - echo "Running benchmarks..."
+      - go test -bench=. -benchmem ./...
+
+  check:
+    desc: Run all checks (lint, test, build)
+    cmds:
+      - task: lint
+      - task: test
+      - task: build
+
+  ci:
+    desc: Run CI pipeline
+    cmds:
+      - task: deps
+      - task: proto
+      - task: lint
+      - task: test
+      - task: build
+
+  test-app:
+    desc: Build and run the test todo application
+    dir: test-app
+    cmds:
+      - echo "Building test app..."
+      - task build
+      - echo "Starting test app..."
+      - ./todo-server
+
+  test-app-dev:
+    desc: Run test app in development mode
+    dir: test-app
+    cmds:
+      - echo "Running test app in dev mode..."
+      - task dev
+
+  test-app-docker:
+    desc: Run test app in Docker
+    dir: test-app
+    cmds:
+      - echo "Running test app in Docker..."
+      - task docker-run
+
+  demo:
+    desc: Run a quick demo of Forge with the test app
+    deps: [build]
+    cmds:
+      - echo "🎯 Forge Demo"
+      - echo "================"
+      - echo ""
+      - echo "Starting todo service demo..."
+      - ./dist/{{.BINARY_NAME}} run --env=dev

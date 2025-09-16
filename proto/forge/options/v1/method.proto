@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package forge.options.v1;
+
+option go_package = "github.com/reliant-labs/forge/gen/forge/options/v1;optionsv1";
+
+import "google/protobuf/descriptor.proto";
+import "google/protobuf/duration.proto";
+
+// Method-level options for Connect RPC method definitions.
+// These annotations control per-RPC behavior such as authentication,
+// idempotency, and timeouts.
+extend google.protobuf.MethodOptions {
+  MethodOptions method_options = 50100;
+}
+
+// MethodOptions defines per-method behavior annotations.
+message MethodOptions {
+  // Whether this method requires authentication.
+  // Overrides the service-level AuthConfig.auth_required default.
+  bool auth_required = 1;
+
+  // Whether this method is idempotent (safe to retry).
+  bool idempotent = 3;
+
+  // Server-side timeout for this method. Zero means use the service default.
+  google.protobuf.Duration timeout = 4;
+}

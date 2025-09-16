@@ -1,0 +1,10 @@
+import { createConnectTransport } from "@connectrpc/connect-web";
+
+// The API URL is read from the NEXT_PUBLIC_API_URL environment variable.
+// In development this defaults to the local backend server.
+const baseUrl =
+  process.env.NEXT_PUBLIC_API_URL ?? "{{.ApiUrl}}";
+
+export const transport = createConnectTransport({
+  baseUrl,
+});

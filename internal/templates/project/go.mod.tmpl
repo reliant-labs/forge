@@ -1,0 +1,20 @@
+module {{.Module}}
+
+go {{.GoVersion}}
+
+require (
+	connectrpc.com/connect v1.19.0
+	connectrpc.com/otelconnect v0.7.1
+	github.com/spf13/cobra v1.9.1
+	go.opentelemetry.io/otel v1.34.0
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.34.0
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.34.0
+	go.opentelemetry.io/otel/sdk v1.34.0
+	go.opentelemetry.io/otel/sdk/metric v1.34.0
+	go.opentelemetry.io/otel/trace v1.34.0
+	golang.org/x/net v0.28.0
+	google.golang.org/protobuf v1.36.9
+	{{.Module}}/gen v0.0.0
+)
+
+replace {{.Module}}/gen => ./gen

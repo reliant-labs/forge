@@ -1,6 +1,6 @@
 # Forge project conventions — {{.Name}}
 
-> **This file is forge-managed.** It is overwritten by `forge new` and future re-init flows. Do not hand-edit. Put project-specific notes in the top-level `reliant.md` instead.
+> **This file is forge-managed.** It is overwritten by `{{.CLI}} new` and future re-init flows. Do not hand-edit. Put project-specific notes in the top-level `reliant.md` instead.
 
 This is a **Forge** project — a Connect RPC development framework purpose-built for LLM-driven development. Everything in the stack communicates over Connect RPC interfaces generated from `proto/` files, which makes every boundary mockable, swappable, and spec-driven.
 
@@ -8,23 +8,23 @@ This is a **Forge** project — a Connect RPC development framework purpose-buil
 
 - **Proto-first.** The contract lives in `proto/`. Go handlers, clients, and DTOs under `gen/` are all derived from it. If you want to change a message or RPC, change the proto and regenerate — never hand-edit `gen/`.
 - **Everything is Connect RPC.** Services talk to each other (and to frontends) through the same interface pattern. There are no side-channel APIs.
-- **Internal boundaries use Go interfaces.** For components that can't be expressed in proto (channels, complex types, factories), `forge package new <name>` creates an `internal/<name>/contract.go` with an interface contract, and codegen produces mocks and middleware from it.
+- **Internal boundaries use Go interfaces.** For components that can't be expressed in proto (channels, complex types, factories), `{{.CLI}} package new <name>` creates an `internal/<name>/contract.go` with an interface contract, and codegen produces mocks and middleware from it.
 - **Mockable by default.** Because every boundary — Connect or Go-interface — has generated mocks, tests can swap real implementations without rewiring anything.
-- **Convention over configuration.** `forge new`, `forge add`, `forge package`, and the `Taskfile.yml` encode the project layout. Follow them and the CLI keeps working. Fight them and you're on your own.
+- **Convention over configuration.** `{{.CLI}} new`, `{{.CLI}} add`, `{{.CLI}} package`, and the `Taskfile.yml` encode the project layout. Follow them and the CLI keeps working. Fight them and you're on your own.
 - **LLM-optimized.** File layout, naming, and scaffolding are chosen so an agent can find things by pattern. Don't "cleverly" reorganize — you'll break the conventions other agents rely on.
 
 ## Rules
 
-- **Never hand-edit anything under `gen/`.** It's overwritten on every `forge generate`. Fix the `.proto` instead.
-- **`gen/` is not committed.** Only `gen/go.mod` and `gen/go.sum` are tracked. Fresh clones must run `forge generate` before `forge run` or `forge test`.
-- **Run `forge generate` after any proto change.** Stale generated code is the #1 source of mysterious compile errors.
-- **Use `forge test`, not raw `go test`.** The CLI sets the right build tags (`integration`) that bare `go test` would skip.
-- **Use `forge debug`, not raw `dlv`.** The CLI manages session state in `.forge/debug-session.json` so subsequent commands reconnect to the same session. Step commands are **`stepin`** / **`stepout`** (no hyphens).
-- **All `forge db migrate ...` commands require `--dsn`.** Set `DATABASE_URL` once in your shell: `export DATABASE_URL="postgres://postgres:postgres@localhost:5432/{{.Name}}?sslmode=disable"`.
+- **Never hand-edit anything under `gen/`.** It's overwritten on every `{{.CLI}} generate`. Fix the `.proto` instead.
+- **`gen/` is not committed.** Only `gen/go.mod` and `gen/go.sum` are tracked. Fresh clones must run `{{.CLI}} generate` before `{{.CLI}} run` or `{{.CLI}} test`.
+- **Run `{{.CLI}} generate` after any proto change.** Stale generated code is the #1 source of mysterious compile errors.
+- **Use `{{.CLI}} test`, not raw `go test`.** The CLI sets the right build tags (`integration`) that bare `go test` would skip.
+- **Use `{{.CLI}} debug`, not raw `dlv`.** The CLI manages session state in `.forge/debug-session.json` so subsequent commands reconnect to the same session. Step commands are **`stepin`** / **`stepout`** (no hyphens).
+- **All `{{.CLI}} db migrate ...` commands require `--dsn`.** Set `DATABASE_URL` once in your shell: `export DATABASE_URL="postgres://postgres:postgres@localhost:5432/{{.Name}}?sslmode=disable"`.
 - **Migrations are append-only history.** Once merged, never edit a migration — write a new one.
 - **Secrets never live in the repo.** Not in KCL, not in code, not in comments. Use cluster-level secret management.
-- **`forge deploy` takes the environment as a positional arg**, not `--env`. Production deploys require explicitly typing `prod`.
-- **`forge package new` creates internal Go packages, not Docker images.** Docker image builds live under `forge build --docker`.
+- **`{{.CLI}} deploy` takes the environment as a positional arg**, not `--env`. Production deploys require explicitly typing `prod`.
+- **`{{.CLI}} package new` creates internal Go packages, not Docker images.** Docker image builds live under `{{.CLI}} build --docker`.
 
 ## Skills — use these playbooks
 

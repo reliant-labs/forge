@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -14,6 +16,17 @@ var (
 
 func Execute() error {
 	return NewRootCmd().Execute()
+}
+
+// CLIName returns the command name users should type to invoke Forge.
+// When the binary is "forge" (standalone install), it returns "forge".
+// When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
+func CLIName() string {
+	base := filepath.Base(os.Args[0])
+	if base == "forge" {
+		return "forge"
+	}
+	return base + " forge"
 }
 
 func SetVersion(v, date, commit string) {

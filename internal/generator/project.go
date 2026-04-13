@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,22 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
+
+// forgeCmdRE matches "forge" used as a CLI command — i.e. followed by a space
+// and a lowercase subcommand token. This avoids replacing skill paths like
+// "forge/run", filenames like "forge.project.yaml", or directory paths.
+var forgeCmdRE = regexp.MustCompile(`\bforge( )`)
+
+// cliName returns the command name users should type to invoke Forge.
+// When the binary is "forge" (standalone), it returns "forge".
+// When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
+func cliName() string {
+	base := filepath.Base(os.Args[0])
+	if base == "forge" {
+		return "forge"
+	}
+	return base + " forge"
+}
 
 // ProjectGenerator generates new project structure
 type ProjectGenerator struct {
@@ -717,7 +734,10 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		return fmt.Errorf("failed to write .reliant/README.md: %w", err)
 	}
 
-	templateData := struct{ Name string }{Name: g.Name}
+	templateData := struct {
+		Name string
+		CLI  string
+	}{Name: g.Name, CLI: cliName()}
 
 	// forge-owned conventions file. Always regenerated.
 	forgeMemoryPath := filepath.Join(reliantDir, "reliant-forge.md")
@@ -772,19 +792,29 @@ func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {
 
 // writeSkills copies every file under project/skills/ in the embedded
 // templates into <reliantDir>/skills/, preserving directory structure.
-// Files are copied verbatim (not rendered as templates) so their prose may
-// contain literal examples like {{.Name}} without conflict.
+// Files are copied verbatim (not rendered as Go templates) so their prose
+// may contain literal examples like {{.Name}} without conflict.
+//
+// CLI command references ("forge <subcommand>") are rewritten to match the
+// detected CLI name (e.g. "reliant forge <subcommand>" when embedded).
 func (g *ProjectGenerator) writeSkills(reliantDir string) error {
 	skillFiles, err := templates.ListProjectTemplates("skills")
 	if err != nil {
 		return fmt.Errorf("failed to list skill templates: %w", err)
 	}
 
+	name := cliName()
+
 	for _, rel := range skillFiles {
 		templateName := path.Join("skills", filepath.ToSlash(rel))
 		content, err := templates.GetProjectTemplate(templateName)
 		if err != nil {
 			return fmt.Errorf("failed to read skill template %s: %w", templateName, err)
+		}
+
+		// Rewrite CLI command references if running under a different binary name.
+		if name != "forge" {
+			content = forgeCmdRE.ReplaceAll(content, []byte(name+"$1"))
 		}
 
 		destPath := filepath.Join(reliantDir, "skills", filepath.FromSlash(rel))

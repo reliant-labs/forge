@@ -203,7 +203,7 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		fmt.Printf("  # Add RPCs to proto/services/%s/v1/%s.proto\n", svcName, svcName)
 	}
 	fmt.Println("  # Then generate code from protos:")
-	fmt.Println("  forge generate")
+	fmt.Printf("  %s generate\n", CLIName())
 	fmt.Println("")
 	if len(frontendNames) > 0 {
 		fmt.Printf("  # Install frontend dependencies:\n")
@@ -257,7 +257,7 @@ func runGoModTidy(path string) error {
 			return fmt.Errorf("go mod tidy (root) failed: %w", err)
 		}
 	} else {
-		fmt.Println("ℹ️  Skipping root go mod tidy until generated proto code exists. Run 'forge generate' first.")
+		fmt.Printf("ℹ️  Skipping root go mod tidy until generated proto code exists. Run '%s generate' first.\n", CLIName())
 	}
 
 	genDir := filepath.Join(path, "gen")

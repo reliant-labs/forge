@@ -134,7 +134,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  1. Define interface methods in internal/%s/contract.go\n", name)
 	fmt.Printf("  2. Implement them in internal/%s/service.go\n", name)
-	fmt.Println("  3. Run: forge generate  (generates mock_gen.go and middleware_gen.go)")
+	fmt.Printf("  3. Run: %s generate  (generates mock_gen.go and middleware_gen.go)\n", CLIName())
 
 	return nil
 }

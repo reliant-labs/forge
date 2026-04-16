@@ -1,24 +1,11 @@
-package {{.PackageName}}
+package {{.Package}}
 
-import (
-	"context"
-	"os"
-
-	"{{.Module}}/pkg/middleware"
-)
+import "context"
 
 // Authorizer handles access control for the {{.ServiceName}} service.
-// Each method listed below must be implemented with real authorization logic.
-// The default implementation denies all access in production.
-//
-// To implement:
-//  1. Extract user claims from context (e.g., from JWT middleware)
-//  2. Check permissions against your authorization rules
-//  3. Return nil to allow, or connect.NewError(connect.CodePermissionDenied, ...) to deny
-type Authorizer struct {
-	// Add dependencies needed for authorization (e.g., DB, policy engine)
-	middleware.UnimplementedAuthorizer
-}
+// The default implementation allows requests through unchanged.
+// Add service-specific authorization checks here when needed.
+type Authorizer struct{}
 
 // NewAuthorizer creates a new Authorizer for this service.
 func NewAuthorizer() *Authorizer {
@@ -26,12 +13,6 @@ func NewAuthorizer() *Authorizer {
 }
 
 // CanAccess implements the Authorizer interface.
-// TODO: Implement authorization logic for each RPC procedure.
-// In development mode, all requests are allowed.
-// In production, implement real authorization checks here.
-func (a *Authorizer) CanAccess(ctx context.Context, procedure string) error {
-	if env := os.Getenv("ENVIRONMENT"); env == "development" || env == "dev" {
-		return nil
-	}
-	return a.UnimplementedAuthorizer.CanAccess(ctx, procedure)
+func (a *Authorizer) CanAccess(_ context.Context, _ string) error {
+	return nil
 }

@@ -60,10 +60,10 @@ Examples:
 }
 
 func runLint(flags lintFlags, paths []string) error {
+	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.proto {
 		return runProtoMethodLinter(paths)
 	}
-
 	if flags.contract {
 		return runContractLinter(paths)
 	}
@@ -76,17 +76,19 @@ func runLint(flags lintFlags, paths []string) error {
 		return fmt.Errorf("failed to load project config: %w", err)
 	}
 
-	return runStandardLinters(flags.fix, paths, cfg)
+	// No flags set — run ALL linters, each skipping gracefully if tool not available.
+	return runAllLinters(flags.fix, paths, cfg)
 }
 
 func runProtoMethodLinter(paths []string) error {
 	fmt.Println("🔍 Running proto method enforcement linter...")
 	fmt.Println()
 
-	// Try to find the pre-built binary first
+	// Gracefully skip if the protomethod binary isn't available
 	binPath, err := resolveProtoMethodBinary()
 	if err != nil {
-		return err
+		fmt.Println("⚠️  Skipping proto method linter (protomethod not found — run 'go install' to enable)")
+		return nil
 	}
 
 	var lintExec *exec.Cmd
@@ -274,6 +276,60 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 	return append(env, prefix+defaultValue)
 }
 
+// runAllLinters runs every linter, each skipping gracefully if the required tool isn't installed.
+func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
+	fmt.Println("🔍 Running all linters...")
+	fmt.Println()
+
+	hasFailed := false
+
+	// 1. Standard Go linters (golangci-lint)
+	if _, err := exec.LookPath("golangci-lint"); err != nil {
+		fmt.Println("⚠️  golangci-lint not found on PATH — skipping")
+	} else if err := runGolangciLint(fix, paths); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ golangci-lint failed: %v\n", err)
+		hasFailed = true
+	}
+
+	// 2. Proto method enforcement
+	if _, err := resolveProtoMethodBinary(); err != nil {
+		fmt.Println("⚠️  protomethod linter not available — skipping")
+	} else if err := runProtoMethodLinter(paths); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ proto method linter failed: %v\n", err)
+		hasFailed = true
+	}
+
+	// 3. Contract interface enforcement
+	if _, err := resolveContractLintBinary(); err != nil {
+		fmt.Println("⚠️  contractlint not available — skipping")
+	} else if err := runContractLinter(paths); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ contract linter failed: %v\n", err)
+		hasFailed = true
+	}
+
+	// 4. Buf lint
+	if _, err := exec.LookPath("buf"); err != nil {
+		fmt.Println("⚠️  buf not found on PATH — skipping buf lint")
+	} else if err := runBufLint(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ buf lint failed: %v\n", err)
+		hasFailed = true
+	}
+
+	// 5. Frontend linters (tsc + eslint)
+	if err := runFrontendLinters(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Frontend lint failed: %v\n", err)
+		hasFailed = true
+	}
+
+	if hasFailed {
+		return fmt.Errorf("linting failed")
+	}
+
+	fmt.Println()
+	fmt.Println("✅ All linters passed!")
+	return nil
+}
+
 func runStandardLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	fmt.Println("🔍 Running standard linters...")
 	fmt.Println()
@@ -290,9 +346,9 @@ func runStandardLinters(fix bool, paths []string, cfg *config.ProjectConfig) err
 		hasFailed = true
 	}
 
-	// Run TypeScript linters for Next.js frontends
-	if err := runTypeScriptLinters(); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ TypeScript lint failed: %v\n", err)
+	// Run TypeScript linters for frontends
+	if err := runFrontendLinters(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Frontend lint failed: %v\n", err)
 		hasFailed = true
 	}
 
@@ -361,8 +417,15 @@ func runBufLint() error {
 	return nil
 }
 
-// runTypeScriptLinters runs ESLint and TypeScript type-checking for Next.js frontends.
-func runTypeScriptLinters() error {
+// runFrontendLinters runs TypeScript type-checking and framework-specific linters
+// for each frontend defined in the project config. Falls back to directory scanning
+// if no config is available.
+func runFrontendLinters(cfg *config.ProjectConfig) error {
+	if cfg != nil && len(cfg.Frontends) > 0 {
+		return runFrontendLintersFromConfig(cfg)
+	}
+
+	// Fallback: scan frontends/ directory when no config is available
 	if !dirExists("frontends") {
 		return nil
 	}
@@ -372,51 +435,94 @@ func runTypeScriptLinters() error {
 		return nil
 	}
 
-	hasFrontends := false
 	hasFailed := false
-
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		feDir := filepath.Join("frontends", e.Name())
-
-		// Only lint directories with package.json (Next.js frontends)
-		pkgJSON := filepath.Join(feDir, "package.json")
-		if _, err := os.Stat(pkgJSON); err != nil {
-			continue
-		}
-		hasFrontends = true
-
-		fmt.Printf("Running TypeScript linters for %s...\n", e.Name())
-
-		// Run npm run lint
-		if err := runNPMScript(feDir, "lint"); err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint failed: %v\n", e.Name(), err)
+		if err := lintFrontendDir(e.Name(), feDir, ""); err != nil {
 			hasFailed = true
-		} else {
-			fmt.Printf("  ✓ %s: lint passed\n", e.Name())
-		}
-
-		// Run npm run typecheck
-		if err := runNPMScript(feDir, "typecheck"); err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run typecheck failed: %v\n", e.Name(), err)
-			hasFailed = true
-		} else {
-			fmt.Printf("  ✓ %s: typecheck passed\n", e.Name())
 		}
 	}
 
-	_ = hasFrontends // no-op when verbose is not accessible
-
 	if hasFailed {
-		return fmt.Errorf("TypeScript linting failed")
+		return fmt.Errorf("frontend linting failed")
 	}
 	return nil
 }
 
-func runNPMScript(dir, script string) error {
-	cmd := exec.Command("npm", "run", script)
+// runFrontendLintersFromConfig lints frontends using project config entries.
+func runFrontendLintersFromConfig(cfg *config.ProjectConfig) error {
+	hasFailed := false
+	for _, fe := range cfg.Frontends {
+		feDir := fe.Path
+		if feDir == "" {
+			feDir = filepath.Join("frontends", fe.Name)
+		}
+		if err := lintFrontendDir(fe.Name, feDir, fe.Type); err != nil {
+			hasFailed = true
+		}
+	}
+	if hasFailed {
+		return fmt.Errorf("frontend linting failed")
+	}
+	return nil
+}
+
+// lintFrontendDir runs linters for a single frontend directory.
+// feType can be "nextjs" or empty (unknown).
+func lintFrontendDir(name, feDir, feType string) error {
+	if !dirExists(feDir) {
+		fmt.Printf("  ⚠️  %s: directory %s not found, skipping\n", name, feDir)
+		return nil
+	}
+
+	pkgJSON := filepath.Join(feDir, "package.json")
+	if _, err := os.Stat(pkgJSON); err != nil {
+		return nil
+	}
+
+	// Check for node_modules
+	if _, err := os.Stat(filepath.Join(feDir, "node_modules")); os.IsNotExist(err) {
+		fmt.Printf("  ⚠️  %s: node_modules not found — run 'npm install' in %s\n", name, feDir)
+		return nil
+	}
+
+	fmt.Printf("Running frontend linters for %s...\n", name)
+	hasFailed := false
+
+	// TypeScript type checking (skip if no tsconfig.json)
+	if _, err := os.Stat(filepath.Join(feDir, "tsconfig.json")); err == nil {
+		if err := runNPXCommand(feDir, "tsc", "--noEmit"); err != nil {
+			fmt.Fprintf(os.Stderr, "  ❌ %s: tsc --noEmit failed: %v\n", name, err)
+			hasFailed = true
+		} else {
+			fmt.Printf("  ✓ %s: typecheck passed\n", name)
+		}
+	} else {
+		fmt.Printf("  ⚠️  %s: no tsconfig.json, skipping typecheck\n", name)
+	}
+
+	// Next.js lint (only for nextjs frontends)
+	if feType == "nextjs" {
+		if err := runNPXCommand(feDir, "next", "lint"); err != nil {
+			fmt.Fprintf(os.Stderr, "  ❌ %s: next lint failed: %v\n", name, err)
+			hasFailed = true
+		} else {
+			fmt.Printf("  ✓ %s: next lint passed\n", name)
+		}
+	}
+
+	if hasFailed {
+		return fmt.Errorf("%s: frontend linting failed", name)
+	}
+	return nil
+}
+
+// runNPXCommand runs an npx command in the given directory.
+func runNPXCommand(dir string, args ...string) error {
+	cmd := exec.Command("npx", args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

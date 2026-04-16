@@ -11,9 +11,10 @@ import (
 
 var migrationNameSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
 
-// CreateMigration creates a new blank SQL migration pair using golang-migrate's
-// timestamped filename convention.
-func CreateMigration(name, dir string) error {
+// CreateMigration creates a new SQL migration pair using golang-migrate's
+// timestamped filename convention. When opts is non-nil, it gathers schema
+// context and writes a rich comment block into the .up.sql file.
+func CreateMigration(name, dir string, opts *MigrationOptions) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create migrations directory: %w", err)
 	}
@@ -28,7 +29,27 @@ func CreateMigration(name, dir string) error {
 	upPath := filepath.Join(dir, baseName+".up.sql")
 	downPath := filepath.Join(dir, baseName+".down.sql")
 
-	upContents := fmt.Sprintf("-- Migration: %s\n-- Write forward SQL here.\n\n", sanitizedName)
+	// Build up contents with context if opts provided.
+	var upContents string
+	if opts == nil {
+		opts = &MigrationOptions{}
+	}
+
+	ctx, err := GatherMigrationContext(sanitizedName, dir, *opts)
+	if err != nil {
+		// Non-fatal — fall back to minimal header.
+		upContents = fmt.Sprintf("-- Migration: %s\n-- Write forward SQL here.\n\n", sanitizedName)
+	} else {
+		upContents = GenerateContextComment(ctx)
+	}
+
+	// If --from-proto, append CREATE TABLE SQL for each proto model.
+	if opts.FromProto && len(ctx.ProtoModels) > 0 {
+		for _, m := range ctx.ProtoModels {
+			upContents += ProtoToCreateTable(m) + "\n"
+		}
+	}
+
 	downContents := fmt.Sprintf("-- Rollback: %s\n-- Write rollback SQL here.\n\n", sanitizedName)
 
 	if err := writeNewFile(upPath, upContents); err != nil {

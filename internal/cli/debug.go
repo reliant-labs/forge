@@ -19,8 +19,8 @@ import (
 func newDebugCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "debug",
-		Short: "Debug a running service with Delve or CDP",
-		Long: `Debug Go services with Delve or TypeScript/Next.js apps with Chrome DevTools Protocol.
+		Short: "Debug a running service with Delve",
+		Long: `Debug Go services with Delve.
 
 Session state is persisted to .forge/debug-session.json so subsequent
 commands (break, continue, eval, ...) reconnect to the same debugger.
@@ -55,7 +55,6 @@ Examples:
 // Session reconnection
 // ---------------------------------------------------------------------------
 
-// connectToSession loads a persisted debug session and connects to the debugger.
 func connectToSession() (debug.Debugger, error) {
 	session, err := debug.LoadSession(".")
 	if err != nil {
@@ -64,23 +63,11 @@ func connectToSession() (debug.Debugger, error) {
 	if session == nil {
 		return nil, fmt.Errorf("no active debug session (run 'forge debug start' first)")
 	}
-
-	switch session.Type {
-	case "delve":
-		d := debug.NewDelveDebugger()
-		if err := d.Connect(session.Addr); err != nil {
-			return nil, fmt.Errorf("connecting to Delve at %s: %w", session.Addr, err)
-		}
-		return d, nil
-	case "cdp":
-		d := debug.NewCDPDebugger()
-		if err := d.ConnectTo(session.Addr); err != nil {
-			return nil, fmt.Errorf("connecting to CDP at %s: %w", session.Addr, err)
-		}
-		return d, nil
-	default:
-		return nil, fmt.Errorf("unknown session type: %s", session.Type)
+	d := debug.NewDelveDebugger()
+	if err := d.Connect(session.Addr); err != nil {
+		return nil, fmt.Errorf("connecting to debugger at %s: %w", session.Addr, err)
 	}
+	return d, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -178,57 +165,43 @@ func printGoroutines(goroutines []debug.GoroutineInfo, jsonOutput bool) {
 
 func newDebugStartCmd() *cobra.Command {
 	var (
-		attachPID   int
-		frontend    string
-		port        int
-		jsonOutput  bool
+		attachPID  int
+		port       int
+		jsonOutput bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "start <service-or-path>",
+		Use:   "start <service>",
 		Short: "Start a debug session for a service",
-		Long: `Start a debug session for a Go service or frontend.
+		Long: `Start a debug session for a Go service.
 
-For Go services, the binary is built with debug flags and launched under Delve.
-For frontends, Next.js is started with --inspect via CDP.
+The binary is built with debug flags (-gcflags=all=-N -l) and launched under Delve.
+
+If the argument contains "/" or ".", it is treated as a direct path.
+Otherwise it is looked up by name in forge.project.yaml.
 
 Examples:
   forge debug start api-gateway
   forge debug start --attach 12345
-  forge debug start --frontend web
+  forge debug start --port 2345 api-gateway
   forge debug start ./cmd/server`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugStart(args, attachPID, frontend, port, jsonOutput)
+			if attachPID > 0 {
+				return runDebugStartAttach(attachPID, jsonOutput)
+			}
+			if len(args) == 0 {
+				return fmt.Errorf("provide a service name or path, or use --attach <pid>")
+			}
+			return runDebugStartService(args[0], port, jsonOutput)
 		},
 	}
 
 	cmd.Flags().IntVar(&attachPID, "attach", 0, "Attach to an existing process by PID")
-	cmd.Flags().StringVar(&frontend, "frontend", "", "Start debugging a frontend (Next.js) by name")
 	cmd.Flags().IntVar(&port, "port", 0, "Debugger listen port (0 = auto)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 
 	return cmd
-}
-
-func runDebugStart(args []string, attachPID int, frontend string, port int, jsonOutput bool) error {
-	// --attach mode
-	if attachPID > 0 {
-		return runDebugStartAttach(attachPID, jsonOutput)
-	}
-
-	// --frontend mode
-	if frontend != "" {
-		return runDebugStartFrontend(frontend, jsonOutput)
-	}
-
-	// Service mode — need a service name or path
-	if len(args) == 0 {
-		return fmt.Errorf("provide a service name, path, or use --attach/--frontend")
-	}
-	target := args[0]
-
-	return runDebugStartService(target, jsonOutput)
 }
 
 func runDebugStartAttach(pid int, jsonOutput bool) error {
@@ -257,61 +230,16 @@ func runDebugStartAttach(pid int, jsonOutput bool) error {
 	return nil
 }
 
-func runDebugStartFrontend(name string, jsonOutput bool) error {
-	// Find frontend path from project config
-	cfg, err := loadProjectConfig()
-	if err != nil {
-		return fmt.Errorf("loading project config: %w", err)
-	}
-
-	var frontendPath string
-	for _, fe := range cfg.Frontends {
-		if fe.Name == name {
-			frontendPath = fe.Path
-			break
-		}
-	}
-	if frontendPath == "" {
-		return fmt.Errorf("frontend %q not found in project config", name)
-	}
-
-	d := debug.NewCDPDebugger()
-	if err := d.StartNextDev(frontendPath); err != nil {
-		return fmt.Errorf("starting frontend debug session: %w", err)
-	}
-
-	session := &debug.SessionInfo{
-		Type:    "cdp",
-		Addr:    d.WsURL(),
-		Binary:  name,
-		Started: time.Now(),
-	}
-	if err := debug.SaveSession(".", session); err != nil {
-		return fmt.Errorf("saving session: %w", err)
-	}
-
-	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(session)
-	} else {
-		fmt.Printf("Frontend %q debug session started\n", name)
-		fmt.Printf("CDP connected at %s\n", d.WsURL())
-	}
-	return nil
-}
-
-func runDebugStartService(target string, jsonOutput bool) error {
-	// Determine the build path.
-	// If target looks like a path (contains / or .), use it directly.
-	// Otherwise treat it as a service name and look it up in project config.
+func runDebugStartService(target string, port int, jsonOutput bool) error {
 	buildPath := target
 	serviceName := target
 
-	// Sanitize service name for use as a file name
 	if serviceName == "." || serviceName == "./" {
 		serviceName = "app"
 	}
 	serviceName = filepath.Base(serviceName)
 
+	// If the target doesn't look like a path, resolve it from project config.
 	if !strings.Contains(target, "/") && !strings.Contains(target, ".") {
 		cfg, err := loadProjectConfig()
 		if err != nil {
@@ -320,9 +248,6 @@ func runDebugStartService(target string, jsonOutput bool) error {
 		found := false
 		for _, svc := range cfg.Services {
 			if svc.Name == target {
-				// The main package for a service is typically at cmd/server or
-				// the service path itself. Use the service path with /cmd/server
-				// as the convention, falling back to the path directly.
 				candidate := filepath.Join(svc.Path, "cmd", "server")
 				if _, err := os.Stat(candidate); err == nil {
 					buildPath = "./" + candidate
@@ -338,7 +263,7 @@ func runDebugStartService(target string, jsonOutput bool) error {
 		}
 	}
 
-	// Build with debug flags
+	// Build with debug flags.
 	outputBinary := filepath.Join(".forge", "debug", serviceName)
 	if err := os.MkdirAll(filepath.Dir(outputBinary), 0o755); err != nil {
 		return fmt.Errorf("creating debug output dir: %w", err)
@@ -352,7 +277,6 @@ func runDebugStartService(target string, jsonOutput bool) error {
 		return fmt.Errorf("building debug binary: %w", err)
 	}
 
-	// Make the path absolute for Delve
 	absBinary, err := filepath.Abs(outputBinary)
 	if err != nil {
 		return fmt.Errorf("resolving binary path: %w", err)
@@ -378,8 +302,7 @@ func runDebugStartService(target string, jsonOutput bool) error {
 		json.NewEncoder(os.Stdout).Encode(session)
 	} else {
 		fmt.Printf("Debug session started for %s\n", serviceName)
-		fmt.Printf("Delve listening at %s (PID %d)\n", d.Addr(), d.PID())
-		fmt.Printf("Binary: %s\n", absBinary)
+		fmt.Printf("Delve listening at %s\n", d.Addr())
 	}
 	return nil
 }
@@ -423,13 +346,8 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 		return err
 	}
 
-	// Function breakpoint — only available on Delve
 	if funcName != "" {
-		dd, ok := dbg.(*debug.DelveDebugger)
-		if !ok {
-			return fmt.Errorf("function breakpoints are only supported for Delve (Go) sessions")
-		}
-		bp, err := dd.SetFunctionBreakpoint(funcName, condition)
+		bp, err := dbg.SetFunctionBreakpoint(funcName, condition)
 		if err != nil {
 			return fmt.Errorf("setting function breakpoint: %w", err)
 		}
@@ -437,7 +355,6 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 		return nil
 	}
 
-	// File:line breakpoint
 	if len(args) == 0 {
 		return fmt.Errorf("provide a file:line argument or use --func")
 	}
@@ -465,7 +382,6 @@ func parseFileLine(s string) (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("invalid line number in %q: %w", s, err)
 	}
-	// Delve requires absolute paths
 	file, err = filepath.Abs(file)
 	if err != nil {
 		return "", 0, fmt.Errorf("resolving absolute path for %q: %w", s[:idx], err)
@@ -523,33 +439,38 @@ func runDebugBreakpoints(jsonOutput bool) error {
 // ---------------------------------------------------------------------------
 
 func newDebugClearCmd() *cobra.Command {
+	var jsonOutput bool
+
 	cmd := &cobra.Command{
 		Use:   "clear <id>",
 		Short: "Clear a breakpoint by ID",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugClear(args[0])
+			id, err := strconv.Atoi(args[0])
+			if err != nil {
+				return fmt.Errorf("invalid breakpoint ID %q: %w", args[0], err)
+			}
+
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+
+			if err := dbg.ClearBreakpoint(id); err != nil {
+				return fmt.Errorf("clearing breakpoint: %w", err)
+			}
+
+			if jsonOutput {
+				json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "cleared": true})
+			} else {
+				fmt.Printf("Breakpoint %d cleared.\n", id)
+			}
+			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugClear(idStr string) error {
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		return fmt.Errorf("invalid breakpoint ID %q: %w", idStr, err)
-	}
-
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	if err := dbg.ClearBreakpoint(id); err != nil {
-		return fmt.Errorf("clearing breakpoint: %w", err)
-	}
-	fmt.Printf("Breakpoint %d cleared.\n", id)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -563,26 +484,21 @@ func newDebugContinueCmd() *cobra.Command {
 		Use:   "continue",
 		Short: "Resume execution until the next breakpoint",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugContinue(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			state, err := dbg.Continue()
+			if err != nil {
+				return fmt.Errorf("continuing: %w", err)
+			}
+			printStopState(state, jsonOutput)
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugContinue(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	state, err := dbg.Continue()
-	if err != nil {
-		return fmt.Errorf("continuing: %w", err)
-	}
-	printStopState(state, jsonOutput)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +512,16 @@ func newDebugStepCmd() *cobra.Command {
 		Use:   "step",
 		Short: "Step over the current line",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugStep(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			state, err := dbg.StepOver()
+			if err != nil {
+				return fmt.Errorf("stepping over: %w", err)
+			}
+			printStopState(state, jsonOutput)
+			return nil
 		},
 	}
 
@@ -604,32 +529,27 @@ func newDebugStepCmd() *cobra.Command {
 	return cmd
 }
 
-func runDebugStep(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	state, err := dbg.StepOver()
-	if err != nil {
-		return fmt.Errorf("stepping over: %w", err)
-	}
-	printStopState(state, jsonOutput)
-	return nil
-}
-
 // ---------------------------------------------------------------------------
-// stepin
+// step-in
 // ---------------------------------------------------------------------------
 
 func newDebugStepInCmd() *cobra.Command {
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
-		Use:   "stepin",
+		Use:   "step-in",
 		Short: "Step into the current function call",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugStepIn(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			state, err := dbg.StepInto()
+			if err != nil {
+				return fmt.Errorf("stepping in: %w", err)
+			}
+			printStopState(state, jsonOutput)
+			return nil
 		},
 	}
 
@@ -637,51 +557,32 @@ func newDebugStepInCmd() *cobra.Command {
 	return cmd
 }
 
-func runDebugStepIn(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	state, err := dbg.StepInto()
-	if err != nil {
-		return fmt.Errorf("stepping in: %w", err)
-	}
-	printStopState(state, jsonOutput)
-	return nil
-}
-
 // ---------------------------------------------------------------------------
-// stepout
+// step-out
 // ---------------------------------------------------------------------------
 
 func newDebugStepOutCmd() *cobra.Command {
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
-		Use:   "stepout",
+		Use:   "step-out",
 		Short: "Step out of the current function",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugStepOut(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			state, err := dbg.StepOut()
+			if err != nil {
+				return fmt.Errorf("stepping out: %w", err)
+			}
+			printStopState(state, jsonOutput)
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugStepOut(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	state, err := dbg.StepOut()
-	if err != nil {
-		return fmt.Errorf("stepping out: %w", err)
-	}
-	printStopState(state, jsonOutput)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -694,39 +595,32 @@ func newDebugEvalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "eval <expression>",
 		Short: "Evaluate an expression in the current scope",
-		Long: `Evaluate a Go or JavaScript expression in the debugger's current scope.
+		Long: `Evaluate a Go expression in the debugger's current scope.
 
 Examples:
   forge debug eval "req.UserID"
-  forge debug eval "len(items)"
-  forge debug eval "config.Port"`,
+  forge debug eval "len(items)"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugEval(args[0], jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			v, err := dbg.Eval(args[0])
+			if err != nil {
+				return fmt.Errorf("evaluating expression: %w", err)
+			}
+			if jsonOutput {
+				json.NewEncoder(os.Stdout).Encode(v)
+			} else {
+				printVariable(*v, "")
+			}
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugEval(expr string, jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	v, err := dbg.Eval(expr)
-	if err != nil {
-		return fmt.Errorf("evaluating expression: %w", err)
-	}
-
-	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(v)
-	} else {
-		printVariable(*v, "")
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -738,28 +632,23 @@ func newDebugLocalsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "locals",
-		Short: "List local variables in the current scope",
+		Short: "Show local variables in the current scope",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugLocals(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			vars, err := dbg.Locals()
+			if err != nil {
+				return fmt.Errorf("listing locals: %w", err)
+			}
+			printVariables(vars, jsonOutput)
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugLocals(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	vars, err := dbg.Locals()
-	if err != nil {
-		return fmt.Errorf("listing locals: %w", err)
-	}
-	printVariables(vars, jsonOutput)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -771,28 +660,23 @@ func newDebugArgsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "args",
-		Short: "List function arguments in the current scope",
+		Short: "Show function arguments in the current scope",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugArgs(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			vars, err := dbg.Args()
+			if err != nil {
+				return fmt.Errorf("listing args: %w", err)
+			}
+			printVariables(vars, jsonOutput)
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugArgs(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	vars, err := dbg.Args()
-	if err != nil {
-		return fmt.Errorf("listing args: %w", err)
-	}
-	printVariables(vars, jsonOutput)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -800,46 +684,31 @@ func runDebugArgs(jsonOutput bool) error {
 // ---------------------------------------------------------------------------
 
 func newDebugStackCmd() *cobra.Command {
-	var jsonOutput bool
+	var (
+		depth      int
+		jsonOutput bool
+	)
 
 	cmd := &cobra.Command{
-		Use:   "stack [depth]",
-		Short: "Print the current call stack",
-		Long: `Print the current call stack up to the given depth (default 10).
-
-Examples:
-  forge debug stack
-  forge debug stack 20`,
-		Args: cobra.MaximumNArgs(1),
+		Use:   "stack",
+		Short: "Show the current call stack",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			depth := 10
-			if len(args) > 0 {
-				d, err := strconv.Atoi(args[0])
-				if err != nil {
-					return fmt.Errorf("invalid depth %q: %w", args[0], err)
-				}
-				depth = d
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
 			}
-			return runDebugStack(depth, jsonOutput)
+			frames, err := dbg.Stacktrace(depth)
+			if err != nil {
+				return fmt.Errorf("getting stacktrace: %w", err)
+			}
+			printStacktrace(frames, jsonOutput)
+			return nil
 		},
 	}
 
+	cmd.Flags().IntVar(&depth, "depth", 50, "Maximum stack depth")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugStack(depth int, jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	frames, err := dbg.Stacktrace(depth)
-	if err != nil {
-		return fmt.Errorf("getting stacktrace: %w", err)
-	}
-	printStacktrace(frames, jsonOutput)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -851,33 +720,23 @@ func newDebugGoroutinesCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "goroutines",
-		Short: "List goroutines (Delve sessions only)",
+		Short: "List goroutines",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugGoroutines(jsonOutput)
+			dbg, err := connectToSession()
+			if err != nil {
+				return err
+			}
+			goroutines, err := dbg.Goroutines()
+			if err != nil {
+				return fmt.Errorf("listing goroutines: %w", err)
+			}
+			printGoroutines(goroutines, jsonOutput)
+			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-func runDebugGoroutines(jsonOutput bool) error {
-	dbg, err := connectToSession()
-	if err != nil {
-		return err
-	}
-
-	dd, ok := dbg.(*debug.DelveDebugger)
-	if !ok {
-		return fmt.Errorf("goroutines command is only available for Delve (Go) sessions")
-	}
-
-	goroutines, err := dd.Goroutines()
-	if err != nil {
-		return fmt.Errorf("listing goroutines: %w", err)
-	}
-	printGoroutines(goroutines, jsonOutput)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -889,31 +748,27 @@ func newDebugStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the debug session and kill the debugged process",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDebugStop()
+			dbg, err := connectToSession()
+			if err != nil {
+				// If we can't connect, still try to clear the session file.
+				if clearErr := debug.ClearSession("."); clearErr != nil {
+					return fmt.Errorf("clearing session: %w (original error: %v)", clearErr, err)
+				}
+				fmt.Println("Session file cleared (debugger was not reachable).")
+				return nil
+			}
+
+			if err := dbg.Stop(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
+			}
+
+			if err := debug.ClearSession("."); err != nil {
+				return fmt.Errorf("clearing session: %w", err)
+			}
+
+			fmt.Println("Debug session stopped.")
+			return nil
 		},
 	}
 	return cmd
-}
-
-func runDebugStop() error {
-	dbg, err := connectToSession()
-	if err != nil {
-		// If we can't connect, still try to clear the session file
-		if clearErr := debug.ClearSession("."); clearErr != nil {
-			return fmt.Errorf("clearing session: %w (original error: %v)", clearErr, err)
-		}
-		fmt.Println("Session file cleared (debugger was not reachable).")
-		return nil
-	}
-
-	if err := dbg.Stop(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
-	}
-
-	if err := debug.ClearSession("."); err != nil {
-		return fmt.Errorf("clearing session: %w", err)
-	}
-
-	fmt.Println("Debug session stopped.")
-	return nil
 }

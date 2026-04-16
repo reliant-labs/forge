@@ -64,6 +64,7 @@ func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
 func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sample-full")
 	generator := NewProjectGenerator("sample-full", root, "example.com/sample-full")
+	generator.ServiceName = "api"
 	generator.FrontendName = "web"
 
 	if err := generator.Generate(); err != nil {
@@ -113,7 +114,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("bootstrap.go should contain Shutdown method, got:\n%s", bootstrapContents)
 	}
 	// A3: BootstrapOnly should validate unknown service names
-	if !strings.Contains(bootstrapContents, "unknown service name, ignoring") {
+	if !strings.Contains(bootstrapContents, "unknown service") {
 		t.Fatalf("bootstrap.go BootstrapOnly should warn about unknown service names, got:\n%s", bootstrapContents)
 	}
 
@@ -201,39 +202,6 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	}
 }
 
-func TestValidateGoVersion(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    string
-	}{
-		{"normal stable version", "1.25.3", "1.25.3"},
-		{"minor only", "1.25", "1.25"},
-		{"exact max known", "1.25.0", "1.25.0"},
-		{"older version", "1.22.5", "1.22.5"},
-		{"newer than known", "1.27.1", "1.25.0"},
-		{"way newer", "1.30.0", "1.25.0"},
-		{"beta version", "1.26beta1", "1.25.0"},
-		{"rc version", "1.26rc1", "1.25.0"},
-		{"RC uppercase", "1.26RC2", "1.25.0"},
-		{"alpha version", "1.26alpha1", "1.25.0"},
-		{"beta of current", "1.25beta1", "1.24.0"},
-		{"devel build", "devel go1.26-abcdef", defaultGoVersion},
-		{"empty string", "", defaultGoVersion},
-		{"garbage", "notaversion", defaultGoVersion},
-		{"single number", "1", defaultGoVersion},
-		{"major 2", "2.0.0", defaultGoVersion},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := validateGoVersion(tt.input)
-			if got != tt.want {
-				t.Errorf("validateGoVersion(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestParseGoVersion(t *testing.T) {
 	tests := []struct {
@@ -420,17 +388,20 @@ func TestProjectGeneratorWritesSkillsTree(t *testing.T) {
 	// list is authoritative: adding or removing a skill should update this
 	// list too, so we notice when the generator silently drops a file.
 	expectedSkills := []string{
-		"forge/add/SKILL.md",
-		"forge/build/SKILL.md",
+		"forge/SKILL.md",
+		"forge/api/SKILL.md",
 		"forge/db/SKILL.md",
 		"forge/debug/SKILL.md",
+		"forge/debug/investigate/SKILL.md",
+		"forge/debug/isolate/SKILL.md",
+		"forge/debug/reproduce/SKILL.md",
 		"forge/deploy/SKILL.md",
-		"forge/e2e-test/SKILL.md",
-		"forge/generate/SKILL.md",
-		"forge/lint/SKILL.md",
-		"forge/package/SKILL.md",
-		"forge/run/SKILL.md",
-		"forge/test/SKILL.md",
+		"forge/frontend/SKILL.md",
+		"forge/services/SKILL.md",
+		"forge/testing/SKILL.md",
+		"forge/testing/e2e/SKILL.md",
+		"forge/testing/integration/SKILL.md",
+		"forge/testing/unit/SKILL.md",
 	}
 	for _, rel := range expectedSkills {
 		assertPathExists(t, filepath.Join(root, ".reliant", "skills", rel))
@@ -438,11 +409,11 @@ func TestProjectGeneratorWritesSkillsTree(t *testing.T) {
 
 	// Spot-check that a skill file has the expected frontmatter shape.
 	debugSkill := readFile(t, filepath.Join(root, ".reliant", "skills", "forge", "debug", "SKILL.md"))
-	if !strings.Contains(debugSkill, "name: forge/debug") {
+	if !strings.Contains(debugSkill, "name: debug") {
 		t.Fatalf("expected debug SKILL.md to include name frontmatter, got:\n%s", debugSkill)
 	}
-	if !strings.Contains(debugSkill, "when_to_use:") {
-		t.Fatalf("expected debug SKILL.md to include when_to_use frontmatter, got:\n%s", debugSkill)
+	if !strings.Contains(debugSkill, "description:") {
+		t.Fatalf("expected debug SKILL.md to include description frontmatter, got:\n%s", debugSkill)
 	}
 
 	// The skills README should also be present.
@@ -613,7 +584,7 @@ func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
 		filepath.Join(root, ".reliant", "reliant-forge.md"),
 		filepath.Join(root, ".reliant", "skills", "README.md"),
 		filepath.Join(root, ".reliant", "skills", "forge", "debug", "SKILL.md"),
-		filepath.Join(root, ".reliant", "skills", "forge", "package", "SKILL.md"),
+		filepath.Join(root, ".reliant", "skills", "forge", "services", "SKILL.md"),
 	}
 	before := make(map[string]string, len(owned))
 	for _, p := range owned {

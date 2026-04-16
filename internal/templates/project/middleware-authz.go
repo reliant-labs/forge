@@ -4,7 +4,6 @@ package middleware
 
 import (
 	"context"
-	"fmt"
 
 	"connectrpc.com/connect"
 )
@@ -51,19 +50,4 @@ func (a *authzInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFun
 		}
 		return next(ctx, conn)
 	}
-}
-
-// UnimplementedAuthorizer returns a PermissionDenied error for every procedure,
-// indicating that authorization logic has not been implemented yet.
-// This is the default authorizer generated for each service. You MUST replace
-// the CanAccess implementation with real authorization logic before deploying.
-type UnimplementedAuthorizer struct{}
-
-// CanAccess always returns PermissionDenied. Override this method with real
-// authorization logic before deploying.
-func (UnimplementedAuthorizer) CanAccess(_ context.Context, procedure string) error {
-	return connect.NewError(
-		connect.CodePermissionDenied,
-		fmt.Errorf("authorization not implemented for %s: implement CanAccess in your service's authorizer", procedure),
-	)
 }

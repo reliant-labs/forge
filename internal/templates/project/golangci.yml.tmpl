@@ -1,0 +1,107 @@
+# Forge lint configuration — calibrated defaults for Go+Connect projects.
+# Adjust thresholds for your project:
+#   Stricter (CRUD APIs):    cyclop 12, funlen 60, gocognit 15
+#   Looser (operators/billing): cyclop 20, funlen 100, gocognit 30
+# Use path-based exclusions for complex subsystems rather than raising global thresholds.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - revive
+    - noctx
+    - misspell
+    - cyclop
+    - funlen
+    - gocognit
+    - nestif
+    - interfacebloat
+  settings:
+    govet:
+      enable-all: true
+      shadow:
+        strict: false
+      disable:
+        - fieldalignment
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: unexported-return
+        - name: argument-limit
+          arguments: [5]
+        - name: function-result-limit
+          arguments: [3]
+        - name: max-public-structs
+          arguments: [5]
+        - name: max-control-nesting
+          arguments: [4]
+    cyclop:
+      max-complexity: 15
+      package-average: 5.0
+      skip-tests: true
+    funlen:
+      lines: 80
+      statements: 40
+    gocognit:
+      min-complexity: 25
+    nestif:
+      min-complexity: 5
+    interfacebloat:
+      max: 10
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+  exclusions:
+    paths:
+      - gen
+      - ".*node_modules.*"
+      - ".*frontends.*"
+      - ".*\\.pb\\.go$"
+      - ".*\\.connect\\.go$"
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - funlen
+          - cyclop
+          - gocognit
+      - path: cmd/
+        linters:
+          - cyclop
+          - gocognit
+          - funlen
+      - path: operators/
+        linters:
+          - funlen
+          - gocognit
+          - nestif
+          - cyclop
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - {{.Module}}

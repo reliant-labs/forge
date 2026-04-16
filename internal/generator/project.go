@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -41,90 +42,31 @@ type ProjectGenerator struct {
 	Name              string
 	Path              string
 	ModulePath        string
-	ServiceName       string // initial service name (default: "api")
+	ServiceName       string // initial service name (empty if none specified)
 	ServicePort       int    // initial service port (default: 8080)
 	FrontendName      string // optional initial Next.js frontend name
 	FrontendPort      int    // frontend port (default: 3000)
 	GoVersionOverride string // if set, use this Go version instead of detecting
 }
 
-const (
-	defaultGoVersion = "1.25.0"
-	// maxKnownGoMinor is the latest stable Go minor version known to this
-	// build of forge. Detected versions newer than this are capped.
-	maxKnownGoMinor = 25
-)
+const defaultGoVersion = "1.25.0"
 
-// detectGoVersion returns a validated Go version from the host (e.g. "1.24.0").
-// Falls back to defaultGoVersion if detection fails.
+// detectGoVersion returns the host Go version from `go env GOVERSION`
+// (for example, "1.26.1"). It trusts the installed toolchain and only falls
+// back to defaultGoVersion when the local version cannot be detected.
 func detectGoVersion() string {
 	out, err := exec.Command("go", "env", "GOVERSION").Output()
 	if err != nil {
 		return defaultGoVersion
 	}
+
 	v := strings.TrimSpace(string(out))
-	// "go1.25.0" -> "1.25.0"
 	v = strings.TrimPrefix(v, "go")
-	if v == "" {
-		return defaultGoVersion
-	}
-	return validateGoVersion(v)
-}
-
-// validateGoVersion checks a raw Go version string and returns a safe version
-// for use in go.mod/go.work files. It handles:
-//   - Pre-release versions (beta, rc) → falls back to previous stable minor
-//   - Versions newer than maxKnownGoMinor → capped to maxKnownGoMinor
-//   - Completely unparseable strings → defaultGoVersion
-func validateGoVersion(v string) string {
-	// Strip pre-release suffixes (e.g. "1.25beta1", "1.25rc1", "1.25.0-rc.1")
-	prerelease := false
-	for _, tag := range []string{"beta", "rc", "alpha"} {
-		if idx := strings.Index(strings.ToLower(v), tag); idx != -1 {
-			v = v[:idx]
-			prerelease = true
-			break
-		}
-	}
-
-	// Also handle devel/tip versions (e.g. "devel go1.25-...")
-	if strings.HasPrefix(v, "devel") || v == "" {
-		fmt.Fprintf(os.Stderr, "⚠️  Detected Go development build. Using go %s instead.\n", goVersionMinor(defaultGoVersion))
+	if v == "" || strings.HasPrefix(v, "devel") {
 		return defaultGoVersion
 	}
 
-	// Strip any trailing dot left after suffix removal (e.g. "1.25." -> "1.25")
-	v = strings.TrimRight(v, ".")
-
-	major, minor, _, ok := parseGoVersion(v)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "⚠️  Could not parse Go version %q. Using go %s instead.\n", v, goVersionMinor(defaultGoVersion))
-		return defaultGoVersion
-	}
-
-	if major != 1 {
-		fmt.Fprintf(os.Stderr, "⚠️  Unexpected Go major version %d. Using go %s instead.\n", major, goVersionMinor(defaultGoVersion))
-		return defaultGoVersion
-	}
-
-	if prerelease {
-		// For pre-release, use the previous stable minor
-		safeMinor := minor - 1
-		if safeMinor < 21 {
-			safeMinor = 21 // don't go below Go 1.21
-		}
-		result := fmt.Sprintf("%d.%d.0", major, safeMinor)
-		fmt.Fprintf(os.Stderr, "⚠️  Detected Go pre-release version. Using go %s instead.\n", goVersionMinor(result))
-		return result
-	}
-
-	if minor > maxKnownGoMinor {
-		result := fmt.Sprintf("%d.%d.0", major, maxKnownGoMinor)
-		fmt.Fprintf(os.Stderr, "⚠️  Detected Go version %s which is newer than the latest known stable (1.%d). Using go %s instead.\n", v, maxKnownGoMinor, goVersionMinor(result))
-		return result
-	}
-
-	return v
+	return strings.TrimRight(v, ".")
 }
 
 // parseGoVersion extracts major, minor, and patch from a version string.
@@ -168,13 +110,11 @@ func goVersionMinor(v string) string {
 func (g *ProjectGenerator) resolveGoVersion() string {
 	if g.GoVersionOverride != "" {
 		v := g.GoVersionOverride
-		// Normalize: accept "1.24" as "1.24.0"
 		parts := strings.SplitN(v, ".", 3)
 		if len(parts) == 2 {
-			v = v + ".0"
+			v += ".0"
 		}
-		_, _, _, ok := parseGoVersion(v)
-		if !ok {
+		if _, _, _, ok := parseGoVersion(v); !ok {
 			fmt.Fprintf(os.Stderr, "⚠️  Invalid --go-version %q. Using detected version instead.\n", g.GoVersionOverride)
 			return detectGoVersion()
 		}
@@ -186,11 +126,10 @@ func (g *ProjectGenerator) resolveGoVersion() string {
 // NewProjectGenerator creates a new project generator
 func NewProjectGenerator(name, path, modulePath string) *ProjectGenerator {
 	return &ProjectGenerator{
-		Name:        name,
-		Path:        path,
-		ModulePath:  modulePath,
-		ServiceName: "api",
-		ServicePort: 8080,
+		Name:         name,
+		Path:         path,
+		ModulePath:   modulePath,
+		ServicePort:  8080,
 		FrontendPort: 3000,
 	}
 }
@@ -224,9 +163,11 @@ func (g *ProjectGenerator) Generate() error {
 		"internal",
 	}
 
-	// Add service directory
-	dirs = append(dirs, fmt.Sprintf("handlers/%s", g.ServiceName))
-	dirs = append(dirs, fmt.Sprintf("proto/services/%s/v1", g.ServiceName))
+	// Add service directory if a service is specified
+	if g.ServiceName != "" {
+		dirs = append(dirs, fmt.Sprintf("handlers/%s", g.ServiceName))
+		dirs = append(dirs, fmt.Sprintf("proto/services/%s/v1", g.ServiceName))
+	}
 
 	// Add frontend directory if specified
 	if g.FrontendName != "" {
@@ -280,8 +221,10 @@ func (g *ProjectGenerator) Generate() error {
 	if err := g.copyforgeProtos(); err != nil {
 		return err
 	}
-	if err := g.createExampleProto(templateData); err != nil {
-		return err
+	if g.ServiceName != "" {
+		if err := g.createExampleProto(templateData); err != nil {
+			return err
+		}
 	}
 	if err := g.createConfigProto(templateData); err != nil {
 		return err
@@ -319,11 +262,26 @@ func (g *ProjectGenerator) Generate() error {
 	if err := g.generatePkgMiddleware(); err != nil {
 		return fmt.Errorf("failed to generate pkg/middleware: %w", err)
 	}
+
+	// Record checksums for frozen files so `forge upgrade` can detect drift.
+	if err := g.recordFrozenChecksums(templateData); err != nil {
+		return fmt.Errorf("failed to record frozen file checksums: %w", err)
+	}
+
 	if err := g.generateBootstrap(); err != nil {
 		return fmt.Errorf("failed to generate pkg/app/bootstrap.go: %w", err)
 	}
+	// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
+	// even with zero services.
+	if err := codegen.GenerateSetup(g.ModulePath, "", g.Path); err != nil {
+		return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
+	}
 	if err := g.generateBootstrapTesting(); err != nil {
 		return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
+	}
+	// Generate migrate.go stub (no migrations embedded at project creation)
+	if err := codegen.GenerateMigrate(g.Path, g.ModulePath, false); err != nil {
+		return fmt.Errorf("failed to generate pkg/app/migrate.go: %w", err)
 	}
 
 	// Write forge.project.yaml
@@ -346,11 +304,18 @@ func (g *ProjectGenerator) Generate() error {
 		return fmt.Errorf("failed to generate docker-compose.yml: %w", err)
 	}
 
+	// Generate .env.example with common environment variables
+	if err := g.generateEnvExample(); err != nil {
+		return fmt.Errorf("failed to generate .env.example: %w", err)
+	}
+
 	if err := g.generateGolangciLint(); err != nil {
 		return fmt.Errorf("failed to generate .golangci.yml: %w", err)
 	}
-	if err := g.generateServiceFiles(); err != nil {
-		return fmt.Errorf("failed to generate service files: %w", err)
+	if g.ServiceName != "" {
+		if err := g.generateServiceFiles(); err != nil {
+			return fmt.Errorf("failed to generate service files: %w", err)
+		}
 	}
 
 	// Generate frontend files if specified (both modes)
@@ -366,8 +331,10 @@ func (g *ProjectGenerator) Generate() error {
 	}
 
 	// Generate E2E test harness (both modes)
-	if err := g.generateE2ETests(); err != nil {
-		return fmt.Errorf("failed to generate E2E tests: %w", err)
+	if g.ServiceName != "" {
+		if err := g.generateE2ETests(); err != nil {
+			return fmt.Errorf("failed to generate E2E tests: %w", err)
+		}
 	}
 
 	// Write project metadata to .reliant directory (both modes)
@@ -437,11 +404,24 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		},
 		CI: config.CIConfig{
 			Provider: "github",
-			Lint:     true,
-			Test:     true,
-			Build:    true,
-			Deploy:   true,
-			VulnScan: true,
+			Lint: config.CILintConfig{
+				Golangci: true,
+				Buf:      true,
+				Frontend: g.FrontendName != "",
+			},
+			Test: config.CITestConfig{
+				Race:     true,
+				Coverage: false,
+			},
+			VulnScan: config.CIVulnConfig{
+				Go:     true,
+				Docker: true,
+				NPM:    g.FrontendName != "",
+			},
+		},
+		Deploy: config.DeployConfig{
+			Provider: "github",
+			// Zero-value DeployConcurrency means enabled
 		},
 		Docker: config.DockerConfig{
 			Registry: "ghcr.io",
@@ -459,13 +439,15 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		},
 	}
 
-	cfg.Services = []config.ServiceConfig{
-		{
-			Name: g.ServiceName,
-			Type: "go_service",
-			Path: fmt.Sprintf("handlers/%s", g.ServiceName),
-			Port: g.ServicePort,
-		},
+	if g.ServiceName != "" {
+		cfg.Services = []config.ServiceConfig{
+			{
+				Name: g.ServiceName,
+				Type: "go_service",
+				Path: fmt.Sprintf("handlers/%s", g.ServiceName),
+				Port: g.ServicePort,
+			},
+		}
 	}
 
 	if g.FrontendName != "" {
@@ -582,10 +564,36 @@ func (g *ProjectGenerator) generateDevConfig() error {
 	return os.WriteFile(destPath, content, 0644)
 }
 
+func (g *ProjectGenerator) generateEnvExample() error {
+	var sb strings.Builder
+	sb.WriteString("# Database\n")
+	sb.WriteString(fmt.Sprintf("DATABASE_URL=postgres://user:pass@localhost:5432/%s?sslmode=disable\n", g.Name))
+	sb.WriteString("\n# Server\n")
+	sb.WriteString(fmt.Sprintf("PORT=%d\n", g.ServicePort))
+	if g.FrontendName != "" {
+		sb.WriteString(fmt.Sprintf("CORS_ORIGINS=http://localhost:%d\n", g.FrontendPort))
+	} else {
+		sb.WriteString("CORS_ORIGINS=http://localhost:3000\n")
+	}
+	sb.WriteString("\n# Environment: set to \"development\" to enable permissive defaults (e.g. authz allow-all).\n")
+	sb.WriteString("ENVIRONMENT=development\n")
+	sb.WriteString("\n# OpenTelemetry (optional)\n")
+	sb.WriteString("# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n")
+	sb.WriteString("# OTEL_SERVICE_NAME=" + g.Name + "\n")
+	if g.FrontendName != "" {
+		sb.WriteString(fmt.Sprintf("\n# Frontend (set in frontends/%s/.env.local)\n", g.FrontendName))
+		sb.WriteString(fmt.Sprintf("# NEXT_PUBLIC_API_URL=http://localhost:%d\n", g.ServicePort))
+	}
+
+	destPath := filepath.Join(g.Path, ".env.example")
+	return os.WriteFile(destPath, []byte(sb.String()), 0644)
+}
+
 func (g *ProjectGenerator) generateGolangciLint() error {
-	content, err := templates.GetProjectTemplate("golangci.yml")
+	data := struct{ Module string }{Module: g.ModulePath}
+	content, err := templates.RenderProjectTemplate("golangci.yml.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("read golangci.yml template: %w", err)
+		return fmt.Errorf("render golangci.yml: %w", err)
 	}
 	destPath := filepath.Join(g.Path, ".golangci.yml")
 	return os.WriteFile(destPath, content, 0644)
@@ -615,31 +623,57 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		Name      string
 		Package   string
 		FieldName string
+		Fallible  bool
 	}
 
 	type bootstrapPackage struct {
 		Name      string
 		Package   string
 		FieldName string
+		Fallible  bool
 	}
 
-	pkg := g.ServiceName
-	fieldName := naming.ToExportedFieldName(pkg)
+	type bootstrapWorker struct {
+		Name      string
+		Package   string
+		FieldName string
+		Fallible  bool
+	}
 
-	data := struct {
-		Module   string
-		Services []bootstrapService
-		Packages []bootstrapPackage
-	}{
-		Module: g.ModulePath,
-		Services: []bootstrapService{
+	type bootstrapOperator struct {
+		Name      string
+		Package   string
+		FieldName string
+		Fallible  bool
+	}
+
+	var services []bootstrapService
+	if g.ServiceName != "" {
+		pkg := g.ServiceName
+		fieldName := naming.ToExportedFieldName(pkg)
+		services = []bootstrapService{
 			{
 				Name:      pkg,
 				Package:   pkg,
 				FieldName: fieldName,
 			},
-		},
-		Packages: nil, // No packages at initial project creation
+		}
+	}
+
+	data := struct {
+		Module      string
+		Services    []bootstrapService
+		Packages    []bootstrapPackage
+		Workers     []bootstrapWorker
+		Operators   []bootstrapOperator
+		HasDatabase bool
+		HasFallible bool
+	}{
+		Module:    g.ModulePath,
+		Services:  services,
+		Packages:  nil, // No packages at initial project creation
+		Workers:   nil, // No workers at initial project creation
+		Operators: nil, // No operators at initial project creation
 	}
 
 	content, err := templates.RenderProjectTemplate("bootstrap.go.tmpl", data)
@@ -653,39 +687,46 @@ func (g *ProjectGenerator) generateBootstrap() error {
 
 // generateBootstrapTesting writes pkg/app/testing.go with test helper functions.
 func (g *ProjectGenerator) generateBootstrapTesting() error {
-	pkg := g.ServiceName
-	fieldName := naming.ToExportedFieldName(pkg)
-
-	protoServiceName := naming.ToPascalCase(pkg) + "Service"
-
 	type bootstrapTestService struct {
 		Name             string
 		Package          string
 		FieldName        string
 		ProtoServiceName string
+		Fallible         bool
 	}
 
 	type bootstrapPackage struct {
 		Name      string
 		Package   string
 		FieldName string
+		Fallible  bool
 	}
 
-	data := struct {
-		Module   string
-		Services []bootstrapTestService
-		Packages []bootstrapPackage
-	}{
-		Module: g.ModulePath,
-		Services: []bootstrapTestService{
+	var services []bootstrapTestService
+	if g.ServiceName != "" {
+		pkg := g.ServiceName
+		fieldName := naming.ToExportedFieldName(pkg)
+		protoServiceName := naming.ToPascalCase(pkg) + "Service"
+		services = []bootstrapTestService{
 			{
 				Name:             pkg,
 				Package:          pkg,
 				FieldName:        fieldName,
 				ProtoServiceName: protoServiceName,
 			},
-		},
-		Packages: nil, // No packages at initial project creation
+		}
+	}
+
+	data := struct {
+		Module             string
+		Services           []bootstrapTestService
+		Packages           []bootstrapPackage
+		MultiTenantEnabled bool
+	}{
+		Module:             g.ModulePath,
+		Services:           services,
+		Packages:           nil,   // No packages at initial project creation
+		MultiTenantEnabled: false, // Multi-tenancy configured post-creation via forge generate
 	}
 
 	content, err := templates.RenderProjectTemplate("bootstrap_testing.go.tmpl", data)
@@ -844,41 +885,94 @@ func writeIfAbsent(destPath, templateName string, data interface{}) error {
 func (g *ProjectGenerator) generateCIFiles() error {
 	provider := "github"
 
-	data := templates.CITemplateData{
-		ProjectName:  g.Name,
-		Module:       g.ModulePath,
-		GoVersion:    goVersionMinor(g.resolveGoVersion()),
-		Registry:     "ghcr.io",
-		GithubOrg:    g.Name,
-		FrontendName: g.FrontendName,
-		Lint:         true,
-		Test:         true,
-		Build:        true,
-		Deploy:       true,
-		VulnScan:     true,
+	hasFrontends := g.FrontendName != ""
+	var frontends []templates.FrontendCIConfig
+	if hasFrontends {
+		frontends = []templates.FrontendCIConfig{
+			{Name: g.FrontendName, Path: fmt.Sprintf("frontends/%s", g.FrontendName)},
+		}
 	}
 
-	// Templated files
+	data := templates.CIWorkflowData{
+		ProjectName:  g.Name,
+		GoVersion:    goVersionMinor(g.resolveGoVersion()),
+		HasFrontends: hasFrontends,
+		Frontends:    frontends,
+		HasServices:  true,
+
+		LintGolangci: true,
+		LintBuf:      true,
+		LintFrontend: hasFrontends,
+
+		TestRace:     true,
+		TestCoverage: false,
+
+		VulnGo:     true,
+		VulnDocker:  true,
+		VulnNPM:     hasFrontends,
+
+		E2EEnabled:  false,
+
+		PermContents: "read",
+
+		HasKCL:       true,
+		Environments: []string{"dev", "staging", "prod"},
+
+		// Legacy fields for other CI templates
+		Module:       g.ModulePath,
+		Registry:     "ghcr",
+		GithubOrg:    g.Name,
+		FrontendName: g.FrontendName,
+	}
+
+	// Deploy and build-images use their own spec-driven data types
+	deployData := templates.DeployWorkflowData{
+		ProjectName:      g.Name,
+		Environments: []templates.DeployEnv{
+			{Name: "staging", Auto: true, Protection: false},
+			{Name: "prod", Auto: false, Protection: true},
+		},
+		Registry:         "ghcr",
+		HasFrontends:     hasFrontends,
+		FrontendDeploy:   "none",
+		MigrationTest:    false,
+		Concurrency:      true,
+		CancelInProgress: false,
+	}
+
+	buildImagesData := templates.BuildImagesWorkflowData{
+		ProjectName:  g.Name,
+		Registry:     "ghcr",
+		HasFrontends: hasFrontends,
+		VulnDocker:   true,
+	}
+
+	// Templated files — each with its own data type
 	templatedFiles := []struct {
 		templateName string
 		dest         string
+		data         interface{}
 	}{
-		{"ci.yml.tmpl", ".github/workflows/ci.yml"},
-		{"build-images.yml.tmpl", ".github/workflows/build-images.yml"},
-		{"deploy.yml.tmpl", ".github/workflows/deploy.yml"},
-		{"dependabot.yml.tmpl", ".github/dependabot.yml"},
+		{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
+		{"build-images.yml.tmpl", ".github/workflows/build-images.yml", buildImagesData},
+		{"deploy.yml.tmpl", ".github/workflows/deploy.yml", deployData},
+		{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
+	}
+
+	// Load checksums to record initial CI file hashes
+	cs, err := LoadChecksums(g.Path)
+	if err != nil {
+		return fmt.Errorf("load checksums: %w", err)
 	}
 
 	for _, f := range templatedFiles {
-		content, err := templates.RenderCITemplate(provider, f.templateName, data)
+		content, err := templates.RenderCITemplate(provider, f.templateName, f.data)
 		if err != nil {
 			return fmt.Errorf("render CI template %s: %w", f.templateName, err)
 		}
-		destPath := filepath.Join(g.Path, f.dest)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		// Use WriteGeneratedFile to record the checksum. force=true since
+		// this is initial project creation — there's nothing to preserve.
+		if _, err := WriteGeneratedFile(g.Path, f.dest, content, cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
 	}
@@ -896,11 +990,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("read CI template %s: %w", f.templateName, err)
 		}
-		destPath := filepath.Join(g.Path, f.dest)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
+		if _, err := WriteGeneratedFile(g.Path, f.dest, content, cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
 	}
@@ -910,12 +1000,13 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	if err != nil {
 		return fmt.Errorf("render CODEOWNERS: %w", err)
 	}
-	destPath := filepath.Join(g.Path, ".github", "CODEOWNERS")
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(destPath, content, 0644); err != nil {
+	if _, err := WriteGeneratedFile(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {
 		return fmt.Errorf("write CODEOWNERS: %w", err)
+	}
+
+	// Save checksums so forge generate knows what was initially generated
+	if err := SaveChecksums(g.Path, cs); err != nil {
+		return fmt.Errorf("save checksums: %w", err)
 	}
 
 	return nil
@@ -929,6 +1020,7 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	}{
 		{"middleware-recovery.go", "recovery.go"},
 		{"middleware-logging.go", "logging.go"},
+		{"middleware-auth.go", "auth.go"},
 		{"middleware-authz.go", "authz.go"},
 		{"middleware-claims.go", "claims.go"},
 		{"middleware-audit.go", "audit.go"},
@@ -947,6 +1039,30 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		}
 	}
 	return nil
+}
+
+// recordFrozenChecksums records checksums for all frozen files managed by
+// `forge upgrade`. This must be called after the frozen files have been
+// written to disk so that new projects have baseline checksums.
+func (g *ProjectGenerator) recordFrozenChecksums(templateData interface{}) error {
+	cs, err := LoadChecksums(g.Path)
+	if err != nil {
+		return fmt.Errorf("load checksums: %w", err)
+	}
+
+	for _, f := range managedFiles() {
+		fullPath := filepath.Join(g.Path, f.destPath)
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // file wasn't generated (e.g. optional)
+			}
+			return fmt.Errorf("read %s for checksum: %w", f.destPath, err)
+		}
+		cs.RecordFile(f.destPath, content)
+	}
+
+	return SaveChecksums(g.Path, cs)
 }
 
 // generateE2ETests generates the E2E test harness for the initial service.

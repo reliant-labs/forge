@@ -32,7 +32,7 @@ func TestSanitizeMigrationName(t *testing.T) {
 func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := CreateMigration("Add Users Table", dir); err != nil {
+	if err := CreateMigration("Add Users Table", dir, nil); err != nil {
 		t.Fatalf("CreateMigration() error = %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(up) error = %v", err)
 	}
-	if !strings.Contains(string(upContents), "Write forward SQL here") {
+	if !strings.Contains(string(upContents), "Write your migration SQL below") {
 		t.Fatalf("unexpected up migration contents: %s", string(upContents))
 	}
 
@@ -87,7 +87,7 @@ func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 func TestCreateMigrationRejectsEmptySanitizedName(t *testing.T) {
 	dir := t.TempDir()
 
-	err := CreateMigration("!!!", dir)
+	err := CreateMigration("!!!", dir, nil)
 	if err == nil {
 		t.Fatal("expected error for empty sanitized migration name")
 	}

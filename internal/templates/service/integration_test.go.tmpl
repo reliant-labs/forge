@@ -4,43 +4,13 @@ package {{.ServiceName | lower}}_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
-	"{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
-	"{{.Module}}/handlers/{{.ServiceName | lower}}"
+	"{{.Module}}/pkg/app"
 )
-
-// testServer creates a real Connect server and returns a client connected to it.
-func testServer(t *testing.T) {{.ProtoConnectPackage}}.{{.HandlerName}}Client {
-	t.Helper()
-
-	svc := {{.ServiceName | lower}}.New({{.ServiceName | lower}}.Deps{
-		// TODO: Initialize test dependencies (mocks, test DB, etc.)
-	})
-	mux := http.NewServeMux()
-
-	path, handler := {{.ProtoConnectPackage}}.New{{.HandlerName}}Handler(svc)
-	mux.Handle(path, handler)
-
-	server := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
-	server.EnableHTTP2 = true
-	server.Start()
-	t.Cleanup(server.Close)
-
-	client := {{.ProtoConnectPackage}}.New{{.HandlerName}}Client(
-		server.Client(),
-		server.URL,
-	)
-
-	return client
-}
 
 {{range .Methods}}
 {{- if or .ClientStreaming .ServerStreaming}}
@@ -54,7 +24,7 @@ func TestIntegration{{.Name}}(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	client := testServer(t)
+	_, client := app.NewTest{{$.ServiceName | pascalCase}}Server(t)
 
 	tests := []struct {
 		name    string

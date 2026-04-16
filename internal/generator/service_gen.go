@@ -84,11 +84,11 @@ func GenerateServiceFiles(root, modulePath, serviceName, projectName string, por
 
 	// -- authorizer.go (via service/authorizer.go.tmpl) --
 	authzData := struct {
-		PackageName string
+		Package     string
 		ServiceName string
 		Module      string
 	}{
-		PackageName: serviceName,
+		Package:     serviceName,
 		ServiceName: handlerName,
 		Module:      modulePath,
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,12 @@ import (
 
 // validGoPackageName matches a valid Go package name: lowercase letters, digits, underscores.
 var validGoPackageName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// validPackageKinds lists the supported --kind values.
+var validPackageKinds = map[string]bool{
+	"eventbus": true,
+	"client":   true,
+}
 
 func newPackageCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -43,10 +50,13 @@ After creation, define your interface methods in contract.go, then run
 
 Example:
   forge package new cache
-  forge package new notifications`,
+  forge package new notifications
+  forge package new events --kind eventbus`,
 		Args: cobra.ExactArgs(1),
 		RunE: runPackageNew,
 	}
+
+	packageNewCmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
 
 	cmd.AddCommand(packageNewCmd)
 
@@ -55,6 +65,18 @@ Example:
 
 func runPackageNew(cmd *cobra.Command, args []string) error {
 	name := args[0]
+
+	kind, _ := cmd.Flags().GetString("kind")
+	kind = strings.TrimSpace(kind)
+
+	// Validate --kind if provided
+	if kind != "" && !validPackageKinds[kind] {
+		valid := make([]string, 0, len(validPackageKinds))
+		for k := range validPackageKinds {
+			valid = append(valid, k)
+		}
+		return fmt.Errorf("invalid package kind %q: valid kinds are %s", kind, strings.Join(valid, ", "))
+	}
 
 	// Validate name is a valid Go package name
 	if !validGoPackageName.MatchString(name) {
@@ -104,27 +126,48 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		Module: cfg.ModulePath,
 	}
 
-	// Render and write contract.go
-	contractContent, err := templates.RenderInternalPackageTemplate("contract.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render contract.go: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0644); err != nil {
-		return fmt.Errorf("write contract.go: %w", err)
-	}
+	if kind != "" {
+		// Kind-specific: discover and render all templates from the kind subdirectory.
+		tmplFiles, err := templates.ListInternalPackageKindTemplates(kind)
+		if err != nil {
+			return fmt.Errorf("list %s templates: %w", kind, err)
+		}
 
-	// Render and write service.go
-	serviceContent, err := templates.RenderInternalPackageTemplate("service.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render service.go: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0644); err != nil {
-		return fmt.Errorf("write service.go: %w", err)
+		for _, tmplFile := range tmplFiles {
+			content, err := templates.RenderInternalPackageKindTemplate(kind, tmplFile, data)
+			if err != nil {
+				return fmt.Errorf("render %s: %w", tmplFile, err)
+			}
+
+			// Strip .tmpl suffix for the output filename.
+			outName := strings.TrimSuffix(tmplFile, ".tmpl")
+			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0644); err != nil {
+				return fmt.Errorf("write %s: %w", outName, err)
+			}
+		}
+	} else {
+		// Default: render the generic contract.go and service.go templates.
+		contractContent, err := templates.RenderInternalPackageTemplate("contract.go.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render contract.go: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0644); err != nil {
+			return fmt.Errorf("write contract.go: %w", err)
+		}
+
+		serviceContent, err := templates.RenderInternalPackageTemplate("service.go.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render service.go: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0644); err != nil {
+			return fmt.Errorf("write service.go: %w", err)
+		}
 	}
 
 	// Update forge.project.yaml
 	cfg.Packages = append(cfg.Packages, config.PackageConfig{
 		Name: name,
+		Kind: kind,
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 		return fmt.Errorf("update project config: %w", err)
@@ -133,7 +176,12 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\n✅ Internal package '%s' created!\n", name)
 	fmt.Println("\nNext steps:")
 	fmt.Printf("  1. Define interface methods in internal/%s/contract.go\n", name)
-	fmt.Printf("  2. Implement them in internal/%s/service.go\n", name)
+	switch kind {
+	case "client":
+		fmt.Printf("  2. Implement them in internal/%s/client.go\n", name)
+	default:
+		fmt.Printf("  2. Implement them in internal/%s/service.go\n", name)
+	}
 	fmt.Printf("  3. Run: %s generate  (generates mock_gen.go and middleware_gen.go)\n", CLIName())
 
 	return nil

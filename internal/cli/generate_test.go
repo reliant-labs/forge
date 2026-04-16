@@ -95,6 +95,14 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 	if err := os.MkdirAll(absFeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Create proto/services so --path flag is used
+	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create proto/api to test that both --path flags are added
+	if err := os.MkdirAll(filepath.Join(dir, "proto", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stubPath := filepath.Join(dir, "buf")
 	stubScript := "#!/bin/sh\npwd > buf.cwd\nprintf '%s' \"$*\" > buf.args\nexit 0\n"
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
@@ -112,30 +120,40 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 		t.Fatalf("runBufGenerateTypeScript() error = %v", err)
 	}
 
+	// buf.gen.yaml should use project-root-relative out: path and no inputs: directive
 	content := readFileForTest(t, filepath.Join(absFeDir, "buf.gen.yaml"))
-	if !strings.Contains(content, "directory: ../../proto") {
-		t.Fatalf("expected TypeScript buf config to use workspace-relative proto dir, got:\n%s", content)
+	if !strings.Contains(content, "out: frontends/web/src/gen") {
+		t.Fatalf("expected TypeScript buf config out: to be project-root-relative, got:\n%s", content)
 	}
-	if strings.Contains(content, "module:") {
-		t.Fatalf("expected TypeScript buf config not to use module input, got:\n%s", content)
+	if strings.Contains(content, "inputs:") {
+		t.Fatalf("expected TypeScript buf config not to use inputs: directive, got:\n%s", content)
 	}
 
-	invocationDir := strings.TrimSpace(readFileForTest(t, filepath.Join(absFeDir, "buf.cwd")))
-	expectedInvocationDir, err := filepath.EvalSymlinks(absFeDir)
+	// buf should run from project root, not frontend dir
+	invocationDir := strings.TrimSpace(readFileForTest(t, filepath.Join(dir, "buf.cwd")))
+	expectedInvocationDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		t.Fatalf("EvalSymlinks(expected frontend dir) error = %v", err)
+		t.Fatalf("EvalSymlinks(expected project dir) error = %v", err)
 	}
 	actualInvocationDir, err := filepath.EvalSymlinks(invocationDir)
 	if err != nil {
 		t.Fatalf("EvalSymlinks(actual invocation dir) error = %v", err)
 	}
 	if actualInvocationDir != expectedInvocationDir {
-		t.Fatalf("expected buf generate to run from frontend dir %q, got %q", expectedInvocationDir, actualInvocationDir)
+		t.Fatalf("expected buf generate to run from project root %q, got %q", expectedInvocationDir, actualInvocationDir)
 	}
 
-	invocationArgs := readFileForTest(t, filepath.Join(absFeDir, "buf.args"))
-	if !strings.Contains(invocationArgs, "generate --template buf.gen.yaml") {
-		t.Fatalf("expected buf generate to use frontend-local template path, got %q", invocationArgs)
+	// Check command uses --template with relative path and --path flags
+	invocationArgs := readFileForTest(t, filepath.Join(dir, "buf.args"))
+	expectedTemplate := filepath.Join("frontends", "web", "buf.gen.yaml")
+	if !strings.Contains(invocationArgs, "--template "+expectedTemplate) {
+		t.Fatalf("expected buf generate to use --template %s, got %q", expectedTemplate, invocationArgs)
+	}
+	if !strings.Contains(invocationArgs, "--path proto/services") {
+		t.Fatalf("expected buf generate to use --path proto/services, got %q", invocationArgs)
+	}
+	if !strings.Contains(invocationArgs, "--path proto/api") {
+		t.Fatalf("expected buf generate to use --path proto/api, got %q", invocationArgs)
 	}
 }
 
@@ -195,7 +213,7 @@ message Account {}
 	}
 
 	ormConfig := readFileForTest(t, filepath.Join(dir, "buf.gen.orm.yaml.captured"))
-	for _, want := range []string{"version: v2", "local: protoc-gen-forge-orm", "out: gen", "paths=source_relative"} {
+	for _, want := range []string{"version: v2", "local:", "protoc-gen-forge-orm", "out: gen", "paths=source_relative"} {
 		if !strings.Contains(ormConfig, want) {
 			t.Fatalf("expected ORM temp config to contain %q, got:\n%s", want, ormConfig)
 		}
@@ -336,6 +354,7 @@ func TestWithForcedEnvAddsMissingValue(t *testing.T) {
 func TestBootstrapGeneratedCodeRunsGeneratePipelineInProjectDirectory(t *testing.T) {
 	dir := t.TempDir()
 	generator := generator.NewProjectGenerator("sample-app", dir, "example.com/sample-app")
+	generator.ServiceName = "api"
 	generator.FrontendName = "web"
 	if err := generator.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)

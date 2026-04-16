@@ -9,15 +9,8 @@ import (
 	"connectrpc.com/connect"
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+	"{{.Module}}/pkg/app"
 )
-
-// newTestService creates a Service instance for unit testing.
-func newTestService(t *testing.T) *Service {
-	t.Helper()
-	return &Service{
-		// TODO: Initialize test dependencies (mocks, test DB, etc.)
-	}
-}
 
 {{range .Methods}}
 {{- if or .ClientStreaming .ServerStreaming}}
@@ -27,7 +20,7 @@ func Test{{.Name}}(t *testing.T) {
 }
 {{- else}}
 func Test{{.Name}}(t *testing.T) {
-	svc := newTestService(t)
+	svc := app.NewTest{{$.ServiceName | pascalCase}}(t)
 
 	tests := []struct {
 		name    string

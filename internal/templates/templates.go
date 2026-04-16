@@ -17,7 +17,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl internal-package/*.tmpl
+//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl operator/*.tmpl
 var templateFS embed.FS
 
 // FuncMap returns the shared template function map used across all templates.
@@ -82,6 +82,8 @@ func renderTemplate(fsys embed.FS, basePath, name string, data interface{}) ([]b
 		return stripBuildIgnore(content), nil
 	}
 
+	content = stripBuildIgnore(content)
+
 	tmpl, err := template.New(name).Funcs(FuncMap()).Parse(string(content))
 	if err != nil {
 		return nil, fmt.Errorf("parse template %s: %w", name, err)
@@ -92,7 +94,7 @@ func renderTemplate(fsys embed.FS, basePath, name string, data interface{}) ([]b
 		return nil, fmt.Errorf("execute template %s: %w", name, err)
 	}
 
-	return buf.Bytes(), nil
+	return stripBuildIgnore(buf.Bytes()), nil
 }
 
 // RenderProjectTemplate renders a project template with the given data,
@@ -231,19 +233,107 @@ func ListCITemplates(provider string) ([]string, error) {
 	return files, nil
 }
 
-// CITemplateData holds data for CI template rendering.
-type CITemplateData struct {
+// CIWorkflowData holds data for the spec-driven CI workflow template.
+type CIWorkflowData struct {
 	ProjectName  string
+	GoVersion    string // e.g. "1.26"
+	HasFrontends bool
+	Frontends    []FrontendCIConfig // from project config
+	HasServices  bool
+
+	// Lint
+	LintGolangci bool
+	LintBuf      bool
+	LintFrontend bool
+
+	// Test
+	TestRace     bool
+	TestCoverage bool
+
+	// Vuln scan
+	VulnGo     bool // govulncheck
+	VulnDocker bool // trivy
+	VulnNPM    bool // npm audit
+
+	// E2E
+	E2EEnabled bool
+	E2ERuntime string // "docker-compose" or "k3d"
+
+	// Permissions
+	PermContents string // default "read"
+
+	// Extra jobs
+	ExtraJobs []CIExtraJob
+
+	// Deploy-related
+	HasKCL bool // validate KCL manifests
+
+	// Environments (for KCL validation)
+	Environments []string
+
+	// Legacy fields used by other CI templates (build-images, deploy, dependabot)
 	Module       string
-	GoVersion    string
-	Registry     string
+	Registry     string // "ghcr", "gar", "ecr"
 	GithubOrg    string
-	FrontendName string
-	Lint         bool
-	Test         bool
-	Build        bool
-	Deploy       bool
-	VulnScan     bool
+	FrontendName string // first frontend name for dependabot
+}
+
+// FrontendCIConfig is a minimal frontend descriptor for CI templates.
+type FrontendCIConfig struct {
+	Name string
+	Path string
+}
+
+// CIExtraJob defines an additional user-specified CI job.
+type CIExtraJob struct {
+	Name    string
+	Needs   []string
+	RunsOn  string
+	Steps   []CIExtraStep
+}
+
+// CIExtraStep is a single step inside an extra CI job.
+type CIExtraStep struct {
+	Name string
+	Run  string
+	Uses string
+	With map[string]string
+}
+
+// DeployEnv represents a single deploy environment (e.g. staging, prod).
+type DeployEnv struct {
+	Name       string // "staging", "preprod", "prod"
+	Auto       bool   // auto-deploy after image build
+	Protection bool   // GitHub environment protection
+	URL        string // environment URL
+}
+
+// DeployWorkflowData holds data for the deploy workflow template.
+type DeployWorkflowData struct {
+	ProjectName      string
+	Environments     []DeployEnv // ordered: staging, preprod, prod
+	Registry         string      // "ghcr", "gar", "ecr"
+	HasFrontends     bool
+	FrontendDeploy   string // "firebase", "vercel", "none"
+	MigrationTest    bool   // test migrations before deploy
+	Concurrency      bool   // per-env concurrency groups
+	CancelInProgress bool
+}
+
+// BuildImagesWorkflowData holds data for the build-images workflow template.
+type BuildImagesWorkflowData struct {
+	ProjectName  string
+	Registry     string // "ghcr", "gar"
+	HasFrontends bool
+	VulnDocker   bool // trivy scanning
+}
+
+// E2EWorkflowData holds data for the standalone E2E test workflow template.
+type E2EWorkflowData struct {
+	ProjectName  string
+	GoVersion    string
+	Runtime      string // "docker-compose" (default) or "k3d"
+	HasFrontends bool
 }
 
 // GetTestTemplate returns the raw content of a test template file.
@@ -281,6 +371,56 @@ func RenderInternalPackageTemplate(name string, data interface{}) ([]byte, error
 	return renderTemplate(templateFS, "internal-package", name, data)
 }
 
+// RenderInternalPackageKindTemplate renders a template from a kind-specific
+// subdirectory under internal-package/ (e.g. internal-package/client/client.go.tmpl).
+func RenderInternalPackageKindTemplate(kind, name string, data interface{}) ([]byte, error) {
+	return renderTemplate(templateFS, path.Join("internal-package", kind), name, data)
+}
+
+// ListInternalPackageKindTemplates returns all template file names under the
+// given kind subdirectory of internal-package/ (e.g. "client").
+func ListInternalPackageKindTemplates(kind string) ([]string, error) {
+	root := path.Join("internal-package", kind)
+	entries, err := templateFS.ReadDir(root)
+	if err != nil {
+		return nil, fmt.Errorf("read internal-package kind dir %s: %w", kind, err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			files = append(files, e.Name())
+		}
+	}
+	return files, nil
+}
+
+
+
+// WebhookTemplateData holds data for webhook template rendering.
+type WebhookTemplateData struct {
+	Name        string // webhook name (e.g. "stripe", "github")
+	ServiceName string // target service name
+	Module      string // Go module path
+}
+
+// WebhookRoutesTemplateData holds data for the webhook_routes_gen.go template.
+type WebhookRoutesTemplateData struct {
+	Package  string                    // Go package name (e.g. "billing")
+	Webhooks []WebhookRouteEntryData   // all webhooks for this service
+}
+
+// WebhookRouteEntryData holds per-webhook data for route generation.
+type WebhookRouteEntryData struct {
+	Name       string // kebab-case name for the URL path (e.g. "stripe")
+	PascalName string // PascalCase name for the handler method (e.g. "Stripe")
+}
+
+// RenderWebhookTemplate renders a webhook template with the given data.
+// name should be e.g. "webhook/webhooks.go.tmpl".
+func RenderWebhookTemplate(name string, data interface{}) ([]byte, error) {
+	return renderTemplate(templateFS, "", name, data)
+}
+
 // TemplateEngine handles code generation from service/middleware templates.
 // NOTE: TemplateEngine pre-parses templates for reuse via a singleton (see generator/project.go),
 // while the standalone Render*Template functions parse on each call. Both share FuncMap().
@@ -314,6 +454,11 @@ func (e *TemplateEngine) loadTemplates() error {
 		"service/unit_test.go.tmpl",
 		"service/integration_test.go.tmpl",
 		"middleware/auth.go.tmpl",
+		"worker/worker.go.tmpl",
+		"worker/worker_test.go.tmpl",
+		"operator/types.go.tmpl",
+		"operator/controller.go.tmpl",
+		"operator/controller_test.go.tmpl",
 	}
 
 	for _, file := range templateFiles {
@@ -349,9 +494,27 @@ func (e *TemplateEngine) RenderTemplate(name string, data interface{}) (string, 
 	return buf.String(), nil
 }
 
+// RenderMiddlewareTemplate renders a middleware template from the embedded middleware/ directory.
+// name should be e.g. "middleware/auth_gen.go.tmpl".
+func RenderMiddlewareTemplate(name string, data interface{}) ([]byte, error) {
+	return renderTemplate(templateFS, "", name, data)
+}
+
 // RenderServiceTemplate renders a service template from the embedded service/ directory.
 // name should be e.g. "service/service.go.tmpl" or "service/handlers.go.tmpl".
 func RenderServiceTemplate(name string, data interface{}) ([]byte, error) {
+	return renderTemplate(templateFS, "", name, data)
+}
+
+// RenderWorkerTemplate renders a worker template from the embedded worker/ directory.
+// name should be e.g. "worker/worker.go.tmpl" or "worker/worker_test.go.tmpl".
+func RenderWorkerTemplate(name string, data interface{}) ([]byte, error) {
+	return renderTemplate(templateFS, "", name, data)
+}
+
+// RenderOperatorTemplate renders an operator template from the embedded operator/ directory.
+// name should be e.g. "operator/types.go.tmpl" or "operator/controller.go.tmpl".
+func RenderOperatorTemplate(name string, data interface{}) ([]byte, error) {
 	return renderTemplate(templateFS, "", name, data)
 }
 

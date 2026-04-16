@@ -65,6 +65,10 @@ func Generate(contractPath string) error {
 		return fmt.Errorf("generate tracing: %w", err)
 	}
 
+	if err := writeMetrics(cf, dir); err != nil {
+		return fmt.Errorf("generate metrics: %w", err)
+	}
+
 	return nil
 }
 
@@ -95,7 +99,12 @@ func ParseContract(path string) (*ContractFile, error) {
 		cf.Imports[name] = path
 	}
 
-	// Walk top-level declarations for type specs that are interfaces.
+	// First pass: collect all interface AST nodes by name.
+	type ifaceEntry struct {
+		name      string
+		ifaceType *ast.InterfaceType
+	}
+	var ifaceEntries []ifaceEntry
 	for _, decl := range file.Decls {
 		genDecl, ok := decl.(*ast.GenDecl)
 		if !ok || genDecl.Tok != token.TYPE {
@@ -110,21 +119,56 @@ func ParseContract(path string) (*ContractFile, error) {
 			if !ok {
 				continue
 			}
-			iface := InterfaceDef{Name: typeSpec.Name.Name}
-			if ifaceType.Methods != nil {
-				for _, field := range ifaceType.Methods.List {
-					funcType, ok := field.Type.(*ast.FuncType)
-					if !ok {
-						continue // skip embedded interfaces
-					}
+			ifaceEntries = append(ifaceEntries, ifaceEntry{
+				name:      typeSpec.Name.Name,
+				ifaceType: ifaceType,
+			})
+		}
+	}
+
+	// Build a map of interface name → direct methods (no embedding resolved yet).
+	ifaceMethodMap := make(map[string][]MethodDef)
+	ifaceEmbeds := make(map[string][]string) // interface name → embedded interface names
+	for _, entry := range ifaceEntries {
+		if entry.ifaceType.Methods != nil {
+			for _, field := range entry.ifaceType.Methods.List {
+				switch ft := field.Type.(type) {
+				case *ast.FuncType:
 					for _, name := range field.Names {
-						md := extractMethod(name.Name, funcType, fset)
-						iface.Methods = append(iface.Methods, md)
+						md := extractMethod(name.Name, ft, fset)
+						ifaceMethodMap[entry.name] = append(ifaceMethodMap[entry.name], md)
 					}
+				case *ast.Ident:
+					// Embedded interface from same package, e.g. "CommandPublisher"
+					ifaceEmbeds[entry.name] = append(ifaceEmbeds[entry.name], ft.Name)
+				case *ast.SelectorExpr:
+					// Embedded interface from another package — skip for now
 				}
 			}
-			cf.Interfaces = append(cf.Interfaces, iface)
 		}
+	}
+
+	// Resolve embedded interfaces: collect all methods including those from embeds.
+	var resolveMethods func(name string, visited map[string]bool) []MethodDef
+	resolveMethods = func(name string, visited map[string]bool) []MethodDef {
+		if visited[name] {
+			return nil
+		}
+		visited[name] = true
+		methods := append([]MethodDef{}, ifaceMethodMap[name]...)
+		for _, embedded := range ifaceEmbeds[name] {
+			methods = append(methods, resolveMethods(embedded, visited)...)
+		}
+		return methods
+	}
+
+	// Second pass: build InterfaceDefs with resolved methods.
+	for _, entry := range ifaceEntries {
+		iface := InterfaceDef{
+			Name:    entry.name,
+			Methods: resolveMethods(entry.name, make(map[string]bool)),
+		}
+		cf.Interfaces = append(cf.Interfaces, iface)
 	}
 
 	return cf, nil
@@ -301,6 +345,15 @@ func writeTracing(cf *ContractFile, dir string) error {
 	if hasMethods {
 		addImport(&imports, "go.opentelemetry.io/otel/codes")
 	}
+	// Need "context" when there are methods without a context.Context parameter.
+	for _, iface := range cf.Interfaces {
+		for _, m := range iface.Methods {
+			if !m.HasContext() {
+				addImport(&imports, "context")
+				break
+			}
+		}
+	}
 
 	data := templateData{
 		Package:    cf.Package,
@@ -319,6 +372,54 @@ func writeTracing(cf *ContractFile, dir string) error {
 	}
 
 	return os.WriteFile(filepath.Join(dir, "tracing_gen.go"), formatted, 0644)
+}
+
+// writeMetrics generates metrics_gen.go in dir.
+func writeMetrics(cf *ContractFile, dir string) error {
+	imports := collectImports(cf, cf.Interfaces)
+	// Always need "go.opentelemetry.io/otel/metric" for the struct fields.
+	if len(cf.Interfaces) > 0 {
+		addImport(&imports, "go.opentelemetry.io/otel/metric")
+	}
+	// Need "go.opentelemetry.io/otel/attribute" and "time" when there are methods.
+	hasMethods := false
+	for _, iface := range cf.Interfaces {
+		if len(iface.Methods) > 0 {
+			hasMethods = true
+			break
+		}
+	}
+	if hasMethods {
+		addImport(&imports, "go.opentelemetry.io/otel/attribute")
+		addImport(&imports, "time")
+	}
+	// Need "context" when there are methods without a context.Context parameter.
+	for _, iface := range cf.Interfaces {
+		for _, m := range iface.Methods {
+			if !m.HasContext() {
+				addImport(&imports, "context")
+				break
+			}
+		}
+	}
+
+	data := templateData{
+		Package:    cf.Package,
+		Imports:    imports,
+		Interfaces: cf.Interfaces,
+	}
+
+	var buf bytes.Buffer
+	if err := metricsTmpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("execute metrics template: %w", err)
+	}
+
+	formatted, err := format.Source(buf.Bytes())
+	if err != nil {
+		return fmt.Errorf("gofmt metrics output: %w\n---\n%s", err, buf.String())
+	}
+
+	return os.WriteFile(filepath.Join(dir, "metrics_gen.go"), formatted, 0644)
 }
 
 // addImport adds an import path if not already present.
@@ -442,6 +543,29 @@ func (m MethodDef) LastResultIsError() bool {
 		return false
 	}
 	return m.Results[len(m.Results)-1].TypeExpr == "error"
+}
+
+// HasContext returns true if the method has a context.Context parameter.
+func (m MethodDef) HasContext() bool {
+	for _, p := range m.Params {
+		if p.TypeExpr == "context.Context" {
+			return true
+		}
+	}
+	return false
+}
+
+// ContextParamName returns the name of the context.Context parameter, or empty string.
+func (m MethodDef) ContextParamName() string {
+	for _, p := range m.Params {
+		if p.TypeExpr == "context.Context" {
+			if p.Name != "" {
+				return p.Name
+			}
+			return "ctx"
+		}
+	}
+	return ""
 }
 
 // ErrorResultName returns the placeholder name for the error result (last result).

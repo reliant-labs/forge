@@ -52,30 +52,54 @@ can standardize on the intended workflow shape before those implementations land
 
 // newDBMigrationCommand creates the migration subcommand.
 func newDBMigrationCommand() *cobra.Command {
-	var migDir string
+	var (
+		migDir    string
+		dsn       string
+		protoDir  string
+		fromProto bool
+	)
 
 	migrationCmd := &cobra.Command{
 		Use:   "migration",
 		Short: "Create new SQL migration files",
-		Long: `Create a new blank SQL migration pair in db/migrations/.
+		Long: `Create a new SQL migration pair in db/migrations/.
 
 This scaffolds timestamped .up.sql and .down.sql files using golang-migrate's
-filename convention so you can author and review SQL directly.
+filename convention. The .up.sql file includes rich schema context so LLMs can
+immediately write the migration SQL.
+
+Context includes:
+  - Current schema (parsed from existing migrations, or from DB with --dsn)
+  - Proto model definitions (scanned from proto/ or --proto-dir)
+  - Previous migration content
+  - Migration history
+  - Schema diff (proto models vs current schema)
 
 Examples:
   forge db migration new add_users_table
+  forge db migration new add_preferences --dsn "$DATABASE_URL"
+  forge db migration new add_preferences --proto-dir proto/db/v1/
+  forge db migration new add_preferences --from-proto
   forge db migration new "backfill account status" --dir db/migrations`,
 	}
 
 	newCmd := &cobra.Command{
 		Use:   "new [name]",
-		Short: "Create a new blank SQL migration pair",
+		Short: "Create a new migration pair with schema context",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return database.CreateMigration(args[0], migDir)
+			opts := &database.MigrationOptions{
+				DSN:       dsn,
+				ProtoDir:  protoDir,
+				FromProto: fromProto,
+			}
+			return database.CreateMigration(args[0], migDir, opts)
 		},
 	}
 	newCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
+	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
+	newCmd.Flags().StringVar(&protoDir, "proto-dir", "", "Directory to scan for proto files (default: proto/)")
+	newCmd.Flags().BoolVar(&fromProto, "from-proto", false, "Auto-generate CREATE TABLE SQL from proto message definitions")
 	migrationCmd.AddCommand(newCmd)
 
 	return migrationCmd

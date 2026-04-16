@@ -1,0 +1,42 @@
+---
+name: services
+description: Scaffold and wire new services, packages, and frontends in a Forge project.
+---
+
+# Adding New Components to a Forge Project
+
+Use this skill whenever you need to introduce a new network-facing service, internal package, or frontend into a Forge mono-repo.
+
+## Choosing the Right Command
+
+| I need…                                      | Command                        | What it creates                          |
+| -------------------------------------------- | ------------------------------ | ---------------------------------------- |
+| A new network-facing API (Connect RPC)       | `forge add service <name>`     | Proto definition, generated stubs, Go service skeleton |
+| An internal Go package with interface contract | `forge package new <name>`   | Package directory with contract interface and default implementation |
+| A new frontend application                   | `forge add frontend <name>`    | Frontend scaffold wired into the project |
+
+## Wiring Cycle
+
+Follow this sequence every time you scaffold a new component:
+
+1. **Scaffold** — run the appropriate `forge add` or `forge package new` command.
+2. **Define the contract** — edit the `.proto` file (services) or the interface (packages).
+3. **Generate** — run `forge generate` to produce Go code from protos and contracts.
+4. **Implement** — write the business logic in the generated skeleton.
+5. **Wire** — register the component in `bootstrap.go` so it starts with the application.
+
+## Port Assignment
+
+Ports are assigned automatically via `forge.project.yaml`. Do not hard-code port numbers; let Forge manage them.
+
+## Rules
+
+- **Always use `forge add` or `forge package new`** — never copy-paste an existing service or package directory.
+- **One service per proto package** — keep proto definitions focused on a single domain.
+- **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
+- **Package names must be valid Go identifiers** — lowercase, no hyphens, no special characters.
+
+## When This Skill Is Not Enough
+
+- **Simple utility packages** — just create a directory under `pkg/` and write plain Go. No scaffold needed.
+- **One-off scripts or CLI tools** — add a `cmd/<name>/main.go` file directly. Forge scaffolding is for wired components, not standalone binaries.

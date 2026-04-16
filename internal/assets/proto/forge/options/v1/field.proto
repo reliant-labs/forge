@@ -40,6 +40,12 @@ message FieldOptions {
 
   // Validation rules applied during code generation.
   ValidationRules validation = 8;
+
+  // When true, this field is the tenant key for row-level tenant isolation.
+  // The ORM will automatically scope queries by this field using the tenant ID
+  // extracted from the request context (set by the TenantInterceptor).
+  // Exactly one field per message should be marked as tenant_key.
+  bool tenant_key = 20;
 }
 
 // ValidationRules defines constraints enforced at the application layer.

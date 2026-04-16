@@ -202,6 +202,9 @@ func runTestE2E(flags testFlags) error {
 }
 
 // runGoTests runs go test with the given package pattern and optional extra args.
+// It uses `go list` to discover testable packages, skipping patterns that resolve
+// to zero packages (e.g. directories with no Go files) instead of treating them
+// as test failures.
 func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, error) {
 	// If --service is specified, scope to that service directory
 	if flags.service != "" {
@@ -224,12 +227,20 @@ func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, 
 	serviceDirs := discoverGoServices()
 	if len(serviceDirs) == 0 {
 		// No service dirs — run from root with the original package pattern
-		return []testResult{runGoTestInDir(".", pkg, extraArgs, flags)}, nil
+		pkgs := goListPackages(".", pkg)
+		if len(pkgs) == 0 {
+			return nil, nil
+		}
+		return []testResult{runGoTestInDir(".", strings.Join(pkgs, " "), extraArgs, flags)}, nil
 	}
 
 	// If we have a specific package pattern from --service, run from root
 	if flags.service != "" {
-		return []testResult{runGoTestInDir(".", pkg, extraArgs, flags)}, nil
+		pkgs := goListPackages(".", pkg)
+		if len(pkgs) == 0 {
+			return nil, nil
+		}
+		return []testResult{runGoTestInDir(".", strings.Join(pkgs, " "), extraArgs, flags)}, nil
 	}
 
 	var (
@@ -242,8 +253,14 @@ func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, 
 		dir := dir
 		// Build the package pattern relative to the project root
 		svcPkg := "./" + dir + "/..."
+		// Use go list to discover actual packages; skip if none found
+		pkgs := goListPackages(".", svcPkg)
+		if len(pkgs) == 0 {
+			continue
+		}
+		resolvedPkg := strings.Join(pkgs, " ")
 		run := func() {
-			result := runGoTestInDir(".", svcPkg, extraArgs, flags)
+			result := runGoTestInDir(".", resolvedPkg, extraArgs, flags)
 			mu.Lock()
 			results = append(results, result)
 			mu.Unlock()
@@ -262,6 +279,27 @@ func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, 
 
 	wg.Wait()
 	return results, nil
+}
+
+// goListPackages runs `go list <pattern>` in the given directory and returns
+// the list of discovered packages. If the pattern resolves to nothing (e.g.
+// a directory tree with no Go files), it returns nil instead of an error.
+func goListPackages(dir, pattern string) []string {
+	cmd := exec.Command("go", "list", pattern)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		// go list returns non-zero when no packages match — that's fine
+		return nil
+	}
+	var pkgs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			pkgs = append(pkgs, line)
+		}
+	}
+	return pkgs
 }
 
 func runGoTestInDir(dir, pkg string, extraArgs []string, flags testFlags) testResult {
@@ -286,7 +324,10 @@ func runGoTestInDir(dir, pkg string, extraArgs []string, flags testFlags) testRe
 		args = append(args, "-v")
 	}
 	args = append(args, extraArgs...)
-	args = append(args, pkg)
+	// pkg may contain multiple space-separated packages from go list
+	for _, p := range strings.Fields(pkg) {
+		args = append(args, p)
+	}
 
 	fmt.Printf("[test] %s: go %s\n", name, strings.Join(args, " "))
 

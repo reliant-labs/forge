@@ -22,23 +22,10 @@ var toolRegistry = map[string]func(json.RawMessage) (string, error){
 	"seed_db":           executeSeedDB,
 	"introspect_schema": executeIntrospectSchema,
 	// Context tools
-	"list_protos":           executeListProtos,
-	"list_services":         executeListServices,
-	"get_service_contract":  executeGetServiceContract,
-	"get_project_config":    executeGetProjectConfig,
-	// Debug tools
-	"debug_start":            executeDebugStart,
-	"debug_set_breakpoint":   executeDebugSetBreakpoint,
-	"debug_list_breakpoints": executeDebugListBreakpoints,
-	"debug_clear_breakpoint": executeDebugClearBreakpoint,
-	"debug_continue":         executeDebugContinue,
-	"debug_step_over":        executeDebugStepOver,
-	"debug_step_into":        executeDebugStepInto,
-	"debug_step_out":         executeDebugStepOut,
-	"debug_eval":             executeDebugEval,
-	"debug_inspect":          executeDebugInspect,
-	"debug_goroutines":       executeDebugGoroutines,
-	"debug_stop":             executeDebugStop,
+	"list_protos":          executeListProtos,
+	"list_services":        executeListServices,
+	"get_service_contract": executeGetServiceContract,
+	"get_project_config":   executeGetProjectConfig,
 }
 
 // AllTools returns all registered MCP tool definitions
@@ -56,19 +43,6 @@ func AllTools() []Tool {
 		GetListServicesTool(),
 		GetGetServiceContractTool(),
 		GetGetProjectConfigTool(),
-		// Debug tools
-		GetDebugStartTool(),
-		GetDebugSetBreakpointTool(),
-		GetDebugListBreakpointsTool(),
-		GetDebugClearBreakpointTool(),
-		GetDebugContinueTool(),
-		GetDebugStepOverTool(),
-		GetDebugStepIntoTool(),
-		GetDebugStepOutTool(),
-		GetDebugEvalTool(),
-		GetDebugInspectTool(),
-		GetDebugGoroutinesTool(),
-		GetDebugStopTool(),
 	}
 }
 

@@ -1,12 +1,6 @@
 version: v2
 plugins:
   - remote: buf.build/bufbuild/es
-    out: src/gen
+    out: frontends/{{.FrontendName}}/src/gen
     opt:
       - target=ts
-  - remote: buf.build/connectrpc/es
-    out: src/gen
-    opt:
-      - target=ts
-inputs:
-  - directory: ../../proto

@@ -19,6 +19,7 @@ func newNewCmd() *cobra.Command {
 		serviceNames  []string
 		frontendNames []string
 		goVersion     string
+		inPlace       bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,10 +40,15 @@ This command will create:
 Example:
   forge new my-project --mod github.com/example/my-project
   forge new my-project --mod github.com/example/my-project --service gateway
-  forge new my-project --mod github.com/example/my-project --frontend web`,
-		Args: cobra.ExactArgs(1),
+  forge new my-project --mod github.com/example/my-project --frontend web
+  forge new --in-place --mod github.com/example/my-project`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runNew(args[0], projectPath, modulePath, serviceNames, frontendNames, goVersion)
+			var projectName string
+			if len(args) > 0 {
+				projectName = args[0]
+			}
+			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace)
 		},
 	}
 
@@ -51,24 +57,55 @@ Example:
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (can be repeated or comma-separated)")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
+	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
 	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
 }
 
-func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string) error {
-	targetPath := filepath.Join(projectPath, projectName)
+func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool) error {
+	var targetPath string
 
-	// Validate project name (hyphens allowed for directory/module paths)
-	if err := validateProjectName(projectName); err != nil {
-		return fmt.Errorf("invalid project name %q: %w", projectName, err)
-	}
+	if inPlace {
+		// In-place mode: scaffold into the current (or --path) directory directly
+		var err error
+		targetPath, err = filepath.Abs(projectPath)
+		if err != nil {
+			return fmt.Errorf("failed to resolve path: %w", err)
+		}
 
-	// Check if directory already exists
-	if _, err := os.Stat(targetPath); err == nil {
-		return fmt.Errorf("directory %s already exists", targetPath)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("failed to stat %s: %w", targetPath, err)
+		// Derive project name from directory if not provided
+		if projectName == "" {
+			projectName = filepath.Base(targetPath)
+		}
+
+		// Validate project name (hyphens allowed for directory/module paths)
+		if err := validateProjectName(projectName); err != nil {
+			return fmt.Errorf("invalid project name %q: %w", projectName, err)
+		}
+
+		// Check that we're not scaffolding over an existing project
+		if _, err := os.Stat(filepath.Join(targetPath, "forge.project.yaml")); err == nil {
+			return fmt.Errorf("forge.project.yaml already exists in %s; this directory already contains a Forge project", targetPath)
+		}
+	} else {
+		if projectName == "" {
+			return fmt.Errorf("project name is required (or use --in-place to scaffold in the current directory)")
+		}
+
+		targetPath = filepath.Join(projectPath, projectName)
+
+		// Validate project name (hyphens allowed for directory/module paths)
+		if err := validateProjectName(projectName); err != nil {
+			return fmt.Errorf("invalid project name %q: %w", projectName, err)
+		}
+
+		// Check if directory already exists
+		if _, err := os.Stat(targetPath); err == nil {
+			return fmt.Errorf("directory %s already exists", targetPath)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("failed to stat %s: %w", targetPath, err)
+		}
 	}
 
 	// Validate service names
@@ -101,6 +138,8 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	// might have created files at targetPath in the meantime, we drop a
 	// marker file immediately after creating the directory and only run
 	// cleanup when that marker is still present.
+	// In --in-place mode, we never RemoveAll the target directory since it
+	// is an existing directory the user owns. We only remove the marker.
 	var success bool
 	markerPath := filepath.Join(targetPath, ".forge", ".scaffold-in-progress")
 	defer func() {
@@ -108,8 +147,13 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 			return
 		}
 		if _, err := os.Stat(markerPath); err != nil {
-			// Marker missing — don't touch the directory; it may belong to
-			// another process or the scaffold never progressed far enough.
+			return
+		}
+		if inPlace {
+			// In --in-place mode, only remove the marker — don't nuke the user's directory.
+			if rmErr := os.Remove(markerPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				fmt.Fprintf(os.Stderr, "warning: failed to remove scaffold marker: %v\n", rmErr)
+			}
 			return
 		}
 		if rmErr := os.RemoveAll(targetPath); rmErr != nil {
@@ -196,8 +240,10 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	success = true
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
 	fmt.Println("\nNext steps:")
-	fmt.Printf("  cd %s\n", projectName)
-	fmt.Println("")
+	if !inPlace {
+		fmt.Printf("  cd %s\n", projectName)
+		fmt.Println("")
+	}
 	fmt.Println("  # Download dependencies:")
 	fmt.Println("  go mod download")
 	fmt.Println("")

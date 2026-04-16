@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -18,11 +20,10 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/spf13/cobra"
-
 	"{{.Module}}/pkg/app"
 	"{{.Module}}/pkg/config"
 	"{{.Module}}/pkg/middleware"
+	"github.com/spf13/cobra"
 )
 
 var serverCmd = &cobra.Command{
@@ -34,6 +35,7 @@ var serverCmd = &cobra.Command{
 
 func init() {
 	config.RegisterFlags(serverCmd)
+	serverCmd.Flags().Bool("auto-migrate", false, "Run database migrations on startup")
 	rootCmd.AddCommand(serverCmd)
 }
 
@@ -54,13 +56,42 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	// OTel is optional — degrade gracefully if not configured.
 	ctx := context.Background()
-	shutdownOTel, err := setupOTel(ctx)
+	shutdownOTel, metricsHandler, err := setupOTel(ctx)
 	if err != nil {
 		logger.Error("failed to initialize OpenTelemetry", "error", err)
 		// Continue without telemetry — this is intentional.
 	}
 
+	// Auto-migrate: run pending database migrations if enabled
+	autoMigrate := false
+	if v, ok := os.LookupEnv("AUTO_MIGRATE"); ok && (v == "true" || v == "1") {
+		autoMigrate = true
+	} else if cmd.Flags().Changed("auto-migrate") {
+		autoMigrate, _ = cmd.Flags().GetBool("auto-migrate")
+	}
+	if autoMigrate {
+		dbURL := os.Getenv("DATABASE_URL")
+		if dbURL == "" {
+			return fmt.Errorf("AUTO_MIGRATE is enabled but DATABASE_URL is not set")
+		}
+		db, dbErr := sql.Open("pgx", dbURL)
+		if dbErr != nil {
+			return fmt.Errorf("failed to connect to database for migration: %w", dbErr)
+		}
+		if migrateErr := app.AutoMigrate(db, logger); migrateErr != nil {
+			_ = db.Close()
+			return fmt.Errorf("auto-migration failed: %w", migrateErr)
+		}
+		_ = db.Close()
+		logger.Info("auto-migration completed successfully")
+	}
+
 	mux := http.NewServeMux()
+
+	// Expose Prometheus metrics endpoint.
+	if metricsHandler != nil {
+		mux.Handle("/metrics", metricsHandler)
+	}
 
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	if err != nil {
@@ -69,6 +100,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	interceptors := []connect.Interceptor{
 		middleware.RecoveryInterceptor(logger),
+		middleware.AuthInterceptor(),
 		middleware.AuditInterceptor(logger),
 		middleware.LoggingInterceptor(logger),
 	}
@@ -83,11 +115,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Bootstrap packages and services
 	var ready atomic.Bool
 	var application *app.App
-	if len(args) > 0 {
-		application = app.BootstrapOnly(mux, logger, cfg, args, opts...)
-		logger.Info("started with service filter", "services", args)
-	} else {
-		application = app.Bootstrap(mux, logger, cfg, opts...)
+	{
+		var bootstrapErr error
+		if len(args) > 0 {
+			application, bootstrapErr = app.BootstrapOnly(mux, logger, cfg, args, opts...)
+		} else {
+			application, bootstrapErr = app.Bootstrap(mux, logger, cfg, opts...)
+		}
+		if bootstrapErr != nil {
+			return fmt.Errorf("bootstrap failed: %w", bootstrapErr)
+		}
+		if len(args) > 0 {
+			logger.Info("started with service filter", "services", args)
+		}
 	}
 	ready.Store(true)
 
@@ -149,6 +189,44 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	// Start workers in background goroutines
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+	var workerWg sync.WaitGroup
+
+	// Build the set of requested names for filtering (empty = run all)
+	nameSet := make(map[string]bool, len(args))
+	for _, n := range args {
+		nameSet[n] = true
+	}
+
+	for _, w := range application.WorkerList() {
+		// If a name filter was provided, only start matching workers
+		if len(nameSet) > 0 && !nameSet[w.Name()] {
+			continue
+		}
+		workerWg.Add(1)
+		go func(w interface {
+			Name() string
+			Start(context.Context) error
+		}) {
+			defer workerWg.Done()
+			logger.Info("starting worker", "worker", w.Name())
+			if err := w.Start(workerCtx); err != nil {
+				logger.Error("worker error", "worker", w.Name(), "error", err)
+			}
+		}(w)
+	}
+
+	// Start controller manager for operators (if any)
+	if application.HasOperators() {
+		go func() {
+			if err := application.RunOperators(ctx, logger); err != nil {
+				logger.Error("controller manager failed", "error", err)
+			}
+		}()
+	}
+
 	select {
 	case err := <-errCh:
 		logger.Error("server error", "error", err)
@@ -159,6 +237,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Stop workers first (cancel context + wait + call Stop)
+	workerCancel()
+	workerWg.Wait()
+	for _, w := range application.WorkerList() {
+		if len(nameSet) > 0 && !nameSet[w.Name()] {
+			continue
+		}
+		if err := w.Stop(shutdownCtx); err != nil {
+			logger.Error("worker stop error", "worker", w.Name(), "error", err)
+		}
+	}
+
 	if err := application.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}

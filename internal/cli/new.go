@@ -48,7 +48,7 @@ Example:
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (required, e.g., github.com/example/my-project)")
-	cmd.Flags().StringSliceVar(&serviceNames, "service", []string{"api"}, "Name(s) of initial Go services (can be repeated or comma-separated)")
+	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (can be repeated or comma-separated)")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	_ = cmd.MarkFlagRequired("mod")
@@ -71,10 +71,6 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		return fmt.Errorf("failed to stat %s: %w", targetPath, err)
 	}
 
-	if len(serviceNames) == 0 {
-		serviceNames = []string{"api"}
-	}
-
 	// Validate service names
 	for _, svcName := range serviceNames {
 		if err := validateIdentifier(svcName); err != nil {
@@ -90,10 +86,12 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	}
 
 	fmt.Printf("Creating new project '%s' at %s\n", projectName, targetPath)
-	if len(serviceNames) == 1 {
-		fmt.Printf("  Service: %s\n", serviceNames[0])
-	} else {
-		fmt.Printf("  Services: %s\n", strings.Join(serviceNames, ", "))
+	if len(serviceNames) > 0 {
+		if len(serviceNames) == 1 {
+			fmt.Printf("  Service: %s\n", serviceNames[0])
+		} else {
+			fmt.Printf("  Services: %s\n", strings.Join(serviceNames, ", "))
+		}
 	}
 	if len(frontendNames) > 0 {
 		fmt.Printf("  Frontend: %s\n", strings.Join(frontendNames, ", "))
@@ -130,29 +128,33 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		return fmt.Errorf("failed to write scaffold marker: %w", err)
 	}
 
-	// Create project generator with the first service
+	// Create project generator
 	gen := generator.NewProjectGenerator(projectName, targetPath, modulePath)
-	gen.ServiceName = serviceNames[0]
+	if len(serviceNames) > 0 {
+		gen.ServiceName = serviceNames[0]
+	}
 	gen.GoVersionOverride = goVersion
 	if len(frontendNames) > 0 {
 		gen.FrontendName = frontendNames[0]
 	}
 
-	// Generate project structure (creates the first service)
+	// Generate project structure
 	if err := gen.Generate(); err != nil {
 		return fmt.Errorf("failed to generate project: %w", err)
 	}
 
-	// Generate additional services beyond the first
-	for i, svcName := range serviceNames[1:] {
-		port := gen.ServicePort + i + 1
-		fmt.Printf("\n🔧 Adding additional service '%s' (port %d)...\n", svcName, port)
-		if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName, port); err != nil {
-			return fmt.Errorf("failed to generate service %s: %w", svcName, err)
-		}
-		// Update project config with additional service
-		if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
-			return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
+	// Generate additional services beyond the first (if any)
+	if len(serviceNames) > 1 {
+		for i, svcName := range serviceNames[1:] {
+			port := gen.ServicePort + i + 1
+			fmt.Printf("\n🔧 Adding additional service '%s' (port %d)...\n", svcName, port)
+			if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName, port); err != nil {
+				return fmt.Errorf("failed to generate service %s: %w", svcName, err)
+			}
+			// Update project config with additional service
+			if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
+				return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
+			}
 		}
 	}
 
@@ -199,8 +201,13 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	fmt.Println("  # Download dependencies:")
 	fmt.Println("  go mod download")
 	fmt.Println("")
-	for _, svcName := range serviceNames {
-		fmt.Printf("  # Add RPCs to proto/services/%s/v1/%s.proto\n", svcName, svcName)
+	if len(serviceNames) > 0 {
+		for _, svcName := range serviceNames {
+			fmt.Printf("  # Add RPCs to proto/services/%s/v1/%s.proto\n", svcName, svcName)
+		}
+	} else {
+		fmt.Printf("  # Add a service:\n")
+		fmt.Printf("  %s add service <name>\n", CLIName())
 	}
 	fmt.Println("  # Then generate code from protos:")
 	fmt.Printf("  %s generate\n", CLIName())
@@ -278,7 +285,7 @@ func bootstrapGeneratedCode(path string) error {
 	generateMu.Lock()
 	defer generateMu.Unlock()
 
-	return runGeneratePipeline(path)
+	return runGeneratePipeline(path, false)
 }
 
 func shouldRunRootGoModTidy(path string) (bool, error) {

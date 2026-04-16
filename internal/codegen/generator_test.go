@@ -158,7 +158,7 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, "example.com/proj", targetDir); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, targetDir); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -206,9 +206,9 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		t.Error("bootstrap.go should contain generated file header")
 	}
 
-	// Must return *App
-	if !strings.Contains(content, `func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts ...connect.HandlerOption) *App`) {
-		t.Error("bootstrap.go Bootstrap() should return *App")
+	// Must return (*App, error)
+	if !strings.Contains(content, `func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts ...connect.HandlerOption) (*App, error)`) {
+		t.Error("bootstrap.go Bootstrap() should return (*App, error)")
 	}
 
 	// Must contain App struct
@@ -234,7 +234,7 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", FieldName: "Notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, "example.com/proj", targetDir); err != nil {
+	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, targetDir); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -288,7 +288,7 @@ func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrapTesting(services, nil, "example.com/proj", targetDir); err != nil {
+	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, targetDir); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
 
@@ -374,7 +374,7 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 		{Name: "cache", Package: "cache", FieldName: "Cache"},
 	}
 
-	if err := GenerateBootstrapTesting(services, packages, "example.com/proj", targetDir); err != nil {
+	if err := GenerateBootstrapTesting(services, packages, nil, nil, "example.com/proj", false, targetDir); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
 
@@ -402,7 +402,7 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 }
 
 func TestPackageDataFromNames(t *testing.T) {
-	pkgs := PackageDataFromNames([]string{"cache", "db", "notifications"})
+	pkgs := PackageDataFromNames([]string{"cache", "db", "notifications"}, t.TempDir())
 
 	if len(pkgs) != 3 {
 		t.Fatalf("expected 3 packages, got %d", len(pkgs))
@@ -609,10 +609,97 @@ func (s *Service) Echo() {}
 	}
 }
 
+func TestGenerateMissingHandlerStubs_RemovesStaleGeneratedFileWhenAllMethodsImplemented(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "echoservice")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existingHandlers := `package echo
+
+func (s *Service) Echo() {}
+func (s *Service) Ping() {}
+`
+	if err := os.WriteFile(filepath.Join(targetDir, "handlers.go"), []byte(existingHandlers), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "handlers_new.go"), []byte("package echo\nfunc (s *Service) Echo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:      "EchoService",
+		Package:   "echo.v1",
+		GoPackage: "github.com/test/proj/gen/proto/services/echo/v1",
+		PkgName:   "echov1",
+		Methods: []Method{
+			{Name: "Echo", InputType: "EchoRequest", OutputType: "EchoResponse"},
+			{Name: "Ping", InputType: "PingRequest", OutputType: "PingResponse"},
+		},
+		ProtoFile:  "proto/services/echo/v1/echo.proto",
+		ModulePath: "github.com/test/proj",
+	}
+
+	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	if err != nil {
+		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
+	}
+	if !result.AllUpToDate {
+		t.Fatalf("expected AllUpToDate, got new methods: %v", result.NewMethods)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "handlers_new.go")); !os.IsNotExist(err) {
+		t.Fatal("handlers_new.go should be removed when all methods are implemented elsewhere")
+	}
+}
+
+func TestGenerateMissingHandlerStubs_IgnoresGeneratedStubsWhenDetectingMissing(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "echoservice")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(targetDir, "handlers_new.go"), []byte("package echo\nfunc (s *Service) Echo() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:      "EchoService",
+		Package:   "echo.v1",
+		GoPackage: "github.com/test/proj/gen/proto/services/echo/v1",
+		PkgName:   "echov1",
+		Methods: []Method{
+			{Name: "Echo", InputType: "EchoRequest", OutputType: "EchoResponse"},
+			{Name: "Ping", InputType: "PingRequest", OutputType: "PingResponse"},
+		},
+		ProtoFile:  "proto/services/echo/v1/echo.proto",
+		ModulePath: "github.com/test/proj",
+	}
+
+	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	if err != nil {
+		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
+	}
+	if result.AllUpToDate {
+		t.Fatal("expected missing methods to be regenerated when only handlers_new.go exists")
+	}
+	if len(result.NewMethods) != 2 {
+		t.Fatalf("expected 2 regenerated methods, got %v", result.NewMethods)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "handlers_new.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(handlers_new.go) error = %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "func (s *Service) Echo(") || !strings.Contains(content, "func (s *Service) Ping(") {
+		t.Fatal("handlers_new.go should be rewritten with all still-missing methods")
+	}
+}
+
 func TestGenerateSetup_CreatesFile(t *testing.T) {
 	targetDir := t.TempDir()
 
-	if err := GenerateSetup("example.com/proj", targetDir); err != nil {
+	if err := GenerateSetup("example.com/proj", "", targetDir); err != nil {
 		t.Fatalf("GenerateSetup() error = %v", err)
 	}
 
@@ -647,7 +734,7 @@ func TestGenerateSetup_DoesNotOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := GenerateSetup("example.com/proj", targetDir); err != nil {
+	if err := GenerateSetup("example.com/proj", "", targetDir); err != nil {
 		t.Fatalf("GenerateSetup() error = %v", err)
 	}
 
@@ -668,7 +755,7 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, "example.com/proj", targetDir); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, targetDir); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -684,6 +771,88 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 	}
 	if !strings.Contains(content, "pkg/app/setup.go") {
 		t.Error("bootstrap.go should reference setup.go in a comment")
+	}
+}
+
+func TestGenerateSetup_WithPostgres(t *testing.T) {
+	targetDir := t.TempDir()
+
+	if err := GenerateSetup("example.com/proj", "postgres", targetDir); err != nil {
+		t.Fatalf("GenerateSetup() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "setup.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(setup.go) error = %v", err)
+	}
+
+	content := string(data)
+
+	if !strings.Contains(content, "database/sql") {
+		t.Error("setup.go should import database/sql when database is configured")
+	}
+	if !strings.Contains(content, "pgx/v5/stdlib") {
+		t.Error("setup.go should import pgx driver for postgres")
+	}
+	if !strings.Contains(content, "sql.Open") {
+		t.Error("setup.go should call sql.Open")
+	}
+	if !strings.Contains(content, "db.Ping()") {
+		t.Error("setup.go should call db.Ping()")
+	}
+	if !strings.Contains(content, "app.DB = db") {
+		t.Error("setup.go should assign db to app.DB")
+	}
+	if !strings.Contains(content, "SetMaxOpenConns") {
+		t.Error("setup.go should set connection pool settings")
+	}
+}
+
+func TestGenerateSetup_WithoutDatabase(t *testing.T) {
+	targetDir := t.TempDir()
+
+	if err := GenerateSetup("example.com/proj", "", targetDir); err != nil {
+		t.Fatalf("GenerateSetup() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "setup.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(setup.go) error = %v", err)
+	}
+
+	content := string(data)
+
+	if strings.Contains(content, "database/sql") {
+		t.Error("setup.go should not import database/sql when no database configured")
+	}
+	if strings.Contains(content, "sql.Open") {
+		t.Error("setup.go should not call sql.Open when no database configured")
+	}
+}
+
+func TestGenerateBootstrap_WithDatabase(t *testing.T) {
+	targetDir := t.TempDir()
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
+	}
+
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, targetDir); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	content := string(data)
+
+	if !strings.Contains(content, "DB") || !strings.Contains(content, "*sql.DB") {
+		t.Error("bootstrap.go should include DB field when database is configured")
+	}
+	if !strings.Contains(content, `"database/sql"`) {
+		t.Error("bootstrap.go should import database/sql when database is configured")
 	}
 }
 

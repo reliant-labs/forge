@@ -64,8 +64,10 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newTestCmd())
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPackageCmd())
+	rootCmd.AddCommand(newPackCmd())
 	rootCmd.AddCommand(newDebugCmd())
 	rootCmd.AddCommand(newDocsCmd())
+	rootCmd.AddCommand(newUpgradeCmd())
 
 	return rootCmd
 }

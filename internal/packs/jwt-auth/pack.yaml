@@ -1,0 +1,31 @@
+name: jwt-auth
+description: "Production-ready JWT authentication with JWKS, dev-mode bypass, and multi-provider support (Auth0, Clerk, Supabase, Firebase)"
+version: 1.0.0
+
+config:
+  section: auth
+  defaults:
+    provider: jwt
+    jwt:
+      signing_method: RS256
+      jwks_url: ""
+      issuer: ""
+      audience: ""
+    dev_mode: true
+
+files:
+  - template: jwt_validator.go.tmpl
+    output: pkg/middleware/jwt_validator.go
+    overwrite: always
+  - template: dev_auth.go.tmpl
+    output: pkg/middleware/dev_auth.go
+    overwrite: always
+
+dependencies:
+  - github.com/golang-jwt/jwt/v5
+  - github.com/MicahParks/keyfunc/v3
+
+generate:
+  - template: auth_gen_override.go.tmpl
+    output: pkg/middleware/auth_gen.go
+    description: "Replaces default auth_gen.go stub with JWKS-based validator"

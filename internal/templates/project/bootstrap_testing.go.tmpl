@@ -2,14 +2,26 @@
 package app
 
 import (
+{{- if .MultiTenantEnabled}}
+	"context"
+{{- end}}
 	"io"
 	"log/slog"
+{{- if .Services}}
 	"net/http"
 	"net/http/httptest"
+{{- end}}
+{{- if or .Services .Packages}}
 	"testing"
+{{- end}}
+{{- if .Services}}
 
 	"connectrpc.com/connect"
+{{- end}}
 	"{{$.Module}}/pkg/config"
+{{- if .MultiTenantEnabled}}
+	"{{$.Module}}/pkg/middleware"
+{{- end}}
 {{range .Services}}
 	"{{$.Module}}/handlers/{{.Package}}"
 	"{{$.Module}}/gen/services/{{.Package}}/v1/{{.Package}}v1connect"
@@ -64,12 +76,29 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Servi
 	for _, opt := range opts {
 		opt(cfg)
 	}
+{{- if .Fallible}}
+	if cfg.{{.Package}}Deps != nil {
+		svc, err := {{.Package}}.New(*cfg.{{.Package}}Deps)
+		if err != nil {
+			t.Fatalf("creating {{.Package}} service: %v", err)
+		}
+		return svc
+	}
+	svc, err := {{.Package}}.New({{.Package}}.Deps{
+		Logger: cfg.logger.With("service", "{{.Name}}"),
+	})
+	if err != nil {
+		t.Fatalf("creating {{.Package}} service: %v", err)
+	}
+	return svc
+{{- else}}
 	if cfg.{{.Package}}Deps != nil {
 		return {{.Package}}.New(*cfg.{{.Package}}Deps)
 	}
 	return {{.Package}}.New({{.Package}}.Deps{
 		Logger: cfg.logger.With("service", "{{.Name}}"),
 	})
+{{- end}}
 }
 
 // NewTest{{.FieldName}}Server creates an httptest.Server with the {{.FieldName}} service registered.
@@ -98,12 +127,29 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{.Package}}.Servic
 	for _, opt := range opts {
 		opt(cfg)
 	}
+{{- if .Fallible}}
+	if cfg.{{.Package}}Deps != nil {
+		svc, err := {{.Package}}.New(*cfg.{{.Package}}Deps)
+		if err != nil {
+			t.Fatalf("creating {{.Package}} package: %v", err)
+		}
+		return svc
+	}
+	svc, err := {{.Package}}.New({{.Package}}.Deps{
+		Logger: cfg.logger.With("package", "{{.Name}}"),
+	})
+	if err != nil {
+		t.Fatalf("creating {{.Package}} package: %v", err)
+	}
+	return svc
+{{- else}}
 	if cfg.{{.Package}}Deps != nil {
 		return {{.Package}}.New(*cfg.{{.Package}}Deps)
 	}
 	return {{.Package}}.New({{.Package}}.Deps{
 		Logger: cfg.logger.With("package", "{{.Name}}"),
 	})
+{{- end}}
 }
 {{end}}
 func defaultTestConfig() *testConfig {
@@ -112,3 +158,14 @@ func defaultTestConfig() *testConfig {
 		cfg:    &config.Config{},
 	}
 }
+
+{{- if .MultiTenantEnabled}}
+
+// WithTestTenant returns a context with the given tenant ID set.
+// Use in tests to simulate an authenticated tenant context.
+//
+//	ctx := app.WithTestTenant(context.Background(), "tenant-123")
+func WithTestTenant(ctx context.Context, tenantID string) context.Context {
+	return middleware.ContextWithTenantID(ctx, tenantID)
+}
+{{- end}}

@@ -1,0 +1,24 @@
+package middleware
+
+import (
+	"log/slog"
+	"os"
+)
+
+// DevAuthEnabled returns true when ENVIRONMENT=development.
+func DevAuthEnabled() bool {
+	env := os.Getenv("ENVIRONMENT")
+	return env == "development" || env == "dev"
+}
+
+// DevClaims returns synthetic claims for local development.
+func DevClaims(logger *slog.Logger) *Claims {
+	logger.Warn("DEV MODE: using synthetic auth claims — do not use in production")
+	return &Claims{
+		UserID: "dev-user-001",
+		Email:  "dev@localhost",
+		OrgID:  "dev-org-001",
+		Role:   "admin",
+		Roles:  []string{"admin", "member"},
+	}
+}

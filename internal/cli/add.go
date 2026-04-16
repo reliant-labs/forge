@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // goKeywords is the set of Go reserved keywords.
@@ -95,16 +96,22 @@ func validateProjectName(name string) error {
 func newAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
-		Short: "Add a service or frontend to an existing project",
-		Long: `Add a new service or frontend to an existing Forge project.
+		Short: "Add a service, worker, operator, or frontend to an existing project",
+		Long: `Add a new service, worker, operator, or frontend to an existing Forge project.
 
 Subcommands:
-  forge add service <name>    Add a new Go service
-  forge add frontend <name>   Add a new Next.js frontend`,
+  forge add service <name>                        Add a new Go service
+  forge add worker <name>                         Add a new background worker
+  forge add operator <name> [--group G] [--version V]  Add a Kubernetes operator
+  forge add frontend <name>                       Add a new Next.js frontend
+  forge add webhook <name> --service S            Add a webhook endpoint to a service`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
+	cmd.AddCommand(newAddWorkerCmd())
+	cmd.AddCommand(newAddOperatorCmd())
 	cmd.AddCommand(newAddFrontendCmd())
+	cmd.AddCommand(newAddWebhookCmd())
 
 	return cmd
 }
@@ -201,7 +208,7 @@ func runAddService(name string, port int) error {
 	// so the pipeline sees the new service in the config)
 	cfg.Services = append(cfg.Services, config.ServiceConfig{
 		Name: name,
-		Type: "GO_SERVICE",
+		Type: "go_service",
 		Path: fmt.Sprintf("handlers/%s", name),
 		Port: port,
 	})
@@ -213,7 +220,7 @@ func runAddService(name string, port int) error {
 	// bootstrap.go, testing.go, go mod tidy, etc.
 	fmt.Println("\n🔧 Running generation pipeline...")
 	generateMu.Lock()
-	err = runGeneratePipeline(root)
+	err = runGeneratePipeline(root, false)
 	generateMu.Unlock()
 	if err != nil {
 		if restoreErr := os.WriteFile(configPath, originalConfigBytes, 0o644); restoreErr != nil {
@@ -239,6 +246,182 @@ func runAddService(name string, port int) error {
 	return nil
 }
 
+// --- add worker ---
+
+func newAddWorkerCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "worker <name>",
+		Short: "Add a new background worker to the project",
+		Long: `Add a new background worker to an existing Forge project.
+
+A worker is a long-running process that doesn't serve HTTP but participates
+in the single-binary lifecycle. It has Start(ctx)/Stop(ctx) methods, health
+reporting, and the same Deps injection as services.
+
+Example:
+  forge add worker email_sender
+  forge add worker order_processor`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAddWorker(args[0])
+		},
+	}
+
+	return cmd
+}
+
+func runAddWorker(name string) error {
+	if err := validateIdentifier(name); err != nil {
+		return fmt.Errorf("invalid worker name: %w", err)
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(root, "forge.project.yaml")
+	cfg, err := generator.ReadProjectConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("read project config: %w", err)
+	}
+
+	// Check for name conflict (workers are stored in Services with type "worker")
+	for _, svc := range cfg.Services {
+		if svc.Name == name {
+			return fmt.Errorf("%q already exists in the project", name)
+		}
+	}
+
+	fmt.Printf("Adding worker '%s'...\n", name)
+
+	// Generate worker files (worker.go, worker_test.go)
+	if err := generator.GenerateWorkerFiles(root, cfg.ModulePath, name); err != nil {
+		return fmt.Errorf("generate worker files: %w", err)
+	}
+
+	// Update forge.project.yaml
+	cfg.Services = append(cfg.Services, config.ServiceConfig{
+		Name: name,
+		Type: "worker",
+		Path: fmt.Sprintf("workers/%s", name),
+	})
+	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+		return fmt.Errorf("update project config: %w", err)
+	}
+
+	// Run the generation pipeline to update bootstrap.go and cmd-server.go
+	fmt.Println("\n🔧 Running generation pipeline...")
+	generateMu.Lock()
+	err = runGeneratePipeline(root, false)
+	generateMu.Unlock()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: generation pipeline failed: %v\n", err)
+		// Non-fatal: the worker files were created successfully
+	}
+
+	fmt.Printf("\n✅ Worker '%s' added successfully!\n", name)
+	fmt.Println("\nNext steps:")
+	fmt.Printf("  1. Implement your processing loop in workers/%s/worker.go\n", name)
+	fmt.Printf("  2. Run tests: go test ./workers/%s/...\n", name)
+
+	return nil
+}
+
+// --- add operator ---
+
+func newAddOperatorCmd() *cobra.Command {
+	var (
+		group   string
+		version string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "operator <name>",
+		Short: "Add a new Kubernetes operator to the project",
+		Long: `Add a new Kubernetes operator (controller) to an existing Forge project.
+
+An operator reconciles custom resources using controller-runtime. It generates
+CRD types (spec + status), a Reconciler, and envtest-based tests.
+
+Example:
+  forge add operator workspace
+  forge add operator workspace --group myapp.io --version v1alpha1`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAddOperator(args[0], group, version)
+		},
+	}
+
+	cmd.Flags().StringVar(&group, "group", "", "API group (default: <project-name>.io)")
+	cmd.Flags().StringVar(&version, "version", "v1", "API version")
+
+	return cmd
+}
+
+func runAddOperator(name, group, version string) error {
+	if err := validateIdentifier(name); err != nil {
+		return fmt.Errorf("invalid operator name: %w", err)
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(root, "forge.project.yaml")
+	cfg, err := generator.ReadProjectConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("read project config: %w", err)
+	}
+
+	// Check for name conflict (operators are stored in Services with type "operator")
+	for _, svc := range cfg.Services {
+		if svc.Name == name {
+			return fmt.Errorf("%q already exists in the project", name)
+		}
+	}
+
+	// Default group from project name
+	if group == "" {
+		group = cfg.Name + ".io"
+	}
+
+	fmt.Printf("Adding operator '%s' (group=%s, version=%s)...\n", name, group, version)
+
+	// Generate operator files (types.go, controller.go, controller_test.go)
+	if err := generator.GenerateOperatorFiles(root, cfg.ModulePath, name, group, version); err != nil {
+		return fmt.Errorf("generate operator files: %w", err)
+	}
+
+	// Update forge.project.yaml
+	cfg.Services = append(cfg.Services, config.ServiceConfig{
+		Name: name,
+		Type: "operator",
+		Path: fmt.Sprintf("operators/%s", name),
+	})
+	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+		return fmt.Errorf("update project config: %w", err)
+	}
+
+	// Run the generation pipeline to update bootstrap.go and cmd-server.go
+	fmt.Println("\n🔧 Running generation pipeline...")
+	generateMu.Lock()
+	err = runGeneratePipeline(root, false)
+	generateMu.Unlock()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: generation pipeline failed: %v\n", err)
+		// Non-fatal: the operator files were created successfully
+	}
+
+	fmt.Printf("\n✅ Operator '%s' added successfully!\n", name)
+	fmt.Println("\nNext steps:")
+	fmt.Printf("  1. Define your CRD spec/status in operators/%s/types.go\n", name)
+	fmt.Printf("  2. Implement reconciliation logic in operators/%s/controller.go\n", name)
+	fmt.Printf("  3. Run tests: go test ./operators/%s/...\n", name)
+
+	return nil
+}
 
 // --- add frontend ---
 
@@ -346,6 +529,101 @@ func runAddFrontend(name string, port int) error {
 	fmt.Printf("  cd frontends/%s\n", name)
 	fmt.Println("  npm install")
 	fmt.Println("  npm run dev")
+
+	return nil
+}
+
+// --- add webhook ---
+
+func newAddWebhookCmd() *cobra.Command {
+	var serviceName string
+
+	cmd := &cobra.Command{
+		Use:   "webhook <name>",
+		Short: "Add a webhook endpoint to an existing service",
+		Long: `Add a webhook ingestion endpoint to an existing Go service.
+
+This scaffolds a webhook handler with signature verification and idempotency,
+along with a test file. The handler is added to the service's handler directory.
+
+Example:
+  forge add webhook stripe --service payments
+  forge add webhook github --service notifications`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAddWebhook(args[0], serviceName)
+		},
+	}
+
+	cmd.Flags().StringVar(&serviceName, "service", "", "Target service name (required)")
+	_ = cmd.MarkFlagRequired("service")
+
+	return cmd
+}
+
+func runAddWebhook(name, serviceName string) error {
+	if err := validateProjectName(name); err != nil {
+		return fmt.Errorf("invalid webhook name: %w", err)
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(root, "forge.project.yaml")
+	cfg, err := generator.ReadProjectConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("read project config: %w", err)
+	}
+
+	// Find the target service.
+	svcIdx := -1
+	for i, svc := range cfg.Services {
+		if svc.Name == serviceName {
+			svcIdx = i
+			break
+		}
+	}
+	if svcIdx == -1 {
+		return fmt.Errorf("service %q not found in forge.project.yaml", serviceName)
+	}
+
+	// Check for duplicate webhook.
+	for _, wh := range cfg.Services[svcIdx].Webhooks {
+		if wh.Name == name {
+			return fmt.Errorf("webhook %q already exists in service %q", name, serviceName)
+		}
+	}
+
+	fmt.Printf("Adding webhook '%s' to service '%s'...\n", name, serviceName)
+
+	// Generate webhook files.
+	if err := generator.GenerateWebhookFiles(root, cfg.ModulePath, serviceName, name); err != nil {
+		return fmt.Errorf("generate webhook files: %w", err)
+	}
+
+	// Update forge.project.yaml.
+	cfg.Services[svcIdx].Webhooks = append(cfg.Services[svcIdx].Webhooks, config.WebhookConfig{
+		Name: name,
+	})
+	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+		return fmt.Errorf("update project config: %w", err)
+	}
+
+	pascalName := naming.ToPascalCase(name)
+
+	fmt.Printf("\n✅ Webhook '%s' added to service '%s'!\n", name, serviceName)
+	fmt.Println("\nGenerated files:")
+	fmt.Printf("  handlers/%s/webhook_%s.go       (handler + signature verification)\n", serviceName, name)
+	fmt.Printf("  handlers/%s/webhook_%s_test.go   (tests)\n", serviceName, name)
+	fmt.Printf("  handlers/%s/webhook_store.go      (idempotency store)\n", serviceName)
+	fmt.Println("\nNext steps:")
+	fmt.Println("  1. Run 'forge generate' to regenerate webhook_routes_gen.go")
+	fmt.Printf("  2. Ensure RegisterHTTP in handlers/%s/service.go calls:\n", serviceName)
+	fmt.Println("     s.RegisterWebhookRoutes(mux, stack)")
+	fmt.Printf("  3. Implement signature verification in handlers/%s/webhook_%s.go\n", serviceName, name)
+	fmt.Printf("  4. Implement webhook processing logic in process%sWebhook()\n", pascalName)
 
 	return nil
 }

@@ -5,7 +5,6 @@
   ],
   "rules": {
     "complexity": ["error", 12],
-    "max-lines-per-function": ["error", { "max": 50, "skipBlankLines": true, "skipComments": true }],
     "max-lines": ["error", { "max": 300, "skipBlankLines": true, "skipComments": true }],
     "max-depth": ["error", 4],
     "max-params": ["error", 4]

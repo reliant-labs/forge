@@ -1,0 +1,55 @@
+package {{.Name | lower}}
+
+import (
+	"context"
+	"log/slog"
+
+	"{{.Module}}/pkg/config"
+)
+
+// Deps contains the dependencies for the {{.Name}} worker.
+type Deps struct {
+	Logger *slog.Logger
+	Config *config.Config
+}
+
+// Worker implements the background processing for {{.Name}}.
+type Worker struct {
+	deps Deps
+}
+
+// New creates a new {{.Name}} worker.
+func New(deps Deps) *Worker {
+	return &Worker{deps: deps}
+}
+
+// Name returns the worker's identifier.
+func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
+
+// Start blocks until ctx is cancelled. Implement your processing loop here.
+func (w *Worker) Start(ctx context.Context) error {
+	w.deps.Logger.Info("worker started", "worker", w.Name())
+
+	// TODO: Implement your worker logic here.
+	// Example patterns:
+	//   - Poll a queue in a loop
+	//   - Subscribe to an event stream
+	//   - Run periodic batch jobs
+	//
+	// Always respect ctx cancellation:
+	//   select {
+	//   case <-ctx.Done():
+	//       return nil
+	//   case msg := <-messages:
+	//       process(msg)
+	//   }
+
+	<-ctx.Done()
+	return nil
+}
+
+// Stop is called during graceful shutdown. Drain in-flight work here.
+func (w *Worker) Stop(ctx context.Context) error {
+	w.deps.Logger.Info("worker stopping", "worker", w.Name())
+	return nil
+}

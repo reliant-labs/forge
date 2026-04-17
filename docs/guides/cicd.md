@@ -136,7 +136,7 @@ All workflows use the `GO_VERSION` environment variable. Update it in `ci.yml`:
 
 ```yaml
 env:
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.26"
 ```
 
 ### Adding a Database to Tests

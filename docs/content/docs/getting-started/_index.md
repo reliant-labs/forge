@@ -13,7 +13,7 @@ This guide walks you through installing the Forge CLI, creating a project, addin
 
 Forge orchestrates several tools. Install these before you begin:
 
-- **Go 1.23+** — [go.dev/dl](https://go.dev/dl/)
+- **Go 1.26+** — [go.dev/dl](https://go.dev/dl/)
 - **buf** — proto linter and code generator: `go install github.com/bufbuild/buf/cmd/buf@latest`
 - **Docker** — for building container images
 - **Task** (optional, recommended) — task runner: `go install github.com/go-task/task/v3/cmd/task@latest`
@@ -92,7 +92,7 @@ myproject/
 │   ├── ci.yml
 │   ├── build-images.yml
 │   └── deploy.yml
-├── forge.project.yaml        # Project configuration (source of truth)
+├── forge.yaml        # Project configuration (source of truth)
 ├── buf.yaml
 ├── go.work                      # Go workspace (root + gen/)
 ├── go.mod
@@ -100,7 +100,7 @@ myproject/
 └── .gitignore
 ```
 
-The `forge.project.yaml` file is the project configuration. Every Forge command reads this file to discover services, frontends, environments, and settings.
+The `forge.yaml` file is the project configuration. Every Forge command reads this file to discover services, frontends, environments, and settings.
 
 ## Adding a Service
 
@@ -110,7 +110,7 @@ With the project created, add more services using `forge add service`:
 forge add service users --port 8081
 ```
 
-This creates the proto stub and Go service scaffold, and updates the wiring in `pkg/app/wire.go` and `forge.project.yaml`.
+This creates the proto stub and Go service scaffold, and updates the wiring in `pkg/app/wire.go` and `forge.yaml`.
 
 The generated proto file is intentionally empty — you define the RPCs:
 
@@ -296,7 +296,7 @@ forge deploy prod --dry-run --image-tag v1.2.0
 
 ## Project Configuration
 
-The `forge.project.yaml` file drives all CLI behavior. Here is an example after adding a few services:
+The `forge.yaml` file drives all CLI behavior. Here is an example after adding a few services:
 
 ```yaml
 name: myproject

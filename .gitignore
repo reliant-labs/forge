@@ -1,9 +1,5 @@
 # Binaries for programs and plugins
-protoc-gen-forge-orm
-atlas-provider-forge
-forge-mcp
 contractlint
-protomethod
 *.exe
 *.exe~
 *.dll

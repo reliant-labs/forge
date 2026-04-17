@@ -6,7 +6,7 @@ weight: 40
 
 # Database Integration
 
-Forge uses a migration-first approach to database access. Checked-in SQL migrations are the source of truth for schema evolution, while proto DB entities provide the application contract view used for generated ORM code. The **protoc-gen-forge-orm** plugin (part of the forge-orm library at `pkg/orm/`) generates thin CRUD operations over `database/sql` — not a heavy ORM like GORM or Ent. **sqlc** generates type-safe Go code from hand-written SQL for complex queries. Both tools produce code that works with the same `database/sql` transaction interface, so you can mix generated CRUD and custom queries within a single transaction.
+Forge uses a migration-first approach to database access. Checked-in SQL migrations are the source of truth for schema evolution, while proto DB entities provide the application contract view used for generated ORM code. The **protoc-gen-forge-orm** plugin (built into the `forge` binary) generates thin CRUD operations over `database/sql` — not a heavy ORM like GORM or Ent. **sqlc** generates type-safe Go code from hand-written SQL for complex queries. Both tools produce code that works with the same `database/sql` transaction interface, so you can mix generated CRUD and custom queries within a single transaction.
 
 ## Defining Proto Entities
 
@@ -145,7 +145,7 @@ message Organization {
 forge generate
 ```
 
-This detects `proto/db/` and automatically runs `protoc-gen-forge-orm` (from `pkg/orm/`) to generate ORM code in `gen/db/v1/`. The generated code provides thin CRUD methods over `database/sql` — create, read, update, delete, and list with basic filtering.
+This detects `proto/db/` and automatically runs the built-in `protoc-gen-forge-orm` plugin to generate ORM code in `gen/db/v1/`. The generated code provides thin CRUD methods over `database/sql` — create, read, update, delete, and list with basic filtering.
 
 ## Running Migrations
 
@@ -208,7 +208,7 @@ The typical workflow when making schema changes:
 
 The generated ORM handles simple CRUD, but real applications need joins, aggregations, CTEs, and other complex queries. Forge uses [sqlc](https://sqlc.dev) for these — you write SQL, sqlc generates type-safe Go code.
 
-Enable sqlc in `forge.project.yaml`:
+Enable sqlc in `forge.yaml`:
 
 ```yaml
 database:

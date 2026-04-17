@@ -56,7 +56,7 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 	data := CIWorkflowData{
 		ProjectName:  "minimal",
-		GoVersion:    "1.25",
+		GoVersion:    "1.26",
 		LintGolangci: true,
 		TestRace:     true,
 		PermContents: "read",

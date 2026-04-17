@@ -27,7 +27,7 @@ Follow this sequence every time you scaffold a new component:
 
 ## Port Assignment
 
-Ports are assigned automatically via `forge.project.yaml`. Do not hard-code port numbers; let Forge manage them.
+Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers; let Forge manage them.
 
 ## Rules
 

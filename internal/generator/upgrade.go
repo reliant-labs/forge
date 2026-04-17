@@ -31,7 +31,7 @@ type UpgradeResult struct {
 // File ownership tiers.
 const (
 	// Tier1 files are always overwritten by forge generate and gitignored.
-	// These are pure infrastructure, 100% derivable from forge.project.yaml.
+	// These are pure infrastructure, 100% derivable from forge.yaml.
 	Tier1 = 1
 	// Tier2 files are checksum-protected and committed to git.
 	// Overwritten only if the user hasn't modified them.

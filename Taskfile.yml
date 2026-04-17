@@ -107,12 +107,6 @@ tasks:
       - go install github.com/go-task/task/v3/cmd/task@latest
       - go install github.com/air-verse/air@latest
 
-  lint-protomethod:
-    desc: Run only the protomethod linter
-    cmds:
-      - echo "Running protomethod linter..."
-      - go run ./cmd/protomethod ./...
-
   docker-build:
     desc: Build Docker image
     cmds:

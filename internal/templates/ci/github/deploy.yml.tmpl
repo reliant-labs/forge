@@ -105,10 +105,19 @@ jobs:
             echo "tag=sha-$(echo ${{"{{"}} github.event.workflow_run.head_sha {{"}}"}} | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Cache KCL CLI
+        uses: actions/cache@v4
+        id: kcl-cache
+        with:
+          path: ~/.kcl
+          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
+
       - name: Install KCL
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
+        if: steps.kcl-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+
+      - name: Add KCL to PATH
+        run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
       {{- if and $data.MigrationTest (ne $env.Name "staging")}}
 
       - name: Test migrations
@@ -250,10 +259,19 @@ jobs:
           printf '%s' "$KUBECONFIG_CONTENTS" > $HOME/.kube/config
           chmod 600 $HOME/.kube/config
 
+      - name: Cache KCL CLI
+        uses: actions/cache@v4
+        id: kcl-cache
+        with:
+          path: ~/.kcl
+          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
+
       - name: Install KCL
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
+        if: steps.kcl-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+
+      - name: Add KCL to PATH
+        run: echo "$HOME/.kcl/bin" >> "$GITHUB_PATH"
       {{- if .MigrationTest}}
 
       - name: Test migrations

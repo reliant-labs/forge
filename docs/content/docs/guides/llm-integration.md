@@ -32,24 +32,7 @@ task proto
 
 ## MCP Integration
 
-Forge includes an MCP (Model Context Protocol) server for AI agents:
-
-```json
-{
-  "mcpServers": {
-    "forge-mcp": {
-      "command": "./mcp/forge-mcp/forge-mcp"
-    }
-  }
-}
-```
-
-Available tools:
-- `taskfile` - Execute development tasks
-- `add_breakpoint` - Debug service methods
-- `stream_logs` - Query application logs
-- `query_db` - Inspect database
-- And more...
+Forge projects can integrate with MCP (Model Context Protocol) servers for AI agents. See `.mcp.json.example` in your project root for available server configurations (e.g., postgres read-only inspection).
 
 ## Prompting Patterns
 

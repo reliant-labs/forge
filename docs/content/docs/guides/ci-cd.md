@@ -140,7 +140,7 @@ env:
   REGISTRY: "ghcr.io/myorg"
 ```
 
-Also update `forge.project.yaml`:
+Also update `forge.yaml`:
 
 ```yaml
 environments:
@@ -155,7 +155,7 @@ environments:
 To add a new environment (e.g., `qa`):
 
 1. Create `deploy/kcl/qa/main.k` with the environment configuration
-2. Add the environment to `forge.project.yaml`
+2. Add the environment to `forge.yaml`
 3. Add a deploy job to `.github/workflows/deploy.yml` with the appropriate trigger
 
 ## Local Development with k3d

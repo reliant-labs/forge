@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -22,11 +23,32 @@ func Execute() error {
 // When the binary is "forge" (standalone install), it returns "forge".
 // When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
 func CLIName() string {
+	return strings.Join(forgeCommand(), " ")
+}
+
+// forgeCommand returns the command tokens needed to invoke Forge.
+// Standalone: ["forge"]. Embedded: ["reliant", "forge"].
+// The first element is always the resolved executable path when called
+// via forgeExecCommand, or the base name for display purposes here.
+func forgeCommand() []string {
 	base := filepath.Base(os.Args[0])
 	if base == "forge" {
-		return "forge"
+		return []string{"forge"}
 	}
-	return base + " forge"
+	return []string{base, "forge"}
+}
+
+// forgeExecCommand returns exec-ready command tokens using the resolved
+// executable path. Use this when spawning forge as a subprocess.
+func forgeExecCommand() ([]string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve executable path: %w", err)
+	}
+	if filepath.Base(exePath) == "forge" {
+		return []string{exePath}, nil
+	}
+	return []string{exePath, "forge"}, nil
 }
 
 func SetVersion(v, date, commit string) {
@@ -81,7 +103,9 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDebugCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
+	rootCmd.AddCommand(newScaffoldFromPlanCmd())
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newProtocGenOrmCmd())
 
 	return rootCmd
 }
@@ -94,7 +118,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print the forge version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("forge version %s (built %s, commit %s)\n", version, buildDate, gitCommit)
+			fmt.Printf("%s version %s (built %s, commit %s)\n", CLIName(), version, buildDate, gitCommit)
 		},
 	}
 }

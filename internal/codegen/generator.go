@@ -226,7 +226,7 @@ type BootstrapServiceData = BootstrapComponentData
 type BootstrapPackageData = BootstrapComponentData
 type BootstrapWorkerData = BootstrapComponentData
 
-// WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.project.yaml).
+// WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
 func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
 	var workers []BootstrapWorkerData
@@ -247,7 +247,7 @@ func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerDat
 
 type BootstrapOperatorData = BootstrapComponentData
 
-// OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.project.yaml).
+// OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
 func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperatorData {
 	var operators []BootstrapOperatorData
@@ -515,7 +515,7 @@ var MigrationsFS embed.FS
 	return nil
 }
 
-// PackageDataFromNames builds BootstrapPackageData from package names (e.g. from forge.project.yaml).
+// PackageDataFromNames builds BootstrapPackageData from package names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors
 // by inspecting the Go source in internal/<name>/.
 func PackageDataFromNames(names []string, projectDir string) []BootstrapPackageData {

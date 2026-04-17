@@ -12,7 +12,7 @@ forge lint [flags] [paths...]
 
 ## Flags
 
-- `--proto` - Run proto method enforcement linter (checks that exported methods only implement proto services)
+- `--contract` - Run contract interface enforcement linter
 - `--fix` - Automatically fix issues where possible
 - `-v, --verbose` - Verbose output
 
@@ -26,19 +26,19 @@ Run all standard linters (golangci-lint + buf):
 forge lint
 ```
 
-### Proto Method Enforcement
+### Contract Interface Enforcement
 
-Check that all exported methods on receivers implement proto service interfaces:
+Check that exported methods on service types implement their contract interfaces:
 
 ```bash
-forge lint --proto
+forge lint --contract
 ```
 
 Run on specific paths:
 
 ```bash
-forge lint --proto ./services/...
-forge lint --proto ./internal/myservice
+forge lint --contract ./services/...
+forge lint --contract ./internal/myservice
 ```
 
 ### Auto-fix Issues
@@ -66,13 +66,13 @@ forge lint --fix
 
 - **buf lint**: Lints proto files for style and best practices
 
-### Proto Method Enforcement (`forge lint --proto`)
+### Contract Interface Enforcement (`forge lint --contract`)
 
 Ensures architectural consistency by enforcing that:
-- ✅ Exported methods on receivers MUST implement proto service interfaces
-- ✅ Exported functions (not on receivers) are allowed
+- ✅ Exported methods on service types MUST implement their contract interface (proto RPC or `contract.go`)
+- ✅ Exported types, functions, constants, and variables are unrestricted
 - ✅ Unexported methods are allowed
-- ❌ Exported methods that don't implement proto services are not allowed
+- ❌ Exported methods on service types that don't match the contract are not allowed
 
 This ensures developers always work through the Forge framework and don't create workarounds.
 
@@ -92,14 +92,7 @@ jobs:
         run: |
           make build
           ./dist/forge lint
-          ./dist/forge lint --proto
-```
-
-Or use the Makefile:
-
-```bash
-make lint                # Standard linting
-make lint-protomethod    # Proto method linting only
+          ./dist/forge lint --contract
 ```
 
 ## Exit Codes
@@ -111,23 +104,18 @@ make lint-protomethod    # Proto method linting only
 ## Output Example
 
 ```bash
-$ forge lint --proto ./services
+$ forge lint --contract ./services
 
-🔍 Running proto method enforcement linter...
+🔍 Running contract interface enforcement linter...
 
-Running: go run ./cmd/protomethod ./services
+./services/user/service.go:45:1: exported method userService.GetUserByEmail does not implement a contract interface; only contract methods should be exported on service types
 
-./services/user/service.go:45:1: exported method userService.GetUserByEmail does not implement a proto service interface; only proto service methods should be exported on receivers
-./services/order/service.go:23:1: exported method orderService.CalculateTotal does not implement a proto service interface; only proto service methods should be exported on receivers
+❌ Contract interface violations found!
 
-❌ Proto method violations found!
-
-Exported methods on receivers must implement proto service interfaces.
-See docs/linter-protomethod.md for more information.
+Exported methods on types implementing contract interfaces must be declared in the interface.
 ```
 
 ## See Also
 
-- [Proto Method Linter Documentation](./linter-protomethod.md)
 - [golangci-lint configuration](./../.golangci.yml)
 - [Contributing Guidelines](./CONTRIBUTING.md)

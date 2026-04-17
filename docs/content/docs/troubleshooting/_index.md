@@ -80,7 +80,7 @@ lsof -i :8080
 # Kill the process
 kill -9 <PID>
 
-# Or use a different port in forge.project.yaml
+# Or use a different port in forge.yaml
 ```
 
 ## Code Generation Issues

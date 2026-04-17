@@ -12,7 +12,7 @@ func TestE2EWorkflowTemplate_DockerCompose(t *testing.T) {
 		Runtime:      "docker-compose",
 		HasFrontends: false,
 	}
-	content, err := RenderCITemplate("github", "e2e.yml.tmpl", data)
+	content, err := CITemplates("github").Render("e2e.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render e2e.yml.tmpl: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestE2EWorkflowTemplate_K3d(t *testing.T) {
 		HasFrontends: true,
 		FrontendPath: "frontends/web",
 	}
-	content, err := RenderCITemplate("github", "e2e.yml.tmpl", data)
+	content, err := CITemplates("github").Render("e2e.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render e2e.yml.tmpl: %v", err)
 	}

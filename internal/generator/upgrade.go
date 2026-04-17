@@ -168,9 +168,9 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 // renderManagedFile renders a managed file's template content.
 func renderManagedFile(f managedFile, data upgradeTemplateData) ([]byte, error) {
 	if f.templated {
-		return templates.RenderProjectTemplate(f.templateName, data)
+		return templates.ProjectTemplates.Render(f.templateName, data)
 	}
-	return templates.GetProjectTemplate(f.templateName)
+	return templates.ProjectTemplates.Get(f.templateName)
 }
 
 // simpleDiff produces a minimal unified-style diff showing changed lines.

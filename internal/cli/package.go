@@ -128,13 +128,13 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 
 	if kind != "" {
 		// Kind-specific: discover and render all templates from the kind subdirectory.
-		tmplFiles, err := templates.ListInternalPackageKindTemplates(kind)
+		tmplFiles, err := templates.InternalPkgKindTemplates(kind).ListFlat("")
 		if err != nil {
 			return fmt.Errorf("list %s templates: %w", kind, err)
 		}
 
 		for _, tmplFile := range tmplFiles {
-			content, err := templates.RenderInternalPackageKindTemplate(kind, tmplFile, data)
+			content, err := templates.InternalPkgKindTemplates(kind).Render(tmplFile, data)
 			if err != nil {
 				return fmt.Errorf("render %s: %w", tmplFile, err)
 			}
@@ -147,7 +147,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		// Default: render the generic contract.go and service.go templates.
-		contractContent, err := templates.RenderInternalPackageTemplate("contract.go.tmpl", data)
+		contractContent, err := templates.InternalPkgTemplates.Render("contract.go.tmpl", data)
 		if err != nil {
 			return fmt.Errorf("render contract.go: %w", err)
 		}
@@ -155,7 +155,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("write contract.go: %w", err)
 		}
 
-		serviceContent, err := templates.RenderInternalPackageTemplate("service.go.tmpl", data)
+		serviceContent, err := templates.InternalPkgTemplates.Render("service.go.tmpl", data)
 		if err != nil {
 			return fmt.Errorf("render service.go: %w", err)
 		}

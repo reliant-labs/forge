@@ -30,7 +30,7 @@ func GenerateTenantMiddleware(mt *config.MultiTenantConfig, targetDir string) er
 		ColumnName: mt.EffectiveColumnName(),
 	}
 
-	content, err := templates.RenderMiddlewareTemplate("middleware/tenant_gen.go.tmpl", data)
+	content, err := templates.MiddlewareTemplates.Render("tenant_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render tenant_gen.go.tmpl: %w", err)
 	}

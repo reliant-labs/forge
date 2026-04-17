@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-func TestRenderServiceTemplate_StripsBuildIgnoreFromRenderedOutput(t *testing.T) {
-	content, err := RenderServiceTemplate("webhook/webhook_routes_gen.go.tmpl", map[string]any{
+func TestRenderTemplate_StripsBuildIgnoreFromRenderedOutput(t *testing.T) {
+	content, err := WebhookTemplates.Render("webhook_routes_gen.go.tmpl", map[string]any{
 		"Package": "tasks",
 		"Webhooks": []map[string]any{{"Name": "github", "PascalName": "Github"}},
 	})
 	if err != nil {
-		t.Fatalf("RenderServiceTemplate() error = %v", err)
+		t.Fatalf("WebhookTemplates.Render() error = %v", err)
 	}
 
 	rendered := string(content)

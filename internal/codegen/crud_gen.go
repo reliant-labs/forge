@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jinzhu/inflection"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -163,7 +164,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// Build template data
 	data := buildCRUDTemplateData(svc, filteredMethods, modulePath)
 
-	content, err := templates.RenderServiceTemplate("service/handlers_crud_gen.go.tmpl", data)
+	content, err := templates.ServiceTemplates.Render("handlers_crud_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_gen.go.tmpl: %w", err)
 	}
@@ -206,7 +207,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			Operation:     cm.Operation,
 			AuthRequired:  cm.Method.AuthRequired,
 			AuthAction:    authAction,
-			PkField:       toGoFieldName(cm.Entity.PkField),
+			PkField:       naming.ToPascalCase(cm.Entity.PkField),
 			PkGoType:      cm.Entity.PkGoType,
 			HasPkInInput:  cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
 			ResponseField: cm.Entity.Name,
@@ -289,7 +290,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 
 	data := buildCRUDTestTemplateData(svc, crudMethods, modulePath)
 
-	content, err := templates.RenderServiceTemplate("service/handlers_crud_test_gen.go.tmpl", data)
+	content, err := templates.ServiceTemplates.Render("handlers_crud_test_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_test_gen.go.tmpl: %w", err)
 	}
@@ -333,7 +334,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			Operation:     cm.Operation,
 			AuthRequired:  cm.Method.AuthRequired,
 			AuthAction:    authAction,
-			PkField:       toGoFieldName(cm.Entity.PkField),
+			PkField:       naming.ToPascalCase(cm.Entity.PkField),
 			PkGoType:      cm.Entity.PkGoType,
 			HasPkInInput:  cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
 			ResponseField: cm.Entity.Name,
@@ -359,7 +360,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			ent = &CRUDTestEntityData{
 				EntityName:  cm.Entity.Name,
 				EntityLower: strings.ToLower(cm.Entity.Name),
-				PkField:     toGoFieldName(cm.Entity.PkField),
+				PkField:     naming.ToPascalCase(cm.Entity.PkField),
 				PkGoType:    cm.Entity.PkGoType,
 				Fields:      fields,
 			}

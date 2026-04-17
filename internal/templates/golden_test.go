@@ -31,9 +31,9 @@ type goldenCase struct {
 // shape used by the generator (see internal/generator/project.go).
 func renderProject(t *testing.T, name string, data any) []byte {
 	t.Helper()
-	out, err := RenderProjectTemplate(name, data)
+	out, err := ProjectTemplates.Render(name, data)
 	if err != nil {
-		t.Fatalf("RenderProjectTemplate(%q) error = %v", name, err)
+		t.Fatalf("ProjectTemplates.Render(%q) error = %v", name, err)
 	}
 	return out
 }
@@ -41,9 +41,9 @@ func renderProject(t *testing.T, name string, data any) []byte {
 // renderCI renders a CI workflow template.
 func renderCI(t *testing.T, provider, name string, data any) []byte {
 	t.Helper()
-	out, err := RenderCITemplate(provider, name, data)
+	out, err := CITemplates(provider).Render(name, data)
 	if err != nil {
-		t.Fatalf("RenderCITemplate(%q, %q) error = %v", provider, name, err)
+		t.Fatalf("CITemplates(%q).Render(%q) error = %v", provider, name, err)
 	}
 	return out
 }
@@ -51,9 +51,9 @@ func renderCI(t *testing.T, provider, name string, data any) []byte {
 // renderService renders a service/ template.
 func renderService(t *testing.T, name string, data any) []byte {
 	t.Helper()
-	out, err := RenderServiceTemplate(name, data)
+	out, err := ServiceTemplates.Render(name, data)
 	if err != nil {
-		t.Fatalf("RenderServiceTemplate(%q) error = %v", name, err)
+		t.Fatalf("ServiceTemplates.Render(%q) error = %v", name, err)
 	}
 	return out
 }
@@ -117,7 +117,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			name: "middleware_cors.go",
 			render: func(t *testing.T) []byte {
 				// middleware-cors.go is static (no .tmpl suffix) — it
-				// flows through RenderProjectTemplate unchanged except
+				// flows through ProjectTemplates.Render unchanged except
 				// for the //go:build ignore strip. Snapshotting it here
 				// guards against accidental edits to this security-
 				// critical file.
@@ -163,7 +163,7 @@ func TestGoldenSnapshots(t *testing.T) {
 						},
 					},
 				}
-				return renderService(t, "service/handlers_gen.go.tmpl", data)
+				return renderService(t, "handlers_gen.go.tmpl", data)
 			},
 		},
 		{

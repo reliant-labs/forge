@@ -125,7 +125,7 @@ type {{.TypeName}}List struct {
 - New command in `internal/cli/add.go`: `newAddOperatorCmd()`
 - New generator: `internal/generator/operator_gen.go`
 - Config tracking: add `Operators []OperatorConfig` to `ProjectConfig`
-- `forge.project.yaml`:
+- `forge.yaml`:
   ```yaml
   operators:
     - name: workspace
@@ -280,7 +280,7 @@ func (h *TestHarness) WithTenant(tenantID string) context.Context {
      tenant_claim: "org_id"   # NEW — enables tenant middleware
    ```
 6. Update `bootstrap_testing.go.tmpl` with `WithTenant()` helper
-7. Add `forge.project.yaml` flag: when `auth.tenant_claim` is set, tenant middleware is generated
+7. Add `forge.yaml` flag: when `auth.tenant_claim` is set, tenant middleware is generated
 
 ---
 

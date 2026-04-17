@@ -99,8 +99,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Build project image
-        run: |
-          if [ -f "Dockerfile" ]; then
-            echo "Building demo"
-            docker buildx build --load -f Dockerfile -t "demo:ci" .
-          fi
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: demo:ci
+          cache-from: type=gha,scope=ci-demo
+          cache-to: type=gha,scope=ci-demo,mode=max

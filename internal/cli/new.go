@@ -20,6 +20,7 @@ func newNewCmd() *cobra.Command {
 		frontendNames []string
 		goVersion     string
 		inPlace       bool
+		force         bool
 		license       string
 		licenseAuthor string
 	)
@@ -37,7 +38,7 @@ This command will create:
 - Docker & docker-compose configuration
 - Basic .gitignore and .golangci.yml
 - Git repository with initial commit
-- forge.project.yaml project configuration
+- forge.yaml project configuration
 
 Example:
   forge new my-project --mod github.com/example/my-project
@@ -50,7 +51,7 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace, license, licenseAuthor)
+			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor)
 		},
 	}
 
@@ -60,6 +61,7 @@ Example:
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
 	_ = cmd.MarkFlagRequired("mod")
@@ -67,7 +69,7 @@ Example:
 	return cmd
 }
 
-func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, license, licenseAuthor string) error {
+func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string) error {
 	var targetPath string
 
 	if inPlace {
@@ -89,8 +91,11 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		}
 
 		// Check that we're not scaffolding over an existing project
-		if _, err := os.Stat(filepath.Join(targetPath, "forge.project.yaml")); err == nil {
-			return fmt.Errorf("forge.project.yaml already exists in %s; this directory already contains a Forge project", targetPath)
+		if _, err := os.Stat(filepath.Join(targetPath, defaultProjectConfigFile)); err == nil {
+			if !force {
+				return fmt.Errorf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath)
+			}
+			fmt.Printf("  --force: overwriting existing %s\n", defaultProjectConfigFile)
 		}
 	} else {
 		if projectName == "" {

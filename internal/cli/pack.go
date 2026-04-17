@@ -52,7 +52,7 @@ func newPackInstallCmd() *cobra.Command {
   2. Render templates with project config (module path, service name, etc.)
   3. Write files to the project
   4. Add Go dependencies
-  5. Record the pack in forge.project.yaml
+  5. Record the pack in forge.yaml
   6. Run go mod tidy
 
 Example:
@@ -71,7 +71,7 @@ func newPackRemoveCmd() *cobra.Command {
 		Long: `Remove a pack from the current Forge project. This will:
 
   1. Delete files created by the pack
-  2. Remove the pack from forge.project.yaml
+  2. Remove the pack from forge.yaml
   3. Note: Go dependencies are NOT removed (they may be used elsewhere)
 
 Example:
@@ -126,7 +126,7 @@ func runPackInstall(name string) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -166,7 +166,7 @@ func runPackRemove(name string) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)

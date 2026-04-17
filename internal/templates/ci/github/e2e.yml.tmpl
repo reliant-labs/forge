@@ -39,6 +39,8 @@ jobs:
         with:
 {{- if .FrontendPath}}
           node-version-file: '{{.FrontendPath}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: '{{.FrontendPath}}/package-lock.json'
 {{- else}}
           node-version: '20'
 {{- end}}
@@ -95,13 +97,19 @@ jobs:
 
       - name: Build images
         run: |
-          docker build -t {{.ProjectName}}:e2e .
+          docker buildx build --load \
+            --cache-from type=gha,scope=e2e-{{.ProjectName}} \
+            --cache-to type=gha,scope=e2e-{{.ProjectName}},mode=max \
+            -t {{.ProjectName}}:e2e .
 {{- if .HasFrontends}}
           for dockerfile in frontends/*/Dockerfile; do
             if [ -f "$dockerfile" ]; then
               fe_dir=$(dirname "$dockerfile")
               fe_name=$(basename "$fe_dir")
-              docker build -t "{{.ProjectName}}/$fe_name:e2e" "$fe_dir"
+              docker buildx build --load \
+                --cache-from "type=gha,scope=e2e-$fe_name" \
+                --cache-to "type=gha,scope=e2e-$fe_name,mode=max" \
+                -t "{{.ProjectName}}/$fe_name:e2e" "$fe_dir"
             fi
           done
 {{- end}}
@@ -118,10 +126,19 @@ jobs:
           done
 {{- end}}
 
+      - name: Cache KCL CLI
+        uses: actions/cache@v4
+        id: kcl-cache
+        with:
+          path: ~/.kcl
+          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
+
       - name: Install KCL
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          echo "$HOME/.kcl/bin" >> $GITHUB_PATH
+        if: steps.kcl-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+
+      - name: Add KCL to PATH
+        run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
 
       - name: Deploy to cluster
         run: |

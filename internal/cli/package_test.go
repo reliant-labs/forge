@@ -32,7 +32,7 @@ func TestRunPackageNew(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write minimal forge.project.yaml
+	// Write minimal forge.yaml
 	configContent := `name: testproject
 module_path: example.com/testproject
 version: "0.1.0"
@@ -43,7 +43,7 @@ services:
     path: handlers/api
     port: 8080
 `
-	if err := os.WriteFile("forge.project.yaml", []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,8 +86,8 @@ services:
 		t.Errorf("service.go missing New constructor returning Service interface, got:\n%s", svc)
 	}
 
-	// Verify forge.project.yaml was updated
-	cfg, err := generator.ReadProjectConfig("forge.project.yaml")
+	// Verify forge.yaml was updated
+	cfg, err := generator.ReadProjectConfig("forge.yaml")
 	if err != nil {
 		t.Fatalf("ReadProjectConfig() error = %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRunPackageNewClientKind(t *testing.T) {
 module_path: example.com/testproject
 version: "0.1.0"
 `
-	if err := os.WriteFile("forge.project.yaml", []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,8 +176,8 @@ version: "0.1.0"
 		t.Error("service.go should not exist for client kind")
 	}
 
-	// Verify forge.project.yaml was updated with kind
-	cfg, err := generator.ReadProjectConfig("forge.project.yaml")
+	// Verify forge.yaml was updated with kind
+	cfg, err := generator.ReadProjectConfig("forge.yaml")
 	if err != nil {
 		t.Fatalf("ReadProjectConfig() error = %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRunPackageNewValidatesName(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 `
-	if err := os.WriteFile("forge.project.yaml", []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,7 +253,7 @@ func TestRunPackageNewRejectsDuplicate(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 `
-	if err := os.WriteFile("forge.project.yaml", []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -282,7 +282,7 @@ func TestRunPackageNewMultiplePackages(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 `
-	if err := os.WriteFile("forge.project.yaml", []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +295,7 @@ module_path: example.com/testproject
 	}
 
 	// Verify both exist in config
-	cfg, err := generator.ReadProjectConfig("forge.project.yaml")
+	cfg, err := generator.ReadProjectConfig("forge.yaml")
 	if err != nil {
 		t.Fatalf("ReadProjectConfig() error = %v", err)
 	}
@@ -334,7 +334,7 @@ func TestRunPackageNewInvalidKind(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 `
-	if err := os.WriteFile("forge.project.yaml", []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 

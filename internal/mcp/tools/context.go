@@ -325,7 +325,7 @@ func GetGetProjectConfigTool() Tool {
 		Name: "get_project_config",
 		Description: `Return the parsed project configuration as JSON.
 
-Reads forge.project.yaml from the project root and returns it as formatted JSON.`,
+Reads forge.yaml from the project root and returns it as formatted JSON.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{},
@@ -338,7 +338,6 @@ func executeGetProjectConfig(arguments json.RawMessage) (string, error) {
 	configFiles := []string{
 		"forge.yaml",
 		"forge.yml",
-		"forge.project.yaml",
 		"forge.project.yml",
 	}
 

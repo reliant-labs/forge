@@ -226,7 +226,7 @@ message Account {}
 
 func TestLoadProjectConfigFromNormalizesFrontendTypeCasing(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "forge.project.yaml")
+	configPath := filepath.Join(dir, "forge.yaml")
 	config := `name: sample
 module_path: example.com/sample
 frontends:

@@ -1,6 +1,6 @@
 module github.com/reliant-labs/forge/pkg
 
-go 1.25.0
+go 1.26.2
 
 require (
 	github.com/Masterminds/squirrel v1.5.4

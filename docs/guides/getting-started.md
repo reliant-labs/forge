@@ -89,7 +89,7 @@ myproject/
 │   ├── ci.yml
 │   ├── build-images.yml
 │   └── deploy.yml
-├── forge.project.yaml        # Project configuration (source of truth)
+├── forge.yaml        # Project configuration (source of truth)
 ├── buf.yaml
 ├── go.work                      # Go workspace (root + gen/)
 ├── go.mod
@@ -97,7 +97,7 @@ myproject/
 └── .gitignore
 ```
 
-The `forge.project.yaml` file is the project configuration. Every Forge command reads this file to discover services, frontends, environments, and settings.
+The `forge.yaml` file is the project configuration. Every Forge command reads this file to discover services, frontends, environments, and settings.
 
 ## Adding a Service
 
@@ -107,7 +107,7 @@ With the project created, add more services using `forge add service`:
 forge add service users --port 8081
 ```
 
-This creates the proto stub and Go service scaffold, and updates the generated wiring in `pkg/app/wire.go` and `forge.project.yaml`.
+This creates the proto stub and Go service scaffold, and updates the generated wiring in `pkg/app/wire.go` and `forge.yaml`.
 
 The generated proto file is intentionally empty -- you define the RPCs:
 

@@ -54,9 +54,9 @@ func runUpgrade(check, force bool) error {
 	projectDir := filepath.Dir(configPath)
 
 	if check {
-		fmt.Println("forge upgrade --check (dry run)")
+		fmt.Printf("%s upgrade --check (dry run)\n", CLIName())
 	} else {
-		fmt.Println("forge upgrade")
+		fmt.Printf("%s upgrade\n", CLIName())
 	}
 	fmt.Println()
 

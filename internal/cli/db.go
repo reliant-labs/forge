@@ -13,7 +13,7 @@ import (
 const defaultMigrationsDir = "db/migrations"
 
 // migrationsDefault returns the configured migrations directory from
-// forge.project.yaml, falling back to defaultMigrationsDir.
+// forge.yaml, falling back to defaultMigrationsDir.
 func migrationsDefault() string {
 	cfg, err := loadProjectConfig()
 	if err != nil {

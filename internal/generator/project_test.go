@@ -47,12 +47,12 @@ func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	configContents := readFile(t, filepath.Join(root, "forge.project.yaml"))
+	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
 	if !strings.Contains(configContents, "migrations_dir: db/migrations") {
-		t.Fatalf("expected forge.project.yaml to include db/migrations, got:\n%s", configContents)
+		t.Fatalf("expected forge.yaml to include db/migrations, got:\n%s", configContents)
 	}
 	if !strings.Contains(configContents, "driver: postgres") {
-		t.Fatalf("expected forge.project.yaml to include database driver, got:\n%s", configContents)
+		t.Fatalf("expected forge.yaml to include database driver, got:\n%s", configContents)
 	}
 
 	composeContents := readFile(t, filepath.Join(root, "docker-compose.yml"))
@@ -71,7 +71,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	configContents := readFile(t, filepath.Join(root, "forge.project.yaml"))
+	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
 	if !strings.Contains(configContents, "type: nextjs") {
 		t.Fatalf("expected scaffolded frontend type to be normalized to nextjs, got:\n%s", configContents)
 	}
@@ -300,7 +300,7 @@ func TestResolveGoVersionOverride(t *testing.T) {
 
 func TestAppendServiceToConfigPreservesUnknownFields(t *testing.T) {
 	root := t.TempDir()
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 
 	// Hand-written config with a user-added top-level key and a user-added
 	// key inside an existing service entry. The Go struct does not know
@@ -339,7 +339,7 @@ my_custom_section:
 
 func TestAppendFrontendToConfigPreservesUnknownFields(t *testing.T) {
 	root := t.TempDir()
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 
 	original := `name: sample
 module_path: example.com/sample

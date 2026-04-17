@@ -55,8 +55,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 			KCLDir:   "deploy/kcl",
 		},
 		Lint: config.LintConfig{
-			ProtoMethod: true,
-			Contract:    true,
+			Contract: true,
 		},
 		Auth: config.AuthConfig{
 			Provider: "none",
@@ -100,11 +99,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		"# once you do. Leave the defaults in place if you're unsure.\n\n")
 	data = append(header, data...)
 
-	destPath := filepath.Join(g.Path, "forge.project.yaml")
+	destPath := filepath.Join(g.Path, "forge.yaml")
 	return os.WriteFile(destPath, data, 0644)
 }
 
-// ReadProjectConfig reads a forge.project.yaml from the given path.
+// ReadProjectConfig reads a forge.yaml from the given path.
 func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -131,7 +130,7 @@ func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
 // round-tripping so that unknown keys, comments, and field ordering added
 // by the user are preserved.
 func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
-	configPath := filepath.Join(projectRoot, "forge.project.yaml")
+	configPath := filepath.Join(projectRoot, "forge.yaml")
 	entry := config.ServiceConfig{
 		Name: serviceName,
 		Type: "go_service",
@@ -146,7 +145,7 @@ func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
 // round-tripping so that unknown keys, comments, and field ordering added
 // by the user are preserved.
 func AppendFrontendToConfig(projectRoot, frontendName string, port int) error {
-	configPath := filepath.Join(projectRoot, "forge.project.yaml")
+	configPath := filepath.Join(projectRoot, "forge.yaml")
 	entry := config.FrontendConfig{
 		Name: frontendName,
 		Type: "nextjs",

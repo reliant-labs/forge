@@ -30,7 +30,7 @@ This creates:
 - `services/todo/handlers.go` — placeholder for business logic
 - `proto/services/todo/v1/todo.proto` — empty proto service stub
 - Updates `pkg/app/wire.go` with construction and registration logic
-- Updates `forge.project.yaml`
+- Updates `forge.yaml`
 
 ## Step 2: Define Proto Contract
 

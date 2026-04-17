@@ -1,8 +1,8 @@
-// Package config defines the canonical forge.project.yaml types shared by
+// Package config defines the canonical forge.yaml types shared by
 // both the CLI (read) and the generator (write) packages.
 package config
 
-// ProjectConfig represents the forge.project.yaml file.
+// ProjectConfig represents the forge.yaml file.
 // Fields align with proto/forge/project/v1/project.proto.
 type ProjectConfig struct {
 	Name       string              `yaml:"name"`
@@ -216,8 +216,7 @@ type DockerConfig struct {
 
 // LintConfig holds lint-related settings.
 type LintConfig struct {
-	ProtoMethod bool `yaml:"proto_method"`
-	Contract    bool `yaml:"contract"`
+	Contract bool `yaml:"contract"`
 }
 
 // AuthConfig holds authentication provider settings.

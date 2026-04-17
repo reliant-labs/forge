@@ -18,7 +18,7 @@ graph LR
     E[contract.go] --> F[Go AST Analysis]
     F --> G[Mocks]
     F --> H[Middleware Wrappers]
-    I[forge.project.yaml] --> J[Wiring Code]
+    I[forge.yaml] --> J[Wiring Code]
 ```
 
 ## Command

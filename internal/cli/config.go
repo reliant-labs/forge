@@ -12,13 +12,13 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// ErrProjectConfigNotFound is returned when forge.project.yaml does not exist.
-var ErrProjectConfigNotFound = errors.New("forge.project.yaml not found in current directory (run 'forge new' to create a project)")
+// ErrProjectConfigNotFound is returned when forge.yaml does not exist.
+var ErrProjectConfigNotFound = errors.New("forge.yaml not found in current directory (run 'forge new' to create a project)")
 
-const defaultProjectConfigFile = "forge.project.yaml"
+const defaultProjectConfigFile = "forge.yaml"
 
 // findProjectConfigFile walks upward from the current working directory
-// looking for forge.project.yaml, similar to how git/go locate their
+// looking for forge.yaml, similar to how git/go locate their
 // configuration. It returns the absolute path to the config file or
 // ErrProjectConfigNotFound if no config is found before reaching the
 // filesystem root.
@@ -45,7 +45,7 @@ func findProjectConfigFile() (string, error) {
 	}
 }
 
-// loadProjectConfig reads forge.project.yaml, walking up from the
+// loadProjectConfig reads forge.yaml, walking up from the
 // current working directory until it finds one (or hits the filesystem
 // root). Returns ErrProjectConfigNotFound when no config is found.
 func loadProjectConfig() (*config.ProjectConfig, error) {

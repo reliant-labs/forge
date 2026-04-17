@@ -8,7 +8,7 @@ import (
 func TestE2EWorkflowTemplate_DockerCompose(t *testing.T) {
 	data := E2EWorkflowData{
 		ProjectName:  "myapp",
-		GoVersion:    "1.25",
+		GoVersion:    "1.26",
 		Runtime:      "docker-compose",
 		HasFrontends: false,
 	}
@@ -40,7 +40,7 @@ func TestE2EWorkflowTemplate_DockerCompose(t *testing.T) {
 func TestE2EWorkflowTemplate_K3d(t *testing.T) {
 	data := E2EWorkflowData{
 		ProjectName:  "myapp",
-		GoVersion:    "1.25",
+		GoVersion:    "1.26",
 		Runtime:      "k3d",
 		HasFrontends: true,
 		FrontendPath: "frontends/web",

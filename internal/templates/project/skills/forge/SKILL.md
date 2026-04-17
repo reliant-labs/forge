@@ -21,7 +21,7 @@ db/migrations/             # SQL migrations (append-only history)
 db/queries/                # sqlc query definitions
 deploy/kcl/<env>/          # KCL deployment manifests per environment
 e2e/                       # End-to-end tests (run against live stack)
-forge.project.yaml         # Project config: services, ports, frontends
+forge.yaml         # Project config: services, ports, frontends
 ```
 
 ## The generate cycle
@@ -59,7 +59,7 @@ forge deploy dev           # Deploy to local k3d cluster
 - Never hand-edit anything under `gen/`. Fix the proto or query, then regenerate.
 - One service per proto package. One handler directory per service.
 - Field numbers are forever — mark removed fields as `reserved`, never reuse numbers.
-- `forge.project.yaml` tracks ports and services — use `forge add` to scaffold, not copy-paste.
+- `forge.yaml` tracks ports and services — use `forge add` to scaffold, not copy-paste.
 
 ## Sub-skills
 

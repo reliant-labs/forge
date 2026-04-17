@@ -29,7 +29,7 @@ cd taskflow
 forge add service tasks --port 8081
 ```
 
-The project now has two services in `forge.project.yaml`:
+The project now has two services in `forge.yaml`:
 
 ```yaml
 services:
@@ -52,7 +52,7 @@ frontends:
 
 ```
 taskflow/
-├── forge.project.yaml
+├── forge.yaml
 ├── cmd/                                  # Single binary (Cobra CLI)
 │   ├── main.go
 │   ├── server.go                         # server [services...] command

@@ -50,6 +50,11 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: '{{(index .Frontends 0).Path}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: |
+{{- range .Frontends}}
+            {{.Path}}/package-lock.json
+{{- end}}
 {{- range .Frontends}}
       - name: Lint {{.Name}}
         working-directory: {{.Path}}
@@ -93,6 +98,11 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: '{{(index .Frontends 0).Path}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: |
+{{- range .Frontends}}
+            {{.Path}}/package-lock.json
+{{- end}}
 {{- range .Frontends}}
       - name: Test {{.Name}}
         working-directory: {{.Path}}
@@ -129,6 +139,11 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: '{{(index .Frontends 0).Path}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: |
+{{- range .Frontends}}
+            {{.Path}}/package-lock.json
+{{- end}}
 {{- range .Frontends}}
       - name: Build {{.Name}}
         working-directory: {{.Path}}
@@ -180,10 +195,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Cache KCL CLI
+        uses: actions/cache@v4
+        id: kcl-cache
+        with:
+          path: ~/.kcl
+          key: kcl-cli-${{"{{"}} runner.os {{"}}"}}
+
       - name: Install KCL
-        run: |
-          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
-          echo "$HOME/.kcl/bin" >> $GITHUB_PATH
+        if: steps.kcl-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+
+      - name: Add KCL to PATH
+        run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
 {{- range .Environments}}
       - name: Validate {{.}} manifests
         run: kcl run deploy/kcl/{{.}}/main.k > /dev/null
@@ -221,6 +245,11 @@ jobs:
           # `engines.node` field. Keeps CI, the Dockerfile, and local
           # dev aligned without a duplicated Node version in the workflow.
           node-version-file: '{{(index .Frontends 0).Path}}/package.json'
+          cache: 'npm'
+          cache-dependency-path: |
+{{- range .Frontends}}
+            {{.Path}}/package-lock.json
+{{- end}}
 {{- range .Frontends}}
       - name: NPM audit {{.Name}}
         working-directory: {{.Path}}
@@ -253,11 +282,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Build project image
-        run: |
-          if [ -f "Dockerfile" ]; then
-            echo "Building {{.ProjectName}}"
-            docker buildx build --load -f Dockerfile -t "{{.ProjectName}}:ci" .
-          fi
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: {{.ProjectName}}:ci
+          cache-from: type=gha,scope=ci-{{.ProjectName}}
+          cache-to: type=gha,scope=ci-{{.ProjectName}},mode=max
 {{- if .VulnDocker}}
       - name: Trivy scan
         uses: aquasecurity/trivy-action@master
@@ -270,10 +302,14 @@ jobs:
 {{- if .HasFrontends}}
 {{- range .Frontends}}
       - name: Build {{.Name}} image
-        run: |
-          if [ -f "{{.Path}}/Dockerfile" ]; then
-            docker buildx build --load -f "{{.Path}}/Dockerfile" -t "{{$.ProjectName}}/{{.Name}}:ci" "{{.Path}}"
-          fi
+        uses: docker/build-push-action@v6
+        with:
+          context: {{.Path}}
+          file: {{.Path}}/Dockerfile
+          load: true
+          tags: {{$.ProjectName}}/{{.Name}}:ci
+          cache-from: type=gha,scope=ci-{{.Name}}
+          cache-to: type=gha,scope=ci-{{.Name}},mode=max
 {{- if $.VulnDocker}}
       - name: Trivy scan {{.Name}}
         uses: aquasecurity/trivy-action@master

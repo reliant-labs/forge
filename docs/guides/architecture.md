@@ -247,7 +247,7 @@ myproject/
 ├── db/migrations/                 # SQL migrations (source of truth)
 ├── frontends/                     # Next.js frontends (if any)
 ├── .github/workflows/             # CI/CD
-├── forge.project.yaml
+├── forge.yaml
 ├── buf.yaml / buf.gen.yaml
 ├── go.work / go.mod
 └── Taskfile.yml

@@ -16,7 +16,6 @@ import (
 
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
-	proto    bool
 	contract bool
 	db       bool
 	fix      bool
@@ -34,13 +33,11 @@ This command will:
 - Run standard Go linters (golangci-lint)
 - Run proto linters (buf lint)
 - Run TypeScript linters for Next.js frontends (if frontends/ exists)
-- Optionally run proto method enforcement linter (--proto)
+- Optionally run contract interface enforcement linter (--contract)
 - Optionally run DB entity lint rules (--db)
 
 Examples:
   forge lint                    # Run all standard linters
-  forge lint --proto            # Run proto method enforcement linter
-  forge lint --proto ./services # Run proto linter on specific path
   forge lint --contract         # Run contract interface enforcement linter
   forge lint --db               # Run DB entity lint rules
   forge lint --fix              # Auto-fix issues where possible`,
@@ -56,7 +53,6 @@ Examples:
 		},
 	}
 
-	cmd.Flags().BoolVar(&flags.proto, "proto", false, "Run proto method enforcement linter")
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
 	cmd.Flags().BoolVar(&flags.db, "db", false, "Run DB entity lint rules on proto/db/ files")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
@@ -66,9 +62,6 @@ Examples:
 
 func runLint(flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
-	if flags.proto {
-		return runProtoMethodLinter(paths)
-	}
 	if flags.contract {
 		return runContractLinter(paths)
 	}
@@ -86,94 +79,6 @@ func runLint(flags lintFlags, paths []string) error {
 
 	// No flags set — run ALL linters, each skipping gracefully if tool not available.
 	return runAllLinters(flags.fix, paths, cfg)
-}
-
-func runProtoMethodLinter(paths []string) error {
-	fmt.Println("🔍 Running proto method enforcement linter...")
-	fmt.Println()
-
-	// Gracefully skip if the protomethod binary isn't available
-	binPath, err := resolveProtoMethodBinary()
-	if err != nil {
-		fmt.Println("⚠️  Skipping proto method linter (protomethod not found — run 'go install' to enable)")
-		return nil
-	}
-
-	var lintExec *exec.Cmd
-	if strings.HasSuffix(binPath, "main.go") {
-		// Running from source
-		args := []string{"run", binPath}
-		args = append(args, paths...)
-		lintExec = exec.Command("go", args...)
-		fmt.Printf("Running: go %s\n", strings.Join(args, " "))
-	} else {
-		// Running pre-built binary
-		lintExec = exec.Command(binPath, paths...)
-		fmt.Printf("Running: %s %s\n", binPath, strings.Join(paths, " "))
-	}
-
-	// Inherit environment and set flags needed for analysis to resolve modules.
-	lintExec.Env = appendEnvIfUnset(os.Environ(), "GOWORK", "off")
-	lintExec.Env = appendEnvIfUnset(lintExec.Env, "GOFLAGS", "-mod=mod")
-	lintExec.Env = ensureEnvDefault(lintExec.Env, "GOPROXY", "https://proxy.golang.org,direct")
-	lintExec.Stdout = os.Stdout
-	lintExec.Stderr = os.Stderr
-	fmt.Println()
-
-	if err := lintExec.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if exitErr.ExitCode() == 3 {
-				fmt.Println()
-				fmt.Println("❌ Proto method violations found!")
-				fmt.Println()
-				fmt.Println("Exported methods on receivers must implement proto service interfaces.")
-				fmt.Println("See docs/linter-protomethod.md for more information.")
-				return fmt.Errorf("linting failed")
-			}
-		}
-		return fmt.Errorf("failed to run proto method linter: %w", err)
-	}
-
-	fmt.Println()
-	fmt.Println("✅ No proto method violations found!")
-	return nil
-}
-
-// resolveProtoMethodBinary finds or builds the protomethod linter binary.
-func resolveProtoMethodBinary() (string, error) {
-	// 1. Check PATH for pre-installed binary
-	if path, err := exec.LookPath("protomethod"); err == nil {
-		return path, nil
-	}
-
-	// 2. Check local bin directory
-	localBin := filepath.Join("bin", "protomethod")
-	if _, err := os.Stat(localBin); err == nil {
-		return localBin, nil
-	}
-
-	// 3. Try to build from source if cmd/protomethod exists
-	srcPath := filepath.Join("cmd", "protomethod", "main.go")
-	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("proto method linter not found: not on PATH, not at bin/protomethod, and no source at %s", srcPath)
-	}
-
-	fmt.Println("Building protomethod linter from source...")
-	if err := os.MkdirAll("bin", 0755); err != nil {
-		// Fall back to go run
-		return srcPath, nil
-	}
-
-	buildCmd := exec.Command("go", "build", "-o", localBin, "./cmd/protomethod")
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
-		fmt.Printf("Warning: failed to build binary, falling back to go run: %v\n", err)
-		return srcPath, nil
-	}
-
-	fmt.Printf("Built %s\n", localBin)
-	return localBin, nil
 }
 
 func runContractLinter(paths []string) error {
@@ -324,15 +229,7 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 		hasFailed = true
 	}
 
-	// 2. Proto method enforcement
-	if _, err := resolveProtoMethodBinary(); err != nil {
-		fmt.Println("⚠️  protomethod linter not available — skipping")
-	} else if err := runProtoMethodLinter(paths); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ proto method linter failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 3. Contract interface enforcement
+	// 2. Contract interface enforcement
 	if _, err := resolveContractLintBinary(); err != nil {
 		fmt.Println("⚠️  contractlint not available — skipping")
 	} else if err := runContractLinter(paths); err != nil {
@@ -393,14 +290,8 @@ func runStandardLinters(fix bool, paths []string, cfg *config.ProjectConfig) err
 		hasFailed = true
 	}
 
-	// Run proto/contract linters if enabled in project config
+	// Run contract linter if enabled in project config
 	if cfg != nil {
-		if cfg.Lint.ProtoMethod {
-			if err := runProtoMethodLinter(paths); err != nil {
-				fmt.Fprintf(os.Stderr, "❌ proto method linter failed: %v\n", err)
-				hasFailed = true
-			}
-		}
 		if cfg.Lint.Contract {
 			if err := runContractLinter(paths); err != nil {
 				fmt.Fprintf(os.Stderr, "❌ contract linter failed: %v\n", err)

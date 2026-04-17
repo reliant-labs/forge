@@ -1,40 +1,40 @@
-// protoc-gen-forge-orm is a protoc plugin that generates type-safe ORM
-// code for proto messages annotated with EntityOptions and FieldOptions.
-//
-// For each annotated message it produces a <name>.pb.orm.go file containing:
-//   - Model and Scanner interface implementations
-//   - CRUD functions: Create, GetByID, List, Update, Delete
-//
-// Generated code uses github.com/reliant-labs/forge/pkg/orm.
-package main
+package cli
 
 import (
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// Extension field numbers from proto/forge/options/v1/entity.proto and field.proto.
 const (
 	entityOptionsFieldNum protoreflect.FieldNumber = 50200
 	fieldOptionsFieldNum  protoreflect.FieldNumber = 50300
 )
 
-func main() {
-	protogen.Options{}.Run(func(p *protogen.Plugin) error {
-		for _, f := range p.Files {
-			if !f.Generate {
-				continue
-			}
-			if err := generateFile(p, f); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+func newProtocGenOrmCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "protoc-gen-forge-orm",
+		Short:  "Protoc plugin for ORM code generation (invoked by buf)",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			protogen.Options{}.Run(func(p *protogen.Plugin) error {
+				for _, f := range p.Files {
+					if !f.Generate {
+						continue
+					}
+					if err := generateOrmFile(p, f); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			return nil
+		},
+	}
 }
 
-func generateFile(p *protogen.Plugin, file *protogen.File) error {
+func generateOrmFile(p *protogen.Plugin, file *protogen.File) error {
 	var entities []entityInfo
 
 	for _, msg := range file.Messages {

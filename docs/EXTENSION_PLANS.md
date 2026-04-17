@@ -2,7 +2,7 @@
 
 ## Overview
 
-These plans extend Forge with new capabilities that make it a better fit for production Go systems. Each extension follows Forge's existing patterns: template-based scaffolding, contract-driven generation, config tracking in `forge.project.yaml`, and wiring through `bootstrap.go`.
+These plans extend Forge with new capabilities that make it a better fit for production Go systems. Each extension follows Forge's existing patterns: template-based scaffolding, contract-driven generation, config tracking in `forge.yaml`, and wiring through `bootstrap.go`.
 
 Priority order based on breadth of impact across production systems.
 
@@ -24,7 +24,7 @@ A worker is a long-running process that doesn't serve HTTP but participates in t
 #### Config tracking
 
 ```yaml
-# forge.project.yaml
+# forge.yaml
 services:
   - name: order-processor
     type: worker          # new type alongside "go_service"
@@ -299,7 +299,7 @@ message MethodOptions {
 #### Config additions
 
 ```yaml
-# forge.project.yaml
+# forge.yaml
 auth:
   provider: jwt           # "jwt" | "api_key" | "both"
   jwt:
@@ -324,7 +324,7 @@ The generated code calls into a user-implementable `TokenValidator` interface so
 ### Implementation steps
 
 1. Read existing auth proto annotations during `forge generate`
-2. Parse `forge.project.yaml` auth config
+2. Parse `forge.yaml` auth config
 3. Generate `middleware/auth_gen.go` with JWT/API key validation based on config
 4. Generate `internal/auth/contract.go` with `TokenValidator` and `KeyStore` interfaces
 5. Update per-service `authorizer.go.tmpl` to use claims from context instead of environment check
@@ -479,7 +479,7 @@ The generated test helpers include `WithTenant(ctx, tenantID)` to set up isolate
 
 ### Implementation steps
 
-1. Add `multi_tenant` option to auth config in `forge.project.yaml`
+1. Add `multi_tenant` option to auth config in `forge.yaml`
 2. Add `tenant_key` to field proto options
 3. Update claims middleware to extract tenant ID
 4. Update ORM generation to add tenant scoping to CRUD queries

@@ -44,7 +44,7 @@ After `forge new`, your project looks like this:
 
 ```
 myproject/
-├── forge.project.yaml        # Project configuration
+├── forge.yaml        # Project configuration
 ├── cmd/                         # Single binary entrypoint (Cobra CLI)
 │   ├── main.go                  # Root command + Execute()
 │   ├── server.go                # server [services...] — HTTP server

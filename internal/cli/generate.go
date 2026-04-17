@@ -32,7 +32,7 @@ func newGenerateCmd() *cobra.Command {
 		Short: "Generate code from proto files",
 		Long: `Generate code from proto files based on project configuration or directory conventions.
 
-When forge.project.yaml exists, generation is driven by the config:
+When forge.yaml exists, generation is driven by the config:
   - buf generate for Go stubs (protoc-gen-go + protoc-gen-connect-go)
   - protoc-gen-forge-orm for entity protos in proto/db/
   - buf generate for TypeScript stubs for Next.js frontends
@@ -41,7 +41,7 @@ When forge.project.yaml exists, generation is driven by the config:
   - sqlc generate if sqlc.yaml exists
   - go mod tidy in gen/
 
-Without forge.project.yaml, falls back to directory convention scanning:
+Without forge.yaml, falls back to directory convention scanning:
   proto/           - Root proto directory (for buf generate)
   proto/services/  - Service definitions (stubs + mocks)
   proto/api/       - API messages
@@ -79,6 +79,13 @@ Examples:
 // projectDir is the root of the project (contains go.mod, proto/, etc.).
 // The caller must hold generateMu.
 func runGeneratePipeline(projectDir string, force bool) error {
+	// Acquire cross-process file lock (complements the in-process generateMu)
+	release, err := acquireGenerateLock(projectDir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	// Step 0a: Load project config (nil when file doesn't exist — fallback to dir scan)
 	cfg, err := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile))
 	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {

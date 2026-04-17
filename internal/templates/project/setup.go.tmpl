@@ -8,7 +8,7 @@ import (
 	"time"
 {{end}}
 	"{{.Module}}/pkg/config"
-{{- if .HasDatabase}}
+{{- if .OrmEnabled}}
 
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
@@ -36,6 +36,7 @@ func Setup(app *App, cfg *config.Config) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	app.DB = db
+{{- if .OrmEnabled}}
 
 	if db != nil {
 		ormClient, err := orm.NewClientWithDB(db, "{{.DatabaseDriver}}")
@@ -44,6 +45,7 @@ func Setup(app *App, cfg *config.Config) error {
 		}
 		app.ORM = ormClient
 	}
+{{- end}}
 {{- else}}
 	// Add your custom wiring here.
 {{- end}}

@@ -20,7 +20,7 @@ import (
 {{- if .Operators}}
 	ctrl "sigs.k8s.io/controller-runtime"
 {{- end}}
-{{- if .HasDatabase}}
+{{- if .OrmEnabled}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 
@@ -113,6 +113,8 @@ type App struct {
 {{- end}}
 {{- if .HasDatabase}}
 	DB       *sql.DB
+{{- end}}
+{{- if .OrmEnabled}}
 	ORM      *orm.Client
 {{- end}}
 }
@@ -222,13 +224,24 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 	pkgs.{{.FieldName}} = {{.Package}}.NewMetricService({{.Package}}Traced, otel.Meter("{{.Package}}"))
 {{- end}}
 {{end}}
-	// Construct services
+	// Construct services. In development, bootstrap swaps the real authorizer
+	// for a permissive DevAuthorizer so local iteration doesn't require a full
+	// authz policy. This is guarded by cfg.Environment and cmd-server.go logs
+	// a WARN at startup when it is active. Production is fail-closed by default.
 	svcs := &Services{}
+{{- if .Services}}
+	devMode := cfg.Environment == "development"
+{{- end}}
 {{- range .Services}}
+	var {{.Package}}Authz middleware.Authorizer = {{.Package}}.NewAuthorizer()
+	if devMode {
+		{{.Package}}Authz = middleware.DevAuthorizer{}
+	}
 {{- if .Fallible}}
 	{{.Package}}Svc, err := {{.Package}}.New({{.Package}}.Deps{
-		Logger: logger.With("service", "{{.Name}}"),
-		Config: cfg,
+		Logger:     logger.With("service", "{{.Name}}"),
+		Config:     cfg,
+		Authorizer: {{.Package}}Authz,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing {{.Package}} service: %w", err)
@@ -236,12 +249,13 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 	svcs.{{.FieldName}} = {{.Package}}Svc
 {{- else}}
 	svcs.{{.FieldName}} = {{.Package}}.New({{.Package}}.Deps{
-		Logger: logger.With("service", "{{.Name}}"),
-		Config: cfg,
+		Logger:     logger.With("service", "{{.Name}}"),
+		Config:     cfg,
+		Authorizer: {{.Package}}Authz,
 	})
 {{- end}}
 	{{.Package}}Opts := slices.Concat(opts, []connect.HandlerOption{connect.WithInterceptors(
-		middleware.AuthzInterceptor({{.Package}}.NewAuthorizer()),
+		middleware.AuthzInterceptor({{.Package}}Authz),
 	)})
 	svcs.{{.FieldName}}.Register(mux, {{.Package}}Opts...)
 	svcs.{{.FieldName}}.RegisterHTTP(mux, middleware.HTTPStack(logger))
@@ -355,13 +369,24 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 	pkgs.{{.FieldName}} = {{.Package}}.NewMetricService({{.Package}}Traced, otel.Meter("{{.Package}}"))
 {{- end}}
 {{end}}
-	// Always construct all services (they're cheap — just a struct with logger and config)
+	// Always construct all services (they're cheap — just a struct with logger and config).
+	// In development, bootstrap swaps the real authorizer for a permissive
+	// DevAuthorizer so local iteration doesn't require a full authz policy.
+	// Production is fail-closed by default.
 	svcs := &Services{}
+{{- if .Services}}
+	devMode := cfg.Environment == "development"
+{{- end}}
 {{- range .Services}}
+	var {{.Package}}Authz middleware.Authorizer = {{.Package}}.NewAuthorizer()
+	if devMode {
+		{{.Package}}Authz = middleware.DevAuthorizer{}
+	}
 {{- if .Fallible}}
 	{{.Package}}Svc, err := {{.Package}}.New({{.Package}}.Deps{
-		Logger: logger.With("service", "{{.Name}}"),
-		Config: cfg,
+		Logger:     logger.With("service", "{{.Name}}"),
+		Config:     cfg,
+		Authorizer: {{.Package}}Authz,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing {{.Package}} service: %w", err)
@@ -369,8 +394,9 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 	svcs.{{.FieldName}} = {{.Package}}Svc
 {{- else}}
 	svcs.{{.FieldName}} = {{.Package}}.New({{.Package}}.Deps{
-		Logger: logger.With("service", "{{.Name}}"),
-		Config: cfg,
+		Logger:     logger.With("service", "{{.Name}}"),
+		Config:     cfg,
+		Authorizer: {{.Package}}Authz,
 	})
 {{- end}}
 {{- end}}
@@ -379,7 +405,7 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- range .Services}}
 	if nameSet["{{.Name}}"] {
 		{{.Package}}Opts := slices.Concat(opts, []connect.HandlerOption{connect.WithInterceptors(
-			middleware.AuthzInterceptor({{.Package}}.NewAuthorizer()),
+			middleware.AuthzInterceptor({{.Package}}Authz),
 		)})
 		svcs.{{.FieldName}}.Register(mux, {{.Package}}Opts...)
 		svcs.{{.FieldName}}.RegisterHTTP(mux, middleware.HTTPStack(logger))

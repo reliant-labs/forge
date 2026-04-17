@@ -1,10 +1,17 @@
 package {{.Package}}
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"connectrpc.com/connect"
+
+	"{{.Module}}/pkg/middleware"
+)
 
 // Authorizer handles access control for the {{.ServiceName}} service.
-// The default implementation allows requests through unchanged.
-// Add service-specific authorization checks here when needed.
+// The default implementation DENIES all requests (fail-closed). Override the
+// CanAccess and/or Can methods to implement your authorization policy.
 type Authorizer struct{}
 
 // NewAuthorizer creates a new Authorizer for this service.
@@ -12,7 +19,19 @@ func NewAuthorizer() *Authorizer {
 	return &Authorizer{}
 }
 
-// CanAccess implements the Authorizer interface.
+// CanAccess implements the middleware.Authorizer interface.
+// Default: DENY all requests. Override to implement procedure-level authorization.
 func (a *Authorizer) CanAccess(_ context.Context, _ string) error {
-	return nil
+	return connect.NewError(connect.CodePermissionDenied, errors.New("authorizer.CanAccess: not implemented — override to implement authorization"))
+}
+
+// Can checks if the user has permission to perform the action on the resource.
+// Override this method to implement custom authorization logic.
+// Default: DENY all requests — you must write your authz policy before any
+// authenticated endpoint will succeed.
+//
+// Actions: middleware.ActionCreate, ActionRead, ActionUpdate, ActionDelete, ActionList
+// Resource: entity name in lowercase, e.g. "patient", "invoice"
+func (a *Authorizer) Can(_ context.Context, _ *middleware.Claims, _, _ string) error {
+	return connect.NewError(connect.CodePermissionDenied, errors.New("authorizer.Can: not implemented — override to implement authorization"))
 }

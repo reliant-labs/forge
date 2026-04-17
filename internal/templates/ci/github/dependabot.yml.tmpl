@@ -5,7 +5,21 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+
+  # The generated protobuf module lives under /gen with its own go.mod.
+  - package-ecosystem: gomod
+    directory: /gen
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
 {{- if .FrontendName}}
+
+  # Frontend workspace may vendor Go tooling in the future (dev-only).
+  - package-ecosystem: gomod
+    directory: /frontends/{{.FrontendName}}
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
 
   - package-ecosystem: npm
     directory: /frontends/{{.FrontendName}}

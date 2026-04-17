@@ -32,7 +32,7 @@ func (i *recoveryInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFun
 					"panic", r,
 					"stack", string(debug.Stack()),
 				)
-				err = connect.NewError(connect.CodeInternal, fmt.Errorf("internal server error"))
+				err = connect.NewError(connect.CodeInternal, panicError(r))
 				resp = nil
 			}
 		}()
@@ -53,9 +53,20 @@ func (i *recoveryInterceptor) WrapStreamingHandler(next connect.StreamingHandler
 					"panic", r,
 					"stack", string(debug.Stack()),
 				)
-				err = connect.NewError(connect.CodeInternal, fmt.Errorf("internal server error"))
+				err = connect.NewError(connect.CodeInternal, panicError(r))
 			}
 		}()
 		return next(ctx, conn)
 	})
+}
+
+// panicError builds an error from a value returned by recover(). If the
+// recovered value is itself an error, the returned error wraps it with %w so
+// callers can use errors.Is / errors.As to unwrap the underlying cause.
+// Otherwise, the value is formatted with %v.
+func panicError(r any) error {
+	if rerr, ok := r.(error); ok {
+		return fmt.Errorf("panic: %w", rerr)
+	}
+	return fmt.Errorf("panic: %v", r)
 }

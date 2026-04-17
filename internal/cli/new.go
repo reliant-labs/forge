@@ -20,6 +20,8 @@ func newNewCmd() *cobra.Command {
 		frontendNames []string
 		goVersion     string
 		inPlace       bool
+		license       string
+		licenseAuthor string
 	)
 
 	cmd := &cobra.Command{
@@ -48,7 +50,7 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace)
+			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace, license, licenseAuthor)
 		},
 	}
 
@@ -58,12 +60,14 @@ Example:
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
+	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
+	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
 	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
 }
 
-func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool) error {
+func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, license, licenseAuthor string) error {
 	var targetPath string
 
 	if inPlace {
@@ -110,7 +114,7 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 
 	// Validate service names
 	for _, svcName := range serviceNames {
-		if err := validateIdentifier(svcName); err != nil {
+		if err := validateServiceName(svcName); err != nil {
 			return fmt.Errorf("invalid service name %q: %w", svcName, err)
 		}
 	}
@@ -187,6 +191,11 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		return fmt.Errorf("failed to generate project: %w", err)
 	}
 
+	// Write LICENSE file if requested
+	if err := writeLicenseFile(targetPath, license, licenseAuthor); err != nil {
+		return fmt.Errorf("failed to write LICENSE: %w", err)
+	}
+
 	// Generate additional services beyond the first (if any)
 	if len(serviceNames) > 1 {
 		for i, svcName := range serviceNames[1:] {
@@ -231,6 +240,16 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
 
+	var frontendInstallFailed bool
+	if len(frontendNames) > 0 {
+		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
+		if err := runNpmInstall(targetPath, frontendNames); err != nil {
+			frontendInstallFailed = true
+			fmt.Printf("Warning: npm install failed: %v\n", err)
+			fmt.Println("You can run 'npm install' manually later — note that CI requires package-lock.json to exist.")
+		}
+	}
+
 	// Scaffold finished — remove the in-progress marker so a later failure
 	// (if any were ever added) wouldn't delete a completed project.
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
@@ -258,8 +277,8 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	fmt.Println("  # Then generate code from protos:")
 	fmt.Printf("  %s generate\n", CLIName())
 	fmt.Println("")
-	if len(frontendNames) > 0 {
-		fmt.Printf("  # Install frontend dependencies:\n")
+	if frontendInstallFailed {
+		fmt.Printf("  # Frontend dependency install failed above — re-run manually:\n")
 		for _, feName := range frontendNames {
 			fmt.Printf("  cd frontends/%s && npm install\n", feName)
 		}
@@ -291,6 +310,29 @@ func initGitRepository(path string) error {
 		return fmt.Errorf("git commit failed: %s", string(output))
 	}
 
+	return nil
+}
+
+// runNpmInstall runs `npm install` in each frontend directory so that a
+// package-lock.json exists before first commit. CI relies on `npm ci` which
+// requires the lockfile.
+func runNpmInstall(root string, frontends []string) error {
+	if _, err := exec.LookPath("npm"); err != nil {
+		return fmt.Errorf("npm not found on PATH: %w", err)
+	}
+	for _, name := range frontends {
+		feDir := filepath.Join(root, "frontends", name)
+		if _, err := os.Stat(filepath.Join(feDir, "package.json")); err != nil {
+			continue
+		}
+		cmd := exec.Command("npm", "install", "--no-audit", "--no-fund")
+		cmd.Dir = feDir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("npm install (%s) failed: %w", name, err)
+		}
+	}
 	return nil
 }
 

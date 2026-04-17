@@ -7,6 +7,8 @@ import (
 {{- if .NeedsStrconv}}
 	"strconv"
 {{- end}}
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -50,11 +52,23 @@ func Load(cmd *cobra.Command) (*Config, error) {
 {{- else}}
 	if v, ok := os.LookupEnv("{{.EnvVar}}"); ok && v != "" {
 {{- if eq .GoType "int32"}}
-		parsed, err := strconv.ParseInt(v, 10, 32)
+{{- if or (eq .GoName "Port") (eq .Flag "port")}}
+		// Port is a TCP/UDP port number — validate strictly against uint16 (1-65535).
+		parsed, err := strconv.ParseUint(v, 10, 16)
 		if err != nil {
-			return nil, fmt.Errorf("invalid {{.EnvVar}}: %w", err)
+			return nil, fmt.Errorf("invalid {{.EnvVar}} %q: must be a port number in [1, 65535]: %w", v, err)
+		}
+		if parsed == 0 {
+			return nil, fmt.Errorf("invalid {{.EnvVar}} %q: must be in [1, 65535]", v)
 		}
 		cfg.{{.GoName}} = int32(parsed)
+{{- else}}
+		parsed, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("invalid {{.EnvVar}} %q: %w", v, err)
+		}
+		cfg.{{.GoName}} = int32(parsed)
+{{- end}}
 {{- else if eq .GoType "int64"}}
 		parsed, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -117,4 +131,50 @@ func Load(cmd *cobra.Command) (*Config, error) {
 	}
 {{end}}
 	return cfg, nil
+}
+
+// Validate checks cross-field invariants on the loaded configuration.
+// It is called by the server entrypoint after Load and surfaces
+// misconfigurations early, before the listener binds. Keep validation
+// limited to combinations that cannot be expressed as per-field defaults.
+func (c *Config) Validate() error {
+	// CORS: a wildcard origin with credentials is spec-invalid. Browsers
+	// refuse to use the response, and servers that emit it silently are
+	// almost always a misconfiguration. Reject eagerly.
+	if c.CorsAllowCredentials {
+		for _, o := range strings.Split(c.CorsOrigins, ",") {
+			if strings.TrimSpace(o) == "*" {
+				return fmt.Errorf("invalid CORS configuration: CORS_ALLOW_CREDENTIALS=true is incompatible with a wildcard origin ('*') — list specific origins explicitly or set CORS_ALLOW_CREDENTIALS=false")
+			}
+		}
+	}
+
+	// TLS: both paths or neither. A single-sided setting is always a bug
+	// (typo, stale secret, half-migrated config) — fail fast.
+	if (c.TLSCertPath == "") != (c.TLSKeyPath == "") {
+		return fmt.Errorf("invalid TLS configuration: TLS_CERT_PATH and TLS_KEY_PATH must both be set or both be empty (got cert=%q key=%q)", c.TLSCertPath, c.TLSKeyPath)
+	}
+
+	// Log format: only two supported values; any other value means the
+	// handler would silently fall back and confuse operators.
+	switch c.LogFormat {
+	case "json", "text":
+	default:
+		return fmt.Errorf("invalid LOG_FORMAT %q: must be 'json' or 'text'", c.LogFormat)
+	}
+
+	// Durations: parse-check so operators learn about typos at startup
+	// rather than at SIGTERM.
+	if c.PreStopDelay != "" {
+		if _, err := time.ParseDuration(c.PreStopDelay); err != nil {
+			return fmt.Errorf("invalid PRE_STOP_DELAY %q: %w", c.PreStopDelay, err)
+		}
+	}
+	if c.ShutdownTimeout != "" {
+		if _, err := time.ParseDuration(c.ShutdownTimeout); err != nil {
+			return fmt.Errorf("invalid SHUTDOWN_TIMEOUT %q: %w", c.ShutdownTimeout, err)
+		}
+	}
+
+	return nil
 }

@@ -14,8 +14,9 @@ concurrency:
   group: ci-${{"{{"}} github.ref {{"}}"}}
   cancel-in-progress: true
 
-env:
-  GO_VERSION: '{{.GoVersion | default "1.25"}}'
+# Go version is read from go.mod's `go` directive via setup-go's
+# `go-version-file` input so CI stays in sync with the project's declared
+# version without a duplicate env var that drifts.
 
 jobs:
 {{- if or .LintGolangci .LintBuf .LintFrontend}}
@@ -26,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+          go-version-file: go.mod
 {{- if .LintGolangci}}
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -45,11 +46,22 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Single source of truth: the first frontend's package.json
+          # `engines.node` field. Keeps CI, the Dockerfile, and local
+          # dev aligned without a duplicated Node version in the workflow.
+          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
 {{- range .Frontends}}
       - name: Lint {{.Name}}
         working-directory: {{.Path}}
         run: npm ci && npm run lint
+      - name: Typecheck {{.Name}}
+        working-directory: {{.Path}}
+        # tsc --noEmit is not covered by eslint; without a dedicated
+        # step, type errors only surface at `next build` time in
+        # production deploys. Keep this step right after lint so
+        # authors see type failures on the same PR that introduced
+        # them.
+        run: npm run typecheck
 {{- end}}
 {{- end}}
 {{- end}}
@@ -61,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+          go-version-file: go.mod
       - name: Go tests
         run: go test {{if .TestRace}}-race {{end}}-count=1 ./...
 {{- if .TestCoverage}}
@@ -77,7 +89,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Single source of truth: the first frontend's package.json
+          # `engines.node` field. Keeps CI, the Dockerfile, and local
+          # dev aligned without a duplicated Node version in the workflow.
+          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
 {{- range .Frontends}}
       - name: Test {{.Name}}
         working-directory: {{.Path}}
@@ -97,14 +112,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+          go-version-file: go.mod
       - name: Go build
-        run: go build ./cmd/...
+        # -trimpath makes builds reproducible across runners;
+        # -buildvcs=true stamps the commit/dirty flag into runtime
+        # debug/buildinfo so deployed binaries can be correlated to a
+        # source commit without a separate manifest. Both flags must
+        # match the Dockerfile / Taskfile so CI, Docker, and local
+        # binaries hash identically from the same source.
+        run: go build -trimpath -buildvcs=true ./cmd/...
 {{- if .HasFrontends}}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Single source of truth: the first frontend's package.json
+          # `engines.node` field. Keeps CI, the Dockerfile, and local
+          # dev aligned without a duplicated Node version in the workflow.
+          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
 {{- range .Frontends}}
       - name: Build {{.Name}}
         working-directory: {{.Path}}
@@ -119,13 +143,28 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+          go-version-file: go.mod
 {{- if .HasServices}}
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
 {{- end}}
       - name: Install forge
-        run: go install github.com/reliant-labs/forge/cmd/forge@latest
+        # Version is stamped at scaffold time from the forge binary that
+        # produced the project. CI installs that exact ref so this step is
+        # reproducible:
+        #   1. Tagged/pseudo-version build → pin by module version.
+        #   2. Local `dev` build with a known git SHA → pin by SHA
+        #      (`go install ...@<sha>` is a valid ref).
+        #   3. Neither available → fall back to @main (regenerate from a
+        #      tagged release to eliminate this branch).
+{{- if and .ForgeVersion (ne .ForgeVersion "dev")}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeVersion}}
+{{- else if and .ForgeGitCommit (ne .ForgeGitCommit "unknown")}}
+        run: go install github.com/reliant-labs/forge/cmd/forge@{{.ForgeGitCommit}}
+{{- else}}
+        # TODO: regenerate from a tagged forge release to pin this install.
+        run: go install github.com/reliant-labs/forge/cmd/forge@main
+{{- end}}
       - name: Generate code
         run: forge generate
       - name: Check for uncommitted changes
@@ -165,9 +204,12 @@ jobs:
 {{- if .VulnGo}}
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{"{{"}} env.GO_VERSION {{"}}"}}
+          go-version-file: go.mod
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pinned explicitly: @latest makes CI non-reproducible and lets a
+        # compromised upstream release silently alter scan results. The
+        # Dependabot config watches this file so bumps arrive as PRs.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: Go vulnerability check
         run: govulncheck ./...
 {{- end}}
@@ -175,13 +217,31 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Single source of truth: the first frontend's package.json
+          # `engines.node` field. Keeps CI, the Dockerfile, and local
+          # dev aligned without a duplicated Node version in the workflow.
+          node-version-file: '{{(index .Frontends 0).Path}}/package.json'
 {{- range .Frontends}}
       - name: NPM audit {{.Name}}
         working-directory: {{.Path}}
         run: npm ci && npm audit --audit-level=high
 {{- end}}
 {{- end}}
+{{- end}}
+{{- if .LicenseCheck}}
+
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@v1.6.0
+      - name: Check licenses
+        run: go-licenses check ./... --disallowed_types=forbidden,restricted
 {{- end}}
 
   docker-build:

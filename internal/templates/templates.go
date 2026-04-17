@@ -255,6 +255,9 @@ type CIWorkflowData struct {
 	VulnDocker bool // trivy
 	VulnNPM    bool // npm audit
 
+	// License compliance
+	LicenseCheck bool // go-licenses
+
 	// E2E
 	E2EEnabled bool
 	E2ERuntime string // "docker-compose" or "k3d"
@@ -276,6 +279,25 @@ type CIWorkflowData struct {
 	Registry     string // "ghcr", "gar", "ecr"
 	GithubOrg    string
 	FrontendName string // first frontend name for dependabot
+
+	// GitHubOwner is the inferred GitHub owner for default CODEOWNERS entries.
+	// Empty when we couldn't confidently infer one (e.g. non-github module
+	// path), in which case the CODEOWNERS template emits no file contents and
+	// the generator drops the file. Populated by the generator from the
+	// project's module path (e.g. "github.com/example/demo" -> "example").
+	GitHubOwner string
+
+	// ForgeVersion is the version of the forge CLI that produced the scaffold.
+	// Used to pin `go install` in the verify-generated CI job so the
+	// regeneration step is reproducible across runs. Empty or "dev" falls
+	// back to ForgeGitCommit (when known), then to the pinned default.
+	ForgeVersion string
+
+	// ForgeGitCommit is the git commit SHA the forge binary was built from.
+	// Used as a fallback for `go install` pinning when ForgeVersion is "dev"
+	// (local builds). A full SHA is a valid `go install ...@<ref>` target,
+	// so dev-built scaffolds remain reproducible.
+	ForgeGitCommit string
 }
 
 // FrontendCIConfig is a minimal frontend descriptor for CI templates.
@@ -334,6 +356,11 @@ type E2EWorkflowData struct {
 	GoVersion    string
 	Runtime      string // "docker-compose" (default) or "k3d"
 	HasFrontends bool
+	// FrontendPath points the setup-node `node-version-file` input at a
+	// package.json whose `engines.node` is honored by setup-node@v4. Empty
+	// when there are no frontends — the template then falls back to a
+	// fixed node-version.
+	FrontendPath string
 }
 
 // GetTestTemplate returns the raw content of a test template file.

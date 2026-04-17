@@ -51,5 +51,29 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 		}
 	}
 
+	// Emit a nested go.mod so that `go test ./...` from the project root
+	// skips this subtree. Frontends contain no first-party Go code, but
+	// npm dependencies (e.g. flatted) occasionally ship .go files under
+	// node_modules, which Go's package discovery would otherwise pick up.
+	// A nested module is the idiomatic Go boundary marker.
+	//
+	// The `go` directive is read from the project's top-level go.mod so the
+	// nested module stays in lockstep with the project's declared Go version
+	// (no literal `go 1.25` to drift). Falls back to the generator's default
+	// when the project go.mod is missing or unparseable (e.g. during the
+	// first-ever scaffold before the project go.mod is written).
+	goVersion := goVersionFromGoMod(root)
+	if goVersion == "" {
+		goVersion = defaultGoVersion
+	}
+	goModPath := filepath.Join(frontendDir, "go.mod")
+	goModContent := fmt.Sprintf("// Nested module boundary so `go test ./...` from the project root\n"+
+		"// skips node_modules and other frontend assets. This frontend has no\n"+
+		"// first-party Go code; the module exists solely as a boundary marker.\n"+
+		"module %s/frontends/%s\n\ngo %s\n", modulePath, frontendName, goVersion)
+	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+		return fmt.Errorf("write frontend go.mod: %w", err)
+	}
+
 	return nil
 }

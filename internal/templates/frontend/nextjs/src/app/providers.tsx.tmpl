@@ -1,0 +1,30 @@
+"use client";
+
+import { useEffect } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
+
+import { initTelemetry } from "@/lib/otel";
+import { queryClient } from "@/lib/query-client";
+
+/**
+ * Top-level client-only provider wrapper.
+ *
+ * - Initializes OpenTelemetry tracing in the browser exactly once per page
+ *   load. `"use client"` + `useEffect` guarantees this runs only after
+ *   hydration, so server rendering is unaffected and `window` is always
+ *   defined when `initTelemetry` is invoked. `initTelemetry` is itself
+ *   idempotent, so a StrictMode double-invoke in development is a no-op.
+ * - Provides the shared `QueryClient` to the component tree so any
+ *   descendant can use `useQuery` / `useMutation` against the Connect
+ *   transport.
+ *
+ * Extend this file with additional providers (theme, auth, form context,
+ * etc.) as the app grows.
+ */
+export function Providers({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    initTelemetry();
+  }, []);
+
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+}

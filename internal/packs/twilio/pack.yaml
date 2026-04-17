@@ -1,0 +1,41 @@
+name: twilio
+description: "Twilio SMS and voice integration — send messages, status webhooks, message tracking"
+version: 1.0.0
+
+config:
+  section: twilio
+  defaults:
+    account_sid_env: TWILIO_ACCOUNT_SID
+    auth_token_env: TWILIO_AUTH_TOKEN
+    from_number_env: TWILIO_FROM_NUMBER
+    status_callback_path: /webhooks/twilio/status
+
+dependencies:
+  - github.com/twilio/twilio-go
+
+files:
+  - template: twilio_client.go.tmpl
+    output: pkg/twilio/client.go
+    overwrite: once
+    description: "Twilio API client wrapper"
+  - template: twilio_webhook.go.tmpl
+    output: pkg/twilio/webhook.go
+    overwrite: once
+    description: "Twilio webhook handler for delivery status"
+  - template: twilio_entities.proto.tmpl
+    output: proto/db/v1/twilio_entities.proto
+    overwrite: once
+    description: "Message tracking entity"
+  - template: twilio_contract.go.tmpl
+    output: internal/messaging/contract.go
+    overwrite: once
+    description: "Messaging service contract"
+  - template: twilio_service.go.tmpl
+    output: internal/messaging/service.go
+    overwrite: once
+    description: "Messaging service implementation"
+
+generate:
+  - template: twilio_webhook_routes.go.tmpl
+    output: handlers/webhooks/twilio_webhook_gen.go
+    description: "Twilio webhook route registration"

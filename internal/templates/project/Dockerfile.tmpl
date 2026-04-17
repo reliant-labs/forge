@@ -1,7 +1,19 @@
 # syntax=docker/dockerfile:1
 
-# Build stage
-FROM golang:{{.GoVersionMinor}}-alpine AS builder
+# Build stage.
+#
+# We pin to `golang:{{.DockerBuilderGoVersion}}-alpine` as the base because Docker Hub's `golang:*-alpine`
+# tags can lag the latest stable Go release by days to weeks. The `go` directive
+# in `go.mod` (currently `go {{.GoVersion}}`) combined with Go's default
+# `GOTOOLCHAIN=auto` means the in-image toolchain will auto-download and use
+# a newer Go toolchain at build time if `go.mod` requires one. This keeps the
+# builder base stable while the effective compiler tracks `go.mod`.
+FROM golang:{{.DockerBuilderGoVersion}}-alpine AS builder
+
+# Let Go's toolchain manager fetch a newer toolchain when go.mod requires it.
+# (This is the default on Go 1.21+, but we set it explicitly for clarity and
+# so the image works even with GOTOOLCHAIN pre-set in a user's environment.)
+ENV GOTOOLCHAIN=auto
 
 RUN apk add --no-cache git
 
@@ -17,15 +29,22 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build with optimizations
+# Build with optimizations.
+# -trimpath removes the host build directory from the embedded GOROOT/module
+# paths so the binary is reproducible across machines.
+# -buildvcs=true keeps the VCS stamp (commit, dirty flag) in the runtime
+# debug/buildinfo output so operators can correlate a running binary to a
+# source commit without a separate build manifest.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /app/bin/{{.Name}} ./cmd
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /app/bin/{{.Name}} ./cmd
 
-# Debug build — full symbols, no inlining
+# Debug build — full symbols, no inlining. We keep -trimpath and -buildvcs
+# for parity with the release build so delve sessions reflect the same
+# source layout and version stamp as production.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd
 
 # Install Delve
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -61,5 +80,8 @@ COPY --from=builder /app/bin/{{.Name}} .
 USER 65532:65532
 
 EXPOSE {{.ServicePort}}
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:${PORT:-8080}/healthz || exit 1
 
 CMD ["./{{.Name}}", "server"]

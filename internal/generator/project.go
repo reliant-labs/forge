@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/assets"
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -106,6 +107,72 @@ func goVersionMinor(v string) string {
 	return v
 }
 
+// latestDockerHubGoMinor is the newest major.minor Go tag we expect to exist
+// on Docker Hub as `golang:<minor>-alpine`. Docker Hub tends to lag upstream
+// Go releases by days to weeks; pinning the scaffolded Dockerfile base to
+// this value avoids `manifest unknown` errors while Go's toolchain manager
+// (GOTOOLCHAIN=auto) transparently fetches any newer toolchain required by
+// `go.mod`.
+//
+// Bump this constant when a newer Go minor is published on Docker Hub.
+const latestDockerHubGoMinor = "1.25"
+
+// dockerBuilderGoVersion returns the Go version tag to use as the builder
+// image base. It prefers the project's declared Go minor version when that
+// image is already known to exist on Docker Hub, otherwise it falls back to
+// the latest publicly available minor. Go's toolchain manager will upgrade
+// the compiler inside the image to match go.mod's `go <version>` directive
+// at build time when needed.
+func dockerBuilderGoVersion(projectGoVersion string) string {
+	minor := goVersionMinor(projectGoVersion)
+	if !dockerHubHasGoMinor(minor) {
+		return latestDockerHubGoMinor
+	}
+	return minor
+}
+
+// dockerHubHasGoMinor reports whether a `golang:<minor>-alpine` image is
+// expected to exist on Docker Hub. It compares the minor against the
+// latest known-good minor (latestDockerHubGoMinor).
+func dockerHubHasGoMinor(minor string) bool {
+	wantMajor, wantMinor, _, ok := parseGoVersion(minor)
+	if !ok {
+		return false
+	}
+	maxMajor, maxMinor, _, ok := parseGoVersion(latestDockerHubGoMinor)
+	if !ok {
+		return false
+	}
+	if wantMajor != maxMajor {
+		return wantMajor < maxMajor
+	}
+	return wantMinor <= maxMinor
+}
+
+// goVersionFromGoMod reads the Go version from <projectDir>/go.mod's `go`
+// directive. Returns "" when projectDir is empty or the file can't be read
+// or parsed. The returned value matches go.mod syntax (e.g. "1.26.1").
+func goVersionFromGoMod(projectDir string) string {
+	if projectDir == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(projectDir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "go ") {
+			continue
+		}
+		v := strings.TrimSpace(strings.TrimPrefix(line, "go "))
+		if _, _, _, ok := parseGoVersion(v); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // resolveGoVersion returns the Go version to use, preferring the override if set.
 func (g *ProjectGenerator) resolveGoVersion() string {
 	if g.GoVersionOverride != "" {
@@ -121,6 +188,25 @@ func (g *ProjectGenerator) resolveGoVersion() string {
 		return v
 	}
 	return detectGoVersion()
+}
+
+// githubOwnerFromModulePath extracts the GitHub owner segment from a Go
+// module path like `github.com/example/demo` (-> "example"). Returns ""
+// for non-github hosts or any path that doesn't have an owner segment.
+// Used to seed the default `.github/CODEOWNERS` entry; when inference
+// fails the generator skips emitting the file rather than shipping a
+// review-free stub.
+func githubOwnerFromModulePath(modulePath string) string {
+	const host = "github.com/"
+	if !strings.HasPrefix(modulePath, host) {
+		return ""
+	}
+	rest := modulePath[len(host):]
+	slash := strings.Index(rest, "/")
+	if slash <= 0 {
+		return ""
+	}
+	return rest[:slash]
 }
 
 // NewProjectGenerator creates a new project generator
@@ -160,7 +246,9 @@ func (g *ProjectGenerator) Generate() error {
 		"cmd",
 		"pkg/app",
 		"pkg/middleware",
-		"internal",
+		// internal/ is intentionally not pre-created. `forge package new <name>`
+		// materializes internal/<name>/ on demand; shipping an empty directory
+		// would just leave a dangling .gitkeep or an untracked empty dir.
 	}
 
 	// Add service directory if a service is specified
@@ -186,6 +274,34 @@ func (g *ProjectGenerator) Generate() error {
 		return fmt.Errorf("failed to create db/migrations/.gitkeep: %w", err)
 	}
 
+	// Scaffold a README.md in db/ so the migrations workflow is self-documenting.
+	dbReadme := "# db\n\nSQL migrations managed by [golang-migrate](https://github.com/golang-migrate/migrate).\n\n" +
+		"## Layout\n\n" +
+		"Place numbered migration pairs in `db/migrations/`:\n\n" +
+		"```\ndb/migrations/\n  0001_init.up.sql\n  0001_init.down.sql\n  0002_add_users.up.sql\n  0002_add_users.down.sql\n```\n\n" +
+		"## CLI\n\n" +
+		"The generated binary exposes `db migrate` subcommands:\n\n" +
+		"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate down    # revert the most recently applied migration\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
+		"All subcommands read `DATABASE_URL` (or `--database-url`) from the standard project config.\n"
+	if err := os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
+		return fmt.Errorf("failed to create db/README.md: %w", err)
+	}
+
+	// proto/api and proto/db are reserved scaffold directories used by
+	// 'forge generate': proto/api holds cross-service message definitions
+	// and proto/db holds entity definitions consumed by protoc-gen-forge-orm.
+	// Populate each with a README so the directory is tracked by git and
+	// users understand what belongs there.
+	protoDirReadmes := map[string]string{
+		filepath.Join(g.Path, "proto", "api", "README.md"): "# proto/api\n\nShared API message definitions (e.g. common request/response types)\nreferenced by multiple services. Files placed here are compiled into\n`gen/api/` by `forge generate`.\n",
+		filepath.Join(g.Path, "proto", "db", "README.md"):  "# proto/db\n\nEntity (database model) proto definitions. Files placed here are\nconsumed by `protoc-gen-forge-orm` to generate typed ORM bindings and\nmigrations. See `forge generate`.\n",
+	}
+	for p, body := range protoDirReadmes {
+		if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+			return fmt.Errorf("failed to create %s: %w", p, err)
+		}
+	}
+
 	goVersion := g.resolveGoVersion()
 
 	// Sanitize name for proto files (no hyphens allowed). Use underscores
@@ -195,27 +311,29 @@ func (g *ProjectGenerator) Generate() error {
 	protoName := strings.ReplaceAll(g.Name, "-", "_")
 
 	templateData := struct {
-		Name           string
-		ProtoName      string
-		Module         string
-		ServiceName    string
-		ServicePort    int
-		ProjectName    string
-		FrontendName   string
-		FrontendPort   int
-		GoVersion      string
-		GoVersionMinor string
+		Name                   string
+		ProtoName              string
+		Module                 string
+		ServiceName            string
+		ServicePort            int
+		ProjectName            string
+		FrontendName           string
+		FrontendPort           int
+		GoVersion              string
+		GoVersionMinor         string
+		DockerBuilderGoVersion string
 	}{
-		Name:           g.Name,
-		ProtoName:      protoName,
-		Module:         g.ModulePath,
-		ServiceName:    g.ServiceName,
-		ServicePort:    g.ServicePort,
-		ProjectName:    g.Name,
-		FrontendName:   g.FrontendName,
-		FrontendPort:   g.FrontendPort,
-		GoVersion:      goVersion,
-		GoVersionMinor: goVersionMinor(goVersion),
+		Name:                   g.Name,
+		ProtoName:              protoName,
+		Module:                 g.ModulePath,
+		ServiceName:            g.ServiceName,
+		ServicePort:            g.ServicePort,
+		ProjectName:            g.Name,
+		FrontendName:           g.FrontendName,
+		FrontendPort:           g.FrontendPort,
+		GoVersion:              goVersion,
+		GoVersionMinor:         goVersionMinor(goVersion),
+		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 	}
 
 	if err := g.copyforgeProtos(); err != nil {
@@ -236,8 +354,11 @@ func (g *ProjectGenerator) Generate() error {
 	}{
 		{"Taskfile.yml.tmpl", "Taskfile.yml"},
 		{".gitignore", ".gitignore"},
+		{".dockerignore", ".dockerignore"},
 		{"Dockerfile.tmpl", "Dockerfile"},
 		{"README.md.tmpl", "README.md"},
+		{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
+		{"CHANGELOG.md.tmpl", "CHANGELOG.md"},
 		{"go.mod.tmpl", "go.mod"},
 		{"go.work.tmpl", "go.work"},
 		{"gen-go.mod.tmpl", "gen/go.mod"},
@@ -245,6 +366,7 @@ func (g *ProjectGenerator) Generate() error {
 		{"buf.gen.yaml", "buf.gen.yaml"},
 		{"cmd-root.go.tmpl", "cmd/main.go"},
 		{"cmd-server.go.tmpl", "cmd/server.go"},
+		{"cmd-db.go.tmpl", "cmd/db.go"},
 		{"otel.go", "cmd/otel.go"},
 		{"cmd-version.go.tmpl", "cmd/version.go"},
 		{"air.toml.tmpl", ".air.toml"},
@@ -273,7 +395,10 @@ func (g *ProjectGenerator) Generate() error {
 	}
 	// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
 	// even with zero services.
-	if err := codegen.GenerateSetup(g.ModulePath, "", g.Path); err != nil {
+	// Initial scaffold: no database driver wired and no ORM — the pipeline
+	// runs `forge generate` immediately after and rewrites this file with
+	// the correct flags once proto/db and forge.project.yaml are present.
+	if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
 		return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
 	}
 	if err := g.generateBootstrapTesting(); err != nil {
@@ -335,6 +460,19 @@ func (g *ProjectGenerator) Generate() error {
 		if err := g.generateE2ETests(); err != nil {
 			return fmt.Errorf("failed to generate E2E tests: %w", err)
 		}
+	}
+
+	// Scaffold examples/ placeholder so the convention is discoverable.
+	if err := g.generateExamplesReadme(); err != nil {
+		return fmt.Errorf("failed to generate examples/README.md: %w", err)
+	}
+
+	// Developer experience + ops scaffolding: .vscode/, .devcontainer/,
+	// scripts/bootstrap.sh, SECURITY.md, .pre-commit-config.yaml,
+	// example migration + seeds, docs/adr/, benchmarks/. Kept behind a
+	// single helper so the entry point in Generate stays readable.
+	if err := g.generateDXFiles(); err != nil {
+		return fmt.Errorf("failed to generate DX scaffolding: %w", err)
 	}
 
 	// Write project metadata to .reliant directory (both modes)
@@ -466,6 +604,16 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
 
+	// Prepend a header explaining the shape of this file. In particular the
+	// `database:` block is declared unconditionally even when no entity
+	// protos exist yet — downstream codegen (`protoc-gen-forge-orm`) reads
+	// it when proto/db/*.proto are added later. Until then it's a no-op.
+	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
+		"# `database:` is declared here even if you haven't added any\n" +
+		"# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it\n" +
+		"# once you do. Leave the defaults in place if you're unsure.\n\n")
+	data = append(header, data...)
+
 	destPath := filepath.Join(g.Path, "forge.project.yaml")
 	return os.WriteFile(destPath, data, 0644)
 }
@@ -575,11 +723,19 @@ func (g *ProjectGenerator) generateEnvExample() error {
 	} else {
 		sb.WriteString("CORS_ORIGINS=http://localhost:3000\n")
 	}
-	sb.WriteString("\n# Environment: set to \"development\" to enable permissive defaults (e.g. authz allow-all).\n")
+	sb.WriteString("\n# Environment: \"production\" (fail-closed defaults) or \"development\"\n")
+	sb.WriteString("# (permissive defaults like authz allow-all). Never set to development in production.\n")
 	sb.WriteString("ENVIRONMENT=development\n")
-	sb.WriteString("\n# OpenTelemetry (optional)\n")
+	sb.WriteString("\n# Run DB migrations on startup (rarely useful in production)\n")
+	sb.WriteString("AUTO_MIGRATE=false\n")
+	sb.WriteString("\n# OpenTelemetry\n")
+	sb.WriteString("# OTEL_EXPORTER_OTLP_ENDPOINT is optional: set it to a running OTLP\n")
+	sb.WriteString("# collector (e.g. http://localhost:4317) to enable trace/metric export.\n")
+	sb.WriteString("# When unset, OpenTelemetry is a no-op.\n")
 	sb.WriteString("# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n")
-	sb.WriteString("# OTEL_SERVICE_NAME=" + g.Name + "\n")
+	sb.WriteString("# OTEL_SERVICE_NAME is the advertised `service.name` resource attribute\n")
+	sb.WriteString("# on every exported span/metric. Default matches the project name.\n")
+	sb.WriteString("OTEL_SERVICE_NAME=" + g.Name + "\n")
 	if g.FrontendName != "" {
 		sb.WriteString(fmt.Sprintf("\n# Frontend (set in frontends/%s/.env.local)\n", g.FrontendName))
 		sb.WriteString(fmt.Sprintf("# NEXT_PUBLIC_API_URL=http://localhost:%d\n", g.ServicePort))
@@ -597,6 +753,25 @@ func (g *ProjectGenerator) generateGolangciLint() error {
 	}
 	destPath := filepath.Join(g.Path, ".golangci.yml")
 	return os.WriteFile(destPath, content, 0644)
+}
+
+// generateExamplesReadme scaffolds an examples/ directory with a README that
+// documents the convention for client-side demos. We don't ship a concrete
+// example because what's appropriate depends on the project's shape; the
+// README gives agents and contributors a stable home to drop one into.
+func (g *ProjectGenerator) generateExamplesReadme() error {
+	data := struct {
+		Name string
+	}{Name: g.Name}
+	content, err := templates.RenderProjectTemplate("examples-README.md.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render examples/README.md: %w", err)
+	}
+	examplesDir := filepath.Join(g.Path, "examples")
+	if err := os.MkdirAll(examplesDir, 0o755); err != nil {
+		return fmt.Errorf("create examples dir: %w", err)
+	}
+	return os.WriteFile(filepath.Join(examplesDir, "README.md"), content, 0o644)
 }
 
 func (g *ProjectGenerator) generateDockerCompose() error {
@@ -667,6 +842,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		Workers     []bootstrapWorker
 		Operators   []bootstrapOperator
 		HasDatabase bool
+		OrmEnabled  bool
 		HasFallible bool
 	}{
 		Module:    g.ModulePath,
@@ -674,6 +850,11 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		Packages:  nil, // No packages at initial project creation
 		Workers:   nil, // No workers at initial project creation
 		Operators: nil, // No operators at initial project creation
+		// Initial scaffold has no proto/db entities; the post-scaffold
+		// generate pipeline re-renders with the correct flags if the user
+		// adds entities.
+		HasDatabase: false,
+		OrmEnabled:  false,
 	}
 
 	content, err := templates.RenderProjectTemplate("bootstrap.go.tmpl", data)
@@ -893,6 +1074,8 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		}
 	}
 
+	githubOwner := githubOwnerFromModulePath(g.ModulePath)
+
 	data := templates.CIWorkflowData{
 		ProjectName:  g.Name,
 		GoVersion:    goVersionMinor(g.resolveGoVersion()),
@@ -911,6 +1094,8 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		VulnDocker:  true,
 		VulnNPM:     hasFrontends,
 
+		LicenseCheck: true,
+
 		E2EEnabled:  false,
 
 		PermContents: "read",
@@ -923,6 +1108,13 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		Registry:     "ghcr",
 		GithubOrg:    g.Name,
 		FrontendName: g.FrontendName,
+		GitHubOwner:  githubOwner,
+
+		// Stamp forge's version so `verify-generated` installs exactly the
+		// same version that produced the scaffold. Git SHA is a fallback when
+		// the binary was built without a version tag (local `dev` builds).
+		ForgeVersion:   buildinfo.Version(),
+		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 
 	// Deploy and build-images use their own spec-driven data types
@@ -947,6 +1139,18 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		VulnDocker:   true,
 	}
 
+	var e2eFrontendPath string
+	if hasFrontends {
+		e2eFrontendPath = fmt.Sprintf("frontends/%s", g.FrontendName)
+	}
+	e2eData := templates.E2EWorkflowData{
+		ProjectName:  g.Name,
+		GoVersion:    goVersionMinor(g.resolveGoVersion()),
+		Runtime:      "docker-compose",
+		HasFrontends: hasFrontends,
+		FrontendPath: e2eFrontendPath,
+	}
+
 	// Templated files — each with its own data type
 	templatedFiles := []struct {
 		templateName string
@@ -956,6 +1160,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
 		{"build-images.yml.tmpl", ".github/workflows/build-images.yml", buildImagesData},
 		{"deploy.yml.tmpl", ".github/workflows/deploy.yml", deployData},
+		{"e2e.yml.tmpl", ".github/workflows/e2e.yml", e2eData},
 		{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
 	}
 
@@ -964,6 +1169,11 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	if err != nil {
 		return fmt.Errorf("load checksums: %w", err)
 	}
+
+	// Keep the stamped forge version in sync with the binary that produced
+	// the CI files. This allows CI `verify-generated` to pin the exact forge
+	// version via install.
+	cs.ForgeVersion = buildinfo.Version()
 
 	for _, f := range templatedFiles {
 		content, err := templates.RenderCITemplate(provider, f.templateName, f.data)
@@ -995,13 +1205,20 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		}
 	}
 
-	// CODEOWNERS (templated)
-	content, err := templates.RenderCITemplate(provider, "CODEOWNERS.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render CODEOWNERS: %w", err)
-	}
-	if _, err := WriteGeneratedFile(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {
-		return fmt.Errorf("write CODEOWNERS: %w", err)
+	// CODEOWNERS is only emitted when we can confidently infer a GitHub
+	// owner from the module path. For non-github module paths (e.g.
+	// `example.com/team/proj`) we skip the file entirely — shipping a
+	// review-free stub that silently bypasses branch protection is worse
+	// than having no file at all. Users can add `.github/CODEOWNERS`
+	// manually when they're ready.
+	if githubOwner != "" {
+		content, err := templates.RenderCITemplate(provider, "CODEOWNERS.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render CODEOWNERS: %w", err)
+		}
+		if _, err := WriteGeneratedFile(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {
+			return fmt.Errorf("write CODEOWNERS: %w", err)
+		}
 	}
 
 	// Save checksums so forge generate knows what was initially generated
@@ -1019,13 +1236,28 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		destName     string
 	}{
 		{"middleware-recovery.go", "recovery.go"},
+		{"middleware-recovery_test.go", "recovery_test.go"},
 		{"middleware-logging.go", "logging.go"},
+		{"middleware-logging_test.go", "logging_test.go"},
 		{"middleware-auth.go", "auth.go"},
+		{"middleware-auth_test.go", "auth_test.go"},
 		{"middleware-authz.go", "authz.go"},
+		{"middleware-permissive-authz.go", "permissive_authz.go"},
 		{"middleware-claims.go", "claims.go"},
 		{"middleware-audit.go", "audit.go"},
 		{"middleware-http.go", "http.go"},
 		{"middleware-cors.go", "cors.go"},
+		{"middleware-cors_test.go", "cors_test.go"},
+		{"middleware-security-headers.go", "security_headers.go"},
+		{"middleware-security-headers_test.go", "security_headers_test.go"},
+		{"middleware-ratelimit.go", "ratelimit.go"},
+		{"middleware-ratelimit_test.go", "ratelimit_test.go"},
+		{"middleware-requestid.go", "requestid.go"},
+		{"middleware-requestid_test.go", "requestid_test.go"},
+		{"middleware-idempotency.go", "idempotency.go"},
+		{"middleware-idempotency_test.go", "idempotency_test.go"},
+		{"middleware-redact.go", "redact.go"},
+		{"middleware-redact_test.go", "redact_test.go"},
 	}
 
 	for _, f := range middlewareFiles {
@@ -1049,6 +1281,11 @@ func (g *ProjectGenerator) recordFrozenChecksums(templateData interface{}) error
 	if err != nil {
 		return fmt.Errorf("load checksums: %w", err)
 	}
+
+	// Stamp the forge binary version that produced this scaffold. Consumers
+	// (e.g. `forge upgrade`, CI `verify-generated`) use this to pin the exact
+	// version they need to regenerate identical artifacts.
+	cs.ForgeVersion = buildinfo.Version()
 
 	for _, f := range managedFiles() {
 		fullPath := filepath.Join(g.Path, f.destPath)

@@ -9,12 +9,14 @@ import (
 	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
 	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
 	"{{.Module}}/pkg/config"
+	"{{.Module}}/pkg/middleware"
 )
 
 // Deps holds dependencies for the {{.ServiceName}} service.
 type Deps struct {
-	Logger *slog.Logger
-	Config *config.Config
+	Logger     *slog.Logger
+	Config     *config.Config
+	Authorizer middleware.Authorizer
 	// Add your dependencies here.
 	// Example: Auth auth.Service  // from internal/auth
 	// Example: Cache cache.Service // from internal/cache

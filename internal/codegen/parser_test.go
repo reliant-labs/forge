@@ -317,6 +317,50 @@ service MetaService {
 	}
 }
 
+func TestParseProtoFile_AuthRequired(t *testing.T) {
+	path := writeProto(t, "auth.proto", `syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "example.com/test/gen/auth/v1;authv1";
+
+service AuthService {
+  rpc Create(CreateReq) returns (CreateResp) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+    };
+  }
+  rpc Public(PublicReq) returns (PublicResp) {
+    option (forge.options.v1.method_options) = {
+      auth_required: false
+    };
+  }
+  rpc NoOption(NoOptReq) returns (NoOptResp);
+}
+`)
+
+	services, err := parseProtoFile(path, "example.com/test")
+	if err != nil {
+		t.Fatalf("parseProtoFile() error = %v", err)
+	}
+	if len(services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(services))
+	}
+	methods := services[0].Methods
+	if len(methods) != 3 {
+		t.Fatalf("expected 3 methods, got %d", len(methods))
+	}
+	if !methods[0].AuthRequired {
+		t.Errorf("Create: expected AuthRequired=true, got false")
+	}
+	if methods[1].AuthRequired {
+		t.Errorf("Public: expected AuthRequired=false, got true")
+	}
+	if methods[2].AuthRequired {
+		t.Errorf("NoOption: expected AuthRequired=false (default), got true")
+	}
+}
+
 func TestParseProtoFile_MissingGoPackageWithService(t *testing.T) {
 	path := writeProto(t, "nopkg.proto", `syntax = "proto3";
 

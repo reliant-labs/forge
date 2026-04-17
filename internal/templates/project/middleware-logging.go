@@ -31,7 +31,15 @@ func (i *loggingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 
 		attrs := []slog.Attr{
 			slog.String("procedure", req.Spec().Procedure),
-			slog.String("duration", time.Since(start).String()),
+			slog.Duration("duration", time.Since(start)),
+		}
+		if rid := RequestIDFromContext(ctx); rid != "" {
+			attrs = append(attrs, slog.String("request_id", rid))
+		} else if rid := req.Header().Get(RequestIDHeader); rid != "" {
+			// Fall back to the raw header in case the request-id middleware
+			// was not wired at the HTTP layer. This keeps logs correlatable
+			// even in partial deployments.
+			attrs = append(attrs, slog.String("request_id", rid))
 		}
 		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
 			attrs = append(attrs, slog.String("trace_id", spanCtx.TraceID().String()))
@@ -59,7 +67,12 @@ func (i *loggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 
 		attrs := []slog.Attr{
 			slog.String("procedure", conn.Spec().Procedure),
-			slog.String("duration", time.Since(start).String()),
+			slog.Duration("duration", time.Since(start)),
+		}
+		if rid := RequestIDFromContext(ctx); rid != "" {
+			attrs = append(attrs, slog.String("request_id", rid))
+		} else if rid := conn.RequestHeader().Get(RequestIDHeader); rid != "" {
+			attrs = append(attrs, slog.String("request_id", rid))
 		}
 		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
 			attrs = append(attrs, slog.String("trace_id", spanCtx.TraceID().String()))

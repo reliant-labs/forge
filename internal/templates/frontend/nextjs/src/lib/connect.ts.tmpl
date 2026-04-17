@@ -1,6 +1,7 @@
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { type Interceptor } from "@connectrpc/connect";
-import { trace, context, propagation } from "@opentelemetry/api";
+import { createClient, type Interceptor } from "@connectrpc/connect";
+import type { DescService } from "@bufbuild/protobuf";
+import { SpanStatusCode, trace, context, propagation } from "@opentelemetry/api";
 
 // The API URL is read from the NEXT_PUBLIC_API_URL environment variable.
 // In development this defaults to the local backend server.
@@ -25,7 +26,12 @@ const tracingInterceptor: Interceptor = (next) => async (req) => {
       span.end();
       return res;
     } catch (err) {
-      span.recordException(err as Error);
+      const error = err as Error;
+      span.recordException(error);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error.message,
+      });
       span.end();
       throw err;
     }
@@ -36,3 +42,16 @@ export const transport = createConnectTransport({
   baseUrl,
   interceptors: [tracingInterceptor],
 });
+
+/**
+ * connectClient creates a typed Connect client for a given service descriptor.
+ *
+ * Usage:
+ *   import { UserService } from "../gen/user/v1/user_pb";
+ *
+ *   const client = connectClient(UserService);
+ *   const user = await client.getUser({ id: "1" });
+ */
+export function connectClient<S extends DescService>(service: S) {
+  return createClient(service, transport);
+}

@@ -42,17 +42,22 @@ type entityInfo struct {
 	msg        *protogen.Message
 	tableName  string
 	softDelete bool
+	timestamps bool
 	fields     []fieldInfo
 	pkField    *fieldInfo
+	inferred   bool // true when entity was inferred from conventions (no explicit annotation)
 }
 
 // fieldInfo holds parsed column metadata for a single field.
 type fieldInfo struct {
-	field       *protogen.Field
-	columnName  string
-	isPK        bool
-	notNull     bool
-	isTimestamp bool
+	field         *protogen.Field
+	columnName    string
+	isPK          bool
+	notNull       bool
+	isTimestamp   bool
+	unique        bool
+	autoIncrement bool
+	references    string // FK reference in "table.column" format
 }
 
 func generateFile(p *protogen.Plugin, file *protogen.File) error {
@@ -110,52 +115,59 @@ func generateFile(p *protogen.Plugin, file *protogen.File) error {
 }
 
 func parseEntity(msg *protogen.Message) (entityInfo, bool) {
-	opts := msg.Desc.Options()
-	if opts == nil {
-		return entityInfo{}, false
-	}
-
-	msgOpts, ok := opts.(*descriptorpb.MessageOptions)
-	if !ok {
-		return entityInfo{}, false
-	}
-
-	// Look for the entity_options extension (field 50200).
 	var tableName string
 	var softDelete bool
+	var timestamps bool
 	found := false
+	inferred := false
 
-	msgOpts.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		if fd.Number() == entityOptionsFieldNum {
-			found = true
-			entMsg := v.Message()
-			if tn := entMsg.Get(entMsg.Descriptor().Fields().ByName("table_name")); tn.IsValid() {
-				tableName = tn.String()
-			}
-			if sd := entMsg.Get(entMsg.Descriptor().Fields().ByName("soft_delete")); sd.IsValid() {
-				softDelete = sd.Bool()
-			}
-			return false
-		}
-		return true
-	})
+	opts := msg.Desc.Options()
+	if opts != nil {
+		if msgOpts, ok := opts.(*descriptorpb.MessageOptions); ok {
+			// Look for the entity_options extension (field 50200).
+			msgOpts.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+				if fd.Number() == entityOptionsFieldNum {
+					found = true
+					entMsg := v.Message()
+					if tn := entMsg.Get(entMsg.Descriptor().Fields().ByName("table_name")); tn.IsValid() {
+						tableName = tn.String()
+					}
+					if sd := entMsg.Get(entMsg.Descriptor().Fields().ByName("soft_delete")); sd.IsValid() {
+						softDelete = sd.Bool()
+					}
+					if ts := entMsg.Get(entMsg.Descriptor().Fields().ByName("timestamps")); ts.IsValid() {
+						timestamps = ts.Bool()
+					}
+					return false
+				}
+				return true
+			})
 
-	// If Range didn't find it, check unknown fields (raw extension bytes).
-	if !found {
-		raw := msgOpts.ProtoReflect().GetUnknown()
-		var rawTN string
-		var rawSD bool
-		found, rawTN, rawSD = parseRawEntityOptions(raw, entityOptionsFieldNum)
-		if found {
-			if rawTN != "" {
-				tableName = rawTN
+			// If Range didn't find it, check unknown fields (raw extension bytes).
+			if !found {
+				raw := msgOpts.ProtoReflect().GetUnknown()
+				var rawTN string
+				var rawSD bool
+				found, rawTN, rawSD = parseRawEntityOptions(raw, entityOptionsFieldNum)
+				if found {
+					if rawTN != "" {
+						tableName = rawTN
+					}
+					softDelete = rawSD
+				}
 			}
-			softDelete = rawSD
 		}
 	}
 
+	// Convention-based inference: if no explicit annotation, check if the message
+	// looks like a DB entity (has an "id" field and is in a db proto path).
 	if !found {
-		return entityInfo{}, false
+		if looksLikeEntity(msg) {
+			found = true
+			inferred = true
+		} else {
+			return entityInfo{}, false
+		}
 	}
 
 	if tableName == "" {
@@ -166,6 +178,8 @@ func parseEntity(msg *protogen.Message) (entityInfo, bool) {
 		msg:        msg,
 		tableName:  tableName,
 		softDelete: softDelete,
+		timestamps: timestamps,
+		inferred:   inferred,
 	}
 
 	for _, f := range msg.Fields {
@@ -182,12 +196,23 @@ func parseEntity(msg *protogen.Message) (entityInfo, bool) {
 		for i, f := range ent.fields {
 			if f.columnName == "id" {
 				ent.fields[i].isPK = true
+				ent.fields[i].notNull = true
+				// Infer auto_increment for integer PK fields.
+				if isIntegerKind(ent.fields[i].field.Desc.Kind()) {
+					ent.fields[i].autoIncrement = true
+				}
 				pk := ent.fields[i]
 				ent.pkField = &pk
 				break
 			}
 		}
 	}
+
+	// Apply convention-based field inferences.
+	applyFieldInferences(&ent)
+
+	// Infer entity-level options from field presence.
+	inferEntityOptions(&ent)
 
 	return ent, true
 }
@@ -465,6 +490,133 @@ func parseField(f *protogen.Field) fieldInfo {
 	return fi
 }
 
+// looksLikeEntity returns true if a message without explicit entity_options
+// appears to be a database entity based on naming conventions.
+// A message is considered an entity if it has an "id" field as its first field
+// and is located within a proto/db/ path.
+func looksLikeEntity(msg *protogen.Message) bool {
+	// Check if in a db proto path.
+	path := string(msg.Desc.ParentFile().Path())
+	if !strings.Contains(path, "db/") && !strings.Contains(path, "db\\") {
+		return false
+	}
+	// Must have at least one field, and the first field should be named "id".
+	fields := msg.Desc.Fields()
+	if fields.Len() == 0 {
+		return false
+	}
+	return string(fields.Get(0).Name()) == "id"
+}
+
+// isIntegerKind returns true for proto field kinds that map to integer DB types.
+func isIntegerKind(k protoreflect.Kind) bool {
+	switch k {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return true
+	}
+	return false
+}
+
+// applyFieldInferences applies convention-based annotations to fields that lack
+// explicit proto annotations. This runs after initial parsing.
+func applyFieldInferences(ent *entityInfo) {
+	for i := range ent.fields {
+		f := &ent.fields[i]
+
+		// Skip fields that already have explicit annotations (PK already handled).
+		if f.isPK {
+			continue
+		}
+
+		name := f.columnName
+
+		// Fields ending in _id → infer foreign key reference and not_null.
+		if strings.HasSuffix(name, "_id") && name != "id" {
+			if f.references == "" {
+				refTable := pluralize(strings.TrimSuffix(name, "_id"))
+				f.references = refTable + ".id"
+			}
+			f.notNull = true
+		}
+
+		// Field named "email" → infer unique.
+		if name == "email" {
+			f.unique = true
+			f.notNull = true
+		}
+
+		// Common not_null fields.
+		if isCommonNotNullField(name) {
+			f.notNull = true
+		}
+	}
+}
+
+// inferEntityOptions infers entity-level options from field presence when not
+// explicitly set via annotations.
+func inferEntityOptions(ent *entityInfo) {
+	hasCreatedAt := false
+	hasUpdatedAt := false
+	hasDeletedAt := false
+
+	for _, f := range ent.fields {
+		switch f.columnName {
+		case "created_at":
+			hasCreatedAt = true
+		case "updated_at":
+			hasUpdatedAt = true
+		case "deleted_at":
+			hasDeletedAt = true
+		}
+	}
+
+	// If timestamps option wasn't explicitly set and fields are missing, infer it.
+	if !ent.timestamps && (!hasCreatedAt || !hasUpdatedAt) {
+		ent.timestamps = true
+	}
+
+	// If soft_delete wasn't explicitly set and deleted_at is missing, infer it.
+	if !ent.softDelete && !hasDeletedAt {
+		ent.softDelete = true
+	}
+}
+
+// isCommonNotNullField returns true for field names that conventionally should be NOT NULL.
+func isCommonNotNullField(name string) bool {
+	switch name {
+	case "name", "title", "status", "type", "slug",
+		"username", "first_name", "last_name",
+		"role", "state", "kind", "code":
+		return true
+	}
+	return false
+}
+
+// pluralize applies simple English pluralization rules.
+func pluralize(s string) string {
+	if s == "" {
+		return s
+	}
+	if strings.HasSuffix(s, "y") {
+		// Check if preceded by a vowel — if so, just add "s".
+		if len(s) >= 2 {
+			prev := s[len(s)-2]
+			if prev == 'a' || prev == 'e' || prev == 'i' || prev == 'o' || prev == 'u' {
+				return s + "s"
+			}
+		}
+		return s[:len(s)-1] + "ies"
+	}
+	if strings.HasSuffix(s, "s") || strings.HasSuffix(s, "x") ||
+		strings.HasSuffix(s, "sh") || strings.HasSuffix(s, "ch") {
+		return s + "es"
+	}
+	return s + "s"
+}
+
 // generateSharedHeader emits the shared, once-per-proto-file declarations:
 // package, imports needed for ormTracer, the ormTracer var, and blank-identifier guards.
 func generateSharedHeader(g *protogen.GeneratedFile, file *protogen.File, hasTimestamp bool) {
@@ -587,6 +739,16 @@ func generateSchema(g *protogen.GeneratedFile, ent entityInfo, msgName string) {
 
 	for _, f := range ent.fields {
 		ormType := protoKindToOrmType(f.field, f.isTimestamp)
+		// Use SERIAL/BIGSERIAL for auto-increment integer PKs.
+		if f.autoIncrement && f.isPK {
+			switch f.field.Desc.Kind() {
+			case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+				protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+				ormType = "orm.TypeBigSerial"
+			default:
+				ormType = "orm.TypeSerial"
+			}
+		}
 		g.P("			{")
 		g.P(`				Name:    "`, f.columnName, `",`)
 		g.P("				Type:    ", ormType, ",")
@@ -596,10 +758,33 @@ func generateSchema(g *protogen.GeneratedFile, ent entityInfo, msgName string) {
 		if f.notNull || f.isPK {
 			g.P("				NotNull: true,")
 		}
+		if f.unique {
+			g.P("				Unique: true,")
+		}
 		g.P("			},")
 	}
 
 	g.P("		},")
+
+	// Generate indexes for FK fields (inferred references).
+	var fkCols []string
+	for _, f := range ent.fields {
+		if f.references != "" && !f.isPK {
+			fkCols = append(fkCols, f.columnName)
+		}
+	}
+	if len(fkCols) > 0 {
+		g.P("		Indexes: []orm.IndexSchema{")
+		for _, col := range fkCols {
+			idxName := "idx_" + ent.tableName + "_" + col
+			g.P("			{")
+			g.P(`				Name:   "`, idxName, `",`)
+			g.P(`				Fields: []string{"`, col, `"},`)
+			g.P("			},")
+		}
+		g.P("		},")
+	}
+
 	g.P("	}")
 	g.P("}")
 	g.P()

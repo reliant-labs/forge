@@ -121,7 +121,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
 		return fmt.Errorf("create pkg/config: %w", err)
 	}
 
-	content, err := templates.RenderProjectTemplate("config.go.tmpl", data)
+	content, err := templates.ProjectTemplates.Render("config.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render config.go.tmpl: %w", err)
 	}
@@ -132,7 +132,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
 	}
 
 	// Generate .env.example at the project root
-	envContent, err := templates.RenderProjectTemplate("env.example.tmpl", data)
+	envContent, err := templates.ProjectTemplates.Render("env.example.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render env.example.tmpl: %w", err)
 	}

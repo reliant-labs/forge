@@ -5,12 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/bufbuild/protocompile/ast"
 	"github.com/bufbuild/protocompile/parser"
 	"github.com/bufbuild/protocompile/reporter"
-	"github.com/jinzhu/inflection"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // EntityDef represents a parsed database entity from proto/db/.
@@ -109,7 +108,7 @@ func parseEntityMessage(msg *ast.MessageNode, protoFile string) *EntityDef {
 		fieldName := string(fieldNode.Name.AsIdentifier())
 		protoType := extractFieldType(fieldNode)
 		goType := entityProtoTypeToGoType(protoType)
-		goName := toGoFieldName(fieldName)
+		goName := naming.ToPascalCase(fieldName)
 
 		ef := EntityField{
 			Name:      fieldName,
@@ -128,7 +127,7 @@ func parseEntityMessage(msg *ast.MessageNode, protoFile string) *EntityDef {
 		if strings.HasSuffix(fieldName, "_id") && fieldName != "id" {
 			ef.IsFK = true
 			refEntity := strings.TrimSuffix(fieldName, "_id")
-			ef.FKTable = inflection.Plural(refEntity)
+			ef.FKTable = naming.Pluralize(refEntity)
 		}
 
 		fields = append(fields, ef)
@@ -141,7 +140,7 @@ func parseEntityMessage(msg *ast.MessageNode, protoFile string) *EntityDef {
 
 	return &EntityDef{
 		Name:      name,
-		TableName: inflection.Plural(toSnakeCase(name)),
+		TableName: naming.Pluralize(naming.ToSnakeCase(name)),
 		PkField:   pkField,
 		PkGoType:  pkGoType,
 		Fields:    fields,
@@ -178,50 +177,3 @@ func entityProtoTypeToGoType(protoType string) string {
 	}
 }
 
-// toGoFieldName converts a snake_case proto field name to PascalCase Go name,
-// respecting Go initialisms (ID, URL, HTTP, etc.).
-func toGoFieldName(s string) string {
-	var b strings.Builder
-	upNext := true
-	parts := splitFieldName(s)
-
-	for _, part := range parts {
-		if isGoInitialism(part) {
-			b.WriteString(strings.ToUpper(part))
-		} else if upNext || true {
-			b.WriteString(strings.ToUpper(part[:1]) + part[1:])
-		}
-	}
-	return b.String()
-}
-
-// splitFieldName splits a snake_case name into parts.
-func splitFieldName(s string) []string {
-	return strings.Split(s, "_")
-}
-
-// isGoInitialism checks if a word is a known Go initialism.
-func isGoInitialism(word string) bool {
-	upper := strings.ToUpper(word)
-	switch upper {
-	case "ACL", "API", "ASCII", "CPU", "CSS", "DB", "DNS", "EOF", "GUID",
-		"HTML", "HTTP", "HTTPS", "ID", "IP", "JSON", "LHS", "MCP", "QPS",
-		"RAM", "RHS", "RPC", "SLA", "SMTP", "SQL", "SSH", "TCP",
-		"TLS", "TTL", "UDP", "UI", "UID", "UUID", "URI", "URL",
-		"UTF8", "VM", "XML", "XMPP", "XSRF", "XSS":
-		return true
-	}
-	return false
-}
-
-// toSnakeCase converts PascalCase to snake_case for table name inference.
-func toSnakeCase(s string) string {
-	var result []rune
-	for i, r := range s {
-		if i > 0 && unicode.IsUpper(r) {
-			result = append(result, '_')
-		}
-		result = append(result, unicode.ToLower(r))
-	}
-	return string(result)
-}

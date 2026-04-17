@@ -100,7 +100,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 	data := mapServiceDefToTemplateData(svc)
 
 	// Render service.go from embedded template
-	serviceContent, err := templates.RenderServiceTemplate("service/service.go.tmpl", data)
+	serviceContent, err := templates.ServiceTemplates.Render("service.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render service.go.tmpl: %w", err)
 	}
@@ -113,7 +113,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 	// comment; skip it and let the user (or subsequent forge generate runs) create
 	// it with actual content.
 	if len(data.Methods) > 0 {
-		handlersContent, err := templates.RenderServiceTemplate("service/handlers.go.tmpl", data)
+		handlersContent, err := templates.ServiceTemplates.Render("handlers.go.tmpl", data)
 		if err != nil {
 			return fmt.Errorf("render handlers.go.tmpl: %w", err)
 		}
@@ -123,7 +123,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 	}
 
 	// Render handlers_test.go from embedded template
-	unitTestContent, err := templates.RenderServiceTemplate("service/unit_test.go.tmpl", data)
+	unitTestContent, err := templates.ServiceTemplates.Render("unit_test.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render unit_test.go.tmpl: %w", err)
 	}
@@ -132,7 +132,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 	}
 
 	// Render integration_test.go from embedded template
-	integrationTestContent, err := templates.RenderServiceTemplate("service/integration_test.go.tmpl", data)
+	integrationTestContent, err := templates.ServiceTemplates.Render("integration_test.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render integration_test.go.tmpl: %w", err)
 	}
@@ -150,7 +150,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 		ServiceName: data.HandlerName,
 		Module:      data.Module,
 	}
-	authzContent, err := templates.RenderServiceTemplate("service/authorizer.go.tmpl", authzData)
+	authzContent, err := templates.ServiceTemplates.Render("authorizer.go.tmpl", authzData)
 	if err != nil {
 		return fmt.Errorf("render authorizer.go.tmpl: %w", err)
 	}
@@ -167,7 +167,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 func RegenerateServiceFile(svc ServiceDef, targetDir string) error {
 	data := mapServiceDefToTemplateData(svc)
 
-	serviceContent, err := templates.RenderServiceTemplate("service/service.go.tmpl", data)
+	serviceContent, err := templates.ServiceTemplates.Render("service.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render service.go.tmpl: %w", err)
 	}
@@ -213,29 +213,18 @@ func GenerateMock(svc ServiceDef, mockDir string) (written bool, err error) {
 	return true, nil
 }
 
-// BootstrapServiceData holds data for a single service in the bootstrap template.
-type BootstrapServiceData struct {
-	Name      string // e.g. "api"
+// BootstrapComponentData represents a bootstrappable component (service, package, worker, operator).
+type BootstrapComponentData struct {
+	Name      string // e.g. "api", "cache", "email_sender"
 	Package   string // e.g. "api" (Go package name)
 	FieldName string // e.g. "API" (exported struct field)
 	Fallible  bool   // true if New() returns (T, error)
 }
 
-// BootstrapPackageData holds data for a single internal package in the bootstrap template.
-type BootstrapPackageData struct {
-	Name      string // e.g. "cache"
-	Package   string // e.g. "cache" (Go package name)
-	FieldName string // e.g. "Cache" (exported struct field)
-	Fallible  bool   // true if New() returns (T, error)
-}
-
-// BootstrapWorkerData holds data for a single worker in the bootstrap template.
-type BootstrapWorkerData struct {
-	Name      string // e.g. "email_sender"
-	Package   string // e.g. "email_sender" (Go package name)
-	FieldName string // e.g. "EmailSender" (exported struct field)
-	Fallible  bool   // true if New() returns (T, error)
-}
+// Type aliases for backward compatibility and readability.
+type BootstrapServiceData = BootstrapComponentData
+type BootstrapPackageData = BootstrapComponentData
+type BootstrapWorkerData = BootstrapComponentData
 
 // WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.project.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
@@ -256,13 +245,7 @@ func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerDat
 	return workers
 }
 
-// BootstrapOperatorData holds data for a single operator in the bootstrap template.
-type BootstrapOperatorData struct {
-	Name      string // e.g. "workspace"
-	Package   string // e.g. "workspace" (Go package name)
-	FieldName string // e.g. "Workspace" (exported struct field)
-	Fallible  bool   // true if New() returns (T, error)
-}
+type BootstrapOperatorData = BootstrapComponentData
 
 // OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.project.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
@@ -331,7 +314,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		HasFallible: hasFallible,
 	}
 
-	content, err := templates.RenderProjectTemplate("bootstrap.go.tmpl", data)
+	content, err := templates.ProjectTemplates.Render("bootstrap.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render bootstrap.go.tmpl: %w", err)
 	}
@@ -472,7 +455,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		MultiTenantEnabled: multiTenantEnabled,
 	}
 
-	content, err := templates.RenderProjectTemplate("bootstrap_testing.go.tmpl", data)
+	content, err := templates.ProjectTemplates.Render("bootstrap_testing.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render bootstrap_testing.go.tmpl: %w", err)
 	}
@@ -499,7 +482,7 @@ func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool) er
 		ModulePath:    modulePath,
 	}
 
-	content, err := templates.RenderProjectTemplate("migrate.go.tmpl", data)
+	content, err := templates.ProjectTemplates.Render("migrate.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render migrate.go.tmpl: %w", err)
 	}
@@ -589,7 +572,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHand
 	missingSvc.Methods = missing
 	data := mapServiceDefToTemplateData(missingSvc)
 
-	content, err := templates.RenderServiceTemplate("service/handlers_gen.go.tmpl", data)
+	content, err := templates.ServiceTemplates.Render("handlers_gen.go.tmpl", data)
 	if err != nil {
 		return nil, fmt.Errorf("render handlers_gen.go.tmpl: %w", err)
 	}
@@ -604,7 +587,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHand
 
 	integrationTestPath := filepath.Join(targetDir, "integration_test.go")
 	if isPlaceholderIntegrationTest(integrationTestPath) {
-		testContent, err := templates.RenderServiceTemplate("service/integration_test.go.tmpl", fullData)
+		testContent, err := templates.ServiceTemplates.Render("integration_test.go.tmpl", fullData)
 		if err != nil {
 			return nil, fmt.Errorf("render integration_test.go.tmpl: %w", err)
 		}
@@ -615,7 +598,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHand
 
 	handlersTestPath := filepath.Join(targetDir, "handlers_test.go")
 	if isPlaceholderUnitTest(handlersTestPath) {
-		testContent, err := templates.RenderServiceTemplate("service/unit_test.go.tmpl", fullData)
+		testContent, err := templates.ServiceTemplates.Render("unit_test.go.tmpl", fullData)
 		if err != nil {
 			return nil, fmt.Errorf("render unit_test.go.tmpl: %w", err)
 		}
@@ -732,7 +715,7 @@ func GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, ta
 		DatabaseDriver: databaseDriver,
 	}
 
-	content, err := templates.RenderProjectTemplate("setup.go.tmpl", data)
+	content, err := templates.ProjectTemplates.Render("setup.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render setup.go.tmpl: %w", err)
 	}

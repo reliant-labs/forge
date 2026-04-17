@@ -19,8 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/pkg/dialects/sqlite"
 	"github.com/reliant-labs/forge/pkg/orm"
 )
@@ -257,7 +257,7 @@ func parseFieldLine(line string) (columnDef, bool) {
 	}
 
 	col := columnDef{
-		name:      toSnake(fieldName),
+		name:      naming.ToSnakeCase(fieldName),
 		protoType: protoType,
 	}
 
@@ -531,7 +531,7 @@ func generateCreateIndex(tableName string, idx indexDef) string {
 }
 
 func inferTableName(messageName string) string {
-	s := toSnake(messageName)
+	s := naming.ToSnakeCase(messageName)
 	if strings.HasSuffix(s, "y") {
 		return s[:len(s)-1] + "ies"
 	}
@@ -541,13 +541,3 @@ func inferTableName(messageName string) string {
 	return s + "s"
 }
 
-func toSnake(s string) string {
-	var result []rune
-	for i, r := range s {
-		if i > 0 && unicode.IsUpper(r) {
-			result = append(result, '_')
-		}
-		result = append(result, unicode.ToLower(r))
-	}
-	return string(result)
-}

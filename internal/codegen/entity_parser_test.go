@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 func TestParseEntityProtos_BasicEntity(t *testing.T) {
@@ -170,7 +172,7 @@ message Invoice {
 	}
 }
 
-func TestToGoFieldName(t *testing.T) {
+func TestToPascalCase(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
@@ -185,9 +187,9 @@ func TestToGoFieldName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := toGoFieldName(tt.input)
+		got := naming.ToPascalCase(tt.input)
 		if got != tt.want {
-			t.Errorf("toGoFieldName(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("naming.ToPascalCase(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

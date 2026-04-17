@@ -83,9 +83,27 @@ forge test
 forge test --service users
 ```
 
+## Idempotency Keys
+
+Mutating RPCs (Create / Update / Delete) should be annotated with `idempotency_key = true` in the proto so callers know to pass a per-request key. The generated client and docs surface this expectation; the handler is responsible for enforcing it.
+
+```proto
+rpc Create(CreateRequest) returns (CreateResponse) {
+  option (forge.options.v1.method_options) = {
+    auth_required: true
+    idempotency_key: true
+  };
+}
+```
+
+Consumers pass the key via the `Idempotency-Key` request header (case-insensitive). Read it from `req.Header().Get("Idempotency-Key")` in the handler, look up any prior result keyed by `(caller, method, key)`, and either replay the stored response or proceed and persist the result. A short TTL (24h is typical) bounds storage.
+
+Read-only methods (Get, List, Search) are naturally idempotent and do not need a key.
+
 ## Common Pitfalls
 
 1. **Stale `gen/`** — Run `forge generate` after any proto change. Type mismatches usually mean you forgot.
 2. **Wrong error codes** — `NotFound` vs `InvalidArgument` vs `Internal` matter for clients. Choose deliberately.
 3. **Missing auth checks** — Ensure auth middleware covers all routes, or validate in the handler.
 4. **Hand-editing `gen/`** — Changes will be overwritten. Always fix the proto source.
+5. **Ignoring `idempotency_key`** — If a method is annotated with `idempotency_key = true`, the handler must read and honor the `Idempotency-Key` header. Otherwise the annotation is misleading.

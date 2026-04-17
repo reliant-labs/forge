@@ -1,0 +1,145 @@
+# CI for forge itself.
+#
+# This workflow exists so forge's own changes can't regress the
+# scaffolds users depend on. It is intentionally modeled after the CI
+# workflow that the scaffold's own ci.yml.tmpl emits — if we dogfood
+# that pattern here, we notice when it's awkward to use in anger.
+#
+# Two tiers:
+#
+#   fast-tests    — runs on every push and PR. `go test ./...` (~seconds).
+#                   This is the gate that blocks merges.
+#
+#   e2e-tests     — runs only on PRs targeting main, and on pushes to
+#                   main. `go test -tags=e2e ./...` scaffolds a full
+#                   project, builds it, and runs its toolchain. Slow
+#                   (minutes). Gated behind the build tag so it doesn't
+#                   slow down the common case.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel older in-flight runs on the same ref so force-pushes don't
+  # pile up. CI minutes are finite.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-tests:
+    name: Fast tests (unit + template snapshots)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Read the Go version from go.mod so CI stays in lockstep
+          # with the module's declared version. Do not hard-code a
+          # version here — it drifts.
+          go-version-file: go.mod
+          cache: false # we handle the cache explicitly below
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -race surfaces concurrency bugs that unit tests sometimes
+        # mask. The fast tier is fast enough that -race doesn't hurt.
+        run: go test -race ./...
+
+  e2e-tests:
+    name: E2E scaffold tests
+    # Only on PRs to main and on main branch pushes. Skipping this
+    # for feature branches keeps the fast-feedback loop short; the
+    # gate is at the PR boundary.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The scaffold test builds forge, scaffolds a project, runs go
+    # build/vet/test inside it, and optionally calls npm/kcl. 20min
+    # should be comfortable; adjust upward only after profiling.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-e2e-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-e2e-
+            ${{ runner.os }}-go-
+
+      # Node powers the Tier 5 frontend build test. If Node is missing
+      # the test skips cleanly, but we want CI to exercise it, not skip.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # Don't auto-cache via setup-node: the test picks its own
+          # temporary working directory so there's nothing stable to
+          # hash against.
+
+      # buf powers the proto-lint optional check inside the Tier 3 test.
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      # golangci-lint powers another optional Tier 3 check.
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          install-mode: binary
+          version: latest
+          # We invoke the tool from inside the generated project, not
+          # on forge itself, so skip the default action run.
+          args: --version
+
+      # kcl powers the Tier 4 render test. This is an intentionally
+      # minimal installation — upstream doesn't publish a first-party
+      # action so we pin via the install script.
+      - name: Install kcl
+        run: |
+          set -euo pipefail
+          curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+          # install-cli.sh drops the binary at /usr/local/kclvm/bin/kcl
+          # but not all releases add it to PATH. Add it defensively.
+          echo "/usr/local/kclvm/bin" >> "$GITHUB_PATH"
+
+      - name: go test -tags=e2e
+        # Limit parallelism: each e2e subtest scaffolds a project and
+        # runs its full toolchain. Running them in parallel on the
+        # standard GitHub runner starves it for memory and produces
+        # flaky failures that look like template bugs.
+        run: go test -tags=e2e -count=1 -p 1 ./...

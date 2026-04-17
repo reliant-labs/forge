@@ -10,6 +10,26 @@ import (
 	"connectrpc.com/connect"
 )
 
+// unauthenticatedProcedures is an explicit allow-list of RPC procedures that
+// bypass the auth interceptor. Entries must be full procedure strings of the
+// form "/package.Service/Method" — no substring matching.
+//
+// Extend this set to expose additional unauthenticated endpoints (e.g. public
+// health, readiness, or version RPCs). Keeping the list exact prevents
+// accidentally bypassing auth for any procedure whose name happens to contain
+// a matching substring (e.g. a user-defined "HealthReport" RPC).
+var unauthenticatedProcedures = map[string]struct{}{
+	"/grpc.health.v1.Health/Check": {},
+	"/grpc.health.v1.Health/Watch": {},
+}
+
+// isUnauthenticatedProcedure reports whether the given full procedure string
+// is in the explicit allow-list and should skip authentication.
+func isUnauthenticatedProcedure(procedure string) bool {
+	_, ok := unauthenticatedProcedures[procedure]
+	return ok
+}
+
 // AuthInterceptor creates a Connect RPC authentication interceptor that
 // handles both unary and streaming RPCs.
 // If no Bearer token is present, the request proceeds unauthenticated.
@@ -21,7 +41,7 @@ type authInterceptor struct{}
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if strings.Contains(req.Spec().Procedure, "Health") {
+		if isUnauthenticatedProcedure(req.Spec().Procedure) {
 			return next(ctx, req)
 		}
 
@@ -40,7 +60,7 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		if strings.Contains(conn.Spec().Procedure, "Health") {
+		if isUnauthenticatedProcedure(conn.Spec().Procedure) {
 			return next(ctx, conn)
 		}
 
@@ -69,7 +89,7 @@ func authenticateFromHeader(ctx context.Context, authorization string) (context.
 
 	claims, err := ValidateToken(token)
 	if err != nil {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %v", err))
+		return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %w", err))
 	}
 
 	return ContextWithClaims(ctx, claims), nil
@@ -104,8 +124,20 @@ func VerifyAuth(ctx context.Context, requiredRoles ...string) error {
 	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("insufficient permissions"))
 }
 
-// ValidateToken validates a bearer token.
-// Projects with real authentication should replace this implementation.
-func ValidateToken(token string) (*Claims, error) {
+// validateTokenFn is the package-level token validator. It is a variable
+// (rather than a function) so projects with real authentication can swap
+// it in during bootstrap, and so tests can install a stub without resorting
+// to build tags or linker tricks.
+//
+// The default implementation refuses every token with a clear error; leaving
+// the middleware wired with a dud validator is always a configuration bug.
+var validateTokenFn = func(token string) (*Claims, error) {
 	return nil, fmt.Errorf("token validation is not configured")
+}
+
+// ValidateToken validates a bearer token by delegating to validateTokenFn.
+// Projects with real authentication should replace validateTokenFn during
+// startup (e.g. with a JWT or API-key validator).
+func ValidateToken(token string) (*Claims, error) {
+	return validateTokenFn(token)
 }

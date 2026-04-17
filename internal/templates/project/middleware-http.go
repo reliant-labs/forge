@@ -100,7 +100,7 @@ func httpLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", rec.status),
-				slog.String("duration", time.Since(start).String()),
+				slog.Duration("duration", time.Since(start)),
 			}
 			if spanCtx := trace.SpanContextFromContext(r.Context()); spanCtx.HasTraceID() {
 				attrs = append(attrs, slog.String("trace_id", spanCtx.TraceID().String()))
@@ -132,7 +132,7 @@ func httpAudit(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("path", r.URL.Path),
 				slog.String("peer", r.RemoteAddr),
 				slog.Int("status", rec.status),
-				slog.String("duration", time.Since(start).String()),
+				slog.Duration("duration", time.Since(start)),
 				slog.Time("timestamp", start),
 			}
 

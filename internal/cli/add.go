@@ -44,6 +44,24 @@ var goPredeclaredIdentifiers = map[string]bool{
 	"min": true, "max": true, "clear": true,
 }
 
+// reservedServiceNames are names that conflict with forge's worker/scheduler
+// subsystems. Using them as HTTP Connect service names causes confusion.
+var reservedServiceNames = map[string]bool{
+	"worker": true, "scheduler": true, "cron": true, "job": true,
+}
+
+// validateServiceName checks that a name is a valid Go identifier and not a
+// reserved service name. For background workers use 'forge add worker <name>'.
+func validateServiceName(name string) error {
+	if err := validateIdentifier(name); err != nil {
+		return err
+	}
+	if reservedServiceNames[strings.ToLower(name)] {
+		return fmt.Errorf("%q is reserved; for background workers use 'forge add worker <name>'", name)
+	}
+	return nil
+}
+
 // validateIdentifier checks that a name is a valid Go identifier and not a keyword.
 func validateIdentifier(name string) error {
 	if name == "" {
@@ -157,7 +175,7 @@ Example:
 }
 
 func runAddService(name string, port int) error {
-	if err := validateIdentifier(name); err != nil {
+	if err := validateServiceName(name); err != nil {
 		return fmt.Errorf("invalid service name: %w", err)
 	}
 

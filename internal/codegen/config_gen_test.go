@@ -235,6 +235,55 @@ func TestGenerateConfigLoader_BoolField(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigLoader_PortRangeCheck(t *testing.T) {
+	targetDir := t.TempDir()
+
+	messages := []ConfigMessage{
+		{
+			Name: "AppConfig",
+			Fields: []ConfigField{
+				{
+					Name:         "port",
+					GoName:       "Port",
+					GoType:       "int32",
+					ProtoType:    "int32",
+					EnvVar:       "PORT",
+					Flag:         "port",
+					DefaultValue: "8080",
+					Description:  "HTTP server port",
+				},
+			},
+		},
+	}
+
+	if err := GenerateConfigLoader(messages, targetDir); err != nil {
+		t.Fatalf("GenerateConfigLoader() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "config", "config.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	content := string(data)
+
+	// Port must be validated via ParseUint with bitSize=16 (1-65535).
+	if !strings.Contains(content, `strconv.ParseUint(v, 10, 16)`) {
+		t.Error("config.go should validate PORT with ParseUint bitSize=16")
+	}
+
+	// Port parsing must NOT use the unchecked int32 path (which would allow
+	// values > 65535 to silently wrap/truncate).
+	if strings.Contains(content, `strconv.ParseInt(v, 10, 32)`) {
+		t.Error("config.go should not use ParseInt 32-bit path for PORT")
+	}
+
+	// Must reject port == 0 explicitly.
+	if !strings.Contains(content, "must be in [1, 65535]") {
+		t.Error("config.go should emit a clear error for out-of-range PORT")
+	}
+}
+
 func TestGenerateConfigLoader_EndToEnd_ParseAndGenerate(t *testing.T) {
 	tempDir := t.TempDir()
 

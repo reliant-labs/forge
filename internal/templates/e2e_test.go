@@ -21,9 +21,12 @@ func TestE2EWorkflowTemplate_DockerCompose(t *testing.T) {
 	for _, want := range []string{
 		"name: E2E Tests",
 		"docker compose -f docker-compose.yml up -d --wait",
-		"go test -v -count=1 -timeout=20m ./e2e/...",
+		"task test:e2e",
 		"docker compose -f docker-compose.yml down -v",
-		"go build -o ./bin/myapp ./cmd/...",
+		"task build",
+		"task deps",
+		"run-e2e",
+		"workflow_dispatch",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing in output: %q", want)
@@ -40,6 +43,7 @@ func TestE2EWorkflowTemplate_K3d(t *testing.T) {
 		GoVersion:    "1.25",
 		Runtime:      "k3d",
 		HasFrontends: true,
+		FrontendPath: "frontends/web",
 	}
 	content, err := RenderCITemplate("github", "e2e.yml.tmpl", data)
 	if err != nil {
@@ -52,6 +56,9 @@ func TestE2EWorkflowTemplate_K3d(t *testing.T) {
 		"k3d image import",
 		"kcl run deploy/kcl/dev/main.k",
 		"frontends/*/Dockerfile",
+		"frontends/web/package.json",
+		"task test:e2e",
+		"run-e2e",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing in output: %q", want)

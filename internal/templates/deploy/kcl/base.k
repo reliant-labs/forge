@@ -55,8 +55,15 @@ OTEL_ENV: [schema.EnvVar] = [
 
 COMMON_ENV: [schema.EnvVar] = []
 
+# kcl v0.11 rejects fully-qualified schema literals inside a lambda body
+# (e.g. `schema.InitContainer { ... }`); the parser only accepts bare
+# identifiers for schema instantiation there. Binding the schema to a local
+# alias keeps us importing `schema` once at the module level while letting
+# the lambda body use the unqualified form.
+_InitContainer = schema.InitContainer
+
 migration_init_container = lambda image: str, db_env: [schema.EnvVar] -> schema.InitContainer {
-    schema.InitContainer {
+    _InitContainer {
         name = "run-migrations"
         image = image
         command = ["./migrate", "up"]

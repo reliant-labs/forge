@@ -54,17 +54,11 @@ func managedFiles() []managedFile {
 		// Templated cmd files
 		{templateName: "cmd-server.go.tmpl", destPath: "cmd/server.go", templated: true, tier: Tier1},
 		{templateName: "cmd-root.go.tmpl", destPath: "cmd/main.go", templated: true, tier: Tier1},
+		{templateName: "cmd-db.go.tmpl", destPath: "cmd/db.go", templated: true, tier: Tier1},
 		{templateName: "cmd-version.go.tmpl", destPath: "cmd/version.go", templated: true, tier: Tier1},
 
 		// Static cmd files
 		{templateName: "otel.go", destPath: "cmd/otel.go", templated: false, tier: Tier1},
-
-		// Middleware (static infrastructure)
-		{templateName: "middleware-recovery.go", destPath: "pkg/middleware/recovery.go", templated: false, tier: Tier1},
-		{templateName: "middleware-logging.go", destPath: "pkg/middleware/logging.go", templated: false, tier: Tier1},
-		{templateName: "middleware-http.go", destPath: "pkg/middleware/http.go", templated: false, tier: Tier1},
-		{templateName: "middleware-audit.go", destPath: "pkg/middleware/audit.go", templated: false, tier: Tier1},
-		{templateName: "middleware-authz.go", destPath: "pkg/middleware/authz.go", templated: false, tier: Tier1},
 
 		// ── Tier 2: Checksum-protected, committed to git ──
 
@@ -77,32 +71,65 @@ func managedFiles() []managedFile {
 		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
 		{templateName: ".gitignore", destPath: ".gitignore", templated: false, tier: Tier2},
 
-		// Middleware (commonly customized)
+		// Middleware — scaffolded once, then owned by the user.
+		// All eight files are committed to git and protected by checksum so
+		// `forge upgrade` leaves user edits alone. Treating them uniformly
+		// avoids the split-brain footgun where some middleware files were
+		// gitignored and overwritten while others were tracked.
+		{templateName: "middleware-recovery.go", destPath: "pkg/middleware/recovery.go", templated: false, tier: Tier2},
+		{templateName: "middleware-recovery_test.go", destPath: "pkg/middleware/recovery_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-logging.go", destPath: "pkg/middleware/logging.go", templated: false, tier: Tier2},
+		{templateName: "middleware-logging_test.go", destPath: "pkg/middleware/logging_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-http.go", destPath: "pkg/middleware/http.go", templated: false, tier: Tier2},
+		{templateName: "middleware-audit.go", destPath: "pkg/middleware/audit.go", templated: false, tier: Tier2},
+		{templateName: "middleware-authz.go", destPath: "pkg/middleware/authz.go", templated: false, tier: Tier2},
+		{templateName: "middleware-permissive-authz.go", destPath: "pkg/middleware/permissive_authz.go", templated: false, tier: Tier2},
 		{templateName: "middleware-cors.go", destPath: "pkg/middleware/cors.go", templated: false, tier: Tier2},
+		{templateName: "middleware-cors_test.go", destPath: "pkg/middleware/cors_test.go", templated: false, tier: Tier2},
 		{templateName: "middleware-auth.go", destPath: "pkg/middleware/auth.go", templated: false, tier: Tier2},
+		{templateName: "middleware-auth_test.go", destPath: "pkg/middleware/auth_test.go", templated: false, tier: Tier2},
 		{templateName: "middleware-claims.go", destPath: "pkg/middleware/claims.go", templated: false, tier: Tier2},
+		{templateName: "middleware-security-headers.go", destPath: "pkg/middleware/security_headers.go", templated: false, tier: Tier2},
+		{templateName: "middleware-security-headers_test.go", destPath: "pkg/middleware/security_headers_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-ratelimit.go", destPath: "pkg/middleware/ratelimit.go", templated: false, tier: Tier2},
+		{templateName: "middleware-ratelimit_test.go", destPath: "pkg/middleware/ratelimit_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-requestid.go", destPath: "pkg/middleware/requestid.go", templated: false, tier: Tier2},
+		{templateName: "middleware-requestid_test.go", destPath: "pkg/middleware/requestid_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-idempotency.go", destPath: "pkg/middleware/idempotency.go", templated: false, tier: Tier2},
+		{templateName: "middleware-idempotency_test.go", destPath: "pkg/middleware/idempotency_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-redact.go", destPath: "pkg/middleware/redact.go", templated: false, tier: Tier2},
+		{templateName: "middleware-redact_test.go", destPath: "pkg/middleware/redact_test.go", templated: false, tier: Tier2},
 	}
 }
 
 // upgradeTemplateData is the data struct used to render frozen templates.
 // Mirrors the anonymous struct in ProjectGenerator.Generate().
 type upgradeTemplateData struct {
-	Name           string
-	ProtoName      string
-	Module         string
-	ServiceName    string
-	ServicePort    int
-	ProjectName    string
-	FrontendName   string
-	FrontendPort   int
-	GoVersion      string
-	GoVersionMinor string
+	Name                   string
+	ProtoName              string
+	Module                 string
+	ServiceName            string
+	ServicePort            int
+	ProjectName            string
+	FrontendName           string
+	FrontendPort           int
+	GoVersion              string
+	GoVersionMinor         string
+	DockerBuilderGoVersion string
 }
 
 // buildTemplateData constructs the template data from a project config,
 // matching what ProjectGenerator.Generate() would produce.
-func buildTemplateData(cfg *config.ProjectConfig) upgradeTemplateData {
-	goVersion := detectGoVersion()
+//
+// projectDir (when non-empty) is used to read the project's go.mod `go`
+// directive so upgrade doesn't silently retarget the project to the host's
+// Go version. When projectDir is empty or go.mod can't be parsed, we fall
+// back to the host's detected version.
+func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemplateData {
+	goVersion := goVersionFromGoMod(projectDir)
+	if goVersion == "" {
+		goVersion = detectGoVersion()
+	}
 	protoName := strings.ReplaceAll(cfg.Name, "-", "_")
 
 	serviceName := "api"
@@ -124,16 +151,17 @@ func buildTemplateData(cfg *config.ProjectConfig) upgradeTemplateData {
 	}
 
 	return upgradeTemplateData{
-		Name:           cfg.Name,
-		ProtoName:      protoName,
-		Module:         cfg.ModulePath,
-		ServiceName:    serviceName,
-		ServicePort:    servicePort,
-		ProjectName:    cfg.Name,
-		FrontendName:   frontendName,
-		FrontendPort:   frontendPort,
-		GoVersion:      goVersion,
-		GoVersionMinor: goVersionMinor(goVersion),
+		Name:                   cfg.Name,
+		ProtoName:              protoName,
+		Module:                 cfg.ModulePath,
+		ServiceName:            serviceName,
+		ServicePort:            servicePort,
+		ProjectName:            cfg.Name,
+		FrontendName:           frontendName,
+		FrontendPort:           frontendPort,
+		GoVersion:              goVersion,
+		GoVersionMinor:         goVersionMinor(goVersion),
+		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 	}
 }
 
@@ -273,7 +301,7 @@ func simpleDiff(path string, old, new []byte) string {
 // RegenerateInfraFiles regenerates all Tier 1 (always-overwrite) infrastructure
 // files. Called by forge generate to keep infrastructure in sync with templates.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, projectDir)
 	for _, f := range managedFiles() {
 		if f.tier != Tier1 {
 			continue
@@ -299,7 +327,7 @@ func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 // When checkOnly is true, no files are written — it only reports what would change.
 // When force is true, user-modified files are overwritten without prompting.
 func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly bool) ([]UpgradeResult, error) {
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, projectDir)
 
 	cs, err := LoadChecksums(projectDir)
 	if err != nil {

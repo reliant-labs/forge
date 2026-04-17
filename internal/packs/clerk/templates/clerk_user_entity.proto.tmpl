@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package db.v1;
+
+option go_package = "{{ .ModulePath }}/gen/db/v1;dbv1";
+
+import "forge/options/v1/entity.proto";
+import "forge/options/v1/field.proto";
+
+// User represents an application user synced from Clerk.
+// Fields are populated via Clerk webhooks (user.created, user.updated).
+message User {
+  option (forge.options.v1.entity_options) = {
+    table_name: "users",
+    soft_delete: true,
+    timestamps: true
+  };
+
+  int64 id = 1 [(forge.options.v1.field_options) = {primary_key: true, auto_increment: true}];
+
+  // Clerk user ID (e.g., "user_2x..."). Unique across the application.
+  string clerk_user_id = 2 [(forge.options.v1.field_options) = {unique: true, not_null: true}];
+
+  // Primary email address synced from Clerk.
+  string email = 3 [(forge.options.v1.field_options) = {unique: true, not_null: true}];
+
+  string first_name = 4;
+  string last_name = 5;
+  string image_url = 6;
+
+  // Timestamps (created_at, updated_at, deleted_at) are managed by entity_options.
+}

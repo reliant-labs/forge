@@ -11,12 +11,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/dblint"
 )
 
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
 	proto    bool
 	contract bool
+	db       bool
 	fix      bool
 }
 
@@ -33,12 +35,14 @@ This command will:
 - Run proto linters (buf lint)
 - Run TypeScript linters for Next.js frontends (if frontends/ exists)
 - Optionally run proto method enforcement linter (--proto)
+- Optionally run DB entity lint rules (--db)
 
 Examples:
   forge lint                    # Run all standard linters
   forge lint --proto            # Run proto method enforcement linter
   forge lint --proto ./services # Run proto linter on specific path
   forge lint --contract         # Run contract interface enforcement linter
+  forge lint --db               # Run DB entity lint rules
   forge lint --fix              # Auto-fix issues where possible`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var paths []string
@@ -54,6 +58,7 @@ Examples:
 
 	cmd.Flags().BoolVar(&flags.proto, "proto", false, "Run proto method enforcement linter")
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
+	cmd.Flags().BoolVar(&flags.db, "db", false, "Run DB entity lint rules on proto/db/ files")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 
 	return cmd
@@ -66,6 +71,9 @@ func runLint(flags lintFlags, paths []string) error {
 	}
 	if flags.contract {
 		return runContractLinter(paths)
+	}
+	if flags.db {
+		return runDBLint()
 	}
 
 	// Load project config for lint defaults. A missing config file is fine
@@ -248,6 +256,31 @@ func resolveContractLintBinary() (string, error) {
 	return localBin, nil
 }
 
+// runDBLint runs advisory lint rules on proto/db/ entity definitions.
+// Findings are printed as warnings and never cause a non-zero exit.
+func runDBLint() error {
+	fmt.Println("🔍 Running DB entity lint rules...")
+	fmt.Println()
+
+	protoDBDir := filepath.Join("proto", "db")
+	if _, err := os.Stat(protoDBDir); os.IsNotExist(err) {
+		fmt.Println("⚠️  No proto/db/ directory found — skipping DB lint")
+		return nil
+	}
+
+	result, err := dblint.LintProtoDir(protoDBDir)
+	if err != nil {
+		return fmt.Errorf("DB lint failed: %w", err)
+	}
+
+	fmt.Print(result.FormatText())
+
+	if !result.HasWarnings() {
+		fmt.Println("✅ No DB lint warnings!")
+	}
+	return nil
+}
+
 // appendEnvIfUnset appends key=value to env only if key is not already set.
 func appendEnvIfUnset(env []string, key, value string) []string {
 	prefix := key + "="
@@ -319,6 +352,14 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	if err := runFrontendLinters(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Frontend lint failed: %v\n", err)
 		hasFailed = true
+	}
+
+	// 6. DB entity lint (advisory — warnings only, does not fail the build)
+	if dirExists("proto/db") {
+		if err := runDBLint(); err != nil {
+			// DB lint errors are non-fatal; they print warnings but don't block.
+			fmt.Fprintf(os.Stderr, "⚠️  DB lint: %v\n", err)
+		}
 	}
 
 	if hasFailed {

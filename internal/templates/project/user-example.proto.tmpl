@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package services.{{.ServiceName}}.v1;
 
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "forge/options/v1/service.proto";
 import "forge/options/v1/method.proto";
@@ -20,6 +21,7 @@ service {{.ServiceName | pascalCase}}Service {
   rpc Create(CreateRequest) returns (CreateResponse) {
     option (forge.options.v1.method_options) = {
       auth_required: true
+      idempotency_key: true
     };
   }
 
@@ -35,6 +37,7 @@ service {{.ServiceName | pascalCase}}Service {
   rpc Update(UpdateRequest) returns (UpdateResponse) {
     option (forge.options.v1.method_options) = {
       auth_required: true
+      idempotency_key: true
     };
   }
 
@@ -42,6 +45,7 @@ service {{.ServiceName | pascalCase}}Service {
   rpc Delete(DeleteRequest) returns (DeleteResponse) {
     option (forge.options.v1.method_options) = {
       auth_required: true
+      idempotency_key: true
     };
   }
 
@@ -84,11 +88,17 @@ message GetResponse {
   {{.ServiceName | singular | pascalCase}} item = 1;
 }
 
+// Update follows the Google AIP-134 convention: the resource is passed by
+// value and the caller specifies which fields to replace via update_mask.
+// If update_mask is empty the handler must treat the request as a no-op
+// (callers should always set the mask explicitly).
 message UpdateRequest {
-  string id = 1;
-  optional string name = 2;
-  optional string description = 3;
-  optional bool active = 4;
+  // The resource to update. Its `id` field identifies the target row.
+  {{.ServiceName | singular | pascalCase}} item = 1;
+
+  // Paths of the fields in `item` to replace. Use `*` to replace all
+  // mutable fields. See https://google.aip.dev/134.
+  google.protobuf.FieldMask update_mask = 2;
 }
 
 message UpdateResponse {
@@ -100,7 +110,13 @@ message DeleteRequest {
   bool hard_delete = 2;
 }
 
-message DeleteResponse {}
+// DeleteResponse returns the id that was deleted plus the server-observed
+// deletion time. This gives callers enough information to reconcile local
+// caches without a follow-up Get.
+message DeleteResponse {
+  string id = 1;
+  google.protobuf.Timestamp deleted_at = 2;
+}
 
 message ListRequest {
   int32 page_size = 1;
@@ -118,5 +134,12 @@ message ListRequest {
 message ListResponse {
   repeated {{.ServiceName | singular | pascalCase}} items = 1;
   string next_page_token = 2;
+
+  // NOTE: total_count is approximate and can be expensive for large
+  // datasets — many backends fall back to `COUNT(*)` which scans the
+  // filtered index. For hot list endpoints consider either:
+  //   (a) dropping this field and relying on cursor-based pagination, or
+  //   (b) moving exact counts to a dedicated Count RPC so callers opt in.
+  // See https://google.aip.dev/158 for the AIP position on this tradeoff.
   int32 total_count = 3;
 }

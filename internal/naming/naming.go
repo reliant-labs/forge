@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/jinzhu/inflection"
 )
 
 // ToPascalCase converts a hyphenated, underscored, or camelCase name to PascalCase.
@@ -95,6 +97,19 @@ func ToSnakeCase(s string) string {
 		prev = r
 	}
 	return b.String()
+}
+
+// Pluralize returns the English plural form of a word using the inflection library.
+func Pluralize(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return inflection.Plural(s)
+}
+
+// IsGoInitialism reports whether word (case-insensitive) is a known Go initialism.
+func IsGoInitialism(word string) bool {
+	return GoInitialismsMap[strings.ToLower(word)]
 }
 
 // ToExportedFieldName converts a lowercase package/field name to an exported

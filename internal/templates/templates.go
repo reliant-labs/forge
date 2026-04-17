@@ -57,23 +57,71 @@ func stripBuildIgnore(data []byte) []byte {
 	return data
 }
 
-// GetProjectTemplate returns the raw content of a project template file.
-// The name should be relative to the project/ directory (e.g. "go.mod.tmpl").
-// If the file starts with a //go:build ignore directive, it is stripped.
-func GetProjectTemplate(name string) ([]byte, error) {
-	data, err := templateFS.ReadFile(path.Join("project", filepath.ToSlash(name)))
+// TemplateCategory provides Get, Render, and List operations for a specific
+// template directory within the embedded filesystem.
+type TemplateCategory struct {
+	basePath string
+}
+
+// Get returns the raw bytes of a template file. Any //go:build ignore
+// directives are stripped from the output.
+func (c TemplateCategory) Get(name string) ([]byte, error) {
+	data, err := templateFS.ReadFile(path.Join(c.basePath, filepath.ToSlash(name)))
 	if err != nil {
 		return nil, err
 	}
 	return stripBuildIgnore(data), nil
 }
 
-// renderTemplate is the shared implementation for all Render*Template functions.
-// It reads a template file from the embedded FS at basePath/name, and if the file
-// has a .tmpl suffix it parses and executes it with the shared FuncMap. Non-.tmpl
-// files are returned as-is.
-func renderTemplate(fsys embed.FS, basePath, name string, data interface{}) ([]byte, error) {
-	content, err := fsys.ReadFile(path.Join(basePath, filepath.ToSlash(name)))
+// Render executes a template with the given data and returns the result.
+func (c TemplateCategory) Render(name string, data interface{}) ([]byte, error) {
+	return RenderFromFS(templateFS, c.basePath, name, data)
+}
+
+// List returns all template names in the category (recursive).
+func (c TemplateCategory) List(subdir string) ([]string, error) {
+	return listTemplates(path.Join(c.basePath, subdir), true)
+}
+
+// ListFlat returns only direct children (non-recursive).
+func (c TemplateCategory) ListFlat(subdir string) ([]string, error) {
+	return listTemplates(path.Join(c.basePath, subdir), false)
+}
+
+// Category instances for each template directory.
+var (
+	ProjectTemplates     = TemplateCategory{basePath: "project"}
+	FrontendTemplates    = TemplateCategory{basePath: "frontend"}
+	DeployTemplates      = TemplateCategory{basePath: "deploy"}
+	TestTemplates        = TemplateCategory{basePath: "test"}
+	InternalPkgTemplates = TemplateCategory{basePath: "internal-package"}
+	ServiceTemplates     = TemplateCategory{basePath: "service"}
+	WebhookTemplates     = TemplateCategory{basePath: "webhook"}
+	MiddlewareTemplates  = TemplateCategory{basePath: "middleware"}
+	WorkerTemplates      = TemplateCategory{basePath: "worker"}
+	OperatorTemplates    = TemplateCategory{basePath: "operator"}
+)
+
+// CITemplates returns a TemplateCategory for a specific CI provider.
+func CITemplates(provider string) TemplateCategory {
+	return TemplateCategory{basePath: path.Join("ci", provider)}
+}
+
+// InternalPkgKindTemplates returns a TemplateCategory for a specific
+// internal-package kind subdirectory.
+func InternalPkgKindTemplates(kind string) TemplateCategory {
+	return TemplateCategory{basePath: path.Join("internal-package", kind)}
+}
+
+// RenderFromFS renders a template from an arbitrary fs.FS. It reads the file at
+// basePath/name, and if the name has a .tmpl suffix it parses and executes it
+// with the shared FuncMap. Non-.tmpl files are returned as-is. Any //go:build
+// ignore directives are stripped from the output.
+//
+// This is the canonical template-rendering function used by both the built-in
+// template helpers and the pack system.
+func RenderFromFS(fsys fs.FS, basePath, name string, data interface{}) ([]byte, error) {
+	content, err := fs.ReadFile(fsys, path.Join(basePath, filepath.ToSlash(name)))
 	if err != nil {
 		return nil, fmt.Errorf("read template %s: %w", name, err)
 	}
@@ -97,30 +145,25 @@ func renderTemplate(fsys embed.FS, basePath, name string, data interface{}) ([]b
 	return stripBuildIgnore(buf.Bytes()), nil
 }
 
-// RenderProjectTemplate renders a project template with the given data,
-// applying the shared funcMap. Only files with .tmpl suffix are treated
-// as Go templates; all others are returned as-is.
-func RenderProjectTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "project", name, data)
-}
 
-// ListProjectTemplates returns all file paths under the given project template
-// subdirectory (e.g. "skills"), relative to that subdirectory. Used for
-// scaffolding trees of files like skills/ where the number and names of files
-// shouldn't be hard-coded in the generator.
-func ListProjectTemplates(subdir string) ([]string, error) {
-	var files []string
-	root := path.Join("project", filepath.ToSlash(subdir))
+
+// listTemplates walks the embedded template FS and returns template names under root.
+// If recursive is true, it walks subdirectories. Otherwise, only lists direct children.
+func listTemplates(root string, recursive bool) ([]string, error) {
 	entries, err := templateFS.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("read project template dir %s: %w", subdir, err)
+		return nil, fmt.Errorf("read template dir %s: %w", root, err)
 	}
 
+	var files []string
 	var walk func(dir string, entries []fs.DirEntry) error
 	walk = func(dir string, entries []fs.DirEntry) error {
 		for _, e := range entries {
 			rel := path.Join(dir, e.Name())
 			if e.IsDir() {
+				if !recursive {
+					continue
+				}
 				sub, err := templateFS.ReadDir(path.Join(root, rel))
 				if err != nil {
 					return err
@@ -141,97 +184,13 @@ func ListProjectTemplates(subdir string) ([]string, error) {
 	return files, nil
 }
 
-// GetFrontendTemplate returns the raw content of a frontend template file.
-// The name should be relative to the frontend/ directory (e.g. "nextjs/package.json.tmpl").
-func GetFrontendTemplate(name string) ([]byte, error) {
-	return templateFS.ReadFile(path.Join("frontend", filepath.ToSlash(name)))
-}
 
-// RenderFrontendTemplate renders a frontend template with the given data,
-// applying the shared funcMap. Only files with .tmpl suffix are treated
-// as Go templates; all others are returned as-is.
-func RenderFrontendTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "frontend", name, data)
-}
 
-// ListFrontendTemplates returns all file paths under the given frontend template directory
-// (e.g. "nextjs"), relative to that directory. This is useful for iterating
-// over all files that need to be written when scaffolding a frontend.
-func ListFrontendTemplates(frontendType string) ([]string, error) {
-	var files []string
-	root := path.Join("frontend", filepath.ToSlash(frontendType))
-	entries, err := templateFS.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read frontend template dir %s: %w", frontendType, err)
-	}
 
-	var walk func(dir string, entries []fs.DirEntry) error
-	walk = func(dir string, entries []fs.DirEntry) error {
-		for _, e := range entries {
-			rel := path.Join(dir, e.Name())
-			if e.IsDir() {
-				sub, err := templateFS.ReadDir(path.Join(root, rel))
-				if err != nil {
-					return err
-				}
-				if err := walk(rel, sub); err != nil {
-					return err
-				}
-			} else {
-				files = append(files, rel)
-			}
-		}
-		return nil
-	}
 
-	if err := walk("", entries); err != nil {
-		return nil, err
-	}
-	return files, nil
-}
 
-// GetDeployTemplate returns the raw content of a deploy template file.
-// The name should be relative to the deploy/ directory (e.g. "kcl/schema.k").
-func GetDeployTemplate(name string) ([]byte, error) {
-	return templateFS.ReadFile(filepath.Join("deploy", name))
-}
 
-// RenderDeployTemplate renders a deploy template with the given data.
-// Only files with .tmpl suffix are treated as Go templates; others returned as-is.
-func RenderDeployTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "deploy", name, data)
-}
 
-// GetCITemplate returns the raw content of a CI template file.
-// The provider is the CI platform (e.g. "github") and name is the file
-// relative to that provider directory (e.g. "ci.yml.tmpl").
-func GetCITemplate(provider, name string) ([]byte, error) {
-	return templateFS.ReadFile(filepath.Join("ci", provider, name))
-}
-
-// RenderCITemplate renders a CI template with the given data.
-// Only files with .tmpl suffix are treated as Go templates; others returned as-is.
-func RenderCITemplate(provider, name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, filepath.Join("ci", provider), name, data)
-}
-
-// ListCITemplates returns all file paths under the given CI provider directory,
-// relative to that directory.
-func ListCITemplates(provider string) ([]string, error) {
-	var files []string
-	root := filepath.Join("ci", provider)
-	entries, err := templateFS.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read CI template dir %s: %w", provider, err)
-	}
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			files = append(files, e.Name())
-		}
-	}
-	return files, nil
-}
 
 // CIWorkflowData holds data for the spec-driven CI workflow template.
 type CIWorkflowData struct {
@@ -363,18 +322,7 @@ type E2EWorkflowData struct {
 	FrontendPath string
 }
 
-// GetTestTemplate returns the raw content of a test template file.
-// The name should be relative to the test/ directory (e.g. "e2e/main_test.go.tmpl").
-func GetTestTemplate(name string) ([]byte, error) {
-	return templateFS.ReadFile(filepath.Join("test", name))
-}
 
-// RenderTestTemplate renders a test template with the given data,
-// applying the shared funcMap. Only files with .tmpl suffix are treated
-// as Go templates; all others are returned as-is.
-func RenderTestTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "test", name, data)
-}
 
 // FrontendTemplateData holds data for frontend template rendering.
 type FrontendTemplateData struct {
@@ -385,41 +333,7 @@ type FrontendTemplateData struct {
 	Module       string
 }
 
-// GetInternalPackageTemplate returns the raw content of an internal-package template file.
-// The name should be relative to the internal-package/ directory (e.g. "contract.go.tmpl").
-func GetInternalPackageTemplate(name string) ([]byte, error) {
-	return templateFS.ReadFile(filepath.Join("internal-package", name))
-}
 
-// RenderInternalPackageTemplate renders an internal-package template with the given data,
-// applying the shared funcMap. Only files with .tmpl suffix are treated
-// as Go templates; all others are returned as-is.
-func RenderInternalPackageTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "internal-package", name, data)
-}
-
-// RenderInternalPackageKindTemplate renders a template from a kind-specific
-// subdirectory under internal-package/ (e.g. internal-package/client/client.go.tmpl).
-func RenderInternalPackageKindTemplate(kind, name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, path.Join("internal-package", kind), name, data)
-}
-
-// ListInternalPackageKindTemplates returns all template file names under the
-// given kind subdirectory of internal-package/ (e.g. "client").
-func ListInternalPackageKindTemplates(kind string) ([]string, error) {
-	root := path.Join("internal-package", kind)
-	entries, err := templateFS.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read internal-package kind dir %s: %w", kind, err)
-	}
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			files = append(files, e.Name())
-		}
-	}
-	return files, nil
-}
 
 
 
@@ -442,15 +356,11 @@ type WebhookRouteEntryData struct {
 	PascalName string // PascalCase name for the handler method (e.g. "Stripe")
 }
 
-// RenderWebhookTemplate renders a webhook template with the given data.
-// name should be e.g. "webhook/webhooks.go.tmpl".
-func RenderWebhookTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "", name, data)
-}
+
 
 // TemplateEngine handles code generation from service/middleware templates.
 // NOTE: TemplateEngine pre-parses templates for reuse via a singleton (see generator/project.go),
-// while the standalone Render*Template functions parse on each call. Both share FuncMap().
+// while the TemplateCategory.Render method parses on each call. Both share FuncMap().
 // Consider consolidating if this becomes a maintenance burden.
 type TemplateEngine struct {
 	templates map[string]*template.Template
@@ -521,29 +431,13 @@ func (e *TemplateEngine) RenderTemplate(name string, data interface{}) (string, 
 	return buf.String(), nil
 }
 
-// RenderMiddlewareTemplate renders a middleware template from the embedded middleware/ directory.
-// name should be e.g. "middleware/auth_gen.go.tmpl".
-func RenderMiddlewareTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "", name, data)
-}
 
-// RenderServiceTemplate renders a service template from the embedded service/ directory.
-// name should be e.g. "service/service.go.tmpl" or "service/handlers.go.tmpl".
-func RenderServiceTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "", name, data)
-}
 
-// RenderWorkerTemplate renders a worker template from the embedded worker/ directory.
-// name should be e.g. "worker/worker.go.tmpl" or "worker/worker_test.go.tmpl".
-func RenderWorkerTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "", name, data)
-}
 
-// RenderOperatorTemplate renders an operator template from the embedded operator/ directory.
-// name should be e.g. "operator/types.go.tmpl" or "operator/controller.go.tmpl".
-func RenderOperatorTemplate(name string, data interface{}) ([]byte, error) {
-	return renderTemplate(templateFS, "", name, data)
-}
+
+
+
+
 
 // Case conversion functions
 
@@ -571,10 +465,7 @@ func toKebabCase(s string) string {
 }
 
 func pluralize(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-	return inflection.Plural(s)
+	return naming.Pluralize(s)
 }
 
 func singularize(s string) string {

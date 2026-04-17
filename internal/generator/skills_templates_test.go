@@ -58,7 +58,7 @@ func extractFencedBlocks(md string) string {
 func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 	root := cli.NewRootCmd()
 
-	skillFiles, err := templates.ListProjectTemplates("skills")
+	skillFiles, err := templates.ProjectTemplates.List("skills")
 	if err != nil {
 		t.Fatalf("ListProjectTemplates(skills) error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 		if !strings.HasSuffix(rel, "SKILL.md") {
 			continue
 		}
-		content, err := templates.GetProjectTemplate("skills/" + rel)
+		content, err := templates.ProjectTemplates.Get("skills/" + rel)
 		if err != nil {
 			t.Fatalf("GetProjectTemplate(%s) error = %v", rel, err)
 		}
@@ -145,7 +145,7 @@ func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 // silently blank out those examples or fail noisily. This test guards against
 // someone renaming a skill to SKILL.md.tmpl or adding template directives.
 func TestSkillTemplatesHaveNoGoTemplateDirectives(t *testing.T) {
-	skillFiles, err := templates.ListProjectTemplates("skills")
+	skillFiles, err := templates.ProjectTemplates.List("skills")
 	if err != nil {
 		t.Fatalf("ListProjectTemplates(skills) error = %v", err)
 	}

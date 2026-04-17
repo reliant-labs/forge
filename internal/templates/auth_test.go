@@ -27,9 +27,9 @@ func TestRenderAuthGenTemplate_JWT(t *testing.T) {
 		Module: "example.com/myproject",
 	}
 
-	content, err := RenderMiddlewareTemplate("middleware/auth_gen.go.tmpl", data)
+	content, err := MiddlewareTemplates.Render("auth_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("RenderMiddlewareTemplate() error = %v", err)
+		t.Fatalf("MiddlewareTemplates.Render() error = %v", err)
 	}
 
 	s := string(content)
@@ -71,9 +71,9 @@ func TestRenderAuthGenTemplate_APIKey(t *testing.T) {
 		Module: "example.com/myproject",
 	}
 
-	content, err := RenderMiddlewareTemplate("middleware/auth_gen.go.tmpl", data)
+	content, err := MiddlewareTemplates.Render("auth_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("RenderMiddlewareTemplate() error = %v", err)
+		t.Fatalf("MiddlewareTemplates.Render() error = %v", err)
 	}
 
 	s := string(content)
@@ -112,9 +112,9 @@ func TestRenderAuthGenTemplate_Both(t *testing.T) {
 		SkipMethods: []string{"/example.v1.ExampleService/PublicMethod"},
 	}
 
-	content, err := RenderMiddlewareTemplate("middleware/auth_gen.go.tmpl", data)
+	content, err := MiddlewareTemplates.Render("auth_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("RenderMiddlewareTemplate() error = %v", err)
+		t.Fatalf("MiddlewareTemplates.Render() error = %v", err)
 	}
 
 	s := string(content)
@@ -150,9 +150,9 @@ func TestRenderAuthValidatorTemplate(t *testing.T) {
 		Module:   "example.com/myproject",
 	}
 
-	content, err := RenderMiddlewareTemplate("middleware/auth_validator.go.tmpl", data)
+	content, err := MiddlewareTemplates.Render("auth_validator.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("RenderMiddlewareTemplate() error = %v", err)
+		t.Fatalf("MiddlewareTemplates.Render() error = %v", err)
 	}
 
 	s := string(content)

@@ -5,13 +5,11 @@
 package packs
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"text/template"
 
 	"gopkg.in/yaml.v3"
 
@@ -183,22 +181,11 @@ func (p *Pack) renderFile(f PackFile, projectDir string, data map[string]any) er
 		}
 	}
 
-	// Read template from embedded FS
-	tmplPath := filepath.Join(p.Name, "templates", f.Template)
-	tmplContent, err := packsFS.ReadFile(tmplPath)
+	// Render template using the shared template engine
+	basePath := filepath.Join(p.Name, "templates")
+	content, err := templates.RenderFromFS(packsFS, basePath, f.Template, data)
 	if err != nil {
-		return fmt.Errorf("read template %s: %w", tmplPath, err)
-	}
-
-	// Parse and execute template
-	tmpl, err := template.New(f.Template).Funcs(templates.FuncMap()).Parse(string(tmplContent))
-	if err != nil {
-		return fmt.Errorf("parse template %s: %w", f.Template, err)
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("execute template %s: %w", f.Template, err)
+		return fmt.Errorf("render template %s: %w", f.Template, err)
 	}
 
 	// Ensure output directory exists
@@ -207,7 +194,7 @@ func (p *Pack) renderFile(f PackFile, projectDir string, data map[string]any) er
 	}
 
 	// Write the file
-	if err := os.WriteFile(target, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(target, content, 0644); err != nil {
 		return fmt.Errorf("write %s: %w", f.Output, err)
 	}
 

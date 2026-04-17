@@ -178,7 +178,7 @@ func newDebugStartCmd() *cobra.Command {
 The binary is built with debug flags (-gcflags=all=-N -l) and launched under Delve.
 
 If the argument contains "/" or ".", it is treated as a direct path.
-Otherwise it is looked up by name in forge.project.yaml.
+Otherwise it is looked up by name in forge.yaml.
 
 Examples:
   forge debug start api-gateway

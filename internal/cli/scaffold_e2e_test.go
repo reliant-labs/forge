@@ -24,7 +24,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	runCmd(t, dir, forgeBin, "new", "basicapp", "--mod", "example.com/basicapp", "--service", "api")
 
 	projectDir := filepath.Join(dir, "basicapp")
-	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.project.yaml"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "go.mod"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "api"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto"))
@@ -117,9 +117,6 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 // with soft-delete, generates ORM code, and verifies it builds.
 func TestE2EScaffoldWithEntityProto(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
-
-	// Ensure protoc-gen-forge-orm is installed
-	installProtocPlugin(t)
 
 	dir := t.TempDir()
 
@@ -358,18 +355,6 @@ func buildforgeBinary(t *testing.T) string {
 	return bin
 }
 
-// installProtocPlugin ensures protoc-gen-forge-orm is installed and on PATH.
-func installProtocPlugin(t *testing.T) {
-	t.Helper()
-
-	repoRoot := findRepoRoot(t)
-	cmd := exec.Command("go", "install", "./cmd/protoc-gen-forge-orm")
-	cmd.Dir = repoRoot
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to install protoc-gen-forge-orm: %v\n%s", err, output)
-	}
-}
 
 // findRepoRoot walks up from the working directory to find the forge repo root.
 func findRepoRoot(t *testing.T) string {

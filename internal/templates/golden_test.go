@@ -83,9 +83,9 @@ func projectData() any {
 		ProjectName:            "demo",
 		FrontendName:           "web",
 		FrontendPort:           3000,
-		GoVersion:              "1.25",
-		GoVersionMinor:         "25",
-		DockerBuilderGoVersion: "1.25",
+		GoVersion:              "1.26",
+		GoVersionMinor:         "26",
+		DockerBuilderGoVersion: "1.26",
 		CLI:                    "forge",
 	}
 }
@@ -171,7 +171,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			render: func(t *testing.T) []byte {
 				data := CIWorkflowData{
 					ProjectName:  "demo",
-					GoVersion:    "1.25",
+					GoVersion:    "1.26",
 					LintGolangci: true,
 					TestRace:     true,
 					PermContents: "read",
@@ -188,7 +188,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			render: func(t *testing.T) []byte {
 				data := CIWorkflowData{
 					ProjectName:  "demo",
-					GoVersion:    "1.25",
+					GoVersion:    "1.26",
 					HasFrontends: true,
 					Frontends: []FrontendCIConfig{
 						{Name: "web", Path: "frontends/web"},

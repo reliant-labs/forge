@@ -122,7 +122,8 @@ Subcommands:
   forge add worker <name>                         Add a new background worker
   forge add operator <name> [--group G] [--version V]  Add a Kubernetes operator
   forge add frontend <name>                       Add a new Next.js frontend
-  forge add webhook <name> --service S            Add a webhook endpoint to a service`,
+  forge add webhook <name> --service S            Add a webhook endpoint to a service
+  forge add package <name>                        Add a new internal package (alias for package new)`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
@@ -130,19 +131,20 @@ Subcommands:
 	cmd.AddCommand(newAddOperatorCmd())
 	cmd.AddCommand(newAddFrontendCmd())
 	cmd.AddCommand(newAddWebhookCmd())
+	cmd.AddCommand(newAddPackageCmd())
 
 	return cmd
 }
 
-// projectRoot finds the project root by looking for forge.project.yaml.
+// projectRoot finds the project root by looking for forge.yaml.
 func projectRoot() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	configPath := filepath.Join(cwd, "forge.project.yaml")
+	configPath := filepath.Join(cwd, "forge.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("forge.project.yaml not found in current directory; run this from the project root")
+		return "", fmt.Errorf("forge.yaml not found in current directory; run this from the project root")
 	}
 	return cwd, nil
 }
@@ -184,7 +186,7 @@ func runAddService(name string, port int) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -222,7 +224,7 @@ func runAddService(name string, port int) error {
 		return fmt.Errorf("read project config for rollback snapshot: %w", err)
 	}
 
-	// Update forge.project.yaml (must happen before the generation pipeline
+	// Update forge.yaml (must happen before the generation pipeline
 	// so the pipeline sees the new service in the config)
 	cfg.Services = append(cfg.Services, config.ServiceConfig{
 		Name: name,
@@ -264,6 +266,21 @@ func runAddService(name string, port int) error {
 	return nil
 }
 
+// --- add package (alias for package new) ---
+
+func newAddPackageCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "package <name>",
+		Short: "Add a new internal package (alias for 'forge package new')",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPackageNew,
+	}
+
+	cmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
+
+	return cmd
+}
+
 // --- add worker ---
 
 func newAddWorkerCmd() *cobra.Command {
@@ -298,7 +315,7 @@ func runAddWorker(name string) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -318,7 +335,7 @@ func runAddWorker(name string) error {
 		return fmt.Errorf("generate worker files: %w", err)
 	}
 
-	// Update forge.project.yaml
+	// Update forge.yaml
 	cfg.Services = append(cfg.Services, config.ServiceConfig{
 		Name: name,
 		Type: "worker",
@@ -387,7 +404,7 @@ func runAddOperator(name, group, version string) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -412,7 +429,7 @@ func runAddOperator(name, group, version string) error {
 		return fmt.Errorf("generate operator files: %w", err)
 	}
 
-	// Update forge.project.yaml
+	// Update forge.yaml
 	cfg.Services = append(cfg.Services, config.ServiceConfig{
 		Name: name,
 		Type: "operator",
@@ -495,7 +512,7 @@ func runAddFrontend(name string, port int) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -531,7 +548,7 @@ func runAddFrontend(name string, port int) error {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
 
-	// Update forge.project.yaml
+	// Update forge.yaml
 	cfg.Frontends = append(cfg.Frontends, config.FrontendConfig{
 		Name: name,
 		Type: "nextjs",
@@ -589,7 +606,7 @@ func runAddWebhook(name, serviceName string) error {
 		return err
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -604,7 +621,7 @@ func runAddWebhook(name, serviceName string) error {
 		}
 	}
 	if svcIdx == -1 {
-		return fmt.Errorf("service %q not found in forge.project.yaml", serviceName)
+		return fmt.Errorf("service %q not found in forge.yaml", serviceName)
 	}
 
 	// Check for duplicate webhook.
@@ -621,7 +638,7 @@ func runAddWebhook(name, serviceName string) error {
 		return fmt.Errorf("generate webhook files: %w", err)
 	}
 
-	// Update forge.project.yaml.
+	// Update forge.yaml.
 	cfg.Services[svcIdx].Webhooks = append(cfg.Services[svcIdx].Webhooks, config.WebhookConfig{
 		Name: name,
 	})

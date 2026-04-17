@@ -29,7 +29,7 @@ type Pack struct {
 }
 
 // PackConfig describes the configuration section a pack adds to
-// forge.project.yaml.
+// forge.yaml.
 type PackConfig struct {
 	Section  string         `yaml:"section"`
 	Defaults map[string]any `yaml:"defaults"`
@@ -59,7 +59,7 @@ func LoadPack(name string) (*Pack, error) {
 }
 
 // Install renders and writes pack files into the project, adds go
-// dependencies, and records the pack in forge.project.yaml.
+// dependencies, and records the pack in forge.yaml.
 func (p *Pack) Install(projectDir string, cfg *config.ProjectConfig) error {
 	// Check if already installed
 	for _, installed := range cfg.Packs {

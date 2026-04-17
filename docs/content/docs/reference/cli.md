@@ -16,7 +16,7 @@ go install github.com/reliant-labs/forge/cmd/forge@latest
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--config` | Path to config file | `./forge.project.yaml` |
+| `--config` | Path to config file | `./forge.yaml` |
 | `--verbose`, `-v` | Verbose output | `false` |
 | `--version` | Print version information | — |
 | `--help`, `-h` | Show help | — |
@@ -79,7 +79,7 @@ forge add service <name> [flags]
 - `services/<name>/handlers.go` — placeholder for business logic
 - `proto/services/<name>/v1/<name>.proto` — empty proto service stub
 - Updates `pkg/app/wire.go` with construction and registration logic
-- Updates `forge.project.yaml`
+- Updates `forge.yaml`
 
 **Examples:**
 
@@ -103,7 +103,7 @@ forge add frontend <name> [flags]
 **What it creates:**
 
 - `frontends/<name>/` — Next.js application scaffold
-- Updates `forge.project.yaml`
+- Updates `forge.yaml`
 
 ---
 

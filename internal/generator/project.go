@@ -13,7 +13,7 @@ import (
 
 // forgeCmdRE matches "forge" used as a CLI command — i.e. followed by a space
 // and a lowercase subcommand token. This avoids replacing skill paths like
-// "forge/run", filenames like "forge.project.yaml", or directory paths.
+// "forge/run", filenames like "forge.yaml", or directory paths.
 var forgeCmdRE = regexp.MustCompile(`\bforge( )`)
 
 // cliName returns the command name users should type to invoke Forge.
@@ -227,7 +227,7 @@ func (g *ProjectGenerator) Generate() error {
 	// even with zero services.
 	// Initial scaffold: no database driver wired and no ORM — the pipeline
 	// runs `forge generate` immediately after and rewrites this file with
-	// the correct flags once proto/db and forge.project.yaml are present.
+	// the correct flags once proto/db and forge.yaml are present.
 	if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
 		return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
 	}
@@ -239,7 +239,7 @@ func (g *ProjectGenerator) Generate() error {
 		return fmt.Errorf("failed to generate pkg/app/migrate.go: %w", err)
 	}
 
-	// Write forge.project.yaml
+	// Write forge.yaml
 	if err := g.writeProjectConfig(); err != nil {
 		return fmt.Errorf("failed to write project config: %w", err)
 	}

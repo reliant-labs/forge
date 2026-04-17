@@ -113,6 +113,23 @@ func InternalPkgKindTemplates(kind string) TemplateCategory {
 	return TemplateCategory{basePath: path.Join("internal-package", kind)}
 }
 
+// ListInternalPackageKindTemplates lists template files for a specific
+// internal-package kind subdirectory (e.g. "client", "eventbus").
+func ListInternalPackageKindTemplates(kind string) ([]string, error) {
+	return InternalPkgKindTemplates(kind).ListFlat("")
+}
+
+// RenderInternalPackageKindTemplate renders a template from a kind subdirectory
+// of the internal-package templates.
+func RenderInternalPackageKindTemplate(kind, name string, data interface{}) ([]byte, error) {
+	return InternalPkgKindTemplates(kind).Render(name, data)
+}
+
+// RenderInternalPackageTemplate renders a base internal-package template.
+func RenderInternalPackageTemplate(name string, data interface{}) ([]byte, error) {
+	return InternalPkgTemplates.Render(name, data)
+}
+
 // RenderFromFS renders a template from an arbitrary fs.FS. It reads the file at
 // basePath/name, and if the name has a .tmpl suffix it parses and executes it
 // with the shared FuncMap. Non-.tmpl files are returned as-is. Any //go:build

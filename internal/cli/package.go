@@ -97,7 +97,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("internal package %q already exists at %s", name, pkgDir)
 	}
 
-	configPath := filepath.Join(root, "forge.project.yaml")
+	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -106,7 +106,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// Check for name conflict in config
 	for _, pkg := range cfg.Packages {
 		if pkg.Name == name {
-			return fmt.Errorf("package %q already exists in forge.project.yaml", name)
+			return fmt.Errorf("package %q already exists in forge.yaml", name)
 		}
 	}
 
@@ -164,7 +164,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Update forge.project.yaml
+	// Update forge.yaml
 	cfg.Packages = append(cfg.Packages, config.PackageConfig{
 		Name: name,
 		Kind: kind,

@@ -98,8 +98,8 @@ jobs:
           push: true
           tags: ${{"{{"}} steps.meta.outputs.tags {{"}}"}}
           labels: ${{"{{"}} steps.meta.outputs.labels {{"}}"}}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope={{.ProjectName}}
+          cache-to: type=gha,scope={{.ProjectName}},mode=max
 
       # ── Supply chain: SBOM + signing + provenance (M-12) ────────────
       # These steps run AFTER the image is pushed and use the immutable

@@ -8,7 +8,7 @@ These flags are available on all commands:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config <path>` | `./forge.project.yaml` | Path to the Forge config file |
+| `--config <path>` | `./forge.yaml` | Path to the Forge config file |
 | `--verbose`, `-v` | `false` | Enable verbose output |
 | `--version` | | Print version information and exit |
 
@@ -37,7 +37,7 @@ forge new <project-name> --mod <module-path> [flags]
 
 **What it generates:**
 
-- Project directory with `forge.project.yaml`
+- Project directory with `forge.yaml`
 - Single binary entrypoint: `cmd/main.go`, `cmd/server.go`, `cmd/version.go`
 - Proto directory structure (`proto/config/`, `proto/services/`, `proto/forge/`)
 - Initial service with `service.go` and `handlers.go` under `services/<name>/`
@@ -65,7 +65,7 @@ Add a new Go service to an existing project.
 forge add service <name> [flags]
 ```
 
-Must be run from the project root (where `forge.project.yaml` exists).
+Must be run from the project root (where `forge.yaml` exists).
 
 **Arguments:**
 
@@ -85,7 +85,7 @@ Must be run from the project root (where `forge.project.yaml` exists).
 - `services/<name>/handlers.go` -- placeholder for business logic
 - `proto/services/<name>/v1/<name>.proto` -- empty proto service stub
 - Updates `pkg/app/wire.go` with construction and registration logic
-- Updates `forge.project.yaml`
+- Updates `forge.yaml`
 
 **Examples:**
 
@@ -120,7 +120,7 @@ forge add frontend <name> [flags]
 
 - `frontends/<name>/` -- Next.js application scaffold
 - Connect RPC client configuration pointed at the first service's port
-- Updates `forge.project.yaml`
+- Updates `forge.yaml`
 
 **Examples:**
 
@@ -176,7 +176,7 @@ forge generate [flags]
 |------|---------|-------------|
 | `--watch`, `-w` | `false` | Watch for proto file changes and regenerate automatically |
 
-**Generation pipeline (config-based, when `forge.project.yaml` exists):**
+**Generation pipeline (config-based, when `forge.yaml` exists):**
 
 1. `buf generate` for Go protobuf + Connect RPC stubs
 2. `buf generate` for TypeScript stubs for each Next.js frontend
@@ -472,7 +472,7 @@ myproject version
 
 ## Project Configuration
 
-All commands that operate on a project read `forge.project.yaml` from the current directory.
+All commands that operate on a project read `forge.yaml` from the current directory.
 
 ```yaml
 name: myproject

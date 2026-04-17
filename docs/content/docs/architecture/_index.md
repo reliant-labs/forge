@@ -204,7 +204,7 @@ myproject/
 ├── db/migrations/
 ├── frontends/
 ├── .github/workflows/
-├── forge.project.yaml
+├── forge.yaml
 ├── buf.yaml / buf.gen.yaml
 ├── go.work / go.mod
 └── Taskfile.yml

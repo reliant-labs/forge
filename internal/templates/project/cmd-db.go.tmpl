@@ -1,0 +1,148 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5" // registers "pgx5" DB driver
+	_ "github.com/golang-migrate/migrate/v4/source/file"    // registers "file://" source driver
+	"github.com/spf13/cobra"
+
+	"{{.Module}}/pkg/config"
+)
+
+// migrationsDir is the on-disk path (relative to the project root) that
+// holds SQL migration files. We keep this path literal rather than using an
+// embed.FS so operators can add new migrations without rebuilding the
+// binary — `db migrate` is intended for ops-driven workflows.
+const migrationsDir = "db/migrations"
+
+var dbCmd = &cobra.Command{
+	Use:   "db",
+	Short: "Database management commands",
+	Long:  "Database management commands. Use subcommands to run or inspect migrations.",
+}
+
+var dbMigrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Manage database migrations",
+	Long:  "Apply, revert, or inspect SQL migrations in " + migrationsDir + ".",
+}
+
+var dbMigrateUpCmd = &cobra.Command{
+	Use:   "up",
+	Short: "Apply all pending migrations",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		m, cleanup, err := openMigrator(cmd)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+			return fmt.Errorf("migrate up: %w", err)
+		}
+		return nil
+	},
+}
+
+var dbMigrateDownCmd = &cobra.Command{
+	Use:   "down",
+	Short: "Revert the most recently applied migration",
+	Long:  "Revert exactly one migration. Use with care in production — each invocation steps down one version.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		m, cleanup, err := openMigrator(cmd)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		if err := m.Steps(-1); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+			return fmt.Errorf("migrate down: %w", err)
+		}
+		return nil
+	},
+}
+
+var dbMigrateStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Print the current migration version",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		m, cleanup, err := openMigrator(cmd)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		version, dirty, err := m.Version()
+		switch {
+		case errors.Is(err, migrate.ErrNilVersion):
+			fmt.Println("no migrations have been applied")
+			return nil
+		case err != nil:
+			return fmt.Errorf("migrate status: %w", err)
+		}
+		fmt.Printf("version=%d dirty=%v\n", version, dirty)
+		return nil
+	},
+}
+
+func init() {
+	config.RegisterFlags(dbMigrateCmd)
+
+	dbMigrateCmd.AddCommand(dbMigrateUpCmd)
+	dbMigrateCmd.AddCommand(dbMigrateDownCmd)
+	dbMigrateCmd.AddCommand(dbMigrateStatusCmd)
+	dbCmd.AddCommand(dbMigrateCmd)
+	rootCmd.AddCommand(dbCmd)
+}
+
+// openMigrator constructs a *migrate.Migrate backed by the pgx driver and
+// the on-disk migrations directory. The returned cleanup closes the source
+// and database connections; it is always safe to call even if setup
+// partially succeeded.
+func openMigrator(cmd *cobra.Command) (*migrate.Migrate, func(), error) {
+	cfg, err := config.Load(cmd)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("load config: %w", err)
+	}
+	if cfg.DatabaseURL == "" {
+		return nil, func() {}, fmt.Errorf("DATABASE_URL (or --database-url) is required")
+	}
+
+	// golang-migrate's pgx v5 driver is registered as "pgx5"; we translate
+	// standard postgres:// URLs by swapping the scheme so users don't need
+	// to learn a migration-tool-specific URL shape.
+	dsn := migrateDSN(cfg.DatabaseURL)
+
+	m, err := migrate.New("file://"+migrationsDir, dsn)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("open migrator: %w", err)
+	}
+	cleanup := func() {
+		srcErr, dbErr := m.Close()
+		if srcErr != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: migrator source close: %v\n", srcErr)
+		}
+		if dbErr != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: migrator db close: %v\n", dbErr)
+		}
+	}
+	return m, cleanup, nil
+}
+
+// migrateDSN rewrites a standard postgres:// or postgresql:// URL to the
+// pgx5:// scheme required by golang-migrate's pgx v5 driver. Other schemes
+// are returned unchanged so future drivers don't require a new branch.
+func migrateDSN(url string) string {
+	const (
+		postgresPrefix   = "postgres://"
+		postgresqlPrefix = "postgresql://"
+		pgxPrefix        = "pgx5://"
+	)
+	switch {
+	case len(url) >= len(postgresqlPrefix) && url[:len(postgresqlPrefix)] == postgresqlPrefix:
+		return pgxPrefix + url[len(postgresqlPrefix):]
+	case len(url) >= len(postgresPrefix) && url[:len(postgresPrefix)] == postgresPrefix:
+		return pgxPrefix + url[len(postgresPrefix):]
+	}
+	return url
+}

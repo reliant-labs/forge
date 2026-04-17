@@ -9,11 +9,16 @@ registries:
     name: {{.ProjectName}}-registry
     host: "0.0.0.0"
     hostPort: "5050"
+# Host ports are intentionally offset (18080, 18443) instead of the
+# conventional 8080/8443 so that `k3d` and `docker compose up` can run
+# simultaneously without colliding on the host. `docker-compose.yml`
+# binds the `app` service to host :8080, so the k3d loadbalancer takes
+# :18080 and :18443.
 ports:
-  - port: 8080:80
+  - port: 18080:80
     nodeFilters:
       - loadbalancer
-  - port: 8443:443
+  - port: 18443:443
     nodeFilters:
       - loadbalancer
 options:

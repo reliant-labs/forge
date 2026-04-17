@@ -11,11 +11,15 @@ import (
 
 // GenerateServiceFiles generates all files for a single Go service:
 //   - handlers/<name>/service.go       (from service/service.go.tmpl)
-//   - handlers/<name>/handlers.go      (from service/handlers.go.tmpl)
 //   - proto/services/<name>/v1/<name>.proto (inline stub, skipped if exists)
 //
 // Both the "new project" and "add service" flows delegate here so the
 // generated output is always identical.
+//
+// handlers.go is intentionally not emitted at scaffold time: with zero RPC
+// methods there is nothing for it to contain. Once RPCs are added to the
+// proto file, `forge generate` produces handlers_gen.go; the user then moves
+// those stubs to handlers.go (or any other file) as they implement them.
 func GenerateServiceFiles(root, modulePath, serviceName, projectName string, port int) error {
 	svcDir := filepath.Join(root, "handlers", serviceName)
 
@@ -61,26 +65,8 @@ func GenerateServiceFiles(root, modulePath, serviceName, projectName string, por
 		return err
 	}
 
-	// -- handlers.go (via service/handlers.go.tmpl) --
-	handlersData := struct {
-		ServiceName  string
-		Module       string
-		ProtoPackage string
-		Methods      []codegen.MethodTemplateData
-	}{
-		ServiceName:  serviceName,
-		Module:       modulePath,
-		ProtoPackage: fmt.Sprintf("services/%s", serviceName),
-		Methods:      []codegen.MethodTemplateData{},
-	}
-
-	handlersContent, err := renderServiceTemplate("service/handlers.go.tmpl", handlersData)
-	if err != nil {
-		return fmt.Errorf("render handlers.go: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(svcDir, "handlers.go"), handlersContent, 0644); err != nil {
-		return err
-	}
+	// handlers.go is intentionally not emitted at scaffold (zero RPC methods).
+	// See function docstring for details.
 
 	// -- authorizer.go (via service/authorizer.go.tmpl) --
 	authzData := struct {

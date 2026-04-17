@@ -4,8 +4,29 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 
 	"connectrpc.com/connect"
+)
+
+// GetUser extracts the authenticated user's claims from the context.
+// Returns a connect CodeUnauthenticated error if no claims are present.
+// Use this in handlers to get the current user before calling Authorizer.Can.
+func GetUser(ctx context.Context) (*Claims, error) {
+	claims, ok := ClaimsFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("no authenticated user"))
+	}
+	return claims, nil
+}
+
+// Standard CRUD action constants for use with Authorizer.Can.
+const (
+	ActionCreate = "create"
+	ActionRead   = "read"
+	ActionUpdate = "update"
+	ActionDelete = "delete"
+	ActionList   = "list"
 )
 
 // Authorizer determines whether the current request is authorized to access
@@ -18,6 +39,12 @@ type Authorizer interface {
 	// to call the given procedure. The procedure string is the full RPC
 	// method name (e.g., "/proto.services.users.v1.UsersService/Create").
 	CanAccess(ctx context.Context, procedure string) error
+
+	// Can checks if the user has permission to perform the action on the resource.
+	// action is one of the Action* constants (create, read, update, delete, list).
+	// resource is the entity name in lowercase (e.g., "patient", "invoice").
+	// Return nil to allow, or a connect.Error (typically CodePermissionDenied) to deny.
+	Can(ctx context.Context, claims *Claims, action string, resource string) error
 }
 
 // AuthzInterceptor returns a Connect interceptor that checks authorization

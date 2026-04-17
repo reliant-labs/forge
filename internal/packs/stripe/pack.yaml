@@ -1,0 +1,29 @@
+name: stripe
+description: "Stripe payment integration — webhook handler, payment intents, customer sync"
+version: 1.0.0
+
+config:
+  section: stripe
+  defaults:
+    webhook_secret_env: STRIPE_WEBHOOK_SECRET
+    api_key_env: STRIPE_SECRET_KEY
+    publishable_key_env: STRIPE_PUBLISHABLE_KEY
+
+dependencies:
+  - github.com/stripe/stripe-go/v82
+
+files:
+  - template: stripe_client.go.tmpl
+    output: pkg/stripe/client.go
+    overwrite: once
+  - template: stripe_webhook.go.tmpl
+    output: pkg/stripe/webhook.go
+    overwrite: once
+  - template: stripe_entities.proto.tmpl
+    output: proto/db/v1/stripe_entities.proto
+    overwrite: once
+
+generate:
+  - template: stripe_webhook_routes.go.tmpl
+    output: handlers/webhooks/stripe_webhook_gen.go
+    description: "Stripe webhook route registration"

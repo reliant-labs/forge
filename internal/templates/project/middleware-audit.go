@@ -61,7 +61,7 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 	attrs := []slog.Attr{
 		slog.String("procedure", procedure),
 		slog.String("peer", peerAddr),
-		slog.String("duration", time.Since(start).String()),
+		slog.Duration("duration", time.Since(start)),
 		slog.Time("timestamp", start),
 	}
 

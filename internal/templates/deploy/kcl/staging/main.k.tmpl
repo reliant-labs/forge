@@ -1,16 +1,30 @@
 """
 Staging environment configuration for {{.ProjectName}}.
+
+Top-level identifiers `image_tag` and `registry` are overridable via
+`kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
+flag only binds top-level names, not nested struct fields.
 """
 
 import deploy.kcl.schema
 import deploy.kcl.base
 import deploy.kcl.render
 
+# Overridable via `kcl run -D image_tag=...`
+image_tag = option("image_tag") or "staging"
+
+# Overridable via `kcl run -D registry=...`. The default is intentionally
+# a placeholder ("ghcr.io/OWNER") so that failing to pass -D registry=...
+# from CI surfaces as a visibly wrong image reference rather than silently
+# deploying from an unrelated default registry. CI passes
+# `-D registry=$REGISTRY` where REGISTRY is derived from the GitHub owner.
+registry = option("registry") or "ghcr.io/OWNER"
+
 env = schema.Environment {
     name = "staging"
     namespace = "{{.ProjectName}}-staging"
-    image_registry = "registry.example.com"
-    image_tag = "staging"
+    image_registry = registry
+    image_tag = image_tag
     network_policies = True
     applications = {
         "{{.ProjectName}}" = schema.Application {
@@ -45,7 +59,8 @@ env = schema.Environment {
                 }
             ]
             health_check = schema.HealthCheck {
-                http_path = "/healthz"
+                liveness_path = "/healthz"
+                readiness_path = "/readyz"
                 http_port = 8080
             }
             autoscaling = schema.AutoScaling {

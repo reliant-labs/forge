@@ -35,6 +35,19 @@ func SetVersion(v, date, commit string) {
 	gitCommit = commit
 }
 
+// GetVersion returns the forge binary's version string. Callers can use this
+// to stamp the current forge version into generated artifacts (e.g. the
+// .forge/checksums.json header), which enables pinned installs in CI.
+func GetVersion() string {
+	return version
+}
+
+// GetGitCommit returns the git commit SHA the forge binary was built from.
+// Returns "unknown" if the binary was not built with ldflags.
+func GetGitCommit() string {
+	return gitCommit
+}
+
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
 	var verbose bool
@@ -68,8 +81,22 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDebugCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
+	rootCmd.AddCommand(newVersionCmd())
 
 	return rootCmd
+}
+
+// newVersionCmd creates the version subcommand so both `forge version` and
+// `forge --version` work. Cobra's built-in --version flag handles the latter;
+// this covers users who type the subcommand form.
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the forge version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("forge version %s (built %s, commit %s)\n", version, buildDate, gitCommit)
+		},
+	}
 }
 
 // newRunCmd creates the run command.

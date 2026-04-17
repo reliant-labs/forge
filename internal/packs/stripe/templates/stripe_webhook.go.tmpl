@@ -1,0 +1,261 @@
+package stripe
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82/webhook"
+)
+
+const (
+	// maxWebhookBodySize is the maximum allowed webhook payload size.
+	maxWebhookBodySize = 1 << 20 // 1MB
+
+	// webhookTolerance is the maximum age of a webhook event before it is
+	// rejected. Stripe's default tolerance is 300 seconds.
+	webhookTolerance = 300 * time.Second
+)
+
+// StripeEventHandler defines the interface for handling Stripe webhook events.
+// Implement this interface to process events from Stripe.
+type StripeEventHandler interface {
+	// Payment intent events
+	HandlePaymentIntentSucceeded(ctx context.Context, event stripe.Event) error
+	HandlePaymentIntentFailed(ctx context.Context, event stripe.Event) error
+
+	// Checkout events
+	HandleCheckoutSessionCompleted(ctx context.Context, event stripe.Event) error
+
+	// Subscription events
+	HandleSubscriptionCreated(ctx context.Context, event stripe.Event) error
+	HandleSubscriptionUpdated(ctx context.Context, event stripe.Event) error
+	HandleSubscriptionDeleted(ctx context.Context, event stripe.Event) error
+
+	// Invoice events
+	HandleInvoicePaid(ctx context.Context, event stripe.Event) error
+	HandleInvoicePaymentFailed(ctx context.Context, event stripe.Event) error
+}
+
+// IdempotencyStore tracks processed event IDs to prevent duplicate handling.
+type IdempotencyStore interface {
+	// IsProcessed returns true if the event has already been handled.
+	IsProcessed(ctx context.Context, eventID string) (bool, error)
+	// MarkProcessed records that the event has been handled.
+	MarkProcessed(ctx context.Context, eventID string) error
+}
+
+// InMemoryIdempotencyStore is a simple in-memory idempotency store suitable
+// for single-instance deployments. For production multi-instance deployments,
+// implement IdempotencyStore backed by your database.
+type InMemoryIdempotencyStore struct {
+	mu        sync.RWMutex
+	processed map[string]time.Time
+}
+
+// NewInMemoryIdempotencyStore creates a new in-memory idempotency store.
+func NewInMemoryIdempotencyStore() *InMemoryIdempotencyStore {
+	return &InMemoryIdempotencyStore{
+		processed: make(map[string]time.Time),
+	}
+}
+
+func (s *InMemoryIdempotencyStore) IsProcessed(_ context.Context, eventID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.processed[eventID]
+	return ok, nil
+}
+
+func (s *InMemoryIdempotencyStore) MarkProcessed(_ context.Context, eventID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processed[eventID] = time.Now()
+	return nil
+}
+
+// WebhookHandler handles incoming Stripe webhook requests.
+type WebhookHandler struct {
+	webhookSecret    string
+	eventHandler     StripeEventHandler
+	idempotencyStore IdempotencyStore
+	logger           *slog.Logger
+}
+
+// WebhookHandlerConfig configures the webhook handler.
+type WebhookHandlerConfig struct {
+	// EventHandler processes specific event types.
+	EventHandler StripeEventHandler
+	// IdempotencyStore tracks processed events. If nil, an in-memory store is used.
+	IdempotencyStore IdempotencyStore
+	// Logger for webhook processing. If nil, slog.Default() is used.
+	Logger *slog.Logger
+}
+
+// NewWebhookHandler creates a webhook handler that verifies signatures and
+// routes events to the appropriate handler methods.
+func NewWebhookHandler(cfg WebhookHandlerConfig) (*WebhookHandler, error) {
+	secret := os.Getenv("{{index .PackConfig "webhook_secret_env"}}")
+	if secret == "" {
+		return nil, fmt.Errorf("stripe: %s environment variable is required", "{{index .PackConfig "webhook_secret_env"}}")
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	store := cfg.IdempotencyStore
+	if store == nil {
+		store = NewInMemoryIdempotencyStore()
+	}
+
+	return &WebhookHandler{
+		webhookSecret:    secret,
+		eventHandler:     cfg.EventHandler,
+		idempotencyStore: store,
+		logger:           logger,
+	}, nil
+}
+
+// ServeHTTP handles the incoming webhook HTTP request.
+func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize))
+	if err != nil {
+		h.logger.Error("failed to read webhook body", "error", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Verify webhook signature using Stripe's library.
+	sigHeader := r.Header.Get("Stripe-Signature")
+	event, err := webhook.ConstructEvent(body, sigHeader, h.webhookSecret)
+	if err != nil {
+		h.logger.Warn("webhook signature verification failed", "error", err)
+		http.Error(w, "invalid signature", http.StatusBadRequest)
+		return
+	}
+
+	// Idempotency check — skip already-processed events.
+	processed, err := h.idempotencyStore.IsProcessed(r.Context(), event.ID)
+	if err != nil {
+		h.logger.Error("idempotency check failed", "event_id", event.ID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if processed {
+		h.logger.Debug("webhook event already processed", "event_id", event.ID, "type", event.Type)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	h.logger.Info("processing stripe webhook",
+		"event_id", event.ID,
+		"type", event.Type,
+		"api_version", event.APIVersion,
+	)
+
+	// Route event to the appropriate handler.
+	if err := h.routeEvent(r.Context(), event); err != nil {
+		h.logger.Error("webhook event processing failed",
+			"event_id", event.ID,
+			"type", event.Type,
+			"error", err,
+		)
+		http.Error(w, "processing failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Mark event as processed.
+	if err := h.idempotencyStore.MarkProcessed(r.Context(), event.ID); err != nil {
+		h.logger.Error("failed to mark event as processed", "event_id", event.ID, "error", err)
+		// Don't return an error to Stripe — the event was processed successfully.
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// routeEvent dispatches the event to the appropriate handler method.
+func (h *WebhookHandler) routeEvent(ctx context.Context, event stripe.Event) error {
+	switch event.Type {
+	// Payment Intent events
+	case "payment_intent.succeeded":
+		return h.eventHandler.HandlePaymentIntentSucceeded(ctx, event)
+	case "payment_intent.payment_failed":
+		return h.eventHandler.HandlePaymentIntentFailed(ctx, event)
+
+	// Checkout events
+	case "checkout.session.completed":
+		return h.eventHandler.HandleCheckoutSessionCompleted(ctx, event)
+
+	// Subscription events
+	case "customer.subscription.created":
+		return h.eventHandler.HandleSubscriptionCreated(ctx, event)
+	case "customer.subscription.updated":
+		return h.eventHandler.HandleSubscriptionUpdated(ctx, event)
+	case "customer.subscription.deleted":
+		return h.eventHandler.HandleSubscriptionDeleted(ctx, event)
+
+	// Invoice events
+	case "invoice.paid":
+		return h.eventHandler.HandleInvoicePaid(ctx, event)
+	case "invoice.payment_failed":
+		return h.eventHandler.HandleInvoicePaymentFailed(ctx, event)
+
+	default:
+		h.logger.Debug("unhandled stripe event type", "type", event.Type, "event_id", event.ID)
+		return nil
+	}
+}
+
+// ParseEventData is a helper that unmarshals the event's Data.Raw into the
+// target struct. Use this inside handler implementations.
+func ParseEventData(event stripe.Event, target interface{}) error {
+	if err := json.Unmarshal(event.Data.Raw, target); err != nil {
+		return fmt.Errorf("stripe: parse event data for %s: %w", event.Type, err)
+	}
+	return nil
+}
+
+// WebhookOption is a functional option for configuring the WebhookHandler.
+type WebhookOption func(*WebhookHandlerConfig)
+
+// WithIdempotencyStore sets the idempotency store for the webhook handler.
+func WithIdempotencyStore(store IdempotencyStore) WebhookOption {
+	return func(cfg *WebhookHandlerConfig) {
+		cfg.IdempotencyStore = store
+	}
+}
+
+// WithLogger sets the logger for the webhook handler.
+func WithLogger(logger *slog.Logger) WebhookOption {
+	return func(cfg *WebhookHandlerConfig) {
+		cfg.Logger = logger
+	}
+}
+
+// NoopEventHandler is a base implementation of StripeEventHandler that
+// does nothing. Embed it in your handler to only implement the events you
+// care about.
+type NoopEventHandler struct{}
+
+func (NoopEventHandler) HandlePaymentIntentSucceeded(context.Context, stripe.Event) error  { return nil }
+func (NoopEventHandler) HandlePaymentIntentFailed(context.Context, stripe.Event) error     { return nil }
+func (NoopEventHandler) HandleCheckoutSessionCompleted(context.Context, stripe.Event) error { return nil }
+func (NoopEventHandler) HandleSubscriptionCreated(context.Context, stripe.Event) error      { return nil }
+func (NoopEventHandler) HandleSubscriptionUpdated(context.Context, stripe.Event) error      { return nil }
+func (NoopEventHandler) HandleSubscriptionDeleted(context.Context, stripe.Event) error      { return nil }
+func (NoopEventHandler) HandleInvoicePaid(context.Context, stripe.Event) error              { return nil }
+func (NoopEventHandler) HandleInvoicePaymentFailed(context.Context, stripe.Event) error     { return nil }

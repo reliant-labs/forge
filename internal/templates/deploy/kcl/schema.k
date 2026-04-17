@@ -21,8 +21,23 @@ schema SecurityContext:
     seccomp_profile: str = "RuntimeDefault"
 
 schema HealthCheck:
-    """HTTP health check probe configuration."""
-    http_path: str = "/healthz"
+    """HTTP health check probe configuration.
+
+    Kubernetes uses two HTTP probes with different semantics:
+      * livenessProbe  — restart the pod if it goes unhealthy (`/healthz`).
+      * readinessProbe — take the pod out of service routing while it warms up
+        or becomes temporarily unable to serve traffic (`/readyz`).
+
+    Apps typically expose different endpoints for each (the Go server
+    scaffolded by forge serves both `/healthz` and `/readyz`). A single
+    shared path would either restart pods that are merely warming up (too
+    aggressive on liveness) or keep unhealthy pods receiving traffic (too
+    lax on readiness), so we model them as separate fields here.
+    """
+    # Liveness ("is this process healthy? if not, restart it")
+    liveness_path: str = "/healthz"
+    # Readiness ("is this process ready to receive traffic right now?")
+    readiness_path: str = "/readyz"
     http_port: int = 8080
     initial_delay: int = 5
     period: int = 10
@@ -74,11 +89,13 @@ schema AutoScaling:
 schema PodDisruptionBudget:
     """Pod disruption budget configuration."""
     enabled: bool = False
-    min_available: int | None = 1
-    max_unavailable: int | None = None
+    # kcl does not accept Python's `int | None`; the `?` suffix is the
+    # idiomatic nullable shorthand.
+    min_available?: int = 1
+    max_unavailable?: int
 
     check:
-        not enabled or (min_available is not None or max_unavailable is not None), \
+        not enabled or (min_available != Undefined or max_unavailable != Undefined), \
             "PDB must have either min_available or max_unavailable when enabled"
 
 schema InitContainer:

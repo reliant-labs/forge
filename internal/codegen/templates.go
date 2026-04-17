@@ -9,6 +9,7 @@ package mocks
 import (
 {{- if .HasMethods}}
 	"context"
+	"fmt"
 {{- end}}
 	"net/http"
 

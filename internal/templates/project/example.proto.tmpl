@@ -31,6 +31,7 @@ service {{.ProjectName | pascalCase}}Service {
   rpc CreateItem(CreateItemRequest) returns (CreateItemResponse) {
     option (forge.options.v1.method_options) = {
       auth_required: true
+      idempotency_key: true
     };
   }
 }

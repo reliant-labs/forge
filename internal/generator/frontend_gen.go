@@ -18,7 +18,7 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 		return fmt.Errorf("create frontend directory: %w", err)
 	}
 
-	frontendFiles, err := templates.ListFrontendTemplates("nextjs")
+	frontendFiles, err := templates.FrontendTemplates.List("nextjs")
 	if err != nil {
 		return fmt.Errorf("list frontend templates: %w", err)
 	}
@@ -32,7 +32,7 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 	}
 
 	for _, file := range frontendFiles {
-		content, err := templates.RenderFrontendTemplate(filepath.Join("nextjs", file), data)
+		content, err := templates.FrontendTemplates.Render(filepath.Join("nextjs", file), data)
 		if err != nil {
 			return fmt.Errorf("render frontend template %s: %w", file, err)
 		}

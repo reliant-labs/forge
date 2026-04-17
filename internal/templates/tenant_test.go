@@ -17,9 +17,9 @@ func TestRenderTenantGenTemplate_DefaultOrgID(t *testing.T) {
 		ColumnName: "org_id",
 	}
 
-	content, err := RenderMiddlewareTemplate("middleware/tenant_gen.go.tmpl", data)
+	content, err := MiddlewareTemplates.Render("tenant_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("RenderMiddlewareTemplate() error = %v", err)
+		t.Fatalf("MiddlewareTemplates.Render() error = %v", err)
 	}
 
 	s := string(content)
@@ -62,9 +62,9 @@ func TestRenderTenantGenTemplate_CustomClaimField(t *testing.T) {
 		ColumnName: "tenant_id",
 	}
 
-	content, err := RenderMiddlewareTemplate("middleware/tenant_gen.go.tmpl", data)
+	content, err := MiddlewareTemplates.Render("tenant_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("RenderMiddlewareTemplate() error = %v", err)
+		t.Fatalf("MiddlewareTemplates.Render() error = %v", err)
 	}
 
 	s := string(content)

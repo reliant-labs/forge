@@ -31,7 +31,7 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		Environments: []string{"dev", "staging", "prod"},
 	}
 
-	content, err := RenderCITemplate("github", "ci.yml.tmpl", data)
+	content, err := CITemplates("github").Render("ci.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 		PermContents: "read",
 	}
 
-	content, err := RenderCITemplate("github", "ci.yml.tmpl", data)
+	content, err := CITemplates("github").Render("ci.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestCIWorkflowTemplate_K3dE2E(t *testing.T) {
 		E2ERuntime:   "k3d",
 	}
 
-	content, err := RenderCITemplate("github", "ci.yml.tmpl", data)
+	content, err := CITemplates("github").Render("ci.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}

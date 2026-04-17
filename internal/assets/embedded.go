@@ -66,7 +66,7 @@ func WriteForgeOptionsV1Protos(destDir string) error {
 
 // WriteTemplate writes a project template to the specified path.
 func WriteTemplate(templateName, destPath string) error {
-	content, err := templates.GetProjectTemplate(templateName)
+	content, err := templates.ProjectTemplates.Get(templateName)
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,7 @@ func WriteTemplate(templateName, destPath string) error {
 // Uses the consolidated template engine with the full funcMap (case converters,
 // type converters, comment formatter, etc.).
 func WriteTemplateWithData(templateName, destPath string, data interface{}) error {
-	content, err := templates.RenderProjectTemplate(templateName, data)
+	content, err := templates.ProjectTemplates.Render(templateName, data)
 	if err != nil {
 		return err
 	}

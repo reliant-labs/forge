@@ -21,7 +21,7 @@ func TestDeployTemplate_AllEnvironments(t *testing.T) {
 		CancelInProgress: false,
 	}
 
-	out, err := RenderCITemplate("github", "deploy.yml.tmpl", data)
+	out, err := CITemplates("github").Render("deploy.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestDeployTemplate_EmptyEnvironments(t *testing.T) {
 		Registry:     "ghcr",
 	}
 
-	out, err := RenderCITemplate("github", "deploy.yml.tmpl", data)
+	out, err := CITemplates("github").Render("deploy.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestDeployTemplate_GARRegistry(t *testing.T) {
 		Registry: "gar",
 	}
 
-	out, err := RenderCITemplate("github", "deploy.yml.tmpl", data)
+	out, err := CITemplates("github").Render("deploy.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 		VulnDocker:   true,
 	}
 
-	out, err := RenderCITemplate("github", "build-images.yml.tmpl", data)
+	out, err := CITemplates("github").Render("build-images.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestBuildImagesTemplate_Minimal(t *testing.T) {
 		VulnDocker:   false,
 	}
 
-	out, err := RenderCITemplate("github", "build-images.yml.tmpl", data)
+	out, err := CITemplates("github").Render("build-images.yml.tmpl", data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}

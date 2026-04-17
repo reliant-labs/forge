@@ -38,7 +38,7 @@ func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMetho
 	}
 
 	// Always regenerate auth_gen.go
-	content, err := templates.RenderMiddlewareTemplate("middleware/auth_gen.go.tmpl", data)
+	content, err := templates.MiddlewareTemplates.Render("auth_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render auth_gen.go.tmpl: %w", err)
 	}
@@ -51,7 +51,7 @@ func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMetho
 	if cfg.Provider == "api_key" || cfg.Provider == "both" {
 		validatorPath := filepath.Join(middlewareDir, "auth_validator.go")
 		if _, err := os.Stat(validatorPath); os.IsNotExist(err) {
-			validatorContent, err := templates.RenderMiddlewareTemplate("middleware/auth_validator.go.tmpl", data)
+			validatorContent, err := templates.MiddlewareTemplates.Render("auth_validator.go.tmpl", data)
 			if err != nil {
 				return fmt.Errorf("render auth_validator.go.tmpl: %w", err)
 			}

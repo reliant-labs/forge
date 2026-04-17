@@ -68,7 +68,7 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 			continue
 		}
 
-		content, err := templates.RenderTestTemplate(tf.tmplName, data)
+		content, err := templates.TestTemplates.Render(tf.tmplName, data)
 		if err != nil {
 			return fmt.Errorf("render e2e template %s: %w", tf.tmplName, err)
 		}

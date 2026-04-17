@@ -144,14 +144,23 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("expected pkg/registry/ directory to not exist")
 	}
 
-	handlersContents := readFile(t, filepath.Join(root, "handlers", "api", "handlers.go"))
-	if !strings.HasPrefix(handlersContents, "package api") {
-		t.Fatalf("expected handlers.go package to match generated service package, got:\n%s", handlersContents)
+	// handlers.go is intentionally not emitted at scaffold (zero RPC methods
+	// in the generated proto stub). The service package is provided by
+	// service.go + authorizer.go until a real RPC is added and forge
+	// generate produces handlers_gen.go.
+	if _, err := os.Stat(filepath.Join(root, "handlers", "api", "handlers.go")); !os.IsNotExist(err) {
+		t.Fatalf("expected handlers/api/handlers.go to not exist at scaffold, got err=%v", err)
+	}
+	if !strings.HasPrefix(serviceContents, "package api") {
+		t.Fatalf("expected service.go package to match generated service package, got:\n%s", serviceContents)
 	}
 
 	helpersContents := readFile(t, filepath.Join(root, "e2e", "api", "helpers_test.go"))
-	if !strings.HasPrefix(helpersContents, "package api_test") {
+	if !strings.Contains(helpersContents, "package api_test") {
 		t.Fatalf("expected e2e helpers to use api_test package, got:\n%s", helpersContents)
+	}
+	if !strings.Contains(helpersContents, "//go:build e2e") {
+		t.Fatalf("expected e2e helpers to have //go:build e2e tag, got:\n%s", helpersContents)
 	}
 	if strings.Contains(helpersContents, "UnknownRequest") {
 		t.Fatalf("expected e2e helpers to avoid placeholder request types, got:\n%s", helpersContents)
@@ -163,8 +172,18 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	}
 
 	feBufGenContents := readFile(t, filepath.Join(root, "frontends", "web", "buf.gen.yaml"))
-	if !strings.Contains(feBufGenContents, "directory: ../../proto") {
-		t.Fatalf("expected frontend buf.gen.yaml to target the local proto workspace, got:\n%s", feBufGenContents)
+	// The frontend buf.gen.yaml is invoked from the project root via
+	// `buf generate --template frontends/<name>/buf.gen.yaml --path proto/services`
+	// (see runBufGenerateTypeScript in internal/cli/generate.go). That means
+	// the template supplies `out:` relative to the project root and must NOT
+	// define an `inputs:` section (inputs come from --path). The old
+	// expectation of `directory: ../../proto` belonged to an earlier design
+	// where buf ran from the frontend dir. Enforce the current contract.
+	if !strings.Contains(feBufGenContents, "out: frontends/web/src/gen") {
+		t.Fatalf("expected frontend buf.gen.yaml to emit project-root-relative out:, got:\n%s", feBufGenContents)
+	}
+	if strings.Contains(feBufGenContents, "inputs:") {
+		t.Fatalf("frontend buf.gen.yaml must not declare inputs: (buf runs with --path), got:\n%s", feBufGenContents)
 	}
 
 	fePackageContents := readFile(t, filepath.Join(root, "frontends", "web", "package.json"))

@@ -1,0 +1,256 @@
+syntax = "proto3";
+
+package {{.ProjectName}}.db.v1;
+
+import "forge/options/v1/entity.proto";
+import "forge/options/v1/field.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "{{.ModulePath}}/gen/db/v1;dbv1";
+
+// StripeCustomer maps a local user/account to a Stripe Customer.
+message StripeCustomer {
+  option (forge.options.v1.entity_options) = {
+    table_name: "stripe_customers"
+    soft_delete: true
+    timestamps: true
+    indexes: [
+      {
+        name: "idx_stripe_customers_stripe_id"
+        fields: ["stripe_customer_id"]
+        unique: true
+      },
+      {
+        name: "idx_stripe_customers_email"
+        fields: ["email"]
+      }
+    ]
+  };
+
+  string id = 1 [(forge.options.v1.field_options) = {
+    primary_key: true
+    not_null: true
+  }];
+
+  string stripe_customer_id = 2 [(forge.options.v1.field_options) = {
+    not_null: true
+    unique: true
+  }];
+
+  string email = 3 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  string name = 4;
+
+  string metadata = 5 [(forge.options.v1.field_options) = {
+    column_type: "JSONB"
+  }];
+
+  google.protobuf.Timestamp created_at = 6 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp updated_at = 7 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp deleted_at = 8;
+}
+
+// StripePaymentIntent tracks Stripe PaymentIntents and their lifecycle.
+message StripePaymentIntent {
+  option (forge.options.v1.entity_options) = {
+    table_name: "stripe_payment_intents"
+    timestamps: true
+    indexes: [
+      {
+        name: "idx_stripe_pi_stripe_id"
+        fields: ["stripe_payment_intent_id"]
+        unique: true
+      },
+      {
+        name: "idx_stripe_pi_customer"
+        fields: ["customer_id"]
+      },
+      {
+        name: "idx_stripe_pi_status"
+        fields: ["status"]
+      }
+    ]
+  };
+
+  string id = 1 [(forge.options.v1.field_options) = {
+    primary_key: true
+    not_null: true
+  }];
+
+  string stripe_payment_intent_id = 2 [(forge.options.v1.field_options) = {
+    not_null: true
+    unique: true
+  }];
+
+  int64 amount = 3 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  string currency = 4 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  // Status: requires_payment_method, requires_confirmation, requires_action,
+  // processing, requires_capture, canceled, succeeded.
+  string status = 5 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  string customer_id = 6 [(forge.options.v1.field_options) = {
+    references: "stripe_customers.id"
+  }];
+
+  string metadata = 7 [(forge.options.v1.field_options) = {
+    column_type: "JSONB"
+  }];
+
+  google.protobuf.Timestamp created_at = 8 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp updated_at = 9 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+}
+
+// StripeSubscription tracks Stripe Subscriptions.
+message StripeSubscription {
+  option (forge.options.v1.entity_options) = {
+    table_name: "stripe_subscriptions"
+    soft_delete: true
+    timestamps: true
+    indexes: [
+      {
+        name: "idx_stripe_sub_stripe_id"
+        fields: ["stripe_subscription_id"]
+        unique: true
+      },
+      {
+        name: "idx_stripe_sub_customer"
+        fields: ["customer_id"]
+      },
+      {
+        name: "idx_stripe_sub_status"
+        fields: ["status"]
+      }
+    ]
+  };
+
+  string id = 1 [(forge.options.v1.field_options) = {
+    primary_key: true
+    not_null: true
+  }];
+
+  string stripe_subscription_id = 2 [(forge.options.v1.field_options) = {
+    not_null: true
+    unique: true
+  }];
+
+  string customer_id = 3 [(forge.options.v1.field_options) = {
+    not_null: true
+    references: "stripe_customers.id"
+  }];
+
+  string plan_id = 4 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  // Status: active, past_due, unpaid, canceled, incomplete, incomplete_expired,
+  // trialing, paused.
+  string status = 5 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  google.protobuf.Timestamp current_period_start = 6 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  google.protobuf.Timestamp current_period_end = 7 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  google.protobuf.Timestamp created_at = 8 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp updated_at = 9 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp deleted_at = 10;
+}
+
+// StripeInvoice tracks Stripe Invoices.
+message StripeInvoice {
+  option (forge.options.v1.entity_options) = {
+    table_name: "stripe_invoices"
+    timestamps: true
+    indexes: [
+      {
+        name: "idx_stripe_inv_stripe_id"
+        fields: ["stripe_invoice_id"]
+        unique: true
+      },
+      {
+        name: "idx_stripe_inv_customer"
+        fields: ["customer_id"]
+      },
+      {
+        name: "idx_stripe_inv_status"
+        fields: ["status"]
+      }
+    ]
+  };
+
+  string id = 1 [(forge.options.v1.field_options) = {
+    primary_key: true
+    not_null: true
+  }];
+
+  string stripe_invoice_id = 2 [(forge.options.v1.field_options) = {
+    not_null: true
+    unique: true
+  }];
+
+  string customer_id = 3 [(forge.options.v1.field_options) = {
+    not_null: true
+    references: "stripe_customers.id"
+  }];
+
+  int64 amount_due = 4 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  int64 amount_paid = 5 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  // Status: draft, open, paid, uncollectible, void.
+  string status = 6 [(forge.options.v1.field_options) = {
+    not_null: true
+  }];
+
+  google.protobuf.Timestamp created_at = 7 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+
+  google.protobuf.Timestamp updated_at = 8 [(forge.options.v1.field_options) = {
+    not_null: true
+    default_value: "NOW()"
+  }];
+}

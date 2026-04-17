@@ -1,7 +1,16 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     restart: unless-stopped
+    # mem_limit / cpus (compose v2 short form) keep local dev from letting
+    # a runaway query chew through host memory or CPU — useful on laptops
+    # where `docker compose up` shares resources with the IDE. The short
+    # form works on every compose version shipped since 1.x; `deploy.
+    # resources.limits` only applies under Swarm and was silently
+    # ignored here. Raise these on dedicated build machines if you
+    # import a large fixture.
+    mem_limit: 512m
+    cpus: 0.5
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-{{.ProjectName}}}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -23,11 +32,23 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
+      PORT: ${PORT:-8080}
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:${PORT:-8080}"
     depends_on:
       postgres:
         condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      # /healthz is the in-process liveness endpoint (see cmd/server.go).
+      # We shell out to wget (busybox/alpine) because the Go runtime base
+      # images don't bundle curl; wget -q --spider is the portable equivalent.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:${PORT:-8080}/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
       - {{.ProjectName}}-net
 
@@ -39,8 +60,9 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
       ENVIRONMENT: development
+      PORT: ${PORT:-8080}
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:${PORT:-8080}"
       - "2345:2345"
     security_opt:
       - "apparmor=unconfined"
@@ -49,6 +71,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      # Same endpoint as app; Delve attaches separately on :2345.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:${PORT:-8080}/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      # Debug binaries boot slower because Delve waits for an attach before
+      # executing main; give it a longer grace period.
+      start_period: 30s
     profiles:
       - debug
     networks:
@@ -60,8 +93,18 @@ services:
     ports:
       - "16686:16686"  # Jaeger UI
       - "4317:4317"    # OTLP gRPC
+      - "14269:14269"  # Admin / health
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+    healthcheck:
+      # Jaeger exposes its health endpoint on port 14269 (admin HTTP). We
+      # can't rely on curl/wget inside the jaeger image, so we probe the TCP
+      # port with /dev/tcp (bash builtin) via sh -c; busybox sh supports it.
+      test: ["CMD-SHELL", "timeout 1 sh -c '</dev/tcp/localhost/14269' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
       - {{.ProjectName}}-net
 

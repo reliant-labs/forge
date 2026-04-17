@@ -21,7 +21,7 @@ func testProjectConfig() *config.ProjectConfig {
 
 func TestBuildTemplateData(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	if data.Name != "test-project" {
 		t.Errorf("Name = %q, want %q", data.Name, "test-project")
@@ -48,7 +48,7 @@ func TestBuildTemplateDataDefaults(t *testing.T) {
 		Name:       "myapp",
 		ModulePath: "github.com/example/myapp",
 	}
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	if data.ServiceName != "api" {
 		t.Errorf("ServiceName = %q, want default %q", data.ServiceName, "api")
@@ -93,7 +93,7 @@ func TestManagedFiles(t *testing.T) {
 
 func TestRenderManagedFile(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	for _, f := range managedFiles() {
 		content, err := renderManagedFile(f, data)
@@ -139,7 +139,7 @@ func TestSimpleDiffIdentical(t *testing.T) {
 
 func TestUpgradeUpToDate(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	// Create temp project with files matching templates
 	dir := t.TempDir()
@@ -173,7 +173,7 @@ func TestUpgradeUpToDate(t *testing.T) {
 
 func TestUpgradeDetectsModified(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	dir := t.TempDir()
 
@@ -237,7 +237,7 @@ func TestUpgradeDetectsModified(t *testing.T) {
 
 func TestUpgradeForceOverwrites(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	dir := t.TempDir()
 
@@ -293,7 +293,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 
 func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	cfg := testProjectConfig()
-	data := buildTemplateData(cfg)
+	data := buildTemplateData(cfg, "")
 
 	dir := t.TempDir()
 

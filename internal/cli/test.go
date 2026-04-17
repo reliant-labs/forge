@@ -197,7 +197,9 @@ func runTestE2E(flags testFlags) error {
 
 	// Run E2E tests directly — bypass runGoTests service scoping since
 	// E2E tests live under e2e/, not handlers/.
-	result := runGoTestInDir(".", pkg, nil, flags)
+	// E2E test files are guarded by `//go:build e2e`, so we must pass
+	// the build tag for them to compile and run.
+	result := runGoTestInDir(".", pkg, []string{"-tags", "e2e"}, flags)
 	return printTestSummary([]testResult{result}, nil)
 }
 

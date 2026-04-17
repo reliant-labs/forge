@@ -48,10 +48,13 @@ _pod_security_context = lambda sc: schema.SecurityContext -> any {
     }
 }
 
-_probe_spec = lambda hc: schema.HealthCheck -> any {
+# Build a probe spec for a specific endpoint. `path` lets callers point the
+# same shared probe timing at different endpoints (`/healthz` for liveness,
+# `/readyz` for readiness).
+_probe_spec = lambda hc: schema.HealthCheck, path: str -> any {
     {
         httpGet = {
-            path = hc.http_path
+            path = path
             port = hc.http_port
         }
         initialDelaySeconds = hc.initial_delay
@@ -134,20 +137,11 @@ _render_deployment = lambda app: schema.Application, env: schema.Environment -> 
                             if app.env_vars:
                                 env = [_env_source(e) for e in app.env_vars]
                             securityContext = _container_security_context(app.security_context)
-                            livenessProbe = _probe_spec(app.health_check)
-                            readinessProbe = {
-                                httpGet = {
-                                    path = "/readyz"
-                                    port = app.health_check.http_port
-                                }
-                                initialDelaySeconds = app.health_check.initial_delay
-                                periodSeconds = app.health_check.period
-                                timeoutSeconds = app.health_check.timeout
-                                failureThreshold = app.health_check.failure_threshold
-                            }
+                            livenessProbe = _probe_spec(app.health_check, app.health_check.liveness_path)
+                            readinessProbe = _probe_spec(app.health_check, app.health_check.readiness_path)
                             startupProbe = {
                                 httpGet = {
-                                    path = "/healthz"
+                                    path = app.health_check.liveness_path
                                     port = app.health_check.http_port
                                 }
                                 failureThreshold = 30
@@ -283,9 +277,9 @@ _render_pdb = lambda app: schema.Application, env: schema.Environment -> any {
         }
         spec = {
             selector = {matchLabels = {"app.kubernetes.io/name" = app.name}}
-            if app.pdb.min_available is not None:
+            if app.pdb.min_available != Undefined:
                 minAvailable = app.pdb.min_available
-            if app.pdb.max_unavailable is not None:
+            if app.pdb.max_unavailable != Undefined:
                 maxUnavailable = app.pdb.max_unavailable
         }
     }
@@ -436,23 +430,22 @@ _render_namespace = lambda env: schema.Environment -> any {
     }
 }
 
+# kcl's grammar treats a `]` followed by a newline (even inside parentheses)
+# as end-of-statement when it appears directly in a lambda body, so the
+# previous multi-line `] + (…)` continuation split into two statements and
+# failed to parse. We factor the per-app list out into a helper lambda and
+# use explicit `\` line continuations so the logical expression stays on a
+# single statement while remaining readable.
+_render_app = lambda app: schema.Application, env: schema.Environment -> [any] {
+    [_render_deployment(app, env), _render_service(app, env)] \
+        + ([_render_ingress(app, env)] if app.ingress.enabled else []) \
+        + ([_render_hpa(app, env)] if app.autoscaling.enabled else []) \
+        + ([_render_pdb(app, env)] if app.pdb.enabled else []) \
+        + _render_rbac(app, env)
+}
+
 render_environment = lambda env: schema.Environment -> [any] {
-    [_render_namespace(env)] + [
-        item
-        for _, app in env.applications
-        for item in [
-            _render_deployment(app, env)
-            _render_service(app, env)
-        ] + (
-            [_render_ingress(app, env)] if app.ingress.enabled else []
-        ) + (
-            [_render_hpa(app, env)] if app.autoscaling.enabled else []
-        ) + (
-            [_render_pdb(app, env)] if app.pdb.enabled else []
-        ) + (
-            _render_rbac(app, env)
-        )
-    ] + (
-        _render_network_policies(env) if env.network_policies else []
-    )
+    [_render_namespace(env)] \
+        + [item for _, app in env.applications for item in _render_app(app, env)] \
+        + (_render_network_policies(env) if env.network_policies else [])
 }

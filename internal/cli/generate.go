@@ -16,6 +16,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/database"
@@ -106,6 +107,9 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to load checksums: %w", err)
 	}
+	// Stamp the forge version that produced this generation cycle. CI pins
+	// its forge install to this version for reproducible `verify-generated`.
+	cs.ForgeVersion = buildinfo.Version()
 	// Ensure checksums are saved at the end of the pipeline
 	defer func() {
 		if saveErr := generator.SaveChecksums(abs, cs); saveErr != nil {
@@ -225,6 +229,13 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		}
 	}
 
+	// ── Step 4b: CRUD handler generation ──
+	if hasServices && hasDB {
+		if err := generateCRUDHandlers(services, modulePath, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: CRUD handler generation failed: %v\n", err)
+		}
+	}
+
 	// ── Step 5: Mocks (always regenerate) ──
 	if hasServices {
 		if err := generateServiceMocks(services, projectDir); err != nil {
@@ -264,7 +275,18 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		if cfg != nil {
 			dbDriver = cfg.Database.Driver
 		}
-		if err := generateBootstrap(services, modulePath, dbDriver, projectDir); err != nil {
+		// ORM is enabled only when there are proto/db entities to generate
+		// ORM bindings for. Configuring a database driver alone (e.g. for
+		// migrations or raw SQL) must not force the ORM field onto App.
+		ormEnabled := false
+		if hasDB {
+			ok, perr := hasProtoFilesInDir(filepath.Join(projectDir, "proto", "db"))
+			if perr != nil {
+				return fmt.Errorf("scan proto/db for ORM protos: %w", perr)
+			}
+			ormEnabled = ok
+		}
+		if err := generateBootstrap(services, modulePath, dbDriver, ormEnabled, projectDir); err != nil {
 			return fmt.Errorf("bootstrap generation failed: %w", err)
 		}
 	}
@@ -526,12 +548,18 @@ func runBufGenerateTypeScript(fe config.FrontendConfig, cfg *config.ProjectConfi
 	// Ensure the frontend has a buf.gen.yaml with out: relative to project root
 	feBufGen := filepath.Join(absFeDir, "buf.gen.yaml")
 	if _, err := os.Stat(feBufGen); os.IsNotExist(err) {
+		// include_imports must be a plugin-level field in buf.gen.yaml v2,
+		// not an `opt:` entry — bufbuild/es rejects unknown opts. Mirror the
+		// structure used by the frontend template (buf.gen.yaml.tmpl) so
+		// regenerated and manually-written configs stay consistent.
 		tsConfig := fmt.Sprintf(`version: v2
 plugins:
   - remote: buf.build/bufbuild/es
     out: %s/src/gen
+    include_imports: true
     opt:
       - target=ts
+      - import_extension=.js
 `, filepath.ToSlash(feDir))
 		if err := os.WriteFile(feBufGen, []byte(tsConfig), 0644); err != nil {
 			return fmt.Errorf("failed to write TypeScript buf config: %w", err)
@@ -584,7 +612,7 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 			if result.AllUpToDate {
 				fmt.Printf("  ⏭️  Skipped %s/ (all handlers up to date)\n", relServiceDir)
 			} else {
-				fmt.Printf("  ✅ Generated %d new handler stub(s) in %s/handlers_new.go: %s\n",
+				fmt.Printf("  ✅ Generated %d new handler stub(s) in %s/handlers_gen.go: %s\n",
 					len(result.NewMethods), relServiceDir, strings.Join(result.NewMethods, ", "))
 				hasNewStubs = true
 			}
@@ -601,6 +629,46 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 		fmt.Println("  💡 Run 'go build ./...' to verify the new stubs compile")
 	}
 
+	return nil
+}
+
+// generateCRUDHandlers generates CRUD handler implementations by matching
+// service RPC methods against entity protos in proto/db/.
+func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, projectDir string) error {
+	entities, err := codegen.ParseEntityProtos(projectDir)
+	if err != nil {
+		return fmt.Errorf("parse entity protos: %w", err)
+	}
+	if len(entities) == 0 {
+		return nil
+	}
+
+	fmt.Println("\n🔧 Generating CRUD handlers...")
+	generated := 0
+	for _, svc := range services {
+		crudMethods := codegen.MatchCRUDMethods(svc, entities)
+		if len(crudMethods) == 0 {
+			continue
+		}
+
+		pkg := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
+		if err := codegen.GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD generation for %s failed: %v\n", svc.Name, err)
+			continue
+		}
+		fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_gen.go (%d methods)\n", pkg, len(crudMethods))
+
+		if err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD test generation for %s failed: %v\n", svc.Name, err)
+		} else {
+			fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_test_gen.go\n", pkg)
+		}
+		generated++
+	}
+
+	if generated == 0 {
+		fmt.Println("  ℹ️  No CRUD patterns matched")
+	}
 	return nil
 }
 
@@ -838,7 +906,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string) error {
 }
 
 // generateBootstrap regenerates pkg/app/bootstrap.go with explicit service construction.
-func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, projectDir string) error {
+func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string) error {
 	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
 
 	workers := discoverWorkers(projectDir)
@@ -851,14 +919,14 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 	packages := discoverPackages(projectDir)
 
 	hasDatabase := databaseDriver != ""
-	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, projectDir); err != nil {
+	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir); err != nil {
 		return fmt.Errorf("failed to generate bootstrap: %w", err)
 	}
 
 	fmt.Println("  ✅ Generated pkg/app/bootstrap.go")
 
 	// Generate setup.go (user-owned, never overwritten)
-	if err := codegen.GenerateSetup(modulePath, databaseDriver, projectDir); err != nil {
+	if err := codegen.GenerateSetup(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
 		return fmt.Errorf("failed to generate setup.go: %w", err)
 	}
 
@@ -1212,6 +1280,8 @@ func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 		VulnDocker:  allVulnDefault || vulnCfg.Docker,
 		VulnNPM:     allVulnDefault || vulnCfg.NPM,
 
+		LicenseCheck: true,
+
 		E2EEnabled:  cfg.CI.E2E.Enabled,
 		E2ERuntime:  effectiveE2ERuntime(cfg),
 
@@ -1219,6 +1289,9 @@ func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 
 		HasKCL:       len(envs) > 0,
 		Environments: envs,
+
+		ForgeVersion:   buildinfo.Version(),
+		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 }
 
@@ -1233,7 +1306,15 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 			URL:        e.URL,
 		})
 	}
-	// If no deploy environments configured, use sensible defaults from project envs
+	// If no deploy environments configured, derive defaults from project envs.
+	// Convention (matches the hardcoded defaults in new-project scaffolding):
+	//   * the first cloud env auto-deploys after a successful image build
+	//     (workflow_run trigger) — this is typically "staging"
+	//   * the last cloud env is gated behind environment protection — this
+	//     is typically "prod"
+	// Without these defaults the deploy.yml template's `{{- if $env.Auto}}`
+	// branch never fires, leaving the workflow_run trigger at the top of the
+	// file unreachable from any job `if:` (H-5).
 	if len(envs) == 0 {
 		for _, e := range cfg.Envs {
 			if e.Type == "cloud" {
@@ -1241,6 +1322,10 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 					Name: e.Name,
 				})
 			}
+		}
+		if len(envs) > 0 {
+			envs[0].Auto = true
+			envs[len(envs)-1].Protection = true
 		}
 	}
 
@@ -1271,11 +1356,16 @@ func buildBuildImagesWorkflowData(cfg *config.ProjectConfig) templates.BuildImag
 
 // buildE2EWorkflowData maps a ProjectConfig to the E2E workflow template data.
 func buildE2EWorkflowData(cfg *config.ProjectConfig) templates.E2EWorkflowData {
+	var fePath string
+	if len(cfg.Frontends) > 0 {
+		fePath = cfg.Frontends[0].Path
+	}
 	return templates.E2EWorkflowData{
 		ProjectName:  cfg.Name,
 		GoVersion:    cfg.CI.EffectiveGoVersion(),
 		Runtime:      effectiveE2ERuntime(cfg),
 		HasFrontends: len(cfg.Frontends) > 0,
+		FrontendPath: fePath,
 	}
 }
 

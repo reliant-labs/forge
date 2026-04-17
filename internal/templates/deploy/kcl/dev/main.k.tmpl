@@ -1,16 +1,27 @@
 """
 Development environment configuration for {{.ProjectName}}.
+
+Top-level identifiers `image_tag` and `registry` are overridable via
+`kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
+flag only binds top-level names, not nested struct fields.
 """
 
 import deploy.kcl.schema
 import deploy.kcl.base
 import deploy.kcl.render
 
+# Overridable via `kcl run -D image_tag=...`
+image_tag = option("image_tag") or "latest"
+
+# Overridable via `kcl run -D registry=...`. Local dev defaults to the k3d
+# registry created by `deploy/k3d.yaml`.
+registry = option("registry") or "localhost:5050"
+
 env = schema.Environment {
     name = "dev"
     namespace = "{{.ProjectName}}-dev"
-    image_registry = "localhost:5050"
-    image_tag = "latest"
+    image_registry = registry
+    image_tag = image_tag
     network_policies = False
     applications = {
         "{{.ProjectName}}" = schema.Application {
@@ -45,7 +56,8 @@ env = schema.Environment {
                 }
             ]
             health_check = schema.HealthCheck {
-                http_path = "/healthz"
+                liveness_path = "/healthz"
+                readiness_path = "/readyz"
                 http_port = 8080
             }
         }

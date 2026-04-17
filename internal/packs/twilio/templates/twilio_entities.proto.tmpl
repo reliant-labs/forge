@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package db.v1;
+
+option go_package = "{{ .ModulePath }}/gen/db/v1;dbv1";
+
+import "forge/options/v1/entity.proto";
+import "forge/options/v1/field.proto";
+
+// SmsMessage tracks outbound and inbound SMS messages via Twilio.
+message SmsMessage {
+  option (forge.options.v1.entity_options) = {
+    table_name: "sms_messages",
+    timestamps: true
+  };
+
+  int64 id = 1 [(forge.options.v1.field_options) = {primary_key: true, auto_increment: true}];
+  string twilio_message_sid = 2 [(forge.options.v1.field_options) = {unique: true}];
+  string to_number = 3 [(forge.options.v1.field_options) = {not_null: true}];
+  string from_number = 4 [(forge.options.v1.field_options) = {not_null: true}];
+  string body = 5;
+  string status = 6;         // queued, sending, sent, delivered, undelivered, failed
+  string error_code = 7;
+  string error_message = 8;
+  string direction = 9;      // outbound, inbound
+}

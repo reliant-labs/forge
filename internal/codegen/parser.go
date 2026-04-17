@@ -29,6 +29,7 @@ type Method struct {
 	OutputType     string
 	ClientStreaming bool
 	ServerStreaming bool
+	AuthRequired   bool // from forge.options.v1.method_options.auth_required
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.
@@ -155,6 +156,7 @@ func parseProtoFile(path string, modulePath string) ([]ServiceDef, error) {
 				OutputType:     string(rpcNode.Output.MessageType.AsIdentifier()),
 				ClientStreaming: rpcNode.Input.Stream != nil,
 				ServerStreaming: rpcNode.Output.Stream != nil,
+				AuthRequired:   parseAuthRequired(rpcNode),
 			}
 			svc.Methods = append(svc.Methods, method)
 		}
@@ -195,6 +197,31 @@ func parseGoPackageValue(raw string) (goPackage, pkgName string) {
 		pkgName = strings.ReplaceAll(pkgName, ".", "")
 	}
 	return
+}
+
+// parseAuthRequired extracts the auth_required field from method_options on an RPC.
+// Returns false if no method_options or auth_required is not set.
+func parseAuthRequired(rpcNode *ast.RPCNode) bool {
+	var authRequired bool
+	rpcNode.RangeOptions(func(opt *ast.OptionNode) bool {
+		// Look for message literal values (the { ... } block)
+		msgLit, ok := opt.Val.(*ast.MessageLiteralNode)
+		if !ok {
+			return true // continue
+		}
+		for _, field := range msgLit.Elements {
+			if field.Name == nil || field.Name.Name == nil {
+				continue
+			}
+			if string(field.Name.Name.AsIdentifier()) == "auth_required" {
+				if ident, ok := field.Val.(ast.IdentValueNode); ok {
+					authRequired = string(ident.AsIdentifier()) == "true"
+				}
+			}
+		}
+		return true // continue checking all options
+	})
+	return authRequired
 }
 
 // GetModulePath reads the module path from go.mod in the given directory.

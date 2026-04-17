@@ -2,7 +2,7 @@
 package app
 
 import (
-{{- if .MultiTenantEnabled}}
+{{- if or .Services .MultiTenantEnabled}}
 	"context"
 {{- end}}
 	"io"
@@ -19,7 +19,7 @@ import (
 	"connectrpc.com/connect"
 {{- end}}
 	"{{$.Module}}/pkg/config"
-{{- if .MultiTenantEnabled}}
+{{- if or .Services .MultiTenantEnabled}}
 	"{{$.Module}}/pkg/middleware"
 {{- end}}
 {{range .Services}}
@@ -30,6 +30,21 @@ import (
 	"{{$.Module}}/internal/{{.Package}}"
 {{- end}}
 )
+{{- if .Services}}
+
+// testAuthorizer is a permissive middleware.Authorizer implementation for use
+// in unit tests. It allows every call. Production authorizers deny by default
+// (fail-closed), but tests typically want to exercise business logic without
+// authz noise — so NewTest{{"{{"}}Service{{"}}"}} wires this in by default.
+// Tests that need to exercise authz rules should construct a real authorizer
+// via WithAuthorizer(...) or pass their own Deps via With<Service>Deps(...).
+type testAuthorizer struct{}
+
+func (testAuthorizer) CanAccess(context.Context, string) error { return nil }
+func (testAuthorizer) Can(context.Context, *middleware.Claims, string, string) error {
+	return nil
+}
+{{- end}}
 
 // TestOption configures test service construction.
 type TestOption func(*testConfig)
@@ -37,6 +52,9 @@ type TestOption func(*testConfig)
 type testConfig struct {
 	logger *slog.Logger
 	cfg    *config.Config
+{{- if .Services}}
+	authz  middleware.Authorizer
+{{- end}}
 {{- range .Services}}
 	{{.Package}}Deps *{{.Package}}.Deps
 {{- end}}
@@ -54,6 +72,14 @@ func WithLogger(l *slog.Logger) TestOption {
 func WithConfig(cfg *config.Config) TestOption {
 	return func(c *testConfig) { c.cfg = cfg }
 }
+{{- if .Services}}
+
+// WithAuthorizer overrides the default permissive test authorizer.
+// Use this when a test needs to exercise real authorization logic.
+func WithAuthorizer(a middleware.Authorizer) TestOption {
+	return func(c *testConfig) { c.authz = a }
+}
+{{- end}}
 {{range .Services}}
 // With{{.FieldName}}Deps overrides the {{.FieldName}} service dependencies.
 func With{{.FieldName}}Deps(deps {{.Package}}.Deps) TestOption {
@@ -68,7 +94,7 @@ func With{{.FieldName}}Deps(deps {{.Package}}.Deps) TestOption {
 {{end}}
 {{- range .Services}}
 // NewTest{{.FieldName}} creates test instance of {{.FieldName}} service with test defaults.
-// By default, deps are minimal (just a discard logger).
+// By default, deps are minimal (discard logger + permissive authorizer).
 // Use options to override specific deps.
 func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Service {
 	t.Helper()
@@ -85,7 +111,9 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Servi
 		return svc
 	}
 	svc, err := {{.Package}}.New({{.Package}}.Deps{
-		Logger: cfg.logger.With("service", "{{.Name}}"),
+		Logger:     cfg.logger.With("service", "{{.Name}}"),
+		Config:     cfg.cfg,
+		Authorizer: cfg.authz,
 	})
 	if err != nil {
 		t.Fatalf("creating {{.Package}} service: %v", err)
@@ -96,7 +124,9 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Servi
 		return {{.Package}}.New(*cfg.{{.Package}}Deps)
 	}
 	return {{.Package}}.New({{.Package}}.Deps{
-		Logger: cfg.logger.With("service", "{{.Name}}"),
+		Logger:     cfg.logger.With("service", "{{.Name}}"),
+		Config:     cfg.cfg,
+		Authorizer: cfg.authz,
 	})
 {{- end}}
 }
@@ -156,6 +186,9 @@ func defaultTestConfig() *testConfig {
 	return &testConfig{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:    &config.Config{},
+{{- if .Services}}
+		authz:  testAuthorizer{},
+{{- end}}
 	}
 }
 

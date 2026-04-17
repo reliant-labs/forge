@@ -21,6 +21,7 @@ type MethodTemplateData struct {
 	OutputType     string // proto output message name, e.g. "GetItemResponse"
 	ClientStreaming bool   // true if the client streams requests
 	ServerStreaming bool   // true if the server streams responses
+	AuthRequired   bool   // true if method_options.auth_required is set
 }
 
 // ServiceTemplateData holds the data shape expected by the embedded service templates.
@@ -71,6 +72,7 @@ func mapServiceDefToTemplateData(svc ServiceDef) ServiceTemplateData {
 			OutputType:     m.OutputType,
 			ClientStreaming: m.ClientStreaming,
 			ServerStreaming: m.ServerStreaming,
+			AuthRequired:   m.AuthRequired,
 		})
 	}
 
@@ -106,13 +108,18 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 		return err
 	}
 
-	// Render handlers.go from embedded template
-	handlersContent, err := templates.RenderServiceTemplate("service/handlers.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render handlers.go.tmpl: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(targetDir, "handlers.go"), handlersContent, 0644); err != nil {
-		return err
+	// Render handlers.go from embedded template only when there are real methods
+	// to implement. With zero methods, handlers.go would just be a placeholder
+	// comment; skip it and let the user (or subsequent forge generate runs) create
+	// it with actual content.
+	if len(data.Methods) > 0 {
+		handlersContent, err := templates.RenderServiceTemplate("service/handlers.go.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render handlers.go.tmpl: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(targetDir, "handlers.go"), handlersContent, 0644); err != nil {
+			return err
+		}
 	}
 
 	// Render handlers_test.go from embedded template
@@ -277,7 +284,14 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 }
 
 // GenerateBootstrap generates pkg/app/bootstrap.go from the bootstrap.go.tmpl template.
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, projectDir string) error {
+//
+// hasDatabase gates the DB field + setupDatabase wiring; ormEnabled gates the
+// ORM field + generated ORM client construction. The two are separate
+// concerns: a project may configure a DB driver (for migrations, raw SQL,
+// sqlc) without opting into the generated forge ORM. The ORM field is
+// dropped when no proto/db/ entity definitions exist so `App.ORM` can never
+// be silently nil in user code.
+func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err
@@ -304,6 +318,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		Workers     []BootstrapWorkerData
 		Operators   []BootstrapOperatorData
 		HasDatabase bool
+		OrmEnabled  bool
 		HasFallible bool
 	}{
 		Module:      modulePath,
@@ -312,6 +327,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		Workers:     workers,
 		Operators:   operators,
 		HasDatabase: hasDatabase,
+		OrmEnabled:  ormEnabled,
 		HasFallible: hasFallible,
 	}
 
@@ -390,11 +406,15 @@ func buildReturnType(m Method) string {
 }
 
 func buildReturnStub(m Method) string {
+	// Go convention: error strings should not start with a capital letter and
+	// should not end with punctuation. RPC method names are pascal-cased, so
+	// we format them as a value rather than using them as the first word.
+	errExpr := fmt.Sprintf("connect.NewError(connect.CodeUnimplemented, fmt.Errorf(\"handler for %%s not yet implemented\", %q))", m.Name)
 	switch {
 	case m.ClientStreaming && m.ServerStreaming, m.ServerStreaming:
-		return "connect.NewError(connect.CodeUnimplemented, nil)"
+		return errExpr
 	default:
-		return "nil, connect.NewError(connect.CodeUnimplemented, nil)"
+		return "nil, " + errExpr
 	}
 }
 
@@ -540,9 +560,9 @@ type MissingHandlerResult struct {
 
 // GenerateMissingHandlerStubs scans the existing service directory for implemented
 // methods on *Service, compares against the proto ServiceDef, and generates stubs
-// only for missing methods into handlers_new.go.
+// only for missing methods into handlers_gen.go.
 // If all methods are already implemented, it returns AllUpToDate=true.
-// If handlers_new.go already exists, it is overwritten (it's generated code).
+// If handlers_gen.go already exists, it is overwritten (it's generated code).
 func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error) {
 	existing, err := scanExistingMethods(targetDir, false)
 	if err != nil {
@@ -556,10 +576,10 @@ func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHand
 		}
 	}
 
-	handlersNewPath := filepath.Join(targetDir, "handlers_new.go")
+	handlersGenPath := filepath.Join(targetDir, "handlers_gen.go")
 	if len(missing) == 0 {
-		if err := os.Remove(handlersNewPath); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("remove stale handlers_new.go: %w", err)
+		if err := os.Remove(handlersGenPath); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove stale handlers_gen.go: %w", err)
 		}
 		return &MissingHandlerResult{AllUpToDate: true}, nil
 	}
@@ -569,27 +589,38 @@ func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHand
 	missingSvc.Methods = missing
 	data := mapServiceDefToTemplateData(missingSvc)
 
-	content, err := templates.RenderServiceTemplate("service/handlers_new.go.tmpl", data)
+	content, err := templates.RenderServiceTemplate("service/handlers_gen.go.tmpl", data)
 	if err != nil {
-		return nil, fmt.Errorf("render handlers_new.go.tmpl: %w", err)
+		return nil, fmt.Errorf("render handlers_gen.go.tmpl: %w", err)
 	}
 
-	if err := os.WriteFile(handlersNewPath, content, 0644); err != nil {
+	if err := os.WriteFile(handlersGenPath, content, 0644); err != nil {
 		return nil, err
 	}
 
-	// If integration_test.go is still a placeholder (no RPCs when first generated),
-	// regenerate it with actual test scaffolding now that RPCs exist.
+	// If integration_test.go / handlers_test.go are still placeholders (no RPCs when
+	// first generated), regenerate them with actual test scaffolding now that RPCs exist.
+	fullData := mapServiceDefToTemplateData(svc)
+
 	integrationTestPath := filepath.Join(targetDir, "integration_test.go")
 	if isPlaceholderIntegrationTest(integrationTestPath) {
-		// Use the full service (all methods, not just missing) for the integration test.
-		fullData := mapServiceDefToTemplateData(svc)
 		testContent, err := templates.RenderServiceTemplate("service/integration_test.go.tmpl", fullData)
 		if err != nil {
 			return nil, fmt.Errorf("render integration_test.go.tmpl: %w", err)
 		}
 		if err := os.WriteFile(integrationTestPath, testContent, 0644); err != nil {
 			return nil, fmt.Errorf("write integration_test.go: %w", err)
+		}
+	}
+
+	handlersTestPath := filepath.Join(targetDir, "handlers_test.go")
+	if isPlaceholderUnitTest(handlersTestPath) {
+		testContent, err := templates.RenderServiceTemplate("service/unit_test.go.tmpl", fullData)
+		if err != nil {
+			return nil, fmt.Errorf("render unit_test.go.tmpl: %w", err)
+		}
+		if err := os.WriteFile(handlersTestPath, testContent, 0644); err != nil {
+			return nil, fmt.Errorf("write handlers_test.go: %w", err)
 		}
 	}
 
@@ -608,7 +639,17 @@ func isPlaceholderIntegrationTest(path string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), `no RPC methods defined yet`)
+	return strings.Contains(string(data), `forge-integration-test-placeholder`)
+}
+
+// isPlaceholderUnitTest checks if handlers_test.go is still the auto-generated
+// placeholder with no real tests.
+func isPlaceholderUnitTest(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), `forge-unit-test-placeholder`)
 }
 
 // scanExistingMethods reads all .go files in dir and returns a set of method names
@@ -631,7 +672,7 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 		if strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		if !includeGeneratedStubs && entry.Name() == "handlers_new.go" {
+		if !includeGeneratedStubs && entry.Name() == "handlers_gen.go" {
 			continue
 		}
 
@@ -666,7 +707,7 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 
 // GenerateSetup generates pkg/app/setup.go if it does not already exist.
 // This file is user-owned and never overwritten.
-func GenerateSetup(modulePath string, databaseDriver string, targetDir string) error {
+func GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error {
 	appDir := filepath.Join(targetDir, "pkg", "app")
 	setupPath := filepath.Join(appDir, "setup.go")
 
@@ -682,10 +723,12 @@ func GenerateSetup(modulePath string, databaseDriver string, targetDir string) e
 	data := struct {
 		Module         string
 		HasDatabase    bool
+		OrmEnabled     bool
 		DatabaseDriver string
 	}{
 		Module:         modulePath,
 		HasDatabase:    databaseDriver != "",
+		OrmEnabled:     ormEnabled,
 		DatabaseDriver: databaseDriver,
 	}
 

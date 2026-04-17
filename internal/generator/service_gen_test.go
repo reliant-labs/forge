@@ -17,7 +17,6 @@ func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 	// Verify all expected files exist
 	expectedFiles := []string{
 		"handlers/orders/service.go",
-		"handlers/orders/handlers.go",
 		"handlers/orders/authorizer.go",
 		"proto/services/orders/v1/orders.proto",
 	}
@@ -26,6 +25,11 @@ func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("expected file %s to exist: %v", f, err)
 		}
+	}
+
+	// handlers.go should NOT exist at scaffold (zero RPC methods).
+	if _, err := os.Stat(filepath.Join(root, "handlers", "orders", "handlers.go")); !os.IsNotExist(err) {
+		t.Errorf("handlers.go should not be emitted at scaffold with zero RPC methods (got err=%v)", err)
 	}
 }
 
@@ -102,5 +106,17 @@ func TestGenerateFrontendFilesCreatesExpectedFiles(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "web") {
 		t.Errorf("package.json should reference frontend name, got:\n%s", string(content))
+	}
+
+	// A nested go.mod must exist so that `go test ./...` from the project
+	// root skips this subtree (frontend node_modules may contain stray .go
+	// files from transitive npm deps).
+	goModPath := filepath.Join(root, "frontends", "web", "go.mod")
+	goModBytes, err := os.ReadFile(goModPath)
+	if err != nil {
+		t.Fatalf("expected frontend go.mod to exist: %v", err)
+	}
+	if !strings.Contains(string(goModBytes), "module example.com/myapp/frontends/web") {
+		t.Errorf("frontend go.mod should declare nested module path, got:\n%s", string(goModBytes))
 	}
 }

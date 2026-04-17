@@ -1,0 +1,29 @@
+# Runs buf breaking-change detection on PRs that touch proto files.
+# Skipped on pushes to main — main *is* the baseline.
+name: Proto Breaking Change Detection
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'proto/**'
+      - 'buf.yaml'
+      - 'buf.gen.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proto-breaking-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  buf-breaking:
+    name: buf breaking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          breaking: true
+          breaking_against: 'https://github.com/${{ github.repository }}.git#branch=main'

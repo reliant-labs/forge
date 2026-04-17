@@ -1,0 +1,36 @@
+name: clerk
+description: "Clerk authentication — JWKS validation, user sync webhooks, session management"
+version: 1.0.0
+
+config:
+  section: auth
+  defaults:
+    provider: clerk
+    clerk:
+      domain_env: CLERK_DOMAIN
+      secret_key_env: CLERK_SECRET_KEY
+      publishable_key_env: CLERK_PUBLISHABLE_KEY
+      webhook_secret_env: CLERK_WEBHOOK_SECRET
+
+dependencies:
+  - github.com/clerk/clerk-sdk-go/v2
+  - github.com/svix/svix-webhooks
+
+files:
+  - template: clerk_auth.go.tmpl
+    output: pkg/middleware/clerk_auth.go
+    overwrite: once
+    description: "Clerk JWT validator and claims extractor"
+  - template: clerk_webhook.go.tmpl
+    output: pkg/clerk/webhook.go
+    overwrite: once
+    description: "Clerk webhook handler for user sync"
+  - template: clerk_user_entity.proto.tmpl
+    output: proto/db/v1/clerk_user.proto
+    overwrite: once
+    description: "User entity with Clerk ID"
+
+generate:
+  - template: clerk_auth_gen.go.tmpl
+    output: pkg/middleware/auth_gen.go
+    description: "Clerk-specific auth middleware (overrides default)"

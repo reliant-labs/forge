@@ -34,16 +34,16 @@ Ordered by workflow:
 
 | Situation | Skill |
 | --- | --- |
-| Adding a new service or frontend | `.reliant/skills/forge/add/SKILL.md` |
-| Creating an internal Go package with an interface contract | `.reliant/skills/forge/package/SKILL.md` |
-| Regenerating code from `.proto` files | `.reliant/skills/forge/generate/SKILL.md` |
-| Running the dev stack with hot reload | `.reliant/skills/forge/run/SKILL.md` |
-| Running unit + integration tests | `.reliant/skills/forge/test/SKILL.md` |
-| Running end-to-end tests against a running stack | `.reliant/skills/forge/e2e-test/SKILL.md` |
-| Debugging a running service with Delve or CDP | `.reliant/skills/forge/debug/SKILL.md` |
-| Building production or debug binaries, or Docker images | `.reliant/skills/forge/build/SKILL.md` |
-| Running linters across Go, proto, and frontend | `.reliant/skills/forge/lint/SKILL.md` |
+| Creating a new project, first steps, dev loop | `.reliant/skills/forge/getting-started/SKILL.md` |
+| Adding a new service, frontend, or worker | `.reliant/skills/forge/services/SKILL.md` |
+| Writing Connect RPC handlers, error handling, middleware | `.reliant/skills/forge/api/SKILL.md` |
 | Database migrations, introspection, proto-db sync | `.reliant/skills/forge/db/SKILL.md` |
+| Frontend development, Connect clients, hooks | `.reliant/skills/forge/frontend/SKILL.md` |
+| Authentication, JWT, API keys, RBAC, multi-tenancy | `.reliant/skills/forge/auth/SKILL.md` |
+| Installing packs (jwt-auth, stripe, clerk, etc.) | `.reliant/skills/forge/packs/SKILL.md` |
+| Background workers — lifecycle, patterns, wiring | `.reliant/skills/forge/workers/SKILL.md` |
+| Observability — Grafana, forge doctor, logs, traces | `.reliant/skills/forge/observability/SKILL.md` |
+| Debugging a running service with Delve or CDP | `.reliant/skills/forge/debug/SKILL.md` |
 | Deploying to k3d, staging, or prod via KCL | `.reliant/skills/forge/deploy/SKILL.md` |
 
 Browse the full set in `.reliant/skills/` — each skill has YAML frontmatter with a `when_to_use` list you can pattern-match against the current task.

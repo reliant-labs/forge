@@ -22,7 +22,7 @@ type Generator interface {
 	GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string) error
 	GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, multiTenantEnabled bool, projectDir string) error
 	GenerateMigrate(targetDir string, modulePath string, hasMigrations bool) error
-	GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error)
+	GenerateMissingHandlerStubs(svc ServiceDef, targetDir string, crudMethodNames map[string]bool) (*MissingHandlerResult, error)
 	GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error
 	GenerateConfigLoader(messages []ConfigMessage, targetDir string) error
 	GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string) error

@@ -63,4 +63,4 @@ forge deploy dev           # Deploy to local k3d cluster
 
 ## Sub-skills
 
-Load sub-skills for specific actions: services, api, frontend, testing, debug, db, deploy.
+Load sub-skills for specific actions: getting-started, services, api, frontend, db, auth, packs, workers, observability, debug, deploy, testing.

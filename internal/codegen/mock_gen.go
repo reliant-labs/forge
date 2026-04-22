@@ -69,7 +69,7 @@ type MockGenerator struct {
 	GenerateBootstrapFunc           func([]ServiceDef, []BootstrapPackageData, []BootstrapWorkerData, []BootstrapOperatorData, string, bool, bool, string) error
 	GenerateBootstrapTestingFunc    func([]ServiceDef, []BootstrapPackageData, []BootstrapWorkerData, []BootstrapOperatorData, string, bool, string) error
 	GenerateMigrateFunc             func(string, string, bool) error
-	GenerateMissingHandlerStubsFunc func(ServiceDef, string) (*MissingHandlerResult, error)
+	GenerateMissingHandlerStubsFunc func(ServiceDef, string, map[string]bool) (*MissingHandlerResult, error)
 	GenerateSetupFunc               func(string, string, bool, string) error
 	GenerateConfigLoaderFunc        func([]ConfigMessage, string) error
 	GenerateAuthMiddlewareFunc      func(*config.AuthConfig, string, []string, string) error
@@ -120,9 +120,9 @@ func (m *MockGenerator) GenerateMigrate(targetDir string, modulePath string, has
 	return fmt.Errorf("MockGenerator.GenerateMigrateFunc not set")
 }
 
-func (m *MockGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error) {
+func (m *MockGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string, crudMethodNames map[string]bool) (*MissingHandlerResult, error) {
 	if m.GenerateMissingHandlerStubsFunc != nil {
-		return m.GenerateMissingHandlerStubsFunc(svc, targetDir)
+		return m.GenerateMissingHandlerStubsFunc(svc, targetDir, crudMethodNames)
 	}
 	return nil, fmt.Errorf("MockGenerator.GenerateMissingHandlerStubsFunc not set")
 }

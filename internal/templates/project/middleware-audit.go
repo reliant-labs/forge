@@ -18,10 +18,13 @@ import (
 // so they can be routed to a dedicated audit log sink (e.g., separate file,
 // SIEM system, or compliance database).
 //
+// NOTE: The audit-log pack enhances this interceptor with database persistence.
+// Install it with `forge pack install audit-log` for queryable audit history.
+//
 // The interceptor extracts user identity from context using ClaimsFromContext.
 // If no claims are present (unauthenticated request), the user is logged as "anonymous".
 func AuditInterceptor(logger *slog.Logger) connect.Interceptor {
-	audit := logger.With("log_type", "audit")
+	audit := logger.With(AttrLogType, "audit")
 	return &auditInterceptor{logger: audit}
 }
 
@@ -59,9 +62,9 @@ func (a *auditInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFun
 
 func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr string, start time.Time, err error) {
 	attrs := []slog.Attr{
-		slog.String("procedure", procedure),
-		slog.String("peer", peerAddr),
-		slog.Duration("duration", time.Since(start)),
+		ProcedureAttr(procedure),
+		PeerAddrAttr(peerAddr),
+		DurationAttr(time.Since(start)),
 		slog.Time("timestamp", start),
 	}
 
@@ -69,23 +72,23 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 	claims, ok := ClaimsFromContext(ctx)
 	if ok && claims != nil {
 		attrs = append(attrs,
-			slog.String("user_id", claims.UserID),
-			slog.String("email", claims.Email),
+			UserIDAttr(claims.UserID),
+			EmailAttr(claims.Email),
 		)
 	} else {
-		attrs = append(attrs, slog.String("user_id", "anonymous"))
+		attrs = append(attrs, UserIDAttr("anonymous"))
 	}
 
 	if err != nil {
 		code := connect.CodeOf(err)
 		attrs = append(attrs,
-			slog.String("status", "error"),
-			slog.String("code", code.String()),
+			StatusAttr("error"),
+			ErrorCodeAttr(code.String()),
 			slog.String("error", err.Error()),
 		)
-		a.logger.LogAttrs(ctx, slog.LevelWarn, "audit", attrs...)
+		LogAuditEventWarn(ctx, a.logger, attrs...)
 	} else {
-		attrs = append(attrs, slog.String("status", "ok"))
-		a.logger.LogAttrs(ctx, slog.LevelInfo, "audit", attrs...)
+		attrs = append(attrs, StatusAttr("ok"))
+		LogAuditEvent(ctx, a.logger, attrs...)
 	}
 }

@@ -219,9 +219,21 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		}
 	}
 
+	// ── Step 3c: Frontend React Query hooks for each service ──
+	if cfg != nil && hasServices && len(services) > 0 {
+		if err := generateFrontendHooks(cfg, services, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: frontend hooks generation failed: %v\n", err)
+		}
+	}
+
 	// ── Step 4: Service stubs (non-destructive) ──
+	// Compute CRUD method names upfront so the stub generator can skip them.
+	var crudMethodNames map[string]bool
+	if hasServices && hasDB {
+		crudMethodNames = collectCRUDMethodNames(services, projectDir)
+	}
 	if hasServices {
-		if err := generateServiceStubs(cfg, services, projectDir); err != nil {
+		if err := generateServiceStubs(cfg, services, projectDir, crudMethodNames); err != nil {
 			return fmt.Errorf("service stub generation failed: %w", err)
 		}
 	}
@@ -230,6 +242,13 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	if hasServices && hasDB {
 		if err := generateCRUDHandlers(services, modulePath, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: CRUD handler generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 4c: Authorizer generation (role mappings from proto annotations) ──
+	if hasServices {
+		if err := codegen.GenerateAuthorizer(services, modulePath, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: authorizer generation failed: %v\n", err)
 		}
 	}
 
@@ -333,6 +352,26 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	fmt.Println("\n── Regenerating infrastructure files ──")
 	if err := generator.RegenerateInfraFiles(abs, cfg); err != nil {
 		return fmt.Errorf("regenerate infrastructure files: %w", err)
+	}
+
+	// ── Step 8d-i: Generate Grafana dashboards ──
+	if cfg != nil {
+		if err := generator.GenerateGrafanaDashboards(cfg.Name, abs); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Grafana dashboard generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 8d-ii: Generate entity-aware seed data ──
+	if hasDB {
+		entityDefs, parseErr := codegen.ParseEntityProtos(projectDir)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: entity proto parsing for seeds failed: %v\n", parseErr)
+		} else if len(entityDefs) > 0 {
+			seedEntities := generator.EntityDefsToSeedEntities(entityDefs)
+			if err := generator.GenerateEntitySeeds(seedEntities, abs); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: entity seed generation failed: %v\n", err)
+			}
+		}
 	}
 
 	// ── Step 8e: go mod tidy in project root ──

@@ -13,13 +13,14 @@ import (
 
 // entityInfo holds parsed entity metadata for a single annotated message.
 type entityInfo struct {
-	msg        *protogen.Message
-	tableName  string
-	softDelete bool
-	timestamps bool
-	fields     []fieldInfo
-	pkField    *fieldInfo
-	inferred   bool // true when entity was inferred from conventions (no explicit annotation)
+	msg         *protogen.Message
+	tableName   string
+	softDelete  bool
+	timestamps  bool
+	fields      []fieldInfo
+	pkField     *fieldInfo
+	tenantField *fieldInfo // non-nil when exactly one field is marked as tenant_key
+	inferred    bool       // true when entity was inferred from conventions (no explicit annotation)
 }
 
 // fieldInfo holds parsed column metadata for a single field.
@@ -32,6 +33,7 @@ type fieldInfo struct {
 	unique        bool
 	autoIncrement bool
 	references    string // FK reference in "table.column" format
+	isTenantKey   bool   // true when marked as tenant_key for row-level isolation
 }
 
 func parseEntity(msg *protogen.Message) (entityInfo, bool) {
@@ -241,12 +243,12 @@ func parseEntityOptionsMsg(b []byte) (tableName string, softDelete bool) {
 }
 
 // parseRawFieldOptions scans raw unknown proto bytes for the field_options extension
-// and extracts the primary_key (field 1, bool) and not_null (field 2, bool) values.
-func parseRawFieldOptions(b []byte, fieldNum protoreflect.FieldNumber) (found bool, primaryKey bool, notNull bool) {
+// and extracts the primary_key (field 1, bool), not_null (field 3, bool), and tenant_key (field 20, bool) values.
+func parseRawFieldOptions(b []byte, fieldNum protoreflect.FieldNumber) (found bool, primaryKey bool, notNull bool, tenantKey bool) {
 	for len(b) > 0 {
 		v, n := consumeVarint(b)
 		if n < 0 {
-			return false, false, false
+			return false, false, false, false
 		}
 		num := protoreflect.FieldNumber(v >> 3)
 		wtype := v & 0x7
@@ -256,11 +258,11 @@ func parseRawFieldOptions(b []byte, fieldNum protoreflect.FieldNumber) (found bo
 			// Length-delimited: this is the embedded FieldOptions message.
 			length, vn := consumeVarint(b)
 			if vn < 0 || vn+int(length) > len(b) {
-				return false, false, false
+				return false, false, false, false
 			}
 			msgBytes := b[vn : vn+int(length)]
-			pk, nn := parseFieldOptionsMsg(msgBytes)
-			return true, pk, nn
+			pk, nn, tk := parseFieldOptionsMsg(msgBytes)
+			return true, pk, nn, tk
 		}
 
 		// Skip the field value based on wire type.
@@ -272,26 +274,26 @@ func parseRawFieldOptions(b []byte, fieldNum protoreflect.FieldNumber) (found bo
 		case 2: // length-delimited
 			length, vn := consumeVarint(b)
 			if vn < 0 {
-				return false, false, false
+				return false, false, false, false
 			}
 			n = vn + int(length)
 		case 5: // 32-bit
 			n = 4
 		default:
-			return false, false, false
+			return false, false, false, false
 		}
 
 		if n < 0 || n > len(b) {
-			return false, false, false
+			return false, false, false, false
 		}
 		b = b[n:]
 	}
-	return false, false, false
+	return false, false, false, false
 }
 
 // parseFieldOptionsMsg parses the inner FieldOptions message bytes.
-// Field 1 (primary_key) = bool/varint, Field 3 (not_null) = bool/varint.
-func parseFieldOptionsMsg(b []byte) (primaryKey bool, notNull bool) {
+// Field 1 (primary_key) = bool/varint, Field 3 (not_null) = bool/varint, Field 20 (tenant_key) = bool/varint.
+func parseFieldOptionsMsg(b []byte) (primaryKey bool, notNull bool, tenantKey bool) {
 	for len(b) > 0 {
 		v, n := consumeVarint(b)
 		if n < 0 {
@@ -315,6 +317,13 @@ func parseFieldOptionsMsg(b []byte) (primaryKey bool, notNull bool) {
 				return
 			}
 			notNull = val != 0
+			b = b[vn:]
+		case num == 20 && wtype == 0: // tenant_key (bool/varint)
+			val, vn := consumeVarint(b)
+			if vn < 0 {
+				return
+			}
+			tenantKey = val != 0
 			b = b[vn:]
 		default:
 			// Skip unknown field.
@@ -390,6 +399,9 @@ func parseField(f *protogen.Field) fieldInfo {
 			if nnFd := desc.Fields().ByName("not_null"); nnFd != nil {
 				fi.notNull = foMsg.Get(nnFd).Bool()
 			}
+			if tkFd := desc.Fields().ByName("tenant_key"); tkFd != nil {
+				fi.isTenantKey = foMsg.Get(tkFd).Bool()
+			}
 			return false
 		}
 		return true
@@ -398,12 +410,13 @@ func parseField(f *protogen.Field) fieldInfo {
 	// If Range didn't find it, check unknown fields (raw extension bytes).
 	if !found {
 		raw := fOpts.ProtoReflect().GetUnknown()
-		var rawPK, rawNN bool
+		var rawPK, rawNN, rawTK bool
 		var rawFound bool
-		rawFound, rawPK, rawNN = parseRawFieldOptions(raw, fieldOptionsFieldNum)
+		rawFound, rawPK, rawNN, rawTK = parseRawFieldOptions(raw, fieldOptionsFieldNum)
 		if rawFound {
 			fi.isPK = rawPK
 			fi.notNull = rawNN
+			fi.isTenantKey = rawTK
 		}
 	}
 
@@ -466,6 +479,20 @@ func applyFieldInferences(ent *entityInfo) {
 		// Common not_null fields.
 		if isCommonNotNullField(name) {
 			f.notNull = true
+		}
+
+		// Auto-infer tenant_key for common tenant column names.
+		if !f.isTenantKey && (name == "tenant_id" || name == "org_id") {
+			f.isTenantKey = true
+		}
+	}
+
+	// Set entity-level tenantField from the first field marked as tenant key.
+	for i := range ent.fields {
+		if ent.fields[i].isTenantKey {
+			tf := ent.fields[i]
+			ent.tenantField = &tf
+			break
 		}
 	}
 }

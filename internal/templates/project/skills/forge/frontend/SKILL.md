@@ -39,6 +39,18 @@ After changing `.proto` files, always regenerate clients:
 forge generate
 ```
 
+## Generated TypeScript Hooks
+
+`forge generate` produces per-service React Query hooks in `frontends/<name>/src/hooks/`. Read RPCs get `useQuery` hooks, mutating RPCs get `useMutation` hooks. Import from the barrel:
+
+```typescript
+import { useGetTask, useCreateTask, useListTasks } from "@/hooks";
+```
+
+Do not hand-edit the generated `*-hooks.ts` files — they are overwritten on `forge generate`. For custom hooks, create separate files in `src/hooks/` (e.g., `src/hooks/custom-hooks.ts`).
+
+Base wrappers `useApiQuery` and `useApiMutation` in `src/hooks/` are available for one-off or composite operations that don't map to generated hooks.
+
 ## Component Patterns
 
 - Use **functional components** with hooks exclusively — no class components.
@@ -47,9 +59,9 @@ forge generate
 
 ## Styling with Tailwind CSS
 
-Use Tailwind utility classes directly in JSX. Follow responsive-first design (`sm:`, `md:`, `lg:` prefixes). Ensure accessible contrast ratios and use semantic HTML elements. Avoid custom CSS files unless absolutely necessary.
+Use Tailwind utility classes directly in JSX. Follow responsive-first design (`sm:`, `md:`, `lg:` prefixes). Ensure accessible contrast ratios and use semantic HTML elements.
 
-## Form Handling
+## Form Handling and Error States
 
 Call Connect RPC mutations in event handlers or server actions. Always handle errors by code:
 
@@ -71,27 +83,19 @@ try {
 }
 ```
 
-## Loading and Error States
-
-Every data-fetching component must handle three states: **loading**, **success**, and **error**. Use skeleton placeholders or spinners for loading. Display actionable error messages — never show raw error objects to users.
-
-## TypeScript
-
-Enable strict mode in `tsconfig.json`. Avoid `any` — use generated types from `gen/` for all RPC request/response shapes. Let the generated code be the single source of truth for API types.
+Every data-fetching component must handle three states: **loading**, **success**, and **error**. Use skeleton placeholders or spinners for loading. Display actionable error messages.
 
 ## Dev Workflow
 
-Run the full stack locally with a single command:
-
 ```bash
-forge run
+forge run    # Full stack: infra + Go (hot reload) + Next.js
 ```
 
-This hot-reloads the Go backend and all frontends simultaneously. Changes to frontend code reflect instantly in the browser.
+Changes to frontend code reflect instantly in the browser.
 
 ## Common Pitfalls
 
-- **Wrong import paths**: Always import generated clients from the project-root `gen/` directory, not from a local copy.
-- **Stale TypeScript clients**: Run `forge generate` after every `.proto` change. The compiler won't catch schema drift — your UI will just break at runtime.
-- **Ignoring Connect error codes**: Catch `ConnectError` and switch on `err.code`. Generic catch-all messages frustrate users.
-- **Missing `"use client"` directive**: Hooks and event handlers require client components. Next.js will error if you forget the directive.
+- **Wrong import paths**: Always import generated clients from the project-root `gen/` directory.
+- **Stale TypeScript clients**: Run `forge generate` after every `.proto` change.
+- **Missing `"use client"` directive**: Hooks and event handlers require client components.
+- **Hand-editing generated hooks**: The `*-hooks.ts` files are overwritten on `forge generate`. Put custom hooks in separate files.

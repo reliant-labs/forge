@@ -99,7 +99,18 @@ func managedFiles() []managedFile {
 		{templateName: "middleware-idempotency_test.go", destPath: "pkg/middleware/idempotency_test.go", templated: false, tier: Tier2},
 		{templateName: "middleware-redact.go", destPath: "pkg/middleware/redact.go", templated: false, tier: Tier2},
 		{templateName: "middleware-redact_test.go", destPath: "pkg/middleware/redact_test.go", templated: false, tier: Tier2},
+		{templateName: "middleware-logevents.go", destPath: "pkg/middleware/logevents.go", templated: false, tier: Tier2},
+		{templateName: "middleware-trace-handler.go", destPath: "pkg/middleware/trace_handler.go", templated: false, tier: Tier2},
+
+		// Alloy config — Tier 1 since it's fully derived from forge.yaml services.
+		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1},
 	}
+}
+
+// ServiceInfo holds the name and port of a service for template rendering.
+type ServiceInfo struct {
+	Name string
+	Port int
 }
 
 // upgradeTemplateData is the data struct used to render frozen templates.
@@ -116,6 +127,7 @@ type upgradeTemplateData struct {
 	GoVersion              string
 	GoVersionMinor         string
 	DockerBuilderGoVersion string
+	Services               []ServiceInfo
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -150,6 +162,24 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		}
 	}
 
+	// Build the services list for templates like alloy-config.
+	// The first service maps to docker-compose name "app".
+	var services []ServiceInfo
+	for i, svc := range cfg.Services {
+		name := svc.Name
+		if i == 0 {
+			name = "app" // docker-compose service name for the primary service
+		}
+		port := svc.Port
+		if port == 0 {
+			port = 8080
+		}
+		services = append(services, ServiceInfo{Name: name, Port: port})
+	}
+	if len(services) == 0 {
+		services = []ServiceInfo{{Name: "app", Port: 8080}}
+	}
+
 	return upgradeTemplateData{
 		Name:                   cfg.Name,
 		ProtoName:              protoName,
@@ -162,6 +192,7 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		GoVersion:              goVersion,
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
+		Services:               services,
 	}
 }
 

@@ -361,6 +361,112 @@ service AuthService {
 	}
 }
 
+func TestParseProtoFile_RequiredRoles(t *testing.T) {
+	path := writeProto(t, "roles.proto", `syntax = "proto3";
+
+package roles.v1;
+
+option go_package = "example.com/test/gen/roles/v1;rolesv1";
+
+service RolesService {
+  rpc AdminOnly(AdminReq) returns (AdminResp) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+      required_roles: ["admin", "org:admin"]
+    };
+  }
+  rpc AnyAuth(AuthReq) returns (AuthResp) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+    };
+  }
+  rpc Public(PubReq) returns (PubResp) {
+    option (forge.options.v1.method_options) = {
+      auth_required: false
+    };
+  }
+  rpc NoOption(NoOptReq) returns (NoOptResp);
+}
+`)
+
+	services, err := parseProtoFile(path, "example.com/test")
+	if err != nil {
+		t.Fatalf("parseProtoFile() error = %v", err)
+	}
+	if len(services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(services))
+	}
+	methods := services[0].Methods
+	if len(methods) != 4 {
+		t.Fatalf("expected 4 methods, got %d", len(methods))
+	}
+
+	// AdminOnly: auth_required=true, required_roles=["admin", "org:admin"]
+	if !methods[0].AuthRequired {
+		t.Errorf("AdminOnly: expected AuthRequired=true, got false")
+	}
+	if len(methods[0].RequiredRoles) != 2 {
+		t.Fatalf("AdminOnly: expected 2 required_roles, got %d: %v", len(methods[0].RequiredRoles), methods[0].RequiredRoles)
+	}
+	if methods[0].RequiredRoles[0] != "admin" || methods[0].RequiredRoles[1] != "org:admin" {
+		t.Errorf("AdminOnly: expected required_roles=[admin, org:admin], got %v", methods[0].RequiredRoles)
+	}
+
+	// AnyAuth: auth_required=true, no roles
+	if !methods[1].AuthRequired {
+		t.Errorf("AnyAuth: expected AuthRequired=true, got false")
+	}
+	if len(methods[1].RequiredRoles) != 0 {
+		t.Errorf("AnyAuth: expected 0 required_roles, got %d", len(methods[1].RequiredRoles))
+	}
+
+	// Public: auth_required=false, no roles
+	if methods[2].AuthRequired {
+		t.Errorf("Public: expected AuthRequired=false, got true")
+	}
+	if len(methods[2].RequiredRoles) != 0 {
+		t.Errorf("Public: expected 0 required_roles, got %d", len(methods[2].RequiredRoles))
+	}
+
+	// NoOption: defaults
+	if methods[3].AuthRequired {
+		t.Errorf("NoOption: expected AuthRequired=false (default), got true")
+	}
+	if len(methods[3].RequiredRoles) != 0 {
+		t.Errorf("NoOption: expected 0 required_roles, got %d", len(methods[3].RequiredRoles))
+	}
+}
+
+func TestParseProtoFile_RequiredRolesSingleValue(t *testing.T) {
+	path := writeProto(t, "single_role.proto", `syntax = "proto3";
+
+package single.v1;
+
+option go_package = "example.com/test/gen/single/v1;singlev1";
+
+service SingleService {
+  rpc Do(DoReq) returns (DoResp) {
+    option (forge.options.v1.method_options) = {
+      auth_required: true
+      required_roles: "admin"
+    };
+  }
+}
+`)
+
+	services, err := parseProtoFile(path, "example.com/test")
+	if err != nil {
+		t.Fatalf("parseProtoFile() error = %v", err)
+	}
+	methods := services[0].Methods
+	if len(methods[0].RequiredRoles) != 1 {
+		t.Fatalf("expected 1 required_role, got %d: %v", len(methods[0].RequiredRoles), methods[0].RequiredRoles)
+	}
+	if methods[0].RequiredRoles[0] != "admin" {
+		t.Errorf("expected required_roles=[admin], got %v", methods[0].RequiredRoles)
+	}
+}
+
 func TestParseProtoFile_MissingGoPackageWithService(t *testing.T) {
 	path := writeProto(t, "nopkg.proto", `syntax = "proto3";
 

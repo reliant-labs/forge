@@ -116,9 +116,9 @@ func (w *InstrumentedGenerator) GenerateMigrate(targetDir string, modulePath str
 	return r0
 }
 
-func (w *InstrumentedGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error) {
+func (w *InstrumentedGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string, crudMethodNames map[string]bool) (*MissingHandlerResult, error) {
 	start := time.Now()
-	r0, r1 := w.inner.GenerateMissingHandlerStubs(svc, targetDir)
+	r0, r1 := w.inner.GenerateMissingHandlerStubs(svc, targetDir, crudMethodNames)
 	w.logger.Info("GenerateMissingHandlerStubs", "duration", time.Since(start), "error", r1)
 	return r0, r1
 }

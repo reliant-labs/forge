@@ -28,9 +28,17 @@ func generateAuthMiddleware(cfg *config.ProjectConfig, services []codegen.Servic
 	}
 
 	// Build the skip list from proto method options.
-	// Methods annotated with auth_required: false in proto options are skipped.
-	// For now we use an empty list — proto option parsing can be added later.
+	// Methods where auth_required is not set (false) get their full procedure
+	// name added so the auth interceptor skips them.
 	var skipMethods []string
+	for _, svc := range services {
+		for _, m := range svc.Methods {
+			if !m.AuthRequired {
+				procedure := fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name)
+				skipMethods = append(skipMethods, procedure)
+			}
+		}
+	}
 
 	if err := codegen.GenerateAuthMiddleware(&cfg.Auth, modPath, skipMethods, projectDir); err != nil {
 		return err

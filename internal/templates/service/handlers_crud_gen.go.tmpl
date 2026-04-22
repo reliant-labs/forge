@@ -12,6 +12,9 @@ import (
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
 	dbv1 "{{.DBPackagePath}}"
 	"{{.Module}}/pkg/middleware"
+{{- if .NeedsORM}}
+	"github.com/reliant-labs/forge/pkg/orm"
+{{- end}}
 )
 
 // Ensure imports are used.
@@ -42,9 +45,24 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 
-	entity := {{.EntityLower | lower}}FromProto(req.Msg)
+{{- if .HasTenant}}
+	tenantID, err := middleware.RequireTenantID(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+{{- end}}
 
+	entity := &dbv1.{{.EntityName}}{
+{{- range .CreateFields}}
+		{{.EntityGoName}}: req.Msg.{{.ProtoGoName}},
+{{- end}}
+	}
+
+{{- if .HasTenant}}
+	if err := dbv1.Create{{.EntityName}}(ctx, s.deps.DB, entity, tenantID); err != nil {
+{{- else}}
 	if err := dbv1.Create{{.EntityName}}(ctx, s.deps.DB, entity); err != nil {
+{{- end}}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create {{.EntityLower}}: %w", err))
 	}
 
@@ -71,7 +89,18 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 
+{{- if .HasTenant}}
+	tenantID, err := middleware.RequireTenantID(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+{{- end}}
+
+{{- if .HasTenant}}
+	result, err := dbv1.Get{{.EntityName}}ByID(ctx, s.deps.DB, req.Msg.{{.PkField}}, tenantID)
+{{- else}}
 	result, err := dbv1.Get{{.EntityName}}ByID(ctx, s.deps.DB, req.Msg.{{.PkField}})
+{{- end}}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("get {{.EntityLower}}: %w", err))
 	}
@@ -99,12 +128,121 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 
+{{- if .HasTenant}}
+	tenantID, err := middleware.RequireTenantID(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+{{- end}}
+
+{{- if or .HasPagination .HasFilters .HasOrderBy}}
+	var opts []orm.QueryOption
+{{- end}}
+
+{{- if .HasPagination}}
+	// Pagination
+	pageSize := int(req.Msg.PageSize)
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	opts = append(opts, orm.WithLimit(pageSize+1)) // fetch one extra to detect next page
+
+	if req.Msg.PageToken != "" {
+		cursor, err := orm.DecodeCursor(req.Msg.PageToken)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid page token"))
+		}
+		opts = append(opts, orm.WithWhere("{{.PkColumnName}}", orm.GreaterThan, cursor))
+	}
+{{- if not .HasOrderBy}}
+	opts = append(opts, orm.WithOrderBy("{{.PkColumnName}}", orm.Asc))
+{{- end}}
+{{- end}}
+
+{{- if .HasFilters}}
+	// Filters
+{{- range .FilterFields}}
+{{- if .IsOptional}}
+	if req.Msg.{{.GoName}} != nil {
+{{- if eq .FilterType "search"}}
+		opts = append(opts, orm.WhereILike("{{.ColumnName}}", "%"+*req.Msg.{{.GoName}}+"%"))
+{{- else if eq .FilterType "exact"}}
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", *req.Msg.{{.GoName}}))
+{{- end}}
+	}
+{{- else}}
+{{- if eq .FilterType "search"}}
+	if req.Msg.{{.GoName}} != "" {
+		opts = append(opts, orm.WhereILike("{{.ColumnName}}", "%"+req.Msg.{{.GoName}}+"%"))
+	}
+{{- else if and (eq .FilterType "exact") (eq .FieldType "string")}}
+	if req.Msg.{{.GoName}} != "" {
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	}
+{{- else if and (eq .FilterType "exact") (eq .FieldType "bool")}}
+	// Bool filters always apply (false is a valid filter value)
+	opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+{{- else if eq .FilterType "exact"}}
+	if req.Msg.{{.GoName}} != 0 {
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	}
+{{- end}}
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{- if .HasOrderBy}}
+	// Ordering
+	if req.Msg.OrderBy != "" {
+		if err := orm.ValidateOrderBy(req.Msg.OrderBy); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		order := orm.Asc
+		if req.Msg.Descending {
+			order = orm.Desc
+		}
+		opts = append(opts, orm.WithOrderBy(req.Msg.OrderBy, order))
+	}
+{{- if .HasPagination}}
+	if req.Msg.OrderBy == "" {
+		opts = append(opts, orm.WithOrderBy("{{.PkColumnName}}", orm.Asc))
+	}
+{{- end}}
+{{- end}}
+
+{{- if and .HasTenant (or .HasPagination .HasFilters .HasOrderBy)}}
+	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB, tenantID, opts...)
+{{- else if .HasTenant}}
+	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB, tenantID)
+{{- else if or .HasPagination .HasFilters .HasOrderBy}}
+	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+{{- else}}
 	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB)
+{{- end}}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list {{.EntityLower}}: %w", err))
 	}
 
 	var items []*pb.{{.EntityName}}
+{{- if .HasPagination}}
+	var nextPageToken string
+	if len(results) > pageSize {
+		results = results[:pageSize]
+		nextPageToken = orm.EncodeCursor(results[pageSize-1].{{.PkField}})
+	}
+
+	for _, e := range results {
+		items = append(items, {{.EntityLower | lower}}ToProto(e))
+	}
+
+	return connect.NewResponse(&pb.{{.OutputType}}{
+		{{.ResponseField | plural}}: items,
+		NextPageToken: nextPageToken,
+	}), nil
+{{- else}}
 	for _, e := range results {
 		items = append(items, {{.EntityLower | lower}}ToProto(e))
 	}
@@ -112,6 +250,7 @@ func (s *Service) {{.MethodName}}(
 	return connect.NewResponse(&pb.{{.OutputType}}{
 		{{.ResponseField | plural}}: items,
 	}), nil
+{{- end}}
 }
 {{- end}}
 
@@ -142,15 +281,26 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 
-	if req.Msg.Item == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("update {{.EntityLower}}: item is required"))
+{{- if .HasTenant}}
+	tenantID, err := middleware.RequireTenantID(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+{{- end}}
+
+	if req.Msg.{{.UpdateEntityField}} == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("update {{.EntityLower}}: {{.UpdateEntityField | lower}} is required"))
 	}
 
 	// TODO(fieldmask): respect req.Msg.UpdateMask. For now we write the
 	// entire resource as a baseline so the stub compiles.
-	entity := {{.EntityLower | lower}}FromProto(req.Msg.Item)
+	entity := {{.EntityLower | lower}}FromProto(req.Msg.{{.UpdateEntityField}})
 
+{{- if .HasTenant}}
+	if err := dbv1.Update{{.EntityName}}(ctx, s.deps.DB, entity, tenantID); err != nil {
+{{- else}}
 	if err := dbv1.Update{{.EntityName}}(ctx, s.deps.DB, entity); err != nil {
+{{- end}}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update {{.EntityLower}}: %w", err))
 	}
 
@@ -177,7 +327,18 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 
+{{- if .HasTenant}}
+	tenantID, err := middleware.RequireTenantID(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+{{- end}}
+
+{{- if .HasTenant}}
+	if err := dbv1.Delete{{.EntityName}}(ctx, s.deps.DB, req.Msg.{{.PkField}}, tenantID); err != nil {
+{{- else}}
 	if err := dbv1.Delete{{.EntityName}}(ctx, s.deps.DB, req.Msg.{{.PkField}}); err != nil {
+{{- end}}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete {{.EntityLower}}: %w", err))
 	}
 

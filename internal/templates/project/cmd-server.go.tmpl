@@ -80,6 +80,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	default: // "json" (also the validated default)
 		logHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
+	logHandler = middleware.NewTraceHandler(logHandler)
 	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
 
@@ -115,7 +116,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("auto-migration failed: %w", migrateErr)
 		}
 		_ = db.Close()
-		logger.Info("auto-migration completed successfully")
+		middleware.LogDBMigrationCompleted(ctx, logger)
 	}
 
 	mux := http.NewServeMux()
@@ -255,7 +256,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("server starting", "addr", addr, "tls", cfg.TLSCertPath != "")
+		middleware.LogServerListening(ctx, logger, slog.String("addr", addr), slog.Bool("tls", cfg.TLSCertPath != ""))
 		// TLS is enabled when both cert and key paths are non-empty;
 		// Validate() above guarantees the paths are either both set or
 		// both empty, so we never ship an asymmetric config to here.
@@ -320,9 +321,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 			Start(context.Context) error
 		}) {
 			defer workerWg.Done()
-			logger.Info("starting worker", "worker", w.Name())
+			middleware.LogWorkerStarting(workerCtx, logger, slog.String("worker", w.Name()))
 			if err := w.Start(workerCtx); err != nil {
-				logger.Error("worker error", "worker", w.Name(), "error", err)
+				middleware.LogWorkerError(workerCtx, logger, slog.String("worker", w.Name()), slog.Any("error", err))
 			}
 		}(w)
 	}
@@ -342,7 +343,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server failed: %w", err)
 	case <-ctx.Done():
 	}
-	logger.Info("shutting down...")
+	middleware.LogServerStopping(ctx, logger)
 
 	// Graceful shutdown sequence:
 	//   1. Flip readiness to false so /readyz starts failing.

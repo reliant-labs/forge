@@ -168,6 +168,7 @@ func newDebugStartCmd() *cobra.Command {
 		attachPID  int
 		port       int
 		jsonOutput bool
+		dockerMode bool
 	)
 
 	cmd := &cobra.Command{
@@ -187,6 +188,9 @@ Examples:
   forge debug start ./cmd/server`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dockerMode {
+				return runDebugStartDocker(cmd)
+			}
 			if attachPID > 0 {
 				return runDebugStartAttach(attachPID, jsonOutput)
 			}
@@ -200,6 +204,7 @@ Examples:
 	cmd.Flags().IntVar(&attachPID, "attach", 0, "Attach to an existing process by PID")
 	cmd.Flags().IntVar(&port, "port", 0, "Debugger listen port (0 = auto)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&dockerMode, "docker", false, "Start debug session in Docker container")
 
 	return cmd
 }
@@ -251,6 +256,9 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 				candidate := filepath.Join(svc.Path, "cmd", "server")
 				if _, err := os.Stat(candidate); err == nil {
 					buildPath = "./" + candidate
+				} else if _, err := os.Stat("cmd"); err == nil {
+					// Mono-service layout: top-level cmd/ directory.
+					buildPath = "./cmd/..."
 				} else {
 					buildPath = "./" + svc.Path
 				}
@@ -282,8 +290,16 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 		return fmt.Errorf("resolving binary path: %w", err)
 	}
 
+	// Determine binary args. If the binary was built from a cmd/ package
+	// that contains a cobra "server" subcommand, pass it so the app
+	// starts its HTTP listener rather than printing usage.
+	var binArgs []string
+	if _, err := os.Stat("cmd/server.go"); err == nil {
+		binArgs = []string{"server"}
+	}
+
 	d := debug.NewDelveDebugger()
-	if err := d.Start(absBinary, nil); err != nil {
+	if err := d.Start(absBinary, binArgs, port); err != nil {
 		return fmt.Errorf("starting Delve: %w", err)
 	}
 
@@ -305,6 +321,60 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 		fmt.Printf("Delve listening at %s\n", d.Addr())
 	}
 	return nil
+}
+
+func runDebugStartDocker(cmd *cobra.Command) error {
+	// Start the debug container.
+	startCmd := exec.Command("docker", "compose", "--profile", "debug", "up", "-d", "app-debug")
+	startCmd.Stdout = os.Stdout
+	startCmd.Stderr = os.Stderr
+	if err := startCmd.Run(); err != nil {
+		return fmt.Errorf("starting debug container: %w", err)
+	}
+
+	// Wait for container to be running.
+	fmt.Println("Waiting for debug container...")
+	time.Sleep(5 * time.Second)
+
+	// Discover Delve port.
+	addr, err := discoverDelvePort()
+	if err != nil {
+		return fmt.Errorf("discovering Delve port: %w", err)
+	}
+	fmt.Printf("Delve listening at %s\n", addr)
+
+	// Connect to verify the debugger is alive, then disconnect so the
+	// TCP connection doesn't go stale when forge exits.
+	d := debug.NewDelveDebugger()
+	if err := d.Connect(addr); err != nil {
+		return fmt.Errorf("connecting to Delve: %w", err)
+	}
+	d.Disconnect()
+
+	// Save session.
+	session := &debug.SessionInfo{
+		Type:    "delve",
+		Addr:    addr,
+		Docker:  true,
+		Started: time.Now(),
+	}
+	if err := debug.SaveSession(".", session); err != nil {
+		return fmt.Errorf("saving session: %w", err)
+	}
+
+	fmt.Println("Docker debug session started")
+	return nil
+}
+
+func discoverDelvePort() (string, error) {
+	out, err := exec.Command("docker", "compose", "port", "app-debug", "2345").Output()
+	if err != nil {
+		return "", fmt.Errorf("docker compose port: %w", err)
+	}
+	addr := strings.TrimSpace(string(out))
+	// Normalize 0.0.0.0 to 127.0.0.1
+	addr = strings.Replace(addr, "0.0.0.0", "127.0.0.1", 1)
+	return addr, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +417,16 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 	}
 
 	if funcName != "" {
+		// If the user passed a short name (e.g. "Create" without module path),
+		// try to resolve it to a fully-qualified function name for Docker sessions.
+		if !strings.Contains(funcName, "/") && !strings.Contains(funcName, ".") {
+			modPath := readModulePath(".")
+			if modPath != "" {
+				if resolved := resolveShortFuncName(modPath, funcName); resolved != "" {
+					funcName = resolved
+				}
+			}
+		}
 		bp, err := dbg.SetFunctionBreakpoint(funcName, condition)
 		if err != nil {
 			return fmt.Errorf("setting function breakpoint: %w", err)
@@ -748,18 +828,34 @@ func newDebugStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the debug session and kill the debugged process",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			session, _ := debug.LoadSession(".")
+
 			dbg, err := connectToSession()
 			if err != nil {
-				// If we can't connect, still try to clear the session file.
+				// Can't connect (timeout, refused, etc.).
+				if session != nil && session.Docker {
+					stopCmd := exec.Command("docker", "compose", "--profile", "debug", "stop", "app-debug")
+					_ = stopCmd.Run()
+				} else if session != nil && session.PID > 0 {
+					if p, findErr := os.FindProcess(session.PID); findErr == nil {
+						_ = p.Kill()
+					}
+				}
 				if clearErr := debug.ClearSession("."); clearErr != nil {
 					return fmt.Errorf("clearing session: %w (original error: %v)", clearErr, err)
 				}
-				fmt.Println("Session file cleared (debugger was not reachable).")
+				fmt.Println("Debug session stopped (killed by PID).")
 				return nil
 			}
 
-			if err := dbg.Stop(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
+			if session != nil && session.Docker {
+				dbg.Disconnect()
+				stopCmd := exec.Command("docker", "compose", "--profile", "debug", "stop", "app-debug")
+				_ = stopCmd.Run()
+			} else {
+				if err := dbg.Stop(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
+				}
 			}
 
 			if err := debug.ClearSession("."); err != nil {
@@ -771,4 +867,50 @@ func newDebugStopCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// ---------------------------------------------------------------------------
+// Function name resolution helpers
+// ---------------------------------------------------------------------------
+
+// readModulePath reads the module path from go.mod in the given directory.
+func readModulePath(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimPrefix(line, "module ")
+		}
+	}
+	return ""
+}
+
+// resolveShortFuncName searches handlers/ subdirectories for a Go file that
+// defines a method matching shortName on a *Service receiver, and returns the
+// fully-qualified Delve function name.
+func resolveShortFuncName(modulePath, shortName string) string {
+	entries, err := os.ReadDir("handlers")
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		files, _ := filepath.Glob(filepath.Join("handlers", entry.Name(), "*.go"))
+		for _, f := range files {
+			content, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(string(content), "func (s *Service) "+shortName+"(") ||
+				strings.Contains(string(content), "func (s *service) "+shortName+"(") {
+				return modulePath + "/handlers/" + entry.Name() + ".(*Service)." + shortName
+			}
+		}
+	}
+	return ""
 }

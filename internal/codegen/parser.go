@@ -20,6 +20,7 @@ type ServiceDef struct {
 	Methods    []Method
 	ProtoFile  string
 	ModulePath string // e.g., "github.com/demo-project"
+	Messages   map[string][]MessageFieldDef // message name → fields (e.g., "ListPatientsRequest" → [...])
 }
 
 // Method represents a single RPC method
@@ -29,7 +30,15 @@ type Method struct {
 	OutputType     string
 	ClientStreaming bool
 	ServerStreaming bool
-	AuthRequired   bool // from forge.options.v1.method_options.auth_required
+	AuthRequired   bool     // from forge.options.v1.method_options.auth_required
+	RequiredRoles  []string // from forge.options.v1.method_options.required_roles
+}
+
+// MessageFieldDef represents a single field in a proto message definition.
+type MessageFieldDef struct {
+	Name       string // proto field name: "page_size", "search", "active"
+	ProtoType  string // "int32", "string", "bool"
+	IsOptional bool   // true if the field has the "optional" label
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.
@@ -127,6 +136,37 @@ func parseProtoFile(path string, modulePath string) ([]ServiceDef, error) {
 		}
 	}
 
+	// Parse message definitions (request/response messages) for field introspection.
+	messages := make(map[string][]MessageFieldDef)
+	for _, decl := range fileNode.Decls {
+		msgNode, ok := decl.(*ast.MessageNode)
+		if !ok {
+			continue
+		}
+		msgName := string(msgNode.Name.AsIdentifier())
+		var fields []MessageFieldDef
+		for _, elem := range msgNode.Decls {
+			fieldNode, ok := elem.(*ast.FieldNode)
+			if !ok {
+				continue
+			}
+			fieldName := string(fieldNode.Name.AsIdentifier())
+			protoType := ""
+			if fieldNode.FldType != nil {
+				protoType = string(fieldNode.FldType.AsIdentifier())
+			}
+			isOptional := fieldNode.Label.KeywordNode != nil && fieldNode.Label.KeywordNode.Val == "optional"
+			fields = append(fields, MessageFieldDef{
+				Name:       fieldName,
+				ProtoType:  protoType,
+				IsOptional: isOptional,
+			})
+		}
+		if len(fields) > 0 {
+			messages[msgName] = fields
+		}
+	}
+
 	// Walk file declarations again for services.
 	var services []ServiceDef
 	for _, decl := range fileNode.Decls {
@@ -142,6 +182,7 @@ func parseProtoFile(path string, modulePath string) ([]ServiceDef, error) {
 			PkgName:    pkgName,
 			ProtoFile:  path,
 			ModulePath: modulePath,
+			Messages:   messages,
 		}
 
 		for _, elem := range svcNode.Decls {
@@ -150,13 +191,15 @@ func parseProtoFile(path string, modulePath string) ([]ServiceDef, error) {
 				continue
 			}
 
+			authRequired, requiredRoles := parseMethodOptions(rpcNode)
 			method := Method{
 				Name:           string(rpcNode.Name.AsIdentifier()),
 				InputType:      string(rpcNode.Input.MessageType.AsIdentifier()),
 				OutputType:     string(rpcNode.Output.MessageType.AsIdentifier()),
 				ClientStreaming: rpcNode.Input.Stream != nil,
 				ServerStreaming: rpcNode.Output.Stream != nil,
-				AuthRequired:   parseAuthRequired(rpcNode),
+				AuthRequired:   authRequired,
+				RequiredRoles:  requiredRoles,
 			}
 			svc.Methods = append(svc.Methods, method)
 		}
@@ -199,10 +242,11 @@ func parseGoPackageValue(raw string) (goPackage, pkgName string) {
 	return
 }
 
-// parseAuthRequired extracts the auth_required field from method_options on an RPC.
-// Returns false if no method_options or auth_required is not set.
-func parseAuthRequired(rpcNode *ast.RPCNode) bool {
+// parseMethodOptions extracts auth_required and required_roles from method_options on an RPC.
+// Returns (false, nil) if no method_options are set.
+func parseMethodOptions(rpcNode *ast.RPCNode) (bool, []string) {
 	var authRequired bool
+	var requiredRoles []string
 	rpcNode.RangeOptions(func(opt *ast.OptionNode) bool {
 		// Look for message literal values (the { ... } block)
 		msgLit, ok := opt.Val.(*ast.MessageLiteralNode)
@@ -213,15 +257,30 @@ func parseAuthRequired(rpcNode *ast.RPCNode) bool {
 			if field.Name == nil || field.Name.Name == nil {
 				continue
 			}
-			if string(field.Name.Name.AsIdentifier()) == "auth_required" {
+			fieldName := string(field.Name.Name.AsIdentifier())
+			switch fieldName {
+			case "auth_required":
 				if ident, ok := field.Val.(ast.IdentValueNode); ok {
 					authRequired = string(ident.AsIdentifier()) == "true"
+				}
+			case "required_roles":
+				// required_roles is a repeated string — can appear as an
+				// array literal or as a single string value.
+				switch v := field.Val.(type) {
+				case *ast.ArrayLiteralNode:
+					for _, elem := range v.Elements {
+						if sv, ok := elem.(ast.StringValueNode); ok {
+							requiredRoles = append(requiredRoles, sv.AsString())
+						}
+					}
+				case ast.StringValueNode:
+					requiredRoles = append(requiredRoles, v.AsString())
 				}
 			}
 		}
 		return true // continue checking all options
 	})
-	return authRequired
+	return authRequired, requiredRoles
 }
 
 // GetModulePath reads the module path from go.mod in the given directory.

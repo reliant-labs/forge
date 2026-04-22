@@ -32,11 +32,11 @@ type ProjectGenerator struct {
 	Name              string
 	Path              string
 	ModulePath        string
-	ServiceName       string // initial service name (empty if none specified)
-	ServicePort       int    // initial service port (default: 8080)
-	FrontendName      string // optional initial Next.js frontend name
-	FrontendPort      int    // frontend port (default: 3000)
-	GoVersionOverride string // if set, use this Go version instead of detecting
+	ServiceName       string       // initial service name (empty if none specified)
+	ServicePort       int          // initial service port (default: 8080)
+	FrontendName      string       // optional initial Next.js frontend name
+	FrontendPort      int          // frontend port (default: 3000)
+	GoVersionOverride string       // if set, use this Go version instead of detecting
 }
 
 // NewProjectGenerator creates a new project generator
@@ -257,6 +257,10 @@ func (g *ProjectGenerator) Generate() error {
 	// Generate docker-compose.yml
 	if err := g.generateDockerCompose(); err != nil {
 		return fmt.Errorf("failed to generate docker-compose.yml: %w", err)
+	}
+
+	if err := g.generateAlloyConfig(); err != nil {
+		return fmt.Errorf("failed to generate alloy config: %w", err)
 	}
 
 	// Generate .env.example with common environment variables

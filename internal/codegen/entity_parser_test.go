@@ -58,7 +58,7 @@ message Patient {
 
 	// Check field details
 	idField := ent.Fields[0]
-	if idField.Name != "id" || idField.GoName != "ID" || idField.GoType != "int64" {
+	if idField.Name != "id" || idField.GoName != "Id" || idField.GoType != "int64" {
 		t.Errorf("id field: got name=%s goName=%s goType=%s", idField.Name, idField.GoName, idField.GoType)
 	}
 

@@ -107,6 +107,32 @@ func Pluralize(s string) string {
 	return inflection.Plural(s)
 }
 
+// ToProtoPascalCase converts a snake_case proto field name to PascalCase using
+// protobuf's Go naming rules: simple title-case each word segment WITHOUT
+// applying Go initialisms. For example:
+//   - "id" → "Id" (not "ID")
+//   - "org_id" → "OrgId" (not "OrgID")
+//   - "http_status" → "HttpStatus" (not "HTTPStatus")
+//
+// This matches the field names that protoc-gen-go actually generates.
+func ToProtoPascalCase(s string) string {
+	var b strings.Builder
+	upNext := true
+	for _, r := range s {
+		if r == '-' || r == '_' {
+			upNext = true
+			continue
+		}
+		if upNext {
+			b.WriteRune(unicode.ToUpper(r))
+			upNext = false
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // IsGoInitialism reports whether word (case-insensitive) is a known Go initialism.
 func IsGoInitialism(word string) bool {
 	return GoInitialismsMap[strings.ToLower(word)]

@@ -208,6 +208,8 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		{"middleware-idempotency_test.go", "idempotency_test.go"},
 		{"middleware-redact.go", "redact.go"},
 		{"middleware-redact_test.go", "redact_test.go"},
+		{"middleware-logevents.go", "logevents.go"},
+		{"middleware-trace-handler.go", "trace_handler.go"},
 	}
 
 	for _, f := range middlewareFiles {

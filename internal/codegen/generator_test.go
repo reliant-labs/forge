@@ -477,7 +477,7 @@ func (s *Service) Echo(
 		ModulePath: "github.com/test/proj",
 	}
 
-	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	result, err := GenerateMissingHandlerStubs(svc, targetDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
 	}
@@ -554,7 +554,7 @@ func (s *Service) Ping() {}
 		ModulePath: "github.com/test/proj",
 	}
 
-	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	result, err := GenerateMissingHandlerStubs(svc, targetDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
 	}
@@ -596,7 +596,7 @@ func (s *Service) Echo() {}
 		ModulePath: "github.com/test/proj",
 	}
 
-	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	result, err := GenerateMissingHandlerStubs(svc, targetDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
 	}
@@ -640,7 +640,7 @@ func (s *Service) Ping() {}
 		ModulePath: "github.com/test/proj",
 	}
 
-	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	result, err := GenerateMissingHandlerStubs(svc, targetDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
 	}
@@ -675,7 +675,7 @@ func TestGenerateMissingHandlerStubs_IgnoresGeneratedStubsWhenDetectingMissing(t
 		ModulePath: "github.com/test/proj",
 	}
 
-	result, err := GenerateMissingHandlerStubs(svc, targetDir)
+	result, err := GenerateMissingHandlerStubs(svc, targetDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
 	}

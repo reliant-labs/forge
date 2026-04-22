@@ -178,10 +178,10 @@ func (w *MetricGenerator) GenerateMigrate(targetDir string, modulePath string, h
 	return r0
 }
 
-func (w *MetricGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error) {
+func (w *MetricGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string, crudMethodNames map[string]bool) (*MissingHandlerResult, error) {
 	start := time.Now()
 	w.callCount.Add(context.Background(), 1, metric.WithAttributes(attribute.String("method", "GenerateMissingHandlerStubs")))
-	r0, r1 := w.inner.GenerateMissingHandlerStubs(svc, targetDir)
+	r0, r1 := w.inner.GenerateMissingHandlerStubs(svc, targetDir, crudMethodNames)
 	w.duration.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(attribute.String("method", "GenerateMissingHandlerStubs")))
 	if r1 != nil {
 		w.errCount.Add(context.Background(), 1, metric.WithAttributes(attribute.String("method", "GenerateMissingHandlerStubs")))

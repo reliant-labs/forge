@@ -193,12 +193,12 @@ func (w *TracedGenerator) GenerateMigrate(targetDir string, modulePath string, h
 	return r0
 }
 
-func (w *TracedGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error) {
+func (w *TracedGenerator) GenerateMissingHandlerStubs(svc ServiceDef, targetDir string, crudMethodNames map[string]bool) (*MissingHandlerResult, error) {
 	ctx, span := w.tracer.Start(context.Background(), "Generator.GenerateMissingHandlerStubs")
 	_ = ctx
 	defer span.End()
 
-	r0, r1 := w.inner.GenerateMissingHandlerStubs(svc, targetDir)
+	r0, r1 := w.inner.GenerateMissingHandlerStubs(svc, targetDir, crudMethodNames)
 	if r1 != nil {
 		span.RecordError(r1)
 		span.SetStatus(codes.Error, r1.Error())

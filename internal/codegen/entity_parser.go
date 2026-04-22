@@ -14,22 +14,27 @@ import (
 
 // EntityDef represents a parsed database entity from proto/db/.
 type EntityDef struct {
-	Name      string        // "Patient"
-	TableName string        // "patients"
-	PkField   string        // "id"
-	PkGoType  string        // "int64"
-	Fields    []EntityField // all fields including PK
-	ProtoFile string        // "proto/db/v1/entities.proto"
+	Name             string        // "Patient"
+	TableName        string        // "patients"
+	PkField          string        // "id"
+	PkGoType         string        // "int64"
+	Fields           []EntityField // all fields including PK
+	ProtoFile        string        // "proto/db/v1/entities.proto"
+	HasTenant        bool          // true when the entity has a tenant key field
+	TenantFieldName  string        // proto field name: "org_id"
+	TenantGoName     string        // Go name: "OrgId"
+	TenantColumnName string        // DB column: "org_id"
 }
 
 // EntityField represents a single field in an entity.
 type EntityField struct {
-	Name      string // Proto field name: "patient_id"
-	GoName    string // Go name: "PatientId"
-	ProtoType string // "int64", "string", etc.
-	GoType    string // "int64", "string", etc.
-	IsFK      bool
-	FKTable   string // "patients" (if FK)
+	Name        string // Proto field name: "patient_id"
+	GoName      string // Go name: "PatientId"
+	ProtoType   string // "int64", "string", etc.
+	GoType      string // "int64", "string", etc.
+	IsFK        bool
+	FKTable     string // "patients" (if FK)
+	IsTenantKey bool   // true when this field is the tenant key
 }
 
 // ParseEntityProtos scans proto/db/ for entity message definitions and returns
@@ -108,7 +113,7 @@ func parseEntityMessage(msg *ast.MessageNode, protoFile string) *EntityDef {
 		fieldName := string(fieldNode.Name.AsIdentifier())
 		protoType := extractFieldType(fieldNode)
 		goType := entityProtoTypeToGoType(protoType)
-		goName := naming.ToPascalCase(fieldName)
+		goName := naming.ToProtoPascalCase(fieldName)
 
 		ef := EntityField{
 			Name:      fieldName,
@@ -138,7 +143,7 @@ func parseEntityMessage(msg *ast.MessageNode, protoFile string) *EntityDef {
 		return nil
 	}
 
-	return &EntityDef{
+	ent := &EntityDef{
 		Name:      name,
 		TableName: naming.Pluralize(naming.ToSnakeCase(name)),
 		PkField:   pkField,
@@ -146,6 +151,19 @@ func parseEntityMessage(msg *ast.MessageNode, protoFile string) *EntityDef {
 		Fields:    fields,
 		ProtoFile: protoFile,
 	}
+
+	// Detect tenant key: look for fields explicitly marked or with conventional names.
+	for _, f := range fields {
+		if f.IsTenantKey || f.Name == "tenant_id" || f.Name == "org_id" {
+			ent.HasTenant = true
+			ent.TenantFieldName = f.Name
+			ent.TenantGoName = f.GoName
+			ent.TenantColumnName = f.Name // snake_case proto name == column name
+			break
+		}
+	}
+
+	return ent
 }
 
 // extractFieldType returns the type name from a field node.
@@ -176,4 +194,3 @@ func entityProtoTypeToGoType(protoType string) string {
 		return protoTypeToGoType(protoType)
 	}
 }
-

@@ -196,8 +196,8 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if strings.Contains(loggingMiddleware, "log.Printf") {
 		t.Fatalf("middleware/logging.go should use slog, not log.Printf, got:\n%s", loggingMiddleware)
 	}
-	if !strings.Contains(loggingMiddleware, ".logger.LogAttrs") {
-		t.Fatalf("middleware/logging.go should use injected logger.LogAttrs, got:\n%s", loggingMiddleware)
+	if !strings.Contains(loggingMiddleware, "LogRequestCompleted") {
+		t.Fatalf("middleware/logging.go should use typed log event helpers, got:\n%s", loggingMiddleware)
 	}
 	recoveryMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "recovery.go"))
 	if strings.Contains(recoveryMiddleware, "log.Printf") {

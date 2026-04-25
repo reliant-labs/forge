@@ -2,16 +2,22 @@ package main
 
 import (
 	"context"
+{{- if index .ConfigFields "AutoMigrate"}}
 	"database/sql"
+{{- end}}
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+{{- if index .ConfigFields "PprofAddr"}}
 	"net/http/pprof"
+{{- end}}
 	"os"
 	"os/signal"
+{{- if index .ConfigFields "CorsOrigins"}}
 	"strings"
+{{- end}}
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -25,7 +31,9 @@ import (
 	"{{.Module}}/pkg/app"
 	"{{.Module}}/pkg/config"
 	"{{.Module}}/pkg/middleware"
+{{- if index .ConfigFields "AutoMigrate"}}
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" sql driver for DATABASE_URL
+{{- end}}
 	"github.com/spf13/cobra"
 )
 
@@ -65,21 +73,31 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid configuration: %w", verr)
 	}
 
-	// Configure logging. LOG_FORMAT picks between structured JSON (for
-	// log aggregators) and human-friendly text (for local dev tails).
-	// Any other value is rejected by Validate above, so the switch
-	// default is unreachable unless Validate is bypassed.
+	// Configure logging.
+{{- if index .ConfigFields "LogLevel"}}
 	var level slog.Level
 	if uerr := level.UnmarshalText([]byte(cfg.LogLevel)); uerr != nil {
 		return fmt.Errorf("invalid log level %q: %w", cfg.LogLevel, uerr)
 	}
+{{- else}}
+	var level slog.Level
+{{- end}}
 	var logHandler slog.Handler
+{{- if index .ConfigFields "LogFormat"}}
+	// LOG_FORMAT picks between structured JSON (for log aggregators) and
+	// human-friendly text (for local dev tails). Any other value is
+	// rejected by Validate above, so the switch default is unreachable
+	// unless Validate is bypassed.
 	switch cfg.LogFormat {
 	case "text":
 		logHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	default: // "json" (also the validated default)
 		logHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
+{{- else}}
+	logHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+{{- end}}
+	logHandler = middleware.NewTraceHandler(logHandler)
 	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
 
@@ -90,6 +108,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		logger.Error("failed to initialize OpenTelemetry", "error", err)
 		// Continue without telemetry — this is intentional.
 	}
+{{- if index .ConfigFields "Environment"}}
 
 	// Warn loudly when running in development mode. Development mode enables
 	// permissive defaults (e.g. authz allow-all) for local ergonomics — this
@@ -98,14 +117,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if cfg.Environment == "development" {
 		logger.Warn("running in development mode — permissive authz defaults are enabled. NEVER set ENVIRONMENT=development in production.")
 	}
+{{- end}}
+{{- if index .ConfigFields "AutoMigrate"}}
 
 	// Auto-migrate: run pending database migrations if cfg.AutoMigrate is true.
 	// Precedence is handled by pkg/config: AUTO_MIGRATE env > --auto-migrate flag > default (false).
 	if cfg.AutoMigrate {
-		if cfg.DatabaseURL == "" {
+{{- if index .ConfigFields "DatabaseUrl"}}
+		if cfg.DatabaseUrl == "" {
 			return fmt.Errorf("auto-migrate is enabled but DATABASE_URL is not set")
 		}
-		db, dbErr := sql.Open("pgx", cfg.DatabaseURL)
+		db, dbErr := sql.Open("pgx", cfg.DatabaseUrl)
+{{- else}}
+		db, dbErr := sql.Open("pgx", "")
+{{- end}}
 		if dbErr != nil {
 			return fmt.Errorf("failed to connect to database for migration: %w", dbErr)
 		}
@@ -115,8 +140,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("auto-migration failed: %w", migrateErr)
 		}
 		_ = db.Close()
-		logger.Info("auto-migration completed successfully")
+		middleware.LogDBMigrationCompleted(ctx, logger)
 	}
+{{- end}}
 
 	mux := http.NewServeMux()
 
@@ -136,6 +162,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		middleware.AuditInterceptor(logger),
 		middleware.LoggingInterceptor(logger),
 	}
+{{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
 	if rl := middleware.RateLimitInterceptor(middleware.RateLimitOptions{
 		Rps:   int(cfg.RateLimitRps),
 		Burst: int(cfg.RateLimitBurst),
@@ -145,6 +172,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// cfg.RateLimitRps <= 0.
 		interceptors = append([]connect.Interceptor{rl}, interceptors...)
 	}
+{{- end}}
 	if otelInterceptor != nil {
 		interceptors = append([]connect.Interceptor{otelInterceptor}, interceptors...)
 	}
@@ -193,6 +221,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	})
 
 	var handler http.Handler = mux
+{{- if index .ConfigFields "CorsOrigins"}}
 	// CORS: parse comma-separated origins from config. The wildcard +
 	// credentials combination is rejected by cfg.Validate() above so we
 	// can pass cfg.CorsAllowCredentials through unchecked here.
@@ -205,8 +234,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(corsOrigins) > 0 {
+{{- if index .ConfigFields "CorsAllowCredentials"}}
 		handler = middleware.CORSMiddleware(corsOrigins, cfg.CorsAllowCredentials)(handler)
+{{- else}}
+		handler = middleware.CORSMiddleware(corsOrigins, false)(handler)
+{{- end}}
 	}
+{{- end}}
+{{- if index .ConfigFields "SecurityHeadersEnabled"}}
 
 	// Security headers — OWASP defaults. Applied outside of CORS so that
 	// preflight (OPTIONS) responses also carry them. HSTS is only emitted
@@ -214,9 +249,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if cfg.SecurityHeadersEnabled {
 		secCfg := middleware.DefaultSecurityHeadersConfig()
 		secCfg.Enabled = true
+{{- if index .ConfigFields "Environment"}}
 		secCfg.Production = cfg.Environment != "development"
+{{- else}}
+		secCfg.Production = true
+{{- end}}
 		handler = middleware.SecurityHeadersMiddleware(secCfg)(handler)
 	}
+{{- end}}
 
 	// RequestID runs at the outermost layer so every subsequent middleware
 	// (CORS, security headers, logging) can see the correlation ID on
@@ -226,7 +266,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	handler = h2c.NewHandler(handler, &http2.Server{})
 
+{{- if index .ConfigFields "Port"}}
 	addr := fmt.Sprintf(":%d", cfg.Port)
+{{- else}}
+	addr := ":8080"
+{{- end}}
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -255,20 +299,27 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("server starting", "addr", addr, "tls", cfg.TLSCertPath != "")
+{{- if and (index .ConfigFields "TlsCertPath") (index .ConfigFields "TlsKeyPath")}}
+		middleware.LogServerListening(ctx, logger, slog.String("addr", addr), slog.Bool("tls", cfg.TlsCertPath != ""))
 		// TLS is enabled when both cert and key paths are non-empty;
 		// Validate() above guarantees the paths are either both set or
 		// both empty, so we never ship an asymmetric config to here.
 		var serveErr error
-		if cfg.TLSCertPath != "" && cfg.TLSKeyPath != "" {
-			serveErr = srv.ServeTLS(ln, cfg.TLSCertPath, cfg.TLSKeyPath)
+		if cfg.TlsCertPath != "" && cfg.TlsKeyPath != "" {
+			serveErr = srv.ServeTLS(ln, cfg.TlsCertPath, cfg.TlsKeyPath)
 		} else {
 			serveErr = srv.Serve(ln)
 		}
+{{- else}}
+		middleware.LogServerListening(ctx, logger, slog.String("addr", addr), slog.Bool("tls", false))
+		var serveErr error
+		serveErr = srv.Serve(ln)
+{{- end}}
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			errCh <- serveErr
 		}
 	}()
+{{- if index .ConfigFields "PprofAddr"}}
 
 	// Optional pprof endpoint on a separate listener. pprof must never be
 	// mounted on the public handler — it exposes heap/goroutine/profile
@@ -297,6 +348,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			}
 		}()
 	}
+{{- end}}
 
 	// Start workers in background goroutines
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -320,9 +372,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 			Start(context.Context) error
 		}) {
 			defer workerWg.Done()
-			logger.Info("starting worker", "worker", w.Name())
+			middleware.LogWorkerStarting(workerCtx, logger, slog.String("worker", w.Name()))
 			if err := w.Start(workerCtx); err != nil {
-				logger.Error("worker error", "worker", w.Name(), "error", err)
+				middleware.LogWorkerError(workerCtx, logger, slog.String("worker", w.Name()), slog.Any("error", err))
 			}
 		}(w)
 	}
@@ -342,7 +394,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server failed: %w", err)
 	case <-ctx.Done():
 	}
-	logger.Info("shutting down...")
+	middleware.LogServerStopping(ctx, logger)
 
 	// Graceful shutdown sequence:
 	//   1. Flip readiness to false so /readyz starts failing.
@@ -356,22 +408,26 @@ func runServer(cmd *cobra.Command, args []string) error {
 	ready.Store(false)
 
 	preStop := 5 * time.Second
+{{- if index .ConfigFields "PreStopDelay"}}
 	if cfg.PreStopDelay != "" {
 		if d, perr := time.ParseDuration(cfg.PreStopDelay); perr == nil {
 			preStop = d
 		}
 	}
+{{- end}}
 	if preStop > 0 {
 		logger.Info("readiness flipped, waiting for LB drain", "pre_stop_delay", preStop)
 		time.Sleep(preStop)
 	}
 
 	shutdownTimeout := 30 * time.Second
+{{- if index .ConfigFields "ShutdownTimeout"}}
 	if cfg.ShutdownTimeout != "" {
 		if d, perr := time.ParseDuration(cfg.ShutdownTimeout); perr == nil {
 			shutdownTimeout = d
 		}
 	}
+{{- end}}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
@@ -393,11 +449,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server shutdown error", "error", err)
 	}
+{{- if index .ConfigFields "PprofAddr"}}
 	if pprofSrv != nil {
 		if err := pprofSrv.Shutdown(shutdownCtx); err != nil {
 			logger.Error("pprof shutdown error", "error", err)
 		}
 	}
+{{- end}}
 	if shutdownOTel != nil {
 		if err := shutdownOTel(shutdownCtx); err != nil {
 			logger.Error("otel shutdown error", "error", err)
@@ -406,6 +464,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+{{- if index .ConfigFields "AutoMigrate"}}
 // applyPoolTuning applies connection-pool settings from config to an open
 // *sql.DB. Values are read from cfg so operators can tune them per
 // environment without recompiling. Defaults come from the generated proto.
@@ -413,20 +472,29 @@ func applyPoolTuning(db *sql.DB, cfg *config.Config) {
 	if db == nil {
 		return
 	}
-	if cfg.DBMaxOpenConns > 0 {
-		db.SetMaxOpenConns(int(cfg.DBMaxOpenConns))
+{{- if index .ConfigFields "DbMaxOpenConns"}}
+	if cfg.DbMaxOpenConns > 0 {
+		db.SetMaxOpenConns(int(cfg.DbMaxOpenConns))
 	}
-	if cfg.DBMaxIdleConns > 0 {
-		db.SetMaxIdleConns(int(cfg.DBMaxIdleConns))
+{{- end}}
+{{- if index .ConfigFields "DbMaxIdleConns"}}
+	if cfg.DbMaxIdleConns > 0 {
+		db.SetMaxIdleConns(int(cfg.DbMaxIdleConns))
 	}
-	if cfg.DBConnMaxIdleTime != "" {
-		if d, err := time.ParseDuration(cfg.DBConnMaxIdleTime); err == nil {
+{{- end}}
+{{- if index .ConfigFields "DbConnMaxIdleTime"}}
+	if cfg.DbConnMaxIdleTime != "" {
+		if d, err := time.ParseDuration(cfg.DbConnMaxIdleTime); err == nil {
 			db.SetConnMaxIdleTime(d)
 		}
 	}
-	if cfg.DBConnMaxLifetime != "" {
-		if d, err := time.ParseDuration(cfg.DBConnMaxLifetime); err == nil {
+{{- end}}
+{{- if index .ConfigFields "DbConnMaxLifetime"}}
+	if cfg.DbConnMaxLifetime != "" {
+		if d, err := time.ParseDuration(cfg.DbConnMaxLifetime); err == nil {
 			db.SetConnMaxLifetime(d)
 		}
 	}
+{{- end}}
 }
+{{- end}}

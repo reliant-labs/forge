@@ -118,25 +118,23 @@ func MyInterceptor() connect.UnaryInterceptorFunc {
 
 ## Proto Annotations
 
-### Entity Options (deprecated, ORM-owned)
+### Entity Messages
+
+Entity messages are defined in the service proto alongside RPCs. They serve as both the API contract and (via type alias) the database type:
 
 ```protobuf
-import "forge/options/v1/entity.proto";
-import "forge/options/v1/field.proto";
-
+// proto/services/users/v1/users.proto
 message User {
-  option (forge.options.v1.entity_options) = {
-    table_name: "users"
-    timestamps: true
-    soft_delete: true
-  };
-
-  string id = 1 [(forge.options.v1.field_options) = {
-    primary_key: true
-    not_null: true
-  }];
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  string org_id = 4;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
 }
 ```
+
+Type aliases in `internal/db/types.go` re-export the proto type: `type User = apiv1.User`. CRUD functions live in `internal/db/user_orm.go`. SQL migrations in `db/migrations/` are the schema source of truth.
 
 ## HTTP Endpoints
 

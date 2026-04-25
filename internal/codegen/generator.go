@@ -91,8 +91,9 @@ func mapServiceDefToTemplateData(svc ServiceDef) ServiceTemplateData {
 }
 
 // GenerateServiceStub generates service.go and handlers.go for a new service
-// using the embedded FS templates.
-func GenerateServiceStub(svc ServiceDef, targetDir string) error {
+// using the embedded FS templates. crudMethodNames lists methods that CRUD gen
+// will implement; these are excluded from the initial handlers.go stubs.
+func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...map[string]bool) error {
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
@@ -108,12 +109,28 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 		return err
 	}
 
+	// For handlers.go, filter out methods that CRUD gen will implement.
+	var crudNames map[string]bool
+	if len(crudMethodNames) > 0 {
+		crudNames = crudMethodNames[0]
+	}
+	handlersData := data
+	if len(crudNames) > 0 {
+		var nonCRUD []MethodTemplateData
+		for _, m := range data.Methods {
+			if !crudNames[m.Name] {
+				nonCRUD = append(nonCRUD, m)
+			}
+		}
+		handlersData.Methods = nonCRUD
+	}
+
 	// Render handlers.go from embedded template only when there are real methods
 	// to implement. With zero methods, handlers.go would just be a placeholder
 	// comment; skip it and let the user (or subsequent forge generate runs) create
 	// it with actual content.
-	if len(data.Methods) > 0 {
-		handlersContent, err := templates.ServiceTemplates.Render("handlers.go.tmpl", data)
+	if len(handlersData.Methods) > 0 {
+		handlersContent, err := templates.ServiceTemplates.Render("handlers.go.tmpl", handlersData)
 		if err != nil {
 			return fmt.Errorf("render handlers.go.tmpl: %w", err)
 		}
@@ -122,8 +139,8 @@ func GenerateServiceStub(svc ServiceDef, targetDir string) error {
 		}
 	}
 
-	// Render handlers_test.go from embedded template
-	unitTestContent, err := templates.ServiceTemplates.Render("unit_test.go.tmpl", data)
+	// Render handlers_test.go from embedded template (same filter as handlers.go — skip CRUD methods)
+	unitTestContent, err := templates.ServiceTemplates.Render("unit_test.go.tmpl", handlersData)
 	if err != nil {
 		return fmt.Errorf("render unit_test.go.tmpl: %w", err)
 	}
@@ -274,7 +291,7 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 // sqlc) without opting into the generated forge ORM. The ORM field is
 // dropped when no proto/db/ entity definitions exist so `App.ORM` can never
 // be silently nil in user code.
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string) error {
+func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err
@@ -294,24 +311,30 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 
 	hasFallible := hasFallibleConstructor(bootstrapSvcs, packages, workers, operators)
 
+	if configFields == nil {
+		configFields = DefaultConfigFieldNames()
+	}
+
 	data := struct {
-		Module      string
-		Services    []BootstrapServiceData
-		Packages    []BootstrapPackageData
-		Workers     []BootstrapWorkerData
-		Operators   []BootstrapOperatorData
-		HasDatabase bool
-		OrmEnabled  bool
-		HasFallible bool
+		Module       string
+		Services     []BootstrapServiceData
+		Packages     []BootstrapPackageData
+		Workers      []BootstrapWorkerData
+		Operators    []BootstrapOperatorData
+		HasDatabase  bool
+		OrmEnabled   bool
+		HasFallible  bool
+		ConfigFields map[string]bool
 	}{
-		Module:      modulePath,
-		Services:    bootstrapSvcs,
-		Packages:    packages,
-		Workers:     workers,
-		Operators:   operators,
-		HasDatabase: hasDatabase,
-		OrmEnabled:  ormEnabled,
-		HasFallible: hasFallible,
+		Module:       modulePath,
+		Services:     bootstrapSvcs,
+		Packages:     packages,
+		Workers:      workers,
+		Operators:    operators,
+		HasDatabase:  hasDatabase,
+		OrmEnabled:   ormEnabled,
+		HasFallible:  hasFallible,
+		ConfigFields: configFields,
 	}
 
 	content, err := templates.ProjectTemplates.Render("bootstrap.go.tmpl", data)
@@ -546,7 +569,9 @@ type MissingHandlerResult struct {
 // only for missing methods into handlers_gen.go.
 // If all methods are already implemented, it returns AllUpToDate=true.
 // If handlers_gen.go already exists, it is overwritten (it's generated code).
-func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHandlerResult, error) {
+// crudMethodNames optionally lists method names that CRUD gen will implement;
+// stubs are skipped for these even if they don't exist yet in the package.
+func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string, crudMethodNames map[string]bool) (*MissingHandlerResult, error) {
 	existing, err := scanExistingMethods(targetDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("scan existing methods: %w", err)
@@ -554,7 +579,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, targetDir string) (*MissingHand
 
 	var missing []Method
 	for _, m := range svc.Methods {
-		if !existing[m.Name] {
+		if !existing[m.Name] && !crudMethodNames[m.Name] {
 			missing = append(missing, m)
 		}
 	}
@@ -655,7 +680,7 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 		if strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		if !includeGeneratedStubs && entry.Name() == "handlers_gen.go" {
+		if !includeGeneratedStubs && (entry.Name() == "handlers_gen.go" || entry.Name() == "handlers_crud_gen.go") {
 			continue
 		}
 

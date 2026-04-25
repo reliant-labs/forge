@@ -340,7 +340,7 @@ func newDBCodegenCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "codegen",
 		Short: "Generate ORM code from proto DB entities",
-		Long: `Run buf generate with protoc-gen-forge-orm for proto/db/ entity protos.
+		Long: `Run buf generate with protoc-gen-forge for proto/db/ entity protos.
 
 This is equivalent to the ORM generation step in 'forge generate' but can be
 run independently when only DB code needs regeneration.

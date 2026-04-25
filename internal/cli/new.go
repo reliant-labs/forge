@@ -230,7 +230,8 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 
 	fmt.Println("\n🔧 Bootstrapping generated proto code...")
 	if err := bootstrapGeneratedCode(targetPath); err != nil {
-		return fmt.Errorf("failed to bootstrap generated code: %w", err)
+		fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", CLIName(), CLIName())
 	}
 
 	// Initialize git repository

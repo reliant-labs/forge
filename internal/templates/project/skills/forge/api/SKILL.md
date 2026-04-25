@@ -1,9 +1,21 @@
 ---
 name: api
-description: Write Connect RPC handlers — error handling, validation, middleware, database access, and testing.
+description: Write Connect RPC handlers — proto service definitions, error handling, middleware, and testing.
 ---
 
 # Connect RPC API Handlers
+
+## Proto Service Definitions
+
+Define RPCs in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions matter — they trigger auto-generated features:
+
+- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) matching an entity defined in the service proto → full handler implementations are auto-generated in `handlers_crud_gen.go`, using ORM functions from `internal/db/`.
+- **AIP-158 pagination fields** (`page_size`, `page_token`, `next_page_token`) → cursor-based pagination is auto-generated.
+- **`optional` filter fields** on List requests → query filters are auto-generated (`search` → ILIKE, others → exact match).
+- **`required_roles` annotation** → per-method RBAC is auto-generated in `authorizer_gen.go`.
+- **`idempotency_key` annotation** → signals callers to pass an `Idempotency-Key` header.
+
+Hand-written handler methods always take priority — the generator skips any method you've already implemented.
 
 ## Handler Anatomy
 
@@ -20,16 +32,6 @@ func (s *UserService) GetUser(ctx context.Context, req *connect.Request[gen.GetU
 }
 ```
 
-## Generated Types
-
-All request/response types and interfaces come from `gen/`. **Never hand-edit files in `gen/`** — fix the `.proto` source and regenerate:
-
-```bash
-forge generate
-```
-
-If behavior seems stale, regenerate first. This is the most common cause of confusing type errors.
-
 ## Error Handling
 
 Use `connect.NewError` with the appropriate code:
@@ -44,7 +46,7 @@ Never expose internal details (stack traces, SQL errors) to clients.
 
 ## Input Validation
 
-Validate at the handler entry point before any business logic or database call:
+Validate at the handler entry point before any business logic:
 
 ```go
 if req.Msg.GetEmail() == "" {
@@ -52,58 +54,42 @@ if req.Msg.GetEmail() == "" {
 }
 ```
 
-Validate all required fields, format constraints, and business rules early. Return `InvalidArgument` with a clear message.
-
 ## Middleware
 
-Middleware lives in `pkg/middleware/` and is wired into the HTTP stack in `cmd/server.go`. Use middleware for cross-cutting concerns: auth, logging, recovery, request IDs. Keep handler code focused on business logic.
+Middleware lives in `pkg/middleware/` and is wired in `cmd/server.go`. Use it for cross-cutting concerns: auth, logging, recovery, request IDs. Keep handler code focused on business logic.
 
 ## Database Access
 
-Use sqlc-generated queries from your `db` package. For multi-step mutations, wrap in a transaction:
+Use ORM functions from `internal/db/` for data access. For multi-step mutations, wrap in a transaction:
 
 ```go
-tx, err := pool.Begin(ctx)
+tx, err := s.pool.Begin(ctx)
 if err != nil {
     return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to begin transaction"))
 }
 defer tx.Rollback(ctx)
-qtx := s.db.WithTx(tx)
-// ... use qtx for queries ...
+// use tx as the executor for ORM functions
+user, err := db.CreateUser(ctx, tx, &db.User{Name: req.Msg.GetName()})
+if err != nil {
+    return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create user"))
+}
 tx.Commit(ctx)
 ```
 
 ## Testing
 
-- **Unit tests**: Use generated mocks from `mock_gen.go` to isolate handler logic from the database.
-- **Integration tests**: Use a real database to verify queries and transactions end-to-end.
+- **Unit tests**: Use generated mocks from `mock_gen.go` to isolate handler logic.
+- **Integration tests**: Use a real database to verify queries and transactions.
 
 ```bash
 forge test
 forge test --service users
 ```
 
-## Idempotency Keys
-
-Mutating RPCs (Create / Update / Delete) should be annotated with `idempotency_key = true` in the proto so callers know to pass a per-request key. The generated client and docs surface this expectation; the handler is responsible for enforcing it.
-
-```proto
-rpc Create(CreateRequest) returns (CreateResponse) {
-  option (forge.options.v1.method_options) = {
-    auth_required: true
-    idempotency_key: true
-  };
-}
-```
-
-Consumers pass the key via the `Idempotency-Key` request header (case-insensitive). Read it from `req.Header().Get("Idempotency-Key")` in the handler, look up any prior result keyed by `(caller, method, key)`, and either replay the stored response or proceed and persist the result. A short TTL (24h is typical) bounds storage.
-
-Read-only methods (Get, List, Search) are naturally idempotent and do not need a key.
-
 ## Common Pitfalls
 
-1. **Stale `gen/`** — Run `forge generate` after any proto change. Type mismatches usually mean you forgot.
-2. **Wrong error codes** — `NotFound` vs `InvalidArgument` vs `Internal` matter for clients. Choose deliberately.
-3. **Missing auth checks** — Ensure auth middleware covers all routes, or validate in the handler.
-4. **Hand-editing `gen/`** — Changes will be overwritten. Always fix the proto source.
-5. **Ignoring `idempotency_key`** — If a method is annotated with `idempotency_key = true`, the handler must read and honor the `Idempotency-Key` header. Otherwise the annotation is misleading.
+1. **Stale `gen/`** — Run `forge generate` after any proto change.
+2. **Wrong error codes** — `NotFound` vs `InvalidArgument` vs `Internal` matter for clients.
+3. **Hand-editing `gen/`** — Changes will be overwritten. Always fix the proto source.
+4. **Hand-editing `authorizer_gen.go`** — It's regenerated. Put custom authorization logic in `authorizer.go`.
+5. **Non-optional filter fields** — List request filter fields must be `optional` in proto, otherwise the generated code can't distinguish "not set" from zero values.

@@ -2,27 +2,22 @@ syntax = "proto3";
 
 package {{.Package}}.db.v1;
 
-import "forge/options/v1/entity.proto";
-import "forge/options/v1/field.proto";
+import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/{{.Package}}/gen/db/v1;dbv1";
 
-// Example entity with transitional Forge DB annotations.
+// Example entity with Forge DB annotations.
 //
 // Migration-first workflow:
 //   1. Author and review SQL migrations in db/migrations/.
 //   2. Apply migrations to a target database.
 //   3. Sync or validate proto DB entities against the migrated schema.
 //   4. Regenerate code and use the resulting CRUD helpers in service code.
-//
-// Note: DB annotations are now owned by the ORM codegen (pkg/orm). The
-// forge.options.v1 annotations remain here as a compatibility layer during
-// that transition.
 message ExampleEntity {
   // Message-level options define table-level metadata used by ORM codegen.
-  option (forge.options.v1.entity_options) = {
-    table_name: "example_entities"
+  option (forge.v1.entity) = {
+    table: "example_entities"
     soft_delete: true
     timestamps: true
     indexes: [
@@ -39,40 +34,34 @@ message ExampleEntity {
   };
 
   // Primary key field
-  string id = 1 [(forge.options.v1.field_options) = {
-    primary_key: true
-    not_null: true
+  string id = 1 [(forge.v1.field) = {
+    pk: true
   }];
 
   // Required text field
-  string name = 2 [(forge.options.v1.field_options) = {
-    not_null: true
-  }];
+  string name = 2;
 
   // Email field with unique index (defined above)
-  string email = 3 [(forge.options.v1.field_options) = {
-    not_null: true
+  string email = 3 [(forge.v1.field) = {
+    unique: true
   }];
 
   // Status field with default
-  string status = 4 [(forge.options.v1.field_options) = {
-    not_null: true
+  string status = 4 [(forge.v1.field) = {
     default_value: "'pending'"
   }];
 
   // JSON metadata (stored as JSONB in PostgreSQL)
-  string metadata = 5 [(forge.options.v1.field_options) = {
-    column_type: "JSONB"
+  string metadata = 5 [(forge.v1.field) = {
+    store: STORE_AS_JSONB
   }];
 
   // Timestamps
-  google.protobuf.Timestamp created_at = 6 [(forge.options.v1.field_options) = {
-    not_null: true
+  google.protobuf.Timestamp created_at = 6 [(forge.v1.field) = {
     default_value: "NOW()"
   }];
 
-  google.protobuf.Timestamp updated_at = 7 [(forge.options.v1.field_options) = {
-    not_null: true
+  google.protobuf.Timestamp updated_at = 7 [(forge.v1.field) = {
     default_value: "NOW()"
   }];
 

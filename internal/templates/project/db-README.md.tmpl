@@ -59,36 +59,28 @@ syntax = "proto3";
 
 package {{.Package}}.db.v1;
 
-import "forge/options/v1/entity.proto";
-import "forge/options/v1/field.proto";
+import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/{{.Package}}/gen/db/v1;dbv1";
 
 message User {
-  option (forge.options.v1.entity_options) = {
-    table_name: "users"
+  option (forge.v1.entity) = {
+    table: "users"
     indexes: [
       { name: "idx_email", fields: ["email"], unique: true }
     ]
   };
 
-  string id = 1 [(forge.options.v1.field_options) = {
-    primary_key: true
-    not_null: true
+  string id = 1 [(forge.v1.field) = {
+    pk: true
   }];
 
-  string email = 2 [(forge.options.v1.field_options) = { not_null: true }];
+  string email = 2 [(forge.v1.field) = { unique: true }];
   string name = 3;
   google.protobuf.Timestamp created_at = 4;
 }
 ```
-
-## Notes on Annotation Ownership
-
-DB annotations are now owned by the ORM codegen (`pkg/orm`). The `forge.options.v1`
-DB annotations remain available here as a compatibility layer during that
-transition.
 
 ## Service Usage
 

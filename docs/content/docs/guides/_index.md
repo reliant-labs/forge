@@ -38,7 +38,7 @@ Build custom Connect RPC interceptors for authentication, logging, metrics, and 
 <div class="col">
 
 ### [Database Integration]({{< relref "database-integration" >}})
-Migration-first database workflow, proto DB contracts, sqlc queries, and transactions.
+Migration-first database workflow, entity types, ORM functions, sqlc queries, and transactions.
 
 </div>
 <div class="col">

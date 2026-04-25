@@ -7,12 +7,12 @@ tmp_dir = "tmp"
   bin = "./tmp/{{.Name}}"
   cmd = "CGO_ENABLED=0 go build -gcflags='all=-N -l' -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
   delay = 1000
-  exclude_dir = ["assets", "tmp", "vendor", "testdata", "web", "dist", "node_modules", "e2e", "gen"]
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "web", "dist", "node_modules", "e2e", "gen", ".forge", ".git", "config", "deploy", "proto", "db"]
   exclude_file = ["_test.go"]
   exclude_regex = ["_test\\.go$"]
   exclude_unchanged = false
   follow_symlink = false
-  full_bin = "dlv exec --headless --listen=:2345 --api-version=2 --accept-multiclient --continue ./tmp/{{.Name}} -- server"
+  full_bin = "dlv exec --headless --listen=:2345 --api-version=2 --accept-multiclient ./tmp/{{.Name}} -- server"
   include_ext = ["go", "yaml"]
   include_file = []
   kill_delay = "5s"

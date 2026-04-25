@@ -35,7 +35,7 @@ func TestGeneratePlanProtoFileBasic(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanProtoFile(root, "example.com/myapp", "careflow", rpcs); err != nil {
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "careflow", rpcs, nil); err != nil {
 		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
 	}
 
@@ -113,7 +113,7 @@ func TestGeneratePlanProtoFileTimestampImport(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanProtoFile(root, "example.com/myapp", "events", rpcs); err != nil {
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "events", rpcs, nil); err != nil {
 		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestGeneratePlanProtoFileRepeatedField(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanProtoFile(root, "example.com/myapp", "tags", rpcs); err != nil {
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "tags", rpcs, nil); err != nil {
 		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestGeneratePlanProtoFileRPCDescription(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanProtoFile(root, "example.com/myapp", "health", rpcs); err != nil {
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "health", rpcs, nil); err != nil {
 		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestGeneratePlanProtoFileOverwritesExisting(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanProtoFile(root, "example.com/myapp", "orders", rpcs); err != nil {
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "orders", rpcs, nil); err != nil {
 		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
 	}
 
@@ -222,5 +222,137 @@ func TestGeneratePlanProtoFileOverwritesExisting(t *testing.T) {
 	}
 	if !strings.Contains(proto, "rpc CreateOrder") {
 		t.Error("new proto should contain CreateOrder RPC")
+	}
+}
+
+func TestGeneratePlanProtoFileEntityMessages(t *testing.T) {
+	root := t.TempDir()
+
+	rpcs := []config.PlanRPC{
+		{
+			Name: "CreatePatient",
+			Request: []config.PlanField{
+				{Name: "name", Type: "string"},
+				{Name: "email", Type: "string"},
+			},
+			Response: []config.PlanField{
+				{Name: "patient", Type: "Patient"},
+			},
+		},
+		{
+			Name: "GetPatient",
+			Request: []config.PlanField{
+				{Name: "id", Type: "string"},
+			},
+			Response: []config.PlanField{
+				{Name: "patient", Type: "Patient"},
+			},
+		},
+	}
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Patient",
+			Timestamps: true,
+			SoftDelete: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "name", Type: "string"},
+				{Name: "email", Type: "string"},
+				{Name: "org_id", Type: "string"},
+			},
+		},
+	}
+
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "careflow", rpcs, entities); err != nil {
+		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "proto", "services", "careflow", "v1", "careflow.proto"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	proto := string(content)
+
+	// Entity message should be present
+	if !strings.Contains(proto, "message Patient {") {
+		t.Error("missing Patient entity message")
+	}
+
+	// Entity fields
+	if !strings.Contains(proto, "string id = 1;") {
+		t.Error("missing id field in Patient entity")
+	}
+	if !strings.Contains(proto, "string name = 2;") {
+		t.Error("missing name field in Patient entity")
+	}
+	if !strings.Contains(proto, "string org_id = 4;") {
+		t.Error("missing org_id field in Patient entity")
+	}
+
+	// Timestamp fields from Timestamps: true
+	if !strings.Contains(proto, "google.protobuf.Timestamp created_at = 5;") {
+		t.Error("missing created_at timestamp field")
+	}
+	if !strings.Contains(proto, "google.protobuf.Timestamp updated_at = 6;") {
+		t.Error("missing updated_at timestamp field")
+	}
+
+	// SoftDelete field
+	if !strings.Contains(proto, "google.protobuf.Timestamp deleted_at = 7;") {
+		t.Error("missing deleted_at soft-delete field")
+	}
+
+	// Timestamp import should be present (from entity timestamps)
+	if !strings.Contains(proto, `import "google/protobuf/timestamp.proto";`) {
+		t.Error("missing timestamp import for entity timestamps")
+	}
+
+	// CRUD RPCs should reference Patient by bare name
+	if !strings.Contains(proto, "Patient patient = 1;") {
+		t.Error("CRUD response should reference Patient by bare name")
+	}
+
+	// Should NOT have db/v1 import
+	if strings.Contains(proto, "db/v1") {
+		t.Error("should not have db/v1 import — entities are inline")
+	}
+}
+
+func TestGeneratePlanProtoFileEntityAutoID(t *testing.T) {
+	root := t.TempDir()
+
+	// Entity without explicit id field — should get auto-injected.
+	entities := []config.PlanEntity{
+		{
+			Name: "Task",
+			Fields: []config.PlanEntityField{
+				{Name: "title", Type: "string"},
+				{Name: "done", Type: "bool"},
+			},
+		},
+	}
+
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "tasks", nil, entities); err != nil {
+		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "proto", "services", "tasks", "v1", "tasks.proto"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	proto := string(content)
+
+	// id should be auto-injected as field 1
+	if !strings.Contains(proto, "string id = 1;") {
+		t.Error("missing auto-injected id field")
+	}
+	// title should be field 2 (bumped by 1)
+	if !strings.Contains(proto, "string title = 2;") {
+		t.Error("title should be field 2 when id is auto-injected")
+	}
+	// done should be field 3
+	if !strings.Contains(proto, "bool done = 3;") {
+		t.Error("done should be field 3 when id is auto-injected")
 	}
 }

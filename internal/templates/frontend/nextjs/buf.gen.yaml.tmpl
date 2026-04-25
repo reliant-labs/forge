@@ -5,7 +5,7 @@ plugins:
     # include_imports is a plugin-level field in buf.gen.yaml v2 (same
     # level as `out:` / `opt:`), not an `opt:` entry — bufbuild/es rejects
     # unknown options. This ensures transitive proto imports (e.g.
-    # forge/options/v1/*.proto referenced by service_pb.ts) are emitted
+    # forge/v1/forge.proto referenced by service_pb.ts) are emitted
     # alongside first-party stubs, otherwise tsc fails with missing
     # modules.
     include_imports: true

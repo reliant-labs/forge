@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -128,6 +129,7 @@ type upgradeTemplateData struct {
 	GoVersionMinor         string
 	DockerBuilderGoVersion string
 	Services               []ServiceInfo
+	ConfigFields           map[string]bool
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -180,6 +182,15 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		services = []ServiceInfo{{Name: "app", Port: 8080}}
 	}
 
+	// Parse config fields from proto/config/ so templates can conditionally
+	// include code blocks that reference specific config fields.
+	configFields := codegen.DefaultConfigFieldNames()
+	if projectDir != "" {
+		if msgs, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config")); err == nil && len(msgs) > 0 {
+			configFields = codegen.ConfigFieldNamesFromMessages(msgs)
+		}
+	}
+
 	return upgradeTemplateData{
 		Name:                   cfg.Name,
 		ProtoName:              protoName,
@@ -193,6 +204,7 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 		Services:               services,
+		ConfigFields:           configFields,
 	}
 }
 

@@ -104,14 +104,14 @@ func openMigrator(cmd *cobra.Command) (*migrate.Migrate, func(), error) {
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("load config: %w", err)
 	}
-	if cfg.DatabaseURL == "" {
+	if cfg.DatabaseUrl == "" {
 		return nil, func() {}, fmt.Errorf("DATABASE_URL (or --database-url) is required")
 	}
 
 	// golang-migrate's pgx v5 driver is registered as "pgx5"; we translate
 	// standard postgres:// URLs by swapping the scheme so users don't need
 	// to learn a migration-tool-specific URL shape.
-	dsn := migrateDSN(cfg.DatabaseURL)
+	dsn := migrateDSN(cfg.DatabaseUrl)
 
 	m, err := migrate.New("file://"+migrationsDir, dsn)
 	if err != nil {

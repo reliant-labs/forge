@@ -16,9 +16,10 @@ import (
 
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
-	contract bool
-	db       bool
-	fix      bool
+	contract     bool
+	db           bool
+	fix          bool
+	exportedVars bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -40,6 +41,7 @@ Examples:
   forge lint                    # Run all standard linters
   forge lint --contract         # Run contract interface enforcement linter
   forge lint --db               # Run DB entity lint rules
+  forge lint --exported-vars     # Run exported vars linter
   forge lint --fix              # Auto-fix issues where possible`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var paths []string
@@ -54,6 +56,7 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
+	cmd.Flags().BoolVar(&flags.exportedVars, "exported-vars", false, "Run exported vars linter")
 	cmd.Flags().BoolVar(&flags.db, "db", false, "Run DB entity lint rules on proto/db/ files")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 
@@ -63,6 +66,9 @@ Examples:
 func runLint(flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.contract {
+		return runContractLinter(paths)
+	}
+	if flags.exportedVars {
 		return runContractLinter(paths)
 	}
 	if flags.db {

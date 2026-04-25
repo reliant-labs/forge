@@ -30,7 +30,6 @@ type CRUDTemplateData struct {
 	NeedsORM      bool         // true if pagination, filters, or ordering requires orm import
 	HasTenant     bool         // true if any CRUD method operates on a tenant-scoped entity
 	CRUDMethods   []CRUDMethodTemplateData
-	Converters    []ConverterTemplateData
 }
 
 // CRUDMethodTemplateData holds per-method template data.
@@ -62,8 +61,11 @@ type CRUDMethodTemplateData struct {
 
 // CreateFieldData holds a field mapping from a create request to the ORM entity.
 type CreateFieldData struct {
-	ProtoGoName  string // Go field name on the proto request message, e.g. "Name"
-	EntityGoName string // Go field name on the ORM entity, e.g. "Name"
+	ProtoGoName  string    // Go field name on the proto request message, e.g. "Name"
+	EntityGoName string    // Go field name on the ORM entity, e.g. "Name"
+	Kind         FieldKind // scalar, enum, message, wrapper, timestamp, etc.
+	GoType       string    // Go type: "string", "int32", "*timestamppb.Timestamp", etc.
+	EnumGoType   string    // For enum fields: the pb.EnumType name
 }
 
 // FilterFieldData describes a filter field extracted from a List request message.
@@ -76,20 +78,7 @@ type FilterFieldData struct {
 	IsOptional bool   // proto optional keyword
 }
 
-// ConverterTemplateData holds per-entity converter function data.
-type ConverterTemplateData struct {
-	EntityName string        // "Patient"
-	FuncPrefix string        // "patient" (lowercase)
-	Fields     []ConverterFieldData
-}
 
-// ConverterFieldData holds per-field converter data.
-type ConverterFieldData struct {
-	ProtoName string // "PatientId"
-	GoName    string // "PatientId" (entity Go name)
-	Skip      bool   // true if types don't match and we should skip
-	Comment   string // explanation when skipped
-}
 
 // MatchCRUDMethods correlates a service's RPC methods with entity definitions
 // and returns the matched CRUD methods. Only unary RPCs are matched.
@@ -227,12 +216,8 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		}
 	}
 
-	// Collect unique entities for converter generation
-	entitySet := make(map[string]EntityDef)
 	var methods []CRUDMethodTemplateData
 	for _, cm := range crudMethods {
-		entitySet[cm.Entity.Name] = cm.Entity
-
 		authAction := operationToAuthAction(cm.Operation)
 
 		// Detect pagination for list operations: check if the input type
@@ -271,7 +256,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		if cm.Operation == "update" && svc.Messages != nil {
 			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, f := range fields {
-					if f.ProtoType == cm.Entity.Name {
+					if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
 						updateEntityField = naming.ToProtoPascalCase(f.Name)
 						break
 					}
@@ -284,9 +269,25 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		if cm.Operation == "create" && svc.Messages != nil {
 			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, f := range fields {
+					goType := ProtoTypeToGoType(f.ProtoType)
+					// Try to get richer GoType from the entity definition
+					for _, ef := range cm.Entity.Fields {
+						if ef.Name == f.Name {
+							goType = ef.GoType
+							break
+						}
+					}
+					kind := DetermineFieldKind(f.ProtoType, goType)
+					var enumGoType string
+					if kind == FieldKindEnum {
+						enumGoType = goType
+					}
 					createFields = append(createFields, CreateFieldData{
 						ProtoGoName:  naming.ToProtoPascalCase(f.Name),
 						EntityGoName: naming.ToProtoPascalCase(f.Name),
+						Kind:         kind,
+						GoType:       goType,
+						EnumGoType:   enumGoType,
 					})
 				}
 			}
@@ -319,39 +320,6 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		})
 	}
 
-	// Build converter data.
-	// Only include entity fields that also exist in the service proto message
-	// (the DB entity may have fields like deleted_at that the API message omits).
-	var converters []ConverterTemplateData
-	for _, entity := range entitySet {
-		// Build set of proto service message field names for this entity.
-		protoFieldSet := make(map[string]bool)
-		if svc.Messages != nil {
-			if msgFields, ok := svc.Messages[entity.Name]; ok {
-				for _, mf := range msgFields {
-					protoFieldSet[mf.Name] = true
-				}
-			}
-		}
-
-		var fields []ConverterFieldData
-		for _, f := range entity.Fields {
-			// If we have proto message field info, skip entity fields not in the proto message.
-			if len(protoFieldSet) > 0 && !protoFieldSet[f.Name] {
-				continue
-			}
-			fields = append(fields, ConverterFieldData{
-				ProtoName: f.GoName,
-				GoName:    f.GoName,
-			})
-		}
-		converters = append(converters, ConverterTemplateData{
-			EntityName: entity.Name,
-			FuncPrefix: strings.ToLower(entity.Name[:1]) + entity.Name[1:],
-			Fields:     fields,
-		})
-	}
-
 	// Check if any method has pagination, filters, or ordering
 	hasPagination := false
 	hasFilters := false
@@ -380,14 +348,13 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		Package:       pkg,
 		Module:        modulePath,
 		ProtoPackage:  protoPackage,
-		DBPackagePath: modulePath + "/gen/db/v1",
+		DBPackagePath: modulePath + "/internal/db",
 		HasPagination: hasPagination,
 		HasFilters:    hasFilters,
 		HasOrderBy:    hasOrderBy,
 		NeedsORM:      needsORM,
 		HasTenant:     hasTenant,
 		CRUDMethods:   methods,
-		Converters:    converters,
 	}
 }
 
@@ -428,9 +395,10 @@ type CRUDTestEntityData struct {
 
 // CRUDTestFieldData holds per-field data for generating test values.
 type CRUDTestFieldData struct {
-	ProtoName string // "Name"
-	GoType    string // "string"
-	TestValue string // `"test-value"` or `1` or `true`
+	ProtoName string    // "Name"
+	GoType    string    // "string"
+	Kind      FieldKind // scalar, enum, message, wrapper, timestamp, etc.
+	TestValue string    // `"test-value"` or `1` or `true`
 }
 
 // GenerateCRUDTests generates handlers_crud_test_gen.go for a service with CRUD methods.
@@ -513,7 +481,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		if cm.Operation == "update" && svc.Messages != nil {
 			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, f := range fields {
-					if f.ProtoType == cm.Entity.Name {
+					if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
 						updateEntityField = naming.ToProtoPascalCase(f.Name)
 						break
 					}
@@ -565,9 +533,11 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				if len(protoFieldSet) > 0 && !protoFieldSet[f.Name] {
 					continue
 				}
+				kind := DetermineFieldKind(f.ProtoType, f.GoType)
 				fields = append(fields, CRUDTestFieldData{
 					ProtoName: f.GoName,
 					GoType:    f.GoType,
+					Kind:      kind,
 					TestValue: testValueForType(f.GoType),
 				})
 			}
@@ -578,7 +548,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				updateReqName := "Update" + cm.Entity.Name + "Request"
 				if msgFields, ok := svc.Messages[updateReqName]; ok {
 					for _, f := range msgFields {
-						if f.ProtoType == cm.Entity.Name {
+						if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
 							updateEntityField = naming.ToProtoPascalCase(f.Name)
 							break
 						}
@@ -606,10 +576,19 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
 				var createFields []CRUDTestFieldData
 				for _, f := range msgFields {
-					goType := protoTypeToGoType(f.ProtoType)
+					goType := ProtoTypeToGoType(f.ProtoType)
+					// Try to get richer GoType from entity definition
+					for _, ef := range cm.Entity.Fields {
+						if ef.Name == f.Name {
+							goType = ef.GoType
+							break
+						}
+					}
+					kind := DetermineFieldKind(f.ProtoType, goType)
 					createFields = append(createFields, CRUDTestFieldData{
 						ProtoName: naming.ToProtoPascalCase(f.Name),
 						GoType:    goType,
+						Kind:      kind,
 						TestValue: testValueForType(goType),
 					})
 				}
@@ -685,8 +664,31 @@ func testValueForType(goType string) string {
 		return `[]byte("test")`
 	case "timestamppb.Timestamp", "*timestamppb.Timestamp":
 		return "timestamppb.Now()"
+	// Wrapper types (google.protobuf.*Value)
+	case "*string":
+		return `wrapperspb.String("test-value")`
+	case "*int32":
+		return "wrapperspb.Int32(42)"
+	case "*int64":
+		return "wrapperspb.Int64(42)"
+	case "*uint32":
+		return "wrapperspb.UInt32(42)"
+	case "*uint64":
+		return "wrapperspb.UInt64(42)"
+	case "*bool":
+		return "wrapperspb.Bool(true)"
+	case "*float32":
+		return "wrapperspb.Float(1.0)"
+	case "*float64":
+		return "wrapperspb.Double(1.0)"
 	default:
-		return `"test-value"`
+		// Enum types (single-word Go ident like "Status") → use zero value
+		// Repeated/map/message types → nil
+		if strings.HasPrefix(goType, "[]") || strings.HasPrefix(goType, "map[") || strings.HasPrefix(goType, "*") {
+			return "nil"
+		}
+		// Likely an enum type — use 0
+		return "0"
 	}
 }
 
@@ -702,7 +704,7 @@ func classifySkipField(name string) bool {
 
 // classifyFilterField builds a FilterFieldData from a proto message field.
 func classifyFilterField(mf MessageFieldDef) FilterFieldData {
-	goType := protoTypeToGoType(mf.ProtoType)
+	goType := ProtoTypeToGoType(mf.ProtoType)
 
 	filterType := "exact"
 	switch mf.Name {
@@ -791,4 +793,10 @@ func operationToAuthAction(op string) string {
 	default:
 		return "read"
 	}
+}
+
+// protoTypeMatchesEntity checks if a proto field type references the given entity.
+// Handles both bare types ("Patient") and qualified types ("db.v1.Patient").
+func protoTypeMatchesEntity(protoType, entityName string) bool {
+	return protoType == entityName || protoType == "db.v1."+entityName
 }

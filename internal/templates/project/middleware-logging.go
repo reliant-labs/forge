@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // loggingInterceptor implements connect.Interceptor with request logging
@@ -30,25 +29,22 @@ func (i *loggingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 		resp, err := next(ctx, req)
 
 		attrs := []slog.Attr{
-			slog.String("procedure", req.Spec().Procedure),
-			slog.Duration("duration", time.Since(start)),
+			ProcedureAttr(req.Spec().Procedure),
+			DurationAttr(time.Since(start)),
 		}
 		if rid := RequestIDFromContext(ctx); rid != "" {
-			attrs = append(attrs, slog.String("request_id", rid))
+			attrs = append(attrs, RequestIDAttr(rid))
 		} else if rid := req.Header().Get(RequestIDHeader); rid != "" {
 			// Fall back to the raw header in case the request-id middleware
 			// was not wired at the HTTP layer. This keeps logs correlatable
 			// even in partial deployments.
-			attrs = append(attrs, slog.String("request_id", rid))
-		}
-		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
-			attrs = append(attrs, slog.String("trace_id", spanCtx.TraceID().String()))
+			attrs = append(attrs, RequestIDAttr(rid))
 		}
 		if err != nil {
 			attrs = append(attrs, slog.Any("error", err))
-			i.logger.LogAttrs(ctx, slog.LevelError, "rpc error", attrs...)
+			LogRequestFailed(ctx, i.logger, attrs...)
 		} else {
-			i.logger.LogAttrs(ctx, slog.LevelInfo, "rpc ok", attrs...)
+			LogRequestCompleted(ctx, i.logger, attrs...)
 		}
 
 		return resp, err
@@ -66,22 +62,19 @@ func (i *loggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 		err := next(ctx, conn)
 
 		attrs := []slog.Attr{
-			slog.String("procedure", conn.Spec().Procedure),
-			slog.Duration("duration", time.Since(start)),
+			ProcedureAttr(conn.Spec().Procedure),
+			DurationAttr(time.Since(start)),
 		}
 		if rid := RequestIDFromContext(ctx); rid != "" {
-			attrs = append(attrs, slog.String("request_id", rid))
+			attrs = append(attrs, RequestIDAttr(rid))
 		} else if rid := conn.RequestHeader().Get(RequestIDHeader); rid != "" {
-			attrs = append(attrs, slog.String("request_id", rid))
-		}
-		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.HasTraceID() {
-			attrs = append(attrs, slog.String("trace_id", spanCtx.TraceID().String()))
+			attrs = append(attrs, RequestIDAttr(rid))
 		}
 		if err != nil {
 			attrs = append(attrs, slog.Any("error", err))
-			i.logger.LogAttrs(ctx, slog.LevelError, "stream error", attrs...)
+			LogStreamFailed(ctx, i.logger, attrs...)
 		} else {
-			i.logger.LogAttrs(ctx, slog.LevelInfo, "stream ok", attrs...)
+			LogStreamCompleted(ctx, i.logger, attrs...)
 		}
 
 		return err

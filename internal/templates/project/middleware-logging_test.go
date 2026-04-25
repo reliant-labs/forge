@@ -55,8 +55,8 @@ func TestLoggingInterceptor_Success(t *testing.T) {
 		t.Fatalf("want 1 log line, got %d", len(lines))
 	}
 	got := lines[0]
-	if got["msg"] != "rpc ok" {
-		t.Fatalf("want msg=rpc ok, got %q", got["msg"])
+	if got["msg"] != "rpc.ok" {
+		t.Fatalf("want msg=rpc.ok, got %q", got["msg"])
 	}
 	if got["request_id"] != "req-abc" {
 		t.Fatalf("want request_id=req-abc, got %v", got["request_id"])
@@ -118,8 +118,8 @@ func TestLoggingInterceptor_ErrorIsLoggedAtErrorLevel(t *testing.T) {
 		t.Fatalf("want 1 log line, got %d", len(lines))
 	}
 	got := lines[0]
-	if got["msg"] != "rpc error" {
-		t.Fatalf("want msg=rpc error, got %q", got["msg"])
+	if got["msg"] != "rpc.error" {
+		t.Fatalf("want msg=rpc.error, got %q", got["msg"])
 	}
 	if got["level"] != "ERROR" {
 		t.Fatalf("want level=ERROR, got %v", got["level"])

@@ -2,13 +2,6 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
-    # mem_limit / cpus (compose v2 short form) keep local dev from letting
-    # a runaway query chew through host memory or CPU — useful on laptops
-    # where `docker compose up` shares resources with the IDE. The short
-    # form works on every compose version shipped since 1.x; `deploy.
-    # resources.limits` only applies under Swarm and was silently
-    # ignored here. Raise these on dedicated build machines if you
-    # import a large fixture.
     mem_limit: 512m
     cpus: 0.5
     environment:
@@ -16,7 +9,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "0:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,27 +21,37 @@ services:
       - {{.ProjectName}}-net
 
   app:
-    build: .
+    build:
+      context: .
+      target: dev
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
-      PORT: ${PORT:-8080}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_SERVICE_NAME: {{.ProjectName}}
+      ENVIRONMENT: development
+      LOG_LEVEL: debug
+      LOG_FORMAT: text
+      AUTO_MIGRATE: "true"
+      PPROF_ADDR: ":6060"
     ports:
-      - "${PORT:-8080}:${PORT:-8080}"
+      - "0:8080"
+      - "0:6060"
+    volumes:
+      - .:/app
+      - go_mod_cache:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
     depends_on:
       postgres:
         condition: service_healthy
-      jaeger:
-        condition: service_healthy
+      lgtm:
+        condition: service_started
     healthcheck:
-      # /healthz is the in-process liveness endpoint (see cmd/server.go).
-      # We shell out to wget (busybox/alpine) because the Go runtime base
-      # images don't bundle curl; wget -q --spider is the portable equivalent.
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:${PORT:-8080}/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 10s
+      start_period: 15s
     networks:
       - {{.ProjectName}}-net
 
@@ -59,11 +62,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-{{.ProjectName}}}?sslmode=disable
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
+      OTEL_SERVICE_NAME: {{.ProjectName}}
       ENVIRONMENT: development
-      PORT: ${PORT:-8080}
     ports:
-      - "${PORT:-8080}:${PORT:-8080}"
-      - "2345:2345"
+      - "0:8080"
+      - "0:2345"
     security_opt:
       - "apparmor=unconfined"
     cap_add:
@@ -71,45 +75,67 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      jaeger:
-        condition: service_healthy
+      lgtm:
+        condition: service_started
     healthcheck:
-      # Same endpoint as app; Delve attaches separately on :2345.
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:${PORT:-8080}/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
-      # Debug binaries boot slower because Delve waits for an attach before
-      # executing main; give it a longer grace period.
       start_period: 30s
     profiles:
       - debug
     networks:
       - {{.ProjectName}}-net
 
-  jaeger:
-    image: jaegertracing/all-in-one:1.64
+  # Grafana Alloy — single collector for metrics, logs, and profiles.
+  # Scrapes app services on the docker network and forwards to the LGTM stack.
+  alloy:
+    image: grafana/alloy:latest
+    restart: unless-stopped
+    volumes:
+      - ./deploy/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["run", "/etc/alloy/config.alloy"]
+    depends_on:
+      lgtm:
+        condition: service_healthy
+    networks:
+      - {{.ProjectName}}-net
+
+  # Grafana LGTM — all-in-one observability backend.
+  # Bundles: Grafana (dashboards), Prometheus (metrics), Tempo (traces),
+  #          Loki (logs), Pyroscope (continuous profiling), and an
+  #          OpenTelemetry Collector.
+  #
+  # The app pushes traces via OTLP gRPC to lgtm:4317 on the docker network.
+  # Only Grafana UI is exposed to the host (dynamic port).
+  lgtm:
+    image: grafana/otel-lgtm:latest
     restart: unless-stopped
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC
-      - "14269:14269"  # Admin / health
+      - "0:3000"    # Grafana UI (dynamic host port)
     environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - lgtm_data:/data
+      - ./deploy/observability/grafana/dashboards:/grafana/dashboards
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning/dashboards
     healthcheck:
-      # Jaeger exposes its health endpoint on port 14269 (admin HTTP). We
-      # can't rely on curl/wget inside the jaeger image, so we probe the TCP
-      # port with /dev/tcp (bash builtin) via sh -c; busybox sh supports it.
-      test: ["CMD-SHELL", "timeout 1 sh -c '</dev/tcp/localhost/14269' || exit 1"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 5s
+      timeout: 1s
+      retries: 30
+      start_period: 30s
     networks:
       - {{.ProjectName}}-net
 
 volumes:
   postgres_data:
+  go_mod_cache:
+  go_build_cache:
+  lgtm_data:
 
 networks:
   {{.ProjectName}}-net:

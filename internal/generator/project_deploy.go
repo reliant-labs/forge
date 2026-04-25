@@ -136,6 +136,29 @@ func (g *ProjectGenerator) generateEnvExample() error {
 	return os.WriteFile(destPath, []byte(sb.String()), 0644)
 }
 
+func (g *ProjectGenerator) generateAlloyConfig() error {
+	port := g.ServicePort
+	if port == 0 {
+		port = 8080
+	}
+	data := struct {
+		ProjectName string
+		Services    []ServiceInfo
+	}{
+		ProjectName: g.Name,
+		Services:    []ServiceInfo{{Name: "app", Port: port}},
+	}
+	content, err := templates.ProjectTemplates.Render("alloy-config.alloy.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render alloy-config.alloy: %w", err)
+	}
+	destPath := filepath.Join(g.Path, "deploy", "alloy-config.alloy")
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(destPath, content, 0644)
+}
+
 func (g *ProjectGenerator) generateDockerCompose() error {
 	data := struct {
 		ProjectName string

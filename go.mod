@@ -2,12 +2,9 @@ module github.com/reliant-labs/forge
 
 go 1.26.2
 
-replace github.com/reliant-labs/forge/gen/forge/options => ./gen/forge
-
 replace github.com/reliant-labs/forge/pkg => ./pkg
 
 require (
-	github.com/bufbuild/protocompile v0.14.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-delve/delve v1.26.1
 	github.com/jackc/pgx/v5 v5.9.1

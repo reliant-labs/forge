@@ -196,8 +196,8 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if strings.Contains(loggingMiddleware, "log.Printf") {
 		t.Fatalf("middleware/logging.go should use slog, not log.Printf, got:\n%s", loggingMiddleware)
 	}
-	if !strings.Contains(loggingMiddleware, ".logger.LogAttrs") {
-		t.Fatalf("middleware/logging.go should use injected logger.LogAttrs, got:\n%s", loggingMiddleware)
+	if !strings.Contains(loggingMiddleware, "LogRequestCompleted") {
+		t.Fatalf("middleware/logging.go should use typed log event helpers, got:\n%s", loggingMiddleware)
 	}
 	recoveryMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "recovery.go"))
 	if strings.Contains(recoveryMiddleware, "log.Printf") {
@@ -457,6 +457,17 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 	}
 	if !strings.Contains(stub, ".reliant/reliant-forge.md") {
 		t.Fatalf("expected reliant.md to point at .reliant/reliant-forge.md, got:\n%s", stub)
+	}
+
+	// The user-owned .reliant/reliant.md project memory file.
+	reliantMemoryPath := filepath.Join(root, ".reliant", "reliant.md")
+	assertPathExists(t, reliantMemoryPath)
+	reliantMemory := readFile(t, reliantMemoryPath)
+	if !strings.Contains(reliantMemory, "# memory-app") {
+		t.Fatalf("expected .reliant/reliant.md to contain project name heading, got:\n%s", reliantMemory)
+	}
+	if !strings.Contains(reliantMemory, "has not launched yet") {
+		t.Fatalf("expected .reliant/reliant.md to contain launch notice, got:\n%s", reliantMemory)
 	}
 
 	// The forge-owned conventions file lives under .reliant/ and must be

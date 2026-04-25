@@ -119,6 +119,18 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"frontends/web/go.mod",
 		"frontends/web/buf.gen.yaml",
 
+		// Core UI components — installed during scaffold.
+		"frontends/web/src/components/ui/sidebar_layout.tsx",
+		"frontends/web/src/components/ui/page_header.tsx",
+		"frontends/web/src/components/ui/badge.tsx",
+		"frontends/web/src/components/ui/modal.tsx",
+		"frontends/web/src/components/ui/skeleton_loader.tsx",
+		"frontends/web/src/components/ui/pagination.tsx",
+		"frontends/web/src/components/ui/search_input.tsx",
+		"frontends/web/src/components/ui/alert_banner.tsx",
+		"frontends/web/src/components/ui/toast_notification.tsx",
+		"frontends/web/src/components/ui/key_value_list.tsx",
+
 		// CI workflows.
 		".github/workflows/ci.yml",
 		".github/workflows/build-images.yml",
@@ -199,6 +211,13 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 			frontendBufGen)
 	}
 	assertIncludeImportsPlacement(t, frontendBufGen)
+
+	frontendLayout := readFileE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "app", "layout.tsx"))
+	// Component library integration: layout must import SidebarLayout.
+	if !strings.Contains(frontendLayout, "SidebarLayout") {
+		t.Errorf("frontends/web/src/app/layout.tsx must import SidebarLayout; got:\n%s",
+			excerpt(frontendLayout, "import", 400))
+	}
 
 	gitignore := readFileE2E(t, filepath.Join(projectDir, ".gitignore"))
 	// Past bug: `.gitignore` ignored `cmd/*.go` because those were

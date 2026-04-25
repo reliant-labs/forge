@@ -59,6 +59,11 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		return fmt.Errorf("failed to write skills: %w", err)
 	}
 
+	// User-owned .reliant/reliant.md — project memory file. Write only if absent.
+	if err := writeIfAbsent(filepath.Join(reliantDir, "reliant.md"), "reliant-reliant.md.tmpl", templateData); err != nil {
+		return fmt.Errorf("failed to write .reliant/reliant.md: %w", err)
+	}
+
 	// User-owned top-level memory file — write only if absent.
 	if err := writeIfAbsent(filepath.Join(g.Path, "reliant.md"), "reliant.md.tmpl", templateData); err != nil {
 		return fmt.Errorf("failed to write reliant.md: %w", err)
@@ -208,6 +213,8 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		{"middleware-idempotency_test.go", "idempotency_test.go"},
 		{"middleware-redact.go", "redact.go"},
 		{"middleware-redact_test.go", "redact_test.go"},
+		{"middleware-logevents.go", "logevents.go"},
+		{"middleware-trace-handler.go", "trace_handler.go"},
 	}
 
 	for _, f := range middlewareFiles {

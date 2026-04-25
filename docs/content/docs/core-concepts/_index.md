@@ -7,56 +7,79 @@ icon: "lightbulb"
 
 # Core Concepts
 
-Forge is built on a set of core principles that guide its design and usage. Understanding these concepts is essential to getting the most out of the framework.
+Forge generates production infrastructure in layers. Understanding these layers is essential to getting the most out of the framework.
 
-## Two Contract Systems
+## Forge's Layered Architecture
 
-### Proto Contracts for External Boundaries
+### API Layer — Proto → Connect RPC
 
-In Forge, **proto files are the source of truth for external service contracts**. This means:
+Proto defines your **external API surface**: service RPCs, request/response messages, and configuration schemas. Forge uses proto to generate Connect RPC stubs, typed Go clients, and frontend TypeScript hooks.
 
-1. **Define services in proto first**
+1. **Define RPCs in proto**
    ```protobuf
    service UserService {
      rpc GetUser(GetUserRequest) returns (User);
    }
    ```
 
-2. **Generate code from proto**
+2. **Generate API infrastructure**
    ```bash
    forge generate
    ```
 
-3. **Implement the generated interface**
+3. **Implement business logic**
    ```go
    func (s *Service) GetUser(ctx context.Context, req *connect.Request[...]) (*connect.Response[...], error) {
        // Your business logic
    }
    ```
 
-### Go Interface Contracts for Internal Boundaries
+Proto drives API types and frontend codegen. It does not control your database schema — that's the data layer's job.
 
-Internal packages use Go interfaces defined in `contract.go`:
+### Infrastructure Layer — Forge's Core Value
 
-1. **Define the interface**
-   ```go
-   // internal/email/contract.go
-   type Contract interface {
-       Send(ctx context.Context, to, subject, body string) error
-   }
-   ```
+This is what Forge actually generates and maintains for you:
 
-2. **Implement the interface**
-   ```go
-   // internal/email/service.go
-   type Service struct { ... }
-   func (s *Service) Send(ctx context.Context, to, subject, body string) error { ... }
-   ```
+- **Middleware stack** — auth, logging, tracing, recovery, wired automatically
+- **Dependency wiring** — `pkg/app/wire.go` with explicit construction, no `init()` or registries
+- **Test harness** — `NewTestXxx` helpers with mock dependencies
+- **Mocks and middleware wrappers** — generated from both proto services and Go interfaces
+- **CI/CD pipelines** — GitHub Actions for test, build, and deploy
+- **Docker and Kubernetes** — multi-stage Dockerfile, KCL manifests, k3d local clusters
+- **Observability** — structured logging, tracing hooks, health checks
 
-3. **Generate mocks and middleware**
-   ```bash
-   forge generate
-   ```
+Running `forge generate` regenerates this infrastructure. It never touches your business logic, database schema, or ORM code.
+
+### Data Layer — Migrations Own the Schema
+
+The database layer evolves independently from the API:
+
+- **SQL migrations** in `db/migrations/` are the source of truth for schema
+- **Entity types** in `internal/db/types.go` start as proto type aliases for convenience
+- **ORM functions** in `internal/db/<entity>_orm.go` provide CRUD operations
+- **sqlc** generates type-safe Go from hand-written SQL for complex queries
+
+When your DB schema diverges from your API types (and it will), you replace the proto alias with a concrete struct and add mapper functions. The data layer is developer-owned — `forge generate` does not touch it.
+
+### Contract Layer — Two Systems, Two Boundaries
+
+External and internal boundaries have different needs, so Forge uses two contract systems:
+
+**Proto contracts** for external boundaries:
+```protobuf
+// proto/services/users/v1/users.proto
+service UsersService {
+  rpc GetUser(GetUserRequest) returns (User);
+}
+```
+
+**Go interface contracts** for internal boundaries:
+```go
+// internal/email/contract.go
+type Contract interface {
+    Send(ctx context.Context, to, subject, body string) error
+}
+```
 
 ### Why Two Systems?
 
@@ -78,8 +101,6 @@ proto/
 │   └── user/
 │       └── v1/
 │           └── service.proto
-└── db/            # Database entities (deprecated, ORM-owned)
-    └── models.proto
 ```
 
 ## Single Binary Design

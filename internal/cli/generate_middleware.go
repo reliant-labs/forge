@@ -28,9 +28,17 @@ func generateAuthMiddleware(cfg *config.ProjectConfig, services []codegen.Servic
 	}
 
 	// Build the skip list from proto method options.
-	// Methods annotated with auth_required: false in proto options are skipped.
-	// For now we use an empty list — proto option parsing can be added later.
+	// Methods where auth_required is not set (false) get their full procedure
+	// name added so the auth interceptor skips them.
 	var skipMethods []string
+	for _, svc := range services {
+		for _, m := range svc.Methods {
+			if !m.AuthRequired {
+				procedure := fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name)
+				skipMethods = append(skipMethods, procedure)
+			}
+		}
+	}
 
 	if err := codegen.GenerateAuthMiddleware(&cfg.Auth, modPath, skipMethods, projectDir); err != nil {
 		return err
@@ -136,23 +144,30 @@ func generateInternalPackageContracts(projectDir string) error {
 
 // generateConfigLoader parses proto/config/ for config protos with
 // ConfigFieldOptions annotations and generates pkg/config/config.go.
-func generateConfigLoader(projectDir string) error {
+func generateConfigLoader(projectDir string) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
 	if err != nil {
-		return fmt.Errorf("failed to parse config protos: %w", err)
+		return nil, fmt.Errorf("failed to parse config protos: %w", err)
 	}
 
 	if len(messages) == 0 {
 		fmt.Println("  ℹ️  No config fields with config_field annotations found")
-		return nil
+		return nil, nil
 	}
 
 	if err := codegen.GenerateConfigLoader(messages, projectDir); err != nil {
-		return fmt.Errorf("failed to generate config loader: %w", err)
+		return nil, fmt.Errorf("failed to generate config loader: %w", err)
 	}
 
 	fmt.Println("  ✅ Generated pkg/config/config.go")
-	return nil
+
+	// Re-render cmd/server.go so it stays in sync with the config fields.
+	if err := codegen.GenerateCmdServer(messages, projectDir); err != nil {
+		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
+	}
+
+	fmt.Println("  ✅ Regenerated cmd/server.go")
+	return codegen.ConfigFieldNamesFromMessages(messages), nil
 }

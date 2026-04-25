@@ -30,18 +30,11 @@ RUN go mod download
 COPY . .
 
 # Build with optimizations.
-# -trimpath removes the host build directory from the embedded GOROOT/module
-# paths so the binary is reproducible across machines.
-# -buildvcs=true keeps the VCS stamp (commit, dirty flag) in the runtime
-# debug/buildinfo output so operators can correlate a running binary to a
-# source commit without a separate build manifest.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /app/bin/{{.Name}} ./cmd
 
-# Debug build — full symbols, no inlining. We keep -trimpath and -buildvcs
-# for parity with the release build so delve sessions reflect the same
-# source layout and version stamp as production.
+# Debug build — full symbols, no inlining.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd
@@ -50,6 +43,21 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     go install github.com/go-delve/delve/cmd/dlv@latest
+
+# ── Dev stage (hot-reload with Air) ──
+FROM golang:{{.DockerBuilderGoVersion}}-alpine AS dev
+
+RUN apk add --no-cache git
+RUN go install github.com/air-verse/air@latest
+
+WORKDIR /app
+
+# Source is volume-mounted at /app by docker-compose.
+# Air watches for changes and rebuilds inside the container.
+
+EXPOSE 8080 6060
+
+CMD ["air", "-c", ".air.toml"]
 
 # ── Debug stage (use with: docker build --target debug) ──
 FROM alpine:3.21 AS debug
@@ -60,11 +68,13 @@ WORKDIR /app
 
 COPY --from=builder /app/bin/{{.Name}}-debug ./{{.Name}}
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
+COPY config/ ./config/
 
-EXPOSE {{.ServicePort}} 2345
+EXPOSE 8080 2345
 
-# Delve headless server — IDEs connect on :2345
-CMD ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./{{.Name}}", "--", "server"]
+# Delve headless server — waits for IDE to attach before running.
+# No --continue: the process is paused until a debugger connects.
+CMD ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "./{{.Name}}", "--", "server"]
 
 # ── Production stage (default) ──
 FROM alpine:3.21 AS production
@@ -73,15 +83,14 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-# Copy binary from builder
 COPY --from=builder /app/bin/{{.Name}} .
+COPY config/ ./config/
 
-# Use non-root user
 USER 65532:65532
 
-EXPOSE {{.ServicePort}}
+EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT:-8080}/healthz || exit 1
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
 
 CMD ["./{{.Name}}", "server"]

@@ -150,6 +150,23 @@ func TestGenerateCRUDHandlers_SkipsExistingMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Write a service.go with Deps struct containing DB field
+	serviceGo := `package patients
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	// Write a handlers.go that already implements CreatePatient
 	handlersGo := `package patients
 
@@ -383,7 +400,7 @@ func TestGenerateCRUDTests_BasicGeneration(t *testing.T) {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
-	genPath := filepath.Join(handlerDir, "handlers_crud_test_gen.go")
+	genPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
 	data, err := os.ReadFile(genPath)
 	if err != nil {
 		t.Fatalf("generated test file not found: %v", err)
@@ -477,7 +494,7 @@ func TestGenerateCRUDTests_PartialCRUD(t *testing.T) {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
-	genPath := filepath.Join(handlerDir, "handlers_crud_test_gen.go")
+	genPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
 	data, err := os.ReadFile(genPath)
 	if err != nil {
 		t.Fatalf("generated test file not found: %v", err)
@@ -512,7 +529,7 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 	}
 
 	// Create a stale test gen file
-	genPath := filepath.Join(handlerDir, "handlers_crud_test_gen.go")
+	genPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
 	if err := os.WriteFile(genPath, []byte("package patients_test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +543,7 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 
 	// Stale file should be removed
 	if _, err := os.Stat(genPath); !os.IsNotExist(err) {
-		t.Error("stale handlers_crud_test_gen.go should have been removed")
+		t.Error("stale handlers_crud_gen_test.go should have been removed")
 	}
 }
 
@@ -544,7 +561,20 @@ func TestTestValueForType(t *testing.T) {
 		{"float64", "1.0"},
 		{"bool", "true"},
 		{"[]byte", `[]byte("test")`},
-		{"SomeCustomType", `"test-value"`},
+		{"*timestamppb.Timestamp", "timestamppb.Now()"},
+		// Wrapper types
+		{"*string", `wrapperspb.String("test-value")`},
+		{"*int32", "wrapperspb.Int32(42)"},
+		{"*int64", "wrapperspb.Int64(42)"},
+		{"*bool", "wrapperspb.Bool(true)"},
+		{"*float64", "wrapperspb.Double(1.0)"},
+		// Message/repeated/map types → nil
+		{"*SomeMessage", "nil"},
+		{"[]string", "nil"},
+		{"[]*SomeMessage", "nil"},
+		{"map[string]string", "nil"},
+		// Enum-like types (bare identifier) → 0
+		{"SomeCustomType", "0"},
 	}
 
 	for _, tt := range tests {
@@ -618,6 +648,262 @@ func TestBuildCRUDTestTemplateData(t *testing.T) {
 	}
 	if len(data.CRUDMethods) != 5 {
 		t.Errorf("expected 5 CRUDMethods, got %d", len(data.CRUDMethods))
+	}
+}
+
+func TestClassifyFilterField(t *testing.T) {
+	tests := []struct {
+		name       string
+		field      MessageFieldDef
+		wantType   string
+		wantGoName string
+	}{
+		{"search field", MessageFieldDef{Name: "search", ProtoType: "string"}, "search", "Search"},
+		{"query field", MessageFieldDef{Name: "query", ProtoType: "string"}, "search", "Query"},
+		{"q field", MessageFieldDef{Name: "q", ProtoType: "string"}, "search", "Q"},
+		{"bool field", MessageFieldDef{Name: "active", ProtoType: "bool"}, "exact", "Active"},
+		{"string field", MessageFieldDef{Name: "status", ProtoType: "string"}, "exact", "Status"},
+		{"int32 field", MessageFieldDef{Name: "age", ProtoType: "int32"}, "exact", "Age"},
+		{"optional field", MessageFieldDef{Name: "active", ProtoType: "bool", IsOptional: true}, "exact", "Active"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ff := classifyFilterField(tt.field)
+			if ff.FilterType != tt.wantType {
+				t.Errorf("FilterType = %q, want %q", ff.FilterType, tt.wantType)
+			}
+			if ff.GoName != tt.wantGoName {
+				t.Errorf("GoName = %q, want %q", ff.GoName, tt.wantGoName)
+			}
+			if ff.IsOptional != tt.field.IsOptional {
+				t.Errorf("IsOptional = %v, want %v", ff.IsOptional, tt.field.IsOptional)
+			}
+		})
+	}
+}
+
+func TestClassifySkipField(t *testing.T) {
+	skipFields := []string{"page_size", "page_token", "descending", "desc", "sort_order"}
+	for _, f := range skipFields {
+		if !classifySkipField(f) {
+			t.Errorf("expected %q to be skipped", f)
+		}
+	}
+
+	noSkipFields := []string{"search", "active", "status", "order_by"}
+	for _, f := range noSkipFields {
+		if classifySkipField(f) {
+			t.Errorf("expected %q to NOT be skipped", f)
+		}
+	}
+}
+
+func TestBuildCRUDTemplateData_WithFilters(t *testing.T) {
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Messages: map[string][]MessageFieldDef{
+			"ListPatientsRequest": {
+				{Name: "page_size", ProtoType: "int32"},
+				{Name: "page_token", ProtoType: "string"},
+				{Name: "active", ProtoType: "bool", IsOptional: true},
+				{Name: "search", ProtoType: "string", IsOptional: true},
+				{Name: "status", ProtoType: "string"},
+				{Name: "order_by", ProtoType: "string"},
+				{Name: "descending", ProtoType: "bool"},
+			},
+		},
+	}
+
+	crudMethods := []CRUDMethod{
+		{
+			Method:    MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+			Entity:    EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}}},
+			Operation: "list",
+		},
+	}
+
+	data := buildCRUDTemplateData(svc, crudMethods, "example.com/test")
+
+	if !data.NeedsORM {
+		t.Error("expected NeedsORM=true")
+	}
+	if !data.HasFilters {
+		t.Error("expected HasFilters=true")
+	}
+	if !data.HasOrderBy {
+		t.Error("expected HasOrderBy=true")
+	}
+	if len(data.CRUDMethods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(data.CRUDMethods))
+	}
+
+	m := data.CRUDMethods[0]
+	if !m.HasFilters {
+		t.Error("expected method HasFilters=true")
+	}
+	if !m.HasOrderBy {
+		t.Error("expected method HasOrderBy=true")
+	}
+	if len(m.FilterFields) != 3 {
+		t.Fatalf("expected 3 filter fields, got %d", len(m.FilterFields))
+	}
+
+	// Check filter field classification
+	expected := []struct {
+		goName     string
+		filterType string
+		isOptional bool
+	}{
+		{"Active", "exact", true},
+		{"Search", "search", true},
+		{"Status", "exact", false},
+	}
+	for i, exp := range expected {
+		ff := m.FilterFields[i]
+		if ff.GoName != exp.goName {
+			t.Errorf("filter[%d].GoName = %q, want %q", i, ff.GoName, exp.goName)
+		}
+		if ff.FilterType != exp.filterType {
+			t.Errorf("filter[%d].FilterType = %q, want %q", i, ff.FilterType, exp.filterType)
+		}
+		if ff.IsOptional != exp.isOptional {
+			t.Errorf("filter[%d].IsOptional = %v, want %v", i, ff.IsOptional, exp.isOptional)
+		}
+	}
+}
+
+func TestGenerateCRUDHandlers_WithFilters(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a service.go with Deps struct containing DB field
+	serviceGo := `package patients
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			"ListPatientsRequest": {
+				{Name: "page_size", ProtoType: "int32"},
+				{Name: "page_token", ProtoType: "string"},
+				{Name: "active", ProtoType: "bool", IsOptional: true},
+				{Name: "search", ProtoType: "string", IsOptional: true},
+				{Name: "order_by", ProtoType: "string"},
+				{Name: "descending", ProtoType: "bool"},
+			},
+		},
+	}
+
+	entities := []EntityDef{{
+		Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64",
+		Fields: []EntityField{
+			{Name: "id", GoName: "ID", GoType: "int64"},
+			{Name: "name", GoName: "Name", GoType: "string"},
+		},
+	}}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+
+	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir)
+	if err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	genPath := filepath.Join(handlerDir, "handlers_crud_gen.go")
+	data, err := os.ReadFile(genPath)
+	if err != nil {
+		t.Fatalf("generated file not found: %v", err)
+	}
+
+	content := string(data)
+
+	// Should contain orm import
+	if !contains(content, "pkg/orm") {
+		t.Error("expected orm import in generated output")
+	}
+
+	// Should contain filter logic
+	if !contains(content, "WhereILike") {
+		t.Error("expected WhereILike for search filter")
+	}
+	if !contains(content, "WhereEq") {
+		t.Error("expected WhereEq for exact filter")
+	}
+
+	// Should contain ordering logic
+	if !contains(content, "ValidateOrderBy") {
+		t.Error("expected ValidateOrderBy for ordering")
+	}
+	if !contains(content, "req.Msg.OrderBy") {
+		t.Error("expected req.Msg.OrderBy in generated output")
+	}
+	if !contains(content, "req.Msg.Descending") {
+		t.Error("expected req.Msg.Descending in generated output")
+	}
+
+	// Should contain filter nil check for optional fields
+	if !contains(content, "req.Msg.Active != nil") {
+		t.Error("expected nil check for optional Active filter")
+	}
+	if !contains(content, "req.Msg.Search != nil") {
+		t.Error("expected nil check for optional Search filter")
+	}
+}
+
+func TestBuildCRUDTemplateData_NoFilters(t *testing.T) {
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		// No Messages — simulates no proto message field parsing
+	}
+
+	crudMethods := []CRUDMethod{
+		{
+			Method:    MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+			Entity:    EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}}},
+			Operation: "list",
+		},
+	}
+
+	data := buildCRUDTemplateData(svc, crudMethods, "example.com/test")
+
+	m := data.CRUDMethods[0]
+	if m.HasFilters {
+		t.Error("expected HasFilters=false when no Messages")
+	}
+	if m.HasOrderBy {
+		t.Error("expected HasOrderBy=false when no Messages")
+	}
+	if !m.HasPagination {
+		t.Error("expected HasPagination=true (AIP-158 naming)")
 	}
 }
 

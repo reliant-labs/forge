@@ -10,7 +10,7 @@ import (
 )
 
 // generateBootstrap regenerates pkg/app/bootstrap.go with explicit service construction.
-func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string) error {
+func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool) error {
 	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
 
 	workers := discoverWorkers(projectDir)
@@ -23,7 +23,7 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 	packages := discoverPackages(projectDir)
 
 	hasDatabase := databaseDriver != ""
-	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir); err != nil {
+	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir, configFields); err != nil {
 		return fmt.Errorf("failed to generate bootstrap: %w", err)
 	}
 

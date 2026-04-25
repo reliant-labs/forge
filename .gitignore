@@ -24,9 +24,6 @@ dist/
 build/
 bin/
 
-# Generated code
-gen/
-
 # Buf lock file
 buf.lock
 
@@ -54,7 +51,6 @@ Thumbs.db
 .env.*.local
 
 # Debug files
-debug
 __debug_bin*
 
 # Temporary files

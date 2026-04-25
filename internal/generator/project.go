@@ -69,7 +69,8 @@ func (g *ProjectGenerator) Generate() error {
 		"proto/db",
 		"proto/config/v1",
 		"proto/forge",
-		"proto/forge/options/v1",
+		"proto/forge/v1",
+
 		"handlers",
 		"handlers/mocks",
 		"gen",
@@ -152,6 +153,7 @@ func (g *ProjectGenerator) Generate() error {
 		GoVersion              string
 		GoVersionMinor         string
 		DockerBuilderGoVersion string
+		ConfigFields           map[string]bool
 	}{
 		Name:                   g.Name,
 		ProtoName:              protoName,
@@ -164,9 +166,10 @@ func (g *ProjectGenerator) Generate() error {
 		GoVersion:              goVersion,
 		GoVersionMinor:         goVersionMinor(goVersion),
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
+		ConfigFields:           codegen.DefaultConfigFieldNames(),
 	}
 
-	if err := g.copyforgeProtos(); err != nil {
+	if err := g.copyForgeV1Proto(); err != nil {
 		return err
 	}
 	if g.ServiceName != "" {
@@ -317,29 +320,9 @@ func (g *ProjectGenerator) Generate() error {
 	return nil
 }
 
-// copyforgeProtos copies the versioned options protos used by newly generated projects.
-func (g *ProjectGenerator) copyforgeProtos() error {
-	v1Dir := filepath.Join(g.Path, "proto", "forge", "options", "v1")
-	protos, err := assets.GetForgeOptionsV1Protos()
-	if err != nil {
-		return fmt.Errorf("failed to load v1 options protos: %w", err)
-	}
-
-	oldGoPackage := `option go_package = "github.com/reliant-labs/forge/gen/forge/options/v1;optionsv1";`
-	newGoPackage := fmt.Sprintf(`option go_package = "%s/gen/forge/options/v1;optionsv1";`, g.ModulePath)
-
-	for name, content := range protos {
-		adjustedContent := strings.Replace(string(content), oldGoPackage, newGoPackage, 1)
-		destPath := filepath.Join(v1Dir, name)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return fmt.Errorf("failed to create options proto directory: %w", err)
-		}
-		if err := os.WriteFile(destPath, []byte(adjustedContent), 0o644); err != nil {
-			return fmt.Errorf("failed to write v1 options proto %s: %w", name, err)
-		}
-	}
-
-	return nil
+func (g *ProjectGenerator) copyForgeV1Proto() error {
+	v1Dir := filepath.Join(g.Path, "proto", "forge", "v1")
+	return assets.WriteForgeV1Proto(v1Dir, g.ModulePath)
 }
 
 func (g *ProjectGenerator) createConfigProto(data interface{}) error {

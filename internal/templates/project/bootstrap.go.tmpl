@@ -230,7 +230,11 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 	// a WARN at startup when it is active. Production is fail-closed by default.
 	svcs := &Services{}
 {{- if .Services}}
+{{- if index .ConfigFields "Environment"}}
 	devMode := cfg.Environment == "development"
+{{- else}}
+	devMode := false
+{{- end}}
 {{- end}}
 {{- range .Services}}
 	var {{.Package}}Authz middleware.Authorizer = {{.Package}}.NewAuthorizer()
@@ -375,7 +379,11 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 	// Production is fail-closed by default.
 	svcs := &Services{}
 {{- if .Services}}
+{{- if index .ConfigFields "Environment"}}
 	devMode := cfg.Environment == "development"
+{{- else}}
+	devMode := false
+{{- end}}
 {{- end}}
 {{- range .Services}}
 	var {{.Package}}Authz middleware.Authorizer = {{.Package}}.NewAuthorizer()

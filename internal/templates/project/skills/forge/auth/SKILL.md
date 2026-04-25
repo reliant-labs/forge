@@ -71,9 +71,8 @@ Annotate RPC methods with `required_roles` in your proto:
 
 ```proto
 rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
-  option (forge.options.v1.method_options) = {
+  option (forge.v1.method) = {
     auth_required: true
-    required_roles: ["admin", "editor"]
   };
 }
 ```
@@ -107,7 +106,7 @@ Run `forge generate` after changing this config.
 | `user_id` / `sub` | `claims.UserID` |
 | `email` | `claims.Email` |
 
-When multi-tenant is enabled, entities with a `tenant_key` field (`org_id` or `tenant_id` column) are automatically scoped — generated CRUD handlers include `WHERE org_id = $tenantID` in every query. No annotation needed; the field name convention is sufficient.
+When multi-tenant is enabled, entities with a field explicitly marked `tenant_key: true` in the plan are automatically scoped — generated CRUD handlers include `WHERE <tenant_col> = $tenantID` in every query. The `tenant_key` must be set explicitly; field names like `org_id` or `tenant_id` are NOT auto-detected.
 
 ## Testing Auth
 

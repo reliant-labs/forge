@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/components"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -75,5 +76,72 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 		return fmt.Errorf("write frontend go.mod: %w", err)
 	}
 
+	// Install core UI components from the component library.
+	if err := installCoreComponents(frontendDir); err != nil {
+		return fmt.Errorf("install core components: %w", err)
+	}
+
+	return nil
+}
+
+// coreComponents lists the components automatically installed during scaffold.
+var coreComponents = []string{
+	"sidebar_layout",
+	"page_header",
+	"badge",
+	"modal",
+	"skeleton_loader",
+	"pagination",
+	"search_input",
+	"alert_banner",
+	"toast_notification",
+	"key_value_list",
+}
+
+// installCoreComponents writes core UI components from the component library
+// into the frontend's src/components/ui/ directory.
+func installCoreComponents(frontendDir string) error {
+	lib := components.NewLibrary()
+	componentsDir := filepath.Join(frontendDir, "src", "components", "ui")
+	if err := os.MkdirAll(componentsDir, 0755); err != nil {
+		return fmt.Errorf("create components dir: %w", err)
+	}
+
+	for _, name := range coreComponents {
+		content, err := lib.Get(name)
+		if err != nil {
+			return fmt.Errorf("get component %s: %w", name, err)
+		}
+		dest := filepath.Join(componentsDir, name+".tsx")
+		if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write component %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// EnsureCoreComponents installs any missing core components into an existing
+// frontend directory. Safe to call repeatedly — only writes files that don't
+// already exist.
+func EnsureCoreComponents(frontendDir string) error {
+	lib := components.NewLibrary()
+	componentsDir := filepath.Join(frontendDir, "src", "components", "ui")
+	if err := os.MkdirAll(componentsDir, 0755); err != nil {
+		return fmt.Errorf("create components dir: %w", err)
+	}
+
+	for _, name := range coreComponents {
+		dest := filepath.Join(componentsDir, name+".tsx")
+		if _, err := os.Stat(dest); err == nil {
+			continue // already exists
+		}
+		content, err := lib.Get(name)
+		if err != nil {
+			return fmt.Errorf("get component %s: %w", name, err)
+		}
+		if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write component %s: %w", name, err)
+		}
+	}
 	return nil
 }

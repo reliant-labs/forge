@@ -3,14 +3,15 @@
 
 import { useMutation, useQuery, type UseQueryOptions, type UseMutationOptions } from "@tanstack/react-query";
 import { connectClient } from "@/lib/connect";
-import { {{.ServiceName}} } from "@/gen/{{.ImportPath}}";
-import type { {{range $i, $m := .Methods}}{{if $i}}, {{end}}{{$m.InputType}}, {{$m.OutputType}}{{end}} } from "@/gen/{{.ImportPath}}";
+import { {{.ServiceName}}, {{range $i, $m := .Methods}}{{if $i}}, {{end}}{{$m.InputType}}Schema{{end}} } from "@/gen/{{.ImportPath}}";
+import type { {{range $i, $m := .Methods}}{{if $i}}, {{end}}{{$m.OutputType}}{{end}} } from "@/gen/{{.ImportPath}}";
+import type { MessageInitShape } from "@bufbuild/protobuf";
 
 const client = connectClient({{.ServiceName}});
 {{range .Methods}}
 {{- if .IsQuery}}
 
-export function use{{.Name}}(req: {{.InputType}}, options?: Partial<UseQueryOptions<{{.OutputType}}>>) {
+export function use{{.Name}}(req: MessageInitShape<typeof {{.InputType}}Schema>, options?: Partial<UseQueryOptions<{{.OutputType}}>>) {
   return useQuery({
     queryKey: ["{{$.ServiceNameCamel}}", "{{.NameCamel}}", req],
     queryFn: () => client.{{.NameCamel}}(req),
@@ -19,9 +20,9 @@ export function use{{.Name}}(req: {{.InputType}}, options?: Partial<UseQueryOpti
 }
 {{- else}}
 
-export function use{{.Name}}(options?: Partial<UseMutationOptions<{{.OutputType}}, Error, {{.InputType}}>>) {
+export function use{{.Name}}(options?: Partial<UseMutationOptions<{{.OutputType}}, Error, MessageInitShape<typeof {{.InputType}}Schema>>>) {
   return useMutation({
-    mutationFn: (req: {{.InputType}}) => client.{{.NameCamel}}(req),
+    mutationFn: (req: MessageInitShape<typeof {{.InputType}}Schema>) => client.{{.NameCamel}}(req),
     ...options,
   });
 }

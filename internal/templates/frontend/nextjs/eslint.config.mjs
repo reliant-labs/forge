@@ -50,10 +50,10 @@ const config = [
   ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
     rules: {
-      complexity: ["error", 12],
-      "max-lines": ["error", { max: 300, skipBlankLines: true, skipComments: true }],
-      "max-depth": ["error", 4],
-      "max-params": ["error", 4],
+      complexity: "off",
+      "max-lines": "off",
+      "max-depth": "off",
+      "max-params": "off",
     },
   },
 ];

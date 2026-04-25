@@ -3,6 +3,7 @@ package {{.Package}}
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
-	dbv1 "{{.DBPackagePath}}"
+	"{{.Module}}/internal/db"
 	"{{.Module}}/pkg/middleware"
 {{- if .NeedsORM}}
 	"github.com/reliant-labs/forge/pkg/orm"
@@ -24,6 +25,7 @@ var (
 	_ = middleware.ActionCreate
 	_ = time.Now
 	_ = timestamppb.Now
+	_ = base64.RawURLEncoding
 )
 
 {{- range .CRUDMethods}}
@@ -52,22 +54,30 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 
-	entity := &dbv1.{{.EntityName}}{
+	entity := &db.{{.EntityName}}{
 {{- range .CreateFields}}
+{{- if eq .Kind "scalar" "timestamp"}}
 		{{.EntityGoName}}: req.Msg.{{.ProtoGoName}},
+{{- else if eq .Kind "enum"}}
+		{{.EntityGoName}}: req.Msg.{{.ProtoGoName}},
+{{- else if eq .Kind "wrapper"}}
+		{{.EntityGoName}}: req.Msg.Get{{.ProtoGoName}}(),
+{{- else}}
+		// TODO: {{.ProtoGoName}} ({{.Kind}}) requires custom mapping
+{{- end}}
 {{- end}}
 	}
 
 {{- if .HasTenant}}
-	if err := dbv1.Create{{.EntityName}}(ctx, s.deps.DB, entity, tenantID); err != nil {
+	if err := db.Create{{.EntityName}}(ctx, s.deps.DB, entity, tenantID); err != nil {
 {{- else}}
-	if err := dbv1.Create{{.EntityName}}(ctx, s.deps.DB, entity); err != nil {
+	if err := db.Create{{.EntityName}}(ctx, s.deps.DB, entity); err != nil {
 {{- end}}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create {{.EntityLower}}: %w", err))
 	}
 
 	return connect.NewResponse(&pb.{{.OutputType}}{
-		{{.ResponseField}}: {{.EntityLower | lower}}ToProto(entity),
+		{{.ResponseField}}: entity,
 	}), nil
 }
 {{- end}}
@@ -97,16 +107,16 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 
 {{- if .HasTenant}}
-	result, err := dbv1.Get{{.EntityName}}ByID(ctx, s.deps.DB, req.Msg.{{.PkField}}, tenantID)
+	result, err := db.Get{{.EntityName}}ByID(ctx, s.deps.DB, req.Msg.{{.PkField}}, tenantID)
 {{- else}}
-	result, err := dbv1.Get{{.EntityName}}ByID(ctx, s.deps.DB, req.Msg.{{.PkField}})
+	result, err := db.Get{{.EntityName}}ByID(ctx, s.deps.DB, req.Msg.{{.PkField}})
 {{- end}}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("get {{.EntityLower}}: %w", err))
 	}
 
 	return connect.NewResponse(&pb.{{.OutputType}}{
-		{{.ResponseField}}: {{.EntityLower | lower}}ToProto(result),
+		{{.ResponseField}}: result,
 	}), nil
 }
 {{- end}}
@@ -151,10 +161,11 @@ func (s *Service) {{.MethodName}}(
 	opts = append(opts, orm.WithLimit(pageSize+1)) // fetch one extra to detect next page
 
 	if req.Msg.PageToken != "" {
-		cursor, err := orm.DecodeCursor(req.Msg.PageToken)
+		cursorBytes, err := base64.RawURLEncoding.DecodeString(req.Msg.PageToken)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid page token"))
 		}
+		cursor := string(cursorBytes)
 		opts = append(opts, orm.WithWhere("{{.PkColumnName}}", orm.GreaterThan, cursor))
 	}
 {{- if not .HasOrderBy}}
@@ -214,41 +225,33 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 
 {{- if and .HasTenant (or .HasPagination .HasFilters .HasOrderBy)}}
-	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB, tenantID, opts...)
+	results, err := db.List{{.EntityName}}(ctx, s.deps.DB, tenantID, opts...)
 {{- else if .HasTenant}}
-	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB, tenantID)
+	results, err := db.List{{.EntityName}}(ctx, s.deps.DB, tenantID)
 {{- else if or .HasPagination .HasFilters .HasOrderBy}}
-	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+	results, err := db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
 {{- else}}
-	results, err := dbv1.List{{.EntityName}}(ctx, s.deps.DB)
+	results, err := db.List{{.EntityName}}(ctx, s.deps.DB)
 {{- end}}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list {{.EntityLower}}: %w", err))
 	}
 
-	var items []*pb.{{.EntityName}}
 {{- if .HasPagination}}
 	var nextPageToken string
 	if len(results) > pageSize {
 		results = results[:pageSize]
-		nextPageToken = orm.EncodeCursor(results[pageSize-1].{{.PkField}})
-	}
-
-	for _, e := range results {
-		items = append(items, {{.EntityLower | lower}}ToProto(e))
+		nextPageToken = base64.RawURLEncoding.EncodeToString([]byte(results[pageSize-1].{{.PkField}}))
 	}
 
 	return connect.NewResponse(&pb.{{.OutputType}}{
-		{{.ResponseField | plural}}: items,
+		{{.ResponseField | plural}}: results,
 		NextPageToken: nextPageToken,
 	}), nil
 {{- else}}
-	for _, e := range results {
-		items = append(items, {{.EntityLower | lower}}ToProto(e))
-	}
 
 	return connect.NewResponse(&pb.{{.OutputType}}{
-		{{.ResponseField | plural}}: items,
+		{{.ResponseField | plural}}: results,
 	}), nil
 {{- end}}
 }
@@ -292,20 +295,19 @@ func (s *Service) {{.MethodName}}(
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("update {{.EntityLower}}: {{.UpdateEntityField | lower}} is required"))
 	}
 
-	// TODO(fieldmask): respect req.Msg.UpdateMask. For now we write the
-	// entire resource as a baseline so the stub compiles.
-	entity := {{.EntityLower | lower}}FromProto(req.Msg.{{.UpdateEntityField}})
+	// req.Msg.{{.UpdateEntityField}} is already *pb.{{.EntityName}} which is *db.{{.EntityName}} via type alias.
+	entity := req.Msg.{{.UpdateEntityField}}
 
 {{- if .HasTenant}}
-	if err := dbv1.Update{{.EntityName}}(ctx, s.deps.DB, entity, tenantID); err != nil {
+	if err := db.Update{{.EntityName}}(ctx, s.deps.DB, entity, tenantID); err != nil {
 {{- else}}
-	if err := dbv1.Update{{.EntityName}}(ctx, s.deps.DB, entity); err != nil {
+	if err := db.Update{{.EntityName}}(ctx, s.deps.DB, entity); err != nil {
 {{- end}}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update {{.EntityLower}}: %w", err))
 	}
 
 	return connect.NewResponse(&pb.{{.OutputType}}{
-		{{.ResponseField}}: {{.EntityLower | lower}}ToProto(entity),
+		{{.ResponseField}}: entity,
 	}), nil
 }
 {{- end}}
@@ -335,56 +337,15 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 
 {{- if .HasTenant}}
-	if err := dbv1.Delete{{.EntityName}}(ctx, s.deps.DB, req.Msg.{{.PkField}}, tenantID); err != nil {
+	if err := db.Delete{{.EntityName}}(ctx, s.deps.DB, req.Msg.{{.PkField}}, tenantID); err != nil {
 {{- else}}
-	if err := dbv1.Delete{{.EntityName}}(ctx, s.deps.DB, req.Msg.{{.PkField}}); err != nil {
+	if err := db.Delete{{.EntityName}}(ctx, s.deps.DB, req.Msg.{{.PkField}}); err != nil {
 {{- end}}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete {{.EntityLower}}: %w", err))
 	}
 
-	return connect.NewResponse(&pb.{{.OutputType}}{
-		Id:        req.Msg.{{.PkField}},
-		DeletedAt: timestamppb.Now(),
-	}), nil
+	return connect.NewResponse(&pb.{{.OutputType}}{}), nil
 }
 {{- end}}
 
 {{- end}}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Proto ↔ Entity converters
-// ────────────────────────────────────────────────────────────────────────────
-
-{{range .Converters}}
-// {{.FuncPrefix}}ToProto converts an ORM entity to a proto message.
-func {{.FuncPrefix}}ToProto(e *dbv1.{{.EntityName}}) *pb.{{.EntityName}} {
-	if e == nil {
-		return nil
-	}
-	return &pb.{{.EntityName}}{
-{{- range .Fields}}
-{{- if .Skip}}
-		// {{.Comment}}
-{{- else}}
-		{{.ProtoName}}: e.{{.GoName}},
-{{- end}}
-{{- end}}
-	}
-}
-
-// {{.FuncPrefix}}FromProto converts a proto message to an ORM entity.
-func {{.FuncPrefix}}FromProto(p *pb.{{.EntityName}}) *dbv1.{{.EntityName}} {
-	if p == nil {
-		return nil
-	}
-	return &dbv1.{{.EntityName}}{
-{{- range .Fields}}
-{{- if .Skip}}
-		// {{.Comment}}
-{{- else}}
-		{{.GoName}}: p.{{.ProtoName}},
-{{- end}}
-{{- end}}
-	}
-}
-{{end}}

@@ -144,23 +144,30 @@ func generateInternalPackageContracts(projectDir string) error {
 
 // generateConfigLoader parses proto/config/ for config protos with
 // ConfigFieldOptions annotations and generates pkg/config/config.go.
-func generateConfigLoader(projectDir string) error {
+func generateConfigLoader(projectDir string) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
 	if err != nil {
-		return fmt.Errorf("failed to parse config protos: %w", err)
+		return nil, fmt.Errorf("failed to parse config protos: %w", err)
 	}
 
 	if len(messages) == 0 {
 		fmt.Println("  ℹ️  No config fields with config_field annotations found")
-		return nil
+		return nil, nil
 	}
 
 	if err := codegen.GenerateConfigLoader(messages, projectDir); err != nil {
-		return fmt.Errorf("failed to generate config loader: %w", err)
+		return nil, fmt.Errorf("failed to generate config loader: %w", err)
 	}
 
 	fmt.Println("  ✅ Generated pkg/config/config.go")
-	return nil
+
+	// Re-render cmd/server.go so it stays in sync with the config fields.
+	if err := codegen.GenerateCmdServer(messages, projectDir); err != nil {
+		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
+	}
+
+	fmt.Println("  ✅ Regenerated cmd/server.go")
+	return codegen.ConfigFieldNamesFromMessages(messages), nil
 }

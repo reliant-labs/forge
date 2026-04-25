@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -34,7 +36,7 @@ func newGenerateCmd() *cobra.Command {
 
 When forge.yaml exists, generation is driven by the config:
   - buf generate for Go stubs (protoc-gen-go + protoc-gen-connect-go)
-  - protoc-gen-forge-orm for entity protos in proto/db/
+  - protoc-gen-forge for entity protos in proto/db/
   - buf generate for TypeScript stubs for Next.js frontends
   - Service stubs and mocks for new services
   - pkg/app/bootstrap.go with explicit service bootstrapping
@@ -45,7 +47,7 @@ Without forge.yaml, falls back to directory convention scanning:
   proto/           - Root proto directory (for buf generate)
   proto/services/  - Service definitions (stubs + mocks)
   proto/api/       - API messages
-  proto/db/        - Database models (protoc-gen-forge-orm)
+  proto/db/        - Database models (protoc-gen-forge)
 
 Examples:
   forge generate              # Generate all code
@@ -157,6 +159,11 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		return fmt.Errorf("buf generate (Go) failed: %w", err)
 	}
 
+	// ── Step 1b: Descriptor extraction (services, entities, configs → forge_descriptor.json) ──
+	if err := runDescriptorGenerate(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: descriptor generation failed: %v\n", err)
+	}
+
 	// ── Step 2: ORM generation if proto/db/ exists ──
 	if hasDB {
 		if err := runOrmGenerate(projectDir); err != nil {
@@ -168,6 +175,23 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	if hasDB && !hasSQLMigrations(projectDir) {
 		if err := maybeGenerateInitialMigration(projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: initial migration generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 2c: Replace boilerplate migration with entity-aware migration ──
+	if hasServices {
+		entityDefs, parseErr := codegen.ParseEntityProtos(projectDir)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: entity proto parsing for migrations failed: %v\n", parseErr)
+		} else if len(entityDefs) > 0 && isBoilerplateMigration(projectDir) {
+			migDir := filepath.Join(projectDir, "db", "migrations")
+			removeBoilerplateMigrations(migDir)
+			planEntities := codegen.EntityDefsToPlanEntities(entityDefs)
+			if err := generator.GeneratePlanMigrations(projectDir, planEntities); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: entity migration generation failed: %v\n", err)
+			} else {
+				fmt.Printf("  ✅ Generated entity-aware migration (%d tables)\n", len(entityDefs))
+			}
 		}
 	}
 
@@ -183,9 +207,12 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 3b: Config loader generation from proto/config/ ──
+	var configFields map[string]bool
 	if hasConfig {
-		if err := generateConfigLoader(projectDir); err != nil {
-			return fmt.Errorf("config loader generation failed: %w", err)
+		var cfgErr error
+		configFields, cfgErr = generateConfigLoader(projectDir)
+		if cfgErr != nil {
+			return fmt.Errorf("config loader generation failed: %w", cfgErr)
 		}
 	}
 
@@ -219,17 +246,84 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		}
 	}
 
+	// ── Step 3c: Frontend React Query hooks for each service ──
+	if cfg != nil && hasServices && len(services) > 0 {
+		if err := generateFrontendHooks(cfg, services, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: frontend hooks generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 3d: Ensure core UI components are installed ──
+	if cfg != nil && len(cfg.Frontends) > 0 {
+		ensureFrontendComponents(cfg, projectDir)
+	}
+
+	// ── Step 3e: Frontend CRUD pages for each service ──
+	if cfg != nil && hasServices && len(services) > 0 {
+		if err := generateFrontendPages(cfg, services, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: frontend page generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 3f: Frontend nav and dashboard (re-render with entity data) ──
+	if cfg != nil && len(cfg.Frontends) > 0 {
+		if err := generateFrontendNav(cfg, services, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: frontend nav generation failed: %v\n", err)
+		}
+	}
+
 	// ── Step 4: Service stubs (non-destructive) ──
+	// Compute CRUD method names upfront so the stub generator can skip them.
+	// Entities may live in proto/db/ (legacy) or proto/services/ (new arch).
+	var crudMethodNames map[string]bool
 	if hasServices {
-		if err := generateServiceStubs(cfg, services, projectDir); err != nil {
+		crudMethodNames = collectCRUDMethodNames(services, projectDir)
+	}
+	if hasServices {
+		if err := generateServiceStubs(cfg, services, projectDir, crudMethodNames); err != nil {
 			return fmt.Errorf("service stub generation failed: %w", err)
 		}
 	}
 
+	// ── Step 4a: Generate internal/db/ (type aliases + ORM CRUD) ──
+	if hasServices {
+		entities, entErr := codegen.ParseEntityProtos(projectDir)
+		if entErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: entity parsing for ORM generation failed: %v\n", entErr)
+		} else if len(entities) > 0 {
+			// Derive service name from the first entity's proto file path.
+			svcName := codegen.ServiceNameFromProtoFile(entities[0].ProtoFile)
+			if svcName != "" {
+				planEntities := codegen.EntityDefsToPlanEntities(entities)
+				entityNames := make([]string, len(entities))
+				for i, e := range entities {
+					entityNames[i] = e.Name
+				}
+
+				if err := generator.GeneratePlanDBTypes(projectDir, modulePath, svcName, entityNames); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: db types generation failed: %v\n", err)
+				}
+
+				if err := generator.GeneratePlanORM(projectDir, modulePath, svcName, planEntities); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: ORM generation failed: %v\n", err)
+				} else {
+					fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
+				}
+			}
+		}
+	}
+
 	// ── Step 4b: CRUD handler generation ──
-	if hasServices && hasDB {
+	if hasServices {
 		if err := generateCRUDHandlers(services, modulePath, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: CRUD handler generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 4c: Authorizer generation (role mappings from proto annotations) ──
+	if hasServices {
+		if err := codegen.GenerateAuthorizer(services, modulePath, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: authorizer generation failed: %v\n", err)
 		}
 	}
 
@@ -253,9 +347,32 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 5d: Tenant middleware generation ──
-	if cfg != nil && cfg.Auth.MultiTenant != nil && cfg.Auth.MultiTenant.Enabled {
-		if err := generateTenantMiddleware(cfg, projectDir); err != nil {
-			return fmt.Errorf("tenant middleware generation failed: %w", err)
+	// Auto-enable multi-tenant if any entity has a tenant key field.
+	if cfg != nil && hasServices {
+		entities, _ := codegen.ParseEntityProtos(projectDir)
+		hasTenantEntities := false
+		for _, e := range entities {
+			if e.HasTenant {
+				hasTenantEntities = true
+				break
+			}
+		}
+		if hasTenantEntities {
+			if cfg.Auth.MultiTenant == nil {
+				cfg.Auth.MultiTenant = &config.MultiTenantConfig{}
+			}
+			if !cfg.Auth.MultiTenant.Enabled {
+				cfg.Auth.MultiTenant.Enabled = true
+				configPath := filepath.Join(projectDir, defaultProjectConfigFile)
+				if writeErr := generator.WriteProjectConfigFile(cfg, configPath); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to persist multi-tenant config: %v\n", writeErr)
+				} else {
+					fmt.Println("  ✅ Auto-enabled multi-tenant config (entities use tenant_key)")
+				}
+			}
+			if err := generateTenantMiddleware(cfg, projectDir); err != nil {
+				return fmt.Errorf("tenant middleware generation failed: %w", err)
+			}
 		}
 	}
 
@@ -272,9 +389,9 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		if cfg != nil {
 			dbDriver = cfg.Database.Driver
 		}
-		// ORM is enabled only when there are proto/db entities to generate
-		// ORM bindings for. Configuring a database driver alone (e.g. for
-		// migrations or raw SQL) must not force the ORM field onto App.
+		// ORM is enabled when entity definitions exist. They may live in:
+		// - proto/db/ (legacy architecture)
+		// - internal/db/types.go (new architecture — entities inline in service protos)
 		ormEnabled := false
 		if hasDB {
 			ok, perr := hasProtoFilesInDir(filepath.Join(projectDir, "proto", "db"))
@@ -283,7 +400,13 @@ func runGeneratePipeline(projectDir string, force bool) error {
 			}
 			ormEnabled = ok
 		}
-		if err := generateBootstrap(services, modulePath, dbDriver, ormEnabled, projectDir); err != nil {
+		if !ormEnabled {
+			// New architecture: check for internal/db/types.go (generated by plan_db_types_gen)
+			if _, err := os.Stat(filepath.Join(projectDir, "internal", "db", "types.go")); err == nil {
+				ormEnabled = true
+			}
+		}
+		if err := generateBootstrap(services, modulePath, dbDriver, ormEnabled, projectDir, configFields); err != nil {
 			return fmt.Errorf("bootstrap generation failed: %w", err)
 		}
 	}
@@ -335,6 +458,35 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		return fmt.Errorf("regenerate infrastructure files: %w", err)
 	}
 
+	// ── Step 8d-i: Generate Grafana dashboards ──
+	if cfg != nil {
+		if err := generator.GenerateGrafanaDashboards(cfg.Name, abs); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Grafana dashboard generation failed: %v\n", err)
+		}
+	}
+
+	// ── Step 8d-ii: Generate entity-aware seed data ──
+	var entityDefs []codegen.EntityDef
+	if hasDB || hasServices {
+		var parseErr error
+		entityDefs, parseErr = codegen.ParseEntityProtos(projectDir)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: entity proto parsing for seeds failed: %v\n", parseErr)
+		} else if len(entityDefs) > 0 {
+			seedEntities := generator.EntityDefsToSeedEntities(entityDefs)
+			if err := generator.GenerateEntitySeeds(seedEntities, abs); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: entity seed generation failed: %v\n", err)
+			}
+		}
+	}
+
+	// ── Step 8d-iii: Generate frontend mock data + transport ──
+	if cfg != nil && len(cfg.Frontends) > 0 && len(entityDefs) > 0 && len(services) > 0 {
+		if err := generateFrontendMocks(cfg, services, entityDefs, projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: frontend mock generation failed: %v\n", err)
+		}
+	}
+
 	// ── Step 8e: go mod tidy in project root ──
 	if err := runGoModTidyRoot(projectDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: go mod tidy in project root failed: %v\n", err)
@@ -350,13 +502,32 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		}
 	}
 
+	// ── Step 8g: Post-generation validation ──
+	if warnings := validateGeneratedProject(projectDir); len(warnings) > 0 {
+		fmt.Fprintf(os.Stderr, "\n⚠️  Post-generation warnings:\n")
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "  • %s\n", w)
+		}
+	}
+
 	// ── Step 9: Validate generated code compiles ──
 	fmt.Println("\n🔨 Validating generated code...")
 	validateCmd := exec.Command("go", "build", "./...")
 	validateCmd.Dir = projectDir
+	var buildStderr strings.Builder
 	validateCmd.Stdout = os.Stdout
-	validateCmd.Stderr = os.Stderr
+	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
 	if err := validateCmd.Run(); err != nil {
+		errOutput := buildStderr.String()
+		if errOutput != "" {
+			fmt.Fprintf(os.Stderr, "\n💡 Build failed. Common fixes:\n")
+			if strings.Contains(errOutput, "pkg/config") {
+				fmt.Fprintf(os.Stderr, "  • Ensure proto/config/ has annotated config fields and re-run 'forge generate'\n")
+			}
+			if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
+				fmt.Fprintf(os.Stderr, "  • authorizer_gen.go may be missing — re-run 'forge generate'\n")
+			}
+		}
 		return fmt.Errorf("generated code failed to compile: %w", err)
 	}
 

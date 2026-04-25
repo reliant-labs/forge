@@ -1,39 +1,63 @@
 # Forge
 
-Proto-first application scaffolding for Go + Next.js monorepos, designed for LLM-assisted development. Forge generates complete, production-ready projects from protobuf definitions -- services, database schemas, TypeScript clients, Kubernetes deployments, and CI/CD pipelines -- with an architecture that LLMs can understand, extend, and verify.
+Production-grade infrastructure generator for Go + Next.js applications. Forge gives you a fully productionized monorepo from day one — OpenTelemetry observability, auth middleware, Kubernetes deployments, CI/CD pipelines, generated mocks, contract enforcement, and test harnesses — so you focus on business logic, not the infrastructure that surrounds it.
 
 ## Why Forge
 
-LLMs are powerful code generators, but they struggle with ambiguous architectures, sprawling codebases, and no way to confirm their output actually works. Forge solves this by generating projects that are purpose-built for AI-assisted development:
+Most frameworks hand you a skeleton and leave you to wire up logging, auth, deployment, testing, and observability yourself. You spend weeks building infrastructure before you write a single line of business logic. And when you get it wrong — missing middleware, broken test isolation, inconsistent error handling — it compounds across every service.
 
-**Reduced context, better generation.** Forge projects are contract-driven. Proto files and Go interfaces define every boundary, so an LLM doesn't need to read thousands of lines of implementation to understand what a service does or how packages connect. It reads the contract, generates the implementation, and moves on. Less context consumed means higher quality output.
+Forge eliminates that gap. You get production infrastructure on day one, and `forge generate` is safe to re-run because it only regenerates infrastructure, never business logic.
 
-**Clean architecture, predictable patterns.** Every service follows the same structure: constructor injection, explicit dependency wiring, no global state, no `init()` side effects. An LLM that has seen one Forge service can generate the next one correctly. Predictable patterns eliminate the guesswork that causes LLMs to hallucinate project-specific conventions.
+**Production infrastructure from day zero.** Every generated project ships with structured logging, OpenTelemetry tracing, Prometheus metrics, continuous profiling, JWT and API key auth, RBAC, rate limiting, idempotency, CORS, security headers, graceful shutdown, and health checks. These aren't stubs — they're working, configured, and connected to a local observability stack you can query immediately.
 
-**Built-in feedback loops for self-verification.** This is the critical piece. LLMs need to run code to know if what they built actually works. Forge generates test harnesses, mock dependencies, contract linters, and a full dev environment out of the box. An LLM can generate a handler, run `forge test`, see the failure, fix it, and iterate -- all without human intervention. The generated CI pipeline (`forge lint --contract`, race-detected tests, build verification) gives the LLM concrete, automated checkpoints to validate its own work.
+**Architectural guardrails that scale.** Forge enforces a contract-driven architecture: Go interfaces define internal boundaries, proto definitions define external APIs, SQL migrations own the database schema. Constructor injection via `Deps` structs, explicit dependency wiring, no global state, no `init()` side effects. Every service follows the same structure, so your codebase stays consistent whether you have one service or twenty.
 
-## What Forge Does
+**LLM-optimized patterns.** Predictable structure means LLMs need less context to generate correct code. An LLM that has seen one Forge service can generate the next one correctly. Generated test harnesses, mock dependencies, and contract linters provide feedback loops that let LLMs iterate autonomously — generate, test, fix, repeat.
 
-Forge is a CLI that scaffolds and manages Go + Next.js monorepo projects where protobuf files define external API contracts and Go interfaces define internal package boundaries. When you define a service in a `.proto` file, Forge generates everything that follows: Go server stubs with Connect RPC, TypeScript client code for your Next.js frontend, Kubernetes manifests via KCL, Docker images, CI/CD workflows, and end-to-end test harnesses.
+**Fast scaffold to working prototype.** Proto definitions get you off the ground fast — define your RPCs and entity messages, run `forge generate`, and you have a working API with CRUD handlers, tests, and typed clients. Then you evolve: business logic lives in handler files you own, database schema is driven by migrations, and entity types grow from proto aliases into concrete Go structs as your domain matures.
 
-The generated projects use [Connect RPC](https://connectrpc.com/) (compatible with gRPC, works over HTTP/1.1 and HTTP/2) for all external service communication. Internal package boundaries use Go interfaces defined in `contract.go` files, which are richer than proto -- supporting channels, complex types, factories, and variadic arguments.
+**Deployment pipeline included.** CI/CD via GitHub Actions, Docker multi-stage builds, Kubernetes manifests via KCL, local dev clusters with k3d, and infrastructure-as-code — all generated and configured from the start. `forge deploy dev` gets you a running cluster in minutes.
 
-Forge generates a complete monorepo with Go services, Next.js frontends, KCL-based Kubernetes deployments, and CI/CD pipelines. This is for teams and LLMs building production applications with multiple services and a frontend.
+## Feature Highlights
+
+**Full Observability Stack.** Every project ships with Grafana LGTM (Prometheus, Tempo, Loki, Pyroscope), Grafana Alloy collector, pre-built dashboards, structured logging, and OpenTelemetry tracing. Run `forge doctor` to validate everything is healthy.
+
+**Production Auth & Security.** JWT validation (HS256/RS256, JWKS), API key auth, RBAC from proto annotations, tenant isolation from JWT claims, rate limiting, idempotency, CORS, security headers, panic recovery, and request ID propagation — all wired into the middleware stack.
+
+**Generated Contracts, Mocks, and Middleware.** Every internal package gets a Go interface contract, a generated mock for testing, and a middleware wrapper that adds structured logging and OpenTelemetry tracing around every method call. No hand-writing mocks, no forgetting to add observability.
+
+**Deployment & CI/CD.** GitHub Actions pipelines (lint → test → build → deploy), Docker multi-stage builds with Trivy scanning, KCL-based Kubernetes manifests with per-environment overrides, k3d local clusters, and k6 load testing scaffolds.
+
+**Testing Infrastructure.** Generated mocks for every internal package, unit and integration test scaffolds, CRUD lifecycle tests, and end-to-end test harnesses. All tests support race detection, coverage reporting, and parallel execution.
+
+**Migration-Driven Database.** SQL migrations are the source of truth for your database schema. Forge generates an initial migration from proto entity definitions to get you started, then you own the schema from there — adding columns, indexes, and constraints through migration files, not proto annotations.
+
+**Scaffold CRUD to Get Started.** Define entity messages in your service proto and Forge scaffolds Create/Get/List/Update/Delete handlers with tests, ORM CRUD functions, type aliases, and an initial SQL migration. List operations include cursor-based keyset pagination, search and filtering, and soft delete support. This gets your API working fast — then you iterate on the business logic in files you own.
+
+**Multi-Tenant Isolation.** Add a `tenant_key` annotation to an entity and Forge generates row-level tenant filtering across all ORM operations, plus middleware that extracts the tenant ID from JWT claims. No manual plumbing required.
+
+**TypeScript Hooks.** For every RPC, Forge auto-generates TanStack React Query hooks — queries for read operations, mutations for writes — ready to use in your Next.js frontend.
+
+**Pack System.** Install pre-built feature packs (`jwt-auth`, `clerk`, `stripe`, `twilio`, `api-key`, `audit-log`) that add real, working code — not just boilerplate stubs.
+
+**Delve Debugging.** Debug running services with `forge debug start`, set breakpoints, evaluate expressions, and inspect goroutines — all from the CLI.
 
 ## Quick Start
 
 ```bash
-# Install the CLI
+# Install
 go install github.com/reliant-labs/forge/cmd/forge@latest
 
-# Create a new project
-forge new myproject --mod github.com/example/myproject
+# Create a project with a service and frontend
+forge new myproject --mod github.com/example/myproject --service api --frontend web
 
-# Enter the project and generate code from protos
+# Enter the project
 cd myproject
+
+# Define your RPCs in proto/services/api/v1/api.proto, then generate everything
 forge generate
 
-# Start the dev server (infrastructure + services + frontends with hot reload)
+# Start the dev environment (Postgres, observability stack, hot-reload)
 forge run
 
 # Deploy to a local k3d cluster
@@ -44,182 +68,358 @@ After `forge new`, your project looks like this:
 
 ```
 myproject/
-├── forge.yaml        # Project configuration
-├── cmd/                         # Single binary entrypoint (Cobra CLI)
-│   ├── main.go                  # Root command + Execute()
-│   ├── server.go                # server [services...] — HTTP server
-│   └── version.go               # Build info
+├── forge.yaml                       # Project configuration
+├── cmd/                             # Single binary entrypoint (Cobra CLI)
+│   ├── main.go
+│   ├── server.go                    # server [services...] — HTTP server
+│   └── version.go
 ├── proto/
-│   ├── services/api/v1/api.proto # Service definitions (you edit these)
-│   ├── config/v1/               # Config proto — instantiation contract
-│   └── forge/options/v1/      # Forge proto annotations
-├── gen/                          # Generated Go + Connect stubs
-├── services/
+│   ├── services/api/v1/api.proto    # RPC + entity definitions (API contracts)
+│   ├── config/v1/                   # Config proto — instantiation contract
+│   └── forge/options/v1/            # Forge proto annotations
+├── gen/                             # Generated Go + Connect stubs
+├── handlers/
 │   └── api/
-│       ├── service.go            # New(deps), Register(mux, opts), Name()
-│       └── handlers.go           # Business logic (you write this)
-├── internal/                     # Internal packages (Go interface contracts)
+│       ├── service.go               # New(deps), Register(mux), Name()
+│       ├── handlers.go              # Business logic (you own this)
+│       ├── handlers_crud_gen.go     # Generated CRUD scaffold
+│       ├── handlers_crud_test_gen.go
+│       └── authorizer_gen.go        # Generated RBAC policy
+├── internal/                        # Internal packages (Go interface contracts)
+│   ├── db/
+│   │   ├── types.go                 # Type aliases: type User = apiv1.User
+│   │   └── user_orm.go              # CRUD functions (Create, Get, List, Update, Delete)
 │   └── <name>/
-│       ├── contract.go           # Go interface — THE contract
-│       ├── service.go            # Implementation
-│       ├── mock_gen.go           # Generated mock
-│       └── middleware_gen.go     # Generated logging/tracing wrapper
+│       ├── contract.go              # Go interface — THE contract
+│       ├── service.go               # Implementation (you own this)
+│       ├── mock_gen.go              # Generated mock
+│       └── middleware_gen.go        # Generated logging/tracing wrapper
 ├── pkg/
-│   └── app/
-│       ├── wire.go               # GENERATED — constructs all boundaries from config
-│       └── wire_test.go          # GENERATED — test config with mocks
-├── frontends/                    # Next.js frontends (if --frontend flag used)
+│   ├── app/
+│   │   ├── bootstrap.go             # Generated — constructs all services
+│   │   └── testing.go               # Generated — test helpers with mocks
+│   └── middleware/                   # Auth, tenant, rate limit, idempotency, etc.
+├── frontends/
 │   └── web/
-│       └── src/gen/              # Generated TypeScript clients
+│       └── src/gen/                 # Generated TypeScript clients + React Query hooks
+├── db/
+│   └── migrations/                  # SQL migration files (source of truth for schema)
 ├── deploy/
-│   ├── kcl/                      # KCL Kubernetes manifests
-│   │   ├── schema.k              # Application schema
-│   │   ├── render.k              # Manifest rendering engine
-│   │   ├── base.k                # Shared env vars and configs
-│   │   ├── dev/main.k            # Dev environment
-│   │   ├── staging/main.k        # Staging environment
-│   │   └── prod/main.k           # Production environment
-│   ├── Dockerfile                # Single multi-stage Dockerfile
-│   ├── k3d.yaml                  # Local cluster config
-│   └── docker-compose.yml        # Local infrastructure (Postgres, Redis)
-├── .github/
-│   └── workflows/
-│       ├── ci.yml                # Lint → Test → Build → Verify → Vuln scan
-│       ├── build-images.yml      # Docker build with Trivy scanning
-│       └── deploy.yml            # Staging auto-deploy, prod manual approval
+│   ├── kcl/                         # KCL Kubernetes manifests (dev/staging/prod)
+│   ├── Dockerfile                   # Multi-stage build
+│   ├── k3d.yaml                     # Local cluster config
+│   └── docker-compose.yml           # Postgres + observability stack
+├── .github/workflows/               # CI/CD (lint → test → build → deploy)
 ├── Taskfile.yml
 ├── buf.yaml / buf.gen.yaml
 └── go.work / go.mod
 ```
 
-## CLI Commands
+## CLI Reference
+
+### Project Lifecycle
 
 | Command | Description |
 |---------|-------------|
-| `forge new <name> --mod <module>` | Create a new project. Use `--frontend <name>` to include a Next.js frontend. |
-| `forge add service <name>` | Add a Go service with proto file and handler scaffold. Updates wiring in `pkg/app/wire.go`. |
-| `forge add frontend <name>` | Add a Next.js frontend with Connect RPC client setup and TypeScript code generation. |
-| `forge package new <name>` | Create an internal package with `contract.go` (Go interface), implementation, and generated mock/middleware. |
-| `forge generate` | Generate all code from protos and contracts: Go stubs, Connect handlers, TypeScript clients, mocks, middleware wrappers, wiring code. Use `--watch` for dev mode. |
-| `forge build` | Build the service binary and Docker image. Supports `--target <name>` and `--parallel`. |
-| `forge run` | Start the dev environment: docker-compose infrastructure, Go binary via Air (hot reload), and Next.js frontends. |
-| `forge deploy <env>` | Deploy to a Kubernetes environment using KCL manifests. For `dev`, auto-creates a k3d cluster. Supports `--dry-run` and `--image-tag`. |
-| `forge test` | Run all tests (Go + frontend). Subcommands: `unit`, `integration`, `e2e`. |
-| `forge lint` | Run golangci-lint, buf lint, and TypeScript linters. Use `--contract` for contract enforcement. |
-| `forge db migration new <name>` | Create a new blank SQL migration pair using golang-migrate naming conventions. |
-| `forge db migrate <up\|down\|status\|version\|force>` | Manage database migrations with golang-migrate. |
+| `forge new <name> --mod <module>` | Create a new project. Optional: `--service <name>`, `--frontend <name>`, `--license <type>`. |
+| `forge generate` | Generate all infrastructure code from protos and contracts. Safe to re-run — never overwrites business logic. Use `--watch` for dev mode, `--force` to regenerate config files. |
+| `forge build` | Build the Go binary and frontends. Supports `--docker`, `--target <name>`, `--debug` (Delve symbols). |
+| `forge run` | Start the dev environment: Docker Compose infra, Go services via Air (hot reload), Next.js frontends. |
+| `forge deploy <env>` | Deploy to Kubernetes via KCL. For `dev`, auto-creates a k3d cluster. Supports `--dry-run`, `--image-tag`. |
+| `forge upgrade` | Update frozen project files from latest Forge templates. Use `--check` for dry-run, `--force` to overwrite. |
 
-For complete flag documentation, see the [CLI Reference](docs/guides/cli-reference.md).
+### Adding Components
 
-## Features
+| Command | Description |
+|---------|-------------|
+| `forge add service <name>` | Add a Go service with proto file, handler scaffold, and wiring. Optional: `--port`. |
+| `forge add worker <name>` | Add a background worker. |
+| `forge add operator <name>` | Add a Kubernetes operator. Optional: `--group`, `--version`. |
+| `forge add frontend <name>` | Add a Next.js frontend with Connect RPC client setup and TypeScript codegen. |
+| `forge add webhook <name>` | Add a webhook endpoint to a service. Requires `--service`. |
+| `forge add package <name>` | Add an internal package with contract interface, implementation, mock, and middleware wrapper. |
 
-### LLM-Friendly by Design
+### Testing and Quality
 
-Forge's architecture decisions directly benefit LLM-driven development:
+| Command | Description |
+|---------|-------------|
+| `forge test` | Run all tests (unit + integration). Subcommands: `unit`, `integration`, `e2e`. |
+| `forge lint` | Run golangci-lint, buf lint, TypeScript linters, and contract enforcement. Use `--contract` or `--db` for specific checks. |
+| `forge doctor` | Diagnose the local dev stack: Docker, app health, Prometheus, Tempo, Loki, Pyroscope, Delve. |
 
-- **Contracts as context anchors.** Proto files and `contract.go` interfaces are compact, self-contained descriptions of every boundary. An LLM reads a contract file instead of tracing through implementation code, dramatically reducing the context window needed to generate correct code.
-- **One pattern, every service.** Constructor injection via `Deps` structs, `New()` constructors, and `Register()` for HTTP wiring. Once an LLM learns the pattern, it applies everywhere -- no per-service discovery required.
-- **Generated mocks and test harnesses.** Every internal package gets a generated mock and every service gets a test helper. LLMs can write tests immediately without setting up infrastructure, and run them to verify their own output.
-- **Contract linting as a guardrail.** `forge lint --contract` catches drift between interfaces and implementations. An LLM can run this after generating code to confirm it didn't break the contract -- a fast, deterministic feedback signal.
-- **Full dev environment in one command.** `forge run` starts infrastructure, services, and frontends. An LLM doesn't need to figure out how to set up Postgres, Redis, or the frontend build -- it just runs the command and tests against a real environment.
+### Database
 
-### Two Contract Systems
+| Command | Description |
+|---------|-------------|
+| `forge db migration new <name>` | Create a new SQL migration pair (up/down). Use `--from-proto` to generate from entity definitions. |
+| `forge db migrate <up\|down\|status\|version\|force>` | Run or inspect migrations via golang-migrate. |
+| `forge db introspect` | Introspect the live database schema. |
+| `forge db proto` | Sync proto entity definitions from the migrated schema. |
+| `forge db codegen` | Generate ORM code from entity definitions. |
 
-Forge enforces two types of contracts depending on the boundary:
+### Packs and Utilities
 
-**Proto contracts for external boundaries.** Service RPCs defined in `proto/services/` and config in `proto/config/` drive Go server stubs and TypeScript clients via Connect RPC. These define the wire format that external consumers see.
+| Command | Description |
+|---------|-------------|
+| `forge pack list` | List available feature packs. |
+| `forge pack install <name>` | Install a pack (renders templates, adds deps, updates forge.yaml). |
+| `forge pack remove <name>` | Remove a pack's files from the project. |
+| `forge debug <subcommand>` | Debug a running service with Delve. Subcommands: `start`, `breakpoint`, `eval`, `goroutines`, `stop`. |
+| `forge docs generate` | Generate documentation from proto definitions and Go source. Supports `--format html\|md\|json`. |
 
-**Go interface contracts for internal boundaries.** Internal packages define their contracts as Go interfaces in `contract.go`. These are richer than proto -- supporting channels, complex types, factories, and variadic arguments. Generated mocks and middleware wrappers come from Go AST analysis of these interfaces.
+## Architecture
 
-### Single Binary Architecture
+Forge uses three contract systems, each owning a different concern:
 
-Each project produces a single Go binary with a Cobra CLI:
+### Proto Definitions — API Contracts and Config
 
-```bash
-myproject server                    # Start all services
-myproject server api users          # Start only specific services
-myproject version                   # Print build info
-```
+Proto files define your **external API surface** and **application configuration**. They are the onramp: define your RPCs and entity messages, run `forge generate`, and you have a working API with typed clients.
 
-All services share one HTTP mux, one middleware stack, and one process. Dependencies are wired explicitly in the generated `pkg/app/wire.go` -- no `init()` side effects, no global registry.
+What proto produces:
+- **Go server stubs** via Connect RPC (protoc-gen-go + protoc-gen-connect-go)
+- **TypeScript clients and React Query hooks** via `@connectrpc/protoc-gen-connect-query`
+- **RBAC authorizer** from `required_roles` annotations
+- **Config proto** for service instantiation contracts
+- **Initial CRUD handlers and tests** from entity messages — a scaffold to get you started
 
-### Constructor Injection
+Proto is **not** the source of truth for your database schema or your internal domain types. It defines what goes over the wire.
 
-Services and internal packages receive their dependencies through `Deps` structs:
+### Go Interface Contracts — Internal Boundaries
+
+Go interfaces in `contract.go` files define your **internal package boundaries**. These are the contracts that matter for testability, observability, and architectural consistency.
+
+What Go contracts produce:
+- **Mock implementations** for testing (method tracking, return value configuration)
+- **Middleware wrappers** that add structured logging and OpenTelemetry tracing around every method call
+- **Bootstrap wiring** that constructs all services with their real dependencies
+- **Test helpers** that construct services with mock dependencies
+
+Go contracts support the full richness of Go's type system — generics, channels, function types, embedded interfaces — things proto can't express.
+
+### SQL Migrations — Database Schema
+
+SQL migration files in `db/migrations/` are the **source of truth for your database schema**. Forge can generate an initial migration from proto entity definitions (`forge db migration new --from-proto`), but from that point forward, you own the schema through migration files.
+
+This separation is intentional: API contracts and database schemas evolve at different rates and for different reasons. A new API field might map to an existing column. A database index has no API representation. Keeping them independent avoids the impedance mismatch that plagues "proto-for-everything" approaches.
+
+## Schema Evolution
+
+Entity types follow a natural lifecycle as your application matures:
+
+### Phase 1: Proto Aliases (Day One)
+
+When you first scaffold an entity, `internal/db/types.go` contains type aliases pointing at the generated proto types:
 
 ```go
-type Deps struct {
-    DB     *pgxpool.Pool
-    Logger *slog.Logger
-    Users  users.Contract  // Go interface from internal/users/contract.go
-}
+type User = apiv1.User
+```
 
-func New(deps Deps) *Service {
-    return &Service{deps: deps}
+This works great early on — your API type and your DB type are the same thing. CRUD handlers pass proto messages directly to ORM functions. Zero mapping code.
+
+### Phase 2: Concrete Structs (As You Diverge)
+
+As your application evolves, API and database concerns diverge. Your DB might need columns that aren't in the API (audit fields, denormalized data, internal state). Your API might return computed fields that aren't stored. At this point, you replace the alias with a concrete struct:
+
+```go
+type User struct {
+    ID        string
+    Email     string
+    Name      string
+    TenantID  string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+    // DB-only fields
+    PasswordHash string
+    LoginCount   int
+    LastLoginAt  *time.Time
 }
 ```
 
-### Contract Enforcement
+### Phase 3: Mappers (Explicit Conversion)
 
-The `forge lint --contract` command scans service types and reports any exported methods that don't match their contract interface. For proto API services, exported methods must correspond to proto RPCs. For internal packages, exported methods must be declared in the `contract.go` interface.
+With concrete structs, you add mapper functions to convert between API types and DB types:
 
-### Migration-First Database
+```go
+func UserToProto(u *User) *apiv1.User { ... }
+func UserFromProto(p *apiv1.User) *User { ... }
+```
 
-SQL migrations in `db/migrations/` are the source of truth for schema evolution. Proto DB entities are the application contract view, validated against the migrated schema. The forge-orm library (included in this repo at `pkg/orm/`) generates thin CRUD over `database/sql` -- no heavy ORM (no GORM, no Ent). For complex queries beyond CRUD, use [sqlc](https://sqlc.dev/) alongside the generated ORM.
+This is where the migration-driven approach pays off: your DB schema evolves through SQL migrations, your API types evolve through proto, and mappers bridge the gap explicitly. No magic, no hidden coupling.
 
-### Test Harness
+## Communication
 
-Generated test helpers in `pkg/app/testing.go` provide `NewTestXxx` and `NewTestXxxServer` functions that wire up services with mock dependencies, making it straightforward to write integration tests without manual setup.
+All service communication uses [Connect RPC](https://connectrpc.com/), which is wire-compatible with gRPC but also works over HTTP/1.1 with JSON. Go services talk to each other via Connect, the Next.js frontend calls the same services with full type safety, and you can debug API calls with `curl`. No gRPC-Web proxies required.
 
-### KCL for Kubernetes Deployments
+## Code Generation
 
-Instead of Helm charts or Kustomize overlays, Forge generates [KCL](https://kcl-lang.io/) configurations -- a typed configuration language with schema validation. Each environment (dev, staging, prod) has its own `main.k` file that composes applications from a shared schema, with compile-time validation catching misconfigurations before they reach your cluster. See the [KCL Guide](docs/guides/kcl.md) for details.
+`forge generate` produces infrastructure code from two sources. It is safe to re-run at any time — generated files are clearly marked (e.g., `*_gen.go`, `*_crud_gen.go`) and never overwrite your business logic in `handlers.go` or `service.go`.
 
-### Connect RPC Everywhere
+### From Proto Definitions
 
-All external service communication uses [Connect RPC](https://connectrpc.com/), which is wire-compatible with gRPC but also works over HTTP/1.1 with JSON. Your Go services can talk to each other via Connect, your Next.js frontend can call the same services over HTTP with full type safety, and you can debug API calls with `curl`. No gRPC-Web proxies required.
+- **Go server stubs** via Connect RPC (protoc-gen-go + protoc-gen-connect-go)
+- **CRUD handler scaffolds and tests** from entity messages — Create, Get, List, Update, Delete implementations using ORM functions from `internal/db/`
+- **Cursor-based pagination** for all List RPCs following AIP-158 conventions
+- **Search and filtering** from request message fields — ILIKE for string fields, exact match for IDs, configurable ordering
+- **Soft delete handling** when `soft_delete = true` is set on an entity — `deleted_at` column managed automatically in all ORM operations
+- **Tenant-scoped queries** when `tenant_key` is annotated — automatic WHERE clause injection across all CRUD operations
+- **RBAC authorizer** from `required_roles` annotations — mapping procedures to roles
+- **TypeScript clients and React Query hooks** via `@connectrpc/protoc-gen-connect-query`
+- **Config proto** for service instantiation contracts
 
-### Auto-Generated CI/CD
+### From Go Interface Contracts
 
-New projects include GitHub Actions workflows that cover the full pipeline: linting (Go, proto, TypeScript), testing with race detection, building the service binary and Docker image, verifying generated code is committed, vulnerability scanning with `govulncheck` and Trivy, and a promotion-based deploy flow where staging deploys automatically on main and production requires manual approval via a version tag. See the [CI/CD Guide](docs/guides/cicd.md).
+- **Mock implementations** for testing (method tracking, return value configuration)
+- **Middleware wrappers** that add structured logging and OpenTelemetry tracing around every method call
+- **Bootstrap wiring** that constructs all services with their real dependencies
+- **Test helpers** that construct services with mock dependencies
+
+## Middleware
+
+Generated projects include a production-ready middleware stack:
+
+| Middleware | Description |
+|-----------|-------------|
+| Auth | JWT and/or API key validation with per-method skip lists |
+| Tenant | Claim-based tenant extraction into request context |
+| RBAC (Authz) | Role-based access control from proto annotations |
+| Rate Limiting | Token bucket rate limiter (per-user or per-IP) |
+| Idempotency | Response caching by idempotency key (configurable TTL and cache size) |
+| CORS | Configurable cross-origin resource sharing |
+| Recovery | Panic recovery with structured error responses |
+| Request ID | Unique request ID injection and propagation |
+| Security Headers | Standard security headers (HSTS, CSP, X-Frame-Options) |
+| Logging | Structured request/response logging |
+| Tracing | OpenTelemetry trace handler |
+| Redact | Sensitive field redaction in logs and responses |
+
+## Observability
+
+Every Forge project includes a complete observability stack configured in Docker Compose:
+
+- **Prometheus** for metrics collection
+- **Tempo** for distributed tracing
+- **Loki** for log aggregation
+- **Pyroscope** for continuous profiling
+- **Grafana** with pre-built dashboards (Overview, Logs, Traces)
+- **Grafana Alloy** as the unified collector
+
+Services emit structured log events, OpenTelemetry traces, and Prometheus metrics out of the box. Run `forge doctor` to verify that every signal is flowing correctly — it checks Docker containers, app health, pprof endpoints, and each telemetry backend.
+
+```bash
+forge doctor                       # Check everything
+forge doctor --signal traces       # Check only trace pipeline
+forge doctor --json                # Machine-readable output
+forge doctor --verbose             # Show evidence for passing checks
+```
+
+## Auth and Multi-Tenancy
+
+Authentication and multi-tenancy are configured in `forge.yaml` and code-generated into your middleware stack.
+
+**JWT Auth** supports HS256 and RS256 signing, JWKS endpoint discovery, configurable claim extraction, and per-method auth overrides via proto annotations. **API Key Auth** generates a validation interceptor and `KeyValidator` interface you implement against your key store. **Dual Auth** supports both JWT and API key on the same service.
+
+**Multi-Tenant Isolation** extracts a tenant ID from JWT claims (configurable field, e.g. `org_id`) and injects it into a request-scoped context. All generated CRUD operations automatically include a tenant WHERE clause. The tenant column name is configurable in `forge.yaml`.
+
+## Pack System
+
+Packs are installable feature modules that add real, working code to your project — not just boilerplate stubs. Each pack renders templates with your project's module path, adds Go dependencies, and records itself in `forge.yaml`.
+
+| Pack | What It Adds |
+|------|-------------|
+| `jwt-auth` | JWT validation middleware (HS256/RS256), JWKS support, dev-mode auth bypass |
+| `clerk` | Clerk authentication integration with webhook handler for user sync |
+| `stripe` | Stripe client, webhook handler with signature verification, payment entity definitions |
+| `twilio` | Twilio client, SMS/voice service with contract interface, webhook handler |
+| `api-key` | API key validation middleware, key store with migration, `KeyValidator` interface |
+| `audit-log` | Audit log interceptor, persistent store with migration, structured audit events |
+
+```bash
+forge pack list                    # See available packs
+forge pack install jwt-auth        # Install JWT authentication
+forge pack install stripe          # Add Stripe integration
+forge pack remove stripe           # Remove a pack
+```
+
+## Testing
+
+Forge generates multiple layers of test infrastructure:
+
+**Unit tests** with generated mocks for every internal package contract. Run with `forge test unit`.
+
+**Integration tests** using real database connections, tagged with `//go:build integration`. Run with `forge test integration`.
+
+**End-to-end tests** from the `e2e/` directory with full service stack. Run with `forge test e2e`.
+
+**CRUD lifecycle tests** are auto-generated alongside CRUD handlers — they cover create, get, list (with pagination), update, and delete flows.
+
+All test commands support `--race` (enabled by default), `--coverage`, `--parallel`, and `--service <name>` to target specific services.
+
+## Deployment
+
+### KCL for Kubernetes
+
+Instead of Helm charts or Kustomize overlays, Forge generates [KCL](https://kcl-lang.io/) configurations — a typed configuration language with schema validation. Each environment (dev, staging, prod) has its own `main.k` that composes applications from a shared schema, with compile-time validation catching misconfigurations before they reach your cluster.
+
+```bash
+forge deploy dev                   # Deploy to local k3d cluster (auto-created)
+forge deploy staging --image-tag v1.2
+forge deploy prod --dry-run        # Preview production manifests
+```
+
+### CI/CD
+
+New projects include GitHub Actions workflows covering the full pipeline:
+
+- **ci.yml** — Lint (Go, proto, TypeScript), test with race detection, build, verify generated code is committed, vulnerability scanning with `govulncheck`
+- **build-images.yml** — Docker build with Trivy security scanning
+- **deploy.yml** — Staging auto-deploys on main, production requires manual approval via version tag
+
+### Infrastructure
+
+- Docker Compose with Postgres and the full observability stack
+- Multi-stage Dockerfile (CGO_ENABLED=0, stripped binary)
+- k3d local cluster with local image registry at `localhost:5050`
+- k6 load testing scaffold
 
 ## Documentation
 
-- [Getting Started](docs/guides/getting-started.md) -- Full walkthrough from install to deploy
-- [Architecture](docs/guides/architecture.md) -- Single binary design, two contract systems, explicit wiring
-- [KCL Deployments](docs/guides/kcl.md) -- Kubernetes configuration with KCL
-- [Database & ORM](docs/guides/database.md) -- Migration-first ORM, sqlc integration, migrations
-- [CI/CD Pipelines](docs/guides/cicd.md) -- Generated GitHub Actions workflows
-- [CLI Reference](docs/guides/cli-reference.md) -- Every command, flag, and option
-
-### Examples
-
-- [Full Monorepo](docs/examples/full-monorepo.md) -- 2 services + Next.js frontend with DB, CI/CD, and multi-env deploy
+- [Getting Started](docs/guides/getting-started.md) — Full walkthrough from install to deploy
+- [Architecture](docs/guides/architecture.md) — Single binary design, two contract systems, explicit wiring
+- [KCL Deployments](docs/guides/kcl.md) — Kubernetes configuration with KCL
+- [Database & ORM](docs/guides/database.md) — Migration-first ORM, sqlc integration, migrations
+- [CI/CD Pipelines](docs/guides/cicd.md) — Generated GitHub Actions workflows
+- [CLI Reference](docs/guides/cli-reference.md) — Every command, flag, and option
 
 ## Contributing
 
 Contributions are welcome. The project uses standard Go tooling:
 
 ```bash
-# Run tests
-go test ./...
-
-# Build the CLI
-go build -o bin/forge ./cmd/forge
-
-# Lint
-golangci-lint run ./...
+go test ./...                      # Run tests
+go build -o bin/forge ./cmd/forge  # Build the CLI
+golangci-lint run ./...            # Lint
 ```
 
 The codebase is organized as:
 
-- `cmd/forge/` -- CLI entrypoint
-- `internal/cli/` -- Command implementations (cobra)
-- `internal/generator/` -- Project and service scaffolding
-- `internal/templates/` -- Embedded templates for generated files
-- `pkg/orm/` -- ORM runtime library (used by generated code)
-- `proto/forge/options/v1/` -- Proto annotations for entities and fields
+| Directory | Purpose |
+|-----------|---------|
+| `cmd/forge/` | CLI entrypoint |
+| `cli/` | Public API for embedding Forge as a subcommand |
+| `internal/cli/` | Command implementations (Cobra) |
+| `internal/codegen/` | Code generation from proto and Go AST |
+| `internal/templates/` | Embedded Go templates for generated files |
+| `internal/packs/` | Pack system (registry, templates, install/remove) |
+| `internal/generator/` | Project and service scaffolding |
+| `internal/doctor/` | Environment diagnostics (`forge doctor`) |
+| `internal/debug/` | Delve debugger integration |
+| `internal/database/` | Migration and schema introspection |
+| `internal/linter/` | DB entity lint rules |
+| `internal/docs/` | Documentation generation |
+| `pkg/orm/` | ORM runtime library (cursor, filter, query, repository) |
+| `pkg/middleware/` | Reusable HTTP middleware (idempotency, redact) |
+| `proto/forge/options/v1/` | Proto annotations for services, methods, entities, fields |
 
-When adding a new command, add the cobra command in `internal/cli/`, register it in `root.go`, and add corresponding templates in `internal/templates/` if the command generates files.
+When adding a new command, add the Cobra command in `internal/cli/`, register it in `root.go`, and add corresponding templates in `internal/templates/` if the command generates files.
 
 Please open issues for bugs and feature requests, and submit pull requests against the `main` branch.

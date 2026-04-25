@@ -11,8 +11,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
-
-	"go.opentelemetry.io/otel/trace"
 )
 
 // HTTPStack returns HTTP middleware that applies recovery, logging, and audit
@@ -101,9 +99,6 @@ func httpLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.String("path", r.URL.Path),
 				slog.Int("status", rec.status),
 				slog.Duration("duration", time.Since(start)),
-			}
-			if spanCtx := trace.SpanContextFromContext(r.Context()); spanCtx.HasTraceID() {
-				attrs = append(attrs, slog.String("trace_id", spanCtx.TraceID().String()))
 			}
 
 			level := slog.LevelInfo

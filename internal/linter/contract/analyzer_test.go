@@ -41,3 +41,37 @@ func TestAnalyzer_EmbeddedInterface(t *testing.T) {
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.Analyzer, "embedded")
 }
+
+// RequireContractAnalyzer tests
+
+func TestRequireContract_WithContract(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requiregood")
+}
+
+func TestRequireContract_NoExportedMethods(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requirenoexported")
+}
+
+func TestRequireContract_MissingContract(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requirebad")
+}
+
+func TestRequireContract_NotInternal(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "notinternal")
+}
+
+// ExportedVarsAnalyzer tests
+
+func TestExportedVars_Good(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsok")
+}
+
+func TestExportedVars_Bad(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsbad")
+}

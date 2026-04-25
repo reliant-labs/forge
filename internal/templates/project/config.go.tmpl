@@ -7,8 +7,12 @@ import (
 {{- if .NeedsStrconv}}
 	"strconv"
 {{- end}}
+{{- if index .FieldNames "CorsAllowCredentials"}}
 	"strings"
+{{- end}}
+{{- if or (index .FieldNames "PreStopDelay") (index .FieldNames "ShutdownTimeout")}}
 	"time"
+{{- end}}
 
 	"github.com/spf13/cobra"
 )
@@ -138,6 +142,7 @@ func Load(cmd *cobra.Command) (*Config, error) {
 // misconfigurations early, before the listener binds. Keep validation
 // limited to combinations that cannot be expressed as per-field defaults.
 func (c *Config) Validate() error {
+{{- if and (index .FieldNames "CorsAllowCredentials") (index .FieldNames "CorsOrigins")}}
 	// CORS: a wildcard origin with credentials is spec-invalid. Browsers
 	// refuse to use the response, and servers that emit it silently are
 	// almost always a misconfiguration. Reject eagerly.
@@ -148,12 +153,16 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+{{- end}}
+{{- if and (index .FieldNames "TlsCertPath") (index .FieldNames "TlsKeyPath")}}
 
 	// TLS: both paths or neither. A single-sided setting is always a bug
 	// (typo, stale secret, half-migrated config) — fail fast.
-	if (c.TLSCertPath == "") != (c.TLSKeyPath == "") {
-		return fmt.Errorf("invalid TLS configuration: TLS_CERT_PATH and TLS_KEY_PATH must both be set or both be empty (got cert=%q key=%q)", c.TLSCertPath, c.TLSKeyPath)
+	if (c.TlsCertPath == "") != (c.TlsKeyPath == "") {
+		return fmt.Errorf("invalid TLS configuration: TLS_CERT_PATH and TLS_KEY_PATH must both be set or both be empty (got cert=%q key=%q)", c.TlsCertPath, c.TlsKeyPath)
 	}
+{{- end}}
+{{- if index .FieldNames "LogFormat"}}
 
 	// Log format: only two supported values; any other value means the
 	// handler would silently fall back and confuse operators.
@@ -162,19 +171,26 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid LOG_FORMAT %q: must be 'json' or 'text'", c.LogFormat)
 	}
+{{- end}}
+{{- if or (index .FieldNames "PreStopDelay") (index .FieldNames "ShutdownTimeout")}}
 
 	// Durations: parse-check so operators learn about typos at startup
 	// rather than at SIGTERM.
+{{- end}}
+{{- if index .FieldNames "PreStopDelay"}}
 	if c.PreStopDelay != "" {
 		if _, err := time.ParseDuration(c.PreStopDelay); err != nil {
 			return fmt.Errorf("invalid PRE_STOP_DELAY %q: %w", c.PreStopDelay, err)
 		}
 	}
+{{- end}}
+{{- if index .FieldNames "ShutdownTimeout"}}
 	if c.ShutdownTimeout != "" {
 		if _, err := time.ParseDuration(c.ShutdownTimeout); err != nil {
 			return fmt.Errorf("invalid SHUTDOWN_TIMEOUT %q: %w", c.ShutdownTimeout, err)
 		}
 	}
+{{- end}}
 
 	return nil
 }

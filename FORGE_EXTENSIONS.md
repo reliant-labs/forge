@@ -168,7 +168,9 @@ Add a step to `runGeneratePipeline()`:
 
 ---
 
-## 2. Multi-Tenancy Primitives
+## 2. Multi-Tenancy Primitives — ✅ DONE
+
+> **Status:** Implemented. CRUD codegen now supports `tenant_key` annotation for mandatory tenant-scoped queries. Tenant context middleware extracts tenant identity from JWT claims. Generated ORM methods require a `tenantID` parameter when `tenant_key: true` is set, making it a compile-time error to forget tenant scoping.
 
 ### Problem
 Most SaaS backends need tenant isolation — scoping data access by organization/tenant. This is repetitive, error-prone, and a security-critical concern. Getting it wrong means data leaks between tenants.
@@ -234,7 +236,7 @@ func TenantInterceptor(tenantClaim string) connect.UnaryInterceptorFunc {
 ```
 
 #### 2b. Tenant-Scoped ORM Queries
-Extend `protoc-gen-forge-orm` to recognize a tenant field annotation:
+The ORM recognizes a tenant field convention:
 
 ```protobuf
 message Workspace {
@@ -284,7 +286,9 @@ func (h *TestHarness) WithTenant(tenantID string) context.Context {
 
 ---
 
-## 3. Proto-Annotated Interceptor Wiring
+## 3. Proto-Annotated Interceptor Wiring — ✅ DONE (Auth/RBAC)
+
+> **Status:** Auth and RBAC annotations are now functional. The code generator reads `auth_required` and role annotations from proto method options and generates a per-method RBAC policy map. The generated auth interceptor consults this map at runtime. Rate-limit and cache annotation wiring remain planned.
 
 ### Problem
 Forge already has proto annotations for auth (`auth_required`), rate limiting (`rate_limit`), and caching (`cache`) in `method.proto`, but the code generation doesn't wire these into actual interceptors automatically. The annotations exist but are decorative.
@@ -496,16 +500,14 @@ services:
 
 ## Priority & Sequencing
 
-| # | Extension | Effort | Value | Dependencies |
-|---|-----------|--------|-------|-------------|
-| 1 | Proto-Annotated Interceptor Wiring | Medium | High | None — builds on existing annotations |
-| 2 | Multi-Tenancy Primitives | Medium | High | Depends on ORM codegen understanding |
-| 3 | Cron Worker Kind | Small | Medium | None — extends existing worker system |
-| 4 | K8s Operator Component Type | Large | High | None — new component type |
+| # | Extension | Effort | Value | Dependencies | Status |
+|---|-----------|--------|-------|-------------|--------|
+| 1 | Proto-Annotated Interceptor Wiring | Medium | High | None — builds on existing annotations | ✅ Auth/RBAC done; rate-limit & cache pending |
+| 2 | Multi-Tenancy Primitives | Medium | High | Depends on ORM codegen understanding | ✅ Done |
+| 3 | Cron Worker Kind | Small | Medium | None — extends existing worker system | Planned |
+| 4 | K8s Operator Component Type | Large | High | None — new component type | Planned |
 
-Recommended order: 3 → 1 → 2 → 4
+Recommended next: 3 → 4 (then finish rate-limit/cache interceptor wiring)
 
 - **Cron workers** are lowest risk, extend existing patterns, quick win.
-- **Interceptor wiring** makes existing annotations functional — high value for low conceptual overhead.
-- **Multi-tenancy** is higher value but touches the ORM codegen (protoc plugin), more delicate.
 - **Operators** are a large addition but self-contained — can be done in parallel with the others.

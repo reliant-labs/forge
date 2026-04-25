@@ -1,0 +1,251 @@
+package apikey
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"math/big"
+	"strings"
+	"time"
+
+	"github.com/lib/pq"
+)
+
+const (
+	// keyPrefix is prepended to every generated API key for easy identification.
+	keyPrefix = "fk_"
+
+	// prefixLen is the number of characters after "fk_" stored as the lookup prefix.
+	prefixLen = 8
+
+	// randomLen is the number of random base62 characters in a generated key.
+	randomLen = 32
+)
+
+// base62Alphabet is the character set used for random key generation.
+const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// APIKey represents a stored API key record (without the plaintext key).
+type APIKey struct {
+	ID         string
+	Prefix     string
+	Hash       string
+	UserID     string
+	Name       string
+	Scopes     []string
+	ExpiresAt  *time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+}
+
+// KeyStore defines the interface for API key lifecycle management.
+type KeyStore interface {
+	// CreateKey generates a new API key for the given user. Returns the stored
+	// record and the plaintext key (shown only once).
+	CreateKey(ctx context.Context, userID, name string, scopes []string) (*APIKey, string, error)
+
+	// RevokeKey soft-deletes an API key by setting its revoked_at timestamp.
+	RevokeKey(ctx context.Context, keyID string) error
+
+	// ListKeys returns all non-revoked API keys for a user.
+	ListKeys(ctx context.Context, userID string) ([]APIKey, error)
+
+	// RotateKey revokes the given key and creates a new one with the same
+	// user, name, and scopes. Returns the new record and plaintext key.
+	RotateKey(ctx context.Context, keyID string) (*APIKey, string, error)
+
+	// ValidateKey looks up an API key by its plaintext value, verifies the
+	// hash, and returns the record if valid and not revoked/expired.
+	ValidateKey(ctx context.Context, plaintext string) (*APIKey, error)
+}
+
+// DBKeyStore implements KeyStore using a *sql.DB connection.
+type DBKeyStore struct {
+	db *sql.DB
+}
+
+// NewDBKeyStore creates a new database-backed key store.
+func NewDBKeyStore(db *sql.DB) *DBKeyStore {
+	return &DBKeyStore{db: db}
+}
+
+// CreateKey generates a new API key, hashes it, and stores the record.
+func (s *DBKeyStore) CreateKey(ctx context.Context, userID, name string, scopes []string) (*APIKey, string, error) {
+	plaintext, err := generateKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate key: %w", err)
+	}
+
+	prefix := plaintext[len(keyPrefix) : len(keyPrefix)+prefixLen]
+	hash := hashKey(plaintext)
+
+	if scopes == nil {
+		scopes = []string{}
+	}
+
+	key := &APIKey{}
+	err = s.db.QueryRowContext(ctx,
+		`INSERT INTO api_keys (prefix, key_hash, user_id, name, scopes)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, prefix, key_hash, user_id, name, scopes, expires_at, revoked_at, created_at, last_used_at`,
+		prefix, hash, userID, name, pq.Array(scopes),
+	).Scan(
+		&key.ID, &key.Prefix, &key.Hash, &key.UserID, &key.Name,
+		pq.Array(&key.Scopes), &key.ExpiresAt, &key.RevokedAt, &key.CreatedAt, &key.LastUsedAt,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("insert api key: %w", err)
+	}
+
+	return key, plaintext, nil
+}
+
+// RevokeKey sets the revoked_at timestamp on a key.
+func (s *DBKeyStore) RevokeKey(ctx context.Context, keyID string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE api_keys SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL`,
+		keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke api key: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("api key not found or already revoked")
+	}
+	return nil
+}
+
+// ListKeys returns all non-revoked keys for a user.
+func (s *DBKeyStore) ListKeys(ctx context.Context, userID string) ([]APIKey, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, prefix, key_hash, user_id, name, scopes, expires_at, revoked_at, created_at, last_used_at
+		 FROM api_keys
+		 WHERE user_id = $1 AND revoked_at IS NULL
+		 ORDER BY created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []APIKey
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(
+			&k.ID, &k.Prefix, &k.Hash, &k.UserID, &k.Name,
+			pq.Array(&k.Scopes), &k.ExpiresAt, &k.RevokedAt, &k.CreatedAt, &k.LastUsedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan api key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// RotateKey revokes the existing key and creates a new one with the same
+// user, name, and scopes.
+func (s *DBKeyStore) RotateKey(ctx context.Context, keyID string) (*APIKey, string, error) {
+	// Look up the existing key
+	var userID, name string
+	var scopes []string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT user_id, name, scopes FROM api_keys WHERE id = $1 AND revoked_at IS NULL`,
+		keyID,
+	).Scan(&userID, &name, pq.Array(&scopes))
+	if err == sql.ErrNoRows {
+		return nil, "", fmt.Errorf("api key not found or already revoked")
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("lookup api key for rotation: %w", err)
+	}
+
+	// Revoke the old key
+	if err := s.RevokeKey(ctx, keyID); err != nil {
+		return nil, "", fmt.Errorf("revoke old key during rotation: %w", err)
+	}
+
+	// Create a new key with the same metadata
+	return s.CreateKey(ctx, userID, name, scopes)
+}
+
+// ValidateKey looks up a key by prefix, compares the full hash, and checks
+// that the key is not revoked or expired.
+func (s *DBKeyStore) ValidateKey(ctx context.Context, plaintext string) (*APIKey, error) {
+	if !strings.HasPrefix(plaintext, keyPrefix) || len(plaintext) < len(keyPrefix)+prefixLen {
+		return nil, fmt.Errorf("invalid api key format")
+	}
+
+	prefix := plaintext[len(keyPrefix) : len(keyPrefix)+prefixLen]
+	hash := hashKey(plaintext)
+
+	var key APIKey
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, prefix, key_hash, user_id, name, scopes, expires_at, revoked_at, created_at, last_used_at
+		 FROM api_keys
+		 WHERE prefix = $1 AND revoked_at IS NULL`,
+		prefix,
+	).Scan(
+		&key.ID, &key.Prefix, &key.Hash, &key.UserID, &key.Name,
+		pq.Array(&key.Scopes), &key.ExpiresAt, &key.RevokedAt, &key.CreatedAt, &key.LastUsedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("invalid api key")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup api key: %w", err)
+	}
+
+	// Constant-time compare of the full hash
+	if key.Hash != hash {
+		return nil, fmt.Errorf("invalid api key")
+	}
+
+	// Check expiry
+	if key.ExpiresAt != nil && key.ExpiresAt.Before(time.Now()) {
+		return nil, fmt.Errorf("api key expired")
+	}
+
+	return &key, nil
+}
+
+// UpdateLastUsed sets the last_used_at timestamp for a key.
+func (s *DBKeyStore) UpdateLastUsed(ctx context.Context, keyID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`,
+		keyID,
+	)
+	return err
+}
+
+// generateKey creates a new random API key in the format fk_<32-char-base62>.
+func generateKey() (string, error) {
+	alphabetLen := big.NewInt(int64(len(base62Alphabet)))
+	var sb strings.Builder
+	sb.WriteString(keyPrefix)
+
+	for i := 0; i < randomLen; i++ {
+		n, err := rand.Int(rand.Reader, alphabetLen)
+		if err != nil {
+			return "", fmt.Errorf("crypto/rand: %w", err)
+		}
+		sb.WriteByte(base62Alphabet[n.Int64()])
+	}
+
+	return sb.String(), nil
+}
+
+// hashKey returns the hex-encoded SHA-256 hash of the given key.
+func hashKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:])
+}

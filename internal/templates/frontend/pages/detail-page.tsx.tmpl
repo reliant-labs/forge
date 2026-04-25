@@ -1,0 +1,166 @@
+"use client";
+
+import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.HooksImportPath}}";
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+{{- if .HasDelete}}
+import { useCallback, useState } from "react";
+{{- end}}
+import PageHeader from "@/components/ui/page_header";
+import Badge from "@/components/ui/badge";
+import KeyValueList from "@/components/ui/key_value_list";
+import SkeletonLoader from "@/components/ui/skeleton_loader";
+{{- if .HasDelete}}
+import Modal from "@/components/ui/modal";
+{{- end}}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  // Handle protobuf-es Timestamp objects (have seconds/nanos properties)
+  if (typeof value === "object" && value !== null && "seconds" in value) {
+    try {
+      const ts = value as { seconds: bigint; nanos?: number };
+      return new Date(Number(ts.seconds) * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch { /* fall through */ }
+  }
+  const s = String(value);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    try { return new Date(s).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; }
+  }
+  return s;
+}
+
+function isEnumLike(key: string, value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const enumKeys = ["status", "type", "kind", "role", "state", "category", "priority", "level"];
+  return enumKeys.some((k) => key.toLowerCase().includes(k));
+}
+
+const badgeVariants = ["info", "success", "warning", "error", "neutral"] as const;
+
+function enumBadgeVariant(value: string): "info" | "success" | "warning" | "error" | "neutral" {
+  const hash = [...value].reduce((a, c) => a + c.charCodeAt(0), 0) % badgeVariants.length;
+  return badgeVariants[hash];
+}
+
+function ErrorState({ error }: { error: Error }) {
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-center">
+      <p className="text-sm font-medium text-red-800">Failed to load {{.EntityName | lower}}</p>
+      <p className="mt-1 text-sm text-red-600">{error.message}</p>
+      <Link href="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-red-700 underline hover:text-red-800">
+        Back to {{.EntityNamePlural | lower}}
+      </Link>
+    </div>
+  );
+}
+
+export default function {{.EntityName}}DetailPage() {
+  const params = useParams();
+  const router = useRouter();
+  const id = params.id as string;
+  {{- if .HasDelete}}
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  {{- end}}
+
+  const { data, isLoading, error } = use{{.GetRPC}}({ id });
+  {{- if .HasDelete}}
+  const deleteMutation = use{{.DeleteRPC}}({
+    onSuccess: () => router.push("/{{.EntitySlug}}"),
+  });
+
+  const handleDelete = useCallback(() => {
+    deleteMutation.mutate({ id });
+  }, [deleteMutation, id]);
+  {{- end}}
+
+  if (isLoading) return <SkeletonLoader variant="list-item" count={5} />;
+  if (error) return <ErrorState error={error} />;
+
+  const item = data?.{{.EntityName | camelCase}} ?? data;
+  const entries = item && typeof item === "object"
+    ? Object.entries(item as Record<string, unknown>).filter(([k]) => k !== "$typeName")
+    : [];
+
+  const fields = entries.map(([key, value]) => ({
+    label: key.replace(/([A-Z])/g, " $1").replace(/^./, (s: string) => s.toUpperCase()),
+    value: isEnumLike(key, value)
+      ? <Badge label={String(value)} variant={enumBadgeVariant(String(value))} />
+      : formatValue(value),
+  }));
+
+  const actions: Array<{ label: string; href?: string; variant?: "primary" | "secondary" | "danger"; icon?: React.ReactNode; onClick?: () => void }> = [
+    {{- if .HasUpdate}}
+    {
+      label: "Edit",
+      href: `/{{.EntitySlug}}/${id}/edit`,
+      variant: "secondary" as const,
+      icon: (
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+        </svg>
+      ),
+    },
+    {{- end}}
+    {{- if .HasDelete}}
+    {
+      label: "Delete",
+      onClick: () => setShowDeleteConfirm(true),
+      variant: "danger" as const,
+      icon: (
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+        </svg>
+      ),
+    },
+    {{- end}}
+  ];
+
+  return (
+    <div>
+      <PageHeader
+        title={String((item as Record<string, unknown>)?.name ?? (item as Record<string, unknown>)?.title ?? "{{.EntityName}}")}
+        breadcrumbs={[
+          { label: "{{.EntityNamePlural}}", href: "/{{.EntitySlug}}" },
+          { label: String((item as Record<string, unknown>)?.name ?? (item as Record<string, unknown>)?.title ?? id) },
+        ]}
+        actions={actions}
+      />
+
+      <KeyValueList groups={[{ fields }]} />
+
+      {{- if .HasDelete}}
+      <Modal
+        open={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        title="Delete {{.EntityName}}"
+        description="Are you sure you want to delete this {{.EntityName | lower}}? This action cannot be undone."
+        footer={
+          <>
+            <button
+              onClick={() => setShowDeleteConfirm(false)}
+              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending}
+              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 disabled:opacity-50"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </button>
+          </>
+        }
+      >
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
+          <svg className="h-5 w-5 text-red-600" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+        </div>
+      </Modal>
+      {{- end}}
+    </div>
+  );
+}

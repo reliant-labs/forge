@@ -4,14 +4,13 @@ package services.{{.ServiceName}}.v1;
 
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
-import "forge/options/v1/service.proto";
-import "forge/options/v1/method.proto";
+import "forge/v1/forge.proto";
 
 option go_package = "{{.Module}}/gen/services/{{.ServiceName}}/v1;{{.ServiceName}}v1";
 
 // {{.Name}} service with basic CRUD operations
 service {{.ServiceName | pascalCase}}Service {
-  option (forge.options.v1.service_options) = {
+  option (forge.v1.service) = {
     name: "{{.ServiceName | pascalCase}}Service"
     version: "1.0.0"
     description: "{{.ServiceName | pascalCase}} management service"
@@ -19,7 +18,7 @@ service {{.ServiceName | pascalCase}}Service {
 
   // Create a new record
   rpc Create(CreateRequest) returns (CreateResponse) {
-    option (forge.options.v1.method_options) = {
+    option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
     };
@@ -27,15 +26,14 @@ service {{.ServiceName | pascalCase}}Service {
 
   // Get record by ID
   rpc Get(GetRequest) returns (GetResponse) {
-    option (forge.options.v1.method_options) = {
+    option (forge.v1.method) = {
       auth_required: true
-      cache: { key_template: "{{.ServiceName | singular | pascalCase}}:{request.id}" }
     };
   }
 
   // Update record
   rpc Update(UpdateRequest) returns (UpdateResponse) {
-    option (forge.options.v1.method_options) = {
+    option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
     };
@@ -43,7 +41,7 @@ service {{.ServiceName | pascalCase}}Service {
 
   // Delete record
   rpc Delete(DeleteRequest) returns (DeleteResponse) {
-    option (forge.options.v1.method_options) = {
+    option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
     };
@@ -51,7 +49,7 @@ service {{.ServiceName | pascalCase}}Service {
 
   // List records with pagination
   rpc List(ListRequest) returns (ListResponse) {
-    option (forge.options.v1.method_options) = {
+    option (forge.v1.method) = {
       auth_required: true
     };
   }

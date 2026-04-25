@@ -29,7 +29,45 @@ type ConfigTemplateField struct {
 // ConfigTemplateData is the top-level data passed to the config.go template.
 type ConfigTemplateData struct {
 	Fields       []ConfigTemplateField
+	FieldNames   map[string]bool // GoName → true for quick existence checks in templates
 	NeedsStrconv bool
+}
+
+// CmdServerTemplateData holds the data passed to cmd-server.go.tmpl.
+// It combines project-level data (Module) with config field awareness
+// so the template can conditionally include code that references
+// specific config fields.
+type CmdServerTemplateData struct {
+	Module       string
+	ConfigFields map[string]bool
+}
+
+// GenerateCmdServer re-renders cmd/server.go with config field awareness.
+// Called during `forge generate` so that cmd/server.go stays in sync with
+// the actual config proto fields.
+func GenerateCmdServer(messages []ConfigMessage, targetDir string) error {
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return fmt.Errorf("read module path: %w", err)
+	}
+
+	data := CmdServerTemplateData{
+		Module:       modulePath,
+		ConfigFields: ConfigFieldNamesFromMessages(messages),
+	}
+
+	content, err := templates.ProjectTemplates.Render("cmd-server.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
+	}
+
+	cmdDir := filepath.Join(targetDir, "cmd")
+	if err := os.MkdirAll(cmdDir, 0755); err != nil {
+		return fmt.Errorf("create cmd/: %w", err)
+	}
+
+	outPath := filepath.Join(cmdDir, "server.go")
+	return os.WriteFile(outPath, content, 0644)
 }
 
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
@@ -111,8 +149,14 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
 		return nil
 	}
 
+	fieldNames := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		fieldNames[f.GoName] = true
+	}
+
 	data := ConfigTemplateData{
 		Fields:       fields,
+		FieldNames:   fieldNames,
 		NeedsStrconv: needsStrconv,
 	}
 
@@ -138,4 +182,45 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
 	}
 	envPath := filepath.Join(targetDir, ".env.example")
 	return os.WriteFile(envPath, envContent, 0644)
+}
+
+// ConfigFieldNamesFromMessages returns a map of Go field names present in the
+// given config messages. Used by templates to conditionally include code
+// blocks that reference specific config fields.
+func ConfigFieldNamesFromMessages(messages []ConfigMessage) map[string]bool {
+	names := make(map[string]bool)
+	for _, msg := range messages {
+		for _, f := range msg.Fields {
+			names[f.GoName] = true
+		}
+	}
+	return names
+}
+
+// DefaultConfigFieldNames returns the field names from the default scaffold
+// config proto. Used at initial project scaffold time before the config
+// proto has been parsed by the generator.
+func DefaultConfigFieldNames() map[string]bool {
+	return map[string]bool{
+		"Port":                    true,
+		"LogLevel":                true,
+		"DatabaseUrl":             true,
+		"CorsOrigins":             true,
+		"CorsAllowCredentials":    true,
+		"TlsCertPath":             true,
+		"TlsKeyPath":              true,
+		"PreStopDelay":            true,
+		"ShutdownTimeout":         true,
+		"LogFormat":               true,
+		"AutoMigrate":             true,
+		"Environment":             true,
+		"RateLimitRps":            true,
+		"RateLimitBurst":          true,
+		"DbMaxOpenConns":          true,
+		"DbMaxIdleConns":          true,
+		"DbConnMaxIdleTime":       true,
+		"DbConnMaxLifetime":       true,
+		"PprofAddr":               true,
+		"SecurityHeadersEnabled":  true,
+	}
 }

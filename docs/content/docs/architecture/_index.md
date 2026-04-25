@@ -1,13 +1,31 @@
 ---
 title: "Architecture"
-description: "Single binary design, two contract systems, explicit wiring, and constructor injection"
+description: "Production infrastructure generation, dual contracts, explicit wiring, and schema evolution"
 weight: 20
 icon: "architecture"
 ---
 
 # Forge Architecture
 
-Forge is built on a dual-contract thesis: **proto contracts for external boundaries, Go interface contracts for internal boundaries**. Proto definitions are the source of truth for APIs and configuration. Go interfaces defined in `contract.go` files are the source of truth for internal package boundaries. This separation exists because proto cannot express channels, complex Go types, factories, or variadic arguments -- the things internal packages need.
+Forge generates production-grade infrastructure so you can focus on business logic. It achieves this through a **dual-contract system** — proto contracts for external boundaries (APIs, config) and Go interface contracts for internal boundaries (packages) — combined with explicit wiring, constructor injection, and contract enforcement. The result is a codebase where the middleware stack, observability, test harness, CI/CD, and deployment are generated and maintained, while business logic and database schema are developer-owned.
+
+## What Forge Generates (and What It Doesn't)
+
+**Generated and maintained by `forge generate`:**
+- Connect RPC stubs and TypeScript clients (from proto)
+- Mocks for API services and internal packages
+- Middleware wrappers (logging, tracing) for internal packages
+- Dependency wiring (`pkg/app/wire.go`)
+- Test harness (`pkg/app/testing.go`)
+- Service stub scaffolds (non-destructive — won't overwrite existing)
+- sqlc query code (if `sqlc.yaml` exists)
+
+**Generated once at scaffold time, then developer-owned:**
+- Business logic (service handlers)
+- Database schema (SQL migrations)
+- Entity types and ORM functions (`internal/db/`)
+- CI/CD pipelines (`.github/workflows/`)
+- Docker and Kubernetes manifests (`deploy/`)
 
 ## Why Two Contract Systems?
 
@@ -17,9 +35,38 @@ Most frameworks treat proto files as the only contract system. Forge recognizes 
 
 **Internal boundaries need Go interfaces** because they stay within a single process. Go interfaces can express channels, complex types, closures, and other constructs that proto cannot. Internal packages like email senders, cache layers, and business logic modules use Go interface contracts in `contract.go`.
 
-**Contract enforcement is automatic.** The `forge lint --contract` command scans all service and package types and rejects any exported method that doesn't map to its contract -- whether that contract is a proto service definition or a Go interface.
+**Contract enforcement is automatic.** The `forge lint --contract` command scans all service and package types and rejects any exported method that doesn't map to its contract — whether that contract is a proto service definition or a Go interface.
 
 **LLM-generated code is constrained.** When an AI writes service code, it must implement a contract-defined interface. It can't invent new public methods, change wire formats, or break the contract with other services.
+
+## Schema Evolution — When API and DB Diverge
+
+Proto defines your API surface. SQL migrations define your database schema. These start aligned but naturally diverge as your application evolves.
+
+**The evolution path:**
+
+1. **Scaffold phase**: Entity messages live in proto. `internal/db/types.go` uses type aliases (`type User = apiv1.User`). API and DB share the same shape.
+
+2. **Divergence**: The database needs columns the API shouldn't expose (e.g., `password_hash`, `login_count`), or the API returns computed fields that don't exist in the DB.
+
+3. **Concrete structs**: Replace the alias with a concrete Go struct in `internal/db/types.go`:
+   ```go
+   type User struct {
+       ID           string
+       Name         string
+       Email        string
+       PasswordHash string  // DB-only, not in API
+       LoginCount   int     // DB-only
+   }
+   ```
+
+4. **Mappers**: Add converter functions in the service layer:
+   ```go
+   func userToProto(u *db.User) *apiv1.User { ... }
+   func userFromProto(u *apiv1.User) *db.User { ... }
+   ```
+
+This is the intended workflow. Proto is the onramp for scaffolding — it gets you running fast. The database layer is yours to evolve independently.
 
 ## Single Binary Design
 
@@ -59,7 +106,7 @@ func BuildDeps(cfg *configv1.Config) (*Deps, error) {
 }
 ```
 
-The config proto is the executable's instantiation contract: it drives what gets constructed, wired, and registered. Mock swapping happens through config -- test configs default to mocks, same wiring code runs.
+The config proto is the executable's instantiation contract: it drives what gets constructed, wired, and registered. Mock swapping happens through config — test configs default to mocks, same wiring code runs.
 
 ## The Two Contract Categories
 
@@ -176,11 +223,11 @@ myproject/
 │   ├── main.go
 │   ├── server.go
 │   └── version.go
-├── proto/                         # External contracts
+├── proto/                         # API contracts (service RPCs + config)
 │   ├── config/v1/                 # Config — instantiation contract
 │   └── services/                  # Service RPCs
 ├── gen/                           # Generated code (separate module)
-├── services/                      # Service handler packages
+├── services/                      # Service handler packages (business logic — you own this)
 │   ├── api/
 │   │   ├── service.go
 │   │   └── handlers.go
@@ -196,12 +243,13 @@ myproject/
 │       ├── wire.go                # GENERATED — dependency wiring
 │       ├── wire_test.go
 │       └── testing.go             # GENERATED — test helpers
+├── db/migrations/                 # SQL migrations (you own this)
+├── internal/db/                   # Entity types + ORM (you own this)
 ├── deploy/
 │   ├── Dockerfile                 # Single Dockerfile
 │   ├── kcl/
 │   ├── docker-compose.yml
 │   └── k3d.yaml
-├── db/migrations/
 ├── frontends/
 ├── .github/workflows/
 ├── forge.yaml
@@ -216,7 +264,7 @@ myproject/
 
 **KCL for Kubernetes.** Not Helm, not Kustomize. Type-safe manifest generation with render lambdas.
 
-**No heavy ORM.** Migration-first. SQL migrations are the source of truth. Thin generated CRUD. Complex queries via sqlc.
+**Migration-first database.** SQL migrations in `db/migrations/` are the source of truth for schema. Entity types in `internal/db/` can start as proto aliases and evolve into concrete structs. Proto defines the API surface, not the database schema.
 
 **Go workspaces.** Generated code in a separate `gen/` module via `go.work`.
 

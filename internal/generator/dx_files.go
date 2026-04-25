@@ -304,7 +304,6 @@ main() {
   install_go_tool govulncheck              golang.org/x/vuln/cmd/govulncheck@latest
 
   log "bootstrap complete"
-  printf '\nNext steps:\n  task deps\n  task dev-up\n  task dev\n'
 }
 
 main "$@"

@@ -12,7 +12,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // goKeywords is the set of Go reserved keywords.
@@ -258,10 +257,6 @@ func runAddService(name string, port int) error {
 	}
 
 	fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
-	fmt.Println("\nNext steps:")
-	fmt.Printf("  1. Add RPCs to proto/services/%s/v1/%s.proto\n", name, name)
-	fmt.Printf("  2. Implement handlers in handlers/%s/handlers.go\n", name)
-	fmt.Printf("  3. E2E tests generated in e2e/%s/ — update after adding RPCs\n", name)
 
 	return nil
 }
@@ -356,9 +351,6 @@ func runAddWorker(name string) error {
 	}
 
 	fmt.Printf("\n✅ Worker '%s' added successfully!\n", name)
-	fmt.Println("\nNext steps:")
-	fmt.Printf("  1. Implement your processing loop in workers/%s/worker.go\n", name)
-	fmt.Printf("  2. Run tests: go test ./workers/%s/...\n", name)
 
 	return nil
 }
@@ -450,10 +442,6 @@ func runAddOperator(name, group, version string) error {
 	}
 
 	fmt.Printf("\n✅ Operator '%s' added successfully!\n", name)
-	fmt.Println("\nNext steps:")
-	fmt.Printf("  1. Define your CRD spec/status in operators/%s/types.go\n", name)
-	fmt.Printf("  2. Implement reconciliation logic in operators/%s/controller.go\n", name)
-	fmt.Printf("  3. Run tests: go test ./operators/%s/...\n", name)
 
 	return nil
 }
@@ -560,10 +548,6 @@ func runAddFrontend(name string, port int) error {
 	}
 
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
-	fmt.Println("\nNext steps:")
-	fmt.Printf("  cd frontends/%s\n", name)
-	fmt.Println("  npm install")
-	fmt.Println("  npm run dev")
 
 	return nil
 }
@@ -646,19 +630,7 @@ func runAddWebhook(name, serviceName string) error {
 		return fmt.Errorf("update project config: %w", err)
 	}
 
-	pascalName := naming.ToPascalCase(name)
-
 	fmt.Printf("\n✅ Webhook '%s' added to service '%s'!\n", name, serviceName)
-	fmt.Println("\nGenerated files:")
-	fmt.Printf("  handlers/%s/webhook_%s.go       (handler + signature verification)\n", serviceName, name)
-	fmt.Printf("  handlers/%s/webhook_%s_test.go   (tests)\n", serviceName, name)
-	fmt.Printf("  handlers/%s/webhook_store.go      (idempotency store)\n", serviceName)
-	fmt.Println("\nNext steps:")
-	fmt.Println("  1. Run 'forge generate' to regenerate webhook_routes_gen.go")
-	fmt.Printf("  2. Ensure RegisterHTTP in handlers/%s/service.go calls:\n", serviceName)
-	fmt.Println("     s.RegisterWebhookRoutes(mux, stack)")
-	fmt.Printf("  3. Implement signature verification in handlers/%s/webhook_%s.go\n", serviceName, name)
-	fmt.Printf("  4. Implement webhook processing logic in process%sWebhook()\n", pascalName)
 
 	return nil
 }

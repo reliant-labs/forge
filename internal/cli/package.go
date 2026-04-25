@@ -174,15 +174,6 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n✅ Internal package '%s' created!\n", name)
-	fmt.Println("\nNext steps:")
-	fmt.Printf("  1. Define interface methods in internal/%s/contract.go\n", name)
-	switch kind {
-	case "client":
-		fmt.Printf("  2. Implement them in internal/%s/client.go\n", name)
-	default:
-		fmt.Printf("  2. Implement them in internal/%s/service.go\n", name)
-	}
-	fmt.Printf("  3. Run: %s generate  (generates mock_gen.go and middleware_gen.go)\n", CLIName())
 
 	return nil
 }

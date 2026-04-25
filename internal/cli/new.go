@@ -246,11 +246,9 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
 
-	var frontendInstallFailed bool
 	if len(frontendNames) > 0 {
 		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
 		if err := runNpmInstall(targetPath, frontendNames); err != nil {
-			frontendInstallFailed = true
 			fmt.Printf("Warning: npm install failed: %v\n", err)
 			fmt.Println("You can run 'npm install' manually later — note that CI requires package-lock.json to exist.")
 		}
@@ -264,34 +262,6 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 
 	success = true
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
-	fmt.Println("\nNext steps:")
-	if !inPlace {
-		fmt.Printf("  cd %s\n", projectName)
-		fmt.Println("")
-	}
-	fmt.Println("  # Download dependencies:")
-	fmt.Println("  go mod download")
-	fmt.Println("")
-	if len(serviceNames) > 0 {
-		for _, svcName := range serviceNames {
-			fmt.Printf("  # Add RPCs to proto/services/%s/v1/%s.proto\n", svcName, svcName)
-		}
-	} else {
-		fmt.Printf("  # Add a service:\n")
-		fmt.Printf("  %s add service <name>\n", CLIName())
-	}
-	fmt.Println("  # Then generate code from protos:")
-	fmt.Printf("  %s generate\n", CLIName())
-	fmt.Println("")
-	if frontendInstallFailed {
-		fmt.Printf("  # Frontend dependency install failed above — re-run manually:\n")
-		for _, feName := range frontendNames {
-			fmt.Printf("  cd frontends/%s && npm install\n", feName)
-		}
-		fmt.Println("")
-	}
-	fmt.Println("  # Build and run:")
-	fmt.Println("  task run")
 
 	return nil
 }

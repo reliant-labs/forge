@@ -236,7 +236,7 @@ func TenantInterceptor(tenantClaim string) connect.UnaryInterceptorFunc {
 ```
 
 #### 2b. Tenant-Scoped ORM Queries
-Extend `protoc-gen-forge-orm` to recognize a tenant field annotation:
+The ORM recognizes a tenant field convention:
 
 ```protobuf
 message Workspace {
@@ -288,7 +288,7 @@ func (h *TestHarness) WithTenant(tenantID string) context.Context {
 
 ## 3. Proto-Annotated Interceptor Wiring — ✅ DONE (Auth/RBAC)
 
-> **Status:** Auth and RBAC annotations are now functional. `protoc-gen-forge-orm` reads `auth_required` and role annotations from proto method options and generates a per-method RBAC policy map. The generated auth interceptor consults this map at runtime. Rate-limit and cache annotation wiring remain planned.
+> **Status:** Auth and RBAC annotations are now functional. The code generator reads `auth_required` and role annotations from proto method options and generates a per-method RBAC policy map. The generated auth interceptor consults this map at runtime. Rate-limit and cache annotation wiring remain planned.
 
 ### Problem
 Forge already has proto annotations for auth (`auth_required`), rate limiting (`rate_limit`), and caching (`cache`) in `method.proto`, but the code generation doesn't wire these into actual interceptors automatically. The annotations exist but are decorative.

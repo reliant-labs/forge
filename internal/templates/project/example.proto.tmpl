@@ -3,33 +3,28 @@ syntax = "proto3";
 package {{.ProjectName | snakeCase}}.v1;
 
 import "google/protobuf/timestamp.proto";
-import "forge/options/v1/service.proto";
-import "forge/options/v1/method.proto";
+import "forge/v1/forge.proto";
 
 option go_package = "{{.Module}}/gen/{{.ProjectName | snakeCase}}/v1;{{.ProjectName | snakeCase}}v1";
 
 // {{.ProjectName | pascalCase}}Service provides example RPC operations.
 // Modify or replace these RPCs with your actual business logic.
 service {{.ProjectName | pascalCase}}Service {
-  option (forge.options.v1.service_options) = {
+  option (forge.v1.service) = {
     name: "{{.ProjectName | pascalCase}}Service"
     version: "1.0.0"
     description: "{{.ProjectName | pascalCase}} service"
   };
 
   // GetItem retrieves an item by ID.
-  rpc GetItem(GetItemRequest) returns (GetItemResponse) {
-    option (forge.options.v1.method_options) = {
-      cache: { key_template: "{{.ProjectName | pascalCase}}:{request.id}" }
-    };
-  }
+  rpc GetItem(GetItemRequest) returns (GetItemResponse) {}
 
   // ListItems returns a paginated list of items.
   rpc ListItems(ListItemsRequest) returns (ListItemsResponse) {}
 
   // CreateItem creates a new item.
   rpc CreateItem(CreateItemRequest) returns (CreateItemResponse) {
-    option (forge.options.v1.method_options) = {
+    option (forge.v1.method) = {
       auth_required: true
       idempotency_key: true
     };

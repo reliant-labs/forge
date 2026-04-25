@@ -1,0 +1,135 @@
+"use client";
+
+import { use{{.CreateRPC}} } from "{{.HooksImportPath}}";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { type FormEvent, useState } from "react";
+import PageHeader from "@/components/ui/page_header";
+import AlertBanner from "@/components/ui/alert_banner";
+
+export default function Create{{.EntityName}}Page() {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = use{{.CreateRPC}}({
+    onSuccess: () => router.push("/{{.EntitySlug}}"),
+    onError: (err: Error) => setError(err.message),
+  });
+
+  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+
+    const formData = new FormData(e.currentTarget);
+    const values: Record<string, unknown> = {};
+
+    {{- range .CreateFields}}
+    {{- if eq .Type "checkbox"}}
+    values["{{.Name}}"] = formData.get("{{.Name}}") === "on";
+    {{- else if eq .Type "number"}}
+    values["{{.Name}}"] = Number(formData.get("{{.Name}}"));
+    {{- else}}
+    values["{{.Name}}"] = formData.get("{{.Name}}") as string;
+    {{- end}}
+    {{- end}}
+
+    mutation.mutate(values as Parameters<typeof mutation.mutate>[0]);
+  }
+
+  return (
+    <div className="mx-auto max-w-xl px-4 py-8">
+      <PageHeader
+        title="Create {{.EntityName}}"
+        breadcrumbs={[
+          { label: "{{.EntityNamePlural}}", href: "/{{.EntitySlug}}" },
+          { label: "Create" },
+        ]}
+      />
+
+      {error && (
+        <div className="mb-6">
+          <AlertBanner variant="error" message={error} dismissible onDismiss={() => setError(null)} />
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-6 rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+        {{- range .CreateFields}}
+        {{- if eq .Type "checkbox"}}
+        <div className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            id="{{.Name}}"
+            name="{{.Name}}"
+            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <label htmlFor="{{.Name}}" className="text-sm font-medium text-gray-700">
+            {{.Label}}
+          </label>
+        </div>
+        {{- else if eq .Type "textarea"}}
+        <div>
+          <label htmlFor="{{.Name}}" className="mb-1 block text-sm font-medium text-gray-700">
+            {{.Label}}{{if .Required}} *{{end}}
+          </label>
+          <textarea
+            id="{{.Name}}"
+            name="{{.Name}}"
+            rows={4}
+            {{- if .Required}}
+            required
+            {{- end}}
+            className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        {{- else if eq .Type "date"}}
+        <div>
+          <label htmlFor="{{.Name}}" className="mb-1 block text-sm font-medium text-gray-700">
+            {{.Label}}{{if .Required}} *{{end}}
+          </label>
+          <input
+            type="datetime-local"
+            id="{{.Name}}"
+            name="{{.Name}}"
+            {{- if .Required}}
+            required
+            {{- end}}
+            className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        {{- else}}
+        <div>
+          <label htmlFor="{{.Name}}" className="mb-1 block text-sm font-medium text-gray-700">
+            {{.Label}}{{if .Required}} *{{end}}
+          </label>
+          <input
+            type="{{.Type}}"
+            id="{{.Name}}"
+            name="{{.Name}}"
+            {{- if .Required}}
+            required
+            {{- end}}
+            className="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        {{- end}}
+        {{- end}}
+
+        <div className="flex items-center justify-end gap-3 border-t border-gray-200 pt-6">
+          <Link
+            href="/{{.EntitySlug}}"
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </Link>
+          <button
+            type="submit"
+            disabled={mutation.isPending}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
+          >
+            {mutation.isPending ? "Creating..." : "Create {{.EntityName}}"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

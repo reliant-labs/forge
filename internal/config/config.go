@@ -2,6 +2,8 @@
 // both the CLI (read) and the generator (write) packages.
 package config
 
+import "strings"
+
 // ProjectConfig represents the forge.yaml file.
 // Fields align with proto/forge/project/v1/project.proto.
 type ProjectConfig struct {
@@ -19,6 +21,7 @@ type ProjectConfig struct {
 	Docker     DockerConfig        `yaml:"docker"`
 	K8s        K8sConfig           `yaml:"k8s"`
 	Lint       LintConfig          `yaml:"lint"`
+	Contracts  ContractsConfig     `yaml:"contracts"`
 	Auth       AuthConfig          `yaml:"auth"`
 	Docs       DocsConfig          `yaml:"docs"`
 	Packs      []string            `yaml:"packs,omitempty"`
@@ -217,6 +220,34 @@ type DockerConfig struct {
 // LintConfig holds lint-related settings.
 type LintConfig struct {
 	Contract bool `yaml:"contract"`
+}
+
+// ContractsConfig controls contract enforcement linter behavior.
+type ContractsConfig struct {
+	Strict            bool     `yaml:"strict"`              // require contract.go for all internal packages with exported methods (default: true)
+	AllowExportedVars bool     `yaml:"allow_exported_vars"` // allow exported package vars (default: false)
+	AllowExportedFuncs bool    `yaml:"allow_exported_funcs"` // allow exported funcs without contract (default: true)
+	Exclude           []string `yaml:"exclude"`             // packages that opt out
+}
+
+// IsStrict returns whether strict contract enforcement is enabled (default: true).
+// When the config is zero-value (not explicitly set), strict defaults to true.
+func (c ContractsConfig) IsStrict() bool {
+	if !c.Strict && !c.AllowExportedVars && !c.AllowExportedFuncs && len(c.Exclude) == 0 {
+		// Zero-value config — default to strict=true.
+		return true
+	}
+	return c.Strict
+}
+
+// IsExcluded returns true if the given package path matches any exclude pattern.
+func (c ContractsConfig) IsExcluded(pkgPath string) bool {
+	for _, pattern := range c.Exclude {
+		if pattern == pkgPath || strings.HasSuffix(pkgPath, "/"+pattern) || strings.Contains(pkgPath, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthConfig holds authentication provider settings.

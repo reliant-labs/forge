@@ -459,6 +459,17 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("expected reliant.md to point at .reliant/reliant-forge.md, got:\n%s", stub)
 	}
 
+	// The user-owned .reliant/reliant.md project memory file.
+	reliantMemoryPath := filepath.Join(root, ".reliant", "reliant.md")
+	assertPathExists(t, reliantMemoryPath)
+	reliantMemory := readFile(t, reliantMemoryPath)
+	if !strings.Contains(reliantMemory, "# memory-app") {
+		t.Fatalf("expected .reliant/reliant.md to contain project name heading, got:\n%s", reliantMemory)
+	}
+	if !strings.Contains(reliantMemory, "has not launched yet") {
+		t.Fatalf("expected .reliant/reliant.md to contain launch notice, got:\n%s", reliantMemory)
+	}
+
 	// The forge-owned conventions file lives under .reliant/ and must be
 	// written by the generator.
 	conventionsPath := filepath.Join(root, ".reliant", "reliant-forge.md")

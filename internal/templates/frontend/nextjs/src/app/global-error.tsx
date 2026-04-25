@@ -16,7 +16,7 @@ export default function GlobalError({
   return (
     <html lang="en">
       <body className="font-sans antialiased">
-        <main className="flex min-h-screen flex-col items-center justify-center p-8">
+        <main className="flex flex-1 flex-col items-center justify-center p-8">
           <div className="max-w-md text-center">
             <h1 className="mb-4 text-3xl font-bold tracking-tight">
               Application error

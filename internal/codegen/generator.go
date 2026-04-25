@@ -291,7 +291,7 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 // sqlc) without opting into the generated forge ORM. The ORM field is
 // dropped when no proto/db/ entity definitions exist so `App.ORM` can never
 // be silently nil in user code.
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string) error {
+func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err
@@ -311,24 +311,30 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 
 	hasFallible := hasFallibleConstructor(bootstrapSvcs, packages, workers, operators)
 
+	if configFields == nil {
+		configFields = DefaultConfigFieldNames()
+	}
+
 	data := struct {
-		Module      string
-		Services    []BootstrapServiceData
-		Packages    []BootstrapPackageData
-		Workers     []BootstrapWorkerData
-		Operators   []BootstrapOperatorData
-		HasDatabase bool
-		OrmEnabled  bool
-		HasFallible bool
+		Module       string
+		Services     []BootstrapServiceData
+		Packages     []BootstrapPackageData
+		Workers      []BootstrapWorkerData
+		Operators    []BootstrapOperatorData
+		HasDatabase  bool
+		OrmEnabled   bool
+		HasFallible  bool
+		ConfigFields map[string]bool
 	}{
-		Module:      modulePath,
-		Services:    bootstrapSvcs,
-		Packages:    packages,
-		Workers:     workers,
-		Operators:   operators,
-		HasDatabase: hasDatabase,
-		OrmEnabled:  ormEnabled,
-		HasFallible: hasFallible,
+		Module:       modulePath,
+		Services:     bootstrapSvcs,
+		Packages:     packages,
+		Workers:      workers,
+		Operators:    operators,
+		HasDatabase:  hasDatabase,
+		OrmEnabled:   ormEnabled,
+		HasFallible:  hasFallible,
+		ConfigFields: configFields,
 	}
 
 	content, err := templates.ProjectTemplates.Render("bootstrap.go.tmpl", data)

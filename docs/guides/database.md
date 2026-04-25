@@ -1,148 +1,92 @@
 # Database & ORM
 
-Forge uses a migration-first database workflow. Checked-in SQL migrations in `db/migrations/` are the source of truth for schema evolution, while proto DB entities provide the application contract view used for generated ORM code. Run `forge generate` to regenerate ORM code from your current proto contracts, and use [sqlc](https://sqlc.dev/) alongside the generated ORM for complex queries.
+Forge uses a migration-first database workflow. Checked-in SQL migrations in `db/migrations/` are the source of truth for schema evolution. Entity messages are defined in the service proto files alongside RPCs, with type aliases and ORM CRUD functions in `internal/db/`. For complex queries, use [sqlc](https://sqlc.dev/) alongside the ORM.
 
-## Migration-First ORM Contracts
+## Architecture
 
-The generated ORM is driven by two custom proto extensions defined in `proto/forge/options/v1/`:
+The database layer consists of three parts:
 
-- **`EntityOptions`** (message-level) -- Maps a proto message to a database table, with options for indexes, soft delete, and automatic timestamps.
-- **`FieldOptions`** (field-level) -- Maps a proto field to a database column, with options for primary key, column type, constraints, references, and validation.
+1. **Entity messages** — defined in the service proto (`proto/services/<svc>/v1/<svc>.proto`) alongside RPC definitions
+2. **Type aliases + ORM functions** — in `internal/db/`:
+   - `types.go` — re-exports proto types: `type User = apiv1.User`
+   - `<entity>_orm.go` — CRUD functions: `CreateUser`, `GetUserByID`, `ListUsers`, `UpdateUser`, `DeleteUser`
+3. **SQL migrations** — in `db/migrations/`, append-only history of schema changes
 
-These extensions are included in every Forge project under `proto/forge/options/v1/entity.proto` and `proto/forge/options/v1/field.proto`.
+`forge generate` does **NOT** regenerate the database layer. It regenerates handlers, frontend hooks, and proto stubs. The DB layer (migrations, ORM functions, types) is owned by the developer/LLM and evolves independently.
 
 ## Defining Entities
 
-Create proto files in `proto/db/` for your database entities. Each message with `entity_options` becomes a database table.
-
-### Basic Entity
+Entity messages live in the service proto. Each message that represents a database entity should have standard fields:
 
 ```protobuf
-// proto/db/user.proto
+// proto/services/users/v1/users.proto
 syntax = "proto3";
 
-package db;
+package services.users.v1;
 
-option go_package = "github.com/example/myproject/gen/db;db";
-
-import "forge/options/v1/entity.proto";
-import "forge/options/v1/field.proto";
 import "google/protobuf/timestamp.proto";
 
+// Entity message — also used as the DB type via alias in internal/db/types.go
 message User {
-  option (forge.options.v1.entity_options) = {
-    table_name: "users"
-    timestamps: true
-    soft_delete: true
-    indexes: [
-      {fields: ["email"], unique: true},
-      {fields: ["status"]}
-    ]
-  };
-
-  string id = 1 [(forge.options.v1.field_options) = {
-    primary_key: true
-    column_type: "UUID"
-    not_null: true
-    default_value: "gen_random_uuid()"
-  }];
-
-  string name = 2 [(forge.options.v1.field_options) = {
-    not_null: true
-    validation: {required: true, min_length: 1, max_length: 255}
-  }];
-
-  string email = 3 [(forge.options.v1.field_options) = {
-    not_null: true
-    unique: true
-    validation: {required: true, format: "email"}
-  }];
-
-  string status = 4 [(forge.options.v1.field_options) = {
-    not_null: true
-    default_value: "'active'"
-    validation: {allowed_values: ["active", "inactive", "suspended"]}
-  }];
-
-  string org_id = 5 [(forge.options.v1.field_options) = {
-    references: "organizations.id"
-    not_null: true
-  }];
-
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  string status = 4;
+  string org_id = 5;
   google.protobuf.Timestamp created_at = 10;
   google.protobuf.Timestamp updated_at = 11;
   google.protobuf.Timestamp deleted_at = 12;
 }
+
+// ... RPC definitions using User
+service UsersService {
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+}
 ```
 
-### EntityOptions Reference
+## Type Aliases and ORM Functions
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `table_name` | string | Database table name. If empty, derived from the message name (e.g., `User` becomes `users`). |
-| `timestamps` | bool | Auto-manage `created_at` and `updated_at` columns. |
-| `soft_delete` | bool | Enable soft delete via a `deleted_at` column. `Delete` sets the timestamp instead of removing the row; queries exclude soft-deleted rows. |
-| `indexes` | repeated IndexConfig | Indexes to create on this table. Each index has `fields` (column names), optional `name`, and optional `unique` flag. |
-
-### FieldOptions Reference
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `primary_key` | bool | Mark this field as the primary key. If no field is marked, `id` is assumed. |
-| `column_type` | string | Override the database column type (e.g., `"UUID"`, `"VARCHAR(255)"`, `"JSONB"`). |
-| `not_null` | bool | Column has a NOT NULL constraint. |
-| `unique` | bool | Column has a UNIQUE constraint. |
-| `default_value` | string | SQL default value expression (e.g., `"0"`, `"'active'"`, `"NOW()"`). |
-| `references` | string | Foreign key reference in `"table.column"` format (e.g., `"users.id"`). |
-| `auto_increment` | bool | Column uses auto-increment / serial. |
-| `validation` | ValidationRules | Application-layer validation rules. |
-
-### ValidationRules Reference
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `required` | bool | Field must be non-zero-value. |
-| `min_length` | int32 | Minimum string length. |
-| `max_length` | int32 | Maximum string length. |
-| `pattern` | string | Regex pattern the value must match. |
-| `format` | string | Semantic format: `"email"`, `"url"`, `"uuid"`, `"ip"`. |
-| `min` | double | Minimum numeric value. |
-| `max` | double | Maximum numeric value. |
-| `allowed_values` | repeated string | Allowed values (for enum-like fields). |
-| `custom` | string | Custom validation function name to call. |
-
-## Generated CRUD Operations
-
-After defining entities and running `forge generate`, you get a `<name>.pb.orm.go` file for each entity in `gen/db/`. For the `User` entity above, the generated code provides these functions:
+After scaffolding, `internal/db/types.go` contains aliases:
 
 ```go
-// Create inserts a new User row.
-func CreateUser(ctx context.Context, db orm.DBTX, user *User) (*User, error)
+package db
 
-// GetByID fetches a User by primary key.
-func GetUserByID(ctx context.Context, db orm.DBTX, id string) (*User, error)
+import apiv1 "github.com/example/myproject/gen/services/users/v1"
 
-// List returns all Users matching the given filters.
-func ListUsers(ctx context.Context, db orm.DBTX, opts ...ListOption) ([]*User, error)
-
-// Update modifies an existing User row.
-func UpdateUser(ctx context.Context, db orm.DBTX, user *User) (*User, error)
-
-// Delete removes a User by primary key (or sets deleted_at if soft_delete is enabled).
-func DeleteUser(ctx context.Context, db orm.DBTX, id string) error
+type User = apiv1.User
 ```
 
-The `orm.DBTX` interface is satisfied by both `*pgxpool.Pool` (direct connection) and `pgx.Tx` (transaction), so the same generated functions work with or without a transaction.
+And `internal/db/user_orm.go` provides CRUD operations:
 
-### Using the Generated ORM
+```go
+package db
+
+import (
+    "context"
+    "github.com/example/myproject/pkg/orm"
+)
+
+func CreateUser(ctx context.Context, db orm.DBTX, user *User) (*User, error) { ... }
+func GetUserByID(ctx context.Context, db orm.DBTX, id string) (*User, error) { ... }
+func ListUsers(ctx context.Context, db orm.DBTX, opts ...ListOption) ([]*User, error) { ... }
+func UpdateUser(ctx context.Context, db orm.DBTX, user *User) (*User, error) { ... }
+func DeleteUser(ctx context.Context, db orm.DBTX, id string) error { ... }
+```
+
+The `orm.DBTX` interface is satisfied by both `*pgxpool.Pool` (direct connection) and `pgx.Tx` (transaction), so the same functions work with or without a transaction.
+
+### Using the ORM
 
 ```go
 package usersservice
 
 import (
     "context"
-    "github.com/example/myproject/gen/db"
-    "github.com/example/myproject/pkg/orm"
+    "github.com/example/myproject/internal/db"
     "github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -163,9 +107,30 @@ func (s *Service) GetUser(ctx context.Context, id string) (*db.User, error) {
 }
 ```
 
+## Schema Evolution — When API and DB Diverge
+
+Initially, entity types are aliases to proto messages. This works when the API and DB schema are identical. When they diverge:
+
+1. Replace the alias with a concrete Go struct in `internal/db/types.go`:
+   ```go
+   type User struct {
+       ID           string
+       Name         string
+       Email        string
+       PasswordHash string  // DB-only, not in API
+       LoginCount   int     // DB-only, not in API
+   }
+   ```
+2. Add converter functions:
+   ```go
+   func UserToProto(u *User) *apiv1.User { ... }
+   func UserFromProto(u *apiv1.User) *User { ... }
+   ```
+3. Update ORM functions to use the concrete struct.
+
 ## Using sqlc for Complex Queries
 
-The generated ORM handles standard CRUD. For complex queries -- joins, aggregations, CTEs, window functions -- use [sqlc](https://sqlc.dev/) alongside the ORM.
+The ORM handles standard CRUD. For complex queries — joins, aggregations, CTEs, window functions — use [sqlc](https://sqlc.dev/) alongside the ORM.
 
 Create a `sqlc.yaml` at the project root:
 
@@ -210,7 +175,7 @@ When you need to combine ORM operations with sqlc queries in a single transactio
 
 ```go
 import (
-    "github.com/example/myproject/gen/db"
+    "github.com/example/myproject/internal/db"
     "github.com/example/myproject/gen/dbqueries"
     "github.com/example/myproject/pkg/orm"
     "github.com/jackc/pgx/v5"
@@ -219,7 +184,7 @@ import (
 
 func (s *Service) TransferUser(ctx context.Context, userID, newOrgID string) error {
     return orm.RunInTx(ctx, s.pool, func(tx pgx.Tx) error {
-        // Use the generated ORM within the transaction
+        // Use ORM within the transaction
         user, err := db.GetUserByID(ctx, tx, userID)
         if err != nil {
             return err
@@ -236,13 +201,12 @@ func (s *Service) TransferUser(ctx context.Context, userID, newOrgID string) err
             return err
         }
 
-        // Both operations commit or roll back together
         return nil
     })
 }
 ```
 
-`orm.RunInTx` handles the transaction lifecycle: it begins the transaction, calls your function, commits on success, and rolls back on error (including panic recovery via the underlying pgx driver).
+`orm.RunInTx` handles the transaction lifecycle: it begins the transaction, calls your function, commits on success, and rolls back on error.
 
 ### ORM Client with Transaction Support
 
@@ -251,10 +215,8 @@ For services that need to pass a transactional context through multiple layers, 
 ```go
 client := orm.NewClient(pool)
 
-// Start a transaction
 err := orm.RunInTx(ctx, pool, func(tx pgx.Tx) error {
     txClient := client.WithTx(tx)
-    // Pass txClient.DB() anywhere you need orm.DBTX
     return db.CreateUser(ctx, txClient.DB(), user)
 })
 ```
@@ -265,11 +227,9 @@ Forge scaffolds and runs SQL migrations with a migration-first workflow:
 
 - `forge db migration new <name>` creates a blank `.up.sql` / `.down.sql` pair in `db/migrations/`
 - `forge db migrate ...` wraps the `golang-migrate` CLI for applying and inspecting migration state
-- proto DB entities should be updated to match the migrated schema and then used for ORM code generation
+- The initial migration (`00001_init.up.sql`) is scaffolded from plan entity definitions
 
 ### Creating a Migration
-
-Create and author a new migration directly in SQL:
 
 ```bash
 forge db migration new add_users_table
@@ -295,7 +255,7 @@ These commands require the `migrate` CLI from [golang-migrate](https://github.co
 
 ### Planned Contract Alignment Commands
 
-The `forge db` command now includes placeholder surfaces for the intended migration-first contract workflow:
+The `forge db` command includes placeholder surfaces for additional workflow commands:
 
 ```bash
 forge db introspect
@@ -307,8 +267,8 @@ forge db codegen
 These commands are currently informational and non-destructive. For now:
 
 - use checked-in SQL migrations as the schema source of truth
-- update proto DB entities manually to match the migrated schema
-- run `forge generate` to regenerate ORM code
+- update entity types in `internal/db/types.go` to match the migrated schema
+- update ORM functions in `internal/db/<entity>_orm.go` as needed
 
 ## Workflow Summary
 
@@ -316,9 +276,10 @@ The typical database workflow in a Forge project:
 
 1. **Create or edit** SQL migrations in `db/migrations/`
 2. **Apply or inspect** migrations with `forge db migrate ...`
-3. **Update proto DB entities** in `proto/db/*.proto` so they reflect the migrated schema
-4. **Generate code** with `forge generate` (produces ORM code and runs sqlc)
-5. **Use in services** by calling the generated ORM functions, optionally within `orm.RunInTx` for transactional operations
+3. **Update entity types** in `internal/db/types.go` if needed (keep alias or create concrete struct)
+4. **Update ORM functions** in `internal/db/<entity>_orm.go` to match schema changes
+5. **Generate code** with `forge generate` (runs sqlc, regenerates handlers and frontend — but NOT the DB layer)
+6. **Use in services** by calling the ORM functions, optionally within `orm.RunInTx` for transactional operations
 
 ## Related Guides
 

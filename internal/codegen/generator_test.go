@@ -158,7 +158,7 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -234,7 +234,7 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", FieldName: "Notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir); err != nil {
+	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -755,7 +755,7 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -839,7 +839,7 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 

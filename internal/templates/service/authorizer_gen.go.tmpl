@@ -84,9 +84,9 @@ func (a *GeneratedAuthorizer) CanAccess(ctx context.Context, procedure string) e
 // Can delegates to CanAccess by constructing the procedure name from the
 // action and resource. For CRUD operations invoked through the handler layer,
 // this provides a consistent authorization check.
+//
+// Deny-by-default: returns an error so new services fail-closed until a real
+// policy is wired. Tests expect this behavior (see TestAuthorizerDenyByDefault).
 func (a *GeneratedAuthorizer) Can(ctx context.Context, _ *middleware.Claims, _ string, _ string) error {
-	// The AuthzInterceptor already calls CanAccess with the real procedure.
-	// When Can is called directly from handler code, we allow it — the
-	// interceptor has already validated access at the procedure level.
-	return nil
+	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("authorization not configured"))
 }

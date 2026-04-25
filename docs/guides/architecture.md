@@ -216,10 +216,9 @@ myproject/
 │   └── version.go
 ├── proto/                         # Proto definitions (external contracts)
 │   ├── config/v1/                 # Config proto — instantiation contract
-│   ├── services/                  # Service RPC definitions
-│   │   ├── api/v1/api.proto
-│   │   └── users/v1/users.proto
-│   └── db/                        # Database entity definitions (deprecated, ORM-owned)
+│   └── services/                  # Service RPC + entity definitions
+│       ├── api/v1/api.proto
+│       └── users/v1/users.proto
 ├── gen/                           # Generated code (separate Go module)
 ├── services/                      # Service handler packages
 │   ├── api/
@@ -259,7 +258,7 @@ myproject/
 
 **KCL for Kubernetes.** Not Helm, not Kustomize. KCL provides type-safe manifest generation with a render lambda pattern.
 
-**No heavy ORM.** Migration-first database workflow. SQL migrations are the source of truth. Generated thin CRUD from proto DB entities. Complex queries use sqlc.
+**No heavy ORM.** Migration-first database workflow. SQL migrations are the source of truth. Entity messages live in the service proto, with type aliases and CRUD functions in `internal/db/`. Complex queries use sqlc.
 
 **Go workspaces.** Generated code lives in a separate `gen/` module, linked via `go.work`.
 

@@ -5,7 +5,7 @@ description: Scaffold and wire new services, packages, and frontends in a Forge 
 
 # Adding New Components to a Forge Project
 
-Use this skill whenever you need to introduce a new network-facing service, internal package, or frontend into a Forge mono-repo.
+Use this skill whenever you need to introduce a new network-facing service, internal package, or frontend into a Forge mono-repo. Every scaffolded service comes with production middleware baked in — structured logging, distributed tracing, auth, rate limiting, and graceful shutdown — so you can focus on business logic from day one.
 
 ## Choosing the Right Command
 

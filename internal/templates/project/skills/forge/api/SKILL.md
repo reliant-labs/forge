@@ -9,7 +9,7 @@ description: Write Connect RPC handlers — proto service definitions, error han
 
 Define RPCs in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions matter — they trigger auto-generated features:
 
-- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) matching a `proto/db/` entity → full handler implementations are auto-generated in `handlers_crud_gen.go`.
+- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) matching an entity defined in the service proto → full handler implementations are auto-generated in `handlers_crud_gen.go`, using ORM functions from `internal/db/`.
 - **AIP-158 pagination fields** (`page_size`, `page_token`, `next_page_token`) → cursor-based pagination is auto-generated.
 - **`optional` filter fields** on List requests → query filters are auto-generated (`search` → ILIKE, others → exact match).
 - **`required_roles` annotation** → per-method RBAC is auto-generated in `authorizer_gen.go`.
@@ -60,16 +60,19 @@ Middleware lives in `pkg/middleware/` and is wired in `cmd/server.go`. Use it fo
 
 ## Database Access
 
-Use sqlc-generated queries from your `db` package. For multi-step mutations, wrap in a transaction:
+Use ORM functions from `internal/db/` for data access. For multi-step mutations, wrap in a transaction:
 
 ```go
-tx, err := pool.Begin(ctx)
+tx, err := s.pool.Begin(ctx)
 if err != nil {
     return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to begin transaction"))
 }
 defer tx.Rollback(ctx)
-qtx := s.db.WithTx(tx)
-// ... use qtx for queries ...
+// use tx as the executor for ORM functions
+user, err := db.CreateUser(ctx, tx, &db.User{Name: req.Msg.GetName()})
+if err != nil {
+    return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create user"))
+}
 tx.Commit(ctx)
 ```
 

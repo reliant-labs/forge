@@ -2,9 +2,13 @@ package main
 
 import (
 	"github.com/reliant-labs/forge/internal/linter/contract"
-	"golang.org/x/tools/go/analysis/singlechecker"
+	"golang.org/x/tools/go/analysis/multichecker"
 )
 
 func main() {
-	singlechecker.Main(contract.Analyzer)
+	multichecker.Main(
+		contract.Analyzer,
+		contract.RequireContractAnalyzer,
+		contract.ExportedVarsAnalyzer,
+	)
 }

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"github.com/jinzhu/inflection"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -341,6 +342,13 @@ type E2EWorkflowData struct {
 
 
 
+// NavPageData describes a single page entry for the frontend navigation.
+type NavPageData struct {
+	Label      string // display name, e.g. "Tasks"
+	LabelLower string // lowercase for descriptions, e.g. "tasks"
+	Slug       string // URL path segment, e.g. "tasks"
+}
+
 // FrontendTemplateData holds data for frontend template rendering.
 type FrontendTemplateData struct {
 	FrontendName string
@@ -348,6 +356,7 @@ type FrontendTemplateData struct {
 	ApiUrl       string
 	ApiPort      string
 	Module       string
+	Pages        []NavPageData
 }
 
 
@@ -465,6 +474,16 @@ func hyphenToUnderscore(s string) string {
 }
 
 func toCamelCase(s string) string {
+	if s == "" {
+		return s
+	}
+	// Handle PascalCase input (no underscores): just lowercase the first letter.
+	if !strings.Contains(s, "_") {
+		runes := []rune(s)
+		runes[0] = unicode.ToLower(runes[0])
+		return string(runes)
+	}
+	// Handle snake_case input: capitalize each part except the first.
 	caser := cases.Title(language.English)
 	parts := strings.Split(s, "_")
 	for i := 1; i < len(parts); i++ {

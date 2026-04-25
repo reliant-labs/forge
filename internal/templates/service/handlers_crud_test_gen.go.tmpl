@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
 	"{{.Module}}/pkg/app"
@@ -16,7 +17,11 @@ import (
 {{- end}}
 )
 
-var _ = timestamppb.Now // ensure import is used
+// Ensure imports are used.
+var (
+	_ = timestamppb.Now
+	_ = wrapperspb.String
+)
 
 // ────────────────────────────────────────────────────────────────────────────
 // CRUD lifecycle integration tests

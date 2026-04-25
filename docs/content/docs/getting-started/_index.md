@@ -1,13 +1,13 @@
 ---
 title: "Getting Started"
-description: "Install Forge, create your first project, and understand the basic workflow"
+description: "Install Forge, create your first project, and understand the scaffold-then-own lifecycle"
 weight: 10
 icon: "play_arrow"
 ---
 
 # Getting Started with Forge
 
-This guide walks you through installing the Forge CLI, creating a project, adding a service, and deploying it locally. By the end you will have a running Go service backed by proto definitions, with hot reload, a Docker image, and Kubernetes manifests.
+This guide walks you through installing the Forge CLI, creating a project, and understanding the full lifecycle: **scaffold with proto, then evolve**. Forge generates the infrastructure — middleware, wiring, test harness, CI/CD, deployment — so you can focus on business logic and database schema.
 
 ## Prerequisites
 
@@ -67,7 +67,7 @@ myproject/
 │       └── api/v1/              # Initial service proto
 │           └── api.proto
 ├── services/
-│   └── api/                     # Go service implementation
+│   └── api/                     # Go service implementation (you own this)
 │       ├── service.go           # New(deps), Register(mux, opts), Name()
 │       └── handlers.go          # RPC implementations (you write this)
 ├── pkg/
@@ -101,6 +101,28 @@ myproject/
 ```
 
 The `forge.yaml` file is the project configuration. Every Forge command reads this file to discover services, frontends, environments, and settings.
+
+## The Scaffold-Then-Own Lifecycle
+
+Forge uses a two-phase model:
+
+### Phase 1: Scaffold
+
+`forge new` and `forge add service` generate everything — proto stubs, service scaffolds, DB migrations, ORM code, CI/CD pipelines, Dockerfiles, and Kubernetes manifests. Proto drives the initial shape of API types and entity definitions.
+
+### Phase 2: Own and Evolve
+
+After scaffolding, you own the business logic, database schema, and deployment config. Here's what continues to be managed by `forge generate` and what's yours:
+
+| Layer | Managed by `forge generate` | Developer/LLM-owned |
+|-------|----------------------------|---------------------|
+| API types | Proto messages, Connect stubs, TS clients | — |
+| Infrastructure | Wiring, mocks, middleware wrappers, test harness | — |
+| Business logic | — | Service handlers |
+| Database | — | Migrations, entity types, ORM |
+| Deployment | — | Dockerfile, KCL, CI/CD |
+
+Proto continues to drive API types and frontend codegen. But it does not control the database schema — migrations do. And it does not control business logic — you do.
 
 ## Adding a Service
 
@@ -159,9 +181,9 @@ This creates `internal/email/` with a `contract.go` (Go interface), implementati
 forge add frontend dashboard
 ```
 
-## Generating Code
+## Generating Infrastructure
 
-After editing proto files, run the code generator:
+After editing proto files or `contract.go` interfaces, regenerate infrastructure:
 
 ```bash
 forge generate
@@ -177,11 +199,13 @@ This runs a multi-step pipeline:
 6. **`sqlc generate`** if `sqlc.yaml` exists
 7. **`go mod tidy`** in `gen/`
 
-Watch mode regenerates automatically when proto files change:
+Watch mode regenerates automatically when contract files change:
 
 ```bash
 forge generate --watch
 ```
+
+**What `forge generate` does NOT touch:** your service handlers, `internal/db/`, `db/migrations/`, `deploy/`, or `.github/workflows/`. Those are yours.
 
 ## Implementing a Service
 
@@ -338,7 +362,7 @@ environments:
 
 ## Next Steps
 
-- **[Architecture]({{< relref "../architecture" >}})** — understand single binary design, two contract systems, and explicit wiring
+- **[Architecture]({{< relref "../architecture" >}})** — understand infrastructure generation, dual contracts, and schema evolution
 - **[KCL Deployment Guide]({{< relref "../guides/kcl" >}})** — customize Kubernetes manifests
 - **[Database Integration]({{< relref "../guides/database-integration" >}})** — migration-first database workflow
 - **[CI/CD Guide]({{< relref "../guides/ci-cd" >}})** — understand the generated GitHub Actions workflows

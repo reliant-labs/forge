@@ -561,7 +561,20 @@ func TestTestValueForType(t *testing.T) {
 		{"float64", "1.0"},
 		{"bool", "true"},
 		{"[]byte", `[]byte("test")`},
-		{"SomeCustomType", `"test-value"`},
+		{"*timestamppb.Timestamp", "timestamppb.Now()"},
+		// Wrapper types
+		{"*string", `wrapperspb.String("test-value")`},
+		{"*int32", "wrapperspb.Int32(42)"},
+		{"*int64", "wrapperspb.Int64(42)"},
+		{"*bool", "wrapperspb.Bool(true)"},
+		{"*float64", "wrapperspb.Double(1.0)"},
+		// Message/repeated/map types → nil
+		{"*SomeMessage", "nil"},
+		{"[]string", "nil"},
+		{"[]*SomeMessage", "nil"},
+		{"map[string]string", "nil"},
+		// Enum-like types (bare identifier) → 0
+		{"SomeCustomType", "0"},
 	}
 
 	for _, tt := range tests {

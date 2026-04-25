@@ -53,7 +53,7 @@ func Setup(app *App, cfg *config.Config) error {
 }
 {{if .HasDatabase}}
 func setupDatabase(cfg *config.Config) (*sql.DB, error) {
-	dsn := cfg.DatabaseURL
+	dsn := cfg.DatabaseUrl
 	if dsn == "" {
 		slog.Warn("DATABASE_URL is not set, skipping database setup")
 		return nil, nil

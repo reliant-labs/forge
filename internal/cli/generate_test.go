@@ -192,7 +192,7 @@ message Account {}
 	if err := os.WriteFile(bufStubPath, []byte(bufStubScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ormPluginPath := filepath.Join(dir, "protoc-gen-forge-orm")
+	ormPluginPath := filepath.Join(dir, "protoc-gen-forge")
 	ormPluginScript := "#!/bin/sh\nexit 0\n"
 	if err := os.WriteFile(ormPluginPath, []byte(ormPluginScript), 0o755); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ message Account {}
 	}
 
 	ormConfig := readFileForTest(t, filepath.Join(dir, "buf.gen.orm.yaml.captured"))
-	for _, want := range []string{"version: v2", "local:", "protoc-gen-forge-orm", "out: gen", "paths=source_relative"} {
+	for _, want := range []string{"version: v2", "local:", "protoc-gen-forge", "out: gen", "mode=orm"} {
 		if !strings.Contains(ormConfig, want) {
 			t.Fatalf("expected ORM temp config to contain %q, got:\n%s", want, ormConfig)
 		}
@@ -367,7 +367,19 @@ mkdir -p gen/services/api/v1/apiv1connect
 cat > gen/services/api/v1/api.pb.go <<'PBEOF'
 package apiv1
 
+import "google.golang.org/protobuf/types/known/timestamppb"
+
 var File_services_api_v1_api_proto = struct{}{}
+
+type API struct {
+	Id          string
+	Name        string
+	Description string
+	Active      bool
+	CreatedAt   *timestamppb.Timestamp
+	UpdatedAt   *timestamppb.Timestamp
+	DeletedAt   *timestamppb.Timestamp
+}
 
 type CreateRequest struct{}
 type CreateResponse struct{}

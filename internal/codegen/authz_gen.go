@@ -24,9 +24,12 @@ type AuthzTemplateData struct {
 	Methods     []AuthzMethodData // per-method authorization data
 }
 
-// GenerateAuthorizer generates authorizer_gen.go for each service that has
-// methods with authorization annotations. The generated file contains a
-// methodRoles map and a role-checking CanAccess/Can implementation.
+// GenerateAuthorizer generates authorizer_gen.go for each service whose
+// handler directory exists. The generated file contains a methodRoles map
+// and a role-checking CanAccess/Can implementation. It is always generated
+// (even with zero annotated methods) so that the companion authorizer.go
+// can unconditionally reference GeneratedAuthorizer without compilation
+// errors.
 func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string) error {
 	for _, svc := range services {
 		pkg := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
@@ -61,6 +64,56 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		outPath := filepath.Join(svcDir, "authorizer_gen.go")
 		if err := os.WriteFile(outPath, content, 0644); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", svc.Name, err)
+		}
+	}
+
+	// Also generate authorizer_gen.go for service directories that exist but
+	// have no corresponding ServiceDef (e.g., scaffold created the handler
+	// dir before any RPCs were defined in the proto). This ensures
+	// authorizer.go can always reference GeneratedAuthorizer.
+	handlersDir := filepath.Join(targetDir, "handlers")
+	entries, err := os.ReadDir(handlersDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read handlers dir: %w", err)
+	}
+
+	// Build set of packages already generated above.
+	generated := make(map[string]bool, len(services))
+	for _, svc := range services {
+		generated[strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))] = true
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pkg := entry.Name()
+		if generated[pkg] {
+			continue
+		}
+		// Only generate if authorizer.go exists (confirming this is a service dir)
+		if _, err := os.Stat(filepath.Join(handlersDir, pkg, "authorizer.go")); os.IsNotExist(err) {
+			continue
+		}
+
+		data := AuthzTemplateData{
+			Package:     pkg,
+			ServiceName: strings.ToUpper(pkg[:1]) + pkg[1:] + "Service",
+			Module:      modulePath,
+			Methods:     nil,
+		}
+
+		content, err := templates.ServiceTemplates.Render("authorizer_gen.go.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render authorizer_gen.go.tmpl for %s: %w", pkg, err)
+		}
+
+		outPath := filepath.Join(handlersDir, pkg, "authorizer_gen.go")
+		if err := os.WriteFile(outPath, content, 0644); err != nil {
+			return fmt.Errorf("write authorizer_gen.go for %s: %w", pkg, err)
 		}
 	}
 

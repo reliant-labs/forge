@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -53,14 +54,15 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	}
 
 	data := struct {
-		Module      string
-		Services    []bootstrapService
-		Packages    []bootstrapPackage
-		Workers     []bootstrapWorker
-		Operators   []bootstrapOperator
-		HasDatabase bool
-		OrmEnabled  bool
-		HasFallible bool
+		Module       string
+		Services     []bootstrapService
+		Packages     []bootstrapPackage
+		Workers      []bootstrapWorker
+		Operators    []bootstrapOperator
+		HasDatabase  bool
+		OrmEnabled   bool
+		HasFallible  bool
+		ConfigFields map[string]bool
 	}{
 		Module:    g.ModulePath,
 		Services:  services,
@@ -70,8 +72,9 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// Initial scaffold has no proto/db entities; the post-scaffold
 		// generate pipeline re-renders with the correct flags if the user
 		// adds entities.
-		HasDatabase: false,
-		OrmEnabled:  false,
+		HasDatabase:  false,
+		OrmEnabled:   false,
+		ConfigFields: codegen.DefaultConfigFieldNames(),
 	}
 
 	content, err := templates.ProjectTemplates.Render("bootstrap.go.tmpl", data)

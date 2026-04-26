@@ -111,6 +111,7 @@ var coreComponents = []string{
 	"alert_banner",
 	"toast_notification",
 	"key_value_list",
+	"login_form",
 }
 
 // installCoreComponents writes core UI components from the component library

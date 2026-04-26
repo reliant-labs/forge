@@ -3,8 +3,12 @@
 import { useEffect } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 
+import { EventBusProvider } from "@/lib/event-context";
 import { initTelemetry } from "@/lib/otel";
 import { queryClient } from "@/lib/query-client";
+import { AuthContextProvider } from "@/lib/auth/context";
+import { useAuth } from "@/lib/auth/context";
+import { setAuthTokenGetter } from "@/lib/connect";
 
 /**
  * Top-level client-only provider wrapper.
@@ -17,14 +21,39 @@ import { queryClient } from "@/lib/query-client";
  * - Provides the shared `QueryClient` to the component tree so any
  *   descendant can use `useQuery` / `useMutation` against the Connect
  *   transport.
- *
- * Extend this file with additional providers (theme, auth, form context,
- * etc.) as the app grows.
+ * - Wraps with `AuthContextProvider` for dependency-injectable auth.
+ *   By default the stub provider is used; pass a real `AuthProvider` to
+ *   `<AuthContextProvider provider={...}>` to enable real auth.
+ * - Provides the typed `EventBus` to the component tree via
+ *   `EventBusProvider`, with dev-mode logging enabled automatically
+ *   in development.
  */
 export function Providers({ children }: { children: React.ReactNode }) {
+  const isDev = process.env.NODE_ENV === "development";
+
   useEffect(() => {
     initTelemetry();
   }, []);
 
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={queryClient}>
+      <EventBusProvider devMode={isDev}>
+        <AuthContextProvider>
+          <AuthTokenBridge />
+          {children}
+        </AuthContextProvider>
+      </EventBusProvider>
+    </QueryClientProvider>
+  );
+}
+
+/** Wires the auth provider's token getter to the Connect transport. */
+function AuthTokenBridge() {
+  const { getToken } = useAuth();
+
+  useEffect(() => {
+    setAuthTokenGetter(getToken);
+  }, [getToken]);
+
+  return null;
 }

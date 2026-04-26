@@ -24,6 +24,8 @@ type ProjectConfig struct {
 	Contracts  ContractsConfig     `yaml:"contracts"`
 	Auth       AuthConfig          `yaml:"auth"`
 	Docs       DocsConfig          `yaml:"docs"`
+	Features   FeaturesConfig      `yaml:"features,omitempty"`
+	Stack      StackConfig         `yaml:"stack,omitempty"`
 	Packs      []string            `yaml:"packs,omitempty"`
 }
 
@@ -251,6 +253,137 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 		}
 	}
 	return false
+}
+
+// FeaturesConfig controls which forge features are active.
+// All fields are *bool so that nil means "enabled" (backwards compat).
+// Explicitly set to false to disable a feature.
+type FeaturesConfig struct {
+	ORM           *bool `yaml:"orm,omitempty"`           // protoc-gen-forge-orm codegen
+	Codegen       *bool `yaml:"codegen,omitempty"`       // service/handler codegen from protos
+	Migrations    *bool `yaml:"migrations,omitempty"`    // auto-generate SQL migrations
+	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows
+	Deploy        *bool `yaml:"deploy,omitempty"`        // generate deploy manifests (KCL, Dockerfiles)
+	Contracts     *bool `yaml:"contracts,omitempty"`     // contract linter enforcement
+	Docs          *bool `yaml:"docs,omitempty"`          // documentation generation
+	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
+	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
+	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
+}
+
+// featureEnabled returns true if the *bool is nil (default) or explicitly true.
+func featureEnabled(b *bool) bool {
+	return b == nil || *b
+}
+
+func (f FeaturesConfig) ORMEnabled() bool           { return featureEnabled(f.ORM) }
+func (f FeaturesConfig) CodegenEnabled() bool       { return featureEnabled(f.Codegen) }
+func (f FeaturesConfig) MigrationsEnabled() bool    { return featureEnabled(f.Migrations) }
+func (f FeaturesConfig) CIEnabled() bool            { return featureEnabled(f.CI) }
+func (f FeaturesConfig) DeployEnabled() bool        { return featureEnabled(f.Deploy) }
+func (f FeaturesConfig) ContractsEnabled() bool     { return featureEnabled(f.Contracts) }
+func (f FeaturesConfig) DocsEnabled() bool          { return featureEnabled(f.Docs) }
+func (f FeaturesConfig) FrontendEnabled() bool      { return featureEnabled(f.Frontend) }
+func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Observability) }
+func (f FeaturesConfig) HotReloadEnabled() bool     { return featureEnabled(f.HotReload) }
+
+// StackConfig declares the technology choices for the project.
+// These are forward-looking declarations — forge may not support all
+// values yet, but they document intent and guide future codegen.
+type StackConfig struct {
+	Backend  StackBackend  `yaml:"backend,omitempty"`
+	Frontend StackFrontend `yaml:"frontend,omitempty"`
+	Database StackDatabase `yaml:"database,omitempty"`
+	Proto    StackProto    `yaml:"proto,omitempty"`
+	Deploy   StackDeploy   `yaml:"deploy,omitempty"`
+	CI       StackCI       `yaml:"ci,omitempty"`
+}
+
+// StackBackend declares the backend language and framework.
+type StackBackend struct {
+	Language  string `yaml:"language,omitempty"`  // "go" (default), "python", "rust", "typescript"
+	Framework string `yaml:"framework,omitempty"` // future: "gin", "fiber", etc.
+}
+
+// StackFrontend declares the frontend framework.
+type StackFrontend struct {
+	Framework string `yaml:"framework,omitempty"` // "nextjs" (default), "react-native", "svelte", "none"
+}
+
+// StackDatabase declares the database technology.
+type StackDatabase struct {
+	Driver string `yaml:"driver,omitempty"` // "postgres" (default), "sqlite", "mysql", "none"
+}
+
+// StackProto declares the proto toolchain.
+type StackProto struct {
+	Enabled  *bool  `yaml:"enabled,omitempty"`  // nil = true
+	Provider string `yaml:"provider,omitempty"` // "buf" (default), "protoc"
+}
+
+// StackDeploy declares the deployment target.
+type StackDeploy struct {
+	Target   string `yaml:"target,omitempty"`   // "k8s" (default), "docker-compose", "fly", "cloudrun", "lambda", "none"
+	Provider string `yaml:"provider,omitempty"` // "k3d", "gke", "eks"
+	Registry string `yaml:"registry,omitempty"` // "ghcr.io", "gcr.io", etc.
+}
+
+// StackCI declares the CI/CD provider.
+type StackCI struct {
+	Provider string `yaml:"provider,omitempty"` // "github" (default), "gitlab", "circleci", "none"
+}
+
+// EffectiveBackendLanguage returns the backend language, defaulting to "go".
+func (s StackConfig) EffectiveBackendLanguage() string {
+	if s.Backend.Language != "" {
+		return s.Backend.Language
+	}
+	return "go"
+}
+
+// EffectiveFrontendFramework returns the frontend framework, defaulting to "nextjs".
+func (s StackConfig) EffectiveFrontendFramework() string {
+	if s.Frontend.Framework != "" {
+		return s.Frontend.Framework
+	}
+	return "nextjs"
+}
+
+// EffectiveDatabaseDriver returns the database driver, defaulting to "postgres".
+func (s StackConfig) EffectiveDatabaseDriver() string {
+	if s.Database.Driver != "" {
+		return s.Database.Driver
+	}
+	return "postgres"
+}
+
+// IsProtoEnabled returns whether the proto toolchain is enabled (default: true).
+func (s StackConfig) IsProtoEnabled() bool {
+	return featureEnabled(s.Proto.Enabled)
+}
+
+// EffectiveProtoProvider returns the proto provider, defaulting to "buf".
+func (s StackConfig) EffectiveProtoProvider() string {
+	if s.Proto.Provider != "" {
+		return s.Proto.Provider
+	}
+	return "buf"
+}
+
+// EffectiveDeployTarget returns the deploy target, defaulting to "k8s".
+func (s StackConfig) EffectiveDeployTarget() string {
+	if s.Deploy.Target != "" {
+		return s.Deploy.Target
+	}
+	return "k8s"
+}
+
+// EffectiveCIProvider returns the CI provider, defaulting to "github".
+func (s StackConfig) EffectiveCIProvider() string {
+	if s.CI.Provider != "" {
+		return s.CI.Provider
+	}
+	return "github"
 }
 
 // AuthConfig holds authentication provider settings.

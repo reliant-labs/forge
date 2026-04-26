@@ -1,3 +1,41 @@
+/**
+ * Toast Notification Component
+ *
+ * This component is controlled via props (toasts[] + onDismiss).
+ *
+ * Forge event bus integration example:
+ *
+ *   import { useEvent, useEmit } from "@/lib/event-context";
+ *   import ToastNotification from "@/components/ui/toast_notification";
+ *
+ *   function ToastContainer() {
+ *     const [toasts, setToasts] = useState<Toast[]>([]);
+ *
+ *     useEvent("toast:show", (payload) => {
+ *       const id = Math.random().toString(36).slice(2);
+ *       setToasts((prev) => [...prev, { id, ...payload }]);
+ *     });
+ *
+ *     useEvent("toast:dismiss", (payload) => {
+ *       if (payload?.id) {
+ *         setToasts((prev) => prev.filter((t) => t.id !== payload.id));
+ *       } else {
+ *         setToasts([]);
+ *       }
+ *     });
+ *
+ *     return (
+ *       <ToastNotification
+ *         toasts={toasts}
+ *         onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+ *       />
+ *     );
+ *   }
+ *
+ *   // To show a toast from anywhere:
+ *   const emit = useEmit();
+ *   emit("toast:show", { message: "Saved!", variant: "success" });
+ */
 import React, { useEffect, useState } from "react";
 
 type ToastVariant = "success" | "error" | "warning" | "info";

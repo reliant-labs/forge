@@ -70,6 +70,35 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string) error {
 	return os.WriteFile(outPath, content, 0644)
 }
 
+// GenerateCmdServerWithFields renders cmd/server.go using a pre-built
+// config field map. This variant is used when the caller needs to modify
+// the field set (e.g. stripping migration fields when the migrations
+// feature is disabled).
+func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string) error {
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return fmt.Errorf("read module path: %w", err)
+	}
+
+	data := CmdServerTemplateData{
+		Module:       modulePath,
+		ConfigFields: configFields,
+	}
+
+	content, err := templates.ProjectTemplates.Render("cmd-server.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
+	}
+
+	cmdDir := filepath.Join(targetDir, "cmd")
+	if err := os.MkdirAll(cmdDir, 0755); err != nil {
+		return fmt.Errorf("create cmd/: %w", err)
+	}
+
+	outPath := filepath.Join(cmdDir, "server.go")
+	return os.WriteFile(outPath, content, 0644)
+}
+
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
 func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
 	// Flatten all fields from all messages into a single Config struct.

@@ -22,6 +22,10 @@ interface SidebarLayoutProps {
   user?: UserInfo;
   children: React.ReactNode;
   headerContent?: React.ReactNode;
+  /** Controlled mode: sidebar collapsed state. When omitted, uses internal state. */
+  collapsed?: boolean;
+  /** Controlled mode: toggle callback. When omitted, uses internal handler. */
+  onToggle?: () => void;
 }
 
 export default function SidebarLayout({
@@ -30,8 +34,12 @@ export default function SidebarLayout({
   user,
   children,
   headerContent,
+  collapsed: controlledCollapsed,
+  onToggle,
 }: SidebarLayoutProps) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const collapsed = controlledCollapsed ?? internalCollapsed;
+  const handleToggle = onToggle ?? (() => setInternalCollapsed((prev) => !prev));
 
   const sections = new Map<string, NavItem[]>();
   for (const item of navItems) {
@@ -52,7 +60,7 @@ export default function SidebarLayout({
         <div className="flex h-16 shrink-0 items-center justify-between border-b border-gray-200 px-4">
           {!collapsed && <div className="truncate">{brand}</div>}
           <button
-            onClick={() => setCollapsed(!collapsed)}
+            onClick={handleToggle}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >

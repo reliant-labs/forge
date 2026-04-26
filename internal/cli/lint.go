@@ -66,12 +66,28 @@ Examples:
 func runLint(flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.contract {
+		cfg, err := loadProjectConfig()
+		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
+			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		if cfg != nil && !cfg.Features.ContractsEnabled() {
+			fmt.Println("contracts feature is disabled in forge.yaml")
+			return nil
+		}
 		return runContractLinter(paths)
 	}
 	if flags.exportedVars {
 		return runContractLinter(paths)
 	}
 	if flags.db {
+		cfg, err := loadProjectConfig()
+		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
+			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		if cfg != nil && !cfg.Features.ORMEnabled() {
+			fmt.Println("orm feature is disabled in forge.yaml")
+			return nil
+		}
 		return runDBLint()
 	}
 
@@ -236,7 +252,9 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	}
 
 	// 2. Contract interface enforcement
-	if _, err := resolveContractLintBinary(); err != nil {
+	if cfg != nil && !cfg.Features.ContractsEnabled() {
+		fmt.Println("⚠️  contracts feature disabled — skipping contract linter")
+	} else if _, err := resolveContractLintBinary(); err != nil {
 		fmt.Println("⚠️  contractlint not available — skipping")
 	} else if err := runContractLinter(paths); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ contract linter failed: %v\n", err)
@@ -258,7 +276,9 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	}
 
 	// 6. DB entity lint (advisory — warnings only, does not fail the build)
-	if dirExists("proto/db") {
+	if cfg != nil && !cfg.Features.ORMEnabled() {
+		fmt.Println("⚠️  orm feature disabled — skipping DB lint")
+	} else if dirExists("proto/db") {
 		if err := runDBLint(); err != nil {
 			// DB lint errors are non-fatal; they print warnings but don't block.
 			fmt.Fprintf(os.Stderr, "⚠️  DB lint: %v\n", err)

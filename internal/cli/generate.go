@@ -155,31 +155,35 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 1: buf generate for Go stubs ──
-	if err := runBufGenerateGo(projectDir); err != nil {
-		return fmt.Errorf("buf generate (Go) failed: %w", err)
+	if (cfg == nil || cfg.Features.CodegenEnabled()) {
+		if err := runBufGenerateGo(projectDir); err != nil {
+			return fmt.Errorf("buf generate (Go) failed: %w", err)
+		}
 	}
 
 	// ── Step 1b: Descriptor extraction (services, entities, configs → forge_descriptor.json) ──
-	if err := runDescriptorGenerate(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: descriptor generation failed: %v\n", err)
+	if (cfg == nil || cfg.Features.CodegenEnabled()) {
+		if err := runDescriptorGenerate(projectDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: descriptor generation failed: %v\n", err)
+		}
 	}
 
 	// ── Step 2: ORM generation if proto/db/ exists ──
-	if hasDB {
+	if (cfg == nil || cfg.Features.ORMEnabled()) && hasDB {
 		if err := runOrmGenerate(projectDir); err != nil {
 			return fmt.Errorf("ORM generation failed: %w", err)
 		}
 	}
 
 	// ── Step 2b: Auto-generate initial migration if proto/db entities exist and no migrations yet ──
-	if hasDB && !hasSQLMigrations(projectDir) {
+	if (cfg == nil || cfg.Features.MigrationsEnabled()) && hasDB && !hasSQLMigrations(projectDir) {
 		if err := maybeGenerateInitialMigration(projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: initial migration generation failed: %v\n", err)
 		}
 	}
 
 	// ── Step 2c: Replace boilerplate migration with entity-aware migration ──
-	if hasServices {
+	if (cfg == nil || cfg.Features.MigrationsEnabled()) && hasServices {
 		entityDefs, parseErr := codegen.ParseEntityProtos(projectDir)
 		if parseErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: entity proto parsing for migrations failed: %v\n", parseErr)
@@ -196,7 +200,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 3: TypeScript generation for frontends with Connect clients ──
-	if cfg != nil {
+	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil {
 		for _, fe := range cfg.Frontends {
 			if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") {
 				if err := runBufGenerateTypeScript(fe, cfg, projectDir); err != nil {
@@ -208,9 +212,13 @@ func runGeneratePipeline(projectDir string, force bool) error {
 
 	// ── Step 3b: Config loader generation from proto/config/ ──
 	var configFields map[string]bool
-	if hasConfig {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasConfig {
 		var cfgErr error
-		configFields, cfgErr = generateConfigLoader(projectDir)
+		var features config.FeaturesConfig
+		if cfg != nil {
+			features = cfg.Features
+		}
+		configFields, cfgErr = generateConfigLoader(projectDir, features)
 		if cfgErr != nil {
 			return fmt.Errorf("config loader generation failed: %w", cfgErr)
 		}
@@ -247,26 +255,26 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 3c: Frontend React Query hooks for each service ──
-	if cfg != nil && hasServices && len(services) > 0 {
+	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && hasServices && len(services) > 0 {
 		if err := generateFrontendHooks(cfg, services, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: frontend hooks generation failed: %v\n", err)
 		}
 	}
 
 	// ── Step 3d: Ensure core UI components are installed ──
-	if cfg != nil && len(cfg.Frontends) > 0 {
+	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && len(cfg.Frontends) > 0 {
 		ensureFrontendComponents(cfg, projectDir)
 	}
 
 	// ── Step 3e: Frontend CRUD pages for each service ──
-	if cfg != nil && hasServices && len(services) > 0 {
+	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && hasServices && len(services) > 0 {
 		if err := generateFrontendPages(cfg, services, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: frontend page generation failed: %v\n", err)
 		}
 	}
 
 	// ── Step 3f: Frontend nav and dashboard (re-render with entity data) ──
-	if cfg != nil && len(cfg.Frontends) > 0 {
+	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && len(cfg.Frontends) > 0 {
 		if err := generateFrontendNav(cfg, services, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: frontend nav generation failed: %v\n", err)
 		}
@@ -279,14 +287,14 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	if hasServices {
 		crudMethodNames = collectCRUDMethodNames(services, projectDir)
 	}
-	if hasServices {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
 		if err := generateServiceStubs(cfg, services, projectDir, crudMethodNames); err != nil {
 			return fmt.Errorf("service stub generation failed: %w", err)
 		}
 	}
 
 	// ── Step 4a: Generate internal/db/ (type aliases + ORM CRUD) ──
-	if hasServices {
+	if (cfg == nil || cfg.Features.ORMEnabled()) && hasServices {
 		entities, entErr := codegen.ParseEntityProtos(projectDir)
 		if entErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: entity parsing for ORM generation failed: %v\n", entErr)
@@ -314,33 +322,35 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 4b: CRUD handler generation ──
-	if hasServices {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
 		if err := generateCRUDHandlers(services, modulePath, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: CRUD handler generation failed: %v\n", err)
 		}
 	}
 
 	// ── Step 4c: Authorizer generation (role mappings from proto annotations) ──
-	if hasServices {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
 		if err := codegen.GenerateAuthorizer(services, modulePath, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: authorizer generation failed: %v\n", err)
 		}
 	}
 
 	// ── Step 5: Mocks (always regenerate) ──
-	if hasServices {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
 		if err := generateServiceMocks(services, projectDir); err != nil {
 			return fmt.Errorf("mock generation failed: %w", err)
 		}
 	}
 
 	// ── Step 5b: Internal package contract generation ──
-	if err := generateInternalPackageContracts(projectDir); err != nil {
-		return fmt.Errorf("internal package contract generation failed: %w", err)
+	if (cfg == nil || cfg.Features.ContractsEnabled()) {
+		if err := generateInternalPackageContracts(projectDir); err != nil {
+			return fmt.Errorf("internal package contract generation failed: %w", err)
+		}
 	}
 
 	// ── Step 5c: Auth middleware generation ──
-	if cfg != nil && cfg.Auth.Provider != "" && cfg.Auth.Provider != "none" {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && cfg != nil && cfg.Auth.Provider != "" && cfg.Auth.Provider != "none" {
 		if err := generateAuthMiddleware(cfg, services, modulePath, projectDir); err != nil {
 			return fmt.Errorf("auth middleware generation failed: %w", err)
 		}
@@ -348,7 +358,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 
 	// ── Step 5d: Tenant middleware generation ──
 	// Auto-enable multi-tenant if any entity has a tenant key field.
-	if cfg != nil && hasServices {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && cfg != nil && hasServices {
 		entities, _ := codegen.ParseEntityProtos(projectDir)
 		hasTenantEntities := false
 		for _, e := range entities {
@@ -377,14 +387,14 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 5e: Webhook route generation ──
-	if cfg != nil {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && cfg != nil {
 		if err := generateWebhookRoutes(cfg, projectDir); err != nil {
 			return fmt.Errorf("webhook route generation failed: %w", err)
 		}
 	}
 
 	// ── Step 6: Generate pkg/app/bootstrap.go ──
-	if hasServices || hasWorkers || hasOperators {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && (hasServices || hasWorkers || hasOperators) {
 		var dbDriver string
 		if cfg != nil {
 			dbDriver = cfg.Database.Driver
@@ -412,7 +422,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 6b: Generate pkg/app/testing.go ──
-	if hasServices || hasWorkers || hasOperators {
+	if (cfg == nil || cfg.Features.CodegenEnabled()) && (hasServices || hasWorkers || hasOperators) {
 		mtEnabled := cfg != nil && cfg.Auth.MultiTenant != nil && cfg.Auth.MultiTenant.Enabled
 		if err := generateBootstrapTesting(services, modulePath, mtEnabled, projectDir); err != nil {
 			return fmt.Errorf("bootstrap testing generation failed: %w", err)
@@ -420,7 +430,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 6c: Generate pkg/app/migrate.go if database is configured ──
-	if cfg != nil && cfg.Database.Driver != "" {
+	if (cfg == nil || cfg.Features.MigrationsEnabled()) && cfg != nil && cfg.Database.Driver != "" {
 		if err := generateMigrate(projectDir, cfg.ModulePath); err != nil {
 			return fmt.Errorf("migrate generation failed: %w", err)
 		}
@@ -437,7 +447,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 8b: Generate CI/CD workflows ──
-	if cfg != nil {
+	if (cfg == nil || cfg.Features.CIEnabled()) && cfg != nil {
 		fmt.Println("\n🔧 Generating CI/CD workflows...")
 		if err := generateCIWorkflows(abs, cfg, cs, force); err != nil {
 			fmt.Fprintf(os.Stderr, "  ⚠️  CI/CD generation warning: %v\n", err)
@@ -453,13 +463,15 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 8d: Regenerate infrastructure files (Tier 1) ──
-	fmt.Println("\n── Regenerating infrastructure files ──")
-	if err := generator.RegenerateInfraFiles(abs, cfg); err != nil {
-		return fmt.Errorf("regenerate infrastructure files: %w", err)
+	if (cfg == nil || cfg.Features.DeployEnabled()) {
+		fmt.Println("\n── Regenerating infrastructure files ──")
+		if err := generator.RegenerateInfraFiles(abs, cfg); err != nil {
+			return fmt.Errorf("regenerate infrastructure files: %w", err)
+		}
 	}
 
 	// ── Step 8d-i: Generate Grafana dashboards ──
-	if cfg != nil {
+	if (cfg == nil || cfg.Features.ObservabilityEnabled()) && cfg != nil {
 		if err := generator.GenerateGrafanaDashboards(cfg.Name, abs); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Grafana dashboard generation failed: %v\n", err)
 		}
@@ -467,7 +479,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 
 	// ── Step 8d-ii: Generate entity-aware seed data ──
 	var entityDefs []codegen.EntityDef
-	if hasDB || hasServices {
+	if (cfg == nil || cfg.Features.MigrationsEnabled()) && (hasDB || hasServices) {
 		var parseErr error
 		entityDefs, parseErr = codegen.ParseEntityProtos(projectDir)
 		if parseErr != nil {
@@ -481,7 +493,7 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	}
 
 	// ── Step 8d-iii: Generate frontend mock data + transport ──
-	if cfg != nil && len(cfg.Frontends) > 0 && len(entityDefs) > 0 && len(services) > 0 {
+	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && len(cfg.Frontends) > 0 && len(entityDefs) > 0 && len(services) > 0 {
 		if err := generateFrontendMocks(cfg, services, entityDefs, projectDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: frontend mock generation failed: %v\n", err)
 		}

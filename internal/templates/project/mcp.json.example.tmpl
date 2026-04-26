@@ -10,6 +10,15 @@
         "@modelcontextprotocol/server-postgres",
         "postgresql://postgres:postgres@localhost:5432/{{.Name}}"
       ]
+    },
+    "grafana": {
+      "_comment": "LLM-driven observability — lets agents query Prometheus, Loki, Tempo, and dashboards directly via the Grafana MCP server (https://github.com/grafana/mcp-grafana). Requires uv (https://docs.astral.sh/uv). The default URL matches the docker-compose Grafana; set GRAFANA_SERVICE_ACCOUNT_TOKEN if auth is required.",
+      "command": "uvx",
+      "args": ["mcp-grafana"],
+      "env": {
+        "GRAFANA_URL": "http://localhost:3000",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": ""
+      }
     }
   }
 }

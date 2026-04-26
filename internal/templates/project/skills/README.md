@@ -1,8 +1,8 @@
 # Skills
 
-This directory contains **skills** — focused, self-contained playbooks that teach an AI agent (or a human) how to accomplish a specific task in this Forge project.
+Skills are focused, self-contained playbooks that teach an AI agent (or a human) how to accomplish a specific task in a Forge project.
 
-Each skill lives in its own folder as a `SKILL.md` file. The folder name determines how the skill is referenced (for example, `forge/debug/isolate` lives at `forge/debug/isolate/SKILL.md`). Skills can be nested — load the parent to see an overview and list of sub-skills.
+Skills are served via `forge skill list` and `forge skill load <name>` — they are embedded in the forge binary and not written to disk. Each skill has a path-based name (e.g. `db`, `frontend/state`, `debug/investigate`).
 
 ## Structure
 
@@ -32,13 +32,13 @@ Skills are organized by **action** — what you're trying to do — not by CLI c
 
 ## How skills are used
 
-Skills are referenced by name from the project's `.reliant/reliant-forge.md` conventions file. When an agent hits a task that matches a skill's description, it should load the corresponding `SKILL.md` and follow it.
+Run `forge skill list` to see all available skills with descriptions. Run `forge skill load <name>` to print a skill's content to stdout. When an agent hits a task that matches a skill's description, it should load the skill and follow it.
 
 Skills are **opinionated**. They encode project conventions and the non-obvious gotchas. Don't treat them as optional — the shortcuts around them cause pain.
 
 ## Adding your own skills
 
-Create a new folder under `.reliant/skills/` and drop a `SKILL.md` file in it. Use the existing forge skills as a template:
+To add project-specific skills, create `.reliant/skills/<name>/SKILL.md` files. Use the existing forge skills as a template:
 
 1. **YAML frontmatter** with `name` (must match directory name) and `description`
 2. **Action-oriented structure** — organize by what the developer wants to do, not by CLI subcommand

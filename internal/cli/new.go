@@ -14,15 +14,17 @@ import (
 
 func newNewCmd() *cobra.Command {
 	var (
-		projectPath   string
-		modulePath    string
-		serviceNames  []string
-		frontendNames []string
-		goVersion     string
-		inPlace       bool
-		force         bool
-		license       string
-		licenseAuthor string
+		projectPath     string
+		modulePath      string
+		serviceNames    []string
+		frontendNames   []string
+		goVersion       string
+		inPlace         bool
+		force           bool
+		license         string
+		licenseAuthor   string
+		disableFeatures []string
+		memoryFormat    string
 	)
 
 	cmd := &cobra.Command{
@@ -40,6 +42,13 @@ This command will create:
 - Git repository with initial commit
 - forge.yaml project configuration
 
+Use --disable to turn off features at creation time:
+  forge new my-project --mod ... --disable ci,deploy
+  forge new my-project --mod ... --disable orm --disable migrations
+
+Valid feature names: orm, codegen, migrations, ci, deploy, contracts,
+docs, frontend, observability, hot_reload.
+
 Example:
   forge new my-project --mod github.com/example/my-project
   forge new my-project --mod github.com/example/my-project --service gateway
@@ -51,7 +60,7 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor)
+			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat)
 		},
 	}
 
@@ -64,12 +73,14 @@ Example:
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload")
+	cmd.Flags().StringVar(&memoryFormat, "memory", "reliant", "AI memory file format: reliant (default), claude, cursor, copilot, codex")
 	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
 }
 
-func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string) error {
+func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string) error {
 	var targetPath string
 
 	if inPlace {
@@ -189,6 +200,18 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	gen.GoVersionOverride = goVersion
 	if len(frontendNames) > 0 {
 		gen.FrontendName = frontendNames[0]
+	}
+
+	// Apply memory format
+	mf, err := generator.ParseMemoryFormat(memoryFormat)
+	if err != nil {
+		return err
+	}
+	gen.MemoryFormat = mf
+
+	// Apply feature disabling
+	if err := applyDisableFlags(gen, disableFeatures); err != nil {
+		return err
 	}
 
 	// Generate project structure
@@ -433,4 +456,35 @@ func readModuleName(path string) (string, error) {
 	}
 
 	return "", fmt.Errorf("module directive not found in go.mod")
+}
+
+func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error {
+	f := func(b bool) *bool { return &b }(false)
+	for _, name := range disable {
+		switch strings.TrimSpace(strings.ToLower(name)) {
+		case "orm":
+			gen.Features.ORM = f
+		case "codegen":
+			gen.Features.Codegen = f
+		case "migrations":
+			gen.Features.Migrations = f
+		case "ci":
+			gen.Features.CI = f
+		case "deploy":
+			gen.Features.Deploy = f
+		case "contracts":
+			gen.Features.Contracts = f
+		case "docs":
+			gen.Features.Docs = f
+		case "frontend":
+			gen.Features.Frontend = f
+		case "observability":
+			gen.Features.Observability = f
+		case "hot_reload", "hot-reload", "hotreload":
+			gen.Features.HotReload = f
+		default:
+			return fmt.Errorf("unknown feature %q; valid features: orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload", name)
+		}
+	}
+	return nil
 }

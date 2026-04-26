@@ -1,5 +1,5 @@
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { createClient, type Interceptor } from "@connectrpc/connect";
+import { createClient, type Transport, type Interceptor } from "@connectrpc/connect";
 import type { DescService } from "@bufbuild/protobuf";
 
 // The API URL is read from the EXPO_PUBLIC_API_URL environment variable.
@@ -7,9 +7,30 @@ import type { DescService } from "@bufbuild/protobuf";
 const baseUrl =
   process.env.EXPO_PUBLIC_API_URL ?? "{{.ApiUrl}}";
 
-export const transport = createConnectTransport({
-  baseUrl,
-});
+// Module-level token getter, wired up by AuthTokenBridge in _layout.tsx.
+let _getToken: () => Promise<string | null> = async () => null;
+
+export function setAuthTokenGetter(fn: () => Promise<string | null>) {
+  _getToken = fn;
+}
+
+// Auth interceptor that attaches the bearer token to every request.
+const authInterceptor: Interceptor = (next) => async (req) => {
+  const token = await _getToken();
+  if (token) {
+    req.header.set("Authorization", `Bearer ${token}`);
+  }
+  return next(req);
+};
+
+function buildTransport(): Transport {
+  return createConnectTransport({
+    baseUrl,
+    interceptors: [authInterceptor],
+  });
+}
+
+export const transport = buildTransport();
 
 /**
  * connectClient creates a typed Connect client for a given service descriptor.

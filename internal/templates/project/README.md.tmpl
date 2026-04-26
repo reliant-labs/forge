@@ -1,6 +1,6 @@
 # {{.Name}}
 
-A Connect RPC service project built with [Forge](https://github.com/reliant-labs/forge).
+A Go application project built with [Forge](https://github.com/reliant-labs/forge). Use it for Connect RPC services, background workers, frontends, or CLI-first tools.
 
 ## Quick Start
 
@@ -9,13 +9,14 @@ A Connect RPC service project built with [Forge](https://github.com/reliant-labs
 task deps
 ```
 
-### 2. Add a service
+### 2. Add a component
 ```bash
 forge add service myservice
+forge add worker cleanup --kind cron --schedule "0 * * * *"
+forge add frontend mobile --kind mobile
 ```
 
-### 3. Define your proto
-Edit the generated proto file in `proto/services/myservice/v1/myservice.proto`:
+If you created the project with an initial service, define your proto by editing `proto/services/myservice/v1/myservice.proto`:
 ```protobuf
 syntax = "proto3";
 
@@ -36,12 +37,12 @@ message HelloResponse {
 }
 ```
 
-### 4. Generate code from protos
+### 3. Generate code from protos
 ```bash
 forge generate
 ```
 
-### 5. Build and run
+### 4. Build and run
 ```bash
 task build
 task dev
@@ -53,7 +54,8 @@ task dev
 |---|---|
 | `forge new` | Create a new project |
 | `forge add service <name>` | Add a Go service |
-| `forge add frontend <name>` | Add a Next.js frontend app |
+| `forge add worker <name>` | Add a background worker; use `--kind cron --schedule "..."` for scheduled workers |
+| `forge add frontend <name>` | Add a Next.js frontend app; use `--kind mobile` for React Native |
 | `forge generate` | Generate code from proto files |
 | `forge lint` | Lint proto and Go code |
 | `forge build` | Build the project |

@@ -11,6 +11,8 @@ This document details planned extensions to make Forge a better fit for producti
 2. [Multi-Tenancy Primitives](#2-multi-tenancy-primitives)
 3. [Proto-Annotated Interceptor Wiring](#3-proto-annotated-interceptor-wiring)
 4. [Scheduled Jobs / Cron Worker Kind](#4-scheduled-jobs--cron-worker-kind)
+5. [Mobile Frontends (React Native)](#5-mobile-frontends-react-native)
+6. [CLI-only Projects](#6-cli-only-projects)
 
 ---
 
@@ -383,118 +385,79 @@ Step 5c: generateInterceptorWiring()
 
 ---
 
-## 4. Scheduled Jobs / Cron Worker Kind
+## 4. Scheduled Jobs / Cron Worker Kind — ✅ DONE
 
-### Problem
-Forge has a `worker` component type with `Start(ctx)/Stop(ctx)` lifecycle, but no built-in pattern for **scheduled/periodic** work. Most backends have cron-like jobs: cleanup old data, sync external state, send digest emails, check expiring subscriptions.
+> **Status:** Implemented. `forge add worker <name> --kind cron --schedule "*/5 * * * *"` scaffolds a cron-scheduled worker using `robfig/cron/v3`. Cron workers share the same `Start(ctx)/Stop(ctx)` lifecycle as regular workers — the cron scheduler runs inside `Start` and stops cleanly on context cancellation. Config is tracked in `forge.yaml` with `kind: cron` and a `schedule` field.
 
-### What to Build
-A new worker kind: `forge add worker <name> --kind cron`
+### Summary
 
-#### Generated Files
-```
-workers/<name>/
-├── worker.go              # CronWorker with schedule registration
-├── jobs.go                # Individual job implementations
-└── worker_test.go         # Tests with manual tick
+```bash
+forge add worker daily_report --kind cron --schedule "0 0 * * *"
 ```
 
-**worker.go.tmpl (cron kind):**
-```go
-package {{.Name}}
+Generated files in `workers/<name>/`:
+- `worker.go` — Worker with cron scheduler, `Run()` method for job logic
+- `worker_test.go` — Lifecycle test
 
-import (
-    "context"
-    "log/slog"
-    "time"
-)
-
-type Job struct {
-    Name     string
-    Schedule time.Duration  // simple interval-based
-    Fn       func(ctx context.Context) error
-}
-
-type Deps struct {
-    Logger *slog.Logger
-    Config *config.Config
-    // Add your dependencies here
-}
-
-type Worker struct {
-    deps    Deps
-    jobs    []Job
-    cancel  context.CancelFunc
-    done    chan struct{}
-}
-
-func New(deps Deps) *Worker {
-    w := &Worker{deps: deps, done: make(chan struct{})}
-    w.registerJobs()
-    return w
-}
-
-func (w *Worker) registerJobs() {
-    w.jobs = []Job{
-        // Register your jobs here:
-        // {Name: "cleanup", Schedule: 1 * time.Hour, Fn: w.cleanup},
-    }
-}
-
-func (w *Worker) Start(ctx context.Context) error {
-    ctx, w.cancel = context.WithCancel(ctx)
-    for _, job := range w.jobs {
-        go w.runJob(ctx, job)
-    }
-    return nil
-}
-
-func (w *Worker) runJob(ctx context.Context, job Job) {
-    ticker := time.NewTicker(job.Schedule)
-    defer ticker.Stop()
-
-    w.deps.Logger.Info("job scheduled", "job", job.Name, "interval", job.Schedule)
-
-    for {
-        select {
-        case <-ctx.Done():
-            return
-        case <-ticker.C:
-            start := time.Now()
-            if err := job.Fn(ctx); err != nil {
-                w.deps.Logger.Error("job failed", "job", job.Name, "error", err, "duration", time.Since(start))
-            } else {
-                w.deps.Logger.Info("job completed", "job", job.Name, "duration", time.Since(start))
-            }
-        }
-    }
-}
-
-func (w *Worker) Stop(ctx context.Context) error {
-    if w.cancel != nil {
-        w.cancel()
-    }
-    return nil
-}
-```
-
-#### Integration with Existing Worker System
-This reuses the existing `Start(ctx)/Stop(ctx)` worker lifecycle — the server template already manages workers. The cron kind just provides the scheduling loop internally.
-
-Config tracking:
+Config in `forge.yaml`:
 ```yaml
 services:
-  - name: cleanup
+  - name: daily_report
     type: worker
-    kind: cron    # NEW — distinguishes from plain workers
+    kind: cron
+    schedule: "0 0 * * *"
+    path: workers/daily_report
 ```
 
-#### Implementation Steps
-1. Create `internal/templates/worker-cron/` directory with templates
-2. Add `--kind` flag to `forge add worker` command in `internal/cli/add.go`
-3. Update `internal/generator/worker_gen.go` to select templates based on kind
-4. Update `ServiceConfig` to include optional `Kind` field for workers
-5. Templates reuse existing worker lifecycle — no bootstrap changes needed
+---
+
+## 5. Mobile Frontends (React Native) — ✅ DONE
+
+> **Status:** Implemented. `forge add frontend <name> --kind mobile` scaffolds a React Native app using Expo SDK 52 with Expo Router. The app uses `@connectrpc/connect-web` transport (HTTP/JSON, compatible with React Native) and reads the API URL from `EXPO_PUBLIC_API_URL`.
+
+### Summary
+
+```bash
+forge add frontend myapp --kind mobile
+```
+
+Generated files in `frontends/<name>/`:
+- Expo SDK 52 project with Expo Router
+- Connect-web transport setup (HTTP/JSON — works in React Native unlike gRPC-web)
+- `EXPO_PUBLIC_API_URL` environment variable for API connectivity
+
+Config in `forge.yaml`:
+```yaml
+frontends:
+  - name: myapp
+    type: react-native
+    kind: mobile
+    path: frontends/myapp
+    port: 3000
+```
+
+Mobile frontends use `connect-web` (not `connect-node`) because React Native's networking layer is HTTP/JSON only — no HTTP/2 or binary gRPC framing.
+
+---
+
+## 6. CLI-only Projects — ✅ DONE
+
+> **Status:** Implemented. `forge new myproject --mod github.com/example/myproject` (without `--service`) now produces a valid CLI-only binary — a Cobra command skeleton with no server bootstrap, no proto services, no HTTP listener. This is useful for building CLI tools, batch processors, or migration utilities that share the Forge project structure.
+
+### Summary
+
+```bash
+forge new mytool --mod github.com/example/mytool
+```
+
+Produces:
+- `cmd/main.go` — Cobra CLI entrypoint
+- `cmd/version.go` — Version command
+- `pkg/config/` — Config struct and loader
+- `forge.yaml` — Project config (empty services list)
+- Standard project files (go.mod, Taskfile, etc.)
+
+No `cmd/server.go`, no `bootstrap.go`, no proto directories. Components can be added later with `forge add service`, `forge add worker`, etc.
 
 ---
 
@@ -504,10 +467,9 @@ services:
 |---|-----------|--------|-------|-------------|--------|
 | 1 | Proto-Annotated Interceptor Wiring | Medium | High | None — builds on existing annotations | ✅ Auth/RBAC done; rate-limit & cache pending |
 | 2 | Multi-Tenancy Primitives | Medium | High | Depends on ORM codegen understanding | ✅ Done |
-| 3 | Cron Worker Kind | Small | Medium | None — extends existing worker system | Planned |
+| 3 | Cron Worker Kind | Small | Medium | None — extends existing worker system | ✅ Done |
 | 4 | K8s Operator Component Type | Large | High | None — new component type | Planned |
+| 5 | Mobile Frontends | Medium | Medium | None — extends frontend system | ✅ Done |
+| 6 | CLI-only Projects | Small | Medium | None — simplifies existing scaffold | ✅ Done |
 
-Recommended next: 3 → 4 (then finish rate-limit/cache interceptor wiring)
-
-- **Cron workers** are lowest risk, extend existing patterns, quick win.
-- **Operators** are a large addition but self-contained — can be done in parallel with the others.
+Remaining: K8s Operator (4), rate-limit & cache interceptor wiring (1 partial).

@@ -222,6 +222,57 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 }
 
 
+func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "cli-only")
+	gen := NewProjectGenerator("cli-only", root, "example.com/cli-only")
+	// No ServiceName set — zero-service CLI-only project
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// Core files must exist
+	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "version.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "app", "bootstrap.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "app", "setup.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
+	assertPathExists(t, filepath.Join(root, "forge.yaml"))
+
+	// Service-specific directories should NOT exist
+	if _, err := os.Stat(filepath.Join(root, "handlers", "api")); !os.IsNotExist(err) {
+		t.Fatal("expected no service handler directory, but it exists")
+	}
+
+	// bootstrap.go should have Bootstrap and BootstrapOnly functions
+	bootstrapContents := readFile(t, filepath.Join(root, "pkg", "app", "bootstrap.go"))
+	if !strings.Contains(bootstrapContents, "func Bootstrap(") {
+		t.Fatal("bootstrap.go missing Bootstrap function")
+	}
+	if !strings.Contains(bootstrapContents, "func BootstrapOnly(") {
+		t.Fatal("bootstrap.go missing BootstrapOnly function")
+	}
+
+	// bootstrap.go should NOT import service-specific packages
+	if strings.Contains(bootstrapContents, "/handlers/") {
+		t.Fatalf("zero-service bootstrap.go should not import handler packages, got:\n%s", bootstrapContents)
+	}
+
+	// cmd/main.go should have Cobra setup
+	mainContents := readFile(t, filepath.Join(root, "cmd", "main.go"))
+	if !strings.Contains(mainContents, "rootCmd") {
+		t.Fatal("cmd/main.go missing rootCmd")
+	}
+
+	// forge.yaml should have an empty services list
+	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
+	if !strings.Contains(configContents, "services: []") {
+		t.Fatalf("expected forge.yaml to have empty services list, got:\n%s", configContents)
+	}
+}
+
 func TestParseGoVersion(t *testing.T) {
 	tests := []struct {
 		input       string

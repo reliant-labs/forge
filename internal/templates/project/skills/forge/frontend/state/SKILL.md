@@ -62,6 +62,42 @@ return <DataList items={query.data} />;
 - **UI store** (`src/stores/ui-store.ts`) — Zustand baseline, extend for your domain
 - **URL state** — App Router params and `useSearchParams` for navigation state
 
+## Pack-driven state expansion
+
+When packs are added to `forge.yaml`, they may expand the frontend state systems:
+
+### Auth pack (`packs: [auth]`)
+- The base `EventMap` already includes `auth:expired`, `auth:login`, `auth:logout`
+- The `AuthProvider` interface in `src/lib/auth/` is the integration point — implement it for your auth provider (Auth0, Clerk, Supabase Auth, etc.)
+- For session state beyond what `useAuth()` provides, create `src/stores/auth-store.ts`:
+  ```typescript
+  import { create } from "zustand";
+  
+  interface AuthUiState {
+    showLoginModal: boolean;
+    setShowLoginModal: (show: boolean) => void;
+    lastAuthError: string | null;
+    setLastAuthError: (error: string | null) => void;
+  }
+  
+  export const useAuthUiStore = create<AuthUiState>((set) => ({
+    showLoginModal: false,
+    setShowLoginModal: (show) => set({ showLoginModal: show }),
+    lastAuthError: null,
+    setLastAuthError: (error) => set({ lastAuthError: error }),
+  }));
+  ```
+
+### Network events
+- `network:error` and `network:unauthorized` are emitted by the Connect interceptors
+- Listen for `network:unauthorized` to trigger auth refresh flows:
+  ```typescript
+  useEvent("network:unauthorized", () => {
+    // Trigger token refresh or redirect to login
+    events.emit("auth:expired");
+  });
+  ```
+
 ## Rules
 
 - Use generated hooks for server data — do not copy backend data into Zustand.

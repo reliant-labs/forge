@@ -95,10 +95,12 @@ tmp/
 # The following encode shared project conventions for LLM-driven
 # development and are INTENTIONALLY committed:
 #
-#   .reliant/          — forge-managed conventions, project metadata, skills
-#   reliant.md         — user-owned project memory file
-#   .mcp.json          — project-level MCP server config
-#   .mcp.json.example  — documentation of opt-in MCP servers
+#   .reliant/                           — forge-managed conventions, project metadata, skills
+#   reliant.md / CLAUDE.md / AGENTS.md  — user-owned project memory file (depends on --memory flag)
+#   .cursorrules                        — project memory file (cursor format)
+#   .github/copilot-instructions.md     — project memory file (copilot format)
+#   .mcp.json                           — project-level MCP server config
+#   .mcp.json.example                   — documentation of opt-in MCP servers
 #
 # Do not add these to .gitignore. If you need to keep local-only overrides,
 # create a `.mcp.local.json` or similar and ignore that instead.

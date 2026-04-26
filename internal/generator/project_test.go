@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func TestProjectGeneratorGenerateCreatesMigrationFirstLayout(t *testing.T) {
@@ -437,6 +440,13 @@ func assertPathExists(t *testing.T, path string) {
 	}
 }
 
+func assertPathNotExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected path %s to NOT exist, but err = %v", path, err)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	contents, err := os.ReadFile(path)
@@ -446,7 +456,7 @@ func readFile(t *testing.T, path string) string {
 	return string(contents)
 }
 
-func TestProjectGeneratorWritesSkillsTree(t *testing.T) {
+func TestProjectGeneratorDoesNotWriteSkillsToDisk(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills-app")
 	generator := NewProjectGenerator("skills-app", root, "example.com/skills-app")
 
@@ -454,40 +464,20 @@ func TestProjectGeneratorWritesSkillsTree(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// Verify the nested skills tree exists with every expected skill. The
-	// list is authoritative: adding or removing a skill should update this
-	// list too, so we notice when the generator silently drops a file.
-	expectedSkills := []string{
-		"forge/SKILL.md",
-		"forge/api/SKILL.md",
-		"forge/db/SKILL.md",
-		"forge/debug/SKILL.md",
-		"forge/debug/investigate/SKILL.md",
-		"forge/debug/isolate/SKILL.md",
-		"forge/debug/reproduce/SKILL.md",
-		"forge/deploy/SKILL.md",
-		"forge/frontend/SKILL.md",
-		"forge/services/SKILL.md",
-		"forge/testing/SKILL.md",
-		"forge/testing/e2e/SKILL.md",
-		"forge/testing/integration/SKILL.md",
-		"forge/testing/unit/SKILL.md",
-	}
-	for _, rel := range expectedSkills {
-		assertPathExists(t, filepath.Join(root, ".reliant", "skills", rel))
+	// Skills are served via `forge skill load`, not written to disk.
+	skillsDir := filepath.Join(root, ".reliant", "skills")
+	if _, err := os.Stat(skillsDir); err == nil {
+		t.Fatalf("expected .reliant/skills/ to NOT exist (skills now served via CLI), but it does")
 	}
 
-	// Spot-check that a skill file has the expected frontmatter shape.
-	debugSkill := readFile(t, filepath.Join(root, ".reliant", "skills", "forge", "debug", "SKILL.md"))
-	if !strings.Contains(debugSkill, "name: debug") {
-		t.Fatalf("expected debug SKILL.md to include name frontmatter, got:\n%s", debugSkill)
+	// Skills should still be accessible via the embedded templates.
+	skillFiles, err := templates.ProjectTemplates.List("skills")
+	if err != nil {
+		t.Fatalf("expected embedded skill templates to be accessible: %v", err)
 	}
-	if !strings.Contains(debugSkill, "description:") {
-		t.Fatalf("expected debug SKILL.md to include description frontmatter, got:\n%s", debugSkill)
+	if len(skillFiles) < 20 {
+		t.Fatalf("expected at least 20 embedded skill files, got %d", len(skillFiles))
 	}
-
-	// The skills README should also be present.
-	assertPathExists(t, filepath.Join(root, ".reliant", "skills", "README.md"))
 }
 
 func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
@@ -498,16 +488,19 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// The user-owned stub lives at the project root and references the
-	// forge-owned conventions file under .reliant/.
+	// The user-owned stub lives at the project root and points agents
+	// at the `forge skill` CLI.
 	stubPath := filepath.Join(root, "reliant.md")
 	assertPathExists(t, stubPath)
 	stub := readFile(t, stubPath)
 	if !strings.Contains(stub, "# memory-app") {
 		t.Fatalf("expected reliant.md to start with project name heading, got:\n%s", stub)
 	}
-	if !strings.Contains(stub, ".reliant/reliant-forge.md") {
-		t.Fatalf("expected reliant.md to point at .reliant/reliant-forge.md, got:\n%s", stub)
+	if !strings.Contains(stub, "skill list") {
+		t.Fatalf("expected reliant.md to reference forge skill list, got:\n%s", stub)
+	}
+	if !strings.Contains(stub, "skill load") {
+		t.Fatalf("expected reliant.md to reference forge skill load, got:\n%s", stub)
 	}
 
 	// The user-owned .reliant/reliant.md project memory file.
@@ -521,19 +514,10 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("expected .reliant/reliant.md to contain launch notice, got:\n%s", reliantMemory)
 	}
 
-	// The forge-owned conventions file lives under .reliant/ and must be
-	// written by the generator.
-	conventionsPath := filepath.Join(root, ".reliant", "reliant-forge.md")
-	assertPathExists(t, conventionsPath)
-	conventions := readFile(t, conventionsPath)
-	if !strings.Contains(conventions, "Forge project conventions") {
-		t.Fatalf("expected reliant-forge.md to include the conventions heading, got:\n%s", conventions)
-	}
-	if !strings.Contains(conventions, ".reliant/skills/forge/debug/SKILL.md") {
-		t.Fatalf("expected reliant-forge.md to reference the debug skill, got:\n%s", conventions)
-	}
-	if !strings.Contains(conventions, "memory-app") {
-		t.Fatalf("expected reliant-forge.md to be templated with project name, got:\n%s", conventions)
+	// reliant-forge.md must NOT exist (conventions now served via CLI).
+	forgeConventions := filepath.Join(root, ".reliant", "reliant-forge.md")
+	if _, err := os.Stat(forgeConventions); err == nil {
+		t.Fatalf("expected .reliant/reliant-forge.md to NOT exist, but it does")
 	}
 }
 
@@ -560,11 +544,127 @@ func TestProjectGeneratorPreservesExistingReliantMemoryFile(t *testing.T) {
 		t.Fatalf("expected existing reliant.md to be preserved verbatim, got:\n%s", after)
 	}
 
-	// But the forge-owned conventions file must still be written.
-	conventions := readFile(t, filepath.Join(root, ".reliant", "reliant-forge.md"))
-	if !strings.Contains(conventions, "Forge project conventions") {
-		t.Fatalf("expected reliant-forge.md to be written even when reliant.md already exists, got:\n%s", conventions)
+	// The forge-owned project.json must still be written.
+	assertPathExists(t, filepath.Join(root, ".reliant", "project.json"))
+}
+
+func TestProjectGeneratorMemoryFormatClaude(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "claude-app")
+	gen := NewProjectGenerator("claude-app", root, "example.com/claude-app")
+	gen.MemoryFormat = MemoryFormatClaude
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
 	}
+
+	// CLAUDE.md should exist.
+	claudePath := filepath.Join(root, "CLAUDE.md")
+	assertPathExists(t, claudePath)
+	content := readFile(t, claudePath)
+	if !strings.Contains(content, "# claude-app") {
+		t.Fatalf("expected CLAUDE.md to contain project name heading, got:\n%s", content)
+	}
+
+	// reliant.md should NOT exist at the top level.
+	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
+		t.Fatal("reliant.md should not exist when --memory=claude")
+	}
+
+	// .reliant/reliant.md (internal) should still exist.
+	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
+}
+
+func TestProjectGeneratorMemoryFormatCursor(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "cursor-app")
+	gen := NewProjectGenerator("cursor-app", root, "example.com/cursor-app")
+	gen.MemoryFormat = MemoryFormatCursor
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	assertPathExists(t, filepath.Join(root, ".cursorrules"))
+	content := readFile(t, filepath.Join(root, ".cursorrules"))
+	if !strings.Contains(content, "# cursor-app") {
+		t.Fatalf("expected .cursorrules to contain project name heading, got:\n%s", content)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
+		t.Fatal("reliant.md should not exist when --memory=cursor")
+	}
+
+	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
+}
+
+func TestProjectGeneratorMemoryFormatCopilot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "copilot-app")
+	gen := NewProjectGenerator("copilot-app", root, "example.com/copilot-app")
+	gen.MemoryFormat = MemoryFormatCopilot
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	copilotPath := filepath.Join(root, ".github", "copilot-instructions.md")
+	assertPathExists(t, copilotPath)
+	content := readFile(t, copilotPath)
+	if !strings.Contains(content, "# copilot-app") {
+		t.Fatalf("expected copilot-instructions.md to contain project name heading, got:\n%s", content)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
+		t.Fatal("reliant.md should not exist when --memory=copilot")
+	}
+
+	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
+}
+
+func TestProjectGeneratorMemoryFormatCodex(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "codex-app")
+	gen := NewProjectGenerator("codex-app", root, "example.com/codex-app")
+	gen.MemoryFormat = MemoryFormatCodex
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	assertPathExists(t, filepath.Join(root, "AGENTS.md"))
+	content := readFile(t, filepath.Join(root, "AGENTS.md"))
+	if !strings.Contains(content, "# codex-app") {
+		t.Fatalf("expected AGENTS.md to contain project name heading, got:\n%s", content)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
+		t.Fatal("reliant.md should not exist when --memory=codex")
+	}
+
+	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
+}
+
+func TestProjectGeneratorPreservesExistingMemoryFileNonReliant(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "existing-claude-app")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll error = %v", err)
+	}
+
+	preExisting := "# my claude instructions\n\ndo not touch.\n"
+	claudePath := filepath.Join(root, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte(preExisting), 0o644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+
+	gen := NewProjectGenerator("existing-claude-app", root, "example.com/existing-claude-app")
+	gen.MemoryFormat = MemoryFormatClaude
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	after := readFile(t, claudePath)
+	if after != preExisting {
+		t.Fatalf("expected existing CLAUDE.md to be preserved verbatim, got:\n%s", after)
+	}
+
+	assertPathExists(t, filepath.Join(root, ".reliant", "project.json"))
 }
 
 func TestProjectGeneratorWritesMCPConfig(t *testing.T) {
@@ -662,10 +762,8 @@ func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
 	}
 
 	owned := []string{
-		filepath.Join(root, ".reliant", "reliant-forge.md"),
-		filepath.Join(root, ".reliant", "skills", "README.md"),
-		filepath.Join(root, ".reliant", "skills", "forge", "debug", "SKILL.md"),
-		filepath.Join(root, ".reliant", "skills", "forge", "services", "SKILL.md"),
+		filepath.Join(root, ".reliant", "project.json"),
+		filepath.Join(root, ".reliant", "README.md"),
 	}
 	before := make(map[string]string, len(owned))
 	for _, p := range owned {
@@ -683,5 +781,216 @@ func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
 		if before[p] != after {
 			t.Errorf("forge-owned file %s changed on regeneration", p)
 		}
+	}
+}
+
+// --- Feature flag gating tests ---
+
+func falsePtr() *bool { f := false; return &f }
+
+func TestFeatureFlag_MigrationsDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-migrations")
+	gen := NewProjectGenerator("no-migrations", root, "example.com/no-migrations")
+	gen.ServiceName = "api"
+	gen.Features = config.FeaturesConfig{
+		Migrations: falsePtr(),
+		ORM:        falsePtr(), // db/ is created when either migrations or ORM is enabled
+	}
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// db/ directory should not exist
+	assertPathNotExists(t, filepath.Join(root, "db"))
+
+	// cmd/db.go should not exist
+	assertPathNotExists(t, filepath.Join(root, "cmd", "db.go"))
+
+	// pkg/app/migrate.go should not exist
+	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "migrate.go"))
+
+	// cmd/server.go should exist (codegen is still enabled) but must NOT
+	// reference AutoMigrate
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
+	if strings.Contains(serverContents, "AutoMigrate") {
+		t.Fatalf("cmd/server.go should NOT reference AutoMigrate when migrations disabled, got:\n%s", serverContents)
+	}
+}
+
+func TestFeatureFlag_CodegenDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-codegen")
+	gen := NewProjectGenerator("no-codegen", root, "example.com/no-codegen")
+	// No ServiceName — setting one would create proto/services/<svc>/v1
+	// unconditionally via MkdirAll.
+	gen.Features = config.FeaturesConfig{
+		Codegen: falsePtr(),
+	}
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// cmd/server.go, cmd/otel.go, cmd/db.go should not exist
+	assertPathNotExists(t, filepath.Join(root, "cmd", "server.go"))
+	assertPathNotExists(t, filepath.Join(root, "cmd", "otel.go"))
+	assertPathNotExists(t, filepath.Join(root, "cmd", "db.go"))
+
+	// Codegen-specific proto dirs should not exist
+	assertPathNotExists(t, filepath.Join(root, "proto", "api"))
+	assertPathNotExists(t, filepath.Join(root, "proto", "services"))
+	assertPathNotExists(t, filepath.Join(root, "proto", "config"))
+	assertPathNotExists(t, filepath.Join(root, "proto", "forge"))
+
+	// pkg/app/bootstrap.go should not exist (generated by codegen pipeline)
+	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "bootstrap.go"))
+
+	// Core files that don't depend on codegen should still exist
+	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "version.go"))
+}
+
+func TestFeatureFlag_DeployDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-deploy")
+	gen := NewProjectGenerator("no-deploy", root, "example.com/no-deploy")
+	gen.ServiceName = "api"
+	gen.Features = config.FeaturesConfig{
+		Deploy: falsePtr(),
+	}
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// Dockerfile and .dockerignore should not exist
+	assertPathNotExists(t, filepath.Join(root, "Dockerfile"))
+	assertPathNotExists(t, filepath.Join(root, ".dockerignore"))
+
+	// docker-compose.yml should not exist (generated by deploy)
+	assertPathNotExists(t, filepath.Join(root, "docker-compose.yml"))
+
+	// deploy/kcl directory should not exist
+	assertPathNotExists(t, filepath.Join(root, "deploy", "kcl"))
+
+	// Non-deploy files should still exist
+	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+}
+
+func TestFeatureFlag_CIDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-ci")
+	gen := NewProjectGenerator("no-ci", root, "example.com/no-ci")
+	gen.ServiceName = "api"
+	gen.Features = config.FeaturesConfig{
+		CI: falsePtr(),
+	}
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// CI workflow files should not exist
+	assertPathNotExists(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
+	assertPathNotExists(t, filepath.Join(root, ".github", "workflows", "deploy.yml"))
+	assertPathNotExists(t, filepath.Join(root, ".github", "workflows", "build-images.yml"))
+	assertPathNotExists(t, filepath.Join(root, ".github", "workflows", "e2e.yml"))
+
+	// pre-commit workflow is also gated on CI
+	assertPathNotExists(t, filepath.Join(root, ".github", "workflows", "pre-commit.yml"))
+
+	// .pre-commit-config.yaml is from DX, not CI — it should still exist
+	assertPathExists(t, filepath.Join(root, ".pre-commit-config.yaml"))
+
+	// Non-CI files should still exist
+	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+}
+
+func TestFeatureFlag_HotReloadDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-hotreload")
+	gen := NewProjectGenerator("no-hotreload", root, "example.com/no-hotreload")
+	gen.ServiceName = "api"
+	gen.Features = config.FeaturesConfig{
+		HotReload: falsePtr(),
+	}
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// Air config files should not exist
+	assertPathNotExists(t, filepath.Join(root, ".air.toml"))
+	assertPathNotExists(t, filepath.Join(root, ".air-debug.toml"))
+
+	// Other files should still exist
+	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+}
+
+func TestFeatureFlag_ObservabilityDisabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "no-observability")
+	gen := NewProjectGenerator("no-observability", root, "example.com/no-observability")
+	gen.ServiceName = "api"
+	gen.Features = config.FeaturesConfig{
+		Observability: falsePtr(),
+	}
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// Alloy config should not exist
+	assertPathNotExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))
+
+	// cmd/otel.go STILL exists because it's tied to codegen, not observability
+	assertPathExists(t, filepath.Join(root, "cmd", "otel.go"))
+
+	// Other files should still exist
+	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+}
+
+func TestFeatureFlag_AllEnabled(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "all-features")
+	gen := NewProjectGenerator("all-features", root, "example.com/all-features")
+	gen.ServiceName = "api"
+	// Features is zero-value — all *bool fields are nil, meaning all enabled
+
+	if err := gen.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	// Migrations
+	assertPathExists(t, filepath.Join(root, "db", "migrations"))
+	assertPathExists(t, filepath.Join(root, "cmd", "db.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "app", "migrate.go"))
+
+	// Codegen
+	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
+	assertPathExists(t, filepath.Join(root, "cmd", "otel.go"))
+	assertPathExists(t, filepath.Join(root, "proto"))
+	assertPathExists(t, filepath.Join(root, "pkg", "app", "bootstrap.go"))
+
+	// Deploy
+	assertPathExists(t, filepath.Join(root, "Dockerfile"))
+	assertPathExists(t, filepath.Join(root, ".dockerignore"))
+	assertPathExists(t, filepath.Join(root, "docker-compose.yml"))
+	assertPathExists(t, filepath.Join(root, "deploy", "kcl"))
+
+	// CI
+	assertPathExists(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
+
+	// Hot reload
+	assertPathExists(t, filepath.Join(root, ".air.toml"))
+	assertPathExists(t, filepath.Join(root, ".air-debug.toml"))
+
+	// Observability
+	assertPathExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))
+
+	// server.go should reference AutoMigrate when migrations are enabled
+	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
+	if !strings.Contains(serverContents, "AutoMigrate") {
+		t.Fatalf("cmd/server.go should reference AutoMigrate when all features enabled, got:\n%s", serverContents)
 	}
 }

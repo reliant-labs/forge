@@ -1,9 +1,44 @@
+<!-- forge:version=1 -->
 # {{.Name}}
 
-Memory file for this project. Loaded automatically by Reliant and compatible tools at the start of every session. Keep it short, actionable, and current.
+This is a **Forge** project managed by the `{{.CLI}}` CLI.
 
-This is a **Forge** project. The forge-owned conventions, rules, and skill pointers live in [`.reliant/reliant-forge.md`](.reliant/reliant-forge.md) — read that file alongside this one. It is written once by `{{.CLI}} new` and is forge-managed; don't hand-edit it. Add your own project-specific context below.
+## Skills
 
-## Project notes
+Run `{{.CLI}} skill list` to discover available playbooks, and `{{.CLI}} skill load <name>` to read one. Available skills:
+
+- **forge** — overall project conventions
+- **getting-started** — onboarding walkthrough
+- **services** — adding and editing services
+- **api** — Connect RPC API patterns
+- **db** — database, ORM, and migrations
+- **frontend** — Next.js frontend overview
+- **frontend/state** — state management (React Query, Zustand, URL)
+- **frontend/patterns** — UI component patterns
+- **proto** — protobuf schema conventions
+- **architecture** — system architecture and layout
+- **workers** — background job workers
+- **auth** — authentication and authorization
+- **packs** — reusable pack system
+- **testing** — testing overview
+- **testing/unit** — unit test patterns
+- **testing/integration** — integration test patterns
+- **testing/e2e** — end-to-end test patterns
+- **debug** — debugging overview
+- **debug/investigate** — investigation techniques
+- **debug/isolate** — isolating failures
+- **debug/reproduce** — reproducing bugs
+- **deploy** — deployment and releases
+- **observability** — logging, tracing, and metrics
+
+## Critical Rules
+
+1. **Never edit generated code** — `gen/` and `*_gen.go` files are overwritten by `{{.CLI}} generate`. Make changes in proto files instead.
+2. **Proto is the canonical input** — all API contracts, ORM models, and frontend hooks derive from proto definitions.
+3. **`{{.CLI}} generate` is safe** — it never overwrites hand-written business logic (handler files, `pkg/app/setup.go`, etc.).
+4. **Migrations are the DB source of truth** — the database schema comes from migrations, not proto. Proto drives the ORM layer above them.
+5. **Use `{{.CLI}} test`** — not raw `go test`. The CLI sets up the correct environment, test database, and flags.
+
+## Project Notes
 
 <!-- Add project-specific context, conventions, and open questions here. -->

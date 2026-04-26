@@ -2,7 +2,6 @@
  * Forge Event Bus — typed pub/sub for imperative cross-cutting actions.
  *
  * Default events are provided. Extend by merging into the EventMap interface:
- * Packs (e.g. auth) may add their own events here during scaffold.
  *
  * ```typescript
  * // In your code:
@@ -29,13 +28,6 @@ export interface EventMap {
   "auth:expired": undefined;
   "auth:login": undefined;
   "auth:logout": undefined;
-
-  // Network events
-  "network:error": { status: number; message: string };
-  "network:unauthorized": undefined;
-
-  // App lifecycle (primarily used by mobile, but available everywhere)
-  "app:ready": undefined;
 }
 
 type EventHandler<T> = (payload: T) => void;

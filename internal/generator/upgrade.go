@@ -47,6 +47,41 @@ type managedFile struct {
 	tier         int    // 1 = always overwrite (gitignored), 2 = checksum-protected
 }
 
+// fileEnabledByFeatures reports whether a managed file should be included
+// given the current feature flags. Files that don't match any gated path
+// are always included (backwards-compatible default).
+func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
+	p := f.destPath
+	switch {
+	case p == "Dockerfile" || p == "docker-compose.yml":
+		return cfg.Features.DeployEnabled()
+	case strings.HasPrefix(p, "deploy/") && strings.HasSuffix(p, ".k"):
+		return cfg.Features.DeployEnabled()
+	case p == ".air.toml" || p == ".air-debug.toml":
+		return cfg.Features.HotReloadEnabled()
+	case p == "deploy/alloy-config.alloy":
+		return cfg.Features.ObservabilityEnabled()
+	case strings.HasPrefix(p, ".github/workflows/"):
+		return cfg.Features.CIEnabled()
+	case p == "cmd/server.go" || p == "cmd/otel.go":
+		return cfg.Features.CodegenEnabled()
+	case p == "cmd/db.go":
+		return cfg.Features.CodegenEnabled() && cfg.Features.MigrationsEnabled()
+	}
+	return true
+}
+
+// filterManagedFiles returns only the managed files whose features are enabled.
+func filterManagedFiles(files []managedFile, cfg *config.ProjectConfig) []managedFile {
+	filtered := make([]managedFile, 0, len(files))
+	for _, f := range files {
+		if fileEnabledByFeatures(f, cfg) {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
+}
+
 // managedFiles returns the list of frozen files that upgrade manages.
 func managedFiles() []managedFile {
 	return []managedFile{
@@ -345,7 +380,7 @@ func simpleDiff(path string, old, new []byte) string {
 // files. Called by forge generate to keep infrastructure in sync with templates.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 	data := buildTemplateData(cfg, projectDir)
-	for _, f := range managedFiles() {
+	for _, f := range filterManagedFiles(managedFiles(), cfg) {
 		if f.tier != Tier1 {
 			continue
 		}
@@ -379,7 +414,7 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 	var results []UpgradeResult
 
-	for _, f := range managedFiles() {
+	for _, f := range filterManagedFiles(managedFiles(), cfg) {
 		// Render the expected content from the current template
 		expected, err := renderManagedFile(f, data)
 		if err != nil {

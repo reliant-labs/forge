@@ -30,9 +30,11 @@ type ProjectConfig struct {
 // ServiceConfig represents a Go service definition.
 type ServiceConfig struct {
 	Name          string          `yaml:"name"`
-	Type          string          `yaml:"type"` // "go_service", "worker", "operator"
+	Type          string          `yaml:"type"`              // "go_service", "worker", "operator"
+	Kind          string          `yaml:"kind,omitempty"`     // sub-type: worker kind ("cron"), empty = default
 	Path          string          `yaml:"path"`
-	Port          int             `yaml:"port"`
+	Port          int             `yaml:"port,omitempty"`
+	Schedule      string          `yaml:"schedule,omitempty"` // cron expression for kind=cron workers
 	ProtoPackages []string        `yaml:"proto_packages,omitempty"`
 	Webhooks      []WebhookConfig `yaml:"webhooks,omitempty"`
 }
@@ -48,10 +50,11 @@ type PackageConfig struct {
 	Kind string `yaml:"kind,omitempty"` // "" (default/generic), "client", "eventbus"
 }
 
-// FrontendConfig defines a frontend application (e.g. Next.js).
+// FrontendConfig defines a frontend application (e.g. Next.js, React Native).
 type FrontendConfig struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"` // "nextjs"
+	Type string `yaml:"type"`          // "nextjs", "react-native"
+	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native)
 	Path string `yaml:"path"`
 	Port int    `yaml:"port"`
 }

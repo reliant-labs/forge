@@ -195,10 +195,10 @@ func runGeneratePipeline(projectDir string, force bool) error {
 		}
 	}
 
-	// ── Step 3: TypeScript generation for each Next.js frontend ──
+	// ── Step 3: TypeScript generation for frontends with Connect clients ──
 	if cfg != nil {
 		for _, fe := range cfg.Frontends {
-			if strings.EqualFold(fe.Type, "nextjs") {
+			if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") {
 				if err := runBufGenerateTypeScript(fe, cfg, projectDir); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: TypeScript generation for %s failed: %v\n", fe.Name, err)
 				}

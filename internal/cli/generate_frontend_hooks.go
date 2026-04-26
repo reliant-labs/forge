@@ -32,7 +32,7 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 	}
 
 	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") {
+		if !strings.EqualFold(fe.Type, "nextjs") && !strings.EqualFold(fe.Type, "react-native") {
 			continue
 		}
 

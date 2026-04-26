@@ -145,10 +145,21 @@ func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
 // round-tripping so that unknown keys, comments, and field ordering added
 // by the user are preserved.
 func AppendFrontendToConfig(projectRoot, frontendName string, port int) error {
+	return AppendFrontendToConfigWithKind(projectRoot, frontendName, port, "")
+}
+
+// AppendFrontendToConfigWithKind is like AppendFrontendToConfig but accepts a
+// kind parameter ("web" or "mobile") to select the frontend type.
+func AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, kind string) error {
 	configPath := filepath.Join(projectRoot, "forge.yaml")
+	feType := "nextjs"
+	if kind == "mobile" {
+		feType = "react-native"
+	}
 	entry := config.FrontendConfig{
 		Name: frontendName,
-		Type: "nextjs",
+		Type: feType,
+		Kind: kind,
 		Path: fmt.Sprintf("frontends/%s", frontendName),
 		Port: port,
 	}

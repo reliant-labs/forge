@@ -10,16 +10,28 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// GenerateFrontendFiles generates the frontend directory and files for a
-// Next.js frontend. Both the "new" project flow and the "add frontend" flow
-// delegate here so the output is always identical.
-func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int) error {
+// frontendTemplateDir returns the template subdirectory for the given kind.
+// kind="mobile" uses react-native templates; everything else uses nextjs.
+func frontendTemplateDir(kind string) string {
+	if kind == "mobile" {
+		return "react-native"
+	}
+	return "nextjs"
+}
+
+// GenerateFrontendFiles generates the frontend directory and files.
+// kind selects the template set: "" or "web" for Next.js, "mobile" for React Native.
+// Both the "new" project flow and the "add frontend" flow delegate here so
+// the output is always identical.
+func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string) error {
 	frontendDir := filepath.Join(root, "frontends", frontendName)
 	if err := os.MkdirAll(frontendDir, 0755); err != nil {
 		return fmt.Errorf("create frontend directory: %w", err)
 	}
 
-	frontendFiles, err := templates.FrontendTemplates.List("nextjs")
+	tmplDir := frontendTemplateDir(kind)
+
+	frontendFiles, err := templates.FrontendTemplates.List(tmplDir)
 	if err != nil {
 		return fmt.Errorf("list frontend templates: %w", err)
 	}
@@ -33,7 +45,7 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 	}
 
 	for _, file := range frontendFiles {
-		content, err := templates.FrontendTemplates.Render(filepath.Join("nextjs", file), data)
+		content, err := templates.FrontendTemplates.Render(filepath.Join(tmplDir, file), data)
 		if err != nil {
 			return fmt.Errorf("render frontend template %s: %w", file, err)
 		}
@@ -76,9 +88,12 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 		return fmt.Errorf("write frontend go.mod: %w", err)
 	}
 
-	// Install core UI components from the component library.
-	if err := installCoreComponents(frontendDir); err != nil {
-		return fmt.Errorf("install core components: %w", err)
+	// Install core web UI components for Next.js frontends only. React Native
+	// uses platform-specific primitives and should not receive web components.
+	if tmplDir == "nextjs" {
+		if err := installCoreComponents(frontendDir); err != nil {
+			return fmt.Errorf("install core components: %w", err)
+		}
 	}
 
 	return nil

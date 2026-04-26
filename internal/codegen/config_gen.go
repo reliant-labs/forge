@@ -11,14 +11,14 @@ import (
 
 // ConfigTemplateField holds template data for a single config field.
 type ConfigTemplateField struct {
-	GoName       string
-	GoType       string
-	EnvVar       string
-	Flag         string
-	DefaultValue string
-	Description  string
-	Required     bool
-	HasDefault   bool
+	GoName         string
+	GoType         string
+	EnvVar         string
+	Flag           string
+	DefaultValue   string
+	Description    string
+	Required       bool
+	HasDefault     bool
 	DefaultInt32   int32
 	DefaultInt64   int64
 	DefaultBool    bool
@@ -201,26 +201,212 @@ func ConfigFieldNamesFromMessages(messages []ConfigMessage) map[string]bool {
 // config proto. Used at initial project scaffold time before the config
 // proto has been parsed by the generator.
 func DefaultConfigFieldNames() map[string]bool {
-	return map[string]bool{
-		"Port":                    true,
-		"LogLevel":                true,
-		"DatabaseUrl":             true,
-		"CorsOrigins":             true,
-		"CorsAllowCredentials":    true,
-		"TlsCertPath":             true,
-		"TlsKeyPath":              true,
-		"PreStopDelay":            true,
-		"ShutdownTimeout":         true,
-		"LogFormat":               true,
-		"AutoMigrate":             true,
-		"Environment":             true,
-		"RateLimitRps":            true,
-		"RateLimitBurst":          true,
-		"DbMaxOpenConns":          true,
-		"DbMaxIdleConns":          true,
-		"DbConnMaxIdleTime":       true,
-		"DbConnMaxLifetime":       true,
-		"PprofAddr":               true,
-		"SecurityHeadersEnabled":  true,
+	return ConfigFieldNamesFromMessages(DefaultConfigMessages())
+}
+
+// DefaultConfigMessages returns the default scaffold config metadata used
+// before protoc-gen-forge has produced a descriptor for proto/config/config.proto.
+func DefaultConfigMessages() []ConfigMessage {
+	return []ConfigMessage{
+		{
+			Name: "AppConfig",
+			Fields: []ConfigField{
+				{
+					Name:         "port",
+					GoName:       "Port",
+					GoType:       "int32",
+					ProtoType:    "int32",
+					EnvVar:       "PORT",
+					Flag:         "port",
+					DefaultValue: "8080",
+					Description:  "HTTP server port",
+				},
+				{
+					Name:         "log_level",
+					GoName:       "LogLevel",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "LOG_LEVEL",
+					Flag:         "log-level",
+					DefaultValue: "info",
+					Description:  "Log level (debug, info, warn, error)",
+				},
+				{
+					Name:        "database_url",
+					GoName:      "DatabaseUrl",
+					GoType:      "string",
+					ProtoType:   "string",
+					EnvVar:      "DATABASE_URL",
+					Flag:        "database-url",
+					Description: "PostgreSQL connection string",
+				},
+				{
+					Name:        "cors_origins",
+					GoName:      "CorsOrigins",
+					GoType:      "string",
+					ProtoType:   "string",
+					EnvVar:      "CORS_ORIGINS",
+					Flag:        "cors-origins",
+					Description: "Comma-separated list of allowed CORS origins",
+				},
+				{
+					Name:         "cors_allow_credentials",
+					GoName:       "CorsAllowCredentials",
+					GoType:       "bool",
+					ProtoType:    "bool",
+					EnvVar:       "CORS_ALLOW_CREDENTIALS",
+					Flag:         "cors-allow-credentials",
+					DefaultValue: "false",
+					Description:  "Set Access-Control-Allow-Credentials: true on CORS responses. MUST NOT be combined with a wildcard origin ('*') — that combination is spec-invalid and will be rejected at startup.",
+				},
+				{
+					Name:        "tls_cert_path",
+					GoName:      "TlsCertPath",
+					GoType:      "string",
+					ProtoType:   "string",
+					EnvVar:      "TLS_CERT_PATH",
+					Flag:        "tls-cert-path",
+					Description: "Path to the TLS certificate (PEM). When both this and TLS_KEY_PATH are set, the server listens over HTTPS; otherwise it serves plaintext. Setting only one of the two is a configuration error.",
+				},
+				{
+					Name:        "tls_key_path",
+					GoName:      "TlsKeyPath",
+					GoType:      "string",
+					ProtoType:   "string",
+					EnvVar:      "TLS_KEY_PATH",
+					Flag:        "tls-key-path",
+					Description: "Path to the TLS private key (PEM). See TLS_CERT_PATH.",
+				},
+				{
+					Name:         "pre_stop_delay",
+					GoName:       "PreStopDelay",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "PRE_STOP_DELAY",
+					Flag:         "pre-stop-delay",
+					DefaultValue: "5s",
+					Description:  "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration).",
+				},
+				{
+					Name:         "shutdown_timeout",
+					GoName:       "ShutdownTimeout",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "SHUTDOWN_TIMEOUT",
+					Flag:         "shutdown-timeout",
+					DefaultValue: "30s",
+					Description:  "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration).",
+				},
+				{
+					Name:         "log_format",
+					GoName:       "LogFormat",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "LOG_FORMAT",
+					Flag:         "log-format",
+					DefaultValue: "json",
+					Description:  "Log output format. One of 'json' (structured, machine-readable) or 'text' (human-friendly). Any other value is rejected at startup.",
+				},
+				{
+					Name:         "auto_migrate",
+					GoName:       "AutoMigrate",
+					GoType:       "bool",
+					ProtoType:    "bool",
+					EnvVar:       "AUTO_MIGRATE",
+					Flag:         "auto-migrate",
+					DefaultValue: "false",
+					Description:  "Run database migrations on startup",
+				},
+				{
+					Name:         "environment",
+					GoName:       "Environment",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "ENVIRONMENT",
+					Flag:         "environment",
+					DefaultValue: "production",
+					Description:  "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production.",
+				},
+				{
+					Name:         "rate_limit_rps",
+					GoName:       "RateLimitRps",
+					GoType:       "int32",
+					ProtoType:    "int32",
+					EnvVar:       "RATE_LIMIT_RPS",
+					Flag:         "rate-limit-rps",
+					DefaultValue: "100",
+					Description:  "Per-key request rate limit (requests per second). 0 or negative disables rate limiting.",
+				},
+				{
+					Name:         "rate_limit_burst",
+					GoName:       "RateLimitBurst",
+					GoType:       "int32",
+					ProtoType:    "int32",
+					EnvVar:       "RATE_LIMIT_BURST",
+					Flag:         "rate-limit-burst",
+					DefaultValue: "200",
+					Description:  "Per-key rate limit burst size. Must be >= rate_limit_rps.",
+				},
+				{
+					Name:         "db_max_open_conns",
+					GoName:       "DbMaxOpenConns",
+					GoType:       "int32",
+					ProtoType:    "int32",
+					EnvVar:       "DB_MAX_OPEN_CONNS",
+					Flag:         "db-max-open-conns",
+					DefaultValue: "25",
+					Description:  "Maximum number of open database connections.",
+				},
+				{
+					Name:         "db_max_idle_conns",
+					GoName:       "DbMaxIdleConns",
+					GoType:       "int32",
+					ProtoType:    "int32",
+					EnvVar:       "DB_MAX_IDLE_CONNS",
+					Flag:         "db-max-idle-conns",
+					DefaultValue: "5",
+					Description:  "Maximum number of idle database connections kept in the pool.",
+				},
+				{
+					Name:         "db_conn_max_idle_time",
+					GoName:       "DbConnMaxIdleTime",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "DB_CONN_MAX_IDLE_TIME",
+					Flag:         "db-conn-max-idle-time",
+					DefaultValue: "5m",
+					Description:  "Maximum amount of time a connection may be idle before being closed (Go duration, e.g. 5m).",
+				},
+				{
+					Name:         "db_conn_max_lifetime",
+					GoName:       "DbConnMaxLifetime",
+					GoType:       "string",
+					ProtoType:    "string",
+					EnvVar:       "DB_CONN_MAX_LIFETIME",
+					Flag:         "db-conn-max-lifetime",
+					DefaultValue: "30m",
+					Description:  "Maximum amount of time a connection may be reused before being closed (Go duration, e.g. 30m).",
+				},
+				{
+					Name:        "pprof_addr",
+					GoName:      "PprofAddr",
+					GoType:      "string",
+					ProtoType:   "string",
+					EnvVar:      "PPROF_ADDR",
+					Flag:        "pprof-addr",
+					Description: "If set, starts a net/http/pprof server on this address (e.g. localhost:6060). Never expose publicly. Empty disables pprof.",
+				},
+				{
+					Name:         "security_headers_enabled",
+					GoName:       "SecurityHeadersEnabled",
+					GoType:       "bool",
+					ProtoType:    "bool",
+					EnvVar:       "SECURITY_HEADERS_ENABLED",
+					Flag:         "security-headers-enabled",
+					DefaultValue: "true",
+					Description:  "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them.",
+				},
+			},
+		},
 	}
 }

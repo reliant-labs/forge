@@ -7,28 +7,39 @@ import (
 )
 
 // GenerateWorkerFiles generates all files for a single worker:
-//   - workers/<name>/worker.go       (from worker/worker.go.tmpl)
-//   - workers/<name>/worker_test.go   (from worker/worker_test.go.tmpl)
+//   - workers/<name>/worker.go       (from worker/worker.go.tmpl or worker-cron/worker.go.tmpl)
+//   - workers/<name>/worker_test.go   (from worker/worker_test.go.tmpl or worker-cron/worker_test.go.tmpl)
+//
+// When kind is "cron", the cron-specific templates are used and the schedule
+// is embedded as a constant in the generated code.
 //
 // Both the "new project" and "add worker" flows delegate here so the
 // generated output is always identical.
-func GenerateWorkerFiles(root, modulePath, workerName string) error {
+func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) error {
 	workerDir := filepath.Join(root, "workers", workerName)
 
 	if err := os.MkdirAll(workerDir, 0755); err != nil {
 		return fmt.Errorf("create directory %s: %w", workerDir, err)
 	}
 
-	data := struct {
-		Name   string
-		Module string
-	}{
-		Name:   workerName,
-		Module: modulePath,
+	// Select template prefix based on kind.
+	tmplPrefix := "worker"
+	if kind == "cron" {
+		tmplPrefix = "worker-cron"
 	}
 
-	// -- worker.go (via worker/worker.go.tmpl) --
-	workerContent, err := renderWorkerTemplate("worker/worker.go.tmpl", data)
+	data := struct {
+		Name     string
+		Module   string
+		Schedule string
+	}{
+		Name:     workerName,
+		Module:   modulePath,
+		Schedule: schedule,
+	}
+
+	// -- worker.go --
+	workerContent, err := renderWorkerTemplate(tmplPrefix+"/worker.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render worker.go: %w", err)
 	}
@@ -36,8 +47,8 @@ func GenerateWorkerFiles(root, modulePath, workerName string) error {
 		return err
 	}
 
-	// -- worker_test.go (via worker/worker_test.go.tmpl) --
-	testContent, err := renderWorkerTemplate("worker/worker_test.go.tmpl", data)
+	// -- worker_test.go --
+	testContent, err := renderWorkerTemplate(tmplPrefix+"/worker_test.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render worker_test.go: %w", err)
 	}

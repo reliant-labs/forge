@@ -12,8 +12,11 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 | I need…                                      | Command                        | What it creates                          |
 | -------------------------------------------- | ------------------------------ | ---------------------------------------- |
 | A new network-facing API (Connect RPC)       | `forge add service <name>`     | Proto definition, generated stubs, Go service skeleton |
+| A background worker                          | `forge add worker <name>`      | Worker with Start/Stop lifecycle |
+| A cron-scheduled worker                      | `forge add worker <name> --kind cron --schedule "..."` | Worker with cron scheduler |
 | An internal Go package with interface contract | `forge package new <name>`   | Package directory with contract interface and default implementation |
-| A new frontend application                   | `forge add frontend <name>`    | Frontend scaffold wired into the project |
+| A Next.js web frontend                       | `forge add frontend <name>`    | Next.js app wired into the project |
+| A React Native mobile frontend               | `forge add frontend <name> --kind mobile` | Expo app with Connect-web transport |
 
 ## Wiring Cycle
 
@@ -39,4 +42,5 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 ## When This Skill Is Not Enough
 
 - **Simple utility packages** — just create a directory under `pkg/` and write plain Go. No scaffold needed.
-- **One-off scripts or CLI tools** — add a `cmd/<name>/main.go` file directly. Forge scaffolding is for wired components, not standalone binaries.
+- **CLI-only projects** — use `forge new <name> --mod <module>` without `--service` to create a Cobra CLI binary with no server bootstrap.
+- **One-off scripts or CLI tools within existing projects** — add a `cmd/<name>/main.go` file directly. Forge scaffolding is for wired components, not standalone binaries.

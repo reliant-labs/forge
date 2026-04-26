@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -279,6 +280,9 @@ func newAddPackageCmd() *cobra.Command {
 // --- add worker ---
 
 func newAddWorkerCmd() *cobra.Command {
+	var kind string
+	var schedule string
+
 	cmd := &cobra.Command{
 		Use:   "worker <name>",
 		Short: "Add a new background worker to the project",
@@ -290,19 +294,41 @@ reporting, and the same Deps injection as services.
 
 Example:
   forge add worker email_sender
-  forge add worker order_processor`,
+  forge add worker order_processor
+  forge add worker cleanup --kind cron --schedule "*/5 * * * *"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddWorker(args[0])
+			return runAddWorker(args[0], kind, schedule)
 		},
 	}
+
+	cmd.Flags().StringVar(&kind, "kind", "", "worker kind (use cron for scheduled workers)")
+	cmd.Flags().StringVar(&schedule, "schedule", "", "cron schedule for --kind cron workers")
 
 	return cmd
 }
 
-func runAddWorker(name string) error {
+func runAddWorker(name, kind, schedule string) error {
 	if err := validateIdentifier(name); err != nil {
 		return fmt.Errorf("invalid worker name: %w", err)
+	}
+
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	schedule = strings.TrimSpace(schedule)
+	switch kind {
+	case "", "cron":
+	default:
+		return fmt.Errorf("invalid worker kind %q: valid kinds are cron", kind)
+	}
+	if kind == "cron" {
+		if schedule == "" {
+			return fmt.Errorf("--schedule is required when --kind cron")
+		}
+		if _, err := cron.ParseStandard(schedule); err != nil {
+			return fmt.Errorf("invalid cron schedule %q: %w", schedule, err)
+		}
+	} else if schedule != "" {
+		return fmt.Errorf("--schedule requires --kind cron")
 	}
 
 	root, err := projectRoot()
@@ -323,18 +349,24 @@ func runAddWorker(name string) error {
 		}
 	}
 
-	fmt.Printf("Adding worker '%s'...\n", name)
+	if kind == "cron" {
+		fmt.Printf("Adding cron worker '%s' (schedule %q)...\n", name, schedule)
+	} else {
+		fmt.Printf("Adding worker '%s'...\n", name)
+	}
 
 	// Generate worker files (worker.go, worker_test.go)
-	if err := generator.GenerateWorkerFiles(root, cfg.ModulePath, name); err != nil {
+	if err := generator.GenerateWorkerFiles(root, cfg.ModulePath, name, kind, schedule); err != nil {
 		return fmt.Errorf("generate worker files: %w", err)
 	}
 
 	// Update forge.yaml
 	cfg.Services = append(cfg.Services, config.ServiceConfig{
-		Name: name,
-		Type: "worker",
-		Path: fmt.Sprintf("workers/%s", name),
+		Name:     name,
+		Type:     "worker",
+		Kind:     kind,
+		Path:     fmt.Sprintf("workers/%s", name),
+		Schedule: schedule,
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 		return fmt.Errorf("update project config: %w", err)
@@ -450,25 +482,28 @@ func runAddOperator(name, group, version string) error {
 
 func newAddFrontendCmd() *cobra.Command {
 	var port int
+	var kind string
 
 	cmd := &cobra.Command{
 		Use:   "frontend <name>",
-		Short: "Add a new Next.js frontend to the project",
-		Long: `Add a new Next.js frontend to an existing forge project.
+		Short: "Add a new frontend to the project",
+		Long: `Add a new frontend to an existing forge project.
 
-This creates the frontend directory with Next.js scaffolding, Connect RPC
-client setup, and updates the project configuration.
+By default this creates a Next.js web frontend with Connect RPC client setup.
+Use --kind mobile to scaffold a React Native app using Expo.
 
 Example:
   forge add frontend web
-  forge add frontend dashboard --port 3001`,
+  forge add frontend dashboard --port 3001
+  forge add frontend mobile --kind mobile`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddFrontend(args[0], port)
+			return runAddFrontend(args[0], port, kind)
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
+	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web or mobile)")
 
 	return cmd
 }
@@ -490,9 +525,16 @@ func validateFrontendName(name string) error {
 	return nil
 }
 
-func runAddFrontend(name string, port int) error {
+func runAddFrontend(name string, port int, kind string) error {
 	if err := validateFrontendName(name); err != nil {
 		return fmt.Errorf("invalid frontend name: %w", err)
+	}
+
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "", "web", "mobile":
+	default:
+		return fmt.Errorf("invalid frontend kind %q: valid kinds are web, mobile", kind)
 	}
 
 	root, err := projectRoot()
@@ -523,7 +565,17 @@ func runAddFrontend(name string, port int) error {
 		}
 	}
 
-	fmt.Printf("Adding frontend '%s' (port %d)...\n", name, port)
+	frontendType := "nextjs"
+	frontendKind := kind
+	frontendDescription := "frontend"
+	if kind == "mobile" {
+		frontendType = "react-native"
+		frontendDescription = "mobile frontend"
+	} else if kind == "" {
+		frontendKind = ""
+	}
+
+	fmt.Printf("Adding %s '%s' (port %d)...\n", frontendDescription, name, port)
 
 	// Determine the API port from the first service
 	apiPort := 8080
@@ -532,14 +584,15 @@ func runAddFrontend(name string, port int) error {
 	}
 
 	// Generate frontend files
-	if err := generator.GenerateFrontendFiles(root, cfg.ModulePath, cfg.Name, name, apiPort); err != nil {
+	if err := generator.GenerateFrontendFiles(root, cfg.ModulePath, cfg.Name, name, apiPort, kind); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
 
 	// Update forge.yaml
 	cfg.Frontends = append(cfg.Frontends, config.FrontendConfig{
 		Name: name,
-		Type: "nextjs",
+		Type: frontendType,
+		Kind: frontendKind,
 		Path: fmt.Sprintf("frontends/%s", name),
 		Port: port,
 	})

@@ -101,6 +101,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newPackageCmd())
 	rootCmd.AddCommand(newPackCmd())
 	rootCmd.AddCommand(newDebugCmd())
+	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
 	rootCmd.AddCommand(newVersionCmd())

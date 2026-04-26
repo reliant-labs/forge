@@ -748,7 +748,7 @@ func GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, ta
 	return os.WriteFile(setupPath, content, 0644)
 }
 
-// hasFallibleConstructor returns true if any service, package, worker, or operator has a fallible constructor.
+// hasFallibleConstructor returns true if any service, package, worker, operator, or function has a fallible constructor.
 func hasFallibleConstructor(services []BootstrapServiceData, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData) bool {
 	for _, s := range services {
 		if s.Fallible {

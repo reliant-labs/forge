@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
 
 func TestCIConfig_EffectiveGoVersion(t *testing.T) {
 	tests := []struct {
@@ -111,6 +115,145 @@ func TestCIExtraJob_EffectiveRunsOn(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("EffectiveRunsOn() with runsOn=%q: got %q, want %q", tt.runsOn, got, tt.want)
 		}
+	}
+}
+
+func TestServiceConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		yamlStr  string
+		wantKind string
+		wantSch  string
+	}{
+		{
+			"worker with cron kind and schedule",
+			"name: cleanup\ntype: worker\nkind: cron\npath: workers/cleanup\nschedule: \"*/5 * * * *\"\n",
+			"cron",
+			"*/5 * * * *",
+		},
+		{
+			"worker with no kind",
+			"name: processor\ntype: worker\npath: workers/processor\n",
+			"",
+			"",
+		},
+		{
+			"go_service with no kind",
+			"name: api\ntype: go_service\npath: handlers/api\nport: 8080\n",
+			"",
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg ServiceConfig
+			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.Kind != tt.wantKind {
+				t.Errorf("Kind = %q, want %q", cfg.Kind, tt.wantKind)
+			}
+			if cfg.Schedule != tt.wantSch {
+				t.Errorf("Schedule = %q, want %q", cfg.Schedule, tt.wantSch)
+			}
+
+			// Round-trip: marshal and unmarshal again
+			out, err := yaml.Marshal(&cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var cfg2 ServiceConfig
+			if err := yaml.Unmarshal(out, &cfg2); err != nil {
+				t.Fatalf("unmarshal round-trip: %v", err)
+			}
+			if cfg2.Kind != tt.wantKind {
+				t.Errorf("round-trip Kind = %q, want %q", cfg2.Kind, tt.wantKind)
+			}
+			if cfg2.Schedule != tt.wantSch {
+				t.Errorf("round-trip Schedule = %q, want %q", cfg2.Schedule, tt.wantSch)
+			}
+		})
+	}
+}
+
+func TestFrontendConfig_KindYAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		yamlStr  string
+		wantKind string
+	}{
+		{
+			"mobile kind",
+			"name: mobile-app\ntype: react-native\nkind: mobile\npath: frontends/mobile-app\nport: 8081\n",
+			"mobile",
+		},
+		{
+			"web kind (default)",
+			"name: web\ntype: nextjs\npath: frontends/web\nport: 8080\n",
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg FrontendConfig
+			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.Kind != tt.wantKind {
+				t.Errorf("Kind = %q, want %q", cfg.Kind, tt.wantKind)
+			}
+
+			// Round-trip
+			out, err := yaml.Marshal(&cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var cfg2 FrontendConfig
+			if err := yaml.Unmarshal(out, &cfg2); err != nil {
+				t.Fatalf("unmarshal round-trip: %v", err)
+			}
+			if cfg2.Kind != tt.wantKind {
+				t.Errorf("round-trip Kind = %q, want %q", cfg2.Kind, tt.wantKind)
+			}
+		})
+	}
+}
+
+func TestPackageConfig_KindYAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		yamlStr  string
+		wantKind string
+	}{
+		{"eventbus", "name: events\nkind: eventbus\n", "eventbus"},
+		{"client", "name: stripe\nkind: client\n", "client"},
+		{"generic (no kind)", "name: utils\n", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg PackageConfig
+			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.Kind != tt.wantKind {
+				t.Errorf("Kind = %q, want %q", cfg.Kind, tt.wantKind)
+			}
+
+			out, err := yaml.Marshal(&cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var cfg2 PackageConfig
+			if err := yaml.Unmarshal(out, &cfg2); err != nil {
+				t.Fatalf("unmarshal round-trip: %v", err)
+			}
+			if cfg2.Kind != tt.wantKind {
+				t.Errorf("round-trip Kind = %q, want %q", cfg2.Kind, tt.wantKind)
+			}
+		})
 	}
 }
 

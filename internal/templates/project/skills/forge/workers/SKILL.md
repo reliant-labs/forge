@@ -1,6 +1,6 @@
 ---
 name: workers
-description: Background workers — adding, implementing, and testing workers.
+description: Background workers — adding, implementing, and testing workers (including cron-scheduled).
 ---
 
 # Background Workers
@@ -11,6 +11,7 @@ Workers are long-running background processes that don't serve HTTP but particip
 
 ```bash
 forge add worker <name>
+forge add worker <name> --kind cron --schedule "*/5 * * * *"
 ```
 
 This creates:
@@ -65,7 +66,36 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 ```
 
-### Periodic / Cron
+### Cron-Scheduled Worker
+
+Use `--kind cron` with a `--schedule` (standard cron expression) to scaffold a worker that runs on a schedule using `robfig/cron/v3`:
+
+```bash
+forge add worker cleanup --kind cron --schedule "0 */6 * * *"
+```
+
+The generated worker has a `Run()` method for your job logic. The cron scheduler is managed inside `Start` and stopped on context cancellation — same lifecycle as a regular worker.
+
+```go
+func (w *Worker) Run() {
+    // Your scheduled job logic here
+    w.deps.Logger.Info("running scheduled cleanup")
+}
+```
+
+Cron workers are tracked with `kind: cron` and `schedule` in `forge.yaml`:
+```yaml
+services:
+  - name: cleanup
+    type: worker
+    kind: cron
+    schedule: "0 */6 * * *"
+    path: workers/cleanup
+```
+
+### Simple Periodic (no cron)
+
+For basic intervals without cron expressions, use a plain worker with a ticker:
 
 ```go
 func (w *Worker) Start(ctx context.Context) error {
@@ -122,3 +152,4 @@ func TestWorkerProcessesMessage(t *testing.T) {
 - Worker names must be valid Go identifiers (lowercase, no hyphens).
 - Use `forge add worker`, not manual directory creation.
 - `bootstrap.go` is regenerated — wire custom dependencies in `setup.go`.
+- Cron workers require `--schedule` with a valid cron expression (5-field standard format).

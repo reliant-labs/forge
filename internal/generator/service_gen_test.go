@@ -90,7 +90,7 @@ func TestGenerateServiceFilesProtoSkipsExisting(t *testing.T) {
 func TestGenerateFrontendFilesCreatesExpectedFiles(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GenerateFrontendFiles(root, "example.com/myapp", "myapp", "web", 8080); err != nil {
+	if err := GenerateFrontendFiles(root, "example.com/myapp", "myapp", "web", 8080, ""); err != nil {
 		t.Fatalf("GenerateFrontendFiles() error = %v", err)
 	}
 
@@ -117,6 +117,69 @@ func TestGenerateFrontendFilesCreatesExpectedFiles(t *testing.T) {
 		t.Fatalf("expected frontend go.mod to exist: %v", err)
 	}
 	if !strings.Contains(string(goModBytes), "module example.com/myapp/frontends/web") {
+		t.Errorf("frontend go.mod should declare nested module path, got:\n%s", string(goModBytes))
+	}
+}
+
+func TestGenerateFrontendFilesReactNative(t *testing.T) {
+	root := t.TempDir()
+
+	if err := GenerateFrontendFiles(root, "example.com/myapp", "myapp", "mobile-app", 8080, "mobile"); err != nil {
+		t.Fatalf("GenerateFrontendFiles(mobile) error = %v", err)
+	}
+
+	feDir := filepath.Join(root, "frontends", "mobile-app")
+
+	// Core files must exist
+	for _, file := range []string{
+		"package.json", "app.json", "tsconfig.json", "babel.config.js",
+		".gitignore", ".env.local", "buf.gen.yaml",
+		"src/lib/connect.ts", "src/lib/query-client.ts",
+		"src/hooks/use-api-query.ts", "src/hooks/use-api-mutation.ts",
+		"app/_layout.tsx", "app/index.tsx",
+		"go.mod",
+	} {
+		if _, err := os.Stat(filepath.Join(feDir, file)); err != nil {
+			t.Errorf("expected %s to exist: %v", file, err)
+		}
+	}
+
+	// package.json should reference expo and the frontend name
+	pkgJSON, err := os.ReadFile(filepath.Join(feDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkgJSON), "mobile-app") {
+		t.Error("package.json should contain frontend name")
+	}
+	if !strings.Contains(string(pkgJSON), "expo") {
+		t.Error("package.json should contain expo dependency")
+	}
+
+	// .env.local should contain EXPO_PUBLIC_API_URL
+	envContent, err := os.ReadFile(filepath.Join(feDir, ".env.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envContent), "EXPO_PUBLIC_API_URL=http://localhost:8080") {
+		t.Errorf(".env.local should contain EXPO_PUBLIC_API_URL, got:\n%s", string(envContent))
+	}
+
+	// connect.ts should use EXPO_PUBLIC_API_URL
+	connectTS, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "connect.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(connectTS), "EXPO_PUBLIC_API_URL") {
+		t.Error("connect.ts should reference EXPO_PUBLIC_API_URL")
+	}
+
+	// go.mod should declare nested module
+	goModBytes, err := os.ReadFile(filepath.Join(feDir, "go.mod"))
+	if err != nil {
+		t.Fatalf("expected frontend go.mod to exist: %v", err)
+	}
+	if !strings.Contains(string(goModBytes), "module example.com/myapp/frontends/mobile-app") {
 		t.Errorf("frontend go.mod should declare nested module path, got:\n%s", string(goModBytes))
 	}
 }

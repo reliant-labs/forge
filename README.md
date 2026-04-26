@@ -133,9 +133,9 @@ myproject/
 | Command | Description |
 |---------|-------------|
 | `forge add service <name>` | Add a Go service with proto file, handler scaffold, and wiring. Optional: `--port`. |
-| `forge add worker <name>` | Add a background worker. |
+| `forge add worker <name>` | Add a background worker. Use `--kind cron --schedule "..."` for cron-scheduled workers. |
 | `forge add operator <name>` | Add a Kubernetes operator. Optional: `--group`, `--version`. |
-| `forge add frontend <name>` | Add a Next.js frontend with Connect RPC client setup and TypeScript codegen. |
+| `forge add frontend <name>` | Add a frontend. Default: Next.js web. Use `--kind mobile` for React Native (Expo). |
 | `forge add webhook <name>` | Add a webhook endpoint to a service. Requires `--service`. |
 | `forge add package <name>` | Add an internal package with contract interface, implementation, mock, and middleware wrapper. |
 

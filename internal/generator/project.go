@@ -347,7 +347,7 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	if g.FrontendName == "" {
 		return nil
 	}
-	return GenerateFrontendFiles(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort)
+	return GenerateFrontendFiles(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "")
 }
 
 // generateE2ETests generates the E2E test harness for the initial service.

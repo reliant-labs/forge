@@ -60,7 +60,7 @@ All annotations live in `forge/v1/forge.proto`:
 | `gen/` — Go stubs, TS clients, mocks | `handlers/<svc>/` — business logic |
 | `pkg/app/bootstrap.go` — service wiring | `pkg/app/setup.go` — custom wiring |
 | `pkg/middleware/` — HTTP/Connect middleware | `internal/db/` — entity types, ORM functions |
-| Frontend hooks and Connect clients | `db/migrations/` — schema (source of truth) |
+| Frontend hooks, Connect clients, auth/events/store scaffolding | `db/migrations/` — schema (source of truth) |
 | Test harness, mock servers | `db/queries/` — SQL queries |
 | CI/CD, Docker, deploy configs | `internal/<pkg>/` — internal packages |
 | `forge_descriptor.json` — proto descriptor data | `internal/<pkg>/contract.go` — interface contracts |
@@ -147,6 +147,8 @@ Ordered by workflow:
 | Writing Connect RPC handlers, error handling, middleware | `.reliant/skills/forge/api/SKILL.md` |
 | Database migrations, introspection, proto-db sync | `.reliant/skills/forge/db/SKILL.md` |
 | Frontend development, Connect clients, hooks | `.reliant/skills/forge/frontend/SKILL.md` |
+| Frontend state management, Zustand, React Query, event bus | `.reliant/skills/forge/frontend/state/SKILL.md` |
+| Frontend component patterns, composition, effects | `.reliant/skills/forge/frontend/patterns/SKILL.md` |
 | Authentication, JWT, API keys, RBAC, multi-tenancy | `.reliant/skills/forge/auth/SKILL.md` |
 | Installing packs (jwt-auth, stripe, clerk, etc.) | `.reliant/skills/forge/packs/SKILL.md` |
 | Background workers — lifecycle, patterns, wiring | `.reliant/skills/forge/workers/SKILL.md` |

@@ -50,6 +50,11 @@ Customize output by providing your own templates via the custom_templates_dir co
 				return err
 			}
 
+			if !cfg.Features.DocsEnabled() {
+				fmt.Println("docs feature is disabled in forge.yaml")
+				return nil
+			}
+
 			fmt.Printf("📚 Generating documentation for project: %s\n\n", cfg.Name)
 
 			var overrides *docs.Overrides

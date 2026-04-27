@@ -153,8 +153,8 @@ func generateConfigLoader(projectDir string) (map[string]bool, error) {
 	}
 
 	if len(messages) == 0 {
-		fmt.Println("  ℹ️  No config fields with config_field annotations found")
-		return nil, nil
+		fmt.Println("  ℹ️  No config fields with config_field annotations found; using default scaffold config fields")
+		messages = codegen.DefaultConfigMessages()
 	}
 
 	if err := codegen.GenerateConfigLoader(messages, projectDir); err != nil {

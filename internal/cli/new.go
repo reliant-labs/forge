@@ -220,7 +220,7 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	for i, feName := range frontendNames[min(1, len(frontendNames)):] {
 		fePort := gen.FrontendPort + i + 1
 		fmt.Printf("\n🔧 Adding additional frontend '%s' (port %d)...\n", feName, fePort)
-		if err := generator.GenerateFrontendFiles(targetPath, modulePath, projectName, feName, gen.ServicePort); err != nil {
+		if err := generator.GenerateFrontendFiles(targetPath, modulePath, projectName, feName, gen.ServicePort, ""); err != nil {
 			return fmt.Errorf("failed to generate frontend %s: %w", feName, err)
 		}
 		if err := generator.AppendFrontendToConfig(targetPath, feName, fePort); err != nil {

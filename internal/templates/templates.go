@@ -18,7 +18,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl operator/*.tmpl
+//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl
 var templateFS embed.FS
 
 // FuncMap returns the shared template function map used across all templates.
@@ -100,6 +100,7 @@ var (
 	WebhookTemplates     = TemplateCategory{basePath: "webhook"}
 	MiddlewareTemplates  = TemplateCategory{basePath: "middleware"}
 	WorkerTemplates      = TemplateCategory{basePath: "worker"}
+	WorkerCronTemplates  = TemplateCategory{basePath: "worker-cron"}
 	OperatorTemplates    = TemplateCategory{basePath: "operator"}
 )
 
@@ -163,8 +164,6 @@ func RenderFromFS(fsys fs.FS, basePath, name string, data interface{}) ([]byte, 
 	return stripBuildIgnore(buf.Bytes()), nil
 }
 
-
-
 // listTemplates walks the embedded template FS and returns template names under root.
 // If recursive is true, it walks subdirectories. Otherwise, only lists direct children.
 func listTemplates(root string, recursive bool) ([]string, error) {
@@ -201,14 +200,6 @@ func listTemplates(root string, recursive bool) ([]string, error) {
 	}
 	return files, nil
 }
-
-
-
-
-
-
-
-
 
 // CIWorkflowData holds data for the spec-driven CI workflow template.
 type CIWorkflowData struct {
@@ -285,10 +276,10 @@ type FrontendCIConfig struct {
 
 // CIExtraJob defines an additional user-specified CI job.
 type CIExtraJob struct {
-	Name    string
-	Needs   []string
-	RunsOn  string
-	Steps   []CIExtraStep
+	Name   string
+	Needs  []string
+	RunsOn string
+	Steps  []CIExtraStep
 }
 
 // CIExtraStep is a single step inside an extra CI job.
@@ -340,8 +331,6 @@ type E2EWorkflowData struct {
 	FrontendPath string
 }
 
-
-
 // NavPageData describes a single page entry for the frontend navigation.
 type NavPageData struct {
 	Label      string // display name, e.g. "Tasks"
@@ -359,10 +348,6 @@ type FrontendTemplateData struct {
 	Pages        []NavPageData
 }
 
-
-
-
-
 // WebhookTemplateData holds data for webhook template rendering.
 type WebhookTemplateData struct {
 	Name        string // webhook name (e.g. "stripe", "github")
@@ -372,8 +357,8 @@ type WebhookTemplateData struct {
 
 // WebhookRoutesTemplateData holds data for the webhook_routes_gen.go template.
 type WebhookRoutesTemplateData struct {
-	Package  string                    // Go package name (e.g. "billing")
-	Webhooks []WebhookRouteEntryData   // all webhooks for this service
+	Package  string                  // Go package name (e.g. "billing")
+	Webhooks []WebhookRouteEntryData // all webhooks for this service
 }
 
 // WebhookRouteEntryData holds per-webhook data for route generation.
@@ -381,8 +366,6 @@ type WebhookRouteEntryData struct {
 	Name       string // kebab-case name for the URL path (e.g. "stripe")
 	PascalName string // PascalCase name for the handler method (e.g. "Stripe")
 }
-
-
 
 // TemplateEngine handles code generation from service/middleware templates.
 // NOTE: TemplateEngine pre-parses templates for reuse via a singleton (see generator/project.go),
@@ -419,9 +402,13 @@ func (e *TemplateEngine) loadTemplates() error {
 		"middleware/auth.go.tmpl",
 		"worker/worker.go.tmpl",
 		"worker/worker_test.go.tmpl",
+		"worker-cron/worker.go.tmpl",
+		"worker-cron/worker_test.go.tmpl",
 		"operator/types.go.tmpl",
 		"operator/controller.go.tmpl",
 		"operator/controller_test.go.tmpl",
+		"function/function.go.tmpl",
+		"function/function_test.go.tmpl",
 	}
 
 	for _, file := range templateFiles {
@@ -430,6 +417,7 @@ func (e *TemplateEngine) loadTemplates() error {
 			// Template doesn't exist yet, skip
 			continue
 		}
+		content = stripBuildIgnore(content)
 
 		tmpl, err := template.New(file).Funcs(e.funcMap).Parse(string(content))
 		if err != nil {
@@ -454,16 +442,8 @@ func (e *TemplateEngine) RenderTemplate(name string, data interface{}) (string, 
 		return "", fmt.Errorf("failed to execute template %s: %w", name, err)
 	}
 
-	return buf.String(), nil
+	return string(stripBuildIgnore(buf.Bytes())), nil
 }
-
-
-
-
-
-
-
-
 
 // Case conversion functions
 

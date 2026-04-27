@@ -13,8 +13,9 @@ Skills are organized by **action** — what you're trying to do — not by CLI c
 └── forge/
     ├── SKILL.md                        # Project overview: proto-first philosophy, layout, dev loop
     ├── services/SKILL.md               # Scaffold and wire services, packages, frontends
+    ├── workers/SKILL.md                # Background workers (including cron-scheduled)
     ├── api/SKILL.md                    # Write Connect RPC handlers
-    ├── frontend/SKILL.md               # Write Next.js frontends
+    ├── frontend/SKILL.md               # Write frontends (Next.js web + React Native mobile)
     ├── testing/                        # Testing methodology
     │   ├── SKILL.md                    # Philosophy: mock vs real, harness patterns, flakiness
     │   ├── unit/SKILL.md              # Hermetic unit tests with generated mocks

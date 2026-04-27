@@ -144,7 +144,11 @@ func generateInternalPackageContracts(projectDir string) error {
 
 // generateConfigLoader parses proto/config/ for config protos with
 // ConfigFieldOptions annotations and generates pkg/config/config.go.
-func generateConfigLoader(projectDir string) (map[string]bool, error) {
+// The features parameter controls which config fields make it into
+// cmd/server.go — when migrations are disabled, migration-related
+// fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
+// the server template so it doesn't reference app.AutoMigrate().
+func generateConfigLoader(projectDir string, features config.FeaturesConfig) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
@@ -163,11 +167,26 @@ func generateConfigLoader(projectDir string) (map[string]bool, error) {
 
 	fmt.Println("  ✅ Generated pkg/config/config.go")
 
+	// Build the config field map and strip migration-related fields when
+	// migrations are disabled. The server template conditionally includes
+	// migration code based on ConfigFields["AutoMigrate"]; removing it
+	// prevents the template from emitting app.AutoMigrate() calls that
+	// reference the ungenerated pkg/app/migrate.go.
+	configFields := codegen.ConfigFieldNamesFromMessages(messages)
+	if !features.MigrationsEnabled() {
+		delete(configFields, "AutoMigrate")
+		delete(configFields, "DatabaseUrl")
+		delete(configFields, "MaxOpenConns")
+		delete(configFields, "MaxIdleConns")
+		delete(configFields, "ConnMaxIdleTime")
+		delete(configFields, "ConnMaxLifetime")
+	}
+
 	// Re-render cmd/server.go so it stays in sync with the config fields.
-	if err := codegen.GenerateCmdServer(messages, projectDir); err != nil {
+	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
 	}
 
 	fmt.Println("  ✅ Regenerated cmd/server.go")
-	return codegen.ConfigFieldNamesFromMessages(messages), nil
+	return configFields, nil
 }

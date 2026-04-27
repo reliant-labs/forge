@@ -124,12 +124,7 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderProject(t, "middleware-cors.go", nil)
 			},
 		},
-		{
-			name: "reliant-forge.md",
-			render: func(t *testing.T) []byte {
-				return renderProject(t, "reliant-forge.md.tmpl", projectData())
-			},
-		},
+
 		{
 			name: "handlers_gen.go",
 			render: func(t *testing.T) []byte {

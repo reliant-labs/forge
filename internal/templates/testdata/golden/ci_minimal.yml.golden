@@ -81,14 +81,8 @@ jobs:
         #   3. Neither available → fall back to @main (regenerate from a
         #      tagged release to eliminate this branch).
         run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.0-test
-      - name: Generate code
-        run: forge generate
-      - name: Check for uncommitted changes
-        run: |
-          if ! git diff --exit-code; then
-            echo "::error::Generated code is out of date. Run 'forge generate' and commit the changes."
-            exit 1
-          fi
+      - name: Verify generated code
+        run: forge ci verify-generated
 
   docker-build:
     name: Docker Build

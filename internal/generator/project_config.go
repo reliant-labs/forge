@@ -11,11 +11,30 @@ import (
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
+	frontendFramework := "none"
+	if g.FrontendName != "" {
+		frontendFramework = "nextjs"
+	}
+
+	// If frontend was explicitly disabled, override the framework to "none".
+	if g.Features.Frontend != nil && !*g.Features.Frontend {
+		frontendFramework = "none"
+	}
+
 	cfg := config.ProjectConfig{
 		Name:       g.Name,
 		ModulePath: g.ModulePath,
 		Version:    "0.1.0",
 		HotReload:  true,
+		Features:   g.buildFeaturesConfig(),
+		Stack: config.StackConfig{
+			Backend:  config.StackBackend{Language: "go"},
+			Frontend: config.StackFrontend{Framework: frontendFramework},
+			Database: config.StackDatabase{Driver: "postgres"},
+			Proto:    config.StackProto{Provider: "buf"},
+			Deploy:   config.StackDeploy{Target: "k8s", Provider: "k3d", Registry: "ghcr.io"},
+			CI:       config.StackCI{Provider: "github"},
+		},
 		Envs: []config.EnvironmentConfig{
 			{Name: "dev", Type: "local"},
 			{Name: "staging", Type: "cloud"},
@@ -103,6 +122,33 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	return os.WriteFile(destPath, data, 0644)
 }
 
+func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
+	t := boolPtr(true)
+	orDefault := func(v *bool) *bool {
+		if v != nil {
+			return v
+		}
+		return t
+	}
+	return config.FeaturesConfig{
+		ORM:           orDefault(g.Features.ORM),
+		Codegen:       orDefault(g.Features.Codegen),
+		Migrations:    orDefault(g.Features.Migrations),
+		CI:            orDefault(g.Features.CI),
+		Deploy:        orDefault(g.Features.Deploy),
+		Contracts:     orDefault(g.Features.Contracts),
+		Docs:          orDefault(g.Features.Docs),
+		Frontend: func() *bool {
+			if g.Features.Frontend != nil {
+				return g.Features.Frontend
+			}
+			return boolPtr(g.FrontendName != "")
+		}(),
+		Observability: orDefault(g.Features.Observability),
+		HotReload:     orDefault(g.Features.HotReload),
+	}
+}
+
 // ReadProjectConfig reads a forge.yaml from the given path.
 func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	data, err := os.ReadFile(path)
@@ -165,6 +211,8 @@ func AppendFrontendToConfigWithKind(projectRoot, frontendName string, port int, 
 	}
 	return appendToProjectConfigSequence(configPath, "frontends", entry)
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 // appendToProjectConfigSequence appends entry to the YAML sequence at the
 // top-level key on the project config at configPath, preserving any keys,

@@ -21,6 +21,12 @@ Key directories inside `frontends/<name>/`:
 
 Generated TypeScript clients live in `gen/` at the project root, shared across all frontends.
 
+For React Native mobile frontends, `forge add frontend <name> --kind mobile` creates an Expo app with the same systems:
+- `app/` — Expo Router screens and layouts
+- `src/hooks/` — Generated Connect RPC hooks (shared template)
+- `src/lib/` — Connect client, event bus, auth provider
+- `src/stores/` — Zustand stores (mobile-adapted: drawer, bottom sheet)
+
 ## Generated TypeScript Hooks
 
 `forge generate` produces per-service React Query hooks in `src/hooks/`. Read RPCs get `useQuery` hooks, mutating RPCs get `useMutation` hooks. Import from the barrel:
@@ -181,6 +187,11 @@ The frontend scaffold includes three extensible systems:
 - **Auth provider** (`src/lib/auth/`) — DI'd via `AuthProvider`. Swap in Auth0, Clerk, or custom JWT by implementing the `AuthProvider` interface. `useAuth()` gives you user, token, login, logout.
 - **Event bus** (`src/lib/events.ts`) — Typed pub/sub for imperative cross-cutting actions (`toast:show`, `auth:expired`, `navigate`). Extend the event map with your own events. Use `useEvent(name, handler)` in components.
 - **UI store** (`src/stores/ui-store.ts`) — Zustand baseline for shared client state (`sidebarCollapsed`, `commandPaletteOpen`). Extend or create domain stores in `src/stores/`.
+
+Mobile (React Native) frontends include the same three systems adapted for mobile:
+- **Auth provider** — same `AuthProvider` interface, same `useAuth()` hook
+- **Event bus** — same typed pub/sub, plus mobile-specific events (`app:background`, `app:foreground`)
+- **UI store** — mobile-adapted: `drawerOpen`, `bottomSheetOpen` instead of `sidebarCollapsed`, `commandPaletteOpen`
 
 ## Sub-skills
 

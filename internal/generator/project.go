@@ -4,17 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 )
-
-// forgeCmdRE matches "forge" used as a CLI command — i.e. followed by a space
-// and a lowercase subcommand token. This avoids replacing skill paths like
-// "forge/run", filenames like "forge.yaml", or directory paths.
-var forgeCmdRE = regexp.MustCompile(`\bforge( )`)
 
 // cliName returns the command name users should type to invoke Forge.
 // When the binary is "forge" (standalone), it returns "forge".
@@ -32,11 +27,13 @@ type ProjectGenerator struct {
 	Name              string
 	Path              string
 	ModulePath        string
-	ServiceName       string       // initial service name (empty if none specified)
-	ServicePort       int          // initial service port (default: 8080)
-	FrontendName      string       // optional initial Next.js frontend name
-	FrontendPort      int          // frontend port (default: 3000)
-	GoVersionOverride string       // if set, use this Go version instead of detecting
+	ServiceName       string              // initial service name (empty if none specified)
+	ServicePort       int                 // initial service port (default: 8080)
+	FrontendName      string              // optional initial Next.js frontend name
+	FrontendPort      int                 // frontend port (default: 3000)
+	GoVersionOverride string              // if set, use this Go version instead of detecting
+	Features          config.FeaturesConfig // feature flags for generation
+	MemoryFormat      MemoryFormat        // AI memory file format (default: reliant)
 }
 
 // NewProjectGenerator creates a new project generator
@@ -60,17 +57,6 @@ func (g *ProjectGenerator) Generate() error {
 
 	// Create directory structure
 	dirs := []string{
-		"db",
-		"db/migrations",
-		"deploy/kcl",
-		"proto",
-		"proto/api",
-		"proto/services",
-		"proto/db",
-		"proto/config/v1",
-		"proto/forge",
-		"proto/forge/v1",
-
 		"handlers",
 		"handlers/mocks",
 		"gen",
@@ -80,6 +66,24 @@ func (g *ProjectGenerator) Generate() error {
 		// internal/ is intentionally not pre-created. `forge package new <name>`
 		// materializes internal/<name>/ on demand; shipping an empty directory
 		// would just leave a dangling .gitkeep or an untracked empty dir.
+	}
+
+	if g.Features.MigrationsEnabled() || g.Features.ORMEnabled() {
+		dirs = append(dirs, "db", "db/migrations")
+	}
+	if g.Features.DeployEnabled() {
+		dirs = append(dirs, "deploy/kcl")
+	}
+	if g.Features.CodegenEnabled() {
+		dirs = append(dirs,
+			"proto",
+			"proto/api",
+			"proto/services",
+			"proto/db",
+			"proto/config/v1",
+			"proto/forge",
+			"proto/forge/v1",
+		)
 	}
 
 	// Add service directory if a service is specified
@@ -100,36 +104,40 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	// Create .gitkeep in db/migrations so the directory is tracked by git
-	if err := os.WriteFile(filepath.Join(g.Path, "db", "migrations", ".gitkeep"), []byte{}, 0644); err != nil {
-		return fmt.Errorf("failed to create db/migrations/.gitkeep: %w", err)
+	if g.Features.MigrationsEnabled() || g.Features.ORMEnabled() {
+		// Create .gitkeep in db/migrations so the directory is tracked by git
+		if err := os.WriteFile(filepath.Join(g.Path, "db", "migrations", ".gitkeep"), []byte{}, 0644); err != nil {
+			return fmt.Errorf("failed to create db/migrations/.gitkeep: %w", err)
+		}
+
+		// Scaffold a README.md in db/ so the migrations workflow is self-documenting.
+		dbReadme := "# db\n\nSQL migrations managed by [golang-migrate](https://github.com/golang-migrate/migrate).\n\n" +
+			"## Layout\n\n" +
+			"Place numbered migration pairs in `db/migrations/`:\n\n" +
+			"```\ndb/migrations/\n  0001_init.up.sql\n  0001_init.down.sql\n  0002_add_users.up.sql\n  0002_add_users.down.sql\n```\n\n" +
+			"## CLI\n\n" +
+			"The generated binary exposes `db migrate` subcommands:\n\n" +
+			"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate down    # revert the most recently applied migration\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
+			"All subcommands read `DATABASE_URL` (or `--database-url`) from the standard project config.\n"
+		if err := os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
+			return fmt.Errorf("failed to create db/README.md: %w", err)
+		}
 	}
 
-	// Scaffold a README.md in db/ so the migrations workflow is self-documenting.
-	dbReadme := "# db\n\nSQL migrations managed by [golang-migrate](https://github.com/golang-migrate/migrate).\n\n" +
-		"## Layout\n\n" +
-		"Place numbered migration pairs in `db/migrations/`:\n\n" +
-		"```\ndb/migrations/\n  0001_init.up.sql\n  0001_init.down.sql\n  0002_add_users.up.sql\n  0002_add_users.down.sql\n```\n\n" +
-		"## CLI\n\n" +
-		"The generated binary exposes `db migrate` subcommands:\n\n" +
-		"```\ngo run ./cmd db migrate up      # apply all pending migrations\ngo run ./cmd db migrate down    # revert the most recently applied migration\ngo run ./cmd db migrate status  # print current version / dirty flag\n```\n\n" +
-		"All subcommands read `DATABASE_URL` (or `--database-url`) from the standard project config.\n"
-	if err := os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(dbReadme), 0644); err != nil {
-		return fmt.Errorf("failed to create db/README.md: %w", err)
-	}
-
-	// proto/api and proto/db are reserved scaffold directories used by
-	// 'forge generate': proto/api holds cross-service message definitions
-	// and proto/db holds entity definitions consumed by protoc-gen-forge-orm.
-	// Populate each with a README so the directory is tracked by git and
-	// users understand what belongs there.
-	protoDirReadmes := map[string]string{
-		filepath.Join(g.Path, "proto", "api", "README.md"): "# proto/api\n\nShared API message definitions (e.g. common request/response types)\nreferenced by multiple services. Files placed here are compiled into\n`gen/api/` by `forge generate`.\n",
-		filepath.Join(g.Path, "proto", "db", "README.md"):  "# proto/db\n\nEntity (database model) proto definitions. Files placed here are\nconsumed by `protoc-gen-forge-orm` to generate typed ORM bindings and\nmigrations. See `forge generate`.\n",
-	}
-	for p, body := range protoDirReadmes {
-		if err := os.WriteFile(p, []byte(body), 0644); err != nil {
-			return fmt.Errorf("failed to create %s: %w", p, err)
+	if g.Features.CodegenEnabled() {
+		// proto/api and proto/db are reserved scaffold directories used by
+		// 'forge generate': proto/api holds cross-service message definitions
+		// and proto/db holds entity definitions consumed by protoc-gen-forge-orm.
+		// Populate each with a README so the directory is tracked by git and
+		// users understand what belongs there.
+		protoDirReadmes := map[string]string{
+			filepath.Join(g.Path, "proto", "api", "README.md"): "# proto/api\n\nShared API message definitions (e.g. common request/response types)\nreferenced by multiple services. Files placed here are compiled into\n`gen/api/` by `forge generate`.\n",
+			filepath.Join(g.Path, "proto", "db", "README.md"):  "# proto/db\n\nEntity (database model) proto definitions. Files placed here are\nconsumed by `protoc-gen-forge-orm` to generate typed ORM bindings and\nmigrations. See `forge generate`.\n",
+		}
+		for p, body := range protoDirReadmes {
+			if err := os.WriteFile(p, []byte(body), 0644); err != nil {
+				return fmt.Errorf("failed to create %s: %w", p, err)
+			}
 		}
 	}
 
@@ -169,16 +177,31 @@ func (g *ProjectGenerator) Generate() error {
 		ConfigFields:           codegen.DefaultConfigFieldNames(),
 	}
 
-	if err := g.copyForgeV1Proto(); err != nil {
-		return err
+	// Strip migration-related config fields when migrations are disabled.
+	// The server template conditionally includes migration code based on
+	// ConfigFields["AutoMigrate"], so removing the field here prevents
+	// the template from emitting app.AutoMigrate() calls.
+	if !g.Features.MigrationsEnabled() {
+		delete(templateData.ConfigFields, "AutoMigrate")
+		delete(templateData.ConfigFields, "DatabaseUrl")
+		delete(templateData.ConfigFields, "MaxOpenConns")
+		delete(templateData.ConfigFields, "MaxIdleConns")
+		delete(templateData.ConfigFields, "ConnMaxIdleTime")
+		delete(templateData.ConfigFields, "ConnMaxLifetime")
 	}
-	if g.ServiceName != "" {
-		if err := g.createExampleProto(templateData); err != nil {
+
+	if g.Features.CodegenEnabled() {
+		if err := g.copyForgeV1Proto(); err != nil {
 			return err
 		}
-	}
-	if err := g.createConfigProto(templateData); err != nil {
-		return err
+		if g.ServiceName != "" {
+			if err := g.createExampleProto(templateData); err != nil {
+				return err
+			}
+		}
+		if err := g.createConfigProto(templateData); err != nil {
+			return err
+		}
 	}
 
 	files := []struct {
@@ -187,8 +210,6 @@ func (g *ProjectGenerator) Generate() error {
 	}{
 		{"Taskfile.yml.tmpl", "Taskfile.yml"},
 		{".gitignore", ".gitignore"},
-		{".dockerignore", ".dockerignore"},
-		{"Dockerfile.tmpl", "Dockerfile"},
 		{"README.md.tmpl", "README.md"},
 		{"CONTRIBUTING.md.tmpl", "CONTRIBUTING.md"},
 		{"CHANGELOG.md.tmpl", "CHANGELOG.md"},
@@ -198,13 +219,36 @@ func (g *ProjectGenerator) Generate() error {
 		{"buf.yaml", "buf.yaml"},
 		{"buf.gen.yaml", "buf.gen.yaml"},
 		{"cmd-root.go.tmpl", "cmd/main.go"},
-		{"cmd-server.go.tmpl", "cmd/server.go"},
-		{"cmd-db.go.tmpl", "cmd/db.go"},
-		{"otel.go", "cmd/otel.go"},
 		{"cmd-version.go.tmpl", "cmd/version.go"},
-		{"air.toml.tmpl", ".air.toml"},
-		{"air-debug.toml.tmpl", ".air-debug.toml"},
 		{"vscode-launch.json.tmpl", ".vscode/launch.json"},
+	}
+
+	// cmd/server.go, cmd/otel.go, and cmd/db.go import pkg/config and
+	// pkg/app which are only generated by the codegen pipeline. Skip
+	// them when codegen is disabled so the project compiles.
+	if g.Features.CodegenEnabled() {
+		// otel.go is always emitted alongside server.go because
+		// server.go calls setupOTel(). The observability feature flag
+		// controls infra files (alloy, grafana, prometheus rules), not
+		// the Go-level tracing wiring.
+		files = append(files,
+			struct{ template, dest string }{"cmd-server.go.tmpl", "cmd/server.go"},
+			struct{ template, dest string }{"otel.go", "cmd/otel.go"},
+		)
+		// cmd/db.go (migrate CLI) depends on both pkg/config and
+		// golang-migrate; skip when migrations are also disabled.
+		if g.Features.MigrationsEnabled() {
+			files = append(files, struct{ template, dest string }{"cmd-db.go.tmpl", "cmd/db.go"})
+		}
+	}
+
+	if g.Features.DeployEnabled() {
+		files = append(files, struct{ template, dest string }{".dockerignore", ".dockerignore"})
+		files = append(files, struct{ template, dest string }{"Dockerfile.tmpl", "Dockerfile"})
+	}
+	if g.Features.HotReloadEnabled() {
+		files = append(files, struct{ template, dest string }{"air.toml.tmpl", ".air.toml"})
+		files = append(files, struct{ template, dest string }{"air-debug.toml.tmpl", ".air-debug.toml"})
 	}
 
 	for _, file := range files {
@@ -223,23 +267,27 @@ func (g *ProjectGenerator) Generate() error {
 		return fmt.Errorf("failed to record frozen file checksums: %w", err)
 	}
 
-	if err := g.generateBootstrap(); err != nil {
-		return fmt.Errorf("failed to generate pkg/app/bootstrap.go: %w", err)
+	if g.Features.CodegenEnabled() {
+		if err := g.generateBootstrap(); err != nil {
+			return fmt.Errorf("failed to generate pkg/app/bootstrap.go: %w", err)
+		}
+		// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
+		// even with zero services.
+		// Initial scaffold: no database driver wired and no ORM — the pipeline
+		// runs `forge generate` immediately after and rewrites this file with
+		// the correct flags once proto/db and forge.yaml are present.
+		if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
+			return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
+		}
+		if err := g.generateBootstrapTesting(); err != nil {
+			return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
+		}
 	}
-	// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
-	// even with zero services.
-	// Initial scaffold: no database driver wired and no ORM — the pipeline
-	// runs `forge generate` immediately after and rewrites this file with
-	// the correct flags once proto/db and forge.yaml are present.
-	if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
-		return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
-	}
-	if err := g.generateBootstrapTesting(); err != nil {
-		return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
-	}
-	// Generate migrate.go stub (no migrations embedded at project creation)
-	if err := codegen.GenerateMigrate(g.Path, g.ModulePath, false); err != nil {
-		return fmt.Errorf("failed to generate pkg/app/migrate.go: %w", err)
+	if g.Features.MigrationsEnabled() {
+		// Generate migrate.go stub (no migrations embedded at project creation)
+		if err := codegen.GenerateMigrate(g.Path, g.ModulePath, false); err != nil {
+			return fmt.Errorf("failed to generate pkg/app/migrate.go: %w", err)
+		}
 	}
 
 	// Write forge.yaml
@@ -247,23 +295,27 @@ func (g *ProjectGenerator) Generate() error {
 		return fmt.Errorf("failed to write project config: %w", err)
 	}
 
-	// Generate KCL deploy files
-	if err := g.generateKCLDeploy(); err != nil {
-		return fmt.Errorf("failed to generate KCL deploy files: %w", err)
+	if g.Features.DeployEnabled() {
+		// Generate KCL deploy files
+		if err := g.generateKCLDeploy(); err != nil {
+			return fmt.Errorf("failed to generate KCL deploy files: %w", err)
+		}
+
+		// Generate dev config (k3d.yaml)
+		if err := g.generateDevConfig(); err != nil {
+			return fmt.Errorf("failed to generate dev config: %w", err)
+		}
+
+		// Generate docker-compose.yml
+		if err := g.generateDockerCompose(); err != nil {
+			return fmt.Errorf("failed to generate docker-compose.yml: %w", err)
+		}
 	}
 
-	// Generate dev config (k3d.yaml)
-	if err := g.generateDevConfig(); err != nil {
-		return fmt.Errorf("failed to generate dev config: %w", err)
-	}
-
-	// Generate docker-compose.yml
-	if err := g.generateDockerCompose(); err != nil {
-		return fmt.Errorf("failed to generate docker-compose.yml: %w", err)
-	}
-
-	if err := g.generateAlloyConfig(); err != nil {
-		return fmt.Errorf("failed to generate alloy config: %w", err)
+	if g.Features.ObservabilityEnabled() {
+		if err := g.generateAlloyConfig(); err != nil {
+			return fmt.Errorf("failed to generate alloy config: %w", err)
+		}
 	}
 
 	// Generate .env.example with common environment variables
@@ -274,26 +326,28 @@ func (g *ProjectGenerator) Generate() error {
 	if err := g.generateGolangciLint(); err != nil {
 		return fmt.Errorf("failed to generate .golangci.yml: %w", err)
 	}
-	if g.ServiceName != "" {
+	if g.Features.CodegenEnabled() && g.ServiceName != "" {
 		if err := g.generateServiceFiles(); err != nil {
 			return fmt.Errorf("failed to generate service files: %w", err)
 		}
 	}
 
-	// Generate frontend files if specified (both modes)
-	if g.FrontendName != "" {
+	// Generate frontend files if specified
+	if g.Features.FrontendEnabled() && g.FrontendName != "" {
 		if err := g.generateFrontendFiles(); err != nil {
 			return fmt.Errorf("failed to generate frontend files: %w", err)
 		}
 	}
 
-	// Generate CI/CD workflow files (both modes)
-	if err := g.generateCIFiles(); err != nil {
-		return fmt.Errorf("failed to generate CI files: %w", err)
+	// Generate CI/CD workflow files
+	if g.Features.CIEnabled() {
+		if err := g.generateCIFiles(); err != nil {
+			return fmt.Errorf("failed to generate CI files: %w", err)
+		}
 	}
 
-	// Generate E2E test harness (both modes)
-	if g.ServiceName != "" {
+	// Generate E2E test harness
+	if g.Features.CodegenEnabled() && g.ServiceName != "" {
 		if err := g.generateE2ETests(); err != nil {
 			return fmt.Errorf("failed to generate E2E tests: %w", err)
 		}

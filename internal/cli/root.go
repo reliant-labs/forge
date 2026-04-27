@@ -107,6 +107,8 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	rootCmd.AddCommand(newComponentCmd())
+	rootCmd.AddCommand(newSkillCmd())
+	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newDoctorCmd())
 
 	return rootCmd

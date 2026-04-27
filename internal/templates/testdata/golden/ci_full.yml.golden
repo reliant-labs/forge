@@ -141,14 +141,8 @@ jobs:
         #   3. Neither available → fall back to @main (regenerate from a
         #      tagged release to eliminate this branch).
         run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.0-test
-      - name: Generate code
-        run: forge generate
-      - name: Check for uncommitted changes
-        run: |
-          if ! git diff --exit-code; then
-            echo "::error::Generated code is out of date. Run 'forge generate' and commit the changes."
-            exit 1
-          fi
+      - name: Verify generated code
+        run: forge ci verify-generated
 
   validate-kcl:
     name: Validate KCL
@@ -168,12 +162,8 @@ jobs:
 
       - name: Add KCL to PATH
         run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
-      - name: Validate dev manifests
-        run: kcl run deploy/kcl/dev/main.k > /dev/null
-      - name: Validate staging manifests
-        run: kcl run deploy/kcl/staging/main.k > /dev/null
-      - name: Validate prod manifests
-        run: kcl run deploy/kcl/prod/main.k > /dev/null
+      - name: Validate KCL manifests
+        run: forge ci validate-kcl
 
   vuln-scan:
     name: Vulnerability Scan
@@ -190,7 +180,7 @@ jobs:
         # Dependabot config watches this file so bumps arrive as PRs.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: Go vulnerability check
-        run: govulncheck ./...
+        run: forge ci vuln-scan --go
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -201,9 +191,8 @@ jobs:
           cache: 'npm'
           cache-dependency-path: |
             frontends/web/package-lock.json
-      - name: NPM audit web
-        working-directory: frontends/web
-        run: npm ci && npm audit --audit-level=high
+      - name: NPM vulnerability check
+        run: forge ci vuln-scan --npm
 
   docker-build:
     name: Docker Build

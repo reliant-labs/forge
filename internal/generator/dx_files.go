@@ -32,32 +32,48 @@ func (g *ProjectGenerator) generateDXFiles() error {
 	if err := g.generatePreCommitConfig(); err != nil {
 		return fmt.Errorf("write .pre-commit-config.yaml: %w", err)
 	}
-	if err := g.generatePreCommitWorkflow(); err != nil {
-		return fmt.Errorf("write pre-commit workflow: %w", err)
+	if g.Features.CIEnabled() {
+		if err := g.generatePreCommitWorkflow(); err != nil {
+			return fmt.Errorf("write pre-commit workflow: %w", err)
+		}
 	}
-	if err := g.generateExampleMigration(); err != nil {
-		return fmt.Errorf("write example migration: %w", err)
+	if g.Features.MigrationsEnabled() {
+		if err := g.generateExampleMigration(); err != nil {
+			return fmt.Errorf("write example migration: %w", err)
+		}
 	}
-	if err := g.generateSeeds(); err != nil {
-		return fmt.Errorf("write db/seeds: %w", err)
+	if g.Features.MigrationsEnabled() {
+		if err := g.generateSeeds(); err != nil {
+			return fmt.Errorf("write db/seeds: %w", err)
+		}
 	}
-	if err := g.generateADRs(); err != nil {
-		return fmt.Errorf("write docs/adr: %w", err)
+	if g.Features.DocsEnabled() {
+		if err := g.generateADRs(); err != nil {
+			return fmt.Errorf("write docs/adr: %w", err)
+		}
 	}
 	if err := g.generateBenchmarks(); err != nil {
 		return fmt.Errorf("write benchmarks: %w", err)
 	}
-	if err := g.generateRunbookAndSLO(); err != nil {
-		return fmt.Errorf("write docs/runbook+slo: %w", err)
+	if g.Features.ObservabilityEnabled() {
+		if err := g.generateRunbookAndSLO(); err != nil {
+			return fmt.Errorf("write docs/runbook+slo: %w", err)
+		}
 	}
-	if err := g.generatePrometheusRules(); err != nil {
-		return fmt.Errorf("write prometheus-rules: %w", err)
+	if g.Features.ObservabilityEnabled() {
+		if err := g.generatePrometheusRules(); err != nil {
+			return fmt.Errorf("write prometheus-rules: %w", err)
+		}
 	}
-	if err := g.generateSQLCStub(); err != nil {
-		return fmt.Errorf("write db/sqlc stub: %w", err)
+	if g.Features.ORMEnabled() {
+		if err := g.generateSQLCStub(); err != nil {
+			return fmt.Errorf("write db/sqlc stub: %w", err)
+		}
 	}
-	if err := g.generateNonGoalsADR(); err != nil {
-		return fmt.Errorf("write non-goals ADR: %w", err)
+	if g.Features.DocsEnabled() {
+		if err := g.generateNonGoalsADR(); err != nil {
+			return fmt.Errorf("write non-goals ADR: %w", err)
+		}
 	}
 	return nil
 }

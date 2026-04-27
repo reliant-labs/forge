@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"time"
 
@@ -14,21 +13,19 @@ import (
 )
 
 // writeProjectMetadata writes everything under .reliant/, the top-level
-// reliant.md stub, and the project-level .mcp.json files.
+// memory file (whose name depends on MemoryFormat), and the project-level
+// .mcp.json files.
 //
 // File ownership model:
 //
 //   - forge-owned (always overwritten on regeneration):
-//     .reliant/project.json, .reliant/README.md, .reliant/reliant-forge.md,
-//     .reliant/skills/**.
+//     .reliant/project.json, .reliant/README.md.
 //
 //   - User-owned (written only if absent, never touched if present):
-//     reliant.md, .mcp.json, .mcp.json.example.
+//     <memory-file>, .reliant/reliant.md, .mcp.json, .mcp.json.example.
 //
-// This split eliminates the merge-logic footguns of the earlier design: the
-// forge-owned files are safe to regenerate freely because the user has no
-// reason to edit them; the user-owned files are safe to leave alone because
-// they point at the forge-owned content via links.
+// Skills and conventions are served via `forge skill list/load` from embedded
+// templates — no files are written to disk for them.
 func (g *ProjectGenerator) writeProjectMetadata() error {
 	reliantDir := filepath.Join(g.Path, ".reliant")
 	if err := os.MkdirAll(reliantDir, 0o755); err != nil {
@@ -48,25 +45,23 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		CLI  string
 	}{Name: g.Name, CLI: cliName()}
 
-	// forge-owned conventions file. Always regenerated.
-	forgeMemoryPath := filepath.Join(reliantDir, "reliant-forge.md")
-	if err := assets.WriteTemplateWithData("reliant-forge.md.tmpl", forgeMemoryPath, templateData); err != nil {
-		return fmt.Errorf("failed to write .reliant/reliant-forge.md: %w", err)
-	}
-
-	// Skills tree. Always regenerated.
-	if err := g.writeSkills(reliantDir); err != nil {
-		return fmt.Errorf("failed to write skills: %w", err)
-	}
-
 	// User-owned .reliant/reliant.md — project memory file. Write only if absent.
+	// This is always generated regardless of --memory format (forge's own memory).
 	if err := writeIfAbsent(filepath.Join(reliantDir, "reliant.md"), "reliant-reliant.md.tmpl", templateData); err != nil {
 		return fmt.Errorf("failed to write .reliant/reliant.md: %w", err)
 	}
 
-	// User-owned top-level memory file — write only if absent.
-	if err := writeIfAbsent(filepath.Join(g.Path, "reliant.md"), "reliant.md.tmpl", templateData); err != nil {
-		return fmt.Errorf("failed to write reliant.md: %w", err)
+	// User-owned top-level memory file — path depends on --memory format.
+	memoryFile := g.MemoryFormat.MemoryFilePath()
+	memoryDest := filepath.Join(g.Path, memoryFile)
+	// Ensure parent directory exists (needed for copilot: .github/).
+	if dir := filepath.Dir(memoryDest); dir != g.Path {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("failed to create directory for %s: %w", memoryFile, err)
+		}
+	}
+	if err := writeIfAbsent(memoryDest, "reliant.md.tmpl", templateData); err != nil {
+		return fmt.Errorf("failed to write %s: %w", memoryFile, err)
 	}
 
 	// User-owned MCP config — write only if absent.
@@ -101,45 +96,6 @@ func (g *ProjectGenerator) writeProjectJSON(reliantDir string) error {
 	if err := os.WriteFile(filepath.Join(reliantDir, "project.json"), data, 0o644); err != nil {
 		return fmt.Errorf("failed to write .reliant/project.json: %w", err)
 	}
-	return nil
-}
-
-// writeSkills copies every file under project/skills/ in the embedded
-// templates into <reliantDir>/skills/, preserving directory structure.
-// Files are copied verbatim (not rendered as Go templates) so their prose
-// may contain literal examples like {{.Name}} without conflict.
-//
-// CLI command references ("forge <subcommand>") are rewritten to match the
-// detected CLI name (e.g. "reliant forge <subcommand>" when embedded).
-func (g *ProjectGenerator) writeSkills(reliantDir string) error {
-	skillFiles, err := templates.ProjectTemplates.List("skills")
-	if err != nil {
-		return fmt.Errorf("failed to list skill templates: %w", err)
-	}
-
-	name := cliName()
-
-	for _, rel := range skillFiles {
-		templateName := path.Join("skills", filepath.ToSlash(rel))
-		content, err := templates.ProjectTemplates.Get(templateName)
-		if err != nil {
-			return fmt.Errorf("failed to read skill template %s: %w", templateName, err)
-		}
-
-		// Rewrite CLI command references if running under a different binary name.
-		if name != "forge" {
-			content = forgeCmdRE.ReplaceAll(content, []byte(name+"$1"))
-		}
-
-		destPath := filepath.Join(reliantDir, "skills", filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return fmt.Errorf("failed to create skill dir %s: %w", filepath.Dir(destPath), err)
-		}
-		if err := os.WriteFile(destPath, content, 0o644); err != nil {
-			return fmt.Errorf("failed to write skill file %s: %w", destPath, err)
-		}
-	}
-
 	return nil
 }
 

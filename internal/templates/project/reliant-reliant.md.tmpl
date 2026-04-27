@@ -25,8 +25,21 @@ This is a Forge-generated Go + Next.js application with:
 - Frontend hooks in `frontends/*/src/hooks/` are generated — use them, don't write manual fetch calls
 - Run `{{.CLI}} generate` after proto changes, then `{{.CLI}} build` to verify
 
+## Frontend Architecture
+
+- **Server state**: Generated React Query hooks (`src/hooks/*-hooks.ts`) — do not copy into Zustand
+- **Client UI state**: Zustand stores in `src/stores/` — subscribe to slices, not whole stores
+- **Auth**: DI'd via `AuthProvider` interface — swap providers without changing components
+- **Events**: Typed event bus (`src/lib/events.ts`) for imperative actions (toasts, navigation) — events are moments, not truth
+- **Forms**: react-hook-form + Zod schemas — do not hand-roll with useState
+- **URL state**: App Router params for anything that should survive refresh/bookmarking
+- **Context**: Only for stable, broad dependencies (auth, theme, event bus) — not high-frequency data
+- **Derive, don't effect**: Compute values during render, never useEffect to set derived state
+
 ## Do NOT Edit
 - `gen/` directory
 - `*_gen.go` files
 - `cmd/server.go`, `cmd/otel.go`
 - `pkg/app/bootstrap.go`
+- `frontends/*/src/hooks/*-hooks.ts`
+- `frontends/*/src/gen/`

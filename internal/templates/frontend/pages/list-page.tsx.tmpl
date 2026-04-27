@@ -8,45 +8,8 @@ import PageHeader from "@/components/ui/page_header";
 import Badge from "@/components/ui/badge";
 import SkeletonLoader from "@/components/ui/skeleton_loader";
 import SearchInput from "@/components/ui/search_input";
-
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  // Handle protobuf-es Timestamp objects (have seconds/nanos properties)
-  if (typeof value === "object" && value !== null && "seconds" in value) {
-    try {
-      const ts = value as { seconds: bigint; nanos?: number };
-      return new Date(Number(ts.seconds) * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    } catch { /* fall through */ }
-  }
-  const s = String(value);
-  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
-    try { return new Date(s).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; }
-  }
-  return s;
-}
-
-function isEnumLike(key: string, value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const enumKeys = ["status", "type", "kind", "role", "state", "category", "priority", "level"];
-  return enumKeys.some((k) => key.toLowerCase().includes(k));
-}
-
-const badgeVariants = ["info", "success", "warning", "error", "neutral"] as const;
-
-function enumBadgeVariant(value: string): "info" | "success" | "warning" | "error" | "neutral" {
-  const hash = [...value].reduce((a, c) => a + c.charCodeAt(0), 0) % badgeVariants.length;
-  return badgeVariants[hash];
-}
-
-function ErrorState({ error }: { error: Error }) {
-  return (
-    <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-center">
-      <p className="text-sm font-medium text-red-800">Failed to load {{.EntityNamePlural | lower}}</p>
-      <p className="mt-1 text-sm text-red-600">{error.message}</p>
-    </div>
-  );
-}
+import AlertBanner from "@/components/ui/alert_banner";
+import { formatValue, isEnumLike, enumBadgeVariant } from "@/lib/format-utils";
 
 function EmptyState() {
   return (
@@ -74,7 +37,7 @@ export default function {{.EntityNamePlural}}Page() {
   const { data, isLoading, error } = use{{.ListRPC}}({});
 
   if (isLoading) return <div className="px-4 py-8"><SkeletonLoader variant="table-row" count={5} /></div>;
-  if (error) return <div className="px-4 py-8"><ErrorState error={error} /></div>;
+  if (error) return <div className="px-4 py-8"><AlertBanner variant="error" message={error.message} /></div>;
 
   const items = data?.{{.EntityNamePlural | camelCase}} ?? [];
 

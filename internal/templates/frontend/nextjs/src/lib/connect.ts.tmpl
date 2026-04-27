@@ -8,6 +8,22 @@ import { SpanStatusCode, trace, context, propagation } from "@opentelemetry/api"
 const baseUrl =
   process.env.NEXT_PUBLIC_API_URL ?? "{{.ApiUrl}}";
 
+// Module-level token getter, wired up by AuthTokenBridge in providers.tsx.
+let _getToken: () => Promise<string | null> = async () => null;
+
+export function setAuthTokenGetter(fn: () => Promise<string | null>) {
+  _getToken = fn;
+}
+
+// Auth interceptor that attaches the bearer token to every request.
+const authInterceptor: Interceptor = (next) => async (req) => {
+  const token = await _getToken();
+  if (token) {
+    req.header.set("Authorization", `Bearer ${token}`);
+  }
+  return next(req);
+};
+
 // Tracing interceptor that propagates W3C trace context to backend.
 const tracingInterceptor: Interceptor = (next) => async (req) => {
   const tracer = trace.getTracer("connect-rpc");
@@ -50,7 +66,7 @@ function buildTransport(): Transport {
 
   return createConnectTransport({
     baseUrl,
-    interceptors: [tracingInterceptor],
+    interceptors: [authInterceptor, tracingInterceptor],
   });
 }
 

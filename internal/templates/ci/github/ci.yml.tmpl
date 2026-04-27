@@ -180,14 +180,8 @@ jobs:
         # TODO: regenerate from a tagged forge release to pin this install.
         run: go install github.com/reliant-labs/forge/cmd/forge@main
 {{- end}}
-      - name: Generate code
-        run: forge generate
-      - name: Check for uncommitted changes
-        run: |
-          if ! git diff --exit-code; then
-            echo "::error::Generated code is out of date. Run 'forge generate' and commit the changes."
-            exit 1
-          fi
+      - name: Verify generated code
+        run: forge ci verify-generated
 {{- if .HasKCL}}
 
   validate-kcl:
@@ -208,10 +202,8 @@ jobs:
 
       - name: Add KCL to PATH
         run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
-{{- range .Environments}}
-      - name: Validate {{.}} manifests
-        run: kcl run deploy/kcl/{{.}}/main.k > /dev/null
-{{- end}}
+      - name: Validate KCL manifests
+        run: forge ci validate-kcl
 {{- end}}
 {{- if or .VulnGo .VulnNPM}}
 
@@ -235,7 +227,7 @@ jobs:
         # Dependabot config watches this file so bumps arrive as PRs.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
       - name: Go vulnerability check
-        run: govulncheck ./...
+        run: forge ci vuln-scan --go
 {{- end}}
 {{- if and .VulnNPM .HasFrontends}}
       - name: Setup Node.js
@@ -250,11 +242,8 @@ jobs:
 {{- range .Frontends}}
             {{.Path}}/package-lock.json
 {{- end}}
-{{- range .Frontends}}
-      - name: NPM audit {{.Name}}
-        working-directory: {{.Path}}
-        run: npm ci && npm audit --audit-level=high
-{{- end}}
+      - name: NPM vulnerability check
+        run: forge ci vuln-scan --npm
 {{- end}}
 {{- end}}
 {{- if .LicenseCheck}}

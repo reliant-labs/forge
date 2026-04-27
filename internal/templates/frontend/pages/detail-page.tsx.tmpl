@@ -4,57 +4,18 @@ import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.Ho
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 {{- if .HasDelete}}
-import { useCallback, useState } from "react";
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 {{- end}}
 import PageHeader from "@/components/ui/page_header";
 import Badge from "@/components/ui/badge";
 import KeyValueList from "@/components/ui/key_value_list";
 import SkeletonLoader from "@/components/ui/skeleton_loader";
+import AlertBanner from "@/components/ui/alert_banner";
 {{- if .HasDelete}}
 import Modal from "@/components/ui/modal";
 {{- end}}
-
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  // Handle protobuf-es Timestamp objects (have seconds/nanos properties)
-  if (typeof value === "object" && value !== null && "seconds" in value) {
-    try {
-      const ts = value as { seconds: bigint; nanos?: number };
-      return new Date(Number(ts.seconds) * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    } catch { /* fall through */ }
-  }
-  const s = String(value);
-  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
-    try { return new Date(s).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; }
-  }
-  return s;
-}
-
-function isEnumLike(key: string, value: unknown): boolean {
-  if (typeof value !== "string") return false;
-  const enumKeys = ["status", "type", "kind", "role", "state", "category", "priority", "level"];
-  return enumKeys.some((k) => key.toLowerCase().includes(k));
-}
-
-const badgeVariants = ["info", "success", "warning", "error", "neutral"] as const;
-
-function enumBadgeVariant(value: string): "info" | "success" | "warning" | "error" | "neutral" {
-  const hash = [...value].reduce((a, c) => a + c.charCodeAt(0), 0) % badgeVariants.length;
-  return badgeVariants[hash];
-}
-
-function ErrorState({ error }: { error: Error }) {
-  return (
-    <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-center">
-      <p className="text-sm font-medium text-red-800">Failed to load {{.EntityName | lower}}</p>
-      <p className="mt-1 text-sm text-red-600">{error.message}</p>
-      <Link href="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-red-700 underline hover:text-red-800">
-        Back to {{.EntityNamePlural | lower}}
-      </Link>
-    </div>
-  );
-}
+import { formatValue, isEnumLike, enumBadgeVariant } from "@/lib/format-utils";
 
 export default function {{.EntityName}}DetailPage() {
   const params = useParams();
@@ -62,21 +23,28 @@ export default function {{.EntityName}}DetailPage() {
   const id = params.id as string;
   {{- if .HasDelete}}
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const queryClient = useQueryClient();
   {{- end}}
 
   const { data, isLoading, error } = use{{.GetRPC}}({ id });
   {{- if .HasDelete}}
   const deleteMutation = use{{.DeleteRPC}}({
-    onSuccess: () => router.push("/{{.EntitySlug}}"),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["{{.ServiceNameCamel}}"] });
+      router.push("/{{.EntitySlug}}");
+    },
   });
-
-  const handleDelete = useCallback(() => {
-    deleteMutation.mutate({ id });
-  }, [deleteMutation, id]);
   {{- end}}
 
   if (isLoading) return <SkeletonLoader variant="list-item" count={5} />;
-  if (error) return <ErrorState error={error} />;
+  if (error) return (
+    <div className="px-4 py-8">
+      <AlertBanner variant="error" message={error.message} />
+      <Link href="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-blue-600 underline hover:text-blue-800">
+        Back to {{.EntityNamePlural | lower}}
+      </Link>
+    </div>
+  );
 
   const item = data?.{{.EntityName | camelCase}} ?? data;
   const entries = item && typeof item === "object"
@@ -145,7 +113,7 @@ export default function {{.EntityName}}DetailPage() {
               Cancel
             </button>
             <button
-              onClick={handleDelete}
+              onClick={() => deleteMutation.mutate({ id })}
               disabled={deleteMutation.isPending}
               className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 disabled:opacity-50"
             >

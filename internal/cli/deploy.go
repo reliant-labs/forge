@@ -55,6 +55,11 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace string) error {
 		return err
 	}
 
+	if !cfg.Features.DeployEnabled() {
+		fmt.Println("deploy feature is disabled in forge.yaml")
+		return nil
+	}
+
 	// Resolve KCL directory.
 	kclDir := cfg.K8s.KCLDir
 	if kclDir == "" {

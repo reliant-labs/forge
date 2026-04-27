@@ -444,6 +444,7 @@ type BootstrapTestServiceData struct {
 	FieldName        string // e.g. "API" (exported struct field)
 	ProtoServiceName string // e.g. "ApiService" (proto service name for connect client)
 	Fallible         bool   // true if New() returns (T, error)
+	HasDB            bool   // true if Deps struct has a DB orm.Context field
 }
 
 // GenerateBootstrapTesting generates pkg/app/testing.go from the bootstrap_testing.go.tmpl template.
@@ -454,15 +455,22 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 	}
 
 	var testSvcs []BootstrapTestServiceData
+	anyServiceHasDB := false
 	for _, svc := range services {
 		pkg := toServicePackage(svc.Name)
-		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
+		handlerDir := filepath.Join(projectDir, "handlers", pkg)
+		fallible, _ := DetectFallibleConstructor(handlerDir)
+		hasDB, _ := DetectDepsDBField(handlerDir)
+		if hasDB {
+			anyServiceHasDB = true
+		}
 		testSvcs = append(testSvcs, BootstrapTestServiceData{
 			Name:             pkg,
 			Package:          pkg,
 			FieldName:        naming.ToExportedFieldName(pkg),
 			ProtoServiceName: svc.Name,
 			Fallible:         fallible,
+			HasDB:            hasDB,
 		})
 	}
 
@@ -471,11 +479,13 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		Services           []BootstrapTestServiceData
 		Packages           []BootstrapPackageData
 		MultiTenantEnabled bool
+		AnyServiceHasDB    bool
 	}{
 		Module:             modulePath,
 		Services:           testSvcs,
 		Packages:           packages,
 		MultiTenantEnabled: multiTenantEnabled,
+		AnyServiceHasDB:    anyServiceHasDB,
 	}
 
 	content, err := templates.ProjectTemplates.Render("bootstrap_testing.go.tmpl", data)

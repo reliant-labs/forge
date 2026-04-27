@@ -86,6 +86,23 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 		}
 	}
 
+	// ── proto-breaking.yml ──
+	if ciData.LintBufBreaking && ciData.HasServices {
+		breakingContent, err := templates.CITemplates(provider).Render("proto-breaking.yml.tmpl", ciData)
+		if err != nil {
+			return fmt.Errorf("render proto-breaking.yml: %w", err)
+		}
+		written, err = generator.WriteGeneratedFile(root, ".github/workflows/proto-breaking.yml", breakingContent, cs, force)
+		if err != nil {
+			return fmt.Errorf("write proto-breaking.yml: %w", err)
+		}
+		if written {
+			fmt.Println("  ✅ Generated .github/workflows/proto-breaking.yml")
+		} else {
+			fmt.Println("  ⚠️  .github/workflows/proto-breaking.yml has local modifications, skipping (use --force to overwrite)")
+		}
+	}
+
 	// ── dependabot.yml ──
 	depData := buildDependabotData(cfg)
 	depContent, err := templates.CITemplates(provider).Render("dependabot.yml.tmpl", depData)
@@ -143,21 +160,24 @@ func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 		Frontends:    frontends,
 		HasServices:  hasServices,
 
-		LintGolangci: allLintDefault || lintCfg.Golangci,
-		LintBuf:      allLintDefault || lintCfg.Buf,
-		LintFrontend: allLintDefault || lintCfg.Frontend,
+		LintGolangci:        allLintDefault || lintCfg.Golangci,
+		LintBuf:             allLintDefault || lintCfg.Buf,
+		LintBufBreaking:     allLintDefault || lintCfg.BufBreaking,
+		LintFrontend:        allLintDefault || lintCfg.Frontend,
+		LintFrontendStyles:  (allLintDefault || lintCfg.Frontend) && cfg.Lint.Frontend.CSSHealth,
+		LintMigrationSafety: allLintDefault || lintCfg.MigrationSafety,
 
 		TestRace:     allTestDefault || testCfg.Race,
 		TestCoverage: testCfg.Coverage,
 
 		VulnGo:     allVulnDefault || vulnCfg.Go,
-		VulnDocker:  allVulnDefault || vulnCfg.Docker,
-		VulnNPM:     allVulnDefault || vulnCfg.NPM,
+		VulnDocker: allVulnDefault || vulnCfg.Docker,
+		VulnNPM:    allVulnDefault || vulnCfg.NPM,
 
 		LicenseCheck: true,
 
-		E2EEnabled:  cfg.CI.E2E.Enabled,
-		E2ERuntime:  effectiveE2ERuntime(cfg),
+		E2EEnabled: cfg.CI.E2E.Enabled,
+		E2ERuntime: effectiveE2ERuntime(cfg),
 
 		PermContents: cfg.CI.EffectivePermContents(),
 

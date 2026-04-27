@@ -210,9 +210,12 @@ type CIWorkflowData struct {
 	HasServices  bool
 
 	// Lint
-	LintGolangci bool
-	LintBuf      bool
-	LintFrontend bool
+	LintGolangci        bool
+	LintBuf             bool
+	LintBufBreaking     bool
+	LintFrontend        bool
+	LintFrontendStyles  bool
+	LintMigrationSafety bool
 
 	// Test
 	TestRace     bool

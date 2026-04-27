@@ -5,6 +5,9 @@ import (
 {{- if or .Services .MultiTenantEnabled}}
 	"context"
 {{- end}}
+{{- if .AnyServiceHasDB}}
+	"database/sql"
+{{- end}}
 	"io"
 	"log/slog"
 {{- if .Services}}
@@ -17,6 +20,11 @@ import (
 {{- if .Services}}
 
 	"connectrpc.com/connect"
+{{- end}}
+{{- if .AnyServiceHasDB}}
+	"github.com/reliant-labs/forge/pkg/orm"
+	_ "github.com/reliant-labs/forge/pkg/dialects/sqlite" // register SQLite dialect for tests
+	_ "github.com/mattn/go-sqlite3"                       // SQLite driver
 {{- end}}
 	"{{$.Module}}/pkg/config"
 {{- if or .Services .MultiTenantEnabled}}
@@ -55,6 +63,9 @@ type testConfig struct {
 {{- if .Services}}
 	authz  middleware.Authorizer
 {{- end}}
+{{- if .AnyServiceHasDB}}
+	db     orm.Context
+{{- end}}
 {{- range .Services}}
 	{{.Package}}Deps *{{.Package}}.Deps
 {{- end}}
@@ -80,6 +91,14 @@ func WithAuthorizer(a middleware.Authorizer) TestOption {
 	return func(c *testConfig) { c.authz = a }
 }
 {{- end}}
+{{- if .AnyServiceHasDB}}
+
+// WithDB overrides the default in-memory test database.
+// Use this to provide a pre-seeded database or a custom ORM context.
+func WithDB(db orm.Context) TestOption {
+	return func(c *testConfig) { c.db = db }
+}
+{{- end}}
 {{range .Services}}
 // With{{.FieldName}}Deps overrides the {{.FieldName}} service dependencies.
 func With{{.FieldName}}Deps(deps {{.Package}}.Deps) TestOption {
@@ -95,10 +114,13 @@ func With{{.FieldName}}Deps(deps {{.Package}}.Deps) TestOption {
 {{- range .Services}}
 // NewTest{{.FieldName}} creates test instance of {{.FieldName}} service with test defaults.
 // By default, deps are minimal (discard logger + permissive authorizer).
+{{- if .HasDB}}
+// A fresh in-memory SQLite database is created automatically for CRUD operations.
+{{- end}}
 // Use options to override specific deps.
 func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Service {
 	t.Helper()
-	cfg := defaultTestConfig()
+	cfg := defaultTestConfig(t)
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -114,6 +136,9 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Servi
 		Logger:     cfg.logger.With("service", "{{.Name}}"),
 		Config:     cfg.cfg,
 		Authorizer: cfg.authz,
+{{- if .HasDB}}
+		DB:         cfg.db,
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("creating {{.Package}} service: %v", err)
@@ -127,6 +152,9 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Package}}.Servi
 		Logger:     cfg.logger.With("service", "{{.Name}}"),
 		Config:     cfg.cfg,
 		Authorizer: cfg.authz,
+{{- if .HasDB}}
+		DB:         cfg.db,
+{{- end}}
 	})
 {{- end}}
 }
@@ -153,7 +181,7 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 // Use options to override specific deps.
 func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{.Package}}.Service {
 	t.Helper()
-	cfg := defaultTestConfig()
+	cfg := defaultTestConfig(t)
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -182,15 +210,40 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{.Package}}.Servic
 {{- end}}
 }
 {{end}}
-func defaultTestConfig() *testConfig {
+func defaultTestConfig(t *testing.T) *testConfig {
+	t.Helper()
 	return &testConfig{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:    &config.Config{},
 {{- if .Services}}
 		authz:  testAuthorizer{},
 {{- end}}
+{{- if .AnyServiceHasDB}}
+		db:     newTestDB(t),
+{{- end}}
 	}
 }
+{{- if .AnyServiceHasDB}}
+
+// newTestDB creates a fresh in-memory SQLite ORM client for test isolation.
+// Each test gets its own database instance. The client is automatically closed
+// when the test completes. Migrations are not run — tests that need schema
+// should run migrations or create tables explicitly.
+func newTestDB(t *testing.T) orm.Context {
+	t.Helper()
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	client, err := orm.NewClientWithDB(db, "sqlite")
+	if err != nil {
+		db.Close()
+		t.Fatalf("create ORM client: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return client
+}
+{{- end}}
 
 {{- if .MultiTenantEnabled}}
 

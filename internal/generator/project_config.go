@@ -44,13 +44,21 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 			Driver:        "postgres",
 			MigrationsDir: "db/migrations",
 			SQLCEnabled:   false,
+			MigrationSafety: config.MigrationSafetyConfig{
+				Enabled:           boolPtr(true),
+				UnsafeAddColumn:   "error",
+				DestructiveChange: "error",
+				VolatileDefault:   "warn",
+			},
 		},
 		CI: config.CIConfig{
 			Provider: "github",
 			Lint: config.CILintConfig{
-				Golangci: true,
-				Buf:      true,
-				Frontend: g.FrontendName != "",
+				Golangci:        true,
+				Buf:             true,
+				BufBreaking:     true,
+				Frontend:        g.FrontendName != "",
+				MigrationSafety: true,
 			},
 			Test: config.CITestConfig{
 				Race:     true,
@@ -75,6 +83,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		},
 		Lint: config.LintConfig{
 			Contract: true,
+			Frontend: config.FrontendLintConfig{
+				CSSHealth:      g.FrontendName != "",
+				NoImportant:    "warn",
+				NoInlineStyles: "warn",
+			},
 		},
 		Auth: config.AuthConfig{
 			Provider: "none",
@@ -131,13 +144,13 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		return t
 	}
 	return config.FeaturesConfig{
-		ORM:           orDefault(g.Features.ORM),
-		Codegen:       orDefault(g.Features.Codegen),
-		Migrations:    orDefault(g.Features.Migrations),
-		CI:            orDefault(g.Features.CI),
-		Deploy:        orDefault(g.Features.Deploy),
-		Contracts:     orDefault(g.Features.Contracts),
-		Docs:          orDefault(g.Features.Docs),
+		ORM:        orDefault(g.Features.ORM),
+		Codegen:    orDefault(g.Features.Codegen),
+		Migrations: orDefault(g.Features.Migrations),
+		CI:         orDefault(g.Features.CI),
+		Deploy:     orDefault(g.Features.Deploy),
+		Contracts:  orDefault(g.Features.Contracts),
+		Docs:       orDefault(g.Features.Docs),
 		Frontend: func() *bool {
 			if g.Features.Frontend != nil {
 				return g.Features.Frontend

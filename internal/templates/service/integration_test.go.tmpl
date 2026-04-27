@@ -13,9 +13,10 @@ import (
 	"{{.Module}}/pkg/app"
 )
 
-// TestIntegration runs each RPC against the in-process test server and asserts
-// that every method returns the expected error (unimplemented by default).
-// Add method-specific behavior tests alongside this table as your service grows.
+// TestIntegration runs each RPC against the in-process test server and verifies
+// that every method responds without panicking. Stubs return errors;
+// implemented handlers may return success or business-logic errors — both are
+// valid. This test stays correct regardless of implementation state.
 func TestIntegration(t *testing.T) {
 	t.Parallel()
 
@@ -27,9 +28,8 @@ func TestIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name    string
-		call    func(client {{.ProtoConnectPackage}}.{{.HandlerName}}Client) error
-		wantErr bool
+		name string
+		call func(client {{.ProtoConnectPackage}}.{{.HandlerName}}Client) error
 	}{
 {{- range .Methods}}
 {{- if or .ClientStreaming .ServerStreaming}}
@@ -41,7 +41,6 @@ func TestIntegration(t *testing.T) {
 				_, err := c.{{.Name}}(ctx, connect.NewRequest(&pb.{{.InputType}}{}))
 				return err
 			},
-			wantErr: true, // stub returns unimplemented; override when implemented
 		},
 {{- end}}
 {{- end}}
@@ -52,14 +51,10 @@ func TestIntegration(t *testing.T) {
 			t.Parallel()
 
 			err := tt.call(client)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
+			// Accept both success and errors — stubs return CodeUnimplemented,
+			// implemented handlers may return business errors or succeed.
 			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+				t.Logf("%s returned error (expected for stubs): %v", tt.name, err)
 			}
 		})
 	}

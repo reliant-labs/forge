@@ -153,6 +153,110 @@ func TestDetectFallibleConstructor_NonexistentDir(t *testing.T) {
 	}
 }
 
+func TestDetectDepsDBField_HasDB(t *testing.T) {
+	dir := t.TempDir()
+	src := `package api
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	Logger     interface{}
+	Config     interface{}
+	Authorizer interface{}
+	DB         orm.Context
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	hasDB, err := DetectDepsDBField(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasDB {
+		t.Error("expected true for Deps with DB orm.Context field")
+	}
+}
+
+func TestDetectDepsDBField_NoDB(t *testing.T) {
+	dir := t.TempDir()
+	src := `package api
+
+type Deps struct {
+	Logger     interface{}
+	Config     interface{}
+	Authorizer interface{}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	hasDB, err := DetectDepsDBField(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasDB {
+		t.Error("expected false for Deps without DB field")
+	}
+}
+
+func TestDetectDepsDBField_NoDeps(t *testing.T) {
+	dir := t.TempDir()
+	src := `package api
+
+type Service struct {
+	DB interface{}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	hasDB, err := DetectDepsDBField(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasDB {
+		t.Error("expected false when struct is not named Deps")
+	}
+}
+
+func TestDetectDepsDBField_NonexistentDir(t *testing.T) {
+	hasDB, err := DetectDepsDBField("/nonexistent/path/that/does/not/exist")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasDB {
+		t.Error("expected false for nonexistent directory")
+	}
+}
+
+func TestDetectDepsDBField_IgnoresTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	src := `package api
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+`
+	// Only in a test file — should not count
+	if err := os.WriteFile(filepath.Join(dir, "service_test.go"), []byte(src), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	hasDB, err := DetectDepsDBField(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasDB {
+		t.Error("expected false when DB is only in test file")
+	}
+}
+
 func TestDetectFallibleConstructor_NoReturnValues(t *testing.T) {
 	dir := t.TempDir()
 	src := `package foo

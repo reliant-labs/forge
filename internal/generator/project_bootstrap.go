@@ -94,6 +94,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		FieldName        string
 		ProtoServiceName string
 		Fallible         bool
+		HasDB            bool
 	}
 
 	type bootstrapPackage struct {
@@ -123,11 +124,13 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		Services           []bootstrapTestService
 		Packages           []bootstrapPackage
 		MultiTenantEnabled bool
+		AnyServiceHasDB    bool
 	}{
 		Module:             g.ModulePath,
 		Services:           services,
 		Packages:           nil,   // No packages at initial project creation
 		MultiTenantEnabled: false, // Multi-tenancy configured post-creation via forge generate
+		AnyServiceHasDB:    false, // DB deps are added later by forge generate
 	}
 
 	content, err := templates.ProjectTemplates.Render("bootstrap_testing.go.tmpl", data)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,14 +13,16 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/dblint"
+	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
-	contract     bool
-	db           bool
-	fix          bool
-	exportedVars bool
+	contract        bool
+	db              bool
+	migrationSafety bool
+	fix             bool
+	exportedVars    bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -36,11 +39,13 @@ This command will:
 - Run TypeScript linters for Next.js frontends (if frontends/ exists)
 - Optionally run contract interface enforcement linter (--contract)
 - Optionally run DB entity lint rules (--db)
+- Optionally run SQL migration safety checks (--migration-safety)
 
 Examples:
   forge lint                    # Run all standard linters
   forge lint --contract         # Run contract interface enforcement linter
   forge lint --db               # Run DB entity lint rules
+  forge lint --migration-safety  # Run SQL migration safety checks
   forge lint --exported-vars     # Run exported vars linter
   forge lint --fix              # Auto-fix issues where possible`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -58,6 +63,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
 	cmd.Flags().BoolVar(&flags.exportedVars, "exported-vars", false, "Run exported vars linter")
 	cmd.Flags().BoolVar(&flags.db, "db", false, "Run DB entity lint rules on proto/db/ files")
+	cmd.Flags().BoolVar(&flags.migrationSafety, "migration-safety", false, "Run SQL migration safety checks")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 
 	return cmd
@@ -89,6 +95,17 @@ func runLint(flags lintFlags, paths []string) error {
 			return nil
 		}
 		return runDBLint()
+	}
+	if flags.migrationSafety {
+		cfg, err := loadProjectConfig()
+		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
+			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		if cfg != nil && !cfg.Features.MigrationsEnabled() {
+			fmt.Println("migrations feature is disabled in forge.yaml")
+			return nil
+		}
+		return runMigrationSafetyLint(cfg)
 	}
 
 	// Load project config for lint defaults. A missing config file is fine
@@ -208,6 +225,30 @@ func runDBLint() error {
 	return nil
 }
 
+func runMigrationSafetyLint(cfg *config.ProjectConfig) error {
+	fmt.Println("🔍 Running SQL migration safety lint...")
+	fmt.Println()
+
+	migrationsDir := filepath.Join("db", "migrations")
+	ruleConfig := migrationlint.DefaultConfig()
+	if cfg != nil {
+		if cfg.Database.MigrationsDir != "" {
+			migrationsDir = cfg.Database.MigrationsDir
+		}
+		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety)
+	}
+
+	result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)
+	if err != nil {
+		return fmt.Errorf("migration safety lint failed: %w", err)
+	}
+	fmt.Print(result.FormatText())
+	if result.HasErrors() {
+		return fmt.Errorf("migration safety violations found")
+	}
+	return nil
+}
+
 // appendEnvIfUnset appends key=value to env only if key is not already set.
 func appendEnvIfUnset(env []string, key, value string) []string {
 	prefix := key + "="
@@ -285,45 +326,12 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 		}
 	}
 
-	if hasFailed {
-		return fmt.Errorf("linting failed")
-	}
-
-	fmt.Println()
-	fmt.Println("✅ All linters passed!")
-	return nil
-}
-
-func runStandardLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
-	fmt.Println("🔍 Running standard linters...")
-	fmt.Println()
-
-	hasFailed := false
-
-	if err := runGolangciLint(fix, paths); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ golangci-lint failed: %v\n", err)
+	// 7. SQL migration safety lint
+	if cfg != nil && !cfg.Features.MigrationsEnabled() {
+		fmt.Println("⚠️  migrations feature disabled — skipping migration safety lint")
+	} else if err := runMigrationSafetyLint(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Migration safety lint failed: %v\n", err)
 		hasFailed = true
-	}
-
-	if err := runBufLint(); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ buf lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// Run TypeScript linters for frontends
-	if err := runFrontendLinters(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Frontend lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// Run contract linter if enabled in project config
-	if cfg != nil {
-		if cfg.Lint.Contract {
-			if err := runContractLinter(paths); err != nil {
-				fmt.Fprintf(os.Stderr, "❌ contract linter failed: %v\n", err)
-				hasFailed = true
-			}
-		}
 	}
 
 	if hasFailed {
@@ -399,7 +407,7 @@ func runFrontendLinters(cfg *config.ProjectConfig) error {
 			continue
 		}
 		feDir := filepath.Join("frontends", e.Name())
-		if err := lintFrontendDir(e.Name(), feDir, ""); err != nil {
+		if err := lintFrontendDir(e.Name(), feDir, "", false); err != nil {
 			hasFailed = true
 		}
 	}
@@ -418,7 +426,7 @@ func runFrontendLintersFromConfig(cfg *config.ProjectConfig) error {
 		if feDir == "" {
 			feDir = filepath.Join("frontends", fe.Name)
 		}
-		if err := lintFrontendDir(fe.Name, feDir, fe.Type); err != nil {
+		if err := lintFrontendDir(fe.Name, feDir, fe.Type, cfg.Lint.Frontend.CSSHealth); err != nil {
 			hasFailed = true
 		}
 	}
@@ -430,7 +438,7 @@ func runFrontendLintersFromConfig(cfg *config.ProjectConfig) error {
 
 // lintFrontendDir runs linters for a single frontend directory.
 // feType can be "nextjs" or empty (unknown).
-func lintFrontendDir(name, feDir, feType string) error {
+func lintFrontendDir(name, feDir, feType string, cssHealth bool) error {
 	if !dirExists(feDir) {
 		fmt.Printf("  ⚠️  %s: directory %s not found, skipping\n", name, feDir)
 		return nil
@@ -441,34 +449,53 @@ func lintFrontendDir(name, feDir, feType string) error {
 		return nil
 	}
 
-	// Check for node_modules
 	if _, err := os.Stat(filepath.Join(feDir, "node_modules")); os.IsNotExist(err) {
 		fmt.Printf("  ⚠️  %s: node_modules not found — run 'npm install' in %s\n", name, feDir)
 		return nil
 	}
 
+	scripts, err := readPackageScripts(pkgJSON)
+	if err != nil {
+		return fmt.Errorf("%s: read package.json scripts: %w", name, err)
+	}
+
 	fmt.Printf("Running frontend linters for %s...\n", name)
 	hasFailed := false
 
-	// TypeScript type checking (skip if no tsconfig.json)
-	if _, err := os.Stat(filepath.Join(feDir, "tsconfig.json")); err == nil {
-		if err := runNPXCommand(feDir, "tsc", "--noEmit"); err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ %s: tsc --noEmit failed: %v\n", name, err)
+	if hasPackageScript(scripts, "lint") {
+		if err := runNPMCommand(feDir, "run", "lint"); err != nil {
+			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint failed: %v\n", name, err)
+			hasFailed = true
+		} else {
+			fmt.Printf("  ✓ %s: lint passed\n", name)
+		}
+	} else if feType == "nextjs" {
+		fmt.Printf("  ⚠️  %s: no npm lint script found; add one instead of relying on deprecated next lint\n", name)
+	} else {
+		fmt.Printf("  ⚠️  %s: no npm lint script found, skipping lint\n", name)
+	}
+
+	if hasPackageScript(scripts, "typecheck") {
+		if err := runNPMCommand(feDir, "run", "typecheck"); err != nil {
+			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run typecheck failed: %v\n", name, err)
 			hasFailed = true
 		} else {
 			fmt.Printf("  ✓ %s: typecheck passed\n", name)
 		}
-	} else {
-		fmt.Printf("  ⚠️  %s: no tsconfig.json, skipping typecheck\n", name)
+	} else if _, err := os.Stat(filepath.Join(feDir, "tsconfig.json")); err == nil {
+		fmt.Printf("  ⚠️  %s: no npm typecheck script found; add `typecheck`: `tsc --noEmit`\n", name)
 	}
 
-	// Next.js lint (only for nextjs frontends)
-	if feType == "nextjs" {
-		if err := runNPXCommand(feDir, "next", "lint"); err != nil {
-			fmt.Fprintf(os.Stderr, "  ❌ %s: next lint failed: %v\n", name, err)
-			hasFailed = true
+	if cssHealth {
+		if hasPackageScript(scripts, "lint:styles") {
+			if err := runNPMCommand(feDir, "run", "lint:styles"); err != nil {
+				fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint:styles failed: %v\n", name, err)
+				hasFailed = true
+			} else {
+				fmt.Printf("  ✓ %s: style lint passed\n", name)
+			}
 		} else {
-			fmt.Printf("  ✓ %s: next lint passed\n", name)
+			fmt.Printf("  ⚠️  %s: css_health enabled but no npm lint:styles script found\n", name)
 		}
 	}
 
@@ -478,9 +505,31 @@ func lintFrontendDir(name, feDir, feType string) error {
 	return nil
 }
 
-// runNPXCommand runs an npx command in the given directory.
-func runNPXCommand(dir string, args ...string) error {
-	cmd := exec.Command("npx", args...)
+type packageJSONScripts struct {
+	Scripts map[string]string `json:"scripts"`
+}
+
+func readPackageScripts(pkgJSON string) (map[string]string, error) {
+	data, err := os.ReadFile(pkgJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	var pkg packageJSONScripts
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, err
+	}
+	return pkg.Scripts, nil
+}
+
+func hasPackageScript(scripts map[string]string, name string) bool {
+	_, ok := scripts[name]
+	return ok
+}
+
+// runNPMCommand runs an npm command in the given directory.
+func runNPMCommand(dir string, args ...string) error {
+	cmd := exec.Command("npm", args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

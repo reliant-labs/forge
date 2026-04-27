@@ -32,8 +32,8 @@ type ProjectConfig struct {
 // ServiceConfig represents a Go service definition.
 type ServiceConfig struct {
 	Name          string          `yaml:"name"`
-	Type          string          `yaml:"type"`              // "go_service", "worker", "operator"
-	Kind          string          `yaml:"kind,omitempty"`     // sub-type: worker kind ("cron"), empty = default
+	Type          string          `yaml:"type"`           // "go_service", "worker", "operator"
+	Kind          string          `yaml:"kind,omitempty"` // sub-type: worker kind ("cron"), empty = default
 	Path          string          `yaml:"path"`
 	Port          int             `yaml:"port,omitempty"`
 	Schedule      string          `yaml:"schedule,omitempty"` // cron expression for kind=cron workers
@@ -55,7 +55,7 @@ type PackageConfig struct {
 // FrontendConfig defines a frontend application (e.g. Next.js, React Native).
 type FrontendConfig struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"`          // "nextjs", "react-native"
+	Type string `yaml:"type"`           // "nextjs", "react-native"
 	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native)
 	Path string `yaml:"path"`
 	Port int    `yaml:"port"`
@@ -73,9 +73,45 @@ type EnvironmentConfig struct {
 
 // DatabaseConfig holds database-related settings.
 type DatabaseConfig struct {
-	Driver        string `yaml:"driver"` // "postgres", "sqlite"
-	MigrationsDir string `yaml:"migrations_dir"`
-	SQLCEnabled   bool   `yaml:"sqlc_enabled"`
+	Driver          string                `yaml:"driver"` // "postgres", "sqlite"
+	MigrationsDir   string                `yaml:"migrations_dir"`
+	SQLCEnabled     bool                  `yaml:"sqlc_enabled"`
+	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
+}
+
+type MigrationSafetyConfig struct {
+	Enabled            *bool    `yaml:"enabled,omitempty"`             // nil = enabled
+	UnsafeAddColumn    string   `yaml:"unsafe_add_column,omitempty"`   // error, warn, off
+	DestructiveChange  string   `yaml:"destructive_change,omitempty"`  // error, warn, off
+	VolatileDefault    string   `yaml:"volatile_default,omitempty"`    // warn, error, off
+	AllowedDestructive []string `yaml:"allowed_destructive,omitempty"` // file globs that may contain destructive changes
+}
+
+func (c MigrationSafetyConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+func (c MigrationSafetyConfig) EffectiveUnsafeAddColumn() string {
+	return effectiveSeverity(c.UnsafeAddColumn, "error")
+}
+
+func (c MigrationSafetyConfig) EffectiveDestructiveChange() string {
+	return effectiveSeverity(c.DestructiveChange, "error")
+}
+
+func (c MigrationSafetyConfig) EffectiveVolatileDefault() string {
+	return effectiveSeverity(c.VolatileDefault, "warn")
+}
+
+func effectiveSeverity(value, fallback string) string {
+	switch strings.ToLower(value) {
+	case "error", "warn", "off":
+		return strings.ToLower(value)
+	case "warning":
+		return "warn"
+	default:
+		return fallback
+	}
 }
 
 // CIConfig holds CI/CD settings.
@@ -92,9 +128,11 @@ type CIConfig struct {
 
 // CILintConfig controls which linters run in CI.
 type CILintConfig struct {
-	Golangci bool `yaml:"golangci"` // default true
-	Buf      bool `yaml:"buf"`      // default true
-	Frontend bool `yaml:"frontend"` // default true
+	Golangci        bool `yaml:"golangci"`         // default true
+	Buf             bool `yaml:"buf"`              // default true
+	BufBreaking     bool `yaml:"buf_breaking"`     // default true
+	Frontend        bool `yaml:"frontend"`         // default true
+	MigrationSafety bool `yaml:"migration_safety"` // default true
 }
 
 // CITestConfig controls test settings in CI.
@@ -147,7 +185,7 @@ func (c *CIConfig) EffectiveGoVersion() string {
 // IsLintEnabled returns true if any linter is enabled.
 // Zero value (all false) is treated as "all enabled" (sensible default).
 func (c *CIConfig) IsLintEnabled() bool {
-	return c.Lint == (CILintConfig{}) || c.Lint.Golangci || c.Lint.Buf || c.Lint.Frontend
+	return c.Lint == (CILintConfig{}) || c.Lint.Golangci || c.Lint.Buf || c.Lint.BufBreaking || c.Lint.Frontend || c.Lint.MigrationSafety
 }
 
 // IsTestRaceEnabled returns true if the race detector should be used.
@@ -180,12 +218,12 @@ func (j *CIExtraJob) EffectiveRunsOn() string {
 
 // DeployConfig holds deployment pipeline settings.
 type DeployConfig struct {
-	Provider       string              `yaml:"provider"`                  // "github"
-	Registry       string              `yaml:"registry,omitempty"`        // "ghcr" (default), "gar", "ecr"
-	Environments   []DeployEnvConfig   `yaml:"environments,omitempty"`
-	Concurrency    DeployConcurrency   `yaml:"concurrency,omitempty"`
-	FrontendDeploy string              `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"
-	MigrationTest  bool                `yaml:"migration_test,omitempty"` // test migrations before deploy
+	Provider       string            `yaml:"provider"`           // "github"
+	Registry       string            `yaml:"registry,omitempty"` // "ghcr" (default), "gar", "ecr"
+	Environments   []DeployEnvConfig `yaml:"environments,omitempty"`
+	Concurrency    DeployConcurrency `yaml:"concurrency,omitempty"`
+	FrontendDeploy string            `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"
+	MigrationTest  bool              `yaml:"migration_test,omitempty"`  // test migrations before deploy
 }
 
 // DeployEnvConfig defines a deployment environment.
@@ -224,15 +262,30 @@ type DockerConfig struct {
 
 // LintConfig holds lint-related settings.
 type LintConfig struct {
-	Contract bool `yaml:"contract"`
+	Contract bool               `yaml:"contract"`
+	Frontend FrontendLintConfig `yaml:"frontend,omitempty"`
+}
+
+type FrontendLintConfig struct {
+	CSSHealth      bool   `yaml:"css_health,omitempty"`       // enable stylelint-backed CSS health checks
+	NoImportant    string `yaml:"no_important,omitempty"`     // error, warn, off
+	NoInlineStyles string `yaml:"no_inline_styles,omitempty"` // error, warn, off
+}
+
+func (c FrontendLintConfig) EffectiveNoImportant() string {
+	return effectiveSeverity(c.NoImportant, "warn")
+}
+
+func (c FrontendLintConfig) EffectiveNoInlineStyles() string {
+	return effectiveSeverity(c.NoInlineStyles, "warn")
 }
 
 // ContractsConfig controls contract enforcement linter behavior.
 type ContractsConfig struct {
-	Strict            bool     `yaml:"strict"`              // require contract.go for all internal packages with exported methods (default: true)
-	AllowExportedVars bool     `yaml:"allow_exported_vars"` // allow exported package vars (default: false)
-	AllowExportedFuncs bool    `yaml:"allow_exported_funcs"` // allow exported funcs without contract (default: true)
-	Exclude           []string `yaml:"exclude"`             // packages that opt out
+	Strict             bool     `yaml:"strict"`               // require contract.go for all internal packages with exported methods (default: true)
+	AllowExportedVars  bool     `yaml:"allow_exported_vars"`  // allow exported package vars (default: false)
+	AllowExportedFuncs bool     `yaml:"allow_exported_funcs"` // allow exported funcs without contract (default: true)
+	Exclude            []string `yaml:"exclude"`              // packages that opt out
 }
 
 // IsStrict returns whether strict contract enforcement is enabled (default: true).
@@ -454,11 +507,11 @@ type K8sConfig struct {
 
 // DocsConfig holds documentation generation settings.
 type DocsConfig struct {
-	Enabled           *bool    `yaml:"enabled,omitempty"`            // nil = true (enabled by default)
-	OutputDir         string   `yaml:"output_dir,omitempty"`         // default: "docs/generated"
-	Format            string   `yaml:"format,omitempty"`             // "markdown" (default) or "hugo"
-	Generators        []string `yaml:"generators,omitempty"`         // e.g. ["api", "architecture", "config", "contracts"]
-	CustomTemplatesDir string  `yaml:"custom_templates_dir,omitempty"` // user template overrides
+	Enabled            *bool    `yaml:"enabled,omitempty"`              // nil = true (enabled by default)
+	OutputDir          string   `yaml:"output_dir,omitempty"`           // default: "docs/generated"
+	Format             string   `yaml:"format,omitempty"`               // "markdown" (default) or "hugo"
+	Generators         []string `yaml:"generators,omitempty"`           // e.g. ["api", "architecture", "config", "contracts"]
+	CustomTemplatesDir string   `yaml:"custom_templates_dir,omitempty"` // user template overrides
 }
 
 // IsEnabled returns whether docs generation is enabled (default: true).

@@ -33,6 +33,14 @@ jobs:
           version: latest
           args: --timeout=5m
           only-new-issues: true
+      - name: Ensure modules are ready for forge install
+        run: go mod download
+      - name: Install forge
+        # Reuses the same pinned forge version as verify-generated so CI runs
+        # migration rules from the generator that created the project.
+        run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.0-test
+      - name: Migration safety lint
+        run: forge ci migration-safety
 
   test:
     name: Test

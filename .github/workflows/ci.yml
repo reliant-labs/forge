@@ -58,6 +58,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m ./...
+
+      - name: Install buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: buf lint
+        run: buf lint
+
       - name: go build
         run: go build ./...
 

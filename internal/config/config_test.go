@@ -33,7 +33,9 @@ func TestCIConfig_IsLintEnabled(t *testing.T) {
 		{"zero value = all enabled", CIConfig{}, true},
 		{"golangci only", CIConfig{Lint: CILintConfig{Golangci: true}}, true},
 		{"buf only", CIConfig{Lint: CILintConfig{Buf: true}}, true},
+		{"buf breaking only", CIConfig{Lint: CILintConfig{BufBreaking: true}}, true},
 		{"frontend only", CIConfig{Lint: CILintConfig{Frontend: true}}, true},
+		{"migration safety only", CIConfig{Lint: CILintConfig{MigrationSafety: true}}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -98,6 +100,51 @@ func TestCIConfig_EffectivePermContents(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("EffectivePermContents() with contents=%q: got %q, want %q", tt.contents, got, tt.want)
 		}
+	}
+}
+
+func TestMigrationSafetyConfigDefaults(t *testing.T) {
+	cfg := MigrationSafetyConfig{}
+	if !cfg.IsEnabled() {
+		t.Fatal("zero-value migration safety config should be enabled")
+	}
+	if got := cfg.EffectiveUnsafeAddColumn(); got != "error" {
+		t.Errorf("EffectiveUnsafeAddColumn() = %q, want error", got)
+	}
+	if got := cfg.EffectiveDestructiveChange(); got != "error" {
+		t.Errorf("EffectiveDestructiveChange() = %q, want error", got)
+	}
+	if got := cfg.EffectiveVolatileDefault(); got != "warn" {
+		t.Errorf("EffectiveVolatileDefault() = %q, want warn", got)
+	}
+}
+
+func TestMigrationSafetyConfigYAMLRoundTrip(t *testing.T) {
+	yamlStr := `enabled: false
+unsafe_add_column: warn
+destructive_change: off
+volatile_default: error
+allowed_destructive:
+  - "*_drop_legacy.up.sql"
+`
+	var cfg MigrationSafetyConfig
+	if err := yaml.Unmarshal([]byte(yamlStr), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.IsEnabled() {
+		t.Fatal("expected enabled=false to disable migration safety")
+	}
+	if got := cfg.EffectiveUnsafeAddColumn(); got != "warn" {
+		t.Errorf("EffectiveUnsafeAddColumn() = %q, want warn", got)
+	}
+	if got := cfg.EffectiveDestructiveChange(); got != "off" {
+		t.Errorf("EffectiveDestructiveChange() = %q, want off", got)
+	}
+	if got := cfg.EffectiveVolatileDefault(); got != "error" {
+		t.Errorf("EffectiveVolatileDefault() = %q, want error", got)
+	}
+	if len(cfg.AllowedDestructive) != 1 || cfg.AllowedDestructive[0] != "*_drop_legacy.up.sql" {
+		t.Fatalf("AllowedDestructive = %#v", cfg.AllowedDestructive)
 	}
 }
 

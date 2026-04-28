@@ -104,6 +104,17 @@ This project uses **Tailwind CSS v4**. Key differences from v3:
 
 Use Tailwind utility classes directly in JSX. Follow responsive-first design (`sm:`, `md:`, `lg:` prefixes).
 
+## CSS Health
+
+Treat CSS as architecture, not a dumping ground. Keep styling predictable and easy to refactor:
+
+- Prefer Tailwind utilities and component variants for layout, spacing, color, and state styling.
+- Use CSS variables in `@theme` or scoped CSS for reusable design tokens; do not hard-code one-off colors across components.
+- Avoid `!important`. If specificity fights you, simplify selectors, move styles closer to the component boundary, or introduce a variant API.
+- Avoid DOM `style={{...}}` props except for truly dynamic runtime values (measured dimensions, CSS custom properties, chart coordinates). Prefer `className` and CSS variables.
+- Keep global CSS small: Tailwind import, theme tokens, base element defaults, and app-wide variables only.
+- Run `npm run lint:styles` when changing CSS-heavy files; it catches `!important` and invalid Tailwind v4 at-rules.
+
 ## Visual Verification
 
 **ALWAYS use BOTH `take_snapshot` AND `take_screenshot` via Chrome DevTools before declaring frontend work complete.**

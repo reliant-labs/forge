@@ -107,6 +107,15 @@ func TestGenerateFrontendFilesCreatesExpectedFiles(t *testing.T) {
 	if !strings.Contains(string(content), "web") {
 		t.Errorf("package.json should reference frontend name, got:\n%s", string(content))
 	}
+	if !strings.Contains(string(content), "lint:styles") {
+		t.Errorf("package.json should include lint:styles, got:\n%s", string(content))
+	}
+	if !strings.Contains(string(content), "stylelint") {
+		t.Errorf("package.json should include stylelint dependencies, got:\n%s", string(content))
+	}
+	if _, err := os.Stat(filepath.Join(root, "frontends", "web", "stylelint.config.mjs")); err != nil {
+		t.Errorf("expected stylelint.config.mjs to exist: %v", err)
+	}
 
 	// A nested go.mod must exist so that `go test ./...` from the project
 	// root skips this subtree (frontend node_modules may contain stray .go

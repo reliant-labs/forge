@@ -37,6 +37,14 @@ jobs:
         uses: bufbuild/buf-setup-action@v1
       - name: Buf lint
         run: buf lint
+      - name: Ensure modules are ready for forge install
+        run: go mod download
+      - name: Install forge
+        # Reuses the same pinned forge version as verify-generated so CI runs
+        # migration rules from the generator that created the project.
+        run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.0-test
+      - name: Migration safety lint
+        run: forge ci migration-safety
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -58,6 +66,9 @@ jobs:
         # authors see type failures on the same PR that introduced
         # them.
         run: npm run typecheck
+      - name: CSS health web
+        working-directory: frontends/web
+        run: npm run lint:styles --if-present
 
   test:
     name: Test

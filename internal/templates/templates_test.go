@@ -95,12 +95,14 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 		Services []struct {
 			Name, Package, FieldName, ProtoServiceName string
 			Fallible                                   bool
+			HasDB                                      bool
 		}
 		Packages []struct {
 			Name, Package, FieldName string
 			Fallible                 bool
 		}
 		MultiTenantEnabled bool
+		AnyServiceHasDB    bool
 	}{
 		Module: "example.com/myproject",
 	}
@@ -116,7 +118,7 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 	if !strings.Contains(rendered, "type TestOption func") {
 		t.Fatal("missing TestOption type")
 	}
-	if !strings.Contains(rendered, "func defaultTestConfig()") {
+	if !strings.Contains(rendered, "func defaultTestConfig(") {
 		t.Fatal("missing defaultTestConfig")
 	}
 

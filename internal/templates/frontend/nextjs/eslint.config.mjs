@@ -10,6 +10,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import js from "@eslint/js";
+import react from "eslint-plugin-react";
 import tseslint from "typescript-eslint";
 import { FlatCompat } from "@eslint/eslintrc";
 
@@ -49,11 +50,26 @@ const config = [
   ...tseslint.configs.recommended,
   ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
+    plugins: {
+      react,
+    },
     rules: {
       complexity: "off",
       "max-lines": "off",
       "max-depth": "off",
       "max-params": "off",
+      "react/forbid-dom-props": [
+        "warn",
+        {
+          forbid: [
+            {
+              propName: "style",
+              message:
+                "Prefer Tailwind utilities, CSS variables, or component variants. Use inline styles only for dynamic values that cannot be expressed safely in CSS.",
+            },
+          ],
+        },
+      ],
     },
   },
 ];

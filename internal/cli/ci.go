@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
 func newCICmd() *cobra.Command {
@@ -19,6 +20,7 @@ func newCICmd() *cobra.Command {
 	cmd.AddCommand(newCIVerifyGeneratedCmd())
 	cmd.AddCommand(newCIValidateKCLCmd())
 	cmd.AddCommand(newCIVulnScanCmd())
+	cmd.AddCommand(newCIMigrationSafetyCmd())
 	return cmd
 }
 
@@ -92,6 +94,38 @@ func newCIValidateKCLCmd() *cobra.Command {
 			}
 
 			fmt.Println("✅ All KCL manifests valid.")
+			return nil
+		},
+	}
+}
+
+func newCIMigrationSafetyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migration-safety",
+		Short: "Run SQL migration safety checks based on forge.yaml config",
+		Long:  "Checks SQL migrations for patterns that pass on empty databases but fail or lock populated databases.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadProjectConfig()
+			if err != nil {
+				return fmt.Errorf("load project config: %w", err)
+			}
+			if !cfg.Features.MigrationsEnabled() {
+				fmt.Println("migrations feature is disabled in forge.yaml")
+				return nil
+			}
+
+			migrationsDir := cfg.Database.MigrationsDir
+			if migrationsDir == "" {
+				migrationsDir = filepath.Join("db", "migrations")
+			}
+			result, err := migrationlint.LintMigrationsDir(migrationsDir, migrationlint.ConfigFromProject(cfg.Database.MigrationSafety))
+			if err != nil {
+				return fmt.Errorf("migration safety lint failed: %w", err)
+			}
+			fmt.Print(result.FormatText())
+			if result.HasErrors() {
+				return fmt.Errorf("migration safety violations found")
+			}
 			return nil
 		},
 	}

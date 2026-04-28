@@ -82,6 +82,13 @@ For shared UI components, prefer controlled APIs so the parent can manage state:
 
 Internal state is fine for leaf components, but core app components should be controllable.
 
+## Styling Rules
+
+- Use semantic component props/variants for repeated visual states instead of copy-pasting long class strings.
+- Do not use `!important` to override generated or library styles; fix ownership/specificity instead.
+- Avoid inline styles for normal UI. If dynamic styling is required, set a CSS variable inline and consume it from a class.
+- Keep CSS modules/global CSS for structural patterns that Tailwind utilities cannot express cleanly.
+
 ## Rules
 
 - Pass slots (JSX props) to avoid threading data through components that don't use it.

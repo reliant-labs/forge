@@ -47,20 +47,23 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		Frontends:    frontends,
 		HasServices:  true,
 
-		LintGolangci: true,
-		LintBuf:      true,
-		LintFrontend: hasFrontends,
+		LintGolangci:        true,
+		LintBuf:             true,
+		LintBufBreaking:     true,
+		LintFrontend:        hasFrontends,
+		LintFrontendStyles:  hasFrontends,
+		LintMigrationSafety: true,
 
 		TestRace:     true,
 		TestCoverage: false,
 
 		VulnGo:     true,
-		VulnDocker:  true,
-		VulnNPM:     hasFrontends,
+		VulnDocker: true,
+		VulnNPM:    hasFrontends,
 
 		LicenseCheck: true,
 
-		E2EEnabled:  false,
+		E2EEnabled: false,
 
 		PermContents: "read",
 
@@ -83,7 +86,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 
 	// Deploy and build-images use their own spec-driven data types
 	deployData := templates.DeployWorkflowData{
-		ProjectName:      g.Name,
+		ProjectName: g.Name,
 		Environments: []templates.DeployEnv{
 			{Name: "staging", Auto: true, Protection: false},
 			{Name: "prod", Auto: false, Protection: true},
@@ -125,6 +128,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		{"build-images.yml.tmpl", ".github/workflows/build-images.yml", buildImagesData},
 		{"deploy.yml.tmpl", ".github/workflows/deploy.yml", deployData},
 		{"e2e.yml.tmpl", ".github/workflows/e2e.yml", e2eData},
+		{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", data},
 		{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
 	}
 

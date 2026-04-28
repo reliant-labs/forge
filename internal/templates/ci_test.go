@@ -15,20 +15,23 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 			{Name: "web", Path: "frontends/web"},
 			{Name: "admin", Path: "frontends/admin"},
 		},
-		HasServices:  true,
-		LintGolangci: true,
-		LintBuf:      true,
-		LintFrontend: true,
-		TestRace:     true,
-		TestCoverage: true,
-		VulnGo:       true,
-		VulnDocker:   true,
-		VulnNPM:      true,
-		E2EEnabled:   true,
-		E2ERuntime:   "docker-compose",
-		PermContents: "read",
-		HasKCL:       true,
-		Environments: []string{"dev", "staging", "prod"},
+		HasServices:         true,
+		LintGolangci:        true,
+		LintBuf:             true,
+		LintBufBreaking:     true,
+		LintFrontend:        true,
+		LintFrontendStyles:  true,
+		LintMigrationSafety: true,
+		TestRace:            true,
+		TestCoverage:        true,
+		VulnGo:              true,
+		VulnDocker:          true,
+		VulnNPM:             true,
+		E2EEnabled:          true,
+		E2ERuntime:          "docker-compose",
+		PermContents:        "read",
+		HasKCL:              true,
+		Environments:        []string{"dev", "staging", "prod"},
 	}
 
 	content, err := CITemplates("github").Render("ci.yml.tmpl", data)
@@ -50,6 +53,22 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		if _, ok := jobs[expected]; !ok {
 			t.Errorf("missing job %q", expected)
 		}
+	}
+}
+
+func TestProtoBreakingWorkflowTemplate(t *testing.T) {
+	data := CIWorkflowData{PermContents: "read"}
+	content, err := CITemplates("github").Render("proto-breaking.yml.tmpl", data)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := yaml.Unmarshal(content, &parsed); err != nil {
+		t.Fatalf("invalid YAML:\n%s\nerror: %v", string(content), err)
+	}
+	if parsed["name"] != "Proto Breaking Change Detection" {
+		t.Fatalf("unexpected workflow name: %#v", parsed["name"])
 	}
 }
 

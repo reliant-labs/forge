@@ -1,0 +1,55 @@
+# See https://pre-commit.com for full docs. Run locally with:
+#     pip install pre-commit && pre-commit install
+# CI runs the same set via .github/workflows/pre-commit.yml.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-yaml
+      - id: check-json
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+      - id: go-vet-mod
+      - id: go-imports
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        # Restrict to frontend + docs so prettier does not fight gofmt or
+        # golangci-lint on Go files.
+        files: \.(ts|tsx|js|jsx|json|md|yml|yaml|css)$
+        exclude: ^(gen/|.*\.pb\.go$)
+
+  # Buf has no first-party pre-commit mirror; invoke its CLI locally.
+  # `buf format -d` prints a diff and exits non-zero on any
+  # formatting difference — exactly the semantics pre-commit expects.
+  - repo: local
+    hooks:
+      - id: buf-format
+        name: buf format
+        entry: buf format -d --exit-code
+        language: system
+        files: \.proto$
+        pass_filenames: false
+
+  # Conventional Commits enforcement.
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.18.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        additional_dependencies: ['@commitlint/config-conventional']

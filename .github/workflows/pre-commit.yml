@@ -1,0 +1,33 @@
+# Runs the same hooks as the local pre-commit config so CI catches
+# contributors who haven't installed pre-commit locally. Hook versions
+# are pinned in .pre-commit-config.yaml.
+name: pre-commit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-commit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+      - uses: pre-commit/action@v3.0.1

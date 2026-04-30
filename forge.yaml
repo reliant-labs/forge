@@ -1,0 +1,79 @@
+# Forge project manifest — see https://github.com/reliant-labs/forge.
+# `database:` is declared here even if you haven't added any
+# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it
+# once you do. Leave the defaults in place if you're unsure.
+
+name: forge-next
+module_path: github.com/reliant-labs/forge-next
+kind: cli
+version: 0.1.0
+hot_reload: false
+services: []
+environments:
+    - name: dev
+      type: local
+    - name: staging
+      type: cloud
+    - name: prod
+      type: cloud
+database:
+    driver: ""
+    migrations_dir: ""
+    sqlc_enabled: false
+ci:
+    provider: github
+    lint:
+        golangci: true
+        buf: false
+        buf_breaking: false
+        frontend: false
+        migration_safety: false
+    test:
+        race: true
+        coverage: false
+    vuln_scan:
+        go: true
+        docker: false
+        npm: false
+docker:
+    registry: ""
+k8s:
+    provider: ""
+    kcl_dir: ""
+lint:
+    contract: true
+    frontend:
+        no_important: warn
+        no_inline_styles: warn
+contracts:
+    strict: true
+    allow_exported_vars: false
+    allow_exported_funcs: false
+    exclude: []
+auth:
+    provider: none
+docs: {}
+features:
+    orm: false
+    codegen: false
+    migrations: false
+    ci: true
+    deploy: false
+    contracts: true
+    docs: true
+    frontend: false
+    observability: false
+    hot_reload: false
+stack:
+    backend:
+        language: go
+    frontend:
+        framework: none
+    database:
+        driver: none
+    proto:
+        provider: buf
+    deploy:
+        target: none
+    ci:
+        provider: github

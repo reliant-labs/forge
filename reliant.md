@@ -1,1 +1,44 @@
-spawning agents is not just good for parallel work, but also to conserve context which yields better results.
+<!-- forge:version=1 -->
+# forge-next
+
+This is a **Forge** project managed by the `forge` CLI.
+
+## Skills
+
+Run `forge skill list` to discover available playbooks, and `forge skill load <name>` to read one. Available skills:
+
+- **forge** — overall project conventions
+- **getting-started** — onboarding walkthrough
+- **services** — adding and editing services
+- **api** — Connect RPC API patterns
+- **db** — database, ORM, and migrations
+- **frontend** — Next.js frontend overview
+- **frontend/state** — state management (React Query, Zustand, URL)
+- **frontend/patterns** — UI component patterns
+- **proto** — protobuf schema conventions
+- **architecture** — system architecture and layout
+- **workers** — background job workers
+- **auth** — authentication and authorization
+- **packs** — reusable pack system
+- **testing** — testing overview
+- **testing/unit** — unit test patterns
+- **testing/integration** — integration test patterns
+- **testing/e2e** — end-to-end test patterns
+- **debug** — debugging overview
+- **debug/investigate** — investigation techniques
+- **debug/isolate** — isolating failures
+- **debug/reproduce** — reproducing bugs
+- **deploy** — deployment and releases
+- **observability** — logging, tracing, and metrics
+
+## Critical Rules
+
+1. **Never edit generated code** — `gen/` and `*_gen.go` files are overwritten by `forge generate`. Make changes in proto files instead.
+2. **Proto is the canonical input** — all API contracts, ORM models, and frontend hooks derive from proto definitions.
+3. **`forge generate` is safe** — it never overwrites hand-written business logic (handler files, `pkg/app/setup.go`, etc.).
+4. **Migrations are the DB source of truth** — the database schema comes from migrations, not proto. Proto drives the ORM layer above them.
+5. **Use `forge test`** — not raw `go test`. The CLI sets up the correct environment, test database, and flags.
+
+## Project Notes
+
+<!-- Add project-specific context, conventions, and open questions here. -->

@@ -1,6 +1,6 @@
 version: '3'
 
-# Task wrappers for the forge-next CLI. Kept intentionally minimal — only
+# Task wrappers for the forge CLI. Kept intentionally minimal — only
 # the verbs that have an obvious meaning for a single-binary tool (build,
 # test, lint, fmt). Add more as the project grows.
 
@@ -16,22 +16,34 @@ tasks:
       - go mod download
 
   build:
-    desc: Build the CLI binary into ./bin/forge-next
+    desc: Build the CLI binary into ./bin/forge
     cmds:
       # -trimpath strips local filesystem paths so builds are reproducible
       # across machines; -buildvcs=true embeds the commit/dirty flag for
       # runtime correlation.
-      - go build -trimpath -buildvcs=true -o bin/forge-next ./cmd/forge-next
+      - go build -trimpath -buildvcs=true -o bin/forge ./cmd/forge
 
   install:
     desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)
     cmds:
-      - go install -trimpath -buildvcs=true ./cmd/forge-next
+      - go install -trimpath -buildvcs=true ./cmd/forge
 
   test:
-    desc: Run Go unit tests
+    desc: Run Go unit tests (excludes `//go:build integration` files)
     cmds:
-      - go test -race -count=1 ./...
+      # `-timeout 120s` matches the global per-package timeout convention so a
+      # hung test fails the suite quickly rather than wedging CI. Integration
+      # tests use the `integration` build tag and ship their own task below.
+      - go test -race -count=1 -timeout 120s ./...
+
+  test:integration:
+    desc: Run integration tests (build tag `integration`, real dependencies expected)
+    cmds:
+      # Integration tests rely on out-of-process state (postgres, sqlite tmp
+      # dir, etc.) so they're gated behind the `integration` build tag and
+      # excluded from `task test`. Run this in an environment that satisfies
+      # the per-test setup contract; see the testing-integration skill.
+      - go test -race -count=1 -timeout 600s -tags=integration ./...
 
   lint:
     desc: Run golangci-lint

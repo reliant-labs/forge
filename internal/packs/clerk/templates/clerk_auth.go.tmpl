@@ -1,0 +1,140 @@
+// forge:scaffold one-shot — Clerk validator; canonical pattern in `forge skill load packs`.
+package clerk
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"sync"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/MicahParks/keyfunc/v3"
+
+	"{{.ModulePath}}/pkg/middleware"
+)
+
+// Validator validates Clerk-issued JWTs using JWKS.
+type Validator struct {
+	jwks       keyfunc.Keyfunc
+	jwksCancel context.CancelFunc // Cancels the JWKS refresh goroutine on Close.
+	domain     string
+	logger     *slog.Logger
+	mu         sync.RWMutex
+}
+
+// ValidatorConfig configures the Clerk JWT validator.
+type ValidatorConfig struct {
+	// Domain is the Clerk domain (e.g., "example.clerk.accounts.dev").
+	// If empty, dev mode is assumed and validation is skipped.
+	Domain string
+}
+
+// NewValidator creates a Clerk JWT validator that uses JWKS for token
+// verification. If the domain is empty, the validator is created in dev
+// mode and ValidateToken always returns an error (use DevAuthEnabled to
+// check before calling).
+func NewValidator(cfg ValidatorConfig, logger *slog.Logger) (*Validator, error) {
+	v := &Validator{
+		domain: cfg.Domain,
+		logger: logger,
+	}
+
+	if cfg.Domain == "" {
+		logger.Warn("Clerk domain not set — validator created in dev mode")
+		return v, nil
+	}
+
+	jwksURL := fmt.Sprintf("https://%s/.well-known/jwks.json", cfg.Domain)
+	ctx, cancel := context.WithCancel(context.Background())
+	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("fetching Clerk JWKS from %s: %w", jwksURL, err)
+	}
+	v.jwks = jwks
+	v.jwksCancel = cancel
+
+	logger.Info("Clerk JWT validator initialized", "domain", cfg.Domain, "jwks_url", jwksURL)
+	return v, nil
+}
+
+// NewValidatorFromEnv creates a validator using the CLERK_DOMAIN
+// environment variable.
+func NewValidatorFromEnv(logger *slog.Logger) (*Validator, error) {
+	return NewValidator(ValidatorConfig{
+		Domain: os.Getenv("CLERK_DOMAIN"),
+	}, logger)
+}
+
+// ValidateToken validates a Clerk JWT and returns Claims.
+// Clerk tokens use RS256 and include session claims in the payload.
+func (v *Validator) ValidateToken(tokenString string) (*middleware.Claims, error) {
+	if v.jwks == nil {
+		return nil, fmt.Errorf("clerk: JWKS not initialized (is CLERK_DOMAIN set?)")
+	}
+
+	opts := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{"RS256"}),
+	}
+
+	token, err := jwt.Parse(tokenString, v.jwks.Keyfunc, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("clerk: invalid token: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("clerk: invalid token claims")
+	}
+
+	return v.extractClaims(claims), nil
+}
+
+// extractClaims maps Clerk JWT claims to the application Claims struct.
+// Clerk tokens include:
+//   - sub: Clerk user ID (e.g., "user_2x...")
+//   - org_id: Active organization ID (if org is selected)
+//   - org_role: Organization role (e.g., "org:admin", "org:member")
+//   - org_permissions: Organization permissions array
+//
+// Email is not included in the JWT by default; it should be synced
+// via webhooks and stored in the user entity.
+func (v *Validator) extractClaims(mc jwt.MapClaims) *middleware.Claims {
+	c := &middleware.Claims{}
+
+	if sub, ok := mc["sub"].(string); ok {
+		c.UserID = sub
+	}
+
+	if orgID, ok := mc["org_id"].(string); ok {
+		c.OrgID = orgID
+	}
+
+	if orgRole, ok := mc["org_role"].(string); ok {
+		c.Role = orgRole
+	}
+
+	// Map org_permissions to Roles for compatibility with VerifyAuth.
+	if perms, ok := mc["org_permissions"].([]interface{}); ok {
+		for _, p := range perms {
+			if s, ok := p.(string); ok {
+				c.Roles = append(c.Roles, s)
+			}
+		}
+	}
+
+	// Also include org_role in Roles if present.
+	if c.Role != "" {
+		c.Roles = append(c.Roles, c.Role)
+	}
+
+	return c
+}
+
+// Close cleans up the JWKS background refresh goroutine.
+func (v *Validator) Close() {
+	if v.jwksCancel != nil {
+		v.jwksCancel()
+	}
+}

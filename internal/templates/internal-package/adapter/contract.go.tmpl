@@ -1,0 +1,37 @@
+// forge:scaffold one-shot — adapter contract; canonical pattern in `forge skill load architecture`.
+// forge:adapter
+//
+// {{.Name}} is an outbound adapter — it owns the implementation of a
+// third-party boundary (HTTP API, queue, storage, etc.) behind a narrow
+// Go interface.
+//
+// Ports own the interface; adapters own the implementation. Callers
+// (interactors, services) depend on Service, never on the concrete
+// adapter type. That keeps business logic free of vendor specifics and
+// keeps the adapter unit-testable with mocked downstreams.
+//
+// Conventions:
+//   - No RPC handlers in this package (lint-enforced via
+//     forgeconv-adapter-no-rpc).
+//   - Translate vendor errors at the boundary; surface domain-typed
+//     errors or wrapped svcerr sentinels.
+//   - Keep retries / timeouts / circuit breakers here, not in callers.
+//
+// Skill: forge skill load adapter
+package {{.Name}}
+
+import "context"
+
+// Service is the {{.Name}} adapter's outbound boundary. Add the methods
+// callers (interactors / services) need; keep the surface narrow — one
+// method per use-case that the downstream supports.
+type Service interface {
+	// HealthCheck verifies connectivity to the downstream system.
+	// Adapters typically expose this so the operator-level health
+	// endpoint can probe each outbound dependency without a real call.
+	HealthCheck(ctx context.Context) error
+
+	// TODO: Add adapter methods here. Examples:
+	// SendThing(ctx context.Context, in SendThingInput) (SendThingResult, error)
+	// FetchThing(ctx context.Context, id string) (Thing, error)
+}

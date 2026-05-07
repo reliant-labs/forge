@@ -1,6 +1,6 @@
 # Examples
 
-Drop-in, runnable examples that demonstrate how to call `forge-next` from
+Drop-in, runnable examples that demonstrate how to call `forge` from
 client code. This directory is intentionally *not* wired into the main
 build so examples can import whatever they need without polluting the
 production module graph.

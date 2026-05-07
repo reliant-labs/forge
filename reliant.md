@@ -1,5 +1,5 @@
 <!-- forge:version=1 -->
-# forge-next
+# forge
 
 This is a **Forge** project managed by the `forge` CLI.
 

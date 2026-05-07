@@ -1,0 +1,125 @@
+<!-- forge:version=1 -->
+# {{.Name}}
+
+This is a **Forge** project managed by the `{{.CLI}}` CLI.
+
+This file is auto-loaded into LLM context every session. Treat it as the authoritative quick-reference. For depth, load the named skills.
+
+## Skills
+
+Run `{{.CLI}} skill list` to discover playbooks, and `{{.CLI}} skill load <name>` to read one. The most-used:
+
+- **forge** — overall project conventions
+- **architecture** — project structure, generated vs hand-written code, the generate pipeline
+- **getting-started** — onboarding walkthrough
+- **services** — adding services, packages, and frontends
+- **api** — Connect RPC handlers (overview)
+- **api/handlers** — the canonical thin-translation handler pattern
+- **service-layer** — business logic in `internal/<svc>/contract.go`
+- **contracts** — the `contract.go` system that drives mocks/middleware/tracing/metrics
+- **proto** — annotation reference and proto file rules (one service per file, explicit annotations, common patterns). Structural rules are reactively enforced by `{{.CLI}} lint --conventions`.
+- **proto-split** — splitting a multi-service proto into per-service files
+- **db** — database, ORM, migrations
+- **frontend** — Next.js frontend overview
+- **frontend/pages** — cookbook for adding a CRUD page
+- **frontend/state** — state management (React Query, Zustand, URL)
+- **frontend/patterns** — UI component patterns
+- **workers** — background jobs
+- **auth** — authentication and authorization
+- **packs** — installing reusable packs
+- **pack-development** — writing a new pack
+- **testing** — overview / **testing/unit** / **testing/integration** / **testing/e2e** / **testing/patterns**
+- **debug** — methodology / **debug/investigate** / **debug/isolate** / **debug/reproduce**
+- **deploy** — releases
+- **observability** — logging, tracing, metrics
+- **migration** — porting an existing project / **migration/service** / **migration/cli**
+
+## Architecture in one screen
+
+The two halves of every domain:
+
+```
+proto/services/<svc>/v1/<svc>.proto    ← API contract (annotated)
+                ↓ forge generate
+gen/services/<svc>/v1/...               ← generated stubs (never edit)
+
+handlers/<svc>/                         ← THIN translation layer
+  service.go      validate, extract auth, proto↔internal, call service, map errors
+  validators.go   pure request validators
+  errors.go       domain error → connect.Code
+
+internal/<svc>/                         ← BUSINESS LOGIC
+  contract.go     Service interface + domain types
+  service.go      implementation
+  errors.go       domain-typed sentinels and error types
+  *_gen.go        mocks/middleware/tracing/metrics from forge generate
+```
+
+Load `architecture` for the deep version.
+
+## Where logic goes
+
+| Concern | Lives in | See skill |
+|---------|----------|-----------|
+| Wire-format validation, auth extraction, proto↔internal conversion, error code mapping | `handlers/<svc>/` | `api/handlers` |
+| Business decisions, DB calls, cross-service orchestration, transactions | `internal/<svc>/contract.go` (interface) + `service.go` (impl) | `service-layer` |
+| Wiring (constructing services, middleware chains, dep injection) | `pkg/app/setup.go` (yours) — never `bootstrap.go` (generated) | `services` |
+| DB schema | migrations under `migrations/` (the source of truth — proto drives the ORM, NOT the DB) | `db` |
+
+If a handler grows past six steps (validate / auth / convert / call service / convert / map error), the extra logic belongs in the service. If a service grows past one domain, it should split.
+
+## Proto annotation requirements
+
+Forge does NOT infer schema by field name. Always be explicit:
+
+```proto
+message Thing {
+  option (forge.v1.entity) = {
+    table_name:  "things"
+    tenant_key:  "org_id"
+    timestamps:  true
+    soft_delete: true
+  };
+  string id     = 1 [(forge.v1.field) = { pk: true }];
+  string org_id = 2 [(forge.v1.field) = { tenant: true, ref: "orgs.id" }];
+  string name   = 3 [(forge.v1.field) = { store: true }];
+}
+```
+
+- Always annotate PK (`pk: true`).
+- Always annotate tenant column (`tenant: true`) AND the message (`tenant_key: "..."`). Forgetting either is a data-isolation bug.
+- Always declare `timestamps: true` for `created_at` / `updated_at`.
+- Always declare `soft_delete: true` to get `deleted_at`.
+- List request filter fields **must** be `optional` — without it, generated filters silently no-op.
+- One service per `.proto` file (`{{.CLI}} lint` rejects multi-service files; see `proto-split`).
+- Cross-service shared messages go in `proto/shared/v1/types.proto`. No service-to-service proto imports.
+
+Load `proto` for the full ruleset and annotation reference. `{{.CLI}} lint --conventions` reactively enforces the rules above (see `forgeconv-pk-annotation`, `forgeconv-tenant-annotation`, `forgeconv-timestamps`, `forgeconv-one-service-per-file`).
+
+## Critical rules
+
+1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`, `bootstrap.go`. All overwritten by `{{.CLI}} generate`. Edit the proto / `contract.go` / config instead.
+2. **Proto is the canonical input** — API contracts, ORM models, and frontend hooks all derive from proto definitions.
+3. **Migrations are the DB source of truth** — the schema comes from migrations, not proto. Proto drives the ORM layer above them.
+4. **Always run `{{.CLI}} lint` after `{{.CLI}} generate`.** The triple gate before you call a phase done:
+   ```
+   {{.CLI}} generate && {{.CLI}} lint && go build ./... && go test ./...
+   ```
+   `{{.CLI}} lint` catches contract-gaps (packages with exported methods but no `contract.go`), multi-service proto files, missing-annotation rules, and exported-vars violations. Running it at every phase is cheap; backfilling six phases later is not.
+5. **`{{.CLI}} generate` is safe** — it never overwrites hand-written business logic (handler files, `pkg/app/setup.go`, etc.).
+6. **Use `{{.CLI}} test`**, not raw `go test`. The CLI sets up the test database, build tags, and flags.
+
+## Forge bug rule: fix in place, don't accumulate
+
+If you hit a forge bug mid-task — bad codegen, lint false-positive, scaffold quirk — **halt, file, fix in original forge, resume**. Do not paper over with workarounds and a TODO. Forge improvements are top priority; the friction is exactly what dogfooding is for. The rule applies even when the fix is "larger than the current task" — surface it; it's in scope.
+
+What this looks like in practice:
+
+- Bug found → confirm reproduction → fix forge directly (or hand off cleanly) → re-run the gate → resume the task.
+- Worth a workaround only when the fix is genuinely a separate engineering project AND the workaround leaves a clear, paged-up TODO. Default to fixing.
+
+The opposite — accumulating bugs in a "fix later" backlog — buries the very signal forge needs to improve. See `migration` for the halt-and-report rule applied to migration work.
+
+## Project Notes
+
+<!-- Add project-specific context, conventions, and open questions here. -->

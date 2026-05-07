@@ -62,6 +62,48 @@ jobs:
         # match the Dockerfile / Taskfile so CI, Docker, and local
         # binaries hash identically from the same source.
         run: go build -trimpath -buildvcs=true ./cmd/...
+  verify-generated:
+    name: Verify Generated Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install forge
+        # Version is stamped at scaffold time from the forge binary that
+        # produced the project. CI installs that exact ref so this step is
+        # reproducible:
+        #   1. Tagged/pseudo-version build → pin by module version.
+        #   2. Local `dev` build with a known git SHA → pin by SHA
+        #      (`go install ...@<sha>` is a valid ref).
+        #   3. Neither available → fall back to @main (regenerate from a
+        #      tagged release to eliminate this branch).
+        # TODO: regenerate from a tagged forge release to pin this install.
+        run: go install github.com/reliant-labs/forge/cmd/forge@main
+      - name: Verify generated code
+        run: forge ci verify-generated
+
+  validate-kcl:
+    name: Validate KCL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache KCL CLI
+        uses: actions/cache@v4
+        id: kcl-cache
+        with:
+          path: ~/.kcl
+          key: kcl-cli-${{ runner.os }}
+
+      - name: Install KCL
+        if: steps.kcl-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL https://kcl-lang.io/script/install-cli.sh | bash
+
+      - name: Add KCL to PATH
+        run: echo "$HOME/.kcl/bin" >> $GITHUB_PATH
+      - name: Validate KCL manifests
+        run: forge ci validate-kcl
 
   vuln-scan:
     name: Vulnerability Scan

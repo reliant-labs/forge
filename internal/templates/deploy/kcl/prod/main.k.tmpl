@@ -1,0 +1,85 @@
+"""
+Production environment configuration for {{.ProjectName}}.
+
+Top-level identifiers `image_tag` and `registry` are overridable via
+`kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
+flag only binds top-level names, not nested struct fields.
+"""
+
+import deploy.kcl.schema
+import deploy.kcl.base
+import deploy.kcl.render
+
+# Per-environment config (generated from forge.yaml + proto annotations).
+# Run `forge generate` to refresh after editing forge.yaml or the config
+# proto. Hand-editing this file is not recommended.
+import deploy.kcl.prod.config_gen as cfg
+
+# Overridable via `kcl run -D image_tag=...`
+_image_tag = option("image_tag") or "stable"
+
+# Overridable via `kcl run -D registry=...`. The default is intentionally
+# a placeholder ("ghcr.io/OWNER") so that failing to pass -D registry=...
+# from CI surfaces as a visibly wrong image reference rather than silently
+# deploying from an unrelated default _registry. CI passes
+# `-D registry=$REGISTRY` where REGISTRY is derived from the GitHub owner.
+_registry = option("registry") or "ghcr.io/OWNER"
+
+_env = schema.Environment {
+    name = "prod"
+    namespace = "{{.ProjectName}}-prod"
+    image_registry = _registry
+    image_tag = _image_tag
+    network_policies = True
+    # Generated ConfigMap(s) carrying non-sensitive per-env config.
+    # Sensitive fields project to externally-managed Secrets via
+    # `secret_ref` and are intentionally NOT generated here.
+    config_maps = cfg.CONFIG_MAPS
+    applications = {
+        "{{.ProjectName}}" = schema.Application {
+            name = "{{.ProjectName}}"
+            image = "{{.ProjectName}}"
+            replicas = 3
+            ports = [
+                schema.ServicePort {
+                    name = "http"
+                    port = 80
+                    target_port = 8080
+                }
+            ]
+            resources = schema.Resources {
+                cpu_request = "500m"
+                memory_request = "512Mi"
+                cpu_limit = "2000m"
+                memory_limit = "1Gi"
+            }
+            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
+                schema.EnvVar {
+                    name = "SERVICE_NAME"
+                    value = "{{.ProjectName}}"
+                }
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{.ProjectName}}"
+                }
+            ]
+            health_check = schema.HealthCheck {
+                liveness_path = "/healthz"
+                readiness_path = "/readyz"
+                http_port = 8080
+            }
+            autoscaling = schema.AutoScaling {
+                enabled = True
+                min_replicas = 3
+                max_replicas = 10
+                cpu_target = 80
+            }
+            pdb = schema.PodDisruptionBudget {
+                enabled = True
+                min_available = 2
+            }
+        }
+    }
+}
+
+manifests = render.render_environment(_env)

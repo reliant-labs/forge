@@ -1,0 +1,23 @@
+-- forge:scaffold one-shot — audit-log up migration; canonical pattern in `forge skill load packs`.
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    user_id VARCHAR(255),
+    email VARCHAR(255),
+    procedure VARCHAR(512) NOT NULL,
+    peer_address VARCHAR(255),
+    duration_ms INTEGER,
+    status VARCHAR(50) NOT NULL DEFAULT 'success',
+    error_code VARCHAR(50),
+    error_message TEXT,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_audit_log_user_id ON audit_log (user_id);
+CREATE INDEX idx_audit_log_procedure ON audit_log (procedure);
+CREATE INDEX idx_audit_log_timestamp ON audit_log (timestamp);
+
+COMMIT;

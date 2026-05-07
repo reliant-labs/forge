@@ -6,7 +6,7 @@
 
 ## Context and Problem Statement
 
-forge-next needs a service interface that is both programmatic (typed
+forge needs a service interface that is both programmatic (typed
 clients for Go services talking to each other) and browser-friendly
 (the Next.js frontend needs to call the same endpoints without a
 separate HTTP-JSON shim). We also want a single schema source of truth

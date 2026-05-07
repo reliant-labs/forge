@@ -1,4 +1,4 @@
-# forge-next
+# forge
 
 ## IMPORTANT NOTICES
 

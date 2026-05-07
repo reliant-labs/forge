@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: {{.ProjectName}}_test
+    ports:
+      # Fixed host port. The e2e harness (main_test.go) connects to
+      # localhost:15432 and does not perform `docker inspect` to discover
+      # a dynamic port, so a random (0:5432) mapping would break tests.
+      # 15432 avoids colliding with any local postgres on the default 5432.
+      - "15432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d {{.ProjectName}}_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10

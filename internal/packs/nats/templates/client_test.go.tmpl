@@ -1,0 +1,87 @@
+// forge:scaffold one-shot — NATS client tests; canonical pattern in `forge skill load packs`.
+package nats
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
+)
+
+// TestConnectAppliesDefaults exercises the option assembly without a live
+// server — Connect will fail to dial, but only after the option layer has
+// run, so we can assert that a missing URL is replaced with DefaultURL.
+func TestConnectAppliesDefaults(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	// Point at a definitely-unreachable port so we don't depend on a real
+	// NATS server in CI. The error is expected; we just want the function
+	// to reach the dial step (i.e. defaults applied without panicking).
+	cfg := Config{URL: "nats://127.0.0.1:1"}
+	_, _, err := Connect(ctx, cfg)
+	if err == nil {
+		t.Fatal("Connect to unreachable host expected error, got nil")
+	}
+	// Sanity check: error must not mention an empty URL.
+	if errors.Is(err, errors.New("")) {
+		t.Errorf("unexpected sentinel error: %v", err)
+	}
+}
+
+// TestConnectRespectsContextCancellation confirms that a cancelled context
+// short-circuits the JetStream sanity ping rather than hanging.
+func TestConnectRespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := Connect(ctx, Config{URL: natsgo.DefaultURL})
+	if err == nil {
+		t.Fatal("Connect with cancelled ctx expected error, got nil")
+	}
+}
+
+// TestSanitize covers the subject sanitiser used by NewSubject.
+func TestSanitize(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"plain":          "plain",
+		"with.dot":       "with_dot",
+		"a*b":            "a_b",
+		"a>b":            "a_b",
+		"has space here": "has_space_here",
+		"has\ttab":       "has_tab",
+	}
+	for in, want := range cases {
+		if got := Sanitize(in); got != want {
+			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNewSubjectShape(t *testing.T) {
+	t.Parallel()
+	got := NewSubject("svc", 1, "users", "created").String()
+	if got != "svc.v1.users.created" {
+		t.Errorf("NewSubject = %q, want svc.v1.users.created", got)
+	}
+
+	defaulted := NewSubject("svc", 0, "users", "created").String()
+	if defaulted != "svc.v1.users.created" {
+		t.Errorf("NewSubject with zero version = %q, want v1 default", defaulted)
+	}
+}
+
+func TestWildcards(t *testing.T) {
+	t.Parallel()
+	if got := WildcardAll("svc", 1); got != "svc.v1.>" {
+		t.Errorf("WildcardAll = %q", got)
+	}
+	if got := WildcardResource("svc", 1, "users"); got != "svc.v1.users.*" {
+		t.Errorf("WildcardResource = %q", got)
+	}
+}

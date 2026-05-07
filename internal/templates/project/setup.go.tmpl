@@ -1,0 +1,109 @@
+package app
+
+import (
+{{- if .HasDatabase}}
+	"database/sql"
+	"fmt"
+	"log/slog"
+	"time"
+{{end}}
+	"{{.Module}}/pkg/config"
+{{- if .OrmEnabled}}
+
+	"github.com/reliant-labs/forge/pkg/orm"
+{{- end}}
+{{- if eq .DatabaseDriver "postgres"}}
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+{{- end}}
+{{- if eq .DatabaseDriver "sqlite"}}
+
+	_ "github.com/mattn/go-sqlite3"
+{{- end}}
+)
+
+// Setup is called by the generated Bootstrap function BEFORE services
+// are constructed. Use this function to build infrastructure (DB pool,
+// NATS client, audit sink, external clients, feature flags) and assign
+// it onto the App struct. The codegen'd wire_gen.go then reads those
+// App fields when assembling each service's Deps.
+//
+// Wiring shape (2026-05-07 wire-gen migration):
+//   1. Bootstrap allocates &App with Logger/Config.
+//   2. Setup (this function) builds DB/NATS/audit/etc. and assigns them
+//      onto user-extendable fields of App.
+//   3. wire_gen reads those fields back when building each service's
+//      Deps struct (see pkg/app/wire_gen.go).
+//   4. validateDeps() in handlers/<svc>/service.go gates the COMPLETE
+//      dep set at New() time — per-RPC nil-checks are unnecessary.
+//
+// To add a new dependency:
+//   - Add a field to *App (in a sibling file like pkg/app/app_extras.go).
+//   - Construct it here in Setup and assign `app.MyDep = ...`.
+//   - Add a matching field to the consuming service's `Deps` struct in
+//     handlers/<svc>/service.go. wire_gen will resolve it by name on
+//     the next `forge generate`.
+//
+// This file is YOUR code — forge generate will never overwrite it.
+//
+//forge:allow
+func Setup(app *App, cfg *config.Config) error {
+{{- if .HasDatabase}}
+	db, err := setupDatabase(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	app.DB = db
+{{- if .OrmEnabled}}
+
+	if db != nil {
+		ormClient, err := orm.NewClientWithDB(db, "{{.DatabaseDriver}}")
+		if err != nil {
+			return fmt.Errorf("failed to create ORM client: %w", err)
+		}
+		app.ORM = ormClient
+	}
+{{- end}}
+{{- else}}
+	// FORGE_SCAFFOLD: build infrastructure here (DB pool, NATS, audit
+	// sink, external clients, feature flags) and assign onto fields
+	// of *App. wire_gen reads those fields when constructing each
+	// service's Deps. Add a sibling pkg/app/app_extras.go with the
+	// extra fields when you outgrow the bare App. Remove this comment
+	// after editing.
+	_ = app
+	_ = cfg
+{{- end}}
+	return nil
+}
+{{if .HasDatabase}}
+func setupDatabase(cfg *config.Config) (*sql.DB, error) {
+	dsn := cfg.DatabaseUrl
+	if dsn == "" {
+		slog.Warn("DATABASE_URL is not set, skipping database setup")
+		return nil, nil
+	}
+
+{{- if eq .DatabaseDriver "postgres"}}
+	db, err := sql.Open("pgx", dsn)
+{{- else}}
+	db, err := sql.Open("{{.DatabaseDriver}}", dsn)
+{{- end}}
+	if err != nil {
+		return nil, fmt.Errorf("sql.Open: %w", err)
+	}
+
+	// Connection pool settings
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("db.Ping: %w", err)
+	}
+
+	return db, nil
+}
+{{end}}

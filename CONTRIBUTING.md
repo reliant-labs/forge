@@ -1,4 +1,4 @@
-# Contributing to forge-next
+# Contributing to forge
 
 Thanks for your interest in contributing! This doc covers the bare minimum to
 get a working dev loop and land a PR.

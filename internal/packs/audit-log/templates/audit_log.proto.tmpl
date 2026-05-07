@@ -1,0 +1,57 @@
+// forge:scaffold one-shot — audit-log proto contract; canonical pattern in `forge skill load packs`.
+syntax = "proto3";
+
+package audit.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "{{.ModulePath}}/gen/audit/v1;auditv1";
+
+// AuditLogService exposes a read-only view over audit events captured by
+// the audit-log pack's interceptor. The interceptor is the write side
+// (every RPC produces an entry); this service is the read side (admins
+// query historical entries through the same Connect RPC surface as the
+// rest of the project).
+service AuditLogService {
+  // ListAuditEvents returns audit log entries matching the supplied
+  // filters, sorted by timestamp descending. Pagination is offset-based;
+  // callers should treat 100 as the default page size when LIMIT is unset.
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse) {}
+}
+
+// AuditEvent is a single audit log entry. Mirrors the columns of the
+// audit_log table the pack's migrations create.
+message AuditEvent {
+  string id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  string user_id = 3;
+  string email = 4;
+  string procedure = 5;
+  string peer_address = 6;
+  int32 duration_ms = 7;
+  string status = 8;        // "ok" or "error"
+  string error_code = 9;    // empty when status == "ok"
+  string error_message = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+// ListAuditEventsRequest carries optional filters and pagination.
+// All filter fields are AND-combined; empty fields are not constrained.
+message ListAuditEventsRequest {
+  // Filter to a specific user.
+  string user_id = 1;
+  // Filter to a specific RPC procedure (e.g. "/myapp.v1.UserService/Update").
+  string procedure = 2;
+  // Lower bound on event timestamp (inclusive).
+  google.protobuf.Timestamp since = 3;
+  // Upper bound on event timestamp (inclusive).
+  google.protobuf.Timestamp until = 4;
+  // Page size. <= 0 is treated as 100.
+  int32 limit = 5;
+  // Offset into the result set.
+  int32 offset = 6;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+}

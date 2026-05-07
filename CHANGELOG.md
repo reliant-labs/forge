@@ -20,4 +20,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-[Unreleased]: https://github.com/OWNER/forge-next/compare/HEAD...HEAD
+[Unreleased]: https://github.com/OWNER/forge/compare/HEAD...HEAD

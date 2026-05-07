@@ -1,0 +1,48 @@
+name: firebase-auth
+description: |
+  Firebase Authentication — JWKS-based JWT validation against Google's
+  Firebase well-known endpoint, with support for multiple project IDs
+  and Firebase claim shapes (uid/email/email_verified, sub=uid). Code is
+  installed into pkg/middleware/auth/firebase/ — wire it in
+  pkg/app/setup.go:
+
+    import firebaseauth "<module>/pkg/middleware/auth/firebase"
+    firebaseauth.Init(logger)
+    interceptors := connect.WithInterceptors(firebaseauth.Interceptor())
+
+  Pair with the `auth-ui` frontend pack for the matching
+  firebase/auth-backed login/signup forms:
+    forge pack install auth-ui --config provider=firebase-auth
+version: 1.0.0
+subpath: middleware/auth/firebase
+
+config:
+  section: auth
+  defaults:
+    provider: firebase
+    firebase:
+      # Comma-separated list of accepted Firebase project IDs. Tokens must
+      # match one. Required in production.
+      project_ids_env: FIREBASE_PROJECT_IDS
+      # Single-project shortcut. Used as audience and issuer suffix.
+      project_id_env: FIREBASE_PROJECT_ID
+    dev_mode: true
+
+dependencies:
+  - github.com/golang-jwt/jwt/v5
+  - github.com/MicahParks/keyfunc/v3@v3.8.0
+
+files:
+  - template: firebase_validator.go.tmpl
+    output: pkg/middleware/auth/firebase/validator.go
+    overwrite: always
+    description: "Firebase JWT validator (JWKS, multi-project ID, Firebase claim shapes)"
+  - template: firebase_dev_auth.go.tmpl
+    output: pkg/middleware/auth/firebase/dev_auth.go
+    overwrite: always
+    description: "Dev-mode synthetic Firebase claims"
+
+generate:
+  - template: firebase_auth_gen.go.tmpl
+    output: pkg/middleware/auth/firebase/auth_gen.go
+    description: "Firebase authentication interceptor (Init/Close/Interceptor)"

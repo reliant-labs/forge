@@ -1,0 +1,162 @@
+// forge:scaffold one-shot — audit store; canonical pattern in `forge skill load packs`.
+package audit
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// AuditEntry represents a single audit log record.
+type AuditEntry struct {
+	ID           string            `json:"id" db:"id"`
+	Timestamp    time.Time         `json:"timestamp" db:"timestamp"`
+	UserID       string            `json:"user_id" db:"user_id"`
+	Email        string            `json:"email" db:"email"`
+	Procedure    string            `json:"procedure" db:"procedure"`
+	PeerAddress  string            `json:"peer_address" db:"peer_address"`
+	DurationMs   int               `json:"duration_ms" db:"duration_ms"`
+	Status       string            `json:"status" db:"status"`
+	ErrorCode    string            `json:"error_code,omitempty" db:"error_code"`
+	ErrorMessage string            `json:"error_message,omitempty" db:"error_message"`
+	Metadata     map[string]string `json:"metadata,omitempty" db:"metadata"`
+	CreatedAt    time.Time         `json:"created_at" db:"created_at"`
+}
+
+// AuditFilter defines query parameters for searching audit log entries.
+type AuditFilter struct {
+	UserID    string
+	Procedure string
+	Since     time.Time
+	Until     time.Time
+	Limit     int
+	Offset    int
+}
+
+// AuditStore defines the interface for audit log persistence.
+type AuditStore interface {
+	// Log persists a single audit entry.
+	Log(ctx context.Context, entry AuditEntry) error
+	// Query retrieves audit entries matching the given filter.
+	Query(ctx context.Context, filter AuditFilter) ([]AuditEntry, error)
+}
+
+// DBAuditStore implements AuditStore using a *sql.DB connection.
+type DBAuditStore struct {
+	db *sql.DB
+}
+
+// NewDBAuditStore creates a new DB-backed audit store.
+func NewDBAuditStore(db *sql.DB) *DBAuditStore {
+	return &DBAuditStore{db: db}
+}
+
+// Log inserts an audit entry into the audit_log table.
+func (s *DBAuditStore) Log(ctx context.Context, entry AuditEntry) error {
+	metadataJSON, err := json.Marshal(entry.Metadata)
+	if err != nil {
+		metadataJSON = []byte("{}")
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO audit_log (timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		entry.Timestamp,
+		entry.UserID,
+		entry.Email,
+		entry.Procedure,
+		entry.PeerAddress,
+		entry.DurationMs,
+		entry.Status,
+		nullString(entry.ErrorCode),
+		nullString(entry.ErrorMessage),
+		metadataJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("audit store: insert: %w", err)
+	}
+	return nil
+}
+
+// Query retrieves audit log entries matching the given filter.
+func (s *DBAuditStore) Query(ctx context.Context, filter AuditFilter) ([]AuditEntry, error) {
+	query := `SELECT id, timestamp, user_id, email, procedure, peer_address, duration_ms, status, error_code, error_message, metadata, created_at FROM audit_log WHERE 1=1`
+	args := []any{}
+	argIdx := 1
+
+	if filter.UserID != "" {
+		query += fmt.Sprintf(" AND user_id = $%d", argIdx)
+		args = append(args, filter.UserID)
+		argIdx++
+	}
+	if filter.Procedure != "" {
+		query += fmt.Sprintf(" AND procedure = $%d", argIdx)
+		args = append(args, filter.Procedure)
+		argIdx++
+	}
+	if !filter.Since.IsZero() {
+		query += fmt.Sprintf(" AND timestamp >= $%d", argIdx)
+		args = append(args, filter.Since)
+		argIdx++
+	}
+	if !filter.Until.IsZero() {
+		query += fmt.Sprintf(" AND timestamp <= $%d", argIdx)
+		args = append(args, filter.Until)
+		argIdx++
+	}
+
+	query += " ORDER BY timestamp DESC"
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	query += fmt.Sprintf(" LIMIT $%d", argIdx)
+	args = append(args, limit)
+	argIdx++
+
+	if filter.Offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", argIdx)
+		args = append(args, filter.Offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("audit store: query: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		var errorCode, errorMessage sql.NullString
+		var metadataJSON []byte
+
+		if err := rows.Scan(
+			&e.ID, &e.Timestamp, &e.UserID, &e.Email, &e.Procedure,
+			&e.PeerAddress, &e.DurationMs, &e.Status,
+			&errorCode, &errorMessage, &metadataJSON, &e.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("audit store: scan: %w", err)
+		}
+
+		e.ErrorCode = errorCode.String
+		e.ErrorMessage = errorMessage.String
+
+		if len(metadataJSON) > 0 {
+			_ = json.Unmarshal(metadataJSON, &e.Metadata)
+		}
+
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+func nullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}

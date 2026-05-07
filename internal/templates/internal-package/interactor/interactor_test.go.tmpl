@@ -1,0 +1,85 @@
+// forge:scaffold one-shot — interactor tests; canonical pattern in `forge skill load testing/patterns`.
+package {{.Name}}
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"testing"
+)
+
+// fakeSource is a hand-rolled mock for the Source interface. Real
+// projects can hand-roll like this or use forge-generated mocks once
+// `forge generate` runs against the contract.go interfaces.
+type fakeSource struct {
+	item Item
+	err  error
+}
+
+func (f *fakeSource) Fetch(_ context.Context, _ string) (Item, error) {
+	return f.item, f.err
+}
+
+// fakeSink records every call so tests can assert composition order.
+type fakeSink struct {
+	got []Item
+	err error
+}
+
+func (f *fakeSink) Send(_ context.Context, item Item) error {
+	f.got = append(f.got, item)
+	return f.err
+}
+
+// TestRun_ComposesSourceAndSink is the canonical "interactor calls two
+// deps in order" assertion. If you only test one path, test this one —
+// it proves the workflow plumbed both collaborators correctly.
+func TestRun_ComposesSourceAndSink(t *testing.T) {
+	t.Parallel()
+
+	src := &fakeSource{item: Item{ID: "x", Body: "hello"}}
+	sink := &fakeSink{}
+	svc := New(Deps{Logger: slog.Default(), Source: src, Sink: sink})
+
+	res, err := svc.Run(context.Background(), RunInput{ID: "x"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("Run.OK = false, want true")
+	}
+	if len(sink.got) != 1 || sink.got[0].ID != "x" {
+		t.Fatalf("sink.got = %+v; want one item with ID=x", sink.got)
+	}
+}
+
+// TestRun_PropagatesSourceError asserts that a Source failure short-
+// circuits the Sink call — the workflow must not invoke the
+// downstream when the upstream failed.
+func TestRun_PropagatesSourceError(t *testing.T) {
+	t.Parallel()
+
+	src := &fakeSource{err: errors.New("boom")}
+	sink := &fakeSink{}
+	svc := New(Deps{Logger: slog.Default(), Source: src, Sink: sink})
+
+	if _, err := svc.Run(context.Background(), RunInput{ID: "x"}); err == nil {
+		t.Fatal("Run should error when Source.Fetch fails")
+	}
+	if len(sink.got) != 0 {
+		t.Fatalf("Sink.Send must not be called on Source failure; got %d calls", len(sink.got))
+	}
+}
+
+// TestRun_RejectsEmptyInput is the validation-at-the-edge test. Real
+// interactors typically grow more validation; the scaffold ships the
+// minimal version so the pattern is on screen.
+func TestRun_RejectsEmptyInput(t *testing.T) {
+	t.Parallel()
+
+	svc := New(Deps{Logger: slog.Default(), Source: &fakeSource{}, Sink: &fakeSink{}})
+
+	if _, err := svc.Run(context.Background(), RunInput{}); err == nil {
+		t.Fatal("Run should reject empty input ID")
+	}
+}

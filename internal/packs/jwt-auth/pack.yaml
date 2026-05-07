@@ -1,0 +1,42 @@
+name: jwt-auth
+description: |
+  Production-ready JWT authentication with JWKS, dev-mode bypass, and
+  multi-provider support (Auth0, Clerk, Supabase, Firebase). Code is
+  installed into pkg/middleware/auth/jwtauth/ — wire it in pkg/app/setup.go:
+
+    import "<module>/pkg/middleware/auth/jwtauth"
+    jwtauth.Init(logger)
+    interceptors := connect.WithInterceptors(jwtauth.Interceptor())
+
+  Pair with the `auth-ui` frontend pack for opinionated login/signup UI:
+    forge pack install auth-ui --config provider=jwt-auth
+version: 1.0.0
+subpath: middleware/auth/jwtauth
+
+config:
+  section: auth
+  defaults:
+    provider: jwt
+    jwt:
+      signing_method: RS256
+      jwks_url: ""
+      issuer: ""
+      audience: ""
+    dev_mode: true
+
+files:
+  - template: jwt_validator.go.tmpl
+    output: pkg/middleware/auth/jwtauth/validator.go
+    overwrite: always
+  - template: dev_auth.go.tmpl
+    output: pkg/middleware/auth/jwtauth/dev_auth.go
+    overwrite: always
+
+dependencies:
+  - github.com/golang-jwt/jwt/v5
+  - github.com/MicahParks/keyfunc/v3@v3.8.0
+
+generate:
+  - template: auth_gen_override.go.tmpl
+    output: pkg/middleware/auth/jwtauth/auth_gen.go
+    description: "JWKS-based authentication interceptor for the jwt-auth pack"

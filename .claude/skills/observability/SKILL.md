@@ -1,0 +1,133 @@
+---
+name: observability
+description: Observability — forge doctor, Grafana dashboards, querying logs/traces/metrics.
+---
+
+# Observability
+
+Every Forge project ships with a full observability stack running locally via Docker Compose (Grafana LGTM: Grafana, Prometheus, Tempo, Loki, Pyroscope). No external services needed.
+
+## forge doctor
+
+Verify the entire observability pipeline is working:
+
+```bash
+forge doctor                    # Check everything
+forge doctor --signal traces    # Check only traces
+forge doctor --signal metrics   # Check only Prometheus
+forge doctor --signal logs      # Check only Loki
+forge doctor --signal profiles  # Check only profiling
+forge doctor --json             # Machine-readable output
+forge doctor --verbose          # Show evidence for passing checks
+```
+
+Doctor checks: Docker containers running, app health endpoint, pprof endpoint, Prometheus targets up, Tempo traces ingested, Loki log streams present, Pyroscope profiles available.
+
+Run `forge doctor` after `forge run` to verify the pipeline is healthy before investigating issues.
+
+## Accessing Grafana
+
+Grafana's port is dynamically assigned. Find it with:
+
+```bash
+docker compose ps    # Look for the lgtm container's port mapping
+forge doctor         # Also shows the Grafana URL
+```
+
+Two dashboards are auto-provisioned:
+- **Logs Dashboard** — Log volume by level, filterable by service/container
+- **Traces Dashboard** — Trace search, latency distribution, service map
+
+## Querying Logs (Loki)
+
+In Grafana → Explore → Loki, use LogQL:
+
+```
+{container=~".*app.*"} | json | level="error"
+{container=~".*app.*"} | json | procedure="/services.users.v1.UsersService/Create"
+{container=~".*app.*"} | json | trace_id="abc123"
+```
+
+Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`). Use typed log helpers in `pkg/middleware/logevents.go` for consistent attributes.
+
+## Querying Traces (Tempo)
+
+In Grafana → Explore → Tempo, search by:
+- Service name (matches your project name)
+- Trace ID (from log lines — click a `trace_id` value to jump to the trace)
+- Duration range
+- Status code
+
+Trace IDs are automatically injected into every log line, connecting logs to traces.
+
+## Querying Metrics (Prometheus)
+
+In Grafana → Explore → Prometheus, use PromQL:
+
+```
+go_goroutines                              # goroutine count per service
+up                                         # scrape targets status
+rate(http_request_duration_seconds_count[5m])  # request rate
+```
+
+## The interceptor-based pattern
+
+Connect interceptors at the handler boundary capture the
+request-scoped observability needs (the vast majority). Forge ships
+them in `forge/pkg/observe`:
+
+| Interceptor | Job |
+|-------------|-----|
+| `observe.RecoveryInterceptor(logger)` | Recovers from handler panics; emits Internal error. Outermost. |
+| `observe.RequestIDInterceptor()` | Mints / propagates `X-Request-Id`; stores on ctx. |
+| `observe.LoggingInterceptor(logger)` | One slog record per RPC: procedure, duration, error. |
+| `observe.TracingInterceptor(tracer)` | One OTel span per RPC. nil tracer disables. |
+| `observe.MetricsInterceptor(meter)` | `rpc.server.{calls,errors,duration}`. nil meter disables. |
+
+The canonical chain is `observe.DefaultMiddlewares(deps)`:
+
+```go
+interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
+    Logger: logger,
+    Tracer: tracer,
+    Meter:  meter,
+    Extras: []connect.Interceptor{
+        middleware.AuthInterceptor(),
+        middleware.AuditInterceptor(logger),
+    },
+})
+opts := []connect.HandlerOption{connect.WithInterceptors(interceptors...)}
+```
+
+Order: recovery → request-id → logging → tracing → metrics → Extras.
+Auth/audit/rate-limit go in `Extras` so failures from those layers
+still get logged, traced, and counted by the canonical chain. Full
+ordering rationale lives in `forge/pkg/observe/middleware.go`.
+
+### Per-method instrumentation (opt-in)
+
+When one Service calls another and you want a child span / log line /
+metric at the inner boundary, use the helpers:
+
+```go
+user, err := observe.TraceCall(ctx, s.tracer, "userstore.Get", func(ctx context.Context) (User, error) {
+    return s.userStore.Get(ctx, id)
+})
+observe.LogCall(ctx, s.logger, "userstore.Get", start, err)
+s.metrics.RecordCall(ctx, "Get", start, err)  // s.metrics = observe.NewCallMetrics(meter, "userstore")
+```
+
+This replaces the pre-1.7 per-package `middleware_gen.go` /
+`tracing_gen.go` / `metrics_gen.go` wrappers, which auto-instrumented
+every contract method. The new shape makes observability explicit and
+opt-in — paid only at call sites that want it. See the
+`v0.x-to-observe-libs` migration skill for the upgrade story.
+
+## Rules
+
+- Run `forge doctor` after `forge run` to verify observability before investigating issues.
+- Grafana port is dynamically assigned — use `docker compose ps` or `forge doctor` to find it.
+- The `alloy-config.alloy` and dashboard files are regenerated by `forge generate` — do not hand-edit.
+- Use the `logevents.go` helpers for structured log events — do not create ad-hoc attribute keys.
+- Trace IDs propagate automatically via OpenTelemetry context — no manual instrumentation needed.
+- Prefer `observe.DefaultMiddlewares` for greenfield wiring; build a custom `[]connect.Interceptor` only when the canonical order doesn't fit.

@@ -1,4 +1,4 @@
-# forge-next
+# forge
 
 A Cobra-based CLI built with [Forge](https://github.com/reliant-labs/forge).
 
@@ -8,24 +8,24 @@ A Cobra-based CLI built with [Forge](https://github.com/reliant-labs/forge).
 # Install dependencies
 task deps
 
-# Build the binary into ./bin/forge-next
+# Build the binary into ./bin/forge
 task build
 
 # Run from source
-go run ./cmd/forge-next version
+go run ./cmd/forge version
 
 # Or install onto $PATH
 task install
-forge-next version
+forge version
 ```
 
 ## Adding a subcommand
 
-Each subcommand lives in its own file under `cmd/forge-next/`. The pattern
+Each subcommand lives in its own file under `cmd/forge/`. The pattern
 mirrors `version.go`:
 
 ```go
-// cmd/forge-next/hello.go
+// cmd/forge/hello.go
 package main
 
 import (
@@ -60,7 +60,7 @@ internal package with a contract interface and tests.
 
 | Command | Description |
 |---|---|
-| `task build` | Build the CLI binary into `./bin/forge-next` |
+| `task build` | Build the CLI binary into `./bin/forge` |
 | `task install` | Install the CLI into `$GOBIN` |
 | `task test` | Run `go test ./...` |
 | `task lint` | Run `golangci-lint` |
@@ -73,8 +73,8 @@ Run `task --list` (or just `task`) for the full set.
 ## Project structure
 
 ```
-forge-next/
-├── cmd/forge-next/    # Cobra root + subcommands (each in its own file)
+forge/
+├── cmd/forge/    # Cobra root + subcommands (each in its own file)
 ├── internal/         # Application packages (forge add package <name>)
 ├── pkg/config/       # Configuration types (extend as needed)
 ├── .reliant/         # Forge conventions, skills, project metadata
@@ -88,10 +88,10 @@ forge-next/
 ## Build flags
 
 Stamp the binary's version, commit, and date at build time so
-`forge-next version` reports a real release rather than `dev`:
+`forge version` reports a real release rather than `dev`:
 
 ```bash
 go build -trimpath -buildvcs=true \
   -ldflags="-X main.version=v1.0.0 -X main.commit=$(git rev-parse HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o bin/forge-next ./cmd/forge-next
+  -o bin/forge ./cmd/forge
 ```

@@ -104,4 +104,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/reliant-labs/forge-next
+        - github.com/reliant-labs/forge

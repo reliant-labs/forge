@@ -1,0 +1,83 @@
+//go:build ignore
+
+package {{.ServicePackage}}
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"sync"
+	"time"
+)
+
+const (
+	// webhookMaxBodySize is the maximum allowed webhook payload size.
+	webhookMaxBodySize = 1 << 20 // 1MB
+)
+
+// webhookEvent represents a received webhook event.
+type webhookEvent struct {
+	// ID is the unique identifier for this event (used for idempotency).
+	ID string
+	// Source identifies the webhook provider.
+	Source string
+	// Headers contains the original request headers.
+	Headers http.Header
+	// Body contains the raw request body.
+	Body []byte
+	// ReceivedAt is when the webhook was received.
+	ReceivedAt time.Time
+}
+
+// extractEventID extracts the event ID from webhook headers.
+// Tries common header patterns used by webhook providers.
+func extractEventID(headers http.Header) string {
+	for _, h := range []string{
+		"X-Event-ID",
+		"X-Webhook-ID",
+		"X-Request-ID",
+		"Stripe-Event-Id",
+		"X-GitHub-Delivery",
+	} {
+		if id := headers.Get(h); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// verifyHMACSHA256 verifies an HMAC-SHA256 signature.
+func verifyHMACSHA256(body []byte, signature string, secret string) bool {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// webhookStore provides idempotency checking for webhooks.
+// Replace this in-memory implementation with a database-backed one for production.
+type webhookStore struct {
+	mu        sync.RWMutex
+	processed map[string]bool
+}
+
+// globalWebhookStore is the package-level webhook idempotency store.
+// In production, replace this with a database-backed implementation.
+var globalWebhookStore = &webhookStore{
+	processed: make(map[string]bool),
+}
+
+func (s *Service) isWebhookProcessed(_ context.Context, eventID string) (bool, error) {
+	globalWebhookStore.mu.RLock()
+	defer globalWebhookStore.mu.RUnlock()
+	return globalWebhookStore.processed[eventID], nil
+}
+
+func (s *Service) markWebhookProcessed(_ context.Context, eventID, source string) error {
+	globalWebhookStore.mu.Lock()
+	defer globalWebhookStore.mu.Unlock()
+	globalWebhookStore.processed[eventID] = true
+	return nil
+}

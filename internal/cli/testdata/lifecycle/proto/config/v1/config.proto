@@ -1,0 +1,31 @@
+// Test fixture: config proto with ConfigFieldOptions annotations.
+syntax = "proto3";
+
+package config.v1;
+
+import "forge/v1/forge.proto";
+
+option go_package = "github.com/test/myproject/gen/config/v1;configv1";
+
+message AppConfig {
+  string database_url = 1 [(forge.v1.config) = {
+    env_var: "DATABASE_URL"
+    flag: "database-url"
+    required: true
+    description: "PostgreSQL connection string"
+  }];
+
+  int32 port = 2 [(forge.v1.config) = {
+    env_var: "PORT"
+    flag: "port"
+    default_value: "8080"
+    description: "HTTP server port"
+  }];
+
+  string log_level = 3 [(forge.v1.config) = {
+    env_var: "LOG_LEVEL"
+    flag: "log-level"
+    default_value: "info"
+    description: "Logging level (debug, info, warn, error)"
+  }];
+}

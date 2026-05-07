@@ -1,0 +1,63 @@
+// forge:scaffold one-shot — interactor implementation; canonical pattern in `forge skill load architecture`.
+package {{.Name}}
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+)
+
+// Deps holds the {{.Name}} interactor's dependencies. Every field MUST
+// be an interface (lint-enforced via
+// forgeconv-interactor-deps-are-interfaces) so the workflow can be
+// unit-tested with mocks.
+type Deps struct {
+	Logger *slog.Logger
+
+	// Source and Sink are the placeholder collaborators defined in
+	// contract.go. Wire concrete adapter / service implementations in
+	// Setup() — e.g.
+	//   {{.Name}}.New({{.Name}}.Deps{
+	//       Source: app.SrcAdapter,  // implements {{.Name}}.Source
+	//       Sink:   app.SinkAdapter, // implements {{.Name}}.Sink
+	//   })
+	Source Source
+	Sink   Sink
+}
+
+// service is the concrete {{.Name}} interactor. The type is unexported —
+// callers depend on Service from contract.go.
+type service struct {
+	deps Deps
+}
+
+// New constructs a {{.Name}} interactor. Returns the Service interface
+// so callers (handlers, other interactors) depend only on the contract.
+func New(deps Deps) Service {
+	return &service{deps: deps}
+}
+
+// Run is the example use case. It fetches an item from the Source and
+// hands it to the Sink — the canonical "compose two collaborators"
+// shape that an interactor scaffold demonstrates.
+//
+// Real interactors usually do more here: validate input, wrap upstream
+// errors with svcerr sentinels, coordinate transactions, emit domain
+// events. Keep all of that in this file (or split per use case as the
+// package grows) — never in the adapters this interactor depends on.
+func (s *service) Run(ctx context.Context, in RunInput) (RunResult, error) {
+	if in.ID == "" {
+		return RunResult{}, fmt.Errorf("{{.Name}}: input ID required")
+	}
+
+	item, err := s.deps.Source.Fetch(ctx, in.ID)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("{{.Name}}: fetch %q: %w", in.ID, err)
+	}
+
+	if err := s.deps.Sink.Send(ctx, item); err != nil {
+		return RunResult{}, fmt.Errorf("{{.Name}}: send %q: %w", in.ID, err)
+	}
+
+	return RunResult{OK: true}, nil
+}

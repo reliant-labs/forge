@@ -1,0 +1,41 @@
+.git
+.github
+docs/
+*.md
+tmp/
+.forge/
+coverage.out
+.golangci.yml
+.gitattributes
+
+# Air hot-reload build outputs
+.air/
+.air-debug/
+
+# Local env files should not affect image builds.
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+bin/
+dist/
+
+# Test output
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+node_modules/
+.next/
+.turbo/
+out/

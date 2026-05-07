@@ -1,0 +1,108 @@
+version: '3'
+
+# Task wrappers for the {{.Name}} CLI. Kept intentionally minimal — only
+# the verbs that have an obvious meaning for a single-binary tool (build,
+# test, lint, fmt). Add more as the project grows.
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  deps:
+    desc: Install Go dependencies
+    cmds:
+      - go mod download
+
+  build:
+    desc: Build the CLI binary into ./bin/{{.Name}}
+    cmds:
+      # -trimpath strips local filesystem paths so builds are reproducible
+      # across machines; -buildvcs=true embeds the commit/dirty flag for
+      # runtime correlation.
+      - go build -trimpath -buildvcs=true -o bin/{{.Name}} ./cmd/{{.Name}}
+
+  install:
+    desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)
+    cmds:
+      - go install -trimpath -buildvcs=true ./cmd/{{.Name}}
+
+  test:
+    desc: Run Go unit tests (excludes `//go:build integration` files)
+    cmds:
+      # `-timeout 120s` matches the global per-package timeout convention so a
+      # hung test fails the suite quickly rather than wedging CI. Integration
+      # tests use the `integration` build tag and ship their own task below.
+      - go test -race -count=1 -timeout 120s ./...
+
+  test:integration:
+    desc: Run integration tests (build tag `integration`, real dependencies expected)
+    cmds:
+      # Integration tests rely on out-of-process state (postgres, sqlite tmp
+      # dir, etc.) so they're gated behind the `integration` build tag and
+      # excluded from `task test`. Run this in an environment that satisfies
+      # the per-test setup contract; see the testing-integration skill.
+      - go test -race -count=1 -timeout 600s -tags=integration ./...
+
+  coverage:
+    # HTML coverage report at coverage.html. Race testing happens in
+    # `task test`; this task is purely for measuring exercised code.
+    desc: Run unit tests with coverage and emit coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out -timeout 60s ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true
+
+  generate:
+    # CLI/library kinds rarely have proto codegen, but contract-driven
+    # mock generation (`forge generate` emits mock_gen.go for any
+    # package with a contract.go) is universal. This task keeps the
+    # verb consistent across kinds so verify-generate has something
+    # canonical to call.
+    desc: Run forge generate (contract mocks, etc.)
+    cmds:
+      - forge generate
+
+  verify-generate:
+    # CI gate: regenerate everything, then assert nothing changed.
+    # Catches the silent codegen-mock drift class of failure where a
+    # contract gains a parameter and the mock_gen.go is not refreshed
+    # — a recurring pain point when working on contract-pack-style
+    # codegen packages. Mirrors the service-kind Taskfile's verbatim.
+    desc: Verify generated code is committed up-to-date (CI guard)
+    cmds:
+      - task: generate
+      - cmd: |
+          if ! git diff --exit-code; then
+            echo "ERROR: Generated files are out of date. Run 'forge generate' (or 'task generate') and commit the result." >&2
+            exit 1
+          fi
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go source
+    cmds:
+      - cmd: |
+          if ! command -v goimports >/dev/null 2>&1; then
+            echo "goimports not installed — run: go install golang.org/x/tools/cmd/goimports@latest" >&2
+            exit 1
+          fi
+          goimports -w .
+      - go mod tidy
+
+  vet:
+    desc: Run go vet across the module
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf bin
+      - rm -f coverage.out coverage.html

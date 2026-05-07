@@ -1,6 +1,6 @@
 # Security Policy
 
-Thanks for taking the time to help keep forge-next secure. This document
+Thanks for taking the time to help keep forge secure. This document
 describes how to report vulnerabilities and what you can expect in
 return.
 

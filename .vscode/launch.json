@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug forge-next CLI",
+      "name": "Debug forge CLI",
       "type": "go",
       "request": "launch",
       "mode": "debug",
-      "program": "${workspaceFolder}/cmd/forge-next",
+      "program": "${workspaceFolder}/cmd/forge",
       "args": [],
       "buildFlags": "-gcflags='all=-N -l'"
     },

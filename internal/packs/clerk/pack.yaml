@@ -1,0 +1,48 @@
+name: clerk
+description: |
+  Clerk authentication — JWKS validation and Connect interceptor. Auth
+  code is installed into pkg/middleware/auth/clerk/ — wire it in
+  pkg/app/setup.go:
+
+    import clerkauth "<module>/pkg/middleware/auth/clerk"
+    clerkauth.Init(logger)
+    interceptors := connect.WithInterceptors(clerkauth.Interceptor())
+
+  Pair with the `auth-ui` frontend pack to drop in Clerk-flavoured
+  <SignIn>/<SignUp>/<UserButton> components:
+    forge pack install auth-ui --config provider=clerk
+
+  For the Clerk webhook user-sync side (which every project customizes
+  anyway), use `forge starter add clerk-webhook` instead — that's a
+  one-time scaffold rather than a tracked pack.
+version: 1.0.0
+subpath: middleware/auth/clerk
+
+config:
+  section: auth
+  defaults:
+    provider: clerk
+    clerk:
+      domain_env: CLERK_DOMAIN
+      secret_key_env: CLERK_SECRET_KEY
+      publishable_key_env: CLERK_PUBLISHABLE_KEY
+
+dependencies:
+  - github.com/clerk/clerk-sdk-go/v2
+  - github.com/MicahParks/keyfunc/v3@v3.8.0
+  - github.com/golang-jwt/jwt/v5
+
+files:
+  - template: clerk_auth.go.tmpl
+    output: pkg/middleware/auth/clerk/validator.go
+    overwrite: once
+    description: "Clerk JWT validator and claims extractor"
+  - template: clerk_dev_auth.go.tmpl
+    output: pkg/middleware/auth/clerk/dev_auth.go
+    overwrite: once
+    description: "Clerk dev-mode synthetic claims"
+
+generate:
+  - template: clerk_auth_gen.go.tmpl
+    output: pkg/middleware/auth/clerk/auth_gen.go
+    description: "Clerk authentication interceptor (Init/Close/Interceptor)"

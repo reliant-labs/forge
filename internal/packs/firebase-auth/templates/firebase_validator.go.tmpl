@@ -1,0 +1,222 @@
+// forge:scaffold one-shot — Firebase validator; canonical pattern in `forge skill load packs`.
+package firebase
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+	"sync"
+
+	"github.com/MicahParks/keyfunc/v3"
+	"github.com/golang-jwt/jwt/v5"
+
+	"{{.ModulePath}}/pkg/middleware"
+)
+
+// firebaseJWKSURL is Google's JWKS endpoint for Firebase ID tokens. The
+// keys here rotate; keyfunc.NewDefaultCtx handles the auto-refresh
+// background goroutine.
+const firebaseJWKSURL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+
+// firebaseIssuerPrefix is the issuer prefix Firebase ID tokens use; the
+// project ID is appended to form the full issuer. We accept any project
+// in the configured set so the same binary can serve tenants from
+// multiple Firebase projects (a common control-plane pattern).
+const firebaseIssuerPrefix = "https://securetoken.google.com/"
+
+// Validator validates Firebase-issued ID tokens using JWKS. It supports
+// multiple accepted project IDs; tokens are accepted if their `aud` and
+// derived `iss` both match one of the configured projects.
+type Validator struct {
+	jwks       keyfunc.Keyfunc
+	jwksCancel context.CancelFunc
+	projectIDs map[string]struct{}
+	logger     *slog.Logger
+	mu         sync.RWMutex
+}
+
+// ValidatorConfig configures the Firebase JWT validator.
+type ValidatorConfig struct {
+	// ProjectIDs is the set of accepted Firebase project IDs. Tokens
+	// whose `aud` does not match one of these are rejected. Required in
+	// production; if empty, the validator returns an error from
+	// NewValidator.
+	ProjectIDs []string
+}
+
+// NewValidator creates a Firebase ID token validator backed by Google's
+// JWKS endpoint. Returns an error if no project IDs are configured.
+func NewValidator(cfg ValidatorConfig, logger *slog.Logger) (*Validator, error) {
+	if len(cfg.ProjectIDs) == 0 {
+		return nil, fmt.Errorf("firebase: at least one project ID must be configured")
+	}
+
+	v := &Validator{
+		projectIDs: make(map[string]struct{}, len(cfg.ProjectIDs)),
+		logger:     logger,
+	}
+	for _, id := range cfg.ProjectIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		v.projectIDs[id] = struct{}{}
+	}
+	if len(v.projectIDs) == 0 {
+		return nil, fmt.Errorf("firebase: at least one non-empty project ID must be configured")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{firebaseJWKSURL})
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("fetching Firebase JWKS from %s: %w", firebaseJWKSURL, err)
+	}
+	v.jwks = jwks
+	v.jwksCancel = cancel
+
+	logger.Info("Firebase JWT validator initialized",
+		"jwks_url", firebaseJWKSURL,
+		"project_count", len(v.projectIDs))
+	return v, nil
+}
+
+// NewValidatorFromEnv creates a validator using FIREBASE_PROJECT_IDS
+// (comma-separated) or, as a fallback, the single-project
+// FIREBASE_PROJECT_ID variable.
+func NewValidatorFromEnv(logger *slog.Logger) (*Validator, error) {
+	ids := projectIDsFromEnv()
+	return NewValidator(ValidatorConfig{ProjectIDs: ids}, logger)
+}
+
+// projectIDsFromEnv parses the project ID env vars into a deduped list.
+func projectIDsFromEnv() []string {
+	raw := os.Getenv("FIREBASE_PROJECT_IDS")
+	if raw == "" {
+		raw = os.Getenv("FIREBASE_PROJECT_ID")
+	}
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ValidateToken validates a Firebase ID token and returns Claims with
+// the Firebase user model mapped onto middleware.Claims (UserID = uid,
+// Email = email, etc).
+func (v *Validator) ValidateToken(tokenString string) (*middleware.Claims, error) {
+	if v.jwks == nil {
+		return nil, fmt.Errorf("firebase: JWKS not initialized")
+	}
+
+	// Firebase ID tokens are RS256-signed; reject anything else.
+	opts := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithExpirationRequired(),
+	}
+
+	token, err := jwt.Parse(tokenString, v.jwks.Keyfunc, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("firebase: invalid token: %w", err)
+	}
+
+	mc, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("firebase: invalid token claims")
+	}
+
+	if err := v.checkAudienceAndIssuer(mc); err != nil {
+		return nil, err
+	}
+
+	return v.extractClaims(mc), nil
+}
+
+// checkAudienceAndIssuer enforces that aud is one of the accepted
+// project IDs and iss is the Firebase issuer for that same project.
+func (v *Validator) checkAudienceAndIssuer(mc jwt.MapClaims) error {
+	aud, _ := mc["aud"].(string)
+	iss, _ := mc["iss"].(string)
+	if aud == "" || iss == "" {
+		return fmt.Errorf("firebase: token missing aud or iss claim")
+	}
+	if _, ok := v.projectIDs[aud]; !ok {
+		return fmt.Errorf("firebase: token aud %q not in accepted project list", aud)
+	}
+	expectedIss := firebaseIssuerPrefix + aud
+	if iss != expectedIss {
+		return fmt.Errorf("firebase: token iss %q does not match expected %q", iss, expectedIss)
+	}
+	return nil
+}
+
+// extractClaims maps Firebase ID token claims to middleware.Claims.
+//
+// Firebase tokens carry:
+//   - sub: Firebase UID (same as user_id)
+//   - uid: Firebase UID (custom, sometimes set)
+//   - email: user email
+//   - email_verified: bool
+//   - name, picture: profile (ignored for now)
+//   - firebase.identities, firebase.sign_in_provider: provider info
+//
+// We map sub → UserID, email → Email. Org/role come from custom claims
+// if present (apps that use Firebase + custom claims can populate them).
+func (v *Validator) extractClaims(mc jwt.MapClaims) *middleware.Claims {
+	c := &middleware.Claims{}
+
+	// Prefer sub (standard JWT) but fall back to uid if a token only has
+	// the Firebase-specific field. In practice Firebase always sets sub.
+	if sub, ok := mc["sub"].(string); ok && sub != "" {
+		c.UserID = sub
+	} else if uid, ok := mc["user_id"].(string); ok {
+		c.UserID = uid
+	} else if uid, ok := mc["uid"].(string); ok {
+		c.UserID = uid
+	}
+
+	if email, ok := mc["email"].(string); ok {
+		c.Email = email
+	}
+
+	// Custom claims: org_id, role, roles. Apps that don't use Firebase
+	// custom claims simply leave these empty.
+	if orgID, ok := mc["org_id"].(string); ok {
+		c.OrgID = orgID
+	}
+	if role, ok := mc["role"].(string); ok {
+		c.Role = role
+	}
+	if roles, ok := mc["roles"].([]interface{}); ok {
+		for _, r := range roles {
+			if s, ok := r.(string); ok {
+				c.Roles = append(c.Roles, s)
+			}
+		}
+	}
+
+	return c
+}
+
+// Close cancels the JWKS background refresh goroutine.
+func (v *Validator) Close() {
+	if v.jwksCancel != nil {
+		v.jwksCancel()
+	}
+}

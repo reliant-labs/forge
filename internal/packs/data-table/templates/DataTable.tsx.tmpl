@@ -1,0 +1,264 @@
+"use client";
+
+// forge:scaffold one-shot — data-table primitive; canonical pattern in `forge skill load packs`.
+import {
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+  type ColumnDef,
+  type SortingState,
+  type ColumnFiltersState,
+  type Updater,
+} from "@tanstack/react-table";
+import { useMemo, useState } from "react";
+
+// Base library primitives — every forge frontend ships these by default
+// via internal/generator/frontend_gen.go's coreComponents list. The pack
+// composes them; it does NOT inline `<table>` / `<button>` / etc. markup.
+import AlertBanner from "@/components/ui/alert_banner";
+import SkeletonLoader from "@/components/ui/skeleton_loader";
+import Table, {
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "@/components/ui/table";
+
+import { Filters } from "./filters";
+import { Pagination } from "./pagination";
+
+/**
+ * Pagination shape produced by forge's auto-generated CRUD list hooks.
+ * Mirrors the cursor-based convention: server returns the next cursor,
+ * client passes it back via `nextCursor` to fetch the next page.
+ */
+export interface PageInfo {
+  nextCursor?: string;
+  prevCursor?: string;
+  total?: number;
+}
+
+export interface DataTableProps<TRow> {
+  /** Column definitions — typically built via the helpers in `./columns`. */
+  columns: ColumnDef<TRow, unknown>[];
+  /** Page of rows. Pass `data?.<entities> ?? []` from a useEntities hook. */
+  data: TRow[];
+  /** True while the underlying React Query is loading. */
+  isLoading?: boolean;
+  /** Optional error from the underlying query. */
+  error?: { message?: string } | null;
+  /** Optional pagination metadata returned by the server. */
+  pageInfo?: PageInfo;
+  /** Server-side controlled state. When set, sorting/filtering/paging are
+   *  passed back through the on*Change callbacks rather than handled
+   *  client-side. */
+  serverSide?: boolean;
+  /** Server-side sort state (column id + direction). */
+  sorting?: SortingState;
+  onSortingChange?: (sorting: SortingState) => void;
+  /** Server-side column filter state. */
+  columnFilters?: ColumnFiltersState;
+  onColumnFiltersChange?: (filters: ColumnFiltersState) => void;
+  /** Search input. Passed through to the Filters bar. */
+  search?: string;
+  onSearchChange?: (next: string) => void;
+  /** Pagination handlers. */
+  page?: number;
+  pageSize?: number;
+  onPageChange?: (next: number) => void;
+  onPageSizeChange?: (next: number) => void;
+  /** Optional row click handler — receives the original row data. */
+  onRowClick?: (row: TRow) => void;
+  /** Empty-state message. */
+  emptyMessage?: string;
+  /** Stable React key extractor. Defaults to `(row as any).id ?? index`. */
+  getRowKey?: (row: TRow, index: number) => string | number;
+}
+
+/**
+ * Generic, fully-typed React table.
+ *
+ * Layered design: TanStack Table is used as a HEADLESS state engine for
+ * sort/filter management; rendered output composes forge's base library
+ * primitives (`Table`, `Button`, `Input`, `Select`, `Chip`, `AlertBanner`,
+ * `SkeletonLoader`, `SearchInput`, base `Pagination`). The pack adds no
+ * bespoke markup — every visible element comes from `@/components/ui/*`.
+ *
+ * Two operating modes:
+ *
+ *   1. Client-side (default) — pass an array, get sort/filter/paginate
+ *      handled in-memory by TanStack Table.
+ *
+ *   2. Server-side (`serverSide={true}`) — the table renders whatever
+ *      `data` you pass and surfaces user intent via `onSortingChange`,
+ *      `onColumnFiltersChange`, `onSearchChange`, `onPageChange`,
+ *      `onPageSizeChange`. Pair with forge's `useEntities({ ... })` hook
+ *      and feed those parameters into the query key.
+ */
+export function DataTable<TRow>(props: DataTableProps<TRow>) {
+  const {
+    columns,
+    data,
+    isLoading,
+    error,
+    pageInfo,
+    serverSide = false,
+    sorting: sortingProp,
+    onSortingChange,
+    columnFilters: columnFiltersProp,
+    onColumnFiltersChange,
+    search,
+    onSearchChange,
+    page,
+    pageSize,
+    onPageChange,
+    onPageSizeChange,
+    onRowClick,
+    emptyMessage = "No results.",
+    getRowKey,
+  } = props;
+
+  // Local state used only when the consumer hasn't passed controlled props.
+  const [localSorting, setLocalSorting] = useState<SortingState>([]);
+  const [localFilters, setLocalFilters] = useState<ColumnFiltersState>([]);
+
+  const sorting = sortingProp ?? localSorting;
+  const columnFilters = columnFiltersProp ?? localFilters;
+
+  const handleSortingChange = (updater: Updater<SortingState>) => {
+    const next = typeof updater === "function" ? updater(sorting) : updater;
+    if (onSortingChange) onSortingChange(next);
+    if (sortingProp === undefined) setLocalSorting(next);
+  };
+
+  const handleColumnFiltersChange = (updater: Updater<ColumnFiltersState>) => {
+    const next = typeof updater === "function" ? updater(columnFilters) : updater;
+    if (onColumnFiltersChange) onColumnFiltersChange(next);
+    if (columnFiltersProp === undefined) setLocalFilters(next);
+  };
+
+  const table = useReactTable<TRow>({
+    data,
+    columns,
+    state: { sorting, columnFilters },
+    onSortingChange: handleSortingChange,
+    onColumnFiltersChange: handleColumnFiltersChange,
+    getCoreRowModel: getCoreRowModel(),
+    manualSorting: serverSide,
+    manualFiltering: serverSide,
+    manualPagination: serverSide,
+  });
+
+  const headerGroups = table.getHeaderGroups();
+  const rows = table.getRowModel().rows;
+
+  const keyOf = useMemo(
+    () =>
+      getRowKey ??
+      ((row: TRow, idx: number) => {
+        const r = row as unknown as { id?: string | number };
+        return r?.id ?? idx;
+      }),
+    [getRowKey],
+  );
+
+  return (
+    <div className="space-y-3">
+      <Filters
+        search={search}
+        onSearchChange={onSearchChange}
+        columnFilters={columnFilters}
+        onColumnFiltersChange={handleColumnFiltersChange}
+        columns={columns}
+      />
+
+      {error?.message ? (
+        <AlertBanner
+          variant="error"
+          message={error.message}
+        />
+      ) : null}
+
+      <Table>
+        <TableHeader>
+          {headerGroups.map((hg) => (
+            <TableRow key={hg.id}>
+              {hg.headers.map((header) => {
+                const sort = header.column.getIsSorted();
+                const canSort = header.column.getCanSort();
+                return (
+                  <TableHead
+                    key={header.id}
+                    sortable={canSort}
+                    onClick={
+                      canSort
+                        ? header.column.getToggleSortingHandler()
+                        : undefined
+                    }
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(
+                            header.column.columnDef.header,
+                            header.getContext(),
+                          )}
+                      {sort === "asc" ? <span aria-hidden>▲</span> : null}
+                      {sort === "desc" ? <span aria-hidden>▼</span> : null}
+                    </span>
+                  </TableHead>
+                );
+              })}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {isLoading ? (
+            <TableRow>
+              <TableCell colSpan={columns.length}>
+                <SkeletonLoader variant="table-row" count={5} />
+              </TableCell>
+            </TableRow>
+          ) : rows.length === 0 ? (
+            <TableRow>
+              <TableCell
+                colSpan={columns.length}
+                className="px-4 py-6 text-center text-sm text-gray-500"
+              >
+                {emptyMessage}
+              </TableCell>
+            </TableRow>
+          ) : (
+            rows.map((row, idx) => (
+              <TableRow
+                key={String(keyOf(row.original, idx))}
+                striped={idx % 2 === 1}
+                clickable={Boolean(onRowClick)}
+                onClick={
+                  onRowClick ? () => onRowClick(row.original) : undefined
+                }
+              >
+                {row.getVisibleCells().map((cell) => (
+                  <TableCell key={cell.id}>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+
+      <Pagination
+        page={page}
+        pageSize={pageSize}
+        total={pageInfo?.total}
+        hasNext={Boolean(pageInfo?.nextCursor)}
+        hasPrev={Boolean(pageInfo?.prevCursor)}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
+      />
+    </div>
+  );
+}

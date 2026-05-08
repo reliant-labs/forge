@@ -1,0 +1,78 @@
+// forge:scaffold one-shot — NATS subject helpers; canonical pattern in `forge skill load packs`.
+package nats
+
+import (
+	"fmt"
+	"strings"
+)
+
+// Subject naming conventions
+//
+// All subjects follow the shape:
+//
+//	<svc>.v<n>.<resource>.<event>
+//
+// where:
+//   - <svc>      is the service / domain prefix (e.g. "workspace", "billing")
+//   - v<n>       is the schema version (start at v1)
+//   - <resource> is the noun being acted on (e.g. "users", "invoices")
+//   - <event>    is the verb / state (e.g. "created", "deleted") — singular
+//
+// Wildcard subjects use NATS's `*` (single token) and `>` (multi-token) —
+// see https://docs.nats.io/nats-concepts/subjects.
+
+// Subject is a typed NATS subject, intended to be built via NewSubject so
+// invalid characters are rejected at construction time.
+type Subject string
+
+// NewSubject builds a versioned subject of the form svc.v<version>.resource.event.
+// Resource and event are sanitised — characters that are invalid in NATS
+// subjects (`.`, `*`, `>`, whitespace) are replaced with `_`.
+func NewSubject(svc string, version int, resource, event string) Subject {
+	if version <= 0 {
+		version = 1
+	}
+	return Subject(fmt.Sprintf("%s.v%d.%s.%s",
+		Sanitize(svc),
+		version,
+		Sanitize(resource),
+		Sanitize(event),
+	))
+}
+
+// String implements fmt.Stringer.
+func (s Subject) String() string { return string(s) }
+
+// Sanitize replaces characters that are invalid in NATS subjects with `_`.
+// Use this when an arbitrary identifier (e.g. a tenant ID containing a `.`)
+// must be embedded as a single subject token.
+func Sanitize(s string) string {
+	r := strings.NewReplacer(
+		".", "_",
+		">", "_",
+		"*", "_",
+		" ", "_",
+		"\t", "_",
+		"\n", "_",
+	)
+	return r.Replace(s)
+}
+
+// WildcardAll returns the multi-token-wildcard subject for a service+version,
+// e.g. "workspace.v1.>". Useful for building a stream that captures every
+// event under a prefix.
+func WildcardAll(svc string, version int) string {
+	if version <= 0 {
+		version = 1
+	}
+	return fmt.Sprintf("%s.v%d.>", Sanitize(svc), version)
+}
+
+// WildcardResource returns a single-token wildcard for events on a resource,
+// e.g. "workspace.v1.users.*" — every event verb on the users resource.
+func WildcardResource(svc string, version int, resource string) string {
+	if version <= 0 {
+		version = 1
+	}
+	return fmt.Sprintf("%s.v%d.%s.*", Sanitize(svc), version, Sanitize(resource))
+}

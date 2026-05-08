@@ -1,0 +1,30 @@
+//go:build ignore
+
+// Package {{.APIPackage}} contains the CRD type definitions for the
+// {{.OperatorName}} operator. Per-CRD type files
+// (<name>_types.go) live alongside this file and register
+// themselves with the shared SchemeBuilder via init().
+package {{.APIPackage}}
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+// GroupVersion is the API group and version shared by all CRDs in
+// this package.
+var GroupVersion = schema.GroupVersion{Group: "{{.Group}}", Version: "{{.Version}}"}
+
+// SchemeBuilder collects the AddToScheme functions of every CRD in
+// this package. The operator's main.go calls AddToScheme on the
+// manager's scheme during startup.
+var (
+	SchemeBuilder = runtime.NewSchemeBuilder(addGroupVersionToScheme)
+	AddToScheme   = SchemeBuilder.AddToScheme
+)
+
+func addGroupVersionToScheme(scheme *runtime.Scheme) error {
+	metav1.AddToGroupVersion(scheme, GroupVersion)
+	return nil
+}

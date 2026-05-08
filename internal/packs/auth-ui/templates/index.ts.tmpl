@@ -1,0 +1,19 @@
+// forge:scaffold one-shot — auth-ui barrel exports; canonical pattern in `forge skill load packs`.
+export { LoginForm } from "./LoginForm";
+export type { LoginFormProps } from "./LoginForm";
+export { SignupForm } from "./SignupForm";
+export type { SignupFormProps } from "./SignupForm";
+export { SessionNav } from "./SessionNav";
+export type { SessionNavProps } from "./SessionNav";
+export { DevModeBanner } from "./DevModeBanner";
+export type { DevModeBannerProps } from "./DevModeBanner";
+
+export {
+  useAuthStore,
+{{- if eq (index .PackConfig "provider") "jwt-auth" }}
+  readPersistedSession,
+  persistSession,
+  clearPersistedSession,
+{{- end }}
+} from "./auth-store";
+export type { AuthUser, AuthSession } from "./auth-store";

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package bad.v1;
+
+import "forge/v1/forge.proto";
+
+option go_package = "example.com/bad/gen/bad/v1;badv1";
+
+// User declares one tenant: true field (`tenant_id`) and ALSO has an
+// `org_id` field with a tenant-shaped name but no annotation. The lint
+// surfaces this as a warning so the engineer reviews intent.
+message User {
+  option (forge.v1.entity) = {
+    table: "users"
+    timestamps: true
+  };
+
+  string id = 1 [(forge.v1.field) = { pk: true }];
+  string tenant_id = 2 [(forge.v1.field) = { tenant: true }];
+  string org_id = 3;
+  string email = 4;
+}

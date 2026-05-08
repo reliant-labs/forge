@@ -1,0 +1,134 @@
+# Forge lint configuration — calibrated conservative defaults for
+# Go+Connect projects. The intent is "noise-free out of the box" —
+# every enabled linter has a brief rationale below. Ratchet down per-project
+# as the codebase matures.
+#
+# Adjust thresholds for your project:
+#   Stricter (CRUD APIs):    cyclop 12, funlen 60, gocognit 15
+#   Looser (operators/billing): cyclop 20, funlen 120, gocognit 30
+# Use path-based exclusions for complex subsystems rather than raising
+# global thresholds.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    # Correctness — high-signal, low-noise.
+    - govet         # standard correctness vet set
+    - errcheck      # catches unchecked error returns
+    - staticcheck   # the SA / ST / S family — broadly accepted lints
+    - unused        # dead code detection
+    - ineffassign   # unused variable assignments
+    - noctx         # http.Request without a context
+    - misspell      # English spelling
+    # Style — cross-project consistency.
+    - gocritic      # opinionated style nits (diagnostic + style + perf tags)
+    - revive        # broad replacement for golint, configurable per-rule
+    - godot         # require trailing punctuation on top-level doc comments
+    # Complexity — fail-loud when functions get away from us.
+    - cyclop        # cyclomatic complexity (includes package-average ratchet)
+    - funlen        # function length cap
+    - gocognit      # cognitive complexity (subjectively closer to readability)
+    - nestif        # block-nesting depth
+    - interfacebloat # cap interface method count
+  settings:
+    govet:
+      enable-all: true
+      shadow:
+        strict: false
+      disable:
+        - fieldalignment
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: unexported-return
+        - name: argument-limit
+          arguments: [5]
+        - name: function-result-limit
+          arguments: [3]
+        - name: max-public-structs
+          arguments: [5]
+        - name: max-control-nesting
+          arguments: [4]
+    cyclop:
+      # 15 keeps long switch/CRUD methods compiling; >15 usually means a
+      # helper would clarify intent. Bump for explicit operator/billing
+      # subsystems via the path-based exclusions below.
+      max-complexity: 15
+      package-average: 5.0
+      skip-tests: true
+    funlen:
+      # 100 lines / 50 statements is generous enough that constructors,
+      # builders, and table-driven test helpers don't trip; tight enough
+      # that 200-line monsters can't sneak in unnoticed.
+      lines: 100
+      statements: 50
+    gocognit:
+      # Cognitive complexity ≠ cyclomatic complexity: nesting and short-
+      # circuit chains weigh more. 20 catches the worst offenders without
+      # punishing well-structured branchy validators.
+      min-complexity: 20
+    nestif:
+      min-complexity: 5
+    interfacebloat:
+      max: 10
+    godot:
+      # Require sentence punctuation on top-level doc comments only;
+      # inline TODOs / sentence fragments inside function bodies are fine.
+      scope: declarations
+      capital: false
+      period: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        # `hugeParam` flags struct-by-value args >80 bytes; we routinely
+        # pass *Request / Deps structs by value as a deliberate API choice.
+        - hugeParam
+  exclusions:
+    paths:
+      - gen
+      - ".*node_modules.*"
+      - ".*frontends.*"
+      - ".*\\.pb\\.go$"
+      - ".*\\.connect\\.go$"
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - funlen
+          - cyclop
+          - gocognit
+          - godot
+      - path: cmd/
+        linters:
+          - cyclop
+          - gocognit
+          - funlen
+      - path: operators/
+        linters:
+          - funlen
+          - gocognit
+          - nestif
+          - cyclop
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - {{.Module}}

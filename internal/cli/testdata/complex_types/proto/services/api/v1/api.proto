@@ -1,0 +1,56 @@
+// Test fixture for protoc-gen-forge integration tests.
+// This file exercises service definitions with auth options and CRUD method patterns.
+syntax = "proto3";
+
+package api.v1;
+
+option go_package = "example.com/test/gen/api/v1;apiv1";
+
+import "forge/v1/forge.proto";
+
+service PatientService {
+  option (forge.v1.service) = {
+    name: "patient"
+    auth: { auth_required: true }
+  };
+
+  rpc CreatePatient(CreatePatientRequest) returns (CreatePatientResponse) {
+    option (forge.v1.method) = { idempotency_key: true };
+  };
+  rpc GetPatient(GetPatientRequest) returns (GetPatientResponse) {
+    option (forge.v1.method) = { auth_required: true };
+  };
+  rpc ListPatients(ListPatientsRequest) returns (ListPatientsResponse);
+}
+
+message CreatePatientRequest {
+  string name = 1;
+  string email = 2;
+  string org_id = 3;
+}
+
+message CreatePatientResponse {
+  string id = 1;
+}
+
+message GetPatientRequest {
+  string id = 1;
+}
+
+message GetPatientResponse {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+message ListPatientsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string search = 3;
+  bool active = 4;
+}
+
+message ListPatientsResponse {
+  repeated GetPatientResponse patients = 1;
+  string next_page_token = 2;
+}

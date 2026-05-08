@@ -1,0 +1,116 @@
+//go:build ignore
+
+package {{.ServicePackage}}
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+// handleWebhook{{.Name | pascalCase}} handles incoming {{.Name}} webhooks.
+//
+// Routes are auto-registered via webhook_routes_gen.go AND auto-wired by
+// pkg/app/bootstrap.go (which calls s.RegisterWebhookRoutes(mux, stack)
+// after the user-owned RegisterHTTP). No manual wiring required.
+func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, webhookMaxBodySize))
+	if err != nil {
+		s.deps.Logger.Error("failed to read webhook body", "error", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	// Verify webhook signature.
+	if err := s.verify{{.Name | pascalCase}}Signature(r.Header, body); err != nil {
+		s.deps.Logger.Warn("webhook signature verification failed", "error", err)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract event ID for idempotency.
+	eventID := extractEventID(r.Header)
+	if eventID == "" {
+		s.deps.Logger.Warn("webhook missing event ID")
+		http.Error(w, "missing event ID", http.StatusBadRequest)
+		return
+	}
+
+	// Idempotency check.
+	processed, err := s.isWebhookProcessed(r.Context(), eventID)
+	if err != nil {
+		s.deps.Logger.Error("failed to check webhook idempotency", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if processed {
+		s.deps.Logger.Debug("webhook already processed", "event_id", eventID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	event := webhookEvent{
+		ID:         eventID,
+		Source:     "{{.Name}}",
+		Headers:    r.Header,
+		Body:       body,
+		ReceivedAt: time.Now(),
+	}
+
+	// Process the webhook.
+	if err := s.process{{.Name | pascalCase}}Webhook(r.Context(), event); err != nil {
+		s.deps.Logger.Error("webhook processing failed", "event_id", eventID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Mark as processed.
+	if err := s.markWebhookProcessed(r.Context(), eventID, "{{.Name}}"); err != nil {
+		s.deps.Logger.Error("failed to mark webhook as processed", "event_id", eventID, "error", err)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// verify{{.Name | pascalCase}}Signature verifies the webhook signature.
+// TODO: Implement provider-specific signature verification.
+func (s *Service) verify{{.Name | pascalCase}}Signature(headers http.Header, body []byte) error {
+	// Example HMAC-SHA256 verification (common pattern):
+	//
+	// signature := headers.Get("X-Signature-256")
+	// if signature == "" {
+	//     return fmt.Errorf("missing signature header")
+	// }
+	// secret := s.deps.Config.{{.Name | pascalCase}}WebhookSecret
+	// if !verifyHMACSHA256(body, signature, secret) {
+	//     return fmt.Errorf("invalid signature")
+	// }
+
+	return fmt.Errorf("TODO: implement signature verification for {{.Name}}")
+}
+
+// process{{.Name | pascalCase}}Webhook processes a verified webhook event.
+// TODO: Implement your webhook processing logic.
+func (s *Service) process{{.Name | pascalCase}}Webhook(ctx context.Context, event webhookEvent) error {
+	s.deps.Logger.Info("processing webhook", "source", event.Source, "event_id", event.ID)
+
+	// TODO: Parse event.Body and handle different event types.
+	// Example:
+	//   var payload MyEventPayload
+	//   if err := json.Unmarshal(event.Body, &payload); err != nil {
+	//       return fmt.Errorf("unmarshal payload: %w", err)
+	//   }
+	//   switch payload.Type {
+	//   case "order.created":
+	//       return s.handleOrderCreated(ctx, payload)
+	//   }
+
+	return nil
+}

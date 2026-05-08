@@ -1,0 +1,109 @@
+# syntax=docker/dockerfile:1
+
+# Build stage.
+#
+# We pin to `golang:{{.DockerBuilderGoVersion}}-alpine` as the base because Docker Hub's `golang:*-alpine`
+# tags can lag the latest stable Go release by days to weeks. The `go` directive
+# in `go.mod` (currently `go {{.GoVersion}}`) combined with Go's default
+# `GOTOOLCHAIN=auto` means the in-image toolchain will auto-download and use
+# a newer Go toolchain at build time if `go.mod` requires one. This keeps the
+# builder base stable while the effective compiler tracks `go.mod`.
+FROM golang:{{.DockerBuilderGoVersion}}-alpine AS builder
+
+# Let Go's toolchain manager fetch a newer toolchain when go.mod requires it.
+# (This is the default on Go 1.21+, but we set it explicitly for clarity and
+# so the image works even with GOTOOLCHAIN pre-set in a user's environment.)
+ENV GOTOOLCHAIN=auto
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy go workspace files
+COPY go.work go.work.sum* ./
+COPY go.mod go.sum ./
+COPY gen/go.mod gen/go.sum ./gen/
+{{- if .LocalForgePkgVendored }}
+
+# ── Dev-mode local forge/pkg vendor ──
+#
+# go.mod has `replace github.com/reliant-labs/forge/pkg => ./.forge-pkg`
+# (a sibling forge checkout vendored in by `forge generate`). Without
+# this COPY the in-container `go mod download` and `go build` would fail
+# because the absolute host path is invisible inside the build context.
+#
+# This block is auto-emitted only while `.forge-pkg/` exists locally.
+# Once the project switches back to a real forge/pkg release tag (no
+# replace), `forge generate` removes the directory and regenerates the
+# Dockerfile without this COPY.
+COPY .forge-pkg/ ./.forge-pkg/
+{{- end }}
+
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build with optimizations.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /app/bin/{{.Name}} ./cmd
+
+# Debug build — full symbols, no inlining.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd
+
+# Install Delve
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    go install github.com/go-delve/delve/cmd/dlv@latest
+
+# ── Dev stage (hot-reload with Air) ──
+FROM golang:{{.DockerBuilderGoVersion}}-alpine AS dev
+
+RUN apk add --no-cache git
+RUN go install github.com/air-verse/air@latest
+
+WORKDIR /app
+
+# Source is volume-mounted at /app by docker-compose.
+# Air watches for changes and rebuilds inside the container.
+
+EXPOSE 8080 6060
+
+CMD ["air", "-c", ".air.toml"]
+
+# ── Debug stage (use with: docker build --target debug) ──
+FROM alpine:3.21 AS debug
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /app/bin/{{.Name}}-debug ./{{.Name}}
+COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
+
+EXPOSE 8080 2345
+
+# Delve headless server — waits for IDE to attach before running.
+# No --continue: the process is paused until a debugger connects.
+CMD ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "./{{.Name}}", "--", "server"]
+
+# ── Production stage (default) ──
+FROM alpine:3.21 AS production
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /app/bin/{{.Name}} .
+
+USER 65532:65532
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
+
+CMD ["./{{.Name}}", "server"]

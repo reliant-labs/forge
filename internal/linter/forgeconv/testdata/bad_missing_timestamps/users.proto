@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package bad.v1;
+
+import "forge/v1/forge.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "example.com/bad/gen/bad/v1;badv1";
+
+// User has explicit pk: true but declares created_at without either
+// `timestamps: true` on the entity or an explicit field annotation.
+message User {
+  option (forge.v1.entity) = {
+    table: "users"
+  };
+
+  string id = 1 [(forge.v1.field) = { pk: true }];
+  string email = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}

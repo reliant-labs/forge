@@ -1,0 +1,94 @@
+//go:build ignore
+
+package middleware
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"connectrpc.com/connect"
+)
+
+// AuditInterceptor creates a Connect interceptor that produces audit log entries
+// for every RPC call. Audit logs capture: who made the call (user ID, email),
+// what procedure was called, when, the result (success/error code), and duration.
+//
+// Audit logs are written to a dedicated logger, separate from operational logs,
+// so they can be routed to a dedicated audit log sink (e.g., separate file,
+// SIEM system, or compliance database).
+//
+// NOTE: The audit-log pack enhances this interceptor with database persistence.
+// Install it with `forge pack install audit-log` for queryable audit history.
+//
+// The interceptor extracts user identity from context using ClaimsFromContext.
+// If no claims are present (unauthenticated request), the user is logged as "anonymous".
+func AuditInterceptor(logger *slog.Logger) connect.Interceptor {
+	audit := logger.With(AttrLogType, "audit")
+	return &auditInterceptor{logger: audit}
+}
+
+type auditInterceptor struct {
+	logger *slog.Logger
+}
+
+func (a *auditInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		start := time.Now()
+
+		resp, err := next(ctx, req)
+
+		a.logAudit(ctx, req.Spec().Procedure, req.Peer().Addr, start, err)
+
+		return resp, err
+	}
+}
+
+func (a *auditInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (a *auditInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		start := time.Now()
+
+		err := next(ctx, conn)
+
+		a.logAudit(ctx, conn.Spec().Procedure, conn.Peer().Addr, start, err)
+
+		return err
+	}
+}
+
+func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr string, start time.Time, err error) {
+	attrs := []slog.Attr{
+		ProcedureAttr(procedure),
+		PeerAddrAttr(peerAddr),
+		DurationAttr(time.Since(start)),
+		slog.Time("timestamp", start),
+	}
+
+	// Extract user identity from auth claims if available
+	claims, ok := ClaimsFromContext(ctx)
+	if ok && claims != nil {
+		attrs = append(attrs,
+			UserIDAttr(claims.UserID),
+			EmailAttr(claims.Email),
+		)
+	} else {
+		attrs = append(attrs, UserIDAttr("anonymous"))
+	}
+
+	if err != nil {
+		code := connect.CodeOf(err)
+		attrs = append(attrs,
+			StatusAttr("error"),
+			ErrorCodeAttr(code.String()),
+			slog.String("error", err.Error()),
+		)
+		LogAuditEventWarn(ctx, a.logger, attrs...)
+	} else {
+		attrs = append(attrs, StatusAttr("ok"))
+		LogAuditEvent(ctx, a.logger, attrs...)
+	}
+}

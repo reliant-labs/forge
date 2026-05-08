@@ -1,0 +1,9 @@
+// forge:scaffold one-shot — audit-log sentinel errors; canonical pattern in `forge skill load packs`.
+package auditlog
+
+import "errors"
+
+// ErrAuditStoreNotConfigured is returned by the AuditLogService handler when
+// it was constructed with a nil store. Callers should ensure NewHandler is
+// invoked with audit.NewDBAuditStore(db) (or another AuditStore).
+var ErrAuditStoreNotConfigured = errors.New("auditlog: audit store not configured")

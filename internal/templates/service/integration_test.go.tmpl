@@ -1,0 +1,55 @@
+//go:build integration
+// +build integration
+
+package {{.ServicePackage}}_test
+
+{{- if .Methods}}
+
+import (
+	"testing"
+
+	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/tdd"
+
+	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
+	"{{.Module}}/pkg/app"
+)
+
+// Per-RPC integration tests scaffolded by forge. Runs each method
+// through an in-process httptest.Server with the real bootstrap stack
+// (real DB / real upstream services). Guarded by `//go:build
+// integration` — invoke via `task test:integration` or `forge test
+// integration`.
+//
+// Library reference: github.com/reliant-labs/forge/pkg/tdd
+// Skill: forge skill load testing/integration
+{{- range .Methods}}
+{{- if or .ClientStreaming .ServerStreaming}}
+
+// TestIntegration_{{.Name}} — TODO: streaming RPC; tdd.TableRPC targets
+// unary handlers. Add a hand-written streaming integration test here.
+{{- else}}
+
+func TestIntegration_{{.Name}}(t *testing.T) {
+	t.Parallel()
+	_, client := app.NewTest{{$.TestHelperName}}Server(t)
+
+	tdd.TableRPC(t, []tdd.Case[pb.{{.InputType}}, pb.{{.OutputType}}]{
+		{
+			Name: "happy path",
+			Req:  connect.NewRequest(&pb.{{.InputType}}{}),
+			// Stub returns CodeUnimplemented; relax/strengthen once the
+			// real handler lands. Add a Check function to assert on the
+			// response body for happy-path cases.
+			WantErr: connect.CodeUnimplemented,
+		},
+	}, client.{{.Name}})
+}
+{{- end}}
+{{- end}}
+{{- else}}
+
+// forge-integration-test-placeholder: this file is regenerated once RPCs are
+// defined in the proto file. Run 'forge generate' after adding RPCs.
+{{- end}}

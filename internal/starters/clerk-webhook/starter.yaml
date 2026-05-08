@@ -1,0 +1,26 @@
+name: clerk-webhook
+description: Clerk webhook user-sync scaffold — Svix signature verification, user/org/membership event dispatch (you own the code).
+deps:
+  go:
+    - github.com/svix/svix-webhooks
+files:
+  - source: clerk_webhook.go.tmpl
+    destination: pkg/clerk/webhook.go
+notes: |
+  After scaffolding, you own this code. Clerk's webhook event shape evolves —
+  monitor https://clerk.com/docs/integrations/webhooks for changes.
+
+  Required environment variable: CLERK_WEBHOOK_SECRET (the Svix signing secret
+  shown in your Clerk dashboard's Webhooks tab).
+
+  Wire the WebhookRouter into your service mux at the route of your choice
+  (commonly `POST /webhooks/clerk`). Implement ClerkWebhookHandler in your
+  application code to persist user/org/membership rows in your own data model.
+
+  This starter is the webhook side of Clerk integration only. For the JWT/JWKS
+  auth side, install the `clerk` pack:
+
+      forge pack install clerk
+
+  Or pair `auth-ui --config provider=clerk` with the `clerk` pack for full
+  auth + UI coverage.

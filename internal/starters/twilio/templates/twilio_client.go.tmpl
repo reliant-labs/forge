@@ -1,0 +1,112 @@
+// Starter scaffold — you own this code. forge does not regenerate it.
+// See https://github.com/twilio/twilio-go for upstream docs.
+package twilio
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+
+	twilioApi "github.com/twilio/twilio-go/rest/api/v2010"
+	twilioClient "github.com/twilio/twilio-go"
+)
+
+// Client wraps the Twilio SDK for sending SMS and voice calls.
+type Client struct {
+	client     *twilioClient.RestClient
+	fromNumber string
+	logger     *slog.Logger
+}
+
+// SMSOption configures optional SMS parameters.
+type SMSOption func(*twilioApi.CreateMessageParams)
+
+// WithStatusCallback sets the status callback URL for delivery tracking.
+func WithStatusCallback(url string) SMSOption {
+	return func(p *twilioApi.CreateMessageParams) {
+		p.SetStatusCallback(url)
+	}
+}
+
+// WithMediaURLs attaches media (MMS) to the message.
+func WithMediaURLs(urls []string) SMSOption {
+	return func(p *twilioApi.CreateMessageParams) {
+		p.SetMediaUrl(urls)
+	}
+}
+
+// NewClient creates a Twilio client from environment variables.
+// Required env vars: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER.
+func NewClient(logger *slog.Logger) (*Client, error) {
+	accountSID := os.Getenv("TWILIO_ACCOUNT_SID")
+	authToken := os.Getenv("TWILIO_AUTH_TOKEN")
+	fromNumber := os.Getenv("TWILIO_FROM_NUMBER")
+
+	if accountSID == "" || authToken == "" {
+		return nil, fmt.Errorf("twilio: TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set")
+	}
+	if fromNumber == "" {
+		return nil, fmt.Errorf("twilio: TWILIO_FROM_NUMBER must be set")
+	}
+
+	client := twilioClient.NewRestClientWithParams(twilioClient.ClientParams{
+		Username: accountSID,
+		Password: authToken,
+	})
+
+	logger.Info("twilio client initialized", "from_number", fromNumber)
+
+	return &Client{
+		client:     client,
+		fromNumber: fromNumber,
+		logger:     logger,
+	}, nil
+}
+
+// SendSMS sends an SMS message and returns the Twilio message SID.
+func (c *Client) SendSMS(to, body string, opts ...SMSOption) (string, error) {
+	params := &twilioApi.CreateMessageParams{}
+	params.SetTo(to)
+	params.SetFrom(c.fromNumber)
+	params.SetBody(body)
+
+	for _, opt := range opts {
+		opt(params)
+	}
+
+	resp, err := c.client.Api.CreateMessage(params)
+	if err != nil {
+		c.logger.Error("twilio: failed to send SMS", "to", to, "error", err)
+		return "", fmt.Errorf("twilio send SMS: %w", err)
+	}
+
+	sid := ""
+	if resp.Sid != nil {
+		sid = *resp.Sid
+	}
+
+	c.logger.Info("twilio: SMS sent", "to", to, "sid", sid)
+	return sid, nil
+}
+
+// SendVoice initiates an outbound voice call with the given TwiML instructions.
+func (c *Client) SendVoice(to, twiml string) (string, error) {
+	params := &twilioApi.CreateCallParams{}
+	params.SetTo(to)
+	params.SetFrom(c.fromNumber)
+	params.SetTwiml(twiml)
+
+	resp, err := c.client.Api.CreateCall(params)
+	if err != nil {
+		c.logger.Error("twilio: failed to initiate call", "to", to, "error", err)
+		return "", fmt.Errorf("twilio send voice: %w", err)
+	}
+
+	sid := ""
+	if resp.Sid != nil {
+		sid = *resp.Sid
+	}
+
+	c.logger.Info("twilio: voice call initiated", "to", to, "sid", sid)
+	return sid, nil
+}

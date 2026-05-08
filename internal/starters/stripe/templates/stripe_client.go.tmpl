@@ -1,0 +1,191 @@
+// Starter scaffold — you own this code. forge does not regenerate it.
+// See https://github.com/stripe/stripe-go for upstream docs.
+package stripe
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82/checkout/session"
+	"github.com/stripe/stripe-go/v82/customer"
+	"github.com/stripe/stripe-go/v82/paymentintent"
+)
+
+// Client wraps the Stripe API with typed methods for common operations.
+type Client struct {
+	apiKey string
+}
+
+// NewClient creates a Stripe client. It reads the API key from the
+// STRIPE_SECRET_KEY environment variable. Override the env-var name
+// directly here if your project uses a different secret-store key.
+func NewClient() (*Client, error) {
+	key := os.Getenv("STRIPE_SECRET_KEY")
+	if key == "" {
+		return nil, fmt.Errorf("stripe: STRIPE_SECRET_KEY environment variable is required")
+	}
+	stripe.Key = key
+	return &Client{apiKey: key}, nil
+}
+
+// --- Payment Intents ---
+
+// CreatePaymentIntentParams are the parameters for creating a payment intent.
+type CreatePaymentIntentParams struct {
+	Amount     int64
+	Currency   string
+	CustomerID string
+	Metadata   map[string]string
+}
+
+// CreatePaymentIntent creates a new Stripe PaymentIntent.
+func (c *Client) CreatePaymentIntent(ctx context.Context, params CreatePaymentIntentParams) (*stripe.PaymentIntent, error) {
+	p := &stripe.PaymentIntentParams{
+		Amount:   stripe.Int64(params.Amount),
+		Currency: stripe.String(params.Currency),
+	}
+	if params.CustomerID != "" {
+		p.Customer = stripe.String(params.CustomerID)
+	}
+	for k, v := range params.Metadata {
+		p.AddMetadata(k, v)
+	}
+
+	pi, err := paymentintent.New(p)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: create payment intent: %w", err)
+	}
+	return pi, nil
+}
+
+// CapturePaymentIntent captures a previously authorized PaymentIntent.
+func (c *Client) CapturePaymentIntent(ctx context.Context, id string) (*stripe.PaymentIntent, error) {
+	pi, err := paymentintent.Capture(id, nil)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: capture payment intent %s: %w", id, err)
+	}
+	return pi, nil
+}
+
+// CancelPaymentIntent cancels an uncaptured PaymentIntent.
+func (c *Client) CancelPaymentIntent(ctx context.Context, id string) (*stripe.PaymentIntent, error) {
+	pi, err := paymentintent.Cancel(id, nil)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: cancel payment intent %s: %w", id, err)
+	}
+	return pi, nil
+}
+
+// GetPaymentIntent retrieves a PaymentIntent by ID.
+func (c *Client) GetPaymentIntent(ctx context.Context, id string) (*stripe.PaymentIntent, error) {
+	pi, err := paymentintent.Get(id, nil)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: get payment intent %s: %w", id, err)
+	}
+	return pi, nil
+}
+
+// --- Customers ---
+
+// CreateCustomerParams are the parameters for creating a customer.
+type CreateCustomerParams struct {
+	Email    string
+	Name     string
+	Metadata map[string]string
+}
+
+// CreateCustomer creates a new Stripe Customer.
+func (c *Client) CreateCustomer(ctx context.Context, params CreateCustomerParams) (*stripe.Customer, error) {
+	p := &stripe.CustomerParams{
+		Email: stripe.String(params.Email),
+		Name:  stripe.String(params.Name),
+	}
+	for k, v := range params.Metadata {
+		p.AddMetadata(k, v)
+	}
+
+	cust, err := customer.New(p)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: create customer: %w", err)
+	}
+	return cust, nil
+}
+
+// UpdateCustomer updates an existing Stripe Customer.
+func (c *Client) UpdateCustomer(ctx context.Context, id string, params CreateCustomerParams) (*stripe.Customer, error) {
+	p := &stripe.CustomerParams{}
+	if params.Email != "" {
+		p.Email = stripe.String(params.Email)
+	}
+	if params.Name != "" {
+		p.Name = stripe.String(params.Name)
+	}
+	for k, v := range params.Metadata {
+		p.AddMetadata(k, v)
+	}
+
+	cust, err := customer.Update(id, p)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: update customer %s: %w", id, err)
+	}
+	return cust, nil
+}
+
+// DeleteCustomer deletes a Stripe Customer.
+func (c *Client) DeleteCustomer(ctx context.Context, id string) error {
+	_, err := customer.Del(id, nil)
+	if err != nil {
+		return fmt.Errorf("stripe: delete customer %s: %w", id, err)
+	}
+	return nil
+}
+
+// GetCustomer retrieves a Stripe Customer by ID.
+func (c *Client) GetCustomer(ctx context.Context, id string) (*stripe.Customer, error) {
+	cust, err := customer.Get(id, nil)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: get customer %s: %w", id, err)
+	}
+	return cust, nil
+}
+
+// --- Checkout Sessions ---
+
+// CreateCheckoutSessionParams are the parameters for creating a checkout session.
+type CreateCheckoutSessionParams struct {
+	CustomerID string
+	SuccessURL string
+	CancelURL  string
+	LineItems  []*stripe.CheckoutSessionLineItemParams
+	Mode       string // "payment", "subscription", or "setup"
+	Metadata   map[string]string
+}
+
+// CreateCheckoutSession creates a new Stripe Checkout Session.
+func (c *Client) CreateCheckoutSession(ctx context.Context, params CreateCheckoutSessionParams) (*stripe.CheckoutSession, error) {
+	mode := stripe.String(params.Mode)
+	if params.Mode == "" {
+		mode = stripe.String(string(stripe.CheckoutSessionModePayment))
+	}
+
+	p := &stripe.CheckoutSessionParams{
+		SuccessURL: stripe.String(params.SuccessURL),
+		CancelURL:  stripe.String(params.CancelURL),
+		Mode:       mode,
+		LineItems:  params.LineItems,
+	}
+	if params.CustomerID != "" {
+		p.Customer = stripe.String(params.CustomerID)
+	}
+	for k, v := range params.Metadata {
+		p.AddMetadata(k, v)
+	}
+
+	sess, err := session.New(p)
+	if err != nil {
+		return nil, fmt.Errorf("stripe: create checkout session: %w", err)
+	}
+	return sess, nil
+}

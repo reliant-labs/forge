@@ -1,0 +1,333 @@
+version: '3'
+
+# ┌─────────────────────────────────────────────────────────┐
+# │ Standard operations — use the forge CLI:                │
+# │                                                         │
+# │   forge run              Dev server (hot-reload)        │
+# │   forge run --debug      Dev + Delve on :2345           │
+# │   forge build            Build production binary        │
+# │   forge build --debug    Build with debug symbols       │
+# │   forge test             Run tests                      │
+# │   forge lint             Run linters                    │
+# │   forge deploy           Deploy to k3d / cloud          │
+# │   forge debug start      Interactive Delve session      │
+# │   forge db migrate up    Run database migrations        │
+# │   forge generate         Codegen from proto files       │
+# │                                                         │
+# │ Task wrappers below exist so CI and onboarding docs     │
+# │ have a stable entry point that doesn't require the      │
+# │ forge CLI to be installed.                              │
+# └─────────────────────────────────────────────────────────┘
+
+vars:
+  GEN_DIR: gen
+  FRONTEND_DIR: frontends/web
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  deps:
+    desc: Install Go and frontend dependencies
+    cmds:
+      - go mod download
+      - task: deps:frontend
+
+  deps:frontend:
+    desc: Install frontend dependencies
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm install
+
+  build:
+    desc: Build Go binaries and frontend bundle
+    cmds:
+      # -trimpath strips local filesystem paths so builds are reproducible
+      # across machines; -buildvcs=true embeds the commit/dirty flag for
+      # runtime correlation. Keep these flags in lockstep with the
+      # Dockerfile and CI workflow so locally-built, CI-built, and
+      # Docker-built binaries all hash identically from the same source.
+      - go build -trimpath -buildvcs=true ./...
+      - task: build:frontend
+
+  build:frontend:
+    desc: Build frontend bundle
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm run build
+
+  test:
+    desc: Run Go unit tests and frontend tests (excludes integration + e2e)
+    cmds:
+      # Integration and e2e tests are guarded by the `integration` and `e2e`
+      # build tags respectively, so they are physically excluded from this
+      # default test run (no compile, no skip-at-runtime).
+      # -timeout 30s surfaces hangs (subprocess loops, deadlocks, accidental
+      # network calls) as fast test failures instead of CI-stalling 10-minute
+      # waits. Pure unit tests should complete in milliseconds; if a test needs
+      # longer it likely belongs behind a build tag (integration / e2e).
+      - go test -race -count=1 -timeout 30s ./...
+      - task: test:frontend
+
+  test:frontend:
+    desc: Run frontend tests
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm test -- --passWithNoTests
+
+  test:integration:
+    desc: Run integration tests (uses -tags=integration; may require docker compose)
+    cmds:
+      # Integration tests are guarded by the `integration` build tag and are
+      # therefore excluded from `task test`. They typically need a real
+      # database / running infra (see docker-compose.yml). -timeout=10m gives
+      # heavy DB-backed scenarios room while still surfacing hangs.
+      - go test -race -tags=integration -count=1 -timeout=10m ./...
+
+  test:e2e:
+    desc: Run end-to-end tests (requires docker compose; uses -tags=e2e)
+    cmds:
+      - go test -tags=e2e -v -count=1 -timeout=20m ./e2e/...
+
+  lint:
+    desc: Run all linters via the forge CLI (Go + proto + frontend)
+    cmds:
+      # Delegate to `forge lint` so this task inherits forge's full linter
+      # suite (golangci-lint with skip-on-missing, buf lint, frontend lint
+      # & typecheck via the configured Next.js workspace, plus the
+      # contract / db / migration-safety / convention sub-linters when
+      # they're enabled in forge.yaml). Pre-fix this task hard-coded
+      # `golangci-lint run`, which exited 127 when the binary wasn't
+      # installed locally — losing the lint signal entirely instead of
+      # the warn-and-skip forge does.
+      - forge lint
+
+  lint:frontend:
+    desc: Run frontend linter and TypeScript typecheck (sub-task; `task lint` already covers this)
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      # Lint catches style and rule violations; typecheck verifies the
+      # program is well-typed. We run both because `next lint` (now
+      # deprecated) skipped typechecking, and CI has historically
+      # shipped type errors that only surfaced at build time. Kept as a
+      # standalone task for fast iteration on frontend-only lint runs;
+      # `task lint` above goes through `forge lint`, which already
+      # includes this step.
+      - npm run lint
+      - npm run typecheck
+
+  dev:
+    desc: Run the app with hot-reload (Air + Next dev)
+    deps:
+      - dev-up
+    cmds:
+      - cmd: air
+        ignore_error: true
+
+  dev:frontend:
+    desc: Run only the frontend dev server
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm run dev
+
+  dev-up:
+    # Developers iterating on the app want Delve attached; launching the
+    # plain `app` service runs a production-style binary that makes
+    # breakpoints impossible. `docker-compose.yml` gates `app-debug`
+    # behind the `debug` profile, so we enable it here. Infra services
+    # (postgres, jaeger) have no profile and come up regardless.
+    desc: Start local dev infrastructure with app-debug (Delve on :2345)
+    cmds:
+      - docker compose --profile debug up -d --wait
+
+  dev-up-prod:
+    # Escape hatch: run the production-mode `app` service locally (no
+    # Delve, smaller image). Useful for smoke-testing the release build
+    # or reproducing prod-only behaviour.
+    desc: Start local dev infrastructure with the production app image
+    cmds:
+      - docker compose up -d --wait
+
+  dev-down:
+    # `--profile '*'` ensures we tear down app-debug too, even if the
+    # caller used `dev-up-prod`; otherwise the debug container would be
+    # left running when no profile is active.
+    desc: Stop local dev infrastructure (docker compose down)
+    cmds:
+      - docker compose --profile '*' down
+
+  proto:
+    desc: Generate protobuf code using buf
+    cmds:
+      - buf generate
+    sources:
+      - proto/**/*.proto
+      - buf.gen.yaml
+    generates:
+      - "{{.GEN_DIR}}/**/*.go"
+
+  fmt:
+    desc: Format Go and frontend source
+    cmds:
+      # goimports handles both gofmt and import ordering; fail loudly if the
+      # binary is missing instead of silently skipping formatting.
+      - cmd: |
+          if ! command -v goimports >/dev/null 2>&1; then
+            echo "goimports not installed — run: go install golang.org/x/tools/cmd/goimports@latest" >&2
+            exit 1
+          fi
+          goimports -w .
+      - go mod tidy
+      - task: fmt:frontend
+
+  fmt:frontend:
+    desc: Format frontend source with prettier
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npx --no-install prettier --write .
+
+  generate:
+    desc: Regenerate protobuf + forge code (frontend client included via buf generate; runs go mod tidy after)
+    cmds:
+      # Pre-flight: fail loudly when required codegen tooling is missing
+      # instead of emitting cryptic buf/protoc errors. Mirrors the pattern
+      # used by `task fmt` for goimports.
+      - cmd: |
+          missing=0
+          if ! command -v buf >/dev/null 2>&1; then
+            echo "buf not installed — install from https://buf.build/docs/installation" >&2
+            missing=1
+          fi
+          if ! command -v protoc-gen-go >/dev/null 2>&1; then
+            echo "protoc-gen-go not installed — run: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest" >&2
+            missing=1
+          fi
+          if ! command -v protoc-gen-connect-go >/dev/null 2>&1; then
+            echo "protoc-gen-connect-go not installed — run: go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest" >&2
+            missing=1
+          fi
+          exit $missing
+      - buf generate
+      - go mod tidy
+
+  verify-generate:
+    # CI gate: regenerate everything, then assert nothing changed. If this
+    # fails the developer forgot to commit a `forge generate` / `buf
+    # generate` result. Mirrors `make verify-generate` from hand-rolled
+    # Makefiles. Uses `git diff --exit-code` so the diff is visible in the
+    # CI log.
+    desc: Verify generated code is committed up-to-date (CI guard)
+    cmds:
+      - task: generate
+      - cmd: |
+          if ! git diff --exit-code; then
+            echo "ERROR: Generated files are out of date. Run 'forge generate' (or 'task generate') and commit the result." >&2
+            exit 1
+          fi
+
+  coverage:
+    # HTML coverage report at coverage.html. We deliberately omit -race
+    # here (race + coverage requires -covermode=atomic, which in turn
+    # needs the `covdata` tool — not always present in auto-installed
+    # toolchains). Race testing happens in `task test`; this task is for
+    # measuring exercised code. Skips integration / e2e (those have their
+    # own tasks) so coverage reflects unit tests.
+    desc: Run unit tests with coverage and emit coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out -timeout 60s ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true
+
+  migrate:
+    desc: Apply pending database migrations (wraps `demo db migrate up`)
+    cmds:
+      # The generated CLI exposes migrations via a dedicated subcommand; keep
+      # this task as the CI/docs-friendly entrypoint.
+      # TODO: if your project does not use the generated `db migrate up`
+      # subcommand (e.g. you run migrations from infra), replace this with
+      # the equivalent command for your stack.
+      - go run ./cmd db migrate up
+
+  db-seed:
+    # Loads every file in db/seeds/ in lexicographic order via psql. Seeds
+    # are expected to be idempotent (ON CONFLICT DO NOTHING or equivalent),
+    # so re-running is safe. $DATABASE_URL must be set — fall back to the
+    # docker-compose default so `task db-seed` works out of the box.
+    desc: Apply all SQL files in db/seeds/ against $DATABASE_URL
+    cmds:
+      - cmd: |
+          if ! command -v psql >/dev/null 2>&1; then
+            echo "psql not installed — install postgresql-client" >&2
+            exit 1
+          fi
+          : "${DATABASE_URL:?DATABASE_URL must be set (see .env.example)}"
+          shopt -s nullglob
+          for f in db/seeds/*.sql; do
+            echo "applying $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+  db-snapshot-restore:
+    # Restore a sanitized snapshot dump (custom-format pg_dump, optionally
+    # gzip-compressed) into a local Postgres database. The default target
+    # database name is "<project>_snapshot" so it doesn't clobber dev data.
+    #
+    # Usage: task db-snapshot-restore DUMP=path/to/snapshot.dump.gz
+    #
+    # TODO: if your project uses a remote/managed snapshot store (GCS, S3),
+    # add a sibling `db-snapshot` task that downloads + sanitizes from
+    # there and writes the dump file this task expects.
+    desc: Restore a DB snapshot dump to local postgres (DUMP=path/to/file.dump[.gz])
+    cmds:
+      - cmd: |
+          DUMP="${DUMP:-snapshot.dump.gz}"
+          DB="${SNAPSHOT_DB:-demo_snapshot}"
+          PGHOST="${PGHOST:-127.0.0.1}"
+          PGUSER="${PGUSER:-postgres}"
+          if [ ! -f "$DUMP" ]; then
+            echo "ERROR: Dump file '$DUMP' not found." >&2
+            echo "Usage: task db-snapshot-restore DUMP=/path/to/snapshot.dump[.gz]" >&2
+            exit 1
+          fi
+          for cmd in pg_restore createdb dropdb; do
+            command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not installed — install postgresql-client" >&2; exit 1; }
+          done
+          echo "==> Restoring $DUMP into $DB (host=$PGHOST user=$PGUSER)..."
+          dropdb --if-exists -h "$PGHOST" -U "$PGUSER" "$DB" 2>/dev/null || true
+          createdb -h "$PGHOST" -U "$PGUSER" "$DB"
+          if [[ "$DUMP" == *.gz ]]; then
+            gunzip -c "$DUMP" | pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
+              --no-owner --no-privileges --clean --if-exists 2>&1 \
+              | grep -v "^pg_restore: warning:" || true
+          else
+            pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
+              --no-owner --no-privileges --clean --if-exists "$DUMP" 2>&1 \
+              | grep -v "^pg_restore: warning:" || true
+          fi
+          echo "==> Restore complete. Connect with: psql -h $PGHOST -U $PGUSER -d $DB"
+
+  bench:
+    # Go microbenchmarks live under benchmarks/. Extra packages with
+    # Benchmark* functions are picked up automatically thanks to the
+    # `./...` scope.
+    desc: Run Go benchmarks (go test -bench=. across the module)
+    cmds:
+      - go test -bench=. -benchmem -run=^$ ./...
+
+  clean:
+    desc: Clean generated files and build artifacts
+    cmds:
+      - rm -rf {{.GEN_DIR}}
+      - rm -rf bin
+      - rm -f coverage.out coverage.html
+      - rm -rf .forge/debug
+
+  dev-psql:
+    desc: Open psql shell to development database (uses $POSTGRES_USER/$POSTGRES_DB, defaults match docker-compose.yml)
+    cmds:
+      # POSTGRES_USER / POSTGRES_DB fall back to the same defaults as the
+      # docker-compose service so `task dev-psql` works with zero env setup.
+      - docker compose exec postgres psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-demo}"

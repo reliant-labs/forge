@@ -1,0 +1,229 @@
+// forge:scaffold one-shot — NATS consumer; canonical pattern in `forge skill load packs`.
+package nats
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// HandleFunc is the user-supplied callback invoked for each delivered message.
+// Returning a nil error causes the consumer to Ack the message; any non-nil
+// error causes a Nak with delay (so the message is redelivered after the
+// configured backoff) up to MaxDeliver attempts.
+type HandleFunc func(ctx context.Context, msg jetstream.Msg) error
+
+// Consumer is the contract for a durable JetStream pull consumer.
+// Implementations may be substituted in tests.
+type Consumer interface {
+	// Start blocks until ctx is cancelled, fetching and dispatching
+	// messages to handler. The returned error is nil on graceful shutdown.
+	Start(ctx context.Context, handler HandleFunc) error
+}
+
+// ConsumerConfig tweaks the durable pull consumer's behaviour.
+//
+// Sensible defaults are applied for any zero-valued field — callers can
+// safely pass ConsumerConfig{} for most use cases.
+type ConsumerConfig struct {
+	// StreamName is the JetStream stream to consume from. Required.
+	StreamName string
+
+	// DurableName names the durable consumer. Required for at-least-once
+	// delivery across process restarts.
+	DurableName string
+
+	// FilterSubject restricts the consumer to a subject pattern. Empty =
+	// receive every subject the stream binds.
+	FilterSubject string
+
+	// FetchBatch is the max messages per Fetch call. Default 25.
+	FetchBatch int
+
+	// FetchMaxWait is how long Fetch blocks before returning empty.
+	// Default 5 seconds.
+	FetchMaxWait time.Duration
+
+	// MaxDeliver caps redelivery attempts before the message is parked
+	// on the DLQ subject. Default 10.
+	MaxDeliver int
+
+	// BackOff is the redelivery delay schedule. Default ramps from 5s to
+	// 2 minutes in 5 steps.
+	BackOff []time.Duration
+
+	// NakDelay is the delay applied when the handler returns a non-nil
+	// error. Default 5 seconds.
+	NakDelay time.Duration
+
+	// DLQSubject, if set, is the subject to publish a failed-message
+	// envelope to once MaxDeliver is exhausted. Empty = no DLQ — the
+	// message is terminated (Term'd) so it isn't redelivered.
+	DLQSubject string
+
+	// Logger receives structured operational logs. nil = a discard logger.
+	Logger *slog.Logger
+}
+
+// jetStreamConsumer is a durable pull-consumer implementation.
+type jetStreamConsumer struct {
+	js     jetstream.JetStream
+	cfg    ConsumerConfig
+	logger *slog.Logger
+}
+
+// NewConsumer builds a durable JetStream pull consumer.
+func NewConsumer(js jetstream.JetStream, cfg ConsumerConfig) Consumer {
+	if cfg.FetchBatch <= 0 {
+		cfg.FetchBatch = 25
+	}
+	if cfg.FetchMaxWait <= 0 {
+		cfg.FetchMaxWait = 5 * time.Second
+	}
+	if cfg.MaxDeliver <= 0 {
+		cfg.MaxDeliver = 10
+	}
+	if cfg.NakDelay <= 0 {
+		cfg.NakDelay = 5 * time.Second
+	}
+	if len(cfg.BackOff) == 0 {
+		cfg.BackOff = []time.Duration{
+			5 * time.Second,
+			15 * time.Second,
+			30 * time.Second,
+			time.Minute,
+			2 * time.Minute,
+		}
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(noopWriter{}, nil))
+	}
+	return &jetStreamConsumer{js: js, cfg: cfg, logger: logger}
+}
+
+type noopWriter struct{}
+
+func (noopWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// Start implements Consumer.
+func (c *jetStreamConsumer) Start(ctx context.Context, handler HandleFunc) error {
+	if c.cfg.StreamName == "" {
+		return errors.New("ConsumerConfig.StreamName is required")
+	}
+	if c.cfg.DurableName == "" {
+		return errors.New("ConsumerConfig.DurableName is required")
+	}
+
+	consumer, err := c.js.CreateOrUpdateConsumer(ctx, c.cfg.StreamName, jetstream.ConsumerConfig{
+		Durable:       c.cfg.DurableName,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		FilterSubject: c.cfg.FilterSubject,
+		MaxDeliver:    c.cfg.MaxDeliver,
+		BackOff:       c.cfg.BackOff,
+	})
+	if err != nil {
+		return fmt.Errorf("create/update consumer %s: %w", c.cfg.DurableName, err)
+	}
+
+	var fetchBackoff time.Duration
+	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Info("nats consumer shutting down", "durable", c.cfg.DurableName)
+			return nil
+		default:
+		}
+
+		msgs, err := consumer.Fetch(c.cfg.FetchBatch, jetstream.FetchMaxWait(c.cfg.FetchMaxWait))
+		if err != nil {
+			fetchBackoff = nextFetchBackoff(fetchBackoff)
+			c.logger.Warn("fetch error, backing off", "err", err, "backoff", fetchBackoff)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(fetchBackoff):
+			}
+			continue
+		}
+		fetchBackoff = 0
+
+		for msg := range msgs.Messages() {
+			c.dispatch(ctx, handler, msg)
+		}
+		if err := msgs.Error(); err != nil {
+			c.logger.Warn("messages stream error", "err", err)
+		}
+	}
+}
+
+// dispatch invokes the handler for a single message and records the result.
+func (c *jetStreamConsumer) dispatch(ctx context.Context, handler HandleFunc, msg jetstream.Msg) {
+	if err := handler(ctx, msg); err != nil {
+		meta, metaErr := msg.Metadata()
+		deliveries := uint64(0)
+		if metaErr == nil {
+			deliveries = meta.NumDelivered
+		}
+		c.logger.Error("handler error",
+			"subject", msg.Subject(),
+			"deliveries", deliveries,
+			"err", err,
+		)
+
+		// Park the message if we've blown through MaxDeliver.
+		if metaErr == nil && deliveries >= uint64(c.cfg.MaxDeliver) {
+			c.terminate(ctx, msg, err)
+			return
+		}
+
+		if nakErr := msg.NakWithDelay(c.cfg.NakDelay); nakErr != nil {
+			c.logger.Error("nak error", "err", nakErr)
+		}
+		return
+	}
+	if ackErr := msg.Ack(); ackErr != nil {
+		c.logger.Error("ack error", "err", ackErr)
+	}
+}
+
+// terminate publishes the message body to the DLQ subject (if configured)
+// then Term's the original so it isn't redelivered. If no DLQ is configured
+// the message is simply Term'd.
+func (c *jetStreamConsumer) terminate(ctx context.Context, msg jetstream.Msg, handlerErr error) {
+	if c.cfg.DLQSubject != "" {
+		if _, pubErr := c.js.Publish(ctx, c.cfg.DLQSubject, msg.Data()); pubErr != nil {
+			c.logger.Error("dlq publish error",
+				"dlq_subject", c.cfg.DLQSubject,
+				"err", pubErr,
+				"handler_err", handlerErr,
+			)
+		} else {
+			c.logger.Warn("message parked on DLQ",
+				"dlq_subject", c.cfg.DLQSubject,
+				"original_subject", msg.Subject(),
+			)
+		}
+	}
+	if termErr := msg.Term(); termErr != nil {
+		c.logger.Error("term error", "err", termErr)
+	}
+}
+
+// nextFetchBackoff implements the same exponential-backoff curve used by the
+// control-plane natsio consumer: start at 100ms, double, cap at 30s.
+func nextFetchBackoff(prev time.Duration) time.Duration {
+	const cap = 30 * time.Second
+	if prev <= 0 {
+		return 100 * time.Millisecond
+	}
+	next := prev * 2
+	if next > cap {
+		return cap
+	}
+	return next
+}

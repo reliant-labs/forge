@@ -1,0 +1,31 @@
+import path from "node:path";
+import type { NextConfig } from "next";
+import bundleAnalyzer from "@next/bundle-analyzer";
+
+const withBundleAnalyzer = bundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+});
+
+const nextConfig: NextConfig = {
+  // "standalone" emits a self-contained Node server at
+  // .next/standalone/server.js plus a pruned node_modules tree. This is
+  // the shape the Dockerfile copies into the runner image.
+  output: "standalone",
+  // outputFileTracingRoot pins the tracing base directory to this frontend's
+  // own folder. Without this, Next.js walks up looking for a workspace root
+  // (e.g. a lockfile in the repo root) and emits the standalone bundle under
+  // `.next/standalone/<relative-path>/server.js`, which the Dockerfile's
+  // `COPY --from=builder /app/.next/standalone ./` cannot locate at runtime.
+  outputFileTracingRoot: path.join(__dirname),
+  webpack: (config) => {
+    // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
+    // Next.js with moduleResolution: bundler can't resolve .js to .ts files
+    // without this alias mapping.
+    config.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    };
+    return config;
+  },
+};
+
+export default withBundleAnalyzer(nextConfig);

@@ -1,0 +1,58 @@
+// forge:scaffold one-shot — event-bus implementation; canonical pattern in `forge skill load service-layer`.
+package {{.Name}}
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+
+	"{{.Module}}/pkg/config"
+)
+
+// Deps contains the dependencies for the event bus.
+type Deps struct {
+	Logger *slog.Logger
+	Config *config.Config
+}
+
+// inMemoryBus is a simple in-memory implementation suitable for development and testing.
+// Replace with NATS, Kafka, Redis Streams, etc. for production use.
+type inMemoryBus struct {
+	deps     Deps
+	mu       sync.RWMutex
+	handlers map[string][]func(ctx context.Context, event Event) error
+}
+
+// New creates a new in-memory event bus. Replace this constructor
+// to return your production implementation (NATS, Kafka, etc.).
+func New(deps Deps) Service {
+	return &inMemoryBus{
+		deps:     deps,
+		handlers: make(map[string][]func(ctx context.Context, event Event) error),
+	}
+}
+
+func (b *inMemoryBus) Publish(ctx context.Context, topic string, event Event) error {
+	b.deps.Logger.Debug("publishing event", "topic", topic, "type", event.Type, "id", event.ID)
+
+	b.mu.RLock()
+	handlers := b.handlers[topic]
+	b.mu.RUnlock()
+
+	for _, h := range handlers {
+		if err := h(ctx, event); err != nil {
+			b.deps.Logger.Error("handler failed", "topic", topic, "type", event.Type, "error", err)
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *inMemoryBus) Subscribe(ctx context.Context, topic string, handler func(ctx context.Context, event Event) error) error {
+	b.deps.Logger.Debug("subscribing to topic", "topic", topic)
+
+	b.mu.Lock()
+	b.handlers[topic] = append(b.handlers[topic], handler)
+	b.mu.Unlock()
+	return nil
+}

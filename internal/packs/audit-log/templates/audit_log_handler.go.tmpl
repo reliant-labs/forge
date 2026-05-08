@@ -1,0 +1,83 @@
+// forge:scaffold one-shot — audit-log handler; canonical pattern in `forge skill load packs`.
+package auditlog
+
+import (
+	"context"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	auditv1 "{{.ModulePath}}/gen/audit/v1"
+	"{{.ModulePath}}/gen/audit/v1/auditv1connect"
+	"{{.ModulePath}}/pkg/audit"
+)
+
+// Handler implements the read-side AuditLogService Connect handler.
+// The write side is the Interceptor in interceptor_gen.go (auto-generated
+// by the pack's generate hook).
+//
+// To register, add to your project's bootstrap or setup:
+//
+//	import (
+//	    "{{.ModulePath}}/gen/audit/v1/auditv1connect"
+//	    auditlog "{{.ModulePath}}/pkg/middleware/audit/auditlog"
+//	    "{{.ModulePath}}/pkg/audit"
+//	)
+//	store := audit.NewDBAuditStore(db)
+//	mux.Handle(auditv1connect.NewAuditLogServiceHandler(auditlog.NewHandler(store)))
+type Handler struct {
+	auditv1connect.UnimplementedAuditLogServiceHandler
+	store audit.AuditStore
+}
+
+// NewHandler returns an AuditLogService handler backed by the given store.
+// Pass the same store the Interceptor was constructed with so reads see
+// the writes.
+func NewHandler(store audit.AuditStore) *Handler {
+	return &Handler{store: store}
+}
+
+// ListAuditEvents implements auditv1connect.AuditLogServiceHandler.
+func (h *Handler) ListAuditEvents(ctx context.Context, req *connect.Request[auditv1.ListAuditEventsRequest]) (*connect.Response[auditv1.ListAuditEventsResponse], error) {
+	if h.store == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			ErrAuditStoreNotConfigured)
+	}
+
+	filter := audit.AuditFilter{
+		UserID:    req.Msg.GetUserId(),
+		Procedure: req.Msg.GetProcedure(),
+		Limit:     int(req.Msg.GetLimit()),
+		Offset:    int(req.Msg.GetOffset()),
+	}
+	if since := req.Msg.GetSince(); since != nil {
+		filter.Since = since.AsTime()
+	}
+	if until := req.Msg.GetUntil(); until != nil {
+		filter.Until = until.AsTime()
+	}
+
+	entries, err := h.store.Query(ctx, filter)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	out := make([]*auditv1.AuditEvent, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, &auditv1.AuditEvent{
+			Id:           e.ID,
+			Timestamp:    timestamppb.New(e.Timestamp),
+			UserId:       e.UserID,
+			Email:        e.Email,
+			Procedure:    e.Procedure,
+			PeerAddress:  e.PeerAddress,
+			DurationMs:   int32(e.DurationMs),
+			Status:       e.Status,
+			ErrorCode:    e.ErrorCode,
+			ErrorMessage: e.ErrorMessage,
+			CreatedAt:    timestamppb.New(e.CreatedAt),
+		})
+	}
+
+	return connect.NewResponse(&auditv1.ListAuditEventsResponse{Events: out}), nil
+}

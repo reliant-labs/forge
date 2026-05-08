@@ -1,0 +1,105 @@
+// forge:scaffold one-shot — NATS publisher; canonical pattern in `forge skill load packs`.
+package nats
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// Publisher is the contract this package exposes for publishing JetStream
+// messages. It exists primarily so callers can substitute a fake in tests.
+type Publisher interface {
+	// Publish marshals payload to JSON, wraps it in an Envelope, and
+	// publishes to subject. Returns the assigned stream sequence number.
+	Publish(ctx context.Context, subject Subject, eventType string, payload any) (uint64, error)
+
+	// PublishRaw publishes a pre-encoded body without an envelope.
+	// Useful when integrating with an externally-defined wire format.
+	PublishRaw(ctx context.Context, subject Subject, body []byte) (uint64, error)
+}
+
+// Envelope is the canonical wire format wrapping a published payload.
+// Mirrors the control-plane natsio convention (Version + Type + Payload).
+type Envelope struct {
+	Version   int             `json:"version"`
+	Type      string          `json:"type"`
+	Timestamp time.Time       `json:"timestamp"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+// CurrentEnvelopeVersion is the current schema version used by Marshal.
+const CurrentEnvelopeVersion = 1
+
+// jetStreamPublisher is a JetStream-backed Publisher.
+type jetStreamPublisher struct {
+	js jetstream.JetStream
+}
+
+// NewPublisher returns a JetStream-backed Publisher.
+func NewPublisher(js jetstream.JetStream) Publisher {
+	return &jetStreamPublisher{js: js}
+}
+
+// Publish implements Publisher.
+func (p *jetStreamPublisher) Publish(ctx context.Context, subject Subject, eventType string, payload any) (uint64, error) {
+	body, err := MarshalEnvelope(eventType, payload)
+	if err != nil {
+		return 0, err
+	}
+	return p.PublishRaw(ctx, subject, body)
+}
+
+// PublishRaw implements Publisher.
+func (p *jetStreamPublisher) PublishRaw(ctx context.Context, subject Subject, body []byte) (uint64, error) {
+	ack, err := p.js.Publish(ctx, subject.String(), body)
+	if err != nil {
+		return 0, fmt.Errorf("publish %s: %w", subject, err)
+	}
+	return ack.Sequence, nil
+}
+
+// MarshalEnvelope builds a JSON envelope of the form
+// {"version":1,"type":<type>,"timestamp":...,"payload":<payload>}.
+func MarshalEnvelope(eventType string, payload any) ([]byte, error) {
+	if eventType == "" {
+		return nil, fmt.Errorf("envelope type is required")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling payload: %w", err)
+	}
+	env := Envelope{
+		Version:   CurrentEnvelopeVersion,
+		Type:      eventType,
+		Timestamp: time.Now().UTC(),
+		Payload:   raw,
+	}
+	out, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling envelope: %w", err)
+	}
+	return out, nil
+}
+
+// UnmarshalEnvelope parses a wire-format envelope. Messages without a version
+// field are treated as v1 for backward compatibility.
+func UnmarshalEnvelope(data []byte) (Envelope, error) {
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return Envelope{}, fmt.Errorf("unmarshaling envelope: %w", err)
+	}
+	if env.Version == 0 {
+		env.Version = 1
+	}
+	if env.Type == "" {
+		return env, fmt.Errorf("envelope missing type")
+	}
+	if env.Version > CurrentEnvelopeVersion {
+		return env, fmt.Errorf("unsupported envelope version %d (max %d)", env.Version, CurrentEnvelopeVersion)
+	}
+	return env, nil
+}

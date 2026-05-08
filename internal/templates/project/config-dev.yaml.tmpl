@@ -1,0 +1,20 @@
+# Development configuration for {{.Name}}
+#
+# The app runs inside docker-compose where ports are fixed (container-internal).
+# Host port mapping is dynamic — use `forge run` or `docker compose port` to
+# discover assigned host ports. Multiple worktrees can run simultaneously.
+port: 8080
+log-level: debug
+log-format: text
+environment: development
+auto-migrate: true
+pprof-addr: ":6060"
+security-headers-enabled: false
+rate-limit-rps: 0
+rate-limit-burst: 0
+db-max-open-conns: 10
+db-max-idle-conns: 5
+db-conn-max-idle-time: 5m
+db-conn-max-lifetime: 30m
+pre-stop-delay: 1s
+shutdown-timeout: 5s

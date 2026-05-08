@@ -1,0 +1,23 @@
+name: stripe
+description: Stripe billing scaffold — checkout, webhook signature verification, subscription helpers (you own the code).
+deps:
+  go:
+    - github.com/stripe/stripe-go/v82
+files:
+  - source: stripe_client.go.tmpl
+    destination: pkg/clients/stripe/client.go
+  - source: stripe_webhook.go.tmpl
+    destination: pkg/clients/stripe/webhook.go
+notes: |
+  After scaffolding, you own this code. The Stripe API surface evolves quickly —
+  monitor Stripe's release notes and update the helpers and webhook event names
+  to suit your use case.
+
+  The webhook handler skeleton verifies Stripe-Signature; production deploys
+  must set STRIPE_WEBHOOK_SECRET (and STRIPE_SECRET_KEY for the API client).
+  Configure via your secret manager of choice (per-env).
+
+  Real Stripe integrations always end up with project-specific data models
+  and migrations — this starter intentionally ships handler code only, no
+  proto entities. Wire customer/invoice/subscription tables to your own
+  domain types.

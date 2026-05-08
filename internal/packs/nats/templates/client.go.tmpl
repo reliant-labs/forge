@@ -1,0 +1,89 @@
+// forge:scaffold one-shot — NATS client wrapper; canonical pattern in `forge skill load packs`.
+//
+// Package nats provides an opinionated wrapper around nats.go and the
+// JetStream client, modelled on the control-plane natsio package.
+//
+// Wire it from pkg/app/setup.go:
+//
+//	nc, js, err := nats.Connect(ctx, nats.Config{URL: cfg.NATSURL})
+//	if err != nil { return err }
+//	defer nc.Drain()
+//	app.NATSPublisher = nats.NewPublisher(js)
+package nats
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// Config describes the connection-time options for NATS. The zero value
+// is usable for local development against the default localhost server.
+type Config struct {
+	// URL is the NATS server URL, e.g. "nats://localhost:4222". If empty,
+	// nats.DefaultURL is used.
+	URL string
+
+	// AuthToken, if non-empty, is sent as the connection auth token.
+	AuthToken string
+
+	// Name labels this connection in NATS server logs.
+	Name string
+
+	// MaxReconnects bounds the auto-reconnect attempts. -1 = forever
+	// (the default if zero is supplied).
+	MaxReconnects int
+
+	// ReconnectWait is the delay between reconnect attempts. Defaults to
+	// 2 seconds when zero.
+	ReconnectWait time.Duration
+}
+
+// Connect dials NATS and returns the raw connection plus a JetStream context.
+// Callers are responsible for calling nc.Drain() (or nc.Close()) on shutdown.
+func Connect(ctx context.Context, cfg Config) (*natsgo.Conn, jetstream.JetStream, error) {
+	if cfg.URL == "" {
+		cfg.URL = natsgo.DefaultURL
+	}
+	if cfg.MaxReconnects == 0 {
+		cfg.MaxReconnects = -1
+	}
+	if cfg.ReconnectWait == 0 {
+		cfg.ReconnectWait = 2 * time.Second
+	}
+
+	opts := []natsgo.Option{
+		natsgo.MaxReconnects(cfg.MaxReconnects),
+		natsgo.ReconnectWait(cfg.ReconnectWait),
+	}
+	if cfg.Name != "" {
+		opts = append(opts, natsgo.Name(cfg.Name))
+	}
+	if cfg.AuthToken != "" {
+		opts = append(opts, natsgo.Token(cfg.AuthToken))
+	}
+
+	nc, err := natsgo.Connect(cfg.URL, opts...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connecting to NATS at %s: %w", cfg.URL, err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		return nil, nil, fmt.Errorf("creating JetStream context: %w", err)
+	}
+
+	// Sanity ping — fail fast if the server doesn't speak JetStream.
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := js.AccountInfo(pingCtx); err != nil {
+		nc.Close()
+		return nil, nil, fmt.Errorf("JetStream account info: %w", err)
+	}
+
+	return nc, js, nil
+}

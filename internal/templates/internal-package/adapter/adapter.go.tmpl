@@ -1,0 +1,66 @@
+// forge:scaffold one-shot — adapter implementation; canonical pattern in `forge skill load architecture`.
+package {{.Name}}
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+// Deps holds the {{.Name}} adapter's dependencies. Keep this list shallow:
+// adapters depend on a logger, an HTTP/client transport, and config.
+// Domain services do NOT belong here — adapters are leaf nodes.
+type Deps struct {
+	Logger *slog.Logger
+
+	// HTTPClient is injected so tests can swap in an httptest-backed
+	// transport. Production wiring should pass a *http.Client with
+	// timeouts and (where appropriate) a retrying transport.
+	HTTPClient *http.Client
+
+	// BaseURL is the downstream service base. Read from your project's
+	// pkg/config in Setup() and pass it through.
+	BaseURL string
+
+	// TODO: Add adapter-specific config (API keys, tenant IDs, etc.) by
+	// extending Deps; keep secrets behind interface methods if you want
+	// the test setup to avoid threading them through.
+}
+
+// service is the concrete {{.Name}} adapter. The type is unexported —
+// callers depend on Service from contract.go.
+type service struct {
+	deps Deps
+}
+
+// New constructs a {{.Name}} adapter. The bootstrap template wires this
+// from Setup() in pkg/app/setup.go.
+func New(deps Deps) Service {
+	if deps.HTTPClient == nil {
+		// Always supply a defaulted client so a minimal Setup() (just a
+		// logger + base URL) still works in dev.
+		deps.HTTPClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &service{deps: deps}
+}
+
+// HealthCheck issues a simple GET against the downstream's health
+// endpoint. Replace the path / response interpretation with whatever
+// the actual {{.Name}} downstream exposes.
+func (s *service) HealthCheck(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.deps.BaseURL+"/health", nil)
+	if err != nil {
+		return fmt.Errorf("{{.Name}}: build health request: %w", err)
+	}
+	resp, err := s.deps.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("{{.Name}}: health request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("{{.Name}}: downstream unhealthy (status %d)", resp.StatusCode)
+	}
+	return nil
+}

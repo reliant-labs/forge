@@ -1,0 +1,28 @@
+// forge:scaffold one-shot
+//
+// Dashboard root — yours to edit. Forge writes this file once at scaffold
+// time and never overwrites it (Tier-2). The entity tile + quick-action
+// grids live in `dashboard_gen.tsx`, which forge regenerates from
+// `forge.yaml` every run.
+//
+// Common edits:
+//   - swap `<EntityTiles />` for a real metrics summary
+//   - reorder sections, add custom widgets
+//   - replace the page header subtitle
+
+import PageHeader from "@/components/ui/page_header";
+import { EntityTiles, QuickActions } from "@/app/dashboard_gen";
+
+export default function DashboardPage() {
+  return (
+    <div>
+      <PageHeader
+        title="Dashboard"
+        subtitle="Overview of your application resources."
+      />
+
+      <EntityTiles />
+      <QuickActions />
+    </div>
+  );
+}

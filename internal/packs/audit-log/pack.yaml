@@ -1,0 +1,55 @@
+name: audit-log
+description: |
+  Audit log with DB persistence — tracks who did what, when, with full
+  RPC metadata, and exposes a read-side ListAuditEvents Connect RPC for
+  the admin view. The interceptor (write side) is installed into
+  pkg/middleware/audit/auditlog/ — wire both ends in pkg/app/setup.go:
+
+    import auditlog "<module>/pkg/middleware/audit/auditlog"
+    import "<module>/pkg/audit"
+    import "<module>/gen/audit/v1/auditv1connect"
+
+    store := audit.NewDBAuditStore(db)
+    interceptors := connect.WithInterceptors(auditlog.Interceptor(logger, store))
+    mux.Handle(auditv1connect.NewAuditLogServiceHandler(auditlog.NewHandler(store)))
+version: 1.1.0
+subpath: middleware/audit/auditlog
+
+config:
+  section: audit_log
+  defaults:
+    enabled: true
+    persist_to_db: true
+
+dependencies: []
+
+files:
+  - template: audit_store.go.tmpl
+    output: pkg/audit/store.go
+    overwrite: once
+    description: "Audit log storage interface and DB implementation"
+  - template: audit_log.proto.tmpl
+    output: proto/audit/v1/audit_log.proto
+    overwrite: once
+    description: "AuditLogService proto: ListAuditEvents read-side RPC"
+  - template: audit_log_handler.go.tmpl
+    output: pkg/middleware/audit/auditlog/handler.go
+    overwrite: once
+    description: "AuditLogService handler implementation backed by AuditStore"
+  - template: audit_log_errors.go.tmpl
+    output: pkg/middleware/audit/auditlog/errors.go
+    overwrite: once
+    description: "Sentinel errors for the AuditLogService handler"
+
+# Migrations get sequential IDs allocated at install time so they don't
+# collide with the scaffold's 00001_init or with other packs' migrations.
+migrations:
+  - name: audit_log
+    up: audit_migration.up.sql.tmpl
+    down: audit_migration.down.sql.tmpl
+    description: "Audit log table"
+
+generate:
+  - template: audit_interceptor_gen.go.tmpl
+    output: pkg/middleware/audit/auditlog/interceptor_gen.go
+    description: "Audit interceptor with DB persistence (auditlog.Interceptor)"

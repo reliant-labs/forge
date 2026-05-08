@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package bad.v1;
+
+import "forge/v1/forge.proto";
+
+option go_package = "example.com/bad/gen/bad/v1;badv1";
+
+// User is annotated as an entity but the `id` field is missing
+// `pk: true`. forge generate would have silently auto-detected the
+// PK by name; lint catches it before that.
+message User {
+  option (forge.v1.entity) = {
+    table: "users"
+    timestamps: true
+  };
+
+  string id = 1;
+  string email = 2;
+}

@@ -1,0 +1,148 @@
+syntax = "proto3";
+
+package config.v1;
+
+option go_package = "{{.Module}}/gen/config/v1;configv1";
+
+import "forge/v1/forge.proto";
+
+// AppConfig defines the application's runtime configuration.
+// Each field maps to an environment variable and/or CLI flag via
+// forge.v1.config annotations. Running `forge generate`
+// produces a typed Go config loader in pkg/config/config.go.
+message AppConfig {
+  int32 port = 1 [(forge.v1.config) = {
+    env_var: "PORT",
+    flag: "port",
+    default_value: "8080",
+    description: "HTTP server port"
+  }];
+
+  string log_level = 2 [(forge.v1.config) = {
+    env_var: "LOG_LEVEL",
+    flag: "log-level",
+    default_value: "info",
+    description: "Log level (debug, info, warn, error)"
+  }];
+
+  string database_url = 3 [(forge.v1.config) = {
+    env_var: "DATABASE_URL",
+    flag: "database-url",
+    description: "PostgreSQL connection string"
+  }];
+
+  string cors_origins = 4 [(forge.v1.config) = {
+    env_var: "CORS_ORIGINS",
+    flag: "cors-origins",
+    description: "Comma-separated list of allowed CORS origins"
+  }];
+
+  bool cors_allow_credentials = 15 [(forge.v1.config) = {
+    env_var: "CORS_ALLOW_CREDENTIALS",
+    flag: "cors-allow-credentials",
+    default_value: "false",
+    description: "Set Access-Control-Allow-Credentials: true on CORS responses. MUST NOT be combined with a wildcard origin ('*') — that combination is spec-invalid and will be rejected at startup."
+  }];
+
+  string tls_cert_path = 16 [(forge.v1.config) = {
+    env_var: "TLS_CERT_PATH",
+    flag: "tls-cert-path",
+    description: "Path to the TLS certificate (PEM). When both this and TLS_KEY_PATH are set, the server listens over HTTPS; otherwise it serves plaintext. Setting only one of the two is a configuration error."
+  }];
+
+  string tls_key_path = 17 [(forge.v1.config) = {
+    env_var: "TLS_KEY_PATH",
+    flag: "tls-key-path",
+    description: "Path to the TLS private key (PEM). See TLS_CERT_PATH."
+  }];
+
+  string pre_stop_delay = 18 [(forge.v1.config) = {
+    env_var: "PRE_STOP_DELAY",
+    flag: "pre-stop-delay",
+    default_value: "5s",
+    description: "Duration to wait after flipping readiness to false before beginning HTTP shutdown. Gives load balancers time to observe the failing probe and stop routing new traffic (Go duration)."
+  }];
+
+  string shutdown_timeout = 19 [(forge.v1.config) = {
+    env_var: "SHUTDOWN_TIMEOUT",
+    flag: "shutdown-timeout",
+    default_value: "30s",
+    description: "Maximum time to wait for in-flight requests and workers to drain during graceful shutdown (Go duration)."
+  }];
+
+  string log_format = 20 [(forge.v1.config) = {
+    env_var: "LOG_FORMAT",
+    flag: "log-format",
+    default_value: "json",
+    description: "Log output format. One of 'json' (structured, machine-readable) or 'text' (human-friendly). Any other value is rejected at startup."
+  }];
+
+  bool auto_migrate = 5 [(forge.v1.config) = {
+    env_var: "AUTO_MIGRATE",
+    flag: "auto-migrate",
+    default_value: "false",
+    description: "Run database migrations on startup"
+  }];
+
+  string environment = 6 [(forge.v1.config) = {
+    env_var: "ENVIRONMENT",
+    flag: "environment",
+    default_value: "production",
+    description: "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production."
+  }];
+
+  int32 rate_limit_rps = 7 [(forge.v1.config) = {
+    env_var: "RATE_LIMIT_RPS",
+    flag: "rate-limit-rps",
+    default_value: "100",
+    description: "Per-key request rate limit (requests per second). 0 or negative disables rate limiting."
+  }];
+
+  int32 rate_limit_burst = 8 [(forge.v1.config) = {
+    env_var: "RATE_LIMIT_BURST",
+    flag: "rate-limit-burst",
+    default_value: "200",
+    description: "Per-key rate limit burst size. Must be >= rate_limit_rps."
+  }];
+
+  int32 db_max_open_conns = 9 [(forge.v1.config) = {
+    env_var: "DB_MAX_OPEN_CONNS",
+    flag: "db-max-open-conns",
+    default_value: "25",
+    description: "Maximum number of open database connections."
+  }];
+
+  int32 db_max_idle_conns = 10 [(forge.v1.config) = {
+    env_var: "DB_MAX_IDLE_CONNS",
+    flag: "db-max-idle-conns",
+    default_value: "5",
+    description: "Maximum number of idle database connections kept in the pool."
+  }];
+
+  string db_conn_max_idle_time = 11 [(forge.v1.config) = {
+    env_var: "DB_CONN_MAX_IDLE_TIME",
+    flag: "db-conn-max-idle-time",
+    default_value: "5m",
+    description: "Maximum amount of time a connection may be idle before being closed (Go duration, e.g. 5m)."
+  }];
+
+  string db_conn_max_lifetime = 12 [(forge.v1.config) = {
+    env_var: "DB_CONN_MAX_LIFETIME",
+    flag: "db-conn-max-lifetime",
+    default_value: "30m",
+    description: "Maximum amount of time a connection may be reused before being closed (Go duration, e.g. 30m)."
+  }];
+
+  string pprof_addr = 13 [(forge.v1.config) = {
+    env_var: "PPROF_ADDR",
+    flag: "pprof-addr",
+    description: "If set, starts a net/http/pprof server on this address (e.g. localhost:6060). Never expose publicly. Empty disables pprof."
+  }];
+
+  bool security_headers_enabled = 14 [(forge.v1.config) = {
+    env_var: "SECURITY_HEADERS_ENABLED",
+    flag: "security-headers-enabled",
+    default_value: "true",
+    description: "Set OWASP security response headers (CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS in production). Disable only if a dedicated edge proxy already sets them."
+  }];
+}

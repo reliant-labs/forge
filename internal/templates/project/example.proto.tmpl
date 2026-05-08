@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package {{.ProjectName | snakeCase}}.v1;
+
+import "google/protobuf/timestamp.proto";
+import "forge/v1/forge.proto";
+
+option go_package = "{{.Module}}/gen/{{.ProjectName | snakeCase}}/v1;{{.ProjectName | snakeCase}}v1";
+
+// {{.ProjectName | pascalCase}}Service provides example RPC operations.
+// Modify or replace these RPCs with your actual business logic.
+service {{.ProjectName | pascalCase}}Service {
+  option (forge.v1.service) = {
+    name: "{{.ProjectName | pascalCase}}Service"
+    version: "1.0.0"
+    description: "{{.ProjectName | pascalCase}} service"
+  };
+
+  // GetItem retrieves an item by ID.
+  rpc GetItem(GetItemRequest) returns (GetItemResponse) {}
+
+  // ListItems returns a paginated list of items.
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse) {}
+
+  // CreateItem creates a new item.
+  rpc CreateItem(CreateItemRequest) returns (CreateItemResponse) {
+    option (forge.v1.method) = {
+      auth_required: true
+      idempotency_key: true
+    };
+  }
+}
+
+// Item represents an example entity.
+message Item {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+// GetItem messages
+message GetItemRequest {
+  string id = 1;
+}
+
+message GetItemResponse {
+  Item item = 1;
+}
+
+// ListItems messages
+message ListItemsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// CreateItem messages
+message CreateItemRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreateItemResponse {
+  Item item = 1;
+}

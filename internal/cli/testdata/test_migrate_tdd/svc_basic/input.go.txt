@@ -1,0 +1,59 @@
+package user_test
+
+import (
+	"context"
+	"testing"
+
+	"connectrpc.com/connect"
+
+	pb "example.com/proj/gen/services/user/v1"
+	"example.com/proj/handlers/user"
+	"example.com/proj/pkg/app"
+)
+
+// TestHandlers exercises each RPC against the service.
+func TestHandlers(t *testing.T) {
+	t.Parallel()
+
+	svc := app.NewTestUser(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "GetCurrentUser",
+			call: func() error {
+				_, err := svc.GetCurrentUser(ctx, connect.NewRequest(&pb.GetCurrentUserRequest{}))
+				return err
+			},
+		},
+		{
+			name: "UpdateProfile",
+			call: func() error {
+				_, err := svc.UpdateProfile(ctx, connect.NewRequest(&pb.UpdateProfileRequest{}))
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.call()
+			if err != nil {
+				t.Logf("%s returned error: %v", tt.name, err)
+			}
+		})
+	}
+}
+
+// TestAuthorizerDenyByDefault verifies fail-closed default authz.
+func TestAuthorizerDenyByDefault(t *testing.T) {
+	t.Parallel()
+	a := user.NewAuthorizer()
+	if err := a.Can(context.Background(), nil, "", ""); err == nil {
+		t.Fatal("expected default authorizer to deny")
+	}
+}

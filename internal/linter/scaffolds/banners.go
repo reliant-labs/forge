@@ -107,7 +107,11 @@ func lintTemplateBanner(path, root string) ([]Finding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	head := firstLines(data, 30)
+	// Window is generous enough (60 lines) to cover scaffolds whose
+	// canonical banner sits below a long doc-comment preamble — e.g.
+	// `app_extras.go.tmpl` documents the user-extension pattern in 40+
+	// lines of //-comments before declaring `//forge:scaffold one-shot`.
+	head := firstLines(data, 60)
 
 	// Content-first overrides:
 	//   - the file already declares its tier via the canonical banner,
@@ -116,6 +120,15 @@ func lintTemplateBanner(path, root string) ([]Finding, error) {
 		return nil, nil
 	}
 	if strings.Contains(head, "forge:scaffold one-shot") {
+		return nil, nil
+	}
+	// `//forge:allow` is the canonical user-owned (Tier-3) marker. Its
+	// presence means the template is intentionally banner-less and
+	// hand-edited by the user after first emit (e.g. `app_extras.go`,
+	// `setup.go`). Treat it as a content-first Tier-3 override so a
+	// new user-owned scaffold doesn't have to be added to the
+	// classifyTemplate name list before the warning quiets down.
+	if strings.Contains(head, "forge:allow") {
 		return nil, nil
 	}
 
@@ -299,6 +312,15 @@ func isKnownTier2(rel, noTmpl string) bool {
 			return true
 		}
 	}
+	// Binary scaffolds (forge add binary flow): cobra subcommand + the
+	// internal/<name>/ runtime trio. Classified as one-shot because the
+	// user owns Run's body and contract.go's Deps from emission onward.
+	if strings.Contains(rel, "internal/templates/project/binary/") {
+		switch noTmpl {
+		case "cmd-binary.go", "binary.go", "binary_test.go", "contract.go", "contract_test.go":
+			return true
+		}
+	}
 	// Frontend page scaffolds (forge add page).
 	if strings.Contains(rel, "internal/templates/frontend/pages/") {
 		return true
@@ -347,7 +369,7 @@ func isKnownTier2(rel, noTmpl string) bool {
 func isKnownTier3(rel, noTmpl string) bool {
 	// Project-level user-owned skeletons.
 	switch noTmpl {
-	case "setup.go", "tools.go", "config.proto",
+	case "setup.go", "tools.go", "app_extras.go", "config.proto",
 		"example.proto", "user-example.proto", "entity-example.proto",
 		"config-dev.yaml", "config-prod.yaml", "config-test.yaml",
 		"docker-compose.yml":

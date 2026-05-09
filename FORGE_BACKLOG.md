@@ -2,6 +2,82 @@
 
 ## Open
 
+- **(2026-05-06 cpnext continuation 8) `contractlint` flags `_test`
+  packages with `Test*` exported symbols.** When a package has a
+  `contract.go` declaring a `Service` interface, declaring tests in the
+  conventional `package <name>_test` form trips the contract linter:
+  `internal/entitlement/service_test.go:1:1: package entitlement_test
+  has exported methods but no contract.go`. The test functions are seen
+  as exported symbols in a "different" package (`entitlement_test`),
+  and the linter expects every package with exported symbols to declare
+  a contract. Workaround: use the internal-test form (`package
+  entitlement`, not `package entitlement_test`) — loses the
+  API-boundary discipline. Suggested fixes: (a) treat `*_test` packages
+  as exempt from the exported-method-needs-contract rule; (b) skip
+  files matching `*_test.go` entirely from the contractlint pass — Go
+  test funcs by convention start with `Test*` / `Benchmark*` /
+  `Example*` and are never part of the package's API surface. Likely
+  one- or two-liner in
+  `forge/internal/linter/contract/exported_methods.go`.
+
+- **(2026-05-07 polish-round, surfaced multiple sessions) Internal
+  package scaffolds emit single-result `New(Deps) Service` but the
+  canonical/polished form is two-result `New(Deps) (Service, error)`.**
+  This polish round (2026-05-08) updated `service.go.tmpl` and
+  `contract_test.go.tmpl` to ship the two-result form, but the
+  flavored variants (interactor, adapter, eventbus, client) and their
+  matching `*_test.go.tmpl` still emit single-result. Drift creates
+  a cross-flavor inconsistency that surfaces when users polish New in
+  one package and expect the convention from another. Followup: walk
+  `internal/templates/internal-package/{interactor,adapter,eventbus,client}/`
+  and align them to two-result, plus adjust their tests.
+
+- **(2026-05-07 cpnext T2-A) `forge generate` gated by sibling-lane
+  convention violations.** During parallel-lane work, an unrelated
+  `internal/<other-lane>/contract.go` violation (e.g. wrongly-named
+  type / func in a vendor adapter where the contract.go declares a real
+  `type Service interface` but the linter incorrectly flags type names
+  in a SIBLING file as living "in contract.go") blocks `forge generate`
+  project-wide — no escape hatch (`--force` does not help; the
+  pre-codegen contract check runs unconditionally). This breaks the
+  canonical "drop stub when real handler lands" flow: parallel agents
+  can't regenerate `handlers_gen.go`, so they have to overwrite it by
+  hand. Suggested fixes: (a) scope the pre-codegen contract check to
+  packages actually being regenerated; (b) add a `--skip-pre-checks`
+  flag for parallel-lane workflows; (c) fix the contractlint to
+  accurately attribute violations to the file they live in (today
+  `client.go`'s `type APIError` is reported under `contract.go:25`).
+
+  *2026-05-07 T3 update*: project-wide regenerate worked once the email/
+  litellm `Deps` were widened to accept `Logger / Config` (forge auto-
+  discovered them as packages and emitted the canonical bootstrap call
+  shape; the package-side Deps need to either match or carry a
+  `// forge:not-a-package` opt-out). Backlog item still open.
+
+- **(2026-05-07 cpnext T2-A) `handlers_scaffold_test.go` factory
+  rejects realistic handlers that have required Deps fields.** The
+  scaffold goes through `app.NewTest<Svc>(t)` which calls `New(deps)`
+  with only the bare-Deps trio (Logger/Config/Authorizer). When the
+  handler grows a required Repo field tied via `validateDeps`, the
+  scaffold tests fail at construction with "Deps.<Repo> is required"
+  before any RPC is dispatched. The scaffold convention assumes
+  bare-Deps is enough, which it never is for a real handler. We worked
+  around by deleting the scaffold and hand-rolling `handlers_test.go`
+  using `tdd.RunRPCCases` directly. Suggested fixes: (a) auto-emit
+  `t.Skip("scaffold: <field> required, swap to handlers_test.go")` when
+  the handler's `validateDeps` rejects bare-Deps; (b) have
+  `app.NewTest<Svc>` thread an optional in-memory test fake for any
+  named-Repository field via reflection.
+
+  *2026-05-07 T3 update*: confirmed the gap at scale — patched
+  `pkg/app/testing.go::NewTestDaemon` by hand to inject `stubDaemonRepo{}`
+  from `pkg/app/testing_extras.go` when `deps.Repo` is nil, then used
+  `forge generate --accept` to record the hand-edit. The stubs let all
+  12 daemon scaffold tests pass without integration-DB. Cleaner
+  long-term fix: extend the testing.go template to insert a
+  user-overridable stub-injection block per service-owned interface
+  field. See `pkg/app/testing_extras.go` for the pattern.
+
 - ~~**(2026-05-07 cpnext-v2 upgrade dogfood) `forge upgrade --to v0.2` rejected
   pseudoversion baselines AND missed the if-err init-form ApplyDeps shape AND
   scattered comments onto synthesized assignments.** ✅ Fixed in-session.
@@ -606,6 +682,60 @@
   condition. Reverted; tidy stays as-is.
 
 ## Fixed in-session
+
+- **(2026-05-06 cpnext continuation 8) Auto-installed Go toolchain
+  missing `covdata` tool surfaces as a confusing `task coverage`
+  failure with no breadcrumb.** ✅ Fixed by adding `CheckCovdata` to
+  the standard doctor check set (`internal/doctor/toolchain.go`,
+  wired into both `RunStandard` and `RunFiltered`'s default branch).
+  Probes `go tool covdata help` and warns (not fails) with an install
+  hint (`go install golang.org/x/tools/cmd/covdata@latest`) when the
+  active toolchain ships without the tool. Warn-not-fail rationale:
+  most projects don't trip it because the scaffolded `task coverage`
+  recipe drops `-covermode=atomic` for exactly this reason; the warn
+  fires for projects that opt into atomic-mode coverage and would
+  otherwise hit the confusing failure mode.
+
+- **(2026-05-08 polish-round) `[banner-unclassified]` warning on
+  `internal/templates/project/app_extras.go.tmpl`.** ✅ Fixed in
+  `forge/internal/linter/scaffolds/banners.go`: bumped the
+  content-first head window from 30 → 60 lines (so a long doc-comment
+  preamble doesn't push the marker out of scope), added `//forge:allow`
+  as a content-first Tier-3 override (it's the canonical user-owned
+  marker and was already documented as such), and added `app_extras.go`
+  to the Tier-3 known-name list as defense-in-depth.
+
+- **(2026-05-08 polish-round) `forge add frontend` did not flip
+  `features.frontend: true` in forge.yaml.** ✅ Fixed in
+  `forge/internal/cli/add.go::runAddFrontend`: after appending the
+  frontend to `cfg.Frontends`, set `cfg.Features.Frontend = &true`
+  before persisting. Projects scaffolded with `forge new --kind
+  service` (no `--frontend`) can now run `forge add frontend admin`
+  and have subsequent `forge generate` runs pick up frontend codegen.
+
+- **(2026-05-08 polish-round) `contract_test.go.tmpl` rendered
+  single-result `pkg.New(pkg.Deps{})` even after users polished `New`
+  to the canonical two-result `(Service, error)` shape.** ✅ Updated
+  both `internal/templates/internal-package/service.go.tmpl` (now
+  emits `func New(deps Deps) (Service, error)`) and
+  `contract_test.go.tmpl` (now emits `svc, err := pkg.New(pkg.Deps{});
+  if err != nil { t.Fatalf(...) }`). Updated the
+  `forge generate` auto-scaffold gate in
+  `internal/cli/generate_middleware.go` to skip when the existing
+  package's `New` is still single-result (with breadcrumb pointing at
+  the polish), preventing a non-compiling auto-scaffold for legacy
+  packages. Test assertion in `package_test.go` updated.
+
+- **(2026-05-08 polish-round) `forgeconv-interactor-deps-are-interfaces`
+  fired on primitive-shaped config DATA (`[]string`,
+  `map[string]int`, etc.).** ✅ Refined the rule in
+  `forge/internal/linter/forgeconv/interactor_deps_are_interfaces.go`:
+  added `isPrimitiveConfigShape` helper that skips slice/map types
+  whose element (and key, for maps) is a Go built-in primitive.
+  Rationale: these have no meaningful interface equivalent — hiding
+  `[]string` behind an interface adds friction without unlocking test
+  power. The rule still fires on concrete struct pointers / concrete
+  selector types (real foot-guns).
 
 - **(2026-05-07 cpnext D2) wire_gen emits `<stringField>: nil` for
   string-typed Deps fields it cannot resolve.** ✅ Fixed by

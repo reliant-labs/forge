@@ -250,17 +250,16 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 	}
 }
 
-// ReadProjectConfig reads a forge.yaml from the given path.
+// ReadProjectConfig reads a forge.yaml from the given path with strict
+// validation: unknown keys, missing required fields, and type mismatches
+// are surfaced together via config.ValidationError rather than failing
+// fast on the first issue. See config.LoadStrict for the full semantics.
 func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read project config: %w", err)
 	}
-	var cfg config.ProjectConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse project config: %w", err)
-	}
-	return &cfg, nil
+	return config.LoadStrict(data, path)
 }
 
 // WriteProjectConfig writes a config.ProjectConfig to the given path.

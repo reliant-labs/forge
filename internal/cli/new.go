@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -110,7 +111,10 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary:
 		// ok
 	default:
-		return "", "", "", fmt.Errorf("invalid --kind %q: valid values are service, cli, library", kindFlag)
+		return "", "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library", kindFlag),
+			"",
+			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, or --kind=library for a pure Go module")
 	}
 
 	// Validate --buf-plugins. Default 'local' (no BSR auth required); the
@@ -125,7 +129,10 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	case "local", "remote":
 		// ok
 	default:
-		return "", "", "", fmt.Errorf("invalid --buf-plugins %q: valid values are local, remote", bufPlugins)
+		return "", "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("invalid --buf-plugins %q: valid values are local, remote", bufPlugins),
+			"",
+			"pass --buf-plugins=local (default; uses protoc-gen-go on PATH) or --buf-plugins=remote (BSR-hosted, no install required)")
 	}
 
 	// Validate --binary. Empty string is treated as "per-service" for
@@ -139,20 +146,32 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	case config.ProjectBinaryPerService, config.ProjectBinaryShared:
 		// ok
 	default:
-		return "", "", "", fmt.Errorf("invalid --binary %q: valid values are per-service, shared", binaryMode)
+		return "", "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("invalid --binary %q: valid values are per-service, shared", binaryMode),
+			"",
+			"pass --binary=per-service (default; one cmd/server.go per service) or --binary=shared (one binary, cobra subcommand per service)")
 	}
 
 	// Reject incompatible flag combinations early so the user gets a
 	// clean error before any directory is created.
 	if kind != config.ProjectKindService {
 		if len(serviceNames) > 0 {
-			return "", "", "", fmt.Errorf("--service is only meaningful with --kind service (got --kind %s)", kind)
+			return "", "", "", cliutil.UserErr("forge new",
+				fmt.Sprintf("--service is only meaningful with --kind service (got --kind %s)", kind),
+				"",
+				"drop --service, or change to --kind service")
 		}
 		if len(frontendNames) > 0 {
-			return "", "", "", fmt.Errorf("--frontend is only meaningful with --kind service (got --kind %s)", kind)
+			return "", "", "", cliutil.UserErr("forge new",
+				fmt.Sprintf("--frontend is only meaningful with --kind service (got --kind %s)", kind),
+				"",
+				"drop --frontend, or change to --kind service")
 		}
 		if binary == config.ProjectBinaryShared {
-			return "", "", "", fmt.Errorf("--binary shared is only meaningful with --kind service (got --kind %s)", kind)
+			return "", "", "", cliutil.UserErr("forge new",
+				fmt.Sprintf("--binary shared is only meaningful with --kind service (got --kind %s)", kind),
+				"",
+				"drop --binary=shared, or change to --kind service")
 		}
 	}
 	return kind, plugins, binary, nil
@@ -187,27 +206,44 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 		// Check that we're not scaffolding over an existing project
 		if _, err := os.Stat(filepath.Join(targetPath, defaultProjectConfigFile)); err == nil {
 			if !force {
-				return fmt.Errorf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath)
+				return cliutil.UserErr("forge new --in-place",
+					fmt.Sprintf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath),
+					"",
+					"pass --force to overwrite, or scaffold into a fresh directory")
 			}
 			fmt.Printf("  --force: overwriting existing %s\n", defaultProjectConfigFile)
 		}
 	} else {
 		if projectName == "" {
-			return fmt.Errorf("project name is required (or use --in-place to scaffold in the current directory)")
+			return cliutil.UserErr("forge new",
+				"project name is required",
+				"",
+				"pass a project name as the first positional arg, or use --in-place to scaffold in the current directory")
 		}
 
 		targetPath = filepath.Join(projectPath, projectName)
 
 		// Validate project name (hyphens allowed for directory/module paths)
 		if err := validateProjectName(projectName); err != nil {
-			return fmt.Errorf("invalid project name %q: %w", projectName, err)
+			return cliutil.WrapUserErr("forge new",
+				fmt.Sprintf("invalid project name %q", projectName),
+				"",
+				"use a name starting with a letter, containing only letters/digits/_/-",
+				err)
 		}
 
 		// Check if directory already exists
 		if _, err := os.Stat(targetPath); err == nil {
-			return fmt.Errorf("directory %s already exists", targetPath)
+			return cliutil.UserErr("forge new",
+				fmt.Sprintf("directory %s already exists", targetPath),
+				"",
+				"pick a different project name, or use --in-place --force to overwrite")
 		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to stat %s: %w", targetPath, err)
+			return cliutil.WrapUserErr("forge new",
+				fmt.Sprintf("failed to stat %s", targetPath),
+				"",
+				"check filesystem permissions on the parent directory",
+				err)
 		}
 	}
 
@@ -712,7 +748,10 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 		case "hot_reload", "hot-reload", "hotreload":
 			gen.Features.HotReload = f
 		default:
-			return fmt.Errorf("unknown feature %q; valid features: orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload", name)
+			return cliutil.UserErr("forge new --disable",
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload", name),
+				"",
+				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}
 	}
 	return nil

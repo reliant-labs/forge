@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
@@ -69,7 +70,10 @@ Examples:
 			}
 
 			if force && accept {
-				return fmt.Errorf("--force and --accept are mutually exclusive: --force discards your edits, --accept keeps them; pick one")
+				return cliutil.UserErr("forge generate",
+					"--force and --accept are mutually exclusive: --force discards your edits, --accept keeps them",
+					"",
+					"pick one — --force to regenerate from templates, or --accept to refresh checksums and keep your edits")
 			}
 
 			generateMu.Lock()
@@ -168,16 +172,16 @@ func runGoBuildValidate(projectDir string) error {
 	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
 	if err := validateCmd.Run(); err != nil {
 		errOutput := buildStderr.String()
+		fix := "ensure all referenced types are imported and re-run 'forge generate'"
 		if errOutput != "" {
-			fmt.Fprintf(os.Stderr, "\n💡 Build failed. Common fixes:\n")
 			if strings.Contains(errOutput, "pkg/config") {
-				fmt.Fprintf(os.Stderr, "  • Ensure proto/config/ has annotated config fields and re-run 'forge generate'\n")
-			}
-			if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
-				fmt.Fprintf(os.Stderr, "  • authorizer_gen.go may be missing — re-run 'forge generate'\n")
+				fix = "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
+			} else if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
+				fix = "authorizer_gen.go may be missing — re-run 'forge generate'"
 			}
 		}
-		return fmt.Errorf("generated code failed to compile: %w", err)
+		return cliutil.WrapUserErr("forge generate (validate generated code)",
+			"go build failed", "", fix, err)
 	}
 	return nil
 }
@@ -216,5 +220,8 @@ func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprint(os.Stderr, res.FormatText())
 	fmt.Fprintln(os.Stderr, "Aborting before bootstrap codegen — fix the contract.go names above and retry.")
-	return fmt.Errorf("forge convention: internal-package contracts must declare 'type Service interface', 'type Deps struct', and 'func New(Deps) Service' (run 'forge lint --conventions' for details)")
+	return cliutil.UserErr("forge generate (pre-codegen contract check)",
+		"internal-package contracts must declare 'type Service interface', 'type Deps struct', and 'func New(Deps) Service'",
+		"",
+		"fix the offending contract.go files (see findings above), or run 'forge lint --conventions' for the per-file detail")
 }

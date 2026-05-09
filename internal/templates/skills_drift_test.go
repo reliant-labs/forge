@@ -28,6 +28,8 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	allowedGenFiles := map[string]struct{}{
 		// Per-package mock generation off contract.go.
 		"mock_gen.go": {},
+		// pkg/app/wire_gen.go — service/worker/operator Deps wiring.
+		"wire_gen.go": {},
 		// Per-handler-directory codegen off proto descriptors.
 		"handlers_gen.go":              {},
 		"handlers_crud_gen.go":         {},

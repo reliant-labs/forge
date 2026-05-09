@@ -242,12 +242,21 @@ func (g *ProjectGenerator) generateWireGen(services []scaffoldServiceInfo) error
 		})
 	}
 
+	// Resolvers is empty at scaffold time — the placeholder
+	// annotation only takes effect when an AppExtras field carries
+	// `// forge:placeholder: <Type>` AND a sibling Deps field
+	// references it by name. At scaffold time AppExtras is empty
+	// (template-emitted shell) and there are no rich Deps fields, so
+	// the resolver block in the template renders to nothing. We pass
+	// the field through so the template's `{{range .Resolvers}}`
+	// doesn't error on an unknown field.
 	data := struct {
 		Module                string
 		Services              []scaffoldWireService
 		Workers               []scaffoldWireService
 		Operators             []scaffoldWireService
 		NeedsAuthorizerImport bool
+		Resolvers             []struct{ Name, TargetType string }
 	}{
 		Module:                g.ModulePath,
 		Services:              wireSvcs,
@@ -264,6 +273,17 @@ func (g *ProjectGenerator) generateWireGen(services []scaffoldServiceInfo) error
 
 // generateBootstrapTesting writes pkg/app/testing.go with test helper functions.
 func (g *ProjectGenerator) generateBootstrapTesting() error {
+	type autoStub struct {
+		FieldName          string
+		StubType           string
+		InterfaceQualified string
+		Methods            []struct {
+			Name            string
+			Params          string
+			Results         string
+			ReturnStatement string
+		}
+	}
 	type bootstrapTestService struct {
 		Name                   string
 		Package                string
@@ -275,6 +295,11 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		HasDB                  bool
 		Alias                  string
 		VarName                string
+		// AutoStubs is always empty at the project-scaffold step; the
+		// service has no Deps fields beyond the bare-Deps trio at this
+		// point. The post-codegen GenerateBootstrapTesting pass populates
+		// it once handlers/<svc>/service.go exists.
+		AutoStubs []autoStub
 	}
 
 	type bootstrapPackage struct {

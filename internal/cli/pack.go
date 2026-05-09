@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/packs"
 )
@@ -298,8 +299,13 @@ func indexByte(s string, c byte) int {
 }
 
 func runPackInstall(name string, configPairs []string) error {
+	ctxLabel := fmt.Sprintf("forge pack add %s", name)
+
 	if !packs.ValidPackName(name) {
-		return fmt.Errorf("invalid pack name %q", name)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid pack name %q", name),
+			"",
+			"run 'forge pack list' to see available packs (names are lowercase letters, digits, hyphens)")
 	}
 
 	root, err := projectRoot()
@@ -310,7 +316,21 @@ func runPackInstall(name string, configPairs []string) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel,
+			"read project config",
+			configPath,
+			"verify forge.yaml is valid YAML and you are in a forge project root",
+			err)
+	}
+
+	// Sanity-check the pack exists before doing dependency resolution so
+	// the error message points at the actual root cause rather than at a
+	// missing-producer chain.
+	if _, err := packs.GetPack(name); err != nil {
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("pack %q is not available in this forge build", name),
+			"",
+			"run 'forge pack list' to see installable packs; check the pack name spelling")
 	}
 
 	// Resolve the full install set: requested pack + any transitive
@@ -321,7 +341,11 @@ func runPackInstall(name string, configPairs []string) error {
 	// fresh project, the resolved order is [audit-log, api-key].
 	order, err := packs.ResolveInstallOrder([]string{name}, cfg.Packs)
 	if err != nil {
-		return fmt.Errorf("resolve pack dependencies: %w", err)
+		return cliutil.WrapUserErr(ctxLabel,
+			"resolve pack dependencies",
+			"",
+			"run 'forge pack list --deps' to inspect the pack dependency graph",
+			err)
 	}
 
 	// Carve out the packs we need to install (skip what's already there).
@@ -417,8 +441,12 @@ func runPackInstall(name string, configPairs []string) error {
 }
 
 func runPackRemove(name string) error {
+	ctxLabel := fmt.Sprintf("forge pack remove %s", name)
 	if !packs.ValidPackName(name) {
-		return fmt.Errorf("invalid pack name %q", name)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid pack name %q", name),
+			"",
+			"run 'forge pack list' to see installed packs (names are lowercase letters, digits, hyphens)")
 	}
 
 	root, err := projectRoot()
@@ -429,11 +457,18 @@ func runPackRemove(name string) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel,
+			"read project config",
+			configPath,
+			"verify forge.yaml is valid YAML",
+			err)
 	}
 
 	if !packs.IsInstalled(name, cfg) {
-		return fmt.Errorf("pack %q is not installed", name)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("pack %q is not installed", name),
+			"",
+			"run 'forge pack list' to see which packs are installed")
 	}
 
 	pack, err := packs.GetPack(name)
@@ -487,12 +522,19 @@ type packInfoSummary struct {
 // empty (we have nothing to compare against); inside a project it lists
 // every pack output that would land on an existing file.
 func runPackInfo(name string, asJSON bool) error {
+	ctxLabel := fmt.Sprintf("forge pack info %s", name)
 	if !packs.ValidPackName(name) {
-		return fmt.Errorf("invalid pack name %q", name)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid pack name %q", name),
+			"",
+			"run 'forge pack list' to see available packs (names are lowercase letters, digits, hyphens)")
 	}
 	pack, err := packs.GetPack(name)
 	if err != nil {
-		return err
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("pack %q is not available in this forge build", name),
+			"",
+			"run 'forge pack list' to see installable packs; check the spelling")
 	}
 
 	summary := buildPackInfoSummary(pack)

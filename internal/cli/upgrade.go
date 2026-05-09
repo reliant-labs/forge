@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -106,14 +107,12 @@ func runUpgrade(check, force bool, toVersion string) error {
 	//      part of the codemod chain at all).
 	//   3. The hop spans more than one minor.
 	if hop := minorHopDistance(from, target); hop > 1 {
-		return fmt.Errorf(
-			"forge migrations are minor-hop only: cannot upgrade %s → %s in one step.\n"+
-				"  Run: %s upgrade --to v%s\n"+
-				"  Then: %s upgrade --to %s (and so on, one minor at a time).\n"+
-				"This rule keeps each per-version codemod running against a clean baseline.",
-			from, target,
-			CLIName(), nextMinor(from),
-			CLIName(), target,
+		return cliutil.UserErr(
+			fmt.Sprintf("forge upgrade --to %s", target),
+			fmt.Sprintf("minor-hop only: cannot upgrade %s → %s in one step (each per-version codemod must run against a clean baseline)", from, target),
+			"",
+			fmt.Sprintf("run '%s upgrade --to v%s' first, then re-run '%s upgrade --to %s' (one minor at a time)",
+				CLIName(), nextMinor(from), CLIName(), target),
 		)
 	}
 
@@ -150,7 +149,12 @@ func runUpgrade(check, force bool, toVersion string) error {
 	if !check {
 		report, err := runCodemodChain(projectDir, from, target)
 		if err != nil {
-			return fmt.Errorf("codemod chain: %w", err)
+			return cliutil.WrapUserErr(
+				fmt.Sprintf("forge upgrade --to %s", target),
+				"codemod chain failed",
+				"",
+				"inspect UPGRADE_NOTES.md (when written) and the codemod log; fix the offending file then re-run upgrade",
+				err)
 		}
 		codemodReport = report
 		if len(report.Auto) > 0 || len(report.Manual) > 0 {

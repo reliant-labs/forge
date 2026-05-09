@@ -17,7 +17,7 @@ import (
 	"strings"
 	"unicode"
 
-	forgev1 "github.com/reliant-labs/forge/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

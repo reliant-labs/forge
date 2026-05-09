@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	forgev1 "github.com/reliant-labs/forge/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"

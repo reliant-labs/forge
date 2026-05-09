@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // lint_wire_coverage.go — `forge lint --wire-coverage`.
@@ -68,31 +70,118 @@ type wireCoverageFinding struct {
 
 // runWireCoverageLint reads the project's pkg/app/wire_gen.go, scans
 // for `// TODO: wire <field>` markers, and prints one warning per
-// match plus a count summary. Does NOT gate the build (returns nil
-// on findings). A missing wire_gen.go is a no-op success — projects
-// that haven't run `forge generate` yet, or library projects with no
-// services / workers / operators, just have nothing to lint.
+// match plus a count summary. Also reads pkg/app/app_extras.go for
+// `forge:placeholder` annotations and reports as ERRORS any field that
+// is still typed `any` after the sibling lane was supposed to land its
+// real type — those cases are the silent-worker-noop bug class the
+// placeholder annotation exists to prevent.
+//
+// TODO findings are warnings (projects in active development
+// legitimately have unresolved wires while threading a new field).
+// Placeholder findings are errors — the user explicitly opted in to
+// "this should be tightened" by writing the marker. The error is
+// returned so `forge lint` (and the embedded `forge generate` check)
+// fails the build.
+//
+// A missing wire_gen.go is a no-op success — projects that haven't
+// run `forge generate` yet, or library projects with no services /
+// workers / operators, just have nothing to lint.
 func runWireCoverageLint(projectDir string) error {
 	fmt.Println("Running wire-coverage lint...")
 	path := filepath.Join(projectDir, "pkg", "app", "wire_gen.go")
+	wireGenExists := true
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Println("  no pkg/app/wire_gen.go — skipping (run `forge generate` first if you have services / workers / operators)")
-		return nil
+		wireGenExists = false
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
+	var findings []wireCoverageFinding
+	if wireGenExists {
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", path, err)
+		}
+		got, err := scanWireGen(f, path, projectDir)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("scan %s: %w", path, err)
+		}
+		findings = got
 	}
-	defer f.Close()
 
-	findings, err := scanWireGen(f, path, projectDir)
+	// Placeholder errors are a strict superset signal — they fire even
+	// when wire_gen.go is missing (forge generate refused to write it).
+	// Read app_extras directly to surface the same diagnosis the
+	// generation step would have surfaced.
+	placeholders, err := scanUnresolvedPlaceholders(projectDir)
 	if err != nil {
-		return fmt.Errorf("scan %s: %w", path, err)
+		return fmt.Errorf("scan placeholders: %w", err)
 	}
 
 	formatWireCoverage(os.Stdout, findings)
+	if !wireGenExists && len(placeholders) == 0 {
+		fmt.Println("  no pkg/app/wire_gen.go — skipping (run `forge generate` first if you have services / workers / operators)")
+		return nil
+	}
+	if len(placeholders) > 0 {
+		formatPlaceholderErrors(os.Stdout, placeholders)
+		return fmt.Errorf("%d unresolved forge:placeholder annotation(s) in pkg/app/app_extras.go — tighten field types", len(placeholders))
+	}
 	return nil
+}
+
+// scanUnresolvedPlaceholders reads pkg/app/app_extras.go and returns
+// every AppExtras field that carries a `forge:placeholder: <Type>`
+// annotation but is still typed `any`. Empty list means either no
+// placeholders are declared, or every placeholder has been tightened
+// to its target type.
+//
+// Sharing codegen.ParseAppFields keeps the recognition logic in one
+// place — same reader the wire_gen generator uses, same exact-type
+// comparison semantics.
+func scanUnresolvedPlaceholders(projectDir string) ([]codegen.UnresolvedPlaceholder, error) {
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if _, err := os.Stat(appDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+	fields, err := codegen.ParseAppFields(appDir)
+	if err != nil {
+		return nil, err
+	}
+	var out []codegen.UnresolvedPlaceholder
+	for _, f := range fields {
+		if f.Placeholder == "" {
+			continue
+		}
+		t := strings.TrimSpace(f.Type)
+		if t == "any" || t == "interface{}" {
+			out = append(out, codegen.UnresolvedPlaceholder{
+				FieldName:   f.Name,
+				CurrentType: f.Type,
+				TargetType:  f.Placeholder,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].FieldName < out[j].FieldName
+	})
+	return out, nil
+}
+
+// formatPlaceholderErrors writes one error per unresolved placeholder
+// in the canonical `forge lint` shape. Severity is error — the build
+// is gated by the caller returning a non-nil error.
+func formatPlaceholderErrors(w io.Writer, placeholders []codegen.UnresolvedPlaceholder) {
+	if len(placeholders) == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	for _, p := range placeholders {
+		fmt.Fprintf(w, "  ✗ [forge-wire-coverage] pkg/app/app_extras.go\n")
+		fmt.Fprintf(w, "      %s carries `forge:placeholder: %s` but is still typed `%s`\n", p.FieldName, p.TargetType, p.CurrentType)
+		fmt.Fprintf(w, "      → tighten the declaration in app_extras.go from `%s %s` to `%s %s`, then re-run `forge generate`\n", p.FieldName, p.CurrentType, p.FieldName, p.TargetType)
+	}
+	fmt.Fprintf(w, "\n%d unresolved forge:placeholder annotation(s) in pkg/app/app_extras.go.\n", len(placeholders))
+	fmt.Fprintln(w, "(errors — failing the build; the placeholder marker promised the field would be tightened)")
 }
 
 // scanWireGen extracts all wire-TODO findings from one wire_gen.go.

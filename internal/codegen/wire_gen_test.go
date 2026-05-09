@@ -408,3 +408,243 @@ type EventPublisher interface{}
 		t.Errorf("expected `NATSPublisher: nil` zero-value assignment:\n%s", content)
 	}
 }
+
+// TestParseAppFields_PlaceholderMarker asserts that AppExtras fields
+// carrying `// forge:placeholder: <Type>` (doc-comment, inline-comment,
+// or struct-tag shape) get Placeholder set on the parsed AppField.
+// App-struct fields never get the marker (it's user-only by design).
+func TestParseAppFields_PlaceholderMarker(t *testing.T) {
+	dir := t.TempDir()
+
+	// app_gen.go (forge-owned) — App struct + a forge-managed field
+	// carrying a (would-be) placeholder marker that should be IGNORED.
+	appGen := `package app
+
+type App struct {
+	*AppExtras
+	// forge:placeholder: db.Repository
+	DB any
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "app_gen.go"), []byte(appGen), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// app_extras.go (user-owned) — three placeholder shapes, one
+	// already-tightened field, one untagged field for control.
+	appExtras := `package app
+
+type AppExtras struct {
+	// UserRepo is shared across services.
+	// forge:placeholder: user.Repository
+	UserRepo any
+
+	// AdminRepo uses the inline-comment shape.
+	AdminRepo any // forge:placeholder: admin.Repository
+
+	// TenantRepo uses the struct-tag shape.
+	TenantRepo any ` + "`forge:placeholder:\"tenant.Repository\"`" + `
+
+	// Already tightened — placeholder marker is a no-op once the
+	// field type matches the target. wire_gen still emits the typed
+	// resolver; the assertion is a no-op at runtime.
+	// forge:placeholder: orgs.Repository
+	OrgRepo orgs.Repository
+
+	// Untagged — no placeholder, normal app.<Field> resolution.
+	Stripe *stripe.Client
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "app_extras.go"), []byte(appExtras), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fields, err := ParseAppFields(dir)
+	if err != nil {
+		t.Fatalf("ParseAppFields: %v", err)
+	}
+
+	want := map[string]string{
+		"DB":         "",                   // App-struct field; marker IGNORED
+		"UserRepo":   "user.Repository",    // doc-comment shape
+		"AdminRepo":  "admin.Repository",   // inline-comment shape
+		"TenantRepo": "tenant.Repository",  // struct-tag shape
+		"OrgRepo":    "orgs.Repository",    // tightened; marker still recorded
+		"Stripe":     "",                   // untagged
+	}
+	got := map[string]string{}
+	for _, f := range fields {
+		got[f.Name] = f.Placeholder
+	}
+	for name, w := range want {
+		if g, ok := got[name]; !ok {
+			t.Errorf("expected field %q in result", name)
+		} else if g != w {
+			t.Errorf("field %q Placeholder = %q, want %q", name, g, w)
+		}
+	}
+}
+
+// TestGenerateWireGen_PlaceholderResolver asserts the codegen path:
+// when a Deps field name matches an AppExtras field with a placeholder
+// AND the AppExtras field is already tightened to the target type,
+// wire_gen emits a typed `resolve<Field>(app)` accessor and renders the
+// helper at file scope. The wire_gen.go consumes the result via the
+// accessor instead of `app.<Field>` directly.
+func TestGenerateWireGen_PlaceholderResolver(t *testing.T) {
+	projectDir := t.TempDir()
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// AppExtras field is already tightened to user.Repository — the
+	// marker is a no-op but should still cause wire_gen to emit the
+	// typed accessor (the `any(...).(T)` assertion compiles either way
+	// and stays consistent across the field's pre/post-tightening
+	// lifetime).
+	appExtras := `package app
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	// forge:placeholder: user.Repository
+	UserRepo user.Repository
+}
+`
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(appExtras), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package api
+
+import (
+	"log/slog"
+)
+
+type Deps struct {
+	Logger   *slog.Logger
+	UserRepo UserRepository
+}
+
+type UserRepository interface{}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
+	}
+	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {
+		t.Fatalf("GenerateWireGen: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
+	if err != nil {
+		t.Fatalf("read wire_gen.go: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{
+		"func resolveUserRepo(app *App) user.Repository",
+		"UserRepo: resolveUserRepo(app)",
+		"typed accessor for forge:placeholder",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("wire_gen.go missing %q\n--- content ---\n%s", want, content)
+		}
+	}
+	// Should NOT carry a TODO since the field was matched.
+	if strings.Contains(content, "TODO: wire UserRepo") {
+		t.Errorf("UserRepo should not have a TODO when resolved via placeholder:\n%s", content)
+	}
+}
+
+// TestGenerateWireGen_UnresolvedPlaceholderFails asserts the build-time
+// gate: an AppExtras field with `forge:placeholder` and still typed
+// `any` causes GenerateWireGen to return an error rather than emit a
+// silently-broken accessor. The error names the field and target type
+// so the user knows exactly which declaration to tighten.
+func TestGenerateWireGen_UnresolvedPlaceholderFails(t *testing.T) {
+	projectDir := t.TempDir()
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	appExtras := `package app
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	// forge:placeholder: user.Repository
+	UserRepo any
+}
+`
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(appExtras), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package api
+type Deps struct {
+	UserRepo UserRepository
+}
+type UserRepository interface{}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
+	}
+	err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil)
+	if err == nil {
+		t.Fatal("expected GenerateWireGen to error on unresolved placeholder, got nil")
+	}
+	for _, want := range []string{
+		"forge:placeholder",
+		"UserRepo",
+		"user.Repository",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message missing %q: %v", want, err)
+		}
+	}
+}
+
+// TestExtractPlaceholderType verifies the comment-shape recognition:
+// doc-comment lines must be `// forge:placeholder: <Type>` exactly,
+// inline-trailing-comment lines are tolerated, and unrelated text in
+// the comment block doesn't trigger a false positive.
+func TestExtractPlaceholderType(t *testing.T) {
+	cases := []struct {
+		text string
+		want string
+	}{
+		{"forge:placeholder: user.Repository", "user.Repository"},
+		{"// forge:placeholder: user.Repository", "user.Repository"},
+		{"  // forge:placeholder: user.Repository  ", "user.Repository"},
+		{"forge:placeholder: \"user.Repository\"", "user.Repository"},
+		{"some prose\nforge:placeholder: api.Client\n", "api.Client"},
+		{"forge:placeholder:", ""},
+		{"// forge:optional-dep", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := ExtractPlaceholderType(c.text)
+		if got != c.want {
+			t.Errorf("ExtractPlaceholderType(%q) = %q, want %q", c.text, got, c.want)
+		}
+	}
+}

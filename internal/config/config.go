@@ -88,6 +88,58 @@ type ProjectConfig struct {
 	Stack        StackConfig         `yaml:"stack,omitempty"`
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
+	// Binaries declares non-server long-running processes scaffolded
+	// via `forge add binary <name>`. Each entry produces a `cmd/<name>.go`
+	// cobra subcommand and an `internal/<name>/` package owning lifecycle
+	// + business logic. Binaries are distinct from:
+	//   - services (Connect-RPC servers wired through pkg/app/bootstrap.go)
+	//   - workers   (in-process goroutines under the canonical server)
+	//   - operators (controller-runtime managers with CRDs)
+	// A binary is the right shape for: reverse proxies, sidecars, off-
+	// service NATS consumers, gateways — anything that needs its own
+	// Deployment but doesn't fit the server/worker/operator templates.
+	Binaries []BinaryConfig `yaml:"binaries,omitempty"`
+}
+
+// BinaryConfig represents a non-server long-running binary scaffolded
+// via `forge add binary <name>`. The shape mirrors ServiceConfig's
+// declarative bits — name, path on disk — without the Connect-RPC
+// fields (Type/Webhooks/CRDs/Group). Kind discriminates the lifecycle
+// shape so deploy and codegen can pick the right template.
+type BinaryConfig struct {
+	// Name is the binary identifier in CLI / display form. May contain
+	// hyphens; the Go-package form is derived via ServicePackageName.
+	// Example: "workspace-proxy".
+	Name string `yaml:"name"`
+	// Path is the cobra subcommand source file relative to the project
+	// root. By convention "cmd/<package>.go" where <package> is the
+	// Go-package form of Name. Stored explicitly so future renames can
+	// avoid breaking forge.yaml-driven tooling.
+	Path string `yaml:"path"`
+	// Kind discriminates the binary lifecycle. Today:
+	//   - "long-running" (default): cobra subcommand runs until SIGINT/
+	//     SIGTERM with graceful shutdown. The proxy / sidecar shape.
+	//   - "cron": one-shot per invocation, intended to be invoked by an
+	//     external scheduler (k8s CronJob). Reserved for future use.
+	//   - "oneshot": one-shot per invocation, no scheduler. Reserved
+	//     for future use (migration runners, backfill scripts).
+	// Today only "long-running" emits a full scaffold; the other kinds
+	// are accepted by the parser so forge.yaml stays forward-compatible
+	// when those scaffolds land.
+	Kind string `yaml:"kind,omitempty"`
+}
+
+// EffectiveBinaryKind returns the kind, defaulting to "long-running"
+// so existing entries without an explicit kind keep the canonical shape.
+func (b BinaryConfig) EffectiveBinaryKind() string {
+	switch strings.ToLower(strings.TrimSpace(b.Kind)) {
+	case "cron":
+		return "cron"
+	case "oneshot":
+		return "oneshot"
+	default:
+		return "long-running"
+	}
 }
 
 // PackOverride is a project-level override block for an installed pack,

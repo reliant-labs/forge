@@ -204,6 +204,14 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 				// which won't match a non-Service shape — skip and let
 				// the user write the test manually.
 				fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (interface %q is not the canonical Service shape; write tests manually)\n", rel, cf.Interfaces[0].Name)
+			} else if !packageHasTwoResultNew(path) {
+				// The contract_test.go.tmpl emits the canonical two-result
+				// form `_, err := pkg.New(pkg.Deps{})`. Packages whose
+				// `New` is still the legacy single-result form
+				// (`func New(Deps) Service`) would get a non-compiling
+				// scaffold — skip and leave breadcrumb. Polish New to
+				// `(Service, error)` to opt back in.
+				fmt.Printf("  ℹ️  Skipped contract_test.go scaffold for %s/ (New is single-result; polish to `func New(Deps) (Service, error)` to enable auto-scaffold)\n", rel)
 			} else {
 				pkgName := filepath.Base(path)
 				// importPath is "mcp/database" for internal/mcp/database, just
@@ -242,6 +250,44 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	}
 
 	return nil
+}
+
+// packageHasTwoResultNew reports whether the package at dir defines a
+// constructor with the canonical two-result `func New(deps Deps) (Service, error)`
+// shape. Returns true if any *.go file in dir contains that signature.
+// Returns false on read errors so the caller falls back to "skip
+// auto-scaffold" — the safe direction.
+//
+// Source-text scan (not AST) is intentional: this runs in the inner
+// loop of `forge generate` and the scaffold gate only needs a coarse
+// match. False negatives (signatures spread oddly across lines) just
+// suppress the auto-scaffold; the user can re-run after polishing.
+func packageHasTwoResultNew(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	// Common variations of whitespace / receiver-less New decl.
+	needles := []string{
+		"func New(deps Deps) (Service, error)",
+		"func New(d Deps) (Service, error)",
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		s := string(data)
+		for _, n := range needles {
+			if strings.Contains(s, n) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // generateConfigLoader parses proto/config/ for config protos with

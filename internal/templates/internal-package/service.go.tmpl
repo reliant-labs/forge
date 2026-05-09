@@ -20,6 +20,11 @@ type service struct {
 
 // New creates a new {{.Name}} service instance.
 // Returns the Service interface — callers interact only through the contract.
-func New(deps Deps) Service {
-	return &service{deps: deps}
+//
+// The two-result `(Service, error)` shape lets New surface dep-validation
+// or one-time-init failures (missing required deps, bad config, etc.).
+// Scaffolds ship with a no-error path; polish the body when you grow
+// dep validation or eager initialization.
+func New(deps Deps) (Service, error) {
+	return &service{deps: deps}, nil
 }

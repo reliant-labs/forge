@@ -75,6 +75,29 @@ _env = schema.Environment {
                 cpu_target = 80
             }
         }
+        # Binaries declared via `forge add binary <name>`. Each runs the
+        # same image with a different cobra subcommand. No Service /
+        # Ingress is emitted — binaries are off-RPC processes.
+{{- range .Binaries}}
+        "{{$.ProjectName}}-{{.Name}}" = schema.Application {
+            name = "{{$.ProjectName}}-{{.Name}}"
+            image = "{{$.ProjectName}}"
+            replicas = 1
+            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
+            resources = schema.Resources {
+                cpu_request = "100m"
+                memory_request = "128Mi"
+                cpu_limit = "500m"
+                memory_limit = "256Mi"
+            }
+            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{$.ProjectName}}-{{.Name}}"
+                }
+            ]
+        }
+{{- end}}
     }
 }
 

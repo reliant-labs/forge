@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -130,6 +131,84 @@ func HasOptionalDepMarker(text string) bool {
 	return false
 }
 
+// ExtractPlaceholderType returns the target type from a
+// `forge:placeholder: <Type>` comment marker, or "" when no marker
+// is present.
+//
+// Recognition is line-based after stripping leading `//`, leading/
+// trailing whitespace; the marker must be the whole line:
+//
+//	// forge:placeholder: user.Repository
+//	UserRepo any
+//
+// Or the inline-comment slot:
+//
+//	UserRepo any // forge:placeholder: user.Repository
+//
+// Both forms are accepted — same convention as `// forge:optional-dep`.
+// The colon is required (it carries data, unlike optional-dep which
+// is a bare directive). Whitespace after the colon is tolerated.
+//
+// Exported so the wire-coverage lint can share the exact same
+// recognition logic — the rule is "if the field has a placeholder
+// AND the field's declared type is `any`, the placeholder is
+// unresolved and lint must error."
+func ExtractPlaceholderType(text string) string {
+	const prefix = "forge:placeholder:"
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.Trim(line, "/ \t")
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		typ := strings.TrimSpace(trimmed[len(prefix):])
+		// Tolerate `forge:placeholder: "user.Repository"` (matches
+		// the struct-tag spelling) so users can mentally cargo-cult
+		// from one shape to the other without being punished.
+		typ = strings.Trim(typ, `"`)
+		if typ == "" {
+			continue
+		}
+		return typ
+	}
+	return ""
+}
+
+// extractPlaceholderTag reads a struct tag's `forge:placeholder:"<Type>"`
+// value, mirroring ExtractPlaceholderType for the struct-tag shape.
+// Returns "" when no tag, no `forge:placeholder` key, or an empty value.
+//
+// The struct-tag form is the second of two accepted shapes — the
+// comment shape is preferred (matches `// forge:optional-dep`), but
+// users coming from the `protobuf:` / `json:` tag world reach for the
+// tag form first. Honoring both shapes costs ~10 lines and saves a
+// foot-gun.
+//
+// Note: Go's standard `reflect.StructTag.Lookup` splits on the first
+// colon in a key, so it can't directly retrieve a key literally named
+// `forge:placeholder`. We do a small bespoke scan instead — search for
+// the literal `forge:placeholder:"<value>"` substring inside the raw
+// tag text. The shape is narrow enough that a regex is overkill.
+func extractPlaceholderTag(tag *ast.BasicLit) string {
+	if tag == nil {
+		return ""
+	}
+	raw, err := strconv.Unquote(tag.Value)
+	if err != nil {
+		return ""
+	}
+	const key = `forge:placeholder:"`
+	idx := strings.Index(raw, key)
+	if idx < 0 {
+		return ""
+	}
+	rest := raw[idx+len(key):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
 // collectDepsFields flattens the Deps struct into one DepsField per
 // declared name. A single field declaration like `A, B *slog.Logger`
 // emits two fields with the same Type. Anonymous (embedded) fields are
@@ -191,6 +270,26 @@ func printType(fset *token.FileSet, expr ast.Expr) string {
 type AppField struct {
 	Name string
 	Type string
+
+	// Placeholder is the target type the AppExtras field should be
+	// tightened to once a sibling lane lands the real type. Set when
+	// the field carries a `// forge:placeholder: <Type>` doc/inline
+	// comment marker. Empty for fields without the marker.
+	//
+	// The annotation exists because parallel agents writing into
+	// app_extras.go often need to declare a field whose typed Repository /
+	// Client / Provider lives in a sibling lane that hasn't merged yet.
+	// Typing the field as `any` keeps the build green; the placeholder
+	// marker says "I know this is `any` — wire_gen should treat me as
+	// <Type>, and lint should error until I'm tightened to <Type>".
+	//
+	// wire_gen renders a typed `resolve<Field>(app)` accessor when the
+	// marker is present so call sites can consume the field as the
+	// promised type rather than `any`. When the user finally tightens
+	// the field declaration from `any` to <Type>, the accessor stays
+	// correct (the type assertion is a no-op for a value already typed
+	// as <Type>).
+	Placeholder string
 }
 
 // ParseAppFields walks every non-test .go file in pkg/app and returns
@@ -205,6 +304,10 @@ type AppField struct {
 //     pointer; Go's field promotion rules make those fields reachable
 //     via `app.<Field>` at the call site even though they live on a
 //     different struct. wire_gen treats them identically.
+//
+// AppExtras fields may carry a `// forge:placeholder: <Type>` doc or
+// inline comment marker, which surfaces as AppField.Placeholder. See
+// the AppField docstring for the why.
 //
 // Anonymous (embedded) fields on App are skipped from the result —
 // they don't have a usable selector name on their own, and the only
@@ -235,7 +338,11 @@ func ParseAppFields(appDir string) ([]AppField, error) {
 			continue
 		}
 		path := filepath.Join(appDir, entry.Name())
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		// ParseComments so we can read the `// forge:placeholder: <Type>`
+		// marker from doc-comment / inline-comment slots on AppExtras
+		// fields. Without it field.Doc / field.Comment are nil and the
+		// marker would be invisible.
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
 			continue
 		}
@@ -264,13 +371,34 @@ func ParseAppFields(appDir string) ([]AppField, error) {
 						continue
 					}
 					typeStr := printType(fset, field.Type)
+					// Only AppExtras fields are user-extendable, so
+					// the placeholder marker is meaningful only there.
+					// Reading from forge-owned App would invite a
+					// mistake (a placeholder on a forge-managed field
+					// wouldn't be honored across regenerates).
+					placeholder := ""
+					if typeSpec.Name.Name == "AppExtras" {
+						if field.Doc != nil {
+							placeholder = ExtractPlaceholderType(field.Doc.Text())
+						}
+						if placeholder == "" && field.Comment != nil {
+							placeholder = ExtractPlaceholderType(field.Comment.Text())
+						}
+						if placeholder == "" {
+							placeholder = extractPlaceholderTag(field.Tag)
+						}
+					}
 					for _, name := range field.Names {
 						if !ast.IsExported(name.Name) {
 							continue
 						}
 						byStruct[typeSpec.Name.Name] = append(
 							byStruct[typeSpec.Name.Name],
-							AppField{Name: name.Name, Type: typeStr},
+							AppField{
+								Name:        name.Name,
+								Type:        typeStr,
+								Placeholder: placeholder,
+							},
 						)
 					}
 				}

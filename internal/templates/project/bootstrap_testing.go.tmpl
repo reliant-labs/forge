@@ -144,12 +144,35 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) *{{.Alias}}.Service
 		deps.DB = cfg.db
 	}
 {{- end}}
+{{- $parentSvc := . }}
+{{- range .AutoStubs}}
+	// Auto-stub {{.FieldName}} ({{.InterfaceQualified}}). Synthesized so
+	// validateDeps accepts NewTest{{$parentSvc.FieldName}} construction without
+	// hand-rolled stubs in the project. Override via With{{$parentSvc.FieldName}}Deps
+	// when a test cares about real behavior on this surface.
+	if deps.{{.FieldName}} == nil {
+		deps.{{.FieldName}} = {{.StubType}}{}
+	}
+{{- end}}
 	svc, err := {{.Alias}}.New(deps)
 	if err != nil {
 		t.Fatalf("creating {{.Package}} service: %v", err)
 	}
 	return svc
 }
+{{- $svc := . }}
+{{- range .AutoStubs}}
+
+// {{.StubType}} satisfies {{.InterfaceQualified}} with zero-value returns
+// so NewTest{{$svc.FieldName}} can construct the service even when the field
+// is required by validateDeps. Tests that need real behavior should
+// supply their own implementation via With{{$svc.FieldName}}Deps(...).
+type {{.StubType}} struct{}
+{{- $stub := .StubType }}
+{{range .Methods}}
+func ({{$stub}}) {{.Name}}({{.Params}}){{if .Results}} {{.Results}}{{end}} { {{if .ReturnStatement}}{{.ReturnStatement}} {{end}}}
+{{- end}}
+{{- end}}
 
 // NewTest{{.FieldName}}Server creates an httptest.Server with the {{.FieldName}} service registered.
 // Returns the server and a typed Connect client.

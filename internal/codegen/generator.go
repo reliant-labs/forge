@@ -796,6 +796,40 @@ type BootstrapTestServiceData struct {
 	// becomes "svcBilling" when there's a cross-role collision so the
 	// services-range and packages-range testConfig fields stay distinct.
 	VarName string
+	// AutoStubs lists the per-Deps-field synthesized interface stubs the
+	// template should emit and inject as defaults inside NewTest<Svc>.
+	// Each entry corresponds to a Deps field whose Go type is an interface
+	// declared locally in the handler package (so the testing.go file can
+	// reference the interface via the imported handler package alias).
+	// Optional-dep fields are excluded — those stay nil to preserve the
+	// "graceful dev-mode degrade" semantics. See ParseLocalInterfaces +
+	// HasOptionalDepMarker for the detection rules.
+	AutoStubs []DepsAutoStub
+}
+
+// DepsAutoStub describes one synthesized interface implementation
+// emitted into the generated pkg/app/testing.go for a service-owned
+// Deps field. The stub satisfies the field's interface with zero-value
+// returns; it exists so NewTest<Svc>(t) can construct the Service even
+// when the field is required by validateDeps. Tests that exercise real
+// behavior continue to override via With<Svc>Deps(...).
+type DepsAutoStub struct {
+	// FieldName is the Deps field name as declared (e.g. "Repo").
+	FieldName string
+	// StubType is the unqualified Go identifier the template should use
+	// for the synthesized stub struct (e.g. "stubApiRepo"). Generated
+	// from the service alias + field name so two services with the same
+	// Deps-field name don't collide at the package level.
+	StubType string
+	// InterfaceQualified is the package-qualified type expression used
+	// when injecting the stub into Deps in NewTest<Svc> (e.g.
+	// "api.Repository"). Always carries the service-package alias so
+	// the same interface name can appear across services without
+	// import collision.
+	InterfaceQualified string
+	// Methods are the interface's flattened method set rendered for
+	// the template's stub-emit loop.
+	Methods []InterfaceMethod
 }
 
 // GenerateBootstrapTesting generates pkg/app/testing.go from the bootstrap_testing.go.tmpl template.
@@ -818,6 +852,13 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		if hasDB {
 			anyServiceHasDB = true
 		}
+		// Auto-stub: walk the service's Deps fields, find any interface-
+		// typed required fields whose interface declaration lives in the
+		// handler package, and queue a synthesized stub. The bare-Deps
+		// trio (Logger / Config / Authorizer) and the DB orm.Context
+		// field are handled by the existing default fill so they're
+		// excluded from auto-stubbing here.
+		autoStubs := computeAutoStubs(handlerDir, pkg)
 		// Derive Connect package path/name from the proto's declared
 		// go_package + PkgName instead of guessing from the service name.
 		// Falls back to the convention path when GoPackage is empty (covers
@@ -839,6 +880,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 			HasDB:                  hasDB,
 			Alias:                  pkg, // overwritten below if there's a cross-role collision
 			VarName:                pkg, // overwritten below if there's a cross-role collision
+			AutoStubs:              autoStubs,
 		})
 	}
 
@@ -860,6 +902,18 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 			testSvcs[i].Alias = "svc" + upperFirst(testSvcs[i].Package)
 			testSvcs[i].FieldName = "Svc" + upperFirst(testSvcs[i].Package)
 			testSvcs[i].VarName = lowerFirst(testSvcs[i].FieldName)
+		}
+		// Rewrite the AutoStubs' qualified interface refs to use the
+		// post-collision alias. The unqualified stub-type identifier
+		// already carries an UpperCamel(Package) prefix so collisions
+		// across services are impossible by construction.
+		alias := testSvcs[i].Alias
+		for j, stub := range testSvcs[i].AutoStubs {
+			// Replace the placeholder "<alias>." prefix with the resolved
+			// alias. computeAutoStubs writes "<alias>." literally so the
+			// rewrite is a single string-replace per field.
+			testSvcs[i].AutoStubs[j].InterfaceQualified = strings.Replace(stub.InterfaceQualified,
+				"<alias>.", alias+".", 1)
 		}
 	}
 	// Apply the same collision rule to packages so the testing.go import
@@ -916,6 +970,72 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		return fmt.Errorf("write pkg/app/testing.go: %w", err)
 	}
 	return nil
+}
+
+// bareDepsFieldNames is the set of Deps field names the bootstrap_testing
+// template fills in by default — these never need an auto-stub. Keep
+// the list narrow: anything else (Repo, Audit, Stripe, Email, ...)
+// flows through the auto-stub path when its type is a local interface.
+var bareDepsFieldNames = map[string]bool{
+	"Logger":     true,
+	"Config":     true,
+	"Authorizer": true,
+	"DB":         true,
+}
+
+// computeAutoStubs walks a service's handler directory, parses its
+// Deps struct + locally-declared interfaces, and returns one
+// DepsAutoStub for every required Deps field whose type is a local
+// interface. The bare-Deps trio (Logger / Config / Authorizer) and
+// the optional-dep set are excluded — those are either filled in by
+// the template's existing default-merge step or deliberately left nil.
+//
+// InterfaceQualified is emitted with a literal "<alias>." prefix; the
+// caller rewrites the placeholder with the service's import alias once
+// cross-role collision rewriting has run. This keeps the stub-data
+// shape stable regardless of which service ends up with the prefixed
+// alias ("svcBilling" vs "billing").
+func computeAutoStubs(handlerDir, _ string) []DepsAutoStub {
+	fields, err := ParseServiceDeps(handlerDir)
+	if err != nil || len(fields) == 0 {
+		return nil
+	}
+	locals, err := ParseLocalInterfaces(handlerDir)
+	if err != nil || len(locals) == 0 {
+		return nil
+	}
+	var stubs []DepsAutoStub
+	for _, f := range fields {
+		if bareDepsFieldNames[f.Name] {
+			continue
+		}
+		if f.Optional {
+			continue
+		}
+		// Only auto-stub bare-identifier interface types. Pointer /
+		// slice / map / chan decorations are not interfaces; selector
+		// types ("pkg.Repository") would require chasing imports across
+		// packages, which is beyond this pass's scope.
+		t := strings.TrimSpace(f.Type)
+		iface, ok := locals[t]
+		if !ok {
+			continue
+		}
+		stubs = append(stubs, DepsAutoStub{
+			FieldName:          f.Name,
+			StubType:           "stub" + upperFirst(strings.TrimPrefix(handlerDir, "")) + f.Name, // overwritten below
+			InterfaceQualified: "<alias>." + iface.Name,
+			Methods:            iface.Methods,
+		})
+	}
+	// Make stub-type names predictable + collision-free across the file:
+	// stub<UpperPackage><FieldName>. handlerDir's last segment IS the
+	// service Go-package name (toServicePackage), so use it directly.
+	pkg := filepath.Base(handlerDir)
+	for i := range stubs {
+		stubs[i].StubType = "stub" + upperFirst(pkg) + stubs[i].FieldName
+	}
+	return stubs
 }
 
 // GenerateMigrate writes pkg/app/migrate.go with embedded migration support.
@@ -1129,9 +1249,25 @@ func isPlaceholderUnitTest(path string) bool {
 	return strings.Contains(string(data), `forge-unit-test-placeholder`)
 }
 
-// scanExistingMethods reads all .go files in dir and returns a set of method names
-// that are already implemented on *Service. It uses go/parser so that multi-line
-// receivers, comments, and strings containing "*Service" are handled correctly.
+// scanExistingMethods reads all .go files in dir and returns a set of
+// method names that are already implemented on *Service. It uses
+// go/parser so that multi-line receivers, comments, and strings
+// containing "*Service" are handled correctly.
+//
+// This is the dedup that lets a user's `handlers.go` claim a method
+// (e.g. `func (s *Service) CreateUser(...) ...`) and have the next
+// `forge generate` automatically drop the matching stub from
+// `handlers_gen.go`. Same shape closes the FORGE_REVIEW_PROCESS.md §2.3
+// git_credential drift class — gen-files and user-files share the
+// `*Service` receiver, so a method declared in either is sufficient
+// signal that the proto RPC is implemented.
+//
+// An individual file that fails to parse is skipped with a warning
+// rather than failing the whole pass: a transient syntax error in a
+// sibling file must not brick the dedup for the entire package, since
+// losing dedup means the user's just-written `CreateUser` would be
+// re-stubbed in handlers_gen.go and the package would fail to compile
+// (duplicate method).
 func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]bool, error) {
 	existing := make(map[string]bool)
 
@@ -1156,7 +1292,11 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 		path := filepath.Join(dir, entry.Name())
 		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+			// Soft-skip on per-file parse errors so a transient syntax
+			// error elsewhere in the package doesn't unwind the dedup
+			// — see func doc.
+			fmt.Fprintf(os.Stderr, "Warning: scanExistingMethods skipping %s (parse error): %v\n", path, err)
+			continue
 		}
 
 		for _, decl := range file.Decls {

@@ -89,12 +89,25 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		kclServices = []kclService{{Name: g.Name}}
 	}
 
+	// Binaries are emitted as additional Applications in the per-env
+	// KCL. At scaffold time there are none; this placeholder + the
+	// `{{range .Binaries}}` block in the env templates means projects
+	// can grow binaries via `forge add binary <name>` without a
+	// template-level migration. `forge generate` re-renders these
+	// files with the up-to-date list from forge.yaml.
+	type kclBinary struct {
+		Name string
+	}
+	var kclBinaries []kclBinary // empty at scaffold time
+
 	templateData := struct {
 		ProjectName string
 		Services    []kclService
+		Binaries    []kclBinary
 	}{
 		ProjectName: g.Name,
 		Services:    kclServices,
+		Binaries:    kclBinaries,
 	}
 
 	for _, f := range envTemplates {

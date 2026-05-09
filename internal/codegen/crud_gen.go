@@ -131,6 +131,16 @@ func MatchCRUDMethods(svc ServiceDef, entities []EntityDef) []CRUDMethod {
 	return matches
 }
 
+// ParseCRUDOperation extracts the CRUD operation and entity name from a
+// method name. Returns ("", "") if the method doesn't match a CRUD
+// pattern. Exported so the CLI's webhook-only detection can ask the
+// same question MatchCRUDMethods does without re-implementing the
+// prefix list. Internal callers should keep using parseCRUDOperation;
+// they're identical.
+func ParseCRUDOperation(methodName string) (operation, entityName string) {
+	return parseCRUDOperation(methodName)
+}
+
 // parseCRUDOperation extracts the CRUD operation and entity name from a method name.
 // Returns ("", "") if the method doesn't match a CRUD pattern.
 func parseCRUDOperation(methodName string) (operation, entityName string) {

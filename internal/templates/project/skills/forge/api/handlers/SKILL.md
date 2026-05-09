@@ -227,6 +227,37 @@ See `testing/patterns` Pattern 1 for the table-driven template, and the `tdd.Run
 - Never reach into the DB or other services from a handler.
 - Hand-written handler methods take priority over generated CRUD — the generator skips any method you implement.
 
+## Cross-lane type placeholders (`forge:placeholder`)
+
+Parallel agent lanes often need to declare an `AppExtras` field whose typed `Repository` / `Client` / `Provider` lives in a sibling lane that has not yet landed. The historical workaround was to type the field as `any` and add an inline cast in `wire_gen.go` (the `castUserRepo` shim that shipped to cpnext was the canonical example). That bridge typed the field at the wrong layer and silently masked the case where the sibling lane *never* landed — the worker registered with `Repo == nil` and quietly no-op'd in production.
+
+`forge:placeholder` makes the deferred-typing intent explicit. Declare the AppExtras field as `any` AND tag it with the target type the marker promises will land:
+
+```go
+// pkg/app/app_extras.go
+type AppExtras struct {
+    // UserRepo is owned by the user-handler lane; type lands when that
+    // lane merges. Tighten this declaration to user.Repository at merge
+    // time — the marker becomes a no-op once the field type matches.
+    // forge:placeholder: user.Repository
+    UserRepo any
+}
+```
+
+Both the comment shape (matches `// forge:optional-dep`) and the struct-tag shape (`UserRepo any \`forge:placeholder:"user.Repository"\``) are accepted.
+
+Three things change when the marker is present:
+
+1. **wire_gen** emits a typed `resolveUserRepo(app) user.Repository` accessor at file scope. Each consuming `wireXxxDeps` calls the accessor instead of `app.UserRepo`, so the typed Deps field receives a typed value. The accessor compiles whether the AppExtras field is still `any` (during the cross-lane port) or already typed `user.Repository` (after tightening) — `any(app.UserRepo).(user.Repository)` is a no-op in the latter case.
+2. **`forge generate` ERRORS** when an AppExtras field carries the marker but is still typed `any`. The build halts with a message naming the field, the current type, and the target type — the user knows exactly which declaration to tighten.
+3. **`forge lint --wire-coverage` ERRORS** on the same condition, even when `wire_gen.go` is missing (the placeholder error fires off `app_extras.go` directly so a `forge generate`-refused-to-write state still gets diagnosed).
+
+Once you tighten the AppExtras declaration from `UserRepo any` to `UserRepo user.Repository`, the marker becomes a no-op — the build-time gate stops firing, the runtime accessor is still emitted, and the type assertion in `resolveUserRepo` becomes a degenerate `any(typed).(typed)` that always succeeds.
+
+If `app.UserRepo` is nil at runtime (e.g. the `setup.go` wiring forgot to assign it), the accessor panics with a clear message. That's deliberate — silent nil passthrough is the bug class the marker exists to surface.
+
+Use `forge:placeholder` only when the typed value originates from a sibling parallel-agent lane. For genuinely optional fields, use `forge:optional-dep` instead — see the next section.
+
 ## Marking optional Deps fields
 
 Most `Deps` fields are required for production traffic — wire_gen sources them from `*App` at startup, `validateDeps()` rejects nil, and per-RPC `if s.deps.X == nil` checks become dead code. The upgrade codemod will strip those checks because they're boilerplate.

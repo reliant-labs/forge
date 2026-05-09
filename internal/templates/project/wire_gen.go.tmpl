@@ -20,6 +20,19 @@
 //      pkg/app/app_extras.go file) and assign it in setup.go. wire_gen
 //      will resolve the next regenerate by exact-name match.
 //
+// Placeholder fields (parallel-lane scaffolding):
+//
+// AppExtras fields tagged `// forge:placeholder: <Type>` (or
+// `forge:placeholder:"<Type>"` as a struct tag) are typed `any` today
+// but should be tightened to <Type> once a sibling lane lands the real
+// type. wire_gen emits a typed `resolve<Field>(app) <Type>` accessor
+// that compiles in both shapes — the runtime type-asserts at first
+// use and panics with a clear message if app.<Field> is nil or of the
+// wrong type. `forge generate` and `forge lint --wire-coverage` ERROR
+// when a placeholder is still typed `any` after the sibling lane is
+// supposed to have landed; tighten the field declaration to make the
+// error go away.
+//
 // To customize: this file is regenerated on every `forge generate`. Edit
 // pkg/app/setup.go (user-owned) to change what *App's fields are
 // populated with; edit the component's Deps struct to change the dep
@@ -27,6 +40,9 @@
 package app
 
 import (
+{{- if .Resolvers}}
+	"fmt"
+{{- end}}
 	"log/slog"
 
 {{- if .NeedsAuthorizerImport}}
@@ -50,6 +66,32 @@ import (
 // from Bootstrap and the import line otherwise drifts on edge-case
 // projects (no Authorizer + no Config-typed fields). Cheap and stable.
 var _ = slog.LevelInfo
+{{range .Resolvers}}
+// resolve{{.Name}} returns app.{{.Name}} as {{.TargetType}}.
+//
+// {{.Name}} carries a `forge:placeholder` annotation in app_extras.go
+// because the typed {{.TargetType}} originates from a sibling lane that
+// may not have landed at the time AppExtras was first written. The
+// accessor compiles whether app.{{.Name}} is declared `any` (during
+// the cross-lane port) or already typed `{{.TargetType}}` (after the
+// user tightens the declaration) — once tightened, the type assertion
+// is a no-op and the marker becomes redundant.
+//
+// Panics with a descriptive message if app.{{.Name}} is nil or of the
+// wrong concrete type at first use; that's the loud failure mode the
+// placeholder annotation exists to surface (silent nil-passthrough was
+// the original bug class).
+func resolve{{.Name}}(app *App) {{.TargetType}} {
+	if app.{{.Name}} == nil {
+		panic("forge wire_gen: app.{{.Name}} is nil — assign it in pkg/app/setup.go before Bootstrap (forge:placeholder target {{.TargetType}})")
+	}
+	v, ok := any(app.{{.Name}}).({{.TargetType}})
+	if !ok {
+		panic(fmt.Sprintf("forge wire_gen: app.{{.Name}} placeholder type mismatch: got %T, want {{.TargetType}}", app.{{.Name}}))
+	}
+	return v
+}
+{{end}}
 {{range .Services}}
 // wire{{.FieldName}}Deps assembles the full {{.Package}}.Deps from the
 // running *App + cfg + bootstrap logger. Called from Bootstrap() before

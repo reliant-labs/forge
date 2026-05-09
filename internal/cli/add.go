@@ -11,6 +11,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -123,13 +124,14 @@ func validateProjectName(name string) error {
 func newAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
-		Short: "Add a service, worker, operator, or frontend to an existing project",
-		Long: `Add a new service, worker, operator, or frontend to an existing Forge project.
+		Short: "Add a service, worker, operator, frontend, or binary to an existing project",
+		Long: `Add a new service, worker, operator, frontend, or binary to an existing Forge project.
 
 Subcommands:
   forge add service <name>                        Add a new Go service
   forge add worker <name>                         Add a new background worker
   forge add operator <name> [--group G] [--version V]  Add a Kubernetes operator
+  forge add binary <name> [--kind long-running]   Add a non-server long-running binary
   forge add frontend <name>                       Add a new Next.js frontend
   forge add webhook <name> --service S            Add a webhook endpoint to a service
   forge add package <name>                        Add a new internal package (alias for package new)`,
@@ -142,6 +144,7 @@ Subcommands:
 	cmd.AddCommand(newAddFrontendCmd())
 	cmd.AddCommand(newAddWebhookCmd())
 	cmd.AddCommand(newAddPackageCmd())
+	cmd.AddCommand(newAddBinaryCmd())
 
 	return cmd
 }
@@ -154,7 +157,10 @@ func projectRoot() (string, error) {
 	}
 	configPath := filepath.Join(cwd, "forge.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return "", fmt.Errorf("forge.yaml not found in current directory; run this from the project root")
+		return "", cliutil.UserErr("forge",
+			"forge.yaml not found in current directory",
+			"",
+			"cd into your project root, or run 'forge new <name>' to scaffold a new project")
 	}
 	return cwd, nil
 }
@@ -164,13 +170,19 @@ func projectRoot() (string, error) {
 // only makes sense for server-shaped projects — CLI and library kinds have
 // no Connect-RPC server to attach handlers to.
 func requireServiceKind(root, action string) error {
-	cfg, err := generator.ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	configPath := filepath.Join(root, "forge.yaml")
+	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(fmt.Sprintf("forge add %s", action),
+			"read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 	if !cfg.IsServiceKind() {
-		return fmt.Errorf("'forge add %s' is only available for service projects (this project's kind: %s). Re-run `forge new` with --kind service to scaffold a server, or use `forge add package` for internal Go packages",
-			action, cfg.EffectiveKind())
+		return cliutil.UserErr(fmt.Sprintf("forge add %s", action),
+			fmt.Sprintf("'forge add %s' is only available for service projects (this project's kind: %s)",
+				action, cfg.EffectiveKind()),
+			"",
+			"re-run 'forge new' with --kind service to scaffold a server, or use 'forge add package' for internal Go packages")
 	}
 	return nil
 }
@@ -203,8 +215,11 @@ Example:
 }
 
 func runAddService(name string, port int) error {
+	ctxLabel := fmt.Sprintf("forge add service %s", name)
 	if err := validateServiceName(name); err != nil {
-		return fmt.Errorf("invalid service name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid service name", "",
+			"use a name starting with a letter, containing letters/digits/_/-; not a Go keyword or reserved (worker/scheduler/cron/job)",
+			err)
 	}
 
 	root, err := projectRoot()
@@ -218,13 +233,17 @@ func runAddService(name string, port int) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 
 	// Check for name conflict
 	for _, svc := range cfg.Services {
 		if svc.Name == name {
-			return fmt.Errorf("service %q already exists in the project", name)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("service %q already exists in the project", name),
+				"",
+				"pick a different service name, or remove the existing entry from forge.yaml's services: list first")
 		}
 	}
 
@@ -361,8 +380,10 @@ Example:
 }
 
 func runAddWorker(name, kind, schedule string) error {
+	ctxLabel := fmt.Sprintf("forge add worker %s", name)
 	if err := validateIdentifier(name); err != nil {
-		return fmt.Errorf("invalid worker name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid worker name", "",
+			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
 	kind = strings.ToLower(strings.TrimSpace(kind))
@@ -370,17 +391,25 @@ func runAddWorker(name, kind, schedule string) error {
 	switch kind {
 	case "", "cron":
 	default:
-		return fmt.Errorf("invalid worker kind %q: valid kinds are cron", kind)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid worker kind %q: valid kinds are cron", kind),
+			"",
+			"omit --kind for a long-running worker, or pass --kind=cron with --schedule for a scheduled worker")
 	}
 	if kind == "cron" {
 		if schedule == "" {
-			return fmt.Errorf("--schedule is required when --kind cron")
+			return cliutil.UserErr(ctxLabel, "--schedule is required when --kind cron", "",
+				"pass --schedule with a 5-field cron expression (e.g. --schedule \"*/5 * * * *\")")
 		}
 		if _, err := cron.ParseStandard(schedule); err != nil {
-			return fmt.Errorf("invalid cron schedule %q: %w", schedule, err)
+			return cliutil.WrapUserErr(ctxLabel,
+				fmt.Sprintf("invalid cron schedule %q", schedule), "",
+				"use a 5-field cron expression (minute hour day-of-month month day-of-week), e.g. \"*/5 * * * *\"",
+				err)
 		}
 	} else if schedule != "" {
-		return fmt.Errorf("--schedule requires --kind cron")
+		return cliutil.UserErr(ctxLabel, "--schedule requires --kind cron", "",
+			"either drop --schedule (long-running worker) or add --kind cron")
 	}
 
 	root, err := projectRoot()
@@ -843,6 +872,14 @@ func runAddFrontend(name string, port int, kind string) error {
 		Path: fmt.Sprintf("frontends/%s", name),
 		Port: port,
 	})
+	// Flip features.frontend on so subsequent `forge generate` runs
+	// pick up the frontend codegen pass. Projects scaffolded with
+	// `forge new --kind service` (no --frontend) leave this field
+	// explicitly false; without this flip the frontend dir + files
+	// would be emitted but never regenerated. Use a stable address so
+	// the *bool survives marshal round-trips.
+	frontendOn := true
+	cfg.Features.Frontend = &frontendOn
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 		return fmt.Errorf("update project config: %w", err)
 	}
@@ -935,5 +972,148 @@ func runAddWebhook(name, serviceName string) error {
 
 	fmt.Printf("\n✅ Webhook '%s' added to service '%s'!\n", name, serviceName)
 
+	return nil
+}
+
+// --- add binary ---
+
+// newAddBinaryCmd is the cobra surface for `forge add binary <name>`.
+//
+// "Binary" is the third long-running shape forge generates, alongside
+// service (Connect-RPC server) and worker (in-process goroutine under
+// the canonical server). It exists for processes that need their own
+// Deployment but don't fit the server / worker / operator templates —
+// reverse proxies, sidecars, off-service NATS consumers, gateways.
+//
+// Pre-binary, every project that needed a second long-running process
+// hand-wrote ~270 LOC of cobra + signal-handling + lifecycle
+// boilerplate (cpnext's workspace_proxy went through this rewrite three
+// times across rebuilds). The scaffold here lifts that boilerplate
+// into the generator so the next equivalent is the user's business
+// logic plus a thin glue layer.
+func newAddBinaryCmd() *cobra.Command {
+	var kind string
+
+	cmd := &cobra.Command{
+		Use:   "binary <name>",
+		Short: "Add a non-server long-running binary to the project",
+		Long: `Add a non-server long-running binary to an existing Forge project.
+
+A binary is a process with its own Deployment shape. Use this when:
+  - You need a reverse proxy / gateway in front of pods.
+  - You want an off-service NATS consumer that isn't an in-process worker.
+  - You need a sidecar with its own deploy lifecycle.
+
+For in-process background work, use 'forge add worker' instead — workers
+share the canonical server's lifecycle and Deps.
+
+This creates:
+  cmd/<name>.go                       Cobra subcommand (registered against the shared root)
+  internal/<name>/contract.go          Deps, Service, New(deps) (*Runner, error)
+  internal/<name>/<name>.go            Runner.Run(ctx) lifecycle body
+  internal/<name>/<name>_test.go       Lifecycle + validateDeps tests
+
+And an entry under 'binaries:' in forge.yaml so deploy emits a
+Deployment for the binary. See the binaries skill (` + "`forge skill load binaries`" + `)
+for when to choose a binary vs worker vs service.
+
+Example:
+  forge add binary workspace-proxy
+  forge add binary auth-sidecar --kind long-running`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAddBinary(args[0], kind)
+		},
+	}
+
+	cmd.Flags().StringVar(&kind, "kind", "long-running", "binary lifecycle kind (long-running, cron, oneshot)")
+
+	return cmd
+}
+
+func runAddBinary(name, kind string) error {
+	if err := validateIdentifier(name); err != nil {
+		return fmt.Errorf("invalid binary name: %w", err)
+	}
+
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "", "long-running":
+		kind = "long-running"
+	case "cron", "oneshot":
+		// Accepted for forge.yaml forward-compat, but the scaffold today
+		// is the long-running shape. Document the limitation explicitly
+		// so users don't think the file output reflects --kind=cron.
+		fmt.Fprintf(os.Stderr, "warning: --kind %s is forward-reserved; today's scaffold emits the long-running shape.\n", kind)
+	default:
+		return fmt.Errorf("invalid binary kind %q: valid kinds are long-running, cron, oneshot", kind)
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+	if err := requireServiceKind(root, "binary"); err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(root, "forge.yaml")
+	cfg, err := generator.ReadProjectConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("read project config: %w", err)
+	}
+
+	// Conflict checks. Binaries share the cmd/ directory with the
+	// canonical `cmd/server.go` and any per-service shared subcommands,
+	// so we check both binaries: AND services:.
+	for _, b := range cfg.Binaries {
+		if b.Name == name {
+			return fmt.Errorf("binary %q already exists in the project", name)
+		}
+	}
+	for _, svc := range cfg.Services {
+		if svc.Name == name {
+			return fmt.Errorf("%q already exists in the project as a %s", name, svc.Type)
+		}
+	}
+	// Reserved cobra subcommand names that would shadow the binary.
+	switch generator.ServicePackageName(name) {
+	case "server", "version", "db":
+		return fmt.Errorf("%q conflicts with a reserved cobra subcommand; pick a different name", name)
+	}
+
+	fmt.Printf("Adding binary '%s' (kind=%s)...\n", name, kind)
+
+	// Generate the four scaffold files (cmd-binary.go, contract.go,
+	// binary.go, binary_test.go).
+	if err := generator.GenerateBinaryFiles(root, cfg.ModulePath, name, kind); err != nil {
+		return fmt.Errorf("generate binary files: %w", err)
+	}
+
+	// Update forge.yaml. Path uses the Go-package form so it matches
+	// the directory the scaffolder creates ("workspace-proxy" ->
+	// cmd/workspace_proxy.go).
+	pkg := generator.ServicePackageName(name)
+	cfg.Binaries = append(cfg.Binaries, config.BinaryConfig{
+		Name: name,
+		Path: fmt.Sprintf("cmd/%s.go", pkg),
+		Kind: kind,
+	})
+	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+		return fmt.Errorf("update project config: %w", err)
+	}
+
+	fmt.Printf("\n✅ Binary '%s' added successfully!\n", name)
+	fmt.Printf("   - cmd/%s.go\n", pkg)
+	fmt.Printf("   - internal/%s/contract.go\n", pkg)
+	fmt.Printf("   - internal/%s/%s.go\n", pkg, pkg)
+	fmt.Printf("   - internal/%s/%s_test.go\n", pkg, pkg)
+	fmt.Printf("   - forge.yaml (binaries: entry)\n\n")
+	fmt.Printf("Next steps:\n")
+	fmt.Printf("  1. Edit internal/%s/%s.go to implement the runtime loop.\n", pkg, pkg)
+	fmt.Printf("  2. Add a Deployment for the binary in deploy/kcl/<env>/main.k\n")
+	fmt.Printf("     (the {{range .Binaries}} block under `applications` is wired\n")
+	fmt.Printf("     for new projects; existing projects need to copy the entry\n")
+	fmt.Printf("     pattern from a sibling Application).\n")
 	return nil
 }

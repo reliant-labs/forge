@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/reliant-labs/forge/internal/cliutil"
 )
 
 // newConfigCmd builds the `forge config` subcommand surface. Today the
@@ -75,18 +77,27 @@ Examples:
 		Args: func(cmd *cobra.Command, args []string) error {
 			if unsetKey {
 				if len(args) != 1 {
-					return fmt.Errorf("--unset requires exactly one positional argument: <key>")
+					return cliutil.UserErr("forge config set --unset",
+						"requires exactly one positional argument: <key>",
+						"",
+						"call as 'forge config set --env <env> --unset <key>'")
 				}
 				return nil
 			}
 			if len(args) != 2 {
-				return fmt.Errorf("`config set` requires two positional arguments: <key> <value> (or --unset <key>)")
+				return cliutil.UserErr("forge config set",
+					"requires two positional arguments: <key> <value>",
+					"",
+					"call as 'forge config set --env <env> <key> <value>' (or pass --unset <key> to remove)")
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if envName == "" {
-				return fmt.Errorf("--env is required")
+				return cliutil.UserErr("forge config set",
+					"--env is required",
+					"",
+					"pass --env <name> matching an environments[] entry in forge.yaml (the env block is created if missing)")
 			}
 			key := args[0]
 			value := ""
@@ -107,7 +118,10 @@ Examples:
 // targeted env's config map is mutated.
 func runConfigSet(envName, key, rawValue string, unset bool) error {
 	if !validConfigKey(key) {
-		return fmt.Errorf("invalid config key %q (must match [a-z][a-z0-9_]*)", key)
+		return cliutil.UserErr(fmt.Sprintf("forge config set --env %s", envName),
+			fmt.Sprintf("invalid config key %q (must match [a-z][a-z0-9_]*)", key),
+			"",
+			"use snake_case starting with a lowercase letter (e.g. log_level, database_url)")
 	}
 
 	configPath, err := findProjectConfigFile()
@@ -251,19 +265,28 @@ func coerceConfigValue(projectDir, key, rawValue string) (any, error) {
 	case "int32", "int64", "uint32", "uint64", "sint32", "sint64", "fixed32", "fixed64":
 		n, err := strconv.ParseInt(rawValue, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("config key %q is %s in proto; value %q is not a valid integer", key, protoType, rawValue)
+			return nil, cliutil.UserErr("forge config set",
+				fmt.Sprintf("config key %q is %s in proto; value %q is not a valid integer", key, protoType, rawValue),
+				"proto/config/v1/config.proto",
+				"pass a numeric value, or change the proto field type if the key should accept strings")
 		}
 		return n, nil
 	case "float", "double":
 		n, err := strconv.ParseFloat(rawValue, 64)
 		if err != nil {
-			return nil, fmt.Errorf("config key %q is %s in proto; value %q is not a valid number", key, protoType, rawValue)
+			return nil, cliutil.UserErr("forge config set",
+				fmt.Sprintf("config key %q is %s in proto; value %q is not a valid number", key, protoType, rawValue),
+				"proto/config/v1/config.proto",
+				"pass a numeric value (e.g. 1.5), or change the proto field type")
 		}
 		return n, nil
 	case "bool":
 		b, err := strconv.ParseBool(rawValue)
 		if err != nil {
-			return nil, fmt.Errorf("config key %q is bool in proto; value %q is not a valid bool (use true/false)", key, rawValue)
+			return nil, cliutil.UserErr("forge config set",
+				fmt.Sprintf("config key %q is bool in proto; value %q is not a valid bool", key, rawValue),
+				"proto/config/v1/config.proto",
+				"pass true or false")
 		}
 		return b, nil
 	default:

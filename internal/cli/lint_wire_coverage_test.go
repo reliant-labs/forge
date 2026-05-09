@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,6 +82,53 @@ func wireAPIDeps(app *App) struct{} {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 findings, got %d: %+v", len(findings), findings)
+	}
+}
+
+// TestScanUnresolvedPlaceholders_ErrorsOnAnyTypedField asserts that
+// AppExtras fields carrying `forge:placeholder` while still declared
+// `any` are reported as errors. Already-tightened fields (where the
+// declared type matches the target) are NOT reported — the marker
+// becomes a no-op once the field is tightened.
+func TestScanUnresolvedPlaceholders_ErrorsOnAnyTypedField(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package app
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	// forge:placeholder: user.Repository
+	UserRepo any
+
+	// forge:placeholder: admin.Repository
+	AdminRepo admin.Repository
+
+	// Untagged — no placeholder, never reported.
+	Stripe *stripe.Client
+}
+`
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := scanUnresolvedPlaceholders(projectDir)
+	if err != nil {
+		t.Fatalf("scanUnresolvedPlaceholders: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 unresolved placeholder, got %d: %+v", len(got), got)
+	}
+	if got[0].FieldName != "UserRepo" {
+		t.Errorf("FieldName = %q, want %q", got[0].FieldName, "UserRepo")
+	}
+	if got[0].TargetType != "user.Repository" {
+		t.Errorf("TargetType = %q, want %q", got[0].TargetType, "user.Repository")
 	}
 }
 

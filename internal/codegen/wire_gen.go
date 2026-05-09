@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -134,6 +135,40 @@ type WireUnresolved struct {
 	Hint string
 }
 
+// PlaceholderResolver describes one typed `resolve<Field>(app) <Type>`
+// helper the wire_gen template emits at file scope. The helper bridges
+// an `any`-typed AppExtras field (during a parallel-lane port where the
+// real type lives in a sibling lane that hasn't merged yet) to the
+// typed Deps field that consumes it.
+//
+// One PlaceholderResolver is generated per AppExtras placeholder
+// referenced by at least one Deps field. The set is deduped by Name so
+// multi-service consumption of the same placeholder emits one helper.
+type PlaceholderResolver struct {
+	// Name is the AppExtras field name (also the Deps field name —
+	// resolution is exact-match by name).
+	Name string
+
+	// TargetType is the type the helper returns; matches the
+	// `forge:placeholder: <Type>` annotation on the AppExtras field.
+	TargetType string
+}
+
+// UnresolvedPlaceholder is an AppExtras field that carries the
+// `forge:placeholder` marker but is still typed `any`. The build-time
+// gate (lint + forge generate) treats these as ERRORS — they're the
+// failure mode the placeholder annotation exists to surface.
+type UnresolvedPlaceholder struct {
+	// FieldName is the AppExtras field name.
+	FieldName string
+
+	// CurrentType is the type as declared today (typically "any").
+	CurrentType string
+
+	// TargetType is the type the user promised to tighten to.
+	TargetType string
+}
+
 // GenerateWireGen emits pkg/app/wire_gen.go. Returns nil with no file
 // written when there are no services AND no workers AND no operators.
 //
@@ -177,10 +212,62 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 	if err != nil {
 		return fmt.Errorf("parse pkg/app for App fields: %w", err)
 	}
-	appFieldSet := map[string]string{}
+	// appFieldByName is the lookup wireExpressionForApp consumes —
+	// carries Type AND Placeholder so the resolver can emit a typed
+	// `resolve<Field>(app)` accessor when a sibling lane hasn't
+	// landed the real type yet.
+	appFieldByName := map[string]AppField{}
 	for _, f := range appFields {
-		appFieldSet[f.Name] = f.Type
+		appFieldByName[f.Name] = f
 	}
+
+	// Build-time gate: any AppExtras field carrying `forge:placeholder`
+	// AND still typed `any` is the unresolved-placeholder failure mode.
+	// The annotation says "this should be tightened to <Type> once the
+	// sibling lane lands"; if the field is still `any` at codegen time,
+	// the lane never landed (or landed and was forgotten), and wire_gen
+	// must fail loudly rather than emit a silent type-asserting accessor
+	// that may panic at runtime.
+	//
+	// Once the user tightens the field declaration to the target type,
+	// the marker becomes a no-op (the field type matches the target;
+	// the generated resolver compiles either way).
+	var unresolvedPlaceholders []UnresolvedPlaceholder
+	for _, f := range appFields {
+		if f.Placeholder == "" {
+			continue
+		}
+		// "any" with surrounding whitespace is the only shape that
+		// counts as unresolved. A field already typed as the target
+		// (or any other concrete type) is considered tightened — the
+		// marker is then redundant but harmless.
+		if strings.TrimSpace(f.Type) == "any" || strings.TrimSpace(f.Type) == "interface{}" {
+			unresolvedPlaceholders = append(unresolvedPlaceholders, UnresolvedPlaceholder{
+				FieldName:   f.Name,
+				CurrentType: f.Type,
+				TargetType:  f.Placeholder,
+			})
+		}
+	}
+	if len(unresolvedPlaceholders) > 0 {
+		var msg strings.Builder
+		msg.WriteString("forge:placeholder annotations have not been tightened to their target types — wire_gen cannot emit a typed accessor.\n\n")
+		msg.WriteString("The following AppExtras fields are still typed `any` despite carrying a placeholder marker:\n\n")
+		for _, up := range unresolvedPlaceholders {
+			fmt.Fprintf(&msg, "  - %s: declared `%s`, marker promises `%s`\n", up.FieldName, up.CurrentType, up.TargetType)
+		}
+		msg.WriteString("\nFix: open pkg/app/app_extras.go, change the field declaration from\n")
+		msg.WriteString("    <Field> any `forge:placeholder:\"<Type>\"`\n")
+		msg.WriteString("(or its comment-shape equivalent) to\n")
+		msg.WriteString("    <Field> <Type>\n")
+		msg.WriteString("then re-run `forge generate`. The marker becomes a no-op once the field type matches its target.\n")
+		return fmt.Errorf("%s", msg.String())
+	}
+
+	// Resolvers collected across all services, workers, operators —
+	// deduped by AppExtras field name so the same placeholder
+	// referenced from multiple components emits one helper.
+	resolverNeeds := map[string]PlaceholderResolver{}
 
 	// Build the collision-aware naming map ONCE, shared with bootstrap.
 	// We synthesize service "components" from ServiceDef just so the
@@ -237,7 +324,7 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 		}
 
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionFor(df, appFieldSet, ormEnabled, runtimeName)
+			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds)
 			// Optional fields that fall through to the typed-zero
 			// branch get the silent treatment: no inline TODO comment,
 			// no contribution to the UNRESOLVED header. The user
@@ -269,14 +356,24 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 	// WireGenServiceData carrier — the template treats them identically
 	// other than the import-path prefix and the per-component logger
 	// attribute key ("worker" / "operator" instead of "service").
-	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldSet, ormEnabled, counts)
+	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
 	if err != nil {
 		return fmt.Errorf("build worker wire data: %w", err)
 	}
-	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldSet, ormEnabled, counts)
+	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
 	if err != nil {
 		return fmt.Errorf("build operator wire data: %w", err)
 	}
+
+	// Sort resolvers by name so the rendered file is stable across
+	// regenerates (map iteration is intentionally random).
+	resolvers := make([]PlaceholderResolver, 0, len(resolverNeeds))
+	for _, r := range resolverNeeds {
+		resolvers = append(resolvers, r)
+	}
+	sort.Slice(resolvers, func(i, j int) bool {
+		return resolvers[i].Name < resolvers[j].Name
+	})
 
 	tmplData := struct {
 		Module                string
@@ -284,12 +381,14 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 		Workers               []WireGenServiceData
 		Operators             []WireGenServiceData
 		NeedsAuthorizerImport bool
+		Resolvers             []PlaceholderResolver
 	}{
 		Module:                modulePath,
 		Services:              wireSvcs,
 		Workers:               wireWorkers,
 		Operators:             wireOperators,
 		NeedsAuthorizerImport: needsAuthorizerImport,
+		Resolvers:             resolvers,
 	}
 
 	content, err := templates.ProjectTemplates().Render("wire_gen.go.tmpl", tmplData)
@@ -311,7 +410,7 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 //
 // Returns an empty slice (not nil) when comps is empty so range over the
 // result is a no-op without nil-check ceremony at the call site.
-func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, loggerAttrKey, projectDir string, appFieldSet map[string]string, ormEnabled bool, counts map[string]int) ([]WireGenServiceData, error) {
+func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, loggerAttrKey, projectDir string, appFieldByName map[string]AppField, ormEnabled bool, counts map[string]int, resolverNeeds map[string]PlaceholderResolver) ([]WireGenServiceData, error) {
 	if len(comps) == 0 {
 		return nil, nil
 	}
@@ -342,7 +441,7 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 		}
 
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionFor(df, appFieldSet, ormEnabled, runtimeName)
+			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds)
 			// Workers/operators are not expected to declare Authorizer
 			// (no inbound RPCs), so they don't get the devMode hook.
 			// If a Deps struct does declare one, we honor it and set
@@ -376,6 +475,56 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 	return out, nil
 }
 
+// wireExpressionForApp is the placeholder-aware resolver. When a Deps
+// field name matches an AppExtras field carrying `forge:placeholder:
+// <Type>`, the resolver registers a typed accessor `resolve<Field>(app)
+// <Type>` in resolverNeeds and emits a call to it from the wireXxxDeps
+// return literal. The accessor compiles whether app.<Field> is typed
+// `any` (during the cross-lane port) or already typed `<Type>` (after
+// the user tightens the declaration).
+//
+// All other resolution rules (conventional names, exact-name app
+// match, typed-zero fallback) match wireExpressionFor exactly — the
+// placeholder branch is purely additive.
+func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver) (expr, comment, unresolvedHint string) {
+	switch df.Name {
+	case "Logger":
+		return fmt.Sprintf("logger.With(\"service\", %q)", runtimeName), "", ""
+	case "Config":
+		return "cfg", "", ""
+	case "Authorizer":
+		return "authz", "devMode swap to middleware.DevAuthorizer in development", ""
+	case "DB":
+		switch {
+		case strings.Contains(df.Type, "orm.Context") && ormEnabled:
+			return "app.ORM", "*orm.Client implements orm.Context", ""
+		case strings.Contains(df.Type, "sql.DB"):
+			return "app.DB", "", ""
+		}
+	}
+
+	if af, ok := appFields[df.Name]; ok {
+		// Placeholder-tagged AppExtras field: emit a typed accessor
+		// reference. The accessor itself is rendered at file scope from
+		// the deduped resolverNeeds map. We register the entry here so
+		// the template knows to emit it.
+		if af.Placeholder != "" {
+			resolverNeeds[df.Name] = PlaceholderResolver{
+				Name:       df.Name,
+				TargetType: af.Placeholder,
+			}
+			return fmt.Sprintf("resolve%s(app)", df.Name),
+				fmt.Sprintf("typed accessor for forge:placeholder %s → %s", df.Name, af.Placeholder),
+				""
+		}
+		return "app." + df.Name, "", ""
+	}
+
+	hint := fmt.Sprintf("add `%s %s` to AppExtras in pkg/app/app_extras.go, then assign `app.%s = ...` in pkg/app/setup.go",
+		df.Name, df.Type, df.Name)
+	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", hint
+}
+
 // wireExpressionFor maps one DepsField to the Go expression wire_gen
 // should emit on the right-hand side. The third return is a hint
 // added to the wire_gen.go header comment when no producer matched —
@@ -387,6 +536,12 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 // inputs. This keeps wire_gen extension a one-step ergonomic — add a
 // field to App + setup it in setup.go, and the next regenerate picks
 // it up by name — instead of forcing users to also edit forge.yaml.
+//
+// appFields here is the legacy-shape map from name → type used by
+// external callers (and the pre-placeholder unit tests). The richer
+// shape (AppField with Placeholder) is consumed by wireExpressionForApp
+// above; this thin wrapper exists so existing callers / tests keep
+// working without a signature churn.
 func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled bool, runtimeName string) (expr, comment, unresolvedHint string) {
 	switch df.Name {
 	case "Logger":
@@ -421,6 +576,12 @@ func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled boo
 	// exported field on the live *App struct. Exact-case match keeps
 	// the resolution unambiguous — alias differences ("Stripe" vs
 	// "stripe") would silently collide otherwise.
+	//
+	// Note: the legacy shape ignores placeholder-tagged fields. The
+	// caller in this package uses wireExpressionForApp instead, which
+	// emits the typed `resolve<Field>(app)` accessor when a placeholder
+	// is set. wireExpressionFor is retained for tests / external
+	// consumers that pre-date the placeholder annotation.
 	if _, ok := appFields[df.Name]; ok {
 		return "app." + df.Name, "", ""
 	}

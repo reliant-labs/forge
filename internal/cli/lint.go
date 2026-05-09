@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/dblint"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
@@ -21,18 +22,19 @@ import (
 
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
-	contract        bool
-	db              bool
-	migrationSafety bool
-	fix             bool
-	exportedVars    bool
-	conventions     bool
-	frontendPacks   bool
-	scaffolds       bool
-	tests           bool
-	banners         bool
-	suggestExcludes bool
-	wireCoverage    bool
+	contract         bool
+	db               bool
+	migrationSafety  bool
+	fix              bool
+	exportedVars     bool
+	conventions      bool
+	frontendPacks    bool
+	scaffolds        bool
+	tests            bool
+	banners          bool
+	suggestExcludes  bool
+	wireCoverage     bool
+	checkWorkarounds bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -74,8 +76,12 @@ Examples:
   forge lint --suggest-excludes # Print a YAML snippet of internal packages that look
                                 # like good candidates for contracts.exclude in forge.yaml
                                 # (analyzer-style, embed-only, etc.)
-  forge lint --wire-coverage    # Surface unresolved Deps fields in pkg/app/wire_gen.go
-                                # (warnings only — see deps_parser + wire_gen.go)
+  forge lint --wire-coverage    # Report unresolved Deps fields in pkg/app/wire_gen.go
+                                # (warnings) AND unresolved forge:placeholder annotations
+                                # in pkg/app/app_extras.go (errors — gate the build)
+  forge lint --check-workarounds # Flag cross-lane workarounds (cast<X>Repo helpers in
+                                # pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go,
+                                # cmd/<name>.go files not declared in forge.yaml binaries:)
   forge lint --fix              # Auto-fix issues where possible`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var paths []string
@@ -99,7 +105,8 @@ Examples:
 	cmd.Flags().BoolVar(&flags.tests, "tests", false, "Run handler-test convention rules (e.g. forgeconv-handler-tests-use-tdd; warnings only)")
 	cmd.Flags().BoolVar(&flags.banners, "banners", false, "Verify forge templates carry the right Tier-1 / Tier-2 lifecycle banner (warnings only; no-op outside the forge repo)")
 	cmd.Flags().BoolVar(&flags.suggestExcludes, "suggest-excludes", false, "Print a YAML snippet of contracts.exclude candidates (heuristic-based; nothing is mutated)")
-	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings only; never gates the build)")
+	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings) and unresolved forge:placeholder annotations in pkg/app/app_extras.go (errors)")
+	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 
 	return cmd
@@ -175,6 +182,13 @@ func runLint(flags lintFlags, paths []string) error {
 			return fmt.Errorf("getwd: %w", err)
 		}
 		return runWireCoverageLint(cwd)
+	}
+	if flags.checkWorkarounds {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runCheckWorkaroundsLint(cwd)
 	}
 
 	// Load project config for lint defaults. A missing config file is fine
@@ -256,10 +270,15 @@ func runContractLinter(paths []string, excludes []string) error {
 				fmt.Println("❌ Contract interface violations found!")
 				fmt.Println()
 				fmt.Println("Exported methods on types implementing contract interfaces must be declared in the interface.")
-				return fmt.Errorf("linting failed")
+				return cliutil.UserErr("forge lint --contract",
+					"contract interface violations found",
+					"",
+					"either declare the exported method in the contract interface, or unexport it (lowercase) if it's helper-only")
 			}
 		}
-		return fmt.Errorf("failed to run contract linter: %w", err)
+		return cliutil.WrapUserErr("forge lint --contract",
+			"failed to run contract linter", "",
+			"ensure 'contractlint' builds (cmd/contractlint/main.go) and your project go.mod is tidy", err)
 	}
 
 	fmt.Println()
@@ -438,7 +457,10 @@ func runConventionLint() error {
 
 	fmt.Print(combined.FormatText())
 	if combined.HasErrors() {
-		return fmt.Errorf("forge convention violations found")
+		return cliutil.UserErr("forge lint --conventions",
+			"forge convention violations found",
+			"",
+			"fix the findings above (proto annotations, contract.go names) — see 'forge skill load contracts' and 'forge skill load proto' for the rules")
 	}
 	fmt.Println("(warnings only — not failing the build)")
 	return nil
@@ -547,6 +569,33 @@ func runBannersLint() error {
 	return nil
 }
 
+// runCheckWorkaroundsLint flags the canonical cross-lane workarounds that
+// shipped to cpnext during the v0.2 rebuild (cast<X>Repo helpers in
+// pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go, cmd/<name>.go
+// files not declared in forge.yaml's binaries: block). All findings are
+// warnings — never gates the build, but surfaces drift before merge so
+// the corresponding forge primitive can replace the workaround.
+//
+// Wired into runAllLinters so plain `forge lint` runs it; `--check-workarounds`
+// runs ONLY this rule for targeted CI gates.
+func runCheckWorkaroundsLint(root string) error {
+	fmt.Println("🔍 Running cross-lane workaround lint...")
+	fmt.Println()
+
+	res, err := scaffolds.LintWorkaroundsRoot(root)
+	if err != nil {
+		return fmt.Errorf("check-workarounds lint failed: %w", err)
+	}
+	if len(res.Findings) == 0 {
+		fmt.Println("✓ no cross-lane workarounds detected.")
+		return nil
+	}
+	fmt.Print(res.FormatText())
+	// Warnings only — never gate.
+	fmt.Println("(warnings only — not failing the build)")
+	return nil
+}
+
 // runScaffoldsLint enforces the forge ownership boundary:
 //   - committed FORGE_SCAFFOLD markers are an error
 //   - _gen files missing the canonical header are an error
@@ -570,7 +619,10 @@ func runScaffoldsLint() error {
 
 	fmt.Print(res.FormatText())
 	if res.HasErrors() {
-		return fmt.Errorf("scaffold ownership violations found")
+		return cliutil.UserErr("forge lint --scaffolds",
+			"scaffold ownership violations found",
+			"",
+			"resolve any committed FORGE_SCAFFOLD: markers and ensure _gen files carry the canonical 'Code generated by forge' header (re-run 'forge generate')")
 	}
 	return nil
 }
@@ -594,7 +646,10 @@ func runMigrationSafetyLint(cfg *config.ProjectConfig) error {
 	}
 	fmt.Print(result.FormatText())
 	if result.HasErrors() {
-		return fmt.Errorf("migration safety violations found")
+		return cliutil.UserErr("forge lint --migration-safety",
+			"migration safety violations found",
+			"",
+			"either rewrite the destructive migration as a non-destructive sequence, or allowlist the file under migration_safety.allowed_destructive in forge.yaml")
 	}
 	return nil
 }
@@ -768,22 +823,44 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	}
 
 	// 13. Wire-coverage — surfaces unresolved Deps fields in
-	// pkg/app/wire_gen.go that wire_gen left as `// TODO: wire X`
-	// because no producer matched. Warnings only — projects in
-	// active development legitimately have unresolved TODOs while
-	// wiring up a new field. Skipped when no wire_gen.go exists
-	// (library projects, fresh scaffolds before `forge generate`).
-	if fileExists(filepath.Join("pkg", "app", "wire_gen.go")) {
+	// pkg/app/wire_gen.go and unresolved `forge:placeholder` markers
+	// in pkg/app/app_extras.go. TODO findings are warnings (active
+	// development), placeholder findings are errors (the user
+	// explicitly promised tightening). The lint runs even when
+	// wire_gen.go is missing — placeholder errors fire purely off
+	// app_extras.go so a forge generate refused-to-write state still
+	// gets diagnosed.
+	if fileExists(filepath.Join("pkg", "app", "wire_gen.go")) ||
+		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
 		cwd, err := os.Getwd()
 		if err == nil {
 			if err := runWireCoverageLint(cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  wire-coverage lint: %v\n", err)
+				fmt.Fprintf(os.Stderr, "❌ wire-coverage lint: %v\n", err)
+				hasFailed = true
+			}
+		}
+	}
+
+	// 14. Check-workarounds — flags the canonical cross-lane workarounds
+	// (FORGE_REVIEW_PROCESS.md §2): cast<X>Repo helpers in wire_gen.go,
+	// pkg/app/testing_extras.go hand-rolled stubs, cmd/<name>.go files
+	// not declared in forge.yaml's binaries: block. Warnings only —
+	// these can be legitimate in some projects, but each has a canonical
+	// forge-primitive replacement either already-landed or in flight.
+	{
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runCheckWorkaroundsLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  check-workarounds lint: %v\n", err)
 			}
 		}
 	}
 
 	if hasFailed {
-		return fmt.Errorf("linting failed")
+		return cliutil.UserErr("forge lint",
+			"one or more linters reported errors",
+			"",
+			"address the per-linter errors above (each preceded by ❌); re-run 'forge lint' to confirm")
 	}
 
 	fmt.Println()

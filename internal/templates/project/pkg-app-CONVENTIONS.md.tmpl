@@ -56,6 +56,42 @@ To add a new dep:
 - Re-run `forge generate`. wire_gen will resolve the field by name on
   the next regenerate.
 
+## Cross-lane type placeholders
+
+If you need to declare an `AppExtras` field whose typed value
+originates from a sibling lane that hasn't landed yet, tag the field
+with `forge:placeholder` so wire_gen emits a typed accessor and `forge
+generate` errors loudly when the lane never lands:
+
+```go
+type AppExtras struct {
+    // forge:placeholder: user.Repository
+    UserRepo any
+}
+```
+
+The struct-tag spelling (`UserRepo any \`forge:placeholder:"user.Repository"\``)
+also works.
+
+- **wire_gen** emits `resolveUserRepo(app) user.Repository` at file
+  scope; each consuming `wireXxxDeps` calls it instead of
+  `app.UserRepo`. The accessor compiles whether the field is `any`
+  (pre-merge) or `user.Repository` (post-merge) — `any(x).(T)` is a
+  no-op in the latter case.
+- **`forge generate` errors** when an AppExtras field carries the
+  marker but is still typed `any`. The error message names the field
+  and target type so you know exactly which declaration to tighten.
+- **`forge lint --wire-coverage` errors** on the same condition, even
+  when `wire_gen.go` doesn't exist yet.
+
+Tighten the declaration to the target type once the sibling lane
+lands. The marker stays harmless — its role is `wire_gen.go`-time
+detection, not `app_extras.go`-time enforcement.
+
+`forge:placeholder` is for cross-lane scaffolding, not optional deps.
+For fields that may legitimately be nil at runtime, use
+`forge:optional-dep` (see the per-service `service.go` Deps struct).
+
 ## Where do per-RPC nil checks belong? (Spoiler: nowhere.)
 
 Forge generates `New(Deps) (*Service, error)` and a `validateDeps()`

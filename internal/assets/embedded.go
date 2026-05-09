@@ -50,7 +50,7 @@ func WriteForgeV1Proto(destDir, modulePath string) error {
 
 	adjusted := string(content)
 	if modulePath != "" {
-		oldPkg := `option go_package = "github.com/reliant-labs/forge/gen/forge/v1;forgev1";`
+		oldPkg := `option go_package = "github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1";`
 		newPkg := `option go_package = "` + modulePath + `/gen/forge/v1;forgev1";`
 		adjusted = strings.Replace(adjusted, oldPkg, newPkg, 1)
 	}

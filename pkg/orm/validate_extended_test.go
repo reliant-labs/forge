@@ -33,8 +33,8 @@ func TestValidateOrderBy_Extended(t *testing.T) {
 		{"hyphen in column", "first-name", true},
 		{"at sign", "@col ASC", true},
 		{"hash sign", "#col ASC", true},
-		{"space in column", "my column", true}, // "my column" → 3 tokens → invalid
-		{"tab character", "name\tASC", false},   // Fields splits on whitespace; should be 2 tokens
+		{"space in column", "my column", true},    // "my column" → 3 tokens → invalid
+		{"tab character", "name\tASC", false},     // Fields splits on whitespace; should be 2 tokens
 		{"newline in clause", "name\nASC", false}, // Fields splits on whitespace
 	}
 

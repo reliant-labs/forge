@@ -300,10 +300,10 @@ func TestIntrospectTable_PrimaryKeys(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []struct {
-		name       string
-		createSQL  string
-		tableName  string
-		pkFields   []string
+		name      string
+		createSQL string
+		tableName string
+		pkFields  []string
 	}{
 		{
 			name: "Single primary key",

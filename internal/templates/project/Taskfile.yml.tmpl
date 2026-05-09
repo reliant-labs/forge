@@ -65,10 +65,16 @@ tasks:
 {{- end}}
 
   test:
-    desc: Run Go unit tests{{if .FrontendName}} and frontend tests{{end}} (excludes e2e)
+    desc: Run Go unit tests{{if .FrontendName}} and frontend tests{{end}} (excludes integration + e2e)
     cmds:
-      # E2E tests are guarded by the `e2e` build tag and therefore excluded here.
-      - go test -race -count=1 ./...
+      # Integration and e2e tests are guarded by the `integration` and `e2e`
+      # build tags respectively, so they are physically excluded from this
+      # default test run (no compile, no skip-at-runtime).
+      # -timeout 30s surfaces hangs (subprocess loops, deadlocks, accidental
+      # network calls) as fast test failures instead of CI-stalling 10-minute
+      # waits. Pure unit tests should complete in milliseconds; if a test needs
+      # longer it likely belongs behind a build tag (integration / e2e).
+      - go test -race -count=1 -timeout 30s ./...
 {{- if .FrontendName}}
       - task: test:frontend
 
@@ -79,27 +85,45 @@ tasks:
       - npm test -- --passWithNoTests
 {{- end}}
 
+  test:integration:
+    desc: Run integration tests (uses -tags=integration; may require docker compose)
+    cmds:
+      # Integration tests are guarded by the `integration` build tag and are
+      # therefore excluded from `task test`. They typically need a real
+      # database / running infra (see docker-compose.yml). -timeout=10m gives
+      # heavy DB-backed scenarios room while still surfacing hangs.
+      - go test -race -tags=integration -count=1 -timeout=10m ./...
+
   test:e2e:
     desc: Run end-to-end tests (requires docker compose; uses -tags=e2e)
     cmds:
       - go test -tags=e2e -v -count=1 -timeout=20m ./e2e/...
 
   lint:
-    desc: Run Go, proto{{if .FrontendName}}, and frontend{{end}} linters
+    desc: Run all linters via the forge CLI (Go + proto{{if .FrontendName}} + frontend{{end}})
     cmds:
-      - golangci-lint run
-      - buf lint
+      # Delegate to `forge lint` so this task inherits forge's full linter
+      # suite (golangci-lint with skip-on-missing, buf lint, frontend lint
+      # & typecheck via the configured Next.js workspace, plus the
+      # contract / db / migration-safety / convention sub-linters when
+      # they're enabled in forge.yaml). Pre-fix this task hard-coded
+      # `golangci-lint run`, which exited 127 when the binary wasn't
+      # installed locally — losing the lint signal entirely instead of
+      # the warn-and-skip forge does.
+      - forge lint
 {{- if .FrontendName}}
-      - task: lint:frontend
 
   lint:frontend:
-    desc: Run frontend linter and TypeScript typecheck
+    desc: Run frontend linter and TypeScript typecheck (sub-task; `task lint` already covers this)
     dir: '{{`{{.FRONTEND_DIR}}`}}'
     cmds:
       # Lint catches style and rule violations; typecheck verifies the
       # program is well-typed. We run both because `next lint` (now
       # deprecated) skipped typechecking, and CI has historically
-      # shipped type errors that only surfaced at build time.
+      # shipped type errors that only surfaced at build time. Kept as a
+      # standalone task for fast iteration on frontend-only lint runs;
+      # `task lint` above goes through `forge lint`, which already
+      # includes this step.
       - npm run lint
       - npm run typecheck
 {{- end}}
@@ -207,6 +231,35 @@ tasks:
       - buf generate
       - go mod tidy
 
+  verify-generate:
+    # CI gate: regenerate everything, then assert nothing changed. If this
+    # fails the developer forgot to commit a `forge generate` / `buf
+    # generate` result. Mirrors `make verify-generate` from hand-rolled
+    # Makefiles. Uses `git diff --exit-code` so the diff is visible in the
+    # CI log.
+    desc: Verify generated code is committed up-to-date (CI guard)
+    cmds:
+      - task: generate
+      - cmd: |
+          if ! git diff --exit-code; then
+            echo "ERROR: Generated files are out of date. Run 'forge generate' (or 'task generate') and commit the result." >&2
+            exit 1
+          fi
+
+  coverage:
+    # HTML coverage report at coverage.html. We deliberately omit -race
+    # here (race + coverage requires -covermode=atomic, which in turn
+    # needs the `covdata` tool — not always present in auto-installed
+    # toolchains). Race testing happens in `task test`; this task is for
+    # measuring exercised code. Skips integration / e2e (those have their
+    # own tasks) so coverage reflects unit tests.
+    desc: Run unit tests with coverage and emit coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out -timeout 60s ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true
+
   migrate:
     desc: Apply pending database migrations (wraps `{{.Name}} db migrate up`)
     cmds:
@@ -236,6 +289,45 @@ tasks:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
 
+  db-snapshot-restore:
+    # Restore a sanitized snapshot dump (custom-format pg_dump, optionally
+    # gzip-compressed) into a local Postgres database. The default target
+    # database name is "<project>_snapshot" so it doesn't clobber dev data.
+    #
+    # Usage: task db-snapshot-restore DUMP=path/to/snapshot.dump.gz
+    #
+    # TODO: if your project uses a remote/managed snapshot store (GCS, S3),
+    # add a sibling `db-snapshot` task that downloads + sanitizes from
+    # there and writes the dump file this task expects.
+    desc: Restore a DB snapshot dump to local postgres (DUMP=path/to/file.dump[.gz])
+    cmds:
+      - cmd: |
+          DUMP="${DUMP:-snapshot.dump.gz}"
+          DB="${SNAPSHOT_DB:-{{.ProjectName}}_snapshot}"
+          PGHOST="${PGHOST:-127.0.0.1}"
+          PGUSER="${PGUSER:-postgres}"
+          if [ ! -f "$DUMP" ]; then
+            echo "ERROR: Dump file '$DUMP' not found." >&2
+            echo "Usage: task db-snapshot-restore DUMP=/path/to/snapshot.dump[.gz]" >&2
+            exit 1
+          fi
+          for cmd in pg_restore createdb dropdb; do
+            command -v "$cmd" >/dev/null 2>&1 || { echo "$cmd not installed — install postgresql-client" >&2; exit 1; }
+          done
+          echo "==> Restoring $DUMP into $DB (host=$PGHOST user=$PGUSER)..."
+          dropdb --if-exists -h "$PGHOST" -U "$PGUSER" "$DB" 2>/dev/null || true
+          createdb -h "$PGHOST" -U "$PGUSER" "$DB"
+          if [[ "$DUMP" == *.gz ]]; then
+            gunzip -c "$DUMP" | pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
+              --no-owner --no-privileges --clean --if-exists 2>&1 \
+              | grep -v "^pg_restore: warning:" || true
+          else
+            pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
+              --no-owner --no-privileges --clean --if-exists "$DUMP" 2>&1 \
+              | grep -v "^pg_restore: warning:" || true
+          fi
+          echo "==> Restore complete. Connect with: psql -h $PGHOST -U $PGUSER -d $DB"
+
   bench:
     # Go microbenchmarks live under benchmarks/. Extra packages with
     # Benchmark* functions are picked up automatically thanks to the
@@ -249,7 +341,7 @@ tasks:
     cmds:
       - rm -rf {{`{{.GEN_DIR}}`}}
       - rm -rf bin
-      - rm -f coverage.out
+      - rm -f coverage.out coverage.html
       - rm -rf .forge/debug
 
   dev-psql:

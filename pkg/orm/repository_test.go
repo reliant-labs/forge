@@ -21,8 +21,10 @@ func (m *testModel) Schema() TableSchema {
 		},
 	}
 }
-func (m *testModel) PrimaryKey() any                                   { return m.ID }
-func (m *testModel) Values() (columns []string, values []any)         { return []string{"id", "name"}, []any{m.ID, m.Name} }
+func (m *testModel) PrimaryKey() any { return m.ID }
+func (m *testModel) Values() (columns []string, values []any) {
+	return []string{"id", "name"}, []any{m.ID, m.Name}
+}
 func (m *testModel) Scan(scanner interface{ Scan(...interface{}) error }) error {
 	return scanner.Scan(&m.ID, &m.Name)
 }

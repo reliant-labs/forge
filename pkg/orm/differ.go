@@ -10,23 +10,23 @@ import (
 
 // ColumnDiff represents a difference in a column definition
 type ColumnDiff struct {
-	ColumnName   string
-	OldType      string
-	NewType      FieldType
-	OldNotNull   bool
-	NewNotNull   bool
-	OldDefault   sql.NullString
-	NewDefault   string
+	ColumnName string
+	OldType    string
+	NewType    FieldType
+	OldNotNull bool
+	NewNotNull bool
+	OldDefault sql.NullString
+	NewDefault string
 }
 
 // SchemaDiff represents all differences between expected and actual schema for a table
 type SchemaDiff struct {
-	TableName        string
-	MissingColumns   []FieldSchema  // Columns in proto but not in DB
-	ExtraColumns     []string       // Columns in DB but not in proto
-	ModifiedColumns  []ColumnDiff   // Columns with type/constraint changes
-	MissingIndexes   []IndexSchema  // Indexes in proto but not in DB
-	ExtraIndexes     []string       // Indexes in DB but not in proto
+	TableName       string
+	MissingColumns  []FieldSchema // Columns in proto but not in DB
+	ExtraColumns    []string      // Columns in DB but not in proto
+	ModifiedColumns []ColumnDiff  // Columns with type/constraint changes
+	MissingIndexes  []IndexSchema // Indexes in proto but not in DB
+	ExtraIndexes    []string      // Indexes in DB but not in proto
 }
 
 // Diff errors
@@ -230,10 +230,10 @@ func canConvertType(from, to FieldType) bool {
 
 	// Define safe conversions
 	safeConversions := map[FieldType][]FieldType{
-		TypeVarchar:  {TypeText},                  // VARCHAR -> TEXT is safe
-		TypeInteger:  {TypeBigInt, TypeText},      // INT -> BIGINT is safe
-		TypeSerial:   {TypeBigSerial, TypeInteger, TypeBigInt}, // SERIAL conversions
-		TypeText:     {TypeVarchar},               // TEXT -> VARCHAR (with potential truncation warning)
+		TypeVarchar: {TypeText},                               // VARCHAR -> TEXT is safe
+		TypeInteger: {TypeBigInt, TypeText},                   // INT -> BIGINT is safe
+		TypeSerial:  {TypeBigSerial, TypeInteger, TypeBigInt}, // SERIAL conversions
+		TypeText:    {TypeVarchar},                            // TEXT -> VARCHAR (with potential truncation warning)
 	}
 
 	allowedTargets, exists := safeConversions[from]
@@ -312,9 +312,9 @@ func DiffDatabase(ctx context.Context, db Context, dialect Dialect, expectedSche
 // Column modifications (type changes, constraint changes, etc.) are NOT supported.
 //
 // To modify a column, use a multi-step migration with PairedMigration:
-//   1. ADD new column with desired schema
-//   2. Migrate data from old column to new column (using DataMigration)
-//   3. DROP old column (in a separate migration after verification)
+//  1. ADD new column with desired schema
+//  2. Migrate data from old column to new column (using DataMigration)
+//  3. DROP old column (in a separate migration after verification)
 //
 // This approach:
 //   - Works on all databases (SQLite, PostgreSQL, MySQL, etc.)

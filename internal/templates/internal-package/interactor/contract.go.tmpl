@@ -1,0 +1,74 @@
+// forge:scaffold one-shot — interactor contract; canonical pattern in `forge skill load architecture`.
+// forge:interactor
+//
+// {{.Name}} is a use-case orchestrator (interactor). It composes two or
+// more adapters / services to fulfill a high-level workflow:
+// validation, sequencing, error wrapping, transaction coordination.
+//
+// Interactors do NOT call third-party systems directly — that's an
+// adapter's job. Interactors do NOT carry RPC handler logic — that's a
+// handler's job. They sit in the middle, expressing a use case in
+// domain terms.
+//
+// Why deps must be interfaces (lint-enforced via
+// forgeconv-interactor-deps-are-interfaces):
+//
+// Interactors are the primary unit-test boundary for business
+// workflows. Tests construct New(Deps{...}) with mock implementations
+// of every dep, exercise the workflow, and assert ordering / error
+// translation. Concrete *adapter.Service pointers in Deps would defeat
+// that — you'd be testing the adapter implementation too.
+//
+// Skill: forge skill load interactor
+package {{.Name}}
+
+import "context"
+
+// Service is the {{.Name}} interactor's use-case surface. Each method
+// represents one workflow step the rest of the system can invoke.
+type Service interface {
+	// Run is a placeholder for the interactor's primary use case.
+	// Replace with your workflow's signature.
+	Run(ctx context.Context, in RunInput) (RunResult, error)
+}
+
+// RunInput is the input shape for the placeholder Run method.
+type RunInput struct {
+	// TODO: replace with the real workflow inputs.
+	ID string
+}
+
+// RunResult is the output shape for the placeholder Run method.
+type RunResult struct {
+	// TODO: replace with the real workflow outputs.
+	OK bool
+}
+
+// ─── Dependency interfaces ──────────────────────────────────────────
+//
+// Interactors declare the *behaviour* they need from collaborators —
+// not the concrete adapter / service types. This is what makes the
+// workflow testable with all-mock deps. Replace these stand-ins with
+// the real method signatures your interactor needs from each
+// collaborator. Conventionally the interface lives next to the
+// interactor (here) rather than next to the adapter, so the
+// interactor's dep surface is documented in one place.
+
+// Source is the interactor's fetch boundary — wired to the real
+// adapter / service in Setup() (e.g. `srcadapter.Service`).
+type Source interface {
+	Fetch(ctx context.Context, id string) (Item, error)
+}
+
+// Sink is the interactor's write boundary — wired to a different
+// adapter / service in Setup() (e.g. `sinkadapter.Service`).
+type Sink interface {
+	Send(ctx context.Context, item Item) error
+}
+
+// Item is the domain type passed between Source and Sink. Replace
+// with the real shape (or import it from a shared package).
+type Item struct {
+	ID   string
+	Body string
+}

@@ -92,6 +92,7 @@ Examples:
 	testCmd.AddCommand(testUnitCmd)
 	testCmd.AddCommand(testIntegrationCmd)
 	testCmd.AddCommand(testE2ECmd)
+	testCmd.AddCommand(newTestMigrateTDDCmd())
 
 	// Flags for the parent test command (inherited by subcommands)
 	testCmd.PersistentFlags().BoolVar(&flags.race, "race", true, "Enable race detector")

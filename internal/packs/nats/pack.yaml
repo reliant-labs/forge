@@ -1,0 +1,54 @@
+name: nats
+description: |
+  NATS JetStream client + publisher + consumer scaffolding. Provides
+  an opinionated wiring for the common control-plane pattern: durable
+  pull-consumer with backoff/retry/DLQ, JSON envelope publisher, and
+  versioned subject naming under <svc>.v1.<resource>.<event>.
+
+  Code is installed into pkg/clients/nats/ — wire it in pkg/app/setup.go:
+
+    import "<module>/pkg/clients/nats"
+
+    nc, js, err := nats.Connect(ctx, nats.Config{URL: cfg.NATSURL})
+    if err != nil { return err }
+    app.NATSPublisher = nats.NewPublisher(js)
+    consumer := nats.NewConsumer(js, "MY_STREAM", "my-durable")
+    go consumer.Start(ctx, handler)
+version: 1.0.0
+subpath: clients/nats
+
+config:
+  section: nats
+  defaults:
+    url: "nats://localhost:4222"
+    auth_token: ""
+    stream_prefix: ""
+
+dependencies:
+  - github.com/nats-io/nats.go@v1.37.0
+
+files:
+  - template: client.go.tmpl
+    output: pkg/clients/nats/client.go
+    overwrite: once
+    description: "NATS connection + JetStream context"
+  - template: publisher.go.tmpl
+    output: pkg/clients/nats/publisher.go
+    overwrite: once
+    description: "JetStream publisher with JSON envelopes"
+  - template: consumer.go.tmpl
+    output: pkg/clients/nats/consumer.go
+    overwrite: once
+    description: "Durable pull consumer with backoff + retry + DLQ"
+  - template: subjects.go.tmpl
+    output: pkg/clients/nats/subjects.go
+    overwrite: once
+    description: "Subject naming conventions (<svc>.v1.<resource>.<event>)"
+  - template: client_test.go.tmpl
+    output: pkg/clients/nats/client_test.go
+    overwrite: once
+    description: "Unit tests for the client/connection helpers"
+  - template: publisher_test.go.tmpl
+    output: pkg/clients/nats/publisher_test.go
+    overwrite: once
+    description: "Unit tests for the publisher"

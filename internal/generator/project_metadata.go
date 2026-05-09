@@ -113,7 +113,7 @@ func writeIfAbsent(destPath, templateName string, data interface{}) error {
 
 func (g *ProjectGenerator) generateGolangciLint() error {
 	data := struct{ Module string }{Module: g.ModulePath}
-	content, err := templates.ProjectTemplates.Render("golangci.yml.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("golangci.yml.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render golangci.yml: %w", err)
 	}
@@ -129,7 +129,7 @@ func (g *ProjectGenerator) generateExamplesReadme() error {
 	data := struct {
 		Name string
 	}{Name: g.Name}
-	content, err := templates.ProjectTemplates.Render("examples-README.md.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("examples-README.md.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render examples/README.md: %w", err)
 	}
@@ -174,7 +174,7 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	}
 
 	for _, f := range middlewareFiles {
-		content, err := templates.ProjectTemplates.Get(f.templateName)
+		content, err := templates.ProjectTemplates().Get(f.templateName)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.templateName, err)
 		}
@@ -190,27 +190,33 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 // `forge upgrade`. This must be called after the frozen files have been
 // written to disk so that new projects have baseline checksums.
 func (g *ProjectGenerator) recordFrozenChecksums(templateData interface{}) error {
-	cs, err := LoadChecksums(g.Path)
+	return RecordFrozenChecksums(g.Path, g.effectiveBinary(), g.effectiveKind())
+}
+
+// RecordFrozenChecksums records checksums for all managed files at
+// projectDir. Exposed publicly so callers outside the scaffold path
+// (e.g. `forge new` after `bootstrapGeneratedCode` runs goimports
+// and reformats Tier-2 files) can re-record the post-formatting bytes
+// — otherwise the checksums baked at scaffold time would not match
+// the on-disk content, and `forge upgrade --dry-run` would flag every
+// formatted file as user-modified.
+func RecordFrozenChecksums(projectDir, binary, kind string) error {
+	cs, err := LoadChecksums(projectDir)
 	if err != nil {
 		return fmt.Errorf("load checksums: %w", err)
 	}
-
-	// Stamp the forge binary version that produced this scaffold. Consumers
-	// (e.g. `forge upgrade`, CI `verify-generated`) use this to pin the exact
-	// version they need to regenerate identical artifacts.
 	cs.ForgeVersion = buildinfo.Version()
 
-	for _, f := range managedFiles() {
-		fullPath := filepath.Join(g.Path, f.destPath)
+	for _, f := range managedFilesForKindBinary(kind, binary) {
+		fullPath := filepath.Join(projectDir, f.destPath)
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				continue // file wasn't generated (e.g. optional)
+				continue
 			}
 			return fmt.Errorf("read %s for checksum: %w", f.destPath, err)
 		}
 		cs.RecordFile(f.destPath, content)
 	}
-
-	return SaveChecksums(g.Path, cs)
+	return SaveChecksums(projectDir, cs)
 }

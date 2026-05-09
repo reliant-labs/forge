@@ -51,12 +51,16 @@ Examples:
 	return cmd
 }
 
+// debugSvc returns a debug.Service handle. Constructed once per call site
+// because the Service is stateless (Deps is empty today).
+func debugSvc() debug.Service { return debug.New(debug.Deps{}) }
+
 // ---------------------------------------------------------------------------
 // Session reconnection
 // ---------------------------------------------------------------------------
 
 func connectToSession() (debug.Debugger, error) {
-	session, err := debug.LoadSession(".")
+	session, err := debugSvc().LoadSession(".")
 	if err != nil {
 		return nil, fmt.Errorf("loading debug session: %w", err)
 	}
@@ -222,7 +226,7 @@ func runDebugStartAttach(pid int, jsonOutput bool) error {
 		Binary:  fmt.Sprintf("pid:%d", pid),
 		Started: time.Now(),
 	}
-	if err := debug.SaveSession(".", session); err != nil {
+	if err := debugSvc().SaveSession(".", session); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
 
@@ -310,7 +314,7 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 		Binary:  absBinary,
 		Started: time.Now(),
 	}
-	if err := debug.SaveSession(".", session); err != nil {
+	if err := debugSvc().SaveSession(".", session); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
 
@@ -358,7 +362,7 @@ func runDebugStartDocker(cmd *cobra.Command) error {
 		Docker:  true,
 		Started: time.Now(),
 	}
-	if err := debug.SaveSession(".", session); err != nil {
+	if err := debugSvc().SaveSession(".", session); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
 
@@ -828,7 +832,7 @@ func newDebugStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the debug session and kill the debugged process",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			session, _ := debug.LoadSession(".")
+			session, _ := debugSvc().LoadSession(".")
 
 			dbg, err := connectToSession()
 			if err != nil {
@@ -841,7 +845,7 @@ func newDebugStopCmd() *cobra.Command {
 						_ = p.Kill()
 					}
 				}
-				if clearErr := debug.ClearSession("."); clearErr != nil {
+				if clearErr := debugSvc().ClearSession("."); clearErr != nil {
 					return fmt.Errorf("clearing session: %w (original error: %v)", clearErr, err)
 				}
 				fmt.Println("Debug session stopped (killed by PID).")
@@ -858,7 +862,7 @@ func newDebugStopCmd() *cobra.Command {
 				}
 			}
 
-			if err := debug.ClearSession("."); err != nil {
+			if err := debugSvc().ClearSession("."); err != nil {
 				return fmt.Errorf("clearing session: %w", err)
 			}
 

@@ -1,0 +1,92 @@
+> **forge:scaffold one-shot** — installed by `forge pack install data-table`. See `forge skill load packs` for canonical pattern.
+
+# DataTable
+
+Generic, fully-typed React table built on
+[`@tanstack/react-table`](https://tanstack.com/table). Pairs with forge's
+auto-generated `useEntities` hooks (`useUsers`, `useInvoices`, …) and
+the cursor-based pagination convention emitted by forge's CRUD ORM.
+
+## Quick start (server-side)
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { useUsers } from "@/hooks/use-users";
+import {
+  DataTable,
+  columnFor,
+  type ColumnDef,
+} from "@/components/data-table";
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+const columns: ColumnDef<User, unknown>[] = [
+  columnFor<User, "name">("name"),
+  columnFor<User, "email">("email"),
+  columnFor<User, "role">("role"),
+];
+
+export default function UsersPage() {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [search, setSearch] = useState("");
+
+  const { data, isLoading, error } = useUsers({
+    page,
+    limit: pageSize,
+    search,
+  });
+
+  const pageInfo = {
+    nextCursor: data?.nextCursor,
+    prevCursor: data?.prevCursor,
+    total: data?.total,
+  };
+
+  return (
+    <DataTable
+      serverSide
+      columns={columns}
+      data={data?.users ?? []}
+      isLoading={isLoading}
+      error={error}
+      pageInfo={pageInfo}
+      page={page}
+      pageSize={pageSize}
+      search={search}
+      onPageChange={setPage}
+      onPageSizeChange={setPageSize}
+      onSearchChange={setSearch}
+    />
+  );
+}
+```
+
+## Quick start (client-side)
+
+For small datasets that fit in memory, omit `serverSide` and let TanStack
+Table handle sort/filter:
+
+```tsx
+<DataTable columns={columns} data={users} />
+```
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `DataTable.tsx` | Main component. Renders header / body / empty / loading / error states. |
+| `columns.tsx`   | `columnFor<T>(key)` and `renderColumn(...)` helpers. |
+| `filters.tsx`   | Search box + per-column filter chips. |
+| `pagination.tsx`| Page / page-size controls. |
+| `index.ts`      | Barrel export. |
+
+All files are written with `overwrite: once` — they are yours to
+customize. Re-installing the pack will not stomp local edits.

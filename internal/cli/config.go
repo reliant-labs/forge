@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
-
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -67,14 +65,11 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		return nil, fmt.Errorf("failed to read project config: %w", err)
 	}
 
-	var cfg config.ProjectConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse project config %s: %w", path, err)
+	parsed, err := config.LoadStrict(data, path)
+	if err != nil {
+		return nil, err
 	}
-
-	if cfg.Name == "" {
-		return nil, fmt.Errorf("project config %s is missing required field: name", path)
-	}
+	cfg := *parsed
 
 	// Apply defaults for service paths and normalize enum casing. Older
 	// generators wrote "GO_SERVICE"; new ones write "go_service". Accept

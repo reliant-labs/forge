@@ -142,3 +142,36 @@ func GetModulePath(dir string) (string, error) {
 
 	return "", fmt.Errorf("module directive not found in go.mod")
 }
+
+// projectBinaryShared best-effort reads forge.yaml and returns true when
+// the project declares `binary: shared`. Used by the bootstrap generator
+// to lazily construct services in the per-service cobra subcommand path.
+// Empty file / parse error / missing field all fall back to false (the
+// canonical per-service mode), so this is safe to call from any project
+// shape including the initial scaffold pass before forge.yaml is fully
+// populated.
+func projectBinaryShared(projectDir string) bool {
+	path := filepath.Join(projectDir, "forge.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	// Lightweight inline parse so the codegen package doesn't take a
+	// dependency on the `config` package (which would create an import
+	// cycle: config → codegen via descriptor types). The spec is a single
+	// top-level scalar key, so a string scan is sufficient.
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "binary:") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "binary:"))
+		// Strip trailing comment + quotes.
+		if idx := strings.Index(val, "#"); idx >= 0 {
+			val = strings.TrimSpace(val[:idx])
+		}
+		val = strings.Trim(val, `"'`)
+		return strings.EqualFold(val, "shared")
+	}
+	return false
+}

@@ -18,7 +18,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	}{
 		ProjectName: g.Name,
 	}
-	kclModContent, err := templates.DeployTemplates.Render("kcl/kcl.mod.tmpl", kclModData)
+	kclModContent, err := templates.DeployTemplates().Render("kcl/kcl.mod.tmpl", kclModData)
 	if err != nil {
 		return fmt.Errorf("render kcl.mod template: %w", err)
 	}
@@ -37,7 +37,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	}
 
 	for _, f := range staticFiles {
-		content, err := templates.DeployTemplates.Get(f.templateName)
+		content, err := templates.DeployTemplates().Get(f.templateName)
 		if err != nil {
 			return fmt.Errorf("read deploy template %s: %w", f.templateName, err)
 		}
@@ -50,7 +50,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 	}
 
-	// Templated per-env files
+	// Templated per-env files. binary=shared projects emit a parallel
+	// set of templates that produce a single MultiServiceApplication
+	// (one image, N Deployments) instead of N copies of Application.
+	// Both shapes pin to the same schema/render lambdas; only the
+	// composition at the env level differs.
 	envTemplates := []struct {
 		templateName string
 		dest         string
@@ -59,15 +63,55 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		{"kcl/staging/main.k.tmpl", "staging/main.k"},
 		{"kcl/prod/main.k.tmpl", "prod/main.k"},
 	}
+	if g.isBinaryShared() {
+		envTemplates = []struct {
+			templateName string
+			dest         string
+		}{
+			{"kcl/dev/main-shared.k.tmpl", "dev/main.k"},
+			{"kcl/staging/main-shared.k.tmpl", "staging/main.k"},
+			{"kcl/prod/main-shared.k.tmpl", "prod/main.k"},
+		}
+	}
+
+	type kclService struct {
+		Name string
+	}
+	var kclServices []kclService
+	for _, svcName := range g.allServices() {
+		kclServices = append(kclServices, kclService{Name: svcName})
+	}
+	// Fall back to the project name when no services are scaffolded yet
+	// (rare: bare scaffold with --binary shared and no --service flags).
+	// Without this the rendered services: list is empty and KCL rejects
+	// MultiServiceApplication via its `len(services) > 0` check.
+	if g.isBinaryShared() && len(kclServices) == 0 {
+		kclServices = []kclService{{Name: g.Name}}
+	}
+
+	// Binaries are emitted as additional Applications in the per-env
+	// KCL. At scaffold time there are none; this placeholder + the
+	// `{{range .Binaries}}` block in the env templates means projects
+	// can grow binaries via `forge add binary <name>` without a
+	// template-level migration. `forge generate` re-renders these
+	// files with the up-to-date list from forge.yaml.
+	type kclBinary struct {
+		Name string
+	}
+	var kclBinaries []kclBinary // empty at scaffold time
 
 	templateData := struct {
 		ProjectName string
+		Services    []kclService
+		Binaries    []kclBinary
 	}{
 		ProjectName: g.Name,
+		Services:    kclServices,
+		Binaries:    kclBinaries,
 	}
 
 	for _, f := range envTemplates {
-		content, err := templates.DeployTemplates.Render(f.templateName, templateData)
+		content, err := templates.DeployTemplates().Render(f.templateName, templateData)
 		if err != nil {
 			return fmt.Errorf("render deploy template %s: %w", f.templateName, err)
 		}
@@ -91,7 +135,7 @@ func (g *ProjectGenerator) generateDevConfig() error {
 		ProjectName: g.Name,
 	}
 
-	content, err := templates.DeployTemplates.Render("k3d.yaml.tmpl", data)
+	content, err := templates.DeployTemplates().Render("k3d.yaml.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render k3d.yaml: %w", err)
 	}
@@ -148,7 +192,7 @@ func (g *ProjectGenerator) generateAlloyConfig() error {
 		ProjectName: g.Name,
 		Services:    []ServiceInfo{{Name: "app", Port: port}},
 	}
-	content, err := templates.ProjectTemplates.Render("alloy-config.alloy.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("alloy-config.alloy.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render alloy-config.alloy: %w", err)
 	}
@@ -165,7 +209,7 @@ func (g *ProjectGenerator) generateDockerCompose() error {
 	}{
 		ProjectName: g.Name,
 	}
-	content, err := templates.ProjectTemplates.Render("docker-compose.yml.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("docker-compose.yml.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render docker-compose.yml: %w", err)
 	}

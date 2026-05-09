@@ -30,9 +30,19 @@ auth:
 
 ## The Claims Struct
 
-All auth flows produce the same canonical `Claims` struct in `pkg/middleware/claims.go`:
+`Claims` is the canonical auth payload, defined in `forge/pkg/auth` and aliased in `pkg/middleware/claims.go`:
 
 ```go
+// pkg/middleware/claims.go (generated)
+package middleware
+
+import "github.com/reliant-labs/forge/pkg/auth"
+
+type Claims = auth.Claims
+```
+
+```go
+// forge/pkg/auth/auth.go
 type Claims struct {
     UserID string   `json:"user_id"`
     Email  string   `json:"email"`
@@ -45,13 +55,67 @@ type Claims struct {
 Retrieve claims in handlers:
 
 ```go
-claims, err := middleware.GetUser(ctx)
-if err != nil {
-    return nil, err  // already a CodeUnauthenticated connect error
+claims, ok := middleware.ClaimsFromContext(ctx)
+if !ok {
+    return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no claims"))
 }
 ```
 
-If you need additional claim fields (e.g., `TenantID`, `Plan`), extend the `Claims` struct rather than creating a separate type.
+If you need additional claim fields, **add them to `forge/pkg/auth.Claims`** so library code (auth interceptor, tenant interceptor) and project code share one type. Project-local extensions are not supported by the alias-based wiring; if you must, replace the `type Claims = auth.Claims` line with a struct that embeds `auth.Claims` and update all middleware that expects `*Claims` accordingly.
+
+## How auth wiring works
+
+The generated `pkg/middleware/auth_gen.go` is a ~40-line shim over `forge/pkg/auth`:
+
+```go
+var generatedAuthConfig = auth.Config{
+    Provider:    "jwt",
+    JWT:         auth.JWTConfig{SigningMethod: "HS256", ...},
+    SkipMethods: []string{...},
+}
+
+func GeneratedAuthInterceptor() connect.UnaryInterceptorFunc {
+    v, _ := auth.NewValidator(generatedAuthConfig)
+    return v.Interceptor(auth.InterceptorOptions{}, ContextWithClaims)
+}
+```
+
+`auth.NewValidator(cfg)` constructs a JWT/API-key validator. `v.Interceptor(opts, withClaims)` returns a Connect interceptor. The `withClaims` callback (`ContextWithClaims`) lives in `pkg/middleware/claims.go`.
+
+For API-key or `both` providers, pass a `KeyValidator` implementation:
+
+```go
+GeneratedAuthInterceptor(myKeyValidator)
+```
+
+`KeyValidator` is aliased to `auth.KeyValidator`; implement `ValidateKey(ctx, key) (*Claims, error)` against your storage.
+
+The library reads `JWT_SECRET` from the environment when `JWTConfig.Secret` is empty (preserves the legacy template behaviour).
+
+## Where the auth interceptor sits in the chain
+
+`cmd/server.go` builds the canonical observability chain via
+`observe.DefaultMiddlewares(...)` (recovery → request-id → logging →
+tracing → metrics) and appends project-specific interceptors via
+`Extras`. Auth is one of those Extras, so failures from the auth
+interceptor are still observable (counted, traced, logged):
+
+```go
+projectInterceptors := []connect.Interceptor{
+    middleware.AuthInterceptor(),       // ← here
+    middleware.AuditInterceptor(logger),
+}
+interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
+    Logger: logger,
+    Extras: projectInterceptors,
+})
+```
+
+The default ordering puts auth-after-observability deliberately —
+operators want auth failures in the same dashboards as successful
+traffic. To put auth first, drop it from `Extras` and prepend it onto
+the result of `DefaultMiddlewares` directly. See
+`forge/pkg/observe/middleware.go` for the full ordering rationale.
 
 ## Unauthenticated Endpoints
 
@@ -107,6 +171,61 @@ Run `forge generate` after changing this config.
 | `email` | `claims.Email` |
 
 When multi-tenant is enabled, entities with a field explicitly marked `tenant_key: true` in the plan are automatically scoped — generated CRUD handlers include `WHERE <tenant_col> = $tenantID` in every query. The `tenant_key` must be set explicitly; field names like `org_id` or `tenant_id` are NOT auto-detected.
+
+## Frontend wiring (auth-ui pack)
+
+The `auth-ui` frontend pack pairs with each auth backend pack to install
+opinionated login / signup / session UI. Pick the backend first, then
+pick the matching `--config provider=…`:
+
+```bash
+# Default — pairs with the jwt-auth backend pack
+forge pack install auth-ui                       # provider defaults to jwt-auth
+
+# Pair with the clerk backend pack (pulls in @clerk/nextjs)
+forge pack install auth-ui --config provider=clerk
+
+# Pair with the firebase-auth backend pack (pulls in firebase)
+forge pack install auth-ui --config provider=firebase-auth
+```
+
+The pack installs into every frontend declared in `forge.yaml` at
+`src/components/auth/`. It ships:
+
+- `LoginForm` — email/password form (or Clerk/Firebase wrapper) with
+  `react-hook-form` + `zod` validation.
+- `SignupForm` — registration form, where supported by the provider.
+- `SessionNav` — header avatar dropdown with sign-out and an optional
+  tenant switcher.
+- `DevModeBanner` — visible warning when
+  `NEXT_PUBLIC_AUTH_DEV_MODE=true`, mirroring the backend pack's
+  `dev_mode: true` setting.
+- `auth-store.ts` — Zustand store: `{user, session, isLoading,
+  isAuthenticated}`. Subscribe to slices, never the whole store.
+
+Wire in `src/app/layout.tsx`:
+
+```tsx
+import { DevModeBanner, SessionNav } from "@/components/auth";
+
+export default function RootLayout({ children }) {
+  return (
+    <html><body>
+      <DevModeBanner />
+      <header className="flex items-center justify-between border-b px-6 py-3">
+        <span className="font-bold">My App</span>
+        <SessionNav />
+      </header>
+      <main>{children}</main>
+    </body></html>
+  );
+}
+```
+
+For the `jwt-auth` variant, also rehydrate the persisted token at app
+boot — see the rendered `src/components/auth/README.md` for the
+`HydrateAuth` snippet. Clerk and Firebase variants manage rehydration
+internally.
 
 ## Testing Auth
 

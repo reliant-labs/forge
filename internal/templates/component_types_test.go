@@ -12,14 +12,16 @@ import (
 func TestWorkerTemplatesRenderDefault(t *testing.T) {
 	data := struct {
 		Name     string
+		Package  string
 		Module   string
 		Schedule string
 	}{
-		Name:   "processor",
-		Module: "example.com/myapp",
+		Name:    "processor",
+		Package: "processor",
+		Module:  "example.com/myapp",
 	}
 
-	content, err := WorkerTemplates.Render("worker.go.tmpl", data)
+	content, err := WorkerTemplates().Render("worker.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render worker.go.tmpl: %v", err)
 	}
@@ -45,14 +47,16 @@ func TestWorkerTemplatesRenderDefault(t *testing.T) {
 func TestWorkerTemplatesRenderTest(t *testing.T) {
 	data := struct {
 		Name     string
+		Package  string
 		Module   string
 		Schedule string
 	}{
-		Name:   "processor",
-		Module: "example.com/myapp",
+		Name:    "processor",
+		Package: "processor",
+		Module:  "example.com/myapp",
 	}
 
-	content, err := WorkerTemplates.Render("worker_test.go.tmpl", data)
+	content, err := WorkerTemplates().Render("worker_test.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render worker_test.go.tmpl: %v", err)
 	}
@@ -71,15 +75,17 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 func TestWorkerCronTemplatesRender(t *testing.T) {
 	data := struct {
 		Name     string
+		Package  string
 		Module   string
 		Schedule string
 	}{
 		Name:     "cleanup",
+		Package:  "cleanup",
 		Module:   "example.com/myapp",
 		Schedule: "0 * * * *",
 	}
 
-	content, err := WorkerCronTemplates.Render("worker.go.tmpl", data)
+	content, err := WorkerCronTemplates().Render("worker.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render worker-cron/worker.go.tmpl: %v", err)
 	}
@@ -105,15 +111,17 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 	data := struct {
 		Name     string
+		Package  string
 		Module   string
 		Schedule string
 	}{
 		Name:     "cleanup",
+		Package:  "cleanup",
 		Module:   "example.com/myapp",
 		Schedule: "0 * * * *",
 	}
 
-	content, err := WorkerCronTemplates.Render("worker_test.go.tmpl", data)
+	content, err := WorkerCronTemplates().Render("worker_test.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render worker-cron/worker_test.go.tmpl: %v", err)
 	}
@@ -131,21 +139,27 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 
 func TestOperatorTemplatesRender(t *testing.T) {
 	data := struct {
-		Name     string
-		TypeName string
-		Group    string
-		Version  string
-		Module   string
+		Name          string
+		Package       string
+		TypeName      string
+		TypeRef       string
+		Group         string
+		Version       string
+		Module        string
+		APIImportPath string
+		SplitAPI      bool
 	}{
 		Name:     "scaler",
+		Package:  "scaler",
 		TypeName: "Scaler",
+		TypeRef:  "Scaler",
 		Group:    "apps",
 		Version:  "v1",
 		Module:   "example.com/myapp",
 	}
 
 	// types.go
-	typesContent, err := OperatorTemplates.Render("types.go.tmpl", data)
+	typesContent, err := OperatorTemplates().Render("types.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render operator/types.go.tmpl: %v", err)
 	}
@@ -170,7 +184,7 @@ func TestOperatorTemplatesRender(t *testing.T) {
 	}
 
 	// controller.go
-	ctrlContent, err := OperatorTemplates.Render("controller.go.tmpl", data)
+	ctrlContent, err := OperatorTemplates().Render("controller.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render operator/controller.go.tmpl: %v", err)
 	}
@@ -186,7 +200,7 @@ func TestOperatorTemplatesRender(t *testing.T) {
 	}
 
 	// controller_test.go
-	testContent, err := OperatorTemplates.Render("controller_test.go.tmpl", data)
+	testContent, err := OperatorTemplates().Render("controller_test.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("render operator/controller_test.go.tmpl: %v", err)
 	}
@@ -200,53 +214,66 @@ func TestOperatorTemplatesRender(t *testing.T) {
 }
 
 func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
+	// Alias / VarName mirror BootstrapComponentData fields. In the
+	// no-collision case Alias = Package, so the rendered template is
+	// identical to the pre-Alias output (Go accepts the redundant
+	// `<alias> "<path>"` import form).
+	// HasWebhooks mirrors codegen.BootstrapServiceData.HasWebhooks. The
+	// bootstrap template gates `RegisterWebhookRoutes(mux, stack)` calls on
+	// it (introduced as part of the 2026-04-30 LLM-port webhook auto-wire
+	// fix). Tests must include the field even when nothing in the test
+	// declares webhooks — otherwise text/template fails fast at the
+	// `<.HasWebhooks>` evaluation.
 	data := struct {
 		Module   string
 		Services []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, FieldName, Alias, VarName string
+			Fallible                                 bool
+			HasWebhooks                              bool
 		}
 		Packages []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
 		}
 		Workers []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, FieldName, Alias, VarName string
+			Fallible                                 bool
 		}
 		Operators []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, FieldName, Alias, VarName string
+			Fallible                                 bool
 		}
 		HasDatabase  bool
 		OrmEnabled   bool
 		HasFallible  bool
+		BinaryShared bool
 		ConfigFields map[string]bool
 	}{
 		Module:       "example.com/fullproject",
 		ConfigFields: map[string]bool{},
 		Services: []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, FieldName, Alias, VarName string
+			Fallible                                 bool
+			HasWebhooks                              bool
 		}{
-			{Name: "api", Package: "api", FieldName: "API"},
+			{Name: "api", Package: "api", FieldName: "API", Alias: "api", VarName: "api"},
 		},
 		Workers: []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, FieldName, Alias, VarName string
+			Fallible                                 bool
 		}{
-			{Name: "indexer", Package: "indexer", FieldName: "Indexer"},
+			{Name: "indexer", Package: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
 		},
 		Operators: []struct {
-			Name, Package, FieldName string
-			Fallible                 bool
+			Name, Package, FieldName, Alias, VarName string
+			Fallible                                 bool
 		}{
-			{Name: "scaler", Package: "scaler", FieldName: "Scaler"},
+			{Name: "scaler", Package: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
 		},
 		HasDatabase: true,
 	}
 
-	content, err := ProjectTemplates.Render("bootstrap.go.tmpl", data)
+	content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
 	if err != nil {
 		t.Fatalf("Render bootstrap.go.tmpl with all types: %v", err)
 	}

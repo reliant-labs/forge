@@ -28,26 +28,26 @@ var toolRegistry = map[string]func(json.RawMessage) (string, error){
 	"get_project_config":   executeGetProjectConfig,
 }
 
-// AllTools returns all registered MCP tool definitions
-func AllTools() []Tool {
+// allTools returns all registered MCP tool definitions
+func allTools() []Tool {
 	return []Tool{
 		// Taskfile
-		GetTaskfileTool(),
+		getTaskfileTool(),
 		// Database tools
-		GetQueryDatabaseTool(),
-		GetMigrateDatabaseTool(),
-		GetSeedDatabaseTool(),
-		GetIntrospectSchemaTool(),
+		getQueryDatabaseTool(),
+		getMigrateDatabaseTool(),
+		getSeedDatabaseTool(),
+		getIntrospectSchemaTool(),
 		// Context tools
-		GetListProtosTool(),
-		GetListServicesTool(),
-		GetGetServiceContractTool(),
-		GetGetProjectConfigTool(),
+		getListProtosTool(),
+		getListServicesTool(),
+		getGetServiceContractTool(),
+		getGetProjectConfigTool(),
 	}
 }
 
-// ExecuteTool routes tool calls to their implementations
-func ExecuteTool(name string, arguments json.RawMessage) (string, error) {
+// executeTool routes tool calls to their implementations
+func executeTool(name string, arguments json.RawMessage) (string, error) {
 	fn, ok := toolRegistry[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)

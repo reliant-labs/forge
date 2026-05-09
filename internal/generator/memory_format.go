@@ -14,13 +14,17 @@ const (
 	MemoryFormatCodex   MemoryFormat = "codex"
 )
 
-// ValidMemoryFormats lists all accepted --memory values.
-var ValidMemoryFormats = []MemoryFormat{
-	MemoryFormatReliant,
-	MemoryFormatClaude,
-	MemoryFormatCursor,
-	MemoryFormatCopilot,
-	MemoryFormatCodex,
+// ValidMemoryFormats lists all accepted --memory values. Returned as a
+// getter to satisfy the no-exported-vars rule; callers should treat the
+// returned slice as read-only (it is rebuilt on each call).
+func ValidMemoryFormats() []MemoryFormat {
+	return []MemoryFormat{
+		MemoryFormatReliant,
+		MemoryFormatClaude,
+		MemoryFormatCursor,
+		MemoryFormatCopilot,
+		MemoryFormatCodex,
+	}
 }
 
 // MemoryFilePath returns the project-root-relative path for the top-level

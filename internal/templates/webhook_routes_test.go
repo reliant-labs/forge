@@ -14,9 +14,9 @@ func TestRenderWebhookRoutesTemplate(t *testing.T) {
 		},
 	}
 
-	content, err := WebhookTemplates.Render("webhook_routes_gen.go.tmpl", data)
+	content, err := WebhookTemplates().Render("webhook_routes_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("WebhookTemplates.Render() error: %v", err)
+		t.Fatalf("WebhookTemplates().Render() error: %v", err)
 	}
 
 	got := string(content)
@@ -59,9 +59,9 @@ func TestRenderWebhookRoutesTemplate_SingleWebhook(t *testing.T) {
 		},
 	}
 
-	content, err := WebhookTemplates.Render("webhook_routes_gen.go.tmpl", data)
+	content, err := WebhookTemplates().Render("webhook_routes_gen.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("WebhookTemplates.Render() error: %v", err)
+		t.Fatalf("WebhookTemplates().Render() error: %v", err)
 	}
 
 	got := string(content)

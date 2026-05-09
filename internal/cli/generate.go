@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,10 +12,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/buildinfo"
-	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
 // generateMu protects the generation pipeline from concurrent runs.
@@ -25,8 +24,10 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch bool
-		force bool
+		watch   bool
+		force   bool
+		accept  bool
+		explain bool
 	)
 
 	cmd := &cobra.Command{
@@ -52,11 +53,42 @@ Without forge.yaml, falls back to directory convention scanning:
 Examples:
   forge generate              # Generate all code
   forge generate --watch      # Watch mode for development
-  forge generate --force      # Force regeneration of config files`,
+  forge generate --force      # Discard hand-edits to Tier-1 files and regenerate
+  forge generate --accept     # Keep hand-edits to Tier-1 files; refresh recorded checksums
+  forge generate --explain    # Print per-file provenance log after generate`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Capture pre-pipeline checksums so --explain can diff
+			// against post-pipeline state to label rewritten vs idempotent.
+			var preChecksums map[string]string
+			if explain {
+				if cs, err := generator.LoadChecksums("."); err == nil {
+					preChecksums = make(map[string]string, len(cs.Files))
+					for k, v := range cs.Files {
+						preChecksums[k] = v.Hash
+					}
+				}
+			}
+
+			if force && accept {
+				return cliutil.UserErr("forge generate",
+					"--force and --accept are mutually exclusive: --force discards your edits, --accept keeps them",
+					"",
+					"pick one — --force to regenerate from templates, or --accept to refresh checksums and keep your edits")
+			}
+
 			generateMu.Lock()
-			err := runGeneratePipeline(".", force)
+			err := runGeneratePipeline(".", force, accept)
 			generateMu.Unlock()
+
+			// Print the explain log even when the pipeline failed — partial
+			// provenance is still useful for diagnosing what got generated
+			// before the build break. The original error is returned below.
+			if explain {
+				if explainErr := printExplainLog(".", preChecksums); explainErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: explain log failed: %v\n", explainErr)
+				}
+			}
+
 			if err != nil {
 				return err
 			}
@@ -71,458 +103,67 @@ Examples:
 	}
 
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for changes and regenerate")
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force regeneration of config files like buf.gen.yaml")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
+	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 
 	return cmd
 }
 
 // runGeneratePipeline executes the unified generation pipeline.
-// Both config-based and directory-scan modes converge on the same ordered steps.
+//
+// Pre-2026-05-06, this was a 584-line procedural function with 25
+// numbered ordered steps. As of 2026-05-07 it is a flat loop over the
+// typed []GenStep plan defined in generate_pipeline.go — every legacy
+// step is now its own GenStep entry with a dedicated stepXxx body.
+//
 // projectDir is the root of the project (contains go.mod, proto/, etc.).
 // The caller must hold generateMu.
-func runGeneratePipeline(projectDir string, force bool) error {
-	// Acquire cross-process file lock (complements the in-process generateMu)
+func runGeneratePipeline(projectDir string, force, accept bool) error {
+	// Cross-process file lock (complements the in-process generateMu).
+	// Held for the lifetime of the pipeline so a parallel `forge add`
+	// can't race a long `forge generate`.
 	release, err := acquireGenerateLock(projectDir)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	// Step 0a: Load project config (nil when file doesn't exist — fallback to dir scan)
-	cfg, err := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile))
-	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-		return fmt.Errorf("failed to load project config: %w", err)
-	}
-	if errors.Is(err, ErrProjectConfigNotFound) {
-		cfg = nil
+	ctx, err := newPipelineContext(projectDir, force, accept)
+	if err != nil {
+		return err
 	}
 
-	// Step 0b: Load checksums for generated-file tracking
-	abs, err := filepath.Abs(projectDir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve project dir: %w", err)
-	}
-	cs, err := generator.LoadChecksums(abs)
-	if err != nil {
-		return fmt.Errorf("failed to load checksums: %w", err)
-	}
-	// Stamp the forge version that produced this generation cycle. CI pins
-	// its forge install to this version for reproducible `verify-generated`.
-	cs.ForgeVersion = buildinfo.Version()
-	// Ensure checksums are saved at the end of the pipeline
+	// Save checksums on exit, even on partial failures: a step that
+	// successfully wrote files should have those tracked so the user's
+	// next `forge audit` doesn't false-flag user-edited drift.
 	defer func() {
-		if saveErr := generator.SaveChecksums(abs, cs); saveErr != nil {
+		if ctx.Checksums == nil {
+			return
+		}
+		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)
 		}
 	}()
 
-	if cfg != nil {
-		fmt.Printf("📦 Generating code for project: %s\n\n", cfg.Name)
-	} else {
-		// Verify we're in a forge project at all
-		if _, err := os.Stat(filepath.Join(projectDir, "proto")); os.IsNotExist(err) {
-			return fmt.Errorf("no 'proto' directory found. Are you in a forge project?")
+	for _, step := range generateSteps() {
+		if !step.Gate(ctx) {
+			continue
 		}
-		fmt.Println("📦 Generating code (directory-scan mode)")
-		fmt.Println()
-	}
-
-	// Detect proto directories
-	hasServices := dirExists(filepath.Join(projectDir, "proto/services"))
-	hasAPI := dirExists(filepath.Join(projectDir, "proto/api"))
-	hasDB := dirExists(filepath.Join(projectDir, "proto/db"))
-	hasConfig := dirExists(filepath.Join(projectDir, "proto/config"))
-
-	if cfg == nil && !hasServices && !hasAPI && !hasDB && !hasConfig {
-		return fmt.Errorf("no proto files found in proto/api, proto/services, proto/db, or proto/config")
-	}
-
-	if cfg == nil {
-		fmt.Println("🔍 Detected proto directories:")
-		if hasAPI {
-			fmt.Println("  ✓ proto/api/ (API messages)")
-		}
-		if hasServices {
-			fmt.Println("  ✓ proto/services/ (Service definitions)")
-		}
-		if hasDB {
-			fmt.Println("  ✓ proto/db/ (Database models)")
-		}
-		if hasConfig {
-			fmt.Println("  ✓ proto/config/ (Config definitions)")
-		}
-		fmt.Println()
-	}
-
-	// ── Step 1: buf generate for Go stubs ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) {
-		if err := runBufGenerateGo(projectDir); err != nil {
-			return fmt.Errorf("buf generate (Go) failed: %w", err)
+		if err := step.Run(ctx); err != nil {
+			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
 
-	// ── Step 1b: Descriptor extraction (services, entities, configs → forge_descriptor.json) ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) {
-		if err := runDescriptorGenerate(projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: descriptor generation failed: %v\n", err)
-		}
-	}
+	fmt.Println()
+	fmt.Println("✅ Code generation complete!")
+	return nil
+}
 
-	// ── Step 2: ORM generation if proto/db/ exists ──
-	if (cfg == nil || cfg.Features.ORMEnabled()) && hasDB {
-		if err := runOrmGenerate(projectDir); err != nil {
-			return fmt.Errorf("ORM generation failed: %w", err)
-		}
-	}
-
-	// ── Step 2b: Auto-generate initial migration if proto/db entities exist and no migrations yet ──
-	if (cfg == nil || cfg.Features.MigrationsEnabled()) && hasDB && !hasSQLMigrations(projectDir) {
-		if err := maybeGenerateInitialMigration(projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: initial migration generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 2c: Replace boilerplate migration with entity-aware migration ──
-	if (cfg == nil || cfg.Features.MigrationsEnabled()) && hasServices {
-		entityDefs, parseErr := codegen.ParseEntityProtos(projectDir)
-		if parseErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: entity proto parsing for migrations failed: %v\n", parseErr)
-		} else if len(entityDefs) > 0 && isBoilerplateMigration(projectDir) {
-			migDir := filepath.Join(projectDir, "db", "migrations")
-			removeBoilerplateMigrations(migDir)
-			planEntities := codegen.EntityDefsToPlanEntities(entityDefs)
-			if err := generator.GeneratePlanMigrations(projectDir, planEntities); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: entity migration generation failed: %v\n", err)
-			} else {
-				fmt.Printf("  ✅ Generated entity-aware migration (%d tables)\n", len(entityDefs))
-			}
-		}
-	}
-
-	// ── Step 3: TypeScript generation for frontends with Connect clients ──
-	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil {
-		for _, fe := range cfg.Frontends {
-			if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") {
-				if err := runBufGenerateTypeScript(fe, cfg, projectDir); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: TypeScript generation for %s failed: %v\n", fe.Name, err)
-				}
-			}
-		}
-	}
-
-	// ── Step 3b: Config loader generation from proto/config/ ──
-	var configFields map[string]bool
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasConfig {
-		var cfgErr error
-		var features config.FeaturesConfig
-		if cfg != nil {
-			features = cfg.Features
-		}
-		configFields, cfgErr = generateConfigLoader(projectDir, features)
-		if cfgErr != nil {
-			return fmt.Errorf("config loader generation failed: %w", cfgErr)
-		}
-	}
-
-	// ── Parse services and module path once for steps 4-6 ──
-	var services []codegen.ServiceDef
-	var modulePath string
-	if hasServices {
-		services, err = codegen.ParseServicesFromProtos(filepath.Join(projectDir, "proto/services"), projectDir)
-		if err != nil {
-			return fmt.Errorf("failed to parse service protos: %w", err)
-		}
-		// ParseServicesFromProtos already reads the module path and sets it on each ServiceDef.
-		// Extract it from the first service to avoid a redundant GetModulePath() call.
-		if len(services) > 0 {
-			modulePath = services[0].ModulePath
-		} else {
-			modulePath, err = codegen.GetModulePath(projectDir)
-			if err != nil {
-				return fmt.Errorf("failed to read module path: %w", err)
-			}
-		}
-	}
-
-	// Resolve module path for workers/operators if not already set (no proto services)
-	hasWorkers := len(discoverWorkers(projectDir)) > 0
-	hasOperators := len(discoverOperators(projectDir)) > 0
-	if modulePath == "" && (hasWorkers || hasOperators) {
-		modulePath, err = codegen.GetModulePath(projectDir)
-		if err != nil {
-			return fmt.Errorf("failed to read module path: %w", err)
-		}
-	}
-
-	// ── Step 3c: Frontend React Query hooks for each service ──
-	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && hasServices && len(services) > 0 {
-		if err := generateFrontendHooks(cfg, services, projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: frontend hooks generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 3d: Ensure core UI components are installed ──
-	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && len(cfg.Frontends) > 0 {
-		ensureFrontendComponents(cfg, projectDir)
-	}
-
-	// ── Step 3e: Frontend CRUD pages for each service ──
-	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && hasServices && len(services) > 0 {
-		if err := generateFrontendPages(cfg, services, projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: frontend page generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 3f: Frontend nav and dashboard (re-render with entity data) ──
-	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && len(cfg.Frontends) > 0 {
-		if err := generateFrontendNav(cfg, services, projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: frontend nav generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 4: Service stubs (non-destructive) ──
-	// Compute CRUD method names upfront so the stub generator can skip them.
-	// Entities may live in proto/db/ (legacy) or proto/services/ (new arch).
-	var crudMethodNames map[string]bool
-	if hasServices {
-		crudMethodNames = collectCRUDMethodNames(services, projectDir)
-	}
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
-		if err := generateServiceStubs(cfg, services, projectDir, crudMethodNames); err != nil {
-			return fmt.Errorf("service stub generation failed: %w", err)
-		}
-	}
-
-	// ── Step 4a: Generate internal/db/ (type aliases + ORM CRUD) ──
-	if (cfg == nil || cfg.Features.ORMEnabled()) && hasServices {
-		entities, entErr := codegen.ParseEntityProtos(projectDir)
-		if entErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: entity parsing for ORM generation failed: %v\n", entErr)
-		} else if len(entities) > 0 {
-			// Derive service name from the first entity's proto file path.
-			svcName := codegen.ServiceNameFromProtoFile(entities[0].ProtoFile)
-			if svcName != "" {
-				planEntities := codegen.EntityDefsToPlanEntities(entities)
-				entityNames := make([]string, len(entities))
-				for i, e := range entities {
-					entityNames[i] = e.Name
-				}
-
-				if err := generator.GeneratePlanDBTypes(projectDir, modulePath, svcName, entityNames); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: db types generation failed: %v\n", err)
-				}
-
-				if err := generator.GeneratePlanORM(projectDir, modulePath, svcName, planEntities); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: ORM generation failed: %v\n", err)
-				} else {
-					fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
-				}
-			}
-		}
-	}
-
-	// ── Step 4b: CRUD handler generation ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
-		if err := generateCRUDHandlers(services, modulePath, projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: CRUD handler generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 4c: Authorizer generation (role mappings from proto annotations) ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
-		if err := codegen.GenerateAuthorizer(services, modulePath, projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: authorizer generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 5: Mocks (always regenerate) ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && hasServices {
-		if err := generateServiceMocks(services, projectDir); err != nil {
-			return fmt.Errorf("mock generation failed: %w", err)
-		}
-	}
-
-	// ── Step 5b: Internal package contract generation ──
-	if (cfg == nil || cfg.Features.ContractsEnabled()) {
-		if err := generateInternalPackageContracts(projectDir); err != nil {
-			return fmt.Errorf("internal package contract generation failed: %w", err)
-		}
-	}
-
-	// ── Step 5c: Auth middleware generation ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && cfg != nil && cfg.Auth.Provider != "" && cfg.Auth.Provider != "none" {
-		if err := generateAuthMiddleware(cfg, services, modulePath, projectDir); err != nil {
-			return fmt.Errorf("auth middleware generation failed: %w", err)
-		}
-	}
-
-	// ── Step 5d: Tenant middleware generation ──
-	// Auto-enable multi-tenant if any entity has a tenant key field.
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && cfg != nil && hasServices {
-		entities, _ := codegen.ParseEntityProtos(projectDir)
-		hasTenantEntities := false
-		for _, e := range entities {
-			if e.HasTenant {
-				hasTenantEntities = true
-				break
-			}
-		}
-		if hasTenantEntities {
-			if cfg.Auth.MultiTenant == nil {
-				cfg.Auth.MultiTenant = &config.MultiTenantConfig{}
-			}
-			if !cfg.Auth.MultiTenant.Enabled {
-				cfg.Auth.MultiTenant.Enabled = true
-				configPath := filepath.Join(projectDir, defaultProjectConfigFile)
-				if writeErr := generator.WriteProjectConfigFile(cfg, configPath); writeErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to persist multi-tenant config: %v\n", writeErr)
-				} else {
-					fmt.Println("  ✅ Auto-enabled multi-tenant config (entities use tenant_key)")
-				}
-			}
-			if err := generateTenantMiddleware(cfg, projectDir); err != nil {
-				return fmt.Errorf("tenant middleware generation failed: %w", err)
-			}
-		}
-	}
-
-	// ── Step 5e: Webhook route generation ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && cfg != nil {
-		if err := generateWebhookRoutes(cfg, projectDir); err != nil {
-			return fmt.Errorf("webhook route generation failed: %w", err)
-		}
-	}
-
-	// ── Step 6: Generate pkg/app/bootstrap.go ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && (hasServices || hasWorkers || hasOperators) {
-		var dbDriver string
-		if cfg != nil {
-			dbDriver = cfg.Database.Driver
-		}
-		// ORM is enabled when entity definitions exist. They may live in:
-		// - proto/db/ (legacy architecture)
-		// - internal/db/types.go (new architecture — entities inline in service protos)
-		ormEnabled := false
-		if hasDB {
-			ok, perr := hasProtoFilesInDir(filepath.Join(projectDir, "proto", "db"))
-			if perr != nil {
-				return fmt.Errorf("scan proto/db for ORM protos: %w", perr)
-			}
-			ormEnabled = ok
-		}
-		if !ormEnabled {
-			// New architecture: check for internal/db/types.go (generated by plan_db_types_gen)
-			if _, err := os.Stat(filepath.Join(projectDir, "internal", "db", "types.go")); err == nil {
-				ormEnabled = true
-			}
-		}
-		if err := generateBootstrap(services, modulePath, dbDriver, ormEnabled, projectDir, configFields); err != nil {
-			return fmt.Errorf("bootstrap generation failed: %w", err)
-		}
-	}
-
-	// ── Step 6b: Generate pkg/app/testing.go ──
-	if (cfg == nil || cfg.Features.CodegenEnabled()) && (hasServices || hasWorkers || hasOperators) {
-		mtEnabled := cfg != nil && cfg.Auth.MultiTenant != nil && cfg.Auth.MultiTenant.Enabled
-		if err := generateBootstrapTesting(services, modulePath, mtEnabled, projectDir); err != nil {
-			return fmt.Errorf("bootstrap testing generation failed: %w", err)
-		}
-	}
-
-	// ── Step 6c: Generate pkg/app/migrate.go if database is configured ──
-	if (cfg == nil || cfg.Features.MigrationsEnabled()) && cfg != nil && cfg.Database.Driver != "" {
-		if err := generateMigrate(projectDir, cfg.ModulePath); err != nil {
-			return fmt.Errorf("migrate generation failed: %w", err)
-		}
-	}
-
-	// ── Step 7: sqlc generate if sqlc.yaml exists ──
-	if err := runSqlcGenerate(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: sqlc generate failed: %v\n", err)
-	}
-
-	// ── Step 8: go mod tidy in gen/ ──
-	if err := runGoModTidyGen(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: go mod tidy in gen/ failed: %v\n", err)
-	}
-
-	// ── Step 8b: Generate CI/CD workflows ──
-	if (cfg == nil || cfg.Features.CIEnabled()) && cfg != nil {
-		fmt.Println("\n🔧 Generating CI/CD workflows...")
-		if err := generateCIWorkflows(abs, cfg, cs, force); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  CI/CD generation warning: %v\n", err)
-			// Non-fatal: don't fail the pipeline for CI generation issues
-		}
-	}
-
-	// ── Step 8c: Re-render installed pack generate hooks ──
-	if cfg != nil && len(cfg.Packs) > 0 {
-		if err := runPackGenerateHooks(projectDir, cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  Pack generate hooks warning: %v\n", err)
-		}
-	}
-
-	// ── Step 8d: Regenerate infrastructure files (Tier 1) ──
-	if (cfg == nil || cfg.Features.DeployEnabled()) {
-		fmt.Println("\n── Regenerating infrastructure files ──")
-		if err := generator.RegenerateInfraFiles(abs, cfg); err != nil {
-			return fmt.Errorf("regenerate infrastructure files: %w", err)
-		}
-	}
-
-	// ── Step 8d-i: Generate Grafana dashboards ──
-	if (cfg == nil || cfg.Features.ObservabilityEnabled()) && cfg != nil {
-		if err := generator.GenerateGrafanaDashboards(cfg.Name, abs); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Grafana dashboard generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 8d-ii: Generate entity-aware seed data ──
-	var entityDefs []codegen.EntityDef
-	if (cfg == nil || cfg.Features.MigrationsEnabled()) && (hasDB || hasServices) {
-		var parseErr error
-		entityDefs, parseErr = codegen.ParseEntityProtos(projectDir)
-		if parseErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: entity proto parsing for seeds failed: %v\n", parseErr)
-		} else if len(entityDefs) > 0 {
-			seedEntities := generator.EntityDefsToSeedEntities(entityDefs)
-			if err := generator.GenerateEntitySeeds(seedEntities, abs); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: entity seed generation failed: %v\n", err)
-			}
-		}
-	}
-
-	// ── Step 8d-iii: Generate frontend mock data + transport ──
-	if (cfg == nil || cfg.Features.FrontendEnabled()) && cfg != nil && len(cfg.Frontends) > 0 && len(entityDefs) > 0 && len(services) > 0 {
-		if err := generateFrontendMocks(cfg, services, entityDefs, projectDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: frontend mock generation failed: %v\n", err)
-		}
-	}
-
-	// ── Step 8e: go mod tidy in project root ──
-	if err := runGoModTidyRoot(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: go mod tidy in project root failed: %v\n", err)
-	}
-
-	// ── Step 8f: Run goimports on generated Go files ──
-	if modulePath == "" {
-		modulePath, _ = codegen.GetModulePath(projectDir)
-	}
-	if modulePath != "" {
-		if err := runGoimportsOnGenerated(projectDir, modulePath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: goimports failed: %v\n", err)
-		}
-	}
-
-	// ── Step 8g: Post-generation validation ──
-	if warnings := validateGeneratedProject(projectDir); len(warnings) > 0 {
-		fmt.Fprintf(os.Stderr, "\n⚠️  Post-generation warnings:\n")
-		for _, w := range warnings {
-			fmt.Fprintf(os.Stderr, "  • %s\n", w)
-		}
-	}
-
-	// ── Step 9: Validate generated code compiles ──
+// runGoBuildValidate is the body of stepGoBuildValidate (was Step 9 in
+// the pre-refactor pipeline). Kept as a non-step helper so unit tests
+// can invoke it directly without spinning up the full GenStep loop.
+func runGoBuildValidate(projectDir string) error {
 	fmt.Println("\n🔨 Validating generated code...")
 	validateCmd := exec.Command("go", "build", "./...")
 	validateCmd.Dir = projectDir
@@ -531,19 +172,56 @@ func runGeneratePipeline(projectDir string, force bool) error {
 	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
 	if err := validateCmd.Run(); err != nil {
 		errOutput := buildStderr.String()
+		fix := "ensure all referenced types are imported and re-run 'forge generate'"
 		if errOutput != "" {
-			fmt.Fprintf(os.Stderr, "\n💡 Build failed. Common fixes:\n")
 			if strings.Contains(errOutput, "pkg/config") {
-				fmt.Fprintf(os.Stderr, "  • Ensure proto/config/ has annotated config fields and re-run 'forge generate'\n")
-			}
-			if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
-				fmt.Fprintf(os.Stderr, "  • authorizer_gen.go may be missing — re-run 'forge generate'\n")
+				fix = "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
+			} else if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
+				fix = "authorizer_gen.go may be missing — re-run 'forge generate'"
 			}
 		}
-		return fmt.Errorf("generated code failed to compile: %w", err)
+		return cliutil.WrapUserErr("forge generate (validate generated code)",
+			"go build failed", "", fix, err)
+	}
+	return nil
+}
+
+// preCodegenContractCheck runs the forgeconv internal-package contract
+// shape analyzer BEFORE any code generators write files. The bootstrap
+// codegen template (internal/templates/project/bootstrap.go.tmpl)
+// hardcodes references to <pkg>.Service / <pkg>.Deps / <pkg>.New(...) for
+// every internal package; a contract.go that uses different names produces
+// a bootstrap.go that doesn't compile. Catching this at validation time
+// (rather than at the final `go build` step) gives the user a clear,
+// actionable error pointing at their contract.go rather than a build
+// error pointing at generated code.
+//
+// Honors `contracts.exclude` from forge.yaml so analyzer sub-packages and
+// other non-bootstrap-managed internal packages can opt out.
+func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error {
+	internalDir := filepath.Join(projectDir, "internal")
+	if _, err := os.Stat(internalDir); os.IsNotExist(err) {
+		return nil
+	}
+	excludes := contractExcludesFromConfig(cfg)
+	res, err := forgeconv.LintInternalContracts(projectDir, excludes)
+	if err != nil {
+		// Best-effort: a walk error shouldn't block generate.
+		fmt.Fprintf(os.Stderr, "Warning: pre-codegen contract check failed: %v\n", err)
+		return nil
+	}
+	if !res.HasErrors() {
+		return nil
 	}
 
-	fmt.Println()
-	fmt.Println("✅ Code generation complete!")
-	return nil
+	// Surface each finding with the same actionable message the lint
+	// command would emit, then abort the pipeline.
+	fmt.Fprintln(os.Stderr, "\n❌ Internal-package contract convention violations:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprint(os.Stderr, res.FormatText())
+	fmt.Fprintln(os.Stderr, "Aborting before bootstrap codegen — fix the contract.go names above and retry.")
+	return cliutil.UserErr("forge generate (pre-codegen contract check)",
+		"internal-package contracts must declare 'type Service interface', 'type Deps struct', and 'func New(Deps) Service'",
+		"",
+		"fix the offending contract.go files (see findings above), or run 'forge lint --conventions' for the per-file detail")
 }

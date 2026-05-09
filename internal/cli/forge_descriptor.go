@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
-	"syscall"
 
 	forgev1 "github.com/reliant-labs/forge/gen/forge/v1"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -14,6 +16,13 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
+
+// descriptorStageDir is the per-invocation staging directory under the
+// descriptor output directory where each buf-plugin process drops a JSON
+// fragment named after the proto package(s) it processed. The parent
+// process (runDescriptorGenerate) merges these fragments into
+// forge_descriptor.json after buf finishes.
+const descriptorStageDir = ".descriptor.d"
 
 // ForgeDescriptor is the top-level JSON structure written by mode=descriptor.
 // It aggregates all data the generate.go pipeline needs from proto descriptors.
@@ -24,48 +33,38 @@ type ForgeDescriptor struct {
 }
 
 // generateDescriptor extracts services, entities, and configs from all proto
-// files and writes them as a single forge_descriptor.json.
+// files this plugin invocation was given, and writes a per-invocation
+// fragment under <descriptorOut>/<descriptorStageDir>/<hash>.json.
 //
 // The output directory is passed via the "descriptor_out" plugin option
-// (set by runDescriptorGenerate in generate_orm.go). The file is written
-// directly to disk instead of through protogen's generated-file mechanism
-// to avoid deduplication issues when buf invokes the plugin once per proto
-// package — protogen would keep only the last written copy, losing data
-// from earlier packages.
+// (set by runDescriptorGenerate in generate_orm.go). The fragments are
+// merged into forge_descriptor.json by mergeDescriptorFragments() in the
+// parent process after buf finishes.
+//
+// Why per-invocation fragments instead of a shared file: buf spawns one
+// plugin process per proto module, so the previous read-modify-write
+// approach (with an in-process syscall.Flock) silently raced when two
+// plugin processes were active at the same time, producing concatenated
+// or truncated JSON. Per-process fragment writes are atomic with respect
+// to each other (each process owns its own filename) and the parent
+// process is the single writer of the final descriptor.
 func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 	if err := os.MkdirAll(descriptorOut, 0o755); err != nil {
 		return fmt.Errorf("create descriptor output directory: %w", err)
 	}
-
-	outPath := filepath.Join(descriptorOut, "forge_descriptor.json")
-
-	// Use a lock file to prevent concurrent buf plugin invocations from
-	// racing on the read-modify-write of forge_descriptor.json.
-	lockPath := outPath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("open lock file: %w", err)
+	stageDir := filepath.Join(descriptorOut, descriptorStageDir)
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return fmt.Errorf("create descriptor stage directory: %w", err)
 	}
-	defer func() {
-		_ = lockFile.Close()
-		_ = os.Remove(lockPath)
-	}()
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquire descriptor lock: %w", err)
-	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
-	// Read existing descriptor to merge with (buf invokes the plugin once per
-	// proto package, so we accumulate results across invocations).
 	var desc ForgeDescriptor
-	if existing, err := os.ReadFile(outPath); err == nil {
-		_ = json.Unmarshal(existing, &desc)
-	}
+	var fragmentKeyParts []string
 
 	for _, f := range p.Files {
 		if !f.Generate {
 			continue
 		}
+		fragmentKeyParts = append(fragmentKeyParts, f.Desc.Path())
 
 		// Extract services
 		for _, svc := range f.Services {
@@ -73,9 +72,19 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 			desc.Services = append(desc.Services, sd)
 		}
 
-		// Extract entities from messages with entity annotations or entity conventions
+		// Extract entities from messages with explicit entity annotations.
+		// Forge has no auto-detection: a message becomes an entity only when
+		// it carries (forge.v1.entity) AND has a (forge.v1.field) = { pk: true }
+		// marker. extractEntityDef returns an error for malformed entities;
+		// surface it via p.Error so `forge generate` halts with a clear
+		// remediation message instead of silently producing broken code.
 		for _, msg := range f.Messages {
-			if ed, ok := extractEntityDef(f, msg); ok {
+			ed, ok, err := extractEntityDef(f, msg)
+			if err != nil {
+				p.Error(err)
+				return nil
+			}
+			if ok {
 				desc.Entities = append(desc.Entities, ed)
 			}
 		}
@@ -88,15 +97,109 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 		}
 	}
 
+	// Skip writing an empty fragment — saves a no-op file per plugin
+	// invocation and keeps the merge step's directory listing clean.
+	if len(desc.Services) == 0 && len(desc.Entities) == 0 && len(desc.Configs) == 0 {
+		return nil
+	}
+
+	// Stable, content-addressable filename so a second invocation against
+	// the same proto files overwrites rather than duplicating fragments.
+	sort.Strings(fragmentKeyParts)
+	h := sha1.New()
+	for _, p := range fragmentKeyParts {
+		_, _ = h.Write([]byte(p))
+		_, _ = h.Write([]byte{'\x00'})
+	}
+	fragmentName := hex.EncodeToString(h.Sum(nil)) + ".json"
+
 	descBytes, err := json.MarshalIndent(desc, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(outPath, descBytes, 0o644); err != nil {
+	// Atomic write: write to a unique temp file in the same directory,
+	// then rename. Rename is atomic on POSIX filesystems even across
+	// concurrent processes.
+	tmp, err := os.CreateTemp(stageDir, "frag-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create descriptor fragment tempfile: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(descBytes); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write descriptor fragment: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close descriptor fragment: %w", err)
+	}
+	if err := os.Rename(tmpPath, filepath.Join(stageDir, fragmentName)); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename descriptor fragment: %w", err)
+	}
+
+	return nil
+}
+
+// MergeDescriptorFragments combines all per-invocation fragments under
+// <descriptorOut>/<descriptorStageDir>/ into a single forge_descriptor.json
+// at <descriptorOut>/forge_descriptor.json, then removes the staging dir.
+// Called by runDescriptorGenerate in the parent process after buf returns.
+//
+// Idempotent: running it twice is safe (the second run sees an empty stage
+// dir and is a no-op apart from rewriting the final descriptor with what's
+// already there). Returns nil silently when no fragments exist (clean
+// projects with no services/entities/configs).
+func MergeDescriptorFragments(descriptorOut string) error {
+	stageDir := filepath.Join(descriptorOut, descriptorStageDir)
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read descriptor stage dir: %w", err)
+	}
+
+	// Sort fragment names so the merged descriptor has a deterministic
+	// order regardless of OS-specific directory iteration order.
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+
+	var merged ForgeDescriptor
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(stageDir, name))
+		if err != nil {
+			return fmt.Errorf("read descriptor fragment %s: %w", name, err)
+		}
+		var frag ForgeDescriptor
+		if err := json.Unmarshal(data, &frag); err != nil {
+			return fmt.Errorf("parse descriptor fragment %s: %w", name, err)
+		}
+		merged.Services = append(merged.Services, frag.Services...)
+		merged.Entities = append(merged.Entities, frag.Entities...)
+		merged.Configs = append(merged.Configs, frag.Configs...)
+	}
+
+	out, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return err
+	}
+	outPath := filepath.Join(descriptorOut, "forge_descriptor.json")
+	if err := os.WriteFile(outPath, out, 0o644); err != nil {
 		return fmt.Errorf("write forge_descriptor.json: %w", err)
 	}
 
+	// Best-effort cleanup of the staging dir; failure here doesn't matter
+	// for correctness because the next run starts with rm -rf.
+	_ = os.RemoveAll(stageDir)
 	return nil
 }
 
@@ -141,12 +244,17 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 	}
 
 	for _, m := range svc.Methods {
+		// Default to fail-closed: an unannotated method requires auth.
+		// Methods that explicitly set `auth_required = false` in their
+		// (forge.v1.method) annotation can opt out — the proto field is
+		// `optional bool` so we distinguish unset from explicit false.
 		method := codegen.Method{
 			Name:           string(m.Desc.Name()),
 			InputType:      string(m.Input.Desc.Name()),
 			OutputType:     string(m.Output.Desc.Name()),
 			ClientStreaming: m.Desc.IsStreamingClient(),
 			ServerStreaming: m.Desc.IsStreamingServer(),
+			AuthRequired:   true,
 		}
 
 		// Read method-level options
@@ -154,7 +262,9 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			ext := proto.GetExtension(methodOpts, forgev1.E_Method)
 			if ext != nil {
 				if mo, ok := ext.(*forgev1.MethodOptions); ok && mo != nil {
-					method.AuthRequired = mo.GetAuthRequired()
+					if mo.AuthRequired != nil {
+						method.AuthRequired = *mo.AuthRequired
+					}
 				}
 			}
 		}
@@ -188,12 +298,19 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 	messages[name] = fields
 }
 
-// extractEntityDef converts a proto message with entity annotations to a codegen.EntityDef.
-func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.EntityDef, bool) {
-	// Try to parse as entityInfo first (reuses the ORM parsing logic)
-	ent, ok := parseEntity(msg)
-	if !ok {
-		return codegen.EntityDef{}, false
+// extractEntityDef converts a proto message with entity annotations to a
+// codegen.EntityDef. Entities are annotation-only — a message becomes an
+// entity solely by carrying `option (forge.v1.entity) = { ... }` plus a
+// field marked `[(forge.v1.field) = { pk: true }]`. parseEntity returns a
+// non-nil error for messages that ARE annotated as entities but lack a PK
+// marker; that error is propagated via p.Error in the descriptor plugin.
+func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.EntityDef, bool, error) {
+	ent, isEntity, err := parseEntity(msg)
+	if err != nil {
+		return codegen.EntityDef{}, false, err
+	}
+	if !isEntity {
+		return codegen.EntityDef{}, false, nil
 	}
 
 	ed := codegen.EntityDef{
@@ -234,13 +351,9 @@ func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.Entit
 		ed.Fields = append(ed.Fields, ef)
 	}
 
-	// Default PK
-	if ed.PkField == "" {
-		ed.PkField = "id"
-		ed.PkGoType = "string"
-	}
-
-	return ed, true
+	// parseEntity already enforces that ed.PkField is non-empty for any
+	// entity that gets here — no fallback needed.
+	return ed, true, nil
 }
 
 // extractConfigMessage checks if a message has any fields with config_field options
@@ -274,6 +387,8 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			DefaultValue: cf.GetDefaultValue(),
 			Required:     cf.GetRequired(),
 			Description:  cf.GetDescription(),
+			Sensitive:    cf.GetSensitive(),
+			Category:     cf.GetCategory(),
 		})
 	}
 

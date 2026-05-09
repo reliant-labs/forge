@@ -37,40 +37,45 @@ func (g *ProjectGenerator) generateDXFiles() error {
 			return fmt.Errorf("write pre-commit workflow: %w", err)
 		}
 	}
-	if g.Features.MigrationsEnabled() {
+	if g.isService() && g.Features.MigrationsEnabled() {
 		if err := g.generateExampleMigration(); err != nil {
 			return fmt.Errorf("write example migration: %w", err)
 		}
 	}
-	if g.Features.MigrationsEnabled() {
+	if g.isService() && g.Features.MigrationsEnabled() {
 		if err := g.generateSeeds(); err != nil {
 			return fmt.Errorf("write db/seeds: %w", err)
 		}
 	}
-	if g.Features.DocsEnabled() {
+	if g.Features.DocsEnabled() && !g.isLibrary() {
 		if err := g.generateADRs(); err != nil {
 			return fmt.Errorf("write docs/adr: %w", err)
 		}
 	}
-	if err := g.generateBenchmarks(); err != nil {
-		return fmt.Errorf("write benchmarks: %w", err)
+	// benchmarks/k6/ is a server load-test harness; skip for non-service
+	// kinds. Library projects can still benefit from a Go testing.B
+	// harness, but it's not load-testing — defer until requested.
+	if g.isService() {
+		if err := g.generateBenchmarks(); err != nil {
+			return fmt.Errorf("write benchmarks: %w", err)
+		}
 	}
-	if g.Features.ObservabilityEnabled() {
+	if g.isService() && g.Features.ObservabilityEnabled() {
 		if err := g.generateRunbookAndSLO(); err != nil {
 			return fmt.Errorf("write docs/runbook+slo: %w", err)
 		}
 	}
-	if g.Features.ObservabilityEnabled() {
+	if g.isService() && g.Features.ObservabilityEnabled() {
 		if err := g.generatePrometheusRules(); err != nil {
 			return fmt.Errorf("write prometheus-rules: %w", err)
 		}
 	}
-	if g.Features.ORMEnabled() {
+	if g.isService() && g.Features.ORMEnabled() {
 		if err := g.generateSQLCStub(); err != nil {
 			return fmt.Errorf("write db/sqlc stub: %w", err)
 		}
 	}
-	if g.Features.DocsEnabled() {
+	if g.Features.DocsEnabled() && g.isService() {
 		if err := g.generateNonGoalsADR(); err != nil {
 			return fmt.Errorf("write non-goals ADR: %w", err)
 		}
@@ -173,11 +178,15 @@ func (g *ProjectGenerator) generateDevcontainer() error {
 
 	// Forward both the server and frontend ports; infra ports (postgres,
 	// jaeger) match the defaults used by docker-compose.yml.tmpl.
-	forward := []string{fmt.Sprintf("%d", g.ServicePort)}
-	if g.FrontendName != "" {
-		forward = append(forward, fmt.Sprintf("%d", g.FrontendPort))
+	// CLI/library kinds have no long-running server, so forward nothing.
+	var forward []string
+	if g.isService() {
+		forward = append(forward, fmt.Sprintf("%d", g.ServicePort))
+		if g.FrontendName != "" {
+			forward = append(forward, fmt.Sprintf("%d", g.FrontendPort))
+		}
+		forward = append(forward, "5432", "16686")
 	}
-	forward = append(forward, "5432", "16686")
 
 	var forwardJSON strings.Builder
 	forwardJSON.WriteString("[")
@@ -188,6 +197,16 @@ func (g *ProjectGenerator) generateDevcontainer() error {
 		forwardJSON.WriteString(p)
 	}
 	forwardJSON.WriteString("]")
+
+	portsAttributes := ""
+	if g.isService() {
+		portsAttributes = fmt.Sprintf(`,
+  "portsAttributes": {
+    "%d": { "label": "app" },
+    "5432": { "label": "postgres" },
+    "16686": { "label": "jaeger-ui" }
+  }`, g.ServicePort)
+	}
 
 	content := fmt.Sprintf(`{
   "name": "%s",
@@ -205,12 +224,7 @@ func (g *ProjectGenerator) generateDevcontainer() error {
     }
   },
   "postCreateCommand": "bash scripts/bootstrap.sh",
-  "forwardPorts": %s,
-  "portsAttributes": {
-    "%d": { "label": "app" },
-    "5432": { "label": "postgres" },
-    "16686": { "label": "jaeger-ui" }
-  },
+  "forwardPorts": %s%s,
   "remoteUser": "vscode",
   "customizations": {
     "vscode": {
@@ -228,7 +242,7 @@ func (g *ProjectGenerator) generateDevcontainer() error {
     }
   }
 }
-`, g.Name, goMinor, forwardJSON.String(), g.ServicePort)
+`, g.Name, goMinor, forwardJSON.String(), portsAttributes)
 
 	dir := filepath.Join(g.Path, ".devcontainer")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -528,13 +542,34 @@ jobs:
 	return os.WriteFile(filepath.Join(dir, "pre-commit.yml"), []byte(content), 0o644)
 }
 
-// generateExampleMigration writes db/migrations/0001_init.{up,down}.sql,
+// generateExampleMigration writes db/migrations/00001_init.{up,down}.sql,
 // a minimal but realistic example (UUID primary key, timestamptz default)
 // that demonstrates the conventions documented in db/README.md.
 // The up migration wraps its DDL in BEGIN/COMMIT so partial failures are
 // rolled back — matches the transaction guidance in db/README.md.
+//
+// Skips emit if any baseline migration already exists in the directory
+// (e.g. user `forge new`'d into a directory carrying a brought-in
+// `00001_baseline.up.sql`). Different number-padding conventions
+// (4-digit vs 5-digit) caused `migrate -path db/migrations` errors in
+// the past — using 5-digit padding here matches `GeneratePlanMigrations`
+// so any collision is now exact-name and obvious.
 func (g *ProjectGenerator) generateExampleMigration() error {
-	up := `-- 0001_init.up.sql
+	dir := filepath.Join(g.Path, "db", "migrations")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	// Detect a brought-in baseline. If any *.sql file exists in
+	// db/migrations/ already, the user owns the schema; the scaffold's
+	// example would either collide or pollute their migration chain.
+	if existing, err := hasExistingMigration(dir); err != nil {
+		return err
+	} else if existing {
+		return nil
+	}
+
+	up := `-- 00001_init.up.sql
 -- Example migration: creates an ` + "`items`" + ` table.
 -- Multi-statement migrations should be wrapped in an explicit
 -- transaction so a failure halfway through leaves the schema untouched.
@@ -553,8 +588,8 @@ CREATE INDEX IF NOT EXISTS items_created_at_idx ON items (created_at DESC);
 COMMIT;
 `
 
-	down := `-- 0001_init.down.sql
--- Revert 0001_init.up.sql.
+	down := `-- 00001_init.down.sql
+-- Revert 00001_init.up.sql.
 BEGIN;
 
 DROP INDEX IF EXISTS items_created_at_idx;
@@ -562,14 +597,10 @@ DROP TABLE IF EXISTS items;
 
 COMMIT;
 `
-	dir := filepath.Join(g.Path, "db", "migrations")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "00001_init.up.sql"), []byte(up), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "0001_init.up.sql"), []byte(up), 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "0001_init.down.sql"), []byte(down), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "00001_init.down.sql"), []byte(down), 0o644); err != nil {
 		return err
 	}
 
@@ -587,17 +618,19 @@ invoked by the generated ` + "`" + `db migrate` + "`" + ` subcommands.
 ` + "```" + `
 db/
   migrations/
-    0001_init.up.sql          # forward migration
-    0001_init.down.sql        # rollback
-    0002_add_users.up.sql
-    0002_add_users.down.sql
+    00001_init.up.sql         # forward migration
+    00001_init.down.sql       # rollback
+    00002_add_users.up.sql
+    00002_add_users.down.sql
   seeds/
     0001_items.sql            # idempotent dev/test seed data
 ` + "```" + `
 
 Migrations run in lexicographic order. Stick to zero-padded, monotonic
-numeric prefixes (` + "`0001`" + `, ` + "`0002`" + `, ...) so the order is stable regardless
-of merge order.
+5-digit numeric prefixes (` + "`00001`" + `, ` + "`00002`" + `, ...) so the order is
+stable regardless of merge order. Forge's pack and ORM generators emit
+5-digit prefixes; matching the convention avoids width-mismatch
+collisions.
 
 ## Writing a new migration
 
@@ -641,12 +674,12 @@ the equivalent) so re-running is safe.
 }
 
 // generateSeeds writes db/seeds/0001_items.sql — a minimal, idempotent
-// example that populates the table created by 0001_init.up.sql.
+// example that populates the table created by 00001_init.up.sql.
 // `ON CONFLICT DO NOTHING` lets the seed run repeatedly without blowing
 // up.
 func (g *ProjectGenerator) generateSeeds() error {
 	seed := `-- 0001_items.sql
--- Seed data for the ` + "`items`" + ` table (see db/migrations/0001_init.up.sql).
+-- Seed data for the ` + "`items`" + ` table (see db/migrations/00001_init.up.sql).
 -- Safe to re-run: each row is keyed by a stable UUID and INSERT uses
 -- ON CONFLICT DO NOTHING.
 INSERT INTO items (id, name) VALUES
@@ -1260,4 +1293,27 @@ added complexity.
 `
 
 	return os.WriteFile(filepath.Join(dir, "0002-intentional-non-goals.md"), []byte(adr), 0o644)
+}
+
+// hasExistingMigration reports whether `dir` contains any *.sql file —
+// indicating a brought-in baseline that the scaffold's example would
+// either collide with or pollute. The check is filename-only; we don't
+// inspect content. Returns false for a missing directory.
+func hasExistingMigration(dir string) (bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".sql") {
+			return true, nil
+		}
+	}
+	return false, nil
 }

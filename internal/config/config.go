@@ -4,29 +4,155 @@ package config
 
 import "strings"
 
+// ProjectKind identifies the shape of a forge project. The default,
+// "service", produces a Connect-RPC service scaffold (handlers,
+// middleware, deploy manifests). "cli" produces a Cobra-based CLI
+// binary with no server-shaped scaffolding. "library" produces a
+// pure Go module with no cmd/ entry point.
+const (
+	ProjectKindService = "service"
+	ProjectKindCLI     = "cli"
+	ProjectKindLibrary = "library"
+)
+
+// ProjectBinary describes the binary packaging shape for a service
+// project. "per-service" (the default) emits the canonical layout:
+// one `cmd/server.go` cobra root with `server [services...]` filtering
+// at the runtime layer, and one Application per service in deploy/
+// KCL. "shared" emits one cobra subcommand per service so callers can
+// invoke `./project <svc>` directly, and KCL emits a single
+// MultiServiceApplication (one image, N Deployments) instead of N
+// Applications. See FORGE_BACKLOG.md "Layer B" + the
+// migration/v0.x-to-binary-shared/ skill for tradeoffs.
+const (
+	ProjectBinaryPerService = "per-service"
+	ProjectBinaryShared     = "shared"
+)
+
+// EffectiveProjectKind returns the project kind, defaulting to
+// "service" so that older forge.yaml files without a kind: field
+// continue to behave as service projects.
+func EffectiveProjectKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case ProjectKindCLI:
+		return ProjectKindCLI
+	case ProjectKindLibrary:
+		return ProjectKindLibrary
+	default:
+		return ProjectKindService
+	}
+}
+
+// EffectiveProjectBinary returns the binary mode, defaulting to
+// "per-service" so projects predating the field keep their existing
+// codegen shape.
+func EffectiveProjectBinary(binary string) string {
+	switch strings.ToLower(strings.TrimSpace(binary)) {
+	case ProjectBinaryShared:
+		return ProjectBinaryShared
+	default:
+		return ProjectBinaryPerService
+	}
+}
+
 // ProjectConfig represents the forge.yaml file.
 // Fields align with proto/forge/project/v1/project.proto.
 type ProjectConfig struct {
-	Name       string              `yaml:"name"`
-	ModulePath string              `yaml:"module_path"`
-	Version    string              `yaml:"version"`
-	HotReload  bool                `yaml:"hot_reload"`
-	Services   []ServiceConfig     `yaml:"services"`
-	Packages   []PackageConfig     `yaml:"packages,omitempty"`
-	Frontends  []FrontendConfig    `yaml:"frontends,omitempty"`
-	Envs       []EnvironmentConfig `yaml:"environments"`
-	Database   DatabaseConfig      `yaml:"database"`
-	CI         CIConfig            `yaml:"ci"`
-	Deploy     DeployConfig        `yaml:"deploy,omitempty"`
-	Docker     DockerConfig        `yaml:"docker"`
-	K8s        K8sConfig           `yaml:"k8s"`
-	Lint       LintConfig          `yaml:"lint"`
-	Contracts  ContractsConfig     `yaml:"contracts"`
-	Auth       AuthConfig          `yaml:"auth"`
-	Docs       DocsConfig          `yaml:"docs"`
-	Features   FeaturesConfig      `yaml:"features,omitempty"`
-	Stack      StackConfig         `yaml:"stack,omitempty"`
-	Packs      []string            `yaml:"packs,omitempty"`
+	Name       string `yaml:"name"`
+	ModulePath string `yaml:"module_path"`
+	Kind       string `yaml:"kind,omitempty"`   // "service" (default), "cli", "library"
+	Binary     string `yaml:"binary,omitempty"` // "per-service" (default), "shared" — one Go binary, cobra subcommand per service
+	Version    string `yaml:"version"`
+	// ForgeVersion records the forge binary version that this project's
+	// generated artifacts were last produced against. It is set at
+	// `forge new` time, bumped after a successful `forge upgrade`, and
+	// consulted by `forge generate` to warn when the forge binary on
+	// PATH has drifted from the version pinned by the project. Empty
+	// (legacy) projects are treated as "0.0.0".
+	ForgeVersion string              `yaml:"forge_version,omitempty"`
+	HotReload    bool                `yaml:"hot_reload"`
+	Services     []ServiceConfig     `yaml:"services"`
+	Packages     []PackageConfig     `yaml:"packages,omitempty"`
+	Frontends    []FrontendConfig    `yaml:"frontends,omitempty"`
+	Envs         []EnvironmentConfig `yaml:"environments"`
+	Database     DatabaseConfig      `yaml:"database"`
+	CI           CIConfig            `yaml:"ci"`
+	Deploy       DeployConfig        `yaml:"deploy,omitempty"`
+	Docker       DockerConfig        `yaml:"docker"`
+	K8s          K8sConfig           `yaml:"k8s"`
+	Lint         LintConfig          `yaml:"lint"`
+	Contracts    ContractsConfig     `yaml:"contracts"`
+	Auth         AuthConfig          `yaml:"auth"`
+	Docs         DocsConfig          `yaml:"docs"`
+	Features     FeaturesConfig      `yaml:"features,omitempty"`
+	Stack        StackConfig         `yaml:"stack,omitempty"`
+	Packs         []string                `yaml:"packs,omitempty"`
+	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
+	// Binaries declares non-server long-running processes scaffolded
+	// via `forge add binary <name>`. Each entry produces a `cmd/<name>.go`
+	// cobra subcommand and an `internal/<name>/` package owning lifecycle
+	// + business logic. Binaries are distinct from:
+	//   - services (Connect-RPC servers wired through pkg/app/bootstrap.go)
+	//   - workers   (in-process goroutines under the canonical server)
+	//   - operators (controller-runtime managers with CRDs)
+	// A binary is the right shape for: reverse proxies, sidecars, off-
+	// service NATS consumers, gateways — anything that needs its own
+	// Deployment but doesn't fit the server/worker/operator templates.
+	Binaries []BinaryConfig `yaml:"binaries,omitempty"`
+}
+
+// BinaryConfig represents a non-server long-running binary scaffolded
+// via `forge add binary <name>`. The shape mirrors ServiceConfig's
+// declarative bits — name, path on disk — without the Connect-RPC
+// fields (Type/Webhooks/CRDs/Group). Kind discriminates the lifecycle
+// shape so deploy and codegen can pick the right template.
+type BinaryConfig struct {
+	// Name is the binary identifier in CLI / display form. May contain
+	// hyphens; the Go-package form is derived via ServicePackageName.
+	// Example: "workspace-proxy".
+	Name string `yaml:"name"`
+	// Path is the cobra subcommand source file relative to the project
+	// root. By convention "cmd/<package>.go" where <package> is the
+	// Go-package form of Name. Stored explicitly so future renames can
+	// avoid breaking forge.yaml-driven tooling.
+	Path string `yaml:"path"`
+	// Kind discriminates the binary lifecycle. Today:
+	//   - "long-running" (default): cobra subcommand runs until SIGINT/
+	//     SIGTERM with graceful shutdown. The proxy / sidecar shape.
+	//   - "cron": one-shot per invocation, intended to be invoked by an
+	//     external scheduler (k8s CronJob). Reserved for future use.
+	//   - "oneshot": one-shot per invocation, no scheduler. Reserved
+	//     for future use (migration runners, backfill scripts).
+	// Today only "long-running" emits a full scaffold; the other kinds
+	// are accepted by the parser so forge.yaml stays forward-compatible
+	// when those scaffolds land.
+	Kind string `yaml:"kind,omitempty"`
+}
+
+// EffectiveBinaryKind returns the kind, defaulting to "long-running"
+// so existing entries without an explicit kind keep the canonical shape.
+func (b BinaryConfig) EffectiveBinaryKind() string {
+	switch strings.ToLower(strings.TrimSpace(b.Kind)) {
+	case "cron":
+		return "cron"
+	case "oneshot":
+		return "oneshot"
+	default:
+		return "long-running"
+	}
+}
+
+// PackOverride is a project-level override block for an installed pack,
+// keyed by pack name under `pack_overrides:` in forge.yaml. It lets the
+// project decline pack-shipped artifacts when its own code already
+// supersedes them — e.g. an audit-log pack ships migrations the project
+// has already authored under different names.
+type PackOverride struct {
+	// SkipMigrations skips rendering the pack's `migrations:` block at
+	// install time. Useful when the project's own migrations supersede
+	// the pack's (typical during forge migrations of an existing repo
+	// where the schema is already in place).
+	SkipMigrations bool `yaml:"skip_migrations,omitempty"`
 }
 
 // ServiceConfig represents a Go service definition.
@@ -39,6 +165,36 @@ type ServiceConfig struct {
 	Schedule      string          `yaml:"schedule,omitempty"` // cron expression for kind=cron workers
 	ProtoPackages []string        `yaml:"proto_packages,omitempty"`
 	Webhooks      []WebhookConfig `yaml:"webhooks,omitempty"`
+	// Group is the API group for type=operator services. e.g.
+	// "reliant.dev". Set when scaffolded via `forge add operator`.
+	Group string `yaml:"group,omitempty"`
+	// Version is the API version for type=operator services. e.g.
+	// "v1alpha1". Set when scaffolded via `forge add operator`.
+	Version string `yaml:"version,omitempty"`
+	// CRDs lists the CRDs reconciled by this operator. Each entry is
+	// a CRD added via `forge add crd <name>` and lives under
+	// operators/<operator>/<crd-name>_controller.go plus
+	// api/<version>/<crd-name>_types.go.
+	CRDs []CRDConfig `yaml:"crds,omitempty"`
+}
+
+// CRDConfig represents a single Custom Resource Definition reconciled
+// by an operator. CRDs are scaffolded via `forge add crd <name> --operator <op>`.
+type CRDConfig struct {
+	// Name is the PascalCase CRD type name. e.g. "Workspace".
+	Name string `yaml:"name"`
+	// Group is the API group, defaulting to the parent operator's
+	// Group. Stored explicitly so a single operator can manage CRDs
+	// from multiple groups.
+	Group string `yaml:"group,omitempty"`
+	// Version is the API version. Defaults to the parent operator's
+	// Version.
+	Version string `yaml:"version,omitempty"`
+	// Shape is the reconciler scaffold style. One of
+	// "state-machine" (phase-driven), "config" (declarative-only,
+	// no state), "composite" (manages sub-resources). Drives which
+	// template is rendered for the controller shim.
+	Shape string `yaml:"shape,omitempty"`
 }
 
 // WebhookConfig represents a webhook endpoint within a service.
@@ -50,6 +206,13 @@ type WebhookConfig struct {
 type PackageConfig struct {
 	Name string `yaml:"name"`
 	Kind string `yaml:"kind,omitempty"` // "" (default/generic), "client", "eventbus"
+	// Type captures the hexagonal-architecture role chosen at scaffold
+	// time: "service" (default — bootstrap-wired contract package),
+	// "adapter" (outbound boundary, marked `// forge:adapter`),
+	// "interactor" (use-case orchestrator, marked `// forge:interactor`).
+	// Empty (omitted) is treated as "service" for backward compatibility
+	// with packages scaffolded before the --type flag landed.
+	Type string `yaml:"type,omitempty"`
 }
 
 // FrontendConfig defines a frontend application (e.g. Next.js, React Native).
@@ -62,13 +225,32 @@ type FrontendConfig struct {
 }
 
 // EnvironmentConfig represents a deployment environment.
+//
+// Per-env runtime config:
+//
+// The Config map carries environment-scoped values for the project's
+// AppConfig fields (proto/config/v1/config.proto). Keys correspond to
+// proto field names (snake_case); values are scalars (string, int, bool)
+// or "${SECRET_NAME}" references for sensitive fields.
+//
+// Two storage shapes are supported and both deserialise into Config:
+//
+//  1. Inline under environments[].config in forge.yaml (good for dev /
+//     staging where values aren't secret).
+//  2. A sibling file `config.<env>.yaml` next to forge.yaml (good for
+//     prod where values mix secret refs with non-secret toggles). The
+//     sibling file is a flat YAML map; its keys override any inline
+//     entries.
+//
+// Use [LoadEnvironmentConfig] to read the merged map for an environment.
 type EnvironmentConfig struct {
-	Name      string   `yaml:"name"` // dev, staging, prod
-	Type      string   `yaml:"type"` // "local", "cloud"
-	Services  []string `yaml:"services,omitempty"`
-	Registry  string   `yaml:"registry,omitempty"`
-	Namespace string   `yaml:"namespace,omitempty"`
-	Domain    string   `yaml:"domain,omitempty"`
+	Name      string         `yaml:"name"` // dev, staging, prod
+	Type      string         `yaml:"type"` // "local", "cloud"
+	Services  []string       `yaml:"services,omitempty"`
+	Registry  string         `yaml:"registry,omitempty"`
+	Namespace string         `yaml:"namespace,omitempty"`
+	Domain    string         `yaml:"domain,omitempty"`
+	Config    map[string]any `yaml:"config,omitempty"`
 }
 
 // DatabaseConfig holds database-related settings.
@@ -328,6 +510,45 @@ type FeaturesConfig struct {
 func featureEnabled(b *bool) bool {
 	return b == nil || *b
 }
+
+// EffectiveKind returns the project kind, defaulting to "service".
+func (c ProjectConfig) EffectiveKind() string {
+	return EffectiveProjectKind(c.Kind)
+}
+
+// EffectiveBinary returns the binary mode, defaulting to "per-service"
+// so legacy forge.yaml files without the field keep producing the
+// canonical cmd/server.go shape.
+func (c ProjectConfig) EffectiveBinary() string {
+	return EffectiveProjectBinary(c.Binary)
+}
+
+// IsBinaryShared reports whether the project uses the shared-binary
+// codegen mode (one Go binary, cobra subcommand per service, KCL
+// MultiServiceApplication for deploy).
+func (c ProjectConfig) IsBinaryShared() bool {
+	return c.EffectiveBinary() == ProjectBinaryShared
+}
+
+// EffectiveForgeVersion returns the forge version pinned by this project,
+// defaulting to "0.0.0" for legacy projects that predate the field.
+// Callers can use the "0.0.0" sentinel to detect "no baseline yet" and
+// nudge the user toward `forge upgrade`.
+func (c ProjectConfig) EffectiveForgeVersion() string {
+	if strings.TrimSpace(c.ForgeVersion) == "" {
+		return "0.0.0"
+	}
+	return c.ForgeVersion
+}
+
+// IsCLIKind reports whether the project is a CLI binary (no server scaffolding).
+func (c ProjectConfig) IsCLIKind() bool { return c.EffectiveKind() == ProjectKindCLI }
+
+// IsLibraryKind reports whether the project is a pure Go library (no cmd/).
+func (c ProjectConfig) IsLibraryKind() bool { return c.EffectiveKind() == ProjectKindLibrary }
+
+// IsServiceKind reports whether the project is a Connect-RPC service.
+func (c ProjectConfig) IsServiceKind() bool { return c.EffectiveKind() == ProjectKindService }
 
 func (f FeaturesConfig) ORMEnabled() bool           { return featureEnabled(f.ORM) }
 func (f FeaturesConfig) CodegenEnabled() bool       { return featureEnabled(f.Codegen) }

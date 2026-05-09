@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/database"
 )
@@ -63,30 +64,52 @@ plugins:
 	return nil
 }
 
+// touchORMOutputs updates the mtime of every *.pb.orm.go file under root to now.
+// Runs as a late pipeline step so post-orm passes (goimports, rehash) don't
+// leave the *.pb.go siblings looking newer; the proto-orm-out-of-sync lint
+// uses mtime comparison and protogen skips writes for byte-identical content,
+// so without this nudge a no-op regen tickles a false stale-warning.
+func touchORMOutputs(root string) error {
+	if !dirExists(root) {
+		return nil
+	}
+	now := time.Now()
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".pb.orm.go") {
+			return nil
+		}
+		// Best-effort; ignore individual errors so one stat-only file doesn't
+		// abort the whole pass.
+		_ = os.Chtimes(path, now, now)
+		return nil
+	})
+}
+
 // runDescriptorGenerate runs buf generate with the protoc-gen-forge plugin (mode=descriptor)
 // to extract service, entity, and config data from all proto files into forge_descriptor.json.
 func runDescriptorGenerate(projectDir string) error {
-	// Collect proto paths that exist
-	var protoPaths []string
-	for _, dir := range []string{"proto/services", "proto/api", "proto/db", "proto/config"} {
-		if dirExists(filepath.Join(projectDir, dir)) {
-			has, err := hasProtoFilesInDir(filepath.Join(projectDir, dir))
-			if err != nil {
-				continue
-			}
-			if has {
-				protoPaths = append(protoPaths, dir)
-			}
-		}
-	}
+	// Collect every proto/<sub>/ that contains .proto files. This includes
+	// the canonical {services,api,db,config} dirs plus any pack-emitted
+	// proto trees (e.g. proto/audit/ from the audit-log pack). Without
+	// the broader walk, pack services are invisible to the descriptor
+	// and downstream codegen (frontend hooks, mocks, etc).
+	protoPaths := discoverProtoSubdirs(projectDir)
 
 	if len(protoPaths) == 0 {
 		return nil // Nothing to extract
 	}
 
-	// Remove stale descriptor so the merge logic in generateDescriptor
-	// doesn't accumulate data from previous runs.
+	// Remove stale descriptor + any leftover staging fragments so the
+	// merge step in MergeDescriptorFragments only sees fragments from
+	// this invocation.
 	_ = os.Remove(filepath.Join(projectDir, "gen", "forge_descriptor.json"))
+	_ = os.RemoveAll(filepath.Join(projectDir, "gen", descriptorStageDir))
 
 	forgeCmd, err := forgeExecCommand()
 	if err != nil {
@@ -133,6 +156,14 @@ plugins:
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("descriptor generation failed: %w", err)
+	}
+
+	// Each plugin process wrote a per-invocation fragment under
+	// gen/.descriptor.d/; merge them into gen/forge_descriptor.json now
+	// that buf has finished. This step is what makes parallel buf-plugin
+	// invocations safe — the merge happens in a single parent process.
+	if err := MergeDescriptorFragments(filepath.Join(projectDir, "gen")); err != nil {
+		return fmt.Errorf("merge descriptor fragments: %w", err)
 	}
 
 	fmt.Println("  ✅ forge_descriptor.json generated")

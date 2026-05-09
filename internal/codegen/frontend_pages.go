@@ -5,6 +5,7 @@ import (
 	"unicode"
 
 	"github.com/jinzhu/inflection"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // PageTemplateData holds data for rendering a single entity's CRUD pages.
@@ -296,20 +297,13 @@ func serviceNameToHookFileName(name string) string {
 	return PascalToKebab(name) + "-hooks.ts"
 }
 
-// PascalToKebab converts PascalCase to kebab-case.
-// "UserService" → "user-service", "TaskItem" → "task-item"
+// PascalToKebab converts PascalCase to kebab-case, respecting Go
+// initialisms (LLM, API, URL, JSON, …) so that "LLMGateway" produces
+// "llm-gateway" rather than "l-l-m-gateway".
+//
+// Thin wrapper around naming.ToKebabCase — kept here for backwards
+// compatibility with existing callers (frontend_pages, frontend_mocks,
+// related tests). New code should call naming.ToKebabCase directly.
 func PascalToKebab(s string) string {
-	var parts []string
-	current := strings.Builder{}
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			parts = append(parts, strings.ToLower(current.String()))
-			current.Reset()
-		}
-		current.WriteRune(r)
-	}
-	if current.Len() > 0 {
-		parts = append(parts, strings.ToLower(current.String()))
-	}
-	return strings.Join(parts, "-")
+	return naming.ToKebabCase(s)
 }

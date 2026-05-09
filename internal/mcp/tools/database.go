@@ -8,8 +8,8 @@ import (
 	"github.com/reliant-labs/forge/internal/mcp/database"
 )
 
-// GetQueryDatabaseTool returns the query_db tool definition
-func GetQueryDatabaseTool() Tool {
+// getQueryDatabaseTool returns the query_db tool definition
+func getQueryDatabaseTool() Tool {
 	return Tool{
 		Name: "query_db",
 		Description: `Execute read-only database queries safely.
@@ -74,8 +74,8 @@ func executeQueryDB(arguments json.RawMessage) (string, error) {
 	}
 
 	// Execute query
-	manager := database.GetConnectionManager()
-	result, err := manager.ExecuteQuery(env, args.Query, args.Limit)
+	dbSvc := database.New(database.Deps{})
+	result, err := dbSvc.ExecuteQuery(env, args.Query, args.Limit)
 	if err != nil {
 		return "", fmt.Errorf("query failed: %w", err)
 	}
@@ -114,8 +114,8 @@ func executeQueryDB(arguments json.RawMessage) (string, error) {
 	return output, nil
 }
 
-// GetMigrateDatabaseTool returns the migrate_db tool definition
-func GetMigrateDatabaseTool() Tool {
+// getMigrateDatabaseTool returns the migrate_db tool definition
+func getMigrateDatabaseTool() Tool {
 	return Tool{
 		Name: "migrate_db",
 		Description: `Validate database connectivity for migrations (does NOT actually run migrations).
@@ -179,8 +179,8 @@ func executeMigrateDB(arguments json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	manager := database.GetConnectionManager()
-	db, err := manager.GetConnection(env)
+	dbSvc := database.New(database.Deps{})
+	db, err := dbSvc.GetConnection(env)
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -217,8 +217,8 @@ func executeMigrateDB(arguments json.RawMessage) (string, error) {
 	return result, nil
 }
 
-// GetSeedDatabaseTool returns the seed_db tool definition
-func GetSeedDatabaseTool() Tool {
+// getSeedDatabaseTool returns the seed_db tool definition
+func getSeedDatabaseTool() Tool {
 	return Tool{
 		Name: "seed_db",
 		Description: `Load test data from fixtures into the database.
@@ -275,22 +275,16 @@ func executeSeedDB(arguments json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	// Get database connection
-	connManager := database.GetConnectionManager()
-	db, err := connManager.GetConnection(env)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to database: %w", err)
-	}
+	dbSvc := database.New(database.Deps{})
 
 	// Load fixture
-	seedManager := database.NewSeedManager("db/fixtures")
-	seed, err := seedManager.LoadFixture(args.Fixture)
+	seed, err := dbSvc.LoadFixture("db/fixtures", args.Fixture)
 	if err != nil {
 		return "", fmt.Errorf("failed to load fixture: %w", err)
 	}
 
 	// Apply seed
-	if err := seedManager.ApplySeed(db, seed, args.ClearFirst); err != nil {
+	if err := dbSvc.ApplySeed(env, seed, args.ClearFirst); err != nil {
 		return "", fmt.Errorf("failed to apply seed: %w", err)
 	}
 
@@ -309,8 +303,8 @@ func executeSeedDB(arguments json.RawMessage) (string, error) {
 	return result, nil
 }
 
-// GetIntrospectSchemaTool returns the introspect_schema tool definition
-func GetIntrospectSchemaTool() Tool {
+// getIntrospectSchemaTool returns the introspect_schema tool definition
+func getIntrospectSchemaTool() Tool {
 	return Tool{
 		Name: "introspect_schema",
 		Description: `Inspect database schema and compare with proto definitions.
@@ -371,14 +365,7 @@ func executeIntrospectSchema(arguments json.RawMessage) (string, error) {
 		return "", err
 	}
 
-	// Get database connection
-	connManager := database.GetConnectionManager()
-	db, err := connManager.GetConnection(env)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	introspector := database.NewSchemaIntrospector(db)
+	dbSvc := database.New(database.Deps{})
 
 	var result string
 
@@ -386,31 +373,26 @@ func executeIntrospectSchema(arguments json.RawMessage) (string, error) {
 		// Introspect specific table
 		result = fmt.Sprintf("Schema Introspection (%s)\n\n", args.Env)
 
+		table, err := dbSvc.IntrospectTable(env, args.Table)
+		if err != nil {
+			return "", fmt.Errorf("failed to introspect table: %w", err)
+		}
+		result += database.FormatTableInfo(table)
 		if args.CompareProto {
-			comparison, err := introspector.CompareWithProto(args.Table, "")
-			if err != nil {
-				return "", fmt.Errorf("failed to compare with proto: %w", err)
-			}
-			result += comparison
-		} else {
-			table, err := introspector.IntrospectTable(args.Table)
-			if err != nil {
-				return "", fmt.Errorf("failed to introspect table: %w", err)
-			}
-			result += database.FormatTableInfo(table)
+			result += "\n\nProto comparison: Not yet implemented\n"
 		}
 	} else {
 		// List all tables
 		result = fmt.Sprintf("Database Schema (%s)\n\n", args.Env)
 
-		tables, err := introspector.ListTables()
+		tables, err := dbSvc.ListTables(env)
 		if err != nil {
 			return "", fmt.Errorf("failed to list tables: %w", err)
 		}
 
 		result += fmt.Sprintf("Found %d tables:\n\n", len(tables))
 		for _, tableName := range tables {
-			table, err := introspector.IntrospectTable(tableName)
+			table, err := dbSvc.IntrospectTable(env, tableName)
 			if err != nil {
 				result += fmt.Sprintf("  %s: %v\n", tableName, err)
 				continue

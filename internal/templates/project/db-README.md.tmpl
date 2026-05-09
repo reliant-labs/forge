@@ -57,7 +57,7 @@ This creates:
 ```protobuf
 syntax = "proto3";
 
-package {{.Package}}.db.v1;
+package {{.Package | snakeCase}}.db.v1;
 
 import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";

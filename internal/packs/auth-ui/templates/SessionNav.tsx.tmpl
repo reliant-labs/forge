@@ -1,0 +1,299 @@
+"use client";
+{{- $provider := index .PackConfig "provider" }}
+
+// forge:scaffold one-shot — auth-ui SessionNav; canonical pattern in `forge skill load packs`.
+/**
+ * SessionNav — header dropdown showing the current user with a sign-out
+ * action. Drop into your top-bar or app header:
+ *
+ *   import { SessionNav } from "@/components/auth";
+ *   <header><SessionNav /></header>
+ *
+ * Built from forge's base UI primitives (`Avatar`, `Button`).
+ */
+
+{{- if eq $provider "clerk" }}
+import { UserButton, SignedIn, SignedOut } from "@clerk/nextjs";
+import Link from "next/link";
+
+import Button from "@/components/ui/button";
+
+export interface SessionNavProps {
+  /** Optional path to the sign-in page; default "/login". */
+  signInUrl?: string;
+}
+
+/**
+ * Clerk variant — uses Clerk's <UserButton /> for the avatar + dropdown
+ * (sign out, manage account, etc.). Falls back to a "Sign in" link when
+ * there is no session.
+ */
+export function SessionNav({ signInUrl = "/login" }: SessionNavProps = {}) {
+  return (
+    <div className="flex items-center gap-3">
+      <SignedIn>
+        <UserButton afterSignOutUrl="/" />
+      </SignedIn>
+      <SignedOut>
+        <Link href={signInUrl}>
+          <Button variant="outline" size="sm">
+            Sign in
+          </Button>
+        </Link>
+      </SignedOut>
+    </div>
+  );
+}
+{{- else if eq $provider "firebase-auth" }}
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { getAuth, signOut } from "firebase/auth";
+
+import Avatar from "@/components/ui/avatar";
+import Button from "@/components/ui/button";
+
+import { useAuthStore } from "./auth-store";
+
+export interface SessionNavProps {
+  signInUrl?: string;
+  /** Optional tenants for a tenant-switcher menu, if multi-tenant. */
+  tenants?: Array<{ id: string; name: string }>;
+  activeTenantId?: string;
+  onTenantSwitch?: (tenantId: string) => void;
+}
+
+/**
+ * Firebase variant — reads `user` from the auth-store (populated via
+ * onAuthStateChanged in the layout) and routes sign-out through firebase.
+ */
+export function SessionNav({
+  signInUrl = "/login",
+  tenants,
+  activeTenantId,
+  onTenantSwitch,
+}: SessionNavProps = {}) {
+  const user = useAuthStore((s) => s.user);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const clearSession = useAuthStore((s) => s.clearSession);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onClickAway = () => setOpen(false);
+    if (open) {
+      window.addEventListener("click", onClickAway);
+      return () => window.removeEventListener("click", onClickAway);
+    }
+  }, [open]);
+
+  const handleSignOut = async () => {
+    setOpen(false);
+    try {
+      await signOut(getAuth());
+    } finally {
+      clearSession();
+    }
+  };
+
+  if (!isAuthenticated || !user) {
+    return (
+      <Link href={signInUrl}>
+        <Button variant="outline" size="sm">
+          Sign in
+        </Button>
+      </Link>
+    );
+  }
+
+  return (
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen((v) => !v)}
+        className="gap-2"
+      >
+        <Avatar size="xs" name={user.name ?? user.email ?? undefined} />
+        <span className="max-w-[12rem] truncate">
+          {user.name ?? user.email ?? "User"}
+        </span>
+      </Button>
+
+      {open ? (
+        <div className="absolute right-0 z-50 mt-1 w-56 rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+          <div className="border-b border-gray-100 px-3 py-2 text-xs text-gray-500">
+            Signed in as
+            <div className="truncate text-sm font-medium text-gray-900">
+              {user.email ?? user.id}
+            </div>
+          </div>
+
+          {tenants && tenants.length > 0 ? (
+            <div className="border-b border-gray-100 py-1">
+              <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Tenant
+              </div>
+              {tenants.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    onTenantSwitch?.(t.id);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm transition-colors hover:bg-gray-50 ${
+                    t.id === activeTenantId
+                      ? "font-medium text-blue-700"
+                      : "text-gray-700"
+                  }`}
+                >
+                  {t.name}
+                  {t.id === activeTenantId ? (
+                    <span aria-hidden>✓</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="block w-full px-3 py-1.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50"
+          >
+            Sign out
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+{{- else }}
+import { useEffect, useState } from "react";
+import Link from "next/link";
+
+import Avatar from "@/components/ui/avatar";
+import Button from "@/components/ui/button";
+
+import { useAuthStore, clearPersistedSession } from "./auth-store";
+
+export interface SessionNavProps {
+  signInUrl?: string;
+  logoutPath?: string;
+  /** Optional tenants for a tenant-switcher menu, if multi-tenant. */
+  tenants?: Array<{ id: string; name: string }>;
+  activeTenantId?: string;
+  onTenantSwitch?: (tenantId: string) => void;
+}
+
+/**
+ * jwt-auth variant — reads user/session from the auth-store, calls the
+ * backend pack's logout endpoint (best-effort), clears the persisted token.
+ */
+export function SessionNav({
+  signInUrl = "/login",
+  logoutPath = "{{ index .PackConfig "jwt_logout_path" }}",
+  tenants,
+  activeTenantId,
+  onTenantSwitch,
+}: SessionNavProps = {}) {
+  const user = useAuthStore((s) => s.user);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const clearSession = useAuthStore((s) => s.clearSession);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const onClickAway = () => setOpen(false);
+    if (open) {
+      window.addEventListener("click", onClickAway);
+      return () => window.removeEventListener("click", onClickAway);
+    }
+  }, [open]);
+
+  const handleSignOut = async () => {
+    setOpen(false);
+    try {
+      await fetch(logoutPath, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // Best-effort — proceed to clear local state regardless.
+    }
+    clearPersistedSession();
+    clearSession();
+  };
+
+  if (!isAuthenticated || !user) {
+    return (
+      <Link href={signInUrl}>
+        <Button variant="outline" size="sm">
+          Sign in
+        </Button>
+      </Link>
+    );
+  }
+
+  return (
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen((v) => !v)}
+        className="gap-2"
+      >
+        <Avatar size="xs" name={user.name ?? user.email ?? undefined} />
+        <span className="max-w-[12rem] truncate">
+          {user.name ?? user.email ?? "User"}
+        </span>
+      </Button>
+
+      {open ? (
+        <div className="absolute right-0 z-50 mt-1 w-56 rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+          <div className="border-b border-gray-100 px-3 py-2 text-xs text-gray-500">
+            Signed in as
+            <div className="truncate text-sm font-medium text-gray-900">
+              {user.email ?? user.id}
+            </div>
+          </div>
+
+          {tenants && tenants.length > 0 ? (
+            <div className="border-b border-gray-100 py-1">
+              <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Tenant
+              </div>
+              {tenants.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    onTenantSwitch?.(t.id);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm transition-colors hover:bg-gray-50 ${
+                    t.id === activeTenantId
+                      ? "font-medium text-blue-700"
+                      : "text-gray-700"
+                  }`}
+                >
+                  {t.name}
+                  {t.id === activeTenantId ? (
+                    <span aria-hidden>✓</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="block w-full px-3 py-1.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50"
+          >
+            Sign out
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+{{- end }}

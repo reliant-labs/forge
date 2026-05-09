@@ -1,64 +1,53 @@
-package {{.ServiceName | lower}}_test
+//go:build integration
+// +build integration
+
+package {{.ServicePackage}}_test
 
 {{- if .Methods}}
 
 import (
-	"context"
 	"testing"
 
 	"connectrpc.com/connect"
 
+	"github.com/reliant-labs/forge/pkg/tdd"
+
 	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
-	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
 	"{{.Module}}/pkg/app"
 )
 
-// TestIntegration runs each RPC against the in-process test server and verifies
-// that every method responds without panicking. Stubs return errors;
-// implemented handlers may return success or business-logic errors — both are
-// valid. This test stays correct regardless of implementation state.
-func TestIntegration(t *testing.T) {
-	t.Parallel()
-
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	_, client := app.NewTest{{.ServiceName | pascalCase}}Server(t)
-	ctx := context.Background()
-
-	tests := []struct {
-		name string
-		call func(client {{.ProtoConnectPackage}}.{{.HandlerName}}Client) error
-	}{
+// Per-RPC integration tests scaffolded by forge. Runs each method
+// through an in-process httptest.Server with the real bootstrap stack
+// (real DB / real upstream services). Guarded by `//go:build
+// integration` — invoke via `task test:integration` or `forge test
+// integration`.
+//
+// Library reference: github.com/reliant-labs/forge/pkg/tdd
+// Skill: forge skill load testing/integration
 {{- range .Methods}}
 {{- if or .ClientStreaming .ServerStreaming}}
-		// TODO: {{.Name}} is a streaming RPC — add a dedicated test (streaming tests don't fit this table).
+
+// TestIntegration_{{.Name}} — TODO: streaming RPC; tdd.TableRPC targets
+// unary handlers. Add a hand-written streaming integration test here.
 {{- else}}
+
+func TestIntegration_{{.Name}}(t *testing.T) {
+	t.Parallel()
+	_, client := app.NewTest{{$.TestHelperName}}Server(t)
+
+	tdd.TableRPC(t, []tdd.Case[pb.{{.InputType}}, pb.{{.OutputType}}]{
 		{
-			name: "{{.Name}}",
-			call: func(c {{$.ProtoConnectPackage}}.{{$.HandlerName}}Client) error {
-				_, err := c.{{.Name}}(ctx, connect.NewRequest(&pb.{{.InputType}}{}))
-				return err
-			},
+			Name: "happy path",
+			Req:  connect.NewRequest(&pb.{{.InputType}}{}),
+			// Stub returns CodeUnimplemented; relax/strengthen once the
+			// real handler lands. Add a Check function to assert on the
+			// response body for happy-path cases.
+			WantErr: connect.CodeUnimplemented,
 		},
-{{- end}}
-{{- end}}
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			err := tt.call(client)
-			// Accept both success and errors — stubs return CodeUnimplemented,
-			// implemented handlers may return business errors or succeed.
-			if err != nil {
-				t.Logf("%s returned error (expected for stubs): %v", tt.name, err)
-			}
-		})
-	}
+	}, client.{{.Name}})
 }
+{{- end}}
+{{- end}}
 {{- else}}
 
 // forge-integration-test-placeholder: this file is regenerated once RPCs are

@@ -1,0 +1,197 @@
+{{- $provider := index .PackConfig "provider" -}}
+> **forge:scaffold one-shot** — installed by `forge pack install auth-ui`. See `forge skill load packs` for canonical pattern.
+
+# auth-ui ({{$provider}})
+
+Opinionated login / signup / session UI for the **{{$provider}}** backend
+pack. All files in this folder were installed by `forge pack install
+auth-ui --config provider={{$provider}}` and are yours to customize
+(`overwrite: once`).
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `LoginForm.tsx` | Sign-in form. |
+| `SignupForm.tsx` | Registration form. |
+| `SessionNav.tsx` | Header avatar + dropdown (sign-out, optional tenant switcher). |
+| `DevModeBanner.tsx` | Warning banner when backend dev-mode bypass is on. |
+| `auth-store.ts` | Zustand store: `{user, session, isLoading, isAuthenticated}`. |
+| `index.ts` | Barrel export. |
+
+## Wire into `app/layout.tsx`
+
+```tsx
+{{- if eq $provider "clerk" }}
+import { ClerkProvider } from "@clerk/nextjs";
+import { DevModeBanner, SessionNav } from "@/components/auth";
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <ClerkProvider>
+      <html lang="en">
+        <body>
+          <DevModeBanner />
+          <header className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+            <span className="font-bold">{{.ProjectName}}</span>
+            <SessionNav />
+          </header>
+          <main>{children}</main>
+        </body>
+      </html>
+    </ClerkProvider>
+  );
+}
+```
+
+Set `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` env vars (the
+`clerk` backend pack reads `CLERK_*` from your runtime config too).
+{{- else if eq $provider "firebase-auth" }}
+import { useEffect } from "react";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { DevModeBanner, SessionNav, useAuthStore } from "@/components/auth";
+
+// Once at app boot — wires the firebase auth observer into our store.
+function FirebaseAuthBridge({ children }: { children: React.ReactNode }) {
+  const setUser = useAuthStore((s) => s.setUser);
+  const setLoading = useAuthStore((s) => s.setLoading);
+
+  useEffect(() => {
+    setLoading(true);
+    const unsub = onAuthStateChanged(getAuth(), (fbUser) => {
+      if (fbUser) {
+        setUser({
+          id: fbUser.uid,
+          email: fbUser.email ?? undefined,
+          name: fbUser.displayName ?? undefined,
+        });
+      } else {
+        setUser(null);
+      }
+    });
+    return unsub;
+  }, [setUser, setLoading]);
+
+  return <>{children}</>;
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>
+        <FirebaseAuthBridge>
+          <DevModeBanner />
+          <header className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+            <span className="font-bold">{{.ProjectName}}</span>
+            <SessionNav />
+          </header>
+          <main>{children}</main>
+        </FirebaseAuthBridge>
+      </body>
+    </html>
+  );
+}
+```
+
+Initialize the firebase app once (typically in `src/lib/firebase.ts`) with
+your project config; `getAuth()` then resolves the singleton.
+{{- else }}
+import { useEffect } from "react";
+import {
+  DevModeBanner,
+  SessionNav,
+  useAuthStore,
+  readPersistedSession,
+} from "@/components/auth";
+
+// Once at app boot — rehydrate the auth store from localStorage so a
+// page reload doesn't bounce the user back to /login.
+function HydrateAuth({ children }: { children: React.ReactNode }) {
+  const setSession = useAuthStore((s) => s.setSession);
+  const setLoading = useAuthStore((s) => s.setLoading);
+
+  useEffect(() => {
+    const persisted = readPersistedSession();
+    if (persisted) {
+      setSession(persisted.user, persisted.session);
+    } else {
+      setLoading(false);
+    }
+  }, [setSession, setLoading]);
+
+  return <>{children}</>;
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body>
+        <HydrateAuth>
+          <DevModeBanner />
+          <header className="flex items-center justify-between border-b border-gray-200 bg-white px-6 py-3">
+            <span className="font-bold">{{.ProjectName}}</span>
+            <SessionNav />
+          </header>
+          <main>{children}</main>
+        </HydrateAuth>
+      </body>
+    </html>
+  );
+}
+```
+
+The forms POST to the jwt-auth backend endpoints
+(`{{ index .PackConfig "jwt_login_path" }}`,
+`{{ index .PackConfig "jwt_signup_path" }}`,
+`{{ index .PackConfig "jwt_logout_path" }}`). Adjust per
+form via the `loginPath` / `signupPath` / `logoutPath` props if your
+backend mounts auth somewhere else.
+{{- end }}
+
+## Read auth state in pages
+
+```tsx
+"use client";
+import { useAuthStore } from "@/components/auth";
+
+export default function Profile() {
+  const user = useAuthStore((s) => s.user);
+  const isLoading = useAuthStore((s) => s.isLoading);
+
+  if (isLoading) return <p>Loading…</p>;
+  if (!user) return <p>Please sign in.</p>;
+  return <p>Hello, {user.name ?? user.email}.</p>;
+}
+```
+
+Always subscribe to slices, not the whole store, per the `frontend/state`
+rules.
+
+## Customization
+
+All files in this folder are `overwrite: once` — re-running
+`forge pack install auth-ui` is a no-op for files that already exist. If
+you want to switch providers, remove first:
+
+```bash
+forge pack remove auth-ui
+forge pack install auth-ui --config provider=<other>
+```
+
+## Dev-mode banner
+
+The `DevModeBanner` reads `NEXT_PUBLIC_AUTH_DEV_MODE`. Set this in your
+`.env.local` for local development to mirror the backend pack's `dev_mode:
+true` setting. The banner stays hidden if the env var is absent or false.

@@ -63,49 +63,22 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	d := doctor.New(cfg.Name, projectDir)
-
-	// Register checks based on --signal filter.
-	switch signal {
-	case "":
-		// All checks.
-		d.Register("Docker Compose", doctor.CheckDocker)
-		d.Register("App Health", doctor.CheckAppHealth)
-		d.Register("pprof", doctor.CheckPprof)
-		d.Register("Prometheus", doctor.CheckPrometheus)
-		d.Register("Traces (Tempo)", doctor.CheckTempo)
-		d.Register("Logs (Loki)", doctor.CheckLoki)
-		d.Register("Profiles (Pyro)", doctor.CheckPyroscope)
-		d.Register("Delve", doctor.CheckDelve)
-	case "metrics":
-		d.Register("Docker Compose", doctor.CheckDocker)
-		d.Register("Prometheus", doctor.CheckPrometheus)
-	case "traces":
-		d.Register("Docker Compose", doctor.CheckDocker)
-		d.Register("Traces (Tempo)", doctor.CheckTempo)
-	case "logs":
-		d.Register("Docker Compose", doctor.CheckDocker)
-		d.Register("Logs (Loki)", doctor.CheckLoki)
-	case "profiles":
-		d.Register("Docker Compose", doctor.CheckDocker)
-		d.Register("pprof", doctor.CheckPprof)
-		d.Register("Profiles (Pyro)", doctor.CheckPyroscope)
-	default:
-		return fmt.Errorf("unknown signal %q (use: metrics, traces, logs, profiles)", signal)
-	}
+	d := doctor.New(doctor.Deps{})
 
 	if !jsonOutput {
 		fmt.Printf("\n  Checking %s development stack...\n\n", cfg.Name)
 	}
 
-	// Docker check runs first (sequential) because it discovers ports.
-	report := d.Run(ctx, []string{"Docker Compose"})
-
-	if jsonOutput {
-		return doctor.PrintJSON(os.Stdout, report)
+	report, err := d.RunFiltered(ctx, cfg.Name, projectDir, signal)
+	if err != nil {
+		return err
 	}
 
-	doctor.PrintReport(os.Stdout, report, verbose)
+	if jsonOutput {
+		return d.PrintJSON(os.Stdout, report)
+	}
+
+	d.PrintReport(os.Stdout, report, verbose)
 
 	if report.Overall == doctor.StatusFail {
 		os.Exit(1)

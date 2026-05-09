@@ -23,6 +23,21 @@ WORKDIR /app
 COPY go.work go.work.sum* ./
 COPY go.mod go.sum ./
 COPY gen/go.mod gen/go.sum ./gen/
+{{- if .LocalForgePkgVendored }}
+
+# ── Dev-mode local forge/pkg vendor ──
+#
+# go.mod has `replace github.com/reliant-labs/forge/pkg => ./.forge-pkg`
+# (a sibling forge checkout vendored in by `forge generate`). Without
+# this COPY the in-container `go mod download` and `go build` would fail
+# because the absolute host path is invisible inside the build context.
+#
+# This block is auto-emitted only while `.forge-pkg/` exists locally.
+# Once the project switches back to a real forge/pkg release tag (no
+# replace), `forge generate` removes the directory and regenerates the
+# Dockerfile without this COPY.
+COPY .forge-pkg/ ./.forge-pkg/
+{{- end }}
 
 RUN go mod download
 
@@ -68,7 +83,6 @@ WORKDIR /app
 
 COPY --from=builder /app/bin/{{.Name}}-debug ./{{.Name}}
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
-COPY config/ ./config/
 
 EXPOSE 8080 2345
 
@@ -84,7 +98,6 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /app
 
 COPY --from=builder /app/bin/{{.Name}} .
-COPY config/ ./config/
 
 USER 65532:65532
 

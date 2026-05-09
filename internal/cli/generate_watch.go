@@ -84,7 +84,7 @@ func watchForChanges() error {
 
 						generateMu.Lock()
 						fmt.Printf("\n🔄 Change detected: %s\n", eventName)
-						if err := runGeneratePipeline(".", false); err != nil {
+						if err := runGeneratePipeline(".", false, false); err != nil {
 							log.Printf("Generation failed: %v", err)
 						}
 						generateMu.Unlock()

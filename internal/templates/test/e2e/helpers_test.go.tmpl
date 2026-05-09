@@ -1,7 +1,7 @@
 //go:build e2e
 // +build e2e
 
-package {{.ServiceName}}_test
+package {{.ServicePackage}}_test
 
 import (
 	"context"
@@ -11,13 +11,11 @@ import (
 	"net/http"
 	"testing"
 
-	"connectrpc.com/connect"
-
-	pb "{{.Module}}/gen/services/{{.ServiceName}}/v1"
-	"{{.Module}}/gen/services/{{.ServiceName}}/v1/{{.ServiceName}}v1connect"
+	pb "{{.Module}}/gen/services/{{.ServicePackage}}/v1"
+	"{{.Module}}/gen/services/{{.ServicePackage}}/v1/{{.ServicePackage}}v1connect"
 {{- else}}
 
-	pb "{{.Module}}/gen/services/{{.ServiceName}}/v1"
+	pb "{{.Module}}/gen/services/{{.ServicePackage}}/v1"
 {{- end}}
 )
 
@@ -33,25 +31,18 @@ func freePort() int {
 {{- if .Methods}}
 
 // newClient creates a Connect RPC client for the {{.ServiceName}} service.
-func newClient(t *testing.T, baseURL string) {{.ServiceName}}v1connect.{{.ProtoServiceName}}ServiceClient {
+//
+// Connect error assertions in tests should use tdd.AssertConnectError
+// from github.com/reliant-labs/forge/pkg/tdd; the in-package helper was
+// removed in favor of the shared library.
+func newClient(t *testing.T, baseURL string) {{.ServicePackage}}v1connect.{{.ProtoServiceName}}ServiceClient {
 	t.Helper()
-	return {{.ServiceName}}v1connect.New{{.ProtoServiceName}}ServiceClient(
+	return {{.ServicePackage}}v1connect.New{{.ProtoServiceName}}ServiceClient(
 		http.DefaultClient,
 		baseURL,
 	)
 }
-
-// assertConnectError asserts that an error is a Connect error with the expected code.
-func assertConnectError(t *testing.T, err error, expectedCode connect.Code) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected connect error with code %v, got nil", expectedCode)
-	}
-	if code := connect.CodeOf(err); code != expectedCode {
-		t.Errorf("expected connect code %v, got %v (error: %v)", expectedCode, code, err)
-	}
-}
 {{- end}}
 
 // Ensure the generated protobuf package import remains referenced.
-var _ = pb.File_services_{{.ServiceName}}_v1_{{.ServiceName}}_proto
+var _ = pb.File_services_{{.ServicePackage}}_v1_{{.ServicePackage}}_proto

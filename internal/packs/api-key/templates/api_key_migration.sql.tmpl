@@ -1,3 +1,4 @@
+-- forge:scaffold one-shot — api-key migration; canonical pattern in `forge skill load packs`.
 BEGIN;
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1,41 +1,20 @@
 //go:build ignore
 
-package {{.ServiceName | lower}}
+package {{.ServicePackage}}
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
 
-const (
-	// webhookMaxBodySize is the maximum allowed webhook payload size.
-	webhookMaxBodySize = 1 << 20 // 1MB
-)
-
-// webhookEvent represents a received webhook event.
-type webhookEvent struct {
-	// ID is the unique identifier for this event (used for idempotency).
-	ID string
-	// Source identifies the webhook provider.
-	Source string
-	// Headers contains the original request headers.
-	Headers http.Header
-	// Body contains the raw request body.
-	Body []byte
-	// ReceivedAt is when the webhook was received.
-	ReceivedAt time.Time
-}
-
 // handleWebhook{{.Name | pascalCase}} handles incoming {{.Name}} webhooks.
 //
-// Routes are auto-registered via webhook_routes_gen.go.
-// Ensure RegisterHTTP calls s.RegisterWebhookRoutes(mux, stack).
+// Routes are auto-registered via webhook_routes_gen.go AND auto-wired by
+// pkg/app/bootstrap.go (which calls s.RegisterWebhookRoutes(mux, stack)
+// after the user-owned RegisterHTTP). No manual wiring required.
 func (s *Service) handleWebhook{{.Name | pascalCase}}(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -134,29 +113,4 @@ func (s *Service) process{{.Name | pascalCase}}Webhook(ctx context.Context, even
 	//   }
 
 	return nil
-}
-
-// extractEventID extracts the event ID from webhook headers.
-// Tries common header patterns used by webhook providers.
-func extractEventID(headers http.Header) string {
-	for _, h := range []string{
-		"X-Event-ID",
-		"X-Webhook-ID",
-		"X-Request-ID",
-		"Stripe-Event-Id",
-		"X-GitHub-Delivery",
-	} {
-		if id := headers.Get(h); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-// verifyHMACSHA256 verifies an HMAC-SHA256 signature.
-func verifyHMACSHA256(body []byte, signature string, secret string) bool {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(expected), []byte(signature))
 }

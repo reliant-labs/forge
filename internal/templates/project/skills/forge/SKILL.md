@@ -38,8 +38,10 @@ proto/services/<svc>/v1/<svc>.proto
   → protoc-gen-go + protoc-gen-connect-go → gen/ stubs
 
 internal/*/contract.go (Go interfaces)
-  → forge generate → mock_gen.go, middleware_gen.go, tracing_gen.go
+  → forge generate → mock_gen.go
 ```
+
+Observability (logging, tracing, metrics, recovery, request-id) is applied at the Connect handler boundary by `forge/pkg/observe` interceptors, not as per-package codegen wrappers. Pre-1.7 `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go` files have been removed.
 
 ### Proto annotations (forge.v1)
 

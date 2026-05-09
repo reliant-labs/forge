@@ -1,6 +1,8 @@
-package middleware
+// forge:scaffold one-shot — Clerk validator; canonical pattern in `forge skill load packs`.
+package clerk
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -8,29 +10,32 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/MicahParks/keyfunc/v3"
+
+	"{{.ModulePath}}/pkg/middleware"
 )
 
-// ClerkJWTValidator validates Clerk-issued JWTs using JWKS.
-type ClerkJWTValidator struct {
-	jwks   keyfunc.Keyfunc
-	domain string
-	logger *slog.Logger
-	mu     sync.RWMutex
+// Validator validates Clerk-issued JWTs using JWKS.
+type Validator struct {
+	jwks       keyfunc.Keyfunc
+	jwksCancel context.CancelFunc // Cancels the JWKS refresh goroutine on Close.
+	domain     string
+	logger     *slog.Logger
+	mu         sync.RWMutex
 }
 
-// ClerkValidatorConfig configures the Clerk JWT validator.
-type ClerkValidatorConfig struct {
+// ValidatorConfig configures the Clerk JWT validator.
+type ValidatorConfig struct {
 	// Domain is the Clerk domain (e.g., "example.clerk.accounts.dev").
 	// If empty, dev mode is assumed and validation is skipped.
 	Domain string
 }
 
-// NewClerkJWTValidator creates a Clerk JWT validator that uses JWKS for
-// token verification. If the domain is empty, the validator is created in
-// dev mode and ValidateToken always returns an error (use DevAuthEnabled
-// to check before calling).
-func NewClerkJWTValidator(cfg ClerkValidatorConfig, logger *slog.Logger) (*ClerkJWTValidator, error) {
-	v := &ClerkJWTValidator{
+// NewValidator creates a Clerk JWT validator that uses JWKS for token
+// verification. If the domain is empty, the validator is created in dev
+// mode and ValidateToken always returns an error (use DevAuthEnabled to
+// check before calling).
+func NewValidator(cfg ValidatorConfig, logger *slog.Logger) (*Validator, error) {
+	v := &Validator{
 		domain: cfg.Domain,
 		logger: logger,
 	}
@@ -41,27 +46,30 @@ func NewClerkJWTValidator(cfg ClerkValidatorConfig, logger *slog.Logger) (*Clerk
 	}
 
 	jwksURL := fmt.Sprintf("https://%s/.well-known/jwks.json", cfg.Domain)
-	jwks, err := keyfunc.NewDefault([]string{jwksURL})
+	ctx, cancel := context.WithCancel(context.Background())
+	jwks, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("fetching Clerk JWKS from %s: %w", jwksURL, err)
 	}
 	v.jwks = jwks
+	v.jwksCancel = cancel
 
 	logger.Info("Clerk JWT validator initialized", "domain", cfg.Domain, "jwks_url", jwksURL)
 	return v, nil
 }
 
-// NewClerkJWTValidatorFromEnv creates a validator using the CLERK_DOMAIN
+// NewValidatorFromEnv creates a validator using the CLERK_DOMAIN
 // environment variable.
-func NewClerkJWTValidatorFromEnv(logger *slog.Logger) (*ClerkJWTValidator, error) {
-	return NewClerkJWTValidator(ClerkValidatorConfig{
+func NewValidatorFromEnv(logger *slog.Logger) (*Validator, error) {
+	return NewValidator(ValidatorConfig{
 		Domain: os.Getenv("CLERK_DOMAIN"),
 	}, logger)
 }
 
 // ValidateToken validates a Clerk JWT and returns Claims.
 // Clerk tokens use RS256 and include session claims in the payload.
-func (v *ClerkJWTValidator) ValidateToken(tokenString string) (*Claims, error) {
+func (v *Validator) ValidateToken(tokenString string) (*middleware.Claims, error) {
 	if v.jwks == nil {
 		return nil, fmt.Errorf("clerk: JWKS not initialized (is CLERK_DOMAIN set?)")
 	}
@@ -92,8 +100,8 @@ func (v *ClerkJWTValidator) ValidateToken(tokenString string) (*Claims, error) {
 //
 // Email is not included in the JWT by default; it should be synced
 // via webhooks and stored in the user entity.
-func (v *ClerkJWTValidator) extractClaims(mc jwt.MapClaims) *Claims {
-	c := &Claims{}
+func (v *Validator) extractClaims(mc jwt.MapClaims) *middleware.Claims {
+	c := &middleware.Claims{}
 
 	if sub, ok := mc["sub"].(string); ok {
 		c.UserID = sub
@@ -125,8 +133,8 @@ func (v *ClerkJWTValidator) extractClaims(mc jwt.MapClaims) *Claims {
 }
 
 // Close cleans up the JWKS background refresh goroutine.
-func (v *ClerkJWTValidator) Close() {
-	if v.jwks != nil {
-		v.jwks.Cancel()
+func (v *Validator) Close() {
+	if v.jwksCancel != nil {
+		v.jwksCancel()
 	}
 }

@@ -44,15 +44,15 @@ const (
 
 // QueryBuilder provides a fluent API for building SQL queries
 type QueryBuilder struct {
-	ctx             Context
-	tableName       string
-	columns         []string
-	whereClauses    []whereClause
-	orderByClauses  []orderByClause
-	limitValue      *int
-	offsetValue     *int
-	args            []interface{}
-	argCounter      int
+	ctx            Context
+	tableName      string
+	columns        []string
+	whereClauses   []whereClause
+	orderByClauses []orderByClause
+	limitValue     *int
+	offsetValue    *int
+	args           []interface{}
+	argCounter     int
 }
 
 type whereClause struct {

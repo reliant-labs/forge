@@ -31,9 +31,9 @@ type goldenCase struct {
 // shape used by the generator (see internal/generator/project.go).
 func renderProject(t *testing.T, name string, data any) []byte {
 	t.Helper()
-	out, err := ProjectTemplates.Render(name, data)
+	out, err := ProjectTemplates().Render(name, data)
 	if err != nil {
-		t.Fatalf("ProjectTemplates.Render(%q) error = %v", name, err)
+		t.Fatalf("ProjectTemplates().Render(%q) error = %v", name, err)
 	}
 	return out
 }
@@ -51,9 +51,9 @@ func renderCI(t *testing.T, provider, name string, data any) []byte {
 // renderService renders a service/ template.
 func renderService(t *testing.T, name string, data any) []byte {
 	t.Helper()
-	out, err := ServiceTemplates.Render(name, data)
+	out, err := ServiceTemplates().Render(name, data)
 	if err != nil {
-		t.Fatalf("ServiceTemplates.Render(%q) error = %v", name, err)
+		t.Fatalf("ServiceTemplates().Render(%q) error = %v", name, err)
 	}
 	return out
 }
@@ -74,6 +74,7 @@ func projectData() any {
 		GoVersionMinor         string
 		DockerBuilderGoVersion string
 		CLI                    string
+		LocalForgePkgVendored  bool
 	}{
 		Name:                   "demo",
 		ProtoName:              "demo",
@@ -87,6 +88,7 @@ func projectData() any {
 		GoVersionMinor:         "26",
 		DockerBuilderGoVersion: "1.26",
 		CLI:                    "forge",
+		LocalForgePkgVendored:  false,
 	}
 }
 
@@ -117,7 +119,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			name: "middleware_cors.go",
 			render: func(t *testing.T) []byte {
 				// middleware-cors.go is static (no .tmpl suffix) — it
-				// flows through ProjectTemplates.Render unchanged except
+				// flows through ProjectTemplates().Render unchanged except
 				// for the //go:build ignore strip. Snapshotting it here
 				// guards against accidental edits to this security-
 				// critical file.
@@ -133,6 +135,7 @@ func TestGoldenSnapshots(t *testing.T) {
 				// both code paths in the template.
 				data := map[string]any{
 					"ServiceName":         "api",
+					"ServicePackage":      "api",
 					"Module":              "github.com/example/demo",
 					"ProtoImportPath":     "proto/services/api",
 					"ProtoPackage":        "proto/services/api",
@@ -175,6 +178,8 @@ func TestGoldenSnapshots(t *testing.T) {
 					Registry:            "ghcr",
 					GithubOrg:           "example",
 					ForgeVersion:        "v0.0.0-test",
+					HasDocker:           true,
+					VerifyGenerated:     true,
 				}
 				return renderCI(t, "github", "ci.yml.tmpl", data)
 			},
@@ -205,6 +210,8 @@ func TestGoldenSnapshots(t *testing.T) {
 					E2ERuntime:          "docker-compose",
 					PermContents:        "read",
 					HasKCL:              true,
+					HasDocker:           true,
+					VerifyGenerated:     true,
 					Environments:        []string{"dev", "staging", "prod"},
 					Module:              "github.com/example/demo",
 					Registry:            "ghcr",

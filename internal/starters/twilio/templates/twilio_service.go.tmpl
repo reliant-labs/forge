@@ -1,0 +1,109 @@
+// Starter scaffold — you own this code. forge does not regenerate it.
+package messaging
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"{{ .ModulePath }}/pkg/clients/twilio"
+)
+
+// Deps holds dependencies for the messaging package.
+// Logger follows the standard forge internal-package contract;
+// pack-specific dependencies (Client) are listed after.
+type Deps struct {
+	Logger *slog.Logger
+	// Client is the Twilio client. If nil, New attempts to construct one
+	// from environment variables via twilio.NewClient. Callers may inject
+	// a pre-built client for tests or to share a single client.
+	Client *twilio.Client
+}
+
+// service is the Twilio-backed implementation of Service.
+type service struct {
+	client *twilio.Client
+	logger *slog.Logger
+}
+
+// New creates a new messaging service backed by Twilio.
+// Returns the Service interface — callers interact only through the contract.
+//
+// If deps.Client is nil, the constructor falls back to twilio.NewClient,
+// which reads its configuration from environment variables. When the env
+// vars are unset (e.g., during tests or local dev without Twilio creds),
+// the returned service is constructed with a nil client and SendSMS /
+// SendVoice will return an error at call time.
+func New(deps Deps) Service {
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	client := deps.Client
+	if client == nil {
+		c, err := twilio.NewClient(logger)
+		if err != nil {
+			logger.Warn("messaging: Twilio client not initialized", "error", err)
+		} else {
+			client = c
+		}
+	}
+
+	return &service{
+		client: client,
+		logger: logger,
+	}
+}
+
+// SendSMS sends an SMS message via Twilio.
+func (s *service) SendSMS(ctx context.Context, to, body string) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("messaging: Twilio client not configured")
+	}
+	sid, err := s.client.SendSMS(to, body)
+	if err != nil {
+		return "", fmt.Errorf("messaging: send SMS: %w", err)
+	}
+
+	s.logger.InfoContext(ctx, "message sent", "to", to, "sid", sid, "direction", "outbound")
+	return sid, nil
+}
+
+// SendVoice initiates a voice call via Twilio.
+func (s *service) SendVoice(ctx context.Context, to, twiml string) (string, error) {
+	if s.client == nil {
+		return "", fmt.Errorf("messaging: Twilio client not configured")
+	}
+	sid, err := s.client.SendVoice(to, twiml)
+	if err != nil {
+		return "", fmt.Errorf("messaging: send voice: %w", err)
+	}
+
+	s.logger.InfoContext(ctx, "voice call initiated", "to", to, "sid", sid)
+	return sid, nil
+}
+
+// GetMessageStatus retrieves the delivery status of a tracked message.
+// This is a stub — implement with your preferred data store.
+func (s *service) GetMessageStatus(ctx context.Context, messageSID string) (*MessageStatus, error) {
+	// TODO: Look up message by SID from your message-tracking table.
+	return nil, fmt.Errorf("messaging: GetMessageStatus not yet implemented")
+}
+
+// HandleStatusCallback processes a Twilio delivery status webhook.
+// This is a stub — implement with your preferred data store.
+func (s *service) HandleStatusCallback(ctx context.Context, callback StatusCallback) error {
+	s.logger.InfoContext(ctx, "status callback received",
+		"message_sid", callback.MessageSID,
+		"status", callback.MessageStatus,
+		"error_code", callback.ErrorCode,
+	)
+
+	// TODO: Update the row matching callback.MessageSID with the new
+	// status, error_code, and error_message in your tracking table.
+	return nil
+}
+
+// Compile-time check that service implements Service.
+var _ Service = (*service)(nil)

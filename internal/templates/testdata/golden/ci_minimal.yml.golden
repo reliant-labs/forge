@@ -70,7 +70,6 @@ jobs:
         # match the Dockerfile / Taskfile so CI, Docker, and local
         # binaries hash identically from the same source.
         run: go build -trimpath -buildvcs=true ./cmd/...
-
   verify-generated:
     name: Verify Generated Code
     runs-on: ubuntu-latest
@@ -91,7 +90,6 @@ jobs:
         run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.0-test
       - name: Verify generated code
         run: forge ci verify-generated
-
   docker-build:
     name: Docker Build
     needs: [build]

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -30,7 +31,11 @@ type AuthzTemplateData struct {
 // (even with zero annotated methods) so that the companion authorizer.go
 // can unconditionally reference GeneratedAuthorizer without compilation
 // errors.
-func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string) error {
+//
+// cs is the project's checksum tracker — passing it ensures every emitted
+// authorizer_gen.go is recorded so `forge audit` doesn't flag it as an
+// orphan. A nil cs is tolerated.
+func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
 	for _, svc := range services {
 		pkg := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
 		svcDir := filepath.Join(targetDir, "handlers", pkg)
@@ -56,13 +61,13 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 			Methods:     methods,
 		}
 
-		content, err := templates.ServiceTemplates.Render("authorizer_gen.go.tmpl", data)
+		content, err := templates.ServiceTemplates().Render("authorizer_gen.go.tmpl", data)
 		if err != nil {
 			return fmt.Errorf("render authorizer_gen.go.tmpl for %s: %w", svc.Name, err)
 		}
 
-		outPath := filepath.Join(svcDir, "authorizer_gen.go")
-		if err := os.WriteFile(outPath, content, 0644); err != nil {
+		relPath := filepath.Join("handlers", pkg, "authorizer_gen.go")
+		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", svc.Name, err)
 		}
 	}
@@ -106,13 +111,13 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 			Methods:     nil,
 		}
 
-		content, err := templates.ServiceTemplates.Render("authorizer_gen.go.tmpl", data)
+		content, err := templates.ServiceTemplates().Render("authorizer_gen.go.tmpl", data)
 		if err != nil {
 			return fmt.Errorf("render authorizer_gen.go.tmpl for %s: %w", pkg, err)
 		}
 
-		outPath := filepath.Join(handlersDir, pkg, "authorizer_gen.go")
-		if err := os.WriteFile(outPath, content, 0644); err != nil {
+		relPath := filepath.Join("handlers", pkg, "authorizer_gen.go")
+		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", pkg, err)
 		}
 	}

@@ -10,9 +10,9 @@ import (
 
 const sessionFile = ".forge/debug-session.json"
 
-// LoadSession reads the persisted debug session from dir.
+// loadSession reads the persisted debug session from dir.
 // Returns (nil, nil) if no session file exists.
-func LoadSession(dir string) (*SessionInfo, error) {
+func loadSession(dir string) (*SessionInfo, error) {
 	path := filepath.Join(dir, sessionFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -28,8 +28,8 @@ func LoadSession(dir string) (*SessionInfo, error) {
 	return &s, nil
 }
 
-// SaveSession writes a debug session to dir/.forge/debug-session.json.
-func SaveSession(dir string, session *SessionInfo) error {
+// saveSession writes a debug session to dir/.forge/debug-session.json.
+func saveSession(dir string, session *SessionInfo) error {
 	path := filepath.Join(dir, sessionFile)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating session directory: %w", err)
@@ -41,8 +41,8 @@ func SaveSession(dir string, session *SessionInfo) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// ClearSession removes the session file from dir.
-func ClearSession(dir string) error {
+// clearSession removes the session file from dir.
+func clearSession(dir string) error {
 	path := filepath.Join(dir, sessionFile)
 	err := os.Remove(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

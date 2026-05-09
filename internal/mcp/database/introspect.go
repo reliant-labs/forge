@@ -30,18 +30,18 @@ type IndexInfo struct {
 	IsUnique bool
 }
 
-// SchemaIntrospector inspects database schema
-type SchemaIntrospector struct {
+// schemaIntrospector inspects database schema
+type schemaIntrospector struct {
 	db *sql.DB
 }
 
-// NewSchemaIntrospector creates a new schema introspector
-func NewSchemaIntrospector(db *sql.DB) *SchemaIntrospector {
-	return &SchemaIntrospector{db: db}
+// newSchemaIntrospector creates a new schema introspector
+func newSchemaIntrospector(db *sql.DB) *schemaIntrospector {
+	return &schemaIntrospector{db: db}
 }
 
 // IntrospectTable gets complete information about a table
-func (si *SchemaIntrospector) IntrospectTable(tableName string) (*TableInfo, error) {
+func (si *schemaIntrospector) introspectTable(tableName string) (*TableInfo, error) {
 	table := &TableInfo{
 		Name:   tableName,
 		Schema: "public",
@@ -65,7 +65,7 @@ func (si *SchemaIntrospector) IntrospectTable(tableName string) (*TableInfo, err
 }
 
 // getColumns retrieves column information for a table
-func (si *SchemaIntrospector) getColumns(tableName string) ([]*ColumnInfo, error) {
+func (si *schemaIntrospector) getColumns(tableName string) ([]*ColumnInfo, error) {
 	query := `
 		SELECT
 			c.column_name,
@@ -115,7 +115,7 @@ func (si *SchemaIntrospector) getColumns(tableName string) ([]*ColumnInfo, error
 }
 
 // getIndexes retrieves index information for a table
-func (si *SchemaIntrospector) getIndexes(tableName string) ([]*IndexInfo, error) {
+func (si *schemaIntrospector) getIndexes(tableName string) ([]*IndexInfo, error) {
 	query := `
 		SELECT
 			i.relname as index_name,
@@ -159,7 +159,7 @@ func (si *SchemaIntrospector) getIndexes(tableName string) ([]*IndexInfo, error)
 }
 
 // ListTables returns all tables in the database
-func (si *SchemaIntrospector) ListTables() ([]string, error) {
+func (si *schemaIntrospector) listTables() ([]string, error) {
 	query := `
 		SELECT table_name
 		FROM information_schema.tables
@@ -186,7 +186,7 @@ func (si *SchemaIntrospector) ListTables() ([]string, error) {
 	return tables, rows.Err()
 }
 
-// FormatTableInfo formats table information as a readable string
+// formatTableInfo formats table information as a readable string
 func FormatTableInfo(table *TableInfo) string {
 	var sb strings.Builder
 
@@ -229,8 +229,8 @@ func FormatTableInfo(table *TableInfo) string {
 }
 
 // CompareWithProto compares database schema with proto definitions
-func (si *SchemaIntrospector) CompareWithProto(tableName, protoFile string) (string, error) {
-	table, err := si.IntrospectTable(tableName)
+func (si *schemaIntrospector) compareWithProto(tableName, protoFile string) (string, error) {
+	table, err := si.introspectTable(tableName)
 	if err != nil {
 		return "", err
 	}

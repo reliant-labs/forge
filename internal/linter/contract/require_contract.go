@@ -19,10 +19,20 @@ var RequireContractAnalyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 }
 
+func init() {
+	registerExcludeFlag(&RequireContractAnalyzer.Flags)
+}
+
 func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	// Only check packages under internal/.
 	pkgPath := pass.Pkg.Path()
 	if !isInternalPackage(pkgPath) {
+		return nil, nil
+	}
+
+	// Honor forge.yaml's contracts.exclude — these packages are intentionally
+	// kept contract-free (utility packages with no behavioral interface).
+	if IsExcluded(pkgPath) {
 		return nil, nil
 	}
 

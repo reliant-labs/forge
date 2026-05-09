@@ -18,20 +18,20 @@ type SeedData struct {
 	Tables      map[string][]map[string]interface{}
 }
 
-// SeedManager manages database seeding
-type SeedManager struct {
+// seedManager manages database seeding
+type seedManager struct {
 	fixturesDir string
 }
 
-// NewSeedManager creates a new seed manager
-func NewSeedManager(fixturesDir string) *SeedManager {
-	return &SeedManager{
+// newSeedManager creates a new seed manager
+func newSeedManager(fixturesDir string) *seedManager {
+	return &seedManager{
 		fixturesDir: fixturesDir,
 	}
 }
 
 // LoadFixture loads a fixture file
-func (sm *SeedManager) LoadFixture(name string) (*SeedData, error) {
+func (sm *seedManager) loadFixture(name string) (*SeedData, error) {
 	// Validate fixture name to prevent path traversal
 	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return nil, fmt.Errorf("invalid fixture name: %q", name)
@@ -80,7 +80,7 @@ func validateTableName(name string) error {
 }
 
 // ApplySeed applies seed data to the database
-func (sm *SeedManager) ApplySeed(db *sql.DB, seed *SeedData, clearFirst bool) error {
+func (sm *seedManager) applySeed(db *sql.DB, seed *SeedData, clearFirst bool) error {
 	// Validate all table names before starting the transaction
 	for table := range seed.Tables {
 		if err := validateTableName(table); err != nil {
@@ -128,7 +128,7 @@ func (sm *SeedManager) ApplySeed(db *sql.DB, seed *SeedData, clearFirst bool) er
 }
 
 // insertRow inserts a single row into a table
-func (sm *SeedManager) insertRow(tx *sql.Tx, table string, row map[string]interface{}) error {
+func (sm *seedManager) insertRow(tx *sql.Tx, table string, row map[string]interface{}) error {
 	if len(row) == 0 {
 		return nil
 	}
@@ -160,7 +160,7 @@ func (sm *SeedManager) insertRow(tx *sql.Tx, table string, row map[string]interf
 }
 
 // ListFixtures returns all available fixtures
-func (sm *SeedManager) ListFixtures() ([]string, error) {
+func (sm *seedManager) listFixtures() ([]string, error) {
 	entries, err := os.ReadDir(sm.fixturesDir)
 	if err != nil {
 		if os.IsNotExist(err) {

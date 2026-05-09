@@ -12,6 +12,12 @@ type FrontendHookTemplateData struct {
 	ServiceNameCamel string               // e.g., "userService"
 	ImportPath       string               // e.g., "services/users/v1/users_pb"
 	Methods          []FrontendHookMethod
+	// HasQueries / HasMutations let the template conditionally import
+	// only the hooks it actually uses. Without these flags the emitted
+	// file pulls in useMutation/useQueryClient/UseMutationOptions for
+	// query-only services, tripping no-unused-vars in eslint configs.
+	HasQueries   bool
+	HasMutations bool
 }
 
 // FrontendHookMethod represents a single unary RPC method for hook generation.
@@ -96,12 +102,19 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			continue
 		}
 
+		isQuery := isQueryMethod(m.Name)
+		if isQuery {
+			data.HasQueries = true
+		} else {
+			data.HasMutations = true
+		}
+
 		data.Methods = append(data.Methods, FrontendHookMethod{
 			Name:       m.Name,
 			NameCamel:  toCamelCaseFromPascal(m.Name),
 			InputType:  m.InputType,
 			OutputType: m.OutputType,
-			IsQuery:    isQueryMethod(m.Name),
+			IsQuery:    isQuery,
 		})
 	}
 

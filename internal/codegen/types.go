@@ -21,7 +21,7 @@ type Method struct {
 	OutputType     string
 	ClientStreaming bool
 	ServerStreaming bool
-	AuthRequired   bool     // from forge.options.v1.method_options.auth_required
+	AuthRequired   bool     // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
 	RequiredRoles  []string // from forge.options.v1.method_options.required_roles
 }
 
@@ -109,6 +109,8 @@ type ConfigField struct {
 	DefaultValue string // From config_field.default_value
 	Required     bool   // From config_field.required
 	Description  string // From config_field.description
+	Sensitive    bool   // From config_field.sensitive — projects to a Secret in deploy
+	Category     string // From config_field.category — groups fields in deploy gen
 }
 
 // ConfigMessage represents a parsed config proto message.

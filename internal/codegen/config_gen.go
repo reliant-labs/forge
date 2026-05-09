@@ -2,10 +2,10 @@ package codegen
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -45,7 +45,10 @@ type CmdServerTemplateData struct {
 // GenerateCmdServer re-renders cmd/server.go with config field awareness.
 // Called during `forge generate` so that cmd/server.go stays in sync with
 // the actual config proto fields.
-func GenerateCmdServer(messages []ConfigMessage, targetDir string) error {
+//
+// cs is the project's checksum tracker — passing it keeps cmd/server.go
+// out of `forge audit`'s orphan/user-edited lists. A nil cs is tolerated.
+func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
 		return fmt.Errorf("read module path: %w", err)
@@ -56,25 +59,22 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string) error {
 		ConfigFields: ConfigFieldNamesFromMessages(messages),
 	}
 
-	content, err := templates.ProjectTemplates.Render("cmd-server.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
 	}
 
-	cmdDir := filepath.Join(targetDir, "cmd")
-	if err := os.MkdirAll(cmdDir, 0755); err != nil {
-		return fmt.Errorf("create cmd/: %w", err)
+	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("cmd", "server.go"), content, cs, true); err != nil {
+		return fmt.Errorf("write cmd/server.go: %w", err)
 	}
-
-	outPath := filepath.Join(cmdDir, "server.go")
-	return os.WriteFile(outPath, content, 0644)
+	return nil
 }
 
 // GenerateCmdServerWithFields renders cmd/server.go using a pre-built
 // config field map. This variant is used when the caller needs to modify
 // the field set (e.g. stripping migration fields when the migrations
 // feature is disabled).
-func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string) error {
+func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
 		return fmt.Errorf("read module path: %w", err)
@@ -85,22 +85,24 @@ func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string)
 		ConfigFields: configFields,
 	}
 
-	content, err := templates.ProjectTemplates.Render("cmd-server.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
 	}
 
-	cmdDir := filepath.Join(targetDir, "cmd")
-	if err := os.MkdirAll(cmdDir, 0755); err != nil {
-		return fmt.Errorf("create cmd/: %w", err)
+	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("cmd", "server.go"), content, cs, true); err != nil {
+		return fmt.Errorf("write cmd/server.go: %w", err)
 	}
-
-	outPath := filepath.Join(cmdDir, "server.go")
-	return os.WriteFile(outPath, content, 0644)
+	return nil
 }
 
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.
-func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
+//
+// cs is the project's checksum tracker. Passing it ensures the generated
+// pkg/config/config.go and .env.example are recorded so `forge audit`
+// doesn't flag them as orphans. A nil cs is tolerated (file is still
+// written).
+func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	// Flatten all fields from all messages into a single Config struct.
 	// Most projects will have a single config message, but we support multiple.
 	var fields []ConfigTemplateField
@@ -189,28 +191,24 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string) error {
 		NeedsStrconv: needsStrconv,
 	}
 
-	configDir := filepath.Join(targetDir, "pkg", "config")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("create pkg/config: %w", err)
-	}
-
-	content, err := templates.ProjectTemplates.Render("config.go.tmpl", data)
+	content, err := templates.ProjectTemplates().Render("config.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render config.go.tmpl: %w", err)
 	}
 
-	outPath := filepath.Join(configDir, "config.go")
-	if err := os.WriteFile(outPath, content, 0644); err != nil {
-		return err
+	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs, true); err != nil {
+		return fmt.Errorf("write pkg/config/config.go: %w", err)
 	}
 
 	// Generate .env.example at the project root
-	envContent, err := templates.ProjectTemplates.Render("env.example.tmpl", data)
+	envContent, err := templates.ProjectTemplates().Render("env.example.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render env.example.tmpl: %w", err)
 	}
-	envPath := filepath.Join(targetDir, ".env.example")
-	return os.WriteFile(envPath, envContent, 0644)
+	if _, err := checksums.WriteGeneratedFile(targetDir, ".env.example", envContent, cs, true); err != nil {
+		return fmt.Errorf("write .env.example: %w", err)
+	}
+	return nil
 }
 
 // ConfigFieldNamesFromMessages returns a map of Go field names present in the

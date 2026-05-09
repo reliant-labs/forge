@@ -93,8 +93,15 @@ func generateOrmFile(p *protogen.Plugin, file *protogen.File, sharedGenerated ma
 	var entities []entityInfo
 
 	for _, msg := range file.Messages {
-		ent, ok := parseEntity(msg)
-		if !ok {
+		ent, isEntity, err := parseEntity(msg)
+		if err != nil {
+			// Annotated as an entity but malformed (e.g. missing pk: true).
+			// Surface the error via the protogen plugin so it appears in
+			// `forge generate` output verbatim and stops codegen.
+			p.Error(err)
+			return nil
+		}
+		if !isEntity {
 			continue
 		}
 		entities = append(entities, ent)

@@ -18,7 +18,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl
+//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
 var templateFS embed.FS
 
 // FuncMap returns the shared template function map used across all templates.
@@ -89,20 +89,49 @@ func (c TemplateCategory) ListFlat(subdir string) ([]string, error) {
 	return listTemplates(path.Join(c.basePath, subdir), false)
 }
 
-// Category instances for each template directory.
-var (
-	ProjectTemplates     = TemplateCategory{basePath: "project"}
-	FrontendTemplates    = TemplateCategory{basePath: "frontend"}
-	DeployTemplates      = TemplateCategory{basePath: "deploy"}
-	TestTemplates        = TemplateCategory{basePath: "test"}
-	InternalPkgTemplates = TemplateCategory{basePath: "internal-package"}
-	ServiceTemplates     = TemplateCategory{basePath: "service"}
-	WebhookTemplates     = TemplateCategory{basePath: "webhook"}
-	MiddlewareTemplates  = TemplateCategory{basePath: "middleware"}
-	WorkerTemplates      = TemplateCategory{basePath: "worker"}
-	WorkerCronTemplates  = TemplateCategory{basePath: "worker-cron"}
-	OperatorTemplates    = TemplateCategory{basePath: "operator"}
-)
+// Category accessors return a TemplateCategory rooted at the named
+// embedded template directory.
+//
+// These were package-level vars in forge; they were converted to functions
+// to satisfy `contracts.allow_exported_vars: false` while keeping the
+// call-site shape close to the original (`ProjectTemplates()` instead of
+// `ProjectTemplates`). TemplateCategory is a value type with no internal
+// state, so reconstructing on each call is free.
+
+// ProjectTemplates returns the category for project-scaffold templates.
+func ProjectTemplates() TemplateCategory { return TemplateCategory{basePath: "project"} }
+
+// FrontendTemplates returns the category for frontend-scaffold templates.
+func FrontendTemplates() TemplateCategory { return TemplateCategory{basePath: "frontend"} }
+
+// DeployTemplates returns the category for deploy-scaffold templates.
+func DeployTemplates() TemplateCategory { return TemplateCategory{basePath: "deploy"} }
+
+// TestTemplates returns the category for test-scaffold templates.
+func TestTemplates() TemplateCategory { return TemplateCategory{basePath: "test"} }
+
+// InternalPkgTemplates returns the category for shared internal-package templates.
+func InternalPkgTemplates() TemplateCategory {
+	return TemplateCategory{basePath: "internal-package"}
+}
+
+// ServiceTemplates returns the category for service-scaffold templates.
+func ServiceTemplates() TemplateCategory { return TemplateCategory{basePath: "service"} }
+
+// WebhookTemplates returns the category for webhook-scaffold templates.
+func WebhookTemplates() TemplateCategory { return TemplateCategory{basePath: "webhook"} }
+
+// MiddlewareTemplates returns the category for middleware-scaffold templates.
+func MiddlewareTemplates() TemplateCategory { return TemplateCategory{basePath: "middleware"} }
+
+// WorkerTemplates returns the category for worker-scaffold templates.
+func WorkerTemplates() TemplateCategory { return TemplateCategory{basePath: "worker"} }
+
+// WorkerCronTemplates returns the category for worker-cron-scaffold templates.
+func WorkerCronTemplates() TemplateCategory { return TemplateCategory{basePath: "worker-cron"} }
+
+// OperatorTemplates returns the category for operator-scaffold templates.
+func OperatorTemplates() TemplateCategory { return TemplateCategory{basePath: "operator"} }
 
 // CITemplates returns a TemplateCategory for a specific CI provider.
 func CITemplates(provider string) TemplateCategory {
@@ -129,7 +158,7 @@ func RenderInternalPackageKindTemplate(kind, name string, data interface{}) ([]b
 
 // RenderInternalPackageTemplate renders a base internal-package template.
 func RenderInternalPackageTemplate(name string, data interface{}) ([]byte, error) {
-	return InternalPkgTemplates.Render(name, data)
+	return InternalPkgTemplates().Render(name, data)
 }
 
 // RenderFromFS renders a template from an arbitrary fs.FS. It reads the file at
@@ -240,7 +269,13 @@ type CIWorkflowData struct {
 	ExtraJobs []CIExtraJob
 
 	// Deploy-related
-	HasKCL bool // validate KCL manifests
+	HasKCL    bool // validate KCL manifests
+	HasDocker bool // emit docker-build job (project has a Dockerfile)
+	// VerifyGenerated controls whether the verify-generated job is emitted.
+	// Service projects always emit it (forge regenerates handlers/middleware
+	// and we want CI to flag drift). CLI/library projects have very little
+	// generated output worth verifying, so the job is suppressed.
+	VerifyGenerated bool
 
 	// Environments (for KCL validation)
 	Environments []string
@@ -353,9 +388,10 @@ type FrontendTemplateData struct {
 
 // WebhookTemplateData holds data for webhook template rendering.
 type WebhookTemplateData struct {
-	Name        string // webhook name (e.g. "stripe", "github")
-	ServiceName string // target service name
-	Module      string // Go module path
+	Name           string // webhook name (e.g. "stripe", "github")
+	ServiceName    string // target service display name (may contain hyphens)
+	ServicePackage string // Go-package-safe form of ServiceName (snake_case)
+	Module         string // Go module path
 }
 
 // WebhookRoutesTemplateData holds data for the webhook_routes_gen.go template.
@@ -410,6 +446,10 @@ func (e *TemplateEngine) loadTemplates() error {
 		"operator/types.go.tmpl",
 		"operator/controller.go.tmpl",
 		"operator/controller_test.go.tmpl",
+		"crd/groupversion.go.tmpl",
+		"crd/types.go.tmpl",
+		"crd/controller.go.tmpl",
+		"crd/controller_test.go.tmpl",
 		"function/function.go.tmpl",
 		"function/function_test.go.tmpl",
 	}

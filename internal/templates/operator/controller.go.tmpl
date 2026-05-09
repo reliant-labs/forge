@@ -1,6 +1,6 @@
 //go:build ignore
 
-package {{.Name | lower}}
+package {{.Package}}
 
 import (
 	"context"
@@ -11,6 +11,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+{{- if .SplitAPI }}
+
+	apipkg "{{.APIImportPath}}"
+{{- end }}
 )
 
 // Deps contains the dependencies for the {{.TypeName}} controller.
@@ -40,7 +44,7 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	log.Info("reconciling")
 
 	// Fetch the resource.
-	var obj {{.TypeName}}
+	var obj {{ if .SplitAPI }}apipkg.{{.TypeName}}{{ else }}{{.TypeName}}{{ end }}
 	if err := c.client.Get(ctx, req.NamespacedName, &obj); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("resource not found, likely deleted")
@@ -72,6 +76,6 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 func (c *Controller) SetupWithManager(mgr ctrl.Manager) error {
 	c.client = mgr.GetClient()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&{{.TypeName}}{}).
+		For(&{{ if .SplitAPI }}apipkg.{{.TypeName}}{{ else }}{{.TypeName}}{{ end }}{}).
 		Complete(c)
 }

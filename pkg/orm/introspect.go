@@ -336,7 +336,7 @@ func introspectColumnsSQLite(ctx context.Context, db Context, dialect Dialect, t
 			Type:         fieldType,
 			Nullable:     isNullable,
 			IsPrimaryKey: isPrimaryKey,
-			IsUnique:     false,  // SQLite PRAGMA doesn't provide unique info easily
+			IsUnique:     false, // SQLite PRAGMA doesn't provide unique info easily
 		}
 
 		if dfltValue.Valid {
@@ -538,36 +538,36 @@ func mapDatabaseTypeToFieldType(dbType string) (FieldType, error) {
 
 	typeMap := map[string]FieldType{
 		// PostgreSQL types
-		"text":                      TypeText,
-		"character varying":         TypeVarchar,
-		"varchar":                   TypeVarchar,
-		"integer":                   TypeInteger,
-		"int":                       TypeInteger,
-		"int4":                      TypeInteger,
-		"serial":                    TypeSerial,
-		"bigint":                    TypeBigInt,
-		"int8":                      TypeBigInt,
-		"bigserial":                 TypeBigSerial,
-		"boolean":                   TypeBoolean,
-		"bool":                      TypeBoolean,
+		"text":                     TypeText,
+		"character varying":        TypeVarchar,
+		"varchar":                  TypeVarchar,
+		"integer":                  TypeInteger,
+		"int":                      TypeInteger,
+		"int4":                     TypeInteger,
+		"serial":                   TypeSerial,
+		"bigint":                   TypeBigInt,
+		"int8":                     TypeBigInt,
+		"bigserial":                TypeBigSerial,
+		"boolean":                  TypeBoolean,
+		"bool":                     TypeBoolean,
 		"timestamp with time zone": TypeTimestampTZ,
-		"timestamptz":               TypeTimestampTZ,
-		"jsonb":                     TypeJSONB,
-		"bytea":                     TypeBytea,
+		"timestamptz":              TypeTimestampTZ,
+		"jsonb":                    TypeJSONB,
+		"bytea":                    TypeBytea,
 		// SQLite types
-		"datetime":                  TypeTimestampTZ,
-		"timestamp":                 TypeTimestampTZ,
-		"tinyint":                   TypeInteger,
-		"smallint":                  TypeInteger,
-		"mediumint":                 TypeInteger,
-		"blob":                      TypeBytea,
-		"clob":                      TypeText,
-		"char":                      TypeText,
-		"real":                      TypeText,
-		"double":                    TypeText,
-		"float":                     TypeText,
-		"numeric":                   TypeText,
-		"decimal":                   TypeText,
+		"datetime":  TypeTimestampTZ,
+		"timestamp": TypeTimestampTZ,
+		"tinyint":   TypeInteger,
+		"smallint":  TypeInteger,
+		"mediumint": TypeInteger,
+		"blob":      TypeBytea,
+		"clob":      TypeText,
+		"char":      TypeText,
+		"real":      TypeText,
+		"double":    TypeText,
+		"float":     TypeText,
+		"numeric":   TypeText,
+		"decimal":   TypeText,
 	}
 
 	if fieldType, exists := typeMap[dbType]; exists {

@@ -1,5 +1,6 @@
 "use client";
 
+// forge:scaffold one-shot — detail page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
 import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.HooksImportPath}}";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";

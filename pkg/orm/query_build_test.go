@@ -13,7 +13,7 @@ type fakeDialect struct {
 	name string
 }
 
-func (d *fakeDialect) Name() string      { return d.name }
+func (d *fakeDialect) Name() string       { return d.name }
 func (d *fakeDialect) DriverName() string { return d.name }
 func (d *fakeDialect) Placeholder(i int) string {
 	if d.name == "sqlite" {
@@ -24,14 +24,14 @@ func (d *fakeDialect) Placeholder(i int) string {
 func (d *fakeDialect) QuoteIdentifier(id string) string {
 	return `"` + strings.ReplaceAll(id, `"`, `""`) + `"`
 }
-func (d *fakeDialect) MapFieldType(ft FieldType) string                { return string(ft) }
-func (d *fakeDialect) SupportsReturning() bool                        { return d.name == "postgres" }
-func (d *fakeDialect) OnConflictClause(c string, u []string) string   { return "" }
-func (d *fakeDialect) TableExistsQuery(t string) string               { return "" }
-func (d *fakeDialect) ListTablesQuery() string                        { return "" }
-func (d *fakeDialect) IntrospectColumnsQuery(t string) string         { return "" }
-func (d *fakeDialect) IntrospectIndexesQuery(t string) string         { return "" }
-func (d *fakeDialect) ParseColumnType(t string) (FieldType, error)    { return TypeText, nil }
+func (d *fakeDialect) MapFieldType(ft FieldType) string             { return string(ft) }
+func (d *fakeDialect) SupportsReturning() bool                      { return d.name == "postgres" }
+func (d *fakeDialect) OnConflictClause(c string, u []string) string { return "" }
+func (d *fakeDialect) TableExistsQuery(t string) string             { return "" }
+func (d *fakeDialect) ListTablesQuery() string                      { return "" }
+func (d *fakeDialect) IntrospectColumnsQuery(t string) string       { return "" }
+func (d *fakeDialect) IntrospectIndexesQuery(t string) string       { return "" }
+func (d *fakeDialect) ParseColumnType(t string) (FieldType, error)  { return TypeText, nil }
 func (d *fakeDialect) ScanColumn(r *sql.Rows) (IntrospectedColumn, error) {
 	return IntrospectedColumn{}, nil
 }
@@ -304,7 +304,7 @@ func TestQueryBuilder_Build_ILike_SQLite(t *testing.T) {
 	qb.Where("email", ILike, "%@EXAMPLE.COM")
 	sql, args := qb.Build()
 
-	expected := `SELECT "id" FROM users WHERE LOWER("email") LIKE LOWER(?)` 
+	expected := `SELECT "id" FROM users WHERE LOWER("email") LIKE LOWER(?)`
 	if sql != expected {
 		t.Errorf("expected %q, got %q", expected, sql)
 	}

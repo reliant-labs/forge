@@ -1,0 +1,105 @@
+// forge:scaffold one-shot — data-table pagination; canonical pattern in `forge skill load packs`.
+// Base library primitives — every forge frontend installs these at scaffold
+// time (see internal/generator/frontend_gen.go's coreComponents).
+import BasePagination from "@/components/ui/pagination";
+import Button from "@/components/ui/button";
+import Select from "@/components/ui/select";
+
+export interface PaginationProps {
+  /** 1-based page index. */
+  page?: number;
+  /** Rows per page. */
+  pageSize?: number;
+  /** Optional total count (when the server returns one). */
+  total?: number;
+  /** True if a next page exists. */
+  hasNext?: boolean;
+  /** True if a previous page exists. */
+  hasPrev?: boolean;
+  onPageChange?: (next: number) => void;
+  onPageSizeChange?: (next: number) => void;
+  /** Selectable page sizes (default [10, 25, 50, 100]). */
+  pageSizeOptions?: number[];
+}
+
+const DEFAULT_PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+
+/**
+ * DataTable pagination shell. Composes:
+ *
+ *  - the base library's `Pagination` (page-number nav + counts) when the
+ *    server returns a `total`, falling back to a cursor-style Prev/Next
+ *    pair (rendered with the base `Button` primitive) otherwise.
+ *  - a page-size selector built on the base `Select` primitive.
+ */
+export function Pagination(props: PaginationProps) {
+  const {
+    page = 1,
+    pageSize = 25,
+    total,
+    hasNext,
+    hasPrev,
+    onPageChange,
+    onPageSizeChange,
+    pageSizeOptions = DEFAULT_PAGE_SIZE_OPTIONS,
+  } = props;
+
+  if (!onPageChange && !onPageSizeChange && total === undefined) {
+    // No pagination wired up — render nothing.
+    return null;
+  }
+
+  const totalPages =
+    total !== undefined && pageSize > 0
+      ? Math.max(1, Math.ceil(total / pageSize))
+      : undefined;
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 px-1 py-2 text-sm text-gray-600">
+      {onPageSizeChange ? (
+        <label className="flex items-center gap-2">
+          <span className="text-xs text-gray-500">Rows</span>
+          <Select
+            selectSize="sm"
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            options={pageSizeOptions.map((s) => ({ value: s, label: String(s) }))}
+          />
+        </label>
+      ) : (
+        <div />
+      )}
+
+      {totalPages !== undefined && onPageChange ? (
+        <div className="flex-1">
+          <BasePagination
+            currentPage={page}
+            totalPages={totalPages}
+            onPageChange={onPageChange}
+            totalItems={total}
+            pageSize={pageSize}
+          />
+        </div>
+      ) : onPageChange ? (
+        <div className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasPrev && page <= 1}
+            onClick={() => onPageChange(Math.max(1, page - 1))}
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={hasNext === false}
+            onClick={() => onPageChange(page + 1)}
+          >
+            Next
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}

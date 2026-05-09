@@ -98,7 +98,7 @@ func (e *Environment) GetPort(service string, containerPort int) (string, bool) 
 }
 
 // Doctor orchestrates running health checks.
-type Doctor struct {
+type doctor struct {
 	env    *Environment
 	checks []namedCheck
 }
@@ -108,9 +108,9 @@ type namedCheck struct {
 	fn   CheckFunc
 }
 
-// New creates a Doctor for the given project.
-func New(projectName, projectDir string) *Doctor {
-	return &Doctor{
+// newDoctor creates a doctor orchestrator for the given project.
+func newDoctor(projectName, projectDir string) *doctor {
+	return &doctor{
 		env: &Environment{
 			ProjectName: projectName,
 			ProjectDir:  projectDir,
@@ -120,14 +120,14 @@ func New(projectName, projectDir string) *Doctor {
 }
 
 // Register adds a check to the doctor.
-func (d *Doctor) Register(name string, fn CheckFunc) {
+func (d *doctor) register(name string, fn CheckFunc) {
 	d.checks = append(d.checks, namedCheck{name: name, fn: fn})
 }
 
 // RunSequential runs checks that must complete before parallel checks
 // (e.g., Docker check discovers ports needed by other checks).
 // RunParallel runs remaining checks concurrently.
-func (d *Doctor) Run(ctx context.Context, sequential []string) Report {
+func (d *doctor) run(ctx context.Context, sequential []string) Report {
 	start := time.Now()
 
 	seqSet := make(map[string]bool, len(sequential))
@@ -194,7 +194,7 @@ func (d *Doctor) Run(ctx context.Context, sequential []string) Report {
 	return report
 }
 
-func (d *Doctor) runCheck(ctx context.Context, c namedCheck) CheckResult {
+func (d *doctor) runCheck(ctx context.Context, c namedCheck) CheckResult {
 	start := time.Now()
 	r := c.fn(ctx, d.env)
 	r.Name = c.name
@@ -227,7 +227,7 @@ func statusIcon(s Status) string {
 }
 
 // PrintReport writes a human-readable report to w.
-func PrintReport(w io.Writer, report Report, verbose bool) {
+func printReport(w io.Writer, report Report, verbose bool) {
 	for _, r := range report.Checks {
 		icon := statusIcon(r.Status)
 		name := fmt.Sprintf("%-20s", r.Name)
@@ -262,7 +262,7 @@ func PrintReport(w io.Writer, report Report, verbose bool) {
 }
 
 // PrintJSON writes the report as JSON to w.
-func PrintJSON(w io.Writer, report Report) error {
+func printJSON(w io.Writer, report Report) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)

@@ -31,6 +31,8 @@ func TestCIWorkflowTemplate_AllFeatures(t *testing.T) {
 		E2ERuntime:          "docker-compose",
 		PermContents:        "read",
 		HasKCL:              true,
+		HasDocker:           true,
+		VerifyGenerated:     true,
 		Environments:        []string{"dev", "staging", "prod"},
 	}
 
@@ -74,11 +76,13 @@ func TestProtoBreakingWorkflowTemplate(t *testing.T) {
 
 func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 	data := CIWorkflowData{
-		ProjectName:  "minimal",
-		GoVersion:    "1.26",
-		LintGolangci: true,
-		TestRace:     true,
-		PermContents: "read",
+		ProjectName:     "minimal",
+		GoVersion:       "1.26",
+		LintGolangci:    true,
+		TestRace:        true,
+		PermContents:    "read",
+		HasDocker:       true,
+		VerifyGenerated: true,
 	}
 
 	content, err := CITemplates("github").Render("ci.yml.tmpl", data)
@@ -113,13 +117,15 @@ func TestCIWorkflowTemplate_Minimal(t *testing.T) {
 
 func TestCIWorkflowTemplate_K3dE2E(t *testing.T) {
 	data := CIWorkflowData{
-		ProjectName:  "myapp",
-		GoVersion:    "1.26",
-		LintGolangci: true,
-		TestRace:     true,
-		PermContents: "read",
-		E2EEnabled:   true,
-		E2ERuntime:   "k3d",
+		ProjectName:     "myapp",
+		GoVersion:       "1.26",
+		LintGolangci:    true,
+		TestRace:        true,
+		PermContents:    "read",
+		E2EEnabled:      true,
+		E2ERuntime:      "k3d",
+		HasDocker:       true,
+		VerifyGenerated: true,
 	}
 
 	content, err := CITemplates("github").Render("ci.yml.tmpl", data)

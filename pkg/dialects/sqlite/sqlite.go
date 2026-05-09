@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/reliant-labs/forge/pkg/orm"
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
+
+	"github.com/reliant-labs/forge/pkg/orm"
 )
 
 // Dialect implements the Dialect interface for SQLite
@@ -135,7 +136,7 @@ func (d *Dialect) ParseColumnType(dbType string) (orm.FieldType, error) {
 
 	// TEXT affinity
 	if strings.Contains(dbType, "CHAR") || strings.Contains(dbType, "CLOB") ||
-	   strings.Contains(dbType, "TEXT") || dbType == "VARCHAR" {
+		strings.Contains(dbType, "TEXT") || dbType == "VARCHAR" {
 		return orm.TypeText, nil
 	}
 
@@ -146,7 +147,7 @@ func (d *Dialect) ParseColumnType(dbType string) (orm.FieldType, error) {
 
 	// REAL affinity
 	if strings.Contains(dbType, "REAL") || strings.Contains(dbType, "FLOA") ||
-	   strings.Contains(dbType, "DOUB") {
+		strings.Contains(dbType, "DOUB") {
 		return orm.TypeText, nil // Map floating point to TEXT for safety
 	}
 
@@ -179,9 +180,9 @@ func (d *Dialect) ScanColumn(rows *sql.Rows) (orm.IntrospectedColumn, error) {
 	var cid int
 	var name string
 	var dbType string
-	var notNull int  // SQLite uses integer: 0 = nullable, 1 = not null
+	var notNull int // SQLite uses integer: 0 = nullable, 1 = not null
 	var dfltValue sql.NullString
-	var pk int  // SQLite uses integer: 0 = not primary key, >0 = primary key position
+	var pk int // SQLite uses integer: 0 = not primary key, >0 = primary key position
 
 	err := rows.Scan(&cid, &name, &dbType, &notNull, &dfltValue, &pk)
 	if err != nil {
@@ -211,7 +212,7 @@ func (d *Dialect) ScanColumn(rows *sql.Rows) (orm.IntrospectedColumn, error) {
 		Nullable:     isNullable,
 		DefaultValue: defaultValue,
 		IsPrimaryKey: isPrimaryKey,
-		IsUnique:     false,   // Will be determined from index introspection
+		IsUnique:     false, // Will be determined from index introspection
 	}
 
 	return column, nil
@@ -224,7 +225,7 @@ func (d *Dialect) ScanIndex(rows *sql.Rows) (indexName, columnName string, isUni
 	// We need to call PRAGMA index_info(index_name) separately to get columns
 	var seq int
 	var name string
-	var unique int  // 0 = not unique, 1 = unique
+	var unique int // 0 = not unique, 1 = unique
 	var origin string
 	var partial int
 

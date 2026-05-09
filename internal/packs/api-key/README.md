@@ -13,7 +13,7 @@ forge pack install api-key
 | File | Description |
 |------|-------------|
 | `pkg/apikey/store.go` | `KeyStore` interface and `DBKeyStore` implementation with create, revoke, rotate, list, and validate operations |
-| `pkg/middleware/api_key_validator_gen.go` | `APIKeyValidator` that bridges the key store into the auth middleware's `Claims` system (regenerated on `forge generate`) |
+| `pkg/middleware/auth/apikey/validator_gen.go` | `apikey.Validator` that bridges the key store into the auth middleware's `Claims` system (regenerated on `forge generate`) |
 | `db/migrations/0002_api_keys.up.sql` | Migration creating the `api_keys` table with prefix index and UUID primary key |
 | `db/migrations/0002_api_keys.down.sql` | Rollback migration |
 
@@ -40,11 +40,18 @@ Keys are generated as `fk_` + 32 random base62 characters. Only the SHA-256 hash
 
 ### Validating Keys
 
-The generated `APIKeyValidator` integrates with the auth middleware. When a request arrives with an `X-API-Key` header, the validator looks up the key by its 8-character prefix, compares the full SHA-256 hash, checks expiry, and returns `Claims` with the key owner's user ID and scopes mapped to roles.
+The generated `apikey.Validator` integrates with the auth middleware. When a request arrives with an `X-API-Key` header, the validator looks up the key by its 8-character prefix, compares the full SHA-256 hash, checks expiry, and returns `Claims` with the key owner's user ID and scopes mapped to roles.
 
 ```go
-validator := middleware.NewAPIKeyValidator(store, logger)
+import (
+    apikeystore "<module>/pkg/apikey"
+    apikeyauth "<module>/pkg/middleware/auth/apikey"
+)
+
+validator := apikeyauth.NewValidator(store, logger)  // store from apikeystore.NewDBKeyStore(db)
 ```
+
+(Both packages are named `apikey` — alias them on import as shown above when you use both in the same file.)
 
 The validator also updates `last_used_at` asynchronously on each successful validation.
 

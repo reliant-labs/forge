@@ -11,6 +11,15 @@ import (
 
 // generateCIWorkflows generates GitHub Actions workflow files from the project config.
 // It uses the checksum system to detect user modifications and skip overwriting them.
+//
+// Kind branching mirrors `forge new`'s project_ci.go: service kinds get
+// the full set (build-images + deploy + e2e + proto-breaking), while
+// CLI/library kinds only get the buildable subset (ci.yml + dependabot)
+// because they have no Docker images, no k8s deploys, no service to
+// stand up, and (for CLIs) typically no protos. Without this guard,
+// `forge generate` on a CLI project drifts from `forge new`: it would
+// emit build-images.yml + deploy.yml that reference services and
+// registries the project does not have.
 func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.FileChecksums, force bool) error {
 	if cfg.CI.Provider != "" && cfg.CI.Provider != "github" {
 		return nil // only github supported for now
@@ -18,10 +27,11 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 
 	provider := "github"
 
+	kind := config.EffectiveProjectKind(cfg.Kind)
+	isService := kind == config.ProjectKindService
+
 	// Build template data from config
 	ciData := buildCIWorkflowData(cfg)
-	deployData := buildDeployWorkflowData(cfg)
-	buildData := buildBuildImagesWorkflowData(cfg)
 
 	// ── ci.yml ──
 	ciContent, err := templates.CITemplates(provider).Render("ci.yml.tmpl", ciData)
@@ -38,38 +48,43 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 		fmt.Println("  ⚠️  .github/workflows/ci.yml has local modifications, skipping (use --force to overwrite)")
 	}
 
-	// ── build-images.yml ──
-	buildContent, err := templates.CITemplates(provider).Render("build-images.yml.tmpl", buildData)
-	if err != nil {
-		return fmt.Errorf("render build-images.yml: %w", err)
-	}
-	written, err = generator.WriteGeneratedFile(root, ".github/workflows/build-images.yml", buildContent, cs, force)
-	if err != nil {
-		return fmt.Errorf("write build-images.yml: %w", err)
-	}
-	if written {
-		fmt.Println("  ✅ Generated .github/workflows/build-images.yml")
-	} else {
-		fmt.Println("  ⚠️  .github/workflows/build-images.yml has local modifications, skipping (use --force to overwrite)")
+	if isService {
+		deployData := buildDeployWorkflowData(cfg)
+		buildData := buildBuildImagesWorkflowData(cfg)
+
+		// ── build-images.yml ──
+		buildContent, err := templates.CITemplates(provider).Render("build-images.yml.tmpl", buildData)
+		if err != nil {
+			return fmt.Errorf("render build-images.yml: %w", err)
+		}
+		written, err = generator.WriteGeneratedFile(root, ".github/workflows/build-images.yml", buildContent, cs, force)
+		if err != nil {
+			return fmt.Errorf("write build-images.yml: %w", err)
+		}
+		if written {
+			fmt.Println("  ✅ Generated .github/workflows/build-images.yml")
+		} else {
+			fmt.Println("  ⚠️  .github/workflows/build-images.yml has local modifications, skipping (use --force to overwrite)")
+		}
+
+		// ── deploy.yml ──
+		deployContent, err := templates.CITemplates(provider).Render("deploy.yml.tmpl", deployData)
+		if err != nil {
+			return fmt.Errorf("render deploy.yml: %w", err)
+		}
+		written, err = generator.WriteGeneratedFile(root, ".github/workflows/deploy.yml", deployContent, cs, force)
+		if err != nil {
+			return fmt.Errorf("write deploy.yml: %w", err)
+		}
+		if written {
+			fmt.Println("  ✅ Generated .github/workflows/deploy.yml")
+		} else {
+			fmt.Println("  ⚠️  .github/workflows/deploy.yml has local modifications, skipping (use --force to overwrite)")
+		}
 	}
 
-	// ── deploy.yml ──
-	deployContent, err := templates.CITemplates(provider).Render("deploy.yml.tmpl", deployData)
-	if err != nil {
-		return fmt.Errorf("render deploy.yml: %w", err)
-	}
-	written, err = generator.WriteGeneratedFile(root, ".github/workflows/deploy.yml", deployContent, cs, force)
-	if err != nil {
-		return fmt.Errorf("write deploy.yml: %w", err)
-	}
-	if written {
-		fmt.Println("  ✅ Generated .github/workflows/deploy.yml")
-	} else {
-		fmt.Println("  ⚠️  .github/workflows/deploy.yml has local modifications, skipping (use --force to overwrite)")
-	}
-
-	// ── e2e.yml (only if E2E enabled) ──
-	if cfg.CI.E2E.Enabled {
+	// ── e2e.yml (only if E2E enabled and project is a service) ──
+	if isService && cfg.CI.E2E.Enabled {
 		e2eData := buildE2EWorkflowData(cfg)
 		e2eContent, err := templates.CITemplates(provider).Render("e2e.yml.tmpl", e2eData)
 		if err != nil {
@@ -183,6 +198,17 @@ func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 
 		HasKCL:       len(envs) > 0,
 		Environments: envs,
+
+		// VerifyGenerated runs `forge generate` + `git diff --exit-code`
+		// in CI to catch silent codegen-mock drift (a contract.go grows
+		// a parameter, the mock_gen.go is not refreshed, tests in an
+		// unrelated package fail). On regeneration we want the same
+		// answer `forge new` chose at scaffold time — true regardless
+		// of project kind. Without this, `forge generate` would
+		// overwrite the scaffold-time CI workflow with a flag-stripped
+		// version (the bug is silent: ci.yml renders fine, just without
+		// the verify job).
+		VerifyGenerated: true,
 
 		ForgeVersion:   buildinfo.Version(),
 		ForgeGitCommit: buildinfo.GitCommit(),

@@ -10,22 +10,31 @@ import deploy.kcl.schema
 import deploy.kcl.base
 import deploy.kcl.render
 
+# Per-environment config (generated from forge.yaml + proto annotations).
+# Run `forge generate` to refresh after editing forge.yaml or the config
+# proto. Hand-editing this file is not recommended.
+import deploy.kcl.staging.config_gen as cfg
+
 # Overridable via `kcl run -D image_tag=...`
-image_tag = option("image_tag") or "staging"
+_image_tag = option("image_tag") or "staging"
 
 # Overridable via `kcl run -D registry=...`. The default is intentionally
 # a placeholder ("ghcr.io/OWNER") so that failing to pass -D registry=...
 # from CI surfaces as a visibly wrong image reference rather than silently
-# deploying from an unrelated default registry. CI passes
+# deploying from an unrelated default _registry. CI passes
 # `-D registry=$REGISTRY` where REGISTRY is derived from the GitHub owner.
-registry = option("registry") or "ghcr.io/OWNER"
+_registry = option("registry") or "ghcr.io/OWNER"
 
-env = schema.Environment {
+_env = schema.Environment {
     name = "staging"
     namespace = "{{.ProjectName}}-staging"
-    image_registry = registry
-    image_tag = image_tag
+    image_registry = _registry
+    image_tag = _image_tag
     network_policies = True
+    # Generated ConfigMap(s) carrying non-sensitive per-env config.
+    # Sensitive fields project to externally-managed Secrets via
+    # `secret_ref` and are intentionally NOT generated here.
+    config_maps = cfg.CONFIG_MAPS
     applications = {
         "{{.ProjectName}}" = schema.Application {
             name = "{{.ProjectName}}"
@@ -44,7 +53,7 @@ env = schema.Environment {
                 cpu_limit = "1000m"
                 memory_limit = "512Mi"
             }
-            env_vars = base.COMMON_ENV + [
+            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
                 schema.EnvVar {
                     name = "SERVICE_NAME"
                     value = "{{.ProjectName}}"
@@ -52,10 +61,6 @@ env = schema.Environment {
                 schema.EnvVar {
                     name = "OTEL_SERVICE_NAME"
                     value = "{{.ProjectName}}"
-                }
-                schema.EnvVar {
-                    name = "LOG_LEVEL"
-                    value = "info"
                 }
             ]
             health_check = schema.HealthCheck {
@@ -70,7 +75,30 @@ env = schema.Environment {
                 cpu_target = 80
             }
         }
+        # Binaries declared via `forge add binary <name>`. Each runs the
+        # same image with a different cobra subcommand. No Service /
+        # Ingress is emitted — binaries are off-RPC processes.
+{{- range .Binaries}}
+        "{{$.ProjectName}}-{{.Name}}" = schema.Application {
+            name = "{{$.ProjectName}}-{{.Name}}"
+            image = "{{$.ProjectName}}"
+            replicas = 1
+            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
+            resources = schema.Resources {
+                cpu_request = "100m"
+                memory_request = "128Mi"
+                cpu_limit = "500m"
+                memory_limit = "256Mi"
+            }
+            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{$.ProjectName}}-{{.Name}}"
+                }
+            ]
+        }
+{{- end}}
     }
 }
 
-manifests = render.render_environment(env)
+manifests = render.render_environment(_env)

@@ -148,8 +148,10 @@ func (m *testModelNoPK) Schema() TableSchema {
 		Fields: []FieldSchema{{Name: "name", Type: TypeText}},
 	}
 }
-func (m *testModelNoPK) PrimaryKey() any                           { return nil }
-func (m *testModelNoPK) Values() (columns []string, values []any) { return []string{"name"}, []any{m.Name} }
+func (m *testModelNoPK) PrimaryKey() any { return nil }
+func (m *testModelNoPK) Values() (columns []string, values []any) {
+	return []string{"name"}, []any{m.Name}
+}
 func (m *testModelNoPK) Scan(scanner interface{ Scan(...interface{}) error }) error {
 	return scanner.Scan(&m.Name)
 }

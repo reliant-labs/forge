@@ -1,7 +1,6 @@
 package orm
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"strings"
@@ -415,11 +414,11 @@ func TestCompareSchemas_Indexes(t *testing.T) {
 // TestGenerateAlterSQL_AddColumn verifies generation of ADD COLUMN statements
 func TestGenerateAlterSQL_AddColumn(t *testing.T) {
 	tests := []struct {
-		name           string
-		dialect        Dialect
-		missingColumn  FieldSchema
-		expectedSQL    string
-		expectedInSQL  []string
+		name          string
+		dialect       Dialect
+		missingColumn FieldSchema
+		expectedSQL   string
+		expectedInSQL []string
 	}{
 		{
 			name:    "PostgreSQL - Add simple column",
@@ -789,10 +788,10 @@ func TestGenerateAlterSQL_StatementOrder(t *testing.T) {
 
 	// Expected order: DROP INDEX, DROP COLUMN, ADD COLUMN, CREATE INDEX
 	expectedOrder := []string{
-		"DROP INDEX",     // DROP INDEX first
-		"DROP COLUMN",    // DROP COLUMN second
-		"ADD COLUMN",     // ADD COLUMN third
-		"CREATE INDEX",   // CREATE INDEX last
+		"DROP INDEX",   // DROP INDEX first
+		"DROP COLUMN",  // DROP COLUMN second
+		"ADD COLUMN",   // ADD COLUMN third
+		"CREATE INDEX", // CREATE INDEX last
 	}
 
 	if len(statements) != len(expectedOrder) {
@@ -806,133 +805,9 @@ func TestGenerateAlterSQL_StatementOrder(t *testing.T) {
 	}
 }
 
-// TestDiffDatabase is an integration test with a real SQLite database
-func TestDiffDatabase(t *testing.T) {
-	// Skip if not in integration test mode
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	ctx := context.Background()
-
-	// Create an in-memory SQLite database for testing
-	// Note: This test assumes SQLite dialect is available
-	// If not available, this test will be skipped
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		t.Skipf("SQLite not available: %v", err)
-	}
-	defer db.Close()
-
-	// Check if SQLite dialect is registered
-	_, err = GetDialect("sqlite")
-	if err != nil {
-		t.Skipf("SQLite dialect not registered: %v", err)
-	}
-
-	client, err := NewClientWithDB(db, "sqlite")
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	// Create a test table with initial schema
-	_, err = client.Exec(ctx, `
-		CREATE TABLE users (
-			id INTEGER PRIMARY KEY,
-			email TEXT NOT NULL,
-			name TEXT
-		)
-	`)
-	if err != nil {
-		t.Fatalf("Failed to create test table: %v", err)
-	}
-
-	// Create an index
-	_, err = client.Exec(ctx, `CREATE INDEX idx_users_email ON users(email)`)
-	if err != nil {
-		t.Fatalf("Failed to create index: %v", err)
-	}
-
-	// Define expected schema with changes
-	expectedSchemas := []TableSchema{
-		{
-			Name: "users",
-			Fields: []FieldSchema{
-				{Name: "id", Type: TypeInteger, PrimaryKey: true, NotNull: true},
-				{Name: "email", Type: TypeText, NotNull: true},
-				{Name: "name", Type: TypeText, NotNull: false},
-				{Name: "age", Type: TypeInteger, NotNull: false}, // New column
-				{Name: "created_at", Type: TypeText, NotNull: false}, // New column
-			},
-			Indexes: []IndexSchema{
-				{Name: "idx_users_email", Fields: []string{"email"}, Unique: false},
-				{Name: "idx_users_name", Fields: []string{"name"}, Unique: false}, // New index
-			},
-		},
-	}
-
-	// Run diff
-	diffs, err := DiffDatabase(ctx, client, client.Dialect(), expectedSchemas)
-	if err != nil {
-		t.Fatalf("DiffDatabase failed: %v", err)
-	}
-
-	// Verify we got exactly one diff (for users table)
-	if len(diffs) != 1 {
-		t.Fatalf("Expected 1 diff, got %d", len(diffs))
-	}
-
-	diff := diffs[0]
-
-	// Verify missing columns
-	if len(diff.MissingColumns) != 2 {
-		t.Errorf("Expected 2 missing columns, got %d", len(diff.MissingColumns))
-	}
-
-	missingNames := make(map[string]bool)
-	for _, col := range diff.MissingColumns {
-		missingNames[col.Name] = true
-	}
-	if !missingNames["age"] || !missingNames["created_at"] {
-		t.Error("Expected 'age' and 'created_at' in missing columns")
-	}
-
-	// Verify missing indexes
-	if len(diff.MissingIndexes) != 1 {
-		t.Errorf("Expected 1 missing index, got %d", len(diff.MissingIndexes))
-	}
-
-	if len(diff.MissingIndexes) > 0 && diff.MissingIndexes[0].Name != "idx_users_name" {
-		t.Errorf("Expected missing index 'idx_users_name', got %q", diff.MissingIndexes[0].Name)
-	}
-
-	// Test with non-existent table
-	t.Run("Non-existent table", func(t *testing.T) {
-		nonExistentSchemas := []TableSchema{
-			{
-				Name: "non_existent_table",
-				Fields: []FieldSchema{
-					{Name: "id", Type: TypeInteger, PrimaryKey: true},
-				},
-			},
-		}
-
-		diffs, err := DiffDatabase(ctx, client, client.Dialect(), nonExistentSchemas)
-		if err != nil {
-			t.Fatalf("DiffDatabase failed: %v", err)
-		}
-
-		if len(diffs) != 1 {
-			t.Fatalf("Expected 1 diff, got %d", len(diffs))
-		}
-
-		// All fields should be missing
-		if len(diffs[0].MissingColumns) != 1 {
-			t.Errorf("Expected all fields to be missing for non-existent table")
-		}
-	})
-}
+// TestDiffDatabase moved to differ_integration_test.go (build tag
+// `integration`) so the unit test pass stays hermetic. Run it via
+// `task test:integration` or `go test -tags=integration ./...`.
 
 // TestTypesCompatible verifies type compatibility detection
 func TestTypesCompatible(t *testing.T) {
@@ -975,9 +850,9 @@ func TestTypesCompatible(t *testing.T) {
 // TestCanConvertType verifies type conversion safety checks
 func TestCanConvertType(t *testing.T) {
 	tests := []struct {
-		name      string
-		from      FieldType
-		to        FieldType
+		name       string
+		from       FieldType
+		to         FieldType
 		canConvert bool
 	}{
 		{"INTEGER to BIGINT (safe upcast)", TypeInteger, TypeBigInt, true},
@@ -1079,8 +954,8 @@ func TestSchemaDiff_IsDestructive(t *testing.T) {
 		destructive bool
 	}{
 		{
-			name: "No changes",
-			diff: SchemaDiff{},
+			name:        "No changes",
+			diff:        SchemaDiff{},
 			destructive: false,
 		},
 		{

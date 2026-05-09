@@ -6,7 +6,7 @@ import (
 	"sort"
 )
 
-//go:embed all:api-key all:audit-log all:jwt-auth all:stripe all:clerk all:twilio
+//go:embed all:api-key all:audit-log all:jwt-auth all:firebase-auth all:clerk all:nats all:data-table all:auth-ui
 var packsFS embed.FS
 
 // ListPacks returns all available packs by scanning the embedded FS

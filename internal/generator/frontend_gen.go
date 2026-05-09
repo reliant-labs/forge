@@ -31,7 +31,7 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 
 	tmplDir := frontendTemplateDir(kind)
 
-	frontendFiles, err := templates.FrontendTemplates.List(tmplDir)
+	frontendFiles, err := templates.FrontendTemplates().List(tmplDir)
 	if err != nil {
 		return fmt.Errorf("list frontend templates: %w", err)
 	}
@@ -45,7 +45,7 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 	}
 
 	for _, file := range frontendFiles {
-		content, err := templates.FrontendTemplates.Render(filepath.Join(tmplDir, file), data)
+		content, err := templates.FrontendTemplates().Render(filepath.Join(tmplDir, file), data)
 		if err != nil {
 			return fmt.Errorf("render frontend template %s: %w", file, err)
 		}
@@ -100,7 +100,30 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 }
 
 // coreComponents lists the components automatically installed during scaffold.
+//
+// The list is deliberately split: the "primitives" group is the layered
+// base library that frontend packs (`data-table`, `auth-ui`, …) MUST
+// import from instead of inlining their own button/input/etc. markup.
+// The trailing "domain" group is higher-level building blocks the
+// scaffold ships unconditionally because every forge frontend tends to
+// reach for them.
 var coreComponents = []string{
+	// Primitives — base building blocks for every frontend pack.
+	"button",
+	"input",
+	"label",
+	"form",
+	"card",
+	"avatar",
+	"tabs",
+	"table",
+	"select",
+	"chip",
+	"row_actions_menu",
+	"progress_bar",
+	"status_dot",
+
+	// Domain components — higher-level shapes the scaffold ships by default.
 	"sidebar_layout",
 	"page_header",
 	"badge",

@@ -30,7 +30,7 @@ func GenerateGrafanaDashboards(projectName, projectDir string) error {
 	}
 
 	// Write provisioning config (static, no templating needed).
-	provContent, err := templates.ProjectTemplates.Get("grafana/dashboards.yaml")
+	provContent, err := templates.ProjectTemplates().Get("grafana/dashboards.yaml")
 	if err != nil {
 		return fmt.Errorf("read grafana provisioning template: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -19,7 +20,16 @@ var Analyzer = &analysis.Analyzer{
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 }
 
+func init() {
+	registerExcludeFlag(&Analyzer.Flags)
+}
+
 func run(pass *analysis.Pass) (interface{}, error) {
+	// Honor forge.yaml's contracts.exclude — packages explicitly excluded by
+	// the user must be skipped before any analysis runs.
+	if IsExcluded(pass.Pkg.Path()) {
+		return nil, nil
+	}
 	// Step 1: Find contract.go and extract interfaces from it.
 	contractInterfaces := extractContractInterfaces(pass)
 	if len(contractInterfaces) == 0 {
@@ -72,34 +82,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	// Step 2b: For each type, prune interfaces that are strict subsets of
-	// another implemented interface. E.g. if Service embeds Base, and the
-	// type implements both, only enforce Service (the superset).
-	for named, constraints := range typeConstraints {
-		if len(constraints) <= 1 {
-			continue
-		}
-		pruned := make([]implInfo, 0, len(constraints))
-		for i, ci := range constraints {
-			dominated := false
-			for j, cj := range constraints {
-				if i == j {
-					continue
-				}
-				// ci is dominated if cj is a strict superset of ci.
-				if ci.ifaceType.NumMethods() < cj.ifaceType.NumMethods() && types.Implements(cj.ifaceType, ci.ifaceType) {
-					dominated = true
-					break
-				}
-			}
-			if !dominated {
-				pruned = append(pruned, ci)
-			}
-		}
-		typeConstraints[named] = pruned
-	}
-
 	// Step 3: Walk all method declarations and report violations.
+	//
+	// Enforcement is per-method: an exported method on an impl type is
+	// allowed if it appears in AT LEAST ONE of the contract interfaces the
+	// type implements. This handles three cases uniformly:
+	//
+	//   1. Single interface — method must be in that interface.
+	//   2. Embedded interfaces (Service embeds Base, type implements both) —
+	//      methods on Service automatically satisfy the union.
+	//   3. Disjoint interfaces (one struct satisfies Reader and Writer with
+	//      no method overlap) — Read() lives in Reader's set, Write() lives
+	//      in Writer's set, both pass.
+	//
+	// The previous "in ALL interfaces" rule (with embedding-only pruning)
+	// incorrectly rejected case 3, forcing users to split into one impl
+	// struct per contract interface as a workaround.
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	nodeFilter := []ast.Node{(*ast.FuncDecl)(nil)}
 
@@ -137,14 +135,27 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		// The method must be declared in ALL interfaces the type implements.
-		// (In practice, a type usually implements one contract interface.)
+		// Pass if the method is declared in any of the implemented interfaces.
+		var ifaceNames []string
 		for _, c := range constraints {
-			if !c.methodNames[methodName] {
-				pass.Reportf(funcDecl.Name.Pos(),
-					"exported method %s on type %s is not declared in the %s interface (contract.go)",
-					methodName, named.Obj().Name(), c.ifaceName)
+			if c.methodNames[methodName] {
+				return
 			}
+			ifaceNames = append(ifaceNames, c.ifaceName)
+		}
+		// Method is in none of the interfaces — report against the union.
+		// Sort for deterministic diagnostic output (constraints is built by
+		// iterating maps, so the order would otherwise be non-deterministic).
+		sort.Strings(ifaceNames)
+		joined := strings.Join(ifaceNames, ", ")
+		if len(constraints) == 1 {
+			pass.Reportf(funcDecl.Name.Pos(),
+				"exported method %s on type %s is not declared in the %s interface (contract.go)",
+				methodName, named.Obj().Name(), joined)
+		} else {
+			pass.Reportf(funcDecl.Name.Pos(),
+				"exported method %s on type %s is not declared in any of the implemented contract interfaces [%s] (contract.go)",
+				methodName, named.Obj().Name(), joined)
 		}
 	})
 

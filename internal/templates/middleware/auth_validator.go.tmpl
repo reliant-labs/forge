@@ -1,9 +1,10 @@
 package middleware
 
-import "context"
-
-// KeyValidator validates API keys and returns the associated claims.
-// Implement this interface with your storage backend (database, cache, etc.).
+// KeyValidator is aliased from auth.KeyValidator in auth_gen.go.
+//
+// To wire API-key auth, implement KeyValidator with your storage backend
+// (database, cache, etc.) and pass it to GeneratedAuthInterceptor when
+// constructing the interceptor chain in pkg/app/setup.go.
 //
 // Example implementation:
 //
@@ -13,13 +14,11 @@ import "context"
 //
 //	func (v *DBKeyValidator) ValidateKey(ctx context.Context, key string) (*Claims, error) {
 //	    var claims Claims
-//	    err := v.db.QueryRowContext(ctx, "SELECT user_id, email, org_id, role FROM api_keys WHERE key = $1 AND revoked_at IS NULL", key).
+//	    err := v.db.QueryRowContext(ctx,
+//	        "SELECT user_id, email, org_id, role FROM api_keys WHERE key = $1 AND revoked_at IS NULL", key).
 //	        Scan(&claims.UserID, &claims.Email, &claims.OrgID, &claims.Role)
 //	    if err != nil {
 //	        return nil, fmt.Errorf("invalid API key")
 //	    }
 //	    return &claims, nil
 //	}
-type KeyValidator interface {
-	ValidateKey(ctx context.Context, key string) (*Claims, error)
-}

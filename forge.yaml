@@ -69,7 +69,7 @@ contracts:
         - "internal/packs"                 # contract.go declares `Manager` (legacy name, not bootstrap-managed); the package is forge-internal, not a user-project bootstrap entry.
         - "internal/database"              # Multi-interface contract.go (SchemaIntrospector + MigrationService + ProtoGenerator); used by forge cli + dblint, not bootstrap codegen.
         - "internal/checksums"             # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
-        - "gen/forge/v1"                   # protoc-gen-go generated code; exported package vars are part of the protobuf API.
+        - "internal/gen/forge/v1"          # protoc-gen-go generated code; exported package vars are part of the protobuf API.
         - "cmd/forge"                      # Linker-set version metadata; -X flags require exported package vars.
         - "cmd/contractlint"               # Tool entry point; main package, no test seam.
 auth:

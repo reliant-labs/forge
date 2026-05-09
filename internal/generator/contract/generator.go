@@ -1,6 +1,16 @@
 // Package contract parses Go interface definitions from contract.go files
-// and generates mock_gen.go (function-field mock pattern) and
-// middleware_gen.go (logging/tracing wrapper) in the same directory.
+// and generates mock_gen.go (function-field mock pattern) in the same
+// directory.
+//
+// Earlier versions of this package also emitted middleware_gen.go,
+// tracing_gen.go and metrics_gen.go — per-method wrappers around every
+// contract.go interface. Those were removed in favour of Connect
+// interceptors at the handler boundary (forge/pkg/observe) plus opt-in
+// helpers (observe.LogCall, observe.TraceCall, observe.NewCallMetrics)
+// for users who want internal-package observability. The mock stays
+// codegen because the per-method MockX struct is a real grep target —
+// "show me MockUserService's methods" is a tight feedback loop that
+// generic reflection can't replace.
 package contract
 
 import (
@@ -12,6 +22,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -41,10 +52,22 @@ type ContractFile struct {
 	Package    string
 	Imports    map[string]string // alias/name → import path (e.g. "sql" → "database/sql")
 	Interfaces []InterfaceDef
+	// InterfaceNames is the set of interface type names defined in this file.
+	// Used by the zero-value generator to emit "nil" for interface-typed
+	// returns instead of the invalid composite literal "T{}".
+	InterfaceNames map[string]bool
 }
 
-// Generate parses contractPath and writes mock_gen.go and middleware_gen.go
-// next to it.
+// Generate parses contractPath and writes mock_gen.go next to it.
+//
+// In addition to (re)writing mock_gen.go, Generate sweeps any stale
+// observability wrappers (middleware_gen.go, tracing_gen.go,
+// metrics_gen.go) from the same directory — these were emitted by
+// previous forge versions and are now superseded by the
+// forge/pkg/observe Connect interceptors. Removing them here (rather
+// than relying on the audit "orphan" report) keeps `forge generate`
+// idempotent and gives the user a clear signal in the build output:
+// either the file is present and current, or it's gone.
 func Generate(contractPath string) error {
 	cf, err := ParseContract(contractPath)
 	if err != nil {
@@ -57,22 +80,35 @@ func Generate(contractPath string) error {
 		return fmt.Errorf("generate mock: %w", err)
 	}
 
-	if err := writeMiddleware(cf, dir); err != nil {
-		return fmt.Errorf("generate middleware: %w", err)
-	}
-
-	if err := writeTracing(cf, dir); err != nil {
-		return fmt.Errorf("generate tracing: %w", err)
-	}
-
-	if err := writeMetrics(cf, dir); err != nil {
-		return fmt.Errorf("generate metrics: %w", err)
+	if err := removeLegacyWrappers(dir); err != nil {
+		return fmt.Errorf("remove legacy wrappers: %w", err)
 	}
 
 	return nil
 }
 
+// removeLegacyWrappers deletes middleware_gen.go, tracing_gen.go and
+// metrics_gen.go from dir if present. These were emitted by earlier
+// forge versions; they're now replaced by observe.* libraries. Missing
+// files are not an error — the function is safe to call on freshly
+// scaffolded packages.
+func removeLegacyWrappers(dir string) error {
+	for _, name := range []string{"middleware_gen.go", "tracing_gen.go", "metrics_gen.go"} {
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // ParseContract parses a contract.go file and extracts all interface definitions.
+//
+// Sibling .go files in the same package directory are also scanned (parse-only,
+// no method extraction) to populate InterfaceNames so the mock generator can
+// emit "nil" for interface-typed returns whose declaration lives outside
+// contract.go (e.g. internal/debug defines Service in contract.go and
+// Debugger in debugger.go).
 func ParseContract(path string) (*ContractFile, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
@@ -81,8 +117,36 @@ func ParseContract(path string) (*ContractFile, error) {
 	}
 
 	cf := &ContractFile{
-		Package: file.Name.Name,
-		Imports: make(map[string]string),
+		Package:        file.Name.Name,
+		Imports:        make(map[string]string),
+		InterfaceNames: make(map[string]bool),
+	}
+
+	// Scan sibling .go files in the same package directory and record any
+	// interface type names. This lets zeroValue recognize interfaces whose
+	// declarations are split across multiple files in the package (common
+	// pattern: contract.go has Service, debugger.go has Debugger).
+	dir := filepath.Dir(path)
+	if entries, dirErr := os.ReadDir(dir); dirErr == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+				continue
+			}
+			// Skip generated files — they re-declare nothing useful and
+			// can transiently fail to parse (e.g. an in-progress edit).
+			if strings.HasSuffix(entry.Name(), "_gen.go") {
+				continue
+			}
+			siblingPath := filepath.Join(dir, entry.Name())
+			if siblingPath == path {
+				continue
+			}
+			siblingFile, sErr := parser.ParseFile(fset, siblingPath, nil, parser.SkipObjectResolution)
+			if sErr != nil {
+				continue // best-effort: skip unparseable siblings
+			}
+			collectInterfaceNames(siblingFile, cf.InterfaceNames)
+		}
 	}
 
 	// Collect imports: build a map from local name → import path.
@@ -123,6 +187,7 @@ func ParseContract(path string) (*ContractFile, error) {
 				name:      typeSpec.Name.Name,
 				ifaceType: ifaceType,
 			})
+			cf.InterfaceNames[typeSpec.Name.Name] = true
 		}
 	}
 
@@ -172,6 +237,28 @@ func ParseContract(path string) (*ContractFile, error) {
 	}
 
 	return cf, nil
+}
+
+// collectInterfaceNames records the name of every interface type declared in
+// file into the names set. Used to build a package-wide set of interface
+// names so the zero-value generator can emit "nil" for interface-typed
+// returns rather than the invalid composite literal "T{}".
+func collectInterfaceNames(file *ast.File, names map[string]bool) {
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			if _, ok := typeSpec.Type.(*ast.InterfaceType); ok {
+				names[typeSpec.Name.Name] = true
+			}
+		}
+	}
 }
 
 // extractMethod builds a MethodDef from a *ast.FuncType.
@@ -258,22 +345,19 @@ func collectFromTypeExpr(typeExpr string, importMap map[string]string, needed ma
 // writeMock generates mock_gen.go in dir.
 func writeMock(cf *ContractFile, dir string) error {
 	imports := collectImports(cf, cf.Interfaces)
-	// Always need "fmt" for the not-set error message (if there are methods).
-	hasMethods := false
-	for _, iface := range cf.Interfaces {
-		if len(iface.Methods) > 0 {
-			hasMethods = true
-			break
-		}
-	}
-	if hasMethods {
-		addImport(&imports, "fmt")
+	// The mock embeds contractkit.Recorder and uses contractkit.MockNotSet
+	// for error-returning methods. The Recorder embed alone requires the
+	// import even for interfaces that have zero methods, so include it
+	// whenever the file declares at least one interface.
+	if len(cf.Interfaces) > 0 {
+		addImport(&imports, contractkitImport)
 	}
 
 	data := templateData{
-		Package:    cf.Package,
-		Imports:    imports,
-		Interfaces: cf.Interfaces,
+		Package:        cf.Package,
+		Imports:        imports,
+		Interfaces:     cf.Interfaces,
+		InterfaceNames: cf.InterfaceNames,
 	}
 
 	var buf bytes.Buffer
@@ -289,137 +373,19 @@ func writeMock(cf *ContractFile, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "mock_gen.go"), formatted, 0644)
 }
 
-// writeMiddleware generates middleware_gen.go in dir.
-func writeMiddleware(cf *ContractFile, dir string) error {
-	imports := collectImports(cf, cf.Interfaces)
-	// Always need "log/slog" for the struct field (present even with zero methods).
-	// Only need "time" when there are methods (used in method wrappers).
-	if len(cf.Interfaces) > 0 {
-		addImport(&imports, "log/slog")
-	}
-	hasMethods := false
-	for _, iface := range cf.Interfaces {
+// hasAnyMethod reports whether any interface in the set has at least one method.
+//
+// Retained even after the middleware/tracing/metrics wrappers were
+// removed — generator_test.go uses it as a helper, and the mock
+// template's "import contractkit only when at least one interface"
+// gate would be re-added if we ever bring back the recorder embed.
+func hasAnyMethod(ifaces []InterfaceDef) bool {
+	for _, iface := range ifaces {
 		if len(iface.Methods) > 0 {
-			hasMethods = true
-			break
+			return true
 		}
 	}
-	if hasMethods {
-		addImport(&imports, "time")
-	}
-
-	data := templateData{
-		Package:    cf.Package,
-		Imports:    imports,
-		Interfaces: cf.Interfaces,
-	}
-
-	var buf bytes.Buffer
-	if err := middlewareTmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("execute middleware template: %w", err)
-	}
-
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		return fmt.Errorf("gofmt middleware output: %w\n---\n%s", err, buf.String())
-	}
-
-	return os.WriteFile(filepath.Join(dir, "middleware_gen.go"), formatted, 0644)
-}
-
-// writeTracing generates tracing_gen.go in dir.
-func writeTracing(cf *ContractFile, dir string) error {
-	imports := collectImports(cf, cf.Interfaces)
-	// Always need "go.opentelemetry.io/otel/trace" for the struct field.
-	if len(cf.Interfaces) > 0 {
-		addImport(&imports, "go.opentelemetry.io/otel/trace")
-	}
-	// Need "go.opentelemetry.io/otel/codes" when there are methods with error results.
-	hasMethods := false
-	for _, iface := range cf.Interfaces {
-		if len(iface.Methods) > 0 {
-			hasMethods = true
-			break
-		}
-	}
-	if hasMethods {
-		addImport(&imports, "go.opentelemetry.io/otel/codes")
-	}
-	// Need "context" when there are methods without a context.Context parameter.
-	for _, iface := range cf.Interfaces {
-		for _, m := range iface.Methods {
-			if !m.HasContext() {
-				addImport(&imports, "context")
-				break
-			}
-		}
-	}
-
-	data := templateData{
-		Package:    cf.Package,
-		Imports:    imports,
-		Interfaces: cf.Interfaces,
-	}
-
-	var buf bytes.Buffer
-	if err := tracingTmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("execute tracing template: %w", err)
-	}
-
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		return fmt.Errorf("gofmt tracing output: %w\n---\n%s", err, buf.String())
-	}
-
-	return os.WriteFile(filepath.Join(dir, "tracing_gen.go"), formatted, 0644)
-}
-
-// writeMetrics generates metrics_gen.go in dir.
-func writeMetrics(cf *ContractFile, dir string) error {
-	imports := collectImports(cf, cf.Interfaces)
-	// Always need "go.opentelemetry.io/otel/metric" for the struct fields.
-	if len(cf.Interfaces) > 0 {
-		addImport(&imports, "go.opentelemetry.io/otel/metric")
-	}
-	// Need "go.opentelemetry.io/otel/attribute" and "time" when there are methods.
-	hasMethods := false
-	for _, iface := range cf.Interfaces {
-		if len(iface.Methods) > 0 {
-			hasMethods = true
-			break
-		}
-	}
-	if hasMethods {
-		addImport(&imports, "go.opentelemetry.io/otel/attribute")
-		addImport(&imports, "time")
-	}
-	// Need "context" when there are methods without a context.Context parameter.
-	for _, iface := range cf.Interfaces {
-		for _, m := range iface.Methods {
-			if !m.HasContext() {
-				addImport(&imports, "context")
-				break
-			}
-		}
-	}
-
-	data := templateData{
-		Package:    cf.Package,
-		Imports:    imports,
-		Interfaces: cf.Interfaces,
-	}
-
-	var buf bytes.Buffer
-	if err := metricsTmpl.Execute(&buf, data); err != nil {
-		return fmt.Errorf("execute metrics template: %w", err)
-	}
-
-	formatted, err := format.Source(buf.Bytes())
-	if err != nil {
-		return fmt.Errorf("gofmt metrics output: %w\n---\n%s", err, buf.String())
-	}
-
-	return os.WriteFile(filepath.Join(dir, "metrics_gen.go"), formatted, 0644)
+	return false
 }
 
 // addImport adds an import path if not already present.
@@ -468,6 +434,28 @@ func (m MethodDef) ResultSignature() string {
 	return sig
 }
 
+// RecordArgs returns the argument list to pass to the embedded
+// contractkit.Recorder.Record. Variadic params are passed verbatim
+// (no "..." suffix) so the recorder receives the slice as a single
+// any value — this is what callers want when asserting on captured
+// arguments. If the method has no parameters, returns the empty
+// string and the template emits Record("Method") with no extra args.
+func (m MethodDef) RecordArgs() string {
+	var parts []string
+	for _, p := range m.Params {
+		name := p.Name
+		if name == "" {
+			name = "_"
+		}
+		// For variadic params, pass the slice as a single value rather
+		// than spreading it — Recorder.Record uses ...any internally,
+		// so spreading would scatter the elements across multiple
+		// captured args, which is rarely what the test assertion wants.
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // CallArgs returns the argument list for delegating to the inner implementation,
 // e.g. "ctx, id" or "ctx, query, args...".
 func (m MethodDef) CallArgs() string {
@@ -505,18 +493,26 @@ func (m MethodDef) FuncFieldType() string {
 }
 
 // ZeroResults returns the zero-value expression for the result types,
-// for use in mock fallback returns. E.g. "nil, fmt.Errorf(...)".
-func (m MethodDef) ZeroResults(mockName string) string {
+// for use in mock fallback returns. E.g. "nil, contractkit.MockNotSet(...)".
+//
+// interfaceNames is the set of locally-defined interface names from the
+// parsed contract; passed through to zeroValue so interface-typed returns
+// emit "nil" rather than the invalid composite literal "T{}".
+//
+// The trailing error result is rendered as contractkit.MockNotSet so the
+// canonical "Mock<Iface>.<Method>Func not set" error string lives in the
+// library; bumping the format is now a one-place change.
+func (m MethodDef) ZeroResults(mockName string, interfaceNames map[string]bool) string {
 	if len(m.Results) == 0 {
 		return ""
 	}
 	var parts []string
 	for i, r := range m.Results {
-		// Last result that is "error" gets the fmt.Errorf fallback.
+		// Last result that is "error" delegates to contractkit.MockNotSet.
 		if i == len(m.Results)-1 && r.TypeExpr == "error" {
-			parts = append(parts, fmt.Sprintf(`fmt.Errorf("%s.%sFunc not set")`, mockName, m.Name))
+			parts = append(parts, fmt.Sprintf(`contractkit.MockNotSet(%q, %q)`, mockName, m.Name))
 		} else {
-			parts = append(parts, zeroValue(r.TypeExpr))
+			parts = append(parts, zeroValue(r.TypeExpr, interfaceNames))
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -576,8 +572,74 @@ func (m MethodDef) ErrorResultName() string {
 	return fmt.Sprintf("r%d", len(m.Results)-1)
 }
 
+// localNamedTypeRe matches an unqualified exported identifier — e.g. "CheckResult".
+// These are almost always struct types defined in the same package as the
+// contract, so the safe zero value is a composite literal "CheckResult{}".
+var localNamedTypeRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]*$`)
+
+// qualifiedNamedTypeRe matches "pkg.Type" — a type from another package.
+// Heuristically we emit "pkg.Type{}". This is wrong for interface types
+// (e.g. sql.Result), but the previous "nil" default was wrong for struct
+// types. Structs are far more common as direct return values; interfaces
+// are usually returned via pointer or wrapped in an error return.
+var qualifiedNamedTypeRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]*\.[A-Z][A-Za-z0-9_]*$`)
+
+// crossPackageInterfaces is a small allow-list of well-known cross-package
+// interface types. The zero-value generator emits "nil" for these instead
+// of the invalid composite literal "pkg.T{}".
+//
+// Local interfaces defined in the same contract.go are detected
+// automatically via ContractFile.InterfaceNames — this list only needs
+// to enumerate types that come from other packages and that contract
+// methods commonly return. Extend as needed; an unrecognized cross-
+// package interface still produces a build error in the generated mock.
+var crossPackageInterfaces = map[string]bool{
+	"context.Context": true,
+	"io.Reader":       true,
+	"io.Writer":       true,
+	"io.Closer":       true,
+	"io.ReadWriter":   true,
+	"io.ReadCloser":   true,
+	"io.WriteCloser":  true,
+	"io.ReadWriteCloser": true,
+	"io.Seeker":       true,
+	"io.ReaderAt":     true,
+	"io.WriterAt":     true,
+	"net.Conn":        true,
+	"net.Listener":    true,
+	"net.Addr":        true,
+	"http.Handler":    true,
+	"http.ResponseWriter": true,
+	"sql.Result":      true,
+	"driver.Conn":     true,
+	"driver.Driver":   true,
+	"driver.Result":   true,
+	"driver.Stmt":     true,
+	"driver.Tx":       true,
+	"fmt.Stringer":    true,
+	"error":           true,
+}
+
+// isInterfaceType reports whether typeExpr names an interface — either a
+// local interface defined in the contract file (interfaceNames) or one of
+// the well-known cross-package interfaces listed in crossPackageInterfaces.
+func isInterfaceType(typeExpr string, interfaceNames map[string]bool) bool {
+	if interfaceNames[typeExpr] {
+		return true
+	}
+	if crossPackageInterfaces[typeExpr] {
+		return true
+	}
+	return false
+}
+
 // zeroValue returns the zero value literal for a Go type expression.
-func zeroValue(typeExpr string) string {
+//
+// interfaceNames is the set of locally-defined interface type names from
+// the parsed ContractFile; types in that set (or in the cross-package
+// allow-list) emit "nil" instead of "T{}" because composite literals are
+// not valid for interface types.
+func zeroValue(typeExpr string, interfaceNames map[string]bool) string {
 	switch {
 	case typeExpr == "bool":
 		return "false"
@@ -593,19 +655,37 @@ func zeroValue(typeExpr string) string {
 		return "0"
 	case typeExpr == "error":
 		return "nil"
+	case typeExpr == "any", typeExpr == "interface{}":
+		return "nil"
 	case strings.HasPrefix(typeExpr, "*"),
 		strings.HasPrefix(typeExpr, "[]"),
 		strings.HasPrefix(typeExpr, "map["),
 		strings.HasPrefix(typeExpr, "chan "),
 		strings.HasPrefix(typeExpr, "<-chan "),
-		strings.HasPrefix(typeExpr, "func("):
+		strings.HasPrefix(typeExpr, "chan<- "),
+		strings.HasPrefix(typeExpr, "func("),
+		strings.HasPrefix(typeExpr, "interface{"),
+		strings.HasPrefix(typeExpr, "interface "):
 		return "nil"
+	case isInterfaceType(typeExpr, interfaceNames):
+		// Named interface type (local or well-known cross-package). A
+		// composite literal "T{}" is invalid for interfaces, so emit
+		// "nil" — the typed-nil-interface zero value.
+		return "nil"
+	case localNamedTypeRe.MatchString(typeExpr),
+		qualifiedNamedTypeRe.MatchString(typeExpr):
+		// Named type — assume a struct value and emit the composite-literal
+		// zero value "T{}" / "pkg.T{}". This is the only safe default for
+		// struct returns (where "nil" would not compile). Known limitation:
+		// if the named type is actually an interface from another package
+		// not in crossPackageInterfaces, "T{}" will not compile; either
+		// hand-edit the function field, change the contract to return a
+		// pointer, or extend the allow-list.
+		return typeExpr + "{}"
 	default:
-		// For interface types and named types from other packages
-		// (e.g. sql.Result is an interface), nil is usually right
-		// when it's used as an interface. For struct values we'd
-		// need the type, but in practice contract interfaces return
-		// pointers or interfaces alongside error.
+		// Anything else (generics like "Result[T]", arrays "[N]T", etc.)
+		// — fall back to nil. This is wrong for some shapes but matches
+		// the long-standing behavior.
 		return "nil"
 	}
 }

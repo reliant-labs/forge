@@ -1,0 +1,2 @@
+# Placeholder so go:embed all:clerk-webhook can resolve before the
+# templates land. Remove once the first real template file is added.

@@ -36,22 +36,22 @@ type ConnectionConfig struct {
 	MaxIdle  int
 }
 
-// ConnectionManager manages database connections per environment
-type ConnectionManager struct {
+// connectionManager manages database connections per environment
+type connectionManager struct {
 	mu          sync.Mutex
 	connections map[Environment]*sql.DB
 	configs     map[Environment]*ConnectionConfig
 }
 
 var (
-	globalConnMgr *ConnectionManager
+	globalConnMgr *connectionManager
 	connOnce      sync.Once
 )
 
-// GetConnectionManager returns the singleton connection manager
-func GetConnectionManager() *ConnectionManager {
+// getConnectionManager returns the singleton connection manager
+func getConnectionManager() *connectionManager {
 	connOnce.Do(func() {
-		globalConnMgr = &ConnectionManager{
+		globalConnMgr = &connectionManager{
 			connections: make(map[Environment]*sql.DB),
 			configs:     make(map[Environment]*ConnectionConfig),
 		}
@@ -73,7 +73,7 @@ var envVarForDSN = map[Environment]string{
 // convention), then the environment-specific variable (e.g.
 // forge_DB_DSN_DEV). Only the dev environment falls back to hardcoded
 // defaults; staging and prod require an environment variable.
-func (cm *ConnectionManager) loadDefaultConfigs() {
+func (cm *connectionManager) loadDefaultConfigs() {
 	for _, env := range []Environment{EnvDev, EnvStaging, EnvProd} {
 		if cfg := configFromEnv(env); cfg != nil {
 			cm.configs[env] = cfg
@@ -139,7 +139,7 @@ func defaultMaxIdle(env Environment) int {
 }
 
 // SetConfig updates the configuration for an environment
-func (cm *ConnectionManager) SetConfig(env Environment, config *ConnectionConfig) {
+func (cm *connectionManager) setConfig(env Environment, config *ConnectionConfig) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -153,7 +153,7 @@ func (cm *ConnectionManager) SetConfig(env Environment, config *ConnectionConfig
 }
 
 // GetConnection returns a database connection for the specified environment
-func (cm *ConnectionManager) GetConnection(env Environment) (*sql.DB, error) {
+func (cm *connectionManager) getConnection(env Environment) (*sql.DB, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -198,7 +198,7 @@ func (cm *ConnectionManager) GetConnection(env Environment) (*sql.DB, error) {
 }
 
 // CloseAll closes all database connections
-func (cm *ConnectionManager) CloseAll() {
+func (cm *connectionManager) closeAll() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -216,13 +216,13 @@ type QueryResult struct {
 }
 
 // ExecuteQuery executes a read-only query
-func (cm *ConnectionManager) ExecuteQuery(env Environment, query string, limit int) (*QueryResult, error) {
+func (cm *connectionManager) executeQuery(env Environment, query string, limit int) (*QueryResult, error) {
 	// Validate query is read-only
 	if !isReadOnlyQuery(query) {
 		return nil, fmt.Errorf("only SELECT queries are allowed")
 	}
 
-	db, err := cm.GetConnection(env)
+	db, err := cm.getConnection(env)
 	if err != nil {
 		return nil, err
 	}

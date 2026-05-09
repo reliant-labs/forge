@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// GetTaskfileTool returns the taskfile tool definition
-func GetTaskfileTool() Tool {
+// getTaskfileTool returns the taskfile tool definition
+func getTaskfileTool() Tool {
 	return Tool{
 		Name: "taskfile",
 		Description: `Run Taskfile.yml tasks safely without Bash access. This is the primary way to build, test, lint, and run Forge projects.

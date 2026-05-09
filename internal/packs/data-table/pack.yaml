@@ -1,0 +1,63 @@
+name: data-table
+kind: frontend
+description: |
+  Generic, fully-typed React data table wired to TanStack Query. Pairs
+  with forge's auto-generated `useEntities` hooks and the cursor-based
+  pagination convention. Drop the component into any list page:
+
+    import { DataTable, type ColumnDef } from "@/components/data-table";
+    const { data, isLoading } = useUsers({ limit: 25, search });
+    return <DataTable columns={userColumns} data={data?.users ?? []} isLoading={isLoading} />;
+
+  Files are installed into every frontend declared in forge.yaml at
+  src/components/data-table/.
+version: 1.1.0
+subpath: src/components/data-table
+
+config:
+  section: data_table
+  defaults:
+    default_page_size: 25
+    page_size_options: [10, 25, 50, 100]
+
+# npm packages installed via `npm install --save` in each frontend
+# directory at install time.
+npm_dependencies:
+  - "@tanstack/react-table@^8.20.0"
+
+# Third-party UI/component imports the pack templates are allowed to
+# reference directly. Anything outside this list that the
+# `frontendpacklint` analyzer recognizes as a UI library
+# (@radix-ui, @headlessui, etc.) raises a warning at `forge lint` time
+# — the convention is that frontend packs wrap base library primitives,
+# not bespoke third-party components. TanStack Table is allowed because
+# it is a *headless* state engine; the rendered output uses base
+# library primitives.
+allowed_third_party:
+  - "@tanstack/react-table"
+
+files:
+  - template: DataTable.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/data-table/DataTable.tsx"
+    overwrite: once
+    description: "Main DataTable component"
+  - template: columns.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/data-table/columns.tsx"
+    overwrite: once
+    description: "Column definition helpers"
+  - template: filters.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/data-table/filters.tsx"
+    overwrite: once
+    description: "Filter UI controls"
+  - template: pagination.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/data-table/pagination.tsx"
+    overwrite: once
+    description: "Pagination controls"
+  - template: index.ts.tmpl
+    output: "{{.FrontendPath}}/src/components/data-table/index.ts"
+    overwrite: once
+    description: "Barrel export"
+  - template: README.md.tmpl
+    output: "{{.FrontendPath}}/src/components/data-table/README.md"
+    overwrite: once
+    description: "Usage example + recipe"

@@ -27,4 +27,3 @@ var (
 	_ Context = (*Client)(nil)
 	_ Context = (*Tx)(nil)
 )
-

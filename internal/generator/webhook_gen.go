@@ -13,7 +13,8 @@ import (
 //   - handlers/<service>/webhook_<name>_test.go   (tests)
 //   - handlers/<service>/webhook_store.go         (idempotency store, only if not present)
 func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) error {
-	svcDir := filepath.Join(root, "handlers", serviceName)
+	svcPkg := ServicePackageName(serviceName)
+	svcDir := filepath.Join(root, "handlers", svcPkg)
 
 	// Ensure the service directory exists.
 	if _, err := os.Stat(svcDir); os.IsNotExist(err) {
@@ -21,13 +22,14 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 	}
 
 	data := templates.WebhookTemplateData{
-		Name:        webhookName,
-		ServiceName: serviceName,
-		Module:      modulePath,
+		Name:           webhookName,
+		ServiceName:    serviceName,
+		ServicePackage: svcPkg,
+		Module:         modulePath,
 	}
 
 	// -- webhook handler --
-	handlerContent, err := templates.WebhookTemplates.Render("webhooks.go.tmpl", data)
+	handlerContent, err := templates.WebhookTemplates().Render("webhooks.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render webhook handler: %w", err)
 	}
@@ -37,7 +39,7 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 	}
 
 	// -- webhook test --
-	testContent, err := templates.WebhookTemplates.Render("webhooks_test.go.tmpl", data)
+	testContent, err := templates.WebhookTemplates().Render("webhooks_test.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render webhook test: %w", err)
 	}
@@ -49,7 +51,7 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 	// -- webhook store (only create if not already present) --
 	storePath := filepath.Join(svcDir, "webhook_store.go")
 	if _, err := os.Stat(storePath); os.IsNotExist(err) {
-		storeContent, err := templates.WebhookTemplates.Render("webhooks_store.go.tmpl", data)
+		storeContent, err := templates.WebhookTemplates().Render("webhooks_store.go.tmpl", data)
 		if err != nil {
 			return fmt.Errorf("render webhook store: %w", err)
 		}

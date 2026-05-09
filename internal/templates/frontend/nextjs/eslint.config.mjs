@@ -10,7 +10,9 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import js from "@eslint/js";
+import importPlugin from "eslint-plugin-import";
 import react from "eslint-plugin-react";
+import unicorn from "eslint-plugin-unicorn";
 import tseslint from "typescript-eslint";
 import { FlatCompat } from "@eslint/eslintrc";
 
@@ -44,6 +46,11 @@ const config = [
       // `reportUnusedDisableDirectives` warning under next/core-web-vitals.
       // Treat the whole tree as read-only to silence the noise.
       "src/gen/**",
+      // Next.js auto-generates next-env.d.ts on `next dev` / `next build`
+      // and uses a triple-slash directive that
+      // @typescript-eslint/triple-slash-reference rejects. Standard
+      // convention is to ignore it — Next regenerates it as needed.
+      "next-env.d.ts",
     ],
   },
   js.configs.recommended,
@@ -52,6 +59,8 @@ const config = [
   {
     plugins: {
       react,
+      import: importPlugin,
+      unicorn,
     },
     rules: {
       complexity: "off",
@@ -70,6 +79,55 @@ const config = [
           ],
         },
       ],
+      // Import hygiene — block circular deps outright; nudge users toward
+      // named exports and grouped/sorted imports. Errors on the cycle
+      // case because cycles silently break code-splitting + cause subtle
+      // initialisation bugs; warn-only on the others so users can ratchet.
+      "import/no-cycle": ["error", { maxDepth: 10 }],
+      "import/no-default-export": "warn",
+      "import/order": [
+        "warn",
+        {
+          groups: [
+            "builtin",
+            "external",
+            "internal",
+            "parent",
+            "sibling",
+            "index",
+            "object",
+            "type",
+          ],
+          "newlines-between": "always",
+          alphabetize: { order: "asc", caseInsensitive: true },
+        },
+      ],
+      // Selective unicorn rules. The plugin as a whole is too noisy
+      // (e.g. no-array-for-each fires on idiomatic React .map adjacent
+      // patterns); these three are uncontroversial wins.
+      "unicorn/prefer-string-trim-start-end": "warn",
+      "unicorn/prefer-set-has": "warn",
+      "unicorn/prefer-includes": "warn",
+    },
+  },
+  {
+    // Next.js requires default exports for pages, layouts, route handlers,
+    // and a handful of other entry-point files. Disable no-default-export
+    // for those paths only.
+    files: [
+      "src/app/**/page.{ts,tsx}",
+      "src/app/**/layout.{ts,tsx}",
+      "src/app/**/loading.{ts,tsx}",
+      "src/app/**/error.{ts,tsx}",
+      "src/app/**/not-found.{ts,tsx}",
+      "src/app/**/template.{ts,tsx}",
+      "src/app/**/route.{ts,tsx}",
+      "src/middleware.{ts,tsx}",
+      "next.config.{js,ts,mjs}",
+      "*.config.{js,ts,mjs}",
+    ],
+    rules: {
+      "import/no-default-export": "off",
     },
   },
 ];

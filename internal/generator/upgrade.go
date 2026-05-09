@@ -48,25 +48,43 @@ type managedFile struct {
 }
 
 // fileEnabledByFeatures reports whether a managed file should be included
-// given the current feature flags. Files that don't match any gated path
-// are always included (backwards-compatible default).
+// given the current feature flags AND project kind. Files that don't match
+// any gated path are always included (backwards-compatible default).
+//
+// Kind gating: CLI and library projects don't ship the Connect-server stack
+// (cmd/{server,otel,db,main}.go, pkg/middleware/*, Dockerfile,
+// docker-compose, alloy-config). Listing them in the upgrade plan for those
+// kinds produced 100+ line "would update" diffs against files that should
+// not exist — noisy, and the fix recipe was always "ignore." Now they are
+// excluded from the plan up-front for non-service kinds.
 func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
 	p := f.destPath
+	kind := config.ProjectKindService
+	if cfg != nil {
+		kind = cfg.EffectiveKind()
+	}
+	isService := kind == config.ProjectKindService
+
+	// Kind gates first — service-shape files don't apply to CLI/library.
 	switch {
+	case strings.HasPrefix(p, "cmd/"):
+		return isService
+	case strings.HasPrefix(p, "pkg/middleware/"):
+		return isService
 	case p == "Dockerfile" || p == "docker-compose.yml":
-		return cfg.Features.DeployEnabled()
+		return isService && cfg.Features.DeployEnabled()
+	case p == "deploy/alloy-config.alloy":
+		return isService && cfg.Features.ObservabilityEnabled()
+	}
+
+	// Feature gates for files that aren't kind-restricted.
+	switch {
 	case strings.HasPrefix(p, "deploy/") && strings.HasSuffix(p, ".k"):
 		return cfg.Features.DeployEnabled()
 	case p == ".air.toml" || p == ".air-debug.toml":
 		return cfg.Features.HotReloadEnabled()
-	case p == "deploy/alloy-config.alloy":
-		return cfg.Features.ObservabilityEnabled()
 	case strings.HasPrefix(p, ".github/workflows/"):
 		return cfg.Features.CIEnabled()
-	case p == "cmd/server.go" || p == "cmd/otel.go":
-		return cfg.Features.CodegenEnabled()
-	case p == "cmd/db.go":
-		return cfg.Features.CodegenEnabled() && cfg.Features.MigrationsEnabled()
 	}
 	return true
 }
@@ -83,13 +101,74 @@ func filterManagedFiles(files []managedFile, cfg *config.ProjectConfig) []manage
 }
 
 // managedFiles returns the list of frozen files that upgrade manages.
+//
+// `binary: shared` projects swap cmd/main.go's source template from
+// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. Per-service cobra
+// subcommand files (cmd/<svc>.go) are intentionally NOT in this list:
+// they are scaffolded once and not re-rendered by `forge generate` /
+// `forge upgrade` since their content is mechanical (a single delegate
+// to runServer) and adding/removing services is handled by the
+// `forge add service` / per-service file generators.
 func managedFiles() []managedFile {
+	return managedFilesFor(config.ProjectBinaryPerService)
+}
+
+// managedFilesForCfg is like managedFiles but consults the project
+// config to choose the right per-kind / per-binary templates. Callers
+// that already have the project config should prefer this so the right
+// template is used during forge upgrade and forge generate's Tier-1
+// regeneration sweep.
+//
+// Kind sensitivity: the Taskfile template differs by kind (service has
+// the full task verb set; CLI has cobra-shaped tasks; library is leaner).
+// Without this, `forge upgrade` on a CLI/library project produced a
+// 100+ line diff that would have replaced the kind-correct Taskfile
+// with the service one — diff was correctly skipped (file was
+// "user-modified" from upgrade's perspective) but the dry-run output
+// was unparseable.
+//
+// Binary sensitivity: `binary: shared` projects swap cmd/main.go's
+// source from cmd-root.go.tmpl to cmd-shared-main.go.tmpl.
+func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
+	binary := config.ProjectBinaryPerService
+	kind := config.ProjectKindService
+	if cfg != nil {
+		binary = cfg.EffectiveBinary()
+		kind = cfg.EffectiveKind()
+	}
+	return managedFilesForKindBinary(kind, binary)
+}
+
+// managedFilesFor returns the file plan for an explicit binary mode at
+// the canonical service kind. Extracted so callers without a
+// *ProjectConfig (e.g. legacy tests) can still get a canonical file
+// list. New callers should prefer managedFilesForKindBinary so kind
+// branches (Taskfile.{cli,library}.yml.tmpl, etc.) are honored.
+func managedFilesFor(binary string) []managedFile {
+	return managedFilesForKindBinary(config.ProjectKindService, binary)
+}
+
+// managedFilesForKindBinary returns the file plan for an explicit kind
+// + binary mode. The kind selects the correct Taskfile template
+// (service / CLI / library); the binary selects cmd/main.go's source.
+func managedFilesForKindBinary(kind, binary string) []managedFile {
+	mainTmpl := "cmd-root.go.tmpl"
+	if binary == config.ProjectBinaryShared {
+		mainTmpl = "cmd-shared-main.go.tmpl"
+	}
+	taskfileTmpl := "Taskfile.yml.tmpl"
+	switch kind {
+	case config.ProjectKindCLI:
+		taskfileTmpl = "Taskfile.cli.yml.tmpl"
+	case config.ProjectKindLibrary:
+		taskfileTmpl = "Taskfile.library.yml.tmpl"
+	}
 	return []managedFile{
 		// ── Tier 1: Always overwritten by forge generate, gitignored ──
 
 		// Templated cmd files
 		{templateName: "cmd-server.go.tmpl", destPath: "cmd/server.go", templated: true, tier: Tier1},
-		{templateName: "cmd-root.go.tmpl", destPath: "cmd/main.go", templated: true, tier: Tier1},
+		{templateName: mainTmpl, destPath: "cmd/main.go", templated: true, tier: Tier1},
 		{templateName: "cmd-db.go.tmpl", destPath: "cmd/db.go", templated: true, tier: Tier1},
 		{templateName: "cmd-version.go.tmpl", destPath: "cmd/version.go", templated: true, tier: Tier1},
 
@@ -99,7 +178,7 @@ func managedFiles() []managedFile {
 		// ── Tier 2: Checksum-protected, committed to git ──
 
 		// Templated config files
-		{templateName: "Taskfile.yml.tmpl", destPath: "Taskfile.yml", templated: true, tier: Tier2},
+		{templateName: taskfileTmpl, destPath: "Taskfile.yml", templated: true, tier: Tier2},
 		{templateName: "Dockerfile.tmpl", destPath: "Dockerfile", templated: true, tier: Tier2},
 		{templateName: "docker-compose.yml.tmpl", destPath: "docker-compose.yml", templated: true, tier: Tier2},
 
@@ -165,6 +244,12 @@ type upgradeTemplateData struct {
 	DockerBuilderGoVersion string
 	Services               []ServiceInfo
 	ConfigFields           map[string]bool
+	// LocalForgePkgVendored — true when <projectDir>/.forge-pkg/go.mod
+	// exists, signalling that the project is using the dev-mode local
+	// vendoring of forge/pkg. The Dockerfile template uses this to emit
+	// a corresponding `COPY .forge-pkg/ ./.forge-pkg/` line so docker
+	// builds resolve the same replace target as host builds.
+	LocalForgePkgVendored bool
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -226,6 +311,18 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		}
 	}
 
+	// Detect whether the project is in the dev-mode local-vendor state for
+	// forge/pkg. The Dockerfile template gates its COPY .forge-pkg/ line on
+	// this so production-published projects (no .forge-pkg/ on disk) keep
+	// their canonical Dockerfile and dev-mode projects get the COPY line
+	// without the user editing the file by hand.
+	localForgePkgVendored := false
+	if projectDir != "" {
+		if _, err := os.Stat(filepath.Join(projectDir, ".forge-pkg", "go.mod")); err == nil {
+			localForgePkgVendored = true
+		}
+	}
+
 	return upgradeTemplateData{
 		Name:                   cfg.Name,
 		ProtoName:              protoName,
@@ -240,15 +337,46 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
 		Services:               services,
 		ConfigFields:           configFields,
+		LocalForgePkgVendored:  localForgePkgVendored,
 	}
 }
 
 // renderManagedFile renders a managed file's template content.
 func renderManagedFile(f managedFile, data upgradeTemplateData) ([]byte, error) {
+	var content []byte
+	var err error
 	if f.templated {
-		return templates.ProjectTemplates.Render(f.templateName, data)
+		content, err = templates.ProjectTemplates().Render(f.templateName, data)
+	} else {
+		content, err = templates.ProjectTemplates().Get(f.templateName)
 	}
-	return templates.ProjectTemplates.Get(f.templateName)
+	if err != nil {
+		return nil, err
+	}
+	// Canonicalize trailing newline. gofmt-formatted Go files (and most
+	// editor-on-save defaults across yaml/json/md) end with exactly one
+	// `\n`. Templates checked into the repo sometimes don't, which made
+	// drift detection report user-modified for files the user never
+	// touched — they just got a `\n` appended on their first editor save.
+	// Normalize at render time so byte-equal comparison and the on-disk
+	// write both end with a single newline.
+	return ensureTrailingNewline(content), nil
+}
+
+// ensureTrailingNewline appends exactly one trailing `\n` to text content,
+// trimming any extras. Empty inputs are left empty.
+func ensureTrailingNewline(b []byte) []byte {
+	if len(b) == 0 {
+		return b
+	}
+	end := len(b)
+	for end > 0 && b[end-1] == '\n' {
+		end--
+	}
+	out := make([]byte, end+1)
+	copy(out, b[:end])
+	out[end] = '\n'
+	return out
 }
 
 // simpleDiff produces a minimal unified-style diff showing changed lines.
@@ -378,9 +506,13 @@ func simpleDiff(path string, old, new []byte) string {
 
 // RegenerateInfraFiles regenerates all Tier 1 (always-overwrite) infrastructure
 // files. Called by forge generate to keep infrastructure in sync with templates.
+//
+// In `binary: shared` projects this picks cmd-shared-main.go.tmpl as the
+// source for cmd/main.go (instead of the canonical cmd-root.go.tmpl) so the
+// shared-binary scaffold survives generate cycles.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 	data := buildTemplateData(cfg, projectDir)
-	for _, f := range filterManagedFiles(managedFiles(), cfg) {
+	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
 		if f.tier != Tier1 {
 			continue
 		}
@@ -414,7 +546,7 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 	var results []UpgradeResult
 
-	for _, f := range filterManagedFiles(managedFiles(), cfg) {
+	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
 		// Render the expected content from the current template
 		expected, err := renderManagedFile(f, data)
 		if err != nil {
@@ -470,12 +602,24 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 			continue
 		}
 
-		// Tier 2: File differs — check if user has modified it
+		// Tier 2: File differs — check if user has modified it.
+		//
+		// "Modified" means the on-disk content matches neither the
+		// current checksum nor any prior render forge has produced for
+		// this path. The history check is what closes the stale-codegen
+		// gap: when a template is updated and the on-disk file is a
+		// prior render (matches a checksum in history but not the
+		// current one), forge treats it as auto-updateable rather than
+		// flagging it as user-modified. See FileChecksums docs in
+		// checksums.go.
 		diff := simpleDiff(f.destPath, existing, expected)
-		storedChecksum, hasChecksum := cs.Files[f.destPath]
+		entry, hasChecksum := cs.Files[f.destPath]
+		matchesKnownRender := hasChecksum && cs.MatchesAnyKnownRender(f.destPath, existing)
+		_ = entry // entry retained for future per-entry diagnostics
 
-		if hasChecksum && HashContent(existing) == storedChecksum {
-			// File matches stored checksum → user hasn't modified it → safe to auto-update
+		if matchesKnownRender {
+			// File matches stored checksum or a prior render → user
+			// hasn't modified it → safe to auto-update.
 			result := UpgradeResult{
 				Path:   f.destPath,
 				Status: UpgradeUpdated,

@@ -1,8 +1,11 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -210,7 +213,7 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir)
+	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
@@ -283,7 +286,7 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 		},
 	}
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir)
+	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
@@ -395,64 +398,115 @@ func TestGenerateCRUDTests_BasicGeneration(t *testing.T) {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir)
+	err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
-	genPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
-	data, err := os.ReadFile(genPath)
+	unitPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
+	unitData, err := os.ReadFile(unitPath)
 	if err != nil {
-		t.Fatalf("generated test file not found: %v", err)
+		t.Fatalf("generated unit test file not found: %v", err)
+	}
+	unitContent := string(unitData)
+
+	integrationPath := filepath.Join(handlerDir, "handlers_crud_integration_test.go")
+	integrationData, err := os.ReadFile(integrationPath)
+	if err != nil {
+		t.Fatalf("generated integration test file not found: %v", err)
+	}
+	integrationContent := string(integrationData)
+
+	// Integration file: should contain lifecycle test (all 5 CRUD ops matched)
+	if !contains(integrationContent, "TestCRUDLifecycle_Patient") {
+		t.Error("expected TestCRUDLifecycle_Patient in integration output")
 	}
 
-	content := string(data)
-
-	// Should contain lifecycle test (all 5 CRUD ops matched)
-	if !contains(content, "TestCRUDLifecycle_Patient") {
-		t.Error("expected TestCRUDLifecycle_Patient in generated output")
+	// Integration file: should contain error case tests
+	if !contains(integrationContent, "TestGet_Patient_NotFound") {
+		t.Error("expected TestGet_Patient_NotFound in integration output")
+	}
+	if !contains(integrationContent, "TestDelete_Patient_NotFound") {
+		t.Error("expected TestDelete_Patient_NotFound in integration output")
+	}
+	if !contains(integrationContent, "TestCreate_Patient_EmptyRequest") {
+		t.Error("expected TestCreate_Patient_EmptyRequest in integration output")
+	}
+	if !contains(integrationContent, "TestUpdate_Patient_NotFound") {
+		t.Error("expected TestUpdate_Patient_NotFound in integration output")
 	}
 
-	// Should contain error case tests
-	if !contains(content, "TestGet_Patient_NotFound") {
-		t.Error("expected TestGet_Patient_NotFound in generated output")
-	}
-	if !contains(content, "TestDelete_Patient_NotFound") {
-		t.Error("expected TestDelete_Patient_NotFound in generated output")
-	}
-	if !contains(content, "TestCreate_Patient_EmptyRequest") {
-		t.Error("expected TestCreate_Patient_EmptyRequest in generated output")
-	}
-	if !contains(content, "TestUpdate_Patient_NotFound") {
-		t.Error("expected TestUpdate_Patient_NotFound in generated output")
+	// Integration file: must START with the build tag so it's excluded from
+	// default `go test ./...`.
+	if !strings.HasPrefix(integrationContent, "//go:build integration\n") {
+		t.Error("expected //go:build integration as first line of integration output")
 	}
 
-	// Should contain unit test frames
-	if !contains(content, "TestUnit_CreatePatient") {
-		t.Error("expected TestUnit_CreatePatient in generated output")
+	// Unit file: should contain unit test frames
+	if !contains(unitContent, "TestUnit_CreatePatient") {
+		t.Error("expected TestUnit_CreatePatient in unit output")
 	}
-	if !contains(content, "TestUnit_GetPatient") {
-		t.Error("expected TestUnit_GetPatient in generated output")
-	}
-
-	// Should have test package suffix
-	if !contains(content, "package patients_test") {
-		t.Error("expected package patients_test in generated output")
+	if !contains(unitContent, "TestUnit_GetPatient") {
+		t.Error("expected TestUnit_GetPatient in unit output")
 	}
 
-	// Should have DO NOT EDIT marker
-	if !contains(content, "DO NOT EDIT") {
-		t.Error("expected DO NOT EDIT marker in generated output")
+	// Unit file: must NOT carry the integration build tag as a directive
+	// (a comment-mention in a doc block is fine).
+	if strings.HasPrefix(unitContent, "//go:build") {
+		t.Error("unit output must not start with a //go:build directive")
 	}
 
-	// Should include testify require import
-	if !contains(content, "github.com/stretchr/testify/require") {
-		t.Error("expected testify/require import in generated output")
+	// Both files: should have test package suffix
+	if !contains(unitContent, "package patients_test") {
+		t.Error("expected package patients_test in unit output")
+	}
+	if !contains(integrationContent, "package patients_test") {
+		t.Error("expected package patients_test in integration output")
 	}
 
-	// Should contain test field values
-	if !contains(content, `"test-value"`) {
-		t.Error("expected test-value string literal in generated output")
+	// Both files: should have DO NOT EDIT marker
+	if !contains(unitContent, "DO NOT EDIT") {
+		t.Error("expected DO NOT EDIT marker in unit output")
+	}
+	if !contains(integrationContent, "DO NOT EDIT") {
+		t.Error("expected DO NOT EDIT marker in integration output")
+	}
+
+	// Integration file: should include testify require import
+	if !contains(integrationContent, "github.com/stretchr/testify/require") {
+		t.Error("expected testify/require import in integration output")
+	}
+
+	// Integration file: should contain test field values
+	if !contains(integrationContent, `"test-value"`) {
+		t.Error("expected test-value string literal in integration output")
+	}
+
+	// Unit file: must delegate to tdd.RunRPCCases instead of inlining
+	// per-RPC harness construction. This is the migration fingerprint
+	// for v0.x-to-tdd-rpccases — locked here so future template churn
+	// trips a test rather than silently regressing the shape.
+	if !contains(unitContent, `"github.com/reliant-labs/forge/pkg/tdd"`) {
+		t.Error("expected unit output to import forge/pkg/tdd")
+	}
+	if !contains(unitContent, "tdd.RunRPCCases(t, []tdd.RPCCase[") {
+		t.Error("expected unit output to call tdd.RunRPCCases with []tdd.RPCCase[…] rows")
+	}
+	if !contains(unitContent, "svc.CreatePatient") {
+		t.Error("expected unit output to pass svc.CreatePatient as the handler arg")
+	}
+	// Unit file: scaffold marker still present so writeScaffoldFile keeps
+	// the file forge-owned until the user clears every marker.
+	if !contains(unitContent, "FORGE_SCAFFOLD:") {
+		t.Error("expected FORGE_SCAFFOLD marker in unit output")
+	}
+
+	// Unit file: must parse as valid Go. Catches template
+	// regressions that produce syntactically broken output —
+	// the template-level fingerprints above check shape, this
+	// checks structure.
+	if _, err := parser.ParseFile(token.NewFileSet(), unitPath, unitContent, parser.SkipObjectResolution); err != nil {
+		t.Errorf("unit output is not valid Go: %v\n----\n%s", err, unitContent)
 	}
 }
 
@@ -489,34 +543,33 @@ func TestGenerateCRUDTests_PartialCRUD(t *testing.T) {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir)
+	err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
-	genPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
-	data, err := os.ReadFile(genPath)
+	integrationPath := filepath.Join(handlerDir, "handlers_crud_integration_test.go")
+	integrationData, err := os.ReadFile(integrationPath)
 	if err != nil {
-		t.Fatalf("generated test file not found: %v", err)
+		t.Fatalf("generated integration test file not found: %v", err)
 	}
-
-	content := string(data)
+	integrationContent := string(integrationData)
 
 	// Should NOT contain lifecycle test (missing list, update, delete)
-	if contains(content, "TestCRUDLifecycle_Patient") {
+	if contains(integrationContent, "TestCRUDLifecycle_Patient") {
 		t.Error("expected no lifecycle test when not all 5 CRUD ops exist")
 	}
 
-	// Should contain individual tests for existing ops
-	if !contains(content, "TestCreate_Patient_EmptyRequest") {
+	// Should contain individual tests for existing ops (live in integration file)
+	if !contains(integrationContent, "TestCreate_Patient_EmptyRequest") {
 		t.Error("expected TestCreate_Patient_EmptyRequest")
 	}
-	if !contains(content, "TestGet_Patient_NotFound") {
+	if !contains(integrationContent, "TestGet_Patient_NotFound") {
 		t.Error("expected TestGet_Patient_NotFound")
 	}
 
 	// Should NOT contain tests for missing ops
-	if contains(content, "TestDelete_Patient_NotFound") {
+	if contains(integrationContent, "TestDelete_Patient_NotFound") {
 		t.Error("should not have delete test when delete op is missing")
 	}
 }
@@ -528,22 +581,29 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a stale test gen file
-	genPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
-	if err := os.WriteFile(genPath, []byte("package patients_test\n"), 0o644); err != nil {
+	// Create stale test gen files (both unit and integration variants)
+	unitPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
+	if err := os.WriteFile(unitPath, []byte("package patients_test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	integrationPath := filepath.Join(handlerDir, "handlers_crud_integration_test.go")
+	if err := os.WriteFile(integrationPath, []byte("//go:build integration\npackage patients_test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	svc := ServiceDef{Name: "PatientsService"}
 
-	err := GenerateCRUDTests(svc, nil, "example.com/test", projectDir)
+	err := GenerateCRUDTests(svc, nil, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDTests() error = %v", err)
 	}
 
-	// Stale file should be removed
-	if _, err := os.Stat(genPath); !os.IsNotExist(err) {
+	// Stale files should be removed
+	if _, err := os.Stat(unitPath); !os.IsNotExist(err) {
 		t.Error("stale handlers_crud_gen_test.go should have been removed")
+	}
+	if _, err := os.Stat(integrationPath); !os.IsNotExist(err) {
+		t.Error("stale handlers_crud_integration_test.go should have been removed")
 	}
 }
 
@@ -621,7 +681,7 @@ func TestBuildCRUDTestTemplateData(t *testing.T) {
 		},
 	}
 
-	data := buildCRUDTestTemplateData(svc, crudMethods, "example.com/test")
+	data := buildCRUDTestTemplateData(svc, crudMethods, "example.com/test", "")
 
 	if data.Package != "patients" {
 		t.Errorf("Package = %q, want patients", data.Package)
@@ -830,7 +890,7 @@ type Service struct {
 
 	crudMethods := MatchCRUDMethods(svc, entities)
 
-	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir)
+	err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil)
 	if err != nil {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
@@ -856,22 +916,24 @@ type Service struct {
 		t.Error("expected WhereEq for exact filter")
 	}
 
-	// Should contain ordering logic
-	if !contains(content, "ValidateOrderBy") {
-		t.Error("expected ValidateOrderBy for ordering")
+	// Should hand off ordering to the crud library (lifecycle moved
+	// into pkg/crud; the shim only wires request accessors).
+	if !contains(content, "HasOrderBy:    true") {
+		t.Error("expected HasOrderBy: true in generated ListOp literal")
 	}
-	if !contains(content, "req.Msg.OrderBy") {
-		t.Error("expected req.Msg.OrderBy in generated output")
+	if !contains(content, "req.OrderBy") {
+		t.Error("expected req.OrderBy accessor closure in generated output")
 	}
-	if !contains(content, "req.Msg.Descending") {
-		t.Error("expected req.Msg.Descending in generated output")
+	if !contains(content, "req.Descending") {
+		t.Error("expected req.Descending accessor closure in generated output")
 	}
 
-	// Should contain filter nil check for optional fields
-	if !contains(content, "req.Msg.Active != nil") {
+	// Should contain filter nil check for optional fields (now inside
+	// the per-RPC Filters closure).
+	if !contains(content, "req.Active != nil") {
 		t.Error("expected nil check for optional Active filter")
 	}
-	if !contains(content, "req.Msg.Search != nil") {
+	if !contains(content, "req.Search != nil") {
 		t.Error("expected nil check for optional Search filter")
 	}
 }

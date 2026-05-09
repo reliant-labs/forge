@@ -11,6 +11,33 @@ description: Database work — migrations own the schema, entity types evolve in
 
 `forge generate` does **NOT** touch the database layer. It never modifies `internal/db/`, `db/migrations/`, or `db/queries/`. You own all of this completely — evolve it freely.
 
+## Proto entities: greenfield vs migrated
+
+Two modes of operation, and `forge audit` (`proto_migration_alignment`
+category) tells you which one you're in:
+
+- **Greenfield (proto authoritative).** A fresh `forge new` with proto
+  entity annotations. `forge generate` produces ORM and CRUD handlers
+  from the proto; on the first run with no migrations it also generates
+  an initial migration from the entities. Proto leads, migrations track.
+
+- **Migrated (migrations authoritative).** When you bring an existing
+  schema into forge via `migration/service` or `migration/cli`, the
+  migrations carry the schema and proto entities become **advisory**.
+  `forge generate` does not regenerate migrations from proto. If you
+  removed proto entities entirely, `forge audit` reports
+  `migrations authoritative (no proto entities)`. If both exist and
+  diverge it flags
+  `diverged: N table(s) in migrations not in proto, M in proto not in
+  migrations` and you decide whether to drop the proto entities, sync
+  them via `forge db proto sync-from-db`, or roll a migration forward
+  to match proto.
+
+In both modes, **migrations remain the runtime source of truth.** Proto
+entities are either driving codegen (greenfield) or documenting it
+(migrated) — but the schema itself lives in `db/migrations/`. See the
+`proto` skill for the proto-side view of the same boundary.
+
 ## Architecture
 
 ```
@@ -150,7 +177,7 @@ Your DB often needs fields the API doesn't expose (audit trails, internal state,
 
 ### API and DB with different field names or shapes
 
-Proto uses `camelCase` field names and specific protobuf types. Your DB might use `snake_case` columns and different types. Concrete structs + mappers handle this cleanly.
+Proto fields are `snake_case` (e.g. `created_at`, `org_id`) and the generated Go types are `PascalCase` (`CreatedAt`, `OrgID`). Your DB might use different column names or different types (e.g. `pgtype.Timestamptz` instead of `*timestamppb.Timestamp`). Concrete structs + mappers handle this cleanly. See `architecture` for the canonical naming-conventions table.
 
 ### Entities that exist only in the DB
 

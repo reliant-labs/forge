@@ -7,7 +7,7 @@ import (
 )
 
 func TestReactNativeTemplatesList(t *testing.T) {
-	files, err := FrontendTemplates.List("react-native")
+	files, err := FrontendTemplates().List("react-native")
 	if err != nil {
 		t.Fatalf("List react-native templates: %v", err)
 	}
@@ -49,14 +49,14 @@ func TestReactNativeTemplatesRender(t *testing.T) {
 		Module:       "example.com/testproject",
 	}
 
-	files, err := FrontendTemplates.List("react-native")
+	files, err := FrontendTemplates().List("react-native")
 	if err != nil {
 		t.Fatalf("List react-native templates: %v", err)
 	}
 
 	for _, f := range files {
 		t.Run(f, func(t *testing.T) {
-			content, err := FrontendTemplates.Render(filepath.Join("react-native", f), data)
+			content, err := FrontendTemplates().Render(filepath.Join("react-native", f), data)
 			if err != nil {
 				t.Fatalf("render %s: %v", f, err)
 			}
@@ -68,7 +68,7 @@ func TestReactNativeTemplatesRender(t *testing.T) {
 
 	// Verify specific template outputs
 	t.Run("package.json contains expo", func(t *testing.T) {
-		content, _ := FrontendTemplates.Render("react-native/package.json.tmpl", data)
+		content, _ := FrontendTemplates().Render("react-native/package.json.tmpl", data)
 		s := string(content)
 		if !strings.Contains(s, `"name": "myapp"`) {
 			t.Error("package.json should contain frontend name")
@@ -79,7 +79,7 @@ func TestReactNativeTemplatesRender(t *testing.T) {
 	})
 
 	t.Run("connect.ts uses EXPO_PUBLIC_API_URL", func(t *testing.T) {
-		content, _ := FrontendTemplates.Render("react-native/src/lib/connect.ts.tmpl", data)
+		content, _ := FrontendTemplates().Render("react-native/src/lib/connect.ts.tmpl", data)
 		s := string(content)
 		if !strings.Contains(s, "EXPO_PUBLIC_API_URL") {
 			t.Error("connect.ts should reference EXPO_PUBLIC_API_URL")
@@ -90,7 +90,7 @@ func TestReactNativeTemplatesRender(t *testing.T) {
 	})
 
 	t.Run("layout contains proper JSX", func(t *testing.T) {
-		content, _ := FrontendTemplates.Render("react-native/app/_layout.tsx.tmpl", data)
+		content, _ := FrontendTemplates().Render("react-native/app/_layout.tsx.tmpl", data)
 		s := string(content)
 		if !strings.Contains(s, "myapp") {
 			t.Error("_layout.tsx should contain rendered frontend name")

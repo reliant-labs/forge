@@ -1,0 +1,49 @@
+"use client";
+
+// forge:scaffold one-shot — auth-ui DevModeBanner; canonical pattern in `forge skill load packs`.
+/**
+ * DevModeBanner — visible warning that the backend auth interceptor is
+ * running in dev-mode bypass. Shows only when the env var
+ * `NEXT_PUBLIC_AUTH_DEV_MODE=true` is set.
+ *
+ * The banner is intentionally loud because dev-mode auth means *every*
+ * request is treated as if a synthetic admin user made it. Forgetting to
+ * disable it before deploying would be a Bad Day.
+ *
+ * Drop into your root layout, above the rest of the app chrome:
+ *
+ *   import {DevModeBanner} from "@/components/auth";
+ *   <DevModeBanner />
+ */
+
+export interface DevModeBannerProps {
+  /** Override the env var. Useful for tests or per-deploy gating. */
+  enabled?: boolean;
+  /** Override the message. Defaults to a concise developer warning. */
+  message?: string;
+}
+
+export function DevModeBanner({ enabled, message }: DevModeBannerProps = {}) {
+  const isOn =
+    enabled ??
+    (typeof process !== "undefined" &&
+      process.env.NEXT_PUBLIC_AUTH_DEV_MODE === "true");
+
+  if (!isOn) {
+    return null;
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="border-b border-amber-300 bg-amber-100 px-4 py-2 text-center text-sm font-medium text-amber-900"
+    >
+      <span aria-hidden className="mr-2">
+        ⚠
+      </span>
+      {message ??
+        "Dev-mode auth is enabled — every request is authenticated as a synthetic admin user. Do not deploy with this on."}
+    </div>
+  );
+}

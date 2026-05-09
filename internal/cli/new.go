@@ -9,6 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -16,6 +18,7 @@ func newNewCmd() *cobra.Command {
 	var (
 		projectPath     string
 		modulePath      string
+		kindFlag        string
 		serviceNames    []string
 		frontendNames   []string
 		goVersion       string
@@ -25,22 +28,25 @@ func newNewCmd() *cobra.Command {
 		licenseAuthor   string
 		disableFeatures []string
 		memoryFormat    string
+		skipTools       bool
+		bufPlugins      string
+		binaryMode      string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "new [project-name] --mod [module-path]",
-		Short: "Create a new Connect RPC project",
+		Short: "Create a new Forge project (service / CLI / library)",
 		Long: `Create a new project with the Forge framework structure.
 
-This command will create:
-- Project directory structure
-- Proto definitions directory
-- Service scaffolding with initial service
-- KCL deploy configuration for dev/staging/prod
-- Docker & docker-compose configuration
-- Basic .gitignore and .golangci.yml
-- Git repository with initial commit
-- forge.yaml project configuration
+Pick a project kind with --kind:
+
+  --kind service  (default) Connect-RPC service: handlers, middleware, deploy
+                            manifests, observability wiring, frontend support.
+  --kind cli                Cobra-based CLI binary: cmd/<name>/main.go +
+                            cmd/<name>/version.go, no server scaffolding,
+                            no proto/services, no deploy/.
+  --kind library            Pure Go module: pkg/<name>/ skeleton, no cmd/,
+                            no CI workflows by default.
 
 Use --disable to turn off features at creation time:
   forge new my-project --mod ... --disable ci,deploy
@@ -53,6 +59,8 @@ Example:
   forge new my-project --mod github.com/example/my-project
   forge new my-project --mod github.com/example/my-project --service gateway
   forge new my-project --mod github.com/example/my-project --frontend web
+  forge new mycli      --mod github.com/example/mycli --kind cli
+  forge new mylib      --mod github.com/example/mylib --kind library
   forge new --in-place --mod github.com/example/my-project`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -60,12 +68,13 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(projectName, projectPath, modulePath, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat)
+			return runNew(projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode)
 		},
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (required, e.g., github.com/example/my-project)")
+	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (can be repeated or comma-separated)")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
@@ -75,12 +84,105 @@ Example:
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload")
 	cmd.Flags().StringVar(&memoryFormat, "memory", "reliant", "AI memory file format: reliant (default), claude, cursor, copilot, codex")
+	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
+	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
+	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
 	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
 }
 
-func runNew(projectName, projectPath, modulePath string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string) error {
+// validateNewArgs runs the pure validation/normalization logic for runNew —
+// the part that doesn't touch the filesystem or run subprocesses. Returns the
+// normalized kind, the normalized buf-plugins choice, the normalized binary
+// mode, or an error.
+//
+// Extracted so tests can exercise the validation surface without invoking the
+// full scaffold (which calls `go mod tidy`, `buf generate`, etc., and is slow
+// or hangs in CI environments without network access).
+func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, frontendNames []string) (kind, plugins, binary string, err error) {
+	// Validate --kind. Empty string is treated as "service" for back-compat
+	// (callers that don't pass the flag at all).
+	kind = strings.ToLower(strings.TrimSpace(kindFlag))
+	if kind == "" {
+		kind = config.ProjectKindService
+	}
+	switch kind {
+	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary:
+		// ok
+	default:
+		return "", "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library", kindFlag),
+			"",
+			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, or --kind=library for a pure Go module")
+	}
+
+	// Validate --buf-plugins. Default 'local' (no BSR auth required); the
+	// 'remote' opt-in is preserved for users who genuinely want BSR-hosted
+	// plugins (no install required, latest version always — but rate-limited
+	// for anonymous users).
+	plugins = strings.ToLower(strings.TrimSpace(bufPlugins))
+	if plugins == "" {
+		plugins = "local"
+	}
+	switch plugins {
+	case "local", "remote":
+		// ok
+	default:
+		return "", "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("invalid --buf-plugins %q: valid values are local, remote", bufPlugins),
+			"",
+			"pass --buf-plugins=local (default; uses protoc-gen-go on PATH) or --buf-plugins=remote (BSR-hosted, no install required)")
+	}
+
+	// Validate --binary. Empty string is treated as "per-service" for
+	// back-compat (callers/tests that don't pass the flag at all). Only
+	// meaningful for service projects.
+	binary = strings.ToLower(strings.TrimSpace(binaryMode))
+	if binary == "" {
+		binary = config.ProjectBinaryPerService
+	}
+	switch binary {
+	case config.ProjectBinaryPerService, config.ProjectBinaryShared:
+		// ok
+	default:
+		return "", "", "", cliutil.UserErr("forge new",
+			fmt.Sprintf("invalid --binary %q: valid values are per-service, shared", binaryMode),
+			"",
+			"pass --binary=per-service (default; one cmd/server.go per service) or --binary=shared (one binary, cobra subcommand per service)")
+	}
+
+	// Reject incompatible flag combinations early so the user gets a
+	// clean error before any directory is created.
+	if kind != config.ProjectKindService {
+		if len(serviceNames) > 0 {
+			return "", "", "", cliutil.UserErr("forge new",
+				fmt.Sprintf("--service is only meaningful with --kind service (got --kind %s)", kind),
+				"",
+				"drop --service, or change to --kind service")
+		}
+		if len(frontendNames) > 0 {
+			return "", "", "", cliutil.UserErr("forge new",
+				fmt.Sprintf("--frontend is only meaningful with --kind service (got --kind %s)", kind),
+				"",
+				"drop --frontend, or change to --kind service")
+		}
+		if binary == config.ProjectBinaryShared {
+			return "", "", "", cliutil.UserErr("forge new",
+				fmt.Sprintf("--binary shared is only meaningful with --kind service (got --kind %s)", kind),
+				"",
+				"drop --binary=shared, or change to --kind service")
+		}
+	}
+	return kind, plugins, binary, nil
+}
+
+func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string) error {
+	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
+	if err != nil {
+		return err
+	}
+
 	var targetPath string
 
 	if inPlace {
@@ -104,27 +206,44 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		// Check that we're not scaffolding over an existing project
 		if _, err := os.Stat(filepath.Join(targetPath, defaultProjectConfigFile)); err == nil {
 			if !force {
-				return fmt.Errorf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath)
+				return cliutil.UserErr("forge new --in-place",
+					fmt.Sprintf("%s already exists in %s; this directory already contains a Forge project", defaultProjectConfigFile, targetPath),
+					"",
+					"pass --force to overwrite, or scaffold into a fresh directory")
 			}
 			fmt.Printf("  --force: overwriting existing %s\n", defaultProjectConfigFile)
 		}
 	} else {
 		if projectName == "" {
-			return fmt.Errorf("project name is required (or use --in-place to scaffold in the current directory)")
+			return cliutil.UserErr("forge new",
+				"project name is required",
+				"",
+				"pass a project name as the first positional arg, or use --in-place to scaffold in the current directory")
 		}
 
 		targetPath = filepath.Join(projectPath, projectName)
 
 		// Validate project name (hyphens allowed for directory/module paths)
 		if err := validateProjectName(projectName); err != nil {
-			return fmt.Errorf("invalid project name %q: %w", projectName, err)
+			return cliutil.WrapUserErr("forge new",
+				fmt.Sprintf("invalid project name %q", projectName),
+				"",
+				"use a name starting with a letter, containing only letters/digits/_/-",
+				err)
 		}
 
 		// Check if directory already exists
 		if _, err := os.Stat(targetPath); err == nil {
-			return fmt.Errorf("directory %s already exists", targetPath)
+			return cliutil.UserErr("forge new",
+				fmt.Sprintf("directory %s already exists", targetPath),
+				"",
+				"pick a different project name, or use --in-place --force to overwrite")
 		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to stat %s: %w", targetPath, err)
+			return cliutil.WrapUserErr("forge new",
+				fmt.Sprintf("failed to stat %s", targetPath),
+				"",
+				"check filesystem permissions on the parent directory",
+				err)
 		}
 	}
 
@@ -194,8 +313,18 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 
 	// Create project generator
 	gen := generator.NewProjectGenerator(projectName, targetPath, modulePath)
+	gen.Kind = kindNormalized
+	gen.Binary = binaryNormalized
+	gen.AdditionalServices = nil
 	if len(serviceNames) > 0 {
 		gen.ServiceName = serviceNames[0]
+		// Pass the rest so binary=shared can emit one cobra subcommand per
+		// service at scaffold time. Per-service mode ignores this and
+		// continues to add additional services post-scaffold via
+		// GenerateServiceFiles + AppendServiceToConfig (below).
+		if len(serviceNames) > 1 {
+			gen.AdditionalServices = append([]string(nil), serviceNames[1:]...)
+		}
 	}
 	gen.GoVersionOverride = goVersion
 	if len(frontendNames) > 0 {
@@ -224,7 +353,16 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		return fmt.Errorf("failed to write LICENSE: %w", err)
 	}
 
-	// Generate additional services beyond the first (if any)
+	// Generate additional services beyond the first (if any).
+	//
+	// Both binary modes call GenerateServiceFiles to scaffold the
+	// per-service handler/proto skeleton. The forge.yaml services list,
+	// however, is populated differently: in binary=per-service we append
+	// each service post-scaffold via AppendServiceToConfig (the
+	// historical, additive path). In binary=shared we wrote ALL services
+	// into forge.yaml during writeProjectConfig (so the bootstrap.go
+	// generator could see the full set up-front), and skipping the
+	// append step here prevents duplicates.
 	if len(serviceNames) > 1 {
 		for i, svcName := range serviceNames[1:] {
 			port := gen.ServicePort + i + 1
@@ -232,9 +370,11 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 			if err := generator.GenerateServiceFiles(targetPath, modulePath, svcName, projectName, port); err != nil {
 				return fmt.Errorf("failed to generate service %s: %w", svcName, err)
 			}
-			// Update project config with additional service
-			if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
-				return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
+			if binaryNormalized != config.ProjectBinaryShared {
+				// Update project config with additional service
+				if err := generator.AppendServiceToConfig(targetPath, svcName, port); err != nil {
+					return fmt.Errorf("failed to update config for service %s: %w", svcName, err)
+				}
 			}
 		}
 	}
@@ -251,10 +391,78 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		}
 	}
 
-	fmt.Println("\n🔧 Bootstrapping generated proto code...")
-	if err := bootstrapGeneratedCode(targetPath); err != nil {
-		fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
-		fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", CLIName(), CLIName())
+	// Apply the --buf-plugins=remote opt-in BEFORE bootstrapGeneratedCode
+	// runs, since the bootstrap invokes `buf generate` which reads
+	// buf.gen.yaml. The default ('local') is already what the template
+	// emits, so only act on 'remote'.
+	if bufPluginsNormalized == "remote" {
+		if err := rewriteBufGenYamlToRemote(targetPath); err != nil {
+			fmt.Fprintf(os.Stderr, "\n⚠️  Failed to switch buf.gen.yaml to remote plugins: %v\n", err)
+		} else {
+			fmt.Println("\n🔧 Switched buf.gen.yaml to BSR-hosted (remote:) plugins per --buf-plugins=remote")
+			fmt.Println("    Note: anonymous users may hit BSR rate limits; run 'buf registry login' if needed.")
+		}
+		// Also rewrite each frontend's buf.gen.yaml to use remote: bufbuild/es
+		// rather than the local protoc-gen-es plugin. Mirrors the Go-side
+		// switch so --buf-plugins=remote is a single coherent opt-in.
+		for _, feName := range frontendNames {
+			feBufGen := filepath.Join(targetPath, "frontends", feName, "buf.gen.yaml")
+			if err := rewriteFrontendBufGenYamlToRemote(feBufGen, feName); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  Failed to switch frontends/%s/buf.gen.yaml to remote plugin: %v\n", feName, err)
+			}
+		}
+	}
+
+	// Auto-install required proto plugins for the default local-plugin
+	// workflow. This makes 'forge new' → 'forge generate' work on a fresh
+	// machine without manual go install. Skip when:
+	//   - user opted out (--skip-tools)
+	//   - user switched to remote plugins (no local binaries needed)
+	//   - go is not on PATH (we'll surface a clearer error from generate later)
+	if !skipTools && bufPluginsNormalized == "local" && kindNormalized == config.ProjectKindService {
+		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
+		if err := runToolsInstall("latest", false); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
+			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", CLIName(), CLIName())
+		}
+	}
+
+	// Frontend dependencies must be installed BEFORE bootstrapGeneratedCode
+	// runs, because the scaffolded buf.gen.yaml uses a `local:` plugin path
+	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es. Without
+	// node_modules in place, the first `buf generate` for TS stubs fails.
+	// (Go-side codegen has no such dependency; the order swap is safe.)
+	if len(frontendNames) > 0 {
+		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
+		if err := runNpmInstall(targetPath, frontendNames); err != nil {
+			fmt.Printf("Warning: npm install failed: %v\n", err)
+			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
+			fmt.Println("    CI also requires package-lock.json to exist.")
+		}
+	}
+
+	// Service projects bootstrap proto/Connect codegen immediately so the
+	// scaffold compiles. CLI/library kinds have no proto/services, so the
+	// pipeline would fail with "no proto files found" — skip it cleanly.
+	if kindNormalized == config.ProjectKindService {
+		fmt.Println("\n🔧 Bootstrapping generated proto code...")
+		if err := bootstrapGeneratedCode(targetPath); err != nil {
+			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", CLIName(), CLIName())
+		}
+	}
+
+	// Re-record frozen-file checksums after bootstrap. bootstrapGeneratedCode
+	// invokes goimports -w on pkg/* which (under Go 1.19+) normalizes godoc
+	// comment list markers, drifting Tier-2 middleware files from their
+	// embedded-template bytes. Without this, `forge upgrade --dry-run` on a
+	// fresh scaffold would flag every reformatted file as user-modified.
+	postBootstrapBinary := config.ProjectBinaryPerService
+	if binaryNormalized != "" {
+		postBootstrapBinary = binaryNormalized
+	}
+	if err := generator.RecordFrozenChecksums(targetPath, postBootstrapBinary, kindNormalized); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to re-record frozen checksums: %v\n", err)
 	}
 
 	// Initialize git repository
@@ -269,14 +477,6 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
 
-	if len(frontendNames) > 0 {
-		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
-		if err := runNpmInstall(targetPath, frontendNames); err != nil {
-			fmt.Printf("Warning: npm install failed: %v\n", err)
-			fmt.Println("You can run 'npm install' manually later — note that CI requires package-lock.json to exist.")
-		}
-	}
-
 	// Scaffold finished — remove the in-progress marker so a later failure
 	// (if any were ever added) wouldn't delete a completed project.
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
@@ -287,6 +487,70 @@ func runNew(projectName, projectPath, modulePath string, serviceNames []string, 
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
 
 	return nil
+}
+
+// rewriteBufGenYamlToRemote switches the scaffolded buf.gen.yaml from
+// `local:` plugins (the default) to BSR-hosted `remote:` plugins. Used
+// by `forge new --buf-plugins=remote` for users who explicitly want the
+// no-install-required experience and accept BSR rate-limits / auth.
+//
+// Idempotent: a buf.gen.yaml that already declares the remote plugins is
+// rewritten to itself.
+func rewriteBufGenYamlToRemote(projectDir string) error {
+	path := filepath.Join(projectDir, "buf.gen.yaml")
+	if _, err := os.Stat(path); err != nil {
+		// No buf.gen.yaml in this project (e.g. library kind). Nothing to do.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat buf.gen.yaml: %w", err)
+	}
+	remote := `version: v2
+# Switched to BSR-hosted plugins via 'forge new --buf-plugins=remote'.
+# No local protoc-gen-go install required, but anonymous users may hit
+# BSR rate limits during heavy generate cycles — 'buf registry login'
+# raises the cap. To switch back, replace 'remote: <bsr-path>' with
+# 'local: <binary-name>'.
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: gen
+    opt:
+      - paths=source_relative
+  - remote: buf.build/connectrpc/go
+    out: gen
+    opt:
+      - paths=source_relative
+`
+	return os.WriteFile(path, []byte(remote), 0o644)
+}
+
+// rewriteFrontendBufGenYamlToRemote switches a frontend's buf.gen.yaml from
+// the default local: TS plugin to the BSR-hosted remote: bufbuild/es. Mirrors
+// rewriteBufGenYamlToRemote — used by `forge new --buf-plugins=remote` so
+// users who explicitly want the no-install BSR experience get it on both
+// the Go and TS sides. Idempotent and a no-op when the file is missing.
+func rewriteFrontendBufGenYamlToRemote(path, feName string) error {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	remote := fmt.Sprintf(`version: v2
+# Switched to BSR-hosted plugin via 'forge new --buf-plugins=remote'.
+# No npm install of @bufbuild/protoc-gen-es required, but anonymous users
+# may hit BSR rate limits — 'buf registry login' raises the cap. To switch
+# back, replace 'remote: buf.build/bufbuild/es' with
+#   'local: ./frontends/%s/node_modules/.bin/protoc-gen-es'
+plugins:
+  - remote: buf.build/bufbuild/es
+    out: frontends/%s/src/gen
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=.js
+`, feName, feName)
+	return os.WriteFile(path, []byte(remote), 0o644)
 }
 
 // initGitRepository initializes a git repository and makes initial commit
@@ -337,6 +601,7 @@ func runNpmInstall(root string, frontends []string) error {
 
 // runGoModTidy runs go mod tidy in the project root and gen/ directories when safe.
 func runGoModTidy(path string) error {
+
 	shouldTidyRoot, err := shouldRunRootGoModTidy(path)
 	if err != nil {
 		return err
@@ -372,7 +637,7 @@ func bootstrapGeneratedCode(path string) error {
 	generateMu.Lock()
 	defer generateMu.Unlock()
 
-	return runGeneratePipeline(path, false)
+	return runGeneratePipeline(path, false, false)
 }
 
 func shouldRunRootGoModTidy(path string) (bool, error) {
@@ -483,7 +748,10 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 		case "hot_reload", "hot-reload", "hotreload":
 			gen.Features.HotReload = f
 		default:
-			return fmt.Errorf("unknown feature %q; valid features: orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload", name)
+			return cliutil.UserErr("forge new --disable",
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload", name),
+				"",
+				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}
 	}
 	return nil

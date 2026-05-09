@@ -1,10 +1,20 @@
 version: v2
+# Default: local plugins resolved from $PATH. Anonymous users can
+# `forge generate` without ever touching the BSR. Run `forge tools
+# install` (or `go install` the two binaries listed below) once to
+# put them on PATH.
+#
+# To opt back into BSR-hosted plugins (no install required, latest
+# version always), replace `local:` with `remote:` and the binary
+# name with the BSR plugin path, e.g.
+#   - remote: buf.build/protocolbuffers/go
+#   - remote: buf.build/connectrpc/go
 plugins:
-  - remote: buf.build/protocolbuffers/go
+  - local: protoc-gen-go
     out: gen
     opt:
       - paths=source_relative
-  - remote: buf.build/connectrpc/go
+  - local: protoc-gen-connect-go
     out: gen
     opt:
       - paths=source_relative

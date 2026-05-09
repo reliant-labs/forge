@@ -1,0 +1,89 @@
+"""
+Development environment configuration for {{.ProjectName}} (binary=shared).
+
+Top-level identifiers `image_tag` and `registry` are overridable via
+`kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
+flag only binds top-level names, not nested struct fields.
+
+This project ships ONE Docker image; each service is a Deployment that
+runs the same binary with a different cobra subcommand. See
+`MultiServiceApplication` in `deploy/kcl/schema.k` for the contract.
+"""
+
+import deploy.kcl.schema
+import deploy.kcl.base
+import deploy.kcl.render
+
+# Per-environment config (generated from forge.yaml + proto annotations).
+# Run `forge generate` to refresh after editing forge.yaml or the config
+# proto. Hand-editing this file is not recommended.
+import deploy.kcl.dev.config_gen as cfg
+
+# Overridable via `kcl run -D image_tag=...`
+_image_tag = option("image_tag") or "latest"
+
+# Overridable via `kcl run -D registry=...`. Local dev defaults to the k3d
+# _registry created by `deploy/k3d.yaml`.
+_registry = option("registry") or "localhost:5050"
+
+_multi = schema.MultiServiceApplication {
+    name = "{{.ProjectName}}"
+    image = "{{.ProjectName}}"
+    # The shared binary lives at /app/{{.ProjectName}} in the
+    # built image (see Dockerfile). Each SubCommandService overrides
+    # only `args:` (the cobra subcommand) — the parent's command is
+    # inherited.
+    command = ["/app/{{.ProjectName}}"]
+    shared_env_vars = base.COMMON_ENV + cfg.APP_ENV + [
+        schema.EnvVar {
+            name = "SERVICE_NAME"
+            value = "{{.ProjectName}}"
+        }
+    ]
+    services = [
+{{- range .Services}}
+        schema.SubCommandService {
+            name = "{{$.ProjectName}}-{{.Name}}"
+            args = ["{{.Name}}"]
+            replicas = 1
+            ports = [
+                schema.ServicePort {
+                    name = "http"
+                    port = 80
+                    target_port = 8080
+                }
+            ]
+            env_vars = [
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{$.ProjectName}}-{{.Name}}"
+                }
+            ]
+            health_check = schema.HealthCheck {
+                liveness_path = "/healthz"
+                readiness_path = "/readyz"
+                http_port = 8080
+            }
+        }
+{{- end}}
+    ]
+}
+
+_env = schema.Environment {
+    name = "dev"
+    namespace = "{{.ProjectName}}-dev"
+    image_registry = _registry
+    image_tag = _image_tag
+    network_policies = False
+    # Generated ConfigMap(s) carrying non-sensitive per-env config.
+    # Sensitive fields project to externally-managed Secrets via
+    # `secret_ref` and are intentionally NOT generated here.
+    config_maps = cfg.CONFIG_MAPS
+    # multi_service_apps expands the MultiServiceApplication into a
+    # `{name: Application}` map suitable for Environment.applications.
+    # Each child Application inherits the parent's image + command +
+    # shared _env vars and merges its own per-service overrides.
+    applications = render.multi_service_apps(_multi)
+}
+
+manifests = render.render_environment(_env)

@@ -1,8 +1,13 @@
-# Forge lint configuration — calibrated defaults for Go+Connect projects.
+# Forge lint configuration — calibrated conservative defaults for
+# Go+Connect projects. The intent is "noise-free out of the box" —
+# every enabled linter has a brief rationale below. Ratchet down per-project
+# as the codebase matures.
+#
 # Adjust thresholds for your project:
 #   Stricter (CRUD APIs):    cyclop 12, funlen 60, gocognit 15
-#   Looser (operators/billing): cyclop 20, funlen 100, gocognit 30
-# Use path-based exclusions for complex subsystems rather than raising global thresholds.
+#   Looser (operators/billing): cyclop 20, funlen 120, gocognit 30
+# Use path-based exclusions for complex subsystems rather than raising
+# global thresholds.
 
 version: "2"
 
@@ -11,20 +16,24 @@ run:
 
 linters:
   enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - unused
-    - ineffassign
-    - gocritic
-    - revive
-    - noctx
-    - misspell
-    - cyclop
-    - funlen
-    - gocognit
-    - nestif
-    - interfacebloat
+    # Correctness — high-signal, low-noise.
+    - govet         # standard correctness vet set
+    - errcheck      # catches unchecked error returns
+    - staticcheck   # the SA / ST / S family — broadly accepted lints
+    - unused        # dead code detection
+    - ineffassign   # unused variable assignments
+    - noctx         # http.Request without a context
+    - misspell      # English spelling
+    # Style — cross-project consistency.
+    - gocritic      # opinionated style nits (diagnostic + style + perf tags)
+    - revive        # broad replacement for golint, configurable per-rule
+    - godot         # require trailing punctuation on top-level doc comments
+    # Complexity — fail-loud when functions get away from us.
+    - cyclop        # cyclomatic complexity (includes package-average ratchet)
+    - funlen        # function length cap
+    - gocognit      # cognitive complexity (subjectively closer to readability)
+    - nestif        # block-nesting depth
+    - interfacebloat # cap interface method count
   settings:
     govet:
       enable-all: true
@@ -52,24 +61,41 @@ linters:
         - name: max-control-nesting
           arguments: [4]
     cyclop:
+      # 15 keeps long switch/CRUD methods compiling; >15 usually means a
+      # helper would clarify intent. Bump for explicit operator/billing
+      # subsystems via the path-based exclusions below.
       max-complexity: 15
       package-average: 5.0
       skip-tests: true
     funlen:
-      lines: 80
-      statements: 40
+      # 100 lines / 50 statements is generous enough that constructors,
+      # builders, and table-driven test helpers don't trip; tight enough
+      # that 200-line monsters can't sneak in unnoticed.
+      lines: 100
+      statements: 50
     gocognit:
-      min-complexity: 25
+      # Cognitive complexity ≠ cyclomatic complexity: nesting and short-
+      # circuit chains weigh more. 20 catches the worst offenders without
+      # punishing well-structured branchy validators.
+      min-complexity: 20
     nestif:
       min-complexity: 5
     interfacebloat:
       max: 10
+    godot:
+      # Require sentence punctuation on top-level doc comments only;
+      # inline TODOs / sentence fragments inside function bodies are fine.
+      scope: declarations
+      capital: false
+      period: true
     gocritic:
       enabled-tags:
         - diagnostic
         - style
         - performance
       disabled-checks:
+        # `hugeParam` flags struct-by-value args >80 bytes; we routinely
+        # pass *Request / Deps structs by value as a deliberate API choice.
         - hugeParam
   exclusions:
     paths:
@@ -86,6 +112,7 @@ linters:
           - funlen
           - cyclop
           - gocognit
+          - godot
       - path: cmd/
         linters:
           - cyclop

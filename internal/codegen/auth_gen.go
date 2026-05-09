@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -23,7 +24,12 @@ type AuthTemplateData struct {
 // It generates:
 //   - pkg/middleware/auth_gen.go (always regenerated — DO NOT EDIT)
 //   - pkg/middleware/auth_validator.go (only if API key auth is configured and file doesn't exist)
-func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string) error {
+//
+// cs is the project's checksum tracker; passing it ensures the generated
+// files do not show up as orphans in `forge audit`. A nil cs is tolerated
+// (the file is still written) so callers without an active generate cycle
+// can use the helper too.
+func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error {
 	middlewareDir := filepath.Join(targetDir, "pkg", "middleware")
 	if err := os.MkdirAll(middlewareDir, 0755); err != nil {
 		return fmt.Errorf("create middleware dir: %w", err)
@@ -37,21 +43,22 @@ func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMetho
 		SkipMethods: skipMethods,
 	}
 
-	// Always regenerate auth_gen.go
-	content, err := templates.MiddlewareTemplates.Render("auth_gen.go.tmpl", data)
+	// Always regenerate auth_gen.go (force=true: this file is forge-owned).
+	content, err := templates.MiddlewareTemplates().Render("auth_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render auth_gen.go.tmpl: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(middlewareDir, "auth_gen.go"), content, 0644); err != nil {
+	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "middleware", "auth_gen.go"), content, cs, true); err != nil {
 		return fmt.Errorf("write auth_gen.go: %w", err)
 	}
 
 	// Generate auth_validator.go only if API key auth is used and the file doesn't exist.
-	// This is a user-editable file — never overwrite it.
+	// This is a user-editable file — never overwrite it. Once it exists, we don't
+	// even checksum it (it's user-owned, not forge-owned).
 	if cfg.Provider == "api_key" || cfg.Provider == "both" {
 		validatorPath := filepath.Join(middlewareDir, "auth_validator.go")
 		if _, err := os.Stat(validatorPath); os.IsNotExist(err) {
-			validatorContent, err := templates.MiddlewareTemplates.Render("auth_validator.go.tmpl", data)
+			validatorContent, err := templates.MiddlewareTemplates().Render("auth_validator.go.tmpl", data)
 			if err != nil {
 				return fmt.Errorf("render auth_validator.go.tmpl: %w", err)
 			}

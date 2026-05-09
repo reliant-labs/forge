@@ -1,17 +1,30 @@
+// forge:scaffold one-shot
+//
+// Sidebar nav — yours to edit. Forge writes this file once at scaffold
+// time and never overwrites it (Tier-2). The route data lives in
+// `nav_gen.tsx`, which forge regenerates from `forge.yaml` every run.
+//
+// Common edits:
+//   - filter ALL_ROUTES (e.g. only show admin routes for admin users)
+//   - reorder entries
+//   - attach a custom icon per route via the `icon` map below
+//   - add static routes that aren't backed by a service
+
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUiStore } from "@/stores/ui-store";
+import { ALL_ROUTES, type RouteSpec } from "@/components/nav_gen";
 
-const navItems = [
-  { label: "Dashboard", href: "/", icon: "dashboard" },
-{{- range .Pages}}
-  { label: "{{.Label}}", href: "/{{.Slug}}", icon: "entity" },
-{{- end}}
+// Curated nav items. Default: show every generated route preceded by the
+// Dashboard home link. Edit this list to prune/reorder.
+const navItems: Array<RouteSpec & { icon?: string }> = [
+  { path: "/", label: "Dashboard", labelLower: "dashboard", slug: "", icon: "dashboard" },
+  ...ALL_ROUTES.map((r) => ({ ...r, icon: "entity" })),
 ];
 
-function NavIcon({ type }: { type: string }) {
+function NavIcon({ type }: { type?: string }) {
   if (type === "dashboard") {
     return (
       <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -70,12 +83,12 @@ export function Nav() {
         <ul className="space-y-0.5">
           {navItems.map((item) => {
             const isActive =
-              pathname === item.href ||
-              (item.href !== "/" && pathname.startsWith(item.href));
+              pathname === item.path ||
+              (item.path !== "/" && pathname.startsWith(item.path));
             return (
-              <li key={item.href}>
+              <li key={item.path}>
                 <Link
-                  href={item.href}
+                  href={item.path}
                   title={collapsed ? item.label : undefined}
                   className={`flex items-center rounded-md px-3 py-2 text-sm transition-colors ${
                     collapsed ? "justify-center" : "gap-2.5"

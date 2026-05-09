@@ -1,11 +1,17 @@
-import Link from "next/link";
-import PageHeader from "@/components/ui/page_header";
+// forge:scaffold one-shot
+//
+// Dashboard root — yours to edit. Forge writes this file once at scaffold
+// time and never overwrites it (Tier-2). The entity tile + quick-action
+// grids live in `dashboard_gen.tsx`, which forge regenerates from
+// `forge.yaml` every run.
+//
+// Common edits:
+//   - swap `<EntityTiles />` for a real metrics summary
+//   - reorder sections, add custom widgets
+//   - replace the page header subtitle
 
-const pages: Array<{ label: string; slug: string; description: string }> = [
-{{- range .Pages}}
-  { label: "{{.Label}}", slug: "{{.Slug}}", description: "Manage {{.LabelLower}}" },
-{{- end}}
-];
+import PageHeader from "@/components/ui/page_header";
+import { EntityTiles, QuickActions } from "@/app/dashboard_gen";
 
 export default function DashboardPage() {
   return (
@@ -15,60 +21,8 @@ export default function DashboardPage() {
         subtitle="Overview of your application resources."
       />
 
-      {pages.length > 0 ? (
-        <>
-          {/* Stat cards */}
-          <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {pages.map((page) => (
-              <Link
-                key={page.slug}
-                href={`/${page.slug}`}
-                className="group rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-blue-300 hover:shadow-md"
-              >
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-gray-500">{page.label}</p>
-                  <span className="rounded-full bg-blue-50 p-1.5 text-blue-600 group-hover:bg-blue-100">
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-                    </svg>
-                  </span>
-                </div>
-                <p className="mt-2 text-3xl font-semibold text-gray-900">&mdash;</p>
-                <p className="mt-1 text-xs text-gray-400">{page.description}</p>
-              </Link>
-            ))}
-          </div>
-
-          {/* Quick actions */}
-          <div>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500">Quick Actions</h2>
-            <div className="flex flex-wrap gap-3">
-              {pages.map((page) => (
-                <Link
-                  key={page.slug}
-                  href={`/${page.slug}/new`}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 hover:border-gray-300"
-                >
-                  <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                  </svg>
-                  Create {page.label.replace(/s$/, "")}
-                </Link>
-              ))}
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="rounded-lg border border-dashed border-gray-300 p-12 text-center">
-          <svg className="mx-auto h-10 w-10 text-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
-          <p className="mt-3 text-sm font-medium text-gray-900">No resources yet</p>
-          <p className="mt-1 text-sm text-gray-500">
-            Add services with CRUD RPCs and run <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs font-mono">forge generate</code> to populate this dashboard.
-          </p>
-        </div>
-      )}
+      <EntityTiles />
+      <QuickActions />
     </div>
   );
 }

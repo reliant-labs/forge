@@ -1,12 +1,12 @@
 syntax = "proto3";
 
-package services.{{.ServiceName}}.v1;
+package services.{{.ServicePackage}}.v1;
 
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 import "forge/v1/forge.proto";
 
-option go_package = "{{.Module}}/gen/services/{{.ServiceName}}/v1;{{.ServiceName}}v1";
+option go_package = "{{.Module}}/gen/services/{{.ServicePackage}}/v1;{{.ServicePackage}}v1";
 
 // {{.Name}} service with basic CRUD operations
 service {{.ServiceName | pascalCase}}Service {

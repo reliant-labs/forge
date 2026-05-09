@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -19,7 +20,8 @@ type E2EMethodInfo struct {
 // E2ETemplateData holds all data needed to render E2E test templates.
 type E2ETemplateData struct {
 	Module           string
-	ServiceName      string
+	ServiceName      string // display form, may contain hyphens
+	ServicePackage   string // Go/proto-package-safe form (snake_case)
 	ProtoServiceName string // PascalCase service name for Connect client types
 	ProtoPackage     string
 	ProjectName      string
@@ -28,12 +30,13 @@ type E2ETemplateData struct {
 	FirstRequestType string // Used to anchor the pb import in helpers
 }
 
-// GenerateE2ETests renders E2E test templates into e2e/<serviceName>/ under projectDir.
+// GenerateE2ETests renders E2E test templates into e2e/<servicePackage>/ under projectDir.
 // It does not overwrite existing files — only creates new ones.
 func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, methods []E2EMethodInfo) error {
 	protoServiceName := naming.ToPascalCase(serviceName)
+	servicePackage := strings.ReplaceAll(strings.ToLower(serviceName), "-", "_")
 
-	destDir := filepath.Join(projectDir, "e2e", serviceName)
+	destDir := filepath.Join(projectDir, "e2e", servicePackage)
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("create e2e directory: %w", err)
 	}
@@ -41,8 +44,9 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 	data := E2ETemplateData{
 		Module:           modulePath,
 		ServiceName:      serviceName,
+		ServicePackage:   servicePackage,
 		ProtoServiceName: protoServiceName,
-		ProtoPackage:     serviceName + "v1",
+		ProtoPackage:     servicePackage + "v1",
 		ProjectName:      projectName,
 		Port:             0, // E2E uses freePort(); this is available as a template var
 		Methods:          methods,
@@ -68,7 +72,7 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 			continue
 		}
 
-		content, err := templates.TestTemplates.Render(tf.tmplName, data)
+		content, err := templates.TestTemplates().Render(tf.tmplName, data)
 		if err != nil {
 			return fmt.Errorf("render e2e template %s: %w", tf.tmplName, err)
 		}

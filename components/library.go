@@ -102,6 +102,19 @@ var registry = []Entry{
 	{Name: "toggle_switch", Category: CategoryUI, Description: "Toggle/switch input with label, description, disabled state, and multiple sizes.", Tags: []string{"ui", "toggle", "switch", "input", "form", "admin"}},
 	{Name: "activity_feed", Category: CategoryUI, Description: "Timeline of recent activity/events with user avatars, relative timestamps, and connecting lines.", Tags: []string{"ui", "activity", "feed", "timeline", "admin", "dashboard"}},
 	{Name: "metric_card", Category: CategoryUI, Description: "Single metric display with trend indicator, sparkline chart, and optional link.", Tags: []string{"ui", "metric", "stat", "dashboard", "analytics", "admin"}},
+
+	// ── UI Primitives (low-level building blocks consumed by frontend packs) ──
+	{Name: "button", Category: CategoryUI, Description: "Generic button primitive with primary/secondary/outline/ghost/danger variants, sizes, and loading state.", Tags: []string{"ui", "primitive", "button", "form", "action"}},
+	{Name: "input", Category: CategoryUI, Description: "Generic text input primitive with sizes, invalid state, and forwarded refs. Pair with the Label primitive.", Tags: []string{"ui", "primitive", "input", "form"}},
+	{Name: "label", Category: CategoryUI, Description: "Form field label primitive with optional required-asterisk affordance.", Tags: []string{"ui", "primitive", "label", "form"}},
+	{Name: "form", Category: CategoryUI, Description: "Form structural primitives — Form root plus FormField, FormError, FormActions for consistent layout and error display.", Tags: []string{"ui", "primitive", "form", "validation"}},
+	{Name: "card", Category: CategoryUI, Description: "Generic Card surface primitive with CardHeader, CardBody, CardFooter subcomponents. Distinct from MetricCard/StatCards (domain components).", Tags: []string{"ui", "primitive", "card", "surface", "container"}},
+	{Name: "table", Category: CategoryUI, Description: "Bare structural table primitives — Table, TableHeader, TableBody, TableRow, TableHead, TableCell. Pair with @tanstack/react-table for headless sort/filter.", Tags: []string{"ui", "primitive", "table", "data"}},
+	{Name: "select", Category: CategoryUI, Description: "Generic select primitive with options array, sizes, and invalid state.", Tags: []string{"ui", "primitive", "select", "dropdown", "form"}},
+	{Name: "chip", Category: CategoryUI, Description: "Removable chip/tag primitive for filter pills and selected tokens. Distinct from Badge (status-shaped).", Tags: []string{"ui", "primitive", "chip", "tag", "filter"}},
+	{Name: "row_actions_menu", Category: CategoryUI, Description: "Kebab-trigger dropdown of row-scoped actions (suspend/resume/delete) for admin list pages. Specialised shape on top of DropdownMenu.", Tags: []string{"ui", "primitive", "menu", "actions", "table", "admin"}},
+	{Name: "progress_bar", Category: CategoryUI, Description: "Value/max bar with optional label and auto-warning tint at >80%. Used in billing usage / quota / capacity displays.", Tags: []string{"ui", "primitive", "progress", "billing", "quota"}},
+	{Name: "status_dot", Category: CategoryUI, Description: "Colored dot plus optional label for compact status display in dense list/table cells. Distinct from Badge (pill-shaped).", Tags: []string{"ui", "primitive", "status", "indicator", "table"}},
 }
 
 // byName provides O(1) lookup.

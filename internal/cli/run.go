@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -57,6 +59,24 @@ func runProjectDev(opts runOptions) error {
 	}
 	if len(opts.services) > 0 {
 		fmt.Printf("[run] Running only: %v\n", opts.services)
+	}
+
+	// Resolve per-env config (forge.yaml inline + optional sibling file).
+	// Missing env or empty config is non-fatal — we log it and continue
+	// with whatever the binary's startup defaults provide.
+	projectDir, perr := findProjectConfigFile()
+	envExtraEnv := map[string]string{}
+	if perr == nil {
+		dir := filepath.Dir(projectDir)
+		envCfg, lerr := config.LoadEnvironmentConfig(cfg, dir, opts.env)
+		if lerr != nil {
+			fmt.Printf("[run] No per-env config for %q (%v); using binary defaults.\n", opts.env, lerr)
+		} else {
+			envExtraEnv = envConfigToEnvVars(envCfg, cfg, projectDir, opts.env)
+			if len(envExtraEnv) > 0 {
+				fmt.Printf("[run] Loaded %d per-env config values from environment %q.\n", len(envExtraEnv), opts.env)
+			}
+		}
 	}
 	fmt.Println()
 
@@ -193,8 +213,16 @@ func runProjectDev(opts runOptions) error {
 			args = append(args, serviceNames...)
 			cmd = exec.CommandContext(ctx, "go", args...)
 		}
+		// Layer per-env config (forge.yaml/sibling) onto the subprocess
+		// environment so the binary's flag/env loader sees the values.
+		// Existing process env wins (a developer can still override
+		// inline) — we apply the per-env values first, then anything
+		// already set in os.Environ().
+		baseEnv := mergeEnv(envExtraEnv, os.Environ())
 		if opts.debug {
-			cmd.Env = append(os.Environ(), "ENVIRONMENT=development")
+			cmd.Env = append(baseEnv, "ENVIRONMENT=development")
+		} else if len(envExtraEnv) > 0 {
+			cmd.Env = baseEnv
 		}
 		cmd.Dir = "."
 		if err := startProcess(cfg.Name, cmd); err != nil {
@@ -341,4 +369,130 @@ func streamWithPrefix(prefix string, r io.Reader, mu *sync.Mutex) {
 		fmt.Print(prefix + line + "\n")
 		mu.Unlock()
 	}
+}
+
+// envConfigToEnvVars projects a merged per-env config map onto a flat
+// NAME→VALUE map suitable for passing to a child process.
+//
+// The keys of envCfg are proto field names (snake_case). We map them to
+// uppercase env-var names by parsing proto/config/ for ConfigFieldOptions
+// to honour any custom env_var: annotations. When the proto descriptor
+// is unavailable (fresh project, no descriptor yet) we fall back to
+// converting snake_case → SCREAMING_SNAKE.
+//
+// Sensitive fields are skipped here — `forge run` is a local dev tool
+// and shouldn't be plumbing secret refs through env vars. Set the
+// secret value in your local env (.env / direnv) instead.
+func envConfigToEnvVars(envCfg map[string]any, _ *config.ProjectConfig, projectDir, _ string) map[string]string {
+	out := map[string]string{}
+	annotations := loadConfigAnnotations(filepath.Dir(projectDir))
+
+	for key, val := range envCfg {
+		envVar := strings.ToUpper(key)
+		var sensitive bool
+		if ann, ok := annotations[key]; ok {
+			if ann.EnvVar != "" {
+				envVar = ann.EnvVar
+			}
+			sensitive = ann.Sensitive
+		}
+		if sensitive {
+			continue
+		}
+		if s, ok := val.(string); ok {
+			if _, isSecretRef := parseLooseSecretRef(s); isSecretRef {
+				// Secret refs aren't resolvable at run-time. Skip and
+				// expect the user to set them in their env.
+				continue
+			}
+		}
+		out[envVar] = stringifyEnvValue(val)
+	}
+	return out
+}
+
+// configAnnotation is a lightweight projection of ConfigField used by
+// the run command to map proto field names to env-var names.
+type configAnnotation struct {
+	EnvVar    string
+	Sensitive bool
+}
+
+// loadConfigAnnotations parses proto/config/ via the forge descriptor
+// and returns proto-field-name → annotation. Returns an empty map on
+// any error (the caller falls back to snake→SCREAMING_SNAKE).
+func loadConfigAnnotations(projectDir string) map[string]configAnnotation {
+	out := map[string]configAnnotation{}
+	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
+	if err != nil || len(messages) == 0 {
+		return out
+	}
+	for _, m := range messages {
+		for _, f := range m.Fields {
+			out[f.Name] = configAnnotation{EnvVar: f.EnvVar, Sensitive: f.Sensitive}
+		}
+	}
+	return out
+}
+
+// parseLooseSecretRef returns ("name", true) for "${name}" strings.
+// Used by run to detect un-resolvable secret references in dev config
+// that should be skipped (let the user's local env supply the value).
+func parseLooseSecretRef(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "${") || !strings.HasSuffix(s, "}") {
+		return "", false
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(s, "${"), "}")
+	if inner == "" {
+		return "", false
+	}
+	return inner, true
+}
+
+// stringifyEnvValue turns a YAML-decoded scalar into its env-var string form.
+func stringifyEnvValue(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case int:
+		return fmt.Sprintf("%d", x)
+	case int64:
+		return fmt.Sprintf("%d", x)
+	case float64:
+		if x == float64(int64(x)) {
+			return fmt.Sprintf("%d", int64(x))
+		}
+		return fmt.Sprintf("%g", x)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// mergeEnv layers per-env config onto a base os.Environ() slice. Keys
+// already present in base are kept (so a developer's shell override
+// always wins). Returns a fresh slice safe to assign to cmd.Env.
+func mergeEnv(extra map[string]string, base []string) []string {
+	have := map[string]struct{}{}
+	for _, kv := range base {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			have[kv[:i]] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	out = append(out, base...)
+	for k, v := range extra {
+		if _, exists := have[k]; exists {
+			continue
+		}
+		out = append(out, k+"="+v)
+	}
+	return out
 }

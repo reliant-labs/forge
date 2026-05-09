@@ -1,22 +1,11 @@
 version: v2
 modules:
   - path: proto
-    name: buf.build/reliant-labs/forge
 deps:
   - buf.build/googleapis/googleapis
-breaking:
-  use:
-    - FILE
 lint:
   use:
     - STANDARD
-  enum_zero_value_suffix: _UNSPECIFIED
-  rpc_allow_same_request_response: false
-  rpc_allow_google_protobuf_empty_requests: false
-  rpc_allow_google_protobuf_empty_responses: false
-  ignore:
-    - test-app
-    - examples
-    - internal/assets
-    - demo-project
-    - test.proto
+breaking:
+  use:
+    - FILE

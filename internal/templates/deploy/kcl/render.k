@@ -25,6 +25,13 @@ _env_source = lambda ev: schema.EnvVar -> any {
                     key = ev.secret_key if ev.secret_key else ev.name
                 }
             }
+        if ev.config_map_ref:
+            valueFrom = {
+                configMapKeyRef = {
+                    name = ev.config_map_ref
+                    key = ev.config_map_key if ev.config_map_key else ev.name
+                }
+            }
     }
 }
 
@@ -414,6 +421,26 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
     ]
 }
 
+# Render a ConfigMap. The metadata namespace defaults to the env's
+# namespace when the caller didn't pin one explicitly on the schema.
+_render_config_map = lambda cm: schema.ConfigMap, env: schema.Environment -> any {
+    {
+        apiVersion = "v1"
+        kind = "ConfigMap"
+        metadata = {
+            name = cm.name
+            namespace = cm.namespace if cm.namespace else env.namespace
+            labels = {
+                "app.kubernetes.io/managed-by" = "forge"
+                "app.kubernetes.io/part-of" = env.name
+            } | cm.labels
+            if cm.annotations:
+                annotations = cm.annotations
+        }
+        data = cm.data
+    }
+}
+
 _render_namespace = lambda env: schema.Environment -> any {
     {
         apiVersion = "v1"
@@ -444,8 +471,37 @@ _render_app = lambda app: schema.Application, env: schema.Environment -> [any] {
         + _render_rbac(app, env)
 }
 
+# Expand a MultiServiceApplication into a flat list of Applications —
+# one per SubCommandService, all sharing the same image. Each child
+# Application's `args` is the SubCommandService's args, and shared env
+# vars from the parent are prepended (per-service env vars win on
+# duplicate keys when the consumer flattens; KCL list concat preserves
+# both, leaving the precedence to the runtime).
+multi_service_apps = lambda mapp: schema.MultiServiceApplication -> {str: schema.Application} {
+    {svc.name: schema.Application {
+        name = svc.name
+        image = mapp.image
+        replicas = svc.replicas
+        ports = svc.ports if svc.ports else [schema.ServicePort {}]
+        resources = svc.resources
+        env_vars = mapp.shared_env_vars + svc.env_vars
+        health_check = svc.health_check
+        security_context = svc.security_context
+        ingress = svc.ingress
+        autoscaling = svc.autoscaling
+        pdb = svc.pdb
+        init_containers = svc.init_containers
+        labels = mapp.labels | svc.labels
+        annotations = mapp.annotations | svc.annotations
+        service_account_name = svc.service_account_name
+        command = svc.command if svc.command else mapp.command
+        args = svc.args
+    } for svc in mapp.services}
+}
+
 render_environment = lambda env: schema.Environment -> [any] {
     [_render_namespace(env)] \
+        + [_render_config_map(cm, env) for cm in env.config_maps] \
         + [item for _, app in env.applications for item in _render_app(app, env)] \
         + (_render_network_policies(env) if env.network_policies else [])
 }

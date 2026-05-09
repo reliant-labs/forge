@@ -1,0 +1,28 @@
+name: twilio
+description: Twilio SMS/voice scaffold — client wrapper, HMAC-SHA1 webhook validation, messaging service stub (you own the code).
+deps:
+  go:
+    - github.com/twilio/twilio-go
+files:
+  - source: twilio_client.go.tmpl
+    destination: pkg/clients/twilio/client.go
+  - source: twilio_webhook.go.tmpl
+    destination: pkg/clients/twilio/webhook.go
+  - source: twilio_contract.go.tmpl
+    destination: internal/messaging/contract.go
+  - source: twilio_service.go.tmpl
+    destination: internal/messaging/service.go
+notes: |
+  After scaffolding, you own this code. Twilio's webhook signing rules and
+  status-callback parameters change occasionally — keep an eye on
+  https://www.twilio.com/docs/usage/security#validating-requests.
+
+  Required environment variables: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+  TWILIO_FROM_NUMBER. Configure via your secret manager of choice (per-env).
+
+  Real Twilio integrations always end up with project-specific message
+  storage — this starter intentionally ships handler code only, no proto
+  entities. Wire the message-tracking table to your own domain types.
+
+  Wire the webhook handler into your service mux at the route of your
+  choice (commonly `POST /webhooks/twilio/status`).

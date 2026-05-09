@@ -25,14 +25,19 @@ func TestJWTAuthPackManifest(t *testing.T) {
 		t.Errorf("Description should mention dev-mode, got: %s", p.Description)
 	}
 
-	// Check dependencies
+	// Check dependencies. Match by module path prefix so version-pinned
+	// entries (e.g. "module@v1.2.3") still satisfy the check.
 	wantDeps := map[string]bool{
-		"github.com/golang-jwt/jwt/v5":  false,
+		"github.com/golang-jwt/jwt/v5":     false,
 		"github.com/MicahParks/keyfunc/v3": false,
 	}
 	for _, dep := range p.Dependencies {
-		if _, ok := wantDeps[dep]; ok {
-			wantDeps[dep] = true
+		modPath := dep
+		if i := strings.Index(dep, "@"); i >= 0 {
+			modPath = dep[:i]
+		}
+		if _, ok := wantDeps[modPath]; ok {
+			wantDeps[modPath] = true
 		}
 	}
 	for dep, found := range wantDeps {
@@ -51,6 +56,28 @@ func TestJWTAuthPackManifest(t *testing.T) {
 	}
 	if !templateNames["dev_auth.go.tmpl"] {
 		t.Error("files should include dev_auth.go.tmpl")
+	}
+
+	// Check that all middleware-package files land under
+	// pkg/middleware/auth/jwtauth/ — the per-pack nested subpackage that
+	// prevents collisions with other auth packs (e.g. clerk).
+	for _, f := range p.Files {
+		if strings.HasPrefix(f.Output, "pkg/middleware/") &&
+			!strings.HasPrefix(f.Output, "pkg/middleware/auth/jwtauth/") {
+			t.Errorf("file %s emits into pkg/middleware/ root; expected pkg/middleware/auth/jwtauth/<file>", f.Output)
+		}
+	}
+	for _, f := range p.Generate {
+		if strings.HasPrefix(f.Output, "pkg/middleware/") &&
+			!strings.HasPrefix(f.Output, "pkg/middleware/auth/jwtauth/") {
+			t.Errorf("generate file %s emits into pkg/middleware/ root; expected pkg/middleware/auth/jwtauth/<file>", f.Output)
+		}
+	}
+
+	// Subpath hint must match the actual installation tree so users see the
+	// right thing in `forge pack info`.
+	if p.Subpath != "middleware/auth/jwtauth" {
+		t.Errorf("Subpath = %q, want %q", p.Subpath, "middleware/auth/jwtauth")
 	}
 
 	// Check generate hook
@@ -99,9 +126,11 @@ func TestJWTAuthTemplatesRender(t *testing.T) {
 				t.Errorf("template %s produced empty output", f.Template)
 			}
 
-			// Verify output contains expected package declaration
-			if !strings.Contains(output, "package middleware") {
-				t.Errorf("template %s output missing 'package middleware'", f.Template)
+			// Verify output contains expected package declaration. After
+			// the per-pack-subpackage refactor, all jwt-auth code lives in
+			// package jwtauth (under pkg/middleware/auth/jwtauth/).
+			if !strings.Contains(output, "package jwtauth") {
+				t.Errorf("template %s output missing 'package jwtauth'", f.Template)
 			}
 		})
 	}
@@ -115,14 +144,19 @@ func TestJWTValidatorTemplateContent(t *testing.T) {
 
 	content := string(tmplContent)
 
-	// Should contain key types and functions
+	// Should contain key types and functions. Names are unprefixed because
+	// the file lives in its own subpackage (jwtauth) — no collision with
+	// other auth packs.
 	checks := []string{
-		"JWTValidator",
-		"JWTValidatorConfig",
-		"NewJWTValidator",
+		"package jwtauth",
+		"type Validator struct",
+		"type ValidatorConfig struct",
+		"func NewValidator(",
 		"ValidateToken",
 		"keyfunc.NewDefault",
-		"func (v *JWTValidator) Close()",
+		"func (v *Validator) Close()",
+		// Cross-package references for shared Claims type.
+		"middleware.Claims",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
@@ -140,14 +174,25 @@ func TestDevAuthTemplateContent(t *testing.T) {
 	content := string(tmplContent)
 
 	checks := []string{
-		"DevAuthEnabled",
-		"DevClaims",
+		"package jwtauth",
+		// Unprefixed names — the package itself namespaces them.
+		"func DevAuthEnabled(",
+		"func DevClaims(",
 		"dev-user-001",
 		"ENVIRONMENT",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
 			t.Errorf("dev_auth.go.tmpl should contain %q", check)
+		}
+	}
+
+	// Negative checks: the old prefixed names belong to the pre-subpackage
+	// era. They must not reappear, otherwise we lose the structural
+	// collision-free property that the subpackage layout buys us.
+	for _, banned := range []string{"JWTDevAuthEnabled", "JWTDevClaims"} {
+		if strings.Contains(content, banned) {
+			t.Errorf("dev_auth.go.tmpl must not declare prefixed %q (now lives in package jwtauth)", banned)
 		}
 	}
 }
@@ -161,14 +206,15 @@ func TestAuthGenOverrideTemplateContent(t *testing.T) {
 	content := string(tmplContent)
 
 	checks := []string{
-		"InitAuth",
-		"CloseAuth",
-		"GeneratedAuthInterceptor",
+		"package jwtauth",
+		"func Init(",
+		"func Close(",
+		"func Interceptor(",
 		"DevAuthEnabled",
-		"jwtValidator",
+		"validator",
 		"JWT_JWKS_URL",
 		"JWT_SIGNING_METHOD",
-		"ContextWithClaims",
+		"middleware.ContextWithClaims",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {

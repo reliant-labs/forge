@@ -132,18 +132,50 @@ func goVersionFromGoMod(projectDir string) string {
 }
 
 // resolveGoVersion returns the Go version to use, preferring the override if set.
+// The returned value is clamped to defaultGoVersion when lower, since forge's
+// generated code (pkg/orm and friends) requires that minimum.
 func (g *ProjectGenerator) resolveGoVersion() string {
+	v := detectGoVersion()
 	if g.GoVersionOverride != "" {
-		v := g.GoVersionOverride
-		parts := strings.SplitN(v, ".", 3)
+		ov := g.GoVersionOverride
+		parts := strings.SplitN(ov, ".", 3)
 		if len(parts) == 2 {
-			v += ".0"
+			ov += ".0"
 		}
-		if _, _, _, ok := parseGoVersion(v); !ok {
+		if _, _, _, ok := parseGoVersion(ov); ok {
+			v = ov
+		} else {
 			fmt.Fprintf(os.Stderr, "⚠️  Invalid --go-version %q. Using detected version instead.\n", g.GoVersionOverride)
-			return detectGoVersion()
 		}
-		return v
 	}
-	return detectGoVersion()
+	if compareGoVersion(v, defaultGoVersion) < 0 {
+		fmt.Fprintf(os.Stderr, "ℹ️  Go version %s is below the forge minimum %s; pinning go.work/go.mod to %s. The Go toolchain (GOTOOLCHAIN=auto) will fetch the required compiler at build time.\n", v, defaultGoVersion, defaultGoVersion)
+		return defaultGoVersion
+	}
+	return v
+}
+
+// compareGoVersion returns -1, 0, or 1 if a is older than, equal to, or newer
+// than b. Unparseable inputs are treated as 0.0.0.
+func compareGoVersion(a, b string) int {
+	aMaj, aMin, aPatch, _ := parseGoVersion(a)
+	bMaj, bMin, bPatch, _ := parseGoVersion(b)
+	switch {
+	case aMaj != bMaj:
+		if aMaj < bMaj {
+			return -1
+		}
+		return 1
+	case aMin != bMin:
+		if aMin < bMin {
+			return -1
+		}
+		return 1
+	case aPatch != bPatch:
+		if aPatch < bPatch {
+			return -1
+		}
+		return 1
+	}
+	return 0
 }

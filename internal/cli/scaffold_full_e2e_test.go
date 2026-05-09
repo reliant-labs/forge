@@ -246,7 +246,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 // Layout expected (correct):
 //
 //	plugins:
-//	  - remote: buf.build/bufbuild/es
+//	  - local: ./frontends/web/node_modules/.bin/protoc-gen-es
 //	    out: ...
 //	    include_imports: true
 //	    opt:
@@ -255,7 +255,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 // Layout rejected (past bug):
 //
 //	plugins:
-//	  - remote: buf.build/bufbuild/es
+//	  - local: ./frontends/web/node_modules/.bin/protoc-gen-es
 //	    out: ...
 //	    opt:
 //	      - target=ts

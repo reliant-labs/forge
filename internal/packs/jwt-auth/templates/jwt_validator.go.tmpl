@@ -1,6 +1,8 @@
-package middleware
+// forge:scaffold one-shot — JWT validator; canonical pattern in `forge skill load packs`.
+package jwtauth
 
 import (
+	"context"
 	"crypto/rsa"
 	"fmt"
 	"log/slog"
@@ -8,11 +10,14 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/MicahParks/keyfunc/v3"
+
+	"{{.ModulePath}}/pkg/middleware"
 )
 
-// JWTValidator validates JWT tokens using JWKS, static keys, or HMAC secrets.
-type JWTValidator struct {
+// Validator validates JWT tokens using JWKS, static keys, or HMAC secrets.
+type Validator struct {
 	jwks          keyfunc.Keyfunc
+	jwksCancel    context.CancelFunc // Cancels the JWKS refresh goroutine on Close.
 	issuer        string
 	audience      string
 	signingMethod string
@@ -22,8 +27,8 @@ type JWTValidator struct {
 	mu            sync.RWMutex
 }
 
-// JWTValidatorConfig configures the JWT validator.
-type JWTValidatorConfig struct {
+// ValidatorConfig configures the JWT validator.
+type ValidatorConfig struct {
 	JWKSURL       string // JWKS endpoint (e.g., https://auth.example.com/.well-known/jwks.json)
 	Issuer        string // Expected issuer claim
 	Audience      string // Expected audience claim
@@ -32,12 +37,12 @@ type JWTValidatorConfig struct {
 	RSAPublicKey  string // PEM-encoded RSA public key (static key)
 }
 
-// NewJWTValidator creates a validator. Supports 3 modes:
+// NewValidator creates a validator. Supports 3 modes:
 //  1. JWKS URL (recommended for production — auto-rotating keys)
 //  2. Static RSA/ECDSA public key
 //  3. HMAC shared secret (dev/simple setups)
-func NewJWTValidator(cfg JWTValidatorConfig, logger *slog.Logger) (*JWTValidator, error) {
-	v := &JWTValidator{
+func NewValidator(cfg ValidatorConfig, logger *slog.Logger) (*Validator, error) {
+	v := &Validator{
 		issuer:        cfg.Issuer,
 		audience:      cfg.Audience,
 		signingMethod: cfg.SigningMethod,
@@ -45,11 +50,14 @@ func NewJWTValidator(cfg JWTValidatorConfig, logger *slog.Logger) (*JWTValidator
 	}
 
 	if cfg.JWKSURL != "" {
-		jwks, err := keyfunc.NewDefault([]string{cfg.JWKSURL})
+		ctx, cancel := context.WithCancel(context.Background())
+		jwks, err := keyfunc.NewDefaultCtx(ctx, []string{cfg.JWKSURL})
 		if err != nil {
+			cancel()
 			return nil, fmt.Errorf("fetching JWKS: %w", err)
 		}
 		v.jwks = jwks
+		v.jwksCancel = cancel
 		logger.Info("JWT validator initialized with JWKS", "url", cfg.JWKSURL)
 	} else if cfg.HMACSecret != "" {
 		v.hmacSecret = []byte(cfg.HMACSecret)
@@ -69,7 +77,7 @@ func NewJWTValidator(cfg JWTValidatorConfig, logger *slog.Logger) (*JWTValidator
 }
 
 // ValidateToken validates a JWT and returns Claims.
-func (v *JWTValidator) ValidateToken(tokenString string) (*Claims, error) {
+func (v *Validator) ValidateToken(tokenString string) (*middleware.Claims, error) {
 	opts := []jwt.ParserOption{
 		jwt.WithValidMethods([]string{v.signingMethod}),
 	}
@@ -93,7 +101,7 @@ func (v *JWTValidator) ValidateToken(tokenString string) (*Claims, error) {
 	return v.extractClaims(claims), nil
 }
 
-func (v *JWTValidator) keyFunc(token *jwt.Token) (interface{}, error) {
+func (v *Validator) keyFunc(token *jwt.Token) (interface{}, error) {
 	if v.jwks != nil {
 		return v.jwks.Keyfunc(token)
 	}
@@ -106,8 +114,8 @@ func (v *JWTValidator) keyFunc(token *jwt.Token) (interface{}, error) {
 	return nil, fmt.Errorf("no signing key configured")
 }
 
-func (v *JWTValidator) extractClaims(mc jwt.MapClaims) *Claims {
-	c := &Claims{}
+func (v *Validator) extractClaims(mc jwt.MapClaims) *middleware.Claims {
+	c := &middleware.Claims{}
 	if sub, ok := mc["sub"].(string); ok {
 		c.UserID = sub
 	}
@@ -132,8 +140,8 @@ func (v *JWTValidator) extractClaims(mc jwt.MapClaims) *Claims {
 }
 
 // Close cleans up JWKS background goroutine.
-func (v *JWTValidator) Close() {
-	if v.jwks != nil {
-		v.jwks.Cancel()
+func (v *Validator) Close() {
+	if v.jwksCancel != nil {
+		v.jwksCancel()
 	}
 }

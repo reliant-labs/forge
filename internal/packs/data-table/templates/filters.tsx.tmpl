@@ -1,0 +1,72 @@
+// forge:scaffold one-shot — data-table filters; canonical pattern in `forge skill load packs`.
+import type { ColumnDef, ColumnFiltersState, Updater } from "@tanstack/react-table";
+
+// Base library primitives — shipped with every forge frontend.
+import SearchInput from "@/components/ui/search_input";
+import Button from "@/components/ui/button";
+import Chip from "@/components/ui/chip";
+
+export interface FiltersProps<TRow> {
+  /** Free-text search string. Server-side mode passes this through to
+   *  the underlying useEntities hook; client-side mode is a no-op unless
+   *  the consumer wires it to TanStack's globalFilter. */
+  search?: string;
+  onSearchChange?: (next: string) => void;
+  /** Per-column filter state. */
+  columnFilters: ColumnFiltersState;
+  onColumnFiltersChange: (updater: Updater<ColumnFiltersState>) => void;
+  /** Columns — used to discover which columns advertise filterable cells. */
+  columns: ColumnDef<TRow, unknown>[];
+}
+
+/**
+ * Filter bar — search box + per-column filter chips, both delegated to
+ * the base library (`SearchInput`, `Chip`, `Button`). The pack adds no
+ * inline Tailwind for this surface.
+ */
+export function Filters<TRow>(props: FiltersProps<TRow>) {
+  const { search, onSearchChange, columnFilters, onColumnFiltersChange } = props;
+  const hasFilters = (columnFilters?.length ?? 0) > 0 || (search ?? "") !== "";
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {onSearchChange ? (
+        <div className="w-72">
+          <SearchInput
+            value={search ?? ""}
+            onChange={onSearchChange}
+            placeholder="Search…"
+            size="sm"
+          />
+        </div>
+      ) : null}
+
+      {columnFilters.map((cf) => (
+        <Chip
+          key={cf.id}
+          label={`${cf.id}: ${String(cf.value)}`}
+          variant="primary"
+          size="sm"
+          onRemove={() =>
+            onColumnFiltersChange((prev) =>
+              prev.filter((p) => p.id !== cf.id),
+            )
+          }
+        />
+      ))}
+
+      {hasFilters ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            onColumnFiltersChange(() => []);
+            if (onSearchChange) onSearchChange("");
+          }}
+        >
+          Clear all
+        </Button>
+      ) : null}
+    </div>
+  );
+}

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -177,6 +178,85 @@ func TestApplyDisableFlags_CaseInsensitive(t *testing.T) {
 	}
 	if gen.Features.CIEnabled() {
 		t.Error("expected CI (uppercase) to disable ci")
+	}
+}
+
+// TestRunNewKindValidation exercises the `--kind` flag's validation surface
+// via the pure validateNewArgs helper. Doing it via runNew would invoke the
+// full scaffold (go mod tidy + buf generate + …), which is slow and can
+// hang in CI environments without network access.
+func TestRunNewKindValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     string
+		wantKind string
+		wantErr  string
+	}{
+		{"unknown kind rejected", "framework", "", `invalid --kind "framework"`},
+		{"empty becomes service", "", config.ProjectKindService, ""}, // empty == service (back-compat)
+		{"service explicit", "service", config.ProjectKindService, ""},
+		{"cli explicit", "cli", config.ProjectKindCLI, ""},
+		{"library explicit", "library", config.ProjectKindLibrary, ""},
+		{"upper-case normalized", "CLI", config.ProjectKindCLI, ""},
+		{"trims whitespace", "  service  ", config.ProjectKindService, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotKind, _, _, err := validateNewArgs(tc.kind, "local", "", nil, nil)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotKind != tc.wantKind {
+				t.Fatalf("kind = %q, want %q", gotKind, tc.wantKind)
+			}
+		})
+	}
+}
+
+// TestRunNewKindCLIRejectsServiceFlag — `--service` is service-only.
+func TestRunNewKindCLIRejectsServiceFlag(t *testing.T) {
+	_, _, _, err := validateNewArgs("cli", "local", "", []string{"api"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "--service is only meaningful with --kind service") {
+		t.Fatalf("expected --service rejection in CLI mode, got: %v", err)
+	}
+}
+
+// TestValidateNewArgs_BufPlugins covers the --buf-plugins normalization.
+func TestValidateNewArgs_BufPlugins(t *testing.T) {
+	cases := []struct {
+		input       string
+		wantPlugins string
+		wantErr     bool
+	}{
+		{"", "local", false}, // default
+		{"local", "local", false},
+		{"remote", "remote", false},
+		{"REMOTE", "remote", false},
+		{"  local  ", "local", false},
+		{"bogus", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			_, gotPlugins, _, err := validateNewArgs("service", tc.input, "", nil, nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q, got nil", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotPlugins != tc.wantPlugins {
+				t.Fatalf("plugins = %q, want %q", gotPlugins, tc.wantPlugins)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,54 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
+
+// addforgeReplaceMain adds a `replace github.com/reliant-labs/forge/pkg => <repo>/pkg`
+// directive to the project go.mod so `go mod tidy` resolves the in-repo
+// pkg (auth, tenant, orm, etc.). Used in tests where the generated project
+// references a forge/pkg subpackage not yet present in the latest published
+// forge/pkg snapshot.
+func addforgeReplaceMain(t *testing.T, projectDir string) {
+	t.Helper()
+	repoRoot := findForgeRepoRoot(t)
+	goModPath := filepath.Join(projectDir, "go.mod")
+	data, err := os.ReadFile(goModPath)
+	if err != nil {
+		t.Fatalf("read project go.mod: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "replace github.com/reliant-labs/forge/pkg") {
+		return
+	}
+	content += fmt.Sprintf("\nreplace github.com/reliant-labs/forge/pkg => %s/pkg\n", repoRoot)
+	if err := os.WriteFile(goModPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write project go.mod: %v", err)
+	}
+}
+
+// findForgeRepoRoot walks up from cwd to find the forge repo root (looks for
+// go.mod with module github.com/reliant-labs/forge).
+func findForgeRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		modPath := filepath.Join(dir, "go.mod")
+		if data, err := os.ReadFile(modPath); err == nil {
+			if strings.Contains(string(data), "module github.com/reliant-labs/forge\n") {
+				return dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	t.Fatalf("could not find forge repo root from %s", dir)
+	return ""
+}
 
 func TestDirExists(t *testing.T) {
 	dir := t.TempDir()
@@ -76,13 +125,29 @@ func TestWriteDefaultBufGenYaml(t *testing.T) {
 		t.Fatal("buf.gen.yaml is empty")
 	}
 
+	// Default scaffold uses local plugins (no BSR auth required).
+	// Past regression: defaulted to remote: plugins which forced
+	// anonymous users to `buf registry login` before `forge generate`
+	// would work reliably (rate-limit hits).
 	for _, want := range []string{
-		"buf.build/protocolbuffers/go",
-		"buf.build/connectrpc/go",
+		"local: protoc-gen-go",
+		"local: protoc-gen-connect-go",
 		"paths=source_relative",
 	} {
 		if !contains(content, want) {
 			t.Errorf("buf.gen.yaml missing %q", want)
+		}
+	}
+	// Negative assertion: must NOT contain remote: plugins as ACTIVE
+	// list entries. We check by stripping comments and confirming no
+	// non-comment line starts with `  - remote:`.
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- remote:") {
+			t.Errorf("buf.gen.yaml unexpectedly contains active BSR remote plugin entry %q (default should be local:)", line)
 		}
 	}
 }
@@ -95,17 +160,37 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 	if err := os.MkdirAll(absFeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Create proto/services so --path flag is used
+	// Create proto/services with a .proto file so the discoverProtoSubdirs
+	// helper picks it up. Empty dirs are now filtered out — pack-emitted
+	// proto trees are detected via .proto presence, so the canonical dirs
+	// follow the same rule for symmetry.
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Create proto/api to test that both --path flags are added
+	if err := os.WriteFile(filepath.Join(dir, "proto", "services", "x.proto"), []byte("syntax=\"proto3\";\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create proto/api with a .proto file so both --path flags are added.
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "proto", "api", "y.proto"), []byte("syntax=\"proto3\";\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stubPath := filepath.Join(dir, "buf")
 	stubScript := "#!/bin/sh\npwd > buf.cwd\nprintf '%s' \"$*\" > buf.args\nexit 0\n"
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// runBufGenerateTypeScript pre-flights the local TS plugin binary now
+	// (since the BSR-removal switch). Drop a no-op stub at the path the
+	// generated buf.gen.yaml references so the pre-flight passes and the
+	// function proceeds to invoke `buf`.
+	pluginBinDir := filepath.Join(absFeDir, "node_modules", ".bin")
+	if err := os.MkdirAll(pluginBinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginBinDir, "protoc-gen-es"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	pathEnv := os.Getenv("PATH")
@@ -127,6 +212,21 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 	}
 	if strings.Contains(content, "inputs:") {
 		t.Fatalf("expected TypeScript buf config not to use inputs: directive, got:\n%s", content)
+	}
+	// Default scaffold uses the local protoc-gen-es plugin (no BSR auth).
+	// Past regression: defaulted to `remote: buf.build/bufbuild/es` which
+	// forced anonymous users to `buf registry login` to escape rate limits.
+	if !strings.Contains(content, "local: ./frontends/web/node_modules/.bin/protoc-gen-es") {
+		t.Fatalf("expected TypeScript buf config to use local: plugin, got:\n%s", content)
+	}
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- remote:") {
+			t.Fatalf("frontend buf.gen.yaml unexpectedly contains active BSR remote plugin entry %q (default should be local:)", line)
+		}
 	}
 
 	// buf should run from project root, not frontend dir
@@ -427,6 +527,12 @@ exit 0
 	}
 	defer func() { _ = os.Setenv("PATH", pathEnv) }()
 
+	// Generated code (pkg/middleware/claims.go etc.) imports
+	// github.com/reliant-labs/forge/pkg/auth which doesn't exist in the
+	// last published forge/pkg snapshot. Point the project at the in-repo
+	// pkg via a replace directive so `go mod tidy` resolves locally.
+	addforgeReplaceMain(t, dir)
+
 	if err := bootstrapGeneratedCode(dir); err != nil {
 		t.Fatalf("bootstrapGeneratedCode() error = %v", err)
 	}
@@ -438,6 +544,118 @@ exit 0
 	connectPath := filepath.Join(dir, "gen", "services", "api", "v1", "apiv1connect", "api.connect.go")
 	if _, err := os.Stat(connectPath); err != nil {
 		t.Fatalf("expected generated Connect stub at %s: %v", connectPath, err)
+	}
+}
+
+// TestForgeVersionMismatchWarning covers the three cases the version-pin
+// machinery cares about: legacy (no forge_version), explicit mismatch,
+// and explicit match. The "dev" binary case is intentionally silent so
+// local forge development doesn't spam dogfood projects.
+func TestForgeVersionMismatchWarning(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		binary      string
+		wantContain string // empty = expect no warning
+	}{
+		{
+			"legacy project (no pin) gets baseline nudge",
+			"",
+			"1.6.0",
+			"no forge_version declared",
+		},
+		{
+			"explicit mismatch: bump from old to newer",
+			"1.4.0",
+			"1.6.0",
+			"forge.yaml declares forge_version: 1.4.0 but binary is 1.6.0",
+		},
+		{
+			"matched version is silent",
+			"1.6.0",
+			"1.6.0",
+			"",
+		},
+		{
+			"dev binary is silent (local forge work)",
+			"1.6.0",
+			"dev",
+			"",
+		},
+		{
+			"(devel) binary is silent",
+			"1.6.0",
+			"(devel)",
+			"",
+		},
+		{
+			"empty binary is silent (defensive)",
+			"1.6.0",
+			"",
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := forgeVersionMismatchWarning(tt.yaml, tt.binary)
+			if tt.wantContain == "" {
+				if got != "" {
+					t.Errorf("forgeVersionMismatchWarning(%q, %q) = %q, want empty",
+						tt.yaml, tt.binary, got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.wantContain) {
+				t.Errorf("forgeVersionMismatchWarning(%q, %q) = %q, want substring %q",
+					tt.yaml, tt.binary, got, tt.wantContain)
+			}
+		})
+	}
+}
+
+// TestRelevantMigrationSkills_FindsCanonicalContractkit verifies that
+// the upgrade path discovery hits the canonical v0.x-to-contractkit
+// skill for any 0.x project bumping forward. The skill ships in the
+// embedded template tree.
+func TestRelevantMigrationSkills_FindsCanonicalContractkit(t *testing.T) {
+	skills := relevantMigrationSkills("0.5.0", "1.6.0")
+	var found bool
+	for _, s := range skills {
+		if s.Path == "migration/v0.x-to-contractkit" {
+			found = true
+			if s.Description == "" {
+				t.Errorf("skill %q has empty description (frontmatter unparsed?)", s.Path)
+			}
+			break
+		}
+	}
+	if !found {
+		var paths []string
+		for _, s := range skills {
+			paths = append(paths, s.Path)
+		}
+		t.Errorf("relevantMigrationSkills(0.5.0 → 1.6.0) did not include migration/v0.x-to-contractkit. Got: %v", paths)
+	}
+}
+
+// TestRelevantMigrationSkills_LegacyTreatedAsSurfaceAll verifies that a
+// legacy project (no forge_version) sees every per-version skill,
+// including the contractkit canonical example.
+func TestRelevantMigrationSkills_LegacyTreatedAsSurfaceAll(t *testing.T) {
+	skills := relevantMigrationSkills("0.0.0", "1.6.0")
+	if len(skills) == 0 {
+		t.Fatal("expected at least one migration skill for legacy projects, got none")
+	}
+	var found bool
+	for _, s := range skills {
+		if s.Path == "migration/v0.x-to-contractkit" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("legacy 0.0.0 → latest path missing canonical migration/v0.x-to-contractkit skill")
 	}
 }
 

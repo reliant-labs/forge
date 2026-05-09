@@ -1,6 +1,10 @@
 version: v2
+# Default: local TypeScript plugin from the frontend's node_modules.
+# See frontends/{{.FrontendName}}/package.json for the @bufbuild/protoc-gen-es
+# pin. Path is relative to where `buf generate` runs (project root, via
+# --template), not relative to this file.
 plugins:
-  - remote: buf.build/bufbuild/es
+  - local: ./frontends/{{.FrontendName}}/node_modules/.bin/protoc-gen-es
     out: frontends/{{.FrontendName}}/src/gen
     include_imports: true
     opt:

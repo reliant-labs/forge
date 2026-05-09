@@ -1,0 +1,53 @@
+// forge:scaffold one-shot — data-table column helpers; canonical pattern in `forge skill load packs`.
+import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
+import type { ReactNode } from "react";
+
+/**
+ * Re-export the TanStack column helper so callers don't need to import
+ * @tanstack/react-table directly.
+ */
+export { createColumnHelper };
+export type { ColumnDef };
+
+/**
+ * Build a column from an entity-style row given a key. Provides sensible
+ * defaults: `accessorKey`, header derived from the key (Title Case), and
+ * a string-coercing cell renderer.
+ *
+ *   columnFor<User>("name")
+ *   // -> { accessorKey: "name", header: "Name", ... }
+ */
+export function columnFor<TRow, TKey extends keyof TRow & string>(
+  key: TKey,
+  overrides?: Partial<ColumnDef<TRow, TRow[TKey]>>,
+): ColumnDef<TRow, TRow[TKey]> {
+  const headerLabel = key
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (s) => s.toUpperCase());
+  return {
+    accessorKey: key as string,
+    header: headerLabel,
+    cell: (info) => {
+      const v = info.getValue();
+      if (v === null || v === undefined) return "";
+      if (v instanceof Date) return v.toLocaleString();
+      return String(v);
+    },
+    ...overrides,
+  };
+}
+
+/** Helper for an explicit-render column (e.g. badges, links). */
+export function renderColumn<TRow>(
+  id: string,
+  header: string,
+  render: (row: TRow) => ReactNode,
+  overrides?: Partial<ColumnDef<TRow, unknown>>,
+): ColumnDef<TRow, unknown> {
+  return {
+    id,
+    header,
+    cell: (info) => render(info.row.original),
+    ...overrides,
+  };
+}

@@ -1,0 +1,321 @@
+"use client";
+{{- $provider := index .PackConfig "provider" }}
+
+// forge:scaffold one-shot — auth-ui LoginForm; canonical pattern in `forge skill load packs`.
+/**
+ * LoginForm — sign-in surface for the {{$provider}} backend pack.
+ *
+ * Wire into a /login page:
+ *
+ *   import { LoginForm } from "@/components/auth";
+ *   export default function LoginPage() {
+ *     return <LoginForm />;
+ *   }
+ *
+ * The form posts to / dispatches to the backend pack's auth endpoint and
+ * pushes the resulting session into the auth-store. The auth-store is the
+ * single read surface for the rest of the app.
+ *
+ * Built from forge's base UI primitives (`Card`, `Form`, `Input`,
+ * `Label`, `Button`, `AlertBanner`) — no inline Tailwind for buttons,
+ * inputs, etc. The pack stays a thin domain layer on top of the base
+ * library.
+ */
+
+{{- if eq $provider "clerk" }}
+import { SignIn } from "@clerk/nextjs";
+
+export interface LoginFormProps {
+  /** Optional path to redirect to after sign-in. Defaults to "/". */
+  afterSignInUrl?: string;
+  /** Optional path to redirect to for sign-up. Defaults to "/signup". */
+  signUpUrl?: string;
+}
+
+// Shared appearance config — kept as a const so JSX double-braces don't
+// collide with the Go template engine that rendered this file.
+const CLERK_APPEARANCE = {
+  elements: {
+    card: "shadow-md",
+  },
+};
+
+/**
+ * Clerk variant — wraps Clerk's hosted <SignIn /> in our shell. Session
+ * state is owned by Clerk; this component does not write to the auth-store
+ * directly. See SessionNav for read access via Clerk's <UserButton />.
+ */
+export function LoginForm({
+  afterSignInUrl = "/",
+  signUpUrl = "/signup",
+}: LoginFormProps = {}) {
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center px-4 py-10">
+      <SignIn
+        afterSignInUrl={afterSignInUrl}
+        signUpUrl={signUpUrl}
+        appearance={CLERK_APPEARANCE}
+      />
+    </div>
+  );
+}
+{{- else if eq $provider "firebase-auth" }}
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+} from "firebase/auth";
+
+import AlertBanner from "@/components/ui/alert_banner";
+import Button from "@/components/ui/button";
+import Card from "@/components/ui/card";
+import Form, { FormError, FormField } from "@/components/ui/form";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
+
+import { useAuthStore } from "./auth-store";
+
+const schema = z.object({
+  email: z.string().email("Enter a valid email."),
+  password: z.string().min(6, "Password must be at least 6 characters."),
+});
+type FormValues = z.infer<typeof schema>;
+
+export interface LoginFormProps {
+  onSuccess?: () => void;
+}
+
+/**
+ * Firebase variant — email+password and Google provider via firebase/auth.
+ * Token capture happens via onAuthStateChanged elsewhere (see README); this
+ * form just kicks off the sign-in flow.
+ */
+export function LoginForm({ onSuccess }: LoginFormProps = {}) {
+  const setLoading = useAuthStore((s) => s.setLoading);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({ resolver: zodResolver(schema) });
+
+  const onSubmit = handleSubmit(async (values) => {
+    setSubmitError(null);
+    setLoading(true);
+    try {
+      const auth = getAuth();
+      await signInWithEmailAndPassword(auth, values.email, values.password);
+      onSuccess?.();
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not sign you in.";
+      setSubmitError(msg);
+    } finally {
+      setLoading(false);
+    }
+  });
+
+  const onGoogle = async () => {
+    setSubmitError(null);
+    setLoading(true);
+    try {
+      const auth = getAuth();
+      await signInWithPopup(auth, new GoogleAuthProvider());
+      onSuccess?.();
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Google sign-in failed.";
+      setSubmitError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card className="mx-auto w-full max-w-sm" padding="lg">
+      <Form onSubmit={onSubmit}>
+        <h1 className="text-xl font-semibold text-gray-900">Sign in</h1>
+
+        <FormField>
+          <Label htmlFor="login-email">Email</Label>
+          <Input
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            invalid={Boolean(errors.email)}
+            {...register("email")}
+          />
+          <FormError message={errors.email?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="login-password">Password</Label>
+          <Input
+            id="login-password"
+            type="password"
+            autoComplete="current-password"
+            invalid={Boolean(errors.password)}
+            {...register("password")}
+          />
+          <FormError message={errors.password?.message} />
+        </FormField>
+
+        {submitError ? (
+          <AlertBanner variant="error" message={submitError} />
+        ) : null}
+
+        <Button type="submit" fullWidth isLoading={isSubmitting}>
+          {isSubmitting ? "Signing in…" : "Sign in"}
+        </Button>
+
+        <div className="relative my-2">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-200" />
+          </div>
+          <div className="relative flex justify-center text-xs">
+            <span className="bg-white px-2 text-gray-500">or</span>
+          </div>
+        </div>
+
+        <Button type="button" variant="outline" fullWidth onClick={onGoogle}>
+          Continue with Google
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+{{- else }}
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+
+import AlertBanner from "@/components/ui/alert_banner";
+import Button from "@/components/ui/button";
+import Card from "@/components/ui/card";
+import Form, { FormError, FormField } from "@/components/ui/form";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
+
+import {
+  useAuthStore,
+  persistSession,
+  type AuthUser,
+  type AuthSession,
+} from "./auth-store";
+
+const schema = z.object({
+  email: z.string().email("Enter a valid email."),
+  password: z.string().min(6, "Password must be at least 6 characters."),
+});
+type FormValues = z.infer<typeof schema>;
+
+export interface LoginFormProps {
+  /**
+   * Override the login endpoint. Defaults to the backend pack's
+   * configured login path: "{{ index .PackConfig "jwt_login_path" }}".
+   */
+  loginPath?: string;
+  /** Called after a successful login, e.g. to navigate. */
+  onSuccess?: (user: AuthUser) => void;
+}
+
+interface LoginResponse {
+  token: string;
+  user: AuthUser;
+  expiresAt?: number;
+}
+
+/**
+ * jwt-auth variant — email+password POSTed to the backend pack's
+ * /auth/login endpoint. Expects `{ token, user }` JSON in the response and
+ * persists both into localStorage so the session survives reloads.
+ */
+export function LoginForm({
+  loginPath = "{{ index .PackConfig "jwt_login_path" }}",
+  onSuccess,
+}: LoginFormProps = {}) {
+  const setSession = useAuthStore((s) => s.setSession);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({ resolver: zodResolver(schema) });
+
+  const onSubmit = handleSubmit(async (values) => {
+    setSubmitError(null);
+    try {
+      const res = await fetch(loginPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Login failed (${res.status})`);
+      }
+      const body = (await res.json()) as LoginResponse;
+      const session: AuthSession = {
+        token: body.token,
+        expiresAt: body.expiresAt,
+      };
+      setSession(body.user, session);
+      persistSession(body.user, session);
+      onSuccess?.(body.user);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not sign you in.";
+      setSubmitError(msg);
+    }
+  });
+
+  return (
+    <Card className="mx-auto w-full max-w-sm" padding="lg">
+      <Form onSubmit={onSubmit}>
+        <h1 className="text-xl font-semibold text-gray-900">Sign in</h1>
+
+        <FormField>
+          <Label htmlFor="login-email">Email</Label>
+          <Input
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            invalid={Boolean(errors.email)}
+            {...register("email")}
+          />
+          <FormError message={errors.email?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="login-password">Password</Label>
+          <Input
+            id="login-password"
+            type="password"
+            autoComplete="current-password"
+            invalid={Boolean(errors.password)}
+            {...register("password")}
+          />
+          <FormError message={errors.password?.message} />
+        </FormField>
+
+        {submitError ? (
+          <AlertBanner variant="error" message={submitError} />
+        ) : null}
+
+        <Button type="submit" fullWidth isLoading={isSubmitting}>
+          {isSubmitting ? "Signing in…" : "Sign in"}
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+{{- end }}

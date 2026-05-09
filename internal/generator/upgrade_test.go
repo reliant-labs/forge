@@ -178,7 +178,7 @@ func TestUpgradeDetectsModified(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write files from templates, record checksums
-	cs := &FileChecksums{Files: make(map[string]string)}
+	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
 	for _, f := range managedFiles() {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
@@ -242,7 +242,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write files, record checksums
-	cs := &FileChecksums{Files: make(map[string]string)}
+	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
 	for _, f := range managedFiles() {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
@@ -307,7 +307,7 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := &FileChecksums{Files: make(map[string]string)}
+	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
 	cs.RecordFile("cmd/otel.go", oldContent) // checksum matches disk
 	if err := SaveChecksums(dir, cs); err != nil {
 		t.Fatal(err)
@@ -353,4 +353,125 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	if string(content) == string(oldContent) {
 		t.Error("cmd/otel.go was not updated")
 	}
+}
+
+// TestUpgradeAutoUpdatesStaleCodegen simulates the FORGE_BACKLOG #2 scenario:
+// a Tier-2 file's template was updated, but the on-disk file is a *prior*
+// render (not the current template, not user-edited). Pre-history, forge
+// would flag this as user-modified (skipped) because the stored checksum
+// didn't match the on-disk hash. With prior-render history tracking, forge
+// recognises the on-disk content as a known prior render and auto-updates
+// it cleanly — no --force, no manual reconciliation required.
+//
+// Concretely, we:
+//
+//  1. Render Tier-2 file v1 via the current template, write to disk, record
+//     checksum H1 (Hash=H1, History=[H1]).
+//  2. Simulate a template update by re-rendering with patched content v2
+//     and recording H2 (Hash=H2, History=[H1, H2]). The on-disk file is
+//     left at v1 — that's the "stale codegen" state we're testing.
+//  3. Patch the on-disk file to a v3 the user never wrote — but we will
+//     stub the upgrade-time render to return v3 so the comparison is
+//     between disk=v1 and template=v3, with H1 in history.
+//  4. Call Upgrade and assert the Tier-2 file reports UpgradeUpdated
+//     (auto-update path) rather than UpgradeUserModified.
+//
+// The test uses the real Dockerfile template path because that's a Tier-2
+// template that's part of the canonical managedFiles list; we synthesize
+// the template-update by hand-recording an extra hash into history.
+func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
+	cfg := testProjectConfig()
+	data := buildTemplateData(cfg, "")
+
+	dir := t.TempDir()
+
+	// Step 1+2: render every managed file to disk. For the file we'll
+	// exercise (Dockerfile), record an additional fake "prior render"
+	// hash in history so the on-disk content (current render) sits at
+	// the tail and the older fake hash sits in history. We then mutate
+	// the disk content to the older fake content — that's our stale
+	// codegen.
+	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	for _, f := range managedFiles() {
+		content, err := renderManagedFile(f, data)
+		if err != nil {
+			t.Fatalf("render %s: %v", f.templateName, err)
+		}
+		dest := filepath.Join(dir, f.destPath)
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		cs.RecordFile(f.destPath, content)
+	}
+
+	// Inject a "prior render" of Dockerfile that no longer matches what
+	// the current template renders. This is what would happen in real
+	// life: the template was updated between v1 and v2, the user never
+	// re-ran upgrade, and the on-disk file is the v1 render.
+	staleDockerfile := []byte("# stale prior-render Dockerfile\nFROM golang:1.18\n")
+	cs.RecordFile("Dockerfile", staleDockerfile) // history now: [<current>, staleHash]
+	// Then overwrite with the current render again, so Hash points to the
+	// current template output but staleHash sits earlier in History.
+	currentDockerfile, err := renderManagedFile(managedFiles()[findManagedIdx(t, "Dockerfile")], data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs.RecordFile("Dockerfile", currentDockerfile)
+	if err := SaveChecksums(dir, cs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now flip the on-disk Dockerfile back to the stale prior-render
+	// content. This is the "stale codegen" state.
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), staleDockerfile, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: the disk content matches a prior-render in history but not
+	// the current Hash.
+	if !cs.MatchesAnyKnownRender("Dockerfile", staleDockerfile) {
+		t.Fatalf("test setup: stale content should match a prior render in history")
+	}
+	if cs.Files["Dockerfile"].Hash == HashContent(staleDockerfile) {
+		t.Fatalf("test setup: current Hash should not equal stale-render hash")
+	}
+
+	// Run upgrade (check-only is fine — we're asserting the classification).
+	results, err := Upgrade(dir, cfg, false, true)
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+
+	var dockerfileResult *UpgradeResult
+	for i, r := range results {
+		if r.Path == "Dockerfile" {
+			dockerfileResult = &results[i]
+			break
+		}
+	}
+	if dockerfileResult == nil {
+		t.Fatal("Dockerfile not in upgrade results")
+	}
+	if dockerfileResult.Status == UpgradeUserModified {
+		t.Errorf("Dockerfile status = %q (user-modified) — stale codegen should auto-update via history match", dockerfileResult.Status)
+	}
+	if dockerfileResult.Status != UpgradeUpdated {
+		t.Errorf("Dockerfile status = %q, want %q (auto-update)", dockerfileResult.Status, UpgradeUpdated)
+	}
+}
+
+// findManagedIdx returns the index of the managed file with the given
+// destPath. Test helper; fails the test if not found.
+func findManagedIdx(t *testing.T, destPath string) int {
+	t.Helper()
+	for i, f := range managedFiles() {
+		if f.destPath == destPath {
+			return i
+		}
+	}
+	t.Fatalf("managed file %q not found", destPath)
+	return -1
 }

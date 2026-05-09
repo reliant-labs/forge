@@ -100,6 +100,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPackageCmd())
 	rootCmd.AddCommand(newPackCmd())
+	rootCmd.AddCommand(newStarterCmd())
 	rootCmd.AddCommand(newDebugCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
@@ -109,7 +110,11 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newComponentCmd())
 	rootCmd.AddCommand(newSkillCmd())
 	rootCmd.AddCommand(newCICmd())
-	rootCmd.AddCommand(newDoctorCmd())
+	rootCmd.AddCommand(newToolsCmd())
+	rootCmd.AddCommand(newBacklogCmd())
+	rootCmd.AddCommand(newAuditCmd())
+	rootCmd.AddCommand(newMapCmd())
+	rootCmd.AddCommand(newConfigCmd())
 
 	return rootCmd
 }

@@ -219,25 +219,3 @@ func TestIsIntegerKind(t *testing.T) {
 	}
 }
 
-func TestIsCommonNotNullField(t *testing.T) {
-	notNullFields := []string{
-		"name", "title", "status", "type", "slug",
-		"username", "first_name", "last_name",
-		"role", "state", "kind", "code",
-	}
-	for _, f := range notNullFields {
-		if !isCommonNotNullField(f) {
-			t.Errorf("isCommonNotNullField(%q) = false, want true", f)
-		}
-	}
-
-	nullableFields := []string{
-		"description", "notes", "avatar", "middle_name",
-		"phone", "address", "metadata",
-	}
-	for _, f := range nullableFields {
-		if isCommonNotNullField(f) {
-			t.Errorf("isCommonNotNullField(%q) = true, want false", f)
-		}
-	}
-}

@@ -9,6 +9,13 @@ import (
 
 // EntityDefToPlanEntity converts an EntityDef (from proto parsing) to a
 // PlanEntity (used by ORM generation).
+//
+// Field semantics (primary key, tenant key, foreign key) are sourced from
+// the EntityDef itself, which was already populated from explicit
+// (forge.v1.entity) / (forge.v1.field) annotations during proto parsing.
+// No name-based heuristics are applied here — `entity.PkField` is the
+// only thing that determines which field is marked PrimaryKey, regardless
+// of whether it happens to be named "id" or something else.
 func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 	pe := config.PlanEntity{
 		Name:      entity.Name,
@@ -22,7 +29,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			Type: f.ProtoType,
 		}
 
-		if f.Name == "id" {
+		if entity.PkField != "" && f.Name == entity.PkField {
 			pf.PrimaryKey = true
 			pf.NotNull = true
 		}

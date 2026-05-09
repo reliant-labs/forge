@@ -10,19 +10,28 @@ import deploy.kcl.schema
 import deploy.kcl.base
 import deploy.kcl.render
 
+# Per-environment config (generated from forge.yaml + proto annotations).
+# Run `forge generate` to refresh after editing forge.yaml or the config
+# proto. Hand-editing this file is not recommended.
+import deploy.kcl.dev.config_gen as cfg
+
 # Overridable via `kcl run -D image_tag=...`
-image_tag = option("image_tag") or "latest"
+_image_tag = option("image_tag") or "latest"
 
 # Overridable via `kcl run -D registry=...`. Local dev defaults to the k3d
-# registry created by `deploy/k3d.yaml`.
-registry = option("registry") or "localhost:5050"
+# _registry created by `deploy/k3d.yaml`.
+_registry = option("registry") or "localhost:5050"
 
-env = schema.Environment {
+_env = schema.Environment {
     name = "dev"
     namespace = "{{.ProjectName}}-dev"
-    image_registry = registry
-    image_tag = image_tag
+    image_registry = _registry
+    image_tag = _image_tag
     network_policies = False
+    # Generated ConfigMap(s) carrying non-sensitive per-env config.
+    # Sensitive fields project to externally-managed Secrets via
+    # `secret_ref` and are intentionally NOT generated here.
+    config_maps = cfg.CONFIG_MAPS
     applications = {
         "{{.ProjectName}}" = schema.Application {
             name = "{{.ProjectName}}"
@@ -41,7 +50,7 @@ env = schema.Environment {
                 cpu_limit = "500m"
                 memory_limit = "256Mi"
             }
-            env_vars = base.COMMON_ENV + [
+            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
                 schema.EnvVar {
                     name = "SERVICE_NAME"
                     value = "{{.ProjectName}}"
@@ -50,10 +59,6 @@ env = schema.Environment {
                     name = "OTEL_SERVICE_NAME"
                     value = "{{.ProjectName}}"
                 }
-                schema.EnvVar {
-                    name = "LOG_LEVEL"
-                    value = "debug"
-                }
             ]
             health_check = schema.HealthCheck {
                 liveness_path = "/healthz"
@@ -61,7 +66,32 @@ env = schema.Environment {
                 http_port = 8080
             }
         }
+        # Binaries declared via `forge add binary <name>`. Each runs the
+        # same image with a different cobra subcommand. No Service /
+        # Ingress is emitted — binaries are off-RPC processes; if your
+        # binary needs to expose a port (proxy / sidecar), hand-edit
+        # this entry to add `ports:` after running `forge generate`.
+{{- range .Binaries}}
+        "{{$.ProjectName}}-{{.Name}}" = schema.Application {
+            name = "{{$.ProjectName}}-{{.Name}}"
+            image = "{{$.ProjectName}}"
+            replicas = 1
+            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
+            resources = schema.Resources {
+                cpu_request = "100m"
+                memory_request = "128Mi"
+                cpu_limit = "500m"
+                memory_limit = "256Mi"
+            }
+            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
+                schema.EnvVar {
+                    name = "OTEL_SERVICE_NAME"
+                    value = "{{$.ProjectName}}-{{.Name}}"
+                }
+            ]
+        }
+{{- end}}
     }
 }
 
-manifests = render.render_environment(env)
+manifests = render.render_environment(_env)

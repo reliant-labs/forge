@@ -1,8 +1,15 @@
 version: v2
 modules:
   - path: proto
-deps:
-  - buf.build/googleapis/googleapis
+# No `deps:` block by default — fresh scaffolds compile without any
+# BSR-hosted modules so anonymous users can run `forge generate`
+# without `buf registry login`. If you need googleapis annotations
+# (`google/api/annotations.proto`, `google/api/field_behavior.proto`),
+# add them back via:
+#   deps:
+#     - buf.build/googleapis/googleapis
+# Well-known protos (`google/protobuf/*`) are part of protobuf itself
+# and do NOT require a BSR dep.
 lint:
   use:
     - STANDARD

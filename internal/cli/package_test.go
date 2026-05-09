@@ -36,7 +36,6 @@ func TestRunPackageNew(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 version: "0.1.0"
-mode: full
 services:
   - name: api
     type: GO_SERVICE
@@ -82,8 +81,8 @@ services:
 	if !strings.Contains(svc, "type service struct") {
 		t.Errorf("service.go missing unexported service struct, got:\n%s", svc)
 	}
-	if !strings.Contains(svc, "func New(deps Deps) Service") {
-		t.Errorf("service.go missing New constructor returning Service interface, got:\n%s", svc)
+	if !strings.Contains(svc, "func New(deps Deps) (Service, error)") {
+		t.Errorf("service.go missing two-result New constructor returning (Service, error), got:\n%s", svc)
 	}
 
 	// Verify forge.yaml was updated

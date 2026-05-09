@@ -277,7 +277,7 @@ func (d *DelveDebugger) Args() ([]Variable, error) {
 }
 
 func (d *DelveDebugger) Stacktrace(depth int) ([]StackFrame, error) {
-	frames, err := d.client.Stacktrace(-1, depth, 0, &defaultLoadConfig)
+	frames, err := d.client.Stacktrace(-1, depth, 0, api.StacktraceOptions(0), &defaultLoadConfig)
 	if err != nil {
 		return nil, err
 	}

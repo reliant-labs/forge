@@ -1,0 +1,101 @@
+# Forge project manifest — see https://github.com/reliant-labs/forge.
+# `database:` is declared here even if you haven't added any
+# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it
+# once you do. Leave the defaults in place if you're unsure.
+
+name: forge
+module_path: github.com/reliant-labs/forge
+kind: cli
+version: 0.1.0
+# forge is its own first user — start at 0.0.0 so `forge upgrade` surfaces
+# the v0.x→contractkit migration skill (and any future migration skills).
+# `forge upgrade` bumps this; `forge generate` only reads it.
+forge_version: 0.0.0
+hot_reload: false
+services: []
+environments:
+    - name: dev
+      type: local
+    - name: staging
+      type: cloud
+    - name: prod
+      type: cloud
+database:
+    driver: ""
+    migrations_dir: ""
+    sqlc_enabled: false
+ci:
+    provider: github
+    lint:
+        golangci: true
+        buf: false
+        buf_breaking: false
+        frontend: false
+        migration_safety: false
+    test:
+        race: true
+        coverage: false
+    vuln_scan:
+        go: true
+        docker: false
+        npm: false
+docker:
+    registry: ""
+k8s:
+    provider: ""
+    kcl_dir: ""
+lint:
+    contract: true
+    frontend:
+        no_important: warn
+        no_inline_styles: warn
+contracts:
+    strict: true
+    allow_exported_vars: false
+    allow_exported_funcs: false
+    exclude:
+        - "internal/naming"                # Pure stateless string-case utilities; mocking adds no value.
+        - "internal/buildinfo"             # Linker-set version metadata; no test seam.
+        - "internal/metadata"              # Project-level data accessor; no behavioral interface.
+        - "internal/assets"                # Embed wrapper; the file IS the data.
+        - "internal/linter/contract"          # Go analysis framework requires Analyzer as a package var.
+        - "internal/linter/dblint"            # Same — analyzer-style sub-package, vars by convention.
+        - "internal/linter/migrationlint"     # Same — analyzer-style sub-package, vars by convention.
+        - "internal/linter/forgeconv"         # Same — convention analyzer over proto files; entry point is exported func.
+        - "internal/linter/frontendpacklint"  # Same — frontend pack convention analyzer; entry point is exported func.
+        - "internal/linter/scaffolds"         # Same — scaffold-ownership analyzer; entry point is exported funcs (LintRoot/Result).
+        - "internal/starters"              # Embed-backed registry: Starter/StarterDeps/StarterFile are part of the YAML schema, exported by definition.
+        - "internal/cli"                   # Cobra command boundary; CLI is the seam, not internals.
+        - "internal/packs"                 # contract.go declares `Manager` (legacy name, not bootstrap-managed); the package is forge-internal, not a user-project bootstrap entry.
+        - "internal/database"              # Multi-interface contract.go (SchemaIntrospector + MigrationService + ProtoGenerator); used by forge cli + dblint, not bootstrap codegen.
+        - "internal/checksums"             # Pure data-record + I/O helpers (FileChecksums struct + Load/Save/Hash); the file-state itself is the API. No behavioural seam to mock.
+        - "gen/forge/v1"                   # protoc-gen-go generated code; exported package vars are part of the protobuf API.
+        - "cmd/forge"                      # Linker-set version metadata; -X flags require exported package vars.
+        - "cmd/contractlint"               # Tool entry point; main package, no test seam.
+auth:
+    provider: none
+docs: {}
+features:
+    orm: false
+    codegen: false
+    migrations: false
+    ci: true
+    deploy: false
+    contracts: true
+    docs: true
+    frontend: false
+    observability: false
+    hot_reload: false
+stack:
+    backend:
+        language: go
+    frontend:
+        framework: none
+    database:
+        driver: none
+    proto:
+        provider: buf
+    deploy:
+        target: none
+    ci:
+        provider: github

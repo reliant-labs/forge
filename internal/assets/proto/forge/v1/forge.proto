@@ -217,9 +217,11 @@ message AuthConfig {
 // MethodOptions defines per-method behavior annotations for Connect RPC methods.
 // Apply via [(forge.v1.method) = { ... }] on any rpc definition.
 message MethodOptions {
-  // Whether this method requires authentication.
+  // Whether this method requires authentication. Optional so the default
+  // (fail-closed: auth required) is distinguishable from an explicit
+  // `auth_required = false` opt-out at the proto level.
   // Overrides the service-level AuthConfig.auth_required default.
-  bool auth_required = 1;
+  optional bool auth_required = 1;
 
   // Whether this method is idempotent (safe to retry without side effects).
   bool idempotent = 3;
@@ -267,4 +269,17 @@ message ConfigFieldOptions {
 
   // Human-readable description shown in --help output and documentation.
   string description = 5;
+
+  // Sensitive marks this field as secret — its value MUST come from a
+  // Kubernetes Secret (or equivalent) rather than a literal env-var, and
+  // it is never written to forge.yaml inline. The deploy generator emits
+  // a `secretKeyRef`-shaped EnvVar referencing a project-level Secret
+  // (default name: <project>-secrets, key: <env_var>).
+  bool sensitive = 6;
+
+  // Category groups related fields for KCL emission. Fields with the same
+  // category are rendered together as a single env-var group (e.g.
+  // category: "stripe" → STRIPE_ENV bundle). Empty category lands the
+  // field in the default APP_ENV bundle.
+  string category = 7;
 }

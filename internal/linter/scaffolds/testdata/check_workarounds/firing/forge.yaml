@@ -1,0 +1,5 @@
+name: firing-fixture
+module_path: example.com/firing
+kind: service
+binary: shared
+# binaries: block intentionally absent — `cmd/extra.go` should fire.

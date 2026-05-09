@@ -1,0 +1,125 @@
+"use client";
+
+// forge:scaffold one-shot — auth-ui store; canonical pattern in `forge skill load packs`.
+/**
+ * Auth UI store — owns the *UI-side* projection of authentication state:
+ *
+ *   {user, session, isLoading, isAuthenticated}
+ *
+ * This pairs with the backend pack: `{{.PackConfig.provider}}`.
+ *
+ *   • Source of truth for the token/session lives where the backend pack
+ *     puts it (jwt-auth → localStorage, clerk → @clerk/nextjs, firebase
+ *     → onAuthStateChanged). This store is a *cache* of that, so the rest
+ *     of the app can read auth via a single hook without needing to know
+ *     which backend is wired.
+ *
+ *   • Subscribe to slices, not the whole store, per frontend/state rules:
+ *       const user = useAuthStore(s => s.user);                  // good
+ *       const isAuth = useAuthStore(s => s.isAuthenticated);     // good
+ *       const all = useAuthStore();                              // bad
+ *
+ *   • Mutate via the actions (setSession / clearSession / setLoading) —
+ *     do not reach into setState from outside. The forms in this folder
+ *     and the LoginForm/SignupForm are the only writers.
+ */
+
+import { create } from "zustand";
+
+export interface AuthUser {
+  id: string;
+  email?: string;
+  name?: string;
+  roles?: string[];
+}
+
+export interface AuthSession {
+  /** Opaque token string. For jwt-auth this is the JWT itself; for clerk
+   *  it is `__session` cookie content; for firebase-auth, an ID token. */
+  token: string;
+  /** Unix epoch seconds at which the token expires, if known. */
+  expiresAt?: number;
+}
+
+interface AuthState {
+  user: AuthUser | null;
+  session: AuthSession | null;
+  isLoading: boolean;
+  isAuthenticated: boolean;
+
+  // Actions
+  setSession: (user: AuthUser, session: AuthSession) => void;
+  setUser: (user: AuthUser | null) => void;
+  setLoading: (loading: boolean) => void;
+  clearSession: () => void;
+}
+
+export const useAuthStore = create<AuthState>((set) => ({
+  user: null,
+  session: null,
+  isLoading: true,
+  isAuthenticated: false,
+
+  setSession: (user, session) =>
+    set({
+      user,
+      session,
+      isAuthenticated: true,
+      isLoading: false,
+    }),
+
+  setUser: (user) =>
+    set({
+      user,
+      isAuthenticated: user !== null,
+      isLoading: false,
+    }),
+
+  setLoading: (loading) => set({ isLoading: loading }),
+
+  clearSession: () =>
+    set({
+      user: null,
+      session: null,
+      isAuthenticated: false,
+      isLoading: false,
+    }),
+}));
+
+{{- if eq (index .PackConfig "provider") "jwt-auth" }}
+
+/**
+ * jwt-auth specific: token is persisted to localStorage so it survives
+ * page reloads. We rehydrate on first import (client-only).
+ */
+const TOKEN_KEY = "forge.auth.token";
+const USER_KEY = "forge.auth.user";
+
+export function readPersistedSession(): {
+  user: AuthUser;
+  session: AuthSession;
+} | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const token = window.localStorage.getItem(TOKEN_KEY);
+    const userJSON = window.localStorage.getItem(USER_KEY);
+    if (!token || !userJSON) return null;
+    const user = JSON.parse(userJSON) as AuthUser;
+    return { user, session: { token } };
+  } catch {
+    return null;
+  }
+}
+
+export function persistSession(user: AuthUser, session: AuthSession) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(TOKEN_KEY, session.token);
+  window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+export function clearPersistedSession() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(USER_KEY);
+}
+{{- end }}

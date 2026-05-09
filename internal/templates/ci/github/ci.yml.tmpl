@@ -172,6 +172,7 @@ jobs:
 {{- end}}
 {{- end}}
 
+{{- if .VerifyGenerated}}
   verify-generated:
     name: Verify Generated Code
     runs-on: ubuntu-latest
@@ -203,6 +204,7 @@ jobs:
 {{- end}}
       - name: Verify generated code
         run: forge ci verify-generated
+{{- end}}
 {{- if .HasKCL}}
 
   validate-kcl:
@@ -283,6 +285,7 @@ jobs:
         run: go-licenses check ./... --disallowed_types=forbidden,restricted
 {{- end}}
 
+{{- if .HasDocker}}
   docker-build:
     name: Docker Build
     needs: [build]
@@ -328,6 +331,7 @@ jobs:
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
+{{- end}}
 {{- end}}
 {{- end}}
 {{- end}}

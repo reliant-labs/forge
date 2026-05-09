@@ -34,10 +34,19 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
 }
 
 // generateFrontendPages generates CRUD page files for each entity that has
-// CRUD-pattern RPCs across all Next.js frontends.
-func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string) error {
+// CRUD-pattern RPCs across all Next.js frontends. Only generates pages for
+// CRUD-pattern RPCs whose entity name (e.g. "Daemon" from "ListDaemons")
+// matches a real entity from the proto descriptor — without that filter,
+// page templates produce broken output for services whose List/Get/Create
+// RPCs don't follow the entity-name-as-field convention.
+func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef) error {
 	if len(services) == 0 {
 		return nil
+	}
+
+	entitySet := make(map[string]struct{}, len(entities))
+	for _, e := range entities {
+		entitySet[strings.ToLower(e.Name)] = struct{}{}
 	}
 
 	// Load page templates
@@ -72,9 +81,15 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		var pageCount int
 
 		for _, svc := range services {
-			entities := codegen.ExtractCRUDEntities(svc)
+			pages := codegen.ExtractCRUDEntities(svc)
 
-			for _, entity := range entities {
+			for _, entity := range pages {
+				// Skip RPC-name-derived entities that don't have a real
+				// entity definition behind them — the page templates would
+				// emit broken field references.
+				if _, ok := entitySet[strings.ToLower(entity.EntityName)]; !ok {
+					continue
+				}
 				// List page: src/app/<slug>/page.tsx
 				if entity.HasList {
 					if err := renderPageToFile(listTmpl, entity, filepath.Join(appDir, entity.EntitySlug, "page.tsx")); err != nil {
@@ -119,7 +134,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 
 // loadPageTemplate reads and parses a page template from the embedded FS.
 func loadPageTemplate(name string) (*template.Template, error) {
-	content, err := templates.FrontendTemplates.Get(filepath.Join("pages", name))
+	content, err := templates.FrontendTemplates().Get(filepath.Join("pages", name))
 	if err != nil {
 		return nil, fmt.Errorf("read page template %s: %w", name, err)
 	}

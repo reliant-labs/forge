@@ -1,0 +1,83 @@
+name: auth-ui
+kind: frontend
+description: |
+  Opinionated login/signup/session UI that pairs with one of the auth
+  backend packs (jwt-auth, clerk, firebase-auth). Provider is selected at
+  install time via --config provider=<jwt-auth|clerk|firebase-auth>;
+  templates branch on the value to emit the right form/SDK glue.
+
+  Files are installed into every frontend declared in forge.yaml at
+  src/components/auth/. Wire <SessionNav /> into your layout and
+  <LoginForm /> into a /login page:
+
+    import { SessionNav, LoginForm } from "@/components/auth";
+
+  The pack also installs a Zustand auth-store that exposes
+  {user, session, isLoading, isAuthenticated}; pages should subscribe to
+  slices, not the whole store.
+version: 1.0.0
+subpath: src/components/auth
+
+config:
+  section: auth_ui
+  defaults:
+    # Which backend pack the UI targets. One of:
+    #   jwt-auth      — email+password POSTed to /auth/login, JWT in localStorage
+    #   clerk         — @clerk/nextjs <SignIn>/<SignUp>/<UserButton> wrapped in our shell
+    #   firebase-auth — firebase/auth SDK with email + Google provider
+    provider: jwt-auth
+    # Show a banner in the UI when running with backend dev-mode auth
+    # bypass enabled. Reads NEXT_PUBLIC_AUTH_DEV_MODE=true at runtime.
+    dev_mode_banner: true
+    # Path the jwt-auth provider POSTs login/signup to. Adjust if your
+    # backend mounts auth under a different prefix.
+    jwt_login_path: /auth/login
+    jwt_signup_path: /auth/signup
+    jwt_logout_path: /auth/logout
+
+# Form validation libraries — utility-only, no UI surface area, so they
+# don't violate the base-library-only rule for component imports.
+npm_dependencies:
+  - "react-hook-form@^7.54.0"
+  - "zod@^3.23.0"
+  - "@hookform/resolvers@^3.9.0"
+  - "zustand@^5.0.0"
+
+# Provider-specific SDKs. The pack installer selects the right list based
+# on the resolved provider value (see ProviderNPMDependencies in pack.go).
+provider_npm_dependencies:
+  jwt-auth: []
+  clerk:
+    - "@clerk/nextjs@^6.0.0"
+  firebase-auth:
+    - "firebase@^11.0.0"
+
+files:
+  - template: LoginForm.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/LoginForm.tsx"
+    overwrite: once
+    description: "Login form — branches on .PackConfig.provider"
+  - template: SignupForm.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/SignupForm.tsx"
+    overwrite: once
+    description: "Signup form — branches on .PackConfig.provider"
+  - template: SessionNav.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/SessionNav.tsx"
+    overwrite: once
+    description: "Header dropdown with user info and sign-out"
+  - template: DevModeBanner.tsx.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/DevModeBanner.tsx"
+    overwrite: once
+    description: "Visible banner when dev-mode auth bypass is on"
+  - template: auth-store.ts.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/auth-store.ts"
+    overwrite: once
+    description: "Zustand auth store: user, session, isLoading, isAuthenticated"
+  - template: index.ts.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/index.ts"
+    overwrite: once
+    description: "Barrel export"
+  - template: README.md.tmpl
+    output: "{{.FrontendPath}}/src/components/auth/README.md"
+    overwrite: once
+    description: "Usage example: wiring into app/layout.tsx"

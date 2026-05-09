@@ -51,6 +51,28 @@ component_library(action="get", name="quadrant_chart")
 
 Categories: layouts, charts, diagrams, deck, ui. Charts handle all coordinate math internally — pass data, get pixels.
 
+### Base UI primitives (always available)
+
+Every forge frontend ships a small set of low-level primitives at scaffold time, under `src/components/ui/`. Pages and frontend packs MUST compose these instead of inlining their own `<button>` / `<input>` / `<table>` markup. The full set:
+
+| Primitive | Import | What it is |
+|-----------|--------|-----------|
+| `button` | `import Button from "@/components/ui/button"` | Generic button — `primary` / `secondary` / `outline` / `ghost` / `danger` variants, sizes, loading state. |
+| `input` | `import Input from "@/components/ui/input"` | Generic text input — sizes, invalid state, forwarded ref. Pair with `<Label>`. |
+| `label` | `import Label from "@/components/ui/label"` | Form field label with optional required-asterisk. |
+| `form` | `import Form, { FormField, FormError, FormActions } from "@/components/ui/form"` | Form structural primitives — root `<form>` plus field/error/actions wrappers. |
+| `card` | `import Card, { CardHeader, CardBody, CardFooter } from "@/components/ui/card"` | Generic surface primitive. Distinct from `MetricCard`/`StatCards` (domain components). |
+| `avatar` | `import Avatar from "@/components/ui/avatar"` | User avatar with image, initials fallback, status indicator. |
+| `tabs` | `import Tabs from "@/components/ui/tabs"` | Tab navigation with underline/pills/boxed variants. |
+| `table` | `import Table, { TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table"` | Bare structural table — pair with `@tanstack/react-table` for headless sort/filter. |
+| `select` | `import Select from "@/components/ui/select"` | Generic select — options array, sizes, invalid state. |
+| `chip` | `import Chip from "@/components/ui/chip"` | Removable filter chip / tag. Distinct from `Badge` (status-shaped). |
+| `toast_notification` | `import { ToastProvider, useToast } from "@/components/ui/toast_notification"` | Toast/notification system — success/error/warning/info, auto-dismiss. |
+
+Plus the higher-level domain components scaffolded out of the box: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`.
+
+These primitives are written as `overwrite: once` from the scaffolder — once installed, they are yours to edit. If you find yourself re-inlining a button or input shape in a page or pack, stop and use the primitive instead.
+
 ## Connect RPC Clients
 
 Import the generated Connect transport from `src/lib/connect.ts` (generated — do not edit):
@@ -203,6 +225,15 @@ Mobile (React Native) frontends include the same three systems adapted for mobil
 - **Auth provider** — same `AuthProvider` interface, same `useAuth()` hook
 - **Event bus** — same typed pub/sub, plus mobile-specific events (`app:background`, `app:foreground`)
 - **UI store** — mobile-adapted: `drawerOpen`, `bottomSheetOpen` instead of `sidebarCollapsed`, `commandPaletteOpen`
+
+## File naming inside `frontends/<name>/src/`
+
+Forge templates follow two TS file-naming conventions, both intentional:
+
+- **Components under `src/components/ui/`** are `snake_case` (`data_table.tsx`, `toast_notification.tsx`, `key_value_list.tsx`). Each file default-exports a single PascalCase component (`Button`, `DataTable`).
+- **Hooks, lib utilities, and stores** are `kebab-case` (`use-api-query.ts`, `format-utils.ts`, `ui-store.ts`).
+
+For the full Go / proto / TS / `forge.yaml` casing table, see `architecture` → **Naming conventions**.
 
 ## Sub-skills
 

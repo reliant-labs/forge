@@ -67,8 +67,10 @@ func (g *ProjectGenerator) generateCIFiles() error {
 
 		PermContents: "read",
 
-		HasKCL:       true,
-		Environments: []string{"dev", "staging", "prod"},
+		HasKCL:          true,
+		HasDocker:       true,
+		VerifyGenerated: true,
+		Environments:    []string{"dev", "staging", "prod"},
 
 		// Legacy fields for other CI templates
 		Module:       g.ModulePath,
@@ -118,18 +120,64 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		FrontendPath: e2eFrontendPath,
 	}
 
-	// Templated files — each with its own data type
-	templatedFiles := []struct {
+	// Templated files — each with its own data type. The full set is
+	// emitted for service kinds; CLI/library kinds get just ci.yml +
+	// dependabot since they have no Docker images, no deploys, and (for
+	// CLIs) typically no protos.
+	var templatedFiles []struct {
 		templateName string
 		dest         string
 		data         interface{}
-	}{
-		{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
-		{"build-images.yml.tmpl", ".github/workflows/build-images.yml", buildImagesData},
-		{"deploy.yml.tmpl", ".github/workflows/deploy.yml", deployData},
-		{"e2e.yml.tmpl", ".github/workflows/e2e.yml", e2eData},
-		{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", data},
-		{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
+	}
+	if g.isService() {
+		templatedFiles = []struct {
+			templateName string
+			dest         string
+			data         interface{}
+		}{
+			{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
+			{"build-images.yml.tmpl", ".github/workflows/build-images.yml", buildImagesData},
+			{"deploy.yml.tmpl", ".github/workflows/deploy.yml", deployData},
+			{"e2e.yml.tmpl", ".github/workflows/e2e.yml", e2eData},
+			{"proto-breaking.yml.tmpl", ".github/workflows/proto-breaking.yml", data},
+			{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
+		}
+	} else {
+		// CLI/library: lint + test + vuln scan still apply, but skip
+		// proto-breaking (no proto/services in CLI), build-images
+		// (no Dockerfile), deploy (no k8s), and e2e (no service to
+		// stand up).
+		// The ci.yml template branches on HasFrontends + LintBuf etc;
+		// for CLI mode we strip frontend hooks and proto-related lints
+		// so the rendered workflow is buildable.
+		data.LintBuf = false
+		data.LintBufBreaking = false
+		data.LintFrontend = false
+		data.LintFrontendStyles = false
+		data.LintMigrationSafety = false
+		data.VulnDocker = false
+		data.VulnNPM = false
+		data.HasFrontends = false
+		data.HasServices = false
+		data.HasKCL = false
+		data.HasDocker = false
+		// VerifyGenerated stays true for CLI/library kinds: even without
+		// proto codegen, contract-driven mock generation (`forge generate`
+		// emits `mock_gen.go` for any package with a contract.go) drifts
+		// silently when a contract method gains a parameter and the mock
+		// is not refreshed. The drift surfaces only at test time, often
+		// in unrelated packages. CI's verify-generate gate catches it
+		// pre-merge regardless of project kind.
+		data.VerifyGenerated = true
+		data.Frontends = nil
+		templatedFiles = []struct {
+			templateName string
+			dest         string
+			data         interface{}
+		}{
+			{"ci.yml.tmpl", ".github/workflows/ci.yml", data},
+			{"dependabot.yml.tmpl", ".github/dependabot.yml", data},
+		}
 	}
 
 	// Load checksums to record initial CI file hashes

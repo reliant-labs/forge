@@ -1,7 +1,7 @@
 //go:build e2e
 // +build e2e
 
-package {{.ServiceName}}_test
+package {{.ServicePackage}}_test
 
 import (
 	"context"
@@ -11,7 +11,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	pb "{{.Module}}/gen/services/{{.ServiceName}}/v1"
+	"github.com/reliant-labs/forge/pkg/tdd"
+
+	pb "{{.Module}}/gen/services/{{.ServicePackage}}/v1"
 {{- end}}
 )
 
@@ -34,15 +36,25 @@ func TestHealthCheck(t *testing.T) {
 	}
 }
 {{- if .Methods}}
+
+// Per-RPC E2E tests scaffolded by forge. Each runs against the live
+// service binary started in TestMain, using a Connect client built via
+// the `newClient` helper in helpers_test.go.
+//
+// Library reference: github.com/reliant-labs/forge/pkg/tdd
+// Skill: forge skill load testing/e2e
 {{range .Methods}}
-func Test{{$.ProtoServiceName}}Service_{{.Name}}ReturnsUnimplementedByDefault(t *testing.T) {
+func Test{{$.ProtoServiceName}}Service_{{.Name}}(t *testing.T) {
 	t.Parallel()
-
 	client := newClient(t, baseURL)
-	req := connect.NewRequest(&pb.{{.InputType}}{})
 
-	_, err := client.{{.Name}}(context.Background(), req)
-	assertConnectError(t, err, connect.CodeUnimplemented)
+	tdd.TableRPC(t, []tdd.Case[pb.{{.InputType}}, pb.{{.OutputType}}]{
+		{
+			Name:    "default stub returns Unimplemented",
+			Req:     connect.NewRequest(&pb.{{.InputType}}{}),
+			WantErr: connect.CodeUnimplemented,
+		},
+	}, client.{{.Name}})
 }
 {{end}}
 {{- end}}

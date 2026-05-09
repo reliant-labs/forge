@@ -12,6 +12,29 @@ import (
 //go:embed proto/forge/v1/forge.proto
 var EmbeddedFiles embed.FS
 
+// WriteTemplate writes a project template to the specified path.
+func WriteTemplate(templateName, destPath string) error {
+	content, err := templates.ProjectTemplates().Get(templateName)
+	if err != nil {
+		return err
+	}
+	return writeFile(destPath, content)
+}
+
+// WriteTemplateWithData writes a project template with data substitution.
+func WriteTemplateWithData(templateName, destPath string, data any) error {
+	content, err := templates.ProjectTemplates().Render(templateName, data)
+	if err != nil {
+		return err
+	}
+	return writeFile(destPath, content)
+}
+
+// WriteExampleProto writes an example proto file with the given service name.
+func WriteExampleProto(serviceName, destPath string, data any) error {
+	return WriteTemplateWithData("user-example.proto.tmpl", destPath, data)
+}
+
 // GetForgeV1Proto returns the unified forge/v1/forge.proto file.
 func GetForgeV1Proto() ([]byte, error) {
 	return EmbeddedFiles.ReadFile("proto/forge/v1/forge.proto")
@@ -34,33 +57,6 @@ func WriteForgeV1Proto(destDir, modulePath string) error {
 
 	destPath := filepath.Join(destDir, "forge.proto")
 	return writeFile(destPath, []byte(adjusted))
-}
-
-// WriteTemplate writes a project template to the specified path.
-func WriteTemplate(templateName, destPath string) error {
-	content, err := templates.ProjectTemplates.Get(templateName)
-	if err != nil {
-		return err
-	}
-
-	return writeFile(destPath, content)
-}
-
-// WriteTemplateWithData writes a project template with data substitution.
-// Uses the consolidated template engine with the full funcMap (case converters,
-// type converters, comment formatter, etc.).
-func WriteTemplateWithData(templateName, destPath string, data interface{}) error {
-	content, err := templates.ProjectTemplates.Render(templateName, data)
-	if err != nil {
-		return err
-	}
-
-	return writeFile(destPath, content)
-}
-
-// WriteExampleProto writes an example proto file with the given service name.
-func WriteExampleProto(serviceName, destPath string, data interface{}) error {
-	return WriteTemplateWithData("user-example.proto.tmpl", destPath, data)
 }
 
 func writeFile(path string, content []byte) error {

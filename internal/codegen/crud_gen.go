@@ -1,12 +1,14 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/jinzhu/inflection"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -129,6 +131,16 @@ func MatchCRUDMethods(svc ServiceDef, entities []EntityDef) []CRUDMethod {
 	return matches
 }
 
+// ParseCRUDOperation extracts the CRUD operation and entity name from a
+// method name. Returns ("", "") if the method doesn't match a CRUD
+// pattern. Exported so the CLI's webhook-only detection can ask the
+// same question MatchCRUDMethods does without re-implementing the
+// prefix list. Internal callers should keep using parseCRUDOperation;
+// they're identical.
+func ParseCRUDOperation(methodName string) (operation, entityName string) {
+	return parseCRUDOperation(methodName)
+}
+
 // parseCRUDOperation extracts the CRUD operation and entity name from a method name.
 // Returns ("", "") if the method doesn't match a CRUD pattern.
 func parseCRUDOperation(methodName string) (operation, entityName string) {
@@ -156,7 +168,11 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 
 // GenerateCRUDHandlers generates handlers_crud_gen.go for a service with CRUD methods.
 // It skips methods that already exist in user-owned handler files.
-func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string) error {
+//
+// cs is the project's checksum tracker. Passing it ensures the rendered
+// handlers_crud_gen.go is recorded so it doesn't show up as an orphan in
+// `forge audit`. A nil cs is tolerated.
+func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
 	pkg := toServicePackage(svc.Name)
 	targetDir := filepath.Join(projectDir, "handlers", pkg)
 
@@ -190,15 +206,16 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// Build template data
 	data := buildCRUDTemplateData(svc, filteredMethods, modulePath)
 
-	content, err := templates.ServiceTemplates.Render("handlers_crud_gen.go.tmpl", data)
+	content, err := templates.ServiceTemplates().Render("handlers_crud_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_gen.go.tmpl: %w", err)
 	}
 
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return err
+	relPath := filepath.Join("handlers", pkg, "handlers_crud_gen.go")
+	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
+		return fmt.Errorf("write handlers_crud_gen.go: %w", err)
 	}
-	return os.WriteFile(crudGenPath, content, 0644)
+	return nil
 }
 
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTemplateData {
@@ -366,6 +383,12 @@ type CRUDTestTemplateData struct {
 	HasTenant     bool                      // true if any entity has tenant isolation
 	Entities      []CRUDTestEntityData      // Grouped per-entity test data
 	CRUDMethods   []CRUDMethodTemplateData  // All CRUD methods (for individual error tests)
+	// TestHelperName mirrors ServiceTemplateData.TestHelperName: the suffix
+	// the bootstrap testing generator emits on `app.NewTest<X>` /
+	// `app.NewTest<X>Server`. CRUD test scaffolds use this rather than
+	// pascal-casing Package so the call site matches the actual factory
+	// when an internal package shares the service's leaf name.
+	TestHelperName string
 }
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
@@ -401,31 +424,74 @@ type CRUDTestFieldData struct {
 	TestValue string    // `"test-value"` or `1` or `true`
 }
 
-// GenerateCRUDTests generates handlers_crud_test_gen.go for a service with CRUD methods.
-func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string) error {
+// GenerateCRUDTests generates handlers_crud_gen_test.go (unit-test frames,
+// no build tag — runs in the default `go test ./...`) and
+// handlers_crud_integration_test.go (lifecycle / tenant / pagination /
+// filter / NotFound suites guarded by `//go:build integration`) for a
+// service with CRUD methods.
+//
+// cs is the project's checksum tracker. Both scaffold files are recorded
+// when actually written; once the user clears every FORGE_SCAFFOLD marker
+// the file becomes user-owned and forge stops re-rendering it (and stops
+// updating the checksum). A nil cs is tolerated.
+func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
 	pkg := toServicePackage(svc.Name)
 	targetDir := filepath.Join(projectDir, "handlers", pkg)
 
-	testGenPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
+	unitPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
+	integrationPath := filepath.Join(targetDir, "handlers_crud_integration_test.go")
 	if len(crudMethods) == 0 {
-		_ = os.Remove(testGenPath)
+		_ = os.Remove(unitPath)
+		_ = os.Remove(integrationPath)
 		return nil
 	}
 
-	data := buildCRUDTestTemplateData(svc, crudMethods, modulePath)
-
-	content, err := templates.ServiceTemplates.Render("handlers_crud_test_gen.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render handlers_crud_test_gen.go.tmpl: %w", err)
-	}
+	data := buildCRUDTestTemplateData(svc, crudMethods, modulePath, projectDir)
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(testGenPath, content, 0644)
+
+	unitContent, err := templates.ServiceTemplates().Render("handlers_crud_test_gen.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render handlers_crud_test_gen.go.tmpl: %w", err)
+	}
+	if err := writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_gen_test.go"), unitContent, cs); err != nil {
+		return err
+	}
+
+	integrationContent, err := templates.ServiceTemplates().Render("handlers_crud_integration_test.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render handlers_crud_integration_test.go.tmpl: %w", err)
+	}
+	return writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_integration_test.go"), integrationContent, cs)
 }
 
-func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTestTemplateData {
+// writeScaffoldFile writes a scaffold-with-placeholders file at
+// projectDir/relPath. If the file already exists on disk and contains no
+// remaining "FORGE_SCAFFOLD:" markers, the user has finished customising
+// it and forge will not overwrite it. Otherwise the file is (re)written
+// from the template and its checksum recorded so `forge audit` doesn't
+// flag it as an orphan.
+//
+// This is the mechanism that lets `_gen` filenames carry "until-customized"
+// semantics: as long as any marker is present the file is forge-owned and
+// regenerated; the moment every marker is removed the file becomes user-owned.
+func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums.FileChecksums) error {
+	fullPath := filepath.Join(projectDir, relPath)
+	if existing, err := os.ReadFile(fullPath); err == nil {
+		if !bytes.Contains(existing, []byte("FORGE_SCAFFOLD:")) {
+			// User has cleared every marker — they own the file now.
+			return nil
+		}
+	}
+	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string) CRUDTestTemplateData {
 	pkg := toServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)
@@ -632,12 +698,13 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	}
 
 	return CRUDTestTemplateData{
-		Package:      pkg,
-		Module:       modulePath,
-		ProtoPackage: protoPackage,
-		HasTenant:    testHasTenant,
-		Entities:     entities,
-		CRUDMethods:  allMethods,
+		Package:        pkg,
+		Module:         modulePath,
+		ProtoPackage:   protoPackage,
+		HasTenant:      testHasTenant,
+		Entities:       entities,
+		CRUDMethods:    allMethods,
+		TestHelperName: ComputeTestHelperName(pkg, projectDir),
 	}
 }
 

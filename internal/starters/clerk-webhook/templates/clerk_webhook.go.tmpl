@@ -1,0 +1,215 @@
+// Starter scaffold — you own this code. forge does not regenerate it.
+// Clerk webhook handler with Svix signature verification.
+// See https://clerk.com/docs/integrations/webhooks for upstream docs.
+package clerk
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+
+	svix "github.com/svix/svix-webhooks/go"
+)
+
+// ClerkWebhookHandler defines callbacks for Clerk webhook events.
+// Implement this interface to handle user and organization sync.
+type ClerkWebhookHandler interface {
+	OnUserCreated(ctx context.Context, user ClerkUser) error
+	OnUserUpdated(ctx context.Context, user ClerkUser) error
+	OnUserDeleted(ctx context.Context, userID string) error
+	OnOrganizationCreated(ctx context.Context, org ClerkOrganization) error
+	OnOrganizationUpdated(ctx context.Context, org ClerkOrganization) error
+	OnMembershipCreated(ctx context.Context, membership ClerkMembership) error
+	OnMembershipDeleted(ctx context.Context, membership ClerkMembership) error
+}
+
+// ClerkUser represents user data from Clerk webhook payloads.
+type ClerkUser struct {
+	ID             string           `json:"id"`
+	FirstName      string           `json:"first_name"`
+	LastName       string           `json:"last_name"`
+	ImageURL       string           `json:"image_url"`
+	EmailAddresses []ClerkEmailAddr `json:"email_addresses"`
+	PrimaryEmailID string           `json:"primary_email_address_id"`
+}
+
+// PrimaryEmail returns the user's primary email address.
+func (u ClerkUser) PrimaryEmail() string {
+	for _, e := range u.EmailAddresses {
+		if e.ID == u.PrimaryEmailID {
+			return e.Email
+		}
+	}
+	if len(u.EmailAddresses) > 0 {
+		return u.EmailAddresses[0].Email
+	}
+	return ""
+}
+
+// ClerkEmailAddr represents an email address in Clerk's payload.
+type ClerkEmailAddr struct {
+	ID    string `json:"id"`
+	Email string `json:"email_address"`
+}
+
+// ClerkOrganization represents organization data from Clerk webhook payloads.
+type ClerkOrganization struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// ClerkMembership represents organization membership data from Clerk webhook payloads.
+type ClerkMembership struct {
+	Organization   ClerkOrganization `json:"organization"`
+	PublicUserData struct {
+		UserID string `json:"user_id"`
+	} `json:"public_user_data"`
+	Role string `json:"role"`
+}
+
+// WebhookEvent represents a Clerk webhook event envelope.
+type WebhookEvent struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+// WebhookRouter routes Clerk webhook events to the appropriate handler.
+type WebhookRouter struct {
+	handler ClerkWebhookHandler
+	secret  string
+	logger  *slog.Logger
+}
+
+// NewWebhookRouter creates a new Clerk webhook router.
+// The secret is used for Svix signature verification. If empty,
+// it reads from the CLERK_WEBHOOK_SECRET environment variable.
+func NewWebhookRouter(handler ClerkWebhookHandler, secret string, logger *slog.Logger) *WebhookRouter {
+	if secret == "" {
+		secret = os.Getenv("CLERK_WEBHOOK_SECRET")
+	}
+	return &WebhookRouter{
+		handler: handler,
+		secret:  secret,
+		logger:  logger,
+	}
+}
+
+// ServeHTTP handles incoming Clerk webhook requests.
+// It verifies the Svix signature, parses the event, and dispatches
+// to the appropriate handler method.
+func (r *WebhookRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		r.logger.Error("clerk webhook: failed to read body", "error", err)
+		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	defer req.Body.Close()
+
+	// Verify Svix signature
+	if r.secret != "" {
+		wh, err := svix.NewWebhook(r.secret)
+		if err != nil {
+			r.logger.Error("clerk webhook: invalid webhook secret", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		err = wh.Verify(body, req.Header)
+		if err != nil {
+			r.logger.Warn("clerk webhook: signature verification failed", "error", err)
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+	} else {
+		r.logger.Warn("clerk webhook: no secret configured, skipping signature verification")
+	}
+
+	var event WebhookEvent
+	if err := json.Unmarshal(body, &event); err != nil {
+		r.logger.Error("clerk webhook: failed to parse event", "error", err)
+		http.Error(w, "invalid event payload", http.StatusBadRequest)
+		return
+	}
+
+	ctx := req.Context()
+	r.logger.Info("clerk webhook: received event", "type", event.Type)
+
+	if err := r.dispatch(ctx, event); err != nil {
+		r.logger.Error("clerk webhook: handler error", "type", event.Type, "error", err)
+		http.Error(w, "handler error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"status":"ok"}`)
+}
+
+func (r *WebhookRouter) dispatch(ctx context.Context, event WebhookEvent) error {
+	switch event.Type {
+	case "user.created":
+		var user ClerkUser
+		if err := json.Unmarshal(event.Data, &user); err != nil {
+			return fmt.Errorf("unmarshal user.created: %w", err)
+		}
+		return r.handler.OnUserCreated(ctx, user)
+
+	case "user.updated":
+		var user ClerkUser
+		if err := json.Unmarshal(event.Data, &user); err != nil {
+			return fmt.Errorf("unmarshal user.updated: %w", err)
+		}
+		return r.handler.OnUserUpdated(ctx, user)
+
+	case "user.deleted":
+		var data struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			return fmt.Errorf("unmarshal user.deleted: %w", err)
+		}
+		return r.handler.OnUserDeleted(ctx, data.ID)
+
+	case "organization.created":
+		var org ClerkOrganization
+		if err := json.Unmarshal(event.Data, &org); err != nil {
+			return fmt.Errorf("unmarshal organization.created: %w", err)
+		}
+		return r.handler.OnOrganizationCreated(ctx, org)
+
+	case "organization.updated":
+		var org ClerkOrganization
+		if err := json.Unmarshal(event.Data, &org); err != nil {
+			return fmt.Errorf("unmarshal organization.updated: %w", err)
+		}
+		return r.handler.OnOrganizationUpdated(ctx, org)
+
+	case "organizationMembership.created":
+		var membership ClerkMembership
+		if err := json.Unmarshal(event.Data, &membership); err != nil {
+			return fmt.Errorf("unmarshal membership.created: %w", err)
+		}
+		return r.handler.OnMembershipCreated(ctx, membership)
+
+	case "organizationMembership.deleted":
+		var membership ClerkMembership
+		if err := json.Unmarshal(event.Data, &membership); err != nil {
+			return fmt.Errorf("unmarshal membership.deleted: %w", err)
+		}
+		return r.handler.OnMembershipDeleted(ctx, membership)
+
+	default:
+		r.logger.Debug("clerk webhook: unhandled event type", "type", event.Type)
+		return nil
+	}
+}

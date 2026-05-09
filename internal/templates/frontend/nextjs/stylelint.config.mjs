@@ -22,6 +22,10 @@ const config = {
       },
     ],
     "declaration-no-important": true,
+    // Tailwind v4 documents `@import "tailwindcss";` as the canonical entry
+    // point. stylelint-config-standard prefers `url("tailwindcss")` notation;
+    // turn that rule off so the standard Tailwind v4 setup lints clean.
+    "import-notation": null,
   },
 };
 

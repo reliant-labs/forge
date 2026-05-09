@@ -1,6 +1,19 @@
 # Clerk Pack
 
-Clerk authentication integration with JWKS-based JWT validation, user/organization webhook sync, and a dev-mode bypass.
+Clerk authentication integration with JWKS-based JWT validation and a
+dev-mode bypass. The pack ships only the auth-side machinery — the
+JWKS rotation and Connect interceptor are pure infrastructure that
+benefit from forge keeping them up to date.
+
+For the **webhook side** of Clerk integration (user sync, org sync,
+membership events), use the `clerk-webhook` starter — that's a
+one-time scaffold rather than a tracked pack, because every project
+customizes the user-sync code anyway.
+
+```bash
+forge pack install clerk
+forge starter add clerk-webhook --service api   # if you also need user sync
+```
 
 ## Installation
 
@@ -10,12 +23,15 @@ forge pack install clerk
 
 ## What Gets Generated
 
+Auth code installs into `pkg/middleware/auth/clerk/` (its own Go subpackage,
+package `clerk`) so multiple auth packs can coexist without colliding on
+filenames in `pkg/middleware/`.
+
 | File | Description |
 |------|-------------|
-| `pkg/middleware/clerk_auth.go` | Clerk JWT validator using JWKS from your Clerk domain |
-| `pkg/middleware/auth_gen.go` | Connect RPC interceptor with Clerk-specific claim extraction (regenerated on `forge generate`) |
-| `pkg/clerk/webhook.go` | Webhook router with Svix signature verification for user and org sync events |
-| `proto/db/v1/clerk_user.proto` | User entity with `clerk_user_id`, email, name — ready for ORM codegen |
+| `pkg/middleware/auth/clerk/validator.go` | Clerk JWT validator (`clerk.Validator`) using JWKS from your Clerk domain |
+| `pkg/middleware/auth/clerk/dev_auth.go` | Dev-mode bypass (`clerk.DevAuthEnabled`, `clerk.DevClaims`) when `CLERK_DOMAIN` is unset |
+| `pkg/middleware/auth/clerk/auth_gen.go` | Connect RPC interceptor (`clerk.Init`, `clerk.Close`, `clerk.Interceptor`) — regenerated on `forge generate` |
 
 ## Configuration
 
@@ -28,20 +44,35 @@ auth:
     domain_env: CLERK_DOMAIN
     secret_key_env: CLERK_SECRET_KEY
     publishable_key_env: CLERK_PUBLISHABLE_KEY
-    webhook_secret_env: CLERK_WEBHOOK_SECRET
 ```
 
 | Variable | Purpose |
 |----------|---------|
 | `CLERK_DOMAIN` | Your Clerk domain (e.g., `example.clerk.accounts.dev`). When unset, dev mode activates. |
 | `CLERK_SECRET_KEY` | Backend API key for Clerk SDK calls |
-| `CLERK_WEBHOOK_SECRET` | Svix signing secret for webhook verification |
 
 ## Usage
 
 ### Session Validation
 
-The generated `auth_gen.go` interceptor validates Clerk JWTs automatically. Clerk tokens include organization claims (`org_id`, `org_role`, `org_permissions`) which are mapped to the standard `Claims` struct for use with Forge's auth middleware.
+The generated `pkg/middleware/auth/clerk/auth_gen.go` interceptor validates Clerk
+JWTs automatically. Clerk tokens include organization claims (`org_id`,
+`org_role`, `org_permissions`) which are mapped to the standard `Claims`
+struct for use with Forge's auth middleware. Wire it in `pkg/app/setup.go`:
+
+```go
+import (
+    "connectrpc.com/connect"
+
+    clerkauth "<module>/pkg/middleware/auth/clerk"
+)
+
+clerkauth.Init(logger)
+defer clerkauth.Close()
+interceptors := connect.WithInterceptors(clerkauth.Interceptor())
+```
+
+Then in handlers:
 
 ```go
 claims := middleware.ClaimsFromContext(ctx)
@@ -55,21 +86,22 @@ claims := middleware.ClaimsFromContext(ctx)
 
 When `CLERK_DOMAIN` is not set, the interceptor injects synthetic claims. Override dev identity with `DEV_USER_ID`, `DEV_ORG_ID`, `DEV_USER_EMAIL`, and `DEV_USER_ROLE` environment variables.
 
-### Webhook Sync
+### Webhook User-Sync (separate scaffold)
 
-Implement the `ClerkWebhookHandler` interface to sync Clerk events to your database:
-
-```go
-router := clerk.NewWebhookRouter(myHandler, "", logger)
-mux.Handle("/webhooks/clerk", router)
+```bash
+forge starter add clerk-webhook --service api
 ```
 
-The router handles these events: `user.created`, `user.updated`, `user.deleted`, `organization.created`, `organization.updated`, `organizationMembership.created`, `organizationMembership.deleted`. All payloads are verified with Svix signatures before dispatch.
+This drops a Svix-verified webhook router into `pkg/clerk/webhook.go`. You
+own the file thereafter. Implement `ClerkWebhookHandler` to persist users,
+orgs, and memberships into your own data model — every project's user
+table differs, so forge does not own a proto entity for this.
 
 ## Dependencies
 
 - `github.com/clerk/clerk-sdk-go/v2`
-- `github.com/svix/svix-webhooks`
+- `github.com/MicahParks/keyfunc/v3`
+- `github.com/golang-jwt/jwt/v5`
 
 ## Removal
 

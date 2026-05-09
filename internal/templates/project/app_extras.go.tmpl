@@ -1,0 +1,52 @@
+// app_extras.go is YOUR code — forge generate will never overwrite it.
+//
+// AppExtras is embedded into the forge-owned *App struct as a pointer
+// (see pkg/app/app_gen.go). Any field you add here is reachable via
+// `app.<Field>` thanks to Go's field promotion, so call sites stay
+// uniform whether the field is forge-managed (DB, ORM) or user-managed
+// (anything you add below).
+//
+// To add a new dependency:
+//   1. Declare the field on AppExtras here.
+//   2. Construct it in pkg/app/setup.go and assign `app.<Field> = ...`.
+//   3. Add a matching field to the consuming service's `Deps` struct in
+//      handlers/<svc>/service.go.
+//   4. Run `forge generate` — wire_gen resolves the field by exact-name
+//      match against AppExtras and emits `<Field>: app.<Field>`.
+//
+// Example:
+//
+//	type AppExtras struct {
+//	    Repo  db.Repository
+//	    Audit audit.Sink
+//	    Stripe *stripe.Client
+//	}
+//
+// Cross-lane type placeholders:
+//
+// When a sibling parallel-agent lane owns the typed Repository / Client
+// the field will eventually carry, declare the field as `any` and tag
+// it with `forge:placeholder: <Type>`. wire_gen emits a typed accessor
+// that compiles in both shapes; `forge generate` errors when the field
+// is still typed `any` after the sibling lane was supposed to land,
+// preventing the "worker registered with nil Repo and silently no-op'd"
+// bug class. Tighten the declaration to <Type> when the lane merges.
+//
+// Example:
+//
+//	type AppExtras struct {
+//	    // forge:placeholder: user.Repository
+//	    UserRepo any
+//	}
+//
+//forge:scaffold one-shot
+//forge:allow
+package app
+
+// AppExtras is the user-owned extension surface for *App. Add fields
+// here as you grow the application; setup.go assigns them, wire_gen
+// reads them.
+type AppExtras struct {
+	// Add user-extension fields here. The struct can be empty until
+	// the first dependency outgrows the bare {Logger, Config} pair.
+}

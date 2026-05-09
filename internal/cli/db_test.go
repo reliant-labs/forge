@@ -6,6 +6,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestResolveDSN(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+
+	if _, err := resolveDSN(""); err == nil {
+		t.Fatal("expected error when neither flag nor env var set")
+	}
+
+	if got, err := resolveDSN("flag-dsn"); err != nil || got != "flag-dsn" {
+		t.Fatalf("flag DSN: got (%q, %v), want (\"flag-dsn\", nil)", got, err)
+	}
+
+	t.Setenv("DATABASE_URL", "env-dsn")
+	if got, err := resolveDSN(""); err != nil || got != "env-dsn" {
+		t.Fatalf("env DSN: got (%q, %v), want (\"env-dsn\", nil)", got, err)
+	}
+
+	// Flag wins over env.
+	if got, err := resolveDSN("flag-dsn"); err != nil || got != "flag-dsn" {
+		t.Fatalf("flag-over-env: got (%q, %v), want (\"flag-dsn\", nil)", got, err)
+	}
+}
+
 func TestDBCommandIncludesExpectedTopLevelSubcommands(t *testing.T) {
 	command := newDBCmd()
 

@@ -1,6 +1,6 @@
 //go:build ignore
 
-package {{.ServiceName | lower}}
+package {{.ServicePackage}}
 
 import (
 	"log/slog"
@@ -13,10 +13,14 @@ import (
 )
 
 func TestWebhook{{.Name | pascalCase}}RejectsNonPOST(t *testing.T) {
-	svc := New(Deps{
-		Logger: slog.Default(),
-		Config: &config.Config{},
+	svc, err := New(Deps{
+		Logger:     slog.Default(),
+		Config:     &config.Config{},
+		Authorizer: NewAuthorizer(),
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/webhooks/{{.Name | kebabCase}}", nil)
 	w := httptest.NewRecorder()
@@ -27,10 +31,14 @@ func TestWebhook{{.Name | pascalCase}}RejectsNonPOST(t *testing.T) {
 }
 
 func TestWebhook{{.Name | pascalCase}}RejectsMissingEventID(t *testing.T) {
-	svc := New(Deps{
-		Logger: slog.Default(),
-		Config: &config.Config{},
+	svc, err := New(Deps{
+		Logger:     slog.Default(),
+		Config:     &config.Config{},
+		Authorizer: NewAuthorizer(),
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	body := strings.NewReader(`{"type":"test"}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/{{.Name | kebabCase}}", body)
@@ -43,10 +51,14 @@ func TestWebhook{{.Name | pascalCase}}RejectsMissingEventID(t *testing.T) {
 }
 
 func TestWebhook{{.Name | pascalCase}}DeduplicatesEvents(t *testing.T) {
-	svc := New(Deps{
-		Logger: slog.Default(),
-		Config: &config.Config{},
+	svc, err := New(Deps{
+		Logger:     slog.Default(),
+		Config:     &config.Config{},
+		Authorizer: NewAuthorizer(),
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	// Mark an event as processed.
 	_ = svc.markWebhookProcessed(nil, "evt-123", "{{.Name}}")

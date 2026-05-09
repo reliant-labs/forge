@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/packs"
 )
 
@@ -67,6 +68,7 @@ func runGoModTidyRoot(projectDir string) error {
 		return nil
 	}
 
+
 	fmt.Println("🔨 Running go mod tidy in project root...")
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = projectDir
@@ -79,6 +81,37 @@ func runGoModTidyRoot(projectDir string) error {
 
 	fmt.Println("  ✅ go.mod tidied")
 	return nil
+}
+
+// rehashTrackedFiles refreshes the on-disk-content checksum for every entry
+// in cs.Files. Called after goimports (or any other post-write formatter)
+// runs over the project so that audit doesn't flag goimports-induced
+// import-group rearrangements as user edits. Missing files are dropped from
+// the tracker rather than left with stale hashes — they'll be re-recorded
+// next generate cycle if forge still emits them.
+//
+// This complements `WriteGeneratedFile`: WriteGeneratedFile records the
+// hash of the pre-formatter content (so the History entry survives), and
+// this pass updates the *current* Hash to match the formatter's output.
+func rehashTrackedFiles(projectDir string, cs *generator.FileChecksums) {
+	if cs == nil || len(cs.Files) == 0 {
+		return
+	}
+	for rel := range cs.Files {
+		full := filepath.Join(projectDir, rel)
+		content, err := os.ReadFile(full)
+		if err != nil {
+			// File was removed (e.g. cleanup of stale codegen). Drop the
+			// stale checksum so audit doesn't keep reporting it.
+			if os.IsNotExist(err) {
+				delete(cs.Files, rel)
+			}
+			continue
+		}
+		entry := cs.Files[rel]
+		entry.Hash = generator.HashContent(content)
+		cs.Files[rel] = entry
+	}
 }
 
 // runGoimportsOnGenerated runs goimports on generated Go files to fix import grouping.
@@ -117,16 +150,28 @@ func runGoimportsOnGenerated(projectDir, modulePath string) error {
 	return nil
 }
 
-// runPackGenerateHooks processes generate hooks for all installed packs.
-// This re-renders pack generate templates so pack-generated code stays
-// up to date with the current project config.
+// runPackGenerateHooks processes generate hooks for all installed packs
+// in dependency-respecting order: producers (depended-on packs) before
+// consumers. This matters when one pack's generate hook references
+// another pack's generated output — without the topo sort, hook order
+// is whatever cfg.Packs happens to list and the dependent hook can run
+// against stale (or absent) producer output.
 func runPackGenerateHooks(projectDir string, cfg *config.ProjectConfig) error {
-	installed, err := packs.InstalledPacks(cfg)
+	// Topo-sort first; fall back to cfg.Packs order on any sort error
+	// (a cycle or missing manifest is rare and we don't want to block
+	// generate on it — the dep is still likely to render fine).
+	order, err := packs.SortInstalledByDependencies(cfg.Packs)
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "⚠ pack dep sort failed (%v); falling back to cfg.Packs order\n", err)
+		order = cfg.Packs
 	}
 
-	for _, p := range installed {
+	for _, name := range order {
+		p, err := packs.GetPack(name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: installed pack %q not found: %v\n", name, err)
+			continue
+		}
 		if len(p.Generate) == 0 {
 			continue
 		}

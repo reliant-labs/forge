@@ -1,0 +1,138 @@
+# pkg/app conventions
+
+This file documents the runtime-wiring conventions enforced by the
+forge-generated `bootstrap.go` + `wire_gen.go` and the user-owned
+`setup.go`. Read this once; the per-service `service.go` files
+reference it instead of duplicating the explanation.
+
+## Bootstrap, Setup, and wire_gen, in one breath
+
+`Bootstrap(mux, logger, cfg)` (and `BootstrapOnly(...)`) follow this
+ordered shape:
+
+```
+Bootstrap → app := &App{ Services: &Services{}, ... }   // empty App
+         → Setup(app, cfg)                              // YOUR code: build DB/NATS/audit, assign onto app fields
+         → for each service:
+              deps := wireXxxDeps(app, cfg, logger, devMode)  // codegen, reads app.<Field>
+              svc, err := xxx.New(deps)                       // validateDeps gates COMPLETE deps
+              app.Services.Xxx = svc
+              mux.Handle(path, svc)                           // pointer is final from here
+         → return app, nil
+```
+
+The pre-2026-05-07 two-phase ApplyDeps pattern is gone: there is no
+post-registration mutation step. Each service's `New()` receives the
+full Deps in one shot, so `validateDeps()` can legitimately enforce
+required fields without breaking startup.
+
+## How wire_gen resolves Deps fields
+
+`pkg/app/wire_gen.go` is regenerated on every `forge generate`. For
+each service it parses `handlers/<svc>/service.go` to extract the
+`Deps` struct's field names + types, then emits a per-service
+`wireXxxDeps(app, cfg, logger, devMode) Deps` function. Resolution
+rules (consulted in order):
+
+1. `Logger` → `logger.With("service", "<runtime-name>")`
+2. `Config` → `cfg`
+3. `Authorizer` → `<svc>.NewAuthorizer()` with devMode swap to
+   `middleware.DevAuthorizer{}`
+4. `DB orm.Context` → `app.ORM` (which implements `orm.Context`)
+5. `DB *sql.DB` → `app.DB`
+6. **Otherwise**: exact-name match against an exported field on `*App`.
+   If `*App` has a field with the same name, wire_gen emits
+   `app.<Field>`.
+7. **No match**: emit `nil` plus a `// TODO: wire <Name>` annotation
+   and a header-comment note. Compile still succeeds; if `validateDeps`
+   marks the field required, startup fails with a clear message.
+
+To add a new dep:
+
+- Add the field to the consuming service's `Deps` struct.
+- Add a matching exported field to `*App` (in a sibling
+  `pkg/app/app_extras.go` file you own).
+- Construct it in `setup.go` and assign to `app.<Field>`.
+- Re-run `forge generate`. wire_gen will resolve the field by name on
+  the next regenerate.
+
+## Cross-lane type placeholders
+
+If you need to declare an `AppExtras` field whose typed value
+originates from a sibling lane that hasn't landed yet, tag the field
+with `forge:placeholder` so wire_gen emits a typed accessor and `forge
+generate` errors loudly when the lane never lands:
+
+```go
+type AppExtras struct {
+    // forge:placeholder: user.Repository
+    UserRepo any
+}
+```
+
+The struct-tag spelling (`UserRepo any \`forge:placeholder:"user.Repository"\``)
+also works.
+
+- **wire_gen** emits `resolveUserRepo(app) user.Repository` at file
+  scope; each consuming `wireXxxDeps` calls it instead of
+  `app.UserRepo`. The accessor compiles whether the field is `any`
+  (pre-merge) or `user.Repository` (post-merge) — `any(x).(T)` is a
+  no-op in the latter case.
+- **`forge generate` errors** when an AppExtras field carries the
+  marker but is still typed `any`. The error message names the field
+  and target type so you know exactly which declaration to tighten.
+- **`forge lint --wire-coverage` errors** on the same condition, even
+  when `wire_gen.go` doesn't exist yet.
+
+Tighten the declaration to the target type once the sibling lane
+lands. The marker stays harmless — its role is `wire_gen.go`-time
+detection, not `app_extras.go`-time enforcement.
+
+`forge:placeholder` is for cross-lane scaffolding, not optional deps.
+For fields that may legitimately be nil at runtime, use
+`forge:optional-dep` (see the per-service `service.go` Deps struct).
+
+## Where do per-RPC nil checks belong? (Spoiler: nowhere.)
+
+Forge generates `New(Deps) (*Service, error)` and a `validateDeps()`
+helper. Add your required fields to that single method:
+
+```go
+func (d Deps) validateDeps() error {
+    if d.Logger == nil   { return fmt.Errorf("foo: Deps.Logger required") }
+    if d.Config == nil   { return fmt.Errorf("foo: Deps.Config required") }
+    if d.Authorizer == nil { return fmt.Errorf("foo: Deps.Authorizer required") }
+    if d.Repo == nil     { return fmt.Errorf("foo: Deps.Repo required") }
+    return nil
+}
+```
+
+Once `Repo` is in `validateDeps`, individual RPC handlers can just use
+`s.deps.Repo.Get(...)` directly — no `if s.deps.Repo == nil { return ... }`
+preamble needed. The validation runs once at bootstrap; if it passes, the
+field is non-nil for every RPC the service ever handles.
+
+If a Dep really is optional (e.g. an audit sink that's allowed to be nil
+in dev), keep it out of `validateDeps` and check at the one call site
+that needs it.
+
+## Why no post-construction mutation
+
+Bootstrap registers each `*Service` on the mux **by pointer**. Connect
+captures that pointer at `Register` time. Reassigning
+`app.Services.Foo = foo.New(...)` after registration has no runtime
+effect — the mux still dispatches to the original instance. The old
+`ApplyDeps` method existed precisely to mutate the pointer in place,
+but having a "fix it after the fact" hook defeats the point of
+validateDeps. With wire_gen, the assembled Deps flow into `New` once,
+the pointer is captured, and there's no further mutation needed.
+
+## Test wiring
+
+`pkg/app/testing.go` emits per-service `NewTest<Svc>(t, ...opts)`
+factories. Tests construct `Deps` directly (filling in only the
+fields they care about; defaults flow in for the bare-Deps trio) and
+call `New` — wire_gen is bypassed in tests so each test stays
+self-contained. Use `app.With<Svc>Deps(deps)` to override the rich
+deps in tests. See the `forge skill load testing/patterns` skill for
+the canonical patterns.

@@ -27,34 +27,37 @@ func TestClerkPackManifest(t *testing.T) {
 	if !strings.Contains(p.Description, "JWKS") {
 		t.Errorf("Description should mention JWKS, got: %s", p.Description)
 	}
-	if !strings.Contains(p.Description, "webhook") {
-		t.Errorf("Description should mention webhook, got: %s", p.Description)
-	}
 
 	if p.Config.Section != "auth" {
 		t.Errorf("Config.Section = %q, want %q", p.Config.Section, "auth")
 	}
 
-	// Check dependencies
-	wantDeps := map[string]bool{
-		"github.com/clerk/clerk-sdk-go/v2": false,
-		"github.com/svix/svix-webhooks":    false,
+	// Check dependencies (modulePath substring match — pinned versions are
+	// appended after "@"). Webhook-specific deps (svix-webhooks) moved out
+	// with the clerk-webhook starter — they should NOT appear here anymore.
+	wantDepPrefixes := []string{
+		"github.com/clerk/clerk-sdk-go/v2",
+		"github.com/MicahParks/keyfunc/v3",
+		"github.com/golang-jwt/jwt/v5",
 	}
-	for _, dep := range p.Dependencies {
-		if _, ok := wantDeps[dep]; ok {
-			wantDeps[dep] = true
+	for _, prefix := range wantDepPrefixes {
+		found := false
+		for _, dep := range p.Dependencies {
+			if dep == prefix || strings.HasPrefix(dep, prefix+"@") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing dependency: %s", prefix)
 		}
 	}
-	for dep, found := range wantDeps {
-		if !found {
-			t.Errorf("missing dependency: %s", dep)
+	for _, dep := range p.Dependencies {
+		if strings.HasPrefix(dep, "github.com/svix/") {
+			t.Errorf("clerk pack must not depend on svix-webhooks anymore (moved to clerk-webhook starter); got %q", dep)
 		}
 	}
 
-	// Check files
-	if len(p.Files) != 3 {
-		t.Errorf("len(Files) = %d, want 3", len(p.Files))
-	}
 	templateNames := make(map[string]bool)
 	for _, f := range p.Files {
 		templateNames[f.Template] = true
@@ -62,11 +65,37 @@ func TestClerkPackManifest(t *testing.T) {
 	if !templateNames["clerk_auth.go.tmpl"] {
 		t.Error("files should include clerk_auth.go.tmpl")
 	}
-	if !templateNames["clerk_webhook.go.tmpl"] {
-		t.Error("files should include clerk_webhook.go.tmpl")
+	if !templateNames["clerk_dev_auth.go.tmpl"] {
+		t.Error("files should include clerk_dev_auth.go.tmpl")
 	}
-	if !templateNames["clerk_user_entity.proto.tmpl"] {
-		t.Error("files should include clerk_user_entity.proto.tmpl")
+	// The webhook + user-entity templates have moved to the clerk-webhook
+	// starter — make sure the pack does NOT still ship them.
+	if templateNames["clerk_webhook.go.tmpl"] {
+		t.Error("clerk_webhook.go.tmpl must NOT be a pack template anymore (moved to clerk-webhook starter)")
+	}
+	if templateNames["clerk_user_entity.proto.tmpl"] {
+		t.Error("clerk_user_entity.proto.tmpl must NOT be a pack template anymore (project-specific data model)")
+	}
+
+	// All middleware-package files land under pkg/middleware/auth/clerk/ —
+	// the per-pack nested subpackage rule.
+	for _, f := range p.Files {
+		if strings.HasPrefix(f.Output, "pkg/middleware/") &&
+			!strings.HasPrefix(f.Output, "pkg/middleware/auth/clerk/") {
+			t.Errorf("file %s emits into pkg/middleware/ root; expected pkg/middleware/auth/clerk/<file>", f.Output)
+		}
+	}
+	for _, f := range p.Generate {
+		if strings.HasPrefix(f.Output, "pkg/middleware/") &&
+			!strings.HasPrefix(f.Output, "pkg/middleware/auth/clerk/") {
+			t.Errorf("generate file %s emits into pkg/middleware/ root; expected pkg/middleware/auth/clerk/<file>", f.Output)
+		}
+	}
+
+	// Subpath hint must match the actual installation tree so users see the
+	// right thing in `forge pack info`.
+	if p.Subpath != "middleware/auth/clerk" {
+		t.Errorf("Subpath = %q, want %q", p.Subpath, "middleware/auth/clerk")
 	}
 
 	// Check generate hook
@@ -127,9 +156,10 @@ func TestClerkAuthTemplateContent(t *testing.T) {
 	content := string(tmplContent)
 
 	checks := []string{
-		"ClerkJWTValidator",
-		"ClerkValidatorConfig",
-		"NewClerkJWTValidator",
+		"package clerk",
+		"type Validator struct",
+		"type ValidatorConfig struct",
+		"func NewValidator(",
 		"ValidateToken",
 		"CLERK_DOMAIN",
 		".well-known/jwks.json",
@@ -137,7 +167,8 @@ func TestClerkAuthTemplateContent(t *testing.T) {
 		"org_id",
 		"org_role",
 		"org_permissions",
-		"func (v *ClerkJWTValidator) Close()",
+		"func (v *Validator) Close()",
+		"middleware.Claims",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
@@ -146,8 +177,8 @@ func TestClerkAuthTemplateContent(t *testing.T) {
 	}
 }
 
-func TestClerkWebhookTemplateContent(t *testing.T) {
-	tmplContent, err := packsFS.ReadFile("clerk/templates/clerk_webhook.go.tmpl")
+func TestClerkDevAuthTemplateContent(t *testing.T) {
+	tmplContent, err := packsFS.ReadFile("clerk/templates/clerk_dev_auth.go.tmpl")
 	if err != nil {
 		t.Fatalf("read template: %v", err)
 	}
@@ -155,57 +186,26 @@ func TestClerkWebhookTemplateContent(t *testing.T) {
 	content := string(tmplContent)
 
 	checks := []string{
-		"ClerkWebhookHandler",
-		"OnUserCreated",
-		"OnUserUpdated",
-		"OnUserDeleted",
-		"OnOrganizationCreated",
-		"OnOrganizationUpdated",
-		"OnMembershipCreated",
-		"OnMembershipDeleted",
-		"svix",
-		"user.created",
-		"user.updated",
-		"user.deleted",
-		"organization.created",
-		"organization.updated",
-		"organizationMembership.created",
-		"organizationMembership.deleted",
-		"CLERK_WEBHOOK_SECRET",
-		"WebhookRouter",
-		"ServeHTTP",
+		"package clerk",
+		// Unprefixed names — the package itself namespaces them.
+		"func DevAuthEnabled(",
+		"func DevClaims(",
+		"CLERK_DOMAIN",
+		"DEV_USER_ID",
+		"DEV_ORG_ID",
+		"middleware.Claims",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
-			t.Errorf("clerk_webhook.go.tmpl should contain %q", check)
+			t.Errorf("clerk_dev_auth.go.tmpl should contain %q", check)
 		}
 	}
-}
 
-func TestClerkUserEntityTemplateContent(t *testing.T) {
-	tmplContent, err := packsFS.ReadFile("clerk/templates/clerk_user_entity.proto.tmpl")
-	if err != nil {
-		t.Fatalf("read template: %v", err)
-	}
-
-	content := string(tmplContent)
-
-	checks := []string{
-		"entity_options",
-		"field_options",
-		"clerk_user_id",
-		"table_name",
-		"soft_delete",
-		"timestamps",
-		"primary_key",
-		"auto_increment",
-		"unique",
-		"not_null",
-		"message User",
-	}
-	for _, check := range checks {
-		if !strings.Contains(content, check) {
-			t.Errorf("clerk_user_entity.proto.tmpl should contain %q", check)
+	// Negative checks: the prefixed names from the pre-subpackage era
+	// must not reappear.
+	for _, banned := range []string{"ClerkDevAuthEnabled", "ClerkDevClaims"} {
+		if strings.Contains(content, banned) {
+			t.Errorf("clerk_dev_auth.go.tmpl must not declare prefixed %q (now lives in package clerk)", banned)
 		}
 	}
 }
@@ -219,16 +219,13 @@ func TestClerkAuthGenTemplateContent(t *testing.T) {
 	content := string(tmplContent)
 
 	checks := []string{
-		"InitAuth",
-		"CloseAuth",
-		"GeneratedAuthInterceptor",
-		"DevAuthEnabled",
-		"DevClaims",
-		"clerkValidator",
+		"package clerk",
+		"func Init(",
+		"func Close(",
+		"func Interceptor(",
+		"validator",
 		"CLERK_DOMAIN",
-		"ContextWithClaims",
-		"DEV_USER_ID",
-		"DEV_ORG_ID",
+		"middleware.ContextWithClaims",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
@@ -262,5 +259,17 @@ func TestGetPackClerk(t *testing.T) {
 	}
 	if p.Name != "clerk" {
 		t.Errorf("Name = %q, want %q", p.Name, "clerk")
+	}
+}
+
+// Defense-in-depth: the dropped packs must NOT be loadable as packs anymore.
+// They should now exist as starters via `forge starter add`.
+func TestDroppedPacksNotLoadable(t *testing.T) {
+	for _, name := range []string{"stripe", "twilio"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadPack(name); err == nil {
+				t.Errorf("LoadPack(%s) succeeded — should be a starter now, not a pack", name)
+			}
+		})
 	}
 }

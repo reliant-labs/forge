@@ -361,6 +361,70 @@ func TestAPIKeyConfig_EffectiveAPIKeyHeader(t *testing.T) {
 	}
 }
 
+func TestProjectConfig_ForgeVersionRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		yamlStr string
+		want    string
+	}{
+		{
+			"explicit forge_version",
+			"name: p\nmodule_path: example.com/p\nforge_version: \"1.5.0\"\n",
+			"1.5.0",
+		},
+		{
+			"missing forge_version (legacy)",
+			"name: p\nmodule_path: example.com/p\n",
+			"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg ProjectConfig
+			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.ForgeVersion != tt.want {
+				t.Errorf("ForgeVersion = %q, want %q", cfg.ForgeVersion, tt.want)
+			}
+
+			// Round-trip
+			out, err := yaml.Marshal(&cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var cfg2 ProjectConfig
+			if err := yaml.Unmarshal(out, &cfg2); err != nil {
+				t.Fatalf("unmarshal round-trip: %v", err)
+			}
+			if cfg2.ForgeVersion != tt.want {
+				t.Errorf("round-trip ForgeVersion = %q, want %q", cfg2.ForgeVersion, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectConfig_EffectiveForgeVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty (legacy)", "", "0.0.0"},
+		{"whitespace only", "   ", "0.0.0"},
+		{"explicit version", "1.5.0", "1.5.0"},
+		{"dev sentinel passes through", "dev", "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ProjectConfig{ForgeVersion: tt.in}
+			if got := cfg.EffectiveForgeVersion(); got != tt.want {
+				t.Errorf("EffectiveForgeVersion(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestJWTConfig_EffectiveSigningMethod(t *testing.T) {
 	tests := []struct {
 		method string

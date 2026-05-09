@@ -1,6 +1,10 @@
 syntax = "proto3";
 
-package {{.Package}}.db.v1;
+// snakeCase normalizes hyphens in {{.Package}} (e.g. "my-app" → "my_app") so
+// the proto package decl is always a valid identifier. Without this, projects
+// scaffolded with hyphenated names produce "package my-app.db.v1;" which buf
+// lint rejects with "unexpected '-' after 'package' declaration".
+package {{.Package | snakeCase}}.db.v1;
 
 import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";

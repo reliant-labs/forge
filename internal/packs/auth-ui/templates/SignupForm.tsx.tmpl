@@ -1,0 +1,359 @@
+"use client";
+{{- $provider := index .PackConfig "provider" }}
+
+// forge:scaffold one-shot — auth-ui SignupForm; canonical pattern in `forge skill load packs`.
+/**
+ * SignupForm — registration surface for the {{$provider}} backend pack.
+ *
+ * Wire into a /signup page:
+ *
+ *   import { SignupForm } from "@/components/auth";
+ *   export default function SignupPage() {
+ *     return <SignupForm />;
+ *   }
+ *
+ * Built from forge's base UI primitives (`Card`, `Form`, `Input`,
+ * `Label`, `Button`, `AlertBanner`).
+ */
+
+{{- if eq $provider "clerk" }}
+import { SignUp } from "@clerk/nextjs";
+
+export interface SignupFormProps {
+  afterSignUpUrl?: string;
+  signInUrl?: string;
+}
+
+// Shared appearance config — kept as a const so JSX double-braces don't
+// collide with the Go template engine that rendered this file.
+const CLERK_APPEARANCE = {
+  elements: {
+    card: "shadow-md",
+  },
+};
+
+export function SignupForm({
+  afterSignUpUrl = "/",
+  signInUrl = "/login",
+}: SignupFormProps = {}) {
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center px-4 py-10">
+      <SignUp
+        afterSignUpUrl={afterSignUpUrl}
+        signInUrl={signInUrl}
+        appearance={CLERK_APPEARANCE}
+      />
+    </div>
+  );
+}
+{{- else if eq $provider "firebase-auth" }}
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  updateProfile,
+} from "firebase/auth";
+
+import AlertBanner from "@/components/ui/alert_banner";
+import Button from "@/components/ui/button";
+import Card from "@/components/ui/card";
+import Form, { FormError, FormField } from "@/components/ui/form";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
+
+import { useAuthStore } from "./auth-store";
+
+const schema = z
+  .object({
+    name: z.string().min(1, "Name is required."),
+    email: z.string().email("Enter a valid email."),
+    password: z.string().min(8, "Password must be at least 8 characters."),
+    confirm: z.string(),
+  })
+  .refine((d) => d.password === d.confirm, {
+    message: "Passwords do not match.",
+    path: ["confirm"],
+  });
+type FormValues = z.infer<typeof schema>;
+
+export interface SignupFormProps {
+  onSuccess?: () => void;
+}
+
+export function SignupForm({ onSuccess }: SignupFormProps = {}) {
+  const setLoading = useAuthStore((s) => s.setLoading);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({ resolver: zodResolver(schema) });
+
+  const onSubmit = handleSubmit(async (values) => {
+    setSubmitError(null);
+    setLoading(true);
+    try {
+      const auth = getAuth();
+      const cred = await createUserWithEmailAndPassword(
+        auth,
+        values.email,
+        values.password,
+      );
+      if (values.name) {
+        await updateProfile(cred.user, { displayName: values.name });
+      }
+      onSuccess?.();
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not create your account.";
+      setSubmitError(msg);
+    } finally {
+      setLoading(false);
+    }
+  });
+
+  return (
+    <Card className="mx-auto w-full max-w-sm" padding="lg">
+      <Form onSubmit={onSubmit}>
+        <h1 className="text-xl font-semibold text-gray-900">Create account</h1>
+
+        <FormField>
+          <Label htmlFor="signup-name" required>
+            Name
+          </Label>
+          <Input
+            id="signup-name"
+            type="text"
+            autoComplete="name"
+            invalid={Boolean(errors.name)}
+            {...register("name")}
+          />
+          <FormError message={errors.name?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="signup-email" required>
+            Email
+          </Label>
+          <Input
+            id="signup-email"
+            type="email"
+            autoComplete="email"
+            invalid={Boolean(errors.email)}
+            {...register("email")}
+          />
+          <FormError message={errors.email?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="signup-password" required>
+            Password
+          </Label>
+          <Input
+            id="signup-password"
+            type="password"
+            autoComplete="new-password"
+            invalid={Boolean(errors.password)}
+            {...register("password")}
+          />
+          <FormError message={errors.password?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="signup-confirm" required>
+            Confirm password
+          </Label>
+          <Input
+            id="signup-confirm"
+            type="password"
+            autoComplete="new-password"
+            invalid={Boolean(errors.confirm)}
+            {...register("confirm")}
+          />
+          <FormError message={errors.confirm?.message} />
+        </FormField>
+
+        {submitError ? (
+          <AlertBanner variant="error" message={submitError} />
+        ) : null}
+
+        <Button type="submit" fullWidth isLoading={isSubmitting}>
+          {isSubmitting ? "Creating account…" : "Create account"}
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+{{- else }}
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+
+import AlertBanner from "@/components/ui/alert_banner";
+import Button from "@/components/ui/button";
+import Card from "@/components/ui/card";
+import Form, { FormError, FormField } from "@/components/ui/form";
+import Input from "@/components/ui/input";
+import Label from "@/components/ui/label";
+
+import {
+  useAuthStore,
+  persistSession,
+  type AuthUser,
+  type AuthSession,
+} from "./auth-store";
+
+const schema = z
+  .object({
+    name: z.string().min(1, "Name is required."),
+    email: z.string().email("Enter a valid email."),
+    password: z.string().min(8, "Password must be at least 8 characters."),
+    confirm: z.string(),
+  })
+  .refine((d) => d.password === d.confirm, {
+    message: "Passwords do not match.",
+    path: ["confirm"],
+  });
+type FormValues = z.infer<typeof schema>;
+
+export interface SignupFormProps {
+  signupPath?: string;
+  onSuccess?: (user: AuthUser) => void;
+}
+
+interface SignupResponse {
+  token: string;
+  user: AuthUser;
+  expiresAt?: number;
+}
+
+/**
+ * jwt-auth variant — email+password POSTed to the backend pack's
+ * /auth/signup endpoint. Mirrors LoginForm: token + user JSON returned,
+ * persisted to localStorage, pushed into the auth-store.
+ */
+export function SignupForm({
+  signupPath = "{{ index .PackConfig "jwt_signup_path" }}",
+  onSuccess,
+}: SignupFormProps = {}) {
+  const setSession = useAuthStore((s) => s.setSession);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({ resolver: zodResolver(schema) });
+
+  const onSubmit = handleSubmit(async (values) => {
+    setSubmitError(null);
+    try {
+      const res = await fetch(signupPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: values.name,
+          email: values.email,
+          password: values.password,
+        }),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Signup failed (${res.status})`);
+      }
+      const body = (await res.json()) as SignupResponse;
+      const session: AuthSession = {
+        token: body.token,
+        expiresAt: body.expiresAt,
+      };
+      setSession(body.user, session);
+      persistSession(body.user, session);
+      onSuccess?.(body.user);
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Could not create your account.";
+      setSubmitError(msg);
+    }
+  });
+
+  return (
+    <Card className="mx-auto w-full max-w-sm" padding="lg">
+      <Form onSubmit={onSubmit}>
+        <h1 className="text-xl font-semibold text-gray-900">Create account</h1>
+
+        <FormField>
+          <Label htmlFor="signup-name" required>
+            Name
+          </Label>
+          <Input
+            id="signup-name"
+            type="text"
+            autoComplete="name"
+            invalid={Boolean(errors.name)}
+            {...register("name")}
+          />
+          <FormError message={errors.name?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="signup-email" required>
+            Email
+          </Label>
+          <Input
+            id="signup-email"
+            type="email"
+            autoComplete="email"
+            invalid={Boolean(errors.email)}
+            {...register("email")}
+          />
+          <FormError message={errors.email?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="signup-password" required>
+            Password
+          </Label>
+          <Input
+            id="signup-password"
+            type="password"
+            autoComplete="new-password"
+            invalid={Boolean(errors.password)}
+            {...register("password")}
+          />
+          <FormError message={errors.password?.message} />
+        </FormField>
+
+        <FormField>
+          <Label htmlFor="signup-confirm" required>
+            Confirm password
+          </Label>
+          <Input
+            id="signup-confirm"
+            type="password"
+            autoComplete="new-password"
+            invalid={Boolean(errors.confirm)}
+            {...register("confirm")}
+          />
+          <FormError message={errors.confirm?.message} />
+        </FormField>
+
+        {submitError ? (
+          <AlertBanner variant="error" message={submitError} />
+        ) : null}
+
+        <Button type="submit" fullWidth isLoading={isSubmitting}>
+          {isSubmitting ? "Creating account…" : "Create account"}
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+{{- end }}

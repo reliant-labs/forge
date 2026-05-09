@@ -12,8 +12,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// GetListProtosTool returns the list_protos tool definition
-func GetListProtosTool() Tool {
+// getListProtosTool returns the list_protos tool definition
+func getListProtosTool() Tool {
 	return Tool{
 		Name: "list_protos",
 		Description: `List all .proto files in the project with their package names, service count, and message count.
@@ -108,8 +108,8 @@ func parseProtoFileInfo(path string) (*protoFileInfo, error) {
 	return info, scanner.Err()
 }
 
-// GetListServicesTool returns the list_services tool definition
-func GetListServicesTool() Tool {
+// getListServicesTool returns the list_services tool definition
+func getListServicesTool() Tool {
 	return Tool{
 		Name: "list_services",
 		Description: `List all services defined in the project's proto files with their RPC methods.
@@ -246,8 +246,8 @@ func extractBraceBlock(s string, pos int) string {
 	return ""
 }
 
-// GetGetServiceContractTool returns the get_service_contract tool definition
-func GetGetServiceContractTool() Tool {
+// getGetServiceContractTool returns the get_service_contract tool definition
+func getGetServiceContractTool() Tool {
 	return Tool{
 		Name: "get_service_contract",
 		Description: `Return the full proto definition for a specific service.
@@ -319,8 +319,8 @@ func executeGetServiceContract(arguments json.RawMessage) (string, error) {
 	return result.String(), nil
 }
 
-// GetGetProjectConfigTool returns the get_project_config tool definition
-func GetGetProjectConfigTool() Tool {
+// getGetProjectConfigTool returns the get_project_config tool definition
+func getGetProjectConfigTool() Tool {
 	return Tool{
 		Name: "get_project_config",
 		Description: `Return the parsed project configuration as JSON.

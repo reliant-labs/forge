@@ -1,0 +1,79 @@
+// forge:scaffold one-shot — NATS publisher tests; canonical pattern in `forge skill load packs`.
+package nats
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestMarshalEnvelopeRoundTrip(t *testing.T) {
+	t.Parallel()
+	type payload struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	in := payload{ID: "abc", Name: "Alice"}
+
+	body, err := MarshalEnvelope("user.created", in)
+	if err != nil {
+		t.Fatalf("MarshalEnvelope: %v", err)
+	}
+
+	env, err := UnmarshalEnvelope(body)
+	if err != nil {
+		t.Fatalf("UnmarshalEnvelope: %v", err)
+	}
+	if env.Version != CurrentEnvelopeVersion {
+		t.Errorf("Version = %d, want %d", env.Version, CurrentEnvelopeVersion)
+	}
+	if env.Type != "user.created" {
+		t.Errorf("Type = %q, want user.created", env.Type)
+	}
+	if env.Timestamp.IsZero() {
+		t.Error("Timestamp is zero")
+	}
+
+	var out payload
+	if err := json.Unmarshal(env.Payload, &out); err != nil {
+		t.Fatalf("payload unmarshal: %v", err)
+	}
+	if out != in {
+		t.Errorf("payload round-trip mismatch: got %+v, want %+v", out, in)
+	}
+}
+
+func TestMarshalEnvelopeRequiresType(t *testing.T) {
+	t.Parallel()
+	if _, err := MarshalEnvelope("", struct{}{}); err == nil {
+		t.Fatal("MarshalEnvelope with empty type expected error, got nil")
+	}
+}
+
+func TestUnmarshalEnvelopeBackcompatNoVersion(t *testing.T) {
+	t.Parallel()
+	// Payload without a version field — should be treated as v1.
+	body := []byte(`{"type":"x","timestamp":"2025-01-01T00:00:00Z","payload":{}}`)
+	env, err := UnmarshalEnvelope(body)
+	if err != nil {
+		t.Fatalf("UnmarshalEnvelope: %v", err)
+	}
+	if env.Version != 1 {
+		t.Errorf("Version = %d, want 1", env.Version)
+	}
+}
+
+func TestUnmarshalEnvelopeRejectsNewerVersion(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"version":99,"type":"x","timestamp":"2025-01-01T00:00:00Z","payload":{}}`)
+	if _, err := UnmarshalEnvelope(body); err == nil {
+		t.Fatal("UnmarshalEnvelope with future version expected error")
+	}
+}
+
+func TestUnmarshalEnvelopeRejectsMissingType(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"version":1,"timestamp":"2025-01-01T00:00:00Z","payload":{}}`)
+	if _, err := UnmarshalEnvelope(body); err == nil {
+		t.Fatal("UnmarshalEnvelope with missing type expected error")
+	}
+}

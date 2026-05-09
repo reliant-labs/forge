@@ -5,10 +5,20 @@ import (
 	"log/slog"
 )
 
-// Deps holds only interfaces (plus the always-allowed Logger).
+// Deps holds only interfaces (plus the always-allowed Logger) and
+// primitive-shaped config DATA (allow-lists, scalar limits, byte
+// secrets, string-keyed primitive maps). The lint rule should let all
+// of these through.
 type Deps struct {
-	Logger  *slog.Logger
-	Charger Charger
+	Logger        *slog.Logger
+	Charger       Charger
+	AllowedModels []string
+	MaxAttempts   []int
+	Flags         []bool
+	Seed          []byte
+	Headers       map[string]string
+	Quotas        map[string]int
+	Nested        [][]byte
 }
 
 type service struct{ deps Deps }

@@ -187,6 +187,16 @@ func lintInteractorPkg(pkgDir, rootDir string) ([]Finding, error) {
 		if isLikelyInterfaceType(field.Type) {
 			continue
 		}
+		// Config-shaped collections of primitives are DATA (allow-lists,
+		// feature-flag rosters, scalar limits-by-key) rather than
+		// behavioral collaborators. They have no meaningful interface
+		// equivalent — `[]string` doesn't get easier to mock by hiding
+		// behind an interface. Skip them at the rule level so the
+		// warning stays focused on real foot-guns (concrete struct
+		// pointers, concrete adapter selectors).
+		if isPrimitiveConfigShape(field.Type) {
+			continue
+		}
 		// Report each concrete field separately so users see every
 		// site that needs an interface lift.
 		for _, n := range field.Names {
@@ -303,6 +313,66 @@ func isLikelyInterfaceType(expr ast.Expr) bool {
 		return true
 	}
 	return false
+}
+
+// isPrimitiveConfigShape returns true for slice/map types whose element
+// (and key, for maps) is a Go built-in primitive — the canonical shape
+// for config DATA on a Deps struct. Examples that pass:
+//
+//	[]string, []int, []float64, []bool, [][]byte
+//	map[string]string, map[string]int, ...
+//
+// Examples that don't (the rule still fires):
+//
+//	[]Source                 // slice of an interface type
+//	[]*adapter.Client        // slice of concrete pointer
+//	map[string]*config.Tier  // map to concrete pointer
+//
+// Rationale: these primitives have no meaningful interface equivalent;
+// hiding `[]string` behind an interface adds friction without unlocking
+// any test power. Recognizing the shape keeps the rule from training
+// users to ignore noisy warnings on routine config fields.
+func isPrimitiveConfigShape(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.ArrayType:
+		// []byte is `*ast.ArrayType{Elt: Ident{"byte"}}`; [][]byte nests.
+		return isPrimitiveType(t.Elt) || isByteSlice(t.Elt)
+	case *ast.MapType:
+		return isPrimitiveType(t.Key) && (isPrimitiveType(t.Value) || isByteSlice(t.Value))
+	}
+	return false
+}
+
+// isPrimitiveType returns true for Go built-in scalar types that are
+// universally safe to ship by value on a Deps struct.
+func isPrimitiveType(expr ast.Expr) bool {
+	id, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	switch id.Name {
+	case "string", "bool",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte", "rune",
+		"float32", "float64",
+		"complex64", "complex128":
+		return true
+	}
+	return false
+}
+
+// isByteSlice returns true for the `[]byte` shape — common as an
+// inline secret/key/seed, treated as primitive for our purposes.
+func isByteSlice(expr ast.Expr) bool {
+	at, ok := expr.(*ast.ArrayType)
+	if !ok {
+		return false
+	}
+	id, ok := at.Elt.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return id.Name == "byte"
 }
 
 // exprString returns a short human-readable rendering of an

@@ -27,7 +27,13 @@ func TestContract(t *testing.T) {
 	t.Parallel()
 
 	// Construct the implementation. Adjust Deps as your contract grows.
-	svc := {{.Name}}.New({{.Name}}.Deps{})
+	// The two-result `(Service, error)` shape matches the canonical
+	// service.go scaffold; if you polish New to do dep validation or
+	// eager init, the err path is already wired.
+	svc, err := {{.Name}}.New({{.Name}}.Deps{})
+	if err != nil {
+		t.Fatalf("{{.Name}}.New: %v", err)
+	}
 
 	cases := []tdd.ContractCase{
 		// {

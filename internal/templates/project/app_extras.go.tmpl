@@ -22,6 +22,23 @@
 //	    Stripe *stripe.Client
 //	}
 //
+// Cross-lane type placeholders:
+//
+// When a sibling parallel-agent lane owns the typed Repository / Client
+// the field will eventually carry, declare the field as `any` and tag
+// it with `forge:placeholder: <Type>`. wire_gen emits a typed accessor
+// that compiles in both shapes; `forge generate` errors when the field
+// is still typed `any` after the sibling lane was supposed to land,
+// preventing the "worker registered with nil Repo and silently no-op'd"
+// bug class. Tighten the declaration to <Type> when the lane merges.
+//
+// Example:
+//
+//	type AppExtras struct {
+//	    // forge:placeholder: user.Repository
+//	    UserRepo any
+//	}
+//
 //forge:scaffold one-shot
 //forge:allow
 package app

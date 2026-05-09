@@ -83,6 +83,50 @@ func TestToSnakeCase(t *testing.T) {
 	}
 }
 
+func TestToKebabCase(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		// Plain PascalCase
+		{"UserService", "user-service"},
+		{"TaskItem", "task-item"},
+		{"Tasks", "tasks"},
+		{"A", "a"},
+		{"", ""},
+		// camelCase input
+		{"taskItem", "task-item"},
+		// snake_case input → kebab
+		{"user_service", "user-service"},
+		// already-kebab input is preserved
+		{"user-service", "user-service"},
+		// LLM/JWT/HTTP/URL/JSON acronyms must stay glued
+		{"LLMGateway", "llm-gateway"},
+		{"LLMGatewayService", "llm-gateway-service"},
+		{"JWTAuth", "jwt-auth"},
+		{"HTTPClient", "http-client"},
+		{"URLBuilder", "url-builder"},
+		{"JSONParser", "json-parser"},
+		{"XMLParser", "xml-parser"},
+		// Trailing acronym
+		{"UserID", "user-id"},
+		{"TaskUUID", "task-uuid"},
+		// Lone acronym
+		{"LLM", "llm"},
+		{"API", "api"},
+		// HTTPS prefix-vs-HTTP — longer wins
+		{"HTTPSConnection", "https-connection"},
+		// Doubled separators normalise
+		{"foo--bar", "foo-bar"},
+		{"foo__bar", "foo-bar"},
+	}
+	for _, tt := range tests {
+		got := ToKebabCase(tt.input)
+		if got != tt.want {
+			t.Errorf("ToKebabCase(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestApplyGoInitialisms_LongerFirst(t *testing.T) {
 	// "Uuid" should become "UUID", not "UuID" (which would happen if "Id" was processed first)
 	got := applyGoInitialisms("Uuid")

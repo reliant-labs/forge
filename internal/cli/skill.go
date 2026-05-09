@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -106,7 +107,10 @@ func newSkillLoadCmd() *cobra.Command {
 
 			content, scope, err := resolveSkillContent(name)
 			if err != nil {
-				return fmt.Errorf("skill %q not found", name)
+				return cliutil.UserErr(fmt.Sprintf("forge skill load %s", name),
+					fmt.Sprintf("skill %q not found", name),
+					"",
+					"run 'forge skill list' to see available skills, or 'forge skill search <keyword>' to find one")
 			}
 			_ = scope // available if we want to log; load is silent.
 

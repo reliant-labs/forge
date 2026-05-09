@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -83,27 +84,19 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 }
 
 // serviceNameToHookFile converts a service name to a hook file name.
-// "UserService" → "user-service-hooks.ts", "EchoService" → "echo-service-hooks.ts"
+// "UserService" → "user-service-hooks.ts", "EchoService" → "echo-service-hooks.ts",
+// "LLMGatewayService" → "llm-gateway-service-hooks.ts" (NOT
+// "l-l-m-gateway-service-hooks.ts" — see naming.ToKebabCase for the
+// initialism table that keeps acronyms glued).
+//
+// All file-emitter sites and the re-export indexer below MUST go through
+// this single function. If a future caller needs kebab-casing for any
+// service-name-derived path, route, or import specifier, use
+// `naming.ToKebabCase` directly rather than re-implementing the rule —
+// the index.ts re-export stays in lockstep with the on-disk filenames
+// only because both go through the same canonical splitter.
 func serviceNameToHookFile(name string) string {
-	return toKebab(name) + "-hooks.ts"
-}
-
-// toKebab converts PascalCase to kebab-case.
-// "UserService" → "user-service", "EchoService" → "echo-service"
-func toKebab(s string) string {
-	var parts []string
-	current := strings.Builder{}
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			parts = append(parts, strings.ToLower(current.String()))
-			current.Reset()
-		}
-		current.WriteRune(r)
-	}
-	if current.Len() > 0 {
-		parts = append(parts, strings.ToLower(current.String()))
-	}
-	return strings.Join(parts, "-")
+	return naming.ToKebabCase(name) + "-hooks.ts"
 }
 
 // writeHooksIndex writes a barrel index.ts that re-exports all hook files.

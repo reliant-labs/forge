@@ -1044,7 +1044,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x05field\x12\x1d.google.protobuf.FieldOptions\x18\xfc\x88\x03 \x01(\v2\x16.forge.v1.FieldOptionsR\x05field:U\n" +
 	"\x06config\x12\x1d.google.protobuf.FieldOptions\x18\xe0\x89\x03 \x01(\v2\x1c.forge.v1.ConfigFieldOptionsR\x06config:U\n" +
 	"\aservice\x12\x1f.google.protobuf.ServiceOptions\x18І\x03 \x01(\v2\x18.forge.v1.ServiceOptionsR\aservice:Q\n" +
-	"\x06method\x12\x1e.google.protobuf.MethodOptions\x18\xb4\x87\x03 \x01(\v2\x17.forge.v1.MethodOptionsR\x06methodB4Z2github.com/reliant-labs/forge/gen/forge/v1;forgev1b\x06proto3"
+	"\x06method\x12\x1e.google.protobuf.MethodOptions\x18\xb4\x87\x03 \x01(\v2\x17.forge.v1.MethodOptionsR\x06methodB=Z;github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1b\x06proto3"
 
 var (
 	file_forge_v1_forge_proto_rawDescOnce sync.Once

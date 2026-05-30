@@ -192,3 +192,104 @@ func TestGenerateFrontendFilesReactNative(t *testing.T) {
 		t.Errorf("frontend go.mod should declare nested module path, got:\n%s", string(goModBytes))
 	}
 }
+
+// TestGenerateFrontendFilesViteSPA exercises the vite-spa kind end-to-end
+// through the generator and asserts the produced file tree includes the
+// Vite-specific entries (index.html, vite.config.ts, src/main.tsx,
+// src/routes.tsx), uses VITE_* env vars in connect.ts and .env.local,
+// and that core UI components are installed alongside the scaffold.
+func TestGenerateFrontendFilesViteSPA(t *testing.T) {
+	root := t.TempDir()
+
+	if err := GenerateFrontendFiles(root, "example.com/myapp", "myapp", "spa-app", 8080, "vite-spa"); err != nil {
+		t.Fatalf("GenerateFrontendFiles(vite-spa) error = %v", err)
+	}
+
+	feDir := filepath.Join(root, "frontends", "spa-app")
+
+	// Core scaffold files must exist.
+	for _, file := range []string{
+		"package.json", "vite.config.ts", "tsconfig.json", "tsconfig.node.json",
+		"index.html", ".gitignore", ".env.local", "buf.gen.yaml",
+		"eslint.config.mjs",
+		"src/main.tsx", "src/App.tsx", "src/routes.tsx", "src/index.css",
+		"src/vite-env.d.ts",
+		"src/stores/ui-store.ts",
+		"src/lib/connect.ts", "src/lib/query-client.ts",
+		"src/lib/events.ts", "src/lib/event-context.tsx",
+		"src/lib/search-schemas.ts", "src/lib/format-utils.ts",
+		"src/lib/auth/provider.ts", "src/lib/auth/stub-provider.ts",
+		"src/lib/auth/context.tsx",
+		"src/hooks/use-api-query.ts", "src/hooks/use-api-mutation.ts",
+		"go.mod",
+	} {
+		if _, err := os.Stat(filepath.Join(feDir, file)); err != nil {
+			t.Errorf("expected %s to exist: %v", file, err)
+		}
+	}
+
+	// Core UI components must be installed (vite-spa is browser-targeted
+	// just like nextjs and uses the same component primitives).
+	if _, err := os.Stat(filepath.Join(feDir, "src", "components", "ui", "button.tsx")); err != nil {
+		t.Errorf("expected core component button.tsx to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(feDir, "src", "components", "ui", "page_header.tsx")); err != nil {
+		t.Errorf("expected core component page_header.tsx to exist: %v", err)
+	}
+
+	// package.json should reference vite and the frontend name.
+	pkgJSON, err := os.ReadFile(filepath.Join(feDir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkgJSON), `"name": "spa-app"`) {
+		t.Error("package.json should contain frontend name")
+	}
+	if !strings.Contains(string(pkgJSON), `"vite"`) {
+		t.Error("package.json should contain vite dependency")
+	}
+	if !strings.Contains(string(pkgJSON), "@tanstack/react-router") {
+		t.Error("package.json should contain @tanstack/react-router")
+	}
+
+	// .env.local should contain VITE_API_URL (Vite exposes import.meta.env
+	// vars prefixed with VITE_).
+	envContent, err := os.ReadFile(filepath.Join(feDir, ".env.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envContent), "VITE_API_URL=http://localhost:8080") {
+		t.Errorf(".env.local should contain VITE_API_URL, got:\n%s", string(envContent))
+	}
+
+	// connect.ts should use VITE_API_URL (not NEXT_PUBLIC_API_URL).
+	connectTS, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "connect.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(connectTS), "VITE_API_URL") {
+		t.Error("connect.ts should reference VITE_API_URL")
+	}
+	if strings.Contains(string(connectTS), "NEXT_PUBLIC_API_URL") {
+		t.Error("connect.ts should NOT reference NEXT_PUBLIC_API_URL")
+	}
+
+	// go.mod should declare nested module.
+	goModBytes, err := os.ReadFile(filepath.Join(feDir, "go.mod"))
+	if err != nil {
+		t.Fatalf("expected frontend go.mod to exist: %v", err)
+	}
+	if !strings.Contains(string(goModBytes), "module example.com/myapp/frontends/spa-app") {
+		t.Errorf("frontend go.mod should declare nested module path, got:\n%s", string(goModBytes))
+	}
+
+	// routes.tsx should embed the FORGE-ROUTES marker block so the page
+	// generator can stitch in entity routes.
+	routesTSX, err := os.ReadFile(filepath.Join(feDir, "src", "routes.tsx"))
+	if err != nil {
+		t.Fatalf("expected src/routes.tsx to exist: %v", err)
+	}
+	if !strings.Contains(string(routesTSX), "FORGE-ROUTES: BEGIN") {
+		t.Error("routes.tsx should contain the FORGE-ROUTES marker block")
+	}
+}

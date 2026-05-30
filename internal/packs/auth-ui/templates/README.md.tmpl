@@ -18,6 +18,7 @@ auth-ui --config provider={{$provider}}` and are yours to customize
 | `DevModeBanner.tsx` | Warning banner when backend dev-mode bypass is on. |
 | `auth-store.ts` | Zustand store: `{user, session, isLoading, isAuthenticated}`. |
 | `index.ts` | Barrel export. |
+| `src/app/auth/callback/page.tsx` | OAuth redirect-flow landing page. {{ if eq $provider "clerk" }}Wraps Clerk's `<AuthenticateWithRedirectCallback />`.{{ else if eq $provider "firebase-auth" }}Consumes `getRedirectResult()` and navigates.{{ else }}POSTs `code` to `{{ index .PackConfig "jwt_oauth_exchange_path" }}`, stores the returned session, navigates.{{ end }} |
 
 ## Wire into `app/layout.tsx`
 
@@ -195,3 +196,36 @@ forge pack install auth-ui --config provider=<other>
 The `DevModeBanner` reads `NEXT_PUBLIC_AUTH_DEV_MODE`. Set this in your
 `.env.local` for local development to mirror the backend pack's `dev_mode:
 true` setting. The banner stays hidden if the env var is absent or false.
+
+## OAuth callback
+
+The pack installs `src/app/auth/callback/page.tsx` — the typed landing
+page for redirect-style OAuth flows. The route is wired automatically by
+Next.js; point your provider at `${ORIGIN}/auth/callback`.
+{{ if eq $provider "clerk" }}
+Clerk owns the callback surface — the generated page is a thin shell
+around `<AuthenticateWithRedirectCallback />`. You typically won't touch
+this file. Delete it if your app only uses the modal sign-in flow.
+{{- else if eq $provider "firebase-auth" }}
+Firebase handles the OAuth exchange inside the SDK; the generated page
+consumes the pending redirect via `getRedirectResult()` and pushes the
+user into the auth-store before navigating. Delete this file if your app
+only uses `signInWithPopup()` — popup flows never hit a callback URL.
+{{- else }}
+The generated page POSTs the OAuth `code` to
+`{{ index .PackConfig "jwt_oauth_exchange_path" }}` (override per-call via
+the `exchangePath` prop). On success it expects `{ token, user }` JSON,
+calls `useAuthStore.setSession(user, session)`, persists via
+`persistSession`, then `router.replace`s to a same-origin `returnTo`
+(open-redirect guarded) or `/`.
+{{- end }}
+
+The four load-bearing pieces (do not remove when customizing): the
+top-of-file `callbackSchema` is the only place that touches raw search
+params; `assertSafeReturnTo` blocks open redirects; the
+`exchanged.current` ref keeps React strict-mode's double-mount from
+firing the exchange twice; the error surface renders a "Back to sign in"
+button rather than silently bouncing.
+
+See the `frontend/patterns` skill for the rationale and the
+`frontend/state` skill for the typed-search-params pattern.

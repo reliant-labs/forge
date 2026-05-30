@@ -4,6 +4,7 @@
 import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.HooksImportPath}}";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { z } from "zod";
 {{- if .HasDelete}}
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -18,10 +19,14 @@ import Modal from "@/components/ui/modal";
 {{- end}}
 import { formatValue, isEnumLike, enumBadgeVariant } from "@/lib/format-utils";
 
+// Route params are an external boundary — validate, don't cast. See the
+// `frontend/patterns` skill ("Typed boundaries"). Swap `min(1)` for
+// `z.string().uuid()` if your IDs are UUIDs.
+const paramsSchema = z.object({ id: z.string().min(1) });
+
 export default function {{.EntityName}}DetailPage() {
-  const params = useParams();
   const router = useRouter();
-  const id = params.id as string;
+  const { id } = paramsSchema.parse(useParams());
   {{- if .HasDelete}}
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const queryClient = useQueryClient();

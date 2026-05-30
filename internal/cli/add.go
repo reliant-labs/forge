@@ -133,6 +133,7 @@ Subcommands:
   forge add operator <name> [--group G] [--version V]  Add a Kubernetes operator
   forge add binary <name> [--kind long-running]   Add a non-server long-running binary
   forge add frontend <name>                       Add a new Next.js frontend
+  forge add scenario <name>                       Scaffold a frontend mock scenario
   forge add webhook <name> --service S            Add a webhook endpoint to a service
   forge add package <name>                        Add a new internal package (alias for package new)`,
 	}
@@ -142,6 +143,7 @@ Subcommands:
 	cmd.AddCommand(newAddOperatorCmd())
 	cmd.AddCommand(newAddCRDCmd())
 	cmd.AddCommand(newAddFrontendCmd())
+	cmd.AddCommand(newAddScenarioCmd())
 	cmd.AddCommand(newAddWebhookCmd())
 	cmd.AddCommand(newAddPackageCmd())
 	cmd.AddCommand(newAddBinaryCmd())
@@ -764,11 +766,13 @@ func newAddFrontendCmd() *cobra.Command {
 
 By default this creates a Next.js web frontend with Connect RPC client setup.
 Use --kind mobile to scaffold a React Native app using Expo.
+Use --kind vite-spa to scaffold a Vite + React + tanstack-router SPA.
 
 Example:
   forge add frontend web
   forge add frontend dashboard --port 3001
-  forge add frontend mobile --kind mobile`,
+  forge add frontend mobile --kind mobile
+  forge add frontend admin --kind vite-spa`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAddFrontend(args[0], port, kind)
@@ -776,7 +780,7 @@ Example:
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
-	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web or mobile)")
+	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
 
 	return cmd
 }
@@ -805,9 +809,9 @@ func runAddFrontend(name string, port int, kind string) error {
 
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
-	case "", "web", "mobile":
+	case "", "web", "mobile", "vite-spa":
 	default:
-		return fmt.Errorf("invalid frontend kind %q: valid kinds are web, mobile", kind)
+		return fmt.Errorf("invalid frontend kind %q: valid kinds are web, mobile, vite-spa", kind)
 	}
 
 	root, err := projectRoot()
@@ -844,10 +848,14 @@ func runAddFrontend(name string, port int, kind string) error {
 	frontendType := "nextjs"
 	frontendKind := kind
 	frontendDescription := "frontend"
-	if kind == "mobile" {
+	switch kind {
+	case "mobile":
 		frontendType = "react-native"
 		frontendDescription = "mobile frontend"
-	} else if kind == "" {
+	case "vite-spa":
+		frontendType = "vite-spa"
+		frontendDescription = "Vite SPA frontend"
+	case "":
 		frontendKind = ""
 	}
 

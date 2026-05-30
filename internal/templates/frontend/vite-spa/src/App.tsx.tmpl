@@ -1,0 +1,22 @@
+// forge:scaffold one-shot
+//
+// App shell — yours to edit. Forge writes this once at scaffold time and
+// never overwrites it. Wire your sidebar nav / header / footer here. The
+// `children` prop receives the matched route's component from
+// tanstack-router via `<Outlet />` in routes.tsx.
+//
+// Common edits:
+//   - Add a sidebar nav (import a generated route table or hand-roll one)
+//   - Add a top-of-app banner (auth dev-mode, deploy environment, etc.)
+
+import type { ReactNode } from "react";
+
+export default function App({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-screen overflow-hidden bg-gray-50">
+      <main className="flex-1 overflow-y-auto p-6">
+        {children}
+      </main>
+    </div>
+  );
+}

@@ -61,6 +61,17 @@ useEffect(() => { setFullName(`${first} ${last}`); }, [first, last]);
 const fullName = `${first} ${last}`;
 ```
 
+### Anti-pattern: store-to-store sync
+
+```tsx
+// BAD — dual-write that will desync
+useEffect(() => {
+  uiStore.setProject(projectStore.current?.id);
+}, [projectStore.current]);
+```
+
+Both stores survive across renders. Race conditions (e.g. one store updates from a hook before the other) cause split-brain. The fix is to have **one store**, or to read the source store inline at the call site. If you find yourself writing this, you have a state-ownership bug — one of the two stores should not exist.
+
 ## Typed boundaries
 
 Use TypeScript and schema validation at boundaries:
@@ -68,7 +79,9 @@ Use TypeScript and schema validation at boundaries:
 - **API responses** — generated Connect types handle this
 - **Form values** — Zod schemas in create/edit pages
 - **Event bus payloads** — typed event map in `src/lib/events.ts`
-- **Route params** — validate with `z.string().uuid()` or similar
+- **Route params** — validate with `z.string().uuid()` or a route-specific Zod schema, not a `as string` cast.
+- **Search params** — always parse `useSearchParams()` (Next.js) or `useLocalSearchParams()` (Expo Router) through a Zod schema for the route. Do **not** pass raw JSON through query strings — model the fields individually so the URL stays readable and the schema does the encoding work for you.
+- **OAuth / redirect callbacks** — define a dedicated typed route (e.g. `/auth/callback/page.tsx`) with a search-param schema. Never `url.searchParams.get(...)` and parse manually. The `auth-ui` pack generates this page provider-aware (jwt-auth: code exchange + setSession; firebase-auth: getRedirectResult; clerk: AuthenticateWithRedirectCallback wrapper) — see `internal/packs/auth-ui/templates/OAuthCallback.tsx.tmpl` for the canonical shape. Load-bearing pieces (typed `callbackSchema`, `assertSafeReturnTo` open-redirect guard, `exchanged.current` strict-mode guard, error surface) are documented in `internal/packs/auth-ui/README.md`.
 
 Do not assume external data has the expected shape.
 
@@ -95,3 +108,4 @@ Internal state is fine for leaf components, but core app components should be co
 - Derive values during render — never `useEffect` to sync derived state.
 - Every data-fetching component must handle loading, error, and empty states.
 - Keep forms in `react-hook-form` + Zod — do not hand-roll form state with scattered `useState`.
+- Browser back/forward is part of the contract. When a surface is "open", ask: should the back button close it? If yes, it's a route — not a Zustand flag.

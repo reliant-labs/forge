@@ -18,6 +18,15 @@ description: |
 version: 1.0.0
 subpath: src/components/auth
 
+# Restrict to Next.js (kind=web) frontends. The pack's OAuthCallback and
+# SessionNav templates reach for `next/navigation` (useRouter,
+# useSearchParams) and write into the Next.js App Router path
+# `src/app/auth/callback/page.tsx`. Adding vite-spa support requires
+# parallel tanstack-router-coded templates and a routes.tsx registration
+# helper — TODO. Mobile (Expo Router) is also out of scope today; the
+# pack assumes a browser-targeted React surface.
+supports_kinds: [web]
+
 config:
   section: auth_ui
   defaults:
@@ -34,6 +43,15 @@ config:
     jwt_login_path: /auth/login
     jwt_signup_path: /auth/signup
     jwt_logout_path: /auth/logout
+    # jwt-auth only — the endpoint the OAuth callback POSTs `code` to.
+    jwt_oauth_exchange_path: /auth/oauth/exchange
+    # Whether to install the OAuth callback page at
+    # src/app/auth/callback/page.tsx. clerk emits a thin wrapper around
+    # <AuthenticateWithRedirectCallback /> (Clerk owns the surface);
+    # jwt-auth and firebase-auth emit a typed-schema callback page that
+    # handles the code exchange / redirect-result + post-success
+    # navigation. Defaults to true for all providers.
+    oauth_callback: true
 
 # Form validation libraries — utility-only, no UI surface area, so they
 # don't violate the base-library-only rule for component imports.
@@ -77,6 +95,10 @@ files:
     output: "{{.FrontendPath}}/src/components/auth/index.ts"
     overwrite: once
     description: "Barrel export"
+  - template: OAuthCallback.tsx.tmpl
+    output: "{{.FrontendPath}}/src/app/auth/callback/page.tsx"
+    overwrite: once
+    description: "OAuth callback — typed search schema + provider-aware token exchange"
   - template: README.md.tmpl
     output: "{{.FrontendPath}}/src/components/auth/README.md"
     overwrite: once

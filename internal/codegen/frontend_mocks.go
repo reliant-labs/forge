@@ -50,7 +50,13 @@ type MockTransportEntity struct {
 	EntityName       string // "Patient"
 	EntityNamePlural string // "Patients"
 	EntitySlug       string // "patients" (for mock data import path)
-	ServiceName      string // "ClinicService"
+	ServiceName      string // "ClinicService" (short, used in display only)
+	// ServiceTypeName is the FULLY-QUALIFIED proto service name, e.g.
+	// "demo.v1.ClinicService". Connect v2's runtime
+	// `method.parent.typeName` returns this form, so the mock transport
+	// must build case keys from it (`${ServiceTypeName}/${RPC}`) or the
+	// fall-through dispatch silently never matches.
+	ServiceTypeName  string // "demo.v1.ClinicService"
 	ListRPC          string // "ListPatients"
 	GetRPC           string // "GetPatient"
 	CreateRPC        string // "CreatePatient"
@@ -98,7 +104,16 @@ func mockDeterministicUUID(name string) string {
 // the same deterministic mock values as seed_gen.go.
 func EntityDefToMockData(entity EntityDef, svc ServiceDef) MockEntityTemplateData {
 	plural := inflection.Plural(entity.Name)
-	importPath := ProtoFileToTSImportPath(svc.ProtoFile)
+	// The entity's Schema (PatientSchema, ProductSchema, etc.) lives in the
+	// entity's proto file, which may be separate from the service proto
+	// (typically `db/v1/*.proto` vs `services/<svc>/v1/*.proto`). Using
+	// the service's file silently emits imports for symbols that don't
+	// exist in that file — the bundle fails to load at runtime.
+	importSource := entity.ProtoFile
+	if importSource == "" {
+		importSource = svc.ProtoFile
+	}
+	importPath := ProtoFileToTSImportPath(importSource)
 
 	var fields []MockField
 	for _, f := range entity.Fields {
@@ -162,6 +177,7 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 				EntityNamePlural:   page.EntityNamePlural,
 				EntitySlug:         page.EntitySlug,
 				ServiceName:        svc.Name,
+				ServiceTypeName:    svc.Package + "." + svc.Name,
 				ListRPC:            page.ListRPC,
 				GetRPC:             page.GetRPC,
 				CreateRPC:          page.CreateRPC,

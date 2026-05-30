@@ -180,6 +180,11 @@ func TestDevAuthTemplateContent(t *testing.T) {
 		"func DevClaims(",
 		"dev-user-001",
 		"ENVIRONMENT",
+		// Dev-bypass sentinel — must stay in sync with DEV_BYPASS_TOKEN
+		// in the frontend stub auth provider. Keep both as compile-time
+		// constants so accidental changes show up in code review.
+		"DevBypassToken",
+		`"dev-bypass-do-not-use-in-prod"`,
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {
@@ -215,6 +220,10 @@ func TestAuthGenOverrideTemplateContent(t *testing.T) {
 		"JWT_JWKS_URL",
 		"JWT_SIGNING_METHOD",
 		"middleware.ContextWithClaims",
+		// Sentinel bypass — per-request, gated on DevAuthEnabled. Without
+		// this branch, dev-mode is either all-bypass (old behavior, can't
+		// test real login) or all-validate (no fast path for agents).
+		"DevBypassToken",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {

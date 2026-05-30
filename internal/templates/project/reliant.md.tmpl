@@ -5,35 +5,6 @@ This is a **Forge** project managed by the `{{.CLI}}` CLI.
 
 This file is auto-loaded into LLM context every session. Treat it as the authoritative quick-reference. For depth, load the named skills.
 
-## Skills
-
-Run `{{.CLI}} skill list` to discover playbooks, and `{{.CLI}} skill load <name>` to read one. The most-used:
-
-- **forge** — overall project conventions
-- **architecture** — project structure, generated vs hand-written code, the generate pipeline
-- **getting-started** — onboarding walkthrough
-- **services** — adding services, packages, and frontends
-- **api** — Connect RPC handlers (overview)
-- **api/handlers** — the canonical thin-translation handler pattern
-- **service-layer** — business logic in `internal/<svc>/contract.go`
-- **contracts** — the `contract.go` system that drives mocks/middleware/tracing/metrics
-- **proto** — annotation reference and proto file rules (one service per file, explicit annotations, common patterns). Structural rules are reactively enforced by `{{.CLI}} lint --conventions`.
-- **proto-split** — splitting a multi-service proto into per-service files
-- **db** — database, ORM, migrations
-- **frontend** — Next.js frontend overview
-- **frontend/pages** — cookbook for adding a CRUD page
-- **frontend/state** — state management (React Query, Zustand, URL)
-- **frontend/patterns** — UI component patterns
-- **workers** — background jobs
-- **auth** — authentication and authorization
-- **packs** — installing reusable packs
-- **pack-development** — writing a new pack
-- **testing** — overview / **testing/unit** / **testing/integration** / **testing/e2e** / **testing/patterns**
-- **debug** — methodology / **debug/investigate** / **debug/isolate** / **debug/reproduce**
-- **deploy** — releases
-- **observability** — logging, tracing, metrics
-- **migration** — porting an existing project / **migration/service** / **migration/cli**
-
 ## Architecture in one screen
 
 The two halves of every domain:

@@ -19,10 +19,18 @@ var validator *Validator
 
 // Init initializes the JWT validator from environment variables.
 // Call this during server startup before handling requests.
+//
+// Dev mode (ENVIRONMENT=development) is per-request, not all-or-nothing:
+//   - Requests with no Authorization header get synthetic DevClaims (so
+//     local dev stays frictionless).
+//   - Requests carrying the DevBypassToken sentinel get synthetic DevClaims
+//     (so the frontend stub provider / scenarios can opt in explicitly).
+//   - Any other token is validated against the real JWT validator (so the
+//     real login UX can be tested locally). If JWT_* env vars aren't set,
+//     real-token requests return 500 — a clear "misconfigured" signal.
 func Init(logger *slog.Logger) error {
 	if DevAuthEnabled() {
-		logger.Warn("DEV MODE: JWT validation disabled — all requests get synthetic claims")
-		return nil
+		logger.Warn("DEV MODE: dev-auth bypass enabled — requests with no token (or with the dev-bypass sentinel) receive synthetic claims. Do not enable in production.")
 	}
 
 	cfg := ValidatorConfig{
@@ -32,6 +40,14 @@ func Init(logger *slog.Logger) error {
 		SigningMethod: os.Getenv("JWT_SIGNING_METHOD"),
 		HMACSecret:    os.Getenv("JWT_HMAC_SECRET"),
 		RSAPublicKey:  os.Getenv("JWT_RSA_PUBLIC_KEY"),
+	}
+
+	// In dev mode without any JWT_* configuration, skip validator init.
+	// Real-token requests will return 500 from the interceptor with a clear
+	// "auth not initialized" message; bypass/no-token requests still work.
+	if DevAuthEnabled() && cfg.JWKSURL == "" && cfg.HMACSecret == "" && cfg.RSAPublicKey == "" {
+		logger.Warn("DEV MODE: no JWT_* config provided — real-token requests will fail until JWT_JWKS_URL (or HMAC/RSA equivalents) is set")
+		return nil
 	}
 
 	if cfg.SigningMethod == "" {
@@ -67,14 +83,31 @@ func Interceptor() connect.UnaryInterceptorFunc {
 				return next(ctx, req)
 			}
 
-			// Dev mode: inject synthetic claims
+			authorization := req.Header().Get("Authorization")
+
+			// Dev-mode bypass paths. Both are gated on DevAuthEnabled() so
+			// the sentinel and the empty-header convenience are inert in
+			// staging/prod regardless of what the client sends.
 			if DevAuthEnabled() {
-				ctx = middleware.ContextWithClaims(ctx, DevClaims(logger))
-				return next(ctx, req)
+				// 1) No header at all — preserves frictionless local dev
+				// (curl, fresh Chrome via Chrome MCP without scenarios).
+				if authorization == "" {
+					ctx = middleware.ContextWithClaims(ctx, DevClaims(logger))
+					return next(ctx, req)
+				}
+				// 2) Sentinel bypass token — opt-in from the frontend stub
+				// provider (or any test client) that wants synthetic claims
+				// without faking a real JWT. Per-request, not per-process,
+				// so the real login flow can still be tested in the same
+				// build by simply not sending the sentinel.
+				if strings.TrimPrefix(authorization, "Bearer ") == DevBypassToken {
+					ctx = middleware.ContextWithClaims(ctx, DevClaims(logger))
+					return next(ctx, req)
+				}
+				// Otherwise fall through to real validation — a real token
+				// in dev mode should be validated like in prod.
 			}
 
-			// Extract Bearer token
-			authorization := req.Header().Get("Authorization")
 			if authorization == "" {
 				return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("missing authorization header"))
 			}

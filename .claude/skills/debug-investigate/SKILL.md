@@ -23,6 +23,7 @@ If the bug only reproduces "when the user has X done" (signed in, GitHub connect
 
 - If a scenario already exists for the state you need, navigate to it.
 - If not, run `forge add scenario <name>`, edit the generated handler to return the right response shape, and navigate.
+- When the bug needs *one* stubbed endpoint and *real* data for everything else, leave the scaffolded `passthrough: true` on and run the frontend with `VITE_MOCK_API=hybrid`. Unmatched RPCs hit the real backend, and `auth: "bypass"` makes the stub provider send the dev-auth sentinel so a fresh Chrome MCP instance skips login. See `frontend/scenarios` for the three-mode table.
 
 See the `frontend/scenarios` sub-skill for the API and rules. The most important one: **mock the RPC response, not the React Query cache** — state-seeding skips the parser layer that's the most common source of "the wire said yes but the UI shows no" bugs.
 

@@ -1,0 +1,134 @@
+// forge:scaffold one-shot — reference OAuth callback page for vite-spa.
+//
+// Tanstack-router gives this surface a major ergonomics boost: the search
+// schema lives on the ROUTE (`validateSearch: callbackSchema.parse`), so
+// this component just calls `useSearch({ from: route.id })` to receive
+// validated, typed params. No `URLSearchParams.get(...)` anywhere.
+//
+// Wiring (in src/routes.tsx):
+//
+//   const callbackSchema = z.object({
+//     code: z.string().optional(),
+//     state: z.string().optional(),
+//     error: z.string().optional(),
+//     error_description: z.string().optional(),
+//     source: z.enum(["signin", "link"]).optional(),
+//     returnTo: z.string().optional(),
+//   });
+//
+//   const oauthCallbackRoute = createRoute({
+//     getParentRoute: () => rootRoute,
+//     path: "/auth/callback",
+//     validateSearch: callbackSchema.parse,
+//     component: OAuthCallbackPage,
+//   });
+//
+// What you must fill in (TODOs below):
+//   1. The token-exchange call for your auth provider.
+//   2. (Optional) capturing a provider_token / identity that your backend
+//      stores out-of-band.
+//   3. The success destination if no returnTo is present.
+//   4. Any error UX you want to render.
+//
+// What you should NOT do
+// ----------------------
+// - Don't reach for `window.location.search`. The route's validateSearch
+//   is the only boundary.
+// - Don't navigate to a `returnTo` value without validating it. The schema
+//   guarantees the SHAPE; `assertSafeReturnTo` additionally guards open
+//   redirects.
+// - Don't run side-effects without an `exchanged.current` guard. React
+//   StrictMode will mount you twice.
+
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+
+interface CallbackParams {
+  code?: string;
+  state?: string;
+  error?: string;
+  error_description?: string;
+  source?: "signin" | "link";
+  returnTo?: string;
+}
+
+/**
+ * Only allow same-origin relative paths to prevent open redirects.
+ */
+function assertSafeReturnTo(returnTo: string | undefined): string | null {
+  if (!returnTo) return null;
+  if (!returnTo.startsWith("/")) return null;
+  if (returnTo.startsWith("//")) return null; // protocol-relative
+  return returnTo;
+}
+
+export default function OAuthCallbackPage() {
+  const navigate = useNavigate();
+  // `strict: false` keeps this component compilable even before the route
+  // is wired up; once you add `from: '/auth/callback'` you get full typing.
+  const params = useSearch({ strict: false }) as CallbackParams;
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const exchanged = useRef(false);
+
+  useEffect(() => {
+    if (exchanged.current) return;
+    exchanged.current = true;
+
+    const run = async () => {
+      if (params.error) {
+        setErrorMessage(params.error_description ?? params.error);
+        return;
+      }
+
+      if (!params.code) {
+        setErrorMessage("Invalid OAuth callback (missing code).");
+        return;
+      }
+
+      try {
+        // TODO #1: exchange `params.code` for a session.
+        throw new Error(
+          "TODO: wire your auth provider's code-exchange call here.",
+        );
+
+        // TODO #2 (optional): capture a provider_token if your app needs
+        // out-of-band identity tokens (e.g. GitHub repo access).
+
+        // TODO #3: replace with the canonical signed-in destination.
+        const fallback = "/";
+        const safeReturnTo = assertSafeReturnTo(params.returnTo);
+        void navigate({ to: safeReturnTo ?? fallback, replace: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Sign-in failed.";
+        setErrorMessage(msg);
+      }
+    };
+
+    void run();
+  }, [params, navigate]);
+
+  if (errorMessage) {
+    // TODO #4: replace with your app's error surface.
+    return (
+      <div className="mx-auto max-w-md p-8">
+        <h2 className="text-lg font-semibold text-red-700">
+          Sign-in failed
+        </h2>
+        <p className="mt-2 text-sm text-gray-600">{errorMessage}</p>
+        <button
+          type="button"
+          onClick={() => void navigate({ to: "/login", replace: true })}
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        >
+          Back to sign in
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-md p-8 text-center">
+      <p className="text-sm text-gray-600">Completing sign-in…</p>
+    </div>
+  );
+}

@@ -75,8 +75,19 @@ type Pack struct {
 	// base library primitives, or "recharts" for a charts pack).
 	// Only honoured when Kind == "frontend".
 	AllowedThirdParty []string        `yaml:"allowed_third_party"`
-	Generate          []PackFile      `yaml:"generate"`
-	Migrations        []PackMigration `yaml:"migrations"`
+	// SupportsKinds restricts a frontend pack to specific frontend kinds
+	// (one of "web", "mobile", "vite-spa"). Empty (default) means the pack
+	// supports all kinds. Most legacy frontend packs are Next.js-coded
+	// (App Router paths, `next/navigation` imports) and should declare
+	// `supports_kinds: [web]` until their templates are adapted to the
+	// other kinds.
+	//
+	// Honoured only when Kind == "frontend". On install, forge errors out
+	// if any of the project's frontends declares a kind not in this list,
+	// listing the unsupported frontends and the supported set.
+	SupportsKinds []string        `yaml:"supports_kinds,omitempty"`
+	Generate      []PackFile      `yaml:"generate"`
+	Migrations    []PackMigration `yaml:"migrations"`
 
 	// DependsOn lists the names of OTHER PACKS this pack requires to be
 	// installed first. Distinct from Dependencies (Go module deps) and
@@ -107,6 +118,29 @@ func (p *Pack) EffectiveKind() string {
 
 // IsFrontendKind reports whether the pack targets a frontend (TypeScript/React).
 func (p *Pack) IsFrontendKind() bool { return p.EffectiveKind() == PackKindFrontend }
+
+// SupportsFrontendKind reports whether the pack's manifest declares
+// support for the given frontend kind. An empty SupportsKinds list means
+// the pack supports every kind (default for backward compatibility).
+//
+// The empty/unspecified kind ("") is treated as "web" — that's the legacy
+// default Next.js kind used by `forge new` and `forge add frontend` when
+// no --kind flag is passed.
+func (p *Pack) SupportsFrontendKind(kind string) bool {
+	if len(p.SupportsKinds) == 0 {
+		return true
+	}
+	k := strings.ToLower(strings.TrimSpace(kind))
+	if k == "" {
+		k = "web"
+	}
+	for _, s := range p.SupportsKinds {
+		if strings.EqualFold(strings.TrimSpace(s), k) {
+			return true
+		}
+	}
+	return false
+}
 
 // PackMigration describes a single migration that the pack contributes to
 // db/migrations/. The migration ID (numeric prefix) is allocated at install
@@ -405,6 +439,28 @@ func (p *Pack) installFrontend(projectDir string, cfg *config.ProjectConfig, eff
 	}
 	if len(cfg.Frontends) == 0 {
 		return fmt.Errorf("pack %q is a frontend pack but the project has no frontends — pass --frontend <name> to forge new", p.Name)
+	}
+
+	// Fail fast if the pack restricts its supported kinds and any of the
+	// project's frontends declare an unsupported kind. This gives users a
+	// clear error instead of a half-installed pack littered across only
+	// some frontends (or templates emitting Next.js-only paths into a
+	// Vite SPA tree).
+	if len(p.SupportsKinds) > 0 {
+		var unsupported []string
+		for _, fe := range cfg.Frontends {
+			if !p.SupportsFrontendKind(fe.Kind) {
+				kind := fe.Kind
+				if kind == "" {
+					kind = "web"
+				}
+				unsupported = append(unsupported, fmt.Sprintf("%s (kind=%s)", fe.Name, kind))
+			}
+		}
+		if len(unsupported) > 0 {
+			return fmt.Errorf("pack %q does not support frontend kind(s) in this project: %s\nSupported kinds: %s\n\nRemove or migrate the unsupported frontends, or pick a different pack.",
+				p.Name, strings.Join(unsupported, ", "), strings.Join(p.SupportsKinds, ", "))
+		}
 	}
 
 	// Resolve any provider-keyed extra npm dependencies. Frontend packs that

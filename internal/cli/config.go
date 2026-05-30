@@ -94,7 +94,16 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 			cfg.Frontends[i].Type = "nextjs"
 			continue
 		}
-		cfg.Frontends[i].Type = normalizeEnum(cfg.Frontends[i].Type)
+		// Frontend type canonical forms are hyphenated ("react-native",
+		// "vite-spa"). Lowercase but keep hyphens; downstream comparisons
+		// use EqualFold against the hyphenated literal.
+		cfg.Frontends[i].Type = strings.ToLower(strings.TrimSpace(cfg.Frontends[i].Type))
+		// Accept legacy snake_case spellings from earlier forge generators.
+		if cfg.Frontends[i].Type == "react_native" {
+			cfg.Frontends[i].Type = "react-native"
+		} else if cfg.Frontends[i].Type == "vite_spa" {
+			cfg.Frontends[i].Type = "vite-spa"
+		}
 	}
 
 	// Normalize environment type casing (accept "LOCAL"/"CLOUD" from older

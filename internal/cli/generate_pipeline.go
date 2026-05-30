@@ -594,7 +594,7 @@ func stepEntityMigration(ctx *pipelineContext) error {
 // nextjs / react-native frontends. Best-effort per-frontend.
 func stepFrontendBufTS(ctx *pipelineContext) error {
 	for _, fe := range ctx.Cfg.Frontends {
-		if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") {
+		if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") || strings.EqualFold(fe.Type, "vite-spa") {
 			if err := runBufGenerateTypeScript(fe, ctx.Cfg, ctx.ProjectDir); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: TypeScript generation for %s failed: %v\n", fe.Name, err)
 			}

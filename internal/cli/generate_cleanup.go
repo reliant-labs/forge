@@ -267,7 +267,7 @@ func cleanupStaleFrontendHooks(cfg *config.ProjectConfig, projectDir string, ser
 
 	var removed []string
 	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") && !strings.EqualFold(fe.Type, "react-native") {
+		if !strings.EqualFold(fe.Type, "nextjs") && !strings.EqualFold(fe.Type, "react-native") && !strings.EqualFold(fe.Type, "vite-spa") {
 			continue
 		}
 		feDir := fe.Path

@@ -218,8 +218,8 @@ type PackageConfig struct {
 // FrontendConfig defines a frontend application (e.g. Next.js, React Native).
 type FrontendConfig struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"`           // "nextjs", "react-native"
-	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native)
+	Type string `yaml:"type"`           // "nextjs", "react-native", "vite-spa"
+	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
 	Path string `yaml:"path"`
 	Port int    `yaml:"port"`
 }

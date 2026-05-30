@@ -670,19 +670,13 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// The user-owned stub lives at the project root and points agents
-	// at the `forge skill` CLI.
+	// The user-owned stub lives at the project root and is auto-loaded
+	// into LLM context every session.
 	stubPath := filepath.Join(root, "reliant.md")
 	assertPathExists(t, stubPath)
 	stub := readFile(t, stubPath)
 	if !strings.Contains(stub, "# memory-app") {
 		t.Fatalf("expected reliant.md to start with project name heading, got:\n%s", stub)
-	}
-	if !strings.Contains(stub, "skill list") {
-		t.Fatalf("expected reliant.md to reference forge skill list, got:\n%s", stub)
-	}
-	if !strings.Contains(stub, "skill load") {
-		t.Fatalf("expected reliant.md to reference forge skill load, got:\n%s", stub)
 	}
 
 	// The user-owned .reliant/reliant.md project memory file.

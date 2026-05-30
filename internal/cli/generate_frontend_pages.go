@@ -15,11 +15,13 @@ import (
 )
 
 // ensureFrontendComponents installs missing core UI components for all
-// Next.js frontends. Called during `forge generate` so existing projects
-// pick up any new core components added in newer forge versions.
+// browser-targeted frontends (nextjs + vite-spa). Called during `forge
+// generate` so existing projects pick up any new core components added in
+// newer forge versions.
 func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
 	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") {
+		feType := strings.ToLower(strings.TrimSpace(fe.Type))
+		if feType != "nextjs" && feType != "vite-spa" {
 			continue
 		}
 		feDir := fe.Path
@@ -34,11 +36,16 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
 }
 
 // generateFrontendPages generates CRUD page files for each entity that has
-// CRUD-pattern RPCs across all Next.js frontends. Only generates pages for
-// CRUD-pattern RPCs whose entity name (e.g. "Daemon" from "ListDaemons")
-// matches a real entity from the proto descriptor — without that filter,
-// page templates produce broken output for services whose List/Get/Create
-// RPCs don't follow the entity-name-as-field convention.
+// CRUD-pattern RPCs across all browser-targeted frontends (nextjs + vite-spa).
+// Only generates pages for CRUD-pattern RPCs whose entity name (e.g.
+// "Daemon" from "ListDaemons") matches a real entity from the proto
+// descriptor — without that filter, page templates produce broken output for
+// services whose List/Get/Create RPCs don't follow the entity-name-as-field
+// convention.
+//
+// Per-kind dispatch:
+//   - nextjs:   pages/ templates → src/app/<slug>/[id]/{,edit/}page.tsx
+//   - vite-spa: vite-spa-pages/ templates → src/pages/<slug>/{List,Detail,Create,Edit}.tsx
 func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef) error {
 	if len(services) == 0 {
 		return nil
@@ -49,26 +56,9 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		entitySet[strings.ToLower(e.Name)] = struct{}{}
 	}
 
-	// Load page templates
-	listTmpl, err := loadPageTemplate("list-page.tsx.tmpl")
-	if err != nil {
-		return err
-	}
-	detailTmpl, err := loadPageTemplate("detail-page.tsx.tmpl")
-	if err != nil {
-		return err
-	}
-	createTmpl, err := loadPageTemplate("create-page.tsx.tmpl")
-	if err != nil {
-		return err
-	}
-	editTmpl, err := loadPageTemplate("edit-page.tsx.tmpl")
-	if err != nil {
-		return err
-	}
-
 	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") {
+		feType := strings.ToLower(strings.TrimSpace(fe.Type))
+		if feType != "nextjs" && feType != "vite-spa" {
 			continue
 		}
 
@@ -76,7 +66,11 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		if feDir == "" {
 			feDir = filepath.Join("frontends", fe.Name)
 		}
-		appDir := filepath.Join(projectDir, feDir, "src", "app")
+
+		layout, err := pageLayoutForKind(feType)
+		if err != nil {
+			return err
+		}
 
 		var pageCount int
 
@@ -90,33 +84,29 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				if _, ok := entitySet[strings.ToLower(entity.EntityName)]; !ok {
 					continue
 				}
-				// List page: src/app/<slug>/page.tsx
 				if entity.HasList {
-					if err := renderPageToFile(listTmpl, entity, filepath.Join(appDir, entity.EntitySlug, "page.tsx")); err != nil {
+					if err := renderPageToFile(layout.listTmpl, entity, filepath.Join(projectDir, feDir, layout.listPath(entity.EntitySlug))); err != nil {
 						return fmt.Errorf("render list page for %s: %w", entity.EntityName, err)
 					}
 					pageCount++
 				}
 
-				// Detail page: src/app/<slug>/[id]/page.tsx
 				if entity.HasGet {
-					if err := renderPageToFile(detailTmpl, entity, filepath.Join(appDir, entity.EntitySlug, "[id]", "page.tsx")); err != nil {
+					if err := renderPageToFile(layout.detailTmpl, entity, filepath.Join(projectDir, feDir, layout.detailPath(entity.EntitySlug))); err != nil {
 						return fmt.Errorf("render detail page for %s: %w", entity.EntityName, err)
 					}
 					pageCount++
 				}
 
-				// Create page: src/app/<slug>/new/page.tsx
 				if entity.HasCreate {
-					if err := renderPageToFile(createTmpl, entity, filepath.Join(appDir, entity.EntitySlug, "new", "page.tsx")); err != nil {
+					if err := renderPageToFile(layout.createTmpl, entity, filepath.Join(projectDir, feDir, layout.createPath(entity.EntitySlug))); err != nil {
 						return fmt.Errorf("render create page for %s: %w", entity.EntityName, err)
 					}
 					pageCount++
 				}
 
-				// Edit page: src/app/<slug>/[id]/edit/page.tsx
 				if entity.HasUpdate {
-					if err := renderPageToFile(editTmpl, entity, filepath.Join(appDir, entity.EntitySlug, "[id]", "edit", "page.tsx")); err != nil {
+					if err := renderPageToFile(layout.editTmpl, entity, filepath.Join(projectDir, feDir, layout.editPath(entity.EntitySlug))); err != nil {
 						return fmt.Errorf("render edit page for %s: %w", entity.EntityName, err)
 					}
 					pageCount++
@@ -132,16 +122,94 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 	return nil
 }
 
+// pageLayout bundles parsed templates with the per-kind output-path policy
+// used when emitting CRUD pages. Output paths are framework-specific
+// (Next.js App Router uses [id]/page.tsx routes; tanstack-router code-based
+// routing has no on-disk route convention so we write to src/pages/).
+type pageLayout struct {
+	listTmpl   *template.Template
+	detailTmpl *template.Template
+	createTmpl *template.Template
+	editTmpl   *template.Template
+
+	listPath   func(slug string) string
+	detailPath func(slug string) string
+	createPath func(slug string) string
+	editPath   func(slug string) string
+}
+
+// pageLayoutForKind returns the parsed templates and path policy for the
+// given frontend kind. The kind is the resolved `Type` field on the
+// frontend config ("nextjs" or "vite-spa").
+func pageLayoutForKind(feType string) (*pageLayout, error) {
+	switch feType {
+	case "nextjs":
+		listTmpl, err := loadPageTemplate("pages", "list-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		detailTmpl, err := loadPageTemplate("pages", "detail-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		createTmpl, err := loadPageTemplate("pages", "create-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		editTmpl, err := loadPageTemplate("pages", "edit-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		appDir := filepath.Join("src", "app")
+		return &pageLayout{
+			listTmpl: listTmpl, detailTmpl: detailTmpl, createTmpl: createTmpl, editTmpl: editTmpl,
+			listPath:   func(slug string) string { return filepath.Join(appDir, slug, "page.tsx") },
+			detailPath: func(slug string) string { return filepath.Join(appDir, slug, "[id]", "page.tsx") },
+			createPath: func(slug string) string { return filepath.Join(appDir, slug, "new", "page.tsx") },
+			editPath:   func(slug string) string { return filepath.Join(appDir, slug, "[id]", "edit", "page.tsx") },
+		}, nil
+	case "vite-spa":
+		listTmpl, err := loadPageTemplate("vite-spa-pages", "list-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		detailTmpl, err := loadPageTemplate("vite-spa-pages", "detail-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		createTmpl, err := loadPageTemplate("vite-spa-pages", "create-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		editTmpl, err := loadPageTemplate("vite-spa-pages", "edit-page.tsx.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		pagesDir := filepath.Join("src", "pages")
+		return &pageLayout{
+			listTmpl: listTmpl, detailTmpl: detailTmpl, createTmpl: createTmpl, editTmpl: editTmpl,
+			listPath:   func(slug string) string { return filepath.Join(pagesDir, slug, "List.tsx") },
+			detailPath: func(slug string) string { return filepath.Join(pagesDir, slug, "Detail.tsx") },
+			createPath: func(slug string) string { return filepath.Join(pagesDir, slug, "Create.tsx") },
+			editPath:   func(slug string) string { return filepath.Join(pagesDir, slug, "Edit.tsx") },
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported frontend type for page generation: %q", feType)
+	}
+}
+
 // loadPageTemplate reads and parses a page template from the embedded FS.
-func loadPageTemplate(name string) (*template.Template, error) {
-	content, err := templates.FrontendTemplates().Get(filepath.Join("pages", name))
+// `dir` is the per-kind template subdirectory under internal/templates/frontend/
+// (e.g. "pages" for nextjs, "vite-spa-pages" for vite-spa).
+func loadPageTemplate(dir, name string) (*template.Template, error) {
+	content, err := templates.FrontendTemplates().Get(filepath.Join(dir, name))
 	if err != nil {
-		return nil, fmt.Errorf("read page template %s: %w", name, err)
+		return nil, fmt.Errorf("read page template %s/%s: %w", dir, name, err)
 	}
 
 	tmpl, err := template.New(name).Funcs(templates.FuncMap()).Parse(string(content))
 	if err != nil {
-		return nil, fmt.Errorf("parse page template %s: %w", name, err)
+		return nil, fmt.Errorf("parse page template %s/%s: %w", dir, name, err)
 	}
 
 	return tmpl, nil

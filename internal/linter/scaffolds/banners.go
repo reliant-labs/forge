@@ -271,6 +271,8 @@ func isKnownTier1(rel, noTmpl string) bool {
 	if strings.HasSuffix(rel, "frontend/hooks.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/mock-data.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/mocks/mock-transport.ts.tmpl") ||
+		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenario-types.ts.tmpl") ||
+		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenarios-index.ts.tmpl") ||
 		strings.HasSuffix(rel, "frontend/nextjs/src/lib/otel.ts.tmpl") {
 		return true
 	}
@@ -323,6 +325,14 @@ func isKnownTier2(rel, noTmpl string) bool {
 	}
 	// Frontend page scaffolds (forge add page).
 	if strings.Contains(rel, "internal/templates/frontend/pages/") {
+		return true
+	}
+	// Frontend scenario scaffolds (forge add scenario + first-time emit of
+	// the empty default). default-scenario.ts.tmpl is seeded once and then
+	// hand-editable; scenario.ts.tmpl produces the per-scenario file written
+	// at `forge add scenario` time.
+	if strings.HasSuffix(rel, "frontend/mocks/scenarios/default-scenario.ts.tmpl") ||
+		strings.HasSuffix(rel, "frontend/mocks/scenarios/scenario.ts.tmpl") {
 		return true
 	}
 	// Pack scaffolds. Anything under packs/<name>/templates/ that emits
@@ -418,9 +428,11 @@ func isKnownTier3(rel, noTmpl string) bool {
 	if strings.Contains(rel, "internal/templates/deploy/kcl/") {
 		return true
 	}
-	// Frontend Next.js / RN page scaffolds + connect/nav/layout.
+	// Frontend Next.js / RN / Vite SPA page scaffolds + connect/nav/layout.
 	if strings.Contains(rel, "internal/templates/frontend/nextjs/") ||
-		strings.Contains(rel, "internal/templates/frontend/react-native/") {
+		strings.Contains(rel, "internal/templates/frontend/react-native/") ||
+		strings.Contains(rel, "internal/templates/frontend/vite-spa/") ||
+		strings.Contains(rel, "internal/templates/frontend/vite-spa-pages/") {
 		return true
 	}
 	return false

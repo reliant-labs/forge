@@ -1,0 +1,32 @@
+// Scenario: {{ .Name }}
+{{- if .Description }}
+//
+// {{ .Description }}
+{{- end }}
+//
+// Edit this file to add typed RPC handler overrides. Anything not listed
+// in `handlers` falls through to the base fixture transport.
+//
+// To activate this scenario, append `?scenario={{ .Name }}` to the URL.
+//
+// Reference: `forge skill load scenarios` for the full contract.
+
+import { defineScenario } from "../scenario-types";
+
+// TODO: import the proto schemas you want to override and add typed handlers, e.g.
+//
+//   import { create } from "@bufbuild/protobuf";
+//   import { GetThingResponseSchema } from "@/gen/.../thing_pb";
+//
+//   handlers: {
+//     "myproject.v1.ThingService/GetThing": (req) =>
+//       create(GetThingResponseSchema, { id: "thing-1", name: "Sample" }),
+//   },
+
+export default defineScenario({
+  name: "{{ .Name }}",
+{{- if .Description }}
+  description: "{{ .Description }}",
+{{- end }}
+  handlers: {},
+});

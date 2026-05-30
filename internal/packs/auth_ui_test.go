@@ -73,13 +73,16 @@ func TestAuthUIPackManifest(t *testing.T) {
 	}
 
 	// Every output path must template into the per-frontend tree so a single
-	// manifest installs into all declared frontends.
+	// manifest installs into all declared frontends. Most files land under
+	// src/components/auth/ (the pack's Subpath); the OAuth callback is a
+	// Next.js route, so it intentionally lands under src/app/auth/callback/.
 	for _, f := range p.Files {
 		if !strings.Contains(f.Output, "{{.FrontendPath}}") {
 			t.Errorf("auth-ui file %q output must reference {{.FrontendPath}}", f.Output)
 		}
-		if !strings.Contains(f.Output, "src/components/auth/") {
-			t.Errorf("auth-ui file %q must land under src/components/auth/", f.Output)
+		if !strings.Contains(f.Output, "src/components/auth/") &&
+			!strings.Contains(f.Output, "src/app/auth/") {
+			t.Errorf("auth-ui file %q must land under src/components/auth/ or src/app/auth/", f.Output)
 		}
 		if f.Overwrite != "once" {
 			t.Errorf("auth-ui file %q must be overwrite: once (got %q)", f.Output, f.Overwrite)

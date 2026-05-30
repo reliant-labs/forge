@@ -9,7 +9,19 @@ description: URL-driven mock states for forge frontends — typed Connect-RPC ha
 
 Forge frontends ship with a mock transport (`src/lib/mock-transport.ts`) that returns deterministic fixture data when `VITE_MOCK_API=true`. That's enough for the happy path. It is **not** enough when a bug depends on a *specific* server response — e.g. "the credential parser misreads `hasToken` so the UI claims you're not connected even when the backend says you are". Reproducing that bug today requires manually driving OAuth in a real browser before Chrome MCP can take over — defeating the agent loop.
 
-Scenarios are typed RPC handler overlays you select via `?scenario=name` in the URL. Each scenario is a small file declaring per-RPC overrides; anything not overridden falls through to the base fixtures. Chrome MCP, vitest tests, and humans all use the same URL → same state.
+Scenarios are typed RPC handler overlays you select via `?scenario=name` in the URL. Each scenario is a small file declaring per-RPC overrides; anything not overridden falls through to the base fixtures (or, in hybrid mode, to the real backend). Chrome MCP, vitest tests, and humans all use the same URL → same state.
+
+## Three modes
+
+The transport `VITE_MOCK_API` / `NEXT_PUBLIC_MOCK_API` env var picks one:
+
+| Mode | Frontend transport | Backend contacted? | Auth | When to use |
+|---|---|---|---|---|
+| `true` | mock-only | no | stub provider sends `mock-token-dev` | Offline UI dev, CI, component tests |
+| `hybrid` | scenarios overlay a real transport | yes, for RPCs not stubbed | scenario decides (see `auth` field) | LLM / Chrome MCP debugging — stub one endpoint, exercise the rest live |
+| unset / `false` | real Connect transport | yes | real provider | Login-flow testing, e2e, production builds |
+
+In hybrid mode, the dev-auth middleware on the backend (gated on `ENVIRONMENT=development`) honors a sentinel bearer token (`dev-bypass-do-not-use-in-prod`) and injects synthetic `dev-user-001` claims. That lets a fresh Chrome instance (no cookies, no storage) skip login by navigating straight to `?scenario=<name>`. Real JWTs are still validated normally, so the login flow remains testable in the same build.
 
 ## The decision: handlers, not state-seeding
 
@@ -49,6 +61,11 @@ import { defineScenario } from "../scenario-types";
 export default defineScenario({
   name: "github-connected",
   description: "User signed in with a valid GitHub credential",
+  // In hybrid mode (VITE_MOCK_API=hybrid), unmatched RPCs hit the real backend.
+  passthrough: true,
+  // "bypass" sends the dev-auth sentinel — no login required.
+  // Use "required" to test the real login UX.
+  auth: "bypass",
   handlers: {
     "controlplane.v1.GitCredentialService/GetGitCredential": (req) =>
       create(GetGitCredentialResponseSchema, {
@@ -74,9 +91,24 @@ render(<RouterProvider router={createRouter({ routeTree, history })} />);
 ```
 
 ```python
-# Chrome MCP from an agent
+# Chrome MCP from an agent — fresh browser, no cookies/storage required.
+# In hybrid mode with auth: "bypass" the stub provider sends the dev-auth
+# sentinel and the backend injects synthetic claims, so no login flow runs.
 chrome_devtools.new_page(url="http://localhost:5173/?scenario=github-connected")
 ```
+
+## `passthrough` and `auth` — picking the right combination
+
+| Goal | `passthrough` | `auth` |
+|---|---|---|
+| Stub one endpoint, get real data for everything else | `true` | `"bypass"` (default) |
+| Stub everything; never touch the backend | `false` (default) | `"bypass"` |
+| Reproduce a bug in the login UX itself | `false` or `true` | `"required"` |
+| Demo on a hosted preview where the backend is real | `true` | `"bypass"` (server must be in dev mode) |
+
+`forge add scenario` scaffolds new files with `passthrough: true` and `auth: "bypass"` — the right defaults for agent-driven debugging. Override per scenario as needed.
+
+The empty `default` scenario (active when the URL has no `?scenario=`) leaves both unset, so visiting `/` cold in hybrid mode runs the real login flow.
 
 ## CLI
 
@@ -183,7 +215,9 @@ When the user clicks "Create" then "Approve" in the UI, the next `ListTasks` que
 ## Rules
 
 - **Handlers receive typed proto messages and return typed proto messages.** Use `create(Schema, {...})`. No `as any`, no JSON blobs.
-- **The default scenario has empty handlers and no setup.** It exists as the "nothing overridden" fallback; don't put fixtures there.
+- **The default scenario has empty handlers, no setup, no passthrough, no auth field.** It is the "nothing overridden" fallback that exists so visiting `/` without `?scenario=` runs the real login flow in hybrid mode. Don't put fixtures or bypass settings there.
+- **`passthrough` only does anything in hybrid mode.** In pure mock mode (`VITE_MOCK_API=true`) there is no backend to forward to, so the field is ignored and fixtures still apply.
+- **The dev-bypass sentinel is inert outside dev mode.** The backend's jwt-auth middleware only honors it when `ENVIRONMENT=development`. In staging/prod it's rejected like any other unsigned string — but don't commit it to a shared env file regardless.
 - **Stateful is fine.** Handlers can close over module-scope state for sequences, click-driven flows, and polling — see the section above. State persists for the lifetime of the loaded module (resets on full reload).
 - **No network calls in `setup()`.** It runs synchronously before the transport is mounted.
 - **Streaming is supported.** A handler can return an array, iterable, async iterable, or a Promise resolving to any of those. The transport adapts it into `AsyncIterable<Response>`. See "Streaming RPCs" in the ADR for examples.

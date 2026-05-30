@@ -140,6 +140,14 @@ func TestEmitScenarioScaffolding_SeedsDefaultOnce(t *testing.T) {
 	if !strings.Contains(string(tb), "export interface Scenario") {
 		t.Errorf("scenario-types.ts missing Scenario interface; got:\n%s", tb)
 	}
+	// Hybrid mode contract: both new optional fields must be exported on
+	// the Scenario interface, otherwise scenarios can't opt into
+	// passthrough or bypass-auth and the hybrid wiring is dead code.
+	for _, want := range []string{"passthrough?:", `auth?: "bypass" | "required"`} {
+		if !strings.Contains(string(tb), want) {
+			t.Errorf("scenario-types.ts missing %q (required for hybrid mode); got:\n%s", want, tb)
+		}
+	}
 
 	// index.ts exists and references the hand-edited default.
 	indexPath := filepath.Join(mocksDir, "scenarios", "index.ts")

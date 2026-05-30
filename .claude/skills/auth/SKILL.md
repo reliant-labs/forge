@@ -34,7 +34,7 @@ Auth packs install their middleware code into a **per-pack Go subpackage**, nest
 
 | Pack | Subpackage path | Package decl | Key symbols |
 |------|-----------------|--------------|-------------|
-| `jwt-auth` | `pkg/middleware/auth/jwtauth/` | `jwtauth` | `Init`, `Close`, `Interceptor`, `DevAuthEnabled`, `Validator` |
+| `jwt-auth` | `pkg/middleware/auth/jwtauth/` | `jwtauth` | `Init`, `Close`, `Interceptor`, `DevAuthEnabled`, `DevBypassToken`, `Validator` |
 | `clerk` | `pkg/middleware/auth/clerk/` | `clerk` | `Init`, `Close`, `Interceptor`, `DevAuthEnabled`, `Validator` |
 | `api-key` | `pkg/middleware/auth/apikey/` | `apikey` | `NewValidator`, `Validator` (implements `middleware.KeyValidator`) |
 | `audit-log` | `pkg/middleware/audit/auditlog/` | `auditlog` | `Interceptor` (DB-backed) |
@@ -139,7 +139,19 @@ rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
 
 ## Dev Mode
 
-In development (`cfg.Environment == "development"`), bootstrap wires a `DevAuthorizer` that allows all requests. This is logged with a WARN at startup. Never use `DevAuthorizer` in production.
+In development (`ENVIRONMENT=development`), bootstrap wires a `DevAuthorizer` that allows all requests, and the `jwt-auth` interceptor switches to a **per-request** bypass instead of all-or-nothing. The interceptor decides per call:
+
+| Authorization header | Behavior in dev mode | Behavior in prod |
+|---|---|---|
+| _(empty)_ | Inject synthetic `DevClaims` (`dev-user-001` / `dev-org-001` / admin). Keeps `curl`, fresh Chrome MCP, and bootstrap scripts frictionless. | 401 |
+| `Bearer dev-bypass-do-not-use-in-prod` (the `jwtauth.DevBypassToken` sentinel) | Inject synthetic `DevClaims`. Used by the frontend stub auth provider when a scenario opts in via `auth: "bypass"`. | 401 (rejected like any unsigned string) |
+| `Bearer <real JWT>` | Validated against the configured `JWT_*` env vars, exactly like prod. Use this to test the real login flow locally. | Validated |
+
+Both bypass paths are gated on `DevAuthEnabled()`, so the sentinel and the empty-header convenience are inert outside dev — no env flag, no header, no config can re-enable them in staging or prod. Startup logs a loud `DEV MODE: dev-auth bypass enabled — …` warning.
+
+Frontend wiring of the sentinel lives in the scenarios system — see the `frontend/scenarios` sub-skill for `auth: "bypass"` and hybrid mode (`VITE_MOCK_API=hybrid`).
+
+Never use `DevAuthorizer` in production.
 
 ## Multi-Tenant Config
 

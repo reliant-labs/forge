@@ -19,6 +19,20 @@ func DevAuthEnabled() bool {
 	return env == "development" || env == "dev"
 }
 
+// DevBypassToken is the sentinel bearer token that, when DevAuthEnabled() is
+// true, short-circuits JWT validation and produces synthetic DevClaims.
+//
+// Used by the frontend stub auth provider in hybrid mode (and by scenario
+// runners) so an LLM driving Chrome MCP can skip the login flow without
+// pre-provisioned cookies/storage. The string is hardcoded — not read from
+// env — specifically so it can never be reconfigured to leak past the
+// ENVIRONMENT gate. In any non-dev environment, this token is rejected like
+// any other unsigned string.
+//
+// Keep this string in sync with `DEV_BYPASS_TOKEN` in the frontend stub
+// auth provider (src/lib/auth/stub-provider.ts).
+const DevBypassToken = "dev-bypass-do-not-use-in-prod"
+
 // DevClaims returns synthetic claims for local development.
 func DevClaims(logger *slog.Logger) *middleware.Claims {
 	logger.Warn("DEV MODE: using synthetic auth claims — do not use in production")

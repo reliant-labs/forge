@@ -33,7 +33,6 @@ type Entry struct {
 // registry holds metadata for every component.
 var registry = []Entry{
 	// ── Layouts ──────────────────────────────────────────────────────────
-	{Name: "hero_centered", Category: CategoryLayouts, Description: "Hero section with centered content, headline, CTA buttons, and gradient background", Tags: []string{"layout", "landing", "marketing", "hero"}},
 	{Name: "sidebar_left", Category: CategoryLayouts, Description: "Fixed left sidebar with navigation and main content area", Tags: []string{"layout", "dashboard", "admin", "portal", "crm"}},
 	{Name: "sidebar_right", Category: CategoryLayouts, Description: "Fixed right sidebar with main content and contextual panel", Tags: []string{"layout", "blog", "docs", "portal"}},
 	{Name: "dashboard_grid", Category: CategoryLayouts, Description: "Responsive grid layout with metric cards and main content area", Tags: []string{"layout", "dashboard", "analytics", "admin", "crm"}},
@@ -44,21 +43,29 @@ var registry = []Entry{
 	{Name: "timeline", Category: CategoryLayouts, Description: "Vertical timeline with date markers and content blocks", Tags: []string{"layout", "timeline", "history", "marketing", "landing"}},
 	{Name: "masonry", Category: CategoryLayouts, Description: "CSS columns masonry grid with variable-height items", Tags: []string{"layout", "gallery", "portfolio", "marketing"}},
 	{Name: "sidebar_layout", Category: CategoryLayouts, Description: "Admin layout with collapsible sidebar, navigation sections, user profile area, and header bar.", Tags: []string{"layout", "admin", "dashboard", "navigation"}},
+	{Name: "variation_grid", Category: CategoryLayouts, Description: "Side-by-side comparison grid for 2-4 design variations. Each variation gets a labeled artboard with optional note. Use when exploring alternative layouts or directions for a single design problem.", Tags: []string{"layout", "design", "comparison", "variations", "artboard", "explore"}},
+	{Name: "dashboard_analytics", Category: CategoryLayouts, Description: "Analytics page shell — title + filters header, KPI strip, hero chart, optional drilldown table. Slot-based so the parent provides the chart and table content (typically Recharts + data_table).", Tags: []string{"layout", "dashboard", "analytics", "admin", "portal"}},
+	{Name: "dashboard_ops", Category: CategoryLayouts, Description: "Ops/SRE dashboard layout — three independently-scrolling columns: alerts left, status grid center, log stream right. Stacks on narrow viewports.", Tags: []string{"layout", "dashboard", "ops", "sre", "incidents", "admin"}},
+	{Name: "inbox_layout", Category: CategoryLayouts, Description: "Two-pane list + preview shell (Gmail/Linear pattern). Parent owns selection state; component just positions list and preview slots. Collapses to single column on narrow viewports.", Tags: []string{"layout", "inbox", "list", "preview", "mail", "portal"}},
+	{Name: "editor_layout", Category: CategoryLayouts, Description: "Three-pane editor shell (Figma/VS Code pattern) — top toolbar, left tools panel, center canvas, right properties panel, optional bottom panel. All side regions are slots.", Tags: []string{"layout", "editor", "ide", "design", "canvas"}},
 
 	// ── Charts ───────────────────────────────────────────────────────────
 	{Name: "quadrant_chart", Category: CategoryCharts, Description: "2x2 quadrant/matrix chart with positioned items, axis labels, and highlighted item. Items use 0-1 normalized coordinates — all pixel math is internal.", Tags: []string{"chart", "competitive", "matrix", "deck", "marketing", "comparison"}},
 	{Name: "concentric_circles", Category: CategoryCharts, Description: "Nested concentric circles for TAM/SAM/SOM or layered metrics. Rings auto-space and labels position in visible bands.", Tags: []string{"chart", "market", "tam", "deck", "marketing"}},
 	{Name: "funnel_chart", Category: CategoryCharts, Description: "Vertical funnel visualization with tapering stages, conversion annotations, and alert highlighting for problem stages.", Tags: []string{"chart", "funnel", "sales", "conversion", "deck", "marketing", "crm"}},
-	{Name: "bar_chart", Category: CategoryCharts, Description: "Horizontal or vertical bar chart with stacked segments, auto-color, and value labels.", Tags: []string{"chart", "bar", "data", "dashboard", "analytics", "deck"}},
-	{Name: "donut_chart", Category: CategoryCharts, Description: "Ring/donut chart with segments, center label, and legend. Uses SVG stroke-dasharray.", Tags: []string{"chart", "donut", "pie", "data", "dashboard", "analytics"}},
-	{Name: "radar_chart", Category: CategoryCharts, Description: "Spider/radar chart with multiple overlaid datasets, configurable axes, and grid rings.", Tags: []string{"chart", "radar", "spider", "comparison", "dashboard", "analytics"}},
+	// NOTE: For commodity data viz (bar, line, area, donut, pie, scatter), install
+	// Recharts (`npm i recharts`) — do NOT hand-roll. The component library only
+	// ships *narrative* charts (quadrant, concentric_circles, funnel) where heavy
+	// customization matters more than interactivity. The frontend skill carries
+	// the full guidance.
 
 	// ── Diagrams ─────────────────────────────────────────────────────────
 	{Name: "flow_horizontal", Category: CategoryDiagrams, Description: "Horizontal flow/pipeline with connected steps, status indicators, and optional loop-back arrow.", Tags: []string{"diagram", "flow", "pipeline", "process", "deck", "marketing"}},
-	{Name: "comparison_matrix", Category: CategoryDiagrams, Description: "Feature comparison table with products as columns, grouped features, check/cross indicators, and highlighted column.", Tags: []string{"diagram", "comparison", "features", "pricing", "marketing", "landing"}},
 	{Name: "process_steps", Category: CategoryDiagrams, Description: "Numbered process steps with completed/active/pending states. Supports horizontal and vertical layouts.", Tags: []string{"diagram", "process", "steps", "onboarding", "marketing", "landing"}},
 	{Name: "architecture_diagram", Category: CategoryDiagrams, Description: "System architecture diagram with grouped service boxes and SVG arrow connections.", Tags: []string{"diagram", "architecture", "system", "technical", "docs"}},
 	{Name: "org_chart", Category: CategoryDiagrams, Description: "Organizational hierarchy chart with recursive tree layout, avatar circles, and CSS connector lines.", Tags: []string{"diagram", "org", "hierarchy", "team", "portal"}},
+	{Name: "bus_bar", Category: CategoryDiagrams, Description: "Pub/sub bus diagram — producers on one side, consumers on the other, labeled bus in the middle. Communicates decoupling. Uses shared coordinate space (W=880, configurable rows) for clean SVG+DOM alignment.", Tags: []string{"diagram", "pub-sub", "kafka", "nats", "events", "architecture"}},
+	{Name: "pub_sub_matrix", Category: CategoryDiagrams, Description: "Subscription matrix — topics as rows, consumers as columns, cells marking who subscribes to what. Pairs with bus_bar to make routing rules scannable. Pure table, no coordinate math.", Tags: []string{"diagram", "pub-sub", "matrix", "routing", "events", "architecture"}},
 
 	// ── Deck (Pitch Deck Slides) ─────────────────────────────────────────
 	{Name: "slide_title", Category: CategoryDeck, Description: "Title/opening slide (1280x720) with centered company name, tagline, and optional logo.", Tags: []string{"deck", "slide", "title", "presentation"}},
@@ -79,7 +86,6 @@ var registry = []Entry{
 	{Name: "hero_section", Category: CategoryUI, Description: "Marketing hero section with headline, CTAs, and optional media area.", Tags: []string{"ui", "hero", "marketing", "landing"}},
 	{Name: "login_form", Category: CategoryUI, Description: "Authentication form with email/password, social login, and sign-up link.", Tags: []string{"ui", "auth", "login", "form", "portal"}},
 	{Name: "data_table", Category: CategoryUI, Description: "Sortable, filterable data table with column headers, row selection, pagination, loading skeleton, and empty state.", Tags: []string{"ui", "crud", "admin", "table", "dashboard"}},
-	{Name: "stat_cards", Category: CategoryUI, Description: "Row of stat cards showing key metrics with icon, label, value, and color-coded trend indicators.", Tags: []string{"ui", "dashboard", "analytics", "admin", "stats"}},
 	{Name: "detail_view", Category: CategoryUI, Description: "Structured detail/show view for a single entity with field groups, multiple field types, and action buttons.", Tags: []string{"ui", "crud", "admin", "detail"}},
 	{Name: "crud_form", Category: CategoryUI, Description: "Form component for create/edit operations with typed fields, validation errors, and submit/cancel buttons.", Tags: []string{"ui", "crud", "admin", "form"}},
 	{Name: "command_bar", Category: CategoryUI, Description: "Command palette / search bar (⌘K style) with filterable results grouped by category and keyboard navigation.", Tags: []string{"ui", "admin", "search", "navigation"}},

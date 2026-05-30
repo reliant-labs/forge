@@ -15,6 +15,8 @@ import { use{{.ListRPC}} } from "{{.HooksImportPath}}";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { z } from "zod";
+import { useTypedSearchParams } from "@/lib/search-schemas";
 import PageHeader from "@/components/ui/page_header";
 import Badge from "@/components/ui/badge";
 import SkeletonLoader from "@/components/ui/skeleton_loader";
@@ -49,6 +51,16 @@ function EmptyState() {
   );
 }
 
+// ---- URL-backed filter schema ----
+// One schema per route — extend this when adding filters instead of reaching
+// for raw `searchParams.get(...)`. See `frontend/state` ("Search params are
+// typed boundaries"). Examples to add later:
+//   status: z.enum(["all", "active", "archived"]).optional().default("all"),
+//   page: z.coerce.number().int().min(1).optional().default(1),
+const searchSchema = z.object({
+  q: z.string().optional().default(""),
+});
+
 export default function {{.EntityNamePlural}}Page() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -56,7 +68,7 @@ export default function {{.EntityNamePlural}}Page() {
   // ---- URL-backed filter state ----
   // Durable filters belong in the URL per the frontend/state skill — link
   // sharing, browser back/forward, and refresh all "just work".
-  const search = searchParams.get("q") ?? "";
+  const { q: search } = useTypedSearchParams(searchSchema);
 
   // Local draft state so typing doesn't update the URL on every keystroke.
   // The committed value lands in the URL on debounce.

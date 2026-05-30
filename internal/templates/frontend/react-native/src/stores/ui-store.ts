@@ -3,6 +3,21 @@ import { create } from "zustand";
 /**
  * Base UI store for React Native — shared client-side state.
  *
+ * Scope: ONLY app-wide, cross-component UI state that doesn't fit anywhere
+ * else (drawer open, bottom sheet open). For everything else, prefer:
+ *
+ *   - Small modals / action sheets bound to one action → `useState` in the
+ *     component that owns the action. Lift to a store ONLY if two unrelated
+ *     components both need to read the same modal's open state.
+ *
+ *   - Navigation-replacing surfaces (settings screen, detail view, full
+ *     drawer) → SCREENS via Expo Router. If the hardware/back button should
+ *     dismiss it, it's a route, not a Zustand field. See the `frontend/state`
+ *     skill.
+ *
+ *   - Server data (the current user, fetched lists) → generated React Query
+ *     hooks. Never copy backend data into Zustand.
+ *
  * Extend by creating domain stores in src/stores/:
  *   src/stores/editor-store.ts
  *
@@ -22,11 +37,6 @@ interface UiState {
   bottomSheetContent: string | null;
   openBottomSheet: (content: string) => void;
   closeBottomSheet: () => void;
-
-  // Active modal (at most one app-level modal at a time)
-  activeModal: string | null;
-  openModal: (id: string) => void;
-  closeModal: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -40,9 +50,4 @@ export const useUiStore = create<UiState>((set) => ({
   bottomSheetContent: null,
   openBottomSheet: (content) => set({ bottomSheetOpen: true, bottomSheetContent: content }),
   closeBottomSheet: () => set({ bottomSheetOpen: false, bottomSheetContent: null }),
-
-  // Active modal
-  activeModal: null,
-  openModal: (id) => set({ activeModal: id }),
-  closeModal: () => set({ activeModal: null }),
 }));

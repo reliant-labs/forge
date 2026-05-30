@@ -58,6 +58,15 @@ export default function Edit{{.EntityName}}Page() {
     mutation.mutate({ id, ...values } as Parameters<typeof mutation.mutate>[0]);
   }
 
+  // Loading is its own state — bail explicitly. Do not derive booleans from
+  // `!isLoading && X` and act on them; that gate is false during the load
+  // window AND when the load returns a falsy value, which races and wipes
+  // real state. See `frontend/state` ("Loading is not the negative of success").
+  //
+  // For type-checker-enforced exhaustiveness, see `useQueryResource` in
+  // `src/hooks/use-query-resource.ts` — it returns a discriminated union
+  // `{ status: 'loading' } | { status: 'error', error } | { status: 'success', data }`
+  // that forces a switch over all three states.
   if (isLoading) return <div className="mx-auto max-w-xl px-4 py-8"><SkeletonLoader variant="form-field" count={4} /></div>;
 
   if (fetchError) {

@@ -1,0 +1,312 @@
+"use client";
+{{- $provider := index .PackConfig "provider" }}
+
+// forge:scaffold one-shot — auth-ui OAuthCallback; canonical pattern in `forge skill load packs`.
+/**
+ * OAuthCallback — typed search-param landing page for the {{$provider}}
+ * backend pack's redirect-style OAuth flow.
+ *
+ * Why this page exists
+ * --------------------
+ * OAuth callbacks are the single most common place where untyped URL
+ * parsing creates production bugs: open redirects, silent code-exchange
+ * failures, lost `returnTo` paths, providers landing the user on the
+ * wrong screen. The fix is a dedicated typed route — see the
+ * `frontend/patterns` and `frontend/state` skills.
+ *
+ * Load-bearing pieces (do not remove when customizing):
+ *   1. `callbackSchema` — the only place that touches raw search params.
+ *   2. `assertSafeReturnTo` — open-redirect guard for the post-success
+ *      navigation.
+ *   3. `exchanged.current` — strict-mode guard: React mounts effects twice
+ *      and the code-exchange must be idempotent.
+ *   4. Error surface — never let an exchange failure silently bounce the
+ *      user back to "/" with no session.
+ *
+ * Wire into `src/app/auth/callback/page.tsx` — already done by the pack.
+ */
+
+{{- if eq $provider "clerk" }}
+// Clerk owns its callback surface — this file is a thin wrapper around
+// <AuthenticateWithRedirectCallback />. The auth-ui pack still emits a
+// file here so that pages linking to "/auth/callback" resolve, but the
+// load-bearing logic (code exchange, session creation, error handling)
+// is all inside Clerk's component.
+//
+// If you don't use Clerk's redirect OAuth flow at all (popup-only), you
+// can safely delete this file and the surrounding route folder — Clerk's
+// modal flow never hits a callback URL on your domain.
+
+import { AuthenticateWithRedirectCallback } from "@clerk/nextjs";
+
+export default function OAuthCallbackPage() {
+  return (
+    <div className="mx-auto max-w-md p-8 text-center">
+      <p className="text-sm text-gray-600">Completing sign-in…</p>
+      <AuthenticateWithRedirectCallback
+        afterSignInUrl="/"
+        afterSignUpUrl="/"
+      />
+    </div>
+  );
+}
+{{- else if eq $provider "firebase-auth" }}
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { z } from "zod";
+import { getAuth, getRedirectResult } from "firebase/auth";
+
+import { useTypedSearchParams } from "@/lib/search-schemas";
+
+import { useAuthStore, type AuthUser } from "./auth-store";
+
+// Typed search params for the OAuth round-trip. Firebase does not surface
+// a `code` to us — the SDK handles the exchange internally via
+// getRedirectResult() — but providers may still pass error/state, and we
+// preserve `returnTo` for post-success navigation.
+const callbackSchema = z.object({
+  state: z.string().optional(),
+  error: z.string().optional(),
+  error_description: z.string().optional(),
+  // `returnTo` preserves the originating URL (preserves mid-flow state
+  // like a half-filled onboarding plan). Validated below before use.
+  returnTo: z.string().optional(),
+});
+
+/**
+ * Only allow same-origin relative paths to prevent open redirects.
+ * A signed-in attacker who can plant a `?returnTo=https://evil.example`
+ * would otherwise have their target page bounce the user off your domain.
+ */
+function assertSafeReturnTo(returnTo: string | undefined): string | null {
+  if (!returnTo) return null;
+  if (!returnTo.startsWith("/")) return null;
+  if (returnTo.startsWith("//")) return null; // protocol-relative
+  return returnTo;
+}
+
+/**
+ * firebase-auth variant — uses getRedirectResult() to consume the OAuth
+ * round-trip the Firebase SDK started via signInWithRedirect(). The
+ * onAuthStateChanged observer wired in the layout (see README) will pick
+ * up the resulting user; this page only navigates and surfaces errors.
+ *
+ * If you use signInWithPopup() exclusively, you don't need this page —
+ * popup auth never hits a callback URL. Delete `src/app/auth/callback/`
+ * if you want to remove the route entirely.
+ */
+export default function OAuthCallbackPage() {
+  const router = useRouter();
+  const params = useTypedSearchParams(callbackSchema);
+  const setUser = useAuthStore((s) => s.setUser);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const exchanged = useRef(false);
+
+  useEffect(() => {
+    if (exchanged.current) return;
+    exchanged.current = true;
+
+    const run = async () => {
+      // Provider returned an error before any code-exchange.
+      if (params.error) {
+        setErrorMessage(params.error_description ?? params.error);
+        return;
+      }
+
+      try {
+        const result = await getRedirectResult(getAuth());
+        if (!result || !result.user) {
+          // No pending redirect — most likely the user landed here
+          // directly, or the SDK already consumed the result on a prior
+          // mount. Treat as malformed callback rather than silently
+          // bouncing to "/".
+          setErrorMessage("No pending sign-in to complete.");
+          return;
+        }
+
+        // Push the user into the store immediately so the next render
+        // sees an authenticated session. onAuthStateChanged will also
+        // fire, but it races with the navigation below.
+        const fbUser = result.user;
+        const user: AuthUser = {
+          id: fbUser.uid,
+          email: fbUser.email ?? undefined,
+          name: fbUser.displayName ?? undefined,
+        };
+        setUser(user);
+
+        const fallback = "/";
+        const safeReturnTo = assertSafeReturnTo(params.returnTo);
+        router.replace(safeReturnTo ?? fallback);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Sign-in failed.";
+        setErrorMessage(msg);
+      }
+    };
+
+    void run();
+  }, [params, router, setUser]);
+
+  if (errorMessage) {
+    return (
+      <div className="mx-auto max-w-md p-8">
+        <h2 className="text-lg font-semibold text-red-700">
+          Sign-in failed
+        </h2>
+        <p className="mt-2 text-sm text-gray-600">{errorMessage}</p>
+        <button
+          type="button"
+          onClick={() => router.replace("/login")}
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        >
+          Back to sign in
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-md p-8 text-center">
+      <p className="text-sm text-gray-600">Completing sign-in…</p>
+    </div>
+  );
+}
+{{- else }}
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { z } from "zod";
+
+import { useTypedSearchParams } from "@/lib/search-schemas";
+
+import {
+  useAuthStore,
+  persistSession,
+  type AuthUser,
+  type AuthSession,
+} from "./auth-store";
+
+// Typed search params for the OAuth round-trip. Extend if your provider
+// emits additional fields (e.g. `id_token`).
+const callbackSchema = z.object({
+  code: z.string().optional(),
+  state: z.string().optional(),
+  error: z.string().optional(),
+  error_description: z.string().optional(),
+  // `returnTo` preserves the originating URL (preserves mid-flow state
+  // like a half-filled onboarding plan). Validated below before use.
+  returnTo: z.string().optional(),
+});
+
+/**
+ * Only allow same-origin relative paths to prevent open redirects.
+ * A signed-in attacker who can plant a `?returnTo=https://evil.example`
+ * would otherwise have their target page bounce the user off your domain.
+ */
+function assertSafeReturnTo(returnTo: string | undefined): string | null {
+  if (!returnTo) return null;
+  if (!returnTo.startsWith("/")) return null;
+  if (returnTo.startsWith("//")) return null; // protocol-relative
+  return returnTo;
+}
+
+export interface OAuthCallbackPageProps {
+  /**
+   * Override the exchange endpoint. Defaults to the backend pack's
+   * configured OAuth exchange path: "{{ index .PackConfig "jwt_oauth_exchange_path" }}".
+   */
+  exchangePath?: string;
+}
+
+interface ExchangeResponse {
+  token: string;
+  user: AuthUser;
+  expiresAt?: number;
+}
+
+/**
+ * jwt-auth variant — POSTs the OAuth `code` to the backend pack's
+ * exchange endpoint. Expects `{ token, user }` JSON in the response and
+ * persists both into localStorage so the session survives reloads.
+ */
+export default function OAuthCallbackPage({
+  exchangePath = "{{ index .PackConfig "jwt_oauth_exchange_path" }}",
+}: OAuthCallbackPageProps = {}) {
+  const router = useRouter();
+  const params = useTypedSearchParams(callbackSchema);
+  const setSession = useAuthStore((s) => s.setSession);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const exchanged = useRef(false);
+
+  useEffect(() => {
+    if (exchanged.current) return;
+    exchanged.current = true;
+
+    const run = async () => {
+      // Provider returned an error before any code-exchange.
+      if (params.error) {
+        setErrorMessage(params.error_description ?? params.error);
+        return;
+      }
+
+      // No code, no error — malformed callback.
+      if (!params.code) {
+        setErrorMessage("Invalid OAuth callback (missing code).");
+        return;
+      }
+
+      try {
+        const res = await fetch(exchangePath, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: params.code, state: params.state }),
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || `OAuth exchange failed (${res.status})`);
+        }
+        const body = (await res.json()) as ExchangeResponse;
+        const session: AuthSession = {
+          token: body.token,
+          expiresAt: body.expiresAt,
+        };
+        setSession(body.user, session);
+        persistSession(body.user, session);
+
+        const fallback = "/";
+        const safeReturnTo = assertSafeReturnTo(params.returnTo);
+        router.replace(safeReturnTo ?? fallback);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Sign-in failed.";
+        setErrorMessage(msg);
+      }
+    };
+
+    void run();
+  }, [params, router, setSession, exchangePath]);
+
+  if (errorMessage) {
+    return (
+      <div className="mx-auto max-w-md p-8">
+        <h2 className="text-lg font-semibold text-red-700">
+          Sign-in failed
+        </h2>
+        <p className="mt-2 text-sm text-gray-600">{errorMessage}</p>
+        <button
+          type="button"
+          onClick={() => router.replace("/login")}
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        >
+          Back to sign in
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-md p-8 text-center">
+      <p className="text-sm text-gray-600">Completing sign-in…</p>
+    </div>
+  );
+}
+{{- end }}

@@ -415,10 +415,10 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 		// so we only validate non-empty values here. Required-ness would
 		// be a regression for existing forge.yaml files.
 		if t := strings.ToLower(strings.TrimSpace(fe.Type)); t != "" {
-			if t != "nextjs" && t != "react_native" && t != "react-native" {
+			if t != "nextjs" && t != "react_native" && t != "react-native" && t != "vite-spa" {
 				out = append(out, validationIssue{
 					msg: fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
-					fix: "use one of: nextjs, react-native.",
+					fix: "use one of: nextjs, react-native, vite-spa.",
 				})
 			}
 		}

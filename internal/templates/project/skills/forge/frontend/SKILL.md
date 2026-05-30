@@ -49,7 +49,21 @@ component_library(action="search", tag="chart")
 component_library(action="get", name="quadrant_chart")
 ```
 
-Categories: layouts, charts, diagrams, deck, ui. Charts handle all coordinate math internally — pass data, get pixels.
+Categories: layouts, charts, diagrams, deck, ui.
+
+### Data viz: use Recharts, not the library
+
+For commodity data viz — bar, line, area, donut, pie, scatter, sparkline — install Recharts:
+
+```bash
+npm i recharts
+```
+
+Hand-rolling SVG paths for these loses to a real library on every dimension that matters: hover tooltips, click handlers, brush selection, datetime/log axes, locale formatting, dual axes, canvas rendering past ~1k points, accessibility. Don't compete with hundreds of person-years of investment.
+
+The component library only ships **narrative** charts — `quadrant_chart` (competitive matrix), `concentric_circles` (TAM/SAM/SOM), `funnel_chart` (sales conversion) — and the `slide_*` deck charts. These are presentation-grade where heavy customization matters more than interactivity, and where libraries are weakest.
+
+Rule of thumb: if it's going on a dashboard, use Recharts. If it's going on a slide or a marketing page, check the component library first.
 
 ### Base UI primitives (always available)
 

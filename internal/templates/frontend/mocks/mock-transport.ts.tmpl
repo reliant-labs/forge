@@ -7,10 +7,14 @@
 //      `default` scenario) gets first crack at every unary RPC. Handlers
 //      keyed by `${serviceTypeName}/${methodName}` return typed proto
 //      messages and short-circuit the rest of the pipeline.
-//   2. RPCs not overridden by the active scenario fall through to the
-//      deterministic per-entity fixtures generated from forge.yaml's
-//      entity definitions.
-//   3. Anything else rejects with Code.Unimplemented so callers see a
+//   2. If the active scenario has `passthrough: true` AND a fallback
+//      transport was supplied (hybrid mode — VITE_MOCK_API=hybrid /
+//      NEXT_PUBLIC_MOCK_API=hybrid), unmatched RPCs are forwarded to the
+//      real backend. This lets one scenario stub a single endpoint while
+//      everything else exercises the live server.
+//   3. Otherwise RPCs not overridden fall through to the deterministic
+//      per-entity fixtures generated from forge.yaml's entity definitions.
+//   4. Anything else rejects with Code.Unimplemented so callers see a
 //      clear error instead of a silent empty response.
 //
 // Streaming is not supported in v1 — see docs/adr/0002-frontend-scenarios.md.
@@ -77,14 +81,24 @@ function makeUnaryResponse<T>(
   };
 }
 
-export function createMockTransport(): Transport {
+/**
+ * Create the mock transport.
+ *
+ * @param fallback - Optional real Connect transport. When the active
+ *   scenario declares `passthrough: true`, any RPC not matched by a
+ *   scenario handler is forwarded to this fallback instead of falling
+ *   through to the per-entity fixtures. Wire this up from `connect.ts`
+ *   when `VITE_MOCK_API=hybrid` / `NEXT_PUBLIC_MOCK_API=hybrid`.
+ */
+export function createMockTransport(fallback?: Transport): Transport {
+  const passthrough = active.passthrough === true && fallback != null;
   return {
     // Connect v2's Transport.unary signature is
     //   (method, signal, timeoutMs, header, input, contextValues)
     // — method first, no separate service arg. `method.parent.typeName`
     // is the fully-qualified service name (e.g. "demo.v1.ClinicService");
     // that's what case keys and scenario handler keys are matched against.
-    async unary(method, _signal, _timeoutMs, _header, input) {
+    async unary(method, signal, timeoutMs, header, input, contextValues) {
       const key = `${method.parent.typeName}/${method.name}`;
 
       // 1) Scenario overlay.
@@ -94,7 +108,14 @@ export function createMockTransport(): Transport {
         return makeUnaryResponse(method, result);
       }
 
-      // 2) Base fixture dispatch — generated from entity definitions.
+      // 2) Passthrough: route to the real backend instead of fixtures.
+      //    Skips fixtures entirely — in hybrid mode the whole point is
+      //    "use real data for anything not explicitly stubbed".
+      if (passthrough) {
+        return fallback!.unary(method, signal, timeoutMs, header, input, contextValues);
+      }
+
+      // 3) Base fixture dispatch — generated from entity definitions.
       switch (key) {
 {{- range .Entities }}
 {{- if .HasList }}
@@ -147,7 +168,7 @@ export function createMockTransport(): Transport {
 {{- end }}
       }
 
-      // 3) Nothing matched. Surface a clear error instead of hanging.
+      // 4) Nothing matched. Surface a clear error instead of hanging.
       return Promise.reject(
         new ConnectError(
           `mock-transport: no scenario handler or entity fixture for ${key}`,
@@ -162,10 +183,15 @@ export function createMockTransport(): Transport {
     // If no handler matches, reject with Unimplemented — base-fixture
     // streaming is intentionally not generated (no canonical "list of N
     // messages" shape for an arbitrary streaming RPC).
-    async stream(method, _signal, _timeoutMs, _header, _input): Promise<StreamResponse<never, never>> {
+    async stream(method, signal, timeoutMs, header, input, contextValues): Promise<StreamResponse<never, never>> {
       const key = `${method.parent.typeName}/${method.name}`;
       const handler = active.handlers[key];
       if (!handler) {
+        // Passthrough mirrors the unary path: in hybrid mode, unmatched
+        // streaming RPCs go to the real backend.
+        if (passthrough) {
+          return fallback!.stream(method, signal, timeoutMs, header, input, contextValues);
+        }
         return Promise.reject(
           new ConnectError(
             `mock-transport: no scenario handler for streaming RPC ${key}`,
@@ -178,7 +204,7 @@ export function createMockTransport(): Transport {
       // and unary-into-stream-out RPCs this is a single message.
       const requestMessages: unknown[] = [];
       try {
-        for await (const m of _input as AsyncIterable<unknown>) requestMessages.push(m);
+        for await (const m of input as AsyncIterable<unknown>) requestMessages.push(m);
       } catch {
         // Synthetic clients sometimes pass a single value rather than an
         // iterable; treat that as an empty request payload.

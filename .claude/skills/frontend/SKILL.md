@@ -210,6 +210,7 @@ Load sub-skills for specific frontend topics:
 
 - **state** — State management decision table, state vs events, ownership, async handling
 - **patterns** — Component composition, container/presentational, effects discipline, typed boundaries
+- **scenarios** — URL-driven mock states for debugging and agent-driven testing without a real backend
 
 ## Rules
 
@@ -220,6 +221,7 @@ Load sub-skills for specific frontend topics:
 - Verify frontend work visually with BOTH `take_snapshot` and `take_screenshot`.
 - Use the `component_library` tool before building UI components from scratch.
 - Use generated React Query hooks for server data — do not copy backend data into Zustand.
+- URL-or-store decision: filters, selected entity, active tab, panel sections live in the URL — not Zustand. Zustand is for ephemeral overlays (dropdowns, popovers, toast queue). See `frontend/state`.
 - Subscribe to Zustand slices, not the whole store.
 - Use the event bus for imperative actions (toasts, navigation commands) — not as a source of truth.
 - Keep forms in react-hook-form + Zod — do not hand-roll form state with scattered useState.

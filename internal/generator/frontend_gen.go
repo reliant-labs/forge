@@ -11,12 +11,17 @@ import (
 )
 
 // frontendTemplateDir returns the template subdirectory for the given kind.
-// kind="mobile" uses react-native templates; everything else uses nextjs.
+// kind="mobile" uses react-native templates; kind="vite-spa" uses vite-spa
+// templates; everything else (including "" and "web") uses nextjs.
 func frontendTemplateDir(kind string) string {
-	if kind == "mobile" {
+	switch kind {
+	case "mobile":
 		return "react-native"
+	case "vite-spa":
+		return "vite-spa"
+	default:
+		return "nextjs"
 	}
-	return "nextjs"
 }
 
 // GenerateFrontendFiles generates the frontend directory and files.
@@ -88,9 +93,10 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 		return fmt.Errorf("write frontend go.mod: %w", err)
 	}
 
-	// Install core web UI components for Next.js frontends only. React Native
-	// uses platform-specific primitives and should not receive web components.
-	if tmplDir == "nextjs" {
+	// Install core web UI components for browser-targeted frontends (Next.js
+	// and Vite SPA). React Native uses platform-specific primitives and should
+	// not receive web components.
+	if tmplDir == "nextjs" || tmplDir == "vite-spa" {
 		if err := installCoreComponents(frontendDir); err != nil {
 			return fmt.Errorf("install core components: %w", err)
 		}

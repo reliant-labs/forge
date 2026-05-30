@@ -225,14 +225,57 @@ func searchSkills(query string) ([]skillSearchResult, error) {
 	return results, nil
 }
 
+// SkillMetaPublic is the cross-package view of a skill returned from
+// [ListSkillsAt]. Only metadata is included; bodies are fetched separately
+// via [ResolveSkillContentAt] to keep enumeration cheap.
+type SkillMetaPublic struct {
+	Path        string
+	Name        string
+	Description string
+	Scope       SkillScope
+}
+
+// ListSkillsAt is the exported wrapper around [listSkillsAt], intended for
+// consumers in sibling packages (e.g. forge/cli's public shim). It hides the
+// unexported skillMeta type behind a stable struct.
+func ListSkillsAt(projectRoot string) ([]SkillMetaPublic, error) {
+	metas, err := listSkillsAt(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SkillMetaPublic, 0, len(metas))
+	for _, m := range metas {
+		out = append(out, SkillMetaPublic{
+			Path:        m.Path,
+			Name:        m.Name,
+			Description: m.Description,
+			Scope:       m.Scope,
+		})
+	}
+	return out, nil
+}
+
+// ResolveSkillContentAt is the exported wrapper around [resolveSkillContentAt].
+func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, error) {
+	return resolveSkillContentAt(projectRoot, skillPath)
+}
+
 // listSkills returns all available skills (forge-shipped + project + user),
-// sorted alphabetically by path. On collision, precedence is:
-//
-//	forge-shipped < project < user-global
-//
-// This lets a user override anything the project defines, and a project
-// override anything forge ships. Each returned skillMeta carries its Scope.
+// sorted alphabetically by path. The project root is discovered by walking
+// upward from the cwd; see [listSkillsAt] for explicit-root callers.
 func listSkills() ([]skillMeta, error) {
+	root, _ := findProjectRoot()
+	return listSkillsAt(root)
+}
+
+// listSkillsAt is like [listSkills] but takes the project root as an argument
+// rather than walking up from cwd. An empty projectRoot skips the project
+// scope (only forge-shipped + user-global skills are returned).
+//
+// Precedence on path collision: forge-shipped < project < user-global. This
+// lets a user override anything the project defines, and a project override
+// anything forge ships. Each returned skillMeta carries its Scope.
+func listSkillsAt(projectRoot string) ([]skillMeta, error) {
 	bySource := map[SkillScope][]skillMeta{}
 
 	// Forge-shipped (lowest precedence).
@@ -243,8 +286,8 @@ func listSkills() ([]skillMeta, error) {
 	bySource[SkillScopeForge] = forgeSkills
 
 	// Project-scope (.forge/skills under project root).
-	if root, err := findProjectRoot(); err == nil && root != "" {
-		projSkills, err := listDiskSkills(filepath.Join(root, ".forge", "skills"), SkillScopeProject)
+	if projectRoot != "" {
+		projSkills, err := listDiskSkills(filepath.Join(projectRoot, ".forge", "skills"), SkillScopeProject)
 		if err == nil {
 			bySource[SkillScopeProject] = projSkills
 		}
@@ -363,7 +406,14 @@ func listDiskSkills(root string, scope SkillScope) ([]skillMeta, error) {
 // user > project > forge precedence. Returns the body, the scope it came
 // from, or an error if the skill is unknown.
 func resolveSkillContent(skillPath string) ([]byte, SkillScope, error) {
-	skills, err := listSkills()
+	root, _ := findProjectRoot()
+	return resolveSkillContentAt(root, skillPath)
+}
+
+// resolveSkillContentAt is like [resolveSkillContent] but scoped to an explicit
+// project root rather than walking up from cwd.
+func resolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, error) {
+	skills, err := listSkillsAt(projectRoot)
 	if err != nil {
 		return nil, "", err
 	}

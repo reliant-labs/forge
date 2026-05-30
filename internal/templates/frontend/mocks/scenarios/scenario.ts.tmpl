@@ -28,5 +28,12 @@ export default defineScenario({
 {{- if .Description }}
   description: "{{ .Description }}",
 {{- end }}
+  // In hybrid mode (VITE_MOCK_API=hybrid), unmatched RPCs hit the real backend.
+  // Set to false to fall back to deterministic fixtures instead.
+  passthrough: true,
+  // "bypass" sends the dev-auth sentinel token so the backend (when
+  // ENVIRONMENT=development) injects synthetic claims — no login required.
+  // Switch to "required" when debugging the real login flow.
+  auth: "bypass",
   handlers: {},
 });

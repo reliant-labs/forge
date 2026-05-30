@@ -42,9 +42,38 @@ export interface Scenario {
   description?: string;
   /**
    * Per-RPC overrides keyed by `${serviceTypeName}/${methodName}`.
-   * Anything not listed falls through to the base fixture transport.
+   * In the default (mock-only) mode, anything not listed falls through to
+   * the base fixture transport. In hybrid mode (VITE_MOCK_API=hybrid) with
+   * `passthrough: true`, anything not listed goes to the REAL backend.
    */
   handlers: Record<string, (req: unknown) => ScenarioHandlerReturn>;
+  /**
+   * When true AND the app is running in hybrid mode
+   * (VITE_MOCK_API=hybrid / NEXT_PUBLIC_MOCK_API=hybrid), RPCs not matched
+   * by a handler are forwarded to the real Connect transport instead of
+   * the base fixtures. Use this when a bug repro needs a *specific* stubbed
+   * response for one endpoint and *real* responses for the rest.
+   *
+   * Ignored in pure mock mode (VITE_MOCK_API=true) — fixtures still apply
+   * there, because there is no backend to forward to.
+   */
+  passthrough?: boolean;
+  /**
+   * Auth behavior for this scenario. Controls what the stub auth provider
+   * sends in the `Authorization` header so the backend's dev-auth middleware
+   * can decide whether to skip JWT validation.
+   *
+   *   "bypass"   — send the dev-bypass sentinel token; backend (when
+   *                ENVIRONMENT=development) injects synthetic claims. Use
+   *                this so an LLM driving Chrome MCP can skip login.
+   *   "required" — send no token; the real login flow must run. Use this
+   *                when you're debugging the login/registration UX itself.
+   *
+   * Defaults to "bypass" for scenarios scaffolded by `forge add scenario`;
+   * the empty `default` scenario leaves it unset (so navigating without
+   * `?scenario=` does NOT bypass auth and the real login UX runs).
+   */
+  auth?: "bypass" | "required";
   /**
    * Side-effects run once before the first render — for non-RPC state
    * (localStorage flags, URL search params other than `scenario`,

@@ -607,6 +607,181 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 	}
 }
 
+// TestGenerateCRUDTests_SkipsExistingMethods mirrors
+// TestGenerateCRUDHandlers_SkipsExistingMethods: once the user has taken
+// ownership of a CRUD method by writing a real handler, the test scaffold
+// MUST stop re-emitting an AIP-158-shaped harness for that method. Before
+// this regression test landed, GenerateCRUDTests kept clobbering the
+// scaffold with `req.PageSize: 10` / `req.Id: 1` rows that no longer
+// type-checked against the user's hand-written request shape, and the
+// test package went red on the next `go test ./...`.
+func TestGenerateCRUDTests_SkipsExistingMethods(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a service.go (required for buildCRUDTestTemplateData to
+	// resolve the test-helper name) and a handlers.go that already
+	// implements CreatePatient. The remaining methods should drive the
+	// test scaffold.
+	serviceGo := `package patients
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	handlersGo := `package patients
+
+import (
+	"context"
+	"connectrpc.com/connect"
+	pb "example.com/test/gen/proto/services/patients/v1"
+)
+
+func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.CreatePatientRequest]) (*connect.Response[pb.CreatePatientResponse], error) {
+	return nil, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "handlers.go"), []byte(handlersGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
+			{Name: "GetPatient", InputType: "GetPatientRequest", OutputType: "GetPatientResponse"},
+		},
+	}
+
+	entities := []EntityDef{
+		{
+			Name:      "Patient",
+			TableName: "patients",
+			PkField:   "id",
+			PkGoType:  "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", GoType: "int64"},
+				{Name: "name", GoName: "Name", GoType: "string"},
+			},
+		},
+	}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+
+	if err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDTests() error = %v", err)
+	}
+
+	unitPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
+	unitData, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("expected handlers_crud_gen_test.go to be written: %v", err)
+	}
+	unit := string(unitData)
+
+	// Must NOT carry a TestUnit_CreatePatient row — user owns CreatePatient.
+	if contains(unit, "TestUnit_CreatePatient") || contains(unit, "svc.CreatePatient") {
+		t.Errorf("unit test scaffold should not reference CreatePatient (user-owned); got:\n%s", unit)
+	}
+	// Should still carry GetPatient (user has not implemented it).
+	if !contains(unit, "TestUnit_GetPatient") {
+		t.Errorf("unit test scaffold should still cover GetPatient; got:\n%s", unit)
+	}
+}
+
+// TestGenerateCRUDTests_RemovesScaffoldWhenAllUserOwned guarantees the
+// stale-cleanup path runs after every CRUD method has been hand-implemented.
+// Combined with the filter above, a user who hand-writes every CRUD method
+// ends up with no `handlers_crud_gen_test.go` on disk — exactly the same
+// shape `GenerateCRUDHandlers` produces for `handlers_crud_gen.go`.
+func TestGenerateCRUDTests_RemovesScaffoldWhenAllUserOwned(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a stale scaffold so we can verify the cleanup branch fires.
+	unitPath := filepath.Join(handlerDir, "handlers_crud_gen_test.go")
+	if err := os.WriteFile(unitPath, []byte("// FORGE_SCAFFOLD: stale\npackage patients_test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	integrationPath := filepath.Join(handlerDir, "handlers_crud_integration_test.go")
+	if err := os.WriteFile(integrationPath, []byte("//go:build integration\n// FORGE_SCAFFOLD: stale\npackage patients_test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceGo := `package patients
+
+type Deps struct{}
+type Service struct{ deps Deps }
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	handlersGo := `package patients
+
+import (
+	"context"
+	"connectrpc.com/connect"
+	pb "example.com/test/gen/proto/services/patients/v1"
+)
+
+func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.CreatePatientRequest]) (*connect.Response[pb.CreatePatientResponse], error) {
+	return nil, nil
+}
+func (s *Service) GetPatient(ctx context.Context, req *connect.Request[pb.GetPatientRequest]) (*connect.Response[pb.GetPatientResponse], error) {
+	return nil, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "handlers.go"), []byte(handlersGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
+			{Name: "GetPatient", InputType: "GetPatientRequest", OutputType: "GetPatientResponse"},
+		},
+	}
+	entities := []EntityDef{{
+		Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64",
+		Fields: []EntityField{{Name: "id", GoName: "ID", GoType: "int64"}},
+	}}
+
+	if err := GenerateCRUDTests(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDTests() error = %v", err)
+	}
+
+	if _, err := os.Stat(unitPath); !os.IsNotExist(err) {
+		t.Error("expected handlers_crud_gen_test.go to be removed when all CRUD methods are user-owned")
+	}
+	if _, err := os.Stat(integrationPath); !os.IsNotExist(err) {
+		t.Error("expected handlers_crud_integration_test.go to be removed when all CRUD methods are user-owned")
+	}
+}
+
 func TestTestValueForType(t *testing.T) {
 	tests := []struct {
 		goType string

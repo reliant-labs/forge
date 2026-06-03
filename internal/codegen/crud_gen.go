@@ -440,13 +440,32 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 
 	unitPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
 	integrationPath := filepath.Join(targetDir, "handlers_crud_integration_test.go")
-	if len(crudMethods) == 0 {
+
+	// Filter out CRUD methods the user has already taken ownership of by
+	// writing a real handler — mirrors the dedup GenerateCRUDHandlers
+	// applies. Without this filter the test scaffold re-emits a stale
+	// handlers_crud_gen_test.go that references AIP-158-shaped request
+	// fields (PageSize, Id-int64, …) the user-owned handler no longer
+	// accepts, and the test package goes red on the next `go test ./...`.
+	existingMethods, err := scanExistingMethods(targetDir, false)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("scan existing methods for %s tests: %w", pkg, err)
+	}
+	var filteredMethods []CRUDMethod
+	for _, cm := range crudMethods {
+		if existingMethods[cm.Method.Name] {
+			continue
+		}
+		filteredMethods = append(filteredMethods, cm)
+	}
+
+	if len(filteredMethods) == 0 {
 		_ = os.Remove(unitPath)
 		_ = os.Remove(integrationPath)
 		return nil
 	}
 
-	data := buildCRUDTestTemplateData(svc, crudMethods, modulePath, projectDir)
+	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir)
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
@@ -477,15 +496,39 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 // This is the mechanism that lets `_gen` filenames carry "until-customized"
 // semantics: as long as any marker is present the file is forge-owned and
 // regenerated; the moment every marker is removed the file becomes user-owned.
+//
+// The file is tagged Tier-2 in the checksum manifest so the pre-pipeline
+// Tier-1 file-stomp guard skips it — Tier-2 means "scaffold once, user
+// edits expected", which is exactly the steady state after a user clears
+// the FORGE_SCAFFOLD markers. When the user has taken ownership we also
+// refresh the recorded checksum to the on-disk content so a future run of
+// `forge audit` doesn't flag a tracked-but-modified mismatch (and so any
+// legacy Tier-0/Tier-1 entry from before this fix gets re-stamped to
+// Tier-2 + forked, matching the user's intent without requiring
+// `forge generate --accept`).
 func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums.FileChecksums) error {
 	fullPath := filepath.Join(projectDir, relPath)
 	if existing, err := os.ReadFile(fullPath); err == nil {
 		if !bytes.Contains(existing, []byte("FORGE_SCAFFOLD:")) {
 			// User has cleared every marker — they own the file now.
+			// Re-stamp the manifest entry to Tier-2 (forked) so the
+			// stomp guard stops flagging the legitimate hand-edit on
+			// the next run. Without this re-stamp a pre-existing Tier-1
+			// recorded checksum would cause `forge generate` to error
+			// out with a "Tier-1 file-stomp" report even though
+			// writeScaffoldFile silently transferred ownership.
+			if cs != nil {
+				if entry, ok := cs.Files[relPath]; ok {
+					entry.Hash = checksums.Hash(existing)
+					entry.Tier = 2
+					entry.Forked = true
+					cs.Files[relPath] = entry
+				}
+			}
 			return nil
 		}
 	}
-	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
+	if _, err := checksums.WriteGeneratedFileTier2(projectDir, relPath, content, cs, true); err != nil {
 		return err
 	}
 	return nil

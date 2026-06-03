@@ -144,17 +144,20 @@ func generateOrmFile(p *protogen.Plugin, file *protogen.File, sharedGenerated ma
 	// Generate per-entity files.
 	for _, ent := range entities {
 		entHasTimestamp := false
+		entHasWrapper := false
 		for _, f := range ent.fields {
 			if f.isTimestamp {
 				entHasTimestamp = true
-				break
+			}
+			if isWrapperField(f.field) {
+				entHasWrapper = true
 			}
 		}
 
 		filename := file.GeneratedFilenamePrefix + "_" + toSnake(string(ent.msg.Desc.Name())) + ".pb.orm.go"
 		g := p.NewGeneratedFile(filename, file.GoImportPath)
 
-		generateEntityHeader(g, file, entHasTimestamp, ent.softDelete, ent.tenantField != nil)
+		generateEntityHeader(g, file, entHasTimestamp, ent.softDelete, ent.tenantField != nil, entHasWrapper)
 		generateEntityCode(g, ent, entHasTimestamp)
 	}
 

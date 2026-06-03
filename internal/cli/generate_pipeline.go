@@ -403,7 +403,22 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	if ctx.Checksums == nil {
 		return nil
 	}
-	drift := ctx.Checksums.CheckTier1Drift(ctx.AbsPath)
+	allDrift := ctx.Checksums.CheckTier1Drift(ctx.AbsPath)
+	if len(allDrift) == 0 {
+		return nil
+	}
+	// Scope drift to files this run's enabled emitters would actually
+	// touch. Out-of-scope drift is announced as a warning (so a parallel
+	// lane's hand-edit doesn't go fully silent) but does not block the
+	// pipeline. See generate_tier1_scope.go for the registry rationale.
+	drift, outOfScope := filterTier1DriftInScope(ctx, allDrift,
+		func(d checksums.Tier1DriftEntry) string { return d.Path })
+	if len(outOfScope) > 0 {
+		fmt.Fprintf(os.Stderr, "ℹ️  Tier-1 stomp guard: %d drifted file(s) out of scope for this run (their emitter step is gated off); ignored:\n", len(outOfScope))
+		for _, d := range outOfScope {
+			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
+		}
+	}
 	if len(drift) == 0 {
 		return nil
 	}

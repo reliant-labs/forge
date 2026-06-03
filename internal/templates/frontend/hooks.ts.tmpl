@@ -22,8 +22,13 @@ import { connectClient } from "@/lib/connect";
 {{- if .HasMutations}}
 import { getEventBus } from "@/lib/events";
 {{- end}}
-import { {{.ServiceName}}, {{range $i, $m := .Methods}}{{if $i}}, {{end}}{{$m.InputType}}Schema{{end}} } from "@/gen/{{.ImportPath}}";
-import type { {{range $i, $m := .Methods}}{{if $i}}, {{end}}{{$m.OutputType}}{{end}} } from "@/gen/{{.ImportPath}}";
+import { {{.ServiceName}} } from "@/gen/{{.ImportPath}}";
+{{- range .SchemaImports}}
+import { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "@/gen/{{.ImportPath}}";
+{{- end}}
+{{- range .TypeImports}}
+import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "@/gen/{{.ImportPath}}";
+{{- end}}
 import type { MessageInitShape } from "@bufbuild/protobuf";
 
 const client = connectClient({{.ServiceName}});

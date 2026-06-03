@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -924,16 +925,60 @@ func runBufLint() error {
 
 	fmt.Println("Running buf lint...")
 
+	// Capture stdout so we can scan for known migration-pain rules and
+	// print the buf.yaml `except` snippet that resolves them. We still
+	// stream the output to the user's terminal verbatim so nothing is
+	// hidden behind the suggestion.
 	cmd := exec.Command("buf", "lint")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var bufOut strings.Builder
+	cmd.Stdout = io.MultiWriter(os.Stdout, &bufOut)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &bufOut)
 
 	if err := cmd.Run(); err != nil {
+		printBufLintExceptHint(bufOut.String())
 		return err
 	}
 
 	fmt.Println("✓ buf lint passed")
 	return nil
+}
+
+// printBufLintExceptHint scans buf lint's output for STANDARD rules
+// that legacy / ported .proto files commonly trip and prints the
+// exact buf.yaml `lint.except` snippet that silences them. Migration
+// projects (where the source repo predates the forge convention) tend
+// to hit ALL four of these on the first `forge generate`; surfacing
+// the resolved YAML in-line saves the "look up buf docs → write
+// except → re-run" loop. FRICTION 2026-06-02: cp-forge proto port.
+func printBufLintExceptHint(output string) {
+	candidates := []string{
+		"PACKAGE_VERSION_SUFFIX",
+		"RPC_REQUEST_STANDARD_NAME",
+		"RPC_RESPONSE_STANDARD_NAME",
+		"RPC_REQUEST_RESPONSE_UNIQUE",
+	}
+	var hit []string
+	for _, rule := range candidates {
+		if strings.Contains(output, rule) {
+			hit = append(hit, rule)
+		}
+	}
+	if len(hit) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "💡 Migration hint: the rule(s) above are common when porting")
+	fmt.Fprintln(os.Stderr, "   pre-forge .proto files. To silence them, add this to buf.yaml:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "     lint:")
+	fmt.Fprintln(os.Stderr, "       use:")
+	fmt.Fprintln(os.Stderr, "         - STANDARD")
+	fmt.Fprintln(os.Stderr, "       except:")
+	for _, rule := range hit {
+		fmt.Fprintf(os.Stderr, "         - %s\n", rule)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "   See the proto / proto-breaking skills for context on each rule.")
 }
 
 // runFrontendLinters runs TypeScript type-checking and framework-specific linters

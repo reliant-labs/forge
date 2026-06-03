@@ -33,8 +33,9 @@ type lintFlags struct {
 	tests            bool
 	banners          bool
 	suggestExcludes  bool
-	wireCoverage     bool
-	checkWorkarounds bool
+	wireCoverage      bool
+	bootstrapCoverage bool
+	checkWorkarounds  bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -106,6 +107,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.banners, "banners", false, "Verify forge templates carry the right Tier-1 / Tier-2 lifecycle banner (warnings only; no-op outside the forge repo)")
 	cmd.Flags().BoolVar(&flags.suggestExcludes, "suggest-excludes", false, "Print a YAML snippet of contracts.exclude candidates (heuristic-based; nothing is mutated)")
 	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings) and unresolved forge:placeholder annotations in pkg/app/app_extras.go (errors)")
+	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 
@@ -182,6 +184,13 @@ func runLint(flags lintFlags, paths []string) error {
 			return fmt.Errorf("getwd: %w", err)
 		}
 		return runWireCoverageLint(cwd)
+	}
+	if flags.bootstrapCoverage {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runBootstrapDepsCoverageLint(cwd)
 	}
 	if flags.checkWorkarounds {
 		cwd, err := os.Getwd()
@@ -836,6 +845,25 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 		if err == nil {
 			if err := runWireCoverageLint(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "❌ wire-coverage lint: %v\n", err)
+				hasFailed = true
+			}
+		}
+	}
+
+	// 13b. Bootstrap-deps-coverage — sibling check to wire-coverage that
+	// catches the audit-no-op silent-drop bug class. When AppExtras has
+	// a same-name field as pkg.Deps but types diverge,
+	// inspectComponentDepsShape silently skips the wire and the package
+	// constructs with nil. Empirically reproduced in the cp-forge v2
+	// migration (audit.Deps.Repo = audit.Repository vs
+	// AppExtras.Repo = *db.PostgresRepository). Failures contribute to
+	// hasFailed.
+	if fileExists(filepath.Join("pkg", "app", "bootstrap.go")) &&
+		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runBootstrapDepsCoverageLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "bootstrap-deps-coverage lint failed: %v\n", err)
 				hasFailed = true
 			}
 		}

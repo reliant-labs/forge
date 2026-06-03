@@ -5,10 +5,8 @@ import (
 	"os"
 	"path"
 
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/compiler/protogen"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
@@ -164,16 +162,3 @@ func generateOrmFile(p *protogen.Plugin, file *protogen.File, sharedGenerated ma
 	return nil
 }
 
-// hasEntityAnnotation checks if a message has the forge.v1.entity extension.
-func hasEntityAnnotation(msg *protogen.Message) bool {
-	opts := msg.Desc.Options()
-	if opts == nil {
-		return false
-	}
-	ext := proto.GetExtension(opts, forgev1.E_Entity)
-	if ext == nil {
-		return false
-	}
-	eo, ok := ext.(*forgev1.EntityOptions)
-	return ok && eo != nil
-}

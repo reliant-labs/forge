@@ -264,7 +264,7 @@ func usesLocalTSPlugin(bufGenPath string) bool {
 	if err != nil {
 		return true
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") {
 			continue

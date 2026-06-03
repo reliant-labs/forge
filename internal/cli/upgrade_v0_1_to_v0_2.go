@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"go/ast"
@@ -676,48 +675,3 @@ func exprToString(expr ast.Expr) string {
 	return buf.String()
 }
 
-// scanForLeftoverApplyDeps is a final pass — after the AST rewrite
-// runs, we grep the project for any remaining "ApplyDeps" string
-// matches (typically inside test helpers, comments, or hand-rolled
-// fixtures the codemod didn't touch). Surfaces them as Manual items
-// so the LLM has a complete worklist.
-//
-// Currently unused by the registered codemod — kept here as a hook
-// for future iterations of the v0.1 migration. Wired up via
-// migrateV01ToV02 if we want a "comprehensive" report; for now the
-// AST rewrites cover the common case.
-func scanForLeftoverApplyDeps(projectDir string) []ManualItem {
-	var items []ManualItem
-	_ = filepath.WalkDir(projectDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		// Skip vendored / generated dirs.
-		if strings.Contains(path, "/gen/") || strings.Contains(path, "/vendor/") {
-			return nil
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return nil
-		}
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		line := 0
-		for scanner.Scan() {
-			line++
-			if strings.Contains(scanner.Text(), "ApplyDeps") {
-				rel, _ := filepath.Rel(projectDir, path)
-				items = append(items, ManualItem{
-					File:   rel,
-					Line:   line,
-					Reason: "leftover ApplyDeps reference — codemod expected only Setup() top-level calls; this one needs hand removal (likely a test fixture or comment).",
-				})
-			}
-		}
-		return nil
-	})
-	return items
-}

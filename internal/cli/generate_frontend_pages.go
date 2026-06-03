@@ -2,12 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -43,10 +46,22 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
 // services whose List/Get/Create RPCs don't follow the entity-name-as-field
 // convention.
 //
+// Tier-2 (scaffold-once) lifecycle: every page template carries a
+//
+//	`// forge:scaffold one-shot — list page emitted by 'forge add page'`
+//
+// banner promising the user that hand-edits will survive subsequent
+// `forge generate` runs. Honor that promise by skipping the write when
+// the target file already exists on disk, mirroring the
+// `emitTier2OnceIfMissing` pattern that `generateFrontendNav` already
+// uses for nav.tsx / page.tsx. `force` (forge generate --force) is the
+// documented escape hatch for "throw my edits away and re-scaffold from
+// the template".
+//
 // Per-kind dispatch:
 //   - nextjs:   pages/ templates → src/app/<slug>/[id]/{,edit/}page.tsx
 //   - vite-spa: vite-spa-pages/ templates → src/pages/<slug>/{List,Detail,Create,Edit}.tsx
-func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef) error {
+func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef, cs *checksums.FileChecksums, force bool) error {
 	if len(services) == 0 {
 		return nil
 	}
@@ -72,7 +87,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			return err
 		}
 
-		var pageCount int
+		var pageCount, skipCount int
 
 		for _, svc := range services {
 			pages := codegen.ExtractCRUDEntities(svc)
@@ -84,38 +99,40 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				if _, ok := entitySet[strings.ToLower(entity.EntityName)]; !ok {
 					continue
 				}
-				if entity.HasList {
-					if err := renderPageToFile(layout.listTmpl, entity, filepath.Join(projectDir, feDir, layout.listPath(entity.EntitySlug))); err != nil {
-						return fmt.Errorf("render list page for %s: %w", entity.EntityName, err)
-					}
-					pageCount++
+				kinds := []struct {
+					emit bool
+					tmpl *template.Template
+					rel  string
+					kind string
+				}{
+					{entity.HasList, layout.listTmpl, layout.listPath(entity.EntitySlug), "list"},
+					{entity.HasGet, layout.detailTmpl, layout.detailPath(entity.EntitySlug), "detail"},
+					{entity.HasCreate, layout.createTmpl, layout.createPath(entity.EntitySlug), "create"},
+					{entity.HasUpdate, layout.editTmpl, layout.editPath(entity.EntitySlug), "edit"},
 				}
-
-				if entity.HasGet {
-					if err := renderPageToFile(layout.detailTmpl, entity, filepath.Join(projectDir, feDir, layout.detailPath(entity.EntitySlug))); err != nil {
-						return fmt.Errorf("render detail page for %s: %w", entity.EntityName, err)
+				for _, k := range kinds {
+					if !k.emit {
+						continue
 					}
-					pageCount++
-				}
-
-				if entity.HasCreate {
-					if err := renderPageToFile(layout.createTmpl, entity, filepath.Join(projectDir, feDir, layout.createPath(entity.EntitySlug))); err != nil {
-						return fmt.Errorf("render create page for %s: %w", entity.EntityName, err)
+					relPath := filepath.Join(feDir, k.rel)
+					wrote, err := renderPageToFileTier2(k.tmpl, entity, projectDir, relPath, cs, force)
+					if err != nil {
+						return fmt.Errorf("render %s page for %s: %w", k.kind, entity.EntityName, err)
 					}
-					pageCount++
-				}
-
-				if entity.HasUpdate {
-					if err := renderPageToFile(layout.editTmpl, entity, filepath.Join(projectDir, feDir, layout.editPath(entity.EntitySlug))); err != nil {
-						return fmt.Errorf("render edit page for %s: %w", entity.EntityName, err)
+					if wrote {
+						pageCount++
+					} else {
+						skipCount++
 					}
-					pageCount++
 				}
 			}
 		}
 
 		if pageCount > 0 {
 			fmt.Printf("  ✅ Generated %d CRUD page(s) for frontend %s\n", pageCount, fe.Name)
+		}
+		if skipCount > 0 {
+			fmt.Printf("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (pass --force to re-scaffold)\n", skipCount, fe.Name)
 		}
 	}
 
@@ -215,16 +232,47 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 	return tmpl, nil
 }
 
-// renderPageToFile renders a template to a file, creating directories as needed.
-func renderPageToFile(tmpl *template.Template, data codegen.PageTemplateData, outPath string) error {
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return fmt.Errorf("create directory for %s: %w", outPath, err)
+// renderPageToFileTier2 renders a page template to disk under
+// "forge:scaffold one-shot" semantics: the file is written once at
+// scaffold time and never overwritten on subsequent `forge generate`
+// runs, matching the leading banner comment every page template
+// carries. `force` re-emits and clobbers existing content for the
+// "throw my edits away and re-scaffold" path.
+//
+// Returns (wrote, err) — wrote=false when the destination already
+// existed and force=false, so the caller can distinguish freshly-
+// scaffolded pages from preserved ones in the summary log.
+//
+// The checksums hand-off (`checksums.WriteGeneratedFileTier2`) tags the
+// emit as Tier-2 in `.forge/checksums.json`, which the stomp-guard
+// reader uses to *skip* the file in CheckTier1Drift — Tier-2 files are
+// expected to drift from forge's recorded render, that's the whole
+// point.
+func renderPageToFileTier2(tmpl *template.Template, data codegen.PageTemplateData, projectDir, relPath string, cs *checksums.FileChecksums, force bool) (bool, error) {
+	fullPath := filepath.Join(projectDir, relPath)
+
+	// Scaffold-once: if the user already has this file on disk, leave
+	// it alone unless --force was passed.
+	if !force {
+		if _, err := os.Stat(fullPath); err == nil {
+			return false, nil
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("stat %s: %w", relPath, err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return false, fmt.Errorf("create directory for %s: %w", relPath, err)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		return err
+		return false, err
 	}
 
-	return os.WriteFile(outPath, buf.Bytes(), 0o644)
+	wrote, err := checksums.WriteGeneratedFileTier2(projectDir, relPath, buf.Bytes(), cs, force)
+	if err != nil {
+		return false, err
+	}
+	return wrote, nil
 }

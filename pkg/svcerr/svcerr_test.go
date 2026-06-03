@@ -43,6 +43,9 @@ func TestSentinel_MapsToConnectCode(t *testing.T) {
 		{"Unavailable", svcerr.ErrUnavailable, svcerr.Unavailable, connect.CodeUnavailable},
 		{"DataLoss", svcerr.ErrDataLoss, svcerr.DataLoss, connect.CodeDataLoss},
 		{"Unauthenticated", svcerr.ErrUnauthenticated, svcerr.Unauthenticated, connect.CodeUnauthenticated},
+		{"PlanLimit", svcerr.ErrPlanLimit, svcerr.PlanLimit, connect.CodeResourceExhausted},
+		{"InsufficientBalance", svcerr.ErrInsufficientBalance, svcerr.InsufficientBalance, connect.CodeFailedPrecondition},
+		{"Expired", svcerr.ErrExpired, svcerr.Expired, connect.CodeFailedPrecondition},
 	}
 
 	for _, tc := range cases {

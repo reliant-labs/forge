@@ -69,7 +69,17 @@ plugins:
 // runBufGenerateTypeScript runs buf generate for TypeScript stubs in a Next.js frontend.
 // It runs buf from the project root to avoid picking up node_modules proto files,
 // using --path flags to scope generation and --template to point at the frontend's buf.gen.yaml.
+//
+// When the project opted into the pnpm-workspace layout
+// (frontend.workspaces: true), TS stubs go to the shared
+// packages/api/src/gen/ once via runBufGenerateTypeScriptWorkspace and
+// the per-frontend buf step is short-circuited. The per-frontend code
+// path below is preserved unchanged for the default layout so existing
+// snapshot tests stay stable.
 func runBufGenerateTypeScript(fe config.FrontendConfig, cfg *config.ProjectConfig, projectDir string) error {
+	if cfg != nil && cfg.IsFrontendWorkspacesEnabled() {
+		return runBufGenerateTypeScriptWorkspace(cfg, projectDir)
+	}
 	feDir := fe.Path
 	if feDir == "" {
 		feDir = filepath.Join("frontends", fe.Name)
@@ -143,6 +153,105 @@ plugins:
 	}
 
 	fmt.Printf("  ✅ TypeScript stubs generated for %s\n", fe.Name)
+	return nil
+}
+
+// runBufGenerateTypeScriptWorkspace runs buf generate for TypeScript
+// stubs in pnpm-workspaces mode. Output goes to packages/api/src/gen
+// once; the per-frontend buf step is skipped because each frontend now
+// consumes the shared workspace package via `"@<scope>/api": "workspace:*"`.
+//
+// The TS plugin is sourced from the first frontend's node_modules/.bin/
+// to avoid making packages/api/ itself a Node project with its own
+// installed plugin. That keeps the workspace package free of build-time
+// dependencies — pnpm install once at the workspace root populates
+// every node_modules/.bin/ in lockstep.
+func runBufGenerateTypeScriptWorkspace(cfg *config.ProjectConfig, projectDir string) error {
+	// Pick the first nextjs / react-native / vite-spa frontend to source
+	// the protoc-gen-es plugin from. We prefer nextjs > vite-spa > react-
+	// native because the web-target frontends are likeliest to already
+	// have node_modules populated in dev.
+	var pluginFrontend *config.FrontendConfig
+	priority := map[string]int{"nextjs": 1, "vite-spa": 2, "react-native": 3}
+	bestRank := 99
+	for i := range cfg.Frontends {
+		fe := cfg.Frontends[i]
+		rank, ok := priority[strings.ToLower(fe.Type)]
+		if !ok {
+			continue
+		}
+		if rank < bestRank {
+			bestRank = rank
+			pluginFrontend = &cfg.Frontends[i]
+		}
+	}
+	if pluginFrontend == nil {
+		// No TS-capable frontend yet — nothing to generate. forge add
+		// frontend will rerun this on a future generate cycle.
+		return nil
+	}
+
+	feDir := pluginFrontend.Path
+	if feDir == "" {
+		feDir = filepath.Join("frontends", pluginFrontend.Name)
+	}
+	absFeDir := filepath.Join(projectDir, feDir)
+
+	// Ensure the workspace buf.gen.yaml exists at packages/api/buf.gen.yaml.
+	// We write it relative to project root so `out: packages/api/src/gen`
+	// resolves correctly when buf runs from projectDir.
+	bufGenPath := filepath.Join(projectDir, "packages", "api", "buf.gen.yaml")
+	if _, err := os.Stat(bufGenPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(bufGenPath), 0o755); err != nil {
+			return fmt.Errorf("create packages/api dir: %w", err)
+		}
+		feSlash := filepath.ToSlash(feDir)
+		body := fmt.Sprintf(`version: v2
+# Local TypeScript plugin (no BSR auth needed). Sourced from
+# %s/node_modules/.bin/ — the workspace-layout convention picks one
+# frontend to install protoc-gen-es; all frontends consume the
+# generated output via the @<scope>/api workspace package.
+#
+# To switch to BSR-hosted plugin, replace 'local:' with
+#   - remote: buf.build/bufbuild/es
+plugins:
+  - local: ./%s/node_modules/.bin/protoc-gen-es
+    out: packages/api/src/gen
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=.js
+`, feSlash, feSlash)
+		if err := os.WriteFile(bufGenPath, []byte(body), 0o644); err != nil {
+			return fmt.Errorf("write packages/api/buf.gen.yaml: %w", err)
+		}
+	}
+
+	// Verify the local TS plugin exists before invoking buf — same
+	// pre-flight as the per-frontend path.
+	if usesLocalTSPlugin(bufGenPath) {
+		pluginPath := filepath.Join(absFeDir, "node_modules", ".bin", "protoc-gen-es")
+		if _, err := os.Stat(pluginPath); os.IsNotExist(err) {
+			fmt.Printf("  ⚠️  workspace TS gen: @bufbuild/protoc-gen-es not installed yet — run `pnpm install` at the project root before `forge generate`.\n")
+			return nil
+		}
+	}
+
+	fmt.Println("🔨 Generating TypeScript stubs into packages/api/src/gen...")
+	relativeTemplate := filepath.Join("packages", "api", "buf.gen.yaml")
+	args := []string{"generate", "--template", relativeTemplate}
+	for _, p := range discoverProtoSubdirs(projectDir) {
+		args = append(args, "--path", p)
+	}
+
+	cmd := exec.Command("buf", args...)
+	cmd.Dir = projectDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("workspace TypeScript generation failed: %w", err)
+	}
+	fmt.Println("  ✅ TypeScript stubs generated into packages/api/src/gen")
 	return nil
 }
 

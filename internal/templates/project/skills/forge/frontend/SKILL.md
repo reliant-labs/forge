@@ -87,6 +87,12 @@ Plus the higher-level domain components scaffolded out of the box: `sidebar_layo
 
 These primitives are written as `overwrite: once` from the scaffolder — once installed, they are yours to edit. If you find yourself re-inlining a button or input shape in a page or pack, stop and use the primitive instead.
 
+### Variant naming conventions
+
+- `Badge` accepts `success | warning | error | info | neutral` as canonical variants, plus `danger` (alias for `error`) and `default` (alias for `neutral`) so ports from codebases using either naming work without an adapter table.
+- `Button` ships `primary | secondary | outline | ghost | danger` — destructive action is `danger`, not `error`, because Button is action-shaped and Badge is status-shaped.
+- `Modal` accepts a `footer` slot prop AND inline footer markup in `children`. Both shapes are first-class — pick whichever the source codebase already uses to minimise port churn.
+
 ## Connect RPC Clients
 
 Import the generated Connect transport from `src/lib/connect.ts` (generated — do not edit):

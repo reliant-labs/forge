@@ -547,16 +547,24 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 	}
 	// For localhost:<port> we also tag the k3d in-cluster mirror
 	// (registry.localhost:<port>) so deployed manifests can reference
-	// the in-cluster-resolvable name. See expandPushRegistries.
+	// the in-cluster-resolvable name. See expandPushRegistries. We only
+	// PUSH to the first (user-specified) registry — the host can't
+	// DNS-resolve registry.localhost, so the mirror tag is a local
+	// alias that downstream manifests resolve via the containerd mirror
+	// config inside k3d. Matches the dockerBuildProject behaviour.
 	var pushTags []string
-	for _, reg := range expandPushRegistries(pushRegistry) {
+	for i, reg := range expandPushRegistries(pushRegistry) {
 		pushLatest := fmt.Sprintf("%s/%s:latest", reg, name)
 		dockerArgs = append(dockerArgs, "-t", pushLatest)
-		pushTags = append(pushTags, pushLatest)
+		if i == 0 {
+			pushTags = append(pushTags, pushLatest)
+		}
 		if v := gitVersionTag(); v != "" {
 			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, v)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
-			pushTags = append(pushTags, pushVersion)
+			if i == 0 {
+				pushTags = append(pushTags, pushVersion)
+			}
 		}
 	}
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))

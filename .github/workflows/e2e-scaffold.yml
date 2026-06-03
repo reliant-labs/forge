@@ -76,7 +76,8 @@ jobs:
           if forge new e2e-test \
               --kind service \
               --mod github.com/e2e/e2e-test \
-              --service api; then
+              --service api \
+              --frontend admin; then
             echo "✅ forge new"
           else
             echo "❌ forge new"
@@ -130,6 +131,37 @@ jobs:
             echo "✅ go test"
           else
             echo "❌ go test"
+            exit 1
+          fi
+
+      # Frontend smoke: install + run the scaffolded Vitest suite against the
+      # admin frontend. Skips cleanly when --kind=service was scaffolded
+      # without a frontend so a future workflow variant (cli/library) doesn't
+      # need workflow surgery to land. The default smoke scenario above
+      # scaffolds `--frontend admin`, so this step normally runs.
+      - name: npm test (frontend)
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          # Find any scaffolded frontend; pick the first one. The smoke
+          # scaffold above passes --frontend admin so this resolves; the
+          # `|| true` keeps the find from failing on empty results.
+          FE_DIR="$(find frontends -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n1 || true)"
+          if [ -z "$FE_DIR" ]; then
+            echo "ℹ️  no frontend scaffolded; skipping npm test"
+            exit 0
+          fi
+          echo "Frontend at: $FE_DIR"
+          cd "$FE_DIR"
+          if npm install --no-audit --no-fund --prefer-offline; then
+            echo "✅ npm install"
+          else
+            echo "❌ npm install"
+            exit 1
+          fi
+          if npm test --silent; then
+            echo "✅ npm test"
+          else
+            echo "❌ npm test"
             exit 1
           fi
 

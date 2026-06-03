@@ -125,6 +125,52 @@ func TestBuildDebugFlagDefaultIsFalse(t *testing.T) {
 	}
 }
 
+// TestExpandPushRegistries covers the k3d-aware expansion: localhost:<port>
+// fans out to also tag registry.localhost:<port> (the in-cluster
+// pull reference), every other registry passes through unchanged.
+func TestExpandPushRegistries(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{
+			name: "localhost retags as registry.localhost",
+			in:   "localhost:5051",
+			want: []string{"localhost:5051", "registry.localhost:5051"},
+		},
+		{
+			name: "localhost on a different port also retags",
+			in:   "localhost:5050",
+			want: []string{"localhost:5050", "registry.localhost:5050"},
+		},
+		{
+			name: "non-localhost registries pass through unchanged",
+			in:   "ghcr.io/acme",
+			want: []string{"ghcr.io/acme"},
+		},
+		{
+			name: "127.0.0.1 is NOT auto-mirrored (only literal localhost)",
+			in:   "127.0.0.1:5051",
+			want: []string{"127.0.0.1:5051"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := expandPushRegistries(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("expandPushRegistries(%q) = %v, want %v", c.in, got, c.want)
+			}
+			for i, v := range got {
+				if v != c.want[i] {
+					t.Errorf("expandPushRegistries(%q)[%d] = %q, want %q", c.in, i, v, c.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestBuildAllFlagsRegistered(t *testing.T) {
 	cmd := newBuildCmd()
 

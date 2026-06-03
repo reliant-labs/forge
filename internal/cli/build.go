@@ -47,7 +47,14 @@ Examples:
   forge build -o bin                         # Output binaries to bin/
   forge build --docker                       # Also build Docker images
   forge build --debug                        # Build with debug symbols for Delve
-  forge build --push ghcr.io/acme            # Build + retag + docker push to a registry`,
+  forge build --push ghcr.io/acme            # Build + retag + docker push to a registry
+  forge build --push localhost:5051          # k3d: auto-mirrors to registry.localhost:5051
+
+For k3d clusters, --push localhost:<port> auto-tags and pushes a second
+reference under registry.localhost:<port> so kubelet inside the cluster
+can resolve the pull (the host sees localhost; the node container does
+not). The deploy/k3d.yaml mirrors block (forge templates) maps both
+names to the same backend.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --push implies --docker so users don't have to pass both.
 			if opts.pushRegistry != "" {
@@ -411,14 +418,16 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
 	}
-	// Tag for the push registry too when requested.
+	// Tag for the push registry too when requested. For localhost:<port>
+	// we also tag the k3d in-cluster mirror (registry.localhost:<port>)
+	// so deployed manifests can reference the in-cluster-resolvable name.
 	var pushTags []string
-	if pushRegistry != "" {
-		pushLatest := fmt.Sprintf("%s/%s:latest", pushRegistry, cfg.Name)
+	for _, reg := range expandPushRegistries(pushRegistry) {
+		pushLatest := fmt.Sprintf("%s/%s:latest", reg, cfg.Name)
 		dockerArgs = append(dockerArgs, "-t", pushLatest)
 		pushTags = append(pushTags, pushLatest)
 		if v := gitVersionTag(); v != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", pushRegistry, cfg.Name, v)
+			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, v)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
 			pushTags = append(pushTags, pushVersion)
 		}
@@ -461,6 +470,25 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 		duration: time.Since(start),
 		err:      nil,
 	}
+}
+
+// expandPushRegistries returns the set of registries to tag a built
+// image against. For non-localhost registries this is just the single
+// pushRegistry the caller passed. For `localhost:<port>` it also adds
+// `registry.localhost:<port>` — the canonical k3d pattern where the
+// host pushes to localhost and kubelet inside the node container pulls
+// from registry.localhost (the deploy/k3d.yaml mirrors block maps both
+// to the same backend). Returns nil when pushRegistry is empty.
+func expandPushRegistries(pushRegistry string) []string {
+	if pushRegistry == "" {
+		return nil
+	}
+	registries := []string{pushRegistry}
+	if strings.HasPrefix(pushRegistry, "localhost:") {
+		port := strings.TrimPrefix(pushRegistry, "localhost:")
+		registries = append(registries, "registry.localhost:"+port)
+	}
+	return registries
 }
 
 // countTags counts the `-t` flags in a docker build arg list for the
@@ -506,13 +534,16 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
 	}
+	// For localhost:<port> we also tag the k3d in-cluster mirror
+	// (registry.localhost:<port>) so deployed manifests can reference
+	// the in-cluster-resolvable name. See expandPushRegistries.
 	var pushTags []string
-	if pushRegistry != "" {
-		pushLatest := fmt.Sprintf("%s/%s:latest", pushRegistry, name)
+	for _, reg := range expandPushRegistries(pushRegistry) {
+		pushLatest := fmt.Sprintf("%s/%s:latest", reg, name)
 		dockerArgs = append(dockerArgs, "-t", pushLatest)
 		pushTags = append(pushTags, pushLatest)
 		if v := gitVersionTag(); v != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", pushRegistry, name, v)
+			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, v)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
 			pushTags = append(pushTags, pushVersion)
 		}

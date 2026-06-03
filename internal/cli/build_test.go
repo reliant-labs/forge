@@ -1,8 +1,48 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestMergeCoverageProfiles_MultipleDirs verifies the merge concatenates
+// per-dir coverage.out files, keeps a single mode: header, and drops
+// duplicate headers from each input.
+func TestMergeCoverageProfiles_MultipleDirs(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	t.Chdir(dir)
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	// Two sibling subtrees with their own coverage.out.
+	for _, sub := range []string{"internal", "pkg"} {
+		if err := os.MkdirAll(sub, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		body := "mode: atomic\ngithub.com/x/" + sub + "/a.go:1.1,2.2 1 1\n"
+		if err := os.WriteFile(filepath.Join(sub, "coverage.out"), []byte(body), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	if err := mergeCoverageProfiles("coverage.out"); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	got, err := os.ReadFile("coverage.out")
+	if err != nil {
+		t.Fatalf("read merged: %v", err)
+	}
+	content := string(got)
+	headerCount := strings.Count(content, "mode:")
+	if headerCount != 1 {
+		t.Errorf("want exactly 1 mode: header, got %d in:\n%s", headerCount, content)
+	}
+	if !strings.Contains(content, "internal/a.go") || !strings.Contains(content, "pkg/a.go") {
+		t.Errorf("merged content missing inputs:\n%s", content)
+	}
+}
 
 // TestCountTagsHelper ensures the docker-build tag counter handles the
 // canonical `-t a -t b` shape and ignores other flags.

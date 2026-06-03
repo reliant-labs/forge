@@ -92,6 +92,33 @@ var (
 	ErrUnavailable        = errors.New("svcerr: unavailable")
 	ErrDataLoss           = errors.New("svcerr: data loss")
 	ErrUnauthenticated    = errors.New("svcerr: unauthenticated")
+
+	// Domain-distinct sentinels with codes shared by the canonical set
+	// above. Added because real services routinely need to distinguish
+	// these failure modes at errors.Is time even though they map to the
+	// same wire-level Connect code. Without them, billing/quota/expiry
+	// callers either lose fidelity (collapse into the canonical sentinel)
+	// or carry private sentinels, breaking svcerr.Wrap composition.
+
+	// ErrPlanLimit indicates the operation was rejected because the
+	// caller's plan/tier doesn't allow it (seat cap, feature gate, model
+	// allowlist, etc.). Distinct from a generic rate-limit hit so
+	// upstream code can errors.Is(err, ErrPlanLimit) for upsell-prompt /
+	// per-cause metric purposes. Wire code: ResourceExhausted.
+	ErrPlanLimit = errors.New("svcerr: plan limit reached")
+
+	// ErrInsufficientBalance indicates a billing wallet / credit
+	// balance is insufficient for the operation. Distinct from generic
+	// "system not in required state" cases so callers can distinguish
+	// "your account is out of money" from "this resource is currently
+	// suspended/locked." Wire code: FailedPrecondition.
+	ErrInsufficientBalance = errors.New("svcerr: insufficient balance")
+
+	// ErrExpired indicates a time-limited resource (invitation, session,
+	// password-reset token, license key) is no longer valid. Distinct
+	// from NotFound (the resource never existed) and from generic
+	// FailedPrecondition. Wire code: FailedPrecondition.
+	ErrExpired = errors.New("svcerr: expired")
 )
 
 // Constructors wrap each sentinel with a human-readable cause. Use
@@ -161,6 +188,22 @@ func DataLoss(detail string) error { return wrapped(ErrDataLoss, detail) }
 
 // Unauthenticated wraps ErrUnauthenticated with the supplied reason.
 func Unauthenticated(reason string) error { return wrapped(ErrUnauthenticated, reason) }
+
+// PlanLimit wraps ErrPlanLimit with the supplied detail. Use when the
+// caller's plan/tier disallows the operation (seat cap, feature gate,
+// per-model allowlist). Distinct from ResourceExhausted so upstream
+// code can react specifically to plan-related rejections.
+func PlanLimit(detail string) error { return wrapped(ErrPlanLimit, detail) }
+
+// InsufficientBalance wraps ErrInsufficientBalance with the supplied
+// detail. Use when a billing wallet / credit account doesn't have
+// funds for the operation.
+func InsufficientBalance(detail string) error { return wrapped(ErrInsufficientBalance, detail) }
+
+// Expired wraps ErrExpired with the supplied detail. Use for
+// time-limited resources (invitation, session, password-reset token)
+// that have aged out.
+func Expired(detail string) error { return wrapped(ErrExpired, detail) }
 
 // wrapped is the canonical "%s: %w" form used by every constructor so
 // that the resulting error string is "<detail>: <sentinel>" and
@@ -250,8 +293,19 @@ func codeFor(err error) connect.Code {
 		return connect.CodeAlreadyExists
 	case errors.Is(err, ErrPermissionDenied):
 		return connect.CodePermissionDenied
+	// ErrPlanLimit MUST be checked before ErrResourceExhausted because
+	// constructors share the same Connect code; matching the broader
+	// sentinel first would shadow the more specific one.
+	case errors.Is(err, ErrPlanLimit):
+		return connect.CodeResourceExhausted
 	case errors.Is(err, ErrResourceExhausted):
 		return connect.CodeResourceExhausted
+	// Same shadowing rule: ErrInsufficientBalance and ErrExpired share
+	// FailedPrecondition with the canonical sentinel; check them first.
+	case errors.Is(err, ErrInsufficientBalance):
+		return connect.CodeFailedPrecondition
+	case errors.Is(err, ErrExpired):
+		return connect.CodeFailedPrecondition
 	case errors.Is(err, ErrFailedPrecondition):
 		return connect.CodeFailedPrecondition
 	case errors.Is(err, ErrAborted):
@@ -325,6 +379,18 @@ func IsDataLoss(err error) bool { return errors.Is(err, ErrDataLoss) }
 
 // IsUnauthenticated reports whether err carries (or wraps) ErrUnauthenticated.
 func IsUnauthenticated(err error) bool { return errors.Is(err, ErrUnauthenticated) }
+
+// IsPlanLimit reports whether err carries (or wraps) ErrPlanLimit.
+// Distinct from IsResourceExhausted (which would also match rate-limit
+// errors); use this when you specifically need "plan-tier rejected."
+func IsPlanLimit(err error) bool { return errors.Is(err, ErrPlanLimit) }
+
+// IsInsufficientBalance reports whether err carries (or wraps)
+// ErrInsufficientBalance.
+func IsInsufficientBalance(err error) bool { return errors.Is(err, ErrInsufficientBalance) }
+
+// IsExpired reports whether err carries (or wraps) ErrExpired.
+func IsExpired(err error) bool { return errors.Is(err, ErrExpired) }
 
 // WithDetail attaches a structured proto.Message detail to the connect
 // error that ToConnect would build for err. Used when the service

@@ -164,6 +164,17 @@ schema Application:
     service_account_name: str = ""
     command: [str] = []
     args: [str] = []
+    # cluster_rbac toggles cluster-scoped RBAC (ClusterRole +
+    # ClusterRoleBinding) instead of the default namespaced Role +
+    # RoleBinding. Operators that manage resources across dynamically-
+    # created namespaces (workspace-controller, multi-tenant operators)
+    # need this. When True, the rendered ClusterRole inherits the same
+    # default rules (configmaps/secrets get/list/watch) but the binding
+    # spans the whole cluster. Pass `cluster_rbac_rules` to extend the
+    # rules with operator-specific verbs (e.g. CRD status writes).
+    # FRICTION 2026-06-02: cp-forge layer 8 KCL port.
+    cluster_rbac: bool = False
+    cluster_rbac_rules: [{str: any}] = []
 
     check:
         replicas > 0, "replicas must be positive"

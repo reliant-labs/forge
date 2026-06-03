@@ -59,7 +59,7 @@ This command will:
 - Optionally run forge convention rules (--conventions)
 - Optionally run frontend pack convention rules (--frontend-packs)
 - Optionally run scaffold ownership rules (--scaffolds)
-- Optionally run handler-test convention rules (--tests)
+- Optionally run test-convention rules across backend handlers and frontend hooks (--tests)
 - Optionally run lifecycle-banner rules on forge templates (--banners)
 
 Examples:
@@ -72,8 +72,10 @@ Examples:
   forge lint --frontend-packs   # Flag third-party UI imports in frontend pack templates
   forge lint --scaffolds        # Flag committed FORGE_SCAFFOLD markers and
                                 # _gen files missing the canonical header
-  forge lint --tests            # Nudge handler tests toward tdd.RunRPCCases
-                                # (warnings only — see migration/v0.x-to-tdd-rpccases)
+  forge lint --tests            # Nudge handler tests toward tdd.RunRPCCases AND
+                                # surface generated frontend hooks without sibling tests
+                                # (warnings only — see migration/v0.x-to-tdd-rpccases
+                                # and the frontend-testing skill)
   forge lint --banners          # Verify every forge template carries the
                                 # right Tier-1 / Tier-2 lifecycle banner
                                 # (warnings only — runs only inside the forge repo)
@@ -106,7 +108,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.conventions, "conventions", false, "Run forge convention rules on proto files")
 	cmd.Flags().BoolVar(&flags.frontendPacks, "frontend-packs", false, "Flag third-party UI imports in frontend pack templates (warnings only)")
 	cmd.Flags().BoolVar(&flags.scaffolds, "scaffolds", false, "Enforce forge ownership boundary (FORGE_SCAFFOLD markers + _gen file headers)")
-	cmd.Flags().BoolVar(&flags.tests, "tests", false, "Run handler-test convention rules (e.g. forgeconv-handler-tests-use-tdd; warnings only)")
+	cmd.Flags().BoolVar(&flags.tests, "tests", false, "Run test-convention rules (handler-tests-use-tdd + frontend-hook-tests; warnings only)")
 	cmd.Flags().BoolVar(&flags.banners, "banners", false, "Verify forge templates carry the right Tier-1 / Tier-2 lifecycle banner (warnings only; no-op outside the forge repo)")
 	cmd.Flags().BoolVar(&flags.suggestExcludes, "suggest-excludes", false, "Print a YAML snippet of contracts.exclude candidates (heuristic-based; nothing is mutated)")
 	cmd.Flags().BoolVar(&flags.suggestBufExcepts, "suggest-buf-excepts", false, "Run buf lint and print a buf.yaml lint.except snippet for STANDARD rules that fired on more than 3 .proto files (nothing is mutated)")
@@ -512,7 +514,7 @@ func runFrontendPackLint() error {
 	return nil
 }
 
-// runTestsLint runs handler-test convention rules. Currently:
+// runTestsLint runs test-convention rules. Currently:
 //
 //   - forgeconv-handler-tests-use-tdd: warns when a handler test file
 //     hand-rolls the `tests := []struct{name, call}` shape instead of
@@ -520,10 +522,16 @@ func runFrontendPackLint() error {
 //     migration/v0.x-to-tdd-rpccases` for the conversion playbook, or
 //     run `forge test migrate-tdd` to convert most files automatically.
 //
+//   - forgeconv-frontend-hook-tests: warns when a generated
+//     frontends/<name>/src/hooks/<svc>-hooks.ts has no sibling test or
+//     `.tsx.starter` waiting to be activated. See the `frontend-testing`
+//     skill.
+//
 // All findings are warnings — never gates the build. The lint exists to
-// surface drift, not block legitimate pre-`tdd.RunRPCCases` projects.
+// surface drift, not block legitimate pre-`tdd.RunRPCCases` projects or
+// frontends that genuinely don't want hook tests.
 func runTestsLint() error {
-	fmt.Println("🔍 Running handler-test convention lint...")
+	fmt.Println("🔍 Running test convention lint...")
 	fmt.Println()
 
 	cwd, err := os.Getwd()
@@ -531,15 +539,23 @@ func runTestsLint() error {
 		return fmt.Errorf("getwd: %w", err)
 	}
 
-	res, err := forgeconv.LintHandlerTests(cwd)
+	handlerRes, err := forgeconv.LintHandlerTests(cwd)
 	if err != nil {
 		return fmt.Errorf("handler-test lint failed: %w", err)
 	}
-	if len(res.Findings) == 0 {
-		fmt.Println("✓ handler-test conventions passed")
+	frontendRes, err := forgeconv.LintFrontendHookTests(cwd)
+	if err != nil {
+		return fmt.Errorf("frontend-hook-test lint failed: %w", err)
+	}
+
+	combined := forgeconv.Result{
+		Findings: append(append([]forgeconv.Finding{}, handlerRes.Findings...), frontendRes.Findings...),
+	}
+	if len(combined.Findings) == 0 {
+		fmt.Println("✓ test conventions passed")
 		return nil
 	}
-	fmt.Print(res.FormatText())
+	fmt.Print(combined.FormatText())
 	// Warnings only — never gate.
 	fmt.Println("(warnings only — not failing the build)")
 	return nil

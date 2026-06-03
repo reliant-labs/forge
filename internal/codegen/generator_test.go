@@ -1039,6 +1039,57 @@ func TestGenerateSetup_WithPostgres(t *testing.T) {
 	}
 }
 
+func TestGeneratePostBootstrap_CreatesFile(t *testing.T) {
+	targetDir := t.TempDir()
+
+	if err := GeneratePostBootstrap(targetDir); err != nil {
+		t.Fatalf("GeneratePostBootstrap() error = %v", err)
+	}
+
+	hookPath := filepath.Join(targetDir, "pkg", "app", "post_bootstrap.go")
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("ReadFile(post_bootstrap.go) error = %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "func PostBootstrap(app *App) error") {
+		t.Error("post_bootstrap.go must declare PostBootstrap(app *App) error")
+	}
+	if !strings.Contains(content, "return nil") {
+		t.Error("post_bootstrap.go default body must be a no-op (return nil)")
+	}
+	if !strings.Contains(content, "never overwrite") {
+		t.Error("post_bootstrap.go should document that it's never overwritten")
+	}
+}
+
+func TestGeneratePostBootstrap_DoesNotOverwrite(t *testing.T) {
+	targetDir := t.TempDir()
+	appDir := filepath.Join(targetDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	custom := "package app\n// my custom post-bootstrap wiring\n"
+	hookPath := filepath.Join(appDir, "post_bootstrap.go")
+	if err := os.WriteFile(hookPath, []byte(custom), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GeneratePostBootstrap(targetDir); err != nil {
+		t.Fatalf("GeneratePostBootstrap() error = %v", err)
+	}
+
+	got, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != custom {
+		t.Errorf("post_bootstrap.go was overwritten: want %q got %q", custom, string(got))
+	}
+}
+
 func TestGenerateSetup_WithoutDatabase(t *testing.T) {
 	targetDir := t.TempDir()
 

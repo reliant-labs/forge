@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestWriteHooksIndex_FlatModeNoCollisions asserts the historic shape is
@@ -130,5 +133,118 @@ func TestDetectIndexCollisions_ListsAllOverlapsSorted(t *testing.T) {
 		if len(c.files) != 2 || c.files[0] != want[0] || c.files[1] != want[1] {
 			t.Errorf("expected files %v for %s, got %v", want, c.symbol, c.files)
 		}
+	}
+}
+
+// TestGenerateFrontendHooks_PerFrontendByDefault asserts that the
+// default (workspaces=false) emit lands at frontends/<name>/src/hooks/
+// with the historic relative-import shape. This is the snapshot
+// stability test — projects that don't opt in must see the exact
+// pre-workspaces layout.
+func TestGenerateFrontendHooks_PerFrontendByDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name: "myapp",
+		Frontends: []config.FrontendConfig{
+			{Name: "web", Type: "nextjs", Path: "frontends/web"},
+		},
+	}
+	services := []codegen.ServiceDef{
+		fakeService("UserService", "proto/services/users/v1/users.proto"),
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "frontends/web/src/hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := generateFrontendHooks(cfg, services, dir); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "frontends/web/src/hooks/user-service-hooks.ts"))
+	if err != nil {
+		t.Fatalf("read per-frontend hooks: %v", err)
+	}
+	s := string(got)
+	// Per-frontend mode imports from @/lib/connect (frontend-local).
+	if !strings.Contains(s, `from "@/lib/connect"`) {
+		t.Errorf("per-frontend hook should import connectClient from @/lib/connect, got:\n%s", s)
+	}
+	// And from @/gen for the proto types.
+	if !strings.Contains(s, `from "@/gen/`) {
+		t.Errorf("per-frontend hook should import proto types from @/gen, got:\n%s", s)
+	}
+	// Workspace import shapes must NOT appear in default mode.
+	if strings.Contains(s, "../transport") || strings.Contains(s, "@myapp/api") {
+		t.Errorf("per-frontend hook should not import from workspace paths, got:\n%s", s)
+	}
+
+	// The shared packages/hooks/ dir should NOT be touched.
+	if _, err := os.Stat(filepath.Join(dir, "packages/hooks")); !os.IsNotExist(err) {
+		t.Errorf("workspaces=false should not create packages/hooks/, got err=%v", err)
+	}
+}
+
+// TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir asserts that
+// the workspace-mode emit lands at packages/hooks/src/generated/ with
+// imports rewritten to @<scope>/api and "../transport".
+func TestGenerateFrontendHooks_WorkspaceModeEmitsToSharedDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.ProjectConfig{
+		Name: "myapp",
+		Frontends: []config.FrontendConfig{
+			{Name: "web", Type: "nextjs", Path: "frontends/web"},
+			{Name: "mobile", Type: "react-native", Path: "frontends/mobile"},
+		},
+		Frontend: config.FrontendProjectConfig{Workspaces: true},
+	}
+	services := []codegen.ServiceDef{
+		fakeService("UserService", "proto/services/users/v1/users.proto"),
+	}
+
+	if err := generateFrontendHooks(cfg, services, dir); err != nil {
+		t.Fatalf("generateFrontendHooks: %v", err)
+	}
+
+	// Workspace mode writes one file shared across all frontends.
+	got, err := os.ReadFile(filepath.Join(dir, "packages/hooks/src/generated/user-service-hooks.ts"))
+	if err != nil {
+		t.Fatalf("read workspace hooks: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, `from "../transport"`) {
+		t.Errorf("workspace hook should import connectClient from ../transport, got:\n%s", s)
+	}
+	if !strings.Contains(s, `from "@myapp/api/services/users/v1/users_pb"`) {
+		t.Errorf("workspace hook should import proto types from @myapp/api/<path>, got:\n%s", s)
+	}
+	// Per-frontend hooks dirs should NOT be written in workspace mode.
+	for _, fe := range cfg.Frontends {
+		p := filepath.Join(dir, fe.Path, "src/hooks/user-service-hooks.ts")
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("workspaces=true should not write per-frontend %s, got err=%v", p, err)
+		}
+	}
+
+	// Barrel index.ts re-exports the generated file.
+	idx, err := os.ReadFile(filepath.Join(dir, "packages/hooks/src/generated/index.ts"))
+	if err != nil {
+		t.Fatalf("read workspace hooks index: %v", err)
+	}
+	if !strings.Contains(string(idx), `export * from "./user-service-hooks"`) {
+		t.Errorf("workspace hooks index should re-export user-service-hooks, got:\n%s", idx)
+	}
+}
+
+// fakeService synthesizes a minimal ServiceDef suitable for hook
+// rendering. The minimum the renderer needs is a name, a proto file
+// (drives the import path), and at least one non-streaming RPC.
+func fakeService(name, protoFile string) codegen.ServiceDef {
+	return codegen.ServiceDef{
+		Name:      name,
+		ProtoFile: protoFile,
+		Methods: []codegen.Method{
+			{Name: "GetUser", InputType: "GetUserRequest", OutputType: "GetUserResponse"},
+			{Name: "CreateUser", InputType: "CreateUserRequest", OutputType: "CreateUserResponse"},
+		},
 	}
 }

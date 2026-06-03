@@ -204,6 +204,15 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		}
 	}
 
+	// Persist the project-level frontend.workspaces flag when opted-in
+	// so subsequent `forge generate` runs know to maintain the pnpm-
+	// workspace layout. When false the field is omitted thanks to
+	// `omitempty` on FrontendProjectConfig.Workspaces — keeps forge.yaml
+	// byte-identical to projects scaffolded before the flag existed.
+	if g.FrontendWorkspaces {
+		cfg.Frontend = config.FrontendProjectConfig{Workspaces: true}
+	}
+
 	data, err := yaml.Marshal(&cfg)
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
@@ -213,10 +222,20 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	// `database:` block is declared unconditionally even when no entity
 	// protos exist yet — downstream codegen (`protoc-gen-forge-orm`) reads
 	// it when proto/db/*.proto are added later. Until then it's a no-op.
+	//
+	// The `frontend:` block is commented in-line — opt-in pnpm-workspaces
+	// is off by default. See `forge skill load frontend-workspaces` for
+	// when (and why) to flip it on.
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
 		"# `database:` is declared here even if you haven't added any\n" +
 		"# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it\n" +
-		"# once you do. Leave the defaults in place if you're unsure.\n\n")
+		"# once you do. Leave the defaults in place if you're unsure.\n" +
+		"#\n" +
+		"# Opt into the pnpm-workspaces layout (shared packages/api +\n" +
+		"# packages/hooks across all frontends) by uncommenting:\n" +
+		"#   frontend:\n" +
+		"#     workspaces: true\n" +
+		"# Recommended once you have 2+ frontends (web + mobile).\n\n")
 	data = append(header, data...)
 
 	// Append a commented-out example of the api: block. It's omitempty

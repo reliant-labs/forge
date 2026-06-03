@@ -74,6 +74,14 @@ type ProjectConfig struct {
 	Services     []ServiceConfig     `yaml:"services"`
 	Packages     []PackageConfig     `yaml:"packages,omitempty"`
 	Frontends    []FrontendConfig    `yaml:"frontends,omitempty"`
+	// Frontend holds project-level frontend settings — distinct from
+	// the per-frontend `Frontends []FrontendConfig` slice above. Today
+	// it only carries the opt-in `workspaces:` flag that turns on the
+	// pnpm-workspace + packages/api + packages/hooks layout so multiple
+	// frontends (web + mobile) can share generated Connect clients and
+	// React Query hook wrappers. When the flag is false (the default)
+	// forge keeps the historic per-frontend layout exactly as before.
+	Frontend     FrontendProjectConfig `yaml:"frontend,omitempty"`
 	Envs         []EnvironmentConfig `yaml:"environments"`
 	Database     DatabaseConfig      `yaml:"database"`
 	CI           CIConfig            `yaml:"ci"`
@@ -223,6 +231,47 @@ type FrontendConfig struct {
 	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
 	Path string `yaml:"path"`
 	Port int    `yaml:"port"`
+}
+
+// FrontendProjectConfig holds project-level frontend settings — fields
+// that apply to the whole project rather than a single frontend entry.
+// Distinct from FrontendConfig (per-frontend) and from the cli loader's
+// "did the user pass --frontend" notion. Today the only field is
+// Workspaces, the opt-in pnpm workspaces toggle.
+//
+// The flag is intentionally project-level (not per-frontend) because
+// the workspace layout reshapes the whole project tree (packages/api,
+// packages/hooks, pnpm-workspace.yaml at root), not just one frontend.
+type FrontendProjectConfig struct {
+	// Workspaces opts the project into the pnpm-workspaces layout. When
+	// true:
+	//
+	//   - A `pnpm-workspace.yaml` is emitted at the project root listing
+	//     `packages/*` and `frontends/*` as members.
+	//   - `packages/api/` contains the buf-generated Connect TS clients
+	//     and proto types as a single workspace package (`@<scope>/api`).
+	//   - `packages/hooks/` contains the React Query wrappers
+	//     (`use-api-query.ts` / `use-api-mutation.ts`) and the generated
+	//     per-service hooks (`packages/hooks/src/generated/`), exposed as
+	//     `@<scope>/hooks`.
+	//   - Each frontend `package.json` declares the workspace deps via
+	//     `"@<scope>/api": "workspace:*"` and imports them by package name
+	//     rather than by relative path.
+	//
+	// When false (the default), forge emits the historic per-frontend
+	// layout — `frontends/<name>/src/gen/` for buf output, hooks
+	// templated into each `frontends/<name>/src/hooks/` — byte-identical
+	// to projects scaffolded before this flag landed.
+	Workspaces bool `yaml:"workspaces,omitempty"`
+}
+
+// IsFrontendWorkspacesEnabled reports whether the project opted in to
+// the pnpm-workspaces layout. Wraps ProjectConfig.Frontend.Workspaces
+// so callers can read the effective flag without poking into the nested
+// struct (and so we have one place to enforce future invariants — e.g.
+// requiring at least 2 frontends before enabling).
+func (c ProjectConfig) IsFrontendWorkspacesEnabled() bool {
+	return c.Frontend.Workspaces
 }
 
 // EnvironmentConfig represents a deployment environment.

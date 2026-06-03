@@ -384,6 +384,24 @@ type FrontendTemplateData struct {
 	ApiPort      string
 	Module       string
 	Pages        []NavPageData
+	// Workspaces reports whether the project opted into the pnpm-
+	// workspaces layout. When true, frontend templates emit imports
+	// of ApiPackage / HooksPackage instead of relative @/gen and
+	// @/hooks paths, and the per-frontend package.json declares
+	// "workspace:*" deps on those packages.
+	//
+	// When false (the default), templates produce the historic
+	// single-frontend output — byte-identical to projects scaffolded
+	// before workspaces landed. Snapshot tests rely on this.
+	Workspaces bool
+	// ApiPackage is the npm package name for the shared Connect TS
+	// clients workspace, e.g. "@myapp/api". Empty when Workspaces is
+	// false.
+	ApiPackage string
+	// HooksPackage is the npm package name for the shared React Query
+	// hooks workspace, e.g. "@myapp/hooks". Empty when Workspaces is
+	// false.
+	HooksPackage string
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

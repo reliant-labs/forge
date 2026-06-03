@@ -112,8 +112,14 @@ const config = [
   },
   {
     // Next.js requires default exports for pages, layouts, route handlers,
-    // and a handful of other entry-point files. Disable no-default-export
-    // for those paths only.
+    // and a handful of other entry-point files. Mock scenarios and tooling
+    // configs (vitest.config.ts, postcss.config.mjs, etc.) also use the
+    // default-export pattern by ecosystem convention. Disable
+    // no-default-export for those paths only — the `**/` prefix on the
+    // config glob is load-bearing: bare `*.config.*` matches only the
+    // first path segment under ESLint flat config's minimatch flavour,
+    // which silently skipped sibling configs like vitest.config.ts at the
+    // project root.
     files: [
       "src/app/**/page.{ts,tsx}",
       "src/app/**/layout.{ts,tsx}",
@@ -123,8 +129,13 @@ const config = [
       "src/app/**/template.{ts,tsx}",
       "src/app/**/route.{ts,tsx}",
       "src/middleware.{ts,tsx}",
+      // Mock scenarios (src/mocks/scenarios/<name>.ts) define a single
+      // scenario object via `export default defineScenario({...})` so the
+      // registry barrel can re-export them by name. That pattern is the
+      // contract — the `import/no-default-export` warning is noise here.
+      "src/mocks/scenarios/**/*.{ts,tsx}",
       "next.config.{js,ts,mjs}",
-      "*.config.{js,ts,mjs}",
+      "**/*.config.{js,ts,mjs}",
     ],
     rules: {
       "import/no-default-export": "off",

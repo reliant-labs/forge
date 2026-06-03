@@ -188,6 +188,7 @@ func generateSteps() []GenStep {
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, Run: stepDescriptorGenerate, Tag: "proto"},
+		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, Run: stepOpenAPIGenerate, Tag: "proto"},
 		{Name: "ORM generate (proto/db)", Gate: gateORMHasDB, Run: stepOrmGenerate, Tag: "codegen"},
 		{Name: "initial migration scaffold", Gate: gateMigrationsHasDB, Run: stepInitialMigration, Tag: "migrations"},
 		{Name: "entity-aware migration", Gate: gateMigrationsHasServices, Run: stepEntityMigration, Tag: "migrations"},
@@ -247,6 +248,22 @@ func gateValidateNotSkipped(ctx *pipelineContext) bool {
 
 func gateCodegenEnabled(ctx *pipelineContext) bool {
 	return ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()
+}
+
+// gateOpenAPIEnabled fires the OpenAPI spec step. Off by default — the
+// flag is opt-in (api.openapi: true in forge.yaml) so existing projects
+// regenerate byte-identically until a user opts in. Requires both the
+// codegen feature and the explicit flag because the spec consumes the
+// same proto inputs as the Go-stub buf step and there's no value in
+// emitting a spec if we're not also emitting the handlers it documents.
+func gateOpenAPIEnabled(ctx *pipelineContext) bool {
+	if ctx.Cfg == nil {
+		return false
+	}
+	if !ctx.Cfg.Features.CodegenEnabled() {
+		return false
+	}
+	return ctx.Cfg.API.OpenAPI
 }
 
 func gateORMHasDB(ctx *pipelineContext) bool {
@@ -597,6 +614,20 @@ func stepBufGenerateGo(ctx *pipelineContext) error {
 func stepDescriptorGenerate(ctx *pipelineContext) error {
 	if err := runDescriptorGenerate(ctx.ProjectDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: descriptor generation failed: %v\n", err)
+	}
+	return nil
+}
+
+// stepOpenAPIGenerate is the api.openapi: true projection. Runs
+// protoc-gen-connect-openapi over each proto/services/<svc>/ to emit
+// `openapi/<service>.yaml`. Best-effort: a missing plugin or a single
+// failing service surfaces as a warning so the rest of the pipeline
+// still completes. The hard "plugin not on PATH" case bubbles up as an
+// error because that's an actionable misconfiguration (the user opted
+// in via forge.yaml but didn't install the binary).
+func stepOpenAPIGenerate(ctx *pipelineContext) error {
+	if err := runOpenAPIGenerate(ctx.ProjectDir, ctx.Cfg); err != nil {
+		return fmt.Errorf("openapi generation: %w", err)
 	}
 	return nil
 }

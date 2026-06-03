@@ -2,6 +2,202 @@
 
 ## Open
 
+- **(2026-06-02 kalshi-trader migration round) CRUD body generator emits
+  AIP-158-shape that doesn't match bespoke list/get protos.** When a proto
+  service method matches a CRUD prefix (`List*`, `Get*`, `Create*`, etc.)
+  the CRUD generator emits a `handlers_crud_gen.go` body assuming the
+  request carries `PageSize`/`PageToken`, the response has a single-entity
+  field named after the entity, the primary key is an integer field named
+  `Id`, and filter fields are untyped string equality. Real-world protos
+  (kalshi-trader's `ListTradesRequest` has `Limit`/`Side enum`/`PnlFilter
+  enum` instead of `PageSize`+string filters; `GetPositionRequest` keys
+  on a string `Ticker`; the response is a repeated message field) miss
+  every one of those assumptions and the generated file is non-compiling
+  Go. Workaround today: write the real `handlers.go` and let
+  `scanExistingMethods` filter out the broken body on the next regen
+  (now also wired for tests — 2026-06-02 fix in this session). Suggested
+  fix: gate CRUD body emission on a deeper shape check — request must
+  carry the expected fields with the expected types, response must be a
+  single message of the expected type — rather than method-name pattern
+  alone. When the shape doesn't match, emit a tagged stub that calls
+  through to a TODO so the file still compiles. Severity: high.
+  Where: `internal/codegen/crud_gen.go` (`MatchCRUDMethods` /
+  `buildCRUDTemplateData`).
+
+- **(2026-06-02 kalshi-trader migration round) `ensureDepsDBField` mutates
+  Tier-2 `service.go` on the first regen for any CRUD-shaped proto.** The
+  first `forge generate` against a proto whose method names match CRUD
+  prefixes silently injects `DB orm.Context` + the orm import into the
+  user-owned `handlers/<svc>/service.go` Deps struct, even when the user
+  intends to hand-write the handlers (and never reach for the DB field).
+  This violates the "Tier-2 = user-owned, never mutated by codegen"
+  convention that the file's banner advertises. The behavior is gated on
+  filteredMethods being non-empty, so once the user hand-writes the
+  matching `handlers.go` and re-runs generate the CRUD body filters out
+  — but the DB field is left in place and the user has to delete it
+  manually. Suggested fix: emit the DB dep as a separate
+  `service_extras_gen.go` (Tier-1) that embeds into the user-owned
+  service.go via Go's struct embedding, rather than mutating service.go
+  directly. Alternative: only inject when the matching `handlers.go` does
+  NOT already exist (so the very first scaffold gets the field but a
+  user who's about to hand-write handlers can skip the field by writing
+  `handlers.go` first). Severity: medium.
+  Where: `internal/codegen/crud_gen.go::ensureDepsDBField` (line ~792).
+
+- **(2026-06-02 kalshi-trader migration round) Cron worker's `Run()` has
+  no `context.Context` parameter, so jobs can't honor shutdown.** The
+  `worker-cron/worker.go.tmpl` emits `func (w *Worker) Run()` with no
+  ctx, so the job body has no way to participate in graceful shutdown
+  (Stop() called → cron.Stop() drains in-flight, but a long-running
+  refit can't observe the parent ctx cancellation). robfig/cron/v3
+  supports a closure-style job, so the fix is straightforward: have the
+  Worker struct hold `baseCtx context.Context` + `baseCancel
+  context.CancelFunc` set in Start() and cancelled in Stop(), then in
+  Start() pass a closure that derives a per-tick ctx from baseCtx and
+  hands it to a new `Run(ctx context.Context)` method. Backwards-
+  incompatible for users who have already polished Run(); ship behind a
+  forge.yaml knob or document as a v0.3 codemod. Severity: medium.
+  Where: `internal/templates/worker-cron/worker.go.tmpl` +
+  `internal/templates/worker-cron/worker_test.go.tmpl`.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add worker` runs
+  the full generation pipeline, which auto-scaffolds a Next.js
+  dashboard.** Adding a single Go cron worker via
+  `forge add worker calibrator_refit --kind cron` caused: (a) a complete
+  `frontends/dashboard/` Next.js scaffold (node_modules, package.json,
+  tsconfig, eslint, postcss, vitest, Dockerfile), (b) a `frontends:`
+  block added to forge.yaml, (c) `features.frontend: false → true`
+  flipped — and a follow-up warning that `@bufbuild/protoc-gen-es` isn't
+  installed yet. None of those side effects are appropriate for an
+  "add a Go worker" command. The root cause is that `runAddWorker`
+  calls `runGeneratePipeline` (the full pipeline) and the
+  frontend-creation step in the pipeline auto-creates a default dashboard
+  when `cfg.Frontends` is empty (or when some related gate triggers).
+  Suggested fix: either (a) add a `--scope=worker|full` flag that
+  defaults to `worker` so `add worker` only touches
+  `{workers/<name>/, pkg/app/{bootstrap,wire_gen,testing}.go, forge.yaml}`,
+  or (b) audit the pipeline for any step that creates files when the
+  user hasn't explicitly opted into the corresponding feature. Severity:
+  high (collision risk with parallel agents; surprising scaffold churn).
+  Where: `internal/cli/add.go::runAddWorker` + the frontend-creation
+  step in `internal/cli/generate_pipeline.go`. Same friction applies to
+  `forge add operator` / `forge add service` — once the scoped-pipeline
+  story exists, share it across all `forge add <kind>` commands.
+
+- **(2026-06-02 kalshi-trader migration round) Worker / operator package
+  names + parent directory keep the snake_case form (`calibrator_refit`).**
+  After the 2026-06-02 fix that converts the FieldName from
+  `Calibrator_refit` → `CalibratorRefit`, the exported Go identifier is
+  idiomatic — but the package name + directory still carry the underscore
+  (`workers/calibrator_refit/`, `package calibrator_refit`). Go's package
+  naming convention (`package calibratorrefit`) prefers all-lowercase
+  no-underscore. revive's `package-comments` and staticcheck's ST1003
+  don't flag underscores in package names by default, so the cost of
+  fixing is mostly stylistic. If the team wants ideal-style outputs,
+  use `naming.ToCompactLower` (or equivalent) for both the directory
+  and the package declaration, while keeping `name:` in forge.yaml as
+  the original snake_case for human readability. Severity: low.
+  Where: `internal/codegen/generator.go::toGoPackage` +
+  `internal/generator/worker_gen.go::ServicePackageName`.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
+  updates `features.frontend` and `frontends:` but leaves
+  `stack.frontend.framework: none` untouched.** After
+  `forge add frontend dashboard`, forge.yaml ends up with
+  `features.frontend: true` + `frontends: [{name: dashboard, type: nextjs}]`
+  but `stack.frontend.framework` still says `none`. Downstream tooling
+  that reads `stack.frontend.framework` (lint config, CI templates,
+  codegen branching) will misread the project as having no frontend
+  stack. Fix: `runAddFrontend` should set
+  `cfg.Stack.Frontend.Framework = "nextjs"` (or the matching value for
+  vite-spa / react-native) when the framework field is empty or "none".
+  Severity: high (silently broken downstream tooling). Where:
+  `internal/cli/add.go::runAddFrontend` (around line 950, right after
+  `cfg.Features.Frontend = &frontendOn`).
+
+- **(2026-06-02 kalshi-trader migration round) Frontend ESLint emits 70+
+  warnings against forge's own scaffolded files on first run.** Sources:
+  - `import/no-default-export` flags every `src/mocks/scenarios/<name>.ts`
+    that uses the canonical `export default defineScenario(...)` shape,
+    plus `vitest.config.ts`. The rule and the scaffold disagree.
+  - `import/order` and import-group spacing errors hit `src/lib/otel.ts`,
+    `src/lib/search-schemas.ts`, and the mock scenarios.
+
+  These all land before any user edit, so the "first `npm run lint`
+  after `forge add frontend`" experience is "72 warnings, all in
+  AUTO-GENERATED files". Fix: either relax the ESLint rules to exempt
+  `src/mocks/scenarios/**` (and similar generator outputs), or adjust the
+  scaffolders to emit code that passes the default rule set. Severity:
+  medium. Where: `internal/templates/frontend/eslint.config.mjs.tmpl` +
+  the various scaffold-emitting frontend templates (scenarios,
+  `lib/otel.ts`, `lib/search-schemas.ts`).
+
+- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
+  doesn't run `npm install` even though its scaffolded `buf.gen.yaml`
+  comment says it does.** The emitted `frontends/<name>/buf.gen.yaml`
+  has a comment claiming `forge new does this for you`, but
+  `forge add frontend` (the other path that creates the same
+  buf.gen.yaml) does NOT run `npm install`. Result: the first
+  `forge generate` after `forge add frontend` fails to find
+  `@bufbuild/protoc-gen-es` and silently skips frontend TS gen with a
+  warning. Fix: have `runAddFrontend` run `npm install` in the freshly-
+  scaffolded frontend directory before returning success. Also
+  parameterize the plugin path in buf.gen.yaml on `{frontend_name}`
+  instead of hard-coding `./frontends/dashboard/node_modules/...` so a
+  user can rename / multi-host without manual fixup. Severity: medium.
+  Where: `internal/cli/add.go::runAddFrontend` (post-step) +
+  `internal/templates/frontend/buf.gen.yaml.tmpl`.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
+  usage text references singular `frontend/web` while the actual path
+  layout is plural `frontends/<name>/`.** Confusing for users following
+  the doc copy. Fix: update the CLI usage string + any docs to match the
+  plural directory layout. Severity: low. Where: `internal/cli/add.go`
+  + scaffold docs.
+
+- **(2026-06-02 kalshi-trader migration round) `forge.yaml`
+  `forge_version` vs binary version warning is noisy during scaffolding
+  iterations.** Every `forge add` / `forge generate` call prints
+  `forge.yaml declares forge_version: <X> but binary is <Y>. Run 'forge
+  upgrade' to migrate.` — even when the skew is a few hours of local
+  dev binary churn. The warning is mostly noise during back-to-back
+  scaffolding and risks masking real warnings. Fix: downgrade to a debug
+  log when both versions look like dev / pseudoversion forms, or warn
+  once per shell session via a sentinel in `$TMPDIR`. Severity: low.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add scenario`
+  doesn't validate that `src/gen/` exists.** The scaffolded scenario
+  file's TODO comment tells the user to import from `@/gen/...`, but
+  on a project that has no API-level RPCs and no generated TS proto
+  bindings, `@/gen/` doesn't exist. Fix: either (a) check for
+  `src/gen/` and warn when missing, or (b) seed the TODO with an
+  existing `service.method` pair from the project's proto registry so
+  the user has a concrete starting point. Severity: low. Where:
+  `internal/cli/add_scenario.go` + the scenario template.
+
+- **(2026-06-02 kalshi-trader migration round) Scaffolded frontend
+  `go.mod` inside `frontends/<name>/` is surprising.** The
+  `frontends/dashboard/go.mod` exists purely as a module-boundary
+  marker so `go test ./...` from the project root skips node_modules.
+  Users adding actual Go code in the frontend dir later will hit
+  surprising behaviour. Fix: at minimum, add a comment in the emitted
+  go.mod explaining its sole purpose ("module-boundary marker only —
+  do not add Go code here"). Severity: low. Where: the frontend go.mod
+  template.
+
+- **(2026-06-02 kalshi-trader migration round) Two CRUD test generators
+  emit overlapping per-RPC test functions.** `handlers_scaffold_test.go`
+  has `TestListTrades_Generated` while `handlers_crud_gen_test.go` has
+  `TestUnit_ListTrades` — both test the same handler with similar
+  assertions, both run in default `go test ./...`. The naming differs
+  enough to avoid collisions but the redundancy is noise, and a user
+  who names a real test `TestListTrades` (without either suffix) is
+  fine BUT a user who names it `TestListTrades_Generated` will collide.
+  Fix: pick one generator to own the per-RPC test row and have the other
+  emit only the lifecycle / cross-cutting tests. Severity: low. Where:
+  `internal/templates/service/unit_test.go.tmpl` +
+  `internal/templates/service/handlers_crud_test_gen.go.tmpl`.
+
 - **(2026-06-02 kalshi-trader port) `forge new` on a project with no
   services yet produces unused `runAll` in `pkg/app/bootstrap.go:125`.**
   Generated `BootstrapOnly` declares `runAll := len(names) == 0` to drive

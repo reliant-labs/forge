@@ -1,0 +1,135 @@
+// Package cli — `forge dev instances` command.
+//
+// Lists every forge-managed dev namespace on every reachable k3d
+// cluster. Supports the multi-worktree workflow where each worktree
+// runs in its own namespace and we need a host-wide view to find what's
+// running.
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/spf13/cobra"
+)
+
+func newDevInstancesCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "instances",
+		Short: "List every forge dev namespace on every reachable cluster",
+		Long: `List every forge-managed dev namespace on the host.
+
+Inspects each k3d cluster's kubeconfig context and reports the
+namespaces labelled app.kubernetes.io/managed-by=forge. Useful for the
+multi-worktree workflow: many worktrees, each with its own namespace,
+all sharing one cluster (or one per worktree).
+
+Examples:
+  forge dev instances
+  forge dev instances --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDevInstances(jsonOut)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
+	return cmd
+}
+
+type devInstance struct {
+	Cluster    string `json:"cluster"`
+	Namespace  string `json:"namespace"`
+	PodCount   int    `json:"pod_count"`
+	PFRunning  int    `json:"port_forwards_running"`
+}
+
+func runDevInstances(jsonOut bool) error {
+	clusters, err := listK3dClusters()
+	if err != nil {
+		return err
+	}
+	if len(clusters) == 0 {
+		if jsonOut {
+			os.Stdout.WriteString("[]\n")
+			return nil
+		}
+		fmt.Println("No k3d clusters found.")
+		return nil
+	}
+
+	var instances []devInstance
+	for _, c := range clusters {
+		ctx := "k3d-" + c.Name
+		nsList := listForgeNamespaces(ctx)
+		for _, ns := range nsList {
+			pc := podCount(ctx, ns)
+			pfs := readPortForwardState(c.Name, ns)
+			instances = append(instances, devInstance{
+				Cluster:   c.Name,
+				Namespace: ns,
+				PodCount:  pc,
+				PFRunning: len(pfs),
+			})
+		}
+	}
+
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(instances)
+	}
+
+	if len(instances) == 0 {
+		fmt.Println("No forge-managed dev namespaces found.")
+		return nil
+	}
+	fmt.Printf("%-20s %-35s %-6s %s\n", "CLUSTER", "NAMESPACE", "PODS", "PORT-FORWARDS")
+	for _, ins := range instances {
+		fmt.Printf("%-20s %-35s %-6d %d\n", ins.Cluster, ins.Namespace, ins.PodCount, ins.PFRunning)
+	}
+	return nil
+}
+
+// listForgeNamespaces queries a specific kubectl context for all
+// forge-managed namespaces. Failures (cluster down, context missing)
+// return nil so the caller can keep walking remaining clusters.
+func listForgeNamespaces(context string) []string {
+	cmd := exec.Command("kubectl", "--context", context,
+		"get", "namespaces",
+		"-l", "app.kubernetes.io/managed-by=forge",
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var nss []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			nss = append(nss, line)
+		}
+	}
+	return nss
+}
+
+// podCount returns the number of pods in a namespace via the given
+// context. Best-effort: failures return 0.
+func podCount(context, namespace string) int {
+	cmd := exec.Command("kubectl", "--context", context, "get", "pods",
+		"-n", namespace, "--no-headers",
+		"-o", "name")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}

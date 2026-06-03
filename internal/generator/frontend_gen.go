@@ -24,11 +24,37 @@ func frontendTemplateDir(kind string) string {
 	}
 }
 
+// FrontendGenOptions carries optional project-level settings forwarded
+// to the per-frontend file emitter. Kept distinct from the existing
+// positional GenerateFrontendFiles params so that adding new optional
+// settings (here: Workspaces) doesn't churn every call site.
+type FrontendGenOptions struct {
+	// Workspaces opts the frontend into the pnpm-workspace layout —
+	// its package.json declares "workspace:*" deps on @<scope>/api /
+	// @<scope>/hooks, and templates render imports of those packages
+	// instead of relative @/gen / @/hooks paths.
+	Workspaces bool
+}
+
 // GenerateFrontendFiles generates the frontend directory and files.
 // kind selects the template set: "" or "web" for Next.js, "mobile" for React Native.
 // Both the "new" project flow and the "add frontend" flow delegate here so
 // the output is always identical.
+//
+// This thin shim preserves the original signature for backward
+// compatibility with the Service contract; new call sites should prefer
+// GenerateFrontendFilesWithOptions when they have access to the
+// project-level Frontend config.
 func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string) error {
+	return GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendName, apiPort, kind, FrontendGenOptions{})
+}
+
+// GenerateFrontendFilesWithOptions is GenerateFrontendFiles with an
+// extra FrontendGenOptions param for project-level toggles (today only
+// Workspaces). The default-zero opts struct produces output
+// byte-identical to GenerateFrontendFiles so existing callers and
+// snapshot tests are unaffected.
+func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions) error {
 	frontendDir := filepath.Join(root, "frontends", frontendName)
 	if err := os.MkdirAll(frontendDir, 0755); err != nil {
 		return fmt.Errorf("create frontend directory: %w", err)
@@ -41,12 +67,18 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 		return fmt.Errorf("list frontend templates: %w", err)
 	}
 
+	layout := NewFrontendWorkspaceLayout(projectName)
 	data := templates.FrontendTemplateData{
 		FrontendName: frontendName,
 		ProjectName:  projectName,
 		ApiUrl:       fmt.Sprintf("http://localhost:%d", apiPort),
 		ApiPort:      fmt.Sprintf("%d", apiPort),
 		Module:       modulePath,
+		Workspaces:   opts.Workspaces,
+	}
+	if opts.Workspaces {
+		data.ApiPackage = layout.ApiPackage
+		data.HooksPackage = layout.HooksPackage
 	}
 
 	for _, file := range frontendFiles {

@@ -192,6 +192,7 @@ func generateSteps() []GenStep {
 		{Name: "ORM generate (proto/db)", Gate: gateORMHasDB, Run: stepOrmGenerate, Tag: "codegen"},
 		{Name: "initial migration scaffold", Gate: gateMigrationsHasDB, Run: stepInitialMigration, Tag: "migrations"},
 		{Name: "entity-aware migration", Gate: gateMigrationsHasServices, Run: stepEntityMigration, Tag: "migrations"},
+		{Name: "frontend workspaces scaffold", Gate: gateFrontendEnabled, Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: gateFrontendEnabled, Run: stepFrontendBufTS, Tag: "frontend"},
 		{Name: "config loader (proto/config)", Gate: gateCodegenHasConfig, Run: stepConfigLoader, Tag: "codegen"},
 		{Name: "parse services + module path", Gate: gateNeedsServices, Run: stepParseServicesAndModule, Tag: "codegen"},
@@ -684,10 +685,39 @@ func stepEntityMigration(ctx *pipelineContext) error {
 	return nil
 }
 
+// stepFrontendWorkspaces emits the project-level pnpm-workspace
+// scaffolding (pnpm-workspace.yaml + packages/api + packages/hooks)
+// when the project opted into `frontend.workspaces: true`. The
+// underlying writer is idempotent — re-running `forge generate` after
+// the user edits e.g. packages/api/package.json does NOT clobber the
+// changes. When workspaces is false the writer no-ops.
+//
+// Runs before the TypeScript-stubs step so packages/api/ exists for
+// buf to emit into when (in a future cycle) the workspace-mode buf
+// gen target lands.
+func stepFrontendWorkspaces(ctx *pipelineContext) error {
+	if !ctx.Cfg.IsFrontendWorkspacesEnabled() {
+		return nil
+	}
+	if err := generator.WriteFrontendWorkspaceFiles(ctx.ProjectDir, ctx.Cfg.Name, true); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: frontend workspace scaffold failed: %v\n", err)
+	}
+	return nil
+}
+
 // stepFrontendBufTS — was Step 3.
 // Per-frontend `buf generate` for TypeScript stubs. Only runs for
 // nextjs / react-native frontends. Best-effort per-frontend.
+//
+// In workspaces mode the per-frontend buf step is replaced by a single
+// shared invocation that emits into packages/api/src/gen — see
+// runBufGenerateTypeScriptWorkspace. Without the early-return below the
+// per-frontend loop would call the workspace helper N times, which is
+// idempotent but spams the output.
 func stepFrontendBufTS(ctx *pipelineContext) error {
+	if ctx.Cfg.IsFrontendWorkspacesEnabled() {
+		return runBufGenerateTypeScriptWorkspace(ctx.Cfg, ctx.ProjectDir)
+	}
 	for _, fe := range ctx.Cfg.Frontends {
 		if strings.EqualFold(fe.Type, "nextjs") || strings.EqualFold(fe.Type, "react-native") || strings.EqualFold(fe.Type, "vite-spa") {
 			if err := runBufGenerateTypeScript(fe, ctx.Cfg, ctx.ProjectDir); err != nil {

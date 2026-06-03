@@ -141,7 +141,7 @@ func runTestAll(flags testFlags) error {
 	frontendResults := runFrontendTests(flags)
 	results = append(results, frontendResults...)
 
-	return printTestSummary(results, discoveryErrs)
+	return printTestSummary(results, discoveryErrs, flags)
 }
 
 func runTestUnit(flags testFlags) error {
@@ -159,7 +159,7 @@ func runTestUnit(flags testFlags) error {
 	frontendResults := runFrontendTests(flags)
 	results = append(results, frontendResults...)
 
-	return printTestSummary(results, discoveryErrs)
+	return printTestSummary(results, discoveryErrs, flags)
 }
 
 func runTestIntegration(flags testFlags) error {
@@ -172,7 +172,7 @@ func runTestIntegration(flags testFlags) error {
 		fmt.Fprintf(os.Stderr, "[test] Go integration test discovery failed: %v\n", err)
 		discoveryErrs = append(discoveryErrs, fmt.Errorf("integration test discovery: %w", err))
 	}
-	return printTestSummary(results, discoveryErrs)
+	return printTestSummary(results, discoveryErrs, flags)
 }
 
 func runTestE2E(flags testFlags) error {
@@ -201,7 +201,7 @@ func runTestE2E(flags testFlags) error {
 	// E2E test files are guarded by `//go:build e2e`, so we must pass
 	// the build tag for them to compile and run.
 	result := runGoTestInDir(".", pkg, []string{"-tags", "e2e"}, flags)
-	return printTestSummary([]testResult{result}, nil)
+	return printTestSummary([]testResult{result}, nil, flags)
 }
 
 // runGoTests runs go test with the given package pattern and optional extra args.
@@ -421,7 +421,7 @@ func runFrontendTests(flags testFlags) []testResult {
 			return nil
 		}
 		// Only test this specific frontend
-		return runFrontendTestInDir(flags.service, feDir)
+		return runFrontendTestInDirWithFlags(flags.service, feDir, flags)
 	}
 
 	entries, err := os.ReadDir("frontends")
@@ -435,13 +435,20 @@ func runFrontendTests(flags testFlags) []testResult {
 			continue
 		}
 		feDir := filepath.Join("frontends", e.Name())
-		results = append(results, runFrontendTestInDir(e.Name(), feDir)...)
+		results = append(results, runFrontendTestInDirWithFlags(e.Name(), feDir, flags)...)
 	}
 
 	return results
 }
 
 func runFrontendTestInDir(name, feDir string) []testResult {
+	return runFrontendTestInDirWithFlags(name, feDir, testFlags{})
+}
+
+// runFrontendTestInDirWithFlags is the flag-aware variant — when
+// --coverage is set, passes `-- --coverage` to npm test so the frontend
+// test runner emits its own coverage report.
+func runFrontendTestInDirWithFlags(name, feDir string, flags testFlags) []testResult {
 	pkgJSON := filepath.Join(feDir, "package.json")
 	if _, err := os.Stat(pkgJSON); err != nil {
 		return nil
@@ -450,9 +457,13 @@ func runFrontendTestInDir(name, feDir string) []testResult {
 	start := time.Now()
 	displayName := fmt.Sprintf("frontends/%s", name)
 
-	fmt.Printf("[test] %s: npm test\n", displayName)
+	npmArgs := []string{"test", "--", "--passWithNoTests"}
+	if flags.coverage {
+		npmArgs = append(npmArgs, "--coverage")
+	}
+	fmt.Printf("[test] %s: npm %s\n", displayName, strings.Join(npmArgs, " "))
 
-	cmd := exec.Command("npm", "test", "--", "--passWithNoTests")
+	cmd := exec.Command("npm", npmArgs...)
 	cmd.Dir = feDir
 	output, runErr := cmd.CombinedOutput()
 	duration := time.Since(start)
@@ -470,7 +481,7 @@ func runFrontendTestInDir(name, feDir string) []testResult {
 	}}
 }
 
-func printTestSummary(results []testResult, discoveryErrs []error) error {
+func printTestSummary(results []testResult, discoveryErrs []error, flags testFlags) error {
 	fmt.Println()
 	fmt.Println("[test] Summary")
 	fmt.Println(strings.Repeat("=", 50))
@@ -510,7 +521,114 @@ func printTestSummary(results []testResult, discoveryErrs []error) error {
 		return fmt.Errorf("%d test discovery error(s)", len(discoveryErrs))
 	}
 
+	// Coverage post-processing: when --coverage was set, run
+	// `go tool cover -html` on the merged coverage.out and print a
+	// one-line total summary. Best-effort: failures here do not turn a
+	// passing test run into a failure.
+	if flags.coverage {
+		emitCoverageReport()
+	}
+
 	fmt.Println()
 	fmt.Println("[test] All tests passed.")
 	return nil
+}
+
+// emitCoverageReport merges every coverage.out written by parallel
+// per-dir runs into the root coverage.out, renders coverage.html, and
+// prints the total %. Best-effort: failures here are warnings, not
+// blockers for an otherwise-green test run.
+//
+// The per-dir profiles live at <dir>/coverage.out (handlers/<svc>/...,
+// internal/, pkg/, cmd/) because each `go test` invocation gets its own
+// CWD. We merge by concatenating with a single `mode:` header on top.
+func emitCoverageReport() {
+	mergedPath := "coverage.out"
+	if err := mergeCoverageProfiles(mergedPath); err != nil {
+		fmt.Printf("[test] --coverage: merge profiles: %v\n", err)
+		return
+	}
+	if _, err := os.Stat(mergedPath); err != nil {
+		fmt.Println("[test] --coverage: no coverage data found (no Go tests ran?)")
+		return
+	}
+
+	// HTML report.
+	htmlCmd := exec.Command("go", "tool", "cover", "-html="+mergedPath, "-o", "coverage.html")
+	if out, err := htmlCmd.CombinedOutput(); err != nil {
+		fmt.Printf("[test] --coverage: go tool cover -html failed: %v\n%s\n", err, string(out))
+		return
+	}
+
+	// Total %.
+	pctCmd := exec.Command("go", "tool", "cover", "-func="+mergedPath)
+	out, err := pctCmd.Output()
+	if err != nil {
+		fmt.Printf("[test] --coverage: go tool cover -func failed: %v\n", err)
+		return
+	}
+	// Last line is `total: (statements) <pct>%`.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	last := lines[len(lines)-1]
+	fields := strings.Fields(last)
+	pct := ""
+	if len(fields) >= 1 {
+		pct = fields[len(fields)-1]
+	}
+	if pct != "" {
+		fmt.Printf("[test] Total coverage: %s; coverage.html ready\n", pct)
+	} else {
+		fmt.Println("[test] coverage.html ready")
+	}
+}
+
+// mergeCoverageProfiles walks the tree for coverage.out files and
+// merges them into the root mergedPath. Each profile's `mode:` header
+// is written once; the per-file data lines from every profile follow.
+// When only one profile is found at the root, this is a no-op success.
+func mergeCoverageProfiles(mergedPath string) error {
+	var profiles []string
+	roots := []string{".", "handlers", "internal", "pkg", "cmd"}
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				// best-effort
+				return nil
+			}
+			if !d.IsDir() && d.Name() == "coverage.out" && path != mergedPath {
+				profiles = append(profiles, path)
+			}
+			return nil
+		})
+	}
+	if len(profiles) == 0 {
+		// The root coverage.out may already be the only output (single-
+		// dir run).
+		if _, err := os.Stat(mergedPath); err == nil {
+			return nil
+		}
+		return nil
+	}
+
+	var sb strings.Builder
+	headerWritten := false
+	for _, p := range profiles {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if i == 0 && strings.HasPrefix(line, "mode:") {
+				if !headerWritten {
+					sb.WriteString(line + "\n")
+					headerWritten = true
+				}
+				continue
+			}
+			if line != "" {
+				sb.WriteString(line + "\n")
+			}
+		}
+	}
+	return os.WriteFile(mergedPath, []byte(sb.String()), 0644)
 }

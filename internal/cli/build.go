@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,17 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 )
+
+// sortedKeys returns map keys in deterministic order. Used so docker
+// build args are stable across runs (relevant for layer caching).
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // buildOptions holds the flag values for the build command.
 type buildOptions struct {
@@ -443,6 +455,15 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 			}
 		}
 	}
+	// Additional build contexts from forge.yaml's docker.build_contexts.
+	// Each becomes a `--build-context name=path` arg, letting the
+	// Dockerfile pull files from outside the normal context via
+	// `COPY --from=name`. Typical use: sibling-checkout local replace
+	// directives where the replaced module lives outside the project tree.
+	for _, name := range sortedKeys(cfg.Docker.BuildContexts) {
+		path := cfg.Docker.BuildContexts[name]
+		dockerArgs = append(dockerArgs, "--build-context", name+"="+path)
+	}
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
@@ -566,6 +587,12 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 				pushTags = append(pushTags, pushVersion)
 			}
 		}
+	}
+	// Additional build contexts from forge.yaml. Same semantics as
+	// dockerBuildProject — useful when the frontend Dockerfile needs
+	// to reference paths outside its own subtree.
+	for _, k := range sortedKeys(cfg.Docker.BuildContexts) {
+		dockerArgs = append(dockerArgs, "--build-context", k+"="+cfg.Docker.BuildContexts[k])
 	}
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)

@@ -315,12 +315,89 @@ type BootstrapComponentData struct {
 	// handlers/<svc>/service.go. Only populated for services; ignored
 	// for packages, workers, and operators.
 	HasWebhooks bool
+	// HasLogger / HasConfig record whether this component's Deps struct
+	// declares a Logger / Config field. The bootstrap template gates the
+	// emission of those Deps-literal fields on these flags so a package
+	// that doesn't consume them isn't forced to carry vestigial Logger /
+	// Config fields just to keep the generated New(Deps{...}) call site
+	// type-checking. Populated by inspectComponentDepsShape before
+	// rendering; defaults to false (skip) when the source dir can't be
+	// parsed (e.g. just-scaffolded component with no Deps yet).
+	HasLogger bool
+	HasConfig bool
+	// AppFieldRefs lists Deps fields (other than Logger/Config) whose
+	// names AND types match an AppExtras field. Bootstrap emits one
+	// assignment per entry like `<DepsField>: app.<DepsField>`. Without
+	// this, audit.New got only {Logger} even when audit.Deps.Repo and
+	// app.Repo both existed — the package silently degraded (Log warn-
+	// and-drops) until the next forge generate cycle. wire_gen has had
+	// this logic for services; this brings packages to parity.
+	AppFieldRefs []AppFieldRef
+}
+
+// AppFieldRef pairs a package Deps field name with the app.<name>
+// expression bootstrap should emit for it. Only emitted when the
+// AppExtras field type EXACTLY matches the Deps field type (otherwise
+// the compile fails with funding.Repository vs *db.PostgresRepository
+// style mismatches).
+type AppFieldRef struct {
+	DepsField string // e.g. "Repo"
 }
 
 // Type aliases for backward compatibility and readability.
 type BootstrapServiceData = BootstrapComponentData
 type BootstrapPackageData = BootstrapComponentData
 type BootstrapWorkerData = BootstrapComponentData
+
+// inspectComponentDepsShape walks each component's source directory under
+// roleRoot (e.g. "internal", "workers", "operators") and populates
+// HasLogger / HasConfig / AppFieldRefs from the parsed Deps struct +
+// AppExtras AST. A missing source dir or unparseable file falls through
+// to defaults: best-effort, errors-as-default.
+//
+// Mutates each component in place so callers don't have to thread a
+// result slice through bootstrap data assembly.
+func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, roleRoot string) {
+	// Resolve AppExtras field types once for the whole batch so each
+	// component can name-and-type-match without re-parsing pkg/app.
+	appFields, _ := ParseAppFields(filepath.Join(projectDir, "pkg", "app"))
+	appFieldTypes := map[string]string{}
+	for _, f := range appFields {
+		appFieldTypes[f.Name] = f.Type
+	}
+
+	for i := range components {
+		dir := filepath.Join(projectDir, roleRoot, components[i].ImportPath)
+		fields, err := ParseServiceDeps(dir)
+		if err != nil || len(fields) == 0 {
+			continue
+		}
+		for _, f := range fields {
+			switch f.Name {
+			case "Logger":
+				components[i].HasLogger = true
+			case "Config":
+				components[i].HasConfig = true
+			default:
+				// Name-match AND exact type-match. Without strict type
+				// comparison the wire would emit `Repo: app.Repo` even
+				// when funding.Deps.Repo is funding.Repository (narrow
+				// domain interface) and app.Repo is *db.PostgresRepository
+				// — type-fails at compile time. Skipping unmatched-type
+				// fields preserves the typed-zero default the Deps zero
+				// value provides; the user can either change app.Repo's
+				// declared type to match the narrow interface OR write a
+				// setup.go adapter — both surfaced clearly by the
+				// bootstrap-deps-coverage lint when name matches but
+				// type doesn't.
+				appType, hasName := appFieldTypes[f.Name]
+				if hasName && appType == f.Type {
+					components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
+				}
+			}
+		}
+	}
+}
 
 // WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
@@ -561,6 +638,19 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	// vs internal package "billing"). When unique, Alias == Package and
 	// the bootstrap import line + symbol references emit unchanged.
 	AssignBootstrapAliases(bootstrapSvcs, packages, workers, operators)
+
+	// Probe each component's Deps struct so the bootstrap template can
+	// emit only the Logger / Config fields that actually exist, and
+	// auto-wire AppExtras-name-and-type-matching fields. Without this,
+	// the template's hardcoded `Logger: ..., Config: cfg` lines force
+	// every internal package to declare those fields even when the
+	// package doesn't read them (the "Deps shape coupling" friction from
+	// the control-plane migration), and the audit-no-op silent-drop fires
+	// when audit.Deps.Repo and AppExtras.Repo both exist but bootstrap
+	// emits only Logger.
+	inspectComponentDepsShape(packages, projectDir, "internal")
+	inspectComponentDepsShape(workers, projectDir, "workers")
+	inspectComponentDepsShape(operators, projectDir, "operators")
 
 	hasFallible := hasFallibleConstructor(bootstrapSvcs, packages, workers, operators)
 
@@ -929,6 +1019,11 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 			pkgsCopy[i].Alias = pkgsCopy[i].Package
 		}
 	}
+	// Probe each package's Deps AST so testing.go emits the same Deps
+	// shape as bootstrap.go. Without this call, removing Logger from a
+	// package's Deps regenerates bootstrap.go cleanly but breaks
+	// testing.go (the v2 migration of control-plane reproduced this).
+	inspectComponentDepsShape(pkgsCopy, projectDir, "internal")
 	packages = pkgsCopy
 
 	// Dedupe Connect package imports: when multiple proto services share one

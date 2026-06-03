@@ -103,16 +103,18 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	}
 
 	data := struct {
-		Module       string
-		Services     []bootstrapService
-		Packages     []bootstrapPackage
-		Workers      []bootstrapWorker
-		Operators    []bootstrapOperator
-		HasDatabase  bool
-		OrmEnabled   bool
-		HasFallible  bool
-		BinaryShared bool
-		ConfigFields map[string]bool
+		Module          string
+		Services        []bootstrapService
+		Packages        []bootstrapPackage
+		Workers         []bootstrapWorker
+		Operators       []bootstrapOperator
+		HasDatabase     bool
+		OrmEnabled      bool
+		HasFallible     bool
+		BinaryShared    bool
+		ConfigFields    map[string]bool
+		RESTEnabled     bool
+		ConnectImports  []string
 	}{
 		Module:    g.ModulePath,
 		Services:  services,
@@ -126,6 +128,11 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		OrmEnabled:   false,
 		BinaryShared: g.isBinaryShared(),
 		ConfigFields: codegen.DefaultConfigFieldNames(),
+		// REST is off at initial scaffold — see generateAppGen for the same
+		// rationale. Users flip api.rest in forge.yaml and re-run
+		// `forge generate` to install the vanguard wrap.
+		RESTEnabled:    false,
+		ConnectImports: nil,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)
@@ -382,6 +389,7 @@ func (g *ProjectGenerator) generateAppGen(hasServices, hasWorkers, hasOperators,
 		Workers     bool
 		Operators   bool
 		Packages    bool
+		RESTEnabled bool
 	}{
 		HasDatabase: false,
 		OrmEnabled:  false,
@@ -389,6 +397,10 @@ func (g *ProjectGenerator) generateAppGen(hasServices, hasWorkers, hasOperators,
 		Workers:     hasWorkers,
 		Operators:   hasOperators,
 		Packages:    hasPackages,
+		// Initial scaffold: REST is off by default. Users opt-in by setting
+		// `api.rest: true` in forge.yaml; the post-scaffold `forge generate`
+		// then re-renders app_gen.go and bootstrap.go with the vanguard wrap.
+		RESTEnabled: false,
 	}
 	content, err := templates.ProjectTemplates().Render("app_gen.go.tmpl", data)
 	if err != nil {

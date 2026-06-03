@@ -1,6 +1,14 @@
 version: v2
 modules:
   - path: proto
+{{- if .RESTEnabled}}
+# `api.rest: true` in forge.yaml — googleapis is required for the
+# `google/api/annotations.proto` import that vanguard's REST transcoder
+# reads off CRUD RPCs. Remove this block (and flip `api.rest: false`) to
+# drop the BSR dep.
+deps:
+  - buf.build/googleapis/googleapis
+{{- else}}
 # No `deps:` block by default — fresh scaffolds compile without any
 # BSR-hosted modules so anonymous users can run `forge generate`
 # without `buf registry login`. If you need googleapis annotations
@@ -10,6 +18,7 @@ modules:
 #     - buf.build/googleapis/googleapis
 # Well-known protos (`google/protobuf/*`) are part of protobuf itself
 # and do NOT require a BSR dep.
+{{- end}}
 lint:
   use:
     - STANDARD

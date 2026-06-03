@@ -236,7 +236,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
 
+	// When `api.rest: true` in forge.yaml, Bootstrap installs a vanguard
+	// REST transcoder over the Connect mux and stores the wrapped handler
+	// on app.RESTHandler. Substituting it here means REST/gRPC/Connect
+	// share the same handler chain (CORS, security headers, OTel) without
+	// the caller having to know which protocol skins are active.
 	var handler http.Handler = mux
+	if application != nil && application.RESTHandler != nil {
+		handler = application.RESTHandler
+	}
 {{- if index .ConfigFields "CorsOrigins"}}
 	// CORS: parse comma-separated origins from config. The wildcard +
 	// credentials combination is rejected by cfg.Validate() above so we

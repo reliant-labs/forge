@@ -316,9 +316,53 @@ func isNullableType(f *protogen.Field) bool {
 		protoreflect.BoolKind,
 		protoreflect.FloatKind, protoreflect.DoubleKind:
 		return true
-	default:
-		return false
 	}
+	return false
+}
+
+// wrapperGoType returns the wrapperspb Go type for a well-known wrapper
+// message (e.g. "wrapperspb.DoubleValue" for google.protobuf.DoubleValue)
+// and the unwrapped scalar Go type stored on the wrapper's Value field
+// (e.g. "float64"). Returns ("", "", false) for fields that are not
+// well-known wrappers.
+//
+// The ORM codegen treats wrapper fields specially: the entity struct
+// inherits the protoc-generated `*wrapperspb.XValue` field type, but the
+// database column stores the unwrapped scalar (nullable). Without this
+// distinction, generateValues would pass `*wrapperspb.XValue` to the SQL
+// driver (which has no conversion) and generateScan would assign a
+// `*scalar` directly to the wrapper field (type mismatch → go build fails).
+// See orm_codegen.go::generateValues / generateScan for the bridge.
+func wrapperGoType(f *protogen.Field) (wrapper string, scalar string, ok bool) {
+	if f.Desc.Kind() != protoreflect.MessageKind || f.Desc.Message() == nil {
+		return "", "", false
+	}
+	switch f.Desc.Message().FullName() {
+	case "google.protobuf.StringValue":
+		return "wrapperspb.StringValue", "string", true
+	case "google.protobuf.Int32Value":
+		return "wrapperspb.Int32Value", "int32", true
+	case "google.protobuf.Int64Value":
+		return "wrapperspb.Int64Value", "int64", true
+	case "google.protobuf.UInt32Value":
+		return "wrapperspb.UInt32Value", "uint32", true
+	case "google.protobuf.UInt64Value":
+		return "wrapperspb.UInt64Value", "uint64", true
+	case "google.protobuf.BoolValue":
+		return "wrapperspb.BoolValue", "bool", true
+	case "google.protobuf.FloatValue":
+		return "wrapperspb.FloatValue", "float32", true
+	case "google.protobuf.DoubleValue":
+		return "wrapperspb.DoubleValue", "float64", true
+	}
+	return "", "", false
+}
+
+// isWrapperField is a thin predicate over wrapperGoType used at call sites
+// that don't need the type names.
+func isWrapperField(f *protogen.Field) bool {
+	_, _, ok := wrapperGoType(f)
+	return ok
 }
 
 // protoKindToOrmType maps proto field kinds to orm.FieldType constants.

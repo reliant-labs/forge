@@ -954,8 +954,19 @@ func runAddFrontend(name string, port int, kind string) error {
 		apiPort = cfg.Services[0].Port
 	}
 
-	// Generate frontend files
-	if err := generator.GenerateFrontendFiles(root, cfg.ModulePath, cfg.Name, name, apiPort, kind); err != nil {
+	// Generate frontend files. When the project has opted into the
+	// pnpm-workspaces layout, both the per-frontend file emitter (so
+	// package.json declares workspace deps + connect.ts imports from
+	// the shared package) and the workspace scaffolder (so packages/api
+	// + packages/hooks + pnpm-workspace.yaml exist if this is the first
+	// frontend added since flipping the flag) need to know.
+	workspaces := cfg.IsFrontendWorkspacesEnabled()
+	if err := generator.WriteFrontendWorkspaceFiles(root, cfg.Name, workspaces); err != nil {
+		return fmt.Errorf("write frontend workspace files: %w", err)
+	}
+	if err := generator.GenerateFrontendFilesWithOptions(root, cfg.ModulePath, cfg.Name, name, apiPort, kind, generator.FrontendGenOptions{
+		Workspaces: workspaces,
+	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
 

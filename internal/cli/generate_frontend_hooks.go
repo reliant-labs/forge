@@ -11,13 +11,27 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// generateFrontendHooks generates TypeScript React Query hook files for each
-// service in every Next.js frontend. It writes one <service>-hooks.ts per
-// service and an index.ts barrel file.
+// generateFrontendHooks generates TypeScript React Query hook files for
+// every Connect-driven service.
+//
+// Two output modes, picked by cfg.IsFrontendWorkspacesEnabled():
+//
+//   - workspaces=false (default): one file per service per frontend, at
+//     frontends/<name>/src/hooks/<svc>-hooks.ts. Each file imports
+//     connectClient from @/lib/connect and proto types from @/gen.
+//     Snapshot-stable with projects scaffolded before the flag landed.
+//
+//   - workspaces=true: one file per service at packages/hooks/src/
+//     generated/<svc>-hooks.ts (shared across all frontends). Each file
+//     imports connectClient from ../transport and proto types from the
+//     project's @<scope>/api workspace. The per-frontend hooks dir is
+//     not touched in this mode — frontends consume the workspace
+//     package instead.
 func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string) error {
 	if len(services) == 0 {
 		return nil
@@ -31,6 +45,10 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 	tmpl, err := template.New("hooks.ts.tmpl").Funcs(templates.FuncMap()).Parse(string(tmplContent))
 	if err != nil {
 		return fmt.Errorf("parse hooks template: %w", err)
+	}
+
+	if cfg.IsFrontendWorkspacesEnabled() {
+		return generateFrontendHooksWorkspace(cfg, services, projectDir, tmpl)
 	}
 
 	for _, fe := range cfg.Frontends {
@@ -110,6 +128,54 @@ func hookFileExportedSymbols(data codegen.FrontendHookTemplateData) []string {
 		out = append(out, "use"+m.Name)
 	}
 	return out
+}
+
+// generateFrontendHooksWorkspace emits the workspace-mode hooks: one
+// file per service at packages/hooks/src/generated/<svc>-hooks.ts,
+// plus a barrel index.ts. Shared by every frontend in the project.
+func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, tmpl *template.Template) error {
+	layout := generator.NewFrontendWorkspaceLayout(cfg.Name)
+	generatedDir := filepath.Join(projectDir, "packages", "hooks", "src", "generated")
+	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
+		return fmt.Errorf("create packages/hooks/src/generated: %w", err)
+	}
+
+	var hookFiles []hookFileEntry
+	for _, svc := range services {
+		data := codegen.ServiceDefToHookData(svc)
+		if len(data.Methods) == 0 {
+			continue
+		}
+		data.Workspaces = true
+		data.ApiPackage = layout.ApiPackage
+
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return fmt.Errorf("render workspace hooks for %s: %w", svc.Name, err)
+		}
+
+		fileName := serviceNameToHookFile(svc.Name)
+		hookFiles = append(hookFiles, hookFileEntry{
+			fileName: fileName,
+			nsAlias:  codegen.ToCamelCaseFromPascalExport(svc.Name),
+			symbols:  hookFileExportedSymbols(data),
+		})
+
+		outPath := filepath.Join(generatedDir, fileName)
+		if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
+			return fmt.Errorf("write hooks file %s: %w", outPath, err)
+		}
+	}
+
+	if len(hookFiles) > 0 {
+		indexPath := filepath.Join(generatedDir, "index.ts")
+		if err := writeHooksIndex(indexPath, hookFiles); err != nil {
+			return fmt.Errorf("write hooks index: %w", err)
+		}
+	}
+
+	fmt.Printf("  ✅ Generated %d hook file(s) at packages/hooks/src/generated\n", len(hookFiles))
+	return nil
 }
 
 // serviceNameToHookFile converts a service name to a hook file name.

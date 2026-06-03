@@ -1,0 +1,204 @@
+---
+name: frontend-workspaces
+description: Opt-in pnpm-workspaces layout for sharing TypeScript code across multiple frontends (web + mobile). When to use it, the resulting layout, how to add new shared packages, and the dev loop.
+---
+
+# Frontend Workspaces
+
+## When to use this
+
+The default forge layout gives each frontend its own standalone
+`package.json` under `frontends/<name>/`. That works fine for a single
+frontend — but the moment you add a second one (e.g. a Next.js web app
+plus a React Native Expo app), each frontend ends up with:
+
+- Its own copy of the buf-generated Connect TS clients (`src/gen/`).
+- Its own copy of the React Query hook wrappers.
+- No clean way to share custom hooks, design tokens, or domain types.
+
+`frontend.workspaces: true` reshapes the project into a pnpm workspace
+so all frontends can share these pieces from one source of truth.
+
+Reach for it when:
+
+- You have **two or more frontends** (web + mobile is the canonical
+  case).
+- You want **one place** for the generated TS clients, hooks, or
+  cross-frontend utilities.
+- You're OK adopting **pnpm** as the package manager (pnpm is required
+  — it's the only manager that handles `workspace:*` resolution
+  cleanly).
+
+If you only have one frontend, leave the flag off. The default layout
+is simpler.
+
+## Turning it on
+
+In `forge.yaml`:
+
+```yaml
+frontend:
+  workspaces: true
+```
+
+Or pass `--frontend-workspaces` to `forge new`. The flag is also
+accepted at `forge add frontend` time — if it was off when you
+scaffolded but you flip it on later, the next `forge generate` will
+emit the workspace scaffolding without disturbing your existing
+frontend's code.
+
+## Resulting layout
+
+```
+<project root>/
+  pnpm-workspace.yaml          # lists packages/* + frontends/*
+  packages/
+    api/                       # @<project>/api
+      package.json
+      buf.gen.yaml             # buf emits TS stubs here
+      src/
+        index.ts               # re-export barrel
+        gen/                   # buf-generated *_pb.ts (gitignored by default)
+    hooks/                     # @<project>/hooks
+      package.json
+      src/
+        transport.ts           # setApiTransport() bootstrap
+        use-api-query.ts       # base wrappers (DOM-free)
+        use-api-mutation.ts
+        index.ts
+        generated/             # per-service hooks (forge-generated)
+          users-hooks.ts
+          orders-hooks.ts
+          index.ts
+  frontends/
+    web/                       # Next.js
+      package.json             # declares "@<project>/api": "workspace:*"
+      src/
+        lib/connect.ts         # builds Transport, calls setApiTransport()
+        ...
+    mobile/                    # Expo / React Native
+      package.json             # same workspace deps
+      ...
+```
+
+The npm scope is derived from your project name (`forge.yaml: name`).
+`name: my-app` produces `@my-app/api` and `@my-app/hooks`. The scope is
+lowercased and stripped to valid npm chars; falls back to `@app` if the
+name doesn't produce a valid segment.
+
+## Dev loop
+
+After flipping the flag and running `forge generate`:
+
+```bash
+# install + link all workspace members in one shot
+pnpm install
+
+# run a frontend
+pnpm --filter web dev      # Next.js
+pnpm --filter mobile start # Expo
+
+# type-check everything (each workspace + each frontend)
+pnpm -r typecheck
+```
+
+## How the pieces fit together
+
+The `@<project>/hooks` package is **DOM-free** — its `tsconfig.json`
+omits the `DOM` lib so accidentally reaching for `document` or
+`window` is a compile error. This is what makes the same hooks usable
+from Next.js and React Native.
+
+Because the hooks package can't construct its own fetch-based
+Transport (that's frontend-specific), it exposes a tiny `transport.ts`
+shim:
+
+```typescript
+// packages/hooks/src/transport.ts
+import { createClient, type Transport } from "@connectrpc/connect";
+
+let _transport: Transport | null = null;
+
+export function setApiTransport(t: Transport) { _transport = t; }
+export function connectClient<S>(service: S) {
+  return createClient(service, _transport ?? throwIfNull());
+}
+```
+
+Each frontend builds its Transport (browser fetch in Next.js, custom
+fetch in React Native) once at startup and hands it over:
+
+```typescript
+// frontends/web/src/lib/connect.ts (auto-generated)
+import { setApiTransport } from "@my-app/hooks";
+
+export const transport = buildTransport();
+setApiTransport(transport);
+```
+
+After that, every hook in `@my-app/hooks/generated` resolves its
+Connect client against whichever Transport is registered. The hook
+files themselves don't import from frontend-specific paths, so they
+work identically in every workspace member.
+
+## Adding a new shared package
+
+You can add your own shared packages alongside the forge-generated
+`packages/api/` and `packages/hooks/`. Common examples:
+
+- `packages/ui/` — shared React components.
+- `packages/types/` — shared TypeScript types not derived from protos.
+- `packages/utils/` — shared helpers.
+
+```bash
+mkdir packages/ui
+cd packages/ui
+pnpm init
+# edit package.json:
+#   "name": "@my-app/ui"
+#   "main": "./src/index.ts"
+```
+
+Then in a frontend:
+
+```bash
+cd frontends/web
+pnpm add @my-app/ui   # resolves to workspace:*
+```
+
+Forge will never touch your own packages — only `packages/api/` and
+`packages/hooks/` are managed.
+
+## What forge owns vs you
+
+| Path | Owner | Regenerated by `forge generate`? |
+| ---- | ----- | -------------------------------- |
+| `pnpm-workspace.yaml` | forge (initial), you (after) | only if missing |
+| `packages/api/package.json` | forge (initial), you (after) | only if missing |
+| `packages/api/src/index.ts` | you | only if missing |
+| `packages/api/src/gen/` | forge | every run (buf) |
+| `packages/hooks/package.json` | forge (initial), you (after) | only if missing |
+| `packages/hooks/src/use-api-*.ts` | forge (initial), you (after) | only if missing |
+| `packages/hooks/src/generated/` | forge | every run |
+| `frontends/<name>/src/lib/connect.ts` | forge (initial), you (after) | only if missing |
+
+Rule of thumb: the `src/gen/` and `src/generated/` directories are
+regenerated every cycle. Everything else is yours to edit once it
+lands.
+
+## Why pnpm only
+
+- `workspace:*` is a pnpm-specific protocol. npm and yarn classic use
+  different conventions that don't compose with React Native's Metro
+  bundler.
+- pnpm's content-addressable store means N frontends sharing N copies
+  of `react-native` cost the disk space of one copy.
+- forge doesn't generate a `package-lock.json` or `yarn.lock`; only
+  `pnpm-lock.yaml` is supported in workspace mode.
+
+## See also
+
+- `frontend` skill — single-frontend dev loop, component library,
+  React Query patterns.
+- `proto` skill — what changes in `proto/services/<svc>/v1/` flow
+  through buf into `packages/api/src/gen/`.

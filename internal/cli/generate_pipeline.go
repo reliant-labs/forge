@@ -766,7 +766,7 @@ func stepFrontendPages(ctx *pipelineContext) error {
 	if len(pageEntities) == 0 {
 		return nil
 	}
-	if err := generateFrontendPages(ctx.Cfg, ctx.Services, ctx.ProjectDir, pageEntities); err != nil {
+	if err := generateFrontendPages(ctx.Cfg, ctx.Services, ctx.ProjectDir, pageEntities, ctx.Checksums, ctx.Force); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: frontend page generation failed: %v\n", err)
 	}
 	return nil

@@ -43,6 +43,85 @@ type MockFieldValue struct {
 // MockTransportTemplateData holds data for rendering the mock-transport.ts file.
 type MockTransportTemplateData struct {
 	Entities []MockTransportEntity
+	// SchemaImportGroups carries the per-ImportPath aggregation of
+	// response-schema imports the mock-transport template needs. The
+	// template iterates these to emit ONE merged `import { ... } from
+	// "@/gen/<path>"` statement per source module, instead of one per
+	// entity. Pre-aggregating in Go (vs. with a groupBy template helper)
+	// keeps the template loop trivially auditable and lets us preserve
+	// entity ordering inside each group.
+	SchemaImportGroups []MockTransportSchemaImportGroup
+}
+
+// MockTransportSchemaImportGroup bundles every response-schema symbol the
+// mock-transport.ts file imports from a single proto-generated module.
+// Two entities whose schemas live in the same `@/gen/services/api/v1/api_pb`
+// module merge into one import statement; entities pointing at distinct
+// modules each get their own group.
+type MockTransportSchemaImportGroup struct {
+	ImportPath string   // proto module path, e.g. "services/api/v1/api_pb"
+	Symbols    []string // schema symbols imported from this module, dedup'd + sorted
+}
+
+// BuildMockTransportSchemaImportGroups groups response-schema imports by
+// the entity's proto module path. Each entity contributes the same
+// per-RPC schema set the per-entity template loop used to emit
+// (`{ListResponseType,GetResponseType,CreateResponseType}Schema` gated
+// on `HasList`/`HasGet`/`HasCreate||HasUpdate`). Duplicate symbols
+// within a group are collapsed; the order is sorted for deterministic
+// output across runs.
+func BuildMockTransportSchemaImportGroups(entities []MockTransportEntity) []MockTransportSchemaImportGroup {
+	// Preserve first-seen ImportPath order for deterministic ordering of
+	// groups across runs (matches the order entities arrive in, which is
+	// itself stable per ExtractMockTransportEntities).
+	pathOrder := make([]string, 0)
+	bySym := make(map[string]map[string]struct{}, 0)
+	add := func(path, sym string) {
+		if path == "" || sym == "" {
+			return
+		}
+		if _, seen := bySym[path]; !seen {
+			pathOrder = append(pathOrder, path)
+			bySym[path] = make(map[string]struct{})
+		}
+		bySym[path][sym] = struct{}{}
+	}
+	for _, e := range entities {
+		if e.HasList {
+			add(e.ImportPath, e.ListResponseType+"Schema")
+		}
+		if e.HasGet {
+			add(e.ImportPath, e.GetResponseType+"Schema")
+		}
+		if e.HasCreate || e.HasUpdate {
+			add(e.ImportPath, e.CreateResponseType+"Schema")
+		}
+	}
+	groups := make([]MockTransportSchemaImportGroup, 0, len(pathOrder))
+	for _, path := range pathOrder {
+		syms := make([]string, 0, len(bySym[path]))
+		for s := range bySym[path] {
+			syms = append(syms, s)
+		}
+		sortStrings(syms)
+		groups = append(groups, MockTransportSchemaImportGroup{
+			ImportPath: path,
+			Symbols:    syms,
+		})
+	}
+	return groups
+}
+
+// sortStrings is a tiny stdlib-free sort helper for the schema-symbol
+// list. Kept inline so the codegen package doesn't grow a sort import
+// just for this single call site (other code paths here already avoid
+// sort to keep the dependency surface lean).
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 // MockTransportEntity represents one entity in the mock transport routing.

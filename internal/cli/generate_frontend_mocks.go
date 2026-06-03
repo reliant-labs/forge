@@ -130,7 +130,8 @@ func generateFrontendMocks(cfg *config.ProjectConfig, services []codegen.Service
 
 		if len(transportEntities) > 0 {
 			transportData := codegen.MockTransportTemplateData{
-				Entities: transportEntities,
+				Entities:           transportEntities,
+				SchemaImportGroups: codegen.BuildMockTransportSchemaImportGroups(transportEntities),
 			}
 
 			var buf bytes.Buffer

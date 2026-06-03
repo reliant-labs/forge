@@ -48,7 +48,22 @@ async function* toAsyncIterable(value: unknown): AsyncIterable<unknown> {
   yield resolved;
 }
 {{- range .Entities }}
-import { {{ .ListResponseType }}Schema, {{ .GetResponseType }}Schema, {{ .CreateResponseType }}Schema } from "@/gen/{{ .ImportPath }}";
+{{- /*
+  Only the response schemas for RPCs the entity actually exposes get
+  imported. Emitting `{{ .GetResponseType }}Schema` when HasGet is false
+  produces the literal token `Schema` (no prefix), which collides with a
+  sibling RPC's `Schema` and yields `Schema, Schema` — a duplicate
+  identifier that tsc rejects (TS2300) and that isn't exported from the
+  proto module anyway (TS2305). The conditional below mirrors the
+  switch-case generation further down (HasList → ListResponseType,
+  HasGet → GetResponseType, HasCreate → CreateResponseType — Update
+  reuses CreateResponseType, Delete returns an empty object).
+*/}}
+import {
+  {{- if .HasList }} {{ .ListResponseType }}Schema,{{ end }}
+  {{- if .HasGet }} {{ .GetResponseType }}Schema,{{ end }}
+  {{- if or .HasCreate .HasUpdate }} {{ .CreateResponseType }}Schema,{{ end }}
+} from "@/gen/{{ .ImportPath }}";
 import * as {{ .EntitySlug }}Mocks from "@/mocks/{{ .EntitySlug }}";
 {{- end }}
 
@@ -98,7 +113,14 @@ function makeUnaryResponse<T>(
  */
 export function createMockTransport(fallback?: Transport): Transport {
   const passthrough = active.passthrough === true && fallback != null;
-  return {
+  // Bind the object literal to a Transport-typed variable rather than
+  // casting the literal at the return site. A trailing assertion cast does
+  // not propagate Connect's Transport signature backwards into the literal's
+  // method bodies, so under `strict` tsc every callback parameter on
+  // `unary` / `stream` errors with "Parameter 'X' implicitly has an 'any'
+  // type" (TS7006). Binding the variable up front gives tsc the parameter
+  // types to infer against.
+  const transport: Transport = {
     // Connect v2's Transport.unary signature is
     //   (method, signal, timeoutMs, header, input, contextValues)
     // — method first, no separate service arg. `method.parent.typeName`
@@ -226,7 +248,8 @@ export function createMockTransport(fallback?: Transport): Transport {
         trailer: new Headers(),
       };
     },
-  } as unknown as Transport;
+  };
+  return transport;
 }
 
 // Re-export the active scenario so tests + dev tools can introspect it.

@@ -103,6 +103,14 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 	if !strings.Contains(s, "func (w *Worker) Run()") {
 		t.Error("cron worker should have Run method")
 	}
+	// Run() body should log "schedule", Schedule so a fresh scaffold is
+	// useful in logs / OTel traces without the user hand-editing the
+	// log line. Friction surfaced by kalshi-trader migration round —
+	// the prior body logged only `"worker", w.Name()` so log scrapers
+	// had no way to tell two workers apart by cadence.
+	if !strings.Contains(s, `"schedule", Schedule`) {
+		t.Errorf("cron worker Run() body should log the cron schedule. Got:\n%s", s)
+	}
 	if strings.Contains(s, "//go:build ignore") {
 		t.Error("rendered output should not retain //go:build ignore")
 	}

@@ -20,6 +20,20 @@ const (
 	TypeBytea       FieldType = "BYTEA"
 	TypeSerial      FieldType = "SERIAL"
 	TypeBigSerial   FieldType = "BIGSERIAL"
+	// TypeReal stores a single-precision floating point value (IEEE 754
+	// 32-bit). Maps to PostgreSQL REAL and to SQLite REAL (which is 8-byte
+	// internally — SQLite has no float32 column type). Used for proto
+	// `float` / `google.protobuf.FloatValue` fields.
+	TypeReal FieldType = "REAL"
+	// TypeDoublePrecision stores a double-precision floating point value
+	// (IEEE 754 64-bit). Maps to PostgreSQL DOUBLE PRECISION and to
+	// SQLite REAL. Used for proto `double` / `google.protobuf.DoubleValue`
+	// fields. Before TypeDoublePrecision landed, protoc-gen-forge emitted
+	// orm.TypeText for double columns; the runtime Scan still worked
+	// because Scan uses *float64, but anything that consults
+	// TableSchema() (DDL introspection / contract sync) saw TEXT for
+	// numeric columns. See orm-typetext-for-double in FORGE_BACKLOG.
+	TypeDoublePrecision FieldType = "DOUBLE PRECISION"
 )
 
 // FieldSchema represents a database field schema

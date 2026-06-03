@@ -381,8 +381,10 @@ func protoKindToOrmType(f *protogen.Field, isTimestamp bool) string {
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return "orm.TypeBigInt"
-	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		return "orm.TypeText" // No dedicated float type; use TEXT for now
+	case protoreflect.FloatKind:
+		return "orm.TypeReal"
+	case protoreflect.DoubleKind:
+		return "orm.TypeDoublePrecision"
 	case protoreflect.BytesKind:
 		return "orm.TypeBytea"
 	case protoreflect.EnumKind:

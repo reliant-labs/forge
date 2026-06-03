@@ -715,17 +715,30 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	for _, cm := range crudMethods {
 		authAction := operationToAuthAction(cm.Operation)
 
+		// Validate the request/response shape up front. The CRUD-body
+		// generator uses the same gate to decide whether to emit a real
+		// handler or a tagged CodeUnimplemented stub; the test scaffold
+		// has to mirror that decision or it emits per-RPC test rows that
+		// dereference fields the request type doesn't have (e.g.
+		// `Id: 1` on a GetMarketRequest keyed on `string ticker`). See
+		// crud-test-scaffold-shape-mismatch in FORGE_BACKLOG.
+		shapeOK, shapeReason := validateCRUDShape(svc, cm)
+
 		hasPagination := false
 		paginationStyle := ""
-		if cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
+		if shapeOK && cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
 			hasPagination = true
 			paginationStyle = "cursor"
 		}
 
 		// Detect filters and ordering from request message fields.
+		// Skip when the shape didn't match — the stub branch doesn't
+		// dereference filter fields and classifyFilterField on a
+		// bespoke request shape would otherwise leak filter rows into
+		// per-RPC test setup that fails to compile.
 		var filterFields []FilterFieldData
 		hasOrderBy := false
-		if cm.Operation == "list" && svc.Messages != nil {
+		if shapeOK && cm.Operation == "list" && svc.Messages != nil {
 			if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, mf := range msgFields {
 					if classifySkipField(mf.Name) {
@@ -774,6 +787,8 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			FilterFields:      filterFields,
 			HasOrderBy:        hasOrderBy,
 			UpdateEntityField: updateEntityField,
+			ShapeMismatch:     !shapeOK,
+			MismatchReason:    shapeReason,
 		}
 		allMethods = append(allMethods, mtd)
 

@@ -251,3 +251,39 @@ func TestGenerateIndexSQL(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerateCreateTableSQL_FloatTypes pins the float/double DDL emission.
+// Before TypeReal / TypeDoublePrecision landed, both `float` and `double`
+// proto kinds mapped to orm.TypeText, so any DDL introspection or contract
+// sync that looked at TableSchema saw a TEXT column for a numeric field.
+// Runtime Scan still worked (Scan uses *float64 directly), but everything
+// schema-shaped lied. See orm-typetext-for-double in FORGE_BACKLOG.
+func TestGenerateCreateTableSQL_FloatTypes(t *testing.T) {
+	schema := TableSchema{
+		Name: "model_performance",
+		Fields: []FieldSchema{
+			{Name: "id", Type: TypeBigInt, PrimaryKey: true},
+			{Name: "brier_score", Type: TypeDoublePrecision, NotNull: true},
+			{Name: "calibration_error", Type: TypeDoublePrecision},
+			{Name: "small_metric", Type: TypeReal},
+		},
+	}
+
+	sql := GenerateCreateTableSQL(schema)
+
+	if !strings.Contains(sql, `"brier_score" DOUBLE PRECISION NOT NULL`) {
+		t.Errorf("expected DOUBLE PRECISION NOT NULL column, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, `"calibration_error" DOUBLE PRECISION`) {
+		t.Errorf("expected DOUBLE PRECISION column, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, `"small_metric" REAL`) {
+		t.Errorf("expected REAL column, got:\n%s", sql)
+	}
+	// And the legacy TypeText sentinel must NOT appear anywhere for these
+	// columns — the regression we're guarding against is a silent fall
+	// through to TEXT in the proto → orm.TypeX mapping.
+	if strings.Contains(sql, `"brier_score" TEXT`) || strings.Contains(sql, `"calibration_error" TEXT`) {
+		t.Errorf("float/double columns regressed to TEXT, got:\n%s", sql)
+	}
+}

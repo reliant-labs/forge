@@ -135,7 +135,8 @@ Subcommands:
   forge add frontend <name>                       Add a new Next.js frontend
   forge add scenario <name>                       Scaffold a frontend mock scenario
   forge add webhook <name> --service S            Add a webhook endpoint to a service
-  forge add package <name>                        Add a new internal package (alias for package new)`,
+  forge add package <name>                        Add a new internal package (alias for package new)
+  forge add library <name>                        Scaffold a library-shaped package (no contract.go; pre-excluded)`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
@@ -147,6 +148,7 @@ Subcommands:
 	cmd.AddCommand(newAddWebhookCmd())
 	cmd.AddCommand(newAddPackageCmd())
 	cmd.AddCommand(newAddBinaryCmd())
+	cmd.AddCommand(newAddLibraryCmd())
 
 	return cmd
 }

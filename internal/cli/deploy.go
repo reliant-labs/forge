@@ -402,9 +402,32 @@ func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
 // when `forge build --push` has already pushed the same tag. Any error
 // (manifest absent, registry unreachable, manifest API disabled) yields
 // false so we fall through to the normal build+push path.
+//
+// For local/HTTP registries we use --insecure so the check works against
+// the dev k3d registry (localhost:5051), which doesn't speak TLS.
 func imageExistsInRegistry(ref string) bool {
-	cmd := exec.Command("docker", "manifest", "inspect", ref)
+	args := []string{"manifest", "inspect"}
+	if isInsecureRegistry(ref) {
+		args = append(args, "--insecure")
+	}
+	args = append(args, ref)
+	cmd := exec.Command("docker", args...)
 	return cmd.Run() == nil
+}
+
+// isInsecureRegistry reports whether the image ref points at a registry
+// that should be treated as HTTP. We treat localhost / 127.0.0.1 /
+// registry.localhost as insecure — these are the dev-cluster k3d
+// registries forge sets up. Anything else (ghcr.io, gcr.io, AR…) is
+// HTTPS by default.
+func isInsecureRegistry(ref string) bool {
+	host, _, _ := strings.Cut(ref, "/")
+	hostOnly, _, _ := strings.Cut(host, ":")
+	switch hostOnly {
+	case "localhost", "127.0.0.1", "registry.localhost":
+		return true
+	}
+	return false
 }
 
 func runKCL(mainK, imageTag, namespace string, envCfg map[string]string) (string, error) {

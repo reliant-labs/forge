@@ -255,6 +255,30 @@ func TestGenerateFrontendFilesCreatesExpectedFiles(t *testing.T) {
 	if !strings.Contains(string(goModBytes), "module example.com/myapp/frontends/web") {
 		t.Errorf("frontend go.mod should declare nested module path, got:\n%s", string(goModBytes))
 	}
+
+	// test-utils.tsx must be scaffolded so page tests can swap the Connect
+	// transport via setTransport(). The skill `frontend-testing` documents
+	// the API; the scaffold needs to ship the file.
+	testUtilsPath := filepath.Join(root, "frontends", "web", "src", "lib", "test-utils.tsx")
+	testUtils, err := os.ReadFile(testUtilsPath)
+	if err != nil {
+		t.Fatalf("expected src/lib/test-utils.tsx to exist: %v", err)
+	}
+	for _, want := range []string{"mockTransport", "renderWithTransport", "setTransport"} {
+		if !strings.Contains(string(testUtils), want) {
+			t.Errorf("test-utils.tsx should export %q, got:\n%s", want, string(testUtils))
+		}
+	}
+
+	// connect.ts must export setTransport so test-utils.tsx can swap the
+	// active transport for hermetic tests.
+	connectTS, err := os.ReadFile(filepath.Join(root, "frontends", "web", "src", "lib", "connect.ts"))
+	if err != nil {
+		t.Fatalf("expected src/lib/connect.ts to exist: %v", err)
+	}
+	if !strings.Contains(string(connectTS), "export function setTransport") {
+		t.Errorf("connect.ts should export setTransport, got:\n%s", string(connectTS))
+	}
 }
 
 func TestGenerateFrontendFilesReactNative(t *testing.T) {
@@ -348,11 +372,22 @@ func TestGenerateFrontendFilesViteSPA(t *testing.T) {
 		"src/lib/auth/provider.ts", "src/lib/auth/stub-provider.ts",
 		"src/lib/auth/context.tsx",
 		"src/hooks/use-api-query.ts", "src/hooks/use-api-mutation.ts",
+		"src/lib/test-utils.tsx",
 		"go.mod",
 	} {
 		if _, err := os.Stat(filepath.Join(feDir, file)); err != nil {
 			t.Errorf("expected %s to exist: %v", file, err)
 		}
+	}
+
+	// connect.ts must expose setTransport so test-utils can swap the
+	// active transport in hermetic page tests.
+	connectForTest, err := os.ReadFile(filepath.Join(feDir, "src", "lib", "connect.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(connectForTest), "export function setTransport") {
+		t.Errorf("vite-spa connect.ts should export setTransport, got:\n%s", string(connectForTest))
 	}
 
 	// Core UI components must be installed (vite-spa is browser-targeted

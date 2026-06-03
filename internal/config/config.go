@@ -250,7 +250,14 @@ type EnvironmentConfig struct {
 	Registry  string         `yaml:"registry,omitempty"`
 	Namespace string         `yaml:"namespace,omitempty"`
 	Domain    string         `yaml:"domain,omitempty"`
-	Config    map[string]any `yaml:"config,omitempty"`
+	// Cluster is the expected kubectl context name for this
+	// environment. When set, `forge deploy <env>` refuses to apply
+	// unless the current kubectl context matches (override via
+	// --context). For dev this defaults to k3d-<project-name>; for
+	// staging/prod the user declares the expected context explicitly
+	// (e.g. "gke_acme-prod_us-central1_cluster-1").
+	Cluster string         `yaml:"cluster,omitempty"`
+	Config  map[string]any `yaml:"config,omitempty"`
 }
 
 // DatabaseConfig holds database-related settings.

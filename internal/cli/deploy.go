@@ -163,13 +163,13 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 	fmt.Println()
 
 	// kubectl-context guard: verify the current context matches the
-	// env's expected cluster before doing anything destructive. Skipped
-	// for dry-run (no apply) and when --context is passed (CI scenarios
-	// where one deploy-bot context legitimately targets multiple envs).
-	if !dryRun {
-		if err := verifyKubectlContext(cfg, envName, contextOverride); err != nil {
-			return err
-		}
+	// env's expected cluster before doing anything destructive. Runs
+	// under --dry-run too: dry-run is for surfacing mistakes (wrong
+	// context!) before they ship, not for papering over them. The guard
+	// is skipped when --context is passed (CI scenarios where a single
+	// deploy-bot context legitimately targets multiple envs).
+	if err := verifyKubectlContext(cfg, envName, contextOverride); err != nil {
+		return err
 	}
 
 	start := time.Now()
@@ -552,17 +552,29 @@ func verifyKubectlContext(cfg *config.ProjectConfig, envName, override string) e
 		return fmt.Errorf("kubectl config current-context: %w (is kubectl installed and configured?)", err)
 	}
 	current := strings.TrimSpace(string(out))
-	if current != expected {
-		return fmt.Errorf(
-			"kubectl context mismatch for env %q:\n"+
-				"  expected: %s\n"+
-				"  current:  %s\n"+
-				"\n"+
-				"refusing to deploy. Fix with one of:\n"+
-				"  kubectl config use-context %s\n"+
-				"  forge deploy %s --context %s   (CI/legitimate override)",
-			envName, expected, current, expected, envName, current)
+	if err := kubectlContextGuardVerdict(envName, expected, current); err != nil {
+		return err
 	}
 	fmt.Printf("kubectl context: %s (matches env %s)\n", current, envName)
 	return nil
+}
+
+// kubectlContextGuardVerdict is the pure comparison core of the
+// kubectl-context guard. Lifted out so unit tests can exercise the
+// mismatch path without shelling to kubectl. Returns nil when current
+// matches expected (or when expected is empty — guard skipped), and
+// the user-facing refusal message otherwise.
+func kubectlContextGuardVerdict(envName, expected, current string) error {
+	if expected == "" || current == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"kubectl context mismatch for env %q:\n"+
+			"  expected: %s\n"+
+			"  current:  %s\n"+
+			"\n"+
+			"refusing to deploy. Fix with one of:\n"+
+			"  kubectl config use-context %s\n"+
+			"  forge deploy %s --context %s   (CI/legitimate override)",
+		envName, expected, current, expected, envName, current)
 }

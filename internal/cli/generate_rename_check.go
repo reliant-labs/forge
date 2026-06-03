@@ -81,7 +81,22 @@ func stepDetectRenamedExports(ctx *pipelineContext) error {
 		PkgName   string
 		Dropped   []string
 		CallSites []renameCallSite
+		// MovedTo is populated when the dropped symbol now lives in a
+		// different package (a cross-package move, not a pure delete).
+		// MovedTo[symbol] -> list of (pkg, path) locations currently
+		// declaring symbol elsewhere. Multiple entries mean the symbol
+		// is now declared in more than one package — a name collision
+		// the user should disambiguate before relying on the warning.
+		MovedTo map[string][]checksums.SymbolLocation
 	}
+
+	// Snapshot the current project-wide exports map ONCE per generate
+	// run. The map is used to detect cross-package moves: if symbol X
+	// is dropped from file F (package P), but X is still declared
+	// somewhere else, the warning should name BOTH the old and new
+	// locations so the user can update their stale `P.X` callers.
+	currentExports := checksums.ScanProjectGoExports(ctx.AbsPath)
+
 	var findings []renameFinding
 	for relPath, prior := range ctx.PriorExports {
 		content, err := os.ReadFile(filepath.Join(ctx.AbsPath, relPath))
@@ -93,9 +108,43 @@ func stepDetectRenamedExports(ctx *pipelineContext) error {
 		if len(dropped) == 0 {
 			continue
 		}
-		// Scan project for stale `pkg.Name` and bare `Name` references.
-		sites := findStaleReferences(ctx.AbsPath, prior.PkgName, dropped, relPath)
-		if len(sites) == 0 {
+
+		// For each dropped symbol, classify it as either (a) gone, or
+		// (b) moved to one-or-more other packages. The packages we
+		// search for stale references differ per case: a "gone" symbol
+		// only needs the old-package grep; a "moved" symbol also needs
+		// the new-package grep (callers may already be referencing the
+		// new location, but old `oldPkg.X` references are still stale).
+		movedTo := make(map[string][]checksums.SymbolLocation)
+		searchPkgs := map[string]bool{prior.PkgName: true}
+		for _, sym := range dropped {
+			locs := currentExports[sym]
+			// Filter out the source file itself — a same-name decl in
+			// the renamed file's NEW state was already captured by the
+			// newNames diff above.
+			var external []checksums.SymbolLocation
+			for _, loc := range locs {
+				if loc.RelPath == relPath {
+					continue
+				}
+				external = append(external, loc)
+			}
+			if len(external) == 0 {
+				continue
+			}
+			movedTo[sym] = external
+			for _, loc := range external {
+				searchPkgs[loc.Pkg] = true
+			}
+		}
+
+		// Walk every package the symbol could be referenced under and
+		// merge the stale-reference findings.
+		var sites []renameCallSite
+		for pkg := range searchPkgs {
+			sites = append(sites, findStaleReferences(ctx.AbsPath, pkg, dropped, relPath)...)
+		}
+		if len(sites) == 0 && len(movedTo) == 0 {
 			continue
 		}
 		findings = append(findings, renameFinding{
@@ -103,6 +152,7 @@ func stepDetectRenamedExports(ctx *pipelineContext) error {
 			PkgName:   prior.PkgName,
 			Dropped:   dropped,
 			CallSites: sites,
+			MovedTo:   movedTo,
 		})
 	}
 	if len(findings) == 0 {
@@ -113,11 +163,28 @@ func stepDetectRenamedExports(ctx *pipelineContext) error {
 	for _, f := range findings {
 		fmt.Fprintf(os.Stderr, "  • %s (package %s)\n", f.FilePath, f.PkgName)
 		fmt.Fprintf(os.Stderr, "    dropped: %s\n", strings.Join(f.Dropped, ", "))
+		// Surface cross-package moves so the user knows the symbol
+		// isn't fully gone — it just lives somewhere else now.
+		for sym, locs := range f.MovedTo {
+			switch {
+			case len(locs) == 1:
+				fmt.Fprintf(os.Stderr, "    moved: %s now in package %s (%s)\n",
+					sym, locs[0].Pkg, locs[0].RelPath)
+			case len(locs) > 1:
+				// Collision: more than one package declares the same
+				// name. Surface every location so the user picks the
+				// right destination.
+				fmt.Fprintf(os.Stderr, "    moved: %s now declared in %d packages — disambiguate:\n", sym, len(locs))
+				for _, loc := range locs {
+					fmt.Fprintf(os.Stderr, "      - %s (%s)\n", loc.Pkg, loc.RelPath)
+				}
+			}
+		}
 		for _, s := range f.CallSites {
 			fmt.Fprintf(os.Stderr, "      %s:%d: refers to %s\n", s.File, s.Line, s.Symbol)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "  Update the callers above to use the new name, or `git checkout` the generated file if the rename was unintended.\n")
+	fmt.Fprintf(os.Stderr, "  Update the callers above to use the new name (or package), or `git checkout` the generated file if the rename was unintended.\n")
 	return nil
 }
 

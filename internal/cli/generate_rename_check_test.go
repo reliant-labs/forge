@@ -221,6 +221,132 @@ var MigrationsFS = "new"
 	}
 }
 
+// TestStepDetectRenamedExports_CrossPackageMoveSurfaces verifies the
+// rename detector follows a symbol from its original package to a
+// different package between renders. `forgedb.MigrationsFS` moves from
+// `db/embed.go` (package forgedb) to `pkg/embed/embed.go` (package
+// embed); a caller still referencing `forgedb.MigrationsFS` is stale
+// and the warning should name the new location.
+func TestStepDetectRenamedExports_CrossPackageMoveSurfaces(t *testing.T) {
+	dir := t.TempDir()
+
+	// Stale caller — references the OLD package name.
+	writeUnderDir(t, dir, "internal/db/migrations.go", `package callers
+
+import "example.com/m/db"
+
+func Apply() { _ = forgedb.MigrationsFS }
+`)
+
+	// 1. Pre-rename: db/embed.go declares MigrationsFS in package forgedb.
+	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+
+var MigrationsFS = "v1"
+`)
+
+	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
+		"db/embed.go": {Hash: "h1", Tier: 1},
+	}}
+	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
+	if err := stepSnapshotTier1Exports(ctx); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// 2. Post-rename: db/embed.go no longer declares MigrationsFS.
+	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+
+var Other = "v2"
+`)
+	// And MigrationsFS now lives in a different package.
+	writeUnderDir(t, dir, "pkg/embed/embed.go", `package embed
+
+var MigrationsFS = "v2"
+`)
+
+	stderr, restore := captureStderr(t)
+	if err := stepDetectRenamedExports(ctx); err != nil {
+		restore()
+		t.Fatalf("detect: %v", err)
+	}
+	restore()
+	out := stderr.String()
+	if !strings.Contains(out, "Tier-1 rename detection") {
+		t.Errorf("missing rename-detection banner; got:\n%s", out)
+	}
+	if !strings.Contains(out, "MigrationsFS") {
+		t.Errorf("warning should name the dropped symbol; got:\n%s", out)
+	}
+	if !strings.Contains(out, "moved: MigrationsFS now in package embed") {
+		t.Errorf("warning should surface the cross-package move; got:\n%s", out)
+	}
+	if !strings.Contains(out, "pkg/embed/embed.go") {
+		t.Errorf("warning should name the new declaration path; got:\n%s", out)
+	}
+	// And the stale `forgedb.MigrationsFS` caller is still flagged.
+	if !strings.Contains(out, "internal/db/migrations.go") {
+		t.Errorf("warning should name the stale caller; got:\n%s", out)
+	}
+}
+
+// TestStepDetectRenamedExports_CollisionDisambiguates pins the
+// disambiguation branch: when the dropped symbol is now declared in
+// >1 package, the warning lists every location so the user picks the
+// right destination.
+func TestStepDetectRenamedExports_CollisionDisambiguates(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-rename declarer.
+	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+
+var Migrations = "v1"
+`)
+	// Stale caller of the old location.
+	writeUnderDir(t, dir, "internal/use.go", `package use
+
+import "example.com/m/db"
+
+func Run() { _ = db.Migrations }
+`)
+	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
+		"db/embed.go": {Tier: 1},
+	}}
+	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
+	if err := stepSnapshotTier1Exports(ctx); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// Post: dropped from db/embed.go; declared in TWO other packages.
+	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+
+var Renamed = "v2"
+`)
+	writeUnderDir(t, dir, "pkg/embed/embed.go", `package embed
+
+var Migrations = "v2"
+`)
+	writeUnderDir(t, dir, "pkg/migrations/migrations.go", `package migrations
+
+var Migrations = "v2"
+`)
+
+	stderr, restore := captureStderr(t)
+	if err := stepDetectRenamedExports(ctx); err != nil {
+		restore()
+		t.Fatalf("detect: %v", err)
+	}
+	restore()
+	out := stderr.String()
+	if !strings.Contains(out, "now declared in 2 packages") {
+		t.Errorf("warning should announce the collision; got:\n%s", out)
+	}
+	if !strings.Contains(out, "embed (pkg/embed/embed.go)") {
+		t.Errorf("warning should name embed package; got:\n%s", out)
+	}
+	if !strings.Contains(out, "migrations (pkg/migrations/migrations.go)") {
+		t.Errorf("warning should name migrations package; got:\n%s", out)
+	}
+}
+
 // writeUnderDir writes content under dir/rel, creating parent
 // directories. Test helper — fails the test on I/O errors. Local to
 // this file to avoid colliding with mustWrite in generate_cleanup_test.go

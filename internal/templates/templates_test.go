@@ -47,11 +47,13 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 			Name, Package, FieldName string
 			Fallible                 bool
 		}
-		HasDatabase  bool
-		OrmEnabled   bool
-		HasFallible  bool
-		BinaryShared bool
-		ConfigFields map[string]bool
+		HasDatabase    bool
+		OrmEnabled     bool
+		HasFallible    bool
+		BinaryShared   bool
+		ConfigFields   map[string]bool
+		RESTEnabled    bool
+		ConnectImports []string
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},

@@ -17,6 +17,13 @@ import (
 // When entities are provided, their message definitions are emitted inline
 // in the service proto (before the RPC request/response messages) so that
 // CRUD RPCs can reference them by bare name.
+//
+// When forge.yaml at `root` declares `api.rest: true`, CRUD-prefixed RPCs
+// (Get/List/Create/Update/Delete<Entity>) are emitted with default
+// `google.api.http` annotations so vanguard can transcode REST↔Connect at
+// runtime. Non-CRUD RPCs are left unannotated and need the user to add
+// annotations by hand. The `google/api/annotations.proto` import is added
+// to the proto only when at least one CRUD RPC was annotated.
 func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.PlanRPC, entities []config.PlanEntity) error {
 	protoDir := filepath.Join(root, "proto", "services", serviceName, "v1")
 	if err := os.MkdirAll(protoDir, 0755); err != nil {
@@ -26,6 +33,19 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 	handlerName := naming.ToPascalCase(serviceName)
 	needsTimestamp := planRPCsNeedTimestamp(rpcs) || planEntitiesNeedTimestamp(entities)
 	entityImports := planRPCsEntityImports(rpcs)
+	restEnabled := projectAPIRESTEnabled(root)
+
+	// Determine which RPCs get HTTP annotations up-front so we know
+	// whether to import google/api/annotations.proto.
+	annotations := make(map[string]string, len(rpcs))
+	if restEnabled {
+		for _, rpc := range rpcs {
+			if ann := crudHTTPAnnotation(rpc.Name); ann != "" {
+				annotations[rpc.Name] = ann
+			}
+		}
+	}
+	needsHTTPAnnotation := len(annotations) > 0
 
 	var b strings.Builder
 
@@ -35,11 +55,14 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 	fmt.Fprintf(&b, "option go_package = \"%s/gen/services/%s/v1;%sv1\";\n", modulePath, serviceName, serviceName)
 
 	// Imports
-	if needsTimestamp || len(entityImports) > 0 {
+	if needsTimestamp || len(entityImports) > 0 || needsHTTPAnnotation {
 		b.WriteString("\n")
 	}
 	if needsTimestamp {
 		b.WriteString("import \"google/protobuf/timestamp.proto\";\n")
+	}
+	if needsHTTPAnnotation {
+		b.WriteString("import \"google/api/annotations.proto\";\n")
 	}
 	for _, imp := range entityImports {
 		fmt.Fprintf(&b, "import \"%s\";\n", imp)
@@ -52,7 +75,13 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 		if rpc.Description != "" {
 			fmt.Fprintf(&b, "  // %s\n", rpc.Description)
 		}
-		fmt.Fprintf(&b, "  rpc %s(%sRequest) returns (%sResponse) {}\n", rpc.Name, rpc.Name, rpc.Name)
+		if ann, ok := annotations[rpc.Name]; ok {
+			fmt.Fprintf(&b, "  rpc %s(%sRequest) returns (%sResponse) {\n", rpc.Name, rpc.Name, rpc.Name)
+			fmt.Fprintf(&b, "    option (google.api.http) = %s;\n", ann)
+			fmt.Fprintf(&b, "  }\n")
+		} else {
+			fmt.Fprintf(&b, "  rpc %s(%sRequest) returns (%sResponse) {}\n", rpc.Name, rpc.Name, rpc.Name)
+		}
 	}
 	b.WriteString("}\n")
 
@@ -206,4 +235,110 @@ func planEntitiesNeedTimestamp(entities []config.PlanEntity) bool {
 		}
 	}
 	return false
+}
+
+// projectAPIRESTEnabled is a generator-local copy of the codegen-package
+// helper of the same name. Kept private here to avoid a generator →
+// codegen import (and the resulting cycle through contract.go). The
+// semantics are identical: scan forge.yaml line-by-line for `rest:` inside
+// the `api:` block and return the parsed bool. Empty file / parse error
+// → false.
+func projectAPIRESTEnabled(projectRoot string) bool {
+	data, err := os.ReadFile(filepath.Join(projectRoot, "forge.yaml"))
+	if err != nil {
+		return false
+	}
+	inAPI := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "api:") {
+				inAPI = true
+				continue
+			}
+			inAPI = false
+			continue
+		}
+		if !inAPI {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "rest:") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "rest:"))
+		if idx := strings.Index(val, "#"); idx >= 0 {
+			val = strings.TrimSpace(val[:idx])
+		}
+		val = strings.Trim(val, `"'`)
+		return strings.EqualFold(val, "true")
+	}
+	return false
+}
+
+// crudHTTPAnnotation returns the `google.api.http` option body (the
+// curly-brace block including braces) for a CRUD-prefixed RPC name, or
+// the empty string if rpcName doesn't match a CRUD pattern. The mapping
+// follows REST conventions:
+//
+//	Get<Entity>    → { get: "/v1/<entities>/{id}" }
+//	List<Entity>   → { get: "/v1/<entities>" }                  (entity already plural)
+//	Create<Entity> → { post: "/v1/<entities>" body: "*" }
+//	Update<Entity> → { patch: "/v1/<entities>/{id}" body: "*" }
+//	Delete<Entity> → { delete: "/v1/<entities>/{id}" }
+//
+// The entity name is lowercased and naïvely pluralized (append "s") so
+// "Patient" → "/v1/patients". List<Entity> uses the suffix as-is on the
+// assumption the user already named the RPC ListPatients (plural); we
+// strip a single trailing "s" before lowercasing/pluralizing so list ends
+// up identical to Get's collection path.
+//
+// Users who want richer pluralization (`ListPeople` → `/v1/people`) or
+// nested resources should hand-edit the annotation after generation.
+func crudHTTPAnnotation(rpcName string) string {
+	switch {
+	case strings.HasPrefix(rpcName, "Get"):
+		ent := strings.TrimPrefix(rpcName, "Get")
+		if ent == "" {
+			return ""
+		}
+		return fmt.Sprintf(`{ get: "/v1/%s/{id}" }`, pluralizeForREST(ent))
+	case strings.HasPrefix(rpcName, "List"):
+		ent := strings.TrimPrefix(rpcName, "List")
+		if ent == "" {
+			return ""
+		}
+		// List<Plural> — normalise to singular then pluralise so the
+		// collection path matches the Get<Singular> sibling.
+		return fmt.Sprintf(`{ get: "/v1/%s" }`, pluralizeForREST(strings.TrimSuffix(ent, "s")))
+	case strings.HasPrefix(rpcName, "Create"):
+		ent := strings.TrimPrefix(rpcName, "Create")
+		if ent == "" {
+			return ""
+		}
+		return fmt.Sprintf(`{ post: "/v1/%s" body: "*" }`, pluralizeForREST(ent))
+	case strings.HasPrefix(rpcName, "Update"):
+		ent := strings.TrimPrefix(rpcName, "Update")
+		if ent == "" {
+			return ""
+		}
+		return fmt.Sprintf(`{ patch: "/v1/%s/{id}" body: "*" }`, pluralizeForREST(ent))
+	case strings.HasPrefix(rpcName, "Delete"):
+		ent := strings.TrimPrefix(rpcName, "Delete")
+		if ent == "" {
+			return ""
+		}
+		return fmt.Sprintf(`{ delete: "/v1/%s/{id}" }`, pluralizeForREST(ent))
+	}
+	return ""
+}
+
+// pluralizeForREST lowercases the entity name and appends "s" — the
+// naïve pluralisation called out as acceptable. Users who want richer
+// rules ("person" → "people") can hand-edit the emitted annotation
+// post-generation; GeneratePlanProtoFile only writes during plan-mode
+// emission, so subsequent `forge generate` runs won't clobber hand-edited
+// .proto files.
+func pluralizeForREST(entity string) string {
+	return strings.ToLower(entity) + "s"
 }

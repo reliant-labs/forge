@@ -21,6 +21,10 @@ type buildOptions struct {
 	parallel    bool
 	buildDocker bool
 	debug       bool
+	// pushRegistry, when non-empty, retags built docker images to
+	// <registry>/<name>:<tag> and pushes them after build. Implies
+	// --docker so users don't have to pass both flags.
+	pushRegistry string
 }
 
 func newBuildCmd() *cobra.Command {
@@ -38,12 +42,17 @@ This command will:
 - Output binaries to the specified output directory
 
 Examples:
-  forge build                    # Build everything
-  forge build -t web             # Build only the "web" frontend
-  forge build -o bin             # Output binaries to bin/
-  forge build --docker           # Also build Docker images
-  forge build --debug           # Build with debug symbols for Delve`,
+  forge build                                # Build everything
+  forge build -t web                         # Build only the "web" frontend
+  forge build -o bin                         # Output binaries to bin/
+  forge build --docker                       # Also build Docker images
+  forge build --debug                        # Build with debug symbols for Delve
+  forge build --push ghcr.io/acme            # Build + retag + docker push to a registry`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --push implies --docker so users don't have to pass both.
+			if opts.pushRegistry != "" {
+				opts.buildDocker = true
+			}
 			return runBuild(opts)
 		},
 	}
@@ -53,6 +62,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
+	cmd.Flags().StringVar(&opts.pushRegistry, "push", "", "Push docker images to this registry after build (implies --docker)")
 
 	return cmd
 }
@@ -189,7 +199,7 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(cfg)
+				r := dockerBuildProject(cfg, opts.pushRegistry)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -199,7 +209,7 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(cfg, f.Name, f.Path)
+				r := dockerBuild(cfg, f.Name, f.Path, opts.pushRegistry)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -232,14 +242,14 @@ func buildSequential(cfg *config.ProjectConfig, frontends []config.FrontendConfi
 	// Docker builds only if --docker flag is set
 	if opts.buildDocker {
 		if buildBinary {
-			r := dockerBuildProject(cfg)
+			r := dockerBuildProject(cfg, opts.pushRegistry)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
 		for _, fe := range frontends {
-			r := dockerBuild(cfg, fe.Name, fe.Path)
+			r := dockerBuild(cfg, fe.Name, fe.Path, opts.pushRegistry)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -368,8 +378,12 @@ func withForcedEnv(env []string, key, value string) []string {
 	return rewritten
 }
 
-// dockerBuildProject builds the single project Docker image from the root Dockerfile.
-func dockerBuildProject(cfg *config.ProjectConfig) buildResult {
+// dockerBuildProject builds the single project Docker image from the
+// root Dockerfile. When pushRegistry is non-empty, the image is also
+// tagged with <pushRegistry>/<name>:<tag> and pushed after a successful
+// build (one docker build + one docker push per image in forge.yaml,
+// matching the MultiServiceApplication pattern).
+func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -396,27 +410,75 @@ func dockerBuildProject(cfg *config.ProjectConfig) buildResult {
 	dockerArgs := []string{"build", "-t", latestTag}
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
-		fmt.Printf("[build] %s: docker build -t %s -t %s\n", cfg.Name, latestTag, versionTag)
-	} else {
-		fmt.Printf("[build] %s: docker build -t %s\n", cfg.Name, latestTag)
 	}
+	// Tag for the push registry too when requested.
+	var pushTags []string
+	if pushRegistry != "" {
+		pushLatest := fmt.Sprintf("%s/%s:latest", pushRegistry, cfg.Name)
+		dockerArgs = append(dockerArgs, "-t", pushLatest)
+		pushTags = append(pushTags, pushLatest)
+		if v := gitVersionTag(); v != "" {
+			pushVersion := fmt.Sprintf("%s/%s:%s", pushRegistry, cfg.Name, v)
+			dockerArgs = append(dockerArgs, "-t", pushVersion)
+			pushTags = append(pushTags, pushVersion)
+		}
+	}
+	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
 	cmd := exec.Command("docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	err := cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return buildResult{
+			name:     cfg.Name + " (docker)",
+			kind:     "docker",
+			duration: time.Since(start),
+			err:      err,
+		}
+	}
+
+	// Push every push-registry tag if requested.
+	for _, t := range pushTags {
+		fmt.Printf("[build] %s: docker push %s\n", cfg.Name, t)
+		pushCmd := exec.Command("docker", "push", t)
+		pushCmd.Stdout = os.Stdout
+		pushCmd.Stderr = os.Stderr
+		if err := pushCmd.Run(); err != nil {
+			return buildResult{
+				name:     cfg.Name + " (docker)",
+				kind:     "docker",
+				duration: time.Since(start),
+				err:      fmt.Errorf("docker push %s: %w", t, err),
+			}
+		}
+	}
+
 	return buildResult{
 		name:     cfg.Name + " (docker)",
 		kind:     "docker",
 		duration: time.Since(start),
-		err:      err,
+		err:      nil,
 	}
 }
 
-// dockerBuild builds a Docker image for a frontend from its own Dockerfile.
-func dockerBuild(cfg *config.ProjectConfig, name, path string) buildResult {
+// countTags counts the `-t` flags in a docker build arg list for the
+// progress line. Cheap; only used for human-readable output.
+func countTags(args []string) int {
+	n := 0
+	for _, a := range args {
+		if a == "-t" {
+			n++
+		}
+	}
+	return n
+}
+
+// dockerBuild builds a Docker image for a frontend from its own
+// Dockerfile. When pushRegistry is non-empty, the image is also tagged
+// with <pushRegistry>/<name>:<tag> and pushed after a successful build.
+func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) buildResult {
 	start := time.Now()
 	dockerfile := filepath.Join(path, "Dockerfile")
 
@@ -443,22 +505,54 @@ func dockerBuild(cfg *config.ProjectConfig, name, path string) buildResult {
 	dockerArgs := []string{"build", "-t", latestTag}
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
-		fmt.Printf("[build] %s: docker build -t %s -t %s\n", name, latestTag, versionTag)
-	} else {
-		fmt.Printf("[build] %s: docker build -t %s\n", name, latestTag)
 	}
+	var pushTags []string
+	if pushRegistry != "" {
+		pushLatest := fmt.Sprintf("%s/%s:latest", pushRegistry, name)
+		dockerArgs = append(dockerArgs, "-t", pushLatest)
+		pushTags = append(pushTags, pushLatest)
+		if v := gitVersionTag(); v != "" {
+			pushVersion := fmt.Sprintf("%s/%s:%s", pushRegistry, name, v)
+			dockerArgs = append(dockerArgs, "-t", pushVersion)
+			pushTags = append(pushTags, pushVersion)
+		}
+	}
+	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 
 	cmd := exec.Command("docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	err := cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return buildResult{
+			name:     name + " (docker)",
+			kind:     "docker",
+			duration: time.Since(start),
+			err:      err,
+		}
+	}
+
+	for _, t := range pushTags {
+		fmt.Printf("[build] %s: docker push %s\n", name, t)
+		pushCmd := exec.Command("docker", "push", t)
+		pushCmd.Stdout = os.Stdout
+		pushCmd.Stderr = os.Stderr
+		if err := pushCmd.Run(); err != nil {
+			return buildResult{
+				name:     name + " (docker)",
+				kind:     "docker",
+				duration: time.Since(start),
+				err:      fmt.Errorf("docker push %s: %w", t, err),
+			}
+		}
+	}
+
 	return buildResult{
 		name:     name + " (docker)",
 		kind:     "docker",
 		duration: time.Since(start),
-		err:      err,
+		err:      nil,
 	}
 }
 

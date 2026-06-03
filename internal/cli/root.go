@@ -117,6 +117,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newConfigCmd())
+	rootCmd.AddCommand(newDevCmd())
 
 	return rootCmd
 }

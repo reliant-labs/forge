@@ -335,6 +335,78 @@ func New(d *Deps) Service { return nil }
 	}
 }
 
+// TestInternalContracts_InterfaceCatalogueSkipped asserts that a
+// package whose contract.go declares only narrow interfaces (>= 2,
+// no Deps struct, no New func) is treated as an "interface catalogue"
+// — a collection of contracts consumed elsewhere, not a Service-shape
+// package the bootstrap binds to. No findings should fire, so the user
+// doesn't have to add the package to contracts.exclude.
+//
+// FRICTION 2026-06-02: cp-forge layer-3 natsio shipped a contract.go
+// with 7 narrow interfaces (Publisher, CommandHandler, three Runners,
+// two Repositories) and the lint fired three findings; the user had to
+// add the package to forge.yaml's contracts.exclude to silence them.
+func TestInternalContracts_InterfaceCatalogueSkipped(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "natsio")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package natsio
+
+// A catalogue of narrow interfaces consumed by other packages. There
+// is no canonical Service surface and no Deps/New trio — this package
+// just describes contracts.
+
+type Publisher interface {
+	Publish(subject string, data []byte) error
+}
+
+type CommandHandler interface {
+	HandleCommand(msg []byte) error
+}
+
+type EventConsumer interface {
+	Consume(subject string) error
+}
+`))
+	res, err := LintInternalContracts(tmp, nil)
+	if err != nil {
+		t.Fatalf("LintInternalContracts: %v", err)
+	}
+	got := findingsForRule(res.Findings, "forgeconv-internal-package-contract-names")
+	if len(got) != 0 {
+		t.Fatalf("interface-catalogue package should produce 0 findings, got %d:\n%s",
+			len(got), res.FormatText())
+	}
+}
+
+// TestInternalContracts_SingleInterfaceStillFires guards the
+// catalogue heuristic's lower bound: a single interface declaration
+// (no Deps/New) is more likely an incomplete contract than a
+// deliberate catalogue, so it should still fire all three findings.
+func TestInternalContracts_SingleInterfaceStillFires(t *testing.T) {
+	tmp := t.TempDir()
+	pkgDir := filepath.Join(tmp, "internal", "incomplete")
+	must(t, mkdirAll(pkgDir))
+	must(t, writeFile(filepath.Join(pkgDir, "contract.go"), `package incomplete
+
+// One interface, no Deps, no New — looks like an unfinished Service
+// scaffold, not an interface catalogue. Lint must surface the gap.
+
+type Sender interface {
+	Send(b []byte) error
+}
+`))
+	res, err := LintInternalContracts(tmp, nil)
+	if err != nil {
+		t.Fatalf("LintInternalContracts: %v", err)
+	}
+	got := findingsForRule(res.Findings, "forgeconv-internal-package-contract-names")
+	if len(got) != 3 {
+		t.Fatalf("single-interface package should fire 3 findings (Service/Deps/New missing), got %d:\n%s",
+			len(got), res.FormatText())
+	}
+}
+
 // findingsForRule filters a finding slice to a single rule. Keeps tests
 // focused — the analyzer pipeline runs every rule in one pass, so a fixture
 // could surface unrelated findings.

@@ -402,6 +402,12 @@ type FrontendTemplateData struct {
 	// hooks workspace, e.g. "@myapp/hooks". Empty when Workspaces is
 	// false.
 	HooksPackage string
+	// UIWebPackage is the npm package name for the shared web UI
+	// component workspace, e.g. "@myapp/ui-web". Empty when Workspaces
+	// is false. Frontend package.json templates declare a
+	// "workspace:*" dep on this, and tsconfig templates redirect
+	// `@/components/*` paths into the package via path mapping.
+	UIWebPackage string
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

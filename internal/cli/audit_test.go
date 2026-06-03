@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestAuditReport_BasicShape exercises buildAuditReport against a
@@ -52,7 +54,7 @@ docs: {}
 	}
 
 	wantKeys := []string{
-		"version", "shape", "conventions", "codegen",
+		"version", "shape", "environments", "conventions", "codegen",
 		"packs", "pack_graph", "proto_migration_alignment",
 		"migration_safety", "wire_coverage", "scaffold_markers", "deps",
 	}
@@ -81,6 +83,58 @@ docs: {}
 	case AuditStatusOK, AuditStatusWarn, AuditStatusError:
 	default:
 		t.Errorf("invalid overall status %q", decoded.OverallStatus)
+	}
+}
+
+// TestAuditEnvironments_WarnsOnMissingCluster confirms the env-cluster
+// audit warns when a non-dev environment is declared without cluster:
+// (so `forge deploy <env>` can't guard against wrong-context applies).
+// Dev gets a safe default (k3d-<project>) so it does NOT warn.
+func TestAuditEnvironments_WarnsOnMissingCluster(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Name: "cp-forge",
+		Envs: []config.EnvironmentConfig{
+			{Name: "dev"},     // OK — defaults to k3d-cp-forge
+			{Name: "staging"}, // warn — no default
+			{Name: "prod", Cluster: "gke_acme-prod"},
+		},
+	}
+	cat := auditEnvironments(cfg)
+	if cat.Status != AuditStatusWarn {
+		t.Fatalf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
+	}
+	if !strings.Contains(cat.Summary, "staging") {
+		t.Errorf("summary should mention the offending env, got %q", cat.Summary)
+	}
+	if !strings.Contains(cat.Summary, "1 env(s)") {
+		t.Errorf("summary should report the count (only staging), got %q", cat.Summary)
+	}
+}
+
+// TestAuditEnvironments_AllSet returns ok when every non-dev env
+// declares cluster: explicitly.
+func TestAuditEnvironments_AllSet(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Name: "cp-forge",
+		Envs: []config.EnvironmentConfig{
+			{Name: "dev"},
+			{Name: "staging", Cluster: "gke_acme-staging"},
+			{Name: "prod", Cluster: "gke_acme-prod"},
+		},
+	}
+	cat := auditEnvironments(cfg)
+	if cat.Status != AuditStatusOK {
+		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
+	}
+}
+
+// TestAuditEnvironments_NoEnvs returns ok (n/a) when forge.yaml has
+// no environments declared at all.
+func TestAuditEnvironments_NoEnvs(t *testing.T) {
+	cfg := &config.ProjectConfig{Name: "cp-forge"}
+	cat := auditEnvironments(cfg)
+	if cat.Status != AuditStatusOK {
+		t.Errorf("status: want ok, got %q", cat.Status)
 	}
 }
 

@@ -237,16 +237,30 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 {{- range .Packages}}
 {{- if .Fallible}}
 	{{.VarName}}Impl, err := {{.Alias}}.New({{.Alias}}.Deps{
+{{- if .HasLogger}}
 		Logger: logger.With("package", "{{.Name}}"),
+{{- end}}
+{{- if .HasConfig}}
 		Config: cfg,
+{{- end}}
+{{- range .AppFieldRefs}}
+		{{.DepsField}}: app.{{.DepsField}},
+{{- end}}
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing {{.ImportPath}}: %w", err)
 	}
 {{- else}}
 	{{.VarName}}Impl := {{.Alias}}.New({{.Alias}}.Deps{
+{{- if .HasLogger}}
 		Logger: logger.With("package", "{{.Name}}"),
+{{- end}}
+{{- if .HasConfig}}
 		Config: cfg,
+{{- end}}
+{{- range .AppFieldRefs}}
+		{{.DepsField}}: app.{{.DepsField}},
+{{- end}}
 	})
 {{- end}}
 	app.Packages.{{.FieldName}} = {{.VarName}}Impl
@@ -397,16 +411,30 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- range .Packages}}
 {{- if .Fallible}}
 	{{.VarName}}Impl, err := {{.Alias}}.New({{.Alias}}.Deps{
+{{- if .HasLogger}}
 		Logger: logger.With("package", "{{.Name}}"),
+{{- end}}
+{{- if .HasConfig}}
 		Config: cfg,
+{{- end}}
+{{- range .AppFieldRefs}}
+		{{.DepsField}}: app.{{.DepsField}},
+{{- end}}
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initializing {{.ImportPath}}: %w", err)
 	}
 {{- else}}
 	{{.VarName}}Impl := {{.Alias}}.New({{.Alias}}.Deps{
+{{- if .HasLogger}}
 		Logger: logger.With("package", "{{.Name}}"),
+{{- end}}
+{{- if .HasConfig}}
 		Config: cfg,
+{{- end}}
+{{- range .AppFieldRefs}}
+		{{.DepsField}}: app.{{.DepsField}},
+{{- end}}
 	})
 {{- end}}
 	app.Packages.{{.FieldName}} = {{.VarName}}Impl

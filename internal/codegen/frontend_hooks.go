@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -8,9 +9,9 @@ import (
 // FrontendHookTemplateData holds data for rendering a single service's
 // TypeScript React Query hooks file.
 type FrontendHookTemplateData struct {
-	ServiceName      string               // e.g., "UserService"
-	ServiceNameCamel string               // e.g., "userService"
-	ImportPath       string               // e.g., "services/users/v1/users_pb"
+	ServiceName      string // e.g., "UserService"
+	ServiceNameCamel string // e.g., "userService"
+	ImportPath       string // e.g., "services/users/v1/users_pb" — the service's own proto file
 	Methods          []FrontendHookMethod
 	// HasQueries / HasMutations let the template conditionally import
 	// only the hooks it actually uses. Without these flags the emitted
@@ -18,6 +19,26 @@ type FrontendHookTemplateData struct {
 	// query-only services, tripping no-unused-vars in eslint configs.
 	HasQueries   bool
 	HasMutations bool
+	// SchemaImports groups input-message `Schema` value imports by their
+	// declaring proto file's TS import path. The template emits one
+	// `import { ...Schema }` statement per entry. Same-file schemas land
+	// under the service's ImportPath; cross-file schemas land under their
+	// own proto file's derived path. Sorted for deterministic output.
+	SchemaImports []HookImportGroup
+	// TypeImports groups output-message `type` imports the same way.
+	// Kept separate from SchemaImports because the template emits these
+	// as `import type { ... }` — value vs type-only is required so a
+	// `--isolatedModules` build still tree-shakes the type-only side.
+	TypeImports []HookImportGroup
+}
+
+// HookImportGroup is one TS import statement: a list of symbols (sorted,
+// deduplicated) drawn from a single source proto file. The template emits
+// one statement per group so cross-proto-file refs resolve to the
+// declaring _pb.ts file.
+type HookImportGroup struct {
+	ImportPath string   // e.g., "services/users/v1/users_pb" or "shared/v1/types_pb"
+	Symbols    []string // sorted, deduplicated identifiers
 }
 
 // FrontendHookMethod represents a single unary RPC method for hook generation.
@@ -43,6 +64,14 @@ func isQueryMethod(name string) bool {
 		}
 	}
 	return false
+}
+
+// ToCamelCaseFromPascalExport is the exported wrapper around the
+// package-internal helper. Callers outside this package (the frontend
+// hooks barrel generator deriving a namespace alias from a service name)
+// use it so the camelCase rules stay in lockstep across packages.
+func ToCamelCaseFromPascalExport(s string) string {
+	return toCamelCaseFromPascal(s)
 }
 
 // toCamelCaseFromPascal converts PascalCase to camelCase by lowering the first
@@ -96,6 +125,22 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		ImportPath:       ProtoFileToTSImportPath(svc.ProtoFile),
 	}
 
+	// schemasByPath / typesByPath collect symbol -> tspath buckets. We use
+	// sets keyed on symbol name to dedupe: the same Request type may be
+	// referenced by multiple RPCs, and the same Response type may appear
+	// in both queries and mutations.
+	schemasByPath := map[string]map[string]struct{}{}
+	typesByPath := map[string]map[string]struct{}{}
+
+	addSym := func(buckets map[string]map[string]struct{}, path, sym string) {
+		set, ok := buckets[path]
+		if !ok {
+			set = map[string]struct{}{}
+			buckets[path] = set
+		}
+		set[sym] = struct{}{}
+	}
+
 	for _, m := range svc.Methods {
 		// Skip streaming RPCs — only generate hooks for unary.
 		if m.ClientStreaming || m.ServerStreaming {
@@ -109,6 +154,26 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 			data.HasMutations = true
 		}
 
+		// The Service value still lives in the service's own _pb.ts, so
+		// ImportPath stays as svc.ProtoFile's derived path. But each
+		// RPC's InputSchema (value import) and Output type (type-only
+		// import) come from the file that physically declares them,
+		// which may differ from svc.ProtoFile for cross-file refs.
+		// Falling back to svc.ProtoFile when InputProtoFile/
+		// OutputProtoFile are empty keeps legacy descriptor.json files
+		// (written before the cross-file fix landed) producing valid
+		// imports rather than `import "@/gen/_pb"`.
+		inPath := m.InputProtoFile
+		if inPath == "" {
+			inPath = svc.ProtoFile
+		}
+		outPath := m.OutputProtoFile
+		if outPath == "" {
+			outPath = svc.ProtoFile
+		}
+		addSym(schemasByPath, ProtoFileToTSImportPath(inPath), m.InputType+"Schema")
+		addSym(typesByPath, ProtoFileToTSImportPath(outPath), m.OutputType)
+
 		data.Methods = append(data.Methods, FrontendHookMethod{
 			Name:       m.Name,
 			NameCamel:  toCamelCaseFromPascal(m.Name),
@@ -118,5 +183,35 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		})
 	}
 
+	data.SchemaImports = flattenImportGroups(schemasByPath)
+	data.TypeImports = flattenImportGroups(typesByPath)
+
 	return data
+}
+
+// flattenImportGroups converts a path -> symbol-set map into a sorted
+// []HookImportGroup with sorted, deduplicated symbol slices. Sorting at
+// both levels makes the rendered TS deterministic byte-for-byte across
+// runs, which the snapshot-style codegen tests rely on.
+func flattenImportGroups(buckets map[string]map[string]struct{}) []HookImportGroup {
+	if len(buckets) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(buckets))
+	for p := range buckets {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	out := make([]HookImportGroup, 0, len(paths))
+	for _, p := range paths {
+		set := buckets[p]
+		syms := make([]string, 0, len(set))
+		for s := range set {
+			syms = append(syms, s)
+		}
+		sort.Strings(syms)
+		out = append(out, HookImportGroup{ImportPath: p, Symbols: syms})
+	}
+	return out
 }

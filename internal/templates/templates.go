@@ -408,6 +408,12 @@ type FrontendTemplateData struct {
 	// "workspace:*" dep on this, and tsconfig templates redirect
 	// `@/components/*` paths into the package via path mapping.
 	UIWebPackage string
+	// UINativePackage is the npm package name for the shared React
+	// Native primitives workspace, e.g. "@myapp/ui-native". Empty
+	// when Workspaces is false OR the project has no RN frontend.
+	// React Native templates reference this in their package.json
+	// workspace deps and example screens.
+	UINativePackage string
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

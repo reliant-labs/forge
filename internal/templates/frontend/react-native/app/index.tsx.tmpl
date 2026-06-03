@@ -1,3 +1,31 @@
+{{- if .Workspaces}}
+import {
+  Button,
+  Card,
+  SafeAreaView,
+  Stack,
+  Text,
+} from "{{.UINativePackage}}";
+
+export default function HomeScreen() {
+  return (
+    <SafeAreaView>
+      <Stack gap={4} style={ {{"{"}} flex: 1, padding: 24, justifyContent: "center" {{"}"}} }>
+        <Text size="3xl" weight="bold">
+          {{.FrontendName}}
+        </Text>
+        <Text tone="muted">Part of the {{.ProjectName}} project</Text>
+        <Card padding="md">
+          <Stack gap={3}>
+            <Text>Edit app/index.tsx to start building your app.</Text>
+            <Button onPress={() => {{"{"}}{{"}"}}}>Hello, world</Button>
+          </Stack>
+        </Card>
+      </Stack>
+    </SafeAreaView>
+  );
+}
+{{- else}}
 import { StyleSheet, Text, View } from "react-native";
 
 export default function HomeScreen() {
@@ -35,3 +63,4 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 });
+{{- end}}

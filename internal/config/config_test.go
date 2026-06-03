@@ -443,3 +443,33 @@ func TestJWTConfig_EffectiveSigningMethod(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectConfig_HasReactNativeFrontend asserts the detector
+// returns true only when at least one frontend is RN-shaped. Gates
+// the @<scope>/ui-native package emit.
+func TestProjectConfig_HasReactNativeFrontend(t *testing.T) {
+	tests := []struct {
+		name      string
+		frontends []FrontendConfig
+		want      bool
+	}{
+		{"empty", nil, false},
+		{"only nextjs", []FrontendConfig{{Name: "web", Type: "nextjs"}}, false},
+		{"only vite-spa", []FrontendConfig{{Name: "admin", Type: "vite-spa"}}, false},
+		{"react-native present", []FrontendConfig{{Name: "mobile", Type: "react-native"}}, true},
+		{"underscore form accepted", []FrontendConfig{{Name: "mobile", Type: "react_native"}}, true},
+		{"mixed", []FrontendConfig{
+			{Name: "web", Type: "nextjs"},
+			{Name: "mobile", Type: "react-native"},
+		}, true},
+		{"case-insensitive type", []FrontendConfig{{Name: "mobile", Type: "React-Native"}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ProjectConfig{Frontends: tt.frontends}
+			if got := cfg.HasReactNativeFrontend(); got != tt.want {
+				t.Errorf("HasReactNativeFrontend() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

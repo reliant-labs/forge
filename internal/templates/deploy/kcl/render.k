@@ -563,6 +563,8 @@ multi_service_apps = lambda mapp: schema.MultiServiceApplication -> {str: schema
         service_account_name = svc.service_account_name
         command = svc.command if svc.command else mapp.command
         args = svc.args
+        cluster_rbac = svc.cluster_rbac
+        cluster_rbac_rules = svc.cluster_rbac_rules
     } for svc in mapp.services}
 }
 

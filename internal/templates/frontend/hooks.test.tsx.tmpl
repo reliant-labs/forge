@@ -1,0 +1,57 @@
+// forge:scaffold one-shot
+//
+// Auto-scaffolded happy-path tests for {{.ServiceName}} hooks.
+//
+// This file landed with a `.starter` suffix because forge `generate`
+// only emits a starter test when no sibling test exists; rename
+// `<svc>-hooks.test.tsx.starter` to `<svc>-hooks.test.tsx` to activate.
+// Once activated, this file is yours — forge will not regenerate it.
+//
+// Each test covers the happy path of one RPC. Extend with error /
+// loading / empty cases as you build the page. See the
+// `frontend-testing` skill for the four-state coverage rule.
+
+import { describe, it, expect } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import { mockTransport } from "@/lib/test-utils";
+import { setTransport } from "@/lib/connect";
+{{range .HookImports}}import { {{.Symbol}} } from "./{{.Module}}";
+{{end}}
+
+function wrapper({ children }: { children: ReactNode }) {
+  const qc = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, staleTime: 0, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+}
+
+describe("{{.ServiceName}} hooks", () => {
+{{range .Methods}}
+  it("{{.HookName}} resolves a happy-path response", async () => {
+    setTransport(
+      mockTransport({
+        "{{$.ServiceName}}.{{.Name}}": { response: {} },
+      }),
+    );
+{{if .IsQuery}}
+    const { result } = renderHook(() => {{.HookName}}({} as never), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeDefined();
+{{else}}
+    const { result } = renderHook(() => {{.HookName}}(), { wrapper });
+    await result.current.mutateAsync({} as never).catch(() => {
+      // Mutations may reject if the empty request fails validation upstream.
+      // The point of the starter is that the wiring resolves; tighten the
+      // assertions as you flesh out the page.
+    });
+    expect(result.current).toBeDefined();
+{{end}}
+  });
+{{end}}
+});

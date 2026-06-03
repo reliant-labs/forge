@@ -22,14 +22,16 @@ func newDevStatusCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Snapshot of cluster + pods + port-forwards + sibling namespaces",
-		Long: `Snapshot of the local dev environment.
+		Short: "Print dynamic dev-loop state (cluster up/down, pods, port-forwards)",
+		Long: `Print the dynamic state of the local dev environment.
 
-Reports:
-  - cluster up/down state and kubectl context
-  - pods in the dev namespace, with readiness
-  - active port-forwards (from the per-namespace PID file)
-  - sibling dev namespaces on this cluster (multi-worktree pattern)
+Dynamic means "what's actually happening right now" — does the k3d
+cluster exist, what's the current kubectl context, what pods are in
+the dev namespace, what port-forwards are running, what sibling dev
+namespaces exist on this cluster.
+
+For static config (declared cluster name, expected context, declared
+service/frontend ports) run ` + "`forge dev info`" + `.
 
 Examples:
   forge dev status
@@ -96,12 +98,24 @@ func runDevStatus(configPath string, jsonOut bool) error {
 		return enc.Encode(summary)
 	}
 
-	fmt.Printf("Cluster:    %s (%s)\n", cluster.Name, boolUpDown(cluster.Exists))
-	fmt.Printf("Context:    %s\n", cluster.Context)
-	fmt.Printf("Namespace:  %s\n", ns)
+	// Dynamic state: is the cluster up, what's the current kubectl
+	// context, what namespace are we reading from. Declared values
+	// (expected cluster name, expected context) live in `forge dev info`.
+	fmt.Printf("Cluster %s: %s\n", cluster.Name, boolUpDown(cluster.Exists))
+	current := currentKubectlContext()
+	if current == "" {
+		fmt.Printf("kubectl context (current): (none)\n")
+	} else if current == cluster.Context {
+		fmt.Printf("kubectl context (current): %s (matches expected)\n", current)
+	} else {
+		fmt.Printf("kubectl context (current): %s (expected %s — run `kubectl config use-context %s`)\n",
+			current, cluster.Context, cluster.Context)
+	}
+	fmt.Printf("Namespace: %s\n", ns)
 	fmt.Println()
 	if !exists {
 		fmt.Println("Cluster is down — run `forge dev cluster up` to start.")
+		fmt.Println("Run `forge dev info` for the declared config.")
 		return nil
 	}
 
@@ -133,6 +147,8 @@ func runDevStatus(configPath string, jsonOut bool) error {
 			fmt.Printf("  - %s\n", s)
 		}
 	}
+	fmt.Println()
+	fmt.Println("For declared port mappings, run `forge dev info`.")
 	return nil
 }
 

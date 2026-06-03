@@ -147,6 +147,21 @@ type AddOptions struct {
 	}
 }
 
+// AddResult is the structured side-channel returned by Add so callers
+// (notably the CLI) can surface follow-up actions. Mirrors
+// packs.InstallResult so the CLI can treat pack-install and starter-add
+// hints uniformly.
+type AddResult struct {
+	// PendingProtoGenerate is set true when the starter wrote a `.proto`
+	// file. Like the pack path, a fresh `.proto` is NOT yet wired into
+	// `buf.yaml` / `forge.yaml`, so the project's `buf generate` /
+	// `forge generate` pipeline has to run before `go mod tidy` (whose
+	// resolution touches the not-yet-existing `gen/<ns>/v1` package) can
+	// succeed. The CLI uses this signal to defer tidy AND to print a
+	// "run `forge generate`" hint at the tail of the add.
+	PendingProtoGenerate bool
+}
+
 // Add renders every file in the starter into the project. The
 // operation is intentionally minimal — no forge.yaml mutation, no
 // dependency install, no migration allocation. The user owns the
@@ -155,9 +170,14 @@ type AddOptions struct {
 // On a re-run, files that already exist are skipped (with a notice)
 // unless opts.Force is set. This mirrors the "starters are one-time"
 // contract: forge does not roll the user's customizations back.
-func (s *Starter) Add(opts AddOptions) error {
+//
+// The returned AddResult carries deferred-codegen flags (today just
+// PendingProtoGenerate) so the CLI can print a single, accurate
+// follow-up hint rather than guessing from stdout grepping.
+func (s *Starter) Add(opts AddOptions) (*AddResult, error) {
+	result := &AddResult{}
 	if opts.ProjectDir == "" {
-		return fmt.Errorf("ProjectDir is required")
+		return result, fmt.Errorf("ProjectDir is required")
 	}
 
 	out := opts.Stdout
@@ -175,7 +195,7 @@ func (s *Starter) Add(opts AddOptions) error {
 	for _, f := range s.Files {
 		dest, err := renderPathTemplate(f.Destination, data)
 		if err != nil {
-			return fmt.Errorf("render destination %q: %w", f.Destination, err)
+			return result, fmt.Errorf("render destination %q: %w", f.Destination, err)
 		}
 		target := filepath.Join(opts.ProjectDir, dest)
 
@@ -189,16 +209,19 @@ func (s *Starter) Add(opts AddOptions) error {
 		basePath := path.Join(s.Name, "templates")
 		content, err := templates.RenderFromFS(startersFS, basePath, f.Source, data)
 		if err != nil {
-			return fmt.Errorf("render template %s: %w", f.Source, err)
+			return result, fmt.Errorf("render template %s: %w", f.Source, err)
 		}
 
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("create directory for %s: %w", dest, err)
+			return result, fmt.Errorf("create directory for %s: %w", dest, err)
 		}
 		if err := os.WriteFile(target, content, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", dest, err)
+			return result, fmt.Errorf("write %s: %w", dest, err)
 		}
 		logf("  Created: %s\n", dest)
+		if strings.HasSuffix(dest, ".proto") {
+			result.PendingProtoGenerate = true
+		}
 	}
 
 	if len(s.Deps.Go) > 0 {
@@ -216,7 +239,7 @@ func (s *Starter) Add(opts AddOptions) error {
 	if strings.TrimSpace(s.Notes) != "" {
 		logf("\nNotes:\n%s\n", strings.TrimRight(s.Notes, "\n"))
 	}
-	return nil
+	return result, nil
 }
 
 // ValidStarterName mirrors packs.ValidPackName — the starter slug

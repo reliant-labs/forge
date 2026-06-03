@@ -140,16 +140,18 @@ func runStarterAdd(name, service string, force bool, out interface {
 		fmt.Fprintln(out, "  --force enabled: existing files will be overwritten")
 	}
 
-	if err := starter.Add(starters.AddOptions{
+	addResult, err := starter.Add(starters.AddOptions{
 		ProjectDir:  root,
 		ModulePath:  cfg.ModulePath,
 		ProjectName: cfg.Name,
 		Service:     service,
 		Force:       force,
 		Stdout:      out,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("add starter %q: %w", name, err)
 	}
+	pendingProtoGenerate := addResult != nil && addResult.PendingProtoGenerate
 
 	// Mirror `forge pack install`'s post-install tidy. Starters drop new
 	// imports into the project that goimports would resolve on next
@@ -158,23 +160,38 @@ func runStarterAdd(name, service string, force bool, out interface {
 	// already runs tidy. Best-effort: if go.mod is absent (frontend-only
 	// starter, or a corrupted project) we just print a hint and bail
 	// without failing the scaffold.
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-		fmt.Fprintln(out, "\n  Running go mod tidy...")
-		tidy := exec.Command("go", "mod", "tidy")
-		tidy.Dir = root
-		tidy.Stdout = os.Stdout
-		tidy.Stderr = os.Stderr
-		if err := tidy.Run(); err != nil {
-			// Don't surface as a starter-add failure: the files landed,
-			// the user owns them, and tidy can be run manually. Some
-			// starters reference packages the user must `go get`
-			// themselves (StarterDeps.Go is intentionally
-			// echo-not-install) so a tidy failure here is plausible.
-			fmt.Fprintf(out, "  Warning: go mod tidy failed (%v) — run it manually after adding the listed Go deps.\n", err)
+	//
+	// Skip tidy when the starter emitted a `.proto` file — same root
+	// cause as the pack path: the scaffolded Go imports point at
+	// `gen/<ns>/v1` paths that don't exist until `forge generate` runs.
+	// Tidy would otherwise fail with "no required module provides
+	// package …/gen/<x>/v1". The closing hint tells the user the next
+	// step is theirs.
+	switch {
+	case pendingProtoGenerate:
+		fmt.Fprintln(out, "\n  Skipping go mod tidy: starter added .proto files; run 'forge generate' to produce gen/ output and tidy.")
+	default:
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			fmt.Fprintln(out, "\n  Running go mod tidy...")
+			tidy := exec.Command("go", "mod", "tidy")
+			tidy.Dir = root
+			tidy.Stdout = os.Stdout
+			tidy.Stderr = os.Stderr
+			if err := tidy.Run(); err != nil {
+				// Don't surface as a starter-add failure: the files landed,
+				// the user owns them, and tidy can be run manually. Some
+				// starters reference packages the user must `go get`
+				// themselves (StarterDeps.Go is intentionally
+				// echo-not-install) so a tidy failure here is plausible.
+				fmt.Fprintf(out, "  Warning: go mod tidy failed (%v) — run it manually after adding the listed Go deps.\n", err)
+			}
 		}
 	}
 
 	fmt.Fprintf(out, "\nStarter '%s' scaffolded. You own these files now — forge will not regenerate them.\n", starter.Name)
+	if pendingProtoGenerate {
+		fmt.Fprintf(out, "\nRun `%s generate` to compile new proto definitions and finish `go mod tidy`.\n", CLIName())
+	}
 	return nil
 }
 

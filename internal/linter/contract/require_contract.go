@@ -30,6 +30,17 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip external test packages (`package <name>_test`). These exist only to
+	// host black-box tests; their Test/Benchmark/Example functions and any
+	// test helper structs are not part of the package's API surface by Go
+	// convention, so requiring a contract.go here would be spurious and would
+	// force users into the internal-test form, losing API-boundary discipline.
+	// The package-under-test is analyzed separately and still subject to the
+	// contract rule.
+	if strings.HasSuffix(pass.Pkg.Name(), "_test") {
+		return nil, nil
+	}
+
 	// Honor forge.yaml's contracts.exclude — these packages are intentionally
 	// kept contract-free (utility packages with no behavioral interface).
 	if IsExcluded(pkgPath) {

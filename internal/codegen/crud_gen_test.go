@@ -238,6 +238,225 @@ func (s *Service) CreatePatient(ctx context.Context, req *connect.Request[pb.Cre
 	}
 }
 
+// TestEnsureDepsDBField_DoesNotMutateWhenHandlersGoExists pins the
+// Tier-3 user-owned contract for handlers/<svc>/service.go.
+//
+// Before this regression test landed, ensureDepsDBField silently
+// injected `DB orm.Context` and a `pkg/orm` import into service.go on
+// the FIRST `forge generate` after a proto service grew a `List*` /
+// `Get*` / `Create*` / etc. method — even when the user had written a
+// hand-rolled handlers.go and never intended to consume forge's CRUD
+// codegen. service.go is Tier-3 user-owned (banners.go classifies it
+// so) and "user-owned, never mutated" is the documented convention;
+// mutating it on regen was a silent stomp.
+//
+// The opt-out: presence of handlers.go in the service package signals
+// "I'm managing handler wiring myself; keep your hands off service.go".
+// The CRUD dedup pass still emits handlers_crud_gen.go for any CRUD
+// method the user has NOT implemented in handlers.go — but if those
+// stubs reference s.deps.DB and the user hasn't added DB, the resulting
+// `go build` error is loud and visible, not a silent file mutation.
+func TestEnsureDepsDBField_DoesNotMutateWhenHandlersGoExists(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// User-owned service.go: NO DB field, NO orm import. The user wants
+	// to hand-write handlers without forge's CRUD codegen wiring.
+	serviceGo := `package patients
+
+import (
+	"fmt"
+	"log/slog"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+}
+
+func (d Deps) validateDeps() error {
+	if d.Logger == nil {
+		return fmt.Errorf("PatientsService: Deps.Logger is required")
+	}
+	return nil
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	servicePath := filepath.Join(handlerDir, "service.go")
+	if err := os.WriteFile(servicePath, []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// User-owned handlers.go: signals opt-out from forge CRUD codegen.
+	// The user has implemented ListPatients themselves with whatever
+	// shape they like — no DB dependency.
+	handlersGo := `package patients
+
+import (
+	"context"
+	"connectrpc.com/connect"
+	pb "example.com/test/gen/proto/services/patients/v1"
+)
+
+func (s *Service) ListPatients(ctx context.Context, req *connect.Request[pb.ListPatientsRequest]) (*connect.Response[pb.ListPatientsResponse], error) {
+	return nil, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "handlers.go"), []byte(handlersGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Snapshot the exact bytes of service.go before generate.
+	beforeBytes, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+		},
+	}
+
+	entities := []EntityDef{
+		{
+			Name:      "Patient",
+			TableName: "patients",
+			PkField:   "id",
+			PkGoType:  "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", GoType: "int64"},
+				{Name: "name", GoName: "Name", GoType: "string"},
+			},
+		},
+	}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if len(crudMethods) != 1 {
+		t.Fatalf("expected 1 CRUD match (ListPatients → Patient), got %d", len(crudMethods))
+	}
+
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	// service.go must be byte-for-byte identical — NO injected DB field,
+	// NO injected orm import. This is the Tier-3-never-mutated guarantee.
+	afterBytes, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeBytes) != string(afterBytes) {
+		t.Errorf("service.go was mutated despite handlers.go existing.\n--- before ---\n%s\n--- after ---\n%s",
+			string(beforeBytes), string(afterBytes))
+	}
+
+	// Sanity checks: defensive against the regression's exact symptoms.
+	after := string(afterBytes)
+	if strings.Contains(after, "orm.Context") {
+		t.Error("service.go must not contain orm.Context after generate when handlers.go exists")
+	}
+	if strings.Contains(after, "github.com/reliant-labs/forge/pkg/orm") {
+		t.Error("service.go must not contain pkg/orm import after generate when handlers.go exists")
+	}
+}
+
+// TestEnsureDepsDBField_InjectsWhenHandlersGoAbsent pins the happy
+// path: a fresh service with no handlers.go (user hasn't started
+// writing handler code yet) DOES get the DB field auto-injected so the
+// generated handlers_crud_gen.go compiles out of the box. This is the
+// behavior that motivated ensureDepsDBField in the first place and we
+// don't want to regress it while fixing the silent-mutation case above.
+func TestEnsureDepsDBField_InjectsWhenHandlersGoAbsent(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh service.go from the scaffold: no DB field, no orm import,
+	// has the "// Add your dependencies here." marker.
+	serviceGo := `package patients
+
+import (
+	"fmt"
+	"log/slog"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	// Add your dependencies here.
+}
+
+func (d Deps) validateDeps() error {
+	if d.Logger == nil {
+		return fmt.Errorf("PatientsService: Deps.Logger is required")
+	}
+	return nil
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	servicePath := filepath.Join(handlerDir, "service.go")
+	if err := os.WriteFile(servicePath, []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Intentionally NO handlers.go — fresh service, user hasn't started.
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+		},
+	}
+
+	entities := []EntityDef{
+		{
+			Name:      "Patient",
+			TableName: "patients",
+			PkField:   "id",
+			PkGoType:  "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", GoType: "int64"},
+				{Name: "name", GoName: "Name", GoType: "string"},
+			},
+		},
+	}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	after, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(after)
+
+	if !strings.Contains(content, "DB") || !strings.Contains(content, "orm.Context") {
+		t.Errorf("expected DB orm.Context to be injected into Deps when no handlers.go exists; got:\n%s", content)
+	}
+	if !strings.Contains(content, "github.com/reliant-labs/forge/pkg/orm") {
+		t.Errorf("expected pkg/orm import to be injected when no handlers.go exists; got:\n%s", content)
+	}
+}
+
 func TestGenerateCRUDHandlers_CleanupWhenNoMethods(t *testing.T) {
 	projectDir := t.TempDir()
 	handlerDir := filepath.Join(projectDir, "handlers", "patients")

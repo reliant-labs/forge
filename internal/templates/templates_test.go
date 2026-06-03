@@ -305,3 +305,68 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 		})
 	}
 }
+
+// TestCmdServerTemplate_CallsPostBootstrap verifies the generated
+// cmd/server.go invokes the user-owned PostBootstrap hook after
+// Bootstrap returns and propagates any error as a fatal boot failure.
+// This is the chokepoint the post-bootstrap user code relies on; if
+// the call disappears from the template, projects that wire
+// post-construct collaborators here will silently no-op.
+func TestCmdServerTemplate_CallsPostBootstrap(t *testing.T) {
+	data := struct {
+		Module       string
+		ConfigFields map[string]bool
+	}{
+		Module:       "example.com/myproject",
+		ConfigFields: map[string]bool{},
+	}
+
+	content, err := ProjectTemplates().Render("cmd-server.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render cmd-server.go.tmpl: %v", err)
+	}
+	rendered := string(content)
+
+	if !strings.Contains(rendered, "app.PostBootstrap(application)") {
+		t.Errorf("cmd-server.go.tmpl must call app.PostBootstrap(application); rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "post-bootstrap hook failed") {
+		t.Errorf("cmd-server.go.tmpl must propagate post-bootstrap errors with a 'post-bootstrap hook failed' message")
+	}
+
+	// Verify it still parses as valid Go.
+	fset := token.NewFileSet()
+	if _, perr := parser.ParseFile(fset, "server.go", rendered, parser.AllErrors); perr != nil {
+		t.Fatalf("rendered server.go does not parse:\n%v\n\nSource:\n%s", perr, rendered)
+	}
+}
+
+// TestPostBootstrapTemplate_ScaffoldsNoOp verifies the user-owned
+// post_bootstrap.go scaffold renders as valid Go with the expected
+// signature `func PostBootstrap(app *App) error`. The default body is
+// a no-op the user replaces; if the signature drifts, every project
+// that owns the file will fail to compile when cmd/server.go's
+// generated call site updates underneath it.
+func TestPostBootstrapTemplate_ScaffoldsNoOp(t *testing.T) {
+	content, err := ProjectTemplates().Render("post_bootstrap.go.tmpl", struct{}{})
+	if err != nil {
+		t.Fatalf("render post_bootstrap.go.tmpl: %v", err)
+	}
+	rendered := string(content)
+
+	if !strings.Contains(rendered, "func PostBootstrap(app *App) error") {
+		t.Errorf("post_bootstrap.go.tmpl must declare `func PostBootstrap(app *App) error`; got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "return nil") {
+		t.Errorf("post_bootstrap.go.tmpl default body must `return nil` (no-op); got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "//forge:allow") {
+		t.Errorf("post_bootstrap.go.tmpl must carry //forge:allow so the audit walker treats it as user-owned")
+	}
+
+	// Verify it parses as valid Go.
+	fset := token.NewFileSet()
+	if _, perr := parser.ParseFile(fset, "post_bootstrap.go", rendered, parser.AllErrors); perr != nil {
+		t.Fatalf("rendered post_bootstrap.go does not parse:\n%v\n\nSource:\n%s", perr, rendered)
+	}
+}

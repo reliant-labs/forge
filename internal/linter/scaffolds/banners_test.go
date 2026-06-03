@@ -52,6 +52,7 @@ func TestClassifyTemplate(t *testing.T) {
 		{"internal/templates/frontend/pages/list-page.tsx.tmpl", tier2Scaffold},
 		{"internal/packs/jwt-auth/templates/jwt_validator.go.tmpl", tier2Scaffold},
 		{"internal/templates/project/setup.go.tmpl", tier3UserOwned},
+		{"internal/templates/project/post_bootstrap.go.tmpl", tier3UserOwned},
 		{"internal/templates/service/service.go.tmpl", tier3UserOwned},
 		{"internal/templates/worker/worker.go.tmpl", tier3UserOwned},
 		{"internal/templates/project/Makefile.tmpl", tierSkip},

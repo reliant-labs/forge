@@ -834,7 +834,32 @@ func classifyFilterField(mf MessageFieldDef) FilterFieldData {
 
 // ensureDepsDBField checks the service.go Deps struct for a DB field and adds
 // one if missing. The CRUD handlers reference s.deps.DB, so we need it present.
+//
+// service.go is a Tier-3 user-owned file: forge scaffolds it once at `forge
+// add service` time, then never re-renders it. Silently injecting fields on
+// every regen broke that contract — a user who hand-wrote a service with
+// `List*`-prefixed RPC methods (matched by parseCRUDOperation) but no
+// intention of using forge's CRUD codegen would see their service.go grow
+// a `DB orm.Context` field and an orm import on the next `forge generate`.
+//
+// The opt-out: if the user has written a `handlers.go` (the sibling Tier-2
+// hand-written-handler file) in the service package, they're signaling that
+// they own handler wiring and forge should not touch service.go. The CRUD
+// dedup pass in GenerateCRUDHandlers already drops any CRUD method the user
+// has implemented in handlers.go; the remaining stubs in handlers_crud_gen.go
+// will fail to compile without a DB field, but that failure is loud (a
+// `go build` error the user sees directly) rather than a silent mutation of
+// their service.go.
+//
+// A fresh service (no handlers.go on disk) still gets the DB field injected
+// automatically — that's the happy path the original code was written for.
 func ensureDepsDBField(serviceDir string) error {
+	// Opt-out signal: user has written a handlers.go file. They're managing
+	// handler wiring (and Deps shape) themselves; don't mutate service.go.
+	if _, err := os.Stat(filepath.Join(serviceDir, "handlers.go")); err == nil {
+		return nil
+	}
+
 	servicePath := filepath.Join(serviceDir, "service.go")
 	data, err := os.ReadFile(servicePath)
 	if err != nil {

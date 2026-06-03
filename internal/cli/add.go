@@ -965,6 +965,17 @@ func runAddFrontend(name string, port int, kind string) error {
 	// the *bool survives marshal round-trips.
 	frontendOn := true
 	cfg.Features.Frontend = &frontendOn
+
+	// Bring stack.frontend.framework in sync with the frontend we just
+	// added. Projects scaffolded without --frontend leave this field as
+	// "none" — downstream tooling (lint config, CI, codegen branching)
+	// reads the framework field directly and would misread the project
+	// as having no frontend stack. Only overwrite when empty or "none"
+	// so a user who set something exotic (e.g. "svelte") keeps it.
+	if cfg.Stack.Frontend.Framework == "" || cfg.Stack.Frontend.Framework == "none" {
+		cfg.Stack.Frontend.Framework = frontendType
+	}
+
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 		return fmt.Errorf("update project config: %w", err)
 	}

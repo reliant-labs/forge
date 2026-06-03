@@ -360,13 +360,26 @@ func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
 	}
 
 	imageRef := fmt.Sprintf("%s/%s:%s", registry, cfg.Name, tag)
+
+	// Skip the rebuild if the image is already present at the tag (e.g.
+	// the user just ran `forge build --push` against the same registry).
+	// `docker manifest inspect` is cheap (HEAD against the registry) and
+	// avoids an O(minutes) docker build + push on the hot path.
+	if imageExistsInRegistry(imageRef) {
+		fmt.Printf("  %s already present — skipping rebuild.\n", imageRef)
+		return nil
+	}
+
 	fmt.Printf("  Building and pushing %s...\n", imageRef)
 
-	buildCmd := exec.Command("docker", "build",
-		"-t", imageRef,
-		"-f", dockerfile,
-		".",
-	)
+	buildArgs := []string{"build", "-t", imageRef}
+	// Apply docker.build_contexts from forge.yaml so sibling-checkout
+	// replace directives resolve in the deploy-time rebuild too.
+	for _, k := range sortedKeys(cfg.Docker.BuildContexts) {
+		buildArgs = append(buildArgs, "--build-context", k+"="+cfg.Docker.BuildContexts[k])
+	}
+	buildArgs = append(buildArgs, "-f", dockerfile, ".")
+	buildCmd := exec.Command("docker", buildArgs...)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
@@ -381,6 +394,17 @@ func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
 	}
 
 	return nil
+}
+
+// imageExistsInRegistry returns true when `docker manifest inspect` can
+// resolve the given image:tag, i.e. it's already in the registry. Used
+// by buildAndPushLocal to short-circuit the redundant deploy-time build
+// when `forge build --push` has already pushed the same tag. Any error
+// (manifest absent, registry unreachable, manifest API disabled) yields
+// false so we fall through to the normal build+push path.
+func imageExistsInRegistry(ref string) bool {
+	cmd := exec.Command("docker", "manifest", "inspect", ref)
+	return cmd.Run() == nil
 }
 
 func runKCL(mainK, imageTag, namespace string, envCfg map[string]string) (string, error) {

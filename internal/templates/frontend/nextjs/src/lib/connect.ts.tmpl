@@ -88,12 +88,25 @@ function buildTransport(): Transport {
 }
 
 export const transport = buildTransport();
+{{- if .Workspaces}}
+
+// Wire the workspace-shared hooks package to this frontend's Transport.
+// The hooks package itself is DOM-free and Transport-agnostic; each
+// frontend constructs its own Transport (Next.js fetch here, custom
+// fetch under React Native) and hands it over once at module load.
+import { setApiTransport } from "{{.HooksPackage}}";
+setApiTransport(transport);
+{{- end}}
 
 /**
  * connectClient creates a typed Connect client for a given service descriptor.
  *
  * Usage:
+{{- if .Workspaces}}
+ *   import { UserService } from "{{.ApiPackage}}/services/users/v1/users_pb";
+{{- else}}
  *   import { UserService } from "../gen/user/v1/user_pb";
+{{- end}}
  *
  *   const client = connectClient(UserService);
  *   const user = await client.getUser({ id: "1" });

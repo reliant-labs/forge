@@ -30,6 +30,18 @@ type FrontendHookTemplateData struct {
 	// as `import type { ... }` — value vs type-only is required so a
 	// `--isolatedModules` build still tree-shakes the type-only side.
 	TypeImports []HookImportGroup
+	// Workspaces is true when the project opted into the pnpm-workspace
+	// layout (frontend.workspaces: true). When true, the rendered hook
+	// file lives under packages/hooks/src/generated/ and imports
+	// connectClient from "../transport" + proto types from the
+	// project's @<scope>/api workspace. When false (the default), the
+	// file lives under frontends/<name>/src/hooks/ and imports from the
+	// frontend-local @/lib/connect + @/gen paths — byte-identical to
+	// projects that predate the workspaces flag.
+	Workspaces bool
+	// ApiPackage is the workspace package name for the shared API
+	// (e.g. "@myapp/api"). Empty when Workspaces is false.
+	ApiPackage string
 }
 
 // HookImportGroup is one TS import statement: a list of symbols (sorted,

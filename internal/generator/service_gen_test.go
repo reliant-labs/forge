@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,132 @@ func TestGenerateServiceFilesProtoSkipsExisting(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "// existing proto") {
 		t.Errorf("existing proto should not be overwritten, got:\n%s", string(content))
+	}
+}
+
+// TestGenerateServiceFilesResumeSkipsExisting verifies that ScaffoldResume
+// preserves every pre-existing output file and reports skips. The recovery
+// scenario this guards: a partial `forge add service` run wrote service.go
+// but `buf generate` failed mid-pipeline; the user re-runs with --resume
+// expecting service.go to stay untouched.
+func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
+	root := t.TempDir()
+
+	// Pre-seed every output file with sentinel content that the scaffolder
+	// would never produce. If --resume erroneously rewrites them, this
+	// content disappears.
+	preExisting := map[string]string{
+		"handlers/orders/service.go":               "// user edits to service.go\npackage orders\n",
+		"handlers/orders/authorizer.go":            "// user edits to authorizer.go\npackage orders\n",
+		"handlers/orders/handlers_scaffold_test.go": "// user edits to scaffold tests\npackage orders\n",
+		"handlers/orders/integration_test.go":      "// user edits to integration tests\npackage orders\n",
+		"proto/services/orders/v1/orders.proto":    "syntax = \"proto3\";\n// user-edited proto\n",
+	}
+	for rel, content := range preExisting {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var progress bytes.Buffer
+	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", 8081,
+		ScaffoldResume, &progress); err != nil {
+		t.Fatalf("GenerateServiceFilesWithMode(resume) error = %v", err)
+	}
+
+	for rel, want := range preExisting {
+		got, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if string(got) != want {
+			t.Errorf("--resume should not have rewritten %s; got:\n%s", rel, string(got))
+		}
+	}
+
+	// One "✓ skipped" line per file the scaffold would otherwise have
+	// emitted.
+	if got := progress.String(); !strings.Contains(got, "skipped: ") {
+		t.Errorf("expected progress output to report skipped files, got:\n%s", got)
+	}
+}
+
+// TestGenerateServiceFilesForceOverwrites verifies that ScaffoldForce
+// rewrites every output file (including the proto) and reports the
+// overwrites.
+func TestGenerateServiceFilesForceOverwrites(t *testing.T) {
+	root := t.TempDir()
+
+	// Pre-seed with sentinel content so we can detect overwrites.
+	preExisting := []string{
+		"handlers/orders/service.go",
+		"handlers/orders/authorizer.go",
+		"handlers/orders/handlers_scaffold_test.go",
+		"handlers/orders/integration_test.go",
+		"proto/services/orders/v1/orders.proto",
+	}
+	for _, rel := range preExisting {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("// SENTINEL"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var progress bytes.Buffer
+	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", 8081,
+		ScaffoldForce, &progress); err != nil {
+		t.Fatalf("GenerateServiceFilesWithMode(force) error = %v", err)
+	}
+
+	for _, rel := range preExisting {
+		got, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if strings.Contains(string(got), "SENTINEL") {
+			t.Errorf("--force should have rewritten %s; sentinel still present", rel)
+		}
+	}
+
+	if got := progress.String(); !strings.Contains(got, "overwriting: ") {
+		t.Errorf("expected progress output to report overwriting files, got:\n%s", got)
+	}
+}
+
+// TestGenerateServiceFilesFailModeKeepsProto re-asserts the historical
+// guard: even in the default ScaffoldFail mode, an existing proto file is
+// preserved (it carries hand-written RPC definitions that the scaffold
+// has no way to reconstruct).
+func TestGenerateServiceFilesFailModeKeepsProto(t *testing.T) {
+	root := t.TempDir()
+
+	protoDir := filepath.Join(root, "proto", "services", "orders", "v1")
+	if err := os.MkdirAll(protoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := "syntax = \"proto3\";\n// hand-written\n"
+	if err := os.WriteFile(filepath.Join(protoDir, "orders.proto"), []byte(want), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GenerateServiceFilesWithMode(root, "example.com/myapp", "orders", "myapp", 8081,
+		ScaffoldFail, nil); err != nil {
+		t.Fatalf("GenerateServiceFilesWithMode(fail) error = %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(protoDir, "orders.proto"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("ScaffoldFail should preserve existing proto; got:\n%s", string(got))
 	}
 }
 

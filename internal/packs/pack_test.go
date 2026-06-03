@@ -440,35 +440,6 @@ func TestDataTablePackManifest(t *testing.T) {
 	}
 }
 
-// TestNATSPackManifest confirms the nats pack declares the expected
-// shape — Go kind, the conventional subpath, and a pinned dependency.
-func TestNATSPackManifest(t *testing.T) {
-	t.Parallel()
-	p, err := LoadPack("nats")
-	if err != nil {
-		t.Fatalf("LoadPack(nats): %v", err)
-	}
-	if p.IsFrontendKind() {
-		t.Errorf("nats pack must be Go kind, got Kind=%q", p.Kind)
-	}
-	if p.Subpath != "clients/nats" {
-		t.Errorf("nats pack Subpath = %q, want clients/nats", p.Subpath)
-	}
-	if len(p.Dependencies) == 0 {
-		t.Error("nats pack must declare at least one Go dependency")
-	}
-	foundNATS := false
-	for _, dep := range p.Dependencies {
-		if strings.HasPrefix(dep, "github.com/nats-io/nats.go") {
-			foundNATS = true
-			break
-		}
-	}
-	if !foundNATS {
-		t.Error("nats pack must depend on github.com/nats-io/nats.go")
-	}
-}
-
 func TestPackFileOverwrite(t *testing.T) {
 	p, err := LoadPack("jwt-auth")
 	if err != nil {

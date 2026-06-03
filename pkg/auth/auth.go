@@ -40,12 +40,36 @@ const (
 // forge versions generated. The generated shim re-exports it via
 // type Claims = auth.Claims so existing project code (referring to
 // middleware.Claims) keeps compiling.
+//
+// Raw carries the full decoded JWT payload (or any provider-specific map a
+// [UserResolver] chooses to attach). Projects that need access to claims
+// outside the fixed fields — Supabase user_metadata, Auth0 app_metadata,
+// Clerk org_permissions, etc. — should read from Raw instead of forking
+// the Claims type.
 type Claims struct {
-	UserID string   `json:"user_id"`
-	Email  string   `json:"email"`
-	OrgID  string   `json:"org_id"`
-	Role   string   `json:"role"`
-	Roles  []string `json:"roles"`
+	UserID string         `json:"user_id"`
+	Email  string         `json:"email"`
+	OrgID  string         `json:"org_id"`
+	Role   string         `json:"role"`
+	Roles  []string       `json:"roles"`
+	Raw    map[string]any `json:"raw,omitempty"`
+}
+
+// UserResolver is an optional hook that translates a raw decoded JWT payload
+// into [Claims]. Projects implement it when they need to consume
+// provider-specific claim shapes (e.g. Supabase user_metadata, Auth0
+// app_metadata, Clerk org_role/org_permissions) without forking the Claims
+// type.
+//
+// The resolver is wired via [Config.UserResolver]; when nil the validator
+// falls back to the built-in shape extraction (sub, email, org_id, role,
+// roles) and still populates Claims.Raw with the full payload.
+type UserResolver interface {
+	// Resolve receives the full decoded JWT payload (as a map, the
+	// shape jwt-go hands us) and must return a populated [Claims]. The
+	// raw payload should typically be copied onto Claims.Raw so
+	// downstream callers can still inspect provider-specific fields.
+	Resolve(rawClaims map[string]any) (*Claims, error)
 }
 
 // KeyValidator validates an API key and returns the associated claims.
@@ -78,6 +102,16 @@ type Config struct {
 
 	// KeyValidator validates API keys. Required when APIKey auth is enabled.
 	KeyValidator KeyValidator
+
+	// UserResolver, when non-nil, projects the raw decoded JWT payload onto
+	// [Claims]. Use it when provider-specific claim shapes (Supabase
+	// user_metadata, Auth0 app_metadata, Clerk org_permissions, etc.) need
+	// to drive the Claims you hand to downstream code.
+	//
+	// When nil the validator uses built-in shape extraction (sub, email,
+	// org_id, role, roles) and still attaches the full payload to
+	// Claims.Raw so downstream code can inspect it.
+	UserResolver UserResolver
 }
 
 // JWTConfig holds JWT-specific settings.
@@ -361,13 +395,37 @@ func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
 		return nil, fmt.Errorf("unexpected claims type")
 	}
 
+	return projectClaims(mapClaims, v.cfg.UserResolver), nil
+}
+
+// projectClaims turns a decoded JWT payload into [Claims]. When resolver is
+// non-nil it delegates the projection; otherwise it uses the built-in
+// extraction (sub/email/org_id/role/roles) and stashes the raw payload onto
+// Claims.Raw for callers that need provider-specific fields.
+//
+// A resolver that returns an error or nil claims is treated as a fallback
+// signal: projectClaims falls back to the built-in shape so a stricter
+// resolver can opt out for tokens it doesn't recognize.
+func projectClaims(mc map[string]any, resolver UserResolver) *Claims {
+	if resolver != nil {
+		c, err := resolver.Resolve(mc)
+		if err == nil && c != nil {
+			return c
+		}
+	}
+	return defaultProjectClaims(mc)
+}
+
+func defaultProjectClaims(mc map[string]any) *Claims {
+	mapClaims := jwt.MapClaims(mc)
 	return &Claims{
 		UserID: getStringClaim(mapClaims, "sub"),
 		Email:  getStringClaim(mapClaims, "email"),
 		OrgID:  getStringClaim(mapClaims, "org_id"),
 		Role:   getStringClaim(mapClaims, "role"),
 		Roles:  getStringSliceClaim(mapClaims, "roles"),
-	}, nil
+		Raw:    mc,
+	}
 }
 
 // decodeJWTKey converts a secret string into the type that github.com/golang-jwt/jwt/v5

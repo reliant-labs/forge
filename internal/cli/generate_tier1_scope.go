@@ -20,12 +20,16 @@
 // fail-open (an unmapped path falls through to "in scope" so missing
 // entries err on the safe side of preserving the loud-fail behavior).
 //
-// The registry is keyed by exact path or trailing-slash prefix. The
+// The registry is keyed by exact path, trailing-slash prefix, or
+// suffix-glob (path/segment pattern with a leading '*' wildcard). The
 // matcher walks the entries in declaration order and returns the first
 // match, so order from most-specific to least-specific.
 package cli
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // tier1OwnerGate returns the predicate function that decides whether
 // the emitter for relPath would actually run for the current pipeline
@@ -42,12 +46,19 @@ func tier1OwnerGate(relPath string) func(*pipelineContext) bool {
 }
 
 // tier1OwnerEntry pairs a path matcher with the gate function controlling
-// the step that emits the file. `prefix` is matched as either an exact
-// path or a directory-with-trailing-slash. Exactly one of `exact` or
-// `prefix` is set per entry.
+// the step that emits the file. Exactly one of `exact`, `prefix`, or
+// `glob` is set per entry.
+//
+//   - exact:  full relative-path equality (e.g. "pkg/app/migrate.go").
+//   - prefix: trailing-slash directory prefix (e.g. "pkg/middleware/").
+//   - glob:   suffix-aware shell glob applied per segment using
+//     path.Match semantics (e.g. "pkg/middleware/*_gen.go",
+//     "handlers/*/handlers_crud_gen.go",
+//     "frontends/*/src/hooks/*-hooks.ts").
 type tier1OwnerEntry struct {
 	exact  string
 	prefix string
+	glob   string
 	gate   func(*pipelineContext) bool
 }
 
@@ -57,6 +68,17 @@ func (e tier1OwnerEntry) match(relPath string) bool {
 	}
 	if e.prefix != "" {
 		return strings.HasPrefix(relPath, e.prefix)
+	}
+	if e.glob != "" {
+		// path/filepath.Match handles `*` per-segment (does NOT cross
+		// `/`). For a multi-segment wildcard we'd need doublestar, but
+		// the registered globs only need single-segment `*` (e.g.
+		// `<svc>` or `<frontend-name>`), so the stdlib is enough.
+		ok, err := filepath.Match(e.glob, relPath)
+		if err != nil {
+			return false
+		}
+		return ok
 	}
 	return false
 }
@@ -88,6 +110,31 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// the guard.
 	{exact: "pkg/app/bootstrap.go", gate: gateCodegenHasAnyEntrypoint},
 	{exact: "pkg/app/testing.go", gate: gateCodegenHasAnyEntrypoint},
+
+	// pkg/app/wire_gen.go is emitted alongside bootstrap.go by
+	// stepBootstrap. Same gate — no entrypoints means no wire shape.
+	{exact: "pkg/app/wire_gen.go", gate: gateCodegenHasAnyEntrypoint},
+
+	// handlers/<svc>/handlers_crud_gen.go is emitted by stepCRUDHandlers.
+	// Gated on codegen-enabled AND ctx.HasServices. A no-services project
+	// (e.g. lib/CLI kind) shouldn't see stale CRUD-handler drift block
+	// its run.
+	{glob: "handlers/*/handlers_crud_gen.go", gate: gateCodegenHasServices},
+
+	// pkg/middleware/*_gen.go covers the auth/tenant middleware
+	// emitters (stepAuthMiddleware + stepTenantMiddleware). Both are
+	// codegen-gated and require at least a configured project; their
+	// finer-grained gates (e.g. gateAuthProviderConfigured) are
+	// strict subsets of gateCodegenHasServices for the purposes of
+	// the stomp guard — using the broader gate keeps the registry
+	// simple while staying fail-closed: if the project has services,
+	// SOME middleware emitter runs, so the drift stays in-scope.
+	{prefix: "pkg/middleware/", gate: gateCodegenHasServices},
+
+	// frontends/<name>/src/hooks/*-hooks.ts is emitted by
+	// stepFrontendHooks. Gated on frontend feature + HasServices
+	// (no services → no proto → nothing to hook).
+	{glob: "frontends/*/src/hooks/*-hooks.ts", gate: gateFrontendHasServices},
 }
 
 // filterTier1DriftInScope returns the subset of `drift` whose owning

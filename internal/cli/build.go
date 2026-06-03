@@ -50,11 +50,12 @@ Examples:
   forge build --push ghcr.io/acme            # Build + retag + docker push to a registry
   forge build --push localhost:5051          # k3d: auto-mirrors to registry.localhost:5051
 
-For k3d clusters, --push localhost:<port> auto-tags and pushes a second
-reference under registry.localhost:<port> so kubelet inside the cluster
-can resolve the pull (the host sees localhost; the node container does
-not). The deploy/k3d.yaml mirrors block (forge templates) maps both
-names to the same backend.`,
+For k3d clusters, --push localhost:<port> also tags the image as
+registry.localhost:<port>/<name> (LOCAL alias only — the host can't
+DNS-resolve registry.localhost, so we don't push it; the containerd
+mirror config inside k3d resolves the manifest reference at pull time).
+This lets deployed manifests reference the in-cluster-resolvable name
+without forcing the user to add /etc/hosts entries on the host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --push implies --docker so users don't have to pass both.
 			if opts.pushRegistry != "" {
@@ -420,16 +421,26 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 	}
 	// Tag for the push registry too when requested. For localhost:<port>
 	// we also tag the k3d in-cluster mirror (registry.localhost:<port>)
-	// so deployed manifests can reference the in-cluster-resolvable name.
+	// so deployed manifests can reference the in-cluster-resolvable name —
+	// but we only PUSH to the user-specified registry, since the host
+	// can't DNS-resolve `registry.localhost` (it's a k3d-internal name).
+	// The mirror tag is a local-only alias that downstream manifest
+	// references resolve via the containerd mirror config inside k3d.
 	var pushTags []string
-	for _, reg := range expandPushRegistries(pushRegistry) {
+	for i, reg := range expandPushRegistries(pushRegistry) {
 		pushLatest := fmt.Sprintf("%s/%s:latest", reg, cfg.Name)
 		dockerArgs = append(dockerArgs, "-t", pushLatest)
-		pushTags = append(pushTags, pushLatest)
+		// Only the first (user-specified) registry gets pushed. The
+		// auto-mirrored registry.localhost:<port> tag is local-alias-only.
+		if i == 0 {
+			pushTags = append(pushTags, pushLatest)
+		}
 		if v := gitVersionTag(); v != "" {
 			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, v)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
-			pushTags = append(pushTags, pushVersion)
+			if i == 0 {
+				pushTags = append(pushTags, pushVersion)
+			}
 		}
 	}
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))

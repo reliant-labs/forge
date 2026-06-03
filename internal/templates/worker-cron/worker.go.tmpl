@@ -62,8 +62,12 @@ func (w *Worker) Stop(ctx context.Context) error {
 }
 
 // Run is invoked on the cron schedule. Implement your logic here.
+//
+// The default body logs both the worker name and the cron expression so
+// fresh scaffolds are useful in `kubectl logs` / OTel traces without
+// hand-editing — every run line correlates back to the schedule it was
+// triggered by. Drop the `"schedule", Schedule` field if your job runs
+// at >1Hz and the log volume becomes noisy.
 func (w *Worker) Run() {
-	w.deps.Logger.Info("cron job executing", "worker", w.Name())
-
-	// TODO: Implement your scheduled job logic here.
+	w.deps.Logger.Info("cron job executing", "worker", w.Name(), "schedule", Schedule)
 }

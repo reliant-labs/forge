@@ -680,3 +680,16 @@ func readFileForTest(t *testing.T, path string) string {
 	}
 	return string(contents)
 }
+
+// TestGenerateCheckFlagRegistered confirms --check is wired and
+// defaults to false (so existing scripts behave identically).
+func TestGenerateCheckFlagRegistered(t *testing.T) {
+	cmd := newGenerateCmd()
+	f := cmd.Flags().Lookup("check")
+	if f == nil {
+		t.Fatal("--check flag not registered on generate command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--check default = %q, want %q", f.DefValue, "false")
+	}
+}

@@ -31,6 +31,9 @@ files:
   - template: dev_auth.go.tmpl
     output: pkg/middleware/auth/jwtauth/dev_auth.go
     overwrite: always
+  - template: dev_login_handler.go.tmpl
+    output: pkg/middleware/auth/jwtauth/dev_login_handler.go
+    overwrite: always
 
 dependencies:
   - github.com/golang-jwt/jwt/v5

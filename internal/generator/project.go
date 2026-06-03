@@ -479,6 +479,13 @@ func (g *ProjectGenerator) Generate() error {
 		if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
 		}
+		// Generate post_bootstrap.go (user-owned, never overwritten). The
+		// scaffolded cmd/server.go calls app.PostBootstrap(application);
+		// without the file, the project would not compile on initial
+		// `forge new` even before any user edits.
+		if err := codegen.GeneratePostBootstrap(g.Path); err != nil {
+			return fmt.Errorf("failed to generate pkg/app/post_bootstrap.go: %w", err)
+		}
 		if err := g.generateBootstrapTesting(); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/testing.go: %w", err)
 		}

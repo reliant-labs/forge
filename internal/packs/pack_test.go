@@ -29,8 +29,8 @@ func TestLoadPack(t *testing.T) {
 	if p.Config.Section != "auth" {
 		t.Errorf("Config.Section = %q, want %q", p.Config.Section, "auth")
 	}
-	if len(p.Files) != 2 {
-		t.Errorf("len(Files) = %d, want 2", len(p.Files))
+	if len(p.Files) != 3 {
+		t.Errorf("len(Files) = %d, want 3", len(p.Files))
 	}
 	if len(p.Dependencies) != 2 {
 		t.Errorf("len(Dependencies) = %d, want 2", len(p.Dependencies))

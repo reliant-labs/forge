@@ -57,6 +57,9 @@ func TestJWTAuthPackManifest(t *testing.T) {
 	if !templateNames["dev_auth.go.tmpl"] {
 		t.Error("files should include dev_auth.go.tmpl")
 	}
+	if !templateNames["dev_login_handler.go.tmpl"] {
+		t.Error("files should include dev_login_handler.go.tmpl")
+	}
 
 	// Check that all middleware-package files land under
 	// pkg/middleware/auth/jwtauth/ — the per-pack nested subpackage that
@@ -198,6 +201,35 @@ func TestDevAuthTemplateContent(t *testing.T) {
 	for _, banned := range []string{"JWTDevAuthEnabled", "JWTDevClaims"} {
 		if strings.Contains(content, banned) {
 			t.Errorf("dev_auth.go.tmpl must not declare prefixed %q (now lives in package jwtauth)", banned)
+		}
+	}
+}
+
+func TestDevLoginHandlerTemplateContent(t *testing.T) {
+	tmplContent, err := packsFS.ReadFile("jwt-auth/templates/dev_login_handler.go.tmpl")
+	if err != nil {
+		t.Fatalf("read template: %v", err)
+	}
+
+	content := string(tmplContent)
+
+	checks := []string{
+		"package jwtauth",
+		"func DevLoginHandler(",
+		// Frontend contract — must match auth-ui's LoginForm expectation.
+		"type DevLoginResponse struct",
+		"Token",
+		"ExpiresAt",
+		"User",
+		// Dev-gate — endpoint must 404 when not in dev mode.
+		"DevAuthEnabled()",
+		"http.NotFound",
+		// Sentinel — must reuse the constant from dev_auth.go.
+		"DevBypassToken",
+	}
+	for _, check := range checks {
+		if !strings.Contains(content, check) {
+			t.Errorf("dev_login_handler.go.tmpl should contain %q", check)
 		}
 	}
 }

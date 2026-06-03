@@ -389,6 +389,13 @@ func runPackInstall(name string, configPairs []string) error {
 		fmt.Printf("Pack '%s' depends on: %v — installing in topological order.\n", name, deps)
 	}
 
+	// Aggregate the PendingProtoGenerate signal across every pack in the
+	// install set. Even one pack adding a .proto means the whole cluster's
+	// `go mod tidy` was deferred, so the closing hint must fire exactly
+	// once at the tail — printing it per-pack would be both noisy and
+	// confusing (e.g. api-key after audit-log would each emit it).
+	pendingProtoGenerate := false
+
 	for _, packName := range toInstall {
 		pack, err := packs.GetPack(packName)
 		if err != nil {
@@ -414,7 +421,10 @@ func runPackInstall(name string, configPairs []string) error {
 			fmt.Printf("  Config overrides: %v\n", thisOverrides)
 		}
 
-		installErr := pack.InstallWithConfig(root, cfg, thisOverrides)
+		installResult, installErr := pack.InstallWithConfig(root, cfg, thisOverrides)
+		if installResult != nil && installResult.PendingProtoGenerate {
+			pendingProtoGenerate = true
+		}
 
 		// Persist cfg.Packs after EVERY successful pack so a partial
 		// failure mid-chain leaves a coherent forge.yaml. If install
@@ -435,6 +445,15 @@ func runPackInstall(name string, configPairs []string) error {
 		if len(pack.Generate) > 0 {
 			fmt.Printf("\nThis pack has generate hooks. Run '%s generate' to generate pack code.\n", CLIName())
 		}
+	}
+
+	// Pending-proto hint: at least one pack in the install cluster emitted
+	// a `.proto` file (or rode on top of a previously-emitted one), so
+	// `go mod tidy` and `buf generate` were deferred. Print one clear,
+	// closing instruction so the user knows the install is half-done by
+	// design and the next step is theirs.
+	if pendingProtoGenerate {
+		fmt.Printf("\nRun `%s generate` to compile new proto definitions and finish `go mod tidy`.\n", CLIName())
 	}
 
 	return nil

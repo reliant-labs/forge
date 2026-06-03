@@ -112,14 +112,14 @@ describe("ui-store", () => {
 - Runner: **Vitest** (matches Next.js / Tailwind v4 / forge's TS toolchain)
 - DOM: `jsdom` or `happy-dom`
 - React: `@testing-library/react` + `@testing-library/user-event`
-- Network: forge ships a `mockTransport()` helper in `src/lib/test-utils.ts` (see the file)
+- Network: forge ships a `mockTransport()` helper in `src/lib/test-utils.tsx` (see the file)
 - Coverage target: utilities + stores + page integrations. **NOT** 100% coverage; aim for behavioral coverage of the four states (loading / error / empty / success) per page.
 
 ## File layout
 
 - Co-located: `users-list.tsx` next to `users-list.test.tsx`
 - Pages: `app/<route>/page.test.tsx` next to `page.tsx`
-- Test utilities: `src/test-utils/` (renamed from `src/lib/test-utils.ts` if it grows; default is the single file)
+- Test utilities: `src/test-utils/` (renamed from `src/lib/test-utils.tsx` if it grows; default is the single file)
 - One Vitest config at the frontend root: `vitest.config.ts`
 
 ## Running tests

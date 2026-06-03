@@ -31,7 +31,13 @@ type CRUDTemplateData struct {
 	HasOrderBy    bool         // true if any list method has order_by
 	NeedsORM      bool         // true if pagination, filters, or ordering requires orm import
 	HasTenant     bool         // true if any CRUD method operates on a tenant-scoped entity
-	CRUDMethods   []CRUDMethodTemplateData
+	// NeedsCRUDLib is true when at least one method emits a real CRUD
+	// body (i.e. uses pkg/crud, internal/db, middleware). When every
+	// method's request/response shape failed validation and we emit
+	// only TODO stubs, the template skips those imports to keep the
+	// file compiling.
+	NeedsCRUDLib bool
+	CRUDMethods  []CRUDMethodTemplateData
 }
 
 // CRUDMethodTemplateData holds per-method template data.
@@ -57,8 +63,19 @@ type CRUDMethodTemplateData struct {
 	HasTenant         bool   // true when the entity has a tenant key field
 	TenantGoName      string // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
 	TenantColumnName  string // e.g., "org_id", "tenant_id"
-	UpdateEntityField string // e.g., "Project" — Go field name in the update request that holds the entity
+	UpdateEntityField string            // e.g., "Project" — Go field name in the update request that holds the entity
 	CreateFields      []CreateFieldData // fields from the create request message
+	// ShapeMismatch is true when the request/response message shapes
+	// observed in svc.Messages don't line up with what the CRUD body
+	// templates assume (AIP-158 page_size/page_token for list, an `id`
+	// scalar key for get/update/delete, an entity-typed response field,
+	// etc.). When true the template emits a tagged TODO stub returning
+	// CodeUnimplemented rather than CRUD-body code that wouldn't compile
+	// against the real proto. See validateCRUDShape for the rules. The
+	// stub carries a FORGE_CRUD_SHAPE_MISMATCH marker plus MismatchReason
+	// so the user (and any future `forge audit`) can spot it.
+	ShapeMismatch  bool
+	MismatchReason string
 }
 
 // CreateFieldData holds a field mapping from a create request to the ORM entity.
@@ -218,6 +235,115 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	return nil
 }
 
+// validateCRUDShape decides whether the request/response messages observed
+// in svc.Messages match the AIP-158-style shape the CRUD body template
+// emits. It returns ok=true when:
+//
+//   - svc.Messages is empty (legacy/no-descriptor path — preserve old
+//     behaviour and let the existing template fire), OR
+//   - the input/output messages for this RPC are absent from
+//     svc.Messages (we can't validate, so be lenient), OR
+//   - every shape rule for the operation holds.
+//
+// When ok=false the returned reason describes the first failing rule.
+// Callers should mark the method ShapeMismatch and skip emitting CRUD-body
+// fields that would dereference unavailable proto fields (PageSize,
+// PageToken, the entity-typed PK accessor, the repeated-entity response
+// field). The handlers_crud_gen.go.tmpl template renders a tagged
+// CodeUnimplemented stub in that branch so the generated file still
+// compiles against bespoke proto shapes (Limit/enum filters, string Ticker
+// keys, repeated-message responses) — see
+// crud-body-generator-shape-mismatch in FORGE_BACKLOG.
+//
+// The rules deliberately stay conservative — they only fail when we can
+// see message fields and prove they don't fit. Anything ambiguous (no
+// Messages map at all, or this particular RPC's messages missing from it)
+// is treated as ok so existing projects whose protos do match AIP-158
+// keep generating the same code they did before this check landed.
+func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
+	if len(svc.Messages) == 0 {
+		return true, ""
+	}
+
+	inputFields, inputKnown := svc.Messages[cm.Method.InputType]
+	outputFields, outputKnown := svc.Messages[cm.Method.OutputType]
+
+	inputByName := make(map[string]MessageFieldDef, len(inputFields))
+	for _, f := range inputFields {
+		inputByName[f.Name] = f
+	}
+	outputByName := make(map[string]MessageFieldDef, len(outputFields))
+	for _, f := range outputFields {
+		outputByName[f.Name] = f
+	}
+
+	switch cm.Operation {
+	case "get", "delete":
+		if !inputKnown {
+			return true, ""
+		}
+		// PkField on the entity is the snake_case proto name (e.g.
+		// "id", "ticker"). The CRUD template emits `req.<PascalPk>`
+		// and downstream code calls Get/DeleteByID with that value.
+		// If the request has no field with that name at all, the
+		// generated body won't compile.
+		if _, has := inputByName[cm.Entity.PkField]; !has {
+			return false, fmt.Sprintf("request %s has no %s field matching entity PK", cm.Method.InputType, cm.Entity.PkField)
+		}
+	case "update":
+		if !inputKnown {
+			return true, ""
+		}
+		// Update body dereferences `req.<EntityField>` and expects
+		// it to be a *db.<Entity>. Validate the request actually
+		// carries an entity-typed field.
+		found := false
+		for _, f := range inputFields {
+			if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, fmt.Sprintf("request %s carries no %s message field", cm.Method.InputType, cm.Entity.Name)
+		}
+	case "list":
+		// AIP-158-style template emits req.PageSize / req.PageToken
+		// when the input type follows List*Request naming. If we
+		// have field data and either is missing, the generated body
+		// fails to compile against the real proto (kalshi-trader's
+		// ListMarketsRequest carries `Limit` instead, for instance).
+		if inputKnown && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
+			if _, hasSize := inputByName["page_size"]; !hasSize {
+				return false, fmt.Sprintf("request %s lacks page_size (AIP-158 pagination assumed by template)", cm.Method.InputType)
+			}
+			if _, hasTok := inputByName["page_token"]; !hasTok {
+				return false, fmt.Sprintf("request %s lacks page_token (AIP-158 pagination assumed by template)", cm.Method.InputType)
+			}
+		}
+		// List response template emits `<EntityPlural>: items` and
+		// optionally `NextPageToken: nextPageToken`. Validate the
+		// response carries a repeated entity field by that name.
+		if outputKnown {
+			pluralLower := strings.ToLower(inflection.Plural(cm.Entity.Name))
+			if _, has := outputByName[pluralLower]; !has {
+				return false, fmt.Sprintf("response %s lacks repeated %s field %s", cm.Method.OutputType, cm.Entity.Name, pluralLower)
+			}
+		}
+	case "create":
+		// Create response template emits `<EntityName>: entity`.
+		// Validate the response carries a single field of that type
+		// (named after the entity in snake_case).
+		if outputKnown {
+			lower := strings.ToLower(cm.Entity.Name)
+			if _, has := outputByName[lower]; !has {
+				return false, fmt.Sprintf("response %s lacks %s field %s", cm.Method.OutputType, cm.Entity.Name, lower)
+			}
+		}
+	}
+	return true, ""
+}
+
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTemplateData {
 	pkg := toServicePackage(svc.Name)
 
@@ -237,19 +363,38 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	for _, cm := range crudMethods {
 		authAction := operationToAuthAction(cm.Operation)
 
+		// Validate the request/response shape up front. When the
+		// observed proto messages don't match the AIP-158-style body
+		// the template emits, we still emit a method (so the proto's
+		// RPC interface is satisfied) but route it to a tagged
+		// CodeUnimplemented stub instead of the body. This keeps
+		// handlers_crud_gen.go compiling against bespoke shapes
+		// (Limit/enum filters, string Ticker keys, repeated-message
+		// responses) — see crud-body-generator-shape-mismatch in
+		// FORGE_BACKLOG.
+		shapeOK, shapeReason := validateCRUDShape(svc, cm)
+
 		// Detect pagination for list operations: check if the input type
 		// follows AIP-158 naming (List<Entity>Request implies page_size).
+		// Skip when the shape didn't match — the stub branch doesn't
+		// dereference PageSize/PageToken so suppressing keeps the
+		// generated file from importing the crud lib unnecessarily.
 		hasPagination := false
 		paginationStyle := ""
-		if cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
+		if shapeOK && cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
 			hasPagination = true
 			paginationStyle = "cursor"
 		}
 
 		// Detect filters and ordering from request message fields.
+		// Skip when the shape didn't match: classifyFilterField would
+		// otherwise happily turn a bespoke field like `ticker` (a
+		// string PK) or a `kalshi_status` enum into a synthetic
+		// `WhereEq("ticker", req.Ticker)` clause that fails to compile
+		// against the real request type.
 		var filterFields []FilterFieldData
 		hasOrderBy := false
-		if cm.Operation == "list" && svc.Messages != nil {
+		if shapeOK && cm.Operation == "list" && svc.Messages != nil {
 			if msgFields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, mf := range msgFields {
 					if classifySkipField(mf.Name) {
@@ -282,8 +427,9 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		}
 
 		// Collect fields from the create request message for entity construction.
+		// Skip on shape mismatch — the stub doesn't reference these.
 		var createFields []CreateFieldData
-		if cm.Operation == "create" && svc.Messages != nil {
+		if shapeOK && cm.Operation == "create" && svc.Messages != nil {
 			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, f := range fields {
 					goType := ProtoTypeToGoType(f.ProtoType)
@@ -334,13 +480,19 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			TenantColumnName:  cm.Entity.TenantColumnName,
 			UpdateEntityField: updateEntityField,
 			CreateFields:      createFields,
+			ShapeMismatch:     !shapeOK,
+			MismatchReason:    shapeReason,
 		})
 	}
 
-	// Check if any method has pagination, filters, or ordering
+	// Check if any method has pagination, filters, ordering, or a real
+	// (non-stub) body. Mismatched stubs contribute nothing to the file's
+	// import needs so we don't pull in pkg/crud or pkg/orm for a file
+	// that only emits TODO stubs.
 	hasPagination := false
 	hasFilters := false
 	hasOrderBy := false
+	needsCRUDLib := false
 	for _, m := range methods {
 		if m.HasPagination {
 			hasPagination = true
@@ -351,10 +503,13 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		if m.HasOrderBy {
 			hasOrderBy = true
 		}
+		if !m.ShapeMismatch {
+			needsCRUDLib = true
+		}
 	}
 	hasTenant := false
 	for _, m := range methods {
-		if m.HasTenant {
+		if m.HasTenant && !m.ShapeMismatch {
 			hasTenant = true
 			break
 		}
@@ -371,6 +526,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		HasOrderBy:    hasOrderBy,
 		NeedsORM:      needsORM,
 		HasTenant:     hasTenant,
+		NeedsCRUDLib:  needsCRUDLib,
 		CRUDMethods:   methods,
 	}
 }

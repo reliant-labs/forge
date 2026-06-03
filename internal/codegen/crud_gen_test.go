@@ -1378,3 +1378,334 @@ func findSubstring(s, sub string) bool {
 	}
 	return false
 }
+
+
+// TestValidateCRUDShape_BespokeShape covers the gating that landed for
+// crud-body-generator-shape-mismatch: when proto messages don't match the
+// AIP-158 conventions the CRUD body template assumes, validateCRUDShape
+// reports the mismatch with a human-readable reason so buildCRUDTemplateData
+// can emit a CodeUnimplemented stub instead of non-compiling body code.
+//
+// The kalshi-trader port hit each of these shapes:
+//   - ListMarketsRequest carries `Limit` (int32) and `Cursor` (string)
+//     instead of AIP-158 `page_size` / `page_token`
+//   - GetMarketRequest's key is `ticker` (string), not the entity's
+//     default `id` PK
+//   - CreateMarketResponse has `repeated Market markets = 1` (a fan-out)
+//     instead of the AIP-shaped `Market market = 1`
+//
+// Each row asserts the rule that catches the specific divergence; the
+// final "matches" row pins the happy path so a future refactor that
+// accidentally tightens the rules trips a test rather than starving
+// real CRUD generation.
+func TestValidateCRUDShape_BespokeShape(t *testing.T) {
+	type tc struct {
+		name      string
+		svc       ServiceDef
+		cm        CRUDMethod
+		wantOK    bool
+		reasonHas string // substring expected in reason when !wantOK
+	}
+
+	patient := EntityDef{Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64"}
+	market := EntityDef{Name: "Market", TableName: "markets", PkField: "id", PkGoType: "int64"}
+
+	cases := []tc{
+		{
+			name: "list_missing_page_size_in_request",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"ListMarketsRequest": {
+						{Name: "limit", ProtoType: "int32"},
+						{Name: "cursor", ProtoType: "string"},
+					},
+					"ListMarketsResponse": {
+						{Name: "markets", ProtoType: "message"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "ListMarkets", InputType: "ListMarketsRequest", OutputType: "ListMarketsResponse"},
+				Entity:    market,
+				Operation: "list",
+			},
+			wantOK:    false,
+			reasonHas: "page_size",
+		},
+		{
+			name: "list_missing_response_plural_field",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"ListPatientsRequest": {
+						{Name: "page_size", ProtoType: "int32"},
+						{Name: "page_token", ProtoType: "string"},
+					},
+					"ListPatientsResponse": {
+						{Name: "items", ProtoType: "message"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+				Entity:    patient,
+				Operation: "list",
+			},
+			wantOK:    false,
+			reasonHas: "patients",
+		},
+		{
+			name: "get_request_missing_pk",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"GetMarketRequest": {
+						{Name: "ticker", ProtoType: "string"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "GetMarket", InputType: "GetMarketRequest", OutputType: "GetMarketResponse"},
+				Entity:    market,
+				Operation: "get",
+			},
+			wantOK:    false,
+			reasonHas: "id",
+		},
+		{
+			name: "create_response_missing_entity_field",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"CreateMarketRequest": {
+						{Name: "ticker", ProtoType: "string"},
+					},
+					"CreateMarketResponse": {
+						{Name: "markets", ProtoType: "message"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "CreateMarket", InputType: "CreateMarketRequest", OutputType: "CreateMarketResponse"},
+				Entity:    market,
+				Operation: "create",
+			},
+			wantOK:    false,
+			reasonHas: "market",
+		},
+		{
+			name: "update_request_missing_entity_message",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"UpdateMarketRequest": {
+						{Name: "ticker", ProtoType: "string"},
+						{Name: "title", ProtoType: "string"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "UpdateMarket", InputType: "UpdateMarketRequest", OutputType: "UpdateMarketResponse"},
+				Entity:    market,
+				Operation: "update",
+			},
+			wantOK:    false,
+			reasonHas: "Market message",
+		},
+		{
+			name: "delete_request_missing_pk",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"DeleteMarketRequest": {
+						{Name: "ticker", ProtoType: "string"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "DeleteMarket", InputType: "DeleteMarketRequest", OutputType: "DeleteMarketResponse"},
+				Entity:    market,
+				Operation: "delete",
+			},
+			wantOK:    false,
+			reasonHas: "id",
+		},
+		{
+			name: "no_messages_map_returns_legacy_ok",
+			svc:  ServiceDef{}, // Messages is nil
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+				Entity:    patient,
+				Operation: "list",
+			},
+			wantOK: true,
+		},
+		{
+			name: "matches_aip158_shape",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"ListPatientsRequest": {
+						{Name: "page_size", ProtoType: "int32"},
+						{Name: "page_token", ProtoType: "string"},
+					},
+					"ListPatientsResponse": {
+						{Name: "patients", ProtoType: "message"},
+						{Name: "next_page_token", ProtoType: "string"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+				Entity:    patient,
+				Operation: "list",
+			},
+			wantOK: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ok, reason := validateCRUDShape(c.svc, c.cm)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v (reason=%q)", ok, c.wantOK, reason)
+			}
+			if !c.wantOK && c.reasonHas != "" && !strings.Contains(reason, c.reasonHas) {
+				t.Errorf("reason = %q, want substring %q", reason, c.reasonHas)
+			}
+		})
+	}
+}
+
+// TestGenerateCRUDHandlers_StubsOnShapeMismatch is the full integration
+// regression for crud-body-generator-shape-mismatch: when the input/output
+// messages don't fit the CRUD-body template's AIP-158 assumptions, the
+// emitted handlers_crud_gen.go must still compile (and satisfy the proto
+// service interface) by returning a tagged CodeUnimplemented stub rather
+// than dereferencing fields the request type doesn't have.
+//
+// Each row pins one of the kalshi-trader shapes:
+//   - ListMarkets: `limit/cursor` instead of `page_size/page_token`
+//   - GetMarket:   `ticker` instead of `id`
+//   - CreateMarket: response has `repeated Market markets` not `Market market`
+//
+// Together they prove buildCRUDTemplateData + the template branch fall
+// back to a stub for every operation where validateCRUDShape returns false.
+func TestGenerateCRUDHandlers_StubsOnShapeMismatch(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "markets")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceGo := `package markets
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "MarketsService",
+		GoPackage:  "example.com/test/gen/proto/services/markets/v1",
+		PkgName:    "marketsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListMarkets", InputType: "ListMarketsRequest", OutputType: "ListMarketsResponse"},
+			{Name: "GetMarket", InputType: "GetMarketRequest", OutputType: "GetMarketResponse"},
+			{Name: "CreateMarket", InputType: "CreateMarketRequest", OutputType: "CreateMarketResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			// bespoke kalshi-style pagination
+			"ListMarketsRequest": {
+				{Name: "limit", ProtoType: "int32"},
+				{Name: "cursor", ProtoType: "string"},
+				{Name: "kalshi_status", ProtoType: "enum"},
+			},
+			"ListMarketsResponse": {
+				{Name: "markets", ProtoType: "message"},
+			},
+			// string Ticker key, not int64 Id
+			"GetMarketRequest": {
+				{Name: "ticker", ProtoType: "string"},
+			},
+			"GetMarketResponse": {
+				{Name: "market", ProtoType: "message"},
+			},
+			// response holds repeated entity (fan-out create), not single
+			"CreateMarketRequest": {
+				{Name: "ticker", ProtoType: "string"},
+			},
+			"CreateMarketResponse": {
+				{Name: "markets", ProtoType: "message"},
+			},
+		},
+	}
+
+	entities := []EntityDef{{
+		Name: "Market", TableName: "markets", PkField: "id", PkGoType: "int64",
+		Fields: []EntityField{
+			{Name: "id", GoName: "ID", GoType: "int64"},
+			{Name: "ticker", GoName: "Ticker", GoType: "string"},
+		},
+	}}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_gen.go"))
+	if err != nil {
+		t.Fatalf("read gen file: %v", err)
+	}
+	content := string(data)
+
+	// 1. Every method should be emitted (so the proto interface is satisfied).
+	for _, want := range []string{"func (s *Service) ListMarkets(", "func (s *Service) GetMarket(", "func (s *Service) CreateMarket("} {
+		if !strings.Contains(content, want) {
+			t.Errorf("missing handler declaration %q in:\n%s", want, content)
+		}
+	}
+
+	// 2. Each method must carry the FORGE_CRUD_SHAPE_MISMATCH marker (so
+	//    the user can grep for it). The package header comment also
+	//    references the marker once, so the total count is per-stub-count + 1.
+	if mismatches := strings.Count(content, "FORGE_CRUD_SHAPE_MISMATCH"); mismatches < 3 {
+		t.Errorf("expected >=3 FORGE_CRUD_SHAPE_MISMATCH markers, got %d in:\n%s", mismatches, content)
+	}
+
+	// 3. None of the AIP-158 dereferences that would fail to compile
+	//    against this proto should appear in the output.
+	for _, bad := range []string{"req.PageSize", "req.PageToken", "crud.HandleList(", "crud.HandleGet(", "crud.HandleCreate("} {
+		if strings.Contains(content, bad) {
+			t.Errorf("unexpected %q in mismatch-only output:\n%s", bad, content)
+		}
+	}
+
+	// 4. Each stub must return CodeUnimplemented so callers get a clear
+	//    error instead of a silent nil response.
+	if c := strings.Count(content, "connect.CodeUnimplemented"); c != 3 {
+		t.Errorf("expected 3 CodeUnimplemented returns, got %d", c)
+	}
+
+	// 5. The generated file must parse as valid Go — the whole point of
+	//    the stub fallback is that the package keeps compiling against
+	//    the real proto shape.
+	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud_gen.go", content, parser.SkipObjectResolution); err != nil {
+		t.Errorf("generated file is not valid Go: %v\n----\n%s", err, content)
+	}
+
+	// 6. Because every method is a stub, the import block must not pull
+	//    in pkg/crud or internal/db (they would be unused and trip the
+	//    compiler).
+	for _, bad := range []string{`"github.com/reliant-labs/forge/pkg/crud"`, `"example.com/test/internal/db"`, `"example.com/test/pkg/middleware"`} {
+		if strings.Contains(content, bad) {
+			t.Errorf("expected no import of %s when every method is a stub; got:\n%s", bad, content)
+		}
+	}
+}
+

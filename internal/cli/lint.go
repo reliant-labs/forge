@@ -34,6 +34,7 @@ type lintFlags struct {
 	tests            bool
 	banners          bool
 	suggestExcludes  bool
+	suggestBufExcepts bool
 	wireCoverage      bool
 	bootstrapCoverage bool
 	checkWorkarounds  bool
@@ -107,6 +108,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.tests, "tests", false, "Run handler-test convention rules (e.g. forgeconv-handler-tests-use-tdd; warnings only)")
 	cmd.Flags().BoolVar(&flags.banners, "banners", false, "Verify forge templates carry the right Tier-1 / Tier-2 lifecycle banner (warnings only; no-op outside the forge repo)")
 	cmd.Flags().BoolVar(&flags.suggestExcludes, "suggest-excludes", false, "Print a YAML snippet of contracts.exclude candidates (heuristic-based; nothing is mutated)")
+	cmd.Flags().BoolVar(&flags.suggestBufExcepts, "suggest-buf-excepts", false, "Run buf lint and print a buf.yaml lint.except snippet for STANDARD rules that fired on more than 3 .proto files (nothing is mutated)")
 	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings) and unresolved forge:placeholder annotations in pkg/app/app_extras.go (errors)")
 	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
@@ -123,6 +125,9 @@ func runLint(flags lintFlags, paths []string) error {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
 		return runSuggestExcludes(cfg)
+	}
+	if flags.suggestBufExcepts {
+		return runSuggestBufExcepts()
 	}
 	if flags.contract {
 		cfg, err := loadProjectConfig()

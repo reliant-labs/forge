@@ -45,6 +45,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"detect proto directories",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
+		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"ORM generate (proto/db)",
 		"initial migration scaffold",
 		"entity-aware migration",

@@ -219,6 +219,20 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		"# once you do. Leave the defaults in place if you're unsure.\n\n")
 	data = append(header, data...)
 
+	// Append a commented-out example of the api: block. It's omitempty
+	// in the struct so an unset map skips it on marshal — surfacing it
+	// here as documentation makes the flags discoverable without
+	// changing default behavior. See SKILL.md (skills/forge/api-openapi)
+	// for the OpenAPI consumer playbook.
+	if g.isService() {
+		footer := []byte("\n# api:\n" +
+			"#   # Emit OpenAPI 3 specs (one yaml per service under openapi/) via\n" +
+			"#   # protoc-gen-connect-openapi. Install once:\n" +
+			"#   #   go install github.com/sudorandom/protoc-gen-connect-openapi@latest\n" +
+			"#   openapi: false\n")
+		data = append(data, footer...)
+	}
+
 	destPath := filepath.Join(g.Path, "forge.yaml")
 	return os.WriteFile(destPath, data, 0644)
 }

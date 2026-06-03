@@ -2,7 +2,39 @@
 
 ## Open
 
-- **(2026-06-02 kalshi-trader migration round) CRUD body generator emits
+- **(2026-06-03 kalshi-trader silent-stall incident) Stubbed loaders and
+  nil-wired sinks/sources should emit loud, persistent boot warnings.**
+  Confirmed root cause of a ~24h silent stall in kalshi-trader production:
+  `internal/botconfig/config.go::LoadFromYAML` is scaffolded to return
+  `ErrNotImplemented`, `pkg/app/setup.go` falls back to a hardcoded default
+  with a `setup.botconfig.fallback` log line, and the operator was unaware
+  the on-disk YAML config was a no-op. The runtime Go fallback's knobs
+  were 2–6× looser than the YAML (`kelly_fraction 0.25` vs `0.10`,
+  `max_position_per_market $50` vs `$10`, `min_bankroll_reserve $100`
+  vs `$20`). Same pattern repeats in `wire_gen.go:128-129` and
+  `setup.go:169-174` where settlement, snapshots, hypotheses, and
+  predictions are wired to `nil` with `DELIBERATELY LEFT NIL` comments —
+  the corresponding cron workers tick every 15/30 min and return
+  immediately, no errors raised. The migration ships, the boot succeeds,
+  and the bot quietly does nothing for hours.
+
+  Suggested fix: forge codegen should detect both patterns at generation
+  time and emit a structured boot-time warning (`level=warn`,
+  `event=forge.scaffold.unwired`, with the symbol and file:line) for each
+  occurrence — visible enough that operators can't miss it, but **not**
+  a fatal error. Migration paths legitimately need to ship partial
+  scaffolds. Two detection rules to start: (1) Tier-1 generated stubs
+  whose body is solely `return ..., ErrNotImplemented` (or similar
+  sentinel), surfaced via either a marker comment in the template or an
+  AST check at generate-time. (2) DI sites in `wire_gen.go` where a
+  generated dep is constructed as `nil` with no `// nolint:forge-unwired`
+  opt-out comment. Optionally gate boot-fail mode behind
+  `forge.yaml: features.strict_wiring: true` for projects that want
+  production-grade enforcement. Severity: high — caused real production
+  outage in the canonical dogfooding project. Where: `internal/codegen/`
+  (template generation + AST detection), `internal/templates/app/wire_gen.go.tmpl`
+  (nil-DI emission), `pkg/forge/diagnostics.go` (boot-warn surface — may
+  not exist yet, design alongside).
   AIP-158-shape that doesn't match bespoke list/get protos.** When a proto
   service method matches a CRUD prefix (`List*`, `Get*`, `Create*`, etc.)
   the CRUD generator emits a `handlers_crud_gen.go` body assuming the

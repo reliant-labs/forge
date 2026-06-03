@@ -315,12 +315,16 @@ func (v *Validator) AuthenticateHeaders(ctx context.Context, headers http.Header
 	return nil, nil
 }
 
-// Interceptor returns a Connect interceptor that authenticates each unary
-// request and stores the resulting claims in the context using the supplied
-// claims-context helper.
+// Interceptor returns a unary-only Connect interceptor that authenticates
+// each request and stores the resulting claims in the context using the
+// supplied claims-context helper.
 //
 // withClaims is the function the user's pkg/middleware exposes for putting
 // claims into context (typically middleware.ContextWithClaims).
+//
+// This entrypoint is kept for backwards compatibility with projects that
+// wired auth as a [connect.UnaryInterceptorFunc]. New code should prefer
+// [Validator.ConnectInterceptor], which also covers streaming RPCs.
 func (v *Validator) Interceptor(opts InterceptorOptions, withClaims func(context.Context, *Claims) context.Context) connect.UnaryInterceptorFunc {
 	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -336,6 +340,66 @@ func (v *Validator) Interceptor(opts InterceptorOptions, withClaims func(context
 			}
 			return next(ctx, req)
 		})
+	})
+}
+
+// ConnectInterceptor returns a full [connect.Interceptor] (unary + streaming
+// handler) that authenticates each request and stores the resulting claims
+// on ctx via withClaims.
+//
+// Use this in preference to [Validator.Interceptor] for any new wiring —
+// connect-go silently bypasses [connect.UnaryInterceptorFunc] for streaming
+// RPCs, which would otherwise leave streaming endpoints unauthenticated.
+//
+// Streaming clients are pass-through: the auth interceptor is server-side.
+func (v *Validator) ConnectInterceptor(opts InterceptorOptions, withClaims func(context.Context, *Claims) context.Context) connect.Interceptor {
+	return &interceptor{v: v, opts: opts, withClaims: withClaims}
+}
+
+// interceptor is the full unary+streaming implementation backing
+// [Validator.ConnectInterceptor].
+type interceptor struct {
+	v          *Validator
+	opts       InterceptorOptions
+	withClaims func(context.Context, *Claims) context.Context
+}
+
+func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if i.v.IsUnauthenticatedProcedure(req.Spec().Procedure, i.opts.SkipMethods) {
+			return next(ctx, req)
+		}
+		claims, err := i.v.AuthenticateHeaders(ctx, req.Header(), i.opts)
+		if err != nil {
+			return nil, err
+		}
+		if claims != nil && i.withClaims != nil {
+			ctx = i.withClaims(ctx, claims)
+		}
+		return next(ctx, req)
+	})
+}
+
+// WrapStreamingClient is a pass-through. The auth interceptor is server-side:
+// client-side credentials are attached by the caller before the request
+// leaves the process, not by this interceptor.
+func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if i.v.IsUnauthenticatedProcedure(conn.Spec().Procedure, i.opts.SkipMethods) {
+			return next(ctx, conn)
+		}
+		claims, err := i.v.AuthenticateHeaders(ctx, conn.RequestHeader(), i.opts)
+		if err != nil {
+			return err
+		}
+		if claims != nil && i.withClaims != nil {
+			ctx = i.withClaims(ctx, claims)
+		}
+		return next(ctx, conn)
 	})
 }
 

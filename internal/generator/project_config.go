@@ -361,7 +361,7 @@ func boolPtr(b bool) *bool { return &b }
 // top-level key on the project config at configPath, preserving any keys,
 // comments, and ordering the user added that are not part of the Go struct.
 // If the key does not exist, it is created.
-func appendToProjectConfigSequence(configPath, key string, entry interface{}) error {
+func appendToProjectConfigSequence(configPath, key string, entry any) error {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)

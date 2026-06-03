@@ -286,6 +286,15 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n✅ Internal package '%s' created!\n", name)
+	// Hint at the next step. `forge add package` emits only contract.go,
+	// service.go, and contract_test.go; mock_gen.go and middleware_gen.go
+	// arrive on the next `forge generate` (the codegen pipeline reads
+	// contract.go and emits them based on the declared Service
+	// interface). Without this breadcrumb, users routinely write a
+	// downstream consumer of `<pkg>.MockService` and find the symbol
+	// missing — the package "exists" in forge.yaml but the mock hasn't
+	// been generated yet.
+	fmt.Printf("   Next: edit internal/%s/contract.go to declare the Service interface, then run `forge generate` to emit mock_gen.go.\n", name)
 
 	return nil
 }

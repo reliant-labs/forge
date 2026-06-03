@@ -95,6 +95,7 @@ var auditCategoryOrder = []string{
 	"migration_safety",
 	"wire_coverage",
 	"scaffold_markers",
+	"crud_stubs",
 	"deps",
 }
 
@@ -173,6 +174,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["migration_safety"] = auditMigrationSafety(cfg, abs)
 	report.Categories["wire_coverage"] = auditWireCoverage(abs)
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
+	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
 	report.Categories["deps"] = auditDeps(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)

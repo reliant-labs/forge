@@ -215,6 +215,12 @@ schema SubCommandService:
     # parent's `command` (typically the binary baked into the image at
     # /usr/local/bin/<project>). Most callers should leave this empty.
     command: [str] = []
+    # See Application.cluster_rbac. Useful when one subservice of a
+    # shared-binary deploy is an operator that needs cluster-scoped
+    # permissions (e.g. the controller subcommand of a multi-service
+    # control plane).
+    cluster_rbac: bool = False
+    cluster_rbac_rules: [{str: any}] = []
 
     check:
         replicas > 0, "replicas must be positive"

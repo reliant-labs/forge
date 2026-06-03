@@ -21,9 +21,9 @@ schema SecurityContext:
     seccomp_profile: str = "RuntimeDefault"
 
 schema HealthCheck:
-    """HTTP health check probe configuration.
+    """Health check probe configuration (HTTP or exec).
 
-    Kubernetes uses two HTTP probes with different semantics:
+    Kubernetes uses two probes with different semantics:
       * livenessProbe  — restart the pod if it goes unhealthy (`/healthz`).
       * readinessProbe — take the pod out of service routing while it warms up
         or becomes temporarily unable to serve traffic (`/readyz`).
@@ -33,12 +33,22 @@ schema HealthCheck:
     shared path would either restart pods that are merely warming up (too
     aggressive on liveness) or keep unhealthy pods receiving traffic (too
     lax on readiness), so we model them as separate fields here.
+
+    For non-HTTP workloads (workers, brokers, sidecars) set
+    `exec_command = ["pgrep", "-f", "myworker"]` (or similar). When
+    `exec_command` is non-empty the render layer emits an `exec:` probe
+    instead of `httpGet:` and the HTTP path/port fields are ignored.
     """
     # Liveness ("is this process healthy? if not, restart it")
     liveness_path: str = "/healthz"
     # Readiness ("is this process ready to receive traffic right now?")
     readiness_path: str = "/readyz"
     http_port: int = 8080
+    # Optional exec-style probe. When non-empty, takes precedence over
+    # the HTTP fields and is rendered as `exec.command:` for BOTH
+    # liveness and readiness. Use for non-HTTP processes (workers,
+    # CLIs, sidecars). Example: ["pgrep", "-f", "myworker"].
+    exec_command: [str] = []
     initial_delay: int = 5
     period: int = 10
     timeout: int = 3

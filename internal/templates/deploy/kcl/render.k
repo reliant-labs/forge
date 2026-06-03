@@ -57,17 +57,39 @@ _pod_security_context = lambda sc: schema.SecurityContext -> any {
 
 # Build a probe spec for a specific endpoint. `path` lets callers point the
 # same shared probe timing at different endpoints (`/healthz` for liveness,
-# `/readyz` for readiness).
+# `/readyz` for readiness). When `hc.exec_command` is non-empty, an `exec:`
+# probe is emitted instead and `path` / `hc.http_port` are ignored — useful
+# for non-HTTP workloads (workers, sidecars).
 _probe_spec = lambda hc: schema.HealthCheck, path: str -> any {
     {
-        httpGet = {
-            path = path
-            port = hc.http_port
-        }
+        if hc.exec_command:
+            exec = {command = hc.exec_command}
+        else:
+            httpGet = {
+                path = path
+                port = hc.http_port
+            }
         initialDelaySeconds = hc.initial_delay
         periodSeconds = hc.period
         timeoutSeconds = hc.timeout
         failureThreshold = hc.failure_threshold
+    }
+}
+
+# Startup probe shares the liveness endpoint / command but uses a longer
+# failure window so slow boot doesn't cascade into liveness restarts.
+# Branches on exec_command the same way `_probe_spec` does.
+_startup_probe_spec = lambda hc: schema.HealthCheck -> any {
+    {
+        if hc.exec_command:
+            exec = {command = hc.exec_command}
+        else:
+            httpGet = {
+                path = hc.liveness_path
+                port = hc.http_port
+            }
+        failureThreshold = 30
+        periodSeconds = 2
     }
 }
 
@@ -146,14 +168,7 @@ _render_deployment = lambda app: schema.Application, env: schema.Environment -> 
                             securityContext = _container_security_context(app.security_context)
                             livenessProbe = _probe_spec(app.health_check, app.health_check.liveness_path)
                             readinessProbe = _probe_spec(app.health_check, app.health_check.readiness_path)
-                            startupProbe = {
-                                httpGet = {
-                                    path = app.health_check.liveness_path
-                                    port = app.health_check.http_port
-                                }
-                                failureThreshold = 30
-                                periodSeconds = 2
-                            }
+                            startupProbe = _startup_probe_spec(app.health_check)
                         }
                     ]
                 }

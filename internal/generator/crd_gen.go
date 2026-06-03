@@ -175,6 +175,33 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		return fmt.Errorf("write %s: %w", testPath, err)
 	}
 
+	// deploy/kcl/lib/<lower>_crd.k — a starter KCL CRD manifest. The
+	// scaffold ships with a permissive `x-kubernetes-preserve-unknown-fields`
+	// schema so it installs immediately; the Go types in
+	// api/<version>/<lower>_types.go stay the source of truth and
+	// users can tighten the schema (or wire controller-gen) when
+	// the CRD shape stabilises. Only emit when the KCL deploy tree
+	// exists (every forge service project has one; CLI-only projects
+	// might not).
+	kclLibDir := filepath.Join(in.Root, "deploy", "kcl", "lib")
+	kclDeployDir := filepath.Join(in.Root, "deploy", "kcl")
+	if _, err := os.Stat(kclDeployDir); err == nil {
+		if err := os.MkdirAll(kclLibDir, 0755); err != nil {
+			return fmt.Errorf("create deploy/kcl/lib directory: %w", err)
+		}
+		crdKclContent, err := renderOperatorTemplate("crd/crd.k.tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render crd crd.k: %w", err)
+		}
+		kclPath := filepath.Join(kclLibDir, lowerName+"_crd.k")
+		// Don't overwrite a hand-extended CRD KCL on re-run.
+		if _, err := os.Stat(kclPath); os.IsNotExist(err) {
+			if err := os.WriteFile(kclPath, crdKclContent, 0644); err != nil {
+				return fmt.Errorf("write %s: %w", kclPath, err)
+			}
+		}
+	}
+
 	return nil
 }
 

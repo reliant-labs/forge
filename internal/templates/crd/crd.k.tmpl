@@ -13,11 +13,11 @@ into your toolchain and replace this file with its output.
 
 Imported into the per-env main.k via `additional_manifests`:
 
-    import deploy.kcl.lib.crd_{{.LowerName}} as crd_{{.LowerName}}
+    import deploy.kcl.lib.{{.LowerName}}_crd as {{.LowerName}}_crd
 
     _env = schema.Environment {
         ...
-        additional_manifests = [crd_{{.LowerName}}.{{.TypeName}}_CRD]
+        additional_manifests = [{{.LowerName}}_crd.{{.TypeName}}_CRD]
     }
 """
 

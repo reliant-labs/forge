@@ -571,6 +571,7 @@ multi_service_apps = lambda mapp: schema.MultiServiceApplication -> {str: schema
 render_environment = lambda env: schema.Environment -> [any] {
     [_render_namespace(env)] \
         + [_render_config_map(cm, env) for cm in env.config_maps] \
+        + env.additional_manifests \
         + [item for _, app in env.applications for item in _render_app(app, env)] \
         + (_render_network_policies(env) if env.network_policies else [])
 }

@@ -285,5 +285,12 @@ schema Environment:
     # one per env (`<project>-<env>-config`) populated from non-sensitive
     # config fields; hand-authored entries are appended fine.
     config_maps: [ConfigMap] = []
+    # Extra cluster-scoped manifests rendered alongside the applications
+    # (CRDs, ClusterIssuers, SealedSecrets, etc.). Each entry is an
+    # arbitrary k8s resource dict — bring your own schema if you want
+    # strong typing. Typical use: `forge add crd` writes
+    # `deploy/kcl/lib/<lower>_crd.k` exporting a `<Name>_CRD` dict;
+    # import it and add it here. Order is preserved.
+    additional_manifests: [any] = []
     network_policies: bool = True
     resource_quotas: bool = False

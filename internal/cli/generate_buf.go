@@ -48,6 +48,11 @@ func writeDefaultBufGenYaml(projectDir string) error {
 # and the binary name with the BSR plugin path, e.g.
 #   - remote: buf.build/protocolbuffers/go
 #   - remote: buf.build/connectrpc/go
+#
+# OpenAPI specs: set ` + "`api.openapi: true`" + ` in forge.yaml. Forge invokes
+# protoc-gen-connect-openapi via a synthesized template; you do NOT
+# need to add it here. Install with:
+#   ` + openAPIPluginInstallCmd + `
 plugins:
   - local: protoc-gen-go
     out: gen

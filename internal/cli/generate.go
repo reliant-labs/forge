@@ -193,18 +193,59 @@ func runGoBuildValidate(projectDir string) error {
 	validateCmd.Stderr = io.MultiWriter(os.Stderr, &buildStderr)
 	if err := validateCmd.Run(); err != nil {
 		errOutput := buildStderr.String()
-		fix := "ensure all referenced types are imported and re-run 'forge generate'"
-		if errOutput != "" {
-			if strings.Contains(errOutput, "pkg/config") {
-				fix = "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
-			} else if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
-				fix = "authorizer_gen.go may be missing — re-run 'forge generate'"
-			}
-		}
+		fix := goBuildValidateFixHint(errOutput)
 		return cliutil.WrapUserErr("forge generate (validate generated code)",
 			"go build failed", "", fix, err)
 	}
 	return nil
+}
+
+// goBuildValidateFixHint inspects the `go build ./...` stderr captured
+// by runGoBuildValidate and returns the most-actionable single-line
+// remediation tip for the failure pattern seen.
+//
+// Pattern hierarchy (first match wins):
+//
+//  1. `undefined: orm.Type*` — protoc-gen-forge emitted a reference to
+//     an orm.* constant that the project's pinned forge/pkg version
+//     does NOT export. This is the "codegen plugin newer than runtime
+//     pin" skew kalshi-trader's migration round hit four separate
+//     times (TypeDoublePrecision/TypeReal landed in forge/pkg after
+//     the project's go.mod pin). The fix is mechanical: bump the
+//     forge/pkg pin in both root and gen/ and re-tidy.
+//
+//  2. `undefined:` against the project's own `pkg/config` package —
+//     proto/config/ likely has no annotated config fields yet.
+//
+//  3. `undefined: GeneratedAuthorizer` / `authorizer_gen` not found —
+//     authorizer_gen.go missing; re-run forge generate.
+//
+//  4. Default fall-through — generic "ensure imports / re-run generate".
+//
+// Extracted from runGoBuildValidate so unit tests can pin the hint
+// selection without spinning up a tmpdir project + a real go build.
+func goBuildValidateFixHint(errOutput string) string {
+	if errOutput == "" {
+		return "ensure all referenced types are imported and re-run 'forge generate'"
+	}
+	// Pattern 1: forge/pkg runtime skew. The protoc-gen-forge in PATH
+	// is newer than the project's pinned forge/pkg version, so codegen
+	// emits constants the runtime doesn't export.
+	//
+	// We match on `undefined: orm.Type` (covers TypeReal,
+	// TypeDoublePrecision, and any future orm.Type<X> constant the
+	// plugin emits — the pattern is forward-compatible without a
+	// growing per-constant allowlist).
+	if strings.Contains(errOutput, "undefined: orm.Type") {
+		return "forge/pkg pin is older than the codegen plugin (orm.Type* not exported). Run `go get github.com/reliant-labs/forge/pkg@latest && go mod tidy` in BOTH the project root and gen/ to bump the pin, then re-run 'forge generate'."
+	}
+	if strings.Contains(errOutput, "pkg/config") {
+		return "ensure proto/config/ has annotated config fields and re-run 'forge generate'"
+	}
+	if strings.Contains(errOutput, "GeneratedAuthorizer") || strings.Contains(errOutput, "authorizer_gen") {
+		return "authorizer_gen.go may be missing — re-run 'forge generate'"
+	}
+	return "ensure all referenced types are imported and re-run 'forge generate'"
 }
 
 // preCodegenContractCheck runs the forgeconv internal-package contract

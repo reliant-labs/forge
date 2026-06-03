@@ -204,15 +204,39 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 	return result
 }
 
+// isBigIntProtoType reports whether protobuf-es v2 emits a TypeScript
+// `bigint` (rather than `number`) field for the given proto scalar type.
+// The default protobuf-es jstype for 64-bit integer scalars is bigint,
+// so int64 / uint64 / sint64 / fixed64 / sfixed64 all need bigint
+// literals (`5n`, `BigInt("...")`) in mock data — emitting a plain
+// number literal produces `Type 'number' is not assignable to type
+// 'bigint'` under `tsc --noEmit`.
+//
+// Projects can override the jstype to JS_STRING / JS_NORMAL at the
+// proto level, but the mock-data generator has no signal for that
+// today — when the override is in play the user will hit a separate
+// compile error pointing at the mismatch and can hand-patch.
+func isBigIntProtoType(protoType string) bool {
+	switch protoType {
+	case "int64", "uint64", "sint64", "fixed64", "sfixed64":
+		return true
+	}
+	return false
+}
+
 // protoTypeToTSType maps proto field types to TypeScript types.
 func protoTypeToTSType(protoType string) string {
 	switch protoType {
 	case "bool":
 		return "boolean"
-	case "int32", "int64", "uint32", "uint64", "sint32", "sint64",
-		"fixed32", "fixed64", "sfixed32", "sfixed64",
+	case "int32", "uint32", "sint32",
+		"fixed32", "sfixed32",
 		"float", "double":
 		return "number"
+	case "int64", "uint64", "sint64", "fixed64", "sfixed64":
+		// protobuf-es v2 emits bigint for 64-bit integer scalars by
+		// default. See isBigIntProtoType for the override caveat.
+		return "bigint"
 	case "google.protobuf.Timestamp":
 		return "string"
 	case "enum":
@@ -230,16 +254,27 @@ func mockGenerateValue(tableName string, f EntityField, i int) string {
 	col := f.Name
 	protoType := f.ProtoType
 
-	// Primary key
+	// Primary key. UUIDs are the project default, but if the proto types
+	// the id field as a 64-bit integer (some projects use distributed
+	// counters / snowflake-style ids) protobuf-es emits it as bigint and
+	// a string literal will not type-check. Emit `BigInt("<n>")` so the
+	// mock value stays deterministic without depending on parsing
+	// hex-of-hash into a numeric literal.
 	if col == "id" {
 		uuid := mockDeterministicUUID(fmt.Sprintf("%s.%d", tableName, i))
+		if isBigIntProtoType(protoType) {
+			return fmt.Sprintf("BigInt(%q)", fmt.Sprintf("%d", i+1))
+		}
 		return fmt.Sprintf("%q", uuid)
 	}
 
-	// Foreign key references
+	// Foreign key references — same bigint caveat as the primary key.
 	if strings.HasSuffix(col, "_id") && col != "id" {
 		refTable := strings.TrimSuffix(col, "_id") + "s"
 		uuid := mockDeterministicUUID(fmt.Sprintf("%s.%d", refTable, i%10))
+		if isBigIntProtoType(protoType) {
+			return fmt.Sprintf("BigInt(%q)", fmt.Sprintf("%d", (i%10)+1))
+		}
 		return fmt.Sprintf("%q", uuid)
 	}
 
@@ -257,11 +292,15 @@ func mockGenerateValue(tableName string, f EntityField, i int) string {
 		return "false"
 	}
 
-	// Numeric types
+	// Numeric types. 64-bit integer scalars project to TypeScript
+	// `bigint` under protobuf-es v2's defaults — emit a `<n>n` bigint
+	// literal rather than a plain number to keep `tsc --noEmit` clean.
 	switch protoType {
-	case "int32", "int64", "uint32", "uint64", "sint32", "sint64",
-		"fixed32", "fixed64", "sfixed32", "sfixed64":
+	case "int32", "uint32", "sint32",
+		"fixed32", "sfixed32":
 		return mockGenerateIntegerValue(col, i)
+	case "int64", "uint64", "sint64", "fixed64", "sfixed64":
+		return mockGenerateIntegerValue(col, i) + "n"
 	case "float", "double":
 		return fmt.Sprintf("%.2f", float64(i+1)*10.5)
 	}

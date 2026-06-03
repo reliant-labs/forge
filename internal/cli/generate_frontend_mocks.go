@@ -230,8 +230,14 @@ const requested =
   typeof globalThis !== "undefined" && globalThis.location
     ? new URLSearchParams(globalThis.location.search).get("scenario")
     : null;
+// Use a ternary instead of && so the empty-string falsy branch doesn't
+// leak '' into the inferred union type. With ?? alone, requested && X
+// narrows to '' | Scenario | undefined, and the empty-string survives ??
+// because it only replaces null/undefined — so subsequent access on
+// active.setup / active.handlers would error under strict tsc.
 const active =
-  (requested && scenarios.byName(requested)) ?? scenarios.defaultScenario;
+  (requested ? scenarios.byName(requested) : undefined) ??
+  scenarios.defaultScenario;
 
 // setup() runs once before any RPC fires. Reserved for non-RPC state
 // (localStorage flags, sessionStorage). Synchronous; no network calls.
@@ -254,13 +260,20 @@ function makeUnaryResponse<T>(
 
 export function createMockTransport(): Transport {
   return {
-    async unary(service, method, _signal, _timeoutMs, _header, message) {
+    async unary(
+      service: { typeName: string },
+      method: { name: string },
+      _signal: AbortSignal | undefined,
+      _timeoutMs: number | undefined,
+      _header: HeadersInit | undefined,
+      message: unknown,
+    ) {
       const key = ` + "`${service.typeName}/${method.name}`" + `;
 
       // Scenario overlay — first crack at every unary RPC.
       const handler = active.handlers[key];
       if (handler) {
-        const result = await handler(message as unknown);
+        const result = await handler(message);
         return makeUnaryResponse(service, method, result);
       }
 

@@ -468,6 +468,17 @@ type ContractsConfig struct {
 	AllowExportedVars  bool     `yaml:"allow_exported_vars"`  // allow exported package vars (default: false)
 	AllowExportedFuncs bool     `yaml:"allow_exported_funcs"` // allow exported funcs without contract (default: true)
 	Exclude            []string `yaml:"exclude"`              // packages that opt out
+	// InterfaceTypes lists additional cross-package interface types (over
+	// and above the built-in list in internal/generator/contract) that the
+	// mock generator should treat as mockable — i.e. emit "nil" as the
+	// fallback zero value instead of the invalid composite literal "T{}".
+	//
+	// Entries are matched against the rendered Go type expression of a
+	// contract method's return value, e.g. "billing.MeterClient" or
+	// "myproject.SomeProjectLocalInterface". Use this when a contract
+	// method returns a project-local interface that the mock generator
+	// would otherwise mistakenly treat as a struct.
+	InterfaceTypes []string `yaml:"interface_types"`
 }
 
 // IsStrict returns whether strict contract enforcement is enabled (default: true).

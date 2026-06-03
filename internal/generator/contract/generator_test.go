@@ -380,6 +380,50 @@ func TestGenerate_InterfaceReturns(t *testing.T) {
 	}
 }
 
+// TestGenerate_ExtraInterfaceTypes verifies the forge.yaml extension hook:
+// a project-local cross-package interface declared via Options.
+// ExtraInterfaceTypes flips the mock fallback from the invalid composite
+// literal "pkg.T{}" to "nil". Regression test for the cp-forge v2
+// svcbilling repro where a contract method returned billing.MeterClient
+// — an interface the built-in crossPackageInterfaces list does not (and
+// should not) know about.
+//
+// Plain Generate (no extras) still produces "billing.MeterClient{}"
+// because the type is not in any allow-list; that branch is exercised
+// first so the test pins down both halves of the contract.
+func TestGenerate_ExtraInterfaceTypes(t *testing.T) {
+	// Baseline: without the extras hook, an unknown cross-package
+	// interface return falls through to the qualified-named-type branch
+	// and emits the (invalid) composite literal "billing.MeterClient{}".
+	baselineDir := copyTestdata(t, "testdata/extra_iface")
+	if err := Generate(filepath.Join(baselineDir, "contract.go")); err != nil {
+		t.Fatalf("Generate() baseline error = %v", err)
+	}
+	baselineMock := filepath.Join(baselineDir, "mock_gen.go")
+	assertFileExists(t, baselineMock)
+	assertContains(t, baselineMock, "billing.MeterClient{}")
+
+	// With the extras hook: declare "billing.MeterClient" as a mockable
+	// interface and the mock fallback collapses to "nil".
+	extraDir := copyTestdata(t, "testdata/extra_iface")
+	opts := Options{
+		ExtraInterfaceTypes: map[string]bool{
+			"billing.MeterClient": true,
+		},
+	}
+	if err := GenerateWithOptions(filepath.Join(extraDir, "contract.go"), opts); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	extraMock := filepath.Join(extraDir, "mock_gen.go")
+	assertFileExists(t, extraMock)
+	assertValidGo(t, extraMock)
+	// The Meter fallback returns (billing.MeterClient, error). With the
+	// extra declared, the interface return collapses to nil; the error
+	// stays as contractkit.MockNotSet.
+	assertContains(t, extraMock, `return nil, contractkit.MockNotSet("MockService", "Meter")`)
+	assertNotContains(t, extraMock, "billing.MeterClient{}")
+}
+
 // TestGenerate_SiblingFileInterface verifies that an interface declared in
 // a sibling .go file (not contract.go) is still recognized as an interface
 // by zeroValue. Without sibling-file scanning the generator emits the

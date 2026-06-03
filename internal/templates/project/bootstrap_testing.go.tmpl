@@ -208,7 +208,12 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{.Alias}}.Service 
 		return svc
 	}
 	svc, err := {{.Alias}}.New({{.Alias}}.Deps{
+{{- if .HasLogger}}
 		Logger: cfg.logger.With("package", "{{.Name}}"),
+{{- end}}
+{{- if .HasConfig}}
+		Config: cfg.cfg,
+{{- end}}
 	})
 	if err != nil {
 		t.Fatalf("creating {{.ImportPath}} package: %v", err)
@@ -219,7 +224,12 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{.Alias}}.Service 
 		return {{.Alias}}.New(*cfg.{{.VarName}}Deps)
 	}
 	return {{.Alias}}.New({{.Alias}}.Deps{
+{{- if .HasLogger}}
 		Logger: cfg.logger.With("package", "{{.Name}}"),
+{{- end}}
+{{- if .HasConfig}}
+		Config: cfg.cfg,
+{{- end}}
 	})
 {{- end}}
 }

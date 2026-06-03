@@ -450,6 +450,7 @@ func (e *TemplateEngine) loadTemplates() error {
 		"crd/types.go.tmpl",
 		"crd/controller.go.tmpl",
 		"crd/controller_test.go.tmpl",
+		"crd/crd.k.tmpl",
 		"function/function.go.tmpl",
 		"function/function_test.go.tmpl",
 	}

@@ -1,11 +1,17 @@
 import React from "react";
 
+// Canonical variants. `danger` and `default` are accepted aliases for
+// `error` and `neutral` respectively — many existing codebases (and
+// alternate design systems) name the destructive variant `danger` and
+// the no-color variant `default`. Accepting both spellings means
+// ports don't need an adapter table at every call site.
 type BadgeVariant = "success" | "warning" | "error" | "info" | "neutral";
+type BadgeVariantAlias = "danger" | "default";
 type BadgeSize = "sm" | "md" | "lg";
 
 interface BadgeProps {
   label: string;
-  variant?: BadgeVariant;
+  variant?: BadgeVariant | BadgeVariantAlias;
   size?: BadgeSize;
   dot?: boolean;
   removable?: boolean;
@@ -34,12 +40,19 @@ const sizeStyles: Record<BadgeSize, string> = {
   lg: "px-2.5 py-1 text-sm",
 };
 
+function resolveVariant(v: BadgeVariant | BadgeVariantAlias): BadgeVariant {
+  if (v === "danger") return "error";
+  if (v === "default") return "neutral";
+  return v;
+}
+
 export default function Badge({ label, variant = "neutral", size = "md", dot, removable, onRemove }: BadgeProps) {
+  const v = resolveVariant(variant);
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full font-medium ring-1 ring-inset ${variantStyles[variant]} ${sizeStyles[size]}`}
+      className={`inline-flex items-center gap-1 rounded-full font-medium ring-1 ring-inset ${variantStyles[v]} ${sizeStyles[size]}`}
     >
-      {dot && <span className={`h-1.5 w-1.5 rounded-full ${dotStyles[variant]}`} />}
+      {dot && <span className={`h-1.5 w-1.5 rounded-full ${dotStyles[v]}`} />}
       {label}
       {removable && (
         <button

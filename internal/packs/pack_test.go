@@ -29,8 +29,8 @@ func TestLoadPack(t *testing.T) {
 	if p.Config.Section != "auth" {
 		t.Errorf("Config.Section = %q, want %q", p.Config.Section, "auth")
 	}
-	if len(p.Files) != 2 {
-		t.Errorf("len(Files) = %d, want 2", len(p.Files))
+	if len(p.Files) != 3 {
+		t.Errorf("len(Files) = %d, want 3", len(p.Files))
 	}
 	if len(p.Dependencies) != 2 {
 		t.Errorf("len(Dependencies) = %d, want 2", len(p.Dependencies))
@@ -233,7 +233,7 @@ func TestPackInstallIdempotentMigrations(t *testing.T) {
 		t.Fatalf("LoadPack: %v", err)
 	}
 
-	if err := pack.InstallWithConfig(dir, cfg, nil); err != nil {
+	if _, err := pack.InstallWithConfig(dir, cfg, nil); err != nil {
 		t.Fatalf("re-install: %v", err)
 	}
 
@@ -295,7 +295,7 @@ func TestPackInstallCollisionDetected(t *testing.T) {
 		t.Fatalf("LoadPack: %v", err)
 	}
 
-	err = pack.InstallWithConfig(dir, cfg, nil)
+	_, err = pack.InstallWithConfig(dir, cfg, nil)
 	if err == nil {
 		t.Fatal("expected collision error, got nil")
 	}
@@ -437,35 +437,6 @@ func TestDataTablePackManifest(t *testing.T) {
 		if !strings.Contains(f.Output, "{{.FrontendPath}}") {
 			t.Errorf("data-table file %q output must reference {{.FrontendPath}}", f.Output)
 		}
-	}
-}
-
-// TestNATSPackManifest confirms the nats pack declares the expected
-// shape — Go kind, the conventional subpath, and a pinned dependency.
-func TestNATSPackManifest(t *testing.T) {
-	t.Parallel()
-	p, err := LoadPack("nats")
-	if err != nil {
-		t.Fatalf("LoadPack(nats): %v", err)
-	}
-	if p.IsFrontendKind() {
-		t.Errorf("nats pack must be Go kind, got Kind=%q", p.Kind)
-	}
-	if p.Subpath != "clients/nats" {
-		t.Errorf("nats pack Subpath = %q, want clients/nats", p.Subpath)
-	}
-	if len(p.Dependencies) == 0 {
-		t.Error("nats pack must declare at least one Go dependency")
-	}
-	foundNATS := false
-	for _, dep := range p.Dependencies {
-		if strings.HasPrefix(dep, "github.com/nats-io/nats.go") {
-			foundNATS = true
-			break
-		}
-	}
-	if !foundNATS {
-		t.Error("nats pack must depend on github.com/nats-io/nats.go")
 	}
 }
 

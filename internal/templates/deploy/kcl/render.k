@@ -57,17 +57,39 @@ _pod_security_context = lambda sc: schema.SecurityContext -> any {
 
 # Build a probe spec for a specific endpoint. `path` lets callers point the
 # same shared probe timing at different endpoints (`/healthz` for liveness,
-# `/readyz` for readiness).
+# `/readyz` for readiness). When `hc.exec_command` is non-empty, an `exec:`
+# probe is emitted instead and `path` / `hc.http_port` are ignored — useful
+# for non-HTTP workloads (workers, sidecars).
 _probe_spec = lambda hc: schema.HealthCheck, path: str -> any {
     {
-        httpGet = {
-            path = path
-            port = hc.http_port
-        }
+        if hc.exec_command:
+            exec = {command = hc.exec_command}
+        else:
+            httpGet = {
+                path = path
+                port = hc.http_port
+            }
         initialDelaySeconds = hc.initial_delay
         periodSeconds = hc.period
         timeoutSeconds = hc.timeout
         failureThreshold = hc.failure_threshold
+    }
+}
+
+# Startup probe shares the liveness endpoint / command but uses a longer
+# failure window so slow boot doesn't cascade into liveness restarts.
+# Branches on exec_command the same way `_probe_spec` does.
+_startup_probe_spec = lambda hc: schema.HealthCheck -> any {
+    {
+        if hc.exec_command:
+            exec = {command = hc.exec_command}
+        else:
+            httpGet = {
+                path = hc.liveness_path
+                port = hc.http_port
+            }
+        failureThreshold = 30
+        periodSeconds = 2
     }
 }
 
@@ -146,14 +168,7 @@ _render_deployment = lambda app: schema.Application, env: schema.Environment -> 
                             securityContext = _container_security_context(app.security_context)
                             livenessProbe = _probe_spec(app.health_check, app.health_check.liveness_path)
                             readinessProbe = _probe_spec(app.health_check, app.health_check.readiness_path)
-                            startupProbe = {
-                                httpGet = {
-                                    path = app.health_check.liveness_path
-                                    port = app.health_check.http_port
-                                }
-                                failureThreshold = 30
-                                periodSeconds = 2
-                            }
+                            startupProbe = _startup_probe_spec(app.health_check)
                         }
                     ]
                 }
@@ -369,18 +384,48 @@ _render_network_policies = lambda env: schema.Environment -> [any] {
     ]
 }
 
-_render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] {
-    _sa_name = app.service_account_name if app.service_account_name else app.name
+# Cluster-scoped RBAC: ClusterRole + ClusterRoleBinding. Used by
+# operators that watch resources across namespaces (workspace-
+# controller, multi-tenant operators). The default ConfigMap/Secret
+# read rules apply; `cluster_rbac_rules` extends them.
+_render_cluster_rbac = lambda app: schema.Application, env: schema.Environment, sa_name: str, default_rules: [any] -> [any] {
     [
         {
-            apiVersion = "v1"
-            kind = "ServiceAccount"
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRole"
             metadata = {
-                name = _sa_name
-                namespace = env.namespace
+                name = "${app.name}-clusterrole"
                 labels = _managed_labels(app)
             }
+            rules = default_rules + app.cluster_rbac_rules
         }
+        {
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRoleBinding"
+            metadata = {
+                name = "${app.name}-clusterrolebinding"
+                labels = _managed_labels(app)
+            }
+            subjects = [
+                {
+                    kind = "ServiceAccount"
+                    name = sa_name
+                    namespace = env.namespace
+                }
+            ]
+            roleRef = {
+                apiGroup = "rbac.authorization.k8s.io"
+                kind = "ClusterRole"
+                name = "${app.name}-clusterrole"
+            }
+        }
+    ]
+}
+
+# Namespaced RBAC: Role + RoleBinding scoped to env.namespace. The
+# default for every Application.
+_render_namespaced_rbac = lambda app: schema.Application, env: schema.Environment, sa_name: str, default_rules: [any] -> [any] {
+    [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "Role"
@@ -389,13 +434,7 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
                 namespace = env.namespace
                 labels = _managed_labels(app)
             }
-            rules = [
-                {
-                    apiGroups = [""]
-                    resources = ["configmaps", "secrets"]
-                    verbs = ["get", "list", "watch"]
-                }
-            ]
+            rules = default_rules
         }
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
@@ -408,7 +447,7 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
             subjects = [
                 {
                     kind = "ServiceAccount"
-                    name = _sa_name
+                    name = sa_name
                     namespace = env.namespace
                 }
             ]
@@ -419,6 +458,34 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
             }
         }
     ]
+}
+
+_render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] {
+    _sa_name = app.service_account_name if app.service_account_name else app.name
+    # Default rules every workload gets — read the projected ConfigMap +
+    # Secret for its per-env config. Operators that need wider access
+    # supply additional rules via `cluster_rbac_rules` (only honored when
+    # `cluster_rbac = True`; the namespaced default Role stays minimal).
+    _default_rules = [
+        {
+            apiGroups = [""]
+            resources = ["configmaps", "secrets"]
+            verbs = ["get", "list", "watch"]
+        }
+    ]
+    _service_account = {
+        apiVersion = "v1"
+        kind = "ServiceAccount"
+        metadata = {
+            name = _sa_name
+            namespace = env.namespace
+            labels = _managed_labels(app)
+        }
+    }
+    [_service_account] \
+        + (_render_cluster_rbac(app, env, _sa_name, _default_rules) \
+           if app.cluster_rbac \
+           else _render_namespaced_rbac(app, env, _sa_name, _default_rules))
 }
 
 # Render a ConfigMap. The metadata namespace defaults to the env's
@@ -496,12 +563,15 @@ multi_service_apps = lambda mapp: schema.MultiServiceApplication -> {str: schema
         service_account_name = svc.service_account_name
         command = svc.command if svc.command else mapp.command
         args = svc.args
+        cluster_rbac = svc.cluster_rbac
+        cluster_rbac_rules = svc.cluster_rbac_rules
     } for svc in mapp.services}
 }
 
 render_environment = lambda env: schema.Environment -> [any] {
     [_render_namespace(env)] \
         + [_render_config_map(cm, env) for cm in env.config_maps] \
+        + env.additional_manifests \
         + [item for _, app in env.applications for item in _render_app(app, env)] \
         + (_render_network_policies(env) if env.network_policies else [])
 }

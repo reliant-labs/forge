@@ -40,12 +40,36 @@ const (
 // forge versions generated. The generated shim re-exports it via
 // type Claims = auth.Claims so existing project code (referring to
 // middleware.Claims) keeps compiling.
+//
+// Raw carries the full decoded JWT payload (or any provider-specific map a
+// [UserResolver] chooses to attach). Projects that need access to claims
+// outside the fixed fields — Supabase user_metadata, Auth0 app_metadata,
+// Clerk org_permissions, etc. — should read from Raw instead of forking
+// the Claims type.
 type Claims struct {
-	UserID string   `json:"user_id"`
-	Email  string   `json:"email"`
-	OrgID  string   `json:"org_id"`
-	Role   string   `json:"role"`
-	Roles  []string `json:"roles"`
+	UserID string         `json:"user_id"`
+	Email  string         `json:"email"`
+	OrgID  string         `json:"org_id"`
+	Role   string         `json:"role"`
+	Roles  []string       `json:"roles"`
+	Raw    map[string]any `json:"raw,omitempty"`
+}
+
+// UserResolver is an optional hook that translates a raw decoded JWT payload
+// into [Claims]. Projects implement it when they need to consume
+// provider-specific claim shapes (e.g. Supabase user_metadata, Auth0
+// app_metadata, Clerk org_role/org_permissions) without forking the Claims
+// type.
+//
+// The resolver is wired via [Config.UserResolver]; when nil the validator
+// falls back to the built-in shape extraction (sub, email, org_id, role,
+// roles) and still populates Claims.Raw with the full payload.
+type UserResolver interface {
+	// Resolve receives the full decoded JWT payload (as a map, the
+	// shape jwt-go hands us) and must return a populated [Claims]. The
+	// raw payload should typically be copied onto Claims.Raw so
+	// downstream callers can still inspect provider-specific fields.
+	Resolve(rawClaims map[string]any) (*Claims, error)
 }
 
 // KeyValidator validates an API key and returns the associated claims.
@@ -78,6 +102,28 @@ type Config struct {
 
 	// KeyValidator validates API keys. Required when APIKey auth is enabled.
 	KeyValidator KeyValidator
+
+	// TokenValidators, when non-empty, replaces the built-in single-secret
+	// JWT path with an ordered fallback chain. Each entry validates the
+	// bearer token independently; the first to accept wins. Use this when
+	// a service must accept tokens from more than one issuer — typically
+	// during an auth-provider migration (e.g. Supabase HMAC tokens
+	// alongside Auth0 JWKS tokens).
+	//
+	// When empty the legacy JWT (single secret / JWKSURL) path is used,
+	// preserving backwards compatibility for projects that only need one
+	// validator.
+	TokenValidators []TokenValidator
+
+	// UserResolver, when non-nil, projects the raw decoded JWT payload onto
+	// [Claims]. Use it when provider-specific claim shapes (Supabase
+	// user_metadata, Auth0 app_metadata, Clerk org_permissions, etc.) need
+	// to drive the Claims you hand to downstream code.
+	//
+	// When nil the validator uses built-in shape extraction (sub, email,
+	// org_id, role, roles) and still attaches the full payload to
+	// Claims.Raw so downstream code can inspect it.
+	UserResolver UserResolver
 }
 
 // JWTConfig holds JWT-specific settings.
@@ -152,6 +198,10 @@ type Validator struct {
 	cfg          Config
 	skipMethods  map[string]bool
 	keyValidator KeyValidator
+	// chain, when non-nil, is the ordered TokenValidator fallback used in
+	// place of the legacy single-secret JWT path. Built once at NewValidator
+	// time so per-request authentication is allocation-free.
+	chain TokenValidator
 }
 
 // NewValidator returns a Validator wired for cfg.Provider.
@@ -173,6 +223,18 @@ func NewValidator(cfg Config) (*Validator, error) {
 	}
 	for _, m := range cfg.SkipMethods {
 		v.skipMethods[m] = true
+	}
+
+	// Build the TokenValidator chain when configured. A single-entry
+	// TokenValidators slice still goes through MultiValidator so the
+	// dispatch path is uniform; the wrapper is effectively free (one
+	// extra indirection per token).
+	if len(cfg.TokenValidators) > 0 {
+		chain, err := NewMultiValidator(cfg.TokenValidators...)
+		if err != nil {
+			return nil, fmt.Errorf("auth: build validator chain: %w", err)
+		}
+		v.chain = chain
 	}
 	return v, nil
 }
@@ -253,12 +315,16 @@ func (v *Validator) AuthenticateHeaders(ctx context.Context, headers http.Header
 	return nil, nil
 }
 
-// Interceptor returns a Connect interceptor that authenticates each unary
-// request and stores the resulting claims in the context using the supplied
-// claims-context helper.
+// Interceptor returns a unary-only Connect interceptor that authenticates
+// each request and stores the resulting claims in the context using the
+// supplied claims-context helper.
 //
 // withClaims is the function the user's pkg/middleware exposes for putting
 // claims into context (typically middleware.ContextWithClaims).
+//
+// This entrypoint is kept for backwards compatibility with projects that
+// wired auth as a [connect.UnaryInterceptorFunc]. New code should prefer
+// [Validator.ConnectInterceptor], which also covers streaming RPCs.
 func (v *Validator) Interceptor(opts InterceptorOptions, withClaims func(context.Context, *Claims) context.Context) connect.UnaryInterceptorFunc {
 	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -274,6 +340,66 @@ func (v *Validator) Interceptor(opts InterceptorOptions, withClaims func(context
 			}
 			return next(ctx, req)
 		})
+	})
+}
+
+// ConnectInterceptor returns a full [connect.Interceptor] (unary + streaming
+// handler) that authenticates each request and stores the resulting claims
+// on ctx via withClaims.
+//
+// Use this in preference to [Validator.Interceptor] for any new wiring —
+// connect-go silently bypasses [connect.UnaryInterceptorFunc] for streaming
+// RPCs, which would otherwise leave streaming endpoints unauthenticated.
+//
+// Streaming clients are pass-through: the auth interceptor is server-side.
+func (v *Validator) ConnectInterceptor(opts InterceptorOptions, withClaims func(context.Context, *Claims) context.Context) connect.Interceptor {
+	return &interceptor{v: v, opts: opts, withClaims: withClaims}
+}
+
+// interceptor is the full unary+streaming implementation backing
+// [Validator.ConnectInterceptor].
+type interceptor struct {
+	v          *Validator
+	opts       InterceptorOptions
+	withClaims func(context.Context, *Claims) context.Context
+}
+
+func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if i.v.IsUnauthenticatedProcedure(req.Spec().Procedure, i.opts.SkipMethods) {
+			return next(ctx, req)
+		}
+		claims, err := i.v.AuthenticateHeaders(ctx, req.Header(), i.opts)
+		if err != nil {
+			return nil, err
+		}
+		if claims != nil && i.withClaims != nil {
+			ctx = i.withClaims(ctx, claims)
+		}
+		return next(ctx, req)
+	})
+}
+
+// WrapStreamingClient is a pass-through. The auth interceptor is server-side:
+// client-side credentials are attached by the caller before the request
+// leaves the process, not by this interceptor.
+func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if i.v.IsUnauthenticatedProcedure(conn.Spec().Procedure, i.opts.SkipMethods) {
+			return next(ctx, conn)
+		}
+		claims, err := i.v.AuthenticateHeaders(ctx, conn.RequestHeader(), i.opts)
+		if err != nil {
+			return err
+		}
+		if claims != nil && i.withClaims != nil {
+			ctx = i.withClaims(ctx, claims)
+		}
+		return next(ctx, conn)
 	})
 }
 
@@ -318,6 +444,12 @@ func (v *Validator) authenticateAPIKey(ctx context.Context, headers http.Header)
 }
 
 func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
+	// Prefer the configured TokenValidator chain when present — this is
+	// the path projects opt into for multi-issuer setups.
+	if v.chain != nil {
+		return v.chain.ValidateToken(tokenString)
+	}
+
 	signingMethod := v.cfg.JWT.EffectiveSigningMethod()
 
 	keyFunc := v.cfg.JWT.KeyFunc
@@ -361,13 +493,37 @@ func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
 		return nil, fmt.Errorf("unexpected claims type")
 	}
 
+	return projectClaims(mapClaims, v.cfg.UserResolver), nil
+}
+
+// projectClaims turns a decoded JWT payload into [Claims]. When resolver is
+// non-nil it delegates the projection; otherwise it uses the built-in
+// extraction (sub/email/org_id/role/roles) and stashes the raw payload onto
+// Claims.Raw for callers that need provider-specific fields.
+//
+// A resolver that returns an error or nil claims is treated as a fallback
+// signal: projectClaims falls back to the built-in shape so a stricter
+// resolver can opt out for tokens it doesn't recognize.
+func projectClaims(mc map[string]any, resolver UserResolver) *Claims {
+	if resolver != nil {
+		c, err := resolver.Resolve(mc)
+		if err == nil && c != nil {
+			return c
+		}
+	}
+	return defaultProjectClaims(mc)
+}
+
+func defaultProjectClaims(mc map[string]any) *Claims {
+	mapClaims := jwt.MapClaims(mc)
 	return &Claims{
 		UserID: getStringClaim(mapClaims, "sub"),
 		Email:  getStringClaim(mapClaims, "email"),
 		OrgID:  getStringClaim(mapClaims, "org_id"),
 		Role:   getStringClaim(mapClaims, "role"),
 		Roles:  getStringSliceClaim(mapClaims, "roles"),
-	}, nil
+		Raw:    mc,
+	}
 }
 
 // decodeJWTKey converts a secret string into the type that github.com/golang-jwt/jwt/v5

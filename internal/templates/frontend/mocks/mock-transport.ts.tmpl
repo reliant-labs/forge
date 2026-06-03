@@ -60,8 +60,14 @@ const requested =
   typeof globalThis !== "undefined" && globalThis.location
     ? new URLSearchParams(globalThis.location.search).get("scenario")
     : null;
+// Use a ternary instead of && so the empty-string falsy branch doesn't
+// leak '' into the inferred union type. With ?? alone, ` requested && X `
+// narrows to '' | Scenario | undefined, and the empty-string survives ??
+// because it only replaces null/undefined — so subsequent access on
+// active.setup / active.handlers would error under strict tsc.
 const active =
-  (requested && scenarios.byName(requested)) ?? scenarios.defaultScenario;
+  (requested ? scenarios.byName(requested) : undefined) ??
+  scenarios.defaultScenario;
 
 // `setup()` runs once before any RPC fires. Reserved for non-RPC state
 // (localStorage flags, sessionStorage). Synchronous; no network calls.

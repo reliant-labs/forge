@@ -24,10 +24,11 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch   bool
-		force   bool
-		accept  bool
-		explain bool
+		watch        bool
+		force        bool
+		accept       bool
+		explain      bool
+		skipValidate bool
 	)
 
 	cmd := &cobra.Command{
@@ -51,11 +52,12 @@ Without forge.yaml, falls back to directory convention scanning:
   proto/db/        - Database models (protoc-gen-forge)
 
 Examples:
-  forge generate              # Generate all code
-  forge generate --watch      # Watch mode for development
-  forge generate --force      # Discard hand-edits to Tier-1 files and regenerate
-  forge generate --accept     # Keep hand-edits to Tier-1 files; refresh recorded checksums
-  forge generate --explain    # Print per-file provenance log after generate`,
+  forge generate                  # Generate all code
+  forge generate --watch          # Watch mode for development
+  forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
+  forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
+  forge generate --explain        # Print per-file provenance log after generate
+  forge generate --skip-validate  # Skip the final 'go build ./...' validate step`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Capture pre-pipeline checksums so --explain can diff
 			// against post-pipeline state to label rewritten vs idempotent.
@@ -77,7 +79,7 @@ Examples:
 			}
 
 			generateMu.Lock()
-			err := runGeneratePipeline(".", force, accept)
+			err := runGeneratePipelineOpts(".", force, accept, skipValidate)
 			generateMu.Unlock()
 
 			// Print the explain log even when the pipeline failed — partial
@@ -106,6 +108,7 @@ Examples:
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
 	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
+	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
 
 	return cmd
 }
@@ -120,6 +123,14 @@ Examples:
 // projectDir is the root of the project (contains go.mod, proto/, etc.).
 // The caller must hold generateMu.
 func runGeneratePipeline(projectDir string, force, accept bool) error {
+	return runGeneratePipelineOpts(projectDir, force, accept, false)
+}
+
+// runGeneratePipelineOpts is the variant that lets the caller pass
+// additional pipeline flags (currently --skip-validate). Wrapping the
+// legacy 3-arg signature keeps test fixtures (and any out-of-tree
+// callers) source-compatible.
+func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool) error {
 	// Cross-process file lock (complements the in-process generateMu).
 	// Held for the lifetime of the pipeline so a parallel `forge add`
 	// can't race a long `forge generate`.
@@ -129,9 +140,13 @@ func runGeneratePipeline(projectDir string, force, accept bool) error {
 	}
 	defer release()
 
-	ctx, err := newPipelineContext(projectDir, force, accept)
+	ctx, err := newPipelineContextWithOpts(projectDir, force, accept, skipValidate)
 	if err != nil {
 		return err
+	}
+
+	if skipValidate {
+		fmt.Println("⏩ --skip-validate: final 'go build ./...' step will be skipped")
 	}
 
 	// Save checksums on exit, even on partial failures: a step that

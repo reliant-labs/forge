@@ -72,6 +72,18 @@ func TestRequireContract_NotInternal(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "notinternal")
 }
 
+// Regression: external test packages (`package <name>_test`) host black-box
+// tests and helper structs that are not part of the package's API surface.
+// Previously the analyzer flagged `package <name>_test` with exported test
+// helpers as "has exported methods but no contract.go", forcing users into
+// the internal-test form and losing API-boundary discipline. The fix is to
+// skip packages whose name ends with `_test`. See friction item
+// contractlint-flags-external-test-packages.
+func TestRequireContract_ExternalTestPackageSkipped(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requireexttest")
+}
+
 // ExportedVarsAnalyzer tests
 
 func TestExportedVars_Good(t *testing.T) {

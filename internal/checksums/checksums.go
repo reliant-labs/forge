@@ -103,6 +103,16 @@ type FileChecksumEntry struct {
 	// to forked paths; the stomp guard ignores them too (no point
 	// guarding a file forge no longer owns). Persists across runs.
 	Forked bool `json:"forked,omitempty"`
+	// Exports lists the names of public top-level identifiers (functions,
+	// types, vars) declared in the most recently rendered version of the
+	// file. Used by the post-emit rename-detection pass: when a Tier-1
+	// file's new render drops a name that's still present in the prior
+	// Exports list, the project may have hand-written callers still
+	// referencing the old name. Recorded only for Go files (.go) — other
+	// languages fall through to an empty list. FRICTION 2026-06-02:
+	// cp-forge dogfood pass surfaced silent `forgedb.Migrations()` →
+	// `forgedb.MigrationsFS` rename leaving callers orphaned.
+	Exports []string `json:"exports,omitempty"`
 }
 
 // Load loads the checksum file from the project root.

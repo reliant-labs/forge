@@ -7,32 +7,76 @@
 // (auth check, tenant check, error mapping, cursor handling, list
 // pagination) lives in github.com/reliant-labs/forge/pkg/crud — only
 // the per-entity wiring stays here.
+//
+// When this file contains a FORGE_CRUD_SHAPE_MISMATCH marker for a
+// method, the request/response message shape diverged from the AIP-158
+// template the body generator expects (e.g. a Limit field instead of
+// PageSize, a string Ticker PK instead of int64 Id, or a response
+// holding a repeated entity field where a single one was expected).
+// Those methods are emitted as tagged CodeUnimplemented stubs rather
+// than non-compiling CRUD-body code; replace each stub with a hand-
+// written handler in a sibling file to take ownership of that RPC.
 package {{.Package}}
 
 import (
 	"context"
+	"fmt"
 
 	"connectrpc.com/connect"
 
+{{- if .NeedsCRUDLib}}
 	"github.com/reliant-labs/forge/pkg/crud"
+{{- end}}
 {{- if .NeedsORM}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+{{- if .NeedsCRUDLib}}
 	"{{.Module}}/internal/db"
 	"{{.Module}}/pkg/middleware"
+{{- end}}
 )
+
+{{- if .NeedsCRUDLib}}
 
 // Ensure imports are used even when a particular shim has no auth or
 // tenant hooks (the closures still close over middleware identifiers).
 var (
 	_ = middleware.ActionCreate
 )
+{{- end}}
+
+// Ensure fmt is always referenced — stub branches use it for the
+// CodeUnimplemented error message, but a fully-CRUD-shaped file might
+// not otherwise reach the fmt package.
+var _ = fmt.Sprintf
 
 {{- range .CRUDMethods}}
 
-{{- if eq .Operation "create"}}
+{{- if .ShapeMismatch}}
+
+// {{.MethodName}} implements the {{.MethodName}} RPC.
+//
+// FORGE_CRUD_SHAPE_MISMATCH: {{.MismatchReason}}
+//
+// The CRUD body generator couldn't auto-wire this RPC because the
+// request/response message shape didn't match the AIP-158 conventions
+// the template assumes (PageSize/PageToken pagination, an `id` scalar
+// key, an entity-typed single response field). Replace this stub with
+// a hand-written handler in a sibling file (e.g. handlers_{{.Operation}}.go);
+// the next `forge generate` will drop this stub once the real
+// implementation is in place.
+func (s *Service) {{.MethodName}}(
+	ctx context.Context,
+	req *connect.Request[pb.{{.InputType}}],
+) (*connect.Response[pb.{{.OutputType}}], error) {
+	_ = ctx
+	_ = req
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("CRUD shape mismatch for %s: %s", "{{.MethodName}}", "{{.MismatchReason}}"))
+}
+
+{{- else if eq .Operation "create"}}
 
 // {{.MethodName}} implements the {{.MethodName}} RPC (CRUD create).
 func (s *Service) {{.MethodName}}(
@@ -81,9 +125,7 @@ func (s *Service) {{.MethodName}}(
 		},
 	})(ctx, req)
 }
-{{- end}}
-
-{{- if eq .Operation "get"}}
+{{- else if eq .Operation "get"}}
 
 // {{.MethodName}} implements the {{.MethodName}} RPC (CRUD get by ID).
 func (s *Service) {{.MethodName}}(
@@ -118,9 +160,7 @@ func (s *Service) {{.MethodName}}(
 		},
 	})(ctx, req)
 }
-{{- end}}
-
-{{- if eq .Operation "list"}}
+{{- else if eq .Operation "list"}}
 
 // {{.MethodName}} implements the {{.MethodName}} RPC (CRUD list).
 func (s *Service) {{.MethodName}}(
@@ -211,9 +251,7 @@ func (s *Service) {{.MethodName}}(
 		},
 	})(ctx, req)
 }
-{{- end}}
-
-{{- if eq .Operation "update"}}
+{{- else if eq .Operation "update"}}
 
 // {{.MethodName}} implements the {{.MethodName}} RPC (CRUD update).
 //
@@ -265,9 +303,7 @@ func (s *Service) {{.MethodName}}(
 		},
 	})(ctx, req)
 }
-{{- end}}
-
-{{- if eq .Operation "delete"}}
+{{- else if eq .Operation "delete"}}
 
 // {{.MethodName}} implements the {{.MethodName}} RPC (CRUD delete).
 func (s *Service) {{.MethodName}}(

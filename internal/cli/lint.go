@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,8 +34,10 @@ type lintFlags struct {
 	tests            bool
 	banners          bool
 	suggestExcludes  bool
-	wireCoverage     bool
-	checkWorkarounds bool
+	suggestBufExcepts bool
+	wireCoverage      bool
+	bootstrapCoverage bool
+	checkWorkarounds  bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -105,7 +108,9 @@ Examples:
 	cmd.Flags().BoolVar(&flags.tests, "tests", false, "Run handler-test convention rules (e.g. forgeconv-handler-tests-use-tdd; warnings only)")
 	cmd.Flags().BoolVar(&flags.banners, "banners", false, "Verify forge templates carry the right Tier-1 / Tier-2 lifecycle banner (warnings only; no-op outside the forge repo)")
 	cmd.Flags().BoolVar(&flags.suggestExcludes, "suggest-excludes", false, "Print a YAML snippet of contracts.exclude candidates (heuristic-based; nothing is mutated)")
+	cmd.Flags().BoolVar(&flags.suggestBufExcepts, "suggest-buf-excepts", false, "Run buf lint and print a buf.yaml lint.except snippet for STANDARD rules that fired on more than 3 .proto files (nothing is mutated)")
 	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings) and unresolved forge:placeholder annotations in pkg/app/app_extras.go (errors)")
+	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 
@@ -120,6 +125,9 @@ func runLint(flags lintFlags, paths []string) error {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
 		return runSuggestExcludes(cfg)
+	}
+	if flags.suggestBufExcepts {
+		return runSuggestBufExcepts()
 	}
 	if flags.contract {
 		cfg, err := loadProjectConfig()
@@ -182,6 +190,13 @@ func runLint(flags lintFlags, paths []string) error {
 			return fmt.Errorf("getwd: %w", err)
 		}
 		return runWireCoverageLint(cwd)
+	}
+	if flags.bootstrapCoverage {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runBootstrapDepsCoverageLint(cwd)
 	}
 	if flags.checkWorkarounds {
 		cwd, err := os.Getwd()
@@ -841,6 +856,25 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 		}
 	}
 
+	// 13b. Bootstrap-deps-coverage — sibling check to wire-coverage that
+	// catches the audit-no-op silent-drop bug class. When AppExtras has
+	// a same-name field as pkg.Deps but types diverge,
+	// inspectComponentDepsShape silently skips the wire and the package
+	// constructs with nil. Empirically reproduced in the cp-forge v2
+	// migration (audit.Deps.Repo = audit.Repository vs
+	// AppExtras.Repo = *db.PostgresRepository). Failures contribute to
+	// hasFailed.
+	if fileExists(filepath.Join("pkg", "app", "bootstrap.go")) &&
+		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runBootstrapDepsCoverageLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "bootstrap-deps-coverage lint failed: %v\n", err)
+				hasFailed = true
+			}
+		}
+	}
+
 	// 14. Check-workarounds — flags the canonical cross-lane workarounds
 	// (FORGE_REVIEW_PROCESS.md §2): cast<X>Repo helpers in wire_gen.go,
 	// pkg/app/testing_extras.go hand-rolled stubs, cmd/<name>.go files
@@ -896,16 +930,60 @@ func runBufLint() error {
 
 	fmt.Println("Running buf lint...")
 
+	// Capture stdout so we can scan for known migration-pain rules and
+	// print the buf.yaml `except` snippet that resolves them. We still
+	// stream the output to the user's terminal verbatim so nothing is
+	// hidden behind the suggestion.
 	cmd := exec.Command("buf", "lint")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var bufOut strings.Builder
+	cmd.Stdout = io.MultiWriter(os.Stdout, &bufOut)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &bufOut)
 
 	if err := cmd.Run(); err != nil {
+		printBufLintExceptHint(bufOut.String())
 		return err
 	}
 
 	fmt.Println("✓ buf lint passed")
 	return nil
+}
+
+// printBufLintExceptHint scans buf lint's output for STANDARD rules
+// that legacy / ported .proto files commonly trip and prints the
+// exact buf.yaml `lint.except` snippet that silences them. Migration
+// projects (where the source repo predates the forge convention) tend
+// to hit ALL four of these on the first `forge generate`; surfacing
+// the resolved YAML in-line saves the "look up buf docs → write
+// except → re-run" loop. FRICTION 2026-06-02: cp-forge proto port.
+func printBufLintExceptHint(output string) {
+	candidates := []string{
+		"PACKAGE_VERSION_SUFFIX",
+		"RPC_REQUEST_STANDARD_NAME",
+		"RPC_RESPONSE_STANDARD_NAME",
+		"RPC_REQUEST_RESPONSE_UNIQUE",
+	}
+	var hit []string
+	for _, rule := range candidates {
+		if strings.Contains(output, rule) {
+			hit = append(hit, rule)
+		}
+	}
+	if len(hit) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "💡 Migration hint: the rule(s) above are common when porting")
+	fmt.Fprintln(os.Stderr, "   pre-forge .proto files. To silence them, add this to buf.yaml:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "     lint:")
+	fmt.Fprintln(os.Stderr, "       use:")
+	fmt.Fprintln(os.Stderr, "         - STANDARD")
+	fmt.Fprintln(os.Stderr, "       except:")
+	for _, rule := range hit {
+		fmt.Fprintf(os.Stderr, "         - %s\n", rule)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "   See the proto / proto-breaking skills for context on each rule.")
 }
 
 // runFrontendLinters runs TypeScript type-checking and framework-specific linters

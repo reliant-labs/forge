@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path"
 
 	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 	"github.com/spf13/cobra"
@@ -127,8 +128,14 @@ func generateOrmFile(p *protogen.Plugin, file *protogen.File, sharedGenerated ma
 
 	// Generate a shared file with package-level declarations (ormTracer, etc.)
 	// Only generate once per Go package to avoid redeclaration errors.
+	// orm-shared-redeclared-multi-proto: key the shared file off the
+	// proto directory (Go package dir) rather than the per-file prefix, so
+	// adding bar.proto next to foo.proto does not leave a stale
+	// foo_orm_shared.pb.orm.go on disk alongside a new bar_orm_shared.pb.orm.go
+	// (which would produce duplicate `var ormTracer = ...` declarations and
+	// a `go build` failure).
 	if !sharedGenerated[file.GoImportPath] {
-		sharedFilename := file.GeneratedFilenamePrefix + "_orm_shared.pb.orm.go"
+		sharedFilename := path.Join(path.Dir(file.GeneratedFilenamePrefix), "orm_shared.pb.orm.go")
 		shared := p.NewGeneratedFile(sharedFilename, file.GoImportPath)
 		generateSharedHeader(shared, file, anyHasTimestamp)
 		sharedGenerated[file.GoImportPath] = true
@@ -137,17 +144,20 @@ func generateOrmFile(p *protogen.Plugin, file *protogen.File, sharedGenerated ma
 	// Generate per-entity files.
 	for _, ent := range entities {
 		entHasTimestamp := false
+		entHasWrapper := false
 		for _, f := range ent.fields {
 			if f.isTimestamp {
 				entHasTimestamp = true
-				break
+			}
+			if isWrapperField(f.field) {
+				entHasWrapper = true
 			}
 		}
 
 		filename := file.GeneratedFilenamePrefix + "_" + toSnake(string(ent.msg.Desc.Name())) + ".pb.orm.go"
 		g := p.NewGeneratedFile(filename, file.GoImportPath)
 
-		generateEntityHeader(g, file, entHasTimestamp, ent.softDelete, ent.tenantField != nil)
+		generateEntityHeader(g, file, entHasTimestamp, ent.softDelete, ent.tenantField != nil, entHasWrapper)
 		generateEntityCode(g, ent, entHasTimestamp)
 	}
 

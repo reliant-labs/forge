@@ -365,6 +365,111 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 	}
 }
 
+// TestInspectComponentDepsShape_DomainLocalConfig asserts that a
+// package whose Deps.Config field is typed as a package-local Config
+// (e.g. `enforcement.Config`) does NOT get HasConfig=true, because the
+// bootstrap template would otherwise emit `Config: cfg` — where cfg is
+// the project's `*config.Config` — and the codegen would fail to
+// compile with "cannot use *config.Config as enforcement.Config".
+//
+// FRICTION 2026-06-02 (cp-forge layer-2 enforcement): the well-known
+// name shortcut for "Config" bypassed type-matching entirely, forcing
+// every package declaring its own Config struct to rename the field
+// (Caps, EnforcementCaps, ...).
+func TestInspectComponentDepsShape_DomainLocalConfig(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// pkg/app/app_extras.go — empty AppExtras (no Config field there).
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"),
+		[]byte("package app\n\ntype AppExtras struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// internal/enforcement/contract.go — Deps with a domain-local Config.
+	pkgDir := filepath.Join(projectDir, "internal", "enforcement")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package enforcement
+
+import "log/slog"
+
+type Config struct{}
+
+type Deps struct {
+	Logger *slog.Logger
+	Config Config
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	components := []BootstrapComponentData{
+		{Name: "enforcement", Package: "enforcement", ImportPath: "enforcement"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if !components[0].HasLogger {
+		t.Error("HasLogger should be true (Logger is *slog.Logger)")
+	}
+	if components[0].HasConfig {
+		t.Error("HasConfig must be false when Deps.Config is a domain-local type (not *config.Config); bootstrap template would emit `Config: cfg` and fail to compile")
+	}
+}
+
+// TestInspectComponentDepsShape_ProjectConfig asserts the canonical
+// case still works: Deps.Config typed as *config.Config gets
+// HasConfig=true so bootstrap emits `Config: cfg`.
+func TestInspectComponentDepsShape_ProjectConfig(t *testing.T) {
+	projectDir := t.TempDir()
+
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"),
+		[]byte("package app\n\ntype AppExtras struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgDir := filepath.Join(projectDir, "internal", "cache")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := `package cache
+
+import (
+	"log/slog"
+	"example.com/proj/pkg/config"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	Config *config.Config
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	components := []BootstrapComponentData{
+		{Name: "cache", Package: "cache", ImportPath: "cache"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if !components[0].HasLogger {
+		t.Error("HasLogger should be true for *slog.Logger")
+	}
+	if !components[0].HasConfig {
+		t.Error("HasConfig should be true for *config.Config")
+	}
+}
+
 func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 	targetDir := t.TempDir()
 
@@ -1090,5 +1195,59 @@ func TestComputeTestHelperName(t *testing.T) {
 		if got := ComputeTestHelperName(c.pkg, c.project); got != c.want {
 			t.Errorf("ComputeTestHelperName(%q, %q) = %q, want %q", c.pkg, c.project, got, c.want)
 		}
+	}
+}
+
+// TestWorkerDataFromNames_PascalCaseFieldName locks in the
+// snake_case-worker fix: `forge add worker calibrator_refit` must yield
+// the idiomatic Go identifier `CalibratorRefit` for the exported
+// Workers struct field + the `wireWorkerCalibratorRefitDeps` function name,
+// not the underscore-preserving `Calibrator_refit` form that revive /
+// staticcheck ST1003 would flag.
+func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
+	cases := []struct {
+		name              string
+		wantPackage       string
+		wantFieldName     string
+		wantVarName       string
+	}{
+		// Snake-case → PascalCase via ToPascalCase. The directory + Go
+		// package stay snake_case so they remain filesystem-friendly.
+		{"calibrator_refit", "calibrator_refit", "CalibratorRefit", "calibratorRefit"},
+		// Hyphenated → underscored Package; PascalCase FieldName.
+		{"email-sender", "email_sender", "EmailSender", "emailSender"},
+		// Single-word stays as-is (just upper-cased first letter).
+		{"refresh", "refresh", "Refresh", "refresh"},
+		// Initialism — ToPascalCase recognizes API and uppercases it.
+		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
+	}
+	for _, c := range cases {
+		got := WorkerDataFromNames([]string{c.name}, "")
+		if len(got) != 1 {
+			t.Fatalf("WorkerDataFromNames(%q) returned %d entries, want 1", c.name, len(got))
+		}
+		w := got[0]
+		if w.Package != c.wantPackage {
+			t.Errorf("WorkerDataFromNames(%q).Package = %q, want %q", c.name, w.Package, c.wantPackage)
+		}
+		if w.FieldName != c.wantFieldName {
+			t.Errorf("WorkerDataFromNames(%q).FieldName = %q, want %q", c.name, w.FieldName, c.wantFieldName)
+		}
+		if w.VarName != c.wantVarName {
+			t.Errorf("WorkerDataFromNames(%q).VarName = %q, want %q", c.name, w.VarName, c.wantVarName)
+		}
+		// Sanity: FieldName must NOT contain an underscore.
+		if strings.Contains(w.FieldName, "_") {
+			t.Errorf("WorkerDataFromNames(%q).FieldName = %q must not contain '_'", c.name, w.FieldName)
+		}
+	}
+}
+
+// TestOperatorDataFromNames_PascalCaseFieldName mirrors the worker
+// regression test — operators share the snake_case → PascalCase rule.
+func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
+	got := OperatorDataFromNames([]string{"cert_rotator"}, "")
+	if len(got) != 1 || got[0].FieldName != "CertRotator" {
+		t.Errorf("OperatorDataFromNames(\"cert_rotator\")[0].FieldName = %q, want \"CertRotator\"", got[0].FieldName)
 	}
 }

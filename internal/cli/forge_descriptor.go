@@ -248,13 +248,22 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		// Methods that explicitly set `auth_required = false` in their
 		// (forge.v1.method) annotation can opt out — the proto field is
 		// `optional bool` so we distinguish unset from explicit false.
+		// InputProtoFile / OutputProtoFile record the file that
+		// physically declares the message. For same-file RPCs this
+		// equals file.Desc.Path(); for cross-file refs (e.g. an RPC in
+		// services/users/v1/users.proto returning a shared/v1/types.proto
+		// Page) it differs, and the frontend hooks generator uses this
+		// to import the symbol from the correct _pb.ts file rather than
+		// the service's own _pb.ts.
 		method := codegen.Method{
-			Name:           string(m.Desc.Name()),
-			InputType:      string(m.Input.Desc.Name()),
-			OutputType:     string(m.Output.Desc.Name()),
+			Name:            string(m.Desc.Name()),
+			InputType:       string(m.Input.Desc.Name()),
+			OutputType:      string(m.Output.Desc.Name()),
 			ClientStreaming: m.Desc.IsStreamingClient(),
 			ServerStreaming: m.Desc.IsStreamingServer(),
-			AuthRequired:   true,
+			AuthRequired:    true,
+			InputProtoFile:  m.Input.Desc.ParentFile().Path(),
+			OutputProtoFile: m.Output.Desc.ParentFile().Path(),
 		}
 
 		// Read method-level options

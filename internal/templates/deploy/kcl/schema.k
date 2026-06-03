@@ -21,9 +21,9 @@ schema SecurityContext:
     seccomp_profile: str = "RuntimeDefault"
 
 schema HealthCheck:
-    """HTTP health check probe configuration.
+    """Health check probe configuration (HTTP or exec).
 
-    Kubernetes uses two HTTP probes with different semantics:
+    Kubernetes uses two probes with different semantics:
       * livenessProbe  — restart the pod if it goes unhealthy (`/healthz`).
       * readinessProbe — take the pod out of service routing while it warms up
         or becomes temporarily unable to serve traffic (`/readyz`).
@@ -33,12 +33,22 @@ schema HealthCheck:
     shared path would either restart pods that are merely warming up (too
     aggressive on liveness) or keep unhealthy pods receiving traffic (too
     lax on readiness), so we model them as separate fields here.
+
+    For non-HTTP workloads (workers, brokers, sidecars) set
+    `exec_command = ["pgrep", "-f", "myworker"]` (or similar). When
+    `exec_command` is non-empty the render layer emits an `exec:` probe
+    instead of `httpGet:` and the HTTP path/port fields are ignored.
     """
     # Liveness ("is this process healthy? if not, restart it")
     liveness_path: str = "/healthz"
     # Readiness ("is this process ready to receive traffic right now?")
     readiness_path: str = "/readyz"
     http_port: int = 8080
+    # Optional exec-style probe. When non-empty, takes precedence over
+    # the HTTP fields and is rendered as `exec.command:` for BOTH
+    # liveness and readiness. Use for non-HTTP processes (workers,
+    # CLIs, sidecars). Example: ["pgrep", "-f", "myworker"].
+    exec_command: [str] = []
     initial_delay: int = 5
     period: int = 10
     timeout: int = 3
@@ -154,6 +164,17 @@ schema Application:
     service_account_name: str = ""
     command: [str] = []
     args: [str] = []
+    # cluster_rbac toggles cluster-scoped RBAC (ClusterRole +
+    # ClusterRoleBinding) instead of the default namespaced Role +
+    # RoleBinding. Operators that manage resources across dynamically-
+    # created namespaces (workspace-controller, multi-tenant operators)
+    # need this. When True, the rendered ClusterRole inherits the same
+    # default rules (configmaps/secrets get/list/watch) but the binding
+    # spans the whole cluster. Pass `cluster_rbac_rules` to extend the
+    # rules with operator-specific verbs (e.g. CRD status writes).
+    # FRICTION 2026-06-02: cp-forge layer 8 KCL port.
+    cluster_rbac: bool = False
+    cluster_rbac_rules: [{str: any}] = []
 
     check:
         replicas > 0, "replicas must be positive"
@@ -194,6 +215,12 @@ schema SubCommandService:
     # parent's `command` (typically the binary baked into the image at
     # /usr/local/bin/<project>). Most callers should leave this empty.
     command: [str] = []
+    # See Application.cluster_rbac. Useful when one subservice of a
+    # shared-binary deploy is an operator that needs cluster-scoped
+    # permissions (e.g. the controller subcommand of a multi-service
+    # control plane).
+    cluster_rbac: bool = False
+    cluster_rbac_rules: [{str: any}] = []
 
     check:
         replicas > 0, "replicas must be positive"
@@ -258,5 +285,12 @@ schema Environment:
     # one per env (`<project>-<env>-config`) populated from non-sensitive
     # config fields; hand-authored entries are appended fine.
     config_maps: [ConfigMap] = []
+    # Extra cluster-scoped manifests rendered alongside the applications
+    # (CRDs, ClusterIssuers, SealedSecrets, etc.). Each entry is an
+    # arbitrary k8s resource dict — bring your own schema if you want
+    # strong typing. Typical use: `forge add crd` writes
+    # `deploy/kcl/lib/<lower>_crd.k` exporting a `<Name>_CRD` dict;
+    # import it and add it here. Order is preserved.
+    additional_manifests: [any] = []
     network_policies: bool = True
     resource_quotas: bool = False

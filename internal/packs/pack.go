@@ -198,13 +198,34 @@ func LoadPack(name string) (*Pack, error) {
 	return &p, nil
 }
 
+// InstallResult is the structured side-channel returned by Install /
+// InstallWithConfig so the CLI can surface user-facing follow-ups after
+// the install completes. Today there is one signal — PendingProtoGenerate —
+// but the struct shape lets future flags land additively without churning
+// every caller's signature.
+type InstallResult struct {
+	// PendingProtoGenerate is set true when the install emitted (or
+	// previously emitted but did not yet render) a `.proto` file that
+	// the project's `buf generate` / `forge generate` pipeline has NOT
+	// yet wired into `buf.yaml` and `gen/`. The CLI uses this to print
+	// a "run `forge generate` to compile new proto definitions" hint
+	// at the tail of the install so the user isn't left in a
+	// half-installed state with broken `go mod tidy`.
+	//
+	// Pack templates that contribute `.proto` files also import the
+	// not-yet-generated `gen/<ns>/v1` package, so tidy is intentionally
+	// deferred to the post-`forge generate` run — this field is the
+	// signal that the deferral happened and the user must take action.
+	PendingProtoGenerate bool
+}
+
 // Install renders and writes pack files into the project, adds
 // dependencies, and records the pack in forge.yaml. Behaviour branches
 // on EffectiveKind — Go packs run `go get`/`go mod tidy`, frontend packs
 // iterate over each project frontend and run `npm install` per frontend.
 //
 // Equivalent to InstallWithConfig(projectDir, cfg, nil).
-func (p *Pack) Install(projectDir string, cfg *config.ProjectConfig) error {
+func (p *Pack) Install(projectDir string, cfg *config.ProjectConfig) (*InstallResult, error) {
 	return p.InstallWithConfig(projectDir, cfg, nil)
 }
 
@@ -230,7 +251,8 @@ func (p *Pack) Install(projectDir string, cfg *config.ProjectConfig) error {
 // catches the case where a pack ships a service handler/proto whose name
 // the user has already scaffolded — a silent skip would yield a build that
 // still references the user's version while the pack thinks it installed.
-func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, overrides map[string]any) error {
+func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, overrides map[string]any) (*InstallResult, error) {
+	result := &InstallResult{}
 	alreadyInstalled := IsInstalled(p.Name, cfg)
 
 	// Merge overrides into config defaults. The merge is shallow — top-level
@@ -239,7 +261,14 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	effectiveCfg := mergePackConfig(p.Config.Defaults, overrides)
 
 	if p.IsFrontendKind() {
-		return p.installFrontend(projectDir, cfg, effectiveCfg, alreadyInstalled)
+		// Frontend packs cannot emit .proto files (manifest doesn't allow
+		// it, and the path conventions wouldn't make sense), so the result
+		// is always zero-valued here. We still return a non-nil pointer so
+		// callers can rely on `result != nil` regardless of pack kind.
+		if err := p.installFrontend(projectDir, cfg, effectiveCfg, alreadyInstalled); err != nil {
+			return result, err
+		}
+		return result, nil
 	}
 
 	// Build template data from project config
@@ -257,7 +286,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	// collisions (e.g. audit-log's handler.go landing on a hand-written file).
 	if !alreadyInstalled {
 		if collisions := p.detectFreshInstallCollisions(projectDir, data); len(collisions) > 0 {
-			return fmt.Errorf("pack %q install would clobber %d existing file(s):\n%s\n\nThe pack was not previously installed (not in forge.yaml's `packs:` list), so these files were authored outside the pack. To proceed, either:\n  - rename or delete the conflicting file(s) so the pack can install cleanly, or\n  - move the conflicting code into a different package and re-run install.\n\nIf you intend to RE-install the pack (the previous install half-completed and forge.yaml lost the entry), add %q under `packs:` in forge.yaml and re-run `forge pack install %s` — that triggers resync mode which respects existing files.",
+			return result, fmt.Errorf("pack %q install would clobber %d existing file(s):\n%s\n\nThe pack was not previously installed (not in forge.yaml's `packs:` list), so these files were authored outside the pack. To proceed, either:\n  - rename or delete the conflicting file(s) so the pack can install cleanly, or\n  - move the conflicting code into a different package and re-run install.\n\nIf you intend to RE-install the pack (the previous install half-completed and forge.yaml lost the entry), add %q under `packs:` in forge.yaml and re-run `forge pack install %s` — that triggers resync mode which respects existing files.",
 				p.Name, len(collisions), strings.Join(collisions, "\n"), p.Name, p.Name)
 		}
 	}
@@ -265,7 +294,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	// Render and write each file
 	for _, f := range p.Files {
 		if err := p.renderFile(f, projectDir, data); err != nil {
-			return fmt.Errorf("render file %s: %w", f.Output, err)
+			return result, fmt.Errorf("render file %s: %w", f.Output, err)
 		}
 	}
 
@@ -289,7 +318,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	} else if len(p.Migrations) > 0 {
 		nextID, err := nextMigrationID(projectDir)
 		if err != nil {
-			return fmt.Errorf("allocate migration ID: %w", err)
+			return result, fmt.Errorf("allocate migration ID: %w", err)
 		}
 		for _, m := range p.Migrations {
 			// Idempotency: if a migration with this slug is already on disk
@@ -300,14 +329,14 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 			// migration is a no-op for that file.
 			existingID, exists, err := findMigrationIDBySlug(projectDir, m.Name)
 			if err != nil {
-				return fmt.Errorf("check existing migration %s: %w", m.Name, err)
+				return result, fmt.Errorf("check existing migration %s: %w", m.Name, err)
 			}
 			if exists {
 				fmt.Printf("  Skipping migration %s (already at %05d, slug match)\n", m.Name, existingID)
 				continue
 			}
 			if err := p.renderMigration(m, projectDir, data, nextID); err != nil {
-				return fmt.Errorf("render migration %s: %w", m.Name, err)
+				return result, fmt.Errorf("render migration %s: %w", m.Name, err)
 			}
 			nextID++
 		}
@@ -334,7 +363,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("go get %s: %w", dep, err)
+			return result, fmt.Errorf("go get %s: %w", dep, err)
 		}
 	}
 
@@ -343,9 +372,15 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	// until `forge generate` runs. Tidy would otherwise fail with "no
 	// required module provides package …/gen/<x>/v1". The user must run
 	// `forge generate` next; tidy runs there.
+	//
+	// We also surface this state through result.PendingProtoGenerate so
+	// the CLI can print a clean "run `forge generate`" hint at the tail
+	// of the install — the per-pack stdout note alone is easy to miss in
+	// a multi-pack install banner.
 	if hasNewProtoFile(p.Files) {
 		fmt.Println("  Skipping go mod tidy: pack added .proto files; run 'forge generate' to produce gen/ output and tidy.")
-		return nil
+		result.PendingProtoGenerate = true
+		return result, nil
 	}
 
 	// Defer tidy if a previously-installed pack emitted .proto files whose
@@ -357,7 +392,8 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	// installs from blocking on a known-broken module graph.
 	if pending := installedPacksWithUnrenderedProto(projectDir, cfg); len(pending) > 0 {
 		fmt.Printf("  Skipping go mod tidy: pack(s) %v emitted .proto files but no gen/ output yet; run 'forge generate' once after this pack-cluster install to render gen/ and tidy.\n", pending)
-		return nil
+		result.PendingProtoGenerate = true
+		return result, nil
 	}
 
 	// Run go mod tidy
@@ -367,10 +403,10 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go mod tidy: %w", err)
+		return result, fmt.Errorf("go mod tidy: %w", err)
 	}
 
-	return nil
+	return result, nil
 }
 
 // installedPacksWithUnrenderedProto returns the names of installed packs

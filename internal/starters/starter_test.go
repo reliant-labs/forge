@@ -110,7 +110,7 @@ func TestStarterAddRendersFiles(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := s.Add(AddOptions{
+	if _, err := s.Add(AddOptions{
 		ProjectDir:  dir,
 		ModulePath:  "github.com/example/myapp",
 		ProjectName: "myapp",
@@ -153,7 +153,7 @@ func TestStarterAddSkipsExistingByDefault(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := s.Add(AddOptions{
+	if _, err := s.Add(AddOptions{
 		ProjectDir:  dir,
 		ModulePath:  "github.com/example/myapp",
 		ProjectName: "myapp",

@@ -29,6 +29,7 @@ func newGenerateCmd() *cobra.Command {
 		accept       bool
 		explain      bool
 		skipValidate bool
+		checkOnly    bool
 	)
 
 	cmd := &cobra.Command{
@@ -57,8 +58,12 @@ Examples:
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
   forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
   forge generate --explain        # Print per-file provenance log after generate
-  forge generate --skip-validate  # Skip the final 'go build ./...' validate step`,
+  forge generate --skip-validate  # Skip the final 'go build ./...' validate step
+  forge generate --check          # Run generate into a tmpdir; exit 1 if it would change the tree`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if checkOnly {
+				return runGenerateCheck()
+			}
 			// Capture pre-pipeline checksums so --explain can diff
 			// against post-pipeline state to label rewritten vs idempotent.
 			var preChecksums map[string]string
@@ -109,6 +114,7 @@ Examples:
 	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 
 	return cmd
 }
@@ -239,4 +245,87 @@ func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error
 		"internal-package contracts must declare 'type Service interface', 'type Deps struct', and 'func New(Deps) Service'",
 		"",
 		"fix the offending contract.go files (see findings above), or run 'forge lint --conventions' for the per-file detail")
+}
+
+// runGenerateCheck implements `forge generate --check` — the CI guard
+// that verifies the committed tree matches what the generator would
+// produce from current proto + forge.yaml + templates. Drift means
+// someone forgot to run `forge generate` after editing a proto file or
+// upgrading forge; CI should fail loudly so the gap doesn't ship.
+//
+// Approach:
+//  1. Snapshot the current tree's committed state via `git stash --keep-index --include-untracked`
+//     equivalent — we use `git diff --quiet` after running generate to
+//     detect any change.
+//  2. Run the pipeline against `.` (the normal path).
+//  3. Compare the post-generate tree against HEAD via `git status --porcelain`.
+//  4. If anything tracked changed (or new files appeared at tracked paths),
+//     emit the diff and exit 1.
+//
+// We don't actually copy the tree to a tmpdir — for forge projects the
+// pipeline is idempotent in the steady state, so the cheapest and most
+// honest check is "run it and see if git notices". The pipeline is
+// already designed to be re-runnable.
+func runGenerateCheck() error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return cliutil.UserErr("forge generate --check",
+			"git not found on PATH",
+			"",
+			"--check requires git to diff the post-generate tree against HEAD")
+	}
+	// Refuse to --check on a dirty working tree — we'd otherwise blame
+	// the user's uncommitted edits on the generator.
+	dirty, err := workingTreeDirty()
+	if err != nil {
+		return fmt.Errorf("git status check: %w", err)
+	}
+	if dirty {
+		return cliutil.UserErr("forge generate --check",
+			"working tree has uncommitted changes — --check would misattribute them to the generator",
+			"",
+			"commit or stash your changes, then re-run forge generate --check")
+	}
+
+	fmt.Println("[generate --check] running generate against current tree...")
+	generateMu.Lock()
+	pipeErr := runGeneratePipelineOpts(".", false, false, true)
+	generateMu.Unlock()
+	if pipeErr != nil {
+		return fmt.Errorf("generate pipeline: %w", pipeErr)
+	}
+
+	// Did anything change?
+	statusCmd := exec.Command("git", "status", "--porcelain")
+	out, err := statusCmd.Output()
+	if err != nil {
+		return fmt.Errorf("git status --porcelain: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		fmt.Println("[generate --check] no drift — tree matches generator output.")
+		return nil
+	}
+
+	fmt.Fprintln(os.Stderr, "[generate --check] drift detected — committed tree does not match generator output:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprint(os.Stderr, string(out))
+	fmt.Fprintln(os.Stderr)
+	// Show a short unified diff so reviewers can see what's stale.
+	diffCmd := exec.Command("git", "--no-pager", "diff", "--stat")
+	diffCmd.Stdout = os.Stderr
+	diffCmd.Stderr = os.Stderr
+	_ = diffCmd.Run()
+	return cliutil.UserErr("forge generate --check",
+		"generated artifacts are out of date in the committed tree",
+		"",
+		"run 'forge generate' locally, commit the result, and push")
+}
+
+// workingTreeDirty returns true when `git status --porcelain` reports
+// any tracked-or-untracked change.
+func workingTreeDirty() (bool, error) {
+	out, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }

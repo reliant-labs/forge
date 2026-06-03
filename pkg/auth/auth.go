@@ -103,6 +103,18 @@ type Config struct {
 	// KeyValidator validates API keys. Required when APIKey auth is enabled.
 	KeyValidator KeyValidator
 
+	// TokenValidators, when non-empty, replaces the built-in single-secret
+	// JWT path with an ordered fallback chain. Each entry validates the
+	// bearer token independently; the first to accept wins. Use this when
+	// a service must accept tokens from more than one issuer — typically
+	// during an auth-provider migration (e.g. Supabase HMAC tokens
+	// alongside Auth0 JWKS tokens).
+	//
+	// When empty the legacy JWT (single secret / JWKSURL) path is used,
+	// preserving backwards compatibility for projects that only need one
+	// validator.
+	TokenValidators []TokenValidator
+
 	// UserResolver, when non-nil, projects the raw decoded JWT payload onto
 	// [Claims]. Use it when provider-specific claim shapes (Supabase
 	// user_metadata, Auth0 app_metadata, Clerk org_permissions, etc.) need
@@ -186,6 +198,10 @@ type Validator struct {
 	cfg          Config
 	skipMethods  map[string]bool
 	keyValidator KeyValidator
+	// chain, when non-nil, is the ordered TokenValidator fallback used in
+	// place of the legacy single-secret JWT path. Built once at NewValidator
+	// time so per-request authentication is allocation-free.
+	chain TokenValidator
 }
 
 // NewValidator returns a Validator wired for cfg.Provider.
@@ -207,6 +223,18 @@ func NewValidator(cfg Config) (*Validator, error) {
 	}
 	for _, m := range cfg.SkipMethods {
 		v.skipMethods[m] = true
+	}
+
+	// Build the TokenValidator chain when configured. A single-entry
+	// TokenValidators slice still goes through MultiValidator so the
+	// dispatch path is uniform; the wrapper is effectively free (one
+	// extra indirection per token).
+	if len(cfg.TokenValidators) > 0 {
+		chain, err := NewMultiValidator(cfg.TokenValidators...)
+		if err != nil {
+			return nil, fmt.Errorf("auth: build validator chain: %w", err)
+		}
+		v.chain = chain
 	}
 	return v, nil
 }
@@ -352,6 +380,12 @@ func (v *Validator) authenticateAPIKey(ctx context.Context, headers http.Header)
 }
 
 func (v *Validator) validateJWT(tokenString string) (*Claims, error) {
+	// Prefer the configured TokenValidator chain when present — this is
+	// the path projects opt into for multi-issuer setups.
+	if v.chain != nil {
+		return v.chain.ValidateToken(tokenString)
+	}
+
 	signingMethod := v.cfg.JWT.EffectiveSigningMethod()
 
 	keyFunc := v.cfg.JWT.KeyFunc

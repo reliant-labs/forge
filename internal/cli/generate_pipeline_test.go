@@ -38,6 +38,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"load project config",
 		"load checksums",
 		"check Tier-1 file-stomp guard",
+		"snapshot Tier-1 exports",
 		"sync forge/pkg dev replace",
 		"announce project",
 		"pre-codegen contract check",
@@ -81,6 +82,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"rehash tracked files",
 		"refresh ORM output mtimes",
 		"post-gen validation",
+		"detect renamed Tier-1 exports",
 		"go build (validate generated code)",
 	}
 

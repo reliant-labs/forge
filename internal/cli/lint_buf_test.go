@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -75,35 +74,4 @@ func TestPrintBufLintExceptHint_DetectsCommonRules(t *testing.T) {
 	}
 }
 
-// captureStderr redirects os.Stderr to a pipe and returns a Builder
-// the caller queries after invoking restore(). Shared with other CLI
-// tests that need to assert on warning/hint text printed to stderr.
-func captureStderr(t *testing.T) (*strings.Builder, func()) {
-	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stderr = w
-	buf := &strings.Builder{}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		b := make([]byte, 4096)
-		for {
-			n, rerr := r.Read(b)
-			if n > 0 {
-				buf.Write(b[:n])
-			}
-			if rerr != nil {
-				return
-			}
-		}
-	}()
-	return buf, func() {
-		_ = w.Close()
-		<-done
-		os.Stderr = orig
-	}
-}
+// captureStderr lives in test_helpers.go (same package); see that file.

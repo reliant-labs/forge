@@ -248,6 +248,6 @@ func sliceContains(xs []string, s string) bool {
 	return false
 }
 
-// captureStderr is reused from lint_buf_test.go (same package). It
+// captureStderr is defined in test_helpers.go (same package). It
 // redirects os.Stderr to a pipe and returns a Builder populated when
 // the returned restore() is called.

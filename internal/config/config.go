@@ -278,6 +278,23 @@ func (c ProjectConfig) IsFrontendWorkspacesEnabled() bool {
 	return c.Frontend.Workspaces
 }
 
+// HasReactNativeFrontend reports whether any frontend in the project is
+// a React Native (Expo) app. Used to gate features that only apply to
+// mobile — e.g. the `@<scope>/ui-native` workspace package.
+//
+// Returns true for frontends declared with `type: react-native` (or the
+// historic `type: react_native` underscore form the validator also
+// accepts).
+func (c ProjectConfig) HasReactNativeFrontend() bool {
+	for _, fe := range c.Frontends {
+		t := strings.ToLower(strings.TrimSpace(fe.Type))
+		if t == "react-native" || t == "react_native" {
+			return true
+		}
+	}
+	return false
+}
+
 // EnvironmentConfig represents a deployment environment.
 //
 // Per-env runtime config:

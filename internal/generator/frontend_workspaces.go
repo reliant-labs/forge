@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/components"
+	nativecomponents "github.com/reliant-labs/forge/components/native"
 )
 
 // Frontend-workspaces emitters.
@@ -49,6 +50,11 @@ type FrontendWorkspaceLayout struct {
 	// targeted frontends import from instead of duplicating per-
 	// frontend copies under src/components/.
 	UIWebPackage string
+	// UINativePackage is the fully-qualified npm package name for the
+	// React Native primitives workspace (e.g. "@myapp/ui-native").
+	// Only emitted when the project has at least one RN frontend AND
+	// workspaces are enabled — empty otherwise.
+	UINativePackage string
 }
 
 // NewFrontendWorkspaceLayout builds the canonical layout from a raw
@@ -60,10 +66,11 @@ func NewFrontendWorkspaceLayout(projectName string) FrontendWorkspaceLayout {
 		scope = "app"
 	}
 	return FrontendWorkspaceLayout{
-		Scope:        scope,
-		ApiPackage:   "@" + scope + "/api",
-		HooksPackage: "@" + scope + "/hooks",
-		UIWebPackage: "@" + scope + "/ui-web",
+		Scope:           scope,
+		ApiPackage:      "@" + scope + "/api",
+		HooksPackage:    "@" + scope + "/hooks",
+		UIWebPackage:    "@" + scope + "/ui-web",
+		UINativePackage: "@" + scope + "/ui-native",
 	}
 }
 
@@ -721,4 +728,150 @@ func writeIfMissing(path, content string) error {
 		return nil
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// WriteUINativePackageFiles emits the packages/ui-native/ scaffold:
+//
+//   - packages/ui-native/package.json (workspace member)
+//   - packages/ui-native/tsconfig.json (no DOM lib, React JSX)
+//   - packages/ui-native/src/tokens.ts (design tokens)
+//   - packages/ui-native/src/index.ts (re-export barrel)
+//   - packages/ui-native/src/components/<primitive>.tsx (one per primitive)
+//   - packages/ui-native/README.md
+//
+// Idempotent: write-if-missing throughout. Once a user edits a
+// primitive (or rewrites the tokens), `forge generate` will not
+// clobber the edit — the package is effectively scaffolded once and
+// owned by the project after.
+//
+// Guarded by the two preconditions documented at the call sites in
+// generate_pipeline.go and add.go:
+//
+//  1. `frontend.workspaces: true`
+//  2. At least one frontend with `type: react-native`
+//
+// When either is false this function should not be called (callers
+// gate); calling it directly still works but emits files that have
+// no consumer.
+func WriteUINativePackageFiles(projectDir string, layout FrontendWorkspaceLayout) error {
+	uiDir := filepath.Join(projectDir, "packages", "ui-native")
+	componentsDir := filepath.Join(uiDir, "src", "components")
+	if err := os.MkdirAll(componentsDir, 0o755); err != nil {
+		return fmt.Errorf("create packages/ui-native: %w", err)
+	}
+
+	pkg := fmt.Sprintf(`{
+  "name": "%s",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens": "./src/tokens.ts",
+    "./components/*": "./src/components/*.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "react-native-safe-area-context": "*"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.0",
+    "typescript": "^5.8.0"
+  }
+}
+`, layout.UINativePackage)
+	if err := writeIfMissing(filepath.Join(uiDir, "package.json"), pkg); err != nil {
+		return err
+	}
+
+	// tsconfig: NO DOM lib — this package must compile under the same
+	// constraints as the React Native runtime (no document/window).
+	// JSX preserved so Metro's babel pass handles it.
+	tsconfig := `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "jsx": "react-jsx",
+    "declaration": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
+`
+	if err := writeIfMissing(filepath.Join(uiDir, "tsconfig.json"), tsconfig); err != nil {
+		return err
+	}
+
+	// Copy embedded primitives + tokens. Write-if-missing so user
+	// edits survive a regen.
+	lib := nativecomponents.NewLibrary()
+	for _, p := range lib.Primitives() {
+		src, err := lib.Get(p.Name)
+		if err != nil {
+			return fmt.Errorf("read native primitive %s: %w", p.Name, err)
+		}
+		dest := filepath.Join(componentsDir, p.Name+".tsx")
+		if err := writeIfMissing(dest, src); err != nil {
+			return err
+		}
+	}
+	tokens, err := lib.Tokens()
+	if err != nil {
+		return fmt.Errorf("read tokens: %w", err)
+	}
+	if err := writeIfMissing(filepath.Join(uiDir, "src", "tokens.ts"), tokens); err != nil {
+		return err
+	}
+
+	// Index barrel is generated from the primitive registry so adding
+	// a new primitive automatically surfaces it. Write-if-missing
+	// so user-curated barrels survive — they can pin the export
+	// list to whatever subset they want without forge clobbering it.
+	if err := writeIfMissing(filepath.Join(uiDir, "src", "index.ts"), lib.IndexBarrel()); err != nil {
+		return err
+	}
+
+	readme := fmt.Sprintf("# %s\n\n"+
+		"Thin React Native primitive set for the project's mobile frontends.\n\n"+
+		"This is **not** a full design system — it's ~10 primitives that mirror\n"+
+		"the web component library's semantic names (Button, Card, Stack, Text,\n"+
+		"…) so cross-platform code can carry the same mental model without\n"+
+		"forge having to ship a Tamagui or Unistyles fork.\n\n"+
+		"## Ownership\n\n"+
+		"`forge generate` writes these files **once** at scaffold time. Edits to\n"+
+		"any file under `src/` survive subsequent runs — the package is\n"+
+		"effectively yours after the initial copy. If you want forge to re-emit\n"+
+		"a primitive from the embedded source, delete the file and re-run\n"+
+		"`forge generate`.\n\n"+
+		"## When to outgrow this\n\n"+
+		"If you need:\n\n"+
+		"- A single design system across web AND native (write components once,\n"+
+		"  render on both).\n"+
+		"- Runtime theme switching, brand variants, a token graph.\n"+
+		"- DataTable / Sidebar / NavHeader equivalents for mobile.\n\n"+
+		"…install **Tamagui** or **Unistyles** and replace this package. See the\n"+
+		"`ui-native-package` skill for the migration shape.\n\n"+
+		"## What ships\n\n"+
+		"Button, Input, Label, Card, Stack (+ HStack/VStack), Text, Spinner,\n"+
+		"Switch, Pressable, SafeAreaView, plus `tokens.ts` for colors / spacing\n"+
+		"/ radius / text sizes.\n\n"+
+		"Frontends consume the package via `\"%s\": \"workspace:*\"` and\n"+
+		"`import { Button, Stack } from \"%s\"`.\n",
+		layout.UINativePackage, layout.UINativePackage, layout.UINativePackage)
+	if err := writeIfMissing(filepath.Join(uiDir, "README.md"), readme); err != nil {
+		return err
+	}
+	return nil
 }

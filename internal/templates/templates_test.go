@@ -80,11 +80,61 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 		t.Fatal("zero-service bootstrap should not import middleware")
 	}
 
+	// Regression for forge-new-empty-services-unused-runAll: BootstrapOnly
+	// declares `runAll := len(names) == 0` purely to feed the per-service
+	// `if runAll || nameSet["<svc>"]` mux-registration guard. When there are
+	// no services, that guard is never emitted, and `runAll :=` becomes a
+	// "declared and not used" compile error. go/parser doesn't flag unused
+	// locals so the ParseFile check below cannot catch this on its own;
+	// guard the literal declaration string instead.
+	if strings.Contains(rendered, "runAll := ") {
+		t.Fatal("zero-service bootstrap must not declare runAll (no consumer block emitted; would fail 'declared and not used')")
+	}
+
 	// Verify it parses as valid Go
 	fset := token.NewFileSet()
 	_, parseErr := parser.ParseFile(fset, "bootstrap.go", rendered, parser.AllErrors)
 	if parseErr != nil {
 		t.Fatalf("rendered bootstrap.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+	}
+}
+
+// TestBootstrapTemplate_WithServicesStillDeclaresRunAll guards the other side
+// of the forge-new-empty-services-unused-runAll fix: when services ARE
+// configured, the per-service mux-registration loop relies on `runAll` to
+// implement the "empty names slice == mount everything" identity used by
+// `./<bin> server`. The empty-case fix must not regress that path.
+func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
+	type svc struct {
+		Name, Package, FieldName, Alias string
+		Fallible, HasWebhooks           bool
+	}
+	data := struct {
+		Module       string
+		Services     []svc
+		Packages     []struct{}
+		Workers      []struct{}
+		Operators    []struct{}
+		ConfigFields map[string]bool
+	}{
+		Module: "example.com/myproject",
+		Services: []svc{
+			{Name: "api", Package: "api", FieldName: "API", Alias: "apihandler"},
+		},
+		ConfigFields: map[string]bool{},
+	}
+
+	content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+	}
+	rendered := string(content)
+
+	if !strings.Contains(rendered, "runAll := len(names) == 0") {
+		t.Fatal("bootstrap with services must declare runAll for the per-service mux-registration guard")
+	}
+	if !strings.Contains(rendered, "if runAll || nameSet[\"api\"]") {
+		t.Fatal("bootstrap with services must consume runAll in the per-service registration guard")
 	}
 }
 

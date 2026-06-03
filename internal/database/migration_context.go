@@ -253,9 +253,53 @@ func parseColumnDefs(body string) []ParsedColumn {
 
 var protoMessageRe = regexp.MustCompile(`^message\s+(\w+)\s*\{`)
 var protoFieldRe = regexp.MustCompile(`^\s*(repeated\s+)?([\w.]+)\s+(\w+)\s*=\s*(\d+)`)
+var protoPackageRe = regexp.MustCompile(`^\s*package\s+([\w.]+)\s*;`)
+
+// isForgeOptionsProtoFile reports whether the given file path or proto package
+// name belongs to the forge option-defining proto tree (e.g. forge/v1/*.proto,
+// forge/options/v1/*.proto, package forge.v1, package forge.options.v1).
+//
+// These files declare extension messages used to annotate user protos
+// (EntityOptions, FieldOptions, IndexDef, ValidationRules, etc.). They are
+// NOT entity definitions and must be excluded from CREATE TABLE emission —
+// many of their field names are reserved Postgres words (e.g. `table`,
+// `unique`, `default`), which produces invalid DDL when ScanProtoModels
+// blindly feeds them to ProtoToCreateTable.
+//
+// The check is conservative: any forward-slash path segment of "forge", or
+// any proto package whose first segment is "forge", matches. Project entity
+// protos always live under proto/db/, proto/services/, etc. — never under
+// proto/forge/.
+func isForgeOptionsProtoFile(path, protoPackage string) bool {
+	if protoPackage != "" {
+		first := protoPackage
+		if i := strings.Index(first, "."); i >= 0 {
+			first = first[:i]
+		}
+		if first == "forge" {
+			return true
+		}
+	}
+	slashed := filepath.ToSlash(path)
+	for _, seg := range strings.Split(slashed, "/") {
+		if seg == "forge" {
+			return true
+		}
+	}
+	return false
+}
 
 // ScanProtoModels scans the given directory recursively for .proto files and
 // extracts all message definitions (not just entity-annotated ones).
+//
+// Files belonging to the forge options proto tree (forge/v1/*.proto and
+// forge/options/v1/*.proto, identified by path segment "forge" or proto
+// package "forge.*") are skipped entirely — those messages define the
+// annotation extensions (EntityOptions, FieldOptions, IndexDef, etc.) and
+// are not user entities. Without this filter, projects importing
+// forge/v1/options.proto would get `CREATE TABLE entity_options (table TEXT,
+// ...)` emitted in their init migration, which is invalid DDL because
+// `table` and `unique` are reserved Postgres keywords.
 func ScanProtoModels(dir string) ([]ProtoModel, error) {
 	var models []ProtoModel
 
@@ -282,7 +326,16 @@ func ScanProtoModels(dir string) ([]ProtoModel, error) {
 }
 
 // parseProtoMessages parses all messages from a single .proto file.
+//
+// Returns no models for files belonging to the forge options proto tree
+// (see isForgeOptionsProtoFile). The package line is detected during the
+// scan; if the file's package is forge.* the entire file is discarded.
 func parseProtoMessages(path string) ([]ProtoModel, error) {
+	// Fast path: the file path itself reveals it's a forge options proto.
+	if isForgeOptionsProtoFile(path, "") {
+		return nil, nil
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -303,6 +356,17 @@ func parseProtoMessages(path string) ([]ProtoModel, error) {
 		// Skip comment-only lines.
 		if strings.HasPrefix(trimmed, "//") {
 			continue
+		}
+
+		// Detect `package forge.*;` declarations while we're still at file
+		// scope (depth 0, no current message). If found, this file declares
+		// forge option extensions — skip it.
+		if current == nil && depth == 0 {
+			if pkgMatches := protoPackageRe.FindStringSubmatch(trimmed); pkgMatches != nil {
+				if isForgeOptionsProtoFile(path, pkgMatches[1]) {
+					return nil, nil
+				}
+			}
 		}
 
 		if current == nil {

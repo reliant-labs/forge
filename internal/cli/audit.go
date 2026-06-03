@@ -86,6 +86,7 @@ type AuditReport struct {
 var auditCategoryOrder = []string{
 	"version",
 	"shape",
+	"environments",
 	"conventions",
 	"codegen",
 	"packs",
@@ -163,6 +164,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 
 	report.Categories["version"] = auditVersion(cfg)
 	report.Categories["shape"] = auditShape(cfg, abs)
+	report.Categories["environments"] = auditEnvironments(cfg)
 	report.Categories["conventions"] = auditConventions(cfg, abs)
 	report.Categories["codegen"] = auditCodegen(cfg, abs)
 	report.Categories["packs"] = auditPacks(cfg)
@@ -284,6 +286,57 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	summary := fmt.Sprintf("kind=%s, %d service(s), %d worker(s), %d operator(s), %d frontend(s), %d pack(s)",
 		cfg.EffectiveKind(), len(services), len(workers), len(operators), len(frontends), len(cfg.Packs))
 	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
+}
+
+// auditEnvironments checks that every declared environment has the
+// fields a deploy run needs to be safe — most importantly, that
+// non-dev environments declare `cluster:` so the kubectl-context guard
+// in `forge deploy <env>` can refuse to apply against the wrong
+// cluster. Dev's cluster defaults to k3d-<project> when omitted; for
+// staging/prod there is no safe default, so we warn.
+func auditEnvironments(cfg *config.ProjectConfig) AuditCategory {
+	if cfg == nil || len(cfg.Envs) == 0 {
+		return AuditCategory{
+			Status:  AuditStatusOK,
+			Summary: "no environments declared (n/a)",
+		}
+	}
+	type envEntry struct {
+		Name    string `json:"name"`
+		Cluster string `json:"cluster,omitempty"`
+		Status  string `json:"status"`
+	}
+	var entries []envEntry
+	var missing []string
+	for _, env := range cfg.Envs {
+		entry := envEntry{Name: env.Name, Cluster: env.Cluster}
+		switch {
+		case env.Cluster != "":
+			entry.Status = "ok"
+		case env.Name == "dev":
+			// Dev has a safe default (k3d-<project>); not a warning.
+			entry.Status = "default (k3d-" + cfg.Name + ")"
+		default:
+			entry.Status = "missing cluster"
+			missing = append(missing, env.Name)
+		}
+		entries = append(entries, entry)
+	}
+	details := map[string]any{"environments": entries}
+	if len(missing) > 0 {
+		details["missing_cluster"] = missing
+		details["hint"] = "declare `environments[].cluster: <context-name>` in forge.yaml for each non-dev env so `forge deploy <env>` can guard against wrong-context applies"
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("%d env(s) without cluster: %s", len(missing), strings.Join(missing, ", ")),
+			Details: details,
+		}
+	}
+	return AuditCategory{
+		Status:  AuditStatusOK,
+		Summary: fmt.Sprintf("%d environment(s) declared, all have cluster: set", len(cfg.Envs)),
+		Details: details,
+	}
 }
 
 func packageNames(pkgs []config.PackageConfig) []string {
@@ -677,6 +730,134 @@ func auditScaffoldMarkers(projectDir string) AuditCategory {
 		Status:  status,
 		Summary: fmt.Sprintf("%d FORGE_SCAFFOLD marker(s) across %d file(s)", total, len(files)),
 		Details: map[string]any{"files": files, "total_markers": total},
+	}
+}
+
+// auditCRUDStubs counts FORGE_CRUD_SHAPE_MISMATCH-tagged CodeUnimplemented
+// stubs in the project's handlers_crud_gen.go files. These stubs are
+// emitted by the CRUD body generator when a request/response message
+// shape diverges from the AIP-158 conventions the template assumes
+// (e.g. a Limit field instead of PageSize, a string Ticker PK instead
+// of int64 Id, or a repeated-entity response where a single one was
+// expected). The stub keeps the file compiling but returns
+// CodeUnimplemented at runtime — production traffic to that RPC will
+// always 501 until a sibling file hand-implements the RPC.
+//
+// Without this audit, the stub is silent: nothing in `forge generate`
+// output, `forge doctor`, or CI tells the operator that an RPC is
+// shipping as Unimplemented. The buried `FORGE_CRUD_SHAPE_MISMATCH`
+// marker lives in a generated file users are told never to edit, so
+// it's easy to miss in code review. This category surfaces the count
+// + per-method list as a structured audit finding so CI can branch on
+// `.crud_stubs.status == "warn"`.
+//
+// We scan files matching `handlers_crud_gen.go` rather than every Go
+// file — both to keep the walk cheap and because the marker is
+// generator-emitted and lives only in those files. Skip set mirrors
+// auditScaffoldMarkers (vendor/.git/etc) plus templates/ and testdata/
+// so forge's own tree doesn't false-positive on its template body
+// (which contains the literal marker as emission text).
+func auditCRUDStubs(projectDir string) AuditCategory {
+	skip := map[string]struct{}{
+		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
+		"testdata":  {},
+		"templates": {},
+	}
+	var stubs []map[string]string
+	files := map[string]int{}
+	total := 0
+	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ok := skip[d.Name()]; ok {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "handlers_crud_gen.go" {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(projectDir, path)
+		rel = filepath.ToSlash(rel)
+		// Walk lines so each marker carries the nearest preceding
+		// `func (s *Service) <Method>(` name — callers want the RPC
+		// identifier, not just a file path. The CRUD template emits
+		// the FORGE_CRUD_SHAPE_MISMATCH comment between the doc
+		// comment and the function declaration, so we record the
+		// method name when we *next* see the func line. Simpler:
+		// stash the previous func name and apply it to the next
+		// marker we see (the marker sits above the matching func).
+		lines := strings.Split(string(data), "\n")
+		type pendingMarker struct {
+			reason string
+			idx    int
+		}
+		var pending []pendingMarker
+		for i, line := range lines {
+			trimmed := strings.TrimLeft(line, " \t")
+			if strings.HasPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:") {
+				reason := strings.TrimSpace(strings.TrimPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:"))
+				pending = append(pending, pendingMarker{reason: reason, idx: i})
+				continue
+			}
+			if !strings.HasPrefix(trimmed, "func (s *Service) ") {
+				continue
+			}
+			if len(pending) == 0 {
+				continue
+			}
+			rest := strings.TrimPrefix(trimmed, "func (s *Service) ")
+			methodEnd := strings.IndexAny(rest, "(")
+			if methodEnd <= 0 {
+				pending = pending[:0]
+				continue
+			}
+			methodName := rest[:methodEnd]
+			// Attach every pending marker to this func (in practice
+			// the template emits exactly one per func, but the loop
+			// stays correct if that changes).
+			for _, p := range pending {
+				stubs = append(stubs, map[string]string{
+					"file":   rel,
+					"method": methodName,
+					"reason": p.reason,
+				})
+				files[rel]++
+				total++
+			}
+			pending = pending[:0]
+		}
+		return nil
+	})
+	// Stable file list for the summary.
+	fileNames := make([]string, 0, len(files))
+	for f := range files {
+		fileNames = append(fileNames, f)
+	}
+	sort.Strings(fileNames)
+	// Deterministic stubs order (by file, then method) so JSON diffs are clean.
+	sort.SliceStable(stubs, func(i, j int) bool {
+		if stubs[i]["file"] != stubs[j]["file"] {
+			return stubs[i]["file"] < stubs[j]["file"]
+		}
+		return stubs[i]["method"] < stubs[j]["method"]
+	})
+	status := AuditStatusOK
+	summary := "0 CRUD shape-mismatch stubs"
+	if total > 0 {
+		status = AuditStatusWarn
+		summary = fmt.Sprintf("%d CRUD shape-mismatch stub(s) across %d file(s) — RPCs return CodeUnimplemented in production", total, len(fileNames))
+	}
+	return AuditCategory{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{"files": fileNames, "total_stubs": total, "stubs": stubs},
 	}
 }
 

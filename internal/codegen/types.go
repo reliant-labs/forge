@@ -4,25 +4,36 @@ import "strings"
 
 // ServiceDef represents a parsed Connect RPC service definition.
 type ServiceDef struct {
-	Name       string   // "EchoService"
-	Package    string   // "echo.v1"
-	GoPackage  string   // "github.com/.../gen/proto/echo/v1"
-	PkgName    string   // "echov1"
+	Name       string // "EchoService"
+	Package    string // "echo.v1"
+	GoPackage  string // "github.com/.../gen/proto/echo/v1"
+	PkgName    string // "echov1"
 	Methods    []Method
 	ProtoFile  string
-	ModulePath string // e.g., "github.com/demo-project"
+	ModulePath string                       // e.g., "github.com/demo-project"
 	Messages   map[string][]MessageFieldDef // message name → fields (e.g., "ListPatientsRequest" → [...])
 }
 
 // Method represents a single RPC method.
 type Method struct {
-	Name           string
-	InputType      string
-	OutputType     string
+	Name            string
+	InputType       string
+	OutputType      string
 	ClientStreaming bool
 	ServerStreaming bool
-	AuthRequired   bool     // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
-	RequiredRoles  []string // from forge.options.v1.method_options.required_roles
+	AuthRequired    bool     // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
+	RequiredRoles   []string // from forge.options.v1.method_options.required_roles
+	// InputProtoFile / OutputProtoFile record the proto file path that
+	// physically declares the input/output message. For RPCs whose
+	// request/response live in the same proto file as the service these
+	// equal ServiceDef.ProtoFile, but they differ when an RPC references
+	// a message from another file (e.g. services/users/v1/users.proto's
+	// ListUsers returns shared/v1/types.proto's Page). The frontend hooks
+	// generator groups imports by these paths so each cross-file message
+	// is imported from its declaring _pb.ts file rather than silently
+	// referenced as an unresolved identifier.
+	InputProtoFile  string
+	OutputProtoFile string
 }
 
 // MessageFieldDef represents a single field in a proto message definition.

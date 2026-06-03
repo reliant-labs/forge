@@ -110,3 +110,83 @@ func TestServiceDefToHookData(t *testing.T) {
 		t.Error("ListUsers should be IsQuery=true")
 	}
 }
+
+// TestServiceDefToHookData_CrossProtoFileImports asserts that an RPC whose
+// input/output messages live in a DIFFERENT proto file from the service
+// produces a separate import group keyed on the message's declaring file.
+// Regression test for the v3-migration failure where admin-web's user
+// service returned a shared/v1/types.proto Page and the rendered hooks.ts
+// imported Page from users_pb (where it did not exist).
+func TestServiceDefToHookData_CrossProtoFileImports(t *testing.T) {
+	svc := ServiceDef{
+		Name:      "UserService",
+		ProtoFile: "proto/services/users/v1/users.proto",
+		Methods: []Method{
+			// Same-file refs: ListUsersRequest/Response live in users.proto.
+			{
+				Name:            "ListUsers",
+				InputType:       "ListUsersRequest",
+				OutputType:      "ListUsersResponse",
+				InputProtoFile:  "proto/services/users/v1/users.proto",
+				OutputProtoFile: "proto/services/users/v1/users.proto",
+			},
+			// Cross-file output ref: returns a shared/v1/types.proto Page.
+			{
+				Name:            "GetUserPage",
+				InputType:       "GetUserPageRequest",
+				OutputType:      "Page",
+				InputProtoFile:  "proto/services/users/v1/users.proto",
+				OutputProtoFile: "proto/shared/v1/types.proto",
+			},
+		},
+	}
+
+	data := ServiceDefToHookData(svc)
+
+	// All input schemas come from users.proto — one schema group.
+	if got, want := len(data.SchemaImports), 1; got != want {
+		t.Fatalf("len(SchemaImports) = %d, want %d", got, want)
+	}
+	if data.SchemaImports[0].ImportPath != "services/users/v1/users_pb" {
+		t.Errorf("SchemaImports[0].ImportPath = %q, want users_pb", data.SchemaImports[0].ImportPath)
+	}
+
+	// Outputs come from TWO files — expect two type-import groups,
+	// sorted alphabetically by import path so shared/* comes first.
+	if got, want := len(data.TypeImports), 2; got != want {
+		t.Fatalf("len(TypeImports) = %d, want %d", got, want)
+	}
+	if data.TypeImports[0].ImportPath != "services/users/v1/users_pb" {
+		t.Errorf("TypeImports[0].ImportPath = %q, want users_pb", data.TypeImports[0].ImportPath)
+	}
+	if data.TypeImports[1].ImportPath != "shared/v1/types_pb" {
+		t.Errorf("TypeImports[1].ImportPath = %q, want types_pb", data.TypeImports[1].ImportPath)
+	}
+	if got, want := data.TypeImports[1].Symbols, []string{"Page"}; len(got) != 1 || got[0] != want[0] {
+		t.Errorf("TypeImports[1].Symbols = %v, want %v", got, want)
+	}
+}
+
+// TestServiceDefToHookData_FallsBackToServiceProtoFile asserts that when
+// InputProtoFile/OutputProtoFile are unset (legacy descriptor.json
+// produced by an older forge binary), the import group falls back to the
+// service's own proto file. This keeps the existing flat-import behavior
+// intact for projects regenerated against an older descriptor.
+func TestServiceDefToHookData_FallsBackToServiceProtoFile(t *testing.T) {
+	svc := ServiceDef{
+		Name:      "EchoService",
+		ProtoFile: "proto/services/echo/v1/echo.proto",
+		Methods: []Method{
+			{Name: "Echo", InputType: "EchoRequest", OutputType: "EchoResponse"},
+		},
+	}
+
+	data := ServiceDefToHookData(svc)
+
+	if len(data.SchemaImports) != 1 || data.SchemaImports[0].ImportPath != "services/echo/v1/echo_pb" {
+		t.Errorf("SchemaImports = %+v, want one entry at echo_pb", data.SchemaImports)
+	}
+	if len(data.TypeImports) != 1 || data.TypeImports[0].ImportPath != "services/echo/v1/echo_pb" {
+		t.Errorf("TypeImports = %+v, want one entry at echo_pb", data.TypeImports)
+	}
+}

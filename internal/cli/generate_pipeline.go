@@ -87,6 +87,17 @@ type pipelineContext struct {
 	// generated file. See stepCheckTier1Drift for the full guard logic.
 	Accept bool
 
+	// SkipValidate suppresses the final `go build ./...` step. The
+	// validate step is all-or-nothing — a single broken file in package
+	// A blocks the validate gate for any unrelated change in package B.
+	// During multi-lane migrations a tree spends extended periods in a
+	// partial-build state; the `--skip-validate` flag lets the user run
+	// `forge generate` when they know their lane is internal (no
+	// proto/contract delta) and the rest of the tree's brokenness is
+	// being worked on elsewhere. FRICTION 2026-06-02: cp-forge
+	// per-commit port 8050178.
+	SkipValidate bool
+
 	// Cfg may be nil — that's the directory-scan fallback path.
 	Cfg *config.ProjectConfig
 
@@ -115,15 +126,24 @@ type pipelineContext struct {
 // the early steps so a unit test can construct a synthetic context
 // without touching disk.
 func newPipelineContext(projectDir string, force, accept bool) (*pipelineContext, error) {
+	return newPipelineContextWithOpts(projectDir, force, accept, false)
+}
+
+// newPipelineContextWithOpts builds the initial context with explicit
+// control over every flag. Exposed so the cobra RunE can plumb through
+// flags like --skip-validate without growing the older newPipelineContext
+// signature that test fixtures rely on.
+func newPipelineContextWithOpts(projectDir string, force, accept, skipValidate bool) (*pipelineContext, error) {
 	abs, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
 	}
 	return &pipelineContext{
-		ProjectDir: projectDir,
-		AbsPath:    abs,
-		Force:      force,
-		Accept:     accept,
+		ProjectDir:   projectDir,
+		AbsPath:      abs,
+		Force:        force,
+		Accept:       accept,
+		SkipValidate: skipValidate,
 	}, nil
 }
 
@@ -184,7 +204,7 @@ func generateSteps() []GenStep {
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},
 		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
-		{Name: "go build (validate generated code)", Gate: always, Run: stepGoBuildValidate, Tag: "validate"},
+		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
 
@@ -192,6 +212,13 @@ func generateSteps() []GenStep {
 // (config loading, checksums, build validation) or whose internal
 // no-op-when-not-applicable behavior matches the pre-refactor shape.
 func always(_ *pipelineContext) bool { return true }
+
+// gateValidateNotSkipped suppresses the final `go build ./...` step
+// when the user passed `--skip-validate`. See the SkipValidate field
+// doc on pipelineContext for the per-lane-migration rationale.
+func gateValidateNotSkipped(ctx *pipelineContext) bool {
+	return !ctx.SkipValidate
+}
 
 // Gate helpers. Pure predicates over ctx — no I/O. Tests assert these
 // don't mutate ctx by calling them twice and comparing field-wise.

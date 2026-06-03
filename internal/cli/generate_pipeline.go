@@ -119,6 +119,26 @@ type pipelineContext struct {
 	ModulePath   string
 	EntityDefs   []codegen.EntityDef
 	ConfigFields map[string]bool
+
+	// PriorExports holds the pre-codegen snapshot of each Tier-1 Go
+	// file's exported top-level identifier names. Populated by
+	// stepSnapshotTier1Exports before any codegen step runs; consumed
+	// by stepDetectRenamedExports after the codegen passes to diff
+	// against the freshly written files. The diff drives the rename-
+	// detection warnings (callers of a dropped name may be orphaned).
+	// FRICTION 2026-06-02: cp-forge `forgedb.Migrations()` →
+	// `forgedb.MigrationsFS` rename left internal/db/migrations.go
+	// orphaned with a silent compile error two runs later.
+	PriorExports map[string]tier1Exports
+}
+
+// tier1Exports is the per-path snapshot captured pre-codegen:
+// the file's package name + the sorted list of public top-level
+// identifiers. PkgName drives `pkg.Name` search patterns when looking
+// for stale callers; Names is the diff-source list.
+type tier1Exports struct {
+	PkgName string
+	Names   []string
 }
 
 // newPipelineContext builds the initial context. The caller (the cobra
@@ -161,6 +181,7 @@ func generateSteps() []GenStep {
 		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config"},
 		{Name: "load checksums", Gate: always, Run: stepLoadChecksums, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
+		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
 		{Name: "pre-codegen contract check", Gate: always, Run: stepPreCodegenContractCheck, Tag: "validate"},
@@ -204,6 +225,7 @@ func generateSteps() []GenStep {
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},
 		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
+		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }

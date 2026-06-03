@@ -94,10 +94,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 			return fmt.Errorf("render frontend template %s: %w", file, err)
 		}
 
-		destFile := file
-		if strings.HasSuffix(destFile, ".tmpl") {
-			destFile = strings.TrimSuffix(destFile, ".tmpl")
-		}
+		destFile := strings.TrimSuffix(file, ".tmpl")
 
 		destPath := filepath.Join(frontendDir, destFile)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {

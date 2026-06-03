@@ -1142,7 +1142,7 @@ func (g *ProjectGenerator) generateSQLCStub() error {
 		return err
 	}
 
-	sqlcYAML := fmt.Sprintf(`version: "2"
+	sqlcYAML := `version: "2"
 sql:
   - engine: "postgresql"
     queries: "db/queries/"
@@ -1157,7 +1157,7 @@ sql:
         emit_interface: true
         emit_exact_table_names: false
         emit_empty_slices: true
-`)
+`
 	_ = sqlcYAML
 
 	readme := `# Database

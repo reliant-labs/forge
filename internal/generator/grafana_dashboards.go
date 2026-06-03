@@ -9,14 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// generateGrafanaDashboards writes pre-built Grafana dashboards and the
-// provisioning config into deploy/observability/grafana/. The dashboards
-// target the metrics, logs, and traces exported by the standard Forge
-// scaffold and collected by the LGTM stack.
-func (g *ProjectGenerator) generateGrafanaDashboards() error {
-	return GenerateGrafanaDashboards(g.Name, g.Path)
-}
-
 // GenerateGrafanaDashboards is the standalone entry point callable from both
 // `forge new` (via ProjectGenerator) and `forge generate`. It writes Grafana
 // dashboards and provisioning config into deploy/observability/grafana/.

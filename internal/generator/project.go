@@ -629,7 +629,7 @@ func (g *ProjectGenerator) Generate() error {
 	// Record checksums for frozen (Tier-2) files now that every managed
 	// file has been written. `forge upgrade` uses these checksums to
 	// distinguish stale codegen from user edits.
-	if err := g.recordFrozenChecksums(templateData); err != nil {
+	if err := g.recordFrozenChecksums(); err != nil {
 		return fmt.Errorf("failed to record frozen file checksums: %w", err)
 	}
 

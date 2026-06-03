@@ -18,10 +18,11 @@ import (
 
 func newDeployCmd() *cobra.Command {
 	var (
-		imageTag      string
-		dryRun        bool
-		namespace     string
+		imageTag        string
+		dryRun          bool
+		namespace       string
 		contextOverride string
+		explain         bool
 	)
 
 	cmd := &cobra.Command{
@@ -36,27 +37,80 @@ to the local registry at localhost:5050.
 
 Safety: before applying, forge verifies the current kubectl context matches
 the environment's expected cluster (configured under environments[].cluster
-in forge.yaml; defaults to k3d-<project> for dev). Use --context to override
-when a single CI deploy-bot context legitimately targets multiple environments.
+in forge.yaml; defaults to k3d-<project> for dev). The check ALSO runs under
+--dry-run so wrong-context mistakes surface before the strict apply.
+
+Use --context to override when a single CI deploy-bot context legitimately
+targets multiple environments. Use --explain to print the resolved guard
+decision (expected / current / verdict) without applying anything.
 
 Examples:
   forge deploy dev                          # Deploy to dev (local k3d)
   forge deploy staging --image-tag v1.2     # Deploy to staging with specific tag
-  forge deploy prod --dry-run               # Preview production manifests
+  forge deploy prod --dry-run               # Preview prod manifests (guard runs)
+  forge deploy prod --explain               # Show the env-cluster guard verdict
   forge deploy dev --namespace custom-ns    # Override namespace
   forge deploy prod --context deploy-bot    # Override the expected kubectl context`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if explain {
+				return runDeployExplain(args[0], contextOverride)
+			}
 			return runDeploy(args[0], imageTag, dryRun, namespace, contextOverride)
 		},
 	}
 
 	cmd.Flags().StringVar(&imageTag, "image-tag", "", "Image tag (default: git short SHA)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
 	cmd.Flags().StringVar(&contextOverride, "context", "", "Override expected kubectl context (skips the env-cluster guard)")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Print the env-cluster guard decision (expected/current/verdict) and exit")
 
 	return cmd
+}
+
+// runDeployExplain prints the resolved kubectl-context guard decision
+// for an environment without doing anything destructive. Useful when
+// debugging why `forge deploy staging` refuses to apply or what context
+// staging is expected to live in.
+func runDeployExplain(envName, override string) error {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		return err
+	}
+	expected := expectedClusterForEnv(cfg, envName)
+	current := strings.TrimSpace(currentKubectlContext())
+
+	fmt.Printf("forge deploy %s — env-cluster guard\n", envName)
+	fmt.Printf("  expected context: %s\n", emptyAs(expected, "(not declared)"))
+	fmt.Printf("  current context:  %s\n", emptyAs(current, "(none — kubectl not configured)"))
+
+	if override != "" {
+		fmt.Printf("  override:         --context %s (guard skipped, kubectl context will switch)\n", override)
+		fmt.Println("  verdict: ALLOW (override active)")
+		return nil
+	}
+	if expected == "" {
+		fmt.Printf("  hint:             declare `environments[%s].cluster: <context>` in forge.yaml to enable the guard\n", envName)
+		fmt.Println("  verdict: ALLOW (no expectation declared — guard skipped)")
+		return nil
+	}
+	if current == expected {
+		fmt.Println("  verdict: ALLOW (current matches expected)")
+		return nil
+	}
+	fmt.Printf("  fix:              kubectl config use-context %s\n", expected)
+	fmt.Println("  verdict: REFUSE (context mismatch)")
+	return nil
+}
+
+// emptyAs returns alt when s is empty, otherwise s. Cheap helper for
+// rendering "not declared" / "(none)" placeholders.
+func emptyAs(s, alt string) string {
+	if s == "" {
+		return alt
+	}
+	return s
 }
 
 func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride string) error {

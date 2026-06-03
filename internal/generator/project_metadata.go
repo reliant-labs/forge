@@ -112,13 +112,14 @@ func writeIfAbsent(destPath, templateName string, data interface{}) error {
 }
 
 func (g *ProjectGenerator) generateGolangciLint() error {
+	// Tier-2 (user-owned): scaffold the default config on first run, but
+	// never stomp on user customizations. Projects routinely tighten /
+	// loosen the default linter set; overwriting on every regen would
+	// erase that work silently. The v2 cp-forge migration repro'd the
+	// pain — users learned to keep a separate .golangci.user.yml just
+	// to survive `forge generate`.
 	data := struct{ Module string }{Module: g.ModulePath}
-	content, err := templates.ProjectTemplates().Render("golangci.yml.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render golangci.yml: %w", err)
-	}
-	destPath := filepath.Join(g.Path, ".golangci.yml")
-	return os.WriteFile(destPath, content, 0644)
+	return writeIfAbsent(filepath.Join(g.Path, ".golangci.yml"), "golangci.yml.tmpl", data)
 }
 
 // generateExamplesReadme scaffolds an examples/ directory with a README that

@@ -27,11 +27,19 @@ func TestTier1OwnerGateRegistry(t *testing.T) {
 		{"db/embed.go", true, "db/embed.go is gated on database driver"},
 		{"pkg/app/bootstrap.go", true, "bootstrap.go is gated on any entrypoint"},
 		{"pkg/app/testing.go", true, "testing.go is gated on any entrypoint"},
+		{"pkg/app/wire_gen.go", true, "wire_gen.go is gated on any entrypoint"},
+		// glob entries — exercise the path/filepath.Match wiring.
+		{"handlers/billing/handlers_crud_gen.go", true, "handlers/<svc>/handlers_crud_gen.go is gated on codegen+services"},
+		{"handlers/users/handlers_crud_gen.go", true, "second svc still matches the same glob"},
+		{"pkg/middleware/auth_gen.go", true, "pkg/middleware/*_gen.go is gated on codegen+services"},
+		{"pkg/middleware/tenant_gen.go", true, "second middleware still matches the same prefix"},
+		{"frontends/admin/src/hooks/users-hooks.ts", true, "frontend hook glob is gated on frontend+services"},
 		// Unknown paths fall through to nil → caller treats as in-scope.
 		// This preserves loud-fail behavior for new emitters until they
 		// get a registry entry.
-		{"pkg/middleware/auth_gen.go", false, "auth_gen.go has no entry — fail-closed by design"},
 		{"cmd/server.go", false, "server.go has no entry — fail-closed by design"},
+		{"handlers/billing/something_else.go", false, "non-_crud_gen handler files don't match the glob"},
+		{"frontends/admin/src/pages/users.tsx", false, "frontend pages aren't in the hooks glob"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -109,7 +117,7 @@ func TestFilterTier1DriftInScope_GateOnKeepsDriftInScope(t *testing.T) {
 func TestFilterTier1DriftInScope_UnknownPathStaysInScope(t *testing.T) {
 	ctx := &pipelineContext{} // empty — all gates fall to defaults
 	drift := []driftStub{
-		{path: "handlers/billing/handlers_crud_gen.go"}, // not in registry
+		{path: "cmd/server.go"}, // not in registry
 	}
 	inScope, outOfScope := filterTier1DriftInScope(ctx, drift, func(d driftStub) string { return d.path })
 	if len(inScope) != 1 {

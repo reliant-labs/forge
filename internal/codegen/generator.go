@@ -375,9 +375,33 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 		for _, f := range fields {
 			switch f.Name {
 			case "Logger":
-				components[i].HasLogger = true
+				// Logger is the project's *slog.Logger. Gate emission
+				// on the declared type matching to avoid stomping on a
+				// package-local Logger type.
+				if f.Type == "" || f.Type == "*slog.Logger" {
+					components[i].HasLogger = true
+				}
 			case "Config":
-				components[i].HasConfig = true
+				// HasConfig gates emission of `Config: cfg` in the
+				// bootstrap template — but `cfg` is the project's
+				// `*config.Config`. If the package declares a
+				// domain-local Config (e.g. enforcement.Config) the
+				// emit would produce a hard type-mismatch at codegen
+				// time. Gate on the type-string matching the project
+				// config so a domain Config field gets the typed-zero
+				// default and the user wires it manually in setup.go
+				// (or via an AppExtras field that matches the type).
+				// FRICTION 2026-06-02: cp-forge layer-2 enforcement.
+				if f.Type == "" || f.Type == "*config.Config" {
+					components[i].HasConfig = true
+				} else {
+					// Domain-local Config — treat like any other field
+					// and let the name+exact-type matcher decide.
+					appType, hasName := appFieldTypes[f.Name]
+					if hasName && appType == f.Type {
+						components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
+					}
+				}
 			default:
 				// Name-match AND exact type-match. Without strict type
 				// comparison the wire would emit `Repo: app.Repo` even

@@ -1197,3 +1197,57 @@ func TestComputeTestHelperName(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkerDataFromNames_PascalCaseFieldName locks in the
+// snake_case-worker fix: `forge add worker calibrator_refit` must yield
+// the idiomatic Go identifier `CalibratorRefit` for the exported
+// Workers struct field + the `wireWorkerCalibratorRefitDeps` function name,
+// not the underscore-preserving `Calibrator_refit` form that revive /
+// staticcheck ST1003 would flag.
+func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
+	cases := []struct {
+		name              string
+		wantPackage       string
+		wantFieldName     string
+		wantVarName       string
+	}{
+		// Snake-case → PascalCase via ToPascalCase. The directory + Go
+		// package stay snake_case so they remain filesystem-friendly.
+		{"calibrator_refit", "calibrator_refit", "CalibratorRefit", "calibratorRefit"},
+		// Hyphenated → underscored Package; PascalCase FieldName.
+		{"email-sender", "email_sender", "EmailSender", "emailSender"},
+		// Single-word stays as-is (just upper-cased first letter).
+		{"refresh", "refresh", "Refresh", "refresh"},
+		// Initialism — ToPascalCase recognizes API and uppercases it.
+		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
+	}
+	for _, c := range cases {
+		got := WorkerDataFromNames([]string{c.name}, "")
+		if len(got) != 1 {
+			t.Fatalf("WorkerDataFromNames(%q) returned %d entries, want 1", c.name, len(got))
+		}
+		w := got[0]
+		if w.Package != c.wantPackage {
+			t.Errorf("WorkerDataFromNames(%q).Package = %q, want %q", c.name, w.Package, c.wantPackage)
+		}
+		if w.FieldName != c.wantFieldName {
+			t.Errorf("WorkerDataFromNames(%q).FieldName = %q, want %q", c.name, w.FieldName, c.wantFieldName)
+		}
+		if w.VarName != c.wantVarName {
+			t.Errorf("WorkerDataFromNames(%q).VarName = %q, want %q", c.name, w.VarName, c.wantVarName)
+		}
+		// Sanity: FieldName must NOT contain an underscore.
+		if strings.Contains(w.FieldName, "_") {
+			t.Errorf("WorkerDataFromNames(%q).FieldName = %q must not contain '_'", c.name, w.FieldName)
+		}
+	}
+}
+
+// TestOperatorDataFromNames_PascalCaseFieldName mirrors the worker
+// regression test — operators share the snake_case → PascalCase rule.
+func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
+	got := OperatorDataFromNames([]string{"cert_rotator"}, "")
+	if len(got) != 1 || got[0].FieldName != "CertRotator" {
+		t.Errorf("OperatorDataFromNames(\"cert_rotator\")[0].FieldName = %q, want \"CertRotator\"", got[0].FieldName)
+	}
+}

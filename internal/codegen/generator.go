@@ -425,13 +425,17 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 
 // WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// Hyphens in the user-facing name are normalized to underscores for Package/FieldName so the
-// generated bootstrap.go remains syntactically valid Go.
+// Hyphens in the user-facing name are normalized to underscores for Package (the on-disk
+// directory + Go package name) while FieldName uses ToPascalCase so snake_case worker
+// names (`calibrator_refit`) produce idiomatic exported identifiers
+// (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than the
+// underscore-preserving `Workers.Calibrator_refit` shape that revive / staticcheck ST1003
+// would flag.
 func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
 	var workers []BootstrapWorkerData
 	for _, name := range names {
 		pkg := toGoPackage(name)
-		fieldName := naming.ToExportedFieldName(pkg)
+		fieldName := naming.ToPascalCase(pkg)
 		fallible := false
 		if projectDir != "" {
 			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "workers", pkg))
@@ -453,11 +457,12 @@ type BootstrapOperatorData = BootstrapComponentData
 
 // OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
+// See WorkerDataFromNames for the FieldName naming rationale (same snake_case → PascalCase rule).
 func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperatorData {
 	var operators []BootstrapOperatorData
 	for _, name := range names {
 		pkg := toGoPackage(name)
-		fieldName := naming.ToExportedFieldName(pkg)
+		fieldName := naming.ToPascalCase(pkg)
 		fallible := false
 		if projectDir != "" {
 			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "operators", pkg))
@@ -538,8 +543,10 @@ func CollisionCounts(services []BootstrapServiceData, packages []BootstrapPackag
 // (rolePrefix + Package, RolePrefix + Package) — alias is lower-camel,
 // field name is upper-camel. Otherwise (Package, fallbackFieldName) —
 // preserving the caller's per-role naming convention (services use
-// ToPascalCase; workers/operators use ToExportedFieldName which keeps
-// underscores; nested packages use a path-encoded form).
+// ToPascalCase; workers/operators also use ToPascalCase so snake_case
+// names produce idiomatic exported identifiers (`Workers.CalibratorRefit`
+// rather than `Workers.Calibrator_refit`); nested packages use a
+// path-encoded form via ToExportedFieldName).
 //
 // Single source of truth for the wire_gen ↔ bootstrap naming agreement:
 // both files derive their `wireXxxDeps` function name + `Services.Xxx`
@@ -575,10 +582,10 @@ func AssignBootstrapAliases(services []BootstrapServiceData, packages []Bootstra
 		alias, fieldName := ResolveCollisionNaming(c.Package, c.FieldName, rolePrefix, count)
 		c.Alias = alias
 		// Only override FieldName/VarName on collision — the no-collision
-		// branch keeps whatever the caller computed (services use
-		// ToPascalCase, packages use ToExportedFieldName for nested
-		// support; honoring those preserves nested-package field names
-		// like "McpDatabase").
+		// branch keeps whatever the caller computed (services and
+		// workers/operators use ToPascalCase; packages use
+		// ToExportedFieldName for nested support; honoring those preserves
+		// nested-package field names like "McpDatabase").
 		if count[c.Package] > 1 {
 			c.FieldName = fieldName
 			c.VarName = lowerFirst(c.FieldName)

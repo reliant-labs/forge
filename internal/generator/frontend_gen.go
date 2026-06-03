@@ -80,6 +80,12 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		data.ApiPackage = layout.ApiPackage
 		data.HooksPackage = layout.HooksPackage
 		data.UIWebPackage = layout.UIWebPackage
+		// UINativePackage only surfaces in mobile (RN) templates —
+		// the nextjs and vite-spa templates don't reference it (the
+		// `{{.UINativePackage}}` tag never appears under those template
+		// trees). Populate unconditionally for workspaces=on so the
+		// RN package.json can refer to it; Next.js renders ignore it.
+		data.UINativePackage = layout.UINativePackage
 	}
 
 	for _, file := range frontendFiles {

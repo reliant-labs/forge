@@ -811,6 +811,13 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	if err := WriteFrontendWorkspaceFiles(g.Path, g.Name, g.FrontendWorkspaces); err != nil {
 		return fmt.Errorf("write frontend workspace files: %w", err)
 	}
+	// `forge new` doesn't currently support scaffolding an RN frontend
+	// as the initial one (the FrontendName path always uses Next.js —
+	// kind="" → frontendTemplateDir returns "nextjs"). So WriteUINativePackageFiles
+	// isn't reachable here in practice; users add the RN frontend via
+	// `forge add frontend --kind mobile` which already wires it up.
+	// If the initial-RN-frontend path ever lands, gate the call here
+	// the same way add.go does.
 	return GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
 		Workspaces: g.FrontendWorkspaces,
 	})

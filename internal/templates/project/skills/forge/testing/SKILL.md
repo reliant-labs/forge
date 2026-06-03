@@ -130,3 +130,5 @@ Same applies to logging diagnostic output you intend to grep in tests.
 - `testing/integration` — real-DB tests behind `//go:build integration`
 - `testing/e2e` — full-stack flows behind `//go:build e2e`
 - `testing/patterns` — copy-paste-ready table-driven templates for the four most common test shapes
+
+For Next.js / vite-spa / React frontends, this skill does NOT apply. See the top-level `frontend-testing` skill for Vitest + Testing Library patterns, the `mockTransport()` seam, and the four-state page coverage rule.

@@ -24,7 +24,11 @@ func renderMockTransport(t *testing.T, entities []codegen.MockTransportEntity) s
 		t.Fatalf("parse mock-transport template: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, codegen.MockTransportTemplateData{Entities: entities}); err != nil {
+	data := codegen.MockTransportTemplateData{
+		Entities:           entities,
+		SchemaImportGroups: codegen.BuildMockTransportSchemaImportGroups(entities),
+	}
+	if err := tmpl.Execute(&buf, data); err != nil {
 		t.Fatalf("execute mock-transport template: %v", err)
 	}
 	return buf.String()
@@ -189,5 +193,156 @@ func TestMockTransport_BindsTransportVariableNotCastAtReturn(t *testing.T) {
 	// creeping back via a future template edit.
 	if strings.Contains(got, "as unknown as Transport") {
 		t.Errorf("template should not use `as unknown as Transport` cast (TS7006 on callback params). Got:\n%s", got)
+	}
+}
+
+// TestMockTransport_StreamMethodHasNoExplicitReturnTypeAnnotation is the
+// regression test for the kalshi-trader friction round's stream-typing
+// blocker. The previous template annotated the stream method as
+//
+//	async stream(...): Promise<StreamResponse<never, never>> { ... }
+//
+// but the passthrough branch returned `fallback!.stream(...)` whose type
+// is the generic `Promise<StreamResponse<I, O>>` — not assignable to the
+// narrower `never, never` instantiation. Result: every `forge generate`
+// re-rendered the file with a TS2322 error in the passthrough branch and
+// blocked `npm run typecheck`. Fix: drop the explicit return-type
+// annotation so tsc infers the per-callback signature from the outer
+// `const transport: Transport = { ... }` binding (which was already in
+// place for the unrelated TS7006 fix).
+func TestMockTransport_StreamMethodHasNoExplicitReturnTypeAnnotation(t *testing.T) {
+	entities := []codegen.MockTransportEntity{
+		{
+			EntityName:       "Trade",
+			EntityNamePlural: "Trades",
+			EntitySlug:       "trades",
+			ServiceName:      "TradingService",
+			ServiceTypeName:  "kalshi.v1.TradingService",
+			ListRPC:          "ListTrades",
+			HasList:          true,
+			ImportPath:       "services/api/v1/api_pb",
+			ListResponseType: "ListTradesResponse",
+		},
+	}
+
+	got := renderMockTransport(t, entities)
+
+	// The explicit annotation on the method signature would re-introduce
+	// TS2322 in the passthrough branch of stream(). The fix removes
+	// `: Promise<StreamResponse<never, never>>` from the actual function
+	// signature line (a `):` token followed by the annotation). The
+	// teaching comment above the method may still reference the type
+	// name to explain *why* the annotation is gone — only the bare
+	// signature form is forbidden.
+	const badSignature = `contextValues): Promise<StreamResponse<never, never>>`
+	if strings.Contains(got, badSignature) {
+		t.Errorf("stream() should not carry an explicit `: Promise<StreamResponse<never, never>>` return-type annotation on the function signature (TS2322 on the passthrough branch). Got:\n%s", got)
+	}
+
+	// Sanity: the stream method must still be present without an
+	// explicit return-type annotation — the signature ends with `) {`,
+	// not `): Promise<...> {`.
+	const goodSignature = `async stream(method, signal, timeoutMs, header, input, contextValues) {`
+	if !strings.Contains(got, goodSignature) {
+		t.Errorf("expected the `async stream(...) {` method definition (annotation-free) in output. Got:\n%s", got)
+	}
+}
+
+// TestMockTransport_GroupsImportsByModule is the regression test for the
+// kalshi-trader friction round's import-grouping nit: three entities
+// (Trade, Hypothesis, Settlement) whose response schemas all lived in
+// `@/gen/services/api/v1/api_pb` rendered as three separate back-to-
+// back import statements rather than one merged one. Not a compile
+// error (tsc dedups), but it tripped `import/order` and
+// `import/no-duplicates` lint rules and bloated the diff. Fix: pre-
+// aggregate the schema imports by ImportPath in
+// BuildMockTransportSchemaImportGroups so the template emits one
+// merged `import { A, B, C } from "@/gen/<path>"` per source module.
+func TestMockTransport_GroupsImportsByModule(t *testing.T) {
+	entities := []codegen.MockTransportEntity{
+		{
+			EntityName:       "Trade",
+			EntitySlug:       "trades",
+			ListRPC:          "ListTrades",
+			HasList:          true,
+			ImportPath:       "services/api/v1/api_pb",
+			ListResponseType: "ListTradesResponse",
+		},
+		{
+			EntityName:       "Hypothesis",
+			EntitySlug:       "hypotheses",
+			ListRPC:          "ListHypotheses",
+			HasList:          true,
+			ImportPath:       "services/api/v1/api_pb",
+			ListResponseType: "ListHypothesesResponse",
+		},
+		{
+			EntityName:       "Settlement",
+			EntitySlug:       "settlements",
+			ListRPC:          "ListSettlements",
+			HasList:          true,
+			ImportPath:       "services/api/v1/api_pb",
+			ListResponseType: "ListSettlementsResponse",
+		},
+	}
+
+	got := renderMockTransport(t, entities)
+
+	// Exactly one schema-import line should reference the shared
+	// api_pb module — three would be a regression.
+	const wantPath = `from "@/gen/services/api/v1/api_pb"`
+	occurrences := strings.Count(got, wantPath)
+	if occurrences != 1 {
+		t.Errorf("expected exactly one `from \"@/gen/services/api/v1/api_pb\"` line (merged import), got %d. Output:\n%s", occurrences, got)
+	}
+
+	// And that single line must list all three schemas, regardless
+	// of order (BuildMockTransportSchemaImportGroups sorts symbols
+	// alphabetically for deterministic output).
+	for _, sym := range []string{"ListTradesResponseSchema", "ListHypothesesResponseSchema", "ListSettlementsResponseSchema"} {
+		if !strings.Contains(got, sym) {
+			t.Errorf("merged import should contain %q. Output:\n%s", sym, got)
+		}
+	}
+
+	// Per-entity mock fixtures stay 1:1 — distinct modules per entity.
+	for _, sym := range []string{"tradesMocks", "hypothesesMocks", "settlementsMocks"} {
+		if !strings.Contains(got, sym) {
+			t.Errorf("expected mock fixture import alias %q in output. Got:\n%s", sym, got)
+		}
+	}
+}
+
+// TestMockTransport_DistinctModules_KeepsImportsSeparate guards against
+// an overzealous fix to BuildMockTransportSchemaImportGroups: when two
+// entities live in different proto modules, they must produce two
+// separate import lines, not one merged super-import.
+func TestMockTransport_DistinctModules_KeepsImportsSeparate(t *testing.T) {
+	entities := []codegen.MockTransportEntity{
+		{
+			EntityName:       "Trade",
+			EntitySlug:       "trades",
+			ListRPC:          "ListTrades",
+			HasList:          true,
+			ImportPath:       "services/api/v1/api_pb",
+			ListResponseType: "ListTradesResponse",
+		},
+		{
+			EntityName:       "Daemon",
+			EntitySlug:       "daemons",
+			ListRPC:          "ListDaemons",
+			HasList:          true,
+			ImportPath:       "services/control/v1/control_pb",
+			ListResponseType: "ListDaemonsResponse",
+		},
+	}
+
+	got := renderMockTransport(t, entities)
+
+	if !strings.Contains(got, `from "@/gen/services/api/v1/api_pb"`) {
+		t.Errorf("expected separate api_pb import line. Got:\n%s", got)
+	}
+	if !strings.Contains(got, `from "@/gen/services/control/v1/control_pb"`) {
+		t.Errorf("expected separate control_pb import line. Got:\n%s", got)
 	}
 }

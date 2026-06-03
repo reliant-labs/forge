@@ -384,18 +384,48 @@ _render_network_policies = lambda env: schema.Environment -> [any] {
     ]
 }
 
-_render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] {
-    _sa_name = app.service_account_name if app.service_account_name else app.name
+# Cluster-scoped RBAC: ClusterRole + ClusterRoleBinding. Used by
+# operators that watch resources across namespaces (workspace-
+# controller, multi-tenant operators). The default ConfigMap/Secret
+# read rules apply; `cluster_rbac_rules` extends them.
+_render_cluster_rbac = lambda app: schema.Application, env: schema.Environment, sa_name: str, default_rules: [any] -> [any] {
     [
         {
-            apiVersion = "v1"
-            kind = "ServiceAccount"
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRole"
             metadata = {
-                name = _sa_name
-                namespace = env.namespace
+                name = "${app.name}-clusterrole"
                 labels = _managed_labels(app)
             }
+            rules = default_rules + app.cluster_rbac_rules
         }
+        {
+            apiVersion = "rbac.authorization.k8s.io/v1"
+            kind = "ClusterRoleBinding"
+            metadata = {
+                name = "${app.name}-clusterrolebinding"
+                labels = _managed_labels(app)
+            }
+            subjects = [
+                {
+                    kind = "ServiceAccount"
+                    name = sa_name
+                    namespace = env.namespace
+                }
+            ]
+            roleRef = {
+                apiGroup = "rbac.authorization.k8s.io"
+                kind = "ClusterRole"
+                name = "${app.name}-clusterrole"
+            }
+        }
+    ]
+}
+
+# Namespaced RBAC: Role + RoleBinding scoped to env.namespace. The
+# default for every Application.
+_render_namespaced_rbac = lambda app: schema.Application, env: schema.Environment, sa_name: str, default_rules: [any] -> [any] {
+    [
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
             kind = "Role"
@@ -404,13 +434,7 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
                 namespace = env.namespace
                 labels = _managed_labels(app)
             }
-            rules = [
-                {
-                    apiGroups = [""]
-                    resources = ["configmaps", "secrets"]
-                    verbs = ["get", "list", "watch"]
-                }
-            ]
+            rules = default_rules
         }
         {
             apiVersion = "rbac.authorization.k8s.io/v1"
@@ -423,7 +447,7 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
             subjects = [
                 {
                     kind = "ServiceAccount"
-                    name = _sa_name
+                    name = sa_name
                     namespace = env.namespace
                 }
             ]
@@ -434,6 +458,34 @@ _render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] 
             }
         }
     ]
+}
+
+_render_rbac = lambda app: schema.Application, env: schema.Environment -> [any] {
+    _sa_name = app.service_account_name if app.service_account_name else app.name
+    # Default rules every workload gets — read the projected ConfigMap +
+    # Secret for its per-env config. Operators that need wider access
+    # supply additional rules via `cluster_rbac_rules` (only honored when
+    # `cluster_rbac = True`; the namespaced default Role stays minimal).
+    _default_rules = [
+        {
+            apiGroups = [""]
+            resources = ["configmaps", "secrets"]
+            verbs = ["get", "list", "watch"]
+        }
+    ]
+    _service_account = {
+        apiVersion = "v1"
+        kind = "ServiceAccount"
+        metadata = {
+            name = _sa_name
+            namespace = env.namespace
+            labels = _managed_labels(app)
+        }
+    }
+    [_service_account] \
+        + (_render_cluster_rbac(app, env, _sa_name, _default_rules) \
+           if app.cluster_rbac \
+           else _render_namespaced_rbac(app, env, _sa_name, _default_rules))
 }
 
 # Render a ConfigMap. The metadata namespace defaults to the env's

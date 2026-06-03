@@ -4,6 +4,13 @@ Development environment configuration for {{.ProjectName}}.
 Top-level identifiers `image_tag` and `registry` are overridable via
 `kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
 flag only binds top-level names, not nested struct fields.
+
+Running multiple services off ONE Docker image? See
+`schema.MultiServiceApplication` + `render.multi_service_apps(...)` in
+`deploy/kcl/schema.k` / `deploy/kcl/render.k`. That shape collapses N
+image builds to 1 by running the shared binary with a different cobra
+subcommand per Deployment. To regenerate this file in that shape, set
+`binary: shared` in forge.yaml and re-run `forge generate`.
 """
 
 import deploy.kcl.schema

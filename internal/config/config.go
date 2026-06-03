@@ -86,6 +86,7 @@ type ProjectConfig struct {
 	Docs         DocsConfig          `yaml:"docs"`
 	Features     FeaturesConfig      `yaml:"features,omitempty"`
 	Stack        StackConfig         `yaml:"stack,omitempty"`
+	API          APIConfig           `yaml:"api,omitempty"`
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
 	// Binaries declares non-server long-running processes scaffolded
@@ -768,4 +769,31 @@ func (d DocsConfig) EffectiveFormat() string {
 		return "markdown"
 	}
 	return d.Format
+}
+
+// APIConfig declares opt-in API-surface artifacts that ride alongside
+// the canonical Connect RPC handlers generated from proto/services. The
+// proto file is the single source of truth for every shape declared
+// here — each field is just a projection of that source rendered by a
+// different plugin in the buf pipeline.
+//
+// Defaults are intentionally all false so existing projects regenerate
+// identically until a user opts in.
+type APIConfig struct {
+	// OpenAPI, when true, runs `protoc-gen-connect-openapi` during
+	// `forge generate` and emits one OpenAPI 3 spec per service at
+	// `openapi/<service>.yaml` from the project root. The user must
+	// have `protoc-gen-connect-openapi` on PATH (install with
+	// `go install github.com/sudorandom/protoc-gen-connect-openapi@latest`).
+	// Consumers: openapi-generator, Postman/Insomnia import,
+	// ChatGPT function-calling, ReadMe.io, Stainless, etc.
+	OpenAPI bool `yaml:"openapi,omitempty"`
+
+	// REST is declared here as the canonical landing spot for the
+	// Vanguard-backed REST/JSON transcoding work. It is intentionally
+	// NOT wired up by this package — another agent owns that surface.
+	// Reserving the field here keeps forge.yaml schema-stable so users
+	// who flip it on early get a no-op rather than an "unknown key"
+	// validation error.
+	REST bool `yaml:"rest,omitempty"`
 }

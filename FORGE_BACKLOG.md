@@ -2,6 +2,63 @@
 
 ## Open
 
+- **(2026-06-02 kalshi-trader port) `forge new` on a project with no
+  services yet produces unused `runAll` in `pkg/app/bootstrap.go:125`.**
+  Generated `BootstrapOnly` declares `runAll := len(names) == 0` to drive
+  mount-time filtering, but with `services: []` no subsequent block
+  references it. `go build` fails with `declared and not used: runAll`
+  and the post-scaffold validation step in `forge new` reports the
+  failure. Repro: `forge new x --mod github.com/x/x` (no services).
+  Workaround: `forge add service <name>` immediately after `forge new`,
+  or hand-add a `_ = runAll` after the declaration. Suggested fix: (a)
+  emit `_ = runAll` defensively in the empty-services case, (b) guard
+  the declaration with `if len(_app_services) > 0` style preamble, or
+  (c) fold the `runAll` flag into the conditional that consumes it.
+  Tagged to `cmd/forge/new.go` post-validation and the bootstrap
+  template.
+
+- **(2026-06-02 kalshi-trader port) ORM codegen leaves a stale
+  `<entity>_orm_shared.pb.orm.go` redeclaring `ormTracer` when a new
+  entity proto is added to an existing Go package.** Repro: have a
+  `proto/db/v1/foo.proto` with one entity, run `forge generate` (clean
+  output). Add `proto/db/v1/bar.proto` with another entity in the same
+  go_package. Run `forge generate` again. Both `foo_orm_shared.pb.orm.go`
+  and `bar_orm_shared.pb.orm.go` declare `var ormTracer = ...` at file
+  scope → `go build` fails with `ormTracer redeclared in this block`.
+  Workaround: delete the older `*_orm_shared.pb.orm.go` by hand before
+  generate. Suggested fix: emit `orm_shared` exactly once per
+  go_package, keyed off the package directory not the proto file, OR
+  use a sync.Once guard on a package-level init pattern.
+
+- **(2026-06-02 kalshi-trader port) Forge's own `forge.v1` option
+  messages get treated as ORM entities and emit illegal Postgres DDL.**
+  When `proto/db/v1/*.proto` imports `forge/v1/options.proto`, forge's
+  ORM codegen visits every message in scope and produces a CREATE TABLE
+  for the option messages themselves — e.g.
+  `CREATE TABLE entity_options (table TEXT NOT NULL, ...)`. Postgres
+  rejects this because `table` is a reserved word. Worse, the
+  auto-generated migration file `<timestamp>_init.up.sql` includes both
+  the user's entities AND the option-message tables, and uses the
+  literal column name `unique` (also reserved) for the `IndexDef.unique`
+  field. Repro: define any entity proto that imports forge/v1/options
+  and run `forge generate`. Workaround: hand-author the migration file
+  and ignore the auto-generated one. Suggested fix: skip messages with
+  `(forge.v1.skip_orm) = true` (and mark all option-shaped messages
+  with that), or exclude messages from packages matching
+  `forge/v1/*`.
+
+- **(2026-06-02 kalshi-trader port) ORM codegen mis-types
+  google.protobuf wrapper fields.** Entity protos that declare a
+  nullable column via `google.protobuf.DoubleValue` or
+  `google.protobuf.StringValue` produce ORM Go code that assigns
+  `*float64` to a `wrapperspb.DoubleValue` field directly (no
+  conversion through `&wrapperspb.DoubleValue{Value: *v}`) — compile
+  fails. Workaround: use plain proto scalars (sql NULL handled via
+  pointer types in the ORM, or via dedicated `int32 has_x = N` sentinel
+  patterns). Suggested fix: detect wrapper types in the field walker
+  and emit the proper unwrap/wrap on read/write paths in the ORM
+  template.
+
 - **(2026-05-06 cpnext continuation 8) `contractlint` flags `_test`
   packages with `Test*` exported symbols.** When a package has a
   `contract.go` declaring a `Service` interface, declaring tests in the

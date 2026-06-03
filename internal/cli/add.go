@@ -135,7 +135,8 @@ Subcommands:
   forge add frontend <name>                       Add a new Next.js frontend
   forge add scenario <name>                       Scaffold a frontend mock scenario
   forge add webhook <name> --service S            Add a webhook endpoint to a service
-  forge add package <name>                        Add a new internal package (alias for package new)`,
+  forge add package <name>                        Add a new internal package (alias for package new)
+  forge add library <name>                        Scaffold a library-shaped package (no contract.go; pre-excluded)`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
@@ -147,6 +148,7 @@ Subcommands:
 	cmd.AddCommand(newAddWebhookCmd())
 	cmd.AddCommand(newAddPackageCmd())
 	cmd.AddCommand(newAddBinaryCmd())
+	cmd.AddCommand(newAddLibraryCmd())
 
 	return cmd
 }
@@ -192,7 +194,11 @@ func requireServiceKind(root, action string) error {
 // --- add service ---
 
 func newAddServiceCmd() *cobra.Command {
-	var port int
+	var (
+		port   int
+		resume bool
+		force  bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "service <name>",
@@ -202,22 +208,47 @@ func newAddServiceCmd() *cobra.Command {
 This creates the service directory structure, proto file, Dockerfile,
 hot-reload config, and updates the project configuration.
 
+Flags:
+  --resume   Re-run a partial scaffold. Skips every output file that
+             already exists on disk. Safe to invoke repeatedly.
+  --force    Re-stamp the scaffold even when files exist. Overwrites
+             service.go, authorizer.go, the test files, and the proto
+             stub. Use after manually editing a scaffolded file and
+             wanting to start over.
+
+--resume and --force are mutually exclusive.
+
 Example:
   forge add service users
-  forge add service orders --port 8082`,
+  forge add service orders --port 8082
+  forge add service users --resume   # recover from a partial failure
+  forge add service users --force    # re-stamp every output file`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddService(args[0], port)
+			return runAddService(args[0], port, resume, force)
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "Service port (default: auto-increment from 8080)")
+	cmd.Flags().BoolVar(&resume, "resume", false, "Resume a partial scaffold: skip files that already exist")
+	cmd.Flags().BoolVar(&force, "force", false, "Force-overwrite every scaffold output file")
 
 	return cmd
 }
 
-func runAddService(name string, port int) error {
+func runAddService(name string, port int, resume, force bool) error {
 	ctxLabel := fmt.Sprintf("forge add service %s", name)
+
+	// --resume and --force are mutually exclusive: one is "preserve user
+	// edits", the other is "discard them". Combining them has no coherent
+	// meaning, so reject early before we touch any files.
+	if resume && force {
+		return cliutil.UserErr(ctxLabel,
+			"--resume and --force are mutually exclusive",
+			"",
+			"use --resume to recover from a partial failure (skips existing files), or --force to re-stamp every output file")
+	}
+
 	if err := validateServiceName(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid service name", "",
 			"use a name starting with a letter, containing letters/digits/_/-; not a Go keyword or reserved (worker/scheduler/cron/job)",
@@ -239,30 +270,61 @@ func runAddService(name string, port int) error {
 			"verify forge.yaml is valid YAML", err)
 	}
 
-	// Check for name conflict
-	for _, svc := range cfg.Services {
+	// Check for name conflict in the existing config. Under --resume or
+	// --force we treat a matching name as "this is the partial scaffold I
+	// am recovering / re-stamping", not as a hard error. We still skip
+	// the forge.yaml append step in that case so we don't duplicate the
+	// services: entry.
+	existingIdx := -1
+	for i, svc := range cfg.Services {
 		if svc.Name == name {
-			return cliutil.UserErr(ctxLabel,
-				fmt.Sprintf("service %q already exists in the project", name),
-				"",
-				"pick a different service name, or remove the existing entry from forge.yaml's services: list first")
+			existingIdx = i
+			break
 		}
 	}
+	if existingIdx >= 0 && !resume && !force {
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("service %q already exists in the project", name),
+			"",
+			"pass --resume to skip files that already exist, --force to overwrite them, or pick a different name")
+	}
 
-	// Auto-assign port if not specified
+	// Port selection. If the service already exists in forge.yaml (resume
+	// or force path) and the user did not pass --port, reuse the existing
+	// port so the regenerated scaffold matches the recorded config.
 	if port == 0 {
-		port = 8080
-		for _, svc := range cfg.Services {
-			if svc.Port >= port {
-				port = svc.Port + 1
+		if existingIdx >= 0 {
+			port = cfg.Services[existingIdx].Port
+		} else {
+			port = 8080
+			for _, svc := range cfg.Services {
+				if svc.Port >= port {
+					port = svc.Port + 1
+				}
 			}
 		}
 	}
 
-	fmt.Printf("Adding service '%s' (port %d)...\n", name, port)
+	switch {
+	case resume:
+		fmt.Printf("Resuming service '%s' (port %d)...\n", name, port)
+	case force:
+		fmt.Printf("Force-stamping service '%s' (port %d)...\n", name, port)
+	default:
+		fmt.Printf("Adding service '%s' (port %d)...\n", name, port)
+	}
 
-	// Generate service files (service.go, handlers.go, proto)
-	if err := generator.GenerateServiceFiles(root, cfg.ModulePath, name, cfg.Name, port); err != nil {
+	// Generate service files (service.go, handlers.go, proto). The mode
+	// drives per-file overwrite/skip behavior; progress writes "✓ skipped"
+	// and "⚠ overwriting" lines to stdout as it goes.
+	mode := generator.ScaffoldFail
+	switch {
+	case resume:
+		mode = generator.ScaffoldResume
+	case force:
+		mode = generator.ScaffoldForce
+	}
+	if err := generator.GenerateServiceFilesWithMode(root, cfg.ModulePath, name, cfg.Name, port, mode, os.Stdout); err != nil {
 		return fmt.Errorf("generate service files: %w", err)
 	}
 
@@ -278,14 +340,19 @@ func runAddService(name string, port int) error {
 	// so the pipeline sees the new service in the config). The Path uses
 	// the Go-package form so it matches the directory the scaffolder
 	// actually creates ("admin-server" -> handlers/admin_server).
-	cfg.Services = append(cfg.Services, config.ServiceConfig{
-		Name: name,
-		Type: "go_service",
-		Path: fmt.Sprintf("handlers/%s", generator.ServicePackageName(name)),
-		Port: port,
-	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	//
+	// Under --resume / --force the service entry may already exist in
+	// forge.yaml; only append when this is a fresh add.
+	if existingIdx < 0 {
+		cfg.Services = append(cfg.Services, config.ServiceConfig{
+			Name: name,
+			Type: "go_service",
+			Path: fmt.Sprintf("handlers/%s", generator.ServicePackageName(name)),
+			Port: port,
+		})
+		if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
+			return fmt.Errorf("update project config: %w", err)
+		}
 	}
 
 	// Run the full generation pipeline: buf generate, service stubs, mocks,
@@ -295,13 +362,23 @@ func runAddService(name string, port int) error {
 	err = runGeneratePipeline(root, false, false)
 	generateMu.Unlock()
 	if err != nil {
-		if restoreErr := os.WriteFile(configPath, originalConfigBytes, 0o644); restoreErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to restore original project config after pipeline failure: %v\n", restoreErr)
+		// Only restore the config when we actually appended to it this
+		// invocation; otherwise --resume would clobber a valid config
+		// after a transient pipeline failure.
+		if existingIdx < 0 {
+			if restoreErr := os.WriteFile(configPath, originalConfigBytes, 0o644); restoreErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to restore original project config after pipeline failure: %v\n", restoreErr)
+			}
+			return fmt.Errorf("generation pipeline failed for service %q (project config restored): %w", name, err)
 		}
-		return fmt.Errorf("generation pipeline failed for service %q (project config restored): %w", name, err)
+		return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
 	}
 
-	// Generate E2E test harness
+	// Generate E2E test harness. GenerateE2ETests already skips existing
+	// files unconditionally, which gives the right behavior for both
+	// --resume and default. --force is not threaded through here because
+	// the E2E harness is the user's tests and clobbering them is rarely
+	// what someone re-stamping a scaffold actually wants.
 	fmt.Println("Generating E2E test harness...")
 	e2eMethods := generator.MethodsFromProtoStub(name)
 	if err := generator.GenerateE2ETests(root, name, cfg.ModulePath, cfg.Name, e2eMethods); err != nil {
@@ -888,6 +965,17 @@ func runAddFrontend(name string, port int, kind string) error {
 	// the *bool survives marshal round-trips.
 	frontendOn := true
 	cfg.Features.Frontend = &frontendOn
+
+	// Bring stack.frontend.framework in sync with the frontend we just
+	// added. Projects scaffolded without --frontend leave this field as
+	// "none" — downstream tooling (lint config, CI, codegen branching)
+	// reads the framework field directly and would misread the project
+	// as having no frontend stack. Only overwrite when empty or "none"
+	// so a user who set something exotic (e.g. "svelte") keeps it.
+	if cfg.Stack.Frontend.Framework == "" || cfg.Stack.Frontend.Framework == "none" {
+		cfg.Stack.Frontend.Framework = frontendType
+	}
+
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 		return fmt.Errorf("update project config: %w", err)
 	}

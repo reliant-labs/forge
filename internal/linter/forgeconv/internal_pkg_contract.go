@@ -171,6 +171,16 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 		hasServiceInterface bool
 		hasDepsStruct       bool
 		hasNewFunc          bool
+		// interfaceCount counts every interface declaration anywhere in
+		// the package. When >= 2 AND no Deps struct AND no New func, the
+		// package is recognized as an "interface-catalogue" shape — a
+		// collection of narrow interfaces consumed elsewhere, not a
+		// Service-shape package the bootstrap template binds to. We
+		// skip the canonical-names check in that case so the user
+		// doesn't have to add the package to contracts.exclude just to
+		// silence false-positive Service/Deps/New findings.
+		// FRICTION 2026-06-02: cp-forge layer-3 natsio, layer-4 daemonstate.
+		interfaceCount int
 		// Capture the first non-canonical interface and struct names so
 		// the error message can be specific ("found 'Sender'/'Config'/'NewSender'").
 		firstIfaceName, firstIfacePos   = "", token.Position{}
@@ -213,6 +223,7 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 					}
 					switch ts.Type.(type) {
 					case *ast.InterfaceType:
+						interfaceCount++
 						if ts.Name.Name == "Service" {
 							hasServiceInterface = true
 						} else if firstIfaceName == "" {
@@ -242,6 +253,27 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 				}
 			}
 		}
+	}
+
+	// Interface-catalogue early-out: when the package declares >= 2
+	// interfaces AND no Deps struct AND no New func, it's clearly a
+	// catalogue of narrow interfaces consumed elsewhere — not a
+	// Service-shape package the bootstrap template binds to. Skipping
+	// the canonical-names check here means the user doesn't have to
+	// add every interface-catalogue package to contracts.exclude just
+	// to silence false-positive Service/Deps/New findings.
+	//
+	// Two-interface threshold (rather than one) avoids a false positive
+	// on a package that simply forgot to add Deps/New: a single
+	// interface declaration is more likely an incomplete contract than
+	// a deliberate catalogue.
+	//
+	// FRICTION 2026-06-02: cp-forge layer-3 natsio (7 narrow interfaces
+	// by design) and layer-4 daemonstate (1 data interface + 1 lifecycle
+	// runner) both required `contracts.exclude` entries that this
+	// early-out makes unnecessary.
+	if interfaceCount >= 2 && !hasDepsStruct && !hasNewFunc {
+		return nil, nil
 	}
 
 	// Findings are reported against contract.go (canonical anchor)

@@ -32,9 +32,20 @@ export function createStubAuthProvider(): AuthProvider {
   const mode = process.env.NEXT_PUBLIC_MOCK_API;
   const isMock = mode === "true";
   const isHybrid = mode === "hybrid";
+  // `dev-real-backend` mode: no mock transport, but ENVIRONMENT=development
+  // means the backend's jwt-auth pack honors the DevBypassToken sentinel. So
+  // unauthenticated dev sessions still get a working bearer token without
+  // needing a login UI or scenario fixtures.
+  //
+  // Set NEXT_PUBLIC_AUTH_DEV_BYPASS=true (or run with NODE_ENV=development
+  // when no mock mode is active) to opt in.
+  const env = process.env.NEXT_PUBLIC_ENVIRONMENT ?? process.env.NODE_ENV;
+  const explicitBypass = process.env.NEXT_PUBLIC_AUTH_DEV_BYPASS === "true";
+  const isDevBypass =
+    !isMock && !isHybrid && (explicitBypass || env === "development");
   const listeners = new Set<(user: AuthUser | null) => void>();
 
-  if (!isMock && !isHybrid) {
+  if (!isMock && !isHybrid && !isDevBypass) {
     console.warn(
       "[auth] Using stub auth provider. Implement AuthProvider and pass it to <AuthContext.Provider> to enable real auth."
     );
@@ -49,11 +60,12 @@ export function createStubAuthProvider(): AuthProvider {
     if (isHybrid) {
       return readActiveScenarioAuth() === "bypass" ? DEV_BYPASS_TOKEN : null;
     }
+    if (isDevBypass) return DEV_BYPASS_TOKEN;
     return null;
   };
 
   const treatAsAuthed = () =>
-    isMock || (isHybrid && readActiveScenarioAuth() === "bypass");
+    isMock || isDevBypass || (isHybrid && readActiveScenarioAuth() === "bypass");
 
   return {
     getToken: async () => tokenForRequest(),

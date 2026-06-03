@@ -38,6 +38,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"load project config",
 		"load checksums",
 		"check Tier-1 file-stomp guard",
+		"snapshot Tier-1 exports",
 		"sync forge/pkg dev replace",
 		"announce project",
 		"pre-codegen contract check",
@@ -81,6 +82,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"rehash tracked files",
 		"refresh ORM output mtimes",
 		"post-gen validation",
+		"detect renamed Tier-1 exports",
 		"go build (validate generated code)",
 	}
 
@@ -174,6 +176,26 @@ func TestGenerateStepsGatesAreSideEffectFree(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGateValidateNotSkipped pins the per-lane-migration escape hatch:
+// when the user passes --skip-validate the final `go build ./...` gate
+// flips OFF (returns false), so a tree that's mid-port and unrelated to
+// the current lane can still complete codegen without the broken-tree
+// build error blocking unrelated work. Default (no --skip-validate)
+// leaves the gate ON.
+//
+// FRICTION 2026-06-02: cp-forge dogfood pass — one broken file in one
+// package was failing the whole validate step for every parallel agent.
+func TestGateValidateNotSkipped(t *testing.T) {
+	on := &pipelineContext{SkipValidate: false}
+	if !gateValidateNotSkipped(on) {
+		t.Error("gateValidateNotSkipped(SkipValidate=false) = false, want true (default-on)")
+	}
+	off := &pipelineContext{SkipValidate: true}
+	if gateValidateNotSkipped(off) {
+		t.Error("gateValidateNotSkipped(SkipValidate=true) = true, want false (--skip-validate honored)")
 	}
 }
 

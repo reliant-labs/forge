@@ -87,6 +87,17 @@ type pipelineContext struct {
 	// generated file. See stepCheckTier1Drift for the full guard logic.
 	Accept bool
 
+	// SkipValidate suppresses the final `go build ./...` step. The
+	// validate step is all-or-nothing — a single broken file in package
+	// A blocks the validate gate for any unrelated change in package B.
+	// During multi-lane migrations a tree spends extended periods in a
+	// partial-build state; the `--skip-validate` flag lets the user run
+	// `forge generate` when they know their lane is internal (no
+	// proto/contract delta) and the rest of the tree's brokenness is
+	// being worked on elsewhere. FRICTION 2026-06-02: cp-forge
+	// per-commit port 8050178.
+	SkipValidate bool
+
 	// Cfg may be nil — that's the directory-scan fallback path.
 	Cfg *config.ProjectConfig
 
@@ -108,6 +119,26 @@ type pipelineContext struct {
 	ModulePath   string
 	EntityDefs   []codegen.EntityDef
 	ConfigFields map[string]bool
+
+	// PriorExports holds the pre-codegen snapshot of each Tier-1 Go
+	// file's exported top-level identifier names. Populated by
+	// stepSnapshotTier1Exports before any codegen step runs; consumed
+	// by stepDetectRenamedExports after the codegen passes to diff
+	// against the freshly written files. The diff drives the rename-
+	// detection warnings (callers of a dropped name may be orphaned).
+	// FRICTION 2026-06-02: cp-forge `forgedb.Migrations()` →
+	// `forgedb.MigrationsFS` rename left internal/db/migrations.go
+	// orphaned with a silent compile error two runs later.
+	PriorExports map[string]tier1Exports
+}
+
+// tier1Exports is the per-path snapshot captured pre-codegen:
+// the file's package name + the sorted list of public top-level
+// identifiers. PkgName drives `pkg.Name` search patterns when looking
+// for stale callers; Names is the diff-source list.
+type tier1Exports struct {
+	PkgName string
+	Names   []string
 }
 
 // newPipelineContext builds the initial context. The caller (the cobra
@@ -115,15 +146,24 @@ type pipelineContext struct {
 // the early steps so a unit test can construct a synthetic context
 // without touching disk.
 func newPipelineContext(projectDir string, force, accept bool) (*pipelineContext, error) {
+	return newPipelineContextWithOpts(projectDir, force, accept, false)
+}
+
+// newPipelineContextWithOpts builds the initial context with explicit
+// control over every flag. Exposed so the cobra RunE can plumb through
+// flags like --skip-validate without growing the older newPipelineContext
+// signature that test fixtures rely on.
+func newPipelineContextWithOpts(projectDir string, force, accept, skipValidate bool) (*pipelineContext, error) {
 	abs, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
 	}
 	return &pipelineContext{
-		ProjectDir: projectDir,
-		AbsPath:    abs,
-		Force:      force,
-		Accept:     accept,
+		ProjectDir:   projectDir,
+		AbsPath:      abs,
+		Force:        force,
+		Accept:       accept,
+		SkipValidate: skipValidate,
 	}, nil
 }
 
@@ -141,6 +181,7 @@ func generateSteps() []GenStep {
 		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config"},
 		{Name: "load checksums", Gate: always, Run: stepLoadChecksums, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
+		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
 		{Name: "pre-codegen contract check", Gate: always, Run: stepPreCodegenContractCheck, Tag: "validate"},
@@ -184,7 +225,8 @@ func generateSteps() []GenStep {
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},
 		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
-		{Name: "go build (validate generated code)", Gate: always, Run: stepGoBuildValidate, Tag: "validate"},
+		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
+		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
 
@@ -192,6 +234,13 @@ func generateSteps() []GenStep {
 // (config loading, checksums, build validation) or whose internal
 // no-op-when-not-applicable behavior matches the pre-refactor shape.
 func always(_ *pipelineContext) bool { return true }
+
+// gateValidateNotSkipped suppresses the final `go build ./...` step
+// when the user passed `--skip-validate`. See the SkipValidate field
+// doc on pipelineContext for the per-lane-migration rationale.
+func gateValidateNotSkipped(ctx *pipelineContext) bool {
+	return !ctx.SkipValidate
+}
 
 // Gate helpers. Pure predicates over ctx — no I/O. Tests assert these
 // don't mutate ctx by calling them twice and comparing field-wise.
@@ -376,7 +425,22 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	if ctx.Checksums == nil {
 		return nil
 	}
-	drift := ctx.Checksums.CheckTier1Drift(ctx.AbsPath)
+	allDrift := ctx.Checksums.CheckTier1Drift(ctx.AbsPath)
+	if len(allDrift) == 0 {
+		return nil
+	}
+	// Scope drift to files this run's enabled emitters would actually
+	// touch. Out-of-scope drift is announced as a warning (so a parallel
+	// lane's hand-edit doesn't go fully silent) but does not block the
+	// pipeline. See generate_tier1_scope.go for the registry rationale.
+	drift, outOfScope := filterTier1DriftInScope(ctx, allDrift,
+		func(d checksums.Tier1DriftEntry) string { return d.Path })
+	if len(outOfScope) > 0 {
+		fmt.Fprintf(os.Stderr, "ℹ️  Tier-1 stomp guard: %d drifted file(s) out of scope for this run (their emitter step is gated off); ignored:\n", len(outOfScope))
+		for _, d := range outOfScope {
+			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
+		}
+	}
 	if len(drift) == 0 {
 		return nil
 	}

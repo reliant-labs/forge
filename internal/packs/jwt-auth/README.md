@@ -18,6 +18,7 @@ on filenames in `pkg/middleware/`.
 |------|-------------|
 | `pkg/middleware/auth/jwtauth/validator.go` | Core JWT validator (`jwtauth.Validator`) supporting JWKS, static RSA, and HMAC signing modes |
 | `pkg/middleware/auth/jwtauth/dev_auth.go` | Dev-mode bypass (`jwtauth.DevAuthEnabled`, `jwtauth.DevClaims`) that injects synthetic claims when `ENVIRONMENT=development` |
+| `pkg/middleware/auth/jwtauth/dev_login_handler.go` | Dev-only `/auth/login` HTTP handler (`jwtauth.DevLoginHandler`) that returns the `DevBypassToken` to the auth-ui `LoginForm`; 404s outside dev |
 | `pkg/middleware/auth/jwtauth/auth_gen.go` | Connect RPC interceptor (`jwtauth.Init`, `jwtauth.Close`, `jwtauth.Interceptor`) — regenerated on `forge generate` |
 
 ## Configuration
@@ -84,7 +85,19 @@ The interceptor extracts the `Authorization: Bearer <token>` header, validates t
 
 ### Dev Mode
 
-When `ENVIRONMENT=development` (or `dev`), the interceptor skips token validation entirely and injects synthetic admin claims. This lets you develop and test without running an identity provider.
+When `ENVIRONMENT=development` (or `dev`), the interceptor accepts three flavors of request:
+
+1. **No `Authorization` header** — synthetic claims; lets curl / Chrome MCP test handlers without a token.
+2. **`Bearer dev-bypass-do-not-use-in-prod`** — the `DevBypassToken` sentinel; lets the frontend stub auth provider and scenarios opt in explicitly.
+3. **Any other token** — validated normally against the configured JWKS/HMAC/RSA so the real login flow can be tested locally.
+
+For the frontend `auth-ui` pack's `LoginForm` (which POSTs email+password to `/auth/login` and expects `{ token, user, expiresAt }`), wire `DevLoginHandler` into your HTTP mux:
+
+```go
+mux.HandleFunc("/auth/login", jwtauth.DevLoginHandler())
+```
+
+The handler accepts any email+password and hands back the `DevBypassToken`. It returns 404 outside dev — production deployments must replace it with a real IdP-backed login handler.
 
 ### JWKS Support
 

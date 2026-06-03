@@ -142,6 +142,133 @@ func TestScanProtoModels_NonexistentDir(t *testing.T) {
 	}
 }
 
+// TestScanProtoModels_SkipsForgeOptionsProtos verifies that the messages
+// declared in forge/v1/*.proto (EntityOptions, FieldOptions, IndexDef,
+// ValidationRules, etc.) are NOT picked up by the scanner and therefore do
+// NOT end up fed into ProtoToCreateTable. Regression test for the
+// "ORM emits tables for forge/v1 options" bug: importing
+// forge/v1/options.proto used to produce
+// `CREATE TABLE entity_options (table TEXT NOT NULL, ...)` in the init
+// migration — invalid DDL because `table` and `unique` are reserved
+// Postgres keywords.
+func TestScanProtoModels_SkipsForgeOptionsProtos(t *testing.T) {
+	dir := t.TempDir()
+
+	// User entity proto under proto/db/v1/ — should be picked up.
+	dbDir := filepath.Join(dir, "db", "v1")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("mkdir db: %v", err)
+	}
+	userProto := `syntax = "proto3";
+package db.v1;
+
+import "forge/v1/options.proto";
+
+message Foo {
+  string id = 1;
+  string name = 2;
+}
+`
+	if err := os.WriteFile(filepath.Join(dbDir, "foo.proto"), []byte(userProto), 0o644); err != nil {
+		t.Fatalf("write foo proto: %v", err)
+	}
+
+	// Vendored forge options proto at proto/forge/v1/ — must be skipped
+	// because its messages are extension definitions (with reserved
+	// Postgres words like `table` and `unique` as field names) that
+	// would emit invalid DDL.
+	forgeDir := filepath.Join(dir, "forge", "v1")
+	if err := os.MkdirAll(forgeDir, 0o755); err != nil {
+		t.Fatalf("mkdir forge: %v", err)
+	}
+	forgeProto := `syntax = "proto3";
+package forge.v1;
+
+message EntityOptions {
+  string table = 1;
+  bool soft_delete = 2;
+  bool timestamps = 3;
+}
+
+message IndexDef {
+  string name = 1;
+  repeated string fields = 2;
+  bool unique = 3;
+}
+
+message FieldOptions {
+  bool pk = 1;
+  bool unique = 5;
+  string default_value = 7;
+}
+`
+	if err := os.WriteFile(filepath.Join(forgeDir, "options.proto"), []byte(forgeProto), 0o644); err != nil {
+		t.Fatalf("write forge proto: %v", err)
+	}
+
+	models, err := ScanProtoModels(dir)
+	if err != nil {
+		t.Fatalf("ScanProtoModels() error = %v", err)
+	}
+
+	// Only Foo should be picked up; EntityOptions/IndexDef/FieldOptions
+	// must be filtered out.
+	if len(models) != 1 {
+		names := make([]string, len(models))
+		for i, m := range models {
+			names[i] = m.Name
+		}
+		t.Fatalf("expected 1 model (Foo), got %d: %v", len(models), names)
+	}
+	if models[0].Name != "Foo" {
+		t.Fatalf("expected only model to be Foo, got %q", models[0].Name)
+	}
+
+	// Belt-and-suspenders: feeding the scanned models to ProtoToCreateTable
+	// must not produce any CREATE TABLE statement that uses a reserved
+	// Postgres word as an unquoted column name. The original bug emitted
+	// `entity_options (table TEXT NOT NULL, ...)`.
+	for _, m := range models {
+		sql := ProtoToCreateTable(m)
+		for _, reserved := range []string{"table", "unique", "default"} {
+			needle := "    " + reserved + " "
+			if strings.Contains(sql, needle) {
+				t.Errorf("CREATE TABLE for %s contains reserved Postgres word %q as a column name:\n%s",
+					m.Name, reserved, sql)
+			}
+		}
+	}
+}
+
+// TestScanProtoModels_SkipsForgeOptionsByPackage exercises the package-line
+// fallback: a forge.* options proto living outside a proto/forge/ directory
+// is still recognised by its `package forge.v1;` declaration. This guards
+// against vendoring layouts that drop the file under, e.g.,
+// proto/third_party/options.proto.
+func TestScanProtoModels_SkipsForgeOptionsByPackage(t *testing.T) {
+	dir := t.TempDir()
+
+	// File path has no `forge` segment — only the proto package marks it.
+	forgeProto := `syntax = "proto3";
+package forge.v1;
+
+message EntityOptions {
+  string table = 1;
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "options.proto"), []byte(forgeProto), 0o644); err != nil {
+		t.Fatalf("write proto: %v", err)
+	}
+
+	models, err := ScanProtoModels(dir)
+	if err != nil {
+		t.Fatalf("ScanProtoModels() error = %v", err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("expected 0 models for forge.v1 package, got %d", len(models))
+	}
+}
+
 func TestComputeSchemaDiff(t *testing.T) {
 	tables := []ParsedTable{
 		{

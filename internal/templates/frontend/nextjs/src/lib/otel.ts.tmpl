@@ -11,15 +11,18 @@
 //   - Minimum TS target is ES2022; confirm tsconfig.json compiles accordingly.
 //
 // See https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/upgrade-to-2.x.md
-import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
-import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { W3CTraceContextPropagator } from '@opentelemetry/core';
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
-import { getWebAutoInstrumentations } from '@opentelemetry/auto-instrumentations-web';
-import { resourceFromAttributes } from '@opentelemetry/resources';
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
+//
+// Imports are alphabetised within the external group to satisfy the
+// scaffold's `import/order` rule (alphabetize: asc, caseInsensitive).
 import { context, propagation, trace } from '@opentelemetry/api';
+import { getWebAutoInstrumentations } from '@opentelemetry/auto-instrumentations-web';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
 const OTEL_ENDPOINT = process.env.NEXT_PUBLIC_OTEL_ENDPOINT || '';
 

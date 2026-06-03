@@ -1,6 +1,27 @@
 """
 Forge Base Configurations
 Composable environment variable groups and common init container templates.
+
+KCL v0.11 quirk — schema literals in lambda bodies
+==================================================
+
+KCL v0.11 rejects fully-qualified schema literals (e.g.
+`schema.InitContainer { ... }`) inside lambda bodies. The parser only
+accepts bare identifiers for schema instantiation there. The
+workaround is a module-level alias:
+
+    _MyType = schema.MyType
+
+    my_helper = lambda x: int -> schema.MyType {
+        _MyType {field = x}
+    }
+
+Every helper file in this project (`lib/`, `base.k`, etc.) that
+returns a schema literal from a lambda should follow this pattern —
+declare module-level `_X = schema.X` aliases once at the top and use
+the bare `_X { ... }` form inside lambda bodies. The quirk recurs
+across every author who writes a new helper file; canonising the
+alias pattern here keeps the workaround discoverable.
 """
 
 import .schema

@@ -133,6 +133,20 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 		return nil
 	}
 
+	// Lift the project's extra interface-type allow-list from forge.yaml
+	// into the shape the contract generator wants. A type listed here
+	// joins the built-in cross-package allow-list when the mock template
+	// decides whether to emit "nil" or "T{}" for a return type. nil/empty
+	// is the no-op default.
+	var extraIfaceTypes map[string]bool
+	if cfg != nil && len(cfg.Contracts.InterfaceTypes) > 0 {
+		extraIfaceTypes = make(map[string]bool, len(cfg.Contracts.InterfaceTypes))
+		for _, t := range cfg.Contracts.InterfaceTypes {
+			extraIfaceTypes[t] = true
+		}
+	}
+	contractOpts := contract.Options{ExtraInterfaceTypes: extraIfaceTypes}
+
 	generated := 0
 	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -170,7 +184,7 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return statErr
 		}
 
-		if genErr := contract.Generate(contractPath); genErr != nil {
+		if genErr := contract.GenerateWithOptions(contractPath, contractOpts); genErr != nil {
 			return fmt.Errorf("generate contract for %s: %w", rel, genErr)
 		}
 		fmt.Printf("  ✅ Generated mock + middleware for %s/\n", rel)

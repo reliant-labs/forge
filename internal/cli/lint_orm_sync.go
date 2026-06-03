@@ -69,6 +69,12 @@ func runORMSyncLint(projectDir string) error {
 		if !strings.HasSuffix(name, ".pb.go") && !strings.HasSuffix(name, ".pb.orm.go") {
 			continue
 		}
+		// Skip the package-level shared file (orm_shared.pb.orm.go).
+		// It is emitted once per Go package and has no proto sibling, so
+		// it would otherwise risk spurious prefix-matches in pbWithORM.
+		if name == "orm_shared.pb.orm.go" {
+			continue
+		}
 		path := filepath.Join(dir, name)
 		fi, statErr := os.Stat(path)
 		if statErr != nil {

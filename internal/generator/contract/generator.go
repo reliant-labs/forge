@@ -58,6 +58,22 @@ type ContractFile struct {
 	InterfaceNames map[string]bool
 }
 
+// Options controls optional aspects of mock generation. The zero value is
+// equivalent to plain Generate(contractPath) — every field is opt-in and
+// backwards compatible.
+type Options struct {
+	// ExtraInterfaceTypes is a project-supplied allow-list of cross-package
+	// interface types the mock generator should treat as mockable. The
+	// rendered type expression of a method's return (e.g.
+	// "billing.MeterClient") is matched against this set during zero-value
+	// emission; matches produce "nil" instead of the invalid composite
+	// literal "T{}".
+	//
+	// Sourced from forge.yaml's `contracts.interface_types` at the CLI
+	// layer; nil / empty is the no-op default.
+	ExtraInterfaceTypes map[string]bool
+}
+
 // Generate parses contractPath and writes mock_gen.go next to it.
 //
 // In addition to (re)writing mock_gen.go, Generate sweeps any stale
@@ -69,6 +85,14 @@ type ContractFile struct {
 // idempotent and gives the user a clear signal in the build output:
 // either the file is present and current, or it's gone.
 func Generate(contractPath string) error {
+	return GenerateWithOptions(contractPath, Options{})
+}
+
+// GenerateWithOptions is Generate with project-level extension hooks
+// (currently: ExtraInterfaceTypes). New plumbing should go through this
+// entry point; the bare Generate is preserved for call sites that don't
+// need the extension surface.
+func GenerateWithOptions(contractPath string, opts Options) error {
 	cf, err := ParseContract(contractPath)
 	if err != nil {
 		return fmt.Errorf("parse contract: %w", err)
@@ -76,7 +100,7 @@ func Generate(contractPath string) error {
 
 	dir := filepath.Dir(contractPath)
 
-	if err := writeMock(cf, dir); err != nil {
+	if err := writeMock(cf, dir, opts); err != nil {
 		return fmt.Errorf("generate mock: %w", err)
 	}
 
@@ -343,7 +367,14 @@ func collectFromTypeExpr(typeExpr string, importMap map[string]string, needed ma
 }
 
 // writeMock generates mock_gen.go in dir.
-func writeMock(cf *ContractFile, dir string) error {
+//
+// opts.ExtraInterfaceTypes is unioned into the set of interface names the
+// template consults during zero-value emission. The union lets projects
+// declare additional cross-package interface types in forge.yaml without
+// requiring a forge fork; an entry like "billing.MeterClient" flips the
+// zero value for that type from the (invalid) "billing.MeterClient{}" to
+// the canonical "nil".
+func writeMock(cf *ContractFile, dir string, opts Options) error {
 	imports := collectImports(cf, cf.Interfaces)
 	// The mock embeds contractkit.Recorder and uses contractkit.MockNotSet
 	// for error-returning methods. The Recorder embed alone requires the
@@ -353,11 +384,24 @@ func writeMock(cf *ContractFile, dir string) error {
 		addImport(&imports, contractkitImport)
 	}
 
+	// Union the project-supplied extras into a fresh copy of the contract's
+	// own interface name set. The template uses this combined set to decide
+	// which return types collapse to "nil" instead of "T{}".
+	interfaceNames := make(map[string]bool, len(cf.InterfaceNames)+len(opts.ExtraInterfaceTypes))
+	for k, v := range cf.InterfaceNames {
+		interfaceNames[k] = v
+	}
+	for k, v := range opts.ExtraInterfaceTypes {
+		if v {
+			interfaceNames[k] = true
+		}
+	}
+
 	data := templateData{
 		Package:        cf.Package,
 		Imports:        imports,
 		Interfaces:     cf.Interfaces,
-		InterfaceNames: cf.InterfaceNames,
+		InterfaceNames: interfaceNames,
 	}
 
 	var buf bytes.Buffer
@@ -594,30 +638,43 @@ var qualifiedNamedTypeRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_]*\.[A-Z][A-Za-z
 // methods commonly return. Extend as needed; an unrecognized cross-
 // package interface still produces a build error in the generated mock.
 var crossPackageInterfaces = map[string]bool{
-	"context.Context": true,
-	"io.Reader":       true,
-	"io.Writer":       true,
-	"io.Closer":       true,
-	"io.ReadWriter":   true,
-	"io.ReadCloser":   true,
-	"io.WriteCloser":  true,
-	"io.ReadWriteCloser": true,
-	"io.Seeker":       true,
-	"io.ReaderAt":     true,
-	"io.WriterAt":     true,
-	"net.Conn":        true,
-	"net.Listener":    true,
-	"net.Addr":        true,
-	"http.Handler":    true,
+	"context.Context":     true,
+	"io.Reader":           true,
+	"io.Writer":           true,
+	"io.Closer":           true,
+	"io.ReadWriter":       true,
+	"io.ReadCloser":       true,
+	"io.WriteCloser":      true,
+	"io.ReadWriteCloser":  true,
+	"io.Seeker":           true,
+	"io.ReaderAt":         true,
+	"io.WriterAt":         true,
+	"net.Conn":            true,
+	"net.Listener":        true,
+	"net.Addr":            true,
+	"http.Handler":        true,
 	"http.ResponseWriter": true,
-	"sql.Result":      true,
-	"driver.Conn":     true,
-	"driver.Driver":   true,
-	"driver.Result":   true,
-	"driver.Stmt":     true,
-	"driver.Tx":       true,
-	"fmt.Stringer":    true,
-	"error":           true,
+	"http.RoundTripper":   true,
+	"http.CookieJar":      true,
+	"sql.Result":          true,
+	"driver.Conn":         true,
+	"driver.Driver":       true,
+	"driver.Result":       true,
+	"driver.Stmt":         true,
+	"driver.Tx":           true,
+	"fmt.Stringer":        true,
+	"error":               true,
+	// Connect-RPC framework interfaces. Contract methods that return
+	// interceptors / interceptor funcs / streaming-handler interceptors
+	// would otherwise emit `connect.Interceptor{}` which doesn't
+	// compile. The v1 cp-forge migration repro'd this on every audit /
+	// auth interceptor port.
+	"connect.Interceptor":                 true,
+	"connect.UnaryInterceptorFunc":        true,
+	"connect.StreamingHandlerInterceptor": true,
+	"connect.StreamingClientInterceptor":  true,
+	"connect.AnyRequest":                  true,
+	"connect.AnyResponse":                 true,
 }
 
 // isInterfaceType reports whether typeExpr names an interface — either a

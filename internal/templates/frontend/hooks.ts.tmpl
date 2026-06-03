@@ -18,6 +18,16 @@ import {
   type UseMutationOptions,
 {{- end}}
 } from "@tanstack/react-query";
+{{- if .Workspaces}}
+import { connectClient } from "../transport";
+import { {{.ServiceName}} } from "{{.ApiPackage}}/{{.ImportPath}}";
+{{- range .SchemaImports}}
+import { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "{{$.ApiPackage}}/{{.ImportPath}}";
+{{- end}}
+{{- range .TypeImports}}
+import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "{{$.ApiPackage}}/{{.ImportPath}}";
+{{- end}}
+{{- else}}
 import { connectClient } from "@/lib/connect";
 {{- if .HasMutations}}
 import { getEventBus } from "@/lib/events";
@@ -28,6 +38,7 @@ import { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "@/g
 {{- end}}
 {{- range .TypeImports}}
 import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "@/gen/{{.ImportPath}}";
+{{- end}}
 {{- end}}
 import type { MessageInitShape } from "@bufbuild/protobuf";
 
@@ -46,6 +57,16 @@ export function use{{.Name}}(req: MessageInitShape<typeof {{.InputType}}Schema>,
 
 export function use{{.Name}}(options?: Partial<UseMutationOptions<{{.OutputType}}, Error, MessageInitShape<typeof {{.InputType}}Schema>>>) {
   const queryClient = useQueryClient();
+{{- if $.Workspaces}}
+  return useMutation({
+    mutationFn: (req: MessageInitShape<typeof {{.InputType}}Schema>) => client.{{.NameCamel}}(req),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: ["{{$.ServiceNameCamel}}"] });
+      options?.onSuccess?.(...args);
+    },
+    ...options,
+  });
+{{- else}}
   const { onSuccess, onError, ...rest } = options ?? {};
   return useMutation({
     mutationFn: (req: MessageInitShape<typeof {{.InputType}}Schema>) => client.{{.NameCamel}}(req),
@@ -60,6 +81,7 @@ export function use{{.Name}}(options?: Partial<UseMutationOptions<{{.OutputType}
     },
     ...rest,
   });
+{{- end}}
 }
 {{- end}}
 {{- end}}

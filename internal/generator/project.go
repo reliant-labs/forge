@@ -35,6 +35,12 @@ type ProjectGenerator struct {
 	ServicePort        int                   // initial service port (default: 8080)
 	FrontendName       string                // optional initial Next.js frontend name
 	FrontendPort       int                   // frontend port (default: 3000)
+	// FrontendWorkspaces opts the project into the pnpm-workspaces
+	// layout: emit a root pnpm-workspace.yaml + packages/api +
+	// packages/hooks, frontends consume @<scope>/api / @<scope>/hooks
+	// via "workspace:*" deps. Off by default — single-frontend
+	// projects keep the historic per-frontend layout unchanged.
+	FrontendWorkspaces bool
 	GoVersionOverride  string                // if set, use this Go version instead of detecting
 	Features           config.FeaturesConfig // feature flags for generation
 	MemoryFormat       MemoryFormat          // AI memory file format (default: reliant)
@@ -787,7 +793,17 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	if g.FrontendName == "" {
 		return nil
 	}
-	return GenerateFrontendFiles(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "")
+	// Emit the workspace-layout scaffolding (pnpm-workspace.yaml +
+	// packages/api + packages/hooks) once, before any per-frontend
+	// files are written. WriteFrontendWorkspaceFiles is idempotent and
+	// no-op'd when FrontendWorkspaces is false, so it's safe to call
+	// unconditionally.
+	if err := WriteFrontendWorkspaceFiles(g.Path, g.Name, g.FrontendWorkspaces); err != nil {
+		return fmt.Errorf("write frontend workspace files: %w", err)
+	}
+	return GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
+		Workspaces: g.FrontendWorkspaces,
+	})
 }
 
 // generateE2ETests generates the E2E test harness for the initial service.

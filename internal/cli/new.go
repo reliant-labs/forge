@@ -31,6 +31,11 @@ func newNewCmd() *cobra.Command {
 		skipTools       bool
 		bufPlugins      string
 		binaryMode      string
+		// frontendWorkspaces opts the project into the pnpm-workspaces
+		// layout — packages/api + packages/hooks shared across all
+		// frontends, frontends import via "@<scope>/api". Default off;
+		// must be opted in explicitly. See SKILL.md/frontend-workspaces.
+		frontendWorkspaces bool
 	)
 
 	cmd := &cobra.Command{
@@ -68,7 +73,7 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode)
+			return runNew(projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
 		},
 	}
 
@@ -87,6 +92,7 @@ Example:
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
+	cmd.Flags().BoolVar(&frontendWorkspaces, "frontend-workspaces", false, "Opt into pnpm-workspaces layout: emit packages/api + packages/hooks shared across all frontends. Off by default; recommended once you have 2+ frontends (web + mobile).")
 	_ = cmd.MarkFlagRequired("mod")
 
 	return cmd
@@ -177,7 +183,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	return kind, plugins, binary, nil
 }
 
-func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string) error {
+func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -330,6 +336,7 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 	if len(frontendNames) > 0 {
 		gen.FrontendName = frontendNames[0]
 	}
+	gen.FrontendWorkspaces = frontendWorkspaces
 
 	// Apply memory format
 	mf, err := generator.ParseMemoryFormat(memoryFormat)
@@ -383,7 +390,9 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 	for i, feName := range frontendNames[min(1, len(frontendNames)):] {
 		fePort := gen.FrontendPort + i + 1
 		fmt.Printf("\n🔧 Adding additional frontend '%s' (port %d)...\n", feName, fePort)
-		if err := generator.GenerateFrontendFiles(targetPath, modulePath, projectName, feName, gen.ServicePort, ""); err != nil {
+		if err := generator.GenerateFrontendFilesWithOptions(targetPath, modulePath, projectName, feName, gen.ServicePort, "", generator.FrontendGenOptions{
+			Workspaces: frontendWorkspaces,
+		}); err != nil {
 			return fmt.Errorf("failed to generate frontend %s: %w", feName, err)
 		}
 		if err := generator.AppendFrontendToConfig(targetPath, feName, fePort); err != nil {

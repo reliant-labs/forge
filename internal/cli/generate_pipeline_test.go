@@ -49,6 +49,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"ORM generate (proto/db)",
 		"initial migration scaffold",
 		"entity-aware migration",
+		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
 		"config loader (proto/config)",
 		"parse services + module path",

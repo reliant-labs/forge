@@ -855,8 +855,10 @@ func planFieldOrmType(t string) string {
 		return "orm.TypeInteger"
 	case "uint64":
 		return "orm.TypeBigInt"
-	case "float", "float32", "double", "float64":
-		return "orm.TypeText"
+	case "float", "float32":
+		return "orm.TypeReal"
+	case "double", "float64":
+		return "orm.TypeDoublePrecision"
 	case "bytes":
 		return "orm.TypeBytea"
 	case "google.protobuf.Timestamp", "timestamp":

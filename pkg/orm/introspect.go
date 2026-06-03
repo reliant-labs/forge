@@ -554,6 +554,15 @@ func mapDatabaseTypeToFieldType(dbType string) (FieldType, error) {
 		"timestamptz":              TypeTimestampTZ,
 		"jsonb":                    TypeJSONB,
 		"bytea":                    TypeBytea,
+		// Floating-point types — PostgreSQL has dedicated REAL (float32)
+		// and DOUBLE PRECISION (float64) columns; SQLite stores both as
+		// REAL (8-byte) but we still surface the proto distinction so
+		// DDL introspection / contract-sync sees the intended width.
+		"real":                    TypeReal,
+		"float4":                  TypeReal,
+		"double precision":        TypeDoublePrecision,
+		"float8":                  TypeDoublePrecision,
+		"double":                  TypeDoublePrecision,
 		// SQLite types
 		"datetime":  TypeTimestampTZ,
 		"timestamp": TypeTimestampTZ,
@@ -563,11 +572,9 @@ func mapDatabaseTypeToFieldType(dbType string) (FieldType, error) {
 		"blob":      TypeBytea,
 		"clob":      TypeText,
 		"char":      TypeText,
-		"real":      TypeText,
-		"double":    TypeText,
-		"float":     TypeText,
-		"numeric":   TypeText,
-		"decimal":   TypeText,
+		"float":     TypeReal,
+		"numeric":   TypeDoublePrecision,
+		"decimal":   TypeDoublePrecision,
 	}
 
 	if fieldType, exists := typeMap[dbType]; exists {

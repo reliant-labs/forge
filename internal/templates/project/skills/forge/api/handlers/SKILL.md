@@ -285,6 +285,56 @@ Three things change when the marker is present:
 
 `forge lint --conventions` catches misplaced markers (`forgeconv-optional-dep-marker-position`) — the marker only takes effect when attached to a `Deps` struct field, so a typo on the struct or a function docstring fails loudly. `forge lint --wire-coverage` reports any non-optional unresolved Deps fields so they don't accumulate silently.
 
+## Extending Repository without breaking sibling fakes (role-interface pattern)
+
+`Repository` is the canonical name for a service's storage interface. The greenfield convention is "one Repository per service, extend as needed" — a Get<Entity>/Create<Entity>/List<Entity> method per RPC, all on the same interface. That works for a single agent owning the whole package.
+
+In a parallel-migration round it does *not* work. Adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes in `handlers/<svc>/handlers_test.go`, in-memory fakes in `e2e/`, the generated mock under `handlers/mocks/`). Agent A adds `GetModelPerformance`; agent B's fakes — or worse, an in-flight rebase carrying stale Repository methods — instantly fail to compile.
+
+**The recommended shape** when adding a new method to an existing Repository in a parallel-migration round is the **opt-in role interface**: declare a small, narrow interface in the file that consumes it, and have the handler type-assert `s.deps.Repo` to that interface at call time.
+
+```go
+// handlers/api/handlers.go
+
+// ModelPerformanceLister is the narrow read surface for GetModelPerformance.
+// It's declared alongside the consuming method so sibling fakes that don't
+// implement it can still satisfy Repository — adding a method here does
+// NOT break tests that build a *fakeRepo without it.
+type ModelPerformanceLister interface {
+    GetModelPerformance(ctx context.Context, opts ModelPerformanceOpts) ([]*db.ModelPerformance, error)
+}
+
+func (s *Service) GetModelPerformance(
+    ctx context.Context,
+    req *connect.Request[apiv1.GetModelPerformanceRequest],
+) (*connect.Response[apiv1.GetModelPerformanceResponse], error) {
+    lister, ok := s.deps.Repo.(ModelPerformanceLister)
+    if !ok {
+        return nil, connect.NewError(connect.CodeUnimplemented,
+            fmt.Errorf("api.GetModelPerformance: Repo does not implement ModelPerformanceLister"))
+    }
+    rows, err := lister.GetModelPerformance(ctx, ...)
+    ...
+}
+```
+
+Production `*ormRepo` implements both `Repository` and `ModelPerformanceLister`; the assertion is a no-op at runtime. Sibling fakes that haven't grown the new method satisfy the broader `Repository` interface and return `CodeUnimplemented` when the new RPC is called against them — the same outcome as a CRUD shape-mismatch stub.
+
+Once every consumer of the Repository fake adds the new method (or the migration round ends and a polish-round consolidates), promote the role interface back onto the main `Repository` interface: the consuming code stays unchanged, and the type assertion becomes a degenerate `Repository → Repository` that always succeeds.
+
+**When to use this pattern.**
+
+- Adding a method to a Repository that has 2+ fake implementations in sibling lanes.
+- Adding a method whose impl is in-flight in a parallel agent's package.
+- Standing up a new RPC whose storage shape isn't final (the role interface absorbs the churn while the impl evolves).
+
+**When NOT to use it.**
+
+- Greenfield work where you own both the Repository and every fake. The role-interface adds indirection for no benefit.
+- After the migration round ends. Consolidate the role back onto `Repository` so the type assertion goes away.
+
+See `forge lint --conventions` for the matching check that flags a role interface that was added but never promoted — once every consumer implements it the lint surfaces "ready to consolidate" so the indirection doesn't linger.
+
 ## When this skill is not enough
 
 - **Designing the service surface** behind the handler — see `service-layer` and `contracts`.

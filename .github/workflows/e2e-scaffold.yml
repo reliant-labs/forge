@@ -1,0 +1,144 @@
+# End-to-end smoke test for `forge new`. Scaffolds a service project from
+# the forge binary built at this commit, then runs generate/build/lint/test
+# against the generated tree. Catches scaffold-level regressions before
+# downstream migration/porting work depends on a broken baseline.
+name: E2E Scaffold
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-scaffold-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scaffold:
+    name: forge new smoke test
+    runs-on: ubuntu-latest
+    env:
+      # Set once so every step uses the same workspace path.
+      E2E_DIR: ${{ github.workspace }}/e2e-workspace
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+
+      - name: Put $HOME/go/bin on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Install forge from current checkout
+        run: |
+          echo "::group::install forge + contractlint"
+          if go install ./cmd/forge ./cmd/contractlint; then
+            echo "::endgroup::"
+            echo "forge: $(command -v forge)"
+            forge --version || true
+            echo "✅ install forge"
+          else
+            echo "::endgroup::"
+            echo "❌ install forge"
+            exit 1
+          fi
+
+      - name: forge tools install
+        run: |
+          if forge tools install; then
+            echo "✅ forge tools install"
+          else
+            echo "❌ forge tools install"
+            exit 1
+          fi
+
+      - name: Prepare clean workspace
+        run: |
+          rm -rf "$E2E_DIR"
+          mkdir -p "$E2E_DIR"
+          echo "✅ workspace ready at $E2E_DIR"
+
+      - name: forge new e2e-test
+        working-directory: ${{ env.E2E_DIR }}
+        run: |
+          if forge new e2e-test \
+              --kind service \
+              --mod github.com/e2e/e2e-test \
+              --service api; then
+            echo "✅ forge new"
+          else
+            echo "❌ forge new"
+            exit 1
+          fi
+
+      - name: forge generate
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          if forge generate; then
+            echo "✅ forge generate"
+          else
+            echo "❌ forge generate"
+            exit 1
+          fi
+
+      - name: go mod tidy
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          if go mod tidy; then
+            echo "✅ go mod tidy"
+          else
+            echo "❌ go mod tidy"
+            exit 1
+          fi
+
+      - name: go build
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          if go build ./...; then
+            echo "✅ go build"
+          else
+            echo "❌ go build"
+            exit 1
+          fi
+
+      - name: forge lint
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          if forge lint; then
+            echo "✅ forge lint"
+          else
+            echo "❌ forge lint"
+            exit 1
+          fi
+
+      - name: go test
+        working-directory: ${{ env.E2E_DIR }}/e2e-test
+        run: |
+          if go test ./...; then
+            echo "✅ go test"
+          else
+            echo "❌ go test"
+            exit 1
+          fi
+
+      - name: Upload generated tree on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-scaffold-tree
+          path: ${{ env.E2E_DIR }}
+          # Cap retention — this is debug bait, not a release artifact.
+          retention-days: 7
+          if-no-files-found: warn

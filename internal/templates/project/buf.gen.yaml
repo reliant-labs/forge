@@ -9,6 +9,11 @@ version: v2
 # name with the BSR plugin path, e.g.
 #   - remote: buf.build/protocolbuffers/go
 #   - remote: buf.build/connectrpc/go
+#
+# OpenAPI specs: set `api.openapi: true` in forge.yaml. Forge will
+# invoke protoc-gen-connect-openapi via a synthesized template; you
+# do NOT need to add it here. Install with:
+#   go install github.com/sudorandom/protoc-gen-connect-openapi@latest
 plugins:
   - local: protoc-gen-go
     out: gen

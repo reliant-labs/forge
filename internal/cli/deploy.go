@@ -18,9 +18,10 @@ import (
 
 func newDeployCmd() *cobra.Command {
 	var (
-		imageTag  string
-		dryRun    bool
-		namespace string
+		imageTag      string
+		dryRun        bool
+		namespace     string
+		contextOverride string
 	)
 
 	cmd := &cobra.Command{
@@ -33,25 +34,32 @@ The environment must correspond to a directory under deploy/kcl/<env>/.
 For dev environments, the command ensures a k3d cluster exists and pushes images
 to the local registry at localhost:5050.
 
+Safety: before applying, forge verifies the current kubectl context matches
+the environment's expected cluster (configured under environments[].cluster
+in forge.yaml; defaults to k3d-<project> for dev). Use --context to override
+when a single CI deploy-bot context legitimately targets multiple environments.
+
 Examples:
-  forge deploy dev                       # Deploy to dev (local k3d)
-  forge deploy staging --image-tag v1.2  # Deploy to staging with specific tag
-  forge deploy prod --dry-run            # Preview production manifests
-  forge deploy dev --namespace custom-ns # Override namespace`,
+  forge deploy dev                          # Deploy to dev (local k3d)
+  forge deploy staging --image-tag v1.2     # Deploy to staging with specific tag
+  forge deploy prod --dry-run               # Preview production manifests
+  forge deploy dev --namespace custom-ns    # Override namespace
+  forge deploy prod --context deploy-bot    # Override the expected kubectl context`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDeploy(args[0], imageTag, dryRun, namespace)
+			return runDeploy(args[0], imageTag, dryRun, namespace, contextOverride)
 		},
 	}
 
 	cmd.Flags().StringVar(&imageTag, "image-tag", "", "Image tag (default: git short SHA)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
+	cmd.Flags().StringVar(&contextOverride, "context", "", "Override expected kubectl context (skips the env-cluster guard)")
 
 	return cmd
 }
 
-func runDeploy(envName, imageTag string, dryRun bool, namespace string) error {
+func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride string) error {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -99,6 +107,16 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace string) error {
 	fmt.Printf("  Namespace:   %s\n", namespace)
 	fmt.Printf("  Dry run:     %v\n", dryRun)
 	fmt.Println()
+
+	// kubectl-context guard: verify the current context matches the
+	// env's expected cluster before doing anything destructive. Skipped
+	// for dry-run (no apply) and when --context is passed (CI scenarios
+	// where one deploy-bot context legitimately targets multiple envs).
+	if !dryRun {
+		if err := verifyKubectlContext(cfg, envName, contextOverride); err != nil {
+			return err
+		}
+	}
 
 	start := time.Now()
 
@@ -428,4 +446,69 @@ func listDeployments(namespace string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// expectedClusterForEnv returns the expected kubectl context name for
+// an environment. Resolution priority:
+//  1. environments[<env>].cluster from forge.yaml
+//  2. For dev: k3d-<project-name>
+//  3. Empty string — no expectation declared (skip the guard)
+func expectedClusterForEnv(cfg *config.ProjectConfig, envName string) string {
+	if env := findEnvironment(cfg, envName); env != nil && env.Cluster != "" {
+		return env.Cluster
+	}
+	if envName == "dev" {
+		// Dev's default is the k3d cluster forge deploy dev creates.
+		return "k3d-" + cfg.Name
+	}
+	return ""
+}
+
+// verifyKubectlContext refuses the deploy when the current kubectl
+// context doesn't match the env's expected cluster. An empty expected
+// value (no declaration in forge.yaml for non-dev envs) skips the
+// guard — projects opt in by declaring environments[<env>].cluster.
+// An explicit --context override also skips the guard, but emits a
+// notice so the override is visible in the deploy log.
+func verifyKubectlContext(cfg *config.ProjectConfig, envName, override string) error {
+	if override != "" {
+		fmt.Printf("kubectl context override: %s (env-cluster guard skipped)\n", override)
+		// Switch the context so the apply lands in the right place.
+		switchCmd := exec.Command("kubectl", "config", "use-context", override)
+		switchCmd.Stdout = os.Stdout
+		switchCmd.Stderr = os.Stderr
+		if err := switchCmd.Run(); err != nil {
+			return fmt.Errorf("kubectl config use-context %s: %w", override, err)
+		}
+		return nil
+	}
+
+	expected := expectedClusterForEnv(cfg, envName)
+	if expected == "" {
+		// No expectation declared for this env. Print a one-liner
+		// reminder so users know they can lock it down, but don't
+		// block the deploy (backwards-compatible default).
+		fmt.Printf("Note: no environments[%s].cluster declared in forge.yaml — kubectl-context guard skipped.\n", envName)
+		return nil
+	}
+
+	currentCmd := exec.Command("kubectl", "config", "current-context")
+	out, err := currentCmd.Output()
+	if err != nil {
+		return fmt.Errorf("kubectl config current-context: %w (is kubectl installed and configured?)", err)
+	}
+	current := strings.TrimSpace(string(out))
+	if current != expected {
+		return fmt.Errorf(
+			"kubectl context mismatch for env %q:\n"+
+				"  expected: %s\n"+
+				"  current:  %s\n"+
+				"\n"+
+				"refusing to deploy. Fix with one of:\n"+
+				"  kubectl config use-context %s\n"+
+				"  forge deploy %s --context %s   (CI/legitimate override)",
+			envName, expected, current, expected, envName, current)
+	}
+	fmt.Printf("kubectl context: %s (matches env %s)\n", current, envName)
+	return nil
 }

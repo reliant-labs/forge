@@ -47,8 +47,28 @@ async function* toAsyncIterable(value: unknown): AsyncIterable<unknown> {
   // Single value
   yield resolved;
 }
+{{- /*
+  Response-schema imports are pre-grouped by source module
+  (.SchemaImportGroups) so two entities whose schemas live in the same
+  `@/gen/<path>` module merge into ONE import statement. The per-entity
+  template loop used to emit one `import { ... } from "@/gen/..."` per
+  entity, which tripped `import/no-duplicates` and `import/order` ESLint
+  rules whenever 2+ entities pointed at the same module (the common case
+  for "two RPCs on one APIService"). Per-RPC schema gating (HasList →
+  ListResponseType, HasGet → GetResponseType, HasCreate / HasUpdate →
+  CreateResponseType — Update reuses Create's response, Delete returns
+  empty) is handled in BuildMockTransportSchemaImportGroups so the
+  template stays a simple loop.
+
+  Per-entity *mock fixture* imports stay 1:1 with .Entities — each entity
+  gets its own `@/mocks/<slug>` module, so there's nothing to dedupe.
+*/}}
+{{- range .SchemaImportGroups }}
+import {
+  {{- range $i, $sym := .Symbols }}{{ if $i }},{{ end }} {{ $sym }}{{ end }},
+} from "@/gen/{{ .ImportPath }}";
+{{- end }}
 {{- range .Entities }}
-import { {{ .ListResponseType }}Schema, {{ .GetResponseType }}Schema, {{ .CreateResponseType }}Schema } from "@/gen/{{ .ImportPath }}";
 import * as {{ .EntitySlug }}Mocks from "@/mocks/{{ .EntitySlug }}";
 {{- end }}
 
@@ -98,7 +118,14 @@ function makeUnaryResponse<T>(
  */
 export function createMockTransport(fallback?: Transport): Transport {
   const passthrough = active.passthrough === true && fallback != null;
-  return {
+  // Bind the object literal to a Transport-typed variable rather than
+  // casting the literal at the return site. A trailing assertion cast does
+  // not propagate Connect's Transport signature backwards into the literal's
+  // method bodies, so under `strict` tsc every callback parameter on
+  // `unary` / `stream` errors with "Parameter 'X' implicitly has an 'any'
+  // type" (TS7006). Binding the variable up front gives tsc the parameter
+  // types to infer against.
+  const transport: Transport = {
     // Connect v2's Transport.unary signature is
     //   (method, signal, timeoutMs, header, input, contextValues)
     // — method first, no separate service arg. `method.parent.typeName`
@@ -189,7 +216,18 @@ export function createMockTransport(fallback?: Transport): Transport {
     // If no handler matches, reject with Unimplemented — base-fixture
     // streaming is intentionally not generated (no canonical "list of N
     // messages" shape for an arbitrary streaming RPC).
-    async stream(method, signal, timeoutMs, header, input, contextValues): Promise<StreamResponse<never, never>> {
+    // No explicit return-type annotation: the outer
+    //   `const transport: Transport = { ... }`
+    // binding lets tsc infer the per-callback signature from Connect's
+    // generic Transport.stream<I, O>. Annotating this method as
+    // `Promise<StreamResponse<never, never>>` makes the passthrough
+    // branch ill-typed because `fallback!.stream(...)` returns
+    // `Promise<StreamResponse<I, O>>`, which is not assignable to the
+    // narrower `never, never` instantiation (TS2322). The synthetic
+    // return at the bottom of the handler-matched branch carries the
+    // necessary `as never` casts to satisfy Transport's expected output
+    // shape per-call.
+    async stream(method, signal, timeoutMs, header, input, contextValues) {
       const key = `${method.parent.typeName}/${method.name}`;
       const handler = active.handlers[key];
       if (!handler) {
@@ -226,7 +264,8 @@ export function createMockTransport(fallback?: Transport): Transport {
         trailer: new Headers(),
       };
     },
-  } as unknown as Transport;
+  };
+  return transport;
 }
 
 // Re-export the active scenario so tests + dev tools can introspect it.

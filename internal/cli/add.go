@@ -542,8 +542,18 @@ func runAddWorker(name, kind, schedule string) error {
 	err = runGeneratePipeline(root, false, false)
 	generateMu.Unlock()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: generation pipeline failed: %v\n", err)
-		// Non-fatal: the worker files were created successfully
+		// Non-fatal: the worker files were created successfully, but the
+		// pipeline failure usually means the project doesn't compile (a
+		// sibling-package issue or a stale generated file). Print a
+		// distinct partial-success line so a user skimming the output
+		// doesn't see the unconditional ✅ below and assume the build is
+		// healthy. Friction reported by the kalshi-trader migration round:
+		// the prior code printed the green check directly after the
+		// "warning: generation pipeline failed" line, hiding the failure
+		// in the visual noise.
+		fmt.Fprintf(os.Stderr, "\nwarning: generation pipeline failed: %v\n", err)
+		fmt.Printf("\n⚠️  Worker '%s' files written, but `forge generate` failed — fix the build before running it again.\n", name)
+		return nil
 	}
 
 	fmt.Printf("\n✅ Worker '%s' added successfully!\n", name)

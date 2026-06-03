@@ -108,16 +108,19 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 // `./<bin> server`. The empty-case fix must not regress that path.
 func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
+		Name, Package, FieldName, Alias    string
+		Fallible, HasWebhooks              bool
+		ConnectPkg, ProtoServiceName       string
 	}
 	data := struct {
-		Module       string
-		Services     []svc
-		Packages     []struct{}
-		Workers      []struct{}
-		Operators    []struct{}
-		ConfigFields map[string]bool
+		Module         string
+		Services       []svc
+		Packages       []struct{}
+		Workers        []struct{}
+		Operators      []struct{}
+		ConfigFields   map[string]bool
+		RESTEnabled    bool
+		ConnectImports []string
 	}{
 		Module: "example.com/myproject",
 		Services: []svc{

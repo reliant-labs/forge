@@ -125,6 +125,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newDevCmd())
 	rootCmd.AddCommand(newAPICmd())
+	rootCmd.AddCommand(newUpCmd())
 
 	return rootCmd
 }

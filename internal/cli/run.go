@@ -494,8 +494,9 @@ func stringifyEnvValue(v any) string {
 
 // runHostService executes a single service as a host process — the
 // inner loop for services declared `deploy = "host"` in the env's
-// rendered KCL. Mechanically equivalent to `go run ./cmd server
-// <service>` with .env.<env> loaded onto the child environment.
+// rendered KCL. When KCL declares deploy.Host.Runner, dispatch picks
+// it up (go-run / air / binary / delve); otherwise falls back to
+// `go run ./cmd server <service>` for backwards compat.
 //
 // Foreground mode streams stdout/stderr with a `[<service>]` prefix and
 // blocks until Ctrl-C. Background mode (background=true) detaches the
@@ -532,6 +533,16 @@ func runHostService(ctx context.Context, name, env, envFile string, background b
 			name, strings.Join(declaredServiceNames(cfg), ", "))
 	}
 
+	// Look up the KCL HostDeploy block for this service. When the env's
+	// KCL declares it, the Runner / AirConfig / DelvePort / EnvFile
+	// fields drive dispatch; otherwise nil falls back to the legacy
+	// `go run ./cmd server <svc>` shape for projects that haven't
+	// migrated to the deploy module yet.
+	host := lookupKCLHostDeploy(ctx, env, name)
+
+	if envFile == "" && host != nil {
+		envFile = host.EnvFile
+	}
 	if envFile == "" {
 		envFile = ".env." + env
 	}
@@ -542,8 +553,7 @@ func runHostService(ctx context.Context, name, env, envFile string, background b
 		fmt.Printf("[run] %s: warning: read %s: %v\n", name, envFile, loadErr)
 	}
 
-	args := []string{"run", "./cmd", "server", name}
-	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd := buildRunHostCmd(ctx, name, host)
 	cmd.Env = mergeEnv(extraEnv, os.Environ())
 
 	// Pid file path is shared by foreground (cleanup on exit) and
@@ -671,6 +681,76 @@ func hostRunPIDPath(name string) (string, error) {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
 	return filepath.Join(home, ".cache", "forge", "run", name+".pid"), nil
+}
+
+// lookupKCLHostDeploy reads the env's rendered KCL and returns the
+// HostDeploy block for the named service. Returns nil when the KCL
+// render fails (e.g. agent A's module not installed yet) or the
+// service isn't declared host-mode in this env. Errors from the KCL
+// render are silently dropped — the caller falls back to the legacy
+// go-run shape.
+func lookupKCLHostDeploy(ctx context.Context, env, svcName string) *HostDeploy {
+	if env == "" {
+		return nil
+	}
+	projectDir := projectDirForKCL()
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return nil
+	}
+	svc := entities.FindService(svcName)
+	if svc == nil || svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+		return nil
+	}
+	return svc.Deploy.Host
+}
+
+// defaultDelvePort is the dlv --listen=:<port> default when KCL doesn't
+// pin one explicitly. Matches the existing `forge run --debug` shape.
+const defaultDelvePort = 2345
+
+// defaultAirConfig is the `air -c <path>` default when KCL doesn't pin
+// one explicitly. Mirrors the `air` tool's own default — `.air.toml` at
+// the project root.
+const defaultAirConfig = ".air.toml"
+
+// buildRunHostCmd composes the exec.Cmd for `forge run <svc>` based on
+// the KCL-declared runner. A nil host or empty runner falls through to
+// the legacy `go run ./cmd server <svc>` shape so projects that haven't
+// migrated to the deploy module yet keep working unchanged.
+//
+// Per-runner notes:
+//   - air:    uses HostDeploy.AirConfig (default ".air.toml").
+//   - binary: assumes `./bin/<svc>` exists — `forge build` writes there.
+//   - delve:  HostDeploy.DelvePort (default 2345); --continue keeps the
+//             server up while a remote IDE attaches.
+func buildRunHostCmd(ctx context.Context, name string, host *HostDeploy) *exec.Cmd {
+	runner := ""
+	if host != nil {
+		runner = strings.TrimSpace(host.Runner)
+	}
+	switch runner {
+	case "air":
+		cfg := defaultAirConfig
+		if host != nil && host.AirConfig != "" {
+			cfg = host.AirConfig
+		}
+		return exec.CommandContext(ctx, "air", "-c", cfg)
+	case "binary":
+		return exec.CommandContext(ctx, "./bin/"+name)
+	case "delve":
+		port := defaultDelvePort
+		if host != nil && host.DelvePort > 0 {
+			port = host.DelvePort
+		}
+		return exec.CommandContext(ctx, "dlv", "exec", "--headless",
+			fmt.Sprintf("--listen=:%d", port),
+			"--api-version=2", "--accept-multiclient",
+			"--continue", "./bin/"+name)
+	default:
+		// "go-run" or "" — the legacy shape.
+		return exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
+	}
 }
 
 // declaredServiceNames returns the names of every service in forge.yaml,

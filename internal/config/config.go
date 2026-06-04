@@ -94,7 +94,11 @@ type ProjectConfig struct {
 	Docs         DocsConfig          `yaml:"docs"`
 	Features     FeaturesConfig      `yaml:"features,omitempty"`
 	Stack        StackConfig         `yaml:"stack,omitempty"`
-	API          APIConfig           `yaml:"api,omitempty"`
+	// API toggles project-level API protocol skins layered on top of the
+	// Connect mux. Default zero-value leaves both REST and OpenAPI off so
+	// existing projects regenerate identically. See [APIConfig] for the
+	// per-field semantics.
+	API APIConfig `yaml:"api,omitempty"`
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
 	// Binaries declares non-server long-running processes scaffolded
@@ -272,6 +276,23 @@ type FrontendProjectConfig struct {
 // requiring at least 2 frontends before enabling).
 func (c ProjectConfig) IsFrontendWorkspacesEnabled() bool {
 	return c.Frontend.Workspaces
+}
+
+// HasReactNativeFrontend reports whether any frontend in the project is
+// a React Native (Expo) app. Used to gate features that only apply to
+// mobile — e.g. the `@<scope>/ui-native` workspace package.
+//
+// Returns true for frontends declared with `type: react-native` (or the
+// historic `type: react_native` underscore form the validator also
+// accepts).
+func (c ProjectConfig) HasReactNativeFrontend() bool {
+	for _, fe := range c.Frontends {
+		t := strings.ToLower(strings.TrimSpace(fe.Type))
+		if t == "react-native" || t == "react_native" {
+			return true
+		}
+	}
+	return false
 }
 
 // EnvironmentConfig represents a deployment environment.
@@ -767,6 +788,25 @@ type JWTConfig struct {
 	SigningMethod string `yaml:"signing_method,omitempty"` // HS256, RS256, ES256
 }
 
+// APIConfig holds project-level API protocol-skin toggles. Both fields
+// default to false, so projects that omit the `api:` block continue to
+// expose only the canonical Connect/gRPC handlers without any runtime
+// transcoding or generated spec files.
+//
+// REST=true installs connectrpc.com/vanguard as middleware in front of
+// the Connect mux. Vanguard transcodes REST↔Connect at runtime based on
+// `google.api.http` annotations on RPCs; the CRUD proto scaffolder also
+// emits standard REST-shaped annotations on Get/List/Create/Update/Delete
+// RPCs so the default CRUD surface gains REST URLs without hand-editing.
+//
+// OpenAPI=true is owned by a sibling agent and emits an OpenAPI spec
+// alongside the proto compile step. The two fields compose: with both
+// on, the generated spec reflects the REST URLs.
+type APIConfig struct {
+	REST    bool `yaml:"rest,omitempty"`
+	OpenAPI bool `yaml:"openapi,omitempty"`
+}
+
 // APIKeyConfig holds API key authentication settings.
 type APIKeyConfig struct {
 	Header string `yaml:"header,omitempty"` // default: "X-API-Key"
@@ -827,29 +867,3 @@ func (d DocsConfig) EffectiveFormat() string {
 	return d.Format
 }
 
-// APIConfig declares opt-in API-surface artifacts that ride alongside
-// the canonical Connect RPC handlers generated from proto/services. The
-// proto file is the single source of truth for every shape declared
-// here — each field is just a projection of that source rendered by a
-// different plugin in the buf pipeline.
-//
-// Defaults are intentionally all false so existing projects regenerate
-// identically until a user opts in.
-type APIConfig struct {
-	// OpenAPI, when true, runs `protoc-gen-connect-openapi` during
-	// `forge generate` and emits one OpenAPI 3 spec per service at
-	// `openapi/<service>.yaml` from the project root. The user must
-	// have `protoc-gen-connect-openapi` on PATH (install with
-	// `go install github.com/sudorandom/protoc-gen-connect-openapi@latest`).
-	// Consumers: openapi-generator, Postman/Insomnia import,
-	// ChatGPT function-calling, ReadMe.io, Stainless, etc.
-	OpenAPI bool `yaml:"openapi,omitempty"`
-
-	// REST is declared here as the canonical landing spot for the
-	// Vanguard-backed REST/JSON transcoding work. It is intentionally
-	// NOT wired up by this package — another agent owns that surface.
-	// Reserving the field here keeps forge.yaml schema-stable so users
-	// who flip it on early get a no-op rather than an "unknown key"
-	// validation error.
-	REST bool `yaml:"rest,omitempty"`
-}

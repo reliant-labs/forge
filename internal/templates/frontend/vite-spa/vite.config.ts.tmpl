@@ -1,0 +1,28 @@
+import path from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+
+// Vite config for the SPA scaffold. Tailwind v4 plugin keeps the CSS
+// pipeline first-party (no PostCSS config needed). The path aliases mirror
+// the tsconfig "paths" entries so editor and runtime resolution agree.
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+{{- if .Workspaces}}
+      // In workspaces mode the shared component library lives at
+      // packages/ui-web/. Redirect `@/components/ui/*` so existing imports
+      // keep working without rewriting every page that consumes them.
+      // Scoped to /ui/ so non-ui paths (e.g. the auth-ui pack's
+      // `@/components/auth/...`) keep resolving against the local src tree.
+      "@/components/ui": path.resolve(__dirname, "../../packages/ui-web/src/components/ui"),
+{{- end}}
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  server: {
+    port: 5173,
+    host: true,
+  },
+});

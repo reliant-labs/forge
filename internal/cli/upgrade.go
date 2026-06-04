@@ -310,7 +310,7 @@ type migrationSkillRef struct {
 // When from is a sentinel ("0.0.0", "", "dev") we surface every
 // migration skill — legacy projects benefit from seeing the full
 // upgrade story, not nothing.
-func relevantMigrationSkills(from, to string) []migrationSkillRef {
+func relevantMigrationSkills(from, _ string) []migrationSkillRef {
 	skills, err := listSkills()
 	if err != nil {
 		return nil

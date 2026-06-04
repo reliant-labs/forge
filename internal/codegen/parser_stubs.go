@@ -175,3 +175,51 @@ func projectBinaryShared(projectDir string) bool {
 	}
 	return false
 }
+
+// projectAPIRESTEnabled best-effort reads forge.yaml and returns true
+// when the project declares `api.rest: true`. Used by the bootstrap
+// generator to wrap the Connect mux with a vanguard REST transcoder and
+// by the CRUD-gen pass to emit `google.api.http` annotations on standard
+// CRUD RPCs. Empty file / parse error / missing field all fall back to
+// false (no REST), so this is safe to call from any project shape
+// including the initial scaffold pass before forge.yaml grows an `api:`
+// block.
+//
+// The scan is intentionally line-based to avoid an import cycle through
+// the config package (mirrors projectBinaryShared). We require `rest:`
+// to appear within the `api:` block — a top-level `rest:` key elsewhere
+// is ignored.
+func projectAPIRESTEnabled(projectDir string) bool {
+	path := filepath.Join(projectDir, "forge.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	inAPI := false
+	for _, line := range strings.Split(string(data), "\n") {
+		// A top-level key (no leading whitespace) closes any prior block.
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "api:") {
+				inAPI = true
+				continue
+			}
+			inAPI = false
+			continue
+		}
+		if !inAPI {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "rest:") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "rest:"))
+		if idx := strings.Index(val, "#"); idx >= 0 {
+			val = strings.TrimSpace(val[:idx])
+		}
+		val = strings.Trim(val, `"'`)
+		return strings.EqualFold(val, "true")
+	}
+	return false
+}

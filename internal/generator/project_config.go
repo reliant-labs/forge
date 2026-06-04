@@ -226,6 +226,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	// The `frontend:` block is commented in-line — opt-in pnpm-workspaces
 	// is off by default. See `forge skill load frontend-workspaces` for
 	// when (and why) to flip it on.
+	//
+	// The `api:` example below is the documented opt-in path for vanguard
+	// REST transcoding (and the OpenAPI-spec sibling toggle). Both default
+	// to off; uncomment + flip to true to install the relevant skin. See
+	// .reliant/SKILL.md → forge/api-rest for the runtime story.
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
 		"# `database:` is declared here even if you haven't added any\n" +
 		"# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it\n" +
@@ -235,7 +240,12 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		"# packages/hooks across all frontends) by uncommenting:\n" +
 		"#   frontend:\n" +
 		"#     workspaces: true\n" +
-		"# Recommended once you have 2+ frontends (web + mobile).\n\n")
+		"# Recommended once you have 2+ frontends (web + mobile).\n" +
+		"#\n" +
+		"# To expose REST URLs on your Connect handlers (vanguard transcoding):\n" +
+		"# api:\n" +
+		"#   rest: true     # vanguard REST↔Connect transcoder; CRUD RPCs get default google.api.http URLs\n" +
+		"#   # openapi: true  # emit an OpenAPI spec alongside the proto compile (sibling toggle)\n\n")
 	data = append(header, data...)
 
 	// Append a commented-out example of the api: block. It's omitempty
@@ -351,7 +361,7 @@ func boolPtr(b bool) *bool { return &b }
 // top-level key on the project config at configPath, preserving any keys,
 // comments, and ordering the user added that are not part of the Go struct.
 // If the key does not exist, it is created.
-func appendToProjectConfigSequence(configPath, key string, entry interface{}) error {
+func appendToProjectConfigSequence(configPath, key string, entry any) error {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)

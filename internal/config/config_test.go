@@ -224,6 +224,76 @@ func TestServiceConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
 	}
 }
 
+func TestServiceConfig_DevTargetYAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name         string
+		yamlStr      string
+		wantTarget   string
+		wantHostMode bool
+	}{
+		{
+			"explicit host",
+			"name: admin-server\ntype: go_service\npath: handlers/admin-server\ndev_target: host\n",
+			"host",
+			true,
+		},
+		{
+			"explicit cluster",
+			"name: admin-server\ntype: go_service\npath: handlers/admin-server\ndev_target: cluster\n",
+			"cluster",
+			false,
+		},
+		{
+			"omitted (legacy)",
+			"name: admin-server\ntype: go_service\npath: handlers/admin-server\n",
+			"",
+			false,
+		},
+		{
+			"upper-case host",
+			"name: x\ntype: go_service\npath: handlers/x\ndev_target: HOST\n",
+			"HOST",
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg ServiceConfig
+			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.DevTarget != tt.wantTarget {
+				t.Errorf("DevTarget = %q, want %q", cfg.DevTarget, tt.wantTarget)
+			}
+			if got := cfg.IsHostDevTarget(); got != tt.wantHostMode {
+				t.Errorf("IsHostDevTarget() = %v, want %v", got, tt.wantHostMode)
+			}
+			// EffectiveDevTarget normalises unknown / missing values to "cluster".
+			eff := cfg.EffectiveDevTarget()
+			if tt.wantHostMode && eff != ServiceDevTargetHost {
+				t.Errorf("EffectiveDevTarget() = %q, want host", eff)
+			}
+			if !tt.wantHostMode && eff != ServiceDevTargetCluster {
+				t.Errorf("EffectiveDevTarget() = %q, want cluster", eff)
+			}
+
+			// Round-trip.
+			out, err := yaml.Marshal(&cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var cfg2 ServiceConfig
+			if err := yaml.Unmarshal(out, &cfg2); err != nil {
+				t.Fatalf("unmarshal round-trip: %v", err)
+			}
+			if cfg2.IsHostDevTarget() != tt.wantHostMode {
+				t.Errorf("round-trip IsHostDevTarget() = %v, want %v", cfg2.IsHostDevTarget(), tt.wantHostMode)
+			}
+		})
+	}
+}
+
 func TestFrontendConfig_KindYAMLRoundTrip(t *testing.T) {
 	tests := []struct {
 		name     string

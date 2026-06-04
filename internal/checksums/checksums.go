@@ -45,6 +45,39 @@ func AddSkipWrite(relPath string) { SkipWrite[relPath] = true }
 // or long-lived processes.
 func ResetSkipWrite() { SkipWrite = map[string]bool{} }
 
+// Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
+// it has detected a hand-edited Tier-2 file. Returning true clobbers the
+// user's edits with the freshly rendered content; returning false (or
+// leaving the hook nil) preserves them — the historic safe default that
+// Tier-2's "scaffold once, never overwrite" contract promises.
+//
+// `forge generate --reset-tier2` installs a hook here that prompts the
+// user (y/N) per file. `--reset-tier2 --yes` installs a hook that
+// returns true without prompting.
+//
+// Plumbed as a package-level hook rather than a parameter so we don't
+// have to churn the dozen call sites of WriteGeneratedFileTier2 to add
+// a new positional flag for the small fraction of runs that actually
+// reset Tier-2.
+var Tier2OverwriteFn func(relPath string) bool
+
+// Tier2PreservedCount counts how many Tier-2 writes WriteGeneratedFileTier2
+// skipped due to a modified-file detection during the current pipeline
+// run. The pipeline reads this at exit to print the
+//
+//	"--force preserved N hand-edited Tier-2 file(s); pass --reset-tier2 ..."
+//
+// summary line. Reset between runs alongside SkipWrite + Tier2OverwriteFn.
+var Tier2PreservedCount int
+
+// ResetTier2State clears the Tier-2 hook + preserved counter. Called at
+// the start of each pipeline run so a previous --reset-tier2 hook from
+// a long-lived test process doesn't leak.
+func ResetTier2State() {
+	Tier2OverwriteFn = nil
+	Tier2PreservedCount = 0
+}
+
 // FileChecksums tracks sha256 digests of forge-generated files.
 //
 // Wire format is JSON. Two shapes are supported on disk:
@@ -366,15 +399,52 @@ func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileCheck
 // file. The stomp guard ignores Tier-2 entries — forge never auto-
 // regenerates these, so a user edit is the expected steady state, not
 // drift. Use this for "// forge:scaffold one-shot" templates.
+//
+// Tier-2 ignores `force=true`: it is for Tier-1 "clobber my hand-edits"
+// semantics, and applying that to Tier-2 would break the scaffold-once
+// contract (`forge generate --force` would silently nuke a hand-written
+// service.go). To explicitly opt-in to Tier-2 overwrite, callers can
+// install Tier2OverwriteFn (the cobra RunE does this when the user
+// passes `--reset-tier2`).
 func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
-	wrote, err := WriteGeneratedFile(root, relPath, content, cs, force)
-	if err != nil || !wrote || cs == nil {
-		return wrote, err
+	_ = force // intentionally ignored — see doc above.
+
+	if SkipWrite[relPath] {
+		return false, nil
 	}
-	entry := cs.Files[relPath]
-	entry.Tier = 2
-	cs.Files[relPath] = entry
-	return wrote, nil
+	if cs != nil {
+		if entry, ok := cs.Files[relPath]; ok && entry.Forked {
+			return false, nil
+		}
+	}
+
+	// Tier-2 modification check is `--reset-tier2`-gated, not force-gated.
+	modified := cs != nil && cs.IsFileModified(root, relPath)
+	if modified {
+		overwrite := false
+		if Tier2OverwriteFn != nil {
+			overwrite = Tier2OverwriteFn(relPath)
+		}
+		if !overwrite {
+			Tier2PreservedCount++
+			return false, nil
+		}
+	}
+
+	fullPath := filepath.Join(root, relPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		return false, err
+	}
+	if cs != nil {
+		cs.RecordFile(relPath, content)
+		entry := cs.Files[relPath]
+		entry.Tier = 2
+		cs.Files[relPath] = entry
+	}
+	return true, nil
 }
 
 // Tier1DriftEntry reports a single Tier-1 file whose on-disk content

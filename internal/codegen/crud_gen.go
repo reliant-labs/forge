@@ -252,8 +252,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 // field). The handlers_crud_gen.go.tmpl template renders a tagged
 // CodeUnimplemented stub in that branch so the generated file still
 // compiles against bespoke proto shapes (Limit/enum filters, string Ticker
-// keys, repeated-message responses) — see
-// crud-body-generator-shape-mismatch in FORGE_BACKLOG.
+// keys, repeated-message responses).
 //
 // The rules deliberately stay conservative — they only fail when we can
 // see message fields and prove they don't fit. Anything ambiguous (no
@@ -370,8 +369,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		// CodeUnimplemented stub instead of the body. This keeps
 		// handlers_crud_gen.go compiling against bespoke shapes
 		// (Limit/enum filters, string Ticker keys, repeated-message
-		// responses) — see crud-body-generator-shape-mismatch in
-		// FORGE_BACKLOG.
+		// responses).
 		shapeOK, shapeReason := validateCRUDShape(svc, cm)
 
 		// Detect pagination for list operations: check if the input type
@@ -720,8 +718,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		// handler or a tagged CodeUnimplemented stub; the test scaffold
 		// has to mirror that decision or it emits per-RPC test rows that
 		// dereference fields the request type doesn't have (e.g.
-		// `Id: 1` on a GetMarketRequest keyed on `string ticker`). See
-		// crud-test-scaffold-shape-mismatch in FORGE_BACKLOG.
+		// `Id: 1` on a GetMarketRequest keyed on `string ticker`).
 		shapeOK, shapeReason := validateCRUDShape(svc, cm)
 
 		hasPagination := false

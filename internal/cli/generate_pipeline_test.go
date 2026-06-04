@@ -43,6 +43,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"announce project",
 		"pre-codegen contract check",
 		"detect proto directories",
+		"ensure gen/go.mod",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
 		"OpenAPI specs (protoc-gen-connect-openapi)",
@@ -198,6 +199,20 @@ func TestGateValidateNotSkipped(t *testing.T) {
 	off := &pipelineContext{SkipValidate: true}
 	if gateValidateNotSkipped(off) {
 		t.Error("gateValidateNotSkipped(SkipValidate=true) = true, want false (--skip-validate honored)")
+	}
+}
+
+// TestGatePreChecksNotSkipped mirrors TestGateValidateNotSkipped for
+// the --skip-pre-checks counterpart. Default is OFF (the gate is ON,
+// the check runs) until the user passes --skip-pre-checks.
+func TestGatePreChecksNotSkipped(t *testing.T) {
+	on := &pipelineContext{SkipPreChecks: false}
+	if !gatePreChecksNotSkipped(on) {
+		t.Error("gatePreChecksNotSkipped(SkipPreChecks=false) = false, want true (default-on)")
+	}
+	off := &pipelineContext{SkipPreChecks: true}
+	if gatePreChecksNotSkipped(off) {
+		t.Error("gatePreChecksNotSkipped(SkipPreChecks=true) = true, want false (--skip-pre-checks honored)")
 	}
 }
 

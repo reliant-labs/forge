@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -38,6 +39,23 @@ type buildOptions struct {
 	// <registry>/<name>:<tag> and pushes them after build. Implies
 	// --docker so users don't have to pass both flags.
 	pushRegistry string
+	// targetArch overrides the GOARCH used for the Go binary build
+	// AND the docker buildx --platform when --docker / --push is set.
+	// Empty means "use host arch for plain go build; use forge.yaml
+	// deploy.target_arch (default amd64) for docker builds". See
+	// resolveBuildArch.
+	targetArch string
+	// env, when set, scopes the build to a specific deploy environment.
+	// Today its only effect is the dev-mode host-target filter: when
+	// env=="dev", services with `dev_target: host` are EXCLUDED from
+	// the build summary (since they run as host processes in the dev
+	// loop and don't belong in the dev image's runtime service set).
+	// The Go binary itself still compiles every service — the host/
+	// cluster split is a runtime placement decision, not a code one.
+	// Empty (the default) means "build everything", preserving the
+	// pre-dev_target behaviour so CI builds for staging/prod aren't
+	// affected.
+	env string
 }
 
 func newBuildCmd() *cobra.Command {
@@ -84,8 +102,43 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().StringVar(&opts.pushRegistry, "push", "", "Push docker images to this registry after build (implies --docker)")
+	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
+	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set to dev, services with dev_target: host are excluded from the dev-image service set (informational; the Go binary still includes their code).")
 
 	return cmd
+}
+
+// resolveBuildArch chooses the GOARCH for `go build`. The arg-shaped
+// signature decouples the three knobs that compose the answer:
+//
+//   - cfgArch: forge.yaml deploy.target_arch (project-level pin)
+//   - flagArch: --target-arch (per-invocation override)
+//   - dockerCtx: whether the caller is building a docker image (in
+//     which case we always cross-compile to the deploy-target arch
+//     since the image is destined for a k8s node, not the dev host)
+//
+// Returns the empty string when no cross-compile is needed (i.e.
+// the resolved target equals runtime.GOARCH). The empty return is
+// the signal buildGoBinary uses to skip the GOOS/GOARCH/CGO_ENABLED
+// env override.
+//
+// Rule of thumb: a plain `forge build` (no docker) defaults to host
+// arch — the user wants a runnable local binary. `forge build
+// --docker` (or --push) defaults to forge.yaml deploy.target_arch
+// (or "amd64" when unset) since the resulting image will be pulled
+// by kubelet on a node whose arch is fixed at cluster-build time.
+func resolveBuildArch(cfgArch, flagArch string, dockerCtx bool) string {
+	target := flagArch
+	if target == "" && dockerCtx {
+		target = cfgArch
+		if target == "" {
+			target = "amd64"
+		}
+	}
+	if target == "" || target == runtime.GOARCH {
+		return ""
+	}
+	return target
 }
 
 type buildResult struct {
@@ -106,6 +159,18 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
 	fmt.Printf("[build]   Parallel: %v\n", opts.parallel)
 	fmt.Printf("[build]   Docker:   %v\n", opts.buildDocker)
+	if opts.env != "" {
+		fmt.Printf("[build]   Env:      %s\n", opts.env)
+	}
+	// Dev-mode informational notice: when --env=dev, services with
+	// dev_target: host are placed on the host, not the cluster, so they
+	// should NOT appear in the dev image's runtime service set. The Go
+	// binary still ships their code (single-binary architecture) — the
+	// notice exists so users see, in one line, which services they'll
+	// be running locally via `forge run <svc>`.
+	if hostSvcs := hostDevTargetServices(cfg); opts.env == "dev" && len(hostSvcs) > 0 {
+		fmt.Printf("[build]   Host-mode services (dev): %s — run via `forge run <name>`\n", strings.Join(hostSvcs, ", "))
+	}
 	fmt.Println()
 
 	// Create output directory
@@ -185,7 +250,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []c
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug)
+			r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false))
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -214,13 +279,17 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []c
 		}
 	}
 
-	// Docker builds after binary builds succeed (only if --docker flag is set)
+	// Docker builds after binary builds succeed (only if --docker flag is set).
+	// dockerArch is resolved with dockerCtx=true so cross-compile kicks in
+	// whenever the deploy-target arch differs from the host — even if the
+	// preceding go build above happened to use the host arch.
 	if opts.buildDocker && !hasBuildFailure {
+		dockerArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, true)
 		if buildBinary {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -230,7 +299,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []c
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(ctx, cfg, f.Name, f.Path, opts.pushRegistry)
+				r := dockerBuild(ctx, cfg, f.Name, f.Path, opts.pushRegistry, dockerArch)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -246,7 +315,7 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends [
 	var results []buildResult
 
 	if buildBinary {
-		r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug)
+		r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false))
 		results = append(results, r)
 		if r.err != nil {
 			return results // Stop on first failure in sequential mode
@@ -262,15 +331,16 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends [
 
 	// Docker builds only if --docker flag is set
 	if opts.buildDocker {
+		dockerArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, true)
 		if buildBinary {
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry)
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
 		for _, fe := range frontends {
-			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry)
+			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry, dockerArch)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -281,7 +351,7 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends [
 	return results
 }
 
-func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir string, debug bool) buildResult {
+func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir string, debug bool, crossArch string) buildResult {
 	start := time.Now()
 	binaryPath := filepath.Join(outputDir, cfg.Name)
 
@@ -289,6 +359,10 @@ func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir str
 		fmt.Printf("[build] %s: go build (debug) -> %s\n", cfg.Name, binaryPath)
 	} else {
 		fmt.Printf("[build] %s: go build -> %s\n", cfg.Name, binaryPath)
+	}
+	if crossArch != "" {
+		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
+			crossArch, runtime.GOOS, runtime.GOARCH)
 	}
 
 	args := []string{"build", "-o", binaryPath}
@@ -303,6 +377,13 @@ func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir str
 	args = append(args, "./cmd")
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if crossArch != "" {
+		// Force linux/<crossArch>. We do not let CGO leak through here:
+		// linux containers built on a mac-arm64 host with CGO enabled
+		// would need a cross-cc toolchain (clang+aarch64-linux-gnu).
+		// Forge's contract is pure-Go binaries, so CGO=0 stays.
+		cmd.Env = append(cmd.Env, "GOOS=linux", "GOARCH="+crossArch)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -404,7 +485,12 @@ func withForcedEnv(env []string, key, value string) []string {
 // tagged with <pushRegistry>/<name>:<tag> and pushed after a successful
 // build (one docker build + one docker push per image in forge.yaml,
 // matching the MultiServiceApplication pattern).
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry string) buildResult {
+//
+// crossArch, when non-empty, drives `docker buildx build --platform=linux/<arch>`
+// so the resulting image runs on a node whose arch matches the deploy
+// target rather than the build host. Empty means "let docker use the
+// host arch" — appropriate when host == target.
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch string) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -428,7 +514,13 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 		versionTag = fmt.Sprintf("%s/%s:%s", registry, cfg.Name, v)
 	}
 
-	dockerArgs := []string{"build", "-t", latestTag}
+	dockerArgs := []string{"build"}
+	if crossArch != "" {
+		dockerArgs = append(dockerArgs, "--platform=linux/"+crossArch)
+		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
+			crossArch, runtime.GOOS, runtime.GOARCH)
+	}
+	dockerArgs = append(dockerArgs, "-t", latestTag)
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
 	}
@@ -539,7 +631,12 @@ func countTags(args []string) int {
 // dockerBuild builds a Docker image for a frontend from its own
 // Dockerfile. When pushRegistry is non-empty, the image is also tagged
 // with <pushRegistry>/<name>:<tag> and pushed after a successful build.
-func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry string) buildResult {
+//
+// crossArch, when non-empty, drives `docker buildx build --platform=linux/<arch>`
+// so frontends destined for the deploy-target node arch are built
+// correctly even on a different host arch. Same semantics as
+// dockerBuildProject.
+func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry, crossArch string) buildResult {
 	start := time.Now()
 	dockerfile := filepath.Join(path, "Dockerfile")
 
@@ -563,7 +660,13 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 		versionTag = fmt.Sprintf("%s/%s:%s", registry, name, v)
 	}
 
-	dockerArgs := []string{"build", "-t", latestTag}
+	dockerArgs := []string{"build"}
+	if crossArch != "" {
+		dockerArgs = append(dockerArgs, "--platform=linux/"+crossArch)
+		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
+			crossArch, runtime.GOOS, runtime.GOARCH)
+	}
+	dockerArgs = append(dockerArgs, "-t", latestTag)
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
 	}
@@ -641,4 +744,22 @@ func filterFrontends(frontends []config.FrontendConfig, target string) []config.
 		}
 	}
 	return nil
+}
+
+// hostDevTargetServices returns the names of services marked
+// `dev_target: host` in forge.yaml, in declared order. Used by
+// `forge build --env dev` and `forge deploy dev` to communicate which
+// services bypass the cluster in the dev loop. Returns nil when no
+// services opt into host mode (the common case for legacy projects).
+func hostDevTargetServices(cfg *config.ProjectConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	var out []string
+	for _, s := range cfg.Services {
+		if s.IsHostDevTarget() {
+			out = append(out, s.Name)
+		}
+	}
+	return out
 }

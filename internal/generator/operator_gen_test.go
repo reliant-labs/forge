@@ -33,9 +33,12 @@ func TestGenerateOperatorFilesWithAPISplitsTypesIntoAPIPackage(t *testing.T) {
 		t.Error("api types.go should not declare WorkspaceController type")
 	}
 
-	controllerPath := filepath.Join(root, "operators", "workspace_controller", "controller.go")
+	// Operator directories use the compact Go-package form
+	// (ServicePackageName strips separators) so "workspace-controller"
+	// becomes operators/workspacecontroller.
+	controllerPath := filepath.Join(root, "operators", "workspacecontroller", "controller.go")
 	if _, err := os.Stat(controllerPath); err != nil {
-		t.Fatalf("expected operators/workspace_controller/controller.go: %v", err)
+		t.Fatalf("expected operators/workspacecontroller/controller.go: %v", err)
 	}
 	controller := readFile(t, controllerPath)
 	if !strings.Contains(controller, `apipkg "example.com/myapp/api/v1alpha1/workspace"`) {
@@ -46,7 +49,7 @@ func TestGenerateOperatorFilesWithAPISplitsTypesIntoAPIPackage(t *testing.T) {
 	}
 
 	// types.go must NOT live alongside the controller in the split layout.
-	siblingTypes := filepath.Join(root, "operators", "workspace_controller", "types.go")
+	siblingTypes := filepath.Join(root, "operators", "workspacecontroller", "types.go")
 	if _, err := os.Stat(siblingTypes); err == nil {
 		t.Error("types.go should NOT exist alongside controller.go in split layout")
 	}
@@ -59,9 +62,9 @@ func TestGenerateOperatorFilesCreatesExpectedFiles(t *testing.T) {
 		t.Fatalf("GenerateOperatorFiles() error = %v", err)
 	}
 
-	// Hyphenated CLI names produce snake_case directories so the package
-	// declaration is a valid Go identifier (operators/deployment_scaler).
-	opDir := filepath.Join(root, "operators", "deployment_scaler")
+	// Hyphenated/snake CLI names compact to a single-word directory so the
+	// package declaration matches Go style (operators/deploymentscaler).
+	opDir := filepath.Join(root, "operators", "deploymentscaler")
 
 	// All three files must exist
 	for _, f := range []string{"types.go", "controller.go", "controller_test.go"} {
@@ -103,13 +106,13 @@ func TestGenerateOperatorFilesCreatesExpectedFiles(t *testing.T) {
 // the scaffold's operator.go is suppressed instead of duplicating symbols.
 func TestGenerateOperatorBinaryOnly_SkipsOnPortedShape(t *testing.T) {
 	root := t.TempDir()
-	operatorDir := filepath.Join(root, "operators", "workspace_controller")
+	operatorDir := filepath.Join(root, "operators", "workspacecontroller")
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
 	// Simulate a ported v0 controller.go: holds the operator wiring surface.
-	ported := `package workspace_controller
+	ported := `package workspacecontroller
 
 type Deps struct{}
 type Controller struct{ Deps Deps }
@@ -148,7 +151,7 @@ func TestGenerateOperatorBinaryOnly_EmitsWhenDirEmpty(t *testing.T) {
 		"workspace-controller", "reliant.dev", "v1alpha1"); err != nil {
 		t.Fatalf("GenerateOperatorBinaryOnly: %v", err)
 	}
-	operatorDir := filepath.Join(root, "operators", "workspace_controller")
+	operatorDir := filepath.Join(root, "operators", "workspacecontroller")
 	if _, err := os.Stat(filepath.Join(operatorDir, "operator.go")); err != nil {
 		t.Errorf("operator.go expected on empty-dir path: %v", err)
 	}
@@ -164,13 +167,13 @@ func TestGenerateOperatorBinaryOnly_EmitsWhenDirEmpty(t *testing.T) {
 // reconciler types.
 func TestGenerateOperatorBinaryOnly_EmitsAlongsidePerCRDFiles(t *testing.T) {
 	root := t.TempDir()
-	operatorDir := filepath.Join(root, "operators", "workspace_controller")
+	operatorDir := filepath.Join(root, "operators", "workspacecontroller")
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	// Per-CRD reconciler shim: declares WorkspaceController but not the
 	// operator-level wiring surface.
-	crdShim := `package workspace_controller
+	crdShim := `package workspacecontroller
 
 type WorkspaceController struct{}
 

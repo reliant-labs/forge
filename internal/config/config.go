@@ -176,6 +176,28 @@ type PackOverride struct {
 	SkipMigrations bool `yaml:"skip_migrations,omitempty"`
 }
 
+// ServiceDevTarget identifies where a service runs in the local dev
+// loop. Default is "cluster": the service is built into an image, pushed
+// to the dev registry, and reconciled by the k3d cluster like every
+// other forge service. "host" flips it: the service runs as a host
+// process under `forge run <service>` (or the project's Taskfile), is
+// excluded from dev-time image build/push, and dev-time `forge deploy`
+// skips its rollout wait + prunes its leftover Deployment.
+//
+// Host-mode is the right shape for non-operator services that don't
+// need cluster-only primitives (ingress webhooks, CRD watch, sidecar
+// dynamic-config injection) — APIs, business-logic gateways, edge
+// proxies — where the redeploy-into-k3d loop is pure friction. Cluster-
+// mode stays the default so existing forge projects keep their current
+// behaviour.
+//
+// dev_target affects ONLY the dev environment. Staging and prod always
+// build, push, and deploy every service regardless of this field.
+const (
+	ServiceDevTargetCluster = "cluster"
+	ServiceDevTargetHost    = "host"
+)
+
 // ServiceConfig represents a Go service definition.
 type ServiceConfig struct {
 	Name          string          `yaml:"name"`
@@ -197,6 +219,34 @@ type ServiceConfig struct {
 	// operators/<operator>/<crd-name>_controller.go plus
 	// api/<version>/<crd-name>_types.go.
 	CRDs []CRDConfig `yaml:"crds,omitempty"`
+	// DevTarget identifies where this service runs in the local dev loop.
+	// Empty (default) and "cluster" mean the service runs in k3d like
+	// every other forge service. "host" flips it to a host-process for
+	// `forge run <service>` ergonomics — see [ServiceDevTargetHost] and
+	// [ServiceConfig.IsHostDevTarget] for the full semantics. Affects
+	// dev only; staging/prod always build + deploy every service.
+	DevTarget string `yaml:"dev_target,omitempty"`
+}
+
+// EffectiveDevTarget returns the dev-target, defaulting to "cluster"
+// so legacy forge.yaml files without the field keep their existing
+// behaviour. Unknown values also fall through to "cluster" — strict
+// validation lives in forge.yaml load, not here.
+func (s ServiceConfig) EffectiveDevTarget() string {
+	switch strings.ToLower(strings.TrimSpace(s.DevTarget)) {
+	case ServiceDevTargetHost:
+		return ServiceDevTargetHost
+	default:
+		return ServiceDevTargetCluster
+	}
+}
+
+// IsHostDevTarget reports whether the service runs as a host process
+// in the dev loop. Returns false for the default ("cluster") and for
+// any unrecognised value, so the host-skip logic in build/deploy never
+// fires accidentally for a typo'd target.
+func (s ServiceConfig) IsHostDevTarget() bool {
+	return s.EffectiveDevTarget() == ServiceDevTargetHost
 }
 
 // CRDConfig represents a single Custom Resource Definition reconciled
@@ -503,6 +553,35 @@ type DeployConfig struct {
 	Concurrency    DeployConcurrency `yaml:"concurrency,omitempty"`
 	FrontendDeploy string            `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"
 	MigrationTest  bool              `yaml:"migration_test,omitempty"`  // test migrations before deploy
+
+	// TargetArch is the GOARCH the deploy target cluster runs on. When
+	// unset, forge defaults to amd64 (the predominant k8s host arch).
+	// Setting this at the project level means Mac/arm64 dev machines
+	// will cross-compile the Go binary (GOOS=linux GOARCH=<target>
+	// CGO_ENABLED=0) and pass --platform=linux/<target> to docker
+	// buildx so the image kubelet pulls actually runs on the node.
+	//
+	// Without cross-compile, an arm64-built image deployed onto an
+	// amd64 node fails at pod startup with the opaque kernel-level
+	// "exec format error". The CLI's --target-arch flag overrides
+	// this per-invocation.
+	TargetArch string `yaml:"target_arch,omitempty"`
+}
+
+// EffectiveTargetArch returns the deploy-target GOARCH. Order of
+// precedence: explicit override (caller-provided), forge.yaml's
+// deploy.target_arch, then the default "amd64". The "amd64" default
+// reflects the empirical reality that the vast majority of k8s nodes
+// are amd64; arm64 deployments must opt in via forge.yaml or
+// --target-arch.
+func (d *DeployConfig) EffectiveTargetArch(override string) string {
+	if override != "" {
+		return override
+	}
+	if d.TargetArch != "" {
+		return d.TargetArch
+	}
+	return "amd64"
 }
 
 // DeployEnvConfig defines a deployment environment.
@@ -551,6 +630,31 @@ type DockerConfig struct {
 type LintConfig struct {
 	Contract bool               `yaml:"contract"`
 	Frontend FrontendLintConfig `yaml:"frontend,omitempty"`
+	// HandlerFileMaxLOC is the per-file LOC threshold above which the
+	// forgeconv-handler-file-size analyzer warns. Counts non-blank, non-
+	// comment Go source lines under handlers/<svc>/*.go. A value of 0 (or
+	// the field unset) is treated as the built-in default — see
+	// [LintConfig.EffectiveHandlerFileMaxLOC] for the canonical value.
+	HandlerFileMaxLOC int `yaml:"handler_file_max_loc,omitempty"`
+}
+
+// DefaultHandlerFileMaxLOC is the built-in threshold used by the
+// forgeconv-handler-file-size analyzer when the project does not set
+// lint.handler_file_max_loc in forge.yaml. Picked at 1000 because that
+// roughly tracks "two screens of any modern editor" plus generous
+// buffer — files past that point materially harm review velocity and
+// almost always benefit from the per-RPC split that `forge add
+// handler-file` is intended to support.
+const DefaultHandlerFileMaxLOC = 1000
+
+// EffectiveHandlerFileMaxLOC returns the LOC threshold for the
+// handler-file-size analyzer, defaulting to [DefaultHandlerFileMaxLOC]
+// when the config value is zero or unset.
+func (c LintConfig) EffectiveHandlerFileMaxLOC() int {
+	if c.HandlerFileMaxLOC <= 0 {
+		return DefaultHandlerFileMaxLOC
+	}
+	return c.HandlerFileMaxLOC
 }
 
 // FrontendLintConfig configures the frontend slice of `forge lint`:
@@ -604,14 +708,15 @@ func (c ContractsConfig) IsStrict() bool {
 	return c.Strict
 }
 
-// IsExcluded returns true if the given package path matches any exclude pattern.
+// IsExcluded returns true if the given package path matches any
+// exclude pattern. Delegates to [MatchExclude] — the shared matcher
+// used by the contract analyzer and the forgeconv lint surface so all
+// three places agree on what "excluded" means. See the doc on
+// MatchExclude for the matching rules and the deliberate exit from the
+// pre-2026-06 inline implementation (empty-pattern handling +
+// slash-normalisation).
 func (c ContractsConfig) IsExcluded(pkgPath string) bool {
-	for _, pattern := range c.Exclude {
-		if pattern == pkgPath || strings.HasSuffix(pkgPath, "/"+pattern) || strings.Contains(pkgPath, pattern) {
-			return true
-		}
-	}
-	return false
+	return MatchExclude(c.Exclude, pkgPath)
 }
 
 // FeaturesConfig controls which forge features are active.
@@ -628,6 +733,19 @@ type FeaturesConfig struct {
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
+
+	// Diagnostics enables runtime emission of pkg/diagnostics records at
+	// Bootstrap time — slog warn lines for every unwired scaffold the
+	// codegen pipeline registered (Tier-1 stubs, nil-wired Deps fields).
+	// Default OFF: existing projects don't suddenly start logging warns on
+	// regen. Opt-in by setting `features.diagnostics: true` in forge.yaml.
+	Diagnostics *bool `yaml:"diagnostics,omitempty"`
+
+	// StrictWiring upgrades the Diagnostics emitter to StrictEmitter, so
+	// any registered diagnostic terminates the process after the summary
+	// line. Implies Diagnostics: true at the wire site — production-grade
+	// projects use this to fail-fast in CI. Default OFF.
+	StrictWiring *bool `yaml:"strict_wiring,omitempty"`
 }
 
 // featureEnabled returns true if the *bool is nil (default) or explicitly true.
@@ -703,6 +821,30 @@ func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Ob
 
 // HotReloadEnabled reports whether the hot-reload feature is on (default: on).
 func (f FeaturesConfig) HotReloadEnabled() bool { return featureEnabled(f.HotReload) }
+
+// DiagnosticsEnabled reports whether the pkg/diagnostics runtime emit
+// is wired by bootstrap (default: OFF). When OFF, codegen still emits
+// pkg/app/diagnostics_gen.go (so `forge audit` can roll the data up
+// from the file), but Bootstrap does not call diagnostics.Default.Boot
+// — no slog lines, no strict-mode exit.
+//
+// Strict-wiring implies Diagnostics: enabling strict without diagnostics
+// is a no-op, so we treat StrictWiringEnabled as forcing diagnostics on.
+func (f FeaturesConfig) DiagnosticsEnabled() bool {
+	if f.StrictWiring != nil && *f.StrictWiring {
+		return true
+	}
+	return f.Diagnostics != nil && *f.Diagnostics
+}
+
+// StrictWiringEnabled reports whether the diagnostics strict-mode
+// exit is wired by bootstrap (default: OFF). Used in tandem with
+// DiagnosticsEnabled — strict-mode wraps the LogEmitter with
+// StrictEmitter so any registered diagnostic terminates the process
+// after the summary line.
+func (f FeaturesConfig) StrictWiringEnabled() bool {
+	return f.StrictWiring != nil && *f.StrictWiring
+}
 
 // StackConfig declares the technology choices for the project.
 // These are forward-looking declarations — forge may not support all

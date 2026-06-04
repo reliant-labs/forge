@@ -594,6 +594,18 @@ func TestForgeVersionMismatchWarning(t *testing.T) {
 			"",
 			"",
 		},
+		{
+			"go pseudoversion binary is silent (go install of untagged commit)",
+			"1.6.0",
+			"v0.0.0-20260101120000-abcdef012345",
+			"",
+		},
+		{
+			"plain v0.0.0- prefix is silent (defensive)",
+			"1.6.0",
+			"v0.0.0-anything",
+			"",
+		},
 	}
 
 	for _, tt := range tests {
@@ -611,6 +623,66 @@ func TestForgeVersionMismatchWarning(t *testing.T) {
 					tt.yaml, tt.binary, got, tt.wantContain)
 			}
 		})
+	}
+}
+
+// TestShouldEmitVersionWarn covers the per-session sentinel gate: an
+// empty warning never emits, the first call for a given binary path
+// emits and touches the sentinel, and subsequent calls within the same
+// "session" (shared $TMPDIR) stay silent.
+func TestShouldEmitVersionWarn(t *testing.T) {
+	// Sandbox $TMPDIR so this test can't leak state out (or in) and so
+	// the sentinel filenames don't collide with a real forge install.
+	t.Setenv("TMPDIR", t.TempDir())
+
+	// Empty warning is always silent regardless of sentinel state.
+	if shouldEmitVersionWarn("", "/some/path/forge") {
+		t.Error("shouldEmitVersionWarn(\"\", …) should be false for an empty warning")
+	}
+
+	const binPath = "/tmp/test/forge-bin"
+	const warning = "⚠️  forge.yaml declares forge_version: 1.4.0 but binary is 1.6.0."
+
+	// First call → emits + touches sentinel.
+	if !shouldEmitVersionWarn(warning, binPath) {
+		t.Fatal("first shouldEmitVersionWarn call should return true (no sentinel yet)")
+	}
+	// Second call → sentinel hit, silent.
+	if shouldEmitVersionWarn(warning, binPath) {
+		t.Error("second shouldEmitVersionWarn call should return false (sentinel present)")
+	}
+
+	// A different binary path gets its own sentinel.
+	const otherBin = "/tmp/test/forge-bin-other"
+	if !shouldEmitVersionWarn(warning, otherBin) {
+		t.Error("shouldEmitVersionWarn for a different binary path should ignore the first path's sentinel")
+	}
+}
+
+// TestVersionWarnSentinelPath verifies the sentinel filename is
+// per-binary-path and lives under $TMPDIR. Two distinct paths must
+// produce distinct sentinels; the same path must be deterministic.
+func TestVersionWarnSentinelPath(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	const a = "/usr/local/bin/forge"
+	const b = "/Users/me/src/forge/forge"
+
+	pa1 := versionWarnSentinelPath(a)
+	pa2 := versionWarnSentinelPath(a)
+	pb := versionWarnSentinelPath(b)
+
+	if pa1 != pa2 {
+		t.Errorf("sentinel path must be deterministic for the same binary; got %q and %q", pa1, pa2)
+	}
+	if pa1 == pb {
+		t.Errorf("sentinel paths for distinct binaries must differ; both produced %q", pa1)
+	}
+	if !strings.HasPrefix(pa1, os.TempDir()) {
+		t.Errorf("sentinel %q must live under $TMPDIR (%q)", pa1, os.TempDir())
+	}
+	if !strings.Contains(pa1, "forge-version-warned-") {
+		t.Errorf("sentinel %q must use the forge-version-warned- prefix", pa1)
 	}
 }
 

@@ -232,12 +232,13 @@ func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string) er
 		registry = reg
 	}
 	opts := buildOptions{
-		outputDir:    "bin",
-		buildTarget:  "all",
-		parallel:     true,
-		buildDocker:  true,
-		pushRegistry: registry,
-		env:          env,
+		outputDir:     "bin",
+		buildTarget:   "all",
+		parallel:      true,
+		buildDocker:   true,
+		pushRegistry:  registry,
+		env:           env,
+		skipFrontends: true,
 	}
 	return runBuild(ctx, opts)
 }

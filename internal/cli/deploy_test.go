@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -114,5 +115,103 @@ func TestDeployDryRunHelpMentionsGuard(t *testing.T) {
 	}
 	if !strings.Contains(f.Usage, "guard") {
 		t.Errorf("--dry-run usage should mention the env-cluster guard, got %q", f.Usage)
+	}
+}
+
+// TestDeployTargetArchFlagRegistered confirms `forge deploy
+// --target-arch` is wired so users can cross-compile from a Mac/arm64
+// host onto an amd64 cluster without editing forge.yaml.
+func TestDeployTargetArchFlagRegistered(t *testing.T) {
+	cmd := newDeployCmd()
+	f := cmd.Flags().Lookup("target-arch")
+	if f == nil {
+		t.Fatal("--target-arch flag not registered on deploy command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--target-arch default = %q, want empty", f.DefValue)
+	}
+}
+
+// TestResolveDeployArch verifies the deploy-side arch resolver. Unlike
+// resolveBuildArch in build.go, this one ALWAYS falls back to amd64 (no
+// "host arch" branch) since deploy is always building an image for a
+// cluster node. Returns the empty string only when the resolved target
+// matches the host arch — the signal to skip `--platform`.
+func TestResolveDeployArch(t *testing.T) {
+	otherArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		otherArch = "arm64"
+	}
+
+	cases := []struct {
+		name     string
+		cfgArch  string
+		flagArch string
+		want     string
+	}{
+		{
+			name:     "no config, no flag → amd64 default",
+			cfgArch:  "",
+			flagArch: "",
+			want: func() string {
+				if runtime.GOARCH == "amd64" {
+					return ""
+				}
+				return "amd64"
+			}(),
+		},
+		{
+			name:     "cfg arch matches host → empty",
+			cfgArch:  runtime.GOARCH,
+			flagArch: "",
+			want:     "",
+		},
+		{
+			name:     "cfg arch differs from host → cross-compile",
+			cfgArch:  otherArch,
+			flagArch: "",
+			want:     otherArch,
+		},
+		{
+			name:     "flag overrides cfg",
+			cfgArch:  runtime.GOARCH,
+			flagArch: otherArch,
+			want:     otherArch,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveDeployArch(c.cfgArch, c.flagArch)
+			if got != c.want {
+				t.Errorf("resolveDeployArch(cfg=%q, flag=%q) = %q, want %q",
+					c.cfgArch, c.flagArch, got, c.want)
+			}
+		})
+	}
+}
+
+// TestEffectiveTargetArch covers the DeployConfig.EffectiveTargetArch
+// precedence chain: explicit override > forge.yaml field > "amd64"
+// default. This is the project-level reader; the CLI-level resolver
+// (resolveDeployArch) layers runtime.GOARCH comparison on top of this.
+func TestEffectiveTargetArch(t *testing.T) {
+	cases := []struct {
+		name     string
+		field    string
+		override string
+		want     string
+	}{
+		{"empty → amd64", "", "", "amd64"},
+		{"field wins over default", "arm64", "", "arm64"},
+		{"override wins over field", "arm64", "amd64", "amd64"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := &config.DeployConfig{TargetArch: c.field}
+			if got := d.EffectiveTargetArch(c.override); got != c.want {
+				t.Errorf("EffectiveTargetArch(override=%q) with field=%q = %q, want %q",
+					c.override, c.field, got, c.want)
+			}
+		})
 	}
 }

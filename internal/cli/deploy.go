@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ func newDeployCmd() *cobra.Command {
 		namespace       string
 		contextOverride string
 		explain         bool
+		targetArch      string
 	)
 
 	cmd := &cobra.Command{
@@ -59,7 +61,13 @@ Examples:
 			if explain {
 				return runDeployExplain(cmd.Context(), args[0], contextOverride)
 			}
-			return runDeploy(cmd.Context(), args[0], imageTag, dryRun, namespace, contextOverride)
+			return runDeploy(cmd.Context(), args[0], deployOptions{
+				imageTag:        imageTag,
+				dryRun:          dryRun,
+				namespace:       namespace,
+				contextOverride: contextOverride,
+				targetArch:      targetArch,
+			})
 		},
 	}
 
@@ -68,6 +76,7 @@ Examples:
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
 	cmd.Flags().StringVar(&contextOverride, "context", "", "Override expected kubectl context (skips the env-cluster guard)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print the env-cluster guard decision (expected/current/verdict) and exit")
+	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 
 	return cmd
 }
@@ -116,7 +125,25 @@ func emptyAs(s, alt string) string {
 	return s
 }
 
-func runDeploy(ctx context.Context, envName, imageTag string, dryRun bool, namespace, contextOverride string) error {
+// deployOptions bundles the flag values for `forge deploy`. The
+// runDeploy function previously took six discrete parameters; growing
+// it to seven tipped revive's argument-limit lint. The struct form
+// makes the call site self-documenting and keeps the per-flag default
+// (e.g. dryRun=false) co-located with the field declaration.
+type deployOptions struct {
+	imageTag        string
+	dryRun          bool
+	namespace       string
+	contextOverride string
+	targetArch      string
+}
+
+func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
+	imageTag := opts.imageTag
+	dryRun := opts.dryRun
+	namespace := opts.namespace
+	contextOverride := opts.contextOverride
+	targetArchFlag := opts.targetArch
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -186,7 +213,7 @@ func runDeploy(ctx context.Context, envName, imageTag string, dryRun bool, names
 			return err
 		}
 
-		if err := buildAndPushLocal(ctx, cfg, imageTag); err != nil {
+		if err := buildAndPushLocal(ctx, cfg, imageTag, targetArchFlag); err != nil {
 			return err
 		}
 	}
@@ -349,7 +376,7 @@ func writeFallbackRegistriesYAML() (string, error) {
 	return f.Name(), nil
 }
 
-func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag string) error {
+func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targetArchFlag string) error {
 	registry := "localhost:5050"
 	if env := findEnvironment(cfg, "dev"); env != nil && env.Registry != "" {
 		registry = env.Registry
@@ -375,7 +402,18 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag strin
 
 	fmt.Printf("  Building and pushing %s...\n", imageRef)
 
-	buildArgs := []string{"build", "-t", imageRef}
+	// Resolve cross-compile target: --target-arch flag > forge.yaml
+	// deploy.target_arch > "amd64" (k8s host default). When the resolved
+	// target equals the host arch, no --platform flag is emitted.
+	crossArch := resolveDeployArch(cfg.Deploy.TargetArch, targetArchFlag)
+
+	buildArgs := []string{"build"}
+	if crossArch != "" {
+		buildArgs = append(buildArgs, "--platform=linux/"+crossArch)
+		fmt.Printf("  [build] cross-compiling for linux/%s (host: %s/%s)\n",
+			crossArch, runtime.GOOS, runtime.GOARCH)
+	}
+	buildArgs = append(buildArgs, "-t", imageRef)
 	// Apply docker.build_contexts from forge.yaml so sibling-checkout
 	// replace directives resolve in the deploy-time rebuild too.
 	for _, k := range sortedKeys(cfg.Docker.BuildContexts) {
@@ -397,6 +435,32 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag strin
 	}
 
 	return nil
+}
+
+// resolveDeployArch picks the target GOARCH for a deploy build. The
+// dispatch order is: explicit --target-arch override, then forge.yaml's
+// deploy.target_arch, then the "amd64" default (which reflects the
+// empirical reality that most k8s nodes are amd64). Returns the empty
+// string when the resolved target equals runtime.GOARCH — the empty
+// return signals callers that no --platform flag is needed.
+//
+// Unlike resolveBuildArch in build.go, this function always falls back
+// to amd64 (i.e. deploy is treated as the docker-context case in
+// build.go). `forge deploy` always builds an image destined for a
+// cluster node, so the "no cross-compile, use host arch" outcome
+// happens only when host == target.
+func resolveDeployArch(cfgArch, flagArch string) string {
+	target := flagArch
+	if target == "" {
+		target = cfgArch
+	}
+	if target == "" {
+		target = "amd64"
+	}
+	if target == runtime.GOARCH {
+		return ""
+	}
+	return target
 }
 
 // imageExistsInRegistry returns true when `docker manifest inspect` can

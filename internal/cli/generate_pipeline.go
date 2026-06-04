@@ -263,25 +263,34 @@ func generateSteps() []GenStep {
 	}
 }
 
-// scopedStepAllowlist maps a pipelineFlags.Scope value to the set of
-// step.Name values the runner is allowed to execute under that scope.
-// An empty Scope (the historical default) bypasses this map entirely
-// and runs every step that passes its Gate.
+// stepPresetAllowlist maps a pipelineFlags.Steps value (a named "step
+// preset") to the set of step.Name values the runner is allowed to
+// execute under that preset. An empty Steps value (the historical
+// default) bypasses this map entirely and runs every step that passes
+// its Gate.
 //
-// Adding a new scope: pick a stable name, enumerate the step.Name values
-// the scope covers, and document the caller's intent in the comment.
-// Step names must match generateSteps() exactly — the
-// TestScopedStepAllowlistMembersExist test verifies this so a typo or a
-// step rename doesn't silently produce a no-op pipeline.
+// Naming note: this used to be called "scope", but the word "scope" is
+// overloaded across forge — it's load-bearing for the file-ownership
+// concept addressed by the Tier-1 inspector in internal/checksums/
+// inspector.go. The pipeline-step concept got renamed to "step preset"
+// so "scope" stays free for the file-ownership concept where it
+// carries weight.
 //
-// The "bootstrap-only" scope covers `forge add worker`: scaffold a new
-// worker, regenerate ONLY pkg/app/{bootstrap,testing,migrate}.go and the
-// validation tail, then exit. Sibling Tier-1 files (.github/workflows/
-// ci.yml, cmd/server.go, frontend mocks, pkg/config/config.go) stay
-// untouched so a sibling agent or hand-curated comment isn't stomped.
-// FRICTION 2026-06-03: cp-forge port-workers ran `forge add worker` 7×
-// and watched regen rewrite 5 unrelated files per call.
-var scopedStepAllowlist = map[string]map[string]bool{
+// Adding a new step preset: pick a stable name, enumerate the
+// step.Name values the preset covers, and document the caller's intent
+// in the comment. Step names must match generateSteps() exactly — the
+// TestStepPresetAllowlistMembersExist test verifies this so a typo or
+// a step rename doesn't silently produce a no-op pipeline.
+//
+// The "bootstrap-only" preset covers `forge add worker`: scaffold a
+// new worker, regenerate ONLY pkg/app/{bootstrap,testing,migrate}.go
+// and the validation tail, then exit. Sibling Tier-1 files
+// (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
+// pkg/config/config.go) stay untouched so a sibling agent or hand-
+// curated comment isn't stomped. FRICTION 2026-06-03: cp-forge
+// port-workers ran `forge add worker` 7× and watched regen rewrite 5
+// unrelated files per call.
+var stepPresetAllowlist = map[string]map[string]bool{
 	"bootstrap-only": {
 		"load project config":              true,
 		"load checksums":                   true,
@@ -304,10 +313,10 @@ var scopedStepAllowlist = map[string]map[string]bool{
 		"check forked-sibling dangling refs": true,
 		"go build (validate generated code)": true,
 	},
-	// The "mocks" scope covers the fast-path "I just edited contract.go,
-	// regenerate mock_gen.go" workflow. Mocks live behind a "DO NOT EDIT"
-	// banner and are deterministic from contract.go + the service proto;
-	// they cannot stomp any Tier-1 file. So:
+	// The "mocks" step preset covers the fast-path "I just edited
+	// contract.go, regenerate mock_gen.go" workflow. Mocks live behind a
+	// "DO NOT EDIT" banner and are deterministic from contract.go + the
+	// service proto; they cannot stomp any Tier-1 file. So:
 	//
 	//   - Skip "check Tier-1 file-stomp guard" entirely. The guard exists
 	//     to protect Tier-1 files from being overwritten by codegen
@@ -334,7 +343,7 @@ var scopedStepAllowlist = map[string]map[string]bool{
 	// could not regen mock_gen.go after a contract.go change without
 	// first reconciling unrelated Tier-1 file edits sitting in their
 	// tree (e.g. modified .github/workflows/ci.yml). The mocks-only
-	// scope makes the inner-loop hermetic.
+	// step preset makes the inner-loop hermetic.
 	"mocks": {
 		"load project config":          true,
 		"load checksums":                true,
@@ -347,12 +356,13 @@ var scopedStepAllowlist = map[string]map[string]bool{
 	},
 }
 
-// knownScopeNames returns a comma-joined string of every registered scope
-// for error messages. Kept as a helper so the error in
-// runGeneratePipelineFlags doesn't have to inline a sort + join.
-func knownScopeNames() string {
-	names := make([]string, 0, len(scopedStepAllowlist))
-	for k := range scopedStepAllowlist {
+// knownStepPresetNames returns a comma-joined string of every
+// registered step preset for error messages. Kept as a helper so the
+// error in runGeneratePipelineFlags doesn't have to inline a sort +
+// join.
+func knownStepPresetNames() string {
+	names := make([]string, 0, len(stepPresetAllowlist))
+	for k := range stepPresetAllowlist {
 		names = append(names, k)
 	}
 	// Tiny sort to keep the error message deterministic.
@@ -594,10 +604,15 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	drift, outOfScope := filterTier1DriftInScope(ctx, allDrift,
 		func(d checksums.Tier1DriftEntry) string { return d.Path })
 	if len(outOfScope) > 0 {
-		fmt.Fprintf(os.Stderr, "ℹ️  Tier-1 stomp guard: %d drifted file(s) out of scope for this run (their emitter step is gated off); ignored:\n", len(outOfScope))
+		// Friendly heads-up rather than a bare warning: out-of-scope drift
+		// is the common case when iterating with `--steps=…` and the user
+		// needs to know (a) what "drifted" means here and (b) how to
+		// resolve it. Two escape hatches mirror the in-scope branch.
+		fmt.Fprintf(os.Stderr, "ℹ️  Tier-1 drift detected in %d file(s) — skipped because their emitter step is not in this run's scope:\n", len(outOfScope))
 		for _, d := range outOfScope {
 			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
 		}
+		fmt.Fprintf(os.Stderr, "   To regenerate them, re-run without `--steps=…` (or pass `--accept` to fold their on-disk content into checksums.json without regenerating).\n")
 	}
 	if len(drift) == 0 {
 		return nil

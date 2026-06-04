@@ -166,6 +166,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// the project chain: rate-limit (before auth — reject floods
 	// without doing token validation work) → auth → audit.
 	projectInterceptors := []connect.Interceptor{
+		// AuthInterceptor is the scaffold in pkg/middleware/auth.go (stub
+		// validateTokenFn). For real JWT auth, run `forge pack install
+		// jwt-auth` — the pack adds an interceptor alongside this one
+		// (it doesn't replace it).
 		middleware.AuthInterceptor(),
 		middleware.AuditInterceptor(logger),
 	}

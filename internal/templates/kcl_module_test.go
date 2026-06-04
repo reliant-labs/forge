@@ -80,6 +80,48 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 	}
 }
 
+// TestKCLModule_EnvOptionPlumbing runs tests/positive_env_option.k
+// under multiple `-D env=<name>` bindings and asserts the conditional-
+// include pattern (additional_manifests gated on option("env")) flows
+// through the manifest renderer. This pins the env-name plumbing the
+// forge CLI does via `RenderKCL`'s `-D env=<env>` arg — without it,
+// every user main.k that does `option("env") == "dev-host"` regresses
+// silently.
+func TestKCLModule_EnvOptionPlumbing(t *testing.T) {
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH; skipping KCL env-option plumbing test")
+	}
+
+	root := kclModuleRoot(t)
+	entry := filepath.Join(root, "tests", "positive_env_option.k")
+
+	for _, env := range []string{"dev", "dev-host"} {
+		t.Run("env="+env, func(t *testing.T) {
+			out, err := runKCL(t, entry, "-D", "env="+env)
+			if err != nil {
+				t.Fatalf("kcl run positive_env_option.k -D env=%s failed: %v\n%s", env, err, out)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
+			}
+			for k, v := range parsed {
+				if !strings.HasPrefix(k, "assert_") {
+					continue
+				}
+				b, ok := v.(bool)
+				if !ok {
+					t.Errorf("identifier %q not a bool: %v", k, v)
+					continue
+				}
+				if !b {
+					t.Errorf("env=%s: assertion %q is false", env, k)
+				}
+			}
+		})
+	}
+}
+
 // TestKCLModule_NegativeChecks runs each tests/negative_*.k file and
 // asserts kcl run exits non-zero. The check block in schema.k is
 // what produces the failure; if a schema change accidentally loosens

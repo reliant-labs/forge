@@ -493,6 +493,7 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		MainK:     mainK,
 		ImageTag:  imageTag,
 		Namespace: namespace,
+		Env:       "dev", // dev cluster reload is dev-only (matches the envDir above)
 		DryRun:    dryRun,
 		Quiet:     true,
 	})

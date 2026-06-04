@@ -99,7 +99,7 @@ Examples:
 
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
-	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the deploy phase (don't kubectl apply)")
+	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend/port-forward")
 	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend + port-forward); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
@@ -296,9 +296,11 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 		return nil, "", fmt.Errorf("unknown host runner %q (expected go-run/air/binary/delve)", host.Runner)
 	}
 	spec := hostlaunch.RunnerSpec{
-		Runner:    host.Runner,
-		AirConfig: host.AirConfig,
-		DelvePort: host.DelvePort,
+		Runner:     host.Runner,
+		AirConfig:  host.AirConfig,
+		DelvePort:  host.DelvePort,
+		WorkingDir: host.WorkingDir,
+		ProjectDir: projectDirForKCL(),
 	}
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
@@ -335,28 +337,58 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 func upFrontends(ctx context.Context, e *KCLEntities, env string, background bool, procs *procRegistry) int {
 	failures := 0
 	for _, fe := range e.Frontends {
-		runner := fe.DevRunner
-		if runner == "" {
-			runner = "npm"
-		}
-		cmd := exec.CommandContext(ctx, runner, "run", "dev")
-		cmd.Dir = fe.Path
-
-		envFile := fe.EnvFile
-		if envFile == "" {
-			envFile = ".env." + env
-		}
-		extra, lerr := hostlaunch.ReadDotEnvFile(envFile)
-		if lerr == nil {
-			cmd.Env = hostlaunch.MergeEnv(extra, os.Environ())
-		}
-
+		cmd := buildFrontendCmd(ctx, fe, env, os.Environ())
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
 		}
 	}
 	return failures
+}
+
+// buildFrontendCmd composes the *exec.Cmd for a single frontend in the
+// up orchestrator. Split out from upFrontends so the env composition is
+// testable without launching a child process.
+//
+// Env layering:
+//
+//  1. parentEnv (typically os.Environ()) is the floor.
+//  2. The env-file (fe.EnvFile or `.env.<env>`) is layered on top via
+//     hostlaunch.MergeEnv (parent wins on conflict — developer-shell
+//     override semantics, matching the host-service shape).
+//  3. PORT from the KCL declaration is force-injected last so it
+//     overrides ANY PORT in the parent env. The KCL declaration is the
+//     canonical port binding for the dev loop; a stale `PORT=8080` in
+//     the parent shell (typical when the parent has another service's
+//     env exported) can't silently shift the bind port out from under
+//     the user. Same precedence as KCL EnvVars on host services.
+//
+// fe.Port == 0 (legacy projects that don't set the field) skips the
+// force-inject so we don't surface a meaningless "PORT=0" line that
+// would crash the dev server.
+func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parentEnv []string) *exec.Cmd {
+	runner := fe.DevRunner
+	if runner == "" {
+		runner = "npm"
+	}
+	cmd := exec.CommandContext(ctx, runner, "run", "dev")
+	cmd.Dir = fe.Path
+
+	envFile := fe.EnvFile
+	if envFile == "" {
+		envFile = ".env." + env
+	}
+	extra, lerr := hostlaunch.ReadDotEnvFile(envFile)
+	if lerr == nil {
+		cmd.Env = hostlaunch.MergeEnv(extra, parentEnv)
+	} else {
+		cmd.Env = append([]string{}, parentEnv...)
+	}
+
+	if fe.Port > 0 {
+		cmd.Env = withForcedEnv(cmd.Env, "PORT", fmt.Sprintf("%d", fe.Port))
+	}
+	return cmd
 }
 
 // upPortForwards starts a `kubectl port-forward` for every cluster

@@ -100,6 +100,7 @@ _render_host_deploy = lambda d: HostDeploy -> any {
         "env_vars": [_render_env_var(e) for e in d.env_vars]
         "secrets_file": d.secrets_file if d.secrets_file else None
         "delve_port": d.delve_port
+        "working_dir": d.working_dir if d.working_dir else None
     }
 }
 

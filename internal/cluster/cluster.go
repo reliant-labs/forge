@@ -98,6 +98,13 @@ type ApplyOpts struct {
 	// pre-extraction. Off by default; the deploy and up call sites
 	// keep the framed banners.
 	Quiet bool
+
+	// Env is the environment name (e.g. "dev", "dev-host", "prod")
+	// passed to KCL as `-D env=<env>`. User main.k files can read it via
+	// `option("env")` to conditionally include manifests — typical use
+	// is skipping in-cluster infra (NATS, Temporal, LiteLLM) on dev-host
+	// envs where docker-compose provides the same services.
+	Env string
 }
 
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
@@ -107,7 +114,7 @@ type ApplyOpts struct {
 // warning messages, and ordering); per-call differences are expressed
 // through ApplyOpts fields.
 func Apply(ctx context.Context, opts ApplyOpts) error {
-	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.EnvConfigKV)
+	manifests, err := RenderManifests(ctx, opts.MainK, opts.ImageTag, opts.Namespace, opts.Env, opts.EnvConfigKV)
 	if err != nil {
 		// Reload's pre-extraction form used the shorter "KCL render:"
 		// wrap; the framed deploy/up path used the longer message.
@@ -193,20 +200,26 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 }
 
 // RenderManifests shells `kcl run <mainK> -D image_tag=<tag>
-// -D namespace=<ns> [-D <key>=<val>]...` and returns the rendered
-// `manifests:` list as a `---`-separated YAML document stream
-// (the shape `kubectl apply -f -` consumes).
+// -D namespace=<ns> [-D env=<env>] [-D <key>=<val>]...` and returns
+// the rendered `manifests:` list as a `---`-separated YAML document
+// stream (the shape `kubectl apply -f -` consumes).
 //
 // KCL emits the program's top-level variables wrapped in a YAML
 // object, so we unwrap the canonical `manifests` key. All other
 // top-level KCL vars MUST be declared private (underscore-prefix) or
 // they'll be dropped with a warning to stderr — only `manifests` is
 // part of the contract.
-func RenderManifests(ctx context.Context, mainK, imageTag, namespace string, envCfgKV map[string]string) (string, error) {
+//
+// env (when non-empty) is passed as `-D env=<env>` so main.k can do
+// `option("env")` and conditionally include manifests per-env.
+func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
 	var out bytes.Buffer
 	args := []string{"run", mainK,
 		"-D", "image_tag=" + imageTag,
 		"-D", "namespace=" + namespace,
+	}
+	if env != "" {
+		args = append(args, "-D", "env="+env)
 	}
 	// Stable ordering for reproducible output / easier diffing.
 	keys := make([]string, 0, len(envCfgKV))

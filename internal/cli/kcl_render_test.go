@@ -253,3 +253,42 @@ func TestParseKCLEntities_FlatShapeStillWorks(t *testing.T) {
 		t.Errorf("flat services: got %d, want 3", got)
 	}
 }
+
+// TestKCLRunArgs_PassesEnvAsDOption pins the contract that the env name
+// is plumbed into KCL as a `-D env=<name>` option. User main.k files
+// rely on this to call `option("env")` and conditionally include
+// manifests per-env (e.g. skipping in-cluster NATS on dev-host where
+// docker-compose provides it). Regressing this silently breaks every
+// per-env conditional in downstream projects.
+func TestKCLRunArgs_PassesEnvAsDOption(t *testing.T) {
+	args := kclRunArgs("/proj/deploy/kcl/dev", "dev")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-D env=dev") {
+		t.Errorf("kclRunArgs missing -D env=dev; got %v", args)
+	}
+	// Sanity: --format json still present so the JSON-parse contract holds.
+	if !strings.Contains(joined, "--format json") {
+		t.Errorf("kclRunArgs missing --format json; got %v", args)
+	}
+	// Sanity: the kclDir is the second positional arg (after `run`).
+	if len(args) < 2 || args[0] != "run" || args[1] != "/proj/deploy/kcl/dev" {
+		t.Errorf("kclRunArgs first args: got %v, want [run /proj/deploy/kcl/dev ...]", args[:2])
+	}
+}
+
+// TestKCLRunArgs_EnvNamePropagates confirms the env value (not just the
+// flag) is what gets passed — a regression where every env rendered as
+// `-D env=dev` would silently break dev-host / staging / prod
+// conditionals downstream.
+func TestKCLRunArgs_EnvNamePropagates(t *testing.T) {
+	for _, env := range []string{"dev", "dev-host", "staging", "prod"} {
+		t.Run(env, func(t *testing.T) {
+			args := kclRunArgs("/proj/deploy/kcl/"+env, env)
+			want := "-D env=" + env
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, want) {
+				t.Errorf("env=%s: kclRunArgs missing %q; got %v", env, want, args)
+			}
+		})
+	}
+}

@@ -792,9 +792,11 @@ func buildRunHostCmd(ctx context.Context, name string, host *HostDeploy) *exec.C
 	spec := hostlaunch.RunnerSpec{}
 	if host != nil {
 		spec = hostlaunch.RunnerSpec{
-			Runner:    host.Runner,
-			AirConfig: host.AirConfig,
-			DelvePort: host.DelvePort,
+			Runner:     host.Runner,
+			AirConfig:  host.AirConfig,
+			DelvePort:  host.DelvePort,
+			WorkingDir: host.WorkingDir,
+			ProjectDir: projectDirForKCL(),
 		}
 	}
 	return hostlaunch.BuildCmd(ctx, name, spec)

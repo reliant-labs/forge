@@ -26,7 +26,12 @@ type client struct {
 }
 
 // New creates a new {{.Name}} client.
-func New(deps Deps) Service {
+//
+// The two-result `(Service, error)` shape lets New surface dep-validation
+// or one-time-init failures (missing required deps, bad config, etc.).
+// Scaffolds ship with a no-error path; polish the body when you grow
+// dep validation or eager initialization.
+func New(deps Deps) (Service, error) {
 	return &client{
 		deps: deps,
 		http: &http.Client{
@@ -35,7 +40,7 @@ func New(deps Deps) Service {
 		// TODO: Set your base URL from config:
 		// baseURL: deps.Config.{{.Name | pascalCase}}BaseURL,
 		baseURL: "https://api.example.com",
-	}
+	}, nil
 }
 
 // HealthCheck verifies connectivity to the external service.

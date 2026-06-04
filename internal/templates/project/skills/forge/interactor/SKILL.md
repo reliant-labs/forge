@@ -121,7 +121,7 @@ type Deps struct {
 
 type service struct{ deps Deps }
 
-func New(deps Deps) Service { return &service{deps: deps} }
+func New(deps Deps) (Service, error) { return &service{deps: deps}, nil }
 
 func (s *service) ChargeAndAudit(ctx context.Context, in ChargeAndAuditInput) error {
     if in.UserID == "" || in.AmountMinor <= 0 {

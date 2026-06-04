@@ -492,6 +492,241 @@ func stringifyEnvValue(v any) string {
 	}
 }
 
+// runHostService executes a single service as a host process — the
+// inner loop for services declared `dev_target: host` in forge.yaml.
+// Mechanically equivalent to `go run ./cmd server <service>` with
+// .env.<env> loaded onto the child environment.
+//
+// Foreground mode streams stdout/stderr with a `[<service>]` prefix and
+// blocks until Ctrl-C. Background mode (background=true) detaches the
+// subprocess, writes its PID to ~/.cache/forge/run/<service>.pid, and
+// returns immediately so orchestration scripts (Taskfile, cloud-dev.sh)
+// can continue. Stop the background process with `forge run <service>
+// stop`.
+//
+// envFile, when empty, defaults to ".env.<env>" (typically ".env.dev").
+// Missing env file is non-fatal — the child inherits the parent's
+// environment unchanged.
+func runHostService(ctx context.Context, name, env, envFile string, background bool) error {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return fmt.Errorf("service name required (usage: forge run <service>)")
+	}
+
+	// Verify the service exists in forge.yaml. We don't enforce
+	// dev_target: host here — `forge run <svc>` against a cluster-mode
+	// service is fine for ad-hoc local runs (e.g. debugging an operator
+	// reconciler against a kubeconfig). The warning makes the unusual
+	// case visible without blocking it.
+	var svc *config.ServiceConfig
+	for i := range cfg.Services {
+		if cfg.Services[i].Name == name {
+			svc = &cfg.Services[i]
+			break
+		}
+	}
+	if svc == nil {
+		return fmt.Errorf("service %q not found in forge.yaml (declared services: %s)",
+			name, strings.Join(declaredServiceNames(cfg), ", "))
+	}
+	if !svc.IsHostDevTarget() {
+		fmt.Printf("[run] Note: service %q is not marked dev_target: host. Running it locally anyway — set dev_target in forge.yaml to silence this notice.\n", name)
+	}
+
+	if envFile == "" {
+		envFile = ".env." + env
+	}
+	extraEnv, loadErr := readDotEnvFile(envFile)
+	if loadErr == nil {
+		fmt.Printf("[run] %s: loaded %d vars from %s\n", name, len(extraEnv), envFile)
+	} else if !os.IsNotExist(loadErr) {
+		fmt.Printf("[run] %s: warning: read %s: %v\n", name, envFile, loadErr)
+	}
+
+	args := []string{"run", "./cmd", "server", name}
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Env = mergeEnv(extraEnv, os.Environ())
+
+	// Pid file path is shared by foreground (cleanup on exit) and
+	// background (handle for `forge run <svc> stop`).
+	pidPath, perr := hostRunPIDPath(name)
+	if perr != nil {
+		return perr
+	}
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+		return fmt.Errorf("create pid dir: %w", err)
+	}
+
+	if background {
+		// Background mode: detach. We don't pipe stdout/stderr — the
+		// caller usually doesn't want them anyway (orchestration script
+		// shapes), and capturing into a log file is a future fight.
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start %s: %w", name, err)
+		}
+		pid := cmd.Process.Pid
+		if writeErr := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", pid)), 0o644); writeErr != nil {
+			fmt.Printf("[run] warning: write pid file %s: %v\n", pidPath, writeErr)
+		}
+		_ = cmd.Process.Release()
+		fmt.Printf("[run] %s: detached (pid=%d). Stop with `forge run %s stop`.\n", name, pid, name)
+		fmt.Printf("[run] pid file: %s\n", pidPath)
+		return nil
+	}
+
+	// Foreground mode: stream output with a prefix and clean up on
+	// Ctrl-C. Mirrors the orchestrator's streamWithPrefix helper.
+	prefix := fmt.Sprintf("[%s] ", name)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+	pid := cmd.Process.Pid
+	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", pid)), 0o644)
+	defer func() { _ = os.Remove(pidPath) }()
+
+	var outputMu sync.Mutex
+	go streamWithPrefix(prefix, stdout, &outputMu)
+	go streamWithPrefix(prefix, stderr, &outputMu)
+
+	fmt.Printf("[run] %s: started (pid=%d). Ctrl-C to stop.\n", name, pid)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	doneCh := make(chan error, 1)
+	go func() { doneCh <- cmd.Wait() }()
+
+	select {
+	case <-sigCh:
+		fmt.Printf("\n[run] %s: stopping (pid=%d)...\n", name, pid)
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-doneCh:
+		case <-time.After(10 * time.Second):
+			fmt.Printf("[run] %s: did not exit after SIGTERM, killing.\n", name)
+			_ = cmd.Process.Kill()
+			<-doneCh
+		}
+	case err := <-doneCh:
+		if err != nil {
+			return fmt.Errorf("%s exited: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// runHostServiceStop reads the per-service PID file and sends SIGTERM.
+// No-op (with a friendly notice) when nothing is tracked, so callers
+// can invoke this unconditionally on teardown.
+func runHostServiceStop(name string) error {
+	if name == "" {
+		return fmt.Errorf("service name required (usage: forge run <service> stop)")
+	}
+	pidPath, err := hostRunPIDPath(name)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("[run] %s: no tracked process (pid file %s missing)\n", name, pidPath)
+			return nil
+		}
+		return fmt.Errorf("read pid file: %w", err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); err != nil {
+		return fmt.Errorf("parse pid file %s: %w", pidPath, err)
+	}
+	proc, ferr := os.FindProcess(pid)
+	if ferr != nil {
+		fmt.Printf("[run] %s: find pid %d: %v\n", name, pid, ferr)
+	} else if err := proc.Signal(syscall.SIGTERM); err != nil {
+		fmt.Printf("[run] %s: signal pid %d: %v (already exited?)\n", name, pid, err)
+	} else {
+		fmt.Printf("[run] %s: SIGTERM sent to pid %d\n", name, pid)
+	}
+	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("[run] warning: remove pid file %s: %v\n", pidPath, err)
+	}
+	return nil
+}
+
+// hostRunPIDPath returns the canonical per-service PID file path:
+//
+//	$HOME/.cache/forge/run/<service>.pid
+//
+// Shared by foreground (cleanup on exit) and background (stop handle)
+// modes so `forge run <svc> stop` works for both.
+func hostRunPIDPath(name string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	return filepath.Join(home, ".cache", "forge", "run", name+".pid"), nil
+}
+
+// declaredServiceNames returns the names of every service in forge.yaml,
+// used by the error path of runHostService to point users at the right
+// spelling when they typo a service name.
+func declaredServiceNames(cfg *config.ProjectConfig) []string {
+	out := make([]string, 0, len(cfg.Services))
+	for _, s := range cfg.Services {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// readDotEnvFile parses a .env file (KEY=VALUE per line, # comments,
+// trailing whitespace trimmed) into a map. Quoted values
+// ("VALUE", 'VALUE') have their outer quotes stripped. Missing file
+// returns os.ErrNotExist so callers can treat absence as non-fatal.
+//
+// Intentionally minimal — we don't expand $VARS or `${VAR:-default}`
+// shell features. Projects needing those should use direnv or a wrapper
+// script; this helper is just enough for the common
+// "DATABASE_URL=postgres://..." case the host-mode loop needs.
+func readDotEnvFile(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// strip an optional leading "export ".
+		line = strings.TrimPrefix(line, "export ")
+		i := strings.IndexByte(line, '=')
+		if i <= 0 {
+			continue
+		}
+		k := strings.TrimSpace(line[:i])
+		v := strings.TrimSpace(line[i+1:])
+		// Strip a single layer of matching quotes, if present.
+		if len(v) >= 2 {
+			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+				v = v[1 : len(v)-1]
+			}
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
 // mergeEnv layers per-env config onto a base os.Environ() slice. Keys
 // already present in base are kept (so a developer's shell override
 // always wins). Returns a fresh slice safe to assign to cmd.Env.

@@ -91,15 +91,19 @@ type Workers struct {
 {{- end}}
 }
 {{end}}
-{{- if .Operators}}
 // OperatorInstance wraps an operator controller for lifecycle management.
+// Emitted unconditionally so cmd/server.go's operator-gating helper
+// compiles even when the project has no operators yet.
 type OperatorInstance struct {
-	name             string
+	name string
+{{- if .Operators}}
 	setupWithManager func(mgr ctrl.Manager) error
+{{- end}}
 }
 
 // Name returns the operator's identifier.
 func (o *OperatorInstance) Name() string { return o.name }
+{{- if .Operators}}
 
 // SetupWithManager registers the controller with the manager.
 func (o *OperatorInstance) SetupWithManager(mgr ctrl.Manager) error { return o.setupWithManager(mgr) }
@@ -110,7 +114,7 @@ type Operators struct {
 	{{.FieldName}} *{{.Alias}}.Controller
 {{- end}}
 }
-{{end}}
+{{- end}}
 // WorkerList returns all workers as a slice for lifecycle management.
 func (a *App) WorkerList() []*WorkerInstance {
 {{- if .Workers}}
@@ -123,16 +127,21 @@ func (a *App) WorkerList() []*WorkerInstance {
 	return nil
 {{- end}}
 }
-{{if .Operators}}
 // OperatorList returns all operators as a slice for lifecycle management.
+// Emitted unconditionally so the operator-gating helper in cmd/server.go
+// compiles in projects with no operators (returns nil there).
 func (a *App) OperatorList() []*OperatorInstance {
+{{- if .Operators}}
 	return []*OperatorInstance{
 {{- range .Operators}}
 		{name: "{{.Name}}", setupWithManager: a.Operators.{{.FieldName}}.SetupWithManager},
 {{- end}}
 	}
+{{- else}}
+	return nil
+{{- end}}
 }
-
+{{if .Operators}}
 // HasOperators returns true if the application has any operators configured.
 func (a *App) HasOperators() bool {
 	return len(a.OperatorList()) > 0

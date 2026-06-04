@@ -262,6 +262,8 @@ Load sub-skills for specific frontend topics:
 - **state** — State management decision table, state vs events, ownership, async handling
 - **patterns** — Component composition, container/presentational, effects discipline, typed boundaries
 
+For frontend testing — what to test, what NOT to test, the `mockTransport()` seam, and recipes per layer — see the top-level `frontend-testing` skill.
+
 ## Rules
 
 - Never hand-edit generated files (`*-hooks.ts`, `src/gen/`, `src/lib/connect.ts`).

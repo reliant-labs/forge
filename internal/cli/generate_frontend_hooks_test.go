@@ -10,6 +10,24 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
+// codegenServiceDefForStarterTest returns a 2-RPC ServiceDef suitable as
+// input to writeHookStarterTest in the starter-test unit tests. Kept as a
+// helper rather than inlined so the three starter tests share one shape.
+func codegenServiceDefForStarterTest() codegen.ServiceDef {
+	return codegen.ServiceDef{
+		Name:      "UserService",
+		ProtoFile: "proto/services/users/v1/users.proto",
+		Methods: []codegen.Method{
+			{Name: "GetUser", InputType: "GetUserRequest", OutputType: "GetUserResponse"},
+			{Name: "CreateUser", InputType: "CreateUserRequest", OutputType: "CreateUserResponse"},
+		},
+	}
+}
+
+func codegenHookDataForStarterTest() codegen.FrontendHookTemplateData {
+	return codegen.ServiceDefToHookData(codegenServiceDefForStarterTest())
+}
+
 // TestWriteHooksIndex_FlatModeNoCollisions asserts the historic shape is
 // preserved when no two hook files re-export the same identifier: a flat
 // `export * from "./..."` per file. This is the path nearly every
@@ -246,5 +264,95 @@ func fakeService(name, protoFile string) codegen.ServiceDef {
 			{Name: "GetUser", InputType: "GetUserRequest", OutputType: "GetUserResponse"},
 			{Name: "CreateUser", InputType: "CreateUserRequest", OutputType: "CreateUserResponse"},
 		},
+	}
+}
+
+// TestWriteHookStarterTest_EmitsStarterWhenNoSiblingPresent asserts that
+// the starter test scaffolds next to the hooks file with one row per RPC
+// and the right `.starter` suffix. The activation contract is "rename
+// .tsx.starter to .tsx to opt in" — so the suffix must be exact.
+func TestWriteHookStarterTest_EmitsStarterWhenNoSiblingPresent(t *testing.T) {
+	dir := t.TempDir()
+	svc := codegenServiceDefForStarterTest()
+	data := codegenHookDataForStarterTest()
+
+	if err := writeHookStarterTest(dir, "user-service-hooks.ts", svc, data); err != nil {
+		t.Fatalf("writeHookStarterTest: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "user-service-hooks.test.tsx.starter"))
+	if err != nil {
+		t.Fatalf("expected starter test to exist: %v", err)
+	}
+	s := string(got)
+	// Per-RPC rows
+	for _, want := range []string{
+		"useGetUser resolves a happy-path response",
+		"useCreateUser resolves a happy-path response",
+		`"UserService.GetUser":`,
+		`"UserService.CreateUser":`,
+		"import { useGetUser }",
+		"import { useCreateUser }",
+		"mockTransport",
+		"setTransport",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("starter missing %q, got:\n%s", want, s)
+		}
+	}
+}
+
+// TestWriteHookStarterTest_SkipsWhenActiveTestExists asserts the starter
+// is NOT written when the user has already activated `<file>.test.tsx`.
+// Regenerating must not clobber the user's hand-edited tests.
+func TestWriteHookStarterTest_SkipsWhenActiveTestExists(t *testing.T) {
+	dir := t.TempDir()
+	activePath := filepath.Join(dir, "user-service-hooks.test.tsx")
+	if err := os.WriteFile(activePath, []byte("// user-edited"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := codegenServiceDefForStarterTest()
+	data := codegenHookDataForStarterTest()
+	if err := writeHookStarterTest(dir, "user-service-hooks.ts", svc, data); err != nil {
+		t.Fatalf("writeHookStarterTest: %v", err)
+	}
+
+	// The user's file must not have been touched.
+	got, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "// user-edited" {
+		t.Errorf("active test was overwritten: %s", string(got))
+	}
+	// And no .starter should have been written alongside it.
+	if _, err := os.Stat(filepath.Join(dir, "user-service-hooks.test.tsx.starter")); err == nil {
+		t.Errorf("starter was written despite active test existing")
+	}
+}
+
+// TestWriteHookStarterTest_SkipsWhenStarterExists asserts the starter is
+// NOT overwritten on re-run. An unactivated starter the user is about to
+// rename stays put across regen cycles.
+func TestWriteHookStarterTest_SkipsWhenStarterExists(t *testing.T) {
+	dir := t.TempDir()
+	starterPath := filepath.Join(dir, "user-service-hooks.test.tsx.starter")
+	if err := os.WriteFile(starterPath, []byte("// previous starter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := codegenServiceDefForStarterTest()
+	data := codegenHookDataForStarterTest()
+	if err := writeHookStarterTest(dir, "user-service-hooks.ts", svc, data); err != nil {
+		t.Fatalf("writeHookStarterTest: %v", err)
+	}
+
+	got, err := os.ReadFile(starterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "// previous starter" {
+		t.Errorf("existing starter was overwritten: %s", string(got))
 	}
 }

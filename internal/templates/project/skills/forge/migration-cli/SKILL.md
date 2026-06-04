@@ -36,9 +36,7 @@ The Cobra `Use:` field inside `internal/cli/root.go` (or whatever your CLI sourc
 Use `forge add binary <name>`. See the `binaries` skill for the full lifecycle; the short version:
 
 ```bash
-forge add binary <second-binary>                      # default --kind long-running
-forge add binary <second-binary> --kind cron          # cron-shaped (schedule via --schedule)
-forge add binary <second-binary> --kind oneshot       # one-shot (Run returns when work is done)
+forge add binary <second-binary>
 ```
 
 This scaffolds `cmd/<name>.go` (a Cobra subcommand registered on the shared root) plus `internal/<name>/{contract.go,<name>.go,<name>_test.go}` and appends a `binaries:` entry to `forge.yaml`.
@@ -124,7 +122,7 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 ## Rules
 
 - Use `--kind cli` (or `--kind library`) at scaffold time. Don't try to disable server-shaped emission post-hoc.
-- Use `forge add binary <name>` for second binaries (see the `binaries` skill for `--kind long-running|cron|oneshot`). The scaffolded Cobra command also hosts child subcommands via `<name>Cmd.AddCommand(...)` — same parent works as an admin-CLI host.
+- Use `forge add binary <name>` for second binaries (see the `binaries` skill). The scaffolded Cobra command also hosts child subcommands via `<name>Cmd.AddCommand(...)` — same parent works as an admin-CLI host.
 - For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge package new`.
 - `forge generate` is mostly a no-op for `--kind cli`, but contract-bearing packages still need it for mocks/middleware.
 - `pkg/` sub-module: workspace `use` OR `replace`, not both.

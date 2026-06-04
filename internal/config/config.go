@@ -125,8 +125,7 @@ type ProjectConfig struct {
 // BinaryConfig represents a non-server long-running binary scaffolded
 // via `forge add binary <name>`. The shape mirrors ServiceConfig's
 // declarative bits — name, path on disk — without the Connect-RPC
-// fields (Type/Webhooks/CRDs/Group). Kind discriminates the lifecycle
-// shape so deploy and codegen can pick the right template.
+// fields (Type/Webhooks/CRDs/Group).
 type BinaryConfig struct {
 	// Name is the binary identifier in CLI / display form. May contain
 	// hyphens; the Go-package form is derived via ServicePackageName.
@@ -137,30 +136,6 @@ type BinaryConfig struct {
 	// Go-package form of Name. Stored explicitly so future renames can
 	// avoid breaking forge.yaml-driven tooling.
 	Path string `yaml:"path"`
-	// Kind discriminates the binary lifecycle. Today:
-	//   - "long-running" (default): cobra subcommand runs until SIGINT/
-	//     SIGTERM with graceful shutdown. The proxy / sidecar shape.
-	//   - "cron": one-shot per invocation, intended to be invoked by an
-	//     external scheduler (k8s CronJob). Reserved for future use.
-	//   - "oneshot": one-shot per invocation, no scheduler. Reserved
-	//     for future use (migration runners, backfill scripts).
-	// Today only "long-running" emits a full scaffold; the other kinds
-	// are accepted by the parser so forge.yaml stays forward-compatible
-	// when those scaffolds land.
-	Kind string `yaml:"kind,omitempty"`
-}
-
-// EffectiveBinaryKind returns the kind, defaulting to "long-running"
-// so existing entries without an explicit kind keep the canonical shape.
-func (b BinaryConfig) EffectiveBinaryKind() string {
-	switch strings.ToLower(strings.TrimSpace(b.Kind)) {
-	case "cron":
-		return "cron"
-	case "oneshot":
-		return "oneshot"
-	default:
-		return "long-running"
-	}
 }
 
 // PackOverride is a project-level override block for an installed pack,
@@ -986,8 +961,7 @@ func (j JWTConfig) EffectiveSigningMethod() string {
 
 // K8sConfig holds Kubernetes configuration.
 type K8sConfig struct {
-	Provider string `yaml:"provider"` // "k3d", "gke", "eks"
-	KCLDir   string `yaml:"kcl_dir"`
+	KCLDir string `yaml:"kcl_dir"`
 }
 
 // DocsConfig holds documentation generation settings.

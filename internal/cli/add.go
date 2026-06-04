@@ -134,7 +134,7 @@ Subcommands:
   forge add service <name>                        Add a new Go service
   forge add worker <name>                         Add a new background worker
   forge add operator <name> [--group G] [--version V]  Add a Kubernetes operator
-  forge add binary <name> [--kind long-running]   Add a non-server long-running binary
+  forge add binary <name>                         Add a non-server long-running binary
   forge add frontend <name>                       Add a new Next.js frontend
   forge add scenario <name>                       Scaffold a frontend mock scenario
   forge add webhook <name> --service S            Add a webhook endpoint to a service
@@ -561,7 +561,7 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 	// operator is responsible for running `forge generate` at a
 	// coordination point. See friction
 	// forge-add-worker-runs-full-pipeline (kalshi-trader migration
-	// round, filed-not-fixed entry: "no --no-generate / --scope=worker
+	// round, filed-not-fixed entry: "no --no-generate / --steps=worker
 	// flag, so the worker-add path always runs the full codegen
 	// pipeline").
 	if noGenerate {
@@ -572,17 +572,19 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 		return nil
 	}
 
-	// Run the generation pipeline, narrowed to the bootstrap-only scope,
-	// so adding a worker regenerates pkg/app/{bootstrap,testing,migrate}.go
-	// and nothing else. The full pipeline would also rewrite every Tier-1
-	// file in its catalog (.github/workflows/ci.yml, cmd/server.go,
-	// frontend mocks, pkg/config/config.go) — friction reported by the
-	// cp-forge port-workers round where `forge add worker` × 7 rewrote 5
-	// unrelated Tier-1 files per invocation. The scoped step set lives in
-	// scopedStepAllowlist["bootstrap-only"] (generate_pipeline.go).
-	fmt.Println("\n🔧 Running generation pipeline (bootstrap-only scope)...")
+	// Run the generation pipeline, narrowed to the bootstrap-only step
+	// preset, so adding a worker regenerates
+	// pkg/app/{bootstrap,testing,migrate}.go and nothing else. The full
+	// pipeline would also rewrite every Tier-1 file in its catalog
+	// (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
+	// pkg/config/config.go) — friction reported by the cp-forge
+	// port-workers round where `forge add worker` × 7 rewrote 5
+	// unrelated Tier-1 files per invocation. The step preset's allowed
+	// step set lives in stepPresetAllowlist["bootstrap-only"]
+	// (generate_pipeline.go).
+	fmt.Println("\n🔧 Running generation pipeline (bootstrap-only step preset)...")
 	generateMu.Lock()
-	err = runGeneratePipelineFlags(root, pipelineFlags{Scope: "bootstrap-only"})
+	err = runGeneratePipelineFlags(root, pipelineFlags{Steps: "bootstrap-only"})
 	generateMu.Unlock()
 	if err != nil {
 		// Non-fatal: the worker files were created successfully, but the
@@ -1194,8 +1196,6 @@ func runAddWebhook(name, serviceName string) error {
 // into the generator so the next equivalent is the user's business
 // logic plus a thin glue layer.
 func newAddBinaryCmd() *cobra.Command {
-	var kind string
-
 	cmd := &cobra.Command{
 		Use:   "binary <name>",
 		Short: "Add a non-server long-running binary to the project",
@@ -1220,35 +1220,19 @@ Deployment for the binary. See the binaries skill (` + "`forge skill load binari
 for when to choose a binary vs worker vs service.
 
 Example:
-  forge add binary workspace-proxy
-  forge add binary auth-sidecar --kind long-running`,
+  forge add binary workspace-proxy`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddBinary(args[0], kind)
+			return runAddBinary(args[0])
 		},
 	}
-
-	cmd.Flags().StringVar(&kind, "kind", "long-running", "binary lifecycle kind (long-running, cron, oneshot)")
 
 	return cmd
 }
 
-func runAddBinary(name, kind string) error {
+func runAddBinary(name string) error {
 	if err := validateIdentifier(name); err != nil {
 		return fmt.Errorf("invalid binary name: %w", err)
-	}
-
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	switch kind {
-	case "", "long-running":
-		kind = "long-running"
-	case "cron", "oneshot":
-		// Accepted for forge.yaml forward-compat, but the scaffold today
-		// is the long-running shape. Document the limitation explicitly
-		// so users don't think the file output reflects --kind=cron.
-		fmt.Fprintf(os.Stderr, "warning: --kind %s is forward-reserved; today's scaffold emits the long-running shape.\n", kind)
-	default:
-		return fmt.Errorf("invalid binary kind %q: valid kinds are long-running, cron, oneshot", kind)
 	}
 
 	root, err := projectRoot()
@@ -1284,11 +1268,11 @@ func runAddBinary(name, kind string) error {
 		return fmt.Errorf("%q conflicts with a reserved cobra subcommand; pick a different name", name)
 	}
 
-	fmt.Printf("Adding binary '%s' (kind=%s)...\n", name, kind)
+	fmt.Printf("Adding binary '%s'...\n", name)
 
 	// Generate the four scaffold files (cmd-binary.go, contract.go,
 	// binary.go, binary_test.go).
-	if err := generator.GenerateBinaryFiles(root, cfg.ModulePath, name, kind); err != nil {
+	if err := generator.GenerateBinaryFiles(root, cfg.ModulePath, name); err != nil {
 		return fmt.Errorf("generate binary files: %w", err)
 	}
 
@@ -1299,7 +1283,6 @@ func runAddBinary(name, kind string) error {
 	cfg.Binaries = append(cfg.Binaries, config.BinaryConfig{
 		Name: name,
 		Path: fmt.Sprintf("cmd/%s.go", pkg),
-		Kind: kind,
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 		return fmt.Errorf("update project config: %w", err)

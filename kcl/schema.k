@@ -220,11 +220,21 @@ schema HostDeploy:
             "HostDeploy.delve_port must be 1..65535"
 
 schema K8sDeploy:
-    """Service runs in-cluster as a Deployment + Service.
+    """DEPRECATED — superseded by K8sCluster (per-service deploy target
+    that carries the env-wide cluster/namespace/registry/domain).
 
-    `ingress` is optional — most internal services don't expose one.
-    `platform` is an optional GOARCH / nodeSelector hint
-    (e.g. "linux/amd64", "linux/arm64") for the build + scheduler.
+    K8sDeploy was the original cluster-deploy block, carrying only the
+    per-service knobs (replicas, ingress, ports, platform) while the
+    env-wide knobs lived on the now-deprecated `Environment` schema and
+    in `forge.yaml -> environments[]`. Forge v2.x moves those env-wide
+    knobs onto the per-service deploy block itself so KCL refs can DRY
+    the common case across many services without forge.yaml's
+    `environments[]` block at all. See the `environments-to-kcl`
+    migration skill for the rewrite.
+
+    The schema is kept for one migration cycle so existing
+    `deploy/kcl/<env>/main.k` files keep rendering during the upgrade.
+    New code should declare `forge.K8sCluster` instead.
     """
     type: str = "cluster"
     replicas: int = 1
@@ -236,6 +246,98 @@ schema K8sDeploy:
     check:
         type == "cluster", "K8sDeploy.type must be 'cluster'"
         replicas > 0, "K8sDeploy.replicas must be positive"
+
+schema K8sCluster:
+    """Service runs in-cluster as a Deployment + Service on a specific
+    Kubernetes cluster. Per-service deploy block that ALSO carries the
+    env-wide knobs (cluster/namespace/registry/domain), so KCL refs
+    DRY the common case across many services without an `environments[]`
+    block in forge.yaml.
+
+    Typical project shape (one ref reused across services):
+
+        _prod_k8s = forge.K8sCluster {
+            cluster = "prod-cluster"
+            namespace = "kalshi-prod"
+            registry = "ghcr.io/reliant/kalshi"
+            domain = "kalshi.com"
+        }
+
+        forge.Service { name = "trader", deploy = _prod_k8s }
+        forge.Service { name = "admin",  deploy = _prod_k8s | { replicas = 5 } }
+
+    The polymorphic discriminator (`type = "cluster"`) is shared with
+    `K8sDeploy` so the existing `_render_k8s_deploy` dispatch handles
+    both schemas — K8sCluster is a superset of K8sDeploy with the
+    env-wide fields tacked on.
+    """
+    type: str = "cluster"
+    # Env-wide knobs — same value across every service in a deploy
+    # group; the cluster.Apply pipeline pulls them off the first
+    # service in the group.
+    cluster: str
+    namespace: str
+    registry: str
+    domain?: str
+    # Per-service knobs (same as K8sDeploy).
+    replicas: int = 1
+    ingress?: Ingress
+    resources?: Resources
+    health_check?: HealthCheck
+    security_context?: SecurityContext
+    env_vars: [EnvVar] = []
+    ports: [int] = []
+    platform?: str
+    cluster_rbac?: ClusterRBAC
+
+    check:
+        type == "cluster", "K8sCluster.type must be 'cluster'"
+        cluster, "K8sCluster.cluster is required (kubectl context name)"
+        namespace, "K8sCluster.namespace is required"
+        registry, "K8sCluster.registry is required (image registry, e.g. ghcr.io/org/proj)"
+        replicas > 0, "K8sCluster.replicas must be positive"
+
+schema VMDocker:
+    """DECLARATIVE-ONLY — Service runs as a Docker container on a
+    single VM reached over SSH. The Go-side dispatch ships as a stub
+    that returns 'not yet implemented'; the schema is here so projects
+    can declare the shape they want, and so the migration skill has
+    something concrete to point at.
+
+    Substitutions accepted in `deploy_cmd` / `rollback_cmd` / `health_cmd`:
+      * ${IMAGE} — image name (from `image`)
+      * ${TAG}   — image tag (from `tag`; falls back to build-resolved)
+      * ${HOST}  — SSH host (from `ssh_host`)
+    """
+    type: str = "vm-docker"
+    ssh_host: str
+    image: str
+    tag?: str
+    deploy_cmd?: str
+    rollback_cmd?: str
+    health_cmd?: str
+    env_file?: str
+
+    check:
+        type == "vm-docker", "VMDocker.type must be 'vm-docker'"
+        ssh_host, "VMDocker.ssh_host is required (e.g. 'user@host')"
+        image, "VMDocker.image is required"
+
+schema Compose:
+    """DECLARATIVE-ONLY — Service runs under docker-compose on the
+    target host. The Go-side dispatch ships as a stub that returns
+    'not yet implemented'; the schema is here so projects can declare
+    the shape they want.
+
+    `service` defaults to the parent Service.name when unset.
+    """
+    type: str = "compose"
+    compose_file: str = "docker-compose.yml"
+    service?: str
+    env_file?: str
+
+    check:
+        type == "compose", "Compose.type must be 'compose'"
 
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
@@ -258,7 +360,11 @@ schema Service:
 
     The `deploy` field's runtime type decides intent:
       * HostDeploy  — forge launches it on the host.
-      * K8sDeploy   — forge deploys to k8s as Deployment + Service.
+      * K8sCluster  — forge deploys to a Kubernetes cluster as
+                       Deployment + Service. Supersedes K8sDeploy.
+      * K8sDeploy   — DEPRECATED — see K8sCluster.
+      * VMDocker    — DECLARATIVE-ONLY — Docker-on-VM via SSH (stub).
+      * Compose     — DECLARATIVE-ONLY — docker-compose (stub).
       * BuildOnly   — forge builds the artifact only (CLI shape).
 
     Omit `deploy` entirely to mean "just build the binary" — the
@@ -268,7 +374,7 @@ schema Service:
     image?: str
     command: [str] = []
     env_vars: [EnvVar] = []
-    deploy?: HostDeploy | K8sDeploy | BuildOnly
+    deploy?: HostDeploy | K8sCluster | K8sDeploy | VMDocker | Compose | BuildOnly
 
     check:
         name, "Service.name is required"

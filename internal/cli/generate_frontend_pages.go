@@ -144,7 +144,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			fmt.Printf("  ✅ Generated %d CRUD page(s) for frontend %s\n", pageCount, fe.Name)
 		}
 		if skipCount > 0 {
-			fmt.Printf("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (pass --force to re-scaffold)\n", skipCount, fe.Name)
+			fmt.Printf("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (pass --force --reset-tier2 to re-scaffold)\n", skipCount, fe.Name)
 		}
 	}
 

@@ -181,6 +181,21 @@ type pipelineFlags struct {
 	// AssumeYes auto-confirms y/N prompts. Currently only consumed by
 	// the per-file Tier-2 overwrite prompt under --reset-tier2.
 	AssumeYes bool
+	// Scope narrows the set of pipeline steps the runner executes. The
+	// empty string runs the full pipeline (the historical default). The
+	// "bootstrap-only" value runs JUST the load/parse/bootstrap/validate
+	// subset — used by `forge add worker` so adding a single worker
+	// doesn't trigger a full project regen that stomps unrelated Tier-1
+	// files (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
+	// pkg/config/config.go). The step allowlist lives in
+	// scopedStepAllowlist (generate_pipeline.go).
+	//
+	// FRICTION 2026-06-03: cp-forge port-workers ran `forge add worker`
+	// 7× and watched regen rewrite 5 unrelated Tier-1 files per call.
+	// Composes with the existing tier1OwnerRegistry scoping in
+	// generate_tier1_scope.go — both narrow what `forge add worker`
+	// touches, just at different layers (drift-guard vs step execution).
+	Scope string
 }
 
 // runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
@@ -242,7 +257,29 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 	}()
 
-	for _, step := range generateSteps() {
+	// Scope filter — when flags.Scope is non-empty, drop steps not in the
+	// allowlist BEFORE the Gate check. The gate is a project-shape
+	// predicate ("does this project have services?"); the scope is a
+	// caller-intent predicate ("am I doing a bootstrap-only regen?").
+	// They compose: a step that's allowlisted by scope still has to pass
+	// its Gate, and a step gated off would skip regardless of scope.
+	steps := generateSteps()
+	if flags.Scope != "" {
+		allow, ok := scopedStepAllowlist[flags.Scope]
+		if !ok {
+			return fmt.Errorf("unknown pipeline scope %q (valid: %s)", flags.Scope, knownScopeNames())
+		}
+		filtered := steps[:0:0]
+		for _, step := range steps {
+			if allow[step.Name] {
+				filtered = append(filtered, step)
+			}
+		}
+		fmt.Printf("⏩ scope=%s: running %d of %d pipeline steps\n", flags.Scope, len(filtered), len(steps))
+		steps = filtered
+	}
+
+	for _, step := range steps {
 		if !step.Gate(ctx) {
 			continue
 		}

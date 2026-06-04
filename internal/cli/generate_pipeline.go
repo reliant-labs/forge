@@ -262,6 +262,65 @@ func generateSteps() []GenStep {
 	}
 }
 
+// scopedStepAllowlist maps a pipelineFlags.Scope value to the set of
+// step.Name values the runner is allowed to execute under that scope.
+// An empty Scope (the historical default) bypasses this map entirely
+// and runs every step that passes its Gate.
+//
+// Adding a new scope: pick a stable name, enumerate the step.Name values
+// the scope covers, and document the caller's intent in the comment.
+// Step names must match generateSteps() exactly — the
+// TestScopedStepAllowlistMembersExist test verifies this so a typo or a
+// step rename doesn't silently produce a no-op pipeline.
+//
+// The "bootstrap-only" scope covers `forge add worker`: scaffold a new
+// worker, regenerate ONLY pkg/app/{bootstrap,testing,migrate}.go and the
+// validation tail, then exit. Sibling Tier-1 files (.github/workflows/
+// ci.yml, cmd/server.go, frontend mocks, pkg/config/config.go) stay
+// untouched so a sibling agent or hand-curated comment isn't stomped.
+// FRICTION 2026-06-03: cp-forge port-workers ran `forge add worker` 7×
+// and watched regen rewrite 5 unrelated files per call.
+var scopedStepAllowlist = map[string]map[string]bool{
+	"bootstrap-only": {
+		"load project config":              true,
+		"load checksums":                   true,
+		"check Tier-1 file-stomp guard":    true,
+		"snapshot Tier-1 exports":          true,
+		"sync forge/pkg dev replace":       true,
+		"announce project":                 true,
+		"detect proto directories":         true,
+		"ensure gen/go.mod":                true,
+		"parse services + module path":     true,
+		"pkg/app/bootstrap.go":             true,
+		"pkg/app/testing.go":               true,
+		"pkg/app/migrate.go":               true,
+		"go mod tidy (gen/)":               true,
+		"go mod tidy (root)":               true,
+		"goimports on generated Go":        true,
+		"rehash tracked files":             true,
+		"post-gen validation":              true,
+		"detect renamed Tier-1 exports":    true,
+		"go build (validate generated code)": true,
+	},
+}
+
+// knownScopeNames returns a comma-joined string of every registered scope
+// for error messages. Kept as a helper so the error in
+// runGeneratePipelineFlags doesn't have to inline a sort + join.
+func knownScopeNames() string {
+	names := make([]string, 0, len(scopedStepAllowlist))
+	for k := range scopedStepAllowlist {
+		names = append(names, k)
+	}
+	// Tiny sort to keep the error message deterministic.
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j-1] > names[j]; j-- {
+			names[j-1], names[j] = names[j], names[j-1]
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 // always is the trivial gate. Used for steps that are unconditional
 // (config loading, checksums, build validation) or whose internal
 // no-op-when-not-applicable behavior matches the pre-refactor shape.

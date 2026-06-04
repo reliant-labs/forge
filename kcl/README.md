@@ -58,10 +58,19 @@ forge CLI can dispatch on intent rather than infer it:
 | `CronJob`  | Scheduled job. Omit `schedule` → renders a Job.       | `cronjobs[]`  |
 
 `Service.deploy` is a polymorphic union — one of `HostDeploy`,
-`K8sCluster`, `VMDocker`, `Compose`, or `BuildOnly`. The `type`
+`K8sCluster`, `External`, `Compose`, or `BuildOnly`. The `type`
 discriminator lives ON the deploy subschema so KCL's JSON output is
 self-describing. Forge's CLI reads the discriminator to decide whether
-to run on host, schedule in cluster, or just produce a build artifact.
+to run on host, schedule in cluster, shell out to a custom CLI, or
+just produce a build artifact.
+
+`External` is the escape hatch for any deploy target driven by a CLI
+(Fly.io / Cloudflare Workers / Cloud Run / ECS / Vercel / systemd VM
+/ …). The provider exec's `deploy_cmd` with substitution tokens
+(`${IMAGE}`, `${TAG}`, `${LAST_TAG}`, `${SERVICE}`, `${ENV}`,
+`${ENV_FILE}`, `${PROJECT_DIR}`, plus any keys declared in `env`).
+See the `external-deploy-recipes` skill for ready-to-paste KCL blocks
+for the common providers.
 
 `HostDeploy` splits per-env config from secrets:
 

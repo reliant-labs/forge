@@ -83,10 +83,12 @@ Why move? Three reasons:
    per env. v2 lets a single env target multiple clusters (e.g. an
    "edge" service on a regional cluster + the rest on the main one);
    each `Service.deploy` picks its own `K8sCluster` ref.
-3. **Future deploy targets.** v2 adds `forge.VMDocker` and
-   `forge.Compose` as sibling deploy-target schemas. They can't fit on
-   `forge.yaml -> environments[]` (the env-wide fields are cluster-
-   specific) and now slot in cleanly alongside `K8sCluster`.
+3. **Non-cluster deploy targets.** v2 adds `forge.External` (generic
+   shell-command escape hatch for Fly.io / Cloud Run / Cloudflare
+   Workers / ECS / etc.) and `forge.Compose` (docker-compose) as
+   sibling deploy-target schemas. They can't fit on `forge.yaml ->
+   environments[]` (the env-wide fields are cluster-specific) and now
+   slot in cleanly alongside `K8sCluster`.
 
 ## 2. Detection
 
@@ -262,7 +264,7 @@ binary is the supported rollback.
 ## See also
 
 - `architecture` skill — where K8sCluster sits in the deploy/kcl
-  module relative to HostDeploy / VMDocker / Compose.
+  module relative to HostDeploy / External / Compose.
 - `deploy` skill — the per-group dispatch architecture and how
   K8sClusterProvider wraps the existing cluster.Apply pipeline.
 - `v0.x-to-env-config` skill — the parallel migration that introduced

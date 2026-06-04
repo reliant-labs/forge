@@ -161,6 +161,14 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 		}
 		MultiTenantEnabled bool
 		AnyServiceHasDB    bool
+		// ExtraImports lists cross-package auto-stub imports. The
+		// template ranges over it unconditionally; we declare the
+		// field as an empty slice so text/template's struct-field
+		// lookup succeeds. The element type only needs the same
+		// .Alias / .Path fields the production type carries.
+		ExtraImports []struct {
+			Alias, Path string
+		}
 	}{
 		Module: "example.com/myproject",
 	}

@@ -24,12 +24,13 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch        bool
-		force        bool
-		accept       bool
-		explain      bool
-		skipValidate bool
-		checkOnly    bool
+		watch         bool
+		force         bool
+		accept        bool
+		explain       bool
+		skipValidate  bool
+		skipPreChecks bool
+		checkOnly     bool
 	)
 
 	cmd := &cobra.Command{
@@ -58,8 +59,9 @@ Examples:
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
   forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
   forge generate --explain        # Print per-file provenance log after generate
-  forge generate --skip-validate  # Skip the final 'go build ./...' validate step
-  forge generate --check          # Run generate into a tmpdir; exit 1 if it would change the tree`,
+  forge generate --skip-validate    # Skip the final 'go build ./...' validate step
+  forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
+  forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
 				return runGenerateCheck()
@@ -84,7 +86,12 @@ Examples:
 			}
 
 			generateMu.Lock()
-			err := runGeneratePipelineOpts(".", force, accept, skipValidate)
+			err := runGeneratePipelineFlags(".", pipelineFlags{
+				Force:         force,
+				Accept:        accept,
+				SkipValidate:  skipValidate,
+				SkipPreChecks: skipPreChecks,
+			})
 			generateMu.Unlock()
 
 			// Print the explain log even when the pipeline failed — partial
@@ -114,6 +121,7 @@ Examples:
 	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
+	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 
 	return cmd
@@ -137,6 +145,30 @@ func runGeneratePipeline(projectDir string, force, accept bool) error {
 // legacy 3-arg signature keeps test fixtures (and any out-of-tree
 // callers) source-compatible.
 func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool) error {
+	return runGeneratePipelineFlags(projectDir, pipelineFlags{
+		Force:        force,
+		Accept:       accept,
+		SkipValidate: skipValidate,
+	})
+}
+
+// pipelineFlags is the typed bag of opt-in toggles for the generate
+// pipeline. Grew out of the per-flag positional-arg signatures
+// (runGeneratePipeline, runGeneratePipelineOpts) once the flag count
+// crossed three — adding a fourth (--skip-pre-checks) without a struct
+// would have meant churning every caller of the positional form.
+type pipelineFlags struct {
+	Force         bool
+	Accept        bool
+	SkipValidate  bool
+	SkipPreChecks bool
+}
+
+// runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
+// runGeneratePipeline (force/accept) and the slightly newer
+// runGeneratePipelineOpts (+ skipValidate) call through here. New flags
+// land on pipelineFlags.
+func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// Cross-process file lock (complements the in-process generateMu).
 	// Held for the lifetime of the pipeline so a parallel `forge add`
 	// can't race a long `forge generate`.
@@ -146,13 +178,16 @@ func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool
 	}
 	defer release()
 
-	ctx, err := newPipelineContextWithOpts(projectDir, force, accept, skipValidate)
+	ctx, err := newPipelineContextWithFlags(projectDir, flags)
 	if err != nil {
 		return err
 	}
 
-	if skipValidate {
+	if flags.SkipValidate {
 		fmt.Println("⏩ --skip-validate: final 'go build ./...' step will be skipped")
+	}
+	if flags.SkipPreChecks {
+		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
 	}
 
 	// Save checksums on exit, even on partial failures: a step that

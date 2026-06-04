@@ -16,6 +16,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
 // ANSI color codes for service log prefixes.
@@ -427,6 +428,36 @@ func envConfigToEnvVars(envCfg map[string]any, _ *config.ProjectConfig, projectD
 	return out
 }
 
+// loadProjectConfigEnv loads forge.yaml `environments[env].config` and
+// projects it to env-var strings via [envConfigToEnvVars]. Returns an
+// empty map (not nil) on any error so callers can pass the result
+// straight to [hostlaunch.LayerHostEnv] without guarding. Missing env /
+// empty config is non-fatal — `forge run <svc>` runs against whatever
+// defaults the binary's flag/env loader provides when no per-env
+// config is declared.
+//
+// Reuses the same loader + projector as the orchestrator
+// (runProjectDev) so host-mode services see the same forge.yaml config
+// values cluster-mode services get via the ConfigMap projection.
+// Sensitive fields and ${SECRET_REF} placeholders are skipped — those
+// belong in `.env.<env>` (the gitignored dotenv) or the developer
+// shell, not in committed forge.yaml.
+func loadProjectConfigEnv(cfg *config.ProjectConfig, env string) map[string]string {
+	if env == "" {
+		return map[string]string{}
+	}
+	projectPath, perr := findProjectConfigFile()
+	if perr != nil {
+		return map[string]string{}
+	}
+	projectDir := filepath.Dir(projectPath)
+	envCfg, lerr := config.LoadEnvironmentConfig(cfg, projectDir, env)
+	if lerr != nil {
+		return map[string]string{}
+	}
+	return envConfigToEnvVars(envCfg, cfg, projectPath, env)
+}
+
 // configAnnotation is a lightweight projection of ConfigField used by
 // the run command to map proto field names to env-var names.
 type configAnnotation struct {
@@ -505,10 +536,32 @@ func stringifyEnvValue(v any) string {
 // can continue. Stop the background process with `forge run <service>
 // stop`.
 //
-// envFile, when empty, defaults to ".env.<env>" (typically ".env.dev").
-// Missing env file is non-fatal — the child inherits the parent's
-// environment unchanged.
-func runHostService(ctx context.Context, name, env, envFile string, background bool) error {
+// Env composition (precedence: later overrides earlier on key
+// conflict; base os.Environ() wins last across the whole chain):
+//
+//  1. os.Environ() — the parent process env. Wins last so a developer
+//     shell override (`LOG_LEVEL=trace forge run ...`) beats everything
+//     else.
+//  2. forge.yaml `environments[<env>].config` — non-secret per-env
+//     config (environment / log_format / log_level / etc.). Same values
+//     cluster-mode services see via the ConfigMap projection, layered
+//     here so host-mode services don't drift. Sensitive fields and
+//     ${SECRET_REF} placeholders are skipped (host-mode dev expects
+//     those in .env.<env> or the developer shell). Lowest precedence
+//     among extras.
+//  3. secretsFile (`.env.<env>`) — gitignored dotenv of API keys plus
+//     any developer-local overrides. Empty path → skip; missing file →
+//     warn and continue; unreadable (parse / permission) → error. Wins
+//     over forge.yaml config so a developer can shadow a committed
+//     value without editing tracked files.
+//  4. host.EnvVars (KCL) — KCL-declared per-env config. Wins over the
+//     two layers above so reproducible per-env config can't drift
+//     across machines.
+//
+// secretsFile, when empty, falls back to host.SecretsFile from KCL.
+// No legacy default (".env.<env>") — projects on the new shape must
+// declare SecretsFile in KCL to opt in.
+func runHostService(ctx context.Context, name, env, secretsFile string, background bool) error {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -534,27 +587,48 @@ func runHostService(ctx context.Context, name, env, envFile string, background b
 	}
 
 	// Look up the KCL HostDeploy block for this service. When the env's
-	// KCL declares it, the Runner / AirConfig / DelvePort / EnvFile
-	// fields drive dispatch; otherwise nil falls back to the legacy
-	// `go run ./cmd server <svc>` shape for projects that haven't
-	// migrated to the deploy module yet.
+	// KCL declares it, the Runner / AirConfig / DelvePort / SecretsFile
+	// / EnvVars fields drive dispatch + env composition; otherwise nil
+	// falls back to the legacy `go run ./cmd server <svc>` shape for
+	// projects that haven't migrated to the deploy module yet.
 	host := lookupKCLHostDeploy(ctx, env, name)
 
-	if envFile == "" && host != nil {
-		envFile = host.EnvFile
+	if secretsFile == "" && host != nil {
+		secretsFile = host.SecretsFile
 	}
-	if envFile == "" {
-		envFile = ".env." + env
+	secrets, loadErr := hostlaunch.LoadSecretsFile(secretsFile)
+	switch {
+	case loadErr == nil && secretsFile != "":
+		fmt.Printf("[run] %s: loaded %d secrets from %s\n", name, len(secrets), secretsFile)
+	case loadErr != nil && os.IsNotExist(loadErr):
+		fmt.Printf("[run] %s: warning: secrets file %s missing; continuing without it\n", name, secretsFile)
+	case loadErr != nil:
+		return fmt.Errorf("read secrets file %s: %w", secretsFile, loadErr)
 	}
-	extraEnv, loadErr := readDotEnvFile(envFile)
-	if loadErr == nil {
-		fmt.Printf("[run] %s: loaded %d vars from %s\n", name, len(extraEnv), envFile)
-	} else if !os.IsNotExist(loadErr) {
-		fmt.Printf("[run] %s: warning: read %s: %v\n", name, envFile, loadErr)
+
+	// Layer KCL-declared env_vars on top of the loaded secrets. EnvVars
+	// only carries inline `value` fields at this surface — secret_ref /
+	// config_map_ref shapes are for K8sDeploy / cluster projection and
+	// have no meaningful host equivalent. Skip non-value entries.
+	envVars := hostEnvVarsToMap(host)
+	if len(envVars) > 0 {
+		fmt.Printf("[run] %s: layering %d KCL env_vars on top of secrets\n", name, len(envVars))
+	}
+
+	// Load forge.yaml environments[<env>].config and project to env-var
+	// strings. Same source as the cluster ConfigMap projection — without
+	// this layer, host-mode services see ONLY .env.<env> (the gitignored
+	// dotenv) and the per-env config that cluster-mode services see via
+	// ConfigMap is invisible on the host. Missing env / empty config is
+	// non-fatal: we log it and continue with whatever the binary's
+	// startup defaults provide.
+	projectConfigEnv := loadProjectConfigEnv(cfg, env)
+	if len(projectConfigEnv) > 0 {
+		fmt.Printf("[run] %s: layering %d forge.yaml config values for env %q\n", name, len(projectConfigEnv), env)
 	}
 
 	cmd := buildRunHostCmd(ctx, name, host)
-	cmd.Env = mergeEnv(extraEnv, os.Environ())
+	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secrets, envVars)
 
 	// Pid file path is shared by foreground (cleanup on exit) and
 	// background (handle for `forge run <svc> stop`).
@@ -669,18 +743,13 @@ func runHostServiceStop(name string) error {
 	return nil
 }
 
-// hostRunPIDPath returns the canonical per-service PID file path:
+// hostRunPIDPath is a thin shim over hostlaunch.PIDPath kept so the
+// existing in-package callers and the run_test.go TestHostRunPIDPath
+// helper stay terse. Canonical path:
 //
 //	$HOME/.cache/forge/run/<service>.pid
-//
-// Shared by foreground (cleanup on exit) and background (stop handle)
-// modes so `forge run <svc> stop` works for both.
 func hostRunPIDPath(name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
-	return filepath.Join(home, ".cache", "forge", "run", name+".pid"), nil
+	return hostlaunch.PIDPath(name)
 }
 
 // lookupKCLHostDeploy reads the env's rendered KCL and returns the
@@ -705,52 +774,51 @@ func lookupKCLHostDeploy(ctx context.Context, env, svcName string) *HostDeploy {
 	return svc.Deploy.Host
 }
 
-// defaultDelvePort is the dlv --listen=:<port> default when KCL doesn't
-// pin one explicitly. Matches the existing `forge run --debug` shape.
-const defaultDelvePort = 2345
-
-// defaultAirConfig is the `air -c <path>` default when KCL doesn't pin
-// one explicitly. Mirrors the `air` tool's own default — `.air.toml` at
-// the project root.
-const defaultAirConfig = ".air.toml"
-
 // buildRunHostCmd composes the exec.Cmd for `forge run <svc>` based on
-// the KCL-declared runner. A nil host or empty runner falls through to
-// the legacy `go run ./cmd server <svc>` shape so projects that haven't
-// migrated to the deploy module yet keep working unchanged.
+// the KCL-declared runner. Thin shim over hostlaunch.BuildCmd; a nil
+// host falls through to the legacy `go run ./cmd server <svc>` shape
+// (hostlaunch's unknown/empty-runner default), preserving the
+// pre-collapse behaviour for projects without a KCL deploy block.
 //
-// Per-runner notes:
-//   - air:    uses HostDeploy.AirConfig (default ".air.toml").
-//   - binary: assumes `./bin/<svc>` exists — `forge build` writes there.
-//   - delve:  HostDeploy.DelvePort (default 2345); --continue keeps the
-//             server up while a remote IDE attaches.
+// The runner dispatch matrix (go-run / air / binary / delve) and its
+// defaults (DefaultAirConfig=".air.toml", DefaultDelvePort=2345) live
+// in the hostlaunch package alongside the `forge up` host phase.
 func buildRunHostCmd(ctx context.Context, name string, host *HostDeploy) *exec.Cmd {
-	runner := ""
+	spec := hostlaunch.RunnerSpec{}
 	if host != nil {
-		runner = strings.TrimSpace(host.Runner)
-	}
-	switch runner {
-	case "air":
-		cfg := defaultAirConfig
-		if host != nil && host.AirConfig != "" {
-			cfg = host.AirConfig
+		spec = hostlaunch.RunnerSpec{
+			Runner:    host.Runner,
+			AirConfig: host.AirConfig,
+			DelvePort: host.DelvePort,
 		}
-		return exec.CommandContext(ctx, "air", "-c", cfg)
-	case "binary":
-		return exec.CommandContext(ctx, "./bin/"+name)
-	case "delve":
-		port := defaultDelvePort
-		if host != nil && host.DelvePort > 0 {
-			port = host.DelvePort
-		}
-		return exec.CommandContext(ctx, "dlv", "exec", "--headless",
-			fmt.Sprintf("--listen=:%d", port),
-			"--api-version=2", "--accept-multiclient",
-			"--continue", "./bin/"+name)
-	default:
-		// "go-run" or "" — the legacy shape.
-		return exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
 	}
+	return hostlaunch.BuildCmd(ctx, name, spec)
+}
+
+// hostEnvVarsToMap projects the HostDeploy.EnvVars slice to a flat
+// NAME→VALUE map for layering onto the subprocess env.
+//
+// Only the inline `value` channel applies on the host — KCLEnvVar's
+// other channels (secret_ref, config_map_ref) are cluster-mode
+// projections (Deployment.env.valueFrom.secretKeyRef etc.) with no
+// meaningful host equivalent. Those projection channels stay in KCL
+// for K8sDeploy services; on the host, secrets come from the
+// gitignored secrets_file.
+//
+// Returns an empty map (not nil) on a nil host, so callers can pass
+// the result straight to [hostlaunch.LayerHostEnv] without guarding.
+func hostEnvVarsToMap(host *HostDeploy) map[string]string {
+	if host == nil || len(host.EnvVars) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(host.EnvVars))
+	for _, ev := range host.EnvVars {
+		if ev.Name == "" || ev.Value == "" {
+			continue
+		}
+		out[ev.Name] = ev.Value
+	}
+	return out
 }
 
 // declaredServiceNames returns the names of every service in forge.yaml,
@@ -764,62 +832,15 @@ func declaredServiceNames(cfg *config.ProjectConfig) []string {
 	return out
 }
 
-// readDotEnvFile parses a .env file (KEY=VALUE per line, # comments,
-// trailing whitespace trimmed) into a map. Quoted values
-// ("VALUE", 'VALUE') have their outer quotes stripped. Missing file
-// returns os.ErrNotExist so callers can treat absence as non-fatal.
-//
-// Intentionally minimal — we don't expand $VARS or `${VAR:-default}`
-// shell features. Projects needing those should use direnv or a wrapper
-// script; this helper is just enough for the common
-// "DATABASE_URL=postgres://..." case the host-mode loop needs.
+// readDotEnvFile is a thin shim over hostlaunch.ReadDotEnvFile; the
+// parser lives in hostlaunch so the `forge up` host phase can share it.
 func readDotEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// strip an optional leading "export ".
-		line = strings.TrimPrefix(line, "export ")
-		i := strings.IndexByte(line, '=')
-		if i <= 0 {
-			continue
-		}
-		k := strings.TrimSpace(line[:i])
-		v := strings.TrimSpace(line[i+1:])
-		// Strip a single layer of matching quotes, if present.
-		if len(v) >= 2 {
-			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
-				v = v[1 : len(v)-1]
-			}
-		}
-		out[k] = v
-	}
-	return out, nil
+	return hostlaunch.ReadDotEnvFile(path)
 }
 
-// mergeEnv layers per-env config onto a base os.Environ() slice. Keys
-// already present in base are kept (so a developer's shell override
-// always wins). Returns a fresh slice safe to assign to cmd.Env.
+// mergeEnv is a thin shim over hostlaunch.MergeEnv. Base wins on key
+// collisions so a developer's shell override always beats the loaded
+// .env values.
 func mergeEnv(extra map[string]string, base []string) []string {
-	have := map[string]struct{}{}
-	for _, kv := range base {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			have[kv[:i]] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(base)+len(extra))
-	out = append(out, base...)
-	for k, v := range extra {
-		if _, exists := have[k]; exists {
-			continue
-		}
-		out = append(out, k+"="+v)
-	}
-	return out
+	return hostlaunch.MergeEnv(extra, base)
 }

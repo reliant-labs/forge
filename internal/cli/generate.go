@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -24,12 +26,15 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch        bool
-		force        bool
-		accept       bool
-		explain      bool
-		skipValidate bool
-		checkOnly    bool
+		watch         bool
+		force         bool
+		accept        bool
+		explain       bool
+		skipValidate  bool
+		skipPreChecks bool
+		resetTier2    bool
+		assumeYes     bool
+		checkOnly     bool
 	)
 
 	cmd := &cobra.Command{
@@ -58,8 +63,10 @@ Examples:
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
   forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
   forge generate --explain        # Print per-file provenance log after generate
-  forge generate --skip-validate  # Skip the final 'go build ./...' validate step
-  forge generate --check          # Run generate into a tmpdir; exit 1 if it would change the tree`,
+  forge generate --skip-validate    # Skip the final 'go build ./...' validate step
+  forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
+  forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
+  forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
 				return runGenerateCheck()
@@ -84,7 +91,14 @@ Examples:
 			}
 
 			generateMu.Lock()
-			err := runGeneratePipelineOpts(".", force, accept, skipValidate)
+			err := runGeneratePipelineFlags(".", pipelineFlags{
+				Force:         force,
+				Accept:        accept,
+				SkipValidate:  skipValidate,
+				SkipPreChecks: skipPreChecks,
+				ResetTier2:    resetTier2,
+				AssumeYes:     assumeYes,
+			})
 			generateMu.Unlock()
 
 			// Print the explain log even when the pipeline failed — partial
@@ -114,6 +128,9 @@ Examples:
 	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
+	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
+	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Auto-confirm interactive prompts (currently consumed by --reset-tier2)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 
 	return cmd
@@ -137,6 +154,40 @@ func runGeneratePipeline(projectDir string, force, accept bool) error {
 // legacy 3-arg signature keeps test fixtures (and any out-of-tree
 // callers) source-compatible.
 func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool) error {
+	return runGeneratePipelineFlags(projectDir, pipelineFlags{
+		Force:        force,
+		Accept:       accept,
+		SkipValidate: skipValidate,
+	})
+}
+
+// pipelineFlags is the typed bag of opt-in toggles for the generate
+// pipeline. Grew out of the per-flag positional-arg signatures
+// (runGeneratePipeline, runGeneratePipelineOpts) once the flag count
+// crossed three — adding a fourth (--skip-pre-checks) without a struct
+// would have meant churning every caller of the positional form.
+type pipelineFlags struct {
+	Force         bool
+	Accept        bool
+	SkipValidate  bool
+	SkipPreChecks bool
+	// ResetTier2 explicitly opts in to overwriting hand-edited Tier-2
+	// scaffolds (service.go, handlers.go, …). The default for Tier-2 is
+	// "preserve hand-edits even when --force is set" — the scaffold-once
+	// contract is broken by the historic --force semantics. When this
+	// flag is set, the user is prompted per file (with a diff preview)
+	// unless AssumeYes is also true. See item 15 of FORGE_BACKLOG.md.
+	ResetTier2 bool
+	// AssumeYes auto-confirms y/N prompts. Currently only consumed by
+	// the per-file Tier-2 overwrite prompt under --reset-tier2.
+	AssumeYes bool
+}
+
+// runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
+// runGeneratePipeline (force/accept) and the slightly newer
+// runGeneratePipelineOpts (+ skipValidate) call through here. New flags
+// land on pipelineFlags.
+func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// Cross-process file lock (complements the in-process generateMu).
 	// Held for the lifetime of the pipeline so a parallel `forge add`
 	// can't race a long `forge generate`.
@@ -146,13 +197,27 @@ func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool
 	}
 	defer release()
 
-	ctx, err := newPipelineContextWithOpts(projectDir, force, accept, skipValidate)
+	ctx, err := newPipelineContextWithFlags(projectDir, flags)
 	if err != nil {
 		return err
 	}
 
-	if skipValidate {
+	if flags.SkipValidate {
 		fmt.Println("⏩ --skip-validate: final 'go build ./...' step will be skipped")
+	}
+	if flags.SkipPreChecks {
+		fmt.Println("⚠️  pre-codegen contract check skipped via --skip-pre-checks")
+	}
+
+	// --reset-tier2 wires a per-file Tier-2 overwrite hook. The hook
+	// drives WriteGeneratedFileTier2's "user-edited Tier-2 detected;
+	// overwrite y/N?" decision. Without the hook the writer preserves
+	// hand-edits — the historic safe default. With --reset-tier2 --yes,
+	// the hook auto-approves; without --yes it prompts per file.
+	checksums.ResetTier2State()
+	if flags.ResetTier2 {
+		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
+		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)
 	}
 
 	// Save checksums on exit, even on partial failures: a step that
@@ -164,6 +229,16 @@ func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool
 		}
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)
+		}
+	}()
+
+	// Tier-2 preservation summary fires only when --force is set: that's
+	// the legacy user expectation we just changed. Users who run plain
+	// `forge generate` already expect Tier-2 to be untouched and don't
+	// need the nag line.
+	defer func() {
+		if flags.Force && checksums.Tier2PreservedCount > 0 {
+			fmt.Fprintf(os.Stderr, "ℹ️  --force preserved %d hand-edited Tier-2 file(s); pass --reset-tier2 to overwrite explicitly.\n", checksums.Tier2PreservedCount)
 		}
 	}()
 
@@ -179,6 +254,53 @@ func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool
 	fmt.Println()
 	fmt.Println("✅ Code generation complete!")
 	return nil
+}
+
+// makeTier2OverwriteHook returns the checksums.Tier2OverwriteFn the
+// pipeline installs when the user passes `--reset-tier2`. The hook
+// fires once per modified Tier-2 file as WriteGeneratedFileTier2
+// encounters it; returning true clobbers the user's edits, false
+// preserves them.
+//
+// When assumeYes is set the hook unconditionally approves the
+// overwrite (`--reset-tier2 --yes`). Otherwise it prints a short
+// preview ("modified Tier-2 file <path>, overwrite? y/N") on stderr
+// and reads from stdin. Any answer other than `y` / `Y` / `yes` is
+// treated as "preserve", matching standard y/N convention.
+//
+// The hook is intentionally simple — we don't print a full unified
+// diff because users running --reset-tier2 already have git available
+// for that ("git diff HEAD -- <path>" before re-running is the
+// expected workflow). The prompt's job is the explicit per-file
+// confirmation gate.
+func makeTier2OverwriteHook(root string, cs *generator.FileChecksums, assumeYes bool) func(string) bool {
+	reader := bufio.NewReader(os.Stdin)
+	return func(relPath string) bool {
+		if assumeYes {
+			fmt.Fprintf(os.Stderr, "  ↻ --reset-tier2 --yes: overwriting %s\n", relPath)
+			return true
+		}
+		recorded := ""
+		current := ""
+		if cs != nil {
+			if entry, ok := cs.Files[relPath]; ok {
+				recorded = short(entry.Hash)
+			}
+		}
+		if data, err := os.ReadFile(filepath.Join(root, relPath)); err == nil {
+			current = short(generator.HashContent(data))
+		}
+		fmt.Fprintf(os.Stderr, "\nTier-2 file modified: %s\n", relPath)
+		fmt.Fprintf(os.Stderr, "  recorded hash: %s\n", recorded)
+		fmt.Fprintf(os.Stderr, "  on-disk hash:  %s\n", current)
+		fmt.Fprintf(os.Stderr, "Overwrite with newly rendered template? [y/N]: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return false
+		}
+		ans := strings.ToLower(strings.TrimSpace(line))
+		return ans == "y" || ans == "yes"
+	}
 }
 
 // runGoBuildValidate is the body of stepGoBuildValidate (was Step 9 in

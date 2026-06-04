@@ -99,6 +99,15 @@ type pipelineContext struct {
 	// per-commit port 8050178.
 	SkipValidate bool
 
+	// SkipPreChecks bypasses the pre-codegen Step 0c contract-shape
+	// check (LintInternalContracts). Same motivation as SkipValidate:
+	// during parallel-lane work an unrelated `internal/<other-lane>/
+	// contract.go` violation would otherwise block regen across every
+	// lane. Distinct from SkipValidate — that one gates the FINAL
+	// `go build`; this one gates the PRE-codegen guard. Both are
+	// available so the user can opt-out of either side independently.
+	SkipPreChecks bool
+
 	// Cfg may be nil — that's the directory-scan fallback path.
 	Cfg *config.ProjectConfig
 
@@ -168,6 +177,25 @@ func newPipelineContextWithOpts(projectDir string, force, accept, skipValidate b
 	}, nil
 }
 
+// newPipelineContextWithFlags is the typed-flags variant. New optional
+// pipeline toggles land on the pipelineFlags struct rather than as a new
+// positional argument — keeps the call-site self-documenting and avoids
+// churning every test fixture when a flag is added.
+func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipelineContext, error) {
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
+	}
+	return &pipelineContext{
+		ProjectDir:    projectDir,
+		AbsPath:       abs,
+		Force:         flags.Force,
+		Accept:        flags.Accept,
+		SkipValidate:  flags.SkipValidate,
+		SkipPreChecks: flags.SkipPreChecks,
+	}, nil
+}
+
 // generateSteps returns the ordered step plan. The slice is the
 // authoritative ordering — comments alongside each entry replace the
 // pre-refactor "Step Nx" numbering. Reorder cautiously; the
@@ -185,8 +213,9 @@ func generateSteps() []GenStep {
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
-		{Name: "pre-codegen contract check", Gate: always, Run: stepPreCodegenContractCheck, Tag: "validate"},
+		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, Run: stepPreCodegenContractCheck, Tag: "validate"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
+		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, Run: stepDescriptorGenerate, Tag: "proto"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, Run: stepOpenAPIGenerate, Tag: "proto"},
@@ -243,6 +272,14 @@ func always(_ *pipelineContext) bool { return true }
 // doc on pipelineContext for the per-lane-migration rationale.
 func gateValidateNotSkipped(ctx *pipelineContext) bool {
 	return !ctx.SkipValidate
+}
+
+// gatePreChecksNotSkipped suppresses the pre-codegen Step 0c contract-
+// shape check when --skip-pre-checks is set. The caller already prints a
+// warn line about the bypass in runGeneratePipelineFlags so users see
+// the skip in their generate output.
+func gatePreChecksNotSkipped(ctx *pipelineContext) bool {
+	return !ctx.SkipPreChecks
 }
 
 // Gate helpers. Pure predicates over ctx — no I/O. Tests assert these
@@ -491,6 +528,24 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		return nil
 	}
 
+	// Mid-merge detection: when git is in the middle of a merge /
+	// cherry-pick / rebase, the Tier-1 drift we're seeing is almost
+	// always upstream changes the operation brought in — NOT a real
+	// hand-edit. Surface a friendlier message that points the user at
+	// the right escape hatch (`--accept` to re-stamp the checksums).
+	if state := detectGitMergeState(ctx.AbsPath); state != "" {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Tier-1 stomp guard tripped while git is mid-%s.\n\n", state)
+		fmt.Fprintf(&b, "%d Tier-1 file(s) drifted from their recorded checksum:\n", len(drift))
+		for _, d := range drift {
+			fmt.Fprintf(&b, "  • %s\n", d.Path)
+		}
+		fmt.Fprintf(&b, "\nDuring a mid-%s state this is almost always upstream changes the merge brought in (not real hand-edits). Two options:\n", state)
+		fmt.Fprintf(&b, "  1. Resolve the %s first (`git status`), then re-run `forge generate`.\n", state)
+		fmt.Fprintf(&b, "  2. Run `forge generate --accept` to re-stamp the recorded checksums to the merged-in content, then proceed.\n")
+		return errMidMergeTier1Drift{state: state, msg: b.String()}
+	}
+
 	// Default: error with a batched report.
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d Tier-1 file(s) modified after last `forge generate`:\n\n", len(drift))
@@ -505,6 +560,83 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	fmt.Fprintf(&b, "  3. Re-run with `--accept` to keep your edits and refresh the recorded checksum (rare; documents an intentional fork).\n")
 	fmt.Fprintf(&b, "  4. Move your customization into a Tier-2 file (`// forge:scaffold one-shot`) — see the `frontend` skill for the nav.tsx / nav_gen.tsx pattern.\n")
 	return fmt.Errorf("Tier-1 file-stomp guard:\n%s", b.String())
+}
+
+// errMidMergeTier1Drift is the typed error returned by
+// stepCheckTier1Drift when it has detected the host repo is mid-merge /
+// mid-cherry-pick / mid-rebase. Callers that want to render a different
+// fixup hint can type-assert with errors.As — the default cobra error
+// path just prints msg.
+type errMidMergeTier1Drift struct {
+	state string // "merge" / "cherry-pick" / "rebase"
+	msg   string
+}
+
+func (e errMidMergeTier1Drift) Error() string { return e.msg }
+
+// GitMergeState reports the in-flight git operation state, if any.
+// Returns "" when no merge / cherry-pick / rebase is in progress.
+func (e errMidMergeTier1Drift) GitMergeState() string { return e.state }
+
+// detectGitMergeState returns the in-flight git operation if any:
+// "merge", "cherry-pick", "rebase", or "" when none. The probe order
+// matches `git status`'s — MERGE_HEAD wins over CHERRY_PICK_HEAD which
+// wins over the rebase directories. .git is also accepted as a regular
+// file (worktrees use a gitfile pointing at the main repo's .git/
+// worktrees/<name>/ — the merge-state files still live in that
+// per-worktree directory, so stat-ing relative to <projectDir>/.git
+// works there too when .git is a directory).
+func detectGitMergeState(projectDir string) string {
+	gitDir := resolveGitDir(projectDir)
+	if gitDir == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "MERGE_HEAD")); err == nil {
+		return "merge"
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "CHERRY_PICK_HEAD")); err == nil {
+		return "cherry-pick"
+	}
+	if fi, err := os.Stat(filepath.Join(gitDir, "rebase-merge")); err == nil && fi.IsDir() {
+		return "rebase"
+	}
+	if fi, err := os.Stat(filepath.Join(gitDir, "rebase-apply")); err == nil && fi.IsDir() {
+		return "rebase"
+	}
+	return ""
+}
+
+// resolveGitDir locates the .git directory for the project. Returns
+// .git when it's a regular directory; for git-worktree checkouts (.git
+// is a file containing `gitdir: <path>`) it follows the redirect.
+// Returns "" when neither shape applies.
+func resolveGitDir(projectDir string) string {
+	gitPath := filepath.Join(projectDir, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	if fi.IsDir() {
+		return gitPath
+	}
+	// .git is a file — typically a worktree pointer.
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+	prefix := "gitdir:"
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		dir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(projectDir, dir)
+		}
+		return dir
+	}
+	return ""
 }
 
 // short truncates a hex digest for human-readable error messages. Full
@@ -601,6 +733,19 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 		fmt.Println()
 	}
 	return nil
+}
+
+// stepEnsureGenModule bootstraps a missing `gen/go.mod` before any step
+// that runs `buf generate` / `go list` / `go build` fires. Fresh git
+// worktrees can carry a `go.work` that declares `use gen` but lack the
+// actual `gen/go.mod` file (it's gitignored in some setups), which makes
+// every Go-tooling invocation fail with "cannot load module gen". Doing
+// the synthesis here — once, before the pipeline hits the proto/tools
+// steps — keeps the rest of the pipeline ignorant of the bootstrap
+// concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
+// conditions.
+func stepEnsureGenModule(ctx *pipelineContext) error {
+	return ensureGenGoMod(ctx.ProjectDir)
 }
 
 // stepBufGenerateGo — was Step 1.

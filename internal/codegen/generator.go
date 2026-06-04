@@ -643,7 +643,29 @@ func AssignBootstrapAliases(services []BootstrapServiceData, packages []Bootstra
 // have webhooks. (2026-04-30 LLM-port: introduced as part of the
 // auto-wire fix — pre-fix, projects had to manually edit service.go to
 // call s.RegisterWebhookRoutes(mux, stack).)
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
+// BootstrapFeatures carries the per-project feature toggles that
+// influence what bootstrap.go's body emits. Added as a struct (not yet
+// another bool) so future feature flags can land additively without
+// re-shaping the GenerateBootstrap signature; today the struct only
+// carries diagnostics + strict-wiring, but the same pattern absorbs
+// later flags cleanly.
+type BootstrapFeatures struct {
+	// DiagnosticsEnabled is true when the project opts in to
+	// `features.diagnostics: true`. Drives whether the template emits
+	// the diagnostics.Default.Boot(emitter) call after Setup. Default
+	// false so existing projects don't suddenly start logging warns on
+	// regen.
+	DiagnosticsEnabled bool
+
+	// StrictWiringEnabled is true when the project opts in to
+	// `features.strict_wiring: true`. Implies DiagnosticsEnabled at the
+	// wire site — strict-mode wraps the LogEmitter in StrictEmitter so
+	// any registered diagnostic exits the process after the summary
+	// line. Default false.
+	StrictWiringEnabled bool
+}
+
+func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err
@@ -718,31 +740,35 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	binaryShared := projectBinaryShared(projectDir)
 
 	data := struct {
-		Module         string
-		Services       []BootstrapServiceData
-		Packages       []BootstrapPackageData
-		Workers        []BootstrapWorkerData
-		Operators      []BootstrapOperatorData
-		HasDatabase    bool
-		OrmEnabled     bool
-		HasFallible    bool
-		BinaryShared   bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
-		ConnectImports []string
+		Module              string
+		Services            []BootstrapServiceData
+		Packages            []BootstrapPackageData
+		Workers             []BootstrapWorkerData
+		Operators           []BootstrapOperatorData
+		HasDatabase         bool
+		OrmEnabled          bool
+		HasFallible         bool
+		BinaryShared        bool
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
-		Module:         modulePath,
-		Services:       bootstrapSvcs,
-		Packages:       packages,
-		Workers:        workers,
-		Operators:      operators,
-		HasDatabase:    hasDatabase,
-		OrmEnabled:     ormEnabled,
-		HasFallible:    hasFallible,
-		BinaryShared:   binaryShared,
-		ConfigFields:   configFields,
-		RESTEnabled:    restEnabled,
-		ConnectImports: connectImports,
+		Module:              modulePath,
+		Services:            bootstrapSvcs,
+		Packages:            packages,
+		Workers:             workers,
+		Operators:           operators,
+		HasDatabase:         hasDatabase,
+		OrmEnabled:          ormEnabled,
+		HasFallible:         hasFallible,
+		BinaryShared:        binaryShared,
+		ConfigFields:        configFields,
+		RESTEnabled:         restEnabled,
+		ConnectImports:      connectImports,
+		DiagnosticsEnabled:  features.DiagnosticsEnabled,
+		StrictWiringEnabled: features.StrictWiringEnabled,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)

@@ -912,9 +912,9 @@ func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	// independently so a consumer can tell `unwired scaffolds exist
 	// but bootstrap isn't emitting them` apart from `clean project`.
 	details := map[string]any{
-		"diagnostics":            []diagEntry{},
-		"runtime_enabled":        enabled,
-		"strict_wiring_enabled":  strict,
+		"diagnostics":           []diagEntry{},
+		"runtime_enabled":       enabled,
+		"strict_wiring_enabled": strict,
 	}
 
 	data, err := os.ReadFile(path)
@@ -954,8 +954,8 @@ func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategor
 			Symbol:    m[1] + "." + m[2],
 			Component: m[1],
 			DepName:   m[2],
-			File:     m[3],
-			Line:     line,
+			File:      m[3],
+			Line:      line,
 		})
 	}
 	// Stable sort (kind, symbol) for deterministic JSON.

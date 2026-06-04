@@ -160,10 +160,23 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if opts.env != "" {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
 	}
-	// Per-env host-mode notice is re-implemented in the KCL-orchestration
-	// batch (deliverable 3): when --env is set, the build reads the
-	// rendered KCL for services declared deploy: "host" and skips the
-	// docker build/push for them. Hooked up in a follow-up commit.
+
+	// When --env is set, read the rendered KCL to drive the docker-skip
+	// set, the per-service platform override, and the build-only variant
+	// builds. Missing KCL render is logged and treated as "no env filter"
+	// so projects that haven't migrated to the deploy module yet keep
+	// working unchanged.
+	var entities *KCLEntities
+	if opts.env != "" {
+		projectDir := projectDirForKCL()
+		ents, kerr := RenderKCL(ctx, projectDir, opts.env)
+		if kerr != nil {
+			fmt.Printf("[build]   Note: skipping KCL filter (%v)\n", kerr)
+		} else {
+			entities = ents
+			summarizeKCLBuildPlan(entities)
+		}
+	}
 	fmt.Println()
 
 	// Create output directory
@@ -189,13 +202,48 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 	}
 
+	// KCL-driven docker skip: with --env set, frontends are always
+	// host-only in the dev loop (no in-cluster frontend Deployment), so
+	// skip the per-frontend docker build. Also skip the project docker
+	// build when every declared service is host or build-only (no
+	// cluster service in this env → no image to push to the cluster).
+	dockerFrontends := frontends
+	skipProjectDocker := false
+	if entities != nil {
+		dockerFrontends = nil
+		if !kclHasClusterService(entities) {
+			skipProjectDocker = true
+		}
+	}
+
+	// Per-env platform override from KCL: use the first cluster
+	// service's deploy.Cluster.Platform when set. KCL renders all cluster
+	// services in one env onto the same node arch in practice (one
+	// project image, one Application set), so picking the first non-empty
+	// platform is a clean default. Falls back to forge.yaml's
+	// deploy.target_arch otherwise.
+	cfgArchForDocker := cfg.Deploy.TargetArch
+	if entities != nil {
+		if p := kclFirstClusterPlatform(entities); p != "" {
+			cfgArchForDocker = p
+		}
+	}
+
 	start := time.Now()
 	var results []buildResult
 
 	if opts.parallel {
-		results = buildParallel(ctx, cfg, frontends, buildBinary, opts)
+		results = buildParallel(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, opts)
 	} else {
-		results = buildSequential(ctx, cfg, frontends, buildBinary, opts)
+		results = buildSequential(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, opts)
+	}
+
+	// Build-only variants from KCL: each declared variant produces one
+	// `bin/<service>-<variant>` binary with the variant's ldflags + build
+	// tags. No docker build; this is the lane for sidecar binaries
+	// shipped in a release artifact, not container images.
+	if entities != nil {
+		results = append(results, buildKCLBuildOnlyVariants(ctx, entities, opts.outputDir)...)
 	}
 
 	// Check for errors
@@ -231,7 +279,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	return nil
 }
 
-func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []config.FrontendConfig, buildBinary bool, opts buildOptions) []buildResult {
+func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker string, opts buildOptions) []buildResult {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
@@ -277,8 +325,8 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []c
 	// whenever the deploy-target arch differs from the host — even if the
 	// preceding go build above happened to use the host arch.
 	if opts.buildDocker && !hasBuildFailure {
-		dockerArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, true)
-		if buildBinary {
+		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
+		if buildBinary && !skipProjectDocker {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -288,7 +336,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []c
 				mu.Unlock()
 			}()
 		}
-		for _, fe := range frontends {
+		for _, fe := range dockerFrontends {
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
@@ -304,7 +352,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []c
 	return results
 }
 
-func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends []config.FrontendConfig, buildBinary bool, opts buildOptions) []buildResult {
+func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker string, opts buildOptions) []buildResult {
 	var results []buildResult
 
 	if buildBinary {
@@ -324,15 +372,15 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends [
 
 	// Docker builds only if --docker flag is set
 	if opts.buildDocker {
-		dockerArch := resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, true)
-		if buildBinary {
+		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
+		if buildBinary && !skipProjectDocker {
 			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
-		for _, fe := range frontends {
+		for _, fe := range dockerFrontends {
 			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry, dockerArch)
 			results = append(results, r)
 			if r.err != nil {
@@ -737,5 +785,128 @@ func filterFrontends(frontends []config.FrontendConfig, target string) []config.
 		}
 	}
 	return nil
+}
+
+// projectDirForKCL resolves the project root directory used as the
+// argument to RenderKCL. Falls back to "." when forge.yaml isn't found
+// (the kcl shell-out will still surface the error with a useful path).
+func projectDirForKCL() string {
+	if cfgPath, perr := findProjectConfigFile(); perr == nil {
+		return filepath.Dir(cfgPath)
+	}
+	return "."
+}
+
+// summarizeKCLBuildPlan prints the per-deploy.type split so users see,
+// in one glance, which services this `forge build --env=<env>` will
+// docker-build vs skip vs treat as build-only-variants. The skip set
+// matches the runtime behaviour wired in runBuild — host and build-only
+// services are excluded from the docker layer; cluster services drive
+// it.
+func summarizeKCLBuildPlan(e *KCLEntities) {
+	if e == nil {
+		return
+	}
+	if hosts := e.HostServiceNames(); len(hosts) > 0 {
+		fmt.Printf("[build]   Host-mode (skip docker): %s\n", strings.Join(hosts, ", "))
+	}
+	if cluster := e.ClusterServiceNames(); len(cluster) > 0 {
+		fmt.Printf("[build]   Cluster-mode (docker):   %s\n", strings.Join(cluster, ", "))
+	}
+	if bo := e.BuildOnlyServiceNames(); len(bo) > 0 {
+		fmt.Printf("[build]   Build-only (binary):     %s\n", strings.Join(bo, ", "))
+	}
+	if len(e.Frontends) > 0 {
+		names := make([]string, 0, len(e.Frontends))
+		for _, f := range e.Frontends {
+			names = append(names, f.Name)
+		}
+		fmt.Printf("[build]   Frontends (skip docker): %s\n", strings.Join(names, ", "))
+	}
+}
+
+// kclHasClusterService reports whether the entity set contains at least
+// one service with deploy.Type == "cluster". When false the project
+// docker build is skipped: there's no in-cluster Application to ship.
+func kclHasClusterService(e *KCLEntities) bool {
+	for _, s := range e.Services {
+		if s.Deploy.Type == "cluster" {
+			return true
+		}
+	}
+	return false
+}
+
+// kclFirstClusterPlatform returns the platform (GOARCH) of the first
+// cluster service whose deploy.Cluster.Platform is non-empty. KCL renders
+// all cluster services in one env onto the same node arch in practice,
+// so the first hit is the env-wide default. Returns "" when no cluster
+// service declares a platform — callers fall back to forge.yaml's
+// deploy.target_arch.
+func kclFirstClusterPlatform(e *KCLEntities) string {
+	for _, s := range e.Services {
+		if s.Deploy.Cluster != nil && s.Deploy.Cluster.Platform != "" {
+			return s.Deploy.Cluster.Platform
+		}
+	}
+	return ""
+}
+
+// buildKCLBuildOnlyVariants compiles each declared build-only variant
+// into bin/<service>-<variant> with the variant's ldflags and build
+// tags. Each variant is a separate `go build` invocation; failures are
+// captured in the returned buildResult slice rather than short-circuited
+// so users see the full list of failures from one run.
+func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir string) []buildResult {
+	var out []buildResult
+	for _, svc := range e.Services {
+		if svc.Deploy.Type != "build-only" || svc.Deploy.BuildOnly == nil {
+			continue
+		}
+		for _, v := range svc.Deploy.BuildOnly.BuildVariants {
+			out = append(out, buildVariant(ctx, svc.Name, v, outputDir))
+		}
+	}
+	return out
+}
+
+// buildVariant builds one binary for a build-only service variant.
+// The output name is <service>-<variant> unless v.OutputName overrides
+// it. ldflags and -tags are appended to the go-build args; env_at_build
+// pairs join CGO_ENABLED=0 on the subprocess env.
+func buildVariant(ctx context.Context, svcName string, v BuildVariant, outputDir string) buildResult {
+	start := time.Now()
+	outName := v.OutputName
+	if outName == "" {
+		outName = svcName + "-" + v.Name
+	}
+	binPath := filepath.Join(outputDir, outName)
+	fmt.Printf("[build] %s (variant %s): go build -> %s\n", svcName, v.Name, binPath)
+
+	args := []string{"build", "-o", binPath}
+	if len(v.Ldflags) > 0 {
+		args = append(args, "-ldflags", strings.Join(v.Ldflags, " "))
+	}
+	if len(v.BuildTags) > 0 {
+		args = append(args, "-tags", strings.Join(v.BuildTags, ","))
+	}
+	args = append(args, "./cmd")
+
+	cmd := exec.CommandContext(ctx, "go", args...)
+	env := append(os.Environ(), "CGO_ENABLED=0")
+	for k, val := range v.EnvAtBuild {
+		env = append(env, k+"="+val)
+	}
+	cmd.Env = env
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	return buildResult{
+		name:     svcName + ":" + v.Name,
+		kind:     "variant",
+		duration: time.Since(start),
+		err:      err,
+	}
 }
 

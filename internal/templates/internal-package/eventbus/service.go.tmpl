@@ -25,11 +25,16 @@ type inMemoryBus struct {
 
 // New creates a new in-memory event bus. Replace this constructor
 // to return your production implementation (NATS, Kafka, etc.).
-func New(deps Deps) Service {
+//
+// The two-result `(Service, error)` shape lets New surface dep-validation
+// or one-time-init failures (missing required deps, bad config, etc.).
+// Scaffolds ship with a no-error path; polish the body when you grow
+// dep validation or eager initialization.
+func New(deps Deps) (Service, error) {
 	return &inMemoryBus{
 		deps:     deps,
 		handlers: make(map[string][]func(ctx context.Context, event Event) error),
-	}
+	}, nil
 }
 
 func (b *inMemoryBus) Publish(ctx context.Context, topic string, event Event) error {

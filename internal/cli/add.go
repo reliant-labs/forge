@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -64,9 +67,9 @@ func validateServiceName(name string) error {
 }
 
 // validateIdentifier checks that a name is valid for use as a service, worker,
-// or operator name. Hyphens are allowed since they are valid in module paths
-// and directory names; templates use snakeCase/pascalCase helpers to convert
-// when a Go identifier is needed (e.g. "admin-server" -> package "admin_server"
+// or operator name. Hyphens and underscores are allowed in the display name;
+// templates use snakeCase/pascalCase helpers to convert when a Go identifier
+// is needed (e.g. "admin-server" / "admin_server" -> package "adminserver"
 // and field "AdminServer"). The leading-character and reserved-word rules
 // match validateProjectName so all top-level scaffold names share one shape.
 func validateIdentifier(name string) error {
@@ -339,7 +342,7 @@ func runAddService(name string, port int, resume, force bool) error {
 	// Update forge.yaml (must happen before the generation pipeline
 	// so the pipeline sees the new service in the config). The Path uses
 	// the Go-package form so it matches the directory the scaffolder
-	// actually creates ("admin-server" -> handlers/admin_server).
+	// actually creates ("admin-server" -> handlers/adminserver).
 	//
 	// Under --resume / --force the service entry may already exist in
 	// forge.yaml; only append when this is a fresh add.
@@ -892,7 +895,7 @@ Example:
   forge add frontend admin --kind vite-spa`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddFrontend(args[0], port, kind)
+			return runAddFrontend(cmd.Context(), args[0], port, kind)
 		},
 	}
 
@@ -919,7 +922,7 @@ func validateFrontendName(name string) error {
 	return nil
 }
 
-func runAddFrontend(name string, port int, kind string) error {
+func runAddFrontend(ctx context.Context, name string, port int, kind string) error {
 	if err := validateFrontendName(name); err != nil {
 		return fmt.Errorf("invalid frontend name: %w", err)
 	}
@@ -1043,8 +1046,37 @@ func runAddFrontend(name string, port int, kind string) error {
 		return fmt.Errorf("update project config: %w", err)
 	}
 
+	// Install the new frontend's npm dependencies so the user can run
+	// the dev server (or `forge generate` post-codegen for the hooks
+	// import) without an extra manual step. Failures here are non-fatal:
+	// if `npm` isn't on PATH, the scaffold is still on disk and we just
+	// nudge the user to install dependencies themselves.
+	frontendDir := filepath.Join(root, "frontends", name)
+	if err := runFrontendNpmInstall(ctx, frontendDir); err != nil {
+		fmt.Printf("\n⚠️  %v\n", err)
+	}
+
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
 
+	return nil
+}
+
+// runFrontendNpmInstall runs `npm install` in the freshly scaffolded
+// frontend directory so the user can immediately run the dev server.
+// A missing `npm` binary is treated as a soft warning — the scaffold
+// itself succeeded and the user can install dependencies later.
+func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
+	cmd := exec.CommandContext(ctx, "npm", "install")
+	cmd.Dir = frontendDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	fmt.Printf("\nRunning `npm install` in %s ...\n", frontendDir)
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("npm not found on PATH; run `npm install` in %s manually", frontendDir)
+		}
+		return fmt.Errorf("npm install failed in %s: %v (run it manually to see full output)", frontendDir, err)
+	}
 	return nil
 }
 

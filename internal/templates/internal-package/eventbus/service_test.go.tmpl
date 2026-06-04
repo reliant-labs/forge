@@ -10,19 +10,21 @@ import (
 )
 
 func TestPublishSubscribe(t *testing.T) {
-	bus := New(Deps{
+	bus, err := New(Deps{
 		Logger: slog.Default(),
 		Config: &config.Config{},
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	ctx := context.Background()
 	received := make(chan Event, 1)
 
-	err := bus.Subscribe(ctx, "test.topic", func(ctx context.Context, e Event) error {
+	if err := bus.Subscribe(ctx, "test.topic", func(ctx context.Context, e Event) error {
 		received <- e
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 

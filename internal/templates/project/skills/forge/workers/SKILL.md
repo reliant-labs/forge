@@ -74,14 +74,17 @@ Use `--kind cron` with a `--schedule` (standard cron expression) to scaffold a w
 forge add worker cleanup --kind cron --schedule "0 */6 * * *"
 ```
 
-The generated worker has a `Run()` method for your job logic. The cron scheduler is managed inside `Start` and stopped on context cancellation — same lifecycle as a regular worker.
+The generated worker has a `Run(ctx context.Context)` method for your job logic. The cron scheduler is managed inside `Start` and stopped on context cancellation — same lifecycle as a regular worker. The cron closure derives a per-tick `ctx` from a base context set in `Start` and cancelled in `Stop`, so long-running jobs can observe graceful shutdown via `ctx.Done()` instead of running to completion after `Stop` fires.
 
 ```go
-func (w *Worker) Run() {
-    // Your scheduled job logic here
-    w.deps.Logger.Info("running scheduled cleanup")
+func (w *Worker) Run(ctx context.Context) {
+    // Your scheduled job logic here. Plumb ctx through every
+    // context-aware downstream call so shutdown is observed.
+    w.deps.Logger.InfoContext(ctx, "running scheduled cleanup")
 }
 ```
+
+> **MIGRATION (v0.x → v0.x+1):** `Run()` now takes a `context.Context`. If you've polished an existing `Run()` body, add a `ctx context.Context` parameter and thread it through any DB/HTTP/adapter call that already accepts a context. The scaffold's `Start` derives a per-tick ctx from `baseCtx`; `Stop` cancels `baseCtx` so in-flight ticks see `ctx.Done()` immediately rather than racing the cron `Stop()` wait group.
 
 Cron workers are tracked with `kind: cron` and `schedule` in `forge.yaml`:
 ```yaml

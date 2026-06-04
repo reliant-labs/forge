@@ -37,13 +37,18 @@ type service struct {
 
 // New constructs a {{.Name}} adapter. The bootstrap template wires this
 // from Setup() in pkg/app/setup.go.
-func New(deps Deps) Service {
+//
+// The two-result `(Service, error)` shape lets New surface dep-validation
+// or one-time-init failures (missing required deps, bad config, etc.).
+// Scaffolds ship with a no-error path; polish the body when you grow
+// dep validation or eager initialization.
+func New(deps Deps) (Service, error) {
 	if deps.HTTPClient == nil {
 		// Always supply a defaulted client so a minimal Setup() (just a
 		// logger + base URL) still works in dev.
 		deps.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &service{deps: deps}
+	return &service{deps: deps}, nil
 }
 
 // HealthCheck issues a simple GET against the downstream's health

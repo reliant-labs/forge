@@ -2,6 +2,19 @@
 
 package {{.Package}}
 
+// MIGRATION (v0.x → v0.x+1): Run now takes a context.Context.
+//
+// Before:
+//   func (w *Worker) Run()
+// After:
+//   func (w *Worker) Run(ctx context.Context)
+//
+// Each tick gets a context derived from baseCtx (set in Start, cancelled
+// in Stop), so long-running Run bodies can observe graceful shutdown via
+// ctx.Done() instead of running to completion after Stop fires. If you've
+// already polished the Run body, add a `ctx context.Context` parameter and
+// pass it through to any context-aware downstream call.
+
 import (
 	"context"
 	"log/slog"
@@ -24,6 +37,12 @@ type Deps struct {
 type Worker struct {
 	deps Deps
 	cron *cron.Cron
+
+	// baseCtx is set in Start and cancelled in Stop. Each cron tick derives
+	// a per-tick context from it so Run can observe graceful shutdown via
+	// ctx.Done() instead of running to completion after Stop fires.
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
 }
 
 // New creates a new {{.Name}} cron worker.
@@ -38,8 +57,21 @@ func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
 func (w *Worker) Start(ctx context.Context) error {
 	w.deps.Logger.Info("cron worker started", "worker", w.Name(), "schedule", Schedule)
 
+	// baseCtx propagates the caller's lifecycle into every per-tick ctx
+	// Run receives. baseCancel is a safety net for Stop() — once we
+	// cancel it, every in-flight Run sees ctx.Done() immediately, even if
+	// the caller's parent ctx is still live.
+	w.baseCtx, w.baseCancel = context.WithCancel(ctx)
+
 	w.cron = cron.New()
-	if _, err := w.cron.AddFunc(Schedule, w.Run); err != nil {
+	if _, err := w.cron.AddFunc(Schedule, func() {
+		// Each tick gets its own context derived from baseCtx so cancel
+		// propagates without leaking state between ticks. Wrap with
+		// context.WithTimeout(w.baseCtx, ...) here if your job has a
+		// natural per-tick deadline (e.g. shorter than the cron period).
+		w.Run(w.baseCtx)
+	}); err != nil {
+		w.baseCancel()
 		return err
 	}
 	w.cron.Start()
@@ -51,6 +83,12 @@ func (w *Worker) Start(ctx context.Context) error {
 // Stop gracefully shuts down the cron scheduler, waiting for any running job to finish.
 func (w *Worker) Stop(ctx context.Context) error {
 	w.deps.Logger.Info("cron worker stopping", "worker", w.Name())
+	if w.baseCancel != nil {
+		// Signal in-flight Run invocations before waiting on the cron
+		// scheduler — they observe ctx.Done() and can bail out cleanly
+		// instead of holding cron.Stop()'s wait group open.
+		w.baseCancel()
+	}
 	if w.cron != nil {
 		stopCtx := w.cron.Stop()
 		select {
@@ -63,11 +101,16 @@ func (w *Worker) Stop(ctx context.Context) error {
 
 // Run is invoked on the cron schedule. Implement your logic here.
 //
+// ctx is derived from the Start() caller's context — when Stop fires (or
+// the caller cancels), ctx.Done() closes. Plumb ctx through every
+// context-aware call (DB queries, HTTP requests, downstream adapters) so
+// shutdown is observed rather than fought.
+//
 // The default body logs both the worker name and the cron expression so
 // fresh scaffolds are useful in `kubectl logs` / OTel traces without
 // hand-editing — every run line correlates back to the schedule it was
 // triggered by. Drop the `"schedule", Schedule` field if your job runs
 // at >1Hz and the log volume becomes noisy.
-func (w *Worker) Run() {
-	w.deps.Logger.Info("cron job executing", "worker", w.Name(), "schedule", Schedule)
+func (w *Worker) Run(ctx context.Context) {
+	w.deps.Logger.InfoContext(ctx, "cron job executing", "worker", w.Name(), "schedule", Schedule)
 }

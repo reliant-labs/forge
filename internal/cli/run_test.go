@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -179,5 +180,74 @@ func TestDebugAirConfigUsesAirWhenConfigExists(t *testing.T) {
 
 	if !useAir {
 		t.Error("expected air to be used when .air-debug.toml exists")
+	}
+}
+
+// TestReadDotEnvFile_BasicShapes covers the small parser the host-mode
+// runner uses to layer .env.dev onto the child process: comments,
+// blank lines, quoted values, `export` prefixes, and unquoted strings.
+// Each line shape is one row in the table so future regressions are
+// obvious from the failing case name.
+func TestReadDotEnvFile_BasicShapes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env.dev")
+	content := `# leading comment
+EMPTY=
+SIMPLE=value
+QUOTED="with spaces"
+SINGLE_QUOTED='another value'
+export EXPORTED=ok
+WITH_HASH=val#not-a-comment
+   PADDED = value-with-spaces
+
+# trailing comment
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := readDotEnvFile(path)
+	if err != nil {
+		t.Fatalf("readDotEnvFile: %v", err)
+	}
+	want := map[string]string{
+		"EMPTY":         "",
+		"SIMPLE":        "value",
+		"QUOTED":        "with spaces",
+		"SINGLE_QUOTED": "another value",
+		"EXPORTED":      "ok",
+		"WITH_HASH":     "val#not-a-comment",
+		"PADDED":        "value-with-spaces",
+	}
+	if len(got) != len(want) {
+		t.Errorf("len(got) = %d, want %d (got=%v)", len(got), len(want), got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestReadDotEnvFile_Missing confirms a missing file returns
+// os.ErrNotExist so callers can branch on it without parsing the
+// underlying syscall error string.
+func TestReadDotEnvFile_Missing(t *testing.T) {
+	dir := t.TempDir()
+	_, err := readDotEnvFile(filepath.Join(dir, "does-not-exist"))
+	if !os.IsNotExist(err) {
+		t.Errorf("want os.ErrNotExist, got %v", err)
+	}
+}
+
+// TestHostRunPIDPath confirms the canonical path layout the runner and
+// `stop` subcommand agree on. The shared path is the bridge between
+// foreground/background mode and the cleanup subcommand.
+func TestHostRunPIDPath(t *testing.T) {
+	got, err := hostRunPIDPath("admin-server")
+	if err != nil {
+		t.Fatalf("hostRunPIDPath: %v", err)
+	}
+	if !strings.HasSuffix(got, "/.cache/forge/run/admin-server.pid") {
+		t.Errorf("want path ending in /.cache/forge/run/admin-server.pid, got %q", got)
 	}
 }

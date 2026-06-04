@@ -28,6 +28,7 @@ import (
 
 // Echo implements the Echo RPC.
 // TODO: Implement business logic for Echo.
+// forge:gen unwired-stub symbol=api.Echo
 func (s *Service) Echo(
 	ctx context.Context,
 	req *connect.Request[pb.EchoRequest],
@@ -37,6 +38,7 @@ func (s *Service) Echo(
 
 // Tail implements the Tail server streaming RPC.
 // TODO: Implement business logic for Tail.
+// forge:gen unwired-stub symbol=api.Tail
 func (s *Service) Tail(
 	ctx context.Context,
 	req *connect.Request[pb.TailRequest],

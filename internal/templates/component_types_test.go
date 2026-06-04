@@ -100,8 +100,26 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 	if !strings.Contains(s, "robfig/cron") {
 		t.Error("cron worker should import robfig/cron")
 	}
-	if !strings.Contains(s, "func (w *Worker) Run()") {
-		t.Error("cron worker should have Run method")
+	if !strings.Contains(s, "func (w *Worker) Run(ctx context.Context)") {
+		t.Error("cron worker should have Run(ctx) method — the context-aware signature lets Run observe Stop/shutdown via ctx.Done()")
+	}
+	// Start must wire baseCtx so per-tick contexts derive from the
+	// caller's lifecycle; Stop must cancel it so in-flight Run sees
+	// ctx.Done() immediately.
+	if !strings.Contains(s, "w.baseCtx, w.baseCancel = context.WithCancel(ctx)") {
+		t.Errorf("cron worker Start should set up baseCtx via context.WithCancel(ctx); got:\n%s", s)
+	}
+	if !strings.Contains(s, "w.baseCancel()") {
+		t.Errorf("cron worker Stop should cancel baseCtx; got:\n%s", s)
+	}
+	if !strings.Contains(s, "w.Run(w.baseCtx)") {
+		t.Errorf("cron closure should pass baseCtx to Run; got:\n%s", s)
+	}
+	// Rendered output must parse as valid Go syntax — catches template
+	// reshuffling regressions. We can't resolve imports in the test, but
+	// parser.ParseFile checks the structural shape.
+	if _, err := parser.ParseFile(token.NewFileSet(), "worker.go", s, parser.SkipObjectResolution); err != nil {
+		t.Errorf("cron worker.go template did not parse as valid Go: %v\n----\n%s", err, s)
 	}
 	// Run() body should log "schedule", Schedule so a fresh scaffold is
 	// useful in logs / OTel traces without the user hand-editing the
@@ -140,6 +158,18 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 	}
 	if !strings.Contains(s, "TestCronWorkerName") {
 		t.Error("cron worker_test.go should contain TestCronWorkerName")
+	}
+	// TestCronWorkerRunAcceptsContext pins the Run(ctx) signature — the
+	// scaffolded test should still cover the context contract even after
+	// the user replaces the example body.
+	if !strings.Contains(s, "TestCronWorkerRunAcceptsContext") {
+		t.Error("cron worker_test.go should contain TestCronWorkerRunAcceptsContext")
+	}
+	if !strings.Contains(s, "w.Run(ctx)") {
+		t.Error("cron worker_test.go should exercise the Run(ctx) signature")
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "worker_test.go", s, parser.SkipObjectResolution); err != nil {
+		t.Errorf("cron worker_test.go template did not parse as valid Go: %v\n----\n%s", err, s)
 	}
 }
 
@@ -251,13 +281,15 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 			Name, Package, FieldName, Alias, VarName string
 			Fallible                                 bool
 		}
-		HasDatabase    bool
-		OrmEnabled     bool
-		HasFallible    bool
-		BinaryShared   bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
-		ConnectImports []string
+		HasDatabase         bool
+		OrmEnabled          bool
+		HasFallible         bool
+		BinaryShared        bool
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
 		Module:       "example.com/fullproject",
 		ConfigFields: map[string]bool{},

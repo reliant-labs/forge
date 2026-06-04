@@ -413,8 +413,16 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}(w)
 	}
 
-	// Start controller manager for operators (if any)
-	if application.HasOperators() {
+	// Start controller manager for operators (if any).
+	//
+	// Operator gating: when the user filtered with `server [services...]`
+	// args, only start the controller manager if the filter includes at
+	// least one operator-shape service. Otherwise an admin-server-only
+	// host run logs "controller manager failed: not running in-cluster"
+	// because controller-runtime mandates a kubeconfig the host process
+	// doesn't have. The unfiltered case (no args) keeps the legacy
+	// behaviour — start every operator the project declared.
+	if application.HasOperators() && shouldRunOperators(application, nameSet) {
 		go func() {
 			if err := application.RunOperators(ctx, logger); err != nil {
 				logger.Error("controller manager failed", "error", err)
@@ -496,6 +504,26 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// shouldRunOperators decides whether the controller manager should start
+// given the user's `server [services...]` filter. The unfiltered case
+// (nameSet empty) preserves the legacy "always start all operators"
+// behaviour. When a filter is active, we only start the manager if the
+// filter explicitly includes at least one operator-shape service —
+// otherwise an admin-server-only host run would log the misleading
+// "controller manager failed: not running in-cluster" because
+// controller-runtime needs a kubeconfig the host process doesn't have.
+func shouldRunOperators(application *app.App, nameSet map[string]bool) bool {
+	if len(nameSet) == 0 {
+		return true
+	}
+	for _, op := range application.OperatorList() {
+		if nameSet[op.Name()] {
+			return true
+		}
+	}
+	return false
 }
 
 {{- if index .ConfigFields "AutoMigrate"}}

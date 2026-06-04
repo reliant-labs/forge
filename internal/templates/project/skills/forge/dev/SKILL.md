@@ -1,6 +1,6 @@
 ---
 name: dev
-description: Local-cluster dev loop primitives — cluster lifecycle, port-forward, status, logs. Compose with project-specific bash for sibling-repo deploys, helm bootstraps, and webhook listeners.
+description: Local-cluster dev loop primitives — cluster lifecycle, port-forward, status, logs, host/cluster split. Compose with project-specific bash for sibling-repo deploys, helm bootstraps, and webhook listeners.
 ---
 
 # Forge Dev Loop
@@ -22,6 +22,95 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge dev info` | Diagnostic dump — cluster, context, namespace, registry, declared service/frontend ports. |
 | `forge dev port-forward` | Forward every service in `forge.yaml` (parallel). Ctrl-C cleans up. PIDs in `~/.cache/forge/dev/<cluster>/<ns>.pids`. |
 | `forge dev instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
+| `forge run <service> [--background]` | Host-mode single-service runner. Execs the binary's `server <service>` subcommand with `.env.<env>` loaded. For services marked `dev_target: host`. |
+| `forge run <service> stop` | Kill the background process tracked by `forge run <service> --background`. |
+| `forge deploy dev [--prune]` | Apply `deploy/kcl/dev/`. Skips rollout wait for `dev_target: host` services. `--prune` deletes orphan forge-managed Deployments. |
+
+## Host vs cluster: where does each service run in dev?
+
+Default is **cluster**: every service runs in k3d, reached via
+`forge dev port-forward`. This is the right shape for services that need
+cluster-only primitives — operators, CRD watchers, ingress webhooks,
+sidecars that depend on dynamic-config injection.
+
+**Host mode** flips a service to run as a host process under `forge run
+<service>`. Mark it in `forge.yaml`:
+
+```yaml
+services:
+  - name: admin-server
+    dev_target: host          # APIs / business logic — fast iteration on host
+  - name: workspace-controller
+    dev_target: cluster       # operator-shape — needs cluster (default)
+  - name: workspace-proxy
+    dev_target: host          # edge proxy — host process is enough for dev
+```
+
+The decision rule:
+
+| Service shape | Recommended dev_target |
+|---|---|
+| Connect-RPC API, business logic, gateway | `host` |
+| Operator (controller-runtime, watches CRDs) | `cluster` |
+| Webhook ingress / TLS-terminating proxy | depends — `cluster` if it needs an Ingress, `host` if it's an upstream forwarder |
+| Worker (background processor, cron) | `host` for fast iteration; `cluster` to test scheduler interactions |
+| Anything that talks to the cluster API (e.g. `kubectl` shells) | `cluster` |
+
+`dev_target` affects ONLY the dev environment. Staging and prod always
+build, push, and deploy every service regardless of this field.
+
+What flipping a service to host mode buys:
+
+- `forge deploy dev` skips its rollout wait (saves 120s/service).
+- `forge deploy dev --prune` deletes its stale in-cluster Deployment.
+- `forge build --env dev` lists it under "host-mode services" so users know
+  they need to run it with `forge run <name>`.
+- The scaffolded `cmd/server.go` operator-gating helper won't start the
+  controller manager when the user filters to host-mode-only services
+  (no more spurious "not running in-cluster" errors during a host run).
+
+## Inner loop: editing a host-mode service
+
+```bash
+# Terminal 1: long-running infra + cluster services
+forge dev cluster up --wait
+forge deploy dev
+forge dev port-forward &
+
+# Terminal 2: the service you're actively editing
+forge run admin-server                  # foreground; Ctrl-C to stop
+# or detach + tail logs separately:
+forge run admin-server --background     # PID at ~/.cache/forge/run/admin-server.pid
+forge run admin-server stop             # later teardown
+```
+
+`forge run admin-server` reads `.env.dev` automatically (override with
+`--env-file`). DATABASE_URL and friends come from the local file, not
+the cluster's Secret. The child process inherits the host shell's env,
+so anything already exported wins over the .env file values.
+
+## Composing with Taskfile (cloud-dev pattern)
+
+The host/cluster split makes the canonical `task dev` shape:
+
+```yaml
+# Taskfile.yml — mirrors source's `make run-admin`
+tasks:
+  dev:
+    desc: Bring up cluster + cluster services, run host services locally
+    cmds:
+      - forge dev cluster up --wait
+      - forge deploy dev --prune       # cluster services only; host services pruned
+      - forge dev port-forward --background
+      - forge run admin-server --background
+      - forge run workspace-proxy --background
+
+  dev-stop:
+    cmds:
+      - forge run admin-server stop
+      - forge run workspace-proxy stop
+      - forge dev port-forward stop
+```
 
 ## Safety: kubectl context pinning
 

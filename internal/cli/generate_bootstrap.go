@@ -12,7 +12,7 @@ import (
 )
 
 // generateBootstrap regenerates pkg/app/bootstrap.go with explicit service construction.
-func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, cs *checksums.FileChecksums) error {
+func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, bootstrapFeatures codegen.BootstrapFeatures, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
 
 	workers := discoverWorkers(projectDir)
@@ -52,7 +52,7 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return fmt.Errorf("failed to generate app_extras.go: %w", err)
 	}
 
-	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir, configFields, webhookServices, cs); err != nil {
+	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir, configFields, webhookServices, bootstrapFeatures, cs); err != nil {
 		return fmt.Errorf("failed to generate bootstrap: %w", err)
 	}
 
@@ -87,11 +87,31 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 	// package collides with an internal-package import (svc Billing +
 	// internal/billing → wireSvcBillingDeps on both sides). Bug-1 of the
 	// 2026-05-07 wire_gen rollout.
-	if err := codegen.GenerateWireGen(services, packages, workers, operators, modulePath, projectDir, ormEnabled, cs); err != nil {
+	wireData, err := codegen.GenerateWireGenData(services, packages, workers, operators, modulePath, projectDir, ormEnabled, cs)
+	if err != nil {
 		return fmt.Errorf("failed to generate wire_gen.go: %w", err)
 	}
 	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
 		fmt.Println("  ✅ Generated pkg/app/wire_gen.go")
+	}
+
+	// Diagnostics codegen runs AFTER wire_gen so it can name the
+	// component / dep that landed at nil. Each kind of wire function gets
+	// its own prefix ("wire" for services, "wireWorker" for workers,
+	// "wireOperator" for operators) so the registered Component matches
+	// the symbol the wire function actually emits at runtime — operators
+	// can grep boot logs by component name and find the function in
+	// wire_gen.go directly. Stubs are scanned separately by the
+	// diagnostics codegen itself from handlers/<svc>/*.go for the
+	// `// forge:gen unwired-stub` marker the handler templates emit.
+	nilDeps := codegen.NilDepEntriesFromWireData(wireData.Services, "wire")
+	nilDeps = append(nilDeps, codegen.NilDepEntriesFromWireData(wireData.Workers, "wireWorker")...)
+	nilDeps = append(nilDeps, codegen.NilDepEntriesFromWireData(wireData.Operators, "wireOperator")...)
+	if err := codegen.GenerateDiagnostics(services, workers, operators, modulePath, projectDir, nilDeps, cs); err != nil {
+		return fmt.Errorf("failed to generate diagnostics_gen.go: %w", err)
+	}
+	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
+		fmt.Println("  ✅ Generated pkg/app/diagnostics_gen.go")
 	}
 
 	return nil

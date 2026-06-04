@@ -47,13 +47,15 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 			Name, Package, FieldName string
 			Fallible                 bool
 		}
-		HasDatabase    bool
-		OrmEnabled     bool
-		HasFallible    bool
-		BinaryShared   bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
-		ConnectImports []string
+		HasDatabase         bool
+		OrmEnabled          bool
+		HasFallible         bool
+		BinaryShared        bool
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -113,14 +115,16 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 		ConnectPkg, ProtoServiceName    string
 	}
 	data := struct {
-		Module         string
-		Services       []svc
-		Packages       []struct{}
-		Workers        []struct{}
-		Operators      []struct{}
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
-		ConnectImports []string
+		Module              string
+		Services            []svc
+		Packages            []struct{}
+		Workers             []struct{}
+		Operators           []struct{}
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
 		Module: "example.com/myproject",
 		Services: []svc{
@@ -143,6 +147,86 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 }
 
+// TestBootstrapTemplate_DiagnosticsEmitWhenEnabled asserts that the
+// `features.diagnostics: true` flag is the only thing that wires
+// diagnostics.Default.Boot into the rendered bootstrap. Off → no
+// import, no call. On + strict_wiring → StrictEmitter wrap.
+//
+// Existing projects without the flag keep their pre-diagnostics
+// bootstrap byte-for-byte (no regression), which is the central
+// promise of the opt-in design.
+func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
+	type svc struct {
+		Name, Package, FieldName, Alias string
+		Fallible, HasWebhooks           bool
+		ConnectPkg, ProtoServiceName    string
+	}
+	mkData := func(diagnostics, strict bool) any {
+		return struct {
+			Module              string
+			Services            []svc
+			Packages            []struct{}
+			Workers             []struct{}
+			Operators           []struct{}
+			ConfigFields        map[string]bool
+			RESTEnabled         bool
+			ConnectImports      []string
+			DiagnosticsEnabled  bool
+			StrictWiringEnabled bool
+		}{
+			Module: "example.com/myproject",
+			Services: []svc{
+				{Name: "api", Package: "api", FieldName: "API", Alias: "api"},
+			},
+			ConfigFields:        map[string]bool{},
+			DiagnosticsEnabled:  diagnostics,
+			StrictWiringEnabled: strict,
+		}
+	}
+
+	render := func(t *testing.T, data any) string {
+		t.Helper()
+		content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+		if err != nil {
+			t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+		}
+		return string(content)
+	}
+
+	t.Run("off-by-default", func(t *testing.T) {
+		rendered := render(t, mkData(false, false))
+		// Diagnostics-related symbols must NOT appear when the feature is
+		// off — guards the additive default-off contract.
+		if strings.Contains(rendered, "diagnostics.Default.Boot") {
+			t.Error("diagnostics.Default.Boot should not be emitted when DiagnosticsEnabled=false")
+		}
+		if strings.Contains(rendered, "pkg/diagnostics") {
+			t.Error("pkg/diagnostics import should not be emitted when DiagnosticsEnabled=false")
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		rendered := render(t, mkData(true, false))
+		if !strings.Contains(rendered, "diagnostics.Default.Boot(diagnostics.NewLogEmitter(logger))") {
+			t.Errorf("expected diagnostics.Default.Boot(NewLogEmitter) when DiagnosticsEnabled=true\n--- rendered ---\n%s", rendered)
+		}
+		if !strings.Contains(rendered, `"github.com/reliant-labs/forge/pkg/diagnostics"`) {
+			t.Errorf("expected pkg/diagnostics import")
+		}
+		// Plain LogEmitter (no StrictEmitter wrap) when strict is off.
+		if strings.Contains(rendered, "NewStrictEmitter") {
+			t.Error("StrictEmitter should not appear when StrictWiringEnabled=false")
+		}
+	})
+
+	t.Run("strict", func(t *testing.T) {
+		rendered := render(t, mkData(true, true))
+		if !strings.Contains(rendered, "diagnostics.Default.Boot(diagnostics.NewStrictEmitter(diagnostics.NewLogEmitter(logger)))") {
+			t.Errorf("expected StrictEmitter wrap when StrictWiringEnabled=true\n--- rendered ---\n%s", rendered)
+		}
+	})
+}
+
 // TestBootstrapTestingTemplate_ZeroServices verifies that bootstrap_testing.go.tmpl
 // renders valid Go when all component lists are empty.
 func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
@@ -161,6 +245,14 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 		}
 		MultiTenantEnabled bool
 		AnyServiceHasDB    bool
+		// ExtraImports lists cross-package auto-stub imports. The
+		// template ranges over it unconditionally; we declare the
+		// field as an empty slice so text/template's struct-field
+		// lookup succeeds. The element type only needs the same
+		// .Alias / .Path fields the production type carries.
+		ExtraImports []struct {
+			Alias, Path string
+		}
 	}{
 		Module: "example.com/myproject",
 	}

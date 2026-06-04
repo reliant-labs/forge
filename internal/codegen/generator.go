@@ -437,17 +437,17 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 
 // WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// Hyphens in the user-facing name are normalized to underscores for Package (the on-disk
-// directory + Go package name) while FieldName uses ToPascalCase so snake_case worker
-// names (`calibrator_refit`) produce idiomatic exported identifiers
+// Hyphens and underscores in the user-facing name are stripped for Package (the on-disk
+// directory + Go package name) so `calibrator_refit` becomes `calibratorrefit`, matching
+// Go style. FieldName is derived from the ORIGINAL name (which retains its separators)
+// via ToPascalCase so snake_case worker names still produce idiomatic exported identifiers
 // (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than the
-// underscore-preserving `Workers.Calibrator_refit` shape that revive / staticcheck ST1003
-// would flag.
+// run-together `Workers.Calibratorrefit` shape ToPascalCase would otherwise emit.
 func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
 	var workers []BootstrapWorkerData
 	for _, name := range names {
 		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(pkg)
+		fieldName := naming.ToPascalCase(name)
 		fallible := false
 		if projectDir != "" {
 			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "workers", pkg))
@@ -474,7 +474,7 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 	var operators []BootstrapOperatorData
 	for _, name := range names {
 		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(pkg)
+		fieldName := naming.ToPascalCase(name)
 		fallible := false
 		if projectDir != "" {
 			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "operators", pkg))
@@ -493,12 +493,17 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 }
 
 // toGoPackage normalizes a CLI/forge.yaml-style name into a valid Go package
-// identifier: lowercase with hyphens replaced by underscores. This mirrors
-// generator.ServicePackageName but is duplicated here to keep codegen free of
-// a generator dependency (the generator package already imports codegen).
+// identifier: lowercase with both hyphen and underscore separators stripped
+// (so "calibrator_refit" becomes "calibratorrefit", matching Go style). This
+// mirrors generator.ServicePackageName but is duplicated here to keep codegen
+// free of a generator dependency (the generator package already imports codegen).
 func toGoPackage(name string) string {
-	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
+	return toGoPackageReplacer.Replace(strings.ToLower(name))
 }
+
+// toGoPackageReplacer mirrors generator.servicePackageReplacer — see that
+// var's comment for why both separators are stripped.
+var toGoPackageReplacer = strings.NewReplacer("-", "", "_", "")
 
 // lowerFirst returns s with the first rune lowercased — used to derive a
 // lowerCamel local-variable prefix from a PascalCase FieldName so generated
@@ -643,7 +648,29 @@ func AssignBootstrapAliases(services []BootstrapServiceData, packages []Bootstra
 // have webhooks. (2026-04-30 LLM-port: introduced as part of the
 // auto-wire fix — pre-fix, projects had to manually edit service.go to
 // call s.RegisterWebhookRoutes(mux, stack).)
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
+// BootstrapFeatures carries the per-project feature toggles that
+// influence what bootstrap.go's body emits. Added as a struct (not yet
+// another bool) so future feature flags can land additively without
+// re-shaping the GenerateBootstrap signature; today the struct only
+// carries diagnostics + strict-wiring, but the same pattern absorbs
+// later flags cleanly.
+type BootstrapFeatures struct {
+	// DiagnosticsEnabled is true when the project opts in to
+	// `features.diagnostics: true`. Drives whether the template emits
+	// the diagnostics.Default.Boot(emitter) call after Setup. Default
+	// false so existing projects don't suddenly start logging warns on
+	// regen.
+	DiagnosticsEnabled bool
+
+	// StrictWiringEnabled is true when the project opts in to
+	// `features.strict_wiring: true`. Implies DiagnosticsEnabled at the
+	// wire site — strict-mode wraps the LogEmitter in StrictEmitter so
+	// any registered diagnostic exits the process after the summary
+	// line. Default false.
+	StrictWiringEnabled bool
+}
+
+func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err
@@ -656,20 +683,30 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	for _, svc := range services {
 		pkg := toServicePackage(svc.Name)
 		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
-		fieldName := naming.ToPascalCase(pkg)
-		// Runtime name is the kebab form derived from the snake package
-		// directory — matches what cobra subcommands pass to runServer
+		// FieldName mirrors the PascalCase proto-service name without the
+		// "Service" suffix ("AdminServerService" -> "AdminServer"). We derive
+		// it from svc.Name (which retains separators / PascalCase boundaries)
+		// rather than from pkg, because pkg is the compact form
+		// ("adminserver") that ToPascalCase can't split back into words.
+		fieldName := naming.ToPascalCase(strings.TrimSuffix(svc.Name, "Service"))
+		if fieldName == "" {
+			fieldName = naming.ToPascalCase(svc.Name)
+		}
+		// Runtime name is the kebab form of the original svc.Name (proto
+		// PascalCase) — matches what cobra subcommands pass to runServer
 		// (cmd-shared-service.go.tmpl uses {{.ServiceName}} which is the
-		// kebab form from forge.yaml). Pre-2026-04-30 this was set to
-		// the snake-case package name, which silently dropped the cobra
+		// kebab form from forge.yaml). Pre-2026-04-30 this was derived
+		// from the snake-case package name, which silently dropped the cobra
 		// invocation under shared-binary mode (admin-server vs admin_server).
-		runtimeName := strings.ReplaceAll(pkg, "_", "-")
+		// The kebab form preserves the original word boundaries that the
+		// compact pkg form loses.
+		runtimeName := naming.ToKebabCase(strings.TrimSuffix(svc.Name, "Service"))
 		// ConnectPkg + ProtoServiceName drive the vanguard.NewService call
 		// site when REST is enabled. The proto service name is the proto
 		// handler name (e.g. "EchoService") which matches the `<X>Name`
 		// constant exposed by connect-generated packages.
 		connectPkg := pkg + "v1connect"
-		protoServiceName := naming.ToPascalCase(pkg) + "Service"
+		protoServiceName := fieldName + "Service"
 		if restEnabled {
 			connectImports = append(connectImports, modulePath+"/gen/services/"+pkg+"/v1/"+connectPkg)
 		}
@@ -718,31 +755,35 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	binaryShared := projectBinaryShared(projectDir)
 
 	data := struct {
-		Module         string
-		Services       []BootstrapServiceData
-		Packages       []BootstrapPackageData
-		Workers        []BootstrapWorkerData
-		Operators      []BootstrapOperatorData
-		HasDatabase    bool
-		OrmEnabled     bool
-		HasFallible    bool
-		BinaryShared   bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
-		ConnectImports []string
+		Module              string
+		Services            []BootstrapServiceData
+		Packages            []BootstrapPackageData
+		Workers             []BootstrapWorkerData
+		Operators           []BootstrapOperatorData
+		HasDatabase         bool
+		OrmEnabled          bool
+		HasFallible         bool
+		BinaryShared        bool
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
-		Module:         modulePath,
-		Services:       bootstrapSvcs,
-		Packages:       packages,
-		Workers:        workers,
-		Operators:      operators,
-		HasDatabase:    hasDatabase,
-		OrmEnabled:     ormEnabled,
-		HasFallible:    hasFallible,
-		BinaryShared:   binaryShared,
-		ConfigFields:   configFields,
-		RESTEnabled:    restEnabled,
-		ConnectImports: connectImports,
+		Module:              modulePath,
+		Services:            bootstrapSvcs,
+		Packages:            packages,
+		Workers:             workers,
+		Operators:           operators,
+		HasDatabase:         hasDatabase,
+		OrmEnabled:          ormEnabled,
+		HasFallible:         hasFallible,
+		BinaryShared:        binaryShared,
+		ConfigFields:        configFields,
+		RESTEnabled:         restEnabled,
+		ConnectImports:      connectImports,
+		DiagnosticsEnabled:  features.DiagnosticsEnabled,
+		StrictWiringEnabled: features.StrictWiringEnabled,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)
@@ -958,6 +999,25 @@ type BootstrapTestServiceData struct {
 	// "graceful dev-mode degrade" semantics. See ParseLocalInterfaces +
 	// HasOptionalDepMarker for the detection rules.
 	AutoStubs []DepsAutoStub
+	// UnresolvedStubs lists Deps fields whose type is a cross-package
+	// selector forge couldn't resolve (alias not in imports, package
+	// can't load, type isn't an interface). The template emits a
+	// `// TODO: stub <type>` line next to NewTest<Svc> so the user
+	// sees a visible reminder to hand-roll an override via
+	// With<Svc>Deps(...). Empty when every selector resolved cleanly.
+	UnresolvedStubs []UnresolvedAutoStub
+}
+
+// UnresolvedAutoStub is one Deps field whose cross-package selector
+// type couldn't be turned into a synthesized stub. Surfaces in the
+// generated testing.go as a TODO comment so the user knows to
+// hand-roll an override.
+type UnresolvedAutoStub struct {
+	// FieldName is the Deps field name as declared.
+	FieldName string
+	// TypeExpr is the unresolved type expression as written in the
+	// Deps struct (e.g. "external.Client").
+	TypeExpr string
 }
 
 // DepsAutoStub describes one synthesized interface implementation
@@ -975,14 +1035,29 @@ type DepsAutoStub struct {
 	// Deps-field name don't collide at the package level.
 	StubType string
 	// InterfaceQualified is the package-qualified type expression used
-	// when injecting the stub into Deps in NewTest<Svc> (e.g.
-	// "api.Repository"). Always carries the service-package alias so
-	// the same interface name can appear across services without
-	// import collision.
+	// when injecting the stub into Deps in NewTest<Svc>.
+	//
+	// For locally-declared interfaces this carries the literal "<alias>."
+	// placeholder so the caller can substitute the post-collision
+	// service alias ("svcBilling" vs "billing"). For cross-package
+	// interfaces (CrossPackage = true) the prefix is already the
+	// declaring package's alias (e.g. "repo.Repository") and must NOT
+	// be re-aliased — the service alias is irrelevant to it.
 	InterfaceQualified string
 	// Methods are the interface's flattened method set rendered for
 	// the template's stub-emit loop.
 	Methods []InterfaceMethod
+	// CrossPackage flags stubs whose interface lives in a package
+	// other than the handler's. The caller uses this to skip the
+	// "<alias>." rewrite and to fold the stub's ExtraImports into
+	// the file's import block.
+	CrossPackage bool
+	// ExtraImports lists every package the stub's method signatures
+	// reference (including the interface's own package). Only populated
+	// when CrossPackage = true. The bootstrap_testing assembler
+	// deduplicates these across stubs into the top-level
+	// ExtraImports field on the template data.
+	ExtraImports []ExtraImport
 }
 
 // GenerateBootstrapTesting generates pkg/app/testing.go from the bootstrap_testing.go.tmpl template.
@@ -1006,12 +1081,18 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 			anyServiceHasDB = true
 		}
 		// Auto-stub: walk the service's Deps fields, find any interface-
-		// typed required fields whose interface declaration lives in the
-		// handler package, and queue a synthesized stub. The bare-Deps
-		// trio (Logger / Config / Authorizer) and the DB orm.Context
-		// field are handled by the existing default fill so they're
-		// excluded from auto-stubbing here.
-		autoStubs := computeAutoStubs(handlerDir, pkg)
+		// typed required fields and queue a synthesized stub. Handles
+		// both locally-declared interfaces AND cross-package selector
+		// types (e.g. repo.Repository) — the selector path loads the
+		// imported package via go/types and walks its method set. The
+		// bare-Deps trio (Logger / Config / Authorizer) and the DB
+		// orm.Context field are handled by the existing default fill
+		// so they're excluded from auto-stubbing here.
+		//
+		// unresolvedStubs surfaces selector types we couldn't resolve
+		// (package failed to load, alias not in imports, type isn't
+		// an interface) so the template can emit a TODO comment.
+		autoStubs, unresolvedStubs := computeAutoStubs(handlerDir, pkg)
 		// Derive Connect package path/name from the proto's declared
 		// go_package + PkgName instead of guessing from the service name.
 		// Falls back to the convention path when GoPackage is empty (covers
@@ -1034,6 +1115,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 			Alias:                  pkg, // overwritten below if there's a cross-role collision
 			VarName:                pkg, // overwritten below if there's a cross-role collision
 			AutoStubs:              autoStubs,
+			UnresolvedStubs:        unresolvedStubs,
 		})
 	}
 
@@ -1060,8 +1142,17 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		// post-collision alias. The unqualified stub-type identifier
 		// already carries an UpperCamel(Package) prefix so collisions
 		// across services are impossible by construction.
+		//
+		// CrossPackage stubs skip this rewrite — their interface lives
+		// in a different package whose alias has nothing to do with
+		// this service's alias. Their InterfaceQualified is already
+		// the resolved "<pkg>.<TypeName>" form from
+		// ResolveCrossPkgInterface.
 		alias := testSvcs[i].Alias
 		for j, stub := range testSvcs[i].AutoStubs {
+			if stub.CrossPackage {
+				continue
+			}
 			// Replace the placeholder "<alias>." prefix with the resolved
 			// alias. computeAutoStubs writes "<alias>." literally so the
 			// rewrite is a single string-replace per field.
@@ -1103,6 +1194,15 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		connectImports = append(connectImports, s.ProtoConnectImportPath)
 	}
 
+	// Collect the union of every cross-package import any auto-stub
+	// needs. The bootstrap_testing template emits these in a dedicated
+	// import block so the rendered file can reference cross-package
+	// interface types and their method-signature dependencies without
+	// the user wiring up the import by hand. Deterministic ordering is
+	// preserved by SortedNeededImports — the union is then re-sorted
+	// here so the final file stays diff-stable.
+	extraImports := mergeExtraImports(testSvcs)
+
 	data := struct {
 		Module             string
 		Services           []BootstrapTestServiceData
@@ -1110,6 +1210,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		Packages           []BootstrapPackageData
 		MultiTenantEnabled bool
 		AnyServiceHasDB    bool
+		ExtraImports       []ExtraImport
 	}{
 		Module:             modulePath,
 		Services:           testSvcs,
@@ -1117,6 +1218,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		Packages:           packages,
 		MultiTenantEnabled: multiTenantEnabled,
 		AnyServiceHasDB:    anyServiceHasDB,
+		ExtraImports:       extraImports,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
@@ -1128,6 +1230,63 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		return fmt.Errorf("write pkg/app/testing.go: %w", err)
 	}
 	return nil
+}
+
+// mergeExtraImports folds every cross-package stub's ExtraImports
+// into one deterministic deduplicated slice. Path is the dedupe key —
+// two stubs that both depend on "x/y/z" produce a single import line.
+// Conflict on the alias (same path with different aliases across two
+// stubs) is resolved first-wins, matching the order computeAutoStubs
+// returns and the import-collection inside ResolveCrossPkgInterface
+// (which uses the imported package's declared name, so a conflict
+// would already be a real package-rename collision the user would
+// have to resolve regardless).
+func mergeExtraImports(services []BootstrapTestServiceData) []ExtraImport {
+	seen := map[string]string{}
+	for _, s := range services {
+		for _, stub := range s.AutoStubs {
+			if !stub.CrossPackage {
+				continue
+			}
+			for _, imp := range stub.ExtraImports {
+				if _, ok := seen[imp.Path]; ok {
+					continue
+				}
+				seen[imp.Path] = imp.Alias
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]ExtraImport, 0, len(seen))
+	for path, alias := range seen {
+		out = append(out, ExtraImport{Path: path, Alias: alias})
+	}
+	// Deterministic order — codegen must be reproducible for the
+	// checksums-based "no spurious diff" guarantee. SortedNeededImports
+	// sorts by Path; we do the same here so the merged slice stays
+	// in lockstep with the per-stub view.
+	sortExtraImports(out)
+	return out
+}
+
+// sortExtraImports puts an ExtraImport slice in canonical Path order.
+// Factored out of mergeExtraImports so the tests can reuse it on
+// hand-built slices without re-running the merge.
+func sortExtraImports(s []ExtraImport) {
+	// import "sort" once; the codegen package already imports it.
+	if len(s) < 2 {
+		return
+	}
+	// Trivial insertion sort: codegen runs are dominated by I/O and
+	// template execution, the import list is typically <10 elements,
+	// and we want to avoid pulling another import for this one call.
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1].Path > s[j].Path; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 // bareDepsFieldNames is the set of Deps field names the bootstrap_testing
@@ -1143,26 +1302,40 @@ var bareDepsFieldNames = map[string]bool{
 
 // computeAutoStubs walks a service's handler directory, parses its
 // Deps struct + locally-declared interfaces, and returns one
-// DepsAutoStub for every required Deps field whose type is a local
-// interface. The bare-Deps trio (Logger / Config / Authorizer) and
-// the optional-dep set are excluded — those are either filled in by
-// the template's existing default-merge step or deliberately left nil.
+// DepsAutoStub for every required Deps field whose type is an
+// interface forge can satisfy with a zero-value stub. The bare-Deps
+// trio (Logger / Config / Authorizer) and the optional-dep set are
+// excluded — those are either filled in by the template's existing
+// default-merge step or deliberately left nil.
 //
-// InterfaceQualified is emitted with a literal "<alias>." prefix; the
-// caller rewrites the placeholder with the service's import alias once
-// cross-role collision rewriting has run. This keeps the stub-data
-// shape stable regardless of which service ends up with the prefixed
-// alias ("svcBilling" vs "billing").
-func computeAutoStubs(handlerDir, _ string) []DepsAutoStub {
+// Two type shapes are handled:
+//
+//  1. Bare-identifier types ("Repository") that resolve to an
+//     interface declared in the handler package. InterfaceQualified
+//     is "<alias>." + name so the caller can substitute the
+//     post-collision service alias.
+//
+//  2. Selector types ("repo.Repository") that resolve to an
+//     interface in an imported package. ResolveCrossPkgInterface
+//     does the heavy lifting (alias → import path → go/packages
+//     load → types.Interface walk). On success, the stub carries
+//     CrossPackage = true and ExtraImports listing every package
+//     its method signatures reference.
+//
+// Unresolvable selector types (alias mismatch, package can't load,
+// type isn't an interface) fall through to the existing
+// "field stays nil" behavior. This is the soft-fail design: tests
+// that hit a nil dependency see the usual nil-deref, the user
+// either overrides the field via With<Svc>Deps or hand-rolls a
+// stub — both are existing escape valves.
+func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStub) {
 	fields, err := ParseServiceDeps(handlerDir)
 	if err != nil || len(fields) == 0 {
-		return nil
+		return nil, nil
 	}
-	locals, err := ParseLocalInterfaces(handlerDir)
-	if err != nil || len(locals) == 0 {
-		return nil
-	}
+	locals, _ := ParseLocalInterfaces(handlerDir)
 	var stubs []DepsAutoStub
+	var unresolved []UnresolvedAutoStub
 	for _, f := range fields {
 		if bareDepsFieldNames[f.Name] {
 			continue
@@ -1170,30 +1343,60 @@ func computeAutoStubs(handlerDir, _ string) []DepsAutoStub {
 		if f.Optional {
 			continue
 		}
-		// Only auto-stub bare-identifier interface types. Pointer /
-		// slice / map / chan decorations are not interfaces; selector
-		// types ("pkg.Repository") would require chasing imports across
-		// packages, which is beyond this pass's scope.
 		t := strings.TrimSpace(f.Type)
-		iface, ok := locals[t]
-		if !ok {
+
+		// (1) Bare-identifier interface declared in this package.
+		if iface, ok := locals[t]; ok {
+			stubs = append(stubs, DepsAutoStub{
+				FieldName:          f.Name,
+				StubType:           "", // resolved below from handlerDir's package
+				InterfaceQualified: "<alias>." + iface.Name,
+				Methods:            iface.Methods,
+			})
 			continue
 		}
-		stubs = append(stubs, DepsAutoStub{
-			FieldName:          f.Name,
-			StubType:           "stub" + upperFirst(strings.TrimPrefix(handlerDir, "")) + f.Name, // overwritten below
-			InterfaceQualified: "<alias>." + iface.Name,
-			Methods:            iface.Methods,
-		})
+
+		// (2) Selector type — resolve across the import boundary.
+		// We only handle the simple `<pkg>.<TypeName>` shape; pointer
+		// (`*pkg.T`), slice, map, and chan decorations on an interface
+		// are not idiomatic and stay on the hand-roll path.
+		if dot := strings.IndexByte(t, '.'); dot > 0 && !strings.ContainsAny(t, "*[]<>(){}") {
+			pkgAlias := t[:dot]
+			typeName := t[dot+1:]
+			res, ok := ResolveCrossPkgInterface(handlerDir, pkgAlias, typeName)
+			if !ok {
+				// Soft-fail: record the selector so the template can
+				// surface a TODO comment. The field still stays nil
+				// at construction time — the comment exists purely to
+				// nudge the user toward With<Svc>Deps overrides or
+				// a hand-rolled stub.
+				unresolved = append(unresolved, UnresolvedAutoStub{
+					FieldName: f.Name,
+					TypeExpr:  t,
+				})
+				continue
+			}
+			stubs = append(stubs, DepsAutoStub{
+				FieldName:          f.Name,
+				StubType:           "", // resolved below
+				InterfaceQualified: res.PackageName + "." + typeName,
+				Methods:            res.Methods,
+				CrossPackage:       true,
+				ExtraImports:       SortedNeededImports(res.NeededImports),
+			})
+		}
 	}
-	// Make stub-type names predictable + collision-free across the file:
-	// stub<UpperPackage><FieldName>. handlerDir's last segment IS the
-	// service Go-package name (toServicePackage), so use it directly.
+	// Make stub-type names predictable + collision-free across the
+	// file: stub<UpperPackage><FieldName>. handlerDir's last segment
+	// IS the service Go-package name (toServicePackage), so use it
+	// directly. The CrossPackage flag does not affect the stub-type
+	// identifier — it lives in pkg/app, not in the imported package,
+	// so the service-name prefix still gives us per-service uniqueness.
 	pkg := filepath.Base(handlerDir)
 	for i := range stubs {
 		stubs[i].StubType = "stub" + upperFirst(pkg) + stubs[i].FieldName
 	}
-	return stubs
+	return stubs, unresolved
 }
 
 // GenerateMigrate writes pkg/app/migrate.go with embedded migration support.
@@ -1357,6 +1560,21 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	// don't checksum them — we want forge audit to leave them alone.
 	fullData := mapServiceDefToTemplateData(svc, projectDir)
 
+	// Filter CRUD methods out of the unit-test scaffold so per-RPC rows
+	// don't overlap with handlers_crud_gen_test.go (which owns shape-aware
+	// per-CRUD-RPC rows). Same filter rule as the initial-gen path in
+	// GenerateServiceStub — one source of truth per method, no duplication.
+	unitTestData := fullData
+	if len(crudMethodNames) > 0 {
+		var nonCRUD []MethodTemplateData
+		for _, m := range fullData.Methods {
+			if !crudMethodNames[m.Name] {
+				nonCRUD = append(nonCRUD, m)
+			}
+		}
+		unitTestData.Methods = nonCRUD
+	}
+
 	integrationTestPath := filepath.Join(targetDir, "integration_test.go")
 	if isPlaceholderIntegrationTest(integrationTestPath) {
 		testContent, err := templates.ServiceTemplates().Render("integration_test.go.tmpl", fullData)
@@ -1370,7 +1588,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 
 	handlersTestPath := filepath.Join(targetDir, "handlers_scaffold_test.go")
 	if isPlaceholderUnitTest(handlersTestPath) {
-		testContent, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", fullData)
+		testContent, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", unitTestData)
 		if err != nil {
 			return nil, fmt.Errorf("render unit_test.go.tmpl: %w", err)
 		}
@@ -1575,18 +1793,21 @@ func hasFallibleConstructor(services []BootstrapServiceData, packages []Bootstra
 }
 
 // toServicePackage converts a proto service name like "EchoService" to its
-// Go-package form ("echo"). Multi-word PascalCase names are snake-cased so the
-// result is a valid Go identifier matching the dir created at scaffold time
-// (e.g. "AdminServerService" -> "admin_server" matches handlers/admin_server/).
-// Hyphens (which can appear when downstream callers feed in the CLI form
-// directly) are also normalized to underscores.
+// Go-package form ("echo"). Multi-word PascalCase names compact to a single
+// lowercase identifier matching the dir created at scaffold time
+// (e.g. "AdminServerService" -> "adminserver" matches handlers/adminserver/).
+// Hyphens / underscores (which can appear when downstream callers feed in the
+// CLI form directly) are also stripped.
+//
+// This must agree with generator.ServicePackageName for any single service so
+// that bootstrap/codegen keys and the on-disk handler directory match. See the
+// matching toGoPackageReplacer for the separator policy.
 func toServicePackage(name string) string {
 	trimmed := strings.TrimSuffix(name, "Service")
 	if trimmed == "" {
 		trimmed = name
 	}
-	// ToSnakeCase handles PascalCase ("AdminServer" -> "admin_server") and
-	// preserves all-lowercase input ("orders" -> "orders"). Replace any
-	// stray hyphens defensively in case a caller passed in a CLI name.
-	return strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
+	// ToSnakeCase handles PascalCase ("AdminServer" -> "admin_server"); strip
+	// the resulting separators so we match ServicePackageName's compact form.
+	return toGoPackage(naming.ToSnakeCase(trimmed))
 }

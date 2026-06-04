@@ -31,13 +31,13 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		// pkg/app/wire_gen.go — service/worker/operator Deps wiring.
 		"wire_gen.go": {},
 		// Per-handler-directory codegen off proto descriptors.
-		"handlers_gen.go":              {},
-		"handlers_crud_gen.go":         {},
-		"handlers_crud_test_gen.go":    {},
-		"handlers_scaffold_test.go":    {}, // post-1.x scaffolded test file
-		"authorizer_gen.go":            {},
-		"tenant_gen.go":                {},
-		"webhook_routes_gen.go":        {},
+		"handlers_gen.go":           {},
+		"handlers_crud_gen.go":      {},
+		"handlers_crud_test_gen.go": {},
+		"handlers_scaffold_test.go": {}, // post-1.x scaffolded test file
+		"authorizer_gen.go":         {},
+		"tenant_gen.go":             {},
+		"webhook_routes_gen.go":     {},
 		// Pack outputs (under pkg/middleware/<pack>/...).
 		"auth_gen.go":     {}, // jwt-auth pack output (see pack-development SKILL.md)
 		"audit_gen.go":    {}, // audit-log pack output

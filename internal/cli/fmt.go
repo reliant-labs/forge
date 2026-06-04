@@ -26,6 +26,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -60,7 +61,7 @@ func newFmtCmd() *cobra.Command {
 			"  forge fmt internal/foo          # format a single directory\n" +
 			"  forge fmt internal/foo bar.go   # format a directory + a file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFmt(args)
+			return runFmt(cmd.Context(), args)
 		},
 	}
 }
@@ -68,7 +69,7 @@ func newFmtCmd() *cobra.Command {
 // runFmt is the command body. It is exported as a package-private
 // helper so the unit test can drive it without going through cobra's
 // argument-parsing layer.
-func runFmt(paths []string) error {
+func runFmt(ctx context.Context, paths []string) error {
 	projectDir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
@@ -84,7 +85,7 @@ func runFmt(paths []string) error {
 		}
 	}
 
-	return runGoimportsFmt(projectDir, modulePath, paths)
+	return runGoimportsFmt(ctx, projectDir, modulePath, paths)
 }
 
 // resolveFmtModulePath returns the `-local` value derived first from
@@ -131,7 +132,7 @@ func defaultFmtTargets(projectDir string) []string {
 // targets. Returns nil with a stderr warning when goimports isn't on
 // PATH; pre-commit hooks shouldn't fail on a missing tool — the user
 // gets the install hint instead.
-func runGoimportsFmt(projectDir, modulePath string, targets []string) error {
+func runGoimportsFmt(ctx context.Context, projectDir, modulePath string, targets []string) error {
 	goimportsPath, err := exec.LookPath("goimports")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "warning: goimports not found on PATH — skipping format")
@@ -147,7 +148,7 @@ func runGoimportsFmt(projectDir, modulePath string, targets []string) error {
 	}
 	args = append(args, targets...)
 
-	cmd := exec.Command(goimportsPath, args...)
+	cmd := exec.CommandContext(ctx, goimportsPath, args...)
 	cmd.Dir = projectDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

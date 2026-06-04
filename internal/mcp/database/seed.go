@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SeedData represents a fixture for seeding the database
@@ -88,11 +90,14 @@ func (sm *seedManager) applySeed(db *sql.DB, seed *SeedData, clearFirst bool) er
 		}
 	}
 
-	tx, err := db.Begin()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Sort tables for deterministic ordering
 	tables := make([]string, 0, len(seed.Tables))
@@ -105,7 +110,7 @@ func (sm *seedManager) applySeed(db *sql.DB, seed *SeedData, clearFirst bool) er
 	if clearFirst {
 		for i := len(tables) - 1; i >= 0; i-- {
 			table := tables[i]
-			if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s", quoteIdent(table))); err != nil {
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", quoteIdent(table))); err != nil {
 				return fmt.Errorf("failed to clear table %s: %w", table, err)
 			}
 		}
@@ -114,7 +119,7 @@ func (sm *seedManager) applySeed(db *sql.DB, seed *SeedData, clearFirst bool) er
 	// Insert data in forward order (parent tables first)
 	for _, table := range tables {
 		for _, row := range seed.Tables[table] {
-			if err := sm.insertRow(tx, table, row); err != nil {
+			if err := sm.insertRow(ctx, tx, table, row); err != nil {
 				return fmt.Errorf("failed to insert into %s: %w", table, err)
 			}
 		}
@@ -128,7 +133,7 @@ func (sm *seedManager) applySeed(db *sql.DB, seed *SeedData, clearFirst bool) er
 }
 
 // insertRow inserts a single row into a table
-func (sm *seedManager) insertRow(tx *sql.Tx, table string, row map[string]interface{}) error {
+func (sm *seedManager) insertRow(ctx context.Context, tx *sql.Tx, table string, row map[string]interface{}) error {
 	if len(row) == 0 {
 		return nil
 	}
@@ -155,7 +160,7 @@ func (sm *seedManager) insertRow(tx *sql.Tx, table string, row map[string]interf
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "))
 
-	_, err := tx.Exec(query, values...)
+	_, err := tx.ExecContext(ctx, query, values...)
 	return err
 }
 

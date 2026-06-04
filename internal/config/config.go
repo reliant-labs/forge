@@ -1,5 +1,13 @@
 // Package config defines the canonical forge.yaml types shared by
-// both the CLI (read) and the generator (write) packages.
+// both the CLI (read) and the generator (write) packages. The
+// forge.yaml schema deliberately exposes ~40 typed sections so YAML
+// unmarshal can hydrate each block; splitting this file would just
+// scatter the same surface across multiple packages and break the
+// "one schema, one file" contract the generator relies on. The
+// max-public-structs revive rule is therefore suppressed at the
+// package-doc line below.
+
+//nolint:revive // max-public-structs: see package doc above.
 package config
 
 import "strings"
@@ -69,11 +77,11 @@ type ProjectConfig struct {
 	// consulted by `forge generate` to warn when the forge binary on
 	// PATH has drifted from the version pinned by the project. Empty
 	// (legacy) projects are treated as "0.0.0".
-	ForgeVersion string              `yaml:"forge_version,omitempty"`
-	HotReload    bool                `yaml:"hot_reload"`
-	Services     []ServiceConfig     `yaml:"services"`
-	Packages     []PackageConfig     `yaml:"packages,omitempty"`
-	Frontends    []FrontendConfig    `yaml:"frontends,omitempty"`
+	ForgeVersion string           `yaml:"forge_version,omitempty"`
+	HotReload    bool             `yaml:"hot_reload"`
+	Services     []ServiceConfig  `yaml:"services"`
+	Packages     []PackageConfig  `yaml:"packages,omitempty"`
+	Frontends    []FrontendConfig `yaml:"frontends,omitempty"`
 	// Frontend holds project-level frontend settings — distinct from
 	// the per-frontend `Frontends []FrontendConfig` slice above. Today
 	// it only carries the opt-in `workspaces:` flag that turns on the
@@ -81,24 +89,24 @@ type ProjectConfig struct {
 	// frontends (web + mobile) can share generated Connect clients and
 	// React Query hook wrappers. When the flag is false (the default)
 	// forge keeps the historic per-frontend layout exactly as before.
-	Frontend     FrontendProjectConfig `yaml:"frontend,omitempty"`
-	Envs         []EnvironmentConfig `yaml:"environments"`
-	Database     DatabaseConfig      `yaml:"database"`
-	CI           CIConfig            `yaml:"ci"`
-	Deploy       DeployConfig        `yaml:"deploy,omitempty"`
-	Docker       DockerConfig        `yaml:"docker"`
-	K8s          K8sConfig           `yaml:"k8s"`
-	Lint         LintConfig          `yaml:"lint"`
-	Contracts    ContractsConfig     `yaml:"contracts"`
-	Auth         AuthConfig          `yaml:"auth"`
-	Docs         DocsConfig          `yaml:"docs"`
-	Features     FeaturesConfig      `yaml:"features,omitempty"`
-	Stack        StackConfig         `yaml:"stack,omitempty"`
+	Frontend  FrontendProjectConfig `yaml:"frontend,omitempty"`
+	Envs      []EnvironmentConfig   `yaml:"environments"`
+	Database  DatabaseConfig        `yaml:"database"`
+	CI        CIConfig              `yaml:"ci"`
+	Deploy    DeployConfig          `yaml:"deploy,omitempty"`
+	Docker    DockerConfig          `yaml:"docker"`
+	K8s       K8sConfig             `yaml:"k8s"`
+	Lint      LintConfig            `yaml:"lint"`
+	Contracts ContractsConfig       `yaml:"contracts"`
+	Auth      AuthConfig            `yaml:"auth"`
+	Docs      DocsConfig            `yaml:"docs"`
+	Features  FeaturesConfig        `yaml:"features,omitempty"`
+	Stack     StackConfig           `yaml:"stack,omitempty"`
 	// API toggles project-level API protocol skins layered on top of the
 	// Connect mux. Default zero-value leaves both REST and OpenAPI off so
 	// existing projects regenerate identically. See [APIConfig] for the
 	// per-field semantics.
-	API APIConfig `yaml:"api,omitempty"`
+	API           APIConfig               `yaml:"api,omitempty"`
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
 	// Binaries declares non-server long-running processes scaffolded
@@ -315,12 +323,12 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 //
 // Use [LoadEnvironmentConfig] to read the merged map for an environment.
 type EnvironmentConfig struct {
-	Name      string         `yaml:"name"` // dev, staging, prod
-	Type      string         `yaml:"type"` // "local", "cloud"
-	Services  []string       `yaml:"services,omitempty"`
-	Registry  string         `yaml:"registry,omitempty"`
-	Namespace string         `yaml:"namespace,omitempty"`
-	Domain    string         `yaml:"domain,omitempty"`
+	Name      string   `yaml:"name"` // dev, staging, prod
+	Type      string   `yaml:"type"` // "local", "cloud"
+	Services  []string `yaml:"services,omitempty"`
+	Registry  string   `yaml:"registry,omitempty"`
+	Namespace string   `yaml:"namespace,omitempty"`
+	Domain    string   `yaml:"domain,omitempty"`
 	// Cluster is the expected kubectl context name for this
 	// environment. When set, `forge deploy <env>` refuses to apply
 	// unless the current kubectl context matches (override via
@@ -339,6 +347,9 @@ type DatabaseConfig struct {
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 }
 
+// MigrationSafetyConfig controls migrationlint's three severity dials
+// (unsafe add-column, destructive change, volatile default) and its
+// list of allowlisted destructive migrations.
 type MigrationSafetyConfig struct {
 	Enabled            *bool    `yaml:"enabled,omitempty"`             // nil = enabled
 	UnsafeAddColumn    string   `yaml:"unsafe_add_column,omitempty"`   // error, warn, off
@@ -347,18 +358,26 @@ type MigrationSafetyConfig struct {
 	AllowedDestructive []string `yaml:"allowed_destructive,omitempty"` // file globs that may contain destructive changes
 }
 
+// IsEnabled reports whether migration safety linting is on. Nil
+// Enabled means "on by default" so opt-in is implicit.
 func (c MigrationSafetyConfig) IsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
+// EffectiveUnsafeAddColumn returns the configured severity for the
+// unsafe-add-column rule, falling back to "error" when unset/invalid.
 func (c MigrationSafetyConfig) EffectiveUnsafeAddColumn() string {
 	return effectiveSeverity(c.UnsafeAddColumn, "error")
 }
 
+// EffectiveDestructiveChange returns the configured severity for the
+// destructive-change rule, falling back to "error" when unset/invalid.
 func (c MigrationSafetyConfig) EffectiveDestructiveChange() string {
 	return effectiveSeverity(c.DestructiveChange, "error")
 }
 
+// EffectiveVolatileDefault returns the configured severity for the
+// volatile-default rule, falling back to "warn" when unset/invalid.
 func (c MigrationSafetyConfig) EffectiveVolatileDefault() string {
 	return effectiveSeverity(c.VolatileDefault, "warn")
 }
@@ -534,16 +553,24 @@ type LintConfig struct {
 	Frontend FrontendLintConfig `yaml:"frontend,omitempty"`
 }
 
+// FrontendLintConfig configures the frontend slice of `forge lint`:
+// whether the stylelint-backed CSS health checks run, and which
+// severity ("error"/"warn"/"off") the `no-important` and
+// `no-inline-styles` rules use.
 type FrontendLintConfig struct {
 	CSSHealth      bool   `yaml:"css_health,omitempty"`       // enable stylelint-backed CSS health checks
 	NoImportant    string `yaml:"no_important,omitempty"`     // error, warn, off
 	NoInlineStyles string `yaml:"no_inline_styles,omitempty"` // error, warn, off
 }
 
+// EffectiveNoImportant returns the configured severity for the
+// no-important rule, falling back to "warn" when unset/invalid.
 func (c FrontendLintConfig) EffectiveNoImportant() string {
 	return effectiveSeverity(c.NoImportant, "warn")
 }
 
+// EffectiveNoInlineStyles returns the configured severity for the
+// no-inline-styles rule, falling back to "warn" when unset/invalid.
 func (c FrontendLintConfig) EffectiveNoInlineStyles() string {
 	return effectiveSeverity(c.NoInlineStyles, "warn")
 }
@@ -647,16 +674,35 @@ func (c ProjectConfig) IsLibraryKind() bool { return c.EffectiveKind() == Projec
 // IsServiceKind reports whether the project is a Connect-RPC service.
 func (c ProjectConfig) IsServiceKind() bool { return c.EffectiveKind() == ProjectKindService }
 
-func (f FeaturesConfig) ORMEnabled() bool           { return featureEnabled(f.ORM) }
-func (f FeaturesConfig) CodegenEnabled() bool       { return featureEnabled(f.Codegen) }
-func (f FeaturesConfig) MigrationsEnabled() bool    { return featureEnabled(f.Migrations) }
-func (f FeaturesConfig) CIEnabled() bool            { return featureEnabled(f.CI) }
-func (f FeaturesConfig) DeployEnabled() bool        { return featureEnabled(f.Deploy) }
-func (f FeaturesConfig) ContractsEnabled() bool     { return featureEnabled(f.Contracts) }
-func (f FeaturesConfig) DocsEnabled() bool          { return featureEnabled(f.Docs) }
-func (f FeaturesConfig) FrontendEnabled() bool      { return featureEnabled(f.Frontend) }
+// ORMEnabled reports whether the ORM feature is on (default: on).
+func (f FeaturesConfig) ORMEnabled() bool { return featureEnabled(f.ORM) }
+
+// CodegenEnabled reports whether codegen is on (default: on).
+func (f FeaturesConfig) CodegenEnabled() bool { return featureEnabled(f.Codegen) }
+
+// MigrationsEnabled reports whether the migrations feature is on (default: on).
+func (f FeaturesConfig) MigrationsEnabled() bool { return featureEnabled(f.Migrations) }
+
+// CIEnabled reports whether the CI feature is on (default: on).
+func (f FeaturesConfig) CIEnabled() bool { return featureEnabled(f.CI) }
+
+// DeployEnabled reports whether the deploy feature is on (default: on).
+func (f FeaturesConfig) DeployEnabled() bool { return featureEnabled(f.Deploy) }
+
+// ContractsEnabled reports whether contract enforcement is on (default: on).
+func (f FeaturesConfig) ContractsEnabled() bool { return featureEnabled(f.Contracts) }
+
+// DocsEnabled reports whether the docs feature is on (default: on).
+func (f FeaturesConfig) DocsEnabled() bool { return featureEnabled(f.Docs) }
+
+// FrontendEnabled reports whether the frontend feature is on (default: on).
+func (f FeaturesConfig) FrontendEnabled() bool { return featureEnabled(f.Frontend) }
+
+// ObservabilityEnabled reports whether the observability feature is on (default: on).
 func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Observability) }
-func (f FeaturesConfig) HotReloadEnabled() bool     { return featureEnabled(f.HotReload) }
+
+// HotReloadEnabled reports whether the hot-reload feature is on (default: on).
+func (f FeaturesConfig) HotReloadEnabled() bool { return featureEnabled(f.HotReload) }
 
 // StackConfig declares the technology choices for the project.
 // These are forward-looking declarations — forge may not support all
@@ -874,4 +920,3 @@ func (d DocsConfig) EffectiveFormat() string {
 	}
 	return d.Format
 }
-

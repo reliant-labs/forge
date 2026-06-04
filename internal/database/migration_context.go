@@ -2,6 +2,7 @@ package database
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,18 +14,18 @@ import (
 
 // MigrationOptions controls what context is included when creating a new migration.
 type MigrationOptions struct {
-	DSN      string // If set, introspect the live DB for schema
-	ProtoDir string // Directory to scan for proto files (default: "proto/")
-	FromProto bool  // Auto-generate CREATE TABLE SQL from proto messages
+	DSN       string // If set, introspect the live DB for schema
+	ProtoDir  string // Directory to scan for proto files (default: "proto/")
+	FromProto bool   // Auto-generate CREATE TABLE SQL from proto messages
 }
 
 // MigrationContext holds all gathered context for generating rich migration comments.
 type MigrationContext struct {
 	MigrationName     string
 	CreatedAt         time.Time
-	ParsedTables      []ParsedTable     // Schema reconstructed from existing migrations
-	LiveTables        []Table           // Schema from live DB introspection (if --dsn)
-	ProtoModels       []ProtoModel      // Proto message definitions
+	ParsedTables      []ParsedTable // Schema reconstructed from existing migrations
+	LiveTables        []Table       // Schema from live DB introspection (if --dsn)
+	ProtoModels       []ProtoModel  // Proto message definitions
 	PreviousMigration *PreviousMigrationInfo
 	MigrationHistory  []string          // List of all previous migration filenames
 	SchemaDiffs       []SchemaDiffEntry // Diff between proto models and schema
@@ -186,9 +187,10 @@ func parseCreateTables(content string, tableMap map[string]*ParsedTable) {
 		depth := 1
 		end := start
 		for end < len(content) && depth > 0 {
-			if content[end] == '(' {
+			switch content[end] {
+			case '(':
 				depth++
-			} else if content[end] == ')' {
+			case ')':
 				depth--
 			}
 			if depth > 0 {
@@ -340,7 +342,7 @@ func parseProtoMessages(path string) ([]ProtoModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	relPath := filepath.Base(path)
 
@@ -398,7 +400,7 @@ func parseProtoMessages(path string) ([]ProtoModel, error) {
 					protoType = "repeated " + protoType
 				}
 				fieldNum := 0
-				fmt.Sscanf(matches[4], "%d", &fieldNum)
+				_, _ = fmt.Sscanf(matches[4], "%d", &fieldNum)
 				current.Fields = append(current.Fields, ProtoModelField{
 					Name:      matches[3],
 					ProtoType: protoType,
@@ -544,8 +546,8 @@ func GetMigrationHistory(dir string) ([]string, error) {
 func GenerateContextComment(ctx *MigrationContext) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("-- Migration: %s\n", ctx.MigrationName))
-	sb.WriteString(fmt.Sprintf("-- Created: %s\n", ctx.CreatedAt.Format(time.RFC3339)))
+	fmt.Fprintf(&sb, "-- Migration: %s\n", ctx.MigrationName)
+	fmt.Fprintf(&sb, "-- Created: %s\n", ctx.CreatedAt.Format(time.RFC3339))
 	sb.WriteString("--\n")
 
 	// Schema section.
@@ -570,9 +572,9 @@ func GenerateContextComment(ctx *MigrationContext) string {
 	if len(ctx.ProtoModels) > 0 {
 		sb.WriteString("-- === PROTO MODELS (potential new tables/columns) ===\n")
 		for _, m := range ctx.ProtoModels {
-			sb.WriteString(fmt.Sprintf("-- message %s {\n", m.Name))
+			fmt.Fprintf(&sb, "-- message %s {\n", m.Name)
 			for _, f := range m.Fields {
-				sb.WriteString(fmt.Sprintf("--   %s %s = %d;\n", f.ProtoType, f.Name, f.Number))
+				fmt.Fprintf(&sb, "--   %s %s = %d;\n", f.ProtoType, f.Name, f.Number)
 			}
 			sb.WriteString("-- }\n")
 		}
@@ -581,10 +583,10 @@ func GenerateContextComment(ctx *MigrationContext) string {
 
 	// Previous migration.
 	if ctx.PreviousMigration != nil {
-		sb.WriteString(fmt.Sprintf("-- === PREVIOUS MIGRATION (%s) ===\n", ctx.PreviousMigration.Filename))
+		fmt.Fprintf(&sb, "-- === PREVIOUS MIGRATION (%s) ===\n", ctx.PreviousMigration.Filename)
 		lines := strings.Split(strings.TrimSpace(ctx.PreviousMigration.Content), "\n")
 		for _, line := range lines {
-			sb.WriteString(fmt.Sprintf("-- %s\n", line))
+			fmt.Fprintf(&sb, "-- %s\n", line)
 		}
 		sb.WriteString("--\n")
 	}
@@ -593,7 +595,7 @@ func GenerateContextComment(ctx *MigrationContext) string {
 	if len(ctx.MigrationHistory) > 0 {
 		sb.WriteString("-- === MIGRATION HISTORY ===\n")
 		for _, name := range ctx.MigrationHistory {
-			sb.WriteString(fmt.Sprintf("-- %s\n", name))
+			fmt.Fprintf(&sb, "-- %s\n", name)
 		}
 		sb.WriteString("--\n")
 	}
@@ -602,7 +604,7 @@ func GenerateContextComment(ctx *MigrationContext) string {
 	if len(ctx.SchemaDiffs) > 0 {
 		sb.WriteString("-- === DIFF (proto vs schema) ===\n")
 		for _, d := range ctx.SchemaDiffs {
-			sb.WriteString(fmt.Sprintf("-- %s: %s\n", d.Kind, d.Message))
+			fmt.Fprintf(&sb, "-- %s: %s\n", d.Kind, d.Message)
 		}
 		sb.WriteString("--\n")
 	}
@@ -634,8 +636,8 @@ func liveTableToColumns(t Table) []commentColumn {
 		}
 		constraint = strings.Join(parts, " ")
 
-		typeName := c.Type
-		if c.UDTName != "" && c.UDTName != strings.ToLower(c.Type) {
+		var typeName string
+		if c.UDTName != "" && !strings.EqualFold(c.UDTName, c.Type) {
 			typeName = strings.ToUpper(c.UDTName)
 		} else {
 			typeName = strings.ToUpper(c.Type)
@@ -651,7 +653,7 @@ func liveTableToColumns(t Table) []commentColumn {
 }
 
 func writeTableComment(sb *strings.Builder, name string, cols []commentColumn) {
-	sb.WriteString(fmt.Sprintf("--\n-- TABLE %s (\n", name))
+	fmt.Fprintf(sb, "--\n-- TABLE %s (\n", name)
 	for i, c := range cols {
 		line := fmt.Sprintf("--   %s %s", c.name, c.typeName)
 		if c.constraint != "" {
@@ -666,7 +668,7 @@ func writeTableComment(sb *strings.Builder, name string, cols []commentColumn) {
 }
 
 func writeParsedTableComment(sb *strings.Builder, t ParsedTable) {
-	sb.WriteString(fmt.Sprintf("--\n-- TABLE %s (\n", t.Name))
+	fmt.Fprintf(sb, "--\n-- TABLE %s (\n", t.Name)
 	for i, c := range t.Columns {
 		line := fmt.Sprintf("--   %s %s", c.Name, strings.ToUpper(c.Type))
 		if c.Constraint != "" {
@@ -712,7 +714,7 @@ func ProtoToCreateTable(model ProtoModel) string {
 	tableName := protoMessageToTableName(model.Name)
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", tableName))
+	fmt.Fprintf(&sb, "CREATE TABLE %s (\n", tableName)
 	sb.WriteString("    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n")
 
 	for _, f := range model.Fields {
@@ -722,7 +724,7 @@ func ProtoToCreateTable(model ProtoModel) string {
 			continue
 		}
 		sqlType := ProtoToSQL(f.ProtoType)
-		sb.WriteString(fmt.Sprintf("    %s %s NOT NULL,\n", colName, sqlType))
+		fmt.Fprintf(&sb, "    %s %s NOT NULL,\n", colName, sqlType)
 	}
 
 	sb.WriteString("    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n")
@@ -733,8 +735,8 @@ func ProtoToCreateTable(model ProtoModel) string {
 }
 
 // GatherMigrationContext collects all available context for a new migration.
-func GatherMigrationContext(name, migDir string, opts MigrationOptions) (*MigrationContext, error) {
-	ctx := &MigrationContext{
+func GatherMigrationContext(ctx context.Context, name, migDir string, opts MigrationOptions) (*MigrationContext, error) {
+	mctx := &MigrationContext{
 		MigrationName: name,
 		CreatedAt:     time.Now().UTC(),
 	}
@@ -745,16 +747,16 @@ func GatherMigrationContext(name, migDir string, opts MigrationOptions) (*Migrat
 		// Non-fatal: we'll just skip this section.
 		parsed = nil
 	}
-	ctx.ParsedTables = parsed
+	mctx.ParsedTables = parsed
 
 	// Live DB introspection.
 	if opts.DSN != "" {
-		db, err := ConnectDB(opts.DSN)
+		db, err := ConnectDB(ctx, opts.DSN)
 		if err == nil {
-			defer db.Close()
-			tables, err := IntrospectSchema(db, "")
+			defer func() { _ = db.Close() }()
+			tables, err := IntrospectSchema(ctx, db, "")
 			if err == nil {
-				ctx.LiveTables = tables
+				mctx.LiveTables = tables
 			}
 		}
 	}
@@ -769,31 +771,31 @@ func GatherMigrationContext(name, migDir string, opts MigrationOptions) (*Migrat
 		// Non-fatal: proto dir may not exist.
 		models = nil
 	}
-	ctx.ProtoModels = models
+	mctx.ProtoModels = models
 
 	// Previous migration.
 	prev, err := GetPreviousMigration(migDir)
 	if err == nil {
-		ctx.PreviousMigration = prev
+		mctx.PreviousMigration = prev
 	}
 
 	// Migration history.
 	history, err := GetMigrationHistory(migDir)
 	if err == nil {
-		ctx.MigrationHistory = history
+		mctx.MigrationHistory = history
 	}
 
 	// Schema diff (use parsed tables since they don't require a DB connection).
-	schemaTables := ctx.ParsedTables
-	if len(ctx.LiveTables) > 0 {
+	schemaTables := mctx.ParsedTables
+	if len(mctx.LiveTables) > 0 {
 		// If we have live tables, convert them to parsed format for diffing.
-		schemaTables = liveToParsed(ctx.LiveTables)
+		schemaTables = liveToParsed(mctx.LiveTables)
 	}
-	if len(schemaTables) > 0 && len(ctx.ProtoModels) > 0 {
-		ctx.SchemaDiffs = ComputeSchemaDiff(schemaTables, ctx.ProtoModels)
+	if len(schemaTables) > 0 && len(mctx.ProtoModels) > 0 {
+		mctx.SchemaDiffs = ComputeSchemaDiff(schemaTables, mctx.ProtoModels)
 	}
 
-	return ctx, nil
+	return mctx, nil
 }
 
 // liveToParsed converts live Table objects to ParsedTable for schema diffing.

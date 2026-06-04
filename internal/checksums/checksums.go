@@ -191,14 +191,14 @@ func unmarshalChecksums(data []byte) (*FileChecksums, error) {
 // Save writes the checksum file in the structured shape.
 func Save(root string, cs *FileChecksums) error {
 	path := filepath.Join(root, checksumFile)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(cs, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 // Hash returns the sha256 hex digest of content.
@@ -328,10 +328,10 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	}
 
 	fullPath := filepath.Join(root, relPath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(fullPath, content, 0644); err != nil {
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}
 	if cs != nil {
@@ -377,19 +377,19 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 	return wrote, nil
 }
 
-// Tier1Drift reports the relative paths of every Tier-1 file whose
-// on-disk content does not match any recorded render (current Hash or
-// any History entry). The returned slice is sorted to give callers a
-// stable error message order.
+// Tier1DriftEntry reports a single Tier-1 file whose on-disk content
+// does not match any recorded render (current Hash or any History
+// entry). The slice returned by CheckTier1Drift is sorted to give
+// callers a stable error message order.
 //
 // Files that aren't tracked, can't be read (e.g. removed by the user),
 // or aren't tagged Tier-1 are skipped — only positive evidence of a
 // hand-edit on a Tier-1 file is reported.
 type Tier1DriftEntry struct {
-	Path           string
-	RecordedHash   string
-	OnDiskHash     string
-	HistoryDepth   int // count of prior renders we compared against
+	Path         string
+	RecordedHash string
+	OnDiskHash   string
+	HistoryDepth int // count of prior renders we compared against
 }
 
 // CheckTier1Drift walks all Tier-1 entries in cs.Files and returns the

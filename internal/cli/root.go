@@ -15,14 +15,16 @@ var (
 	gitCommit string // Set via ldflags at build time
 )
 
+// Execute is the entrypoint used by main() to dispatch the assembled
+// root cobra command. Wraps NewRootCmd().Execute().
 func Execute() error {
 	return NewRootCmd().Execute()
 }
 
-// CLIName returns the command name users should type to invoke Forge.
+// Name returns the command name users should type to invoke Forge.
 // When the binary is "forge" (standalone install), it returns "forge".
 // When embedded in another binary (e.g. "reliant"), it returns "reliant forge".
-func CLIName() string {
+func Name() string {
 	return strings.Join(forgeCommand(), " ")
 }
 
@@ -51,6 +53,9 @@ func forgeExecCommand() ([]string, error) {
 	return []string{exePath, "forge"}, nil
 }
 
+// SetVersion stamps the version/date/commit metadata used by the
+// `version` subcommand and the rendered Cobra Version string. Called
+// once from main() with ldflags-injected values.
 func SetVersion(v, date, commit string) {
 	version = v
 	buildDate = date
@@ -131,7 +136,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print the forge version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s version %s (built %s, commit %s)\n", CLIName(), version, buildDate, gitCommit)
+			fmt.Printf("%s version %s (built %s, commit %s)\n", Name(), version, buildDate, gitCommit)
 		},
 	}
 }

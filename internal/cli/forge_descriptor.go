@@ -10,11 +10,12 @@ import (
 	"sort"
 	"strings"
 
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
-	"github.com/reliant-labs/forge/internal/codegen"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/reliant-labs/forge/internal/codegen"
+	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 )
 
 // descriptorStageDir is the per-invocation staging directory under the

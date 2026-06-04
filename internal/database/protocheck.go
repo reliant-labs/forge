@@ -11,10 +11,10 @@ import (
 
 // Diff represents a single difference between DB schema and proto definition.
 type Diff struct {
-	Table   string `json:"table"`
-	Kind    string `json:"kind"`    // "missing_table", "missing_column", "extra_column", "type_mismatch", "nullable_mismatch"
-	Column  string `json:"column,omitempty"`
-	Detail  string `json:"detail"`
+	Table  string `json:"table"`
+	Kind   string `json:"kind"` // "missing_table", "missing_column", "extra_column", "type_mismatch", "nullable_mismatch"
+	Column string `json:"column,omitempty"`
+	Detail string `json:"detail"`
 }
 
 // CheckResult holds the results of a schema-to-proto comparison.
@@ -35,22 +35,22 @@ func (r CheckResult) FormatText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d difference(s) across %d table(s):\n\n", len(r.Diffs), r.Checked))
+	fmt.Fprintf(&sb, "Found %d difference(s) across %d table(s):\n\n", len(r.Diffs), r.Checked)
 
 	for _, d := range r.Diffs {
 		switch d.Kind {
 		case "missing_table":
-			sb.WriteString(fmt.Sprintf("  [MISSING TABLE] %s: %s\n", d.Table, d.Detail))
+			fmt.Fprintf(&sb, "  [MISSING TABLE] %s: %s\n", d.Table, d.Detail)
 		case "missing_column":
-			sb.WriteString(fmt.Sprintf("  [MISSING COLUMN] %s.%s: %s\n", d.Table, d.Column, d.Detail))
+			fmt.Fprintf(&sb, "  [MISSING COLUMN] %s.%s: %s\n", d.Table, d.Column, d.Detail)
 		case "extra_column":
-			sb.WriteString(fmt.Sprintf("  [EXTRA COLUMN] %s.%s: %s\n", d.Table, d.Column, d.Detail))
+			fmt.Fprintf(&sb, "  [EXTRA COLUMN] %s.%s: %s\n", d.Table, d.Column, d.Detail)
 		case "type_mismatch":
-			sb.WriteString(fmt.Sprintf("  [TYPE MISMATCH] %s.%s: %s\n", d.Table, d.Column, d.Detail))
+			fmt.Fprintf(&sb, "  [TYPE MISMATCH] %s.%s: %s\n", d.Table, d.Column, d.Detail)
 		case "nullable_mismatch":
-			sb.WriteString(fmt.Sprintf("  [NULLABLE MISMATCH] %s.%s: %s\n", d.Table, d.Column, d.Detail))
+			fmt.Fprintf(&sb, "  [NULLABLE MISMATCH] %s.%s: %s\n", d.Table, d.Column, d.Detail)
 		default:
-			sb.WriteString(fmt.Sprintf("  [%s] %s.%s: %s\n", strings.ToUpper(d.Kind), d.Table, d.Column, d.Detail))
+			fmt.Fprintf(&sb, "  [%s] %s.%s: %s\n", strings.ToUpper(d.Kind), d.Table, d.Column, d.Detail)
 		}
 	}
 
@@ -211,7 +211,7 @@ func parseProtoEntityFile(path string) ([]ProtoEntity, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var entities []ProtoEntity
 	var current *ProtoEntity

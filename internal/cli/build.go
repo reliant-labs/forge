@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -73,7 +74,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 			if opts.pushRegistry != "" {
 				opts.buildDocker = true
 			}
-			return runBuild(opts)
+			return runBuild(cmd.Context(), opts)
 		},
 	}
 
@@ -94,7 +95,7 @@ type buildResult struct {
 	err      error
 }
 
-func runBuild(opts buildOptions) error {
+func runBuild(ctx context.Context, opts buildOptions) error {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -108,7 +109,7 @@ func runBuild(opts buildOptions) error {
 	fmt.Println()
 
 	// Create output directory
-	if err := os.MkdirAll(opts.outputDir, 0755); err != nil {
+	if err := os.MkdirAll(opts.outputDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
@@ -134,9 +135,9 @@ func runBuild(opts buildOptions) error {
 	var results []buildResult
 
 	if opts.parallel {
-		results = buildParallel(cfg, frontends, buildBinary, opts)
+		results = buildParallel(ctx, cfg, frontends, buildBinary, opts)
 	} else {
-		results = buildSequential(cfg, frontends, buildBinary, opts)
+		results = buildSequential(ctx, cfg, frontends, buildBinary, opts)
 	}
 
 	// Check for errors
@@ -172,7 +173,7 @@ func runBuild(opts buildOptions) error {
 	return nil
 }
 
-func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig, buildBinary bool, opts buildOptions) []buildResult {
+func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends []config.FrontendConfig, buildBinary bool, opts buildOptions) []buildResult {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
@@ -184,7 +185,7 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := buildGoBinary(cfg, opts.outputDir, opts.debug)
+			r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug)
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -195,7 +196,7 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 		wg.Add(1)
 		go func(f config.FrontendConfig) {
 			defer wg.Done()
-			r := buildFrontend(f)
+			r := buildFrontend(ctx, f)
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -219,7 +220,7 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(cfg, opts.pushRegistry)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -229,7 +230,7 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(cfg, f.Name, f.Path, opts.pushRegistry)
+				r := dockerBuild(ctx, cfg, f.Name, f.Path, opts.pushRegistry)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -241,18 +242,18 @@ func buildParallel(cfg *config.ProjectConfig, frontends []config.FrontendConfig,
 	return results
 }
 
-func buildSequential(cfg *config.ProjectConfig, frontends []config.FrontendConfig, buildBinary bool, opts buildOptions) []buildResult {
+func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends []config.FrontendConfig, buildBinary bool, opts buildOptions) []buildResult {
 	var results []buildResult
 
 	if buildBinary {
-		r := buildGoBinary(cfg, opts.outputDir, opts.debug)
+		r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug)
 		results = append(results, r)
 		if r.err != nil {
 			return results // Stop on first failure in sequential mode
 		}
 	}
 	for _, fe := range frontends {
-		r := buildFrontend(fe)
+		r := buildFrontend(ctx, fe)
 		results = append(results, r)
 		if r.err != nil {
 			return results
@@ -262,14 +263,14 @@ func buildSequential(cfg *config.ProjectConfig, frontends []config.FrontendConfi
 	// Docker builds only if --docker flag is set
 	if opts.buildDocker {
 		if buildBinary {
-			r := dockerBuildProject(cfg, opts.pushRegistry)
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
 		for _, fe := range frontends {
-			r := dockerBuild(cfg, fe.Name, fe.Path, opts.pushRegistry)
+			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -280,7 +281,7 @@ func buildSequential(cfg *config.ProjectConfig, frontends []config.FrontendConfi
 	return results
 }
 
-func buildGoBinary(cfg *config.ProjectConfig, outputDir string, debug bool) buildResult {
+func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir string, debug bool) buildResult {
 	start := time.Now()
 	binaryPath := filepath.Join(outputDir, cfg.Name)
 
@@ -294,13 +295,13 @@ func buildGoBinary(cfg *config.ProjectConfig, outputDir string, debug bool) buil
 	if debug {
 		args = append(args, "-gcflags=all=-N -l")
 	} else {
-		versionInfo := gitVersionInfo()
+		versionInfo := gitVersionInfo(ctx)
 		ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s -X main.date=%s",
 			versionInfo.version, versionInfo.commit, versionInfo.date)
 		args = append(args, "-ldflags", ldflags)
 	}
 	args = append(args, "./cmd")
-	cmd := exec.Command("go", args...)
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -325,19 +326,19 @@ type versionInfo struct {
 
 // gitVersionInfo returns version metadata derived from git, falling back to
 // safe defaults when git commands fail (e.g. not a git repo).
-func gitVersionInfo() versionInfo {
+func gitVersionInfo(ctx context.Context) versionInfo {
 	info := versionInfo{
 		version: "dev",
 		commit:  "none",
 		date:    "unknown",
 	}
 
-	if out, err := exec.Command("git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
+	if out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
 		if v := strings.TrimSpace(string(out)); v != "" {
 			info.version = v
 		}
 	}
-	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
+	if out, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
 		if c := strings.TrimSpace(string(out)); c != "" {
 			info.commit = c
 		}
@@ -348,19 +349,19 @@ func gitVersionInfo() versionInfo {
 
 // gitVersionTag returns the git-describe version if this is a git repo,
 // or the empty string otherwise. Used to add a version tag to docker images.
-func gitVersionTag() string {
-	out, err := exec.Command("git", "describe", "--tags", "--always", "--dirty").Output()
+func gitVersionTag(ctx context.Context) string {
+	out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--always", "--dirty").Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
 
-func buildFrontend(fe config.FrontendConfig) buildResult {
+func buildFrontend(ctx context.Context, fe config.FrontendConfig) buildResult {
 	start := time.Now()
 	fmt.Printf("[build] %s: NODE_ENV=production npm run build in %s\n", fe.Name, fe.Path)
 
-	cmd := exec.Command("npm", "run", "build")
+	cmd := exec.CommandContext(ctx, "npm", "run", "build")
 	cmd.Dir = fe.Path
 	cmd.Env = withForcedEnv(os.Environ(), "NODE_ENV", "production")
 	cmd.Stdout = os.Stdout
@@ -403,7 +404,7 @@ func withForcedEnv(env []string, key, value string) []string {
 // tagged with <pushRegistry>/<name>:<tag> and pushed after a successful
 // build (one docker build + one docker push per image in forge.yaml,
 // matching the MultiServiceApplication pattern).
-func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry string) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -423,7 +424,7 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 	}
 	latestTag := fmt.Sprintf("%s/%s:latest", registry, cfg.Name)
 	versionTag := ""
-	if v := gitVersionTag(); v != "" {
+	if v := gitVersionTag(ctx); v != "" {
 		versionTag = fmt.Sprintf("%s/%s:%s", registry, cfg.Name, v)
 	}
 
@@ -447,7 +448,7 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 		if i == 0 {
 			pushTags = append(pushTags, pushLatest)
 		}
-		if v := gitVersionTag(); v != "" {
+		if v := gitVersionTag(ctx); v != "" {
 			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, v)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
 			if i == 0 {
@@ -467,7 +468,7 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
-	cmd := exec.Command("docker", dockerArgs...)
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -483,7 +484,7 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 	// Push every push-registry tag if requested.
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", cfg.Name, t)
-		pushCmd := exec.Command("docker", "push", t)
+		pushCmd := exec.CommandContext(ctx, "docker", "push", t)
 		pushCmd.Stdout = os.Stdout
 		pushCmd.Stderr = os.Stderr
 		if err := pushCmd.Run(); err != nil {
@@ -538,7 +539,7 @@ func countTags(args []string) int {
 // dockerBuild builds a Docker image for a frontend from its own
 // Dockerfile. When pushRegistry is non-empty, the image is also tagged
 // with <pushRegistry>/<name>:<tag> and pushed after a successful build.
-func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) buildResult {
+func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry string) buildResult {
 	start := time.Now()
 	dockerfile := filepath.Join(path, "Dockerfile")
 
@@ -558,7 +559,7 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 	}
 	latestTag := fmt.Sprintf("%s/%s:latest", registry, name)
 	versionTag := ""
-	if v := gitVersionTag(); v != "" {
+	if v := gitVersionTag(ctx); v != "" {
 		versionTag = fmt.Sprintf("%s/%s:%s", registry, name, v)
 	}
 
@@ -580,7 +581,7 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 		if i == 0 {
 			pushTags = append(pushTags, pushLatest)
 		}
-		if v := gitVersionTag(); v != "" {
+		if v := gitVersionTag(ctx); v != "" {
 			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, v)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
 			if i == 0 {
@@ -597,7 +598,7 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 
-	cmd := exec.Command("docker", dockerArgs...)
+	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -612,7 +613,7 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 
 	for _, t := range pushTags {
 		fmt.Printf("[build] %s: docker push %s\n", name, t)
-		pushCmd := exec.Command("docker", "push", t)
+		pushCmd := exec.CommandContext(ctx, "docker", "push", t)
 		pushCmd.Stdout = os.Stdout
 		pushCmd.Stderr = os.Stderr
 		if err := pushCmd.Run(); err != nil {

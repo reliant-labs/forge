@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,9 +55,9 @@ Examples:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if explain {
-				return runDeployExplain(args[0], contextOverride)
+				return runDeployExplain(cmd.Context(), args[0], contextOverride)
 			}
-			return runDeploy(args[0], imageTag, dryRun, namespace, contextOverride)
+			return runDeploy(cmd.Context(), args[0], imageTag, dryRun, namespace, contextOverride)
 		},
 	}
 
@@ -73,13 +74,13 @@ Examples:
 // for an environment without doing anything destructive. Useful when
 // debugging why `forge deploy staging` refuses to apply or what context
 // staging is expected to live in.
-func runDeployExplain(envName, override string) error {
+func runDeployExplain(ctx context.Context, envName, override string) error {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
 	}
 	expected := expectedClusterForEnv(cfg, envName)
-	current := strings.TrimSpace(currentKubectlContext())
+	current := strings.TrimSpace(currentKubectlContext(ctx))
 
 	fmt.Printf("forge deploy %s — env-cluster guard\n", envName)
 	fmt.Printf("  expected context: %s\n", emptyAs(expected, "(not declared)"))
@@ -113,7 +114,7 @@ func emptyAs(s, alt string) string {
 	return s
 }
 
-func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride string) error {
+func runDeploy(ctx context.Context, envName, imageTag string, dryRun bool, namespace, contextOverride string) error {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -139,7 +140,7 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 
 	// Resolve image tag.
 	if imageTag == "" {
-		tag, err := gitShortSHA()
+		tag, err := gitShortSHA(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to determine image tag: %w\nUse --image-tag to specify one manually", err)
 		}
@@ -168,7 +169,7 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 	// context!) before they ship, not for papering over them. The guard
 	// is skipped when --context is passed (CI scenarios where a single
 	// deploy-bot context legitimately targets multiple envs).
-	if err := verifyKubectlContext(cfg, envName, contextOverride); err != nil {
+	if err := verifyKubectlContext(ctx, cfg, envName, contextOverride); err != nil {
 		return err
 	}
 
@@ -179,11 +180,11 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 	// dry-run only renders manifests and never touches the cluster or
 	// registry, so the slow image step is dead weight.
 	if envName == "dev" && !dryRun {
-		if err := ensureDevCluster(); err != nil {
+		if err := ensureDevCluster(ctx); err != nil {
 			return err
 		}
 
-		if err := buildAndPushLocal(cfg, imageTag); err != nil {
+		if err := buildAndPushLocal(ctx, cfg, imageTag); err != nil {
 			return err
 		}
 	}
@@ -209,7 +210,7 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 
 	// Generate manifests with KCL.
 	fmt.Printf("Generating manifests from %s...\n", mainK)
-	manifests, err := runKCL(mainK, imageTag, namespace, envCfgKV)
+	manifests, err := runKCL(ctx, mainK, imageTag, namespace, envCfgKV)
 	if err != nil {
 		return fmt.Errorf("KCL manifest generation failed: %w", err)
 	}
@@ -224,7 +225,7 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 
 	// Apply manifests.
 	fmt.Println("Applying manifests...")
-	if err := kubectlApply(manifests); err != nil {
+	if err := kubectlApply(ctx, manifests); err != nil {
 		return fmt.Errorf("kubectl apply failed: %w", err)
 	}
 
@@ -233,12 +234,12 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 	// prefixes shared-binary deployments with `<project>-<svc>` and KCL
 	// renders may add suffixes for component types (operator/worker).
 	fmt.Println("Waiting for rollouts...")
-	deployments, err := listDeployments(namespace)
+	deployments, err := listDeployments(ctx, namespace)
 	if err != nil {
 		fmt.Printf("  Warning: list deployments: %v\n", err)
 	} else {
 		for _, dep := range deployments {
-			if err := waitForRollout(dep, namespace); err != nil {
+			if err := waitForRollout(ctx, dep, namespace); err != nil {
 				fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
 			} else {
 				fmt.Printf("  %s: ready\n", dep)
@@ -250,17 +251,17 @@ func runDeploy(envName, imageTag string, dryRun bool, namespace, contextOverride
 	return nil
 }
 
-func gitShortSHA() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
+func gitShortSHA(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD").Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-func ensureDevCluster() error {
+func ensureDevCluster(ctx context.Context) error {
 	fmt.Println("Checking k3d cluster...")
-	out, err := exec.Command("k3d", "cluster", "list", "-o", "json").Output()
+	out, err := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json").Output()
 	if err != nil {
 		return fmt.Errorf("k3d not available: %w\nInstall k3d: https://k3d.io", err)
 	}
@@ -271,7 +272,7 @@ func ensureDevCluster() error {
 		k3dConfig := filepath.Join("deploy", "k3d.yaml")
 		var createCmd *exec.Cmd
 		if _, err := os.Stat(k3dConfig); err == nil {
-			createCmd = exec.Command("k3d", "cluster", "create", "--config", k3dConfig)
+			createCmd = exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", k3dConfig)
 		} else {
 			// Fallback create path (no project-level deploy/k3d.yaml).
 			// Write a temp registries.yaml that mirrors the canonical
@@ -288,8 +289,8 @@ func ensureDevCluster() error {
 			if regsErr != nil {
 				return fmt.Errorf("write fallback registries.yaml: %w", regsErr)
 			}
-			defer os.Remove(regsPath)
-			createCmd = exec.Command("k3d", "cluster", "create", "dev",
+			defer func() { _ = os.Remove(regsPath) }()
+			createCmd = exec.CommandContext(ctx, "k3d", "cluster", "create", "dev",
 				"--registry-create", "dev-registry:0.0.0.0:5050",
 				"--registry-config", regsPath,
 				"--servers", "1",
@@ -335,18 +336,18 @@ func writeFallbackRegistriesYAML() (string, error) {
 		return "", err
 	}
 	if _, err := f.WriteString(fallbackRegistriesYAML); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return "", err
 	}
 	return f.Name(), nil
 }
 
-func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
+func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag string) error {
 	registry := "localhost:5050"
 	if env := findEnvironment(cfg, "dev"); env != nil && env.Registry != "" {
 		registry = env.Registry
@@ -365,7 +366,7 @@ func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
 	// the user just ran `forge build --push` against the same registry).
 	// `docker manifest inspect` is cheap (HEAD against the registry) and
 	// avoids an O(minutes) docker build + push on the hot path.
-	if imageExistsInRegistry(imageRef) {
+	if imageExistsInRegistry(ctx, imageRef) {
 		fmt.Printf("  %s already present — skipping rebuild.\n", imageRef)
 		return nil
 	}
@@ -379,14 +380,14 @@ func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
 		buildArgs = append(buildArgs, "--build-context", k+"="+cfg.Docker.BuildContexts[k])
 	}
 	buildArgs = append(buildArgs, "-f", dockerfile, ".")
-	buildCmd := exec.Command("docker", buildArgs...)
+	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
 		return fmt.Errorf("docker build for %s failed: %w", cfg.Name, err)
 	}
 
-	pushCmd := exec.Command("docker", "push", imageRef)
+	pushCmd := exec.CommandContext(ctx, "docker", "push", imageRef)
 	pushCmd.Stdout = os.Stdout
 	pushCmd.Stderr = os.Stderr
 	if err := pushCmd.Run(); err != nil {
@@ -405,13 +406,13 @@ func buildAndPushLocal(cfg *config.ProjectConfig, tag string) error {
 //
 // For local/HTTP registries we use --insecure so the check works against
 // the dev k3d registry (localhost:5051), which doesn't speak TLS.
-func imageExistsInRegistry(ref string) bool {
+func imageExistsInRegistry(ctx context.Context, ref string) bool {
 	args := []string{"manifest", "inspect"}
 	if isInsecureRegistry(ref) {
 		args = append(args, "--insecure")
 	}
 	args = append(args, ref)
-	cmd := exec.Command("docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	return cmd.Run() == nil
 }
 
@@ -430,7 +431,7 @@ func isInsecureRegistry(ref string) bool {
 	return false
 }
 
-func runKCL(mainK, imageTag, namespace string, envCfg map[string]string) (string, error) {
+func runKCL(ctx context.Context, mainK, imageTag, namespace string, envCfg map[string]string) (string, error) {
 	var out bytes.Buffer
 	args := []string{"run", mainK,
 		"-D", "image_tag=" + imageTag,
@@ -445,7 +446,7 @@ func runKCL(mainK, imageTag, namespace string, envCfg map[string]string) (string
 	for _, k := range keys {
 		args = append(args, "-D", k+"="+envCfg[k])
 	}
-	cmd := exec.Command("kcl", args...)
+	cmd := exec.CommandContext(ctx, "kcl", args...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 
@@ -503,16 +504,16 @@ func extractManifests(kclOutput []byte) (string, error) {
 	return sb.String(), nil
 }
 
-func kubectlApply(manifests string) error {
-	cmd := exec.Command("kubectl", "apply", "--server-side", "-f", "-")
+func kubectlApply(ctx context.Context, manifests string) error {
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "--server-side", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-func waitForRollout(name, namespace string) error {
-	cmd := exec.Command("kubectl", "rollout", "status",
+func waitForRollout(ctx context.Context, name, namespace string) error {
+	cmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 		"deployment/"+name,
 		"-n", namespace,
 		"--timeout=120s",
@@ -528,8 +529,8 @@ func waitForRollout(name, namespace string) error {
 // `<project>-<svc>` names, per-service `<svc>` names, operator and
 // worker deployments, and anything packs add — without forge having to
 // guess naming schemes per scaffold mode.
-func listDeployments(namespace string) ([]string, error) {
-	cmd := exec.Command("kubectl", "get", "deployments",
+func listDeployments(ctx context.Context, namespace string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "deployments",
 		"-n", namespace,
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}",
@@ -571,11 +572,11 @@ func expectedClusterForEnv(cfg *config.ProjectConfig, envName string) string {
 // guard — projects opt in by declaring environments[<env>].cluster.
 // An explicit --context override also skips the guard, but emits a
 // notice so the override is visible in the deploy log.
-func verifyKubectlContext(cfg *config.ProjectConfig, envName, override string) error {
+func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName, override string) error {
 	if override != "" {
 		fmt.Printf("kubectl context override: %s (env-cluster guard skipped)\n", override)
 		// Switch the context so the apply lands in the right place.
-		switchCmd := exec.Command("kubectl", "config", "use-context", override)
+		switchCmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", override)
 		switchCmd.Stdout = os.Stdout
 		switchCmd.Stderr = os.Stderr
 		if err := switchCmd.Run(); err != nil {
@@ -593,7 +594,7 @@ func verifyKubectlContext(cfg *config.ProjectConfig, envName, override string) e
 		return nil
 	}
 
-	currentCmd := exec.Command("kubectl", "config", "current-context")
+	currentCmd := exec.CommandContext(ctx, "kubectl", "config", "current-context")
 	out, err := currentCmd.Output()
 	if err != nil {
 		return fmt.Errorf("kubectl config current-context: %w (is kubectl installed and configured?)", err)

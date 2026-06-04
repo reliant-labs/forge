@@ -81,7 +81,12 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	d.PrintReport(os.Stdout, report, verbose)
 
 	if report.Overall == doctor.StatusFail {
-		os.Exit(1)
+		// Return a sentinel so cobra exits non-zero. The report has
+		// already been printed; main.go's "Error: ..." line prints the
+		// short message below so the user sees a clear failure reason.
+		return errDoctorFailed
 	}
 	return nil
 }
+
+var errDoctorFailed = fmt.Errorf("doctor reported failing checks; see report above")

@@ -31,10 +31,10 @@ func TestAuthUIPackManifest(t *testing.T) {
 
 	// Required utility deps shipped to every variant.
 	wantDeps := map[string]bool{
-		"react-hook-form":         false,
-		"zod":                     false,
-		"@hookform/resolvers":     false,
-		"zustand":                 false,
+		"react-hook-form":     false,
+		"zod":                 false,
+		"@hookform/resolvers": false,
+		"zustand":             false,
 	}
 	for _, dep := range p.NPMDependencies {
 		// npm specs split on the *last* `@` so scoped packages like

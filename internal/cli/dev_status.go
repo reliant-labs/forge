@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,7 +38,7 @@ Examples:
   forge dev status
   forge dev status --json    # machine-readable for scripts/dashboards`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevStatus(configPath, jsonOut)
+			return runDevStatus(cmd.Context(), configPath, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -48,11 +49,11 @@ Examples:
 // devStatusSummary is the rendered shape — kept stable so --json output
 // is consumable by dashboards and scripts.
 type devStatusSummary struct {
-	Cluster       clusterStatusSummary `json:"cluster"`
-	Namespace     string               `json:"namespace"`
-	Pods          []podStatusEntry     `json:"pods"`
-	PortForwards  []portForwardEntry   `json:"port_forwards"`
-	Siblings      []string             `json:"siblings"`
+	Cluster      clusterStatusSummary `json:"cluster"`
+	Namespace    string               `json:"namespace"`
+	Pods         []podStatusEntry     `json:"pods"`
+	PortForwards []portForwardEntry   `json:"port_forwards"`
+	Siblings     []string             `json:"siblings"`
 }
 
 type podStatusEntry struct {
@@ -63,13 +64,13 @@ type podStatusEntry struct {
 	Age     string `json:"age"`
 }
 
-func runDevStatus(configPath string, jsonOut bool) error {
+func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
 	}
 
-	exists, _ := clusterExists(clusterName)
+	exists, _ := clusterExists(ctx, clusterName)
 	_, statErr := os.Stat(configPath)
 
 	cluster := clusterStatusSummary{
@@ -87,9 +88,9 @@ func runDevStatus(configPath string, jsonOut bool) error {
 	}
 
 	if exists {
-		summary.Pods = listPodsInNamespace(ns)
+		summary.Pods = listPodsInNamespace(ctx, ns)
 		summary.PortForwards = readPortForwardState(clusterName, ns)
-		summary.Siblings = listSiblingNamespaces(clusterName, ns)
+		summary.Siblings = listSiblingNamespaces(ctx, clusterName, ns)
 	}
 
 	if jsonOut {
@@ -102,12 +103,13 @@ func runDevStatus(configPath string, jsonOut bool) error {
 	// context, what namespace are we reading from. Declared values
 	// (expected cluster name, expected context) live in `forge dev info`.
 	fmt.Printf("Cluster %s: %s\n", cluster.Name, boolUpDown(cluster.Exists))
-	current := currentKubectlContext()
-	if current == "" {
+	current := currentKubectlContext(ctx)
+	switch current {
+	case "":
 		fmt.Printf("kubectl context (current): (none)\n")
-	} else if current == cluster.Context {
+	case cluster.Context:
 		fmt.Printf("kubectl context (current): %s (matches expected)\n", current)
-	} else {
+	default:
 		fmt.Printf("kubectl context (current): %s (expected %s — run `kubectl config use-context %s`)\n",
 			current, cluster.Context, cluster.Context)
 	}
@@ -169,8 +171,8 @@ func devNamespace(clusterName string) string {
 // listPodsInNamespace returns a compact pod table for the given
 // namespace. Failures are non-fatal — we return an empty slice and let
 // the caller render "(none)".
-func listPodsInNamespace(ns string) []podStatusEntry {
-	cmd := exec.Command("kubectl", "get", "pods", "-n", ns, "--no-headers",
+func listPodsInNamespace(ctx context.Context, ns string) []podStatusEntry {
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns, "--no-headers",
 		"-o", "custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[*].ready,STATUS:.status.phase,RESTARTS:.status.containerStatuses[*].restartCount,AGE:.metadata.creationTimestamp")
 	out, err := cmd.Output()
 	if err != nil {
@@ -197,8 +199,8 @@ func listPodsInNamespace(ns string) []podStatusEntry {
 // cluster other than the project's primary dev namespace. Used to
 // surface the multi-worktree workflow (each worktree gets its own
 // namespace via the env override).
-func listSiblingNamespaces(clusterName, primary string) []string {
-	cmd := exec.Command("kubectl", "get", "namespaces",
+func listSiblingNamespaces(ctx context.Context, clusterName, primary string) []string {
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "namespaces",
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
 	out, err := cmd.Output()

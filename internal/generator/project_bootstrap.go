@@ -103,18 +103,20 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	}
 
 	data := struct {
-		Module          string
-		Services        []bootstrapService
-		Packages        []bootstrapPackage
-		Workers         []bootstrapWorker
-		Operators       []bootstrapOperator
-		HasDatabase     bool
-		OrmEnabled      bool
-		HasFallible     bool
-		BinaryShared    bool
-		ConfigFields    map[string]bool
-		RESTEnabled     bool
-		ConnectImports  []string
+		Module              string
+		Services            []bootstrapService
+		Packages            []bootstrapPackage
+		Workers             []bootstrapWorker
+		Operators           []bootstrapOperator
+		HasDatabase         bool
+		OrmEnabled          bool
+		HasFallible         bool
+		BinaryShared        bool
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
 		Module:    g.ModulePath,
 		Services:  services,
@@ -133,6 +135,13 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// `forge generate` to install the vanguard wrap.
 		RESTEnabled:    false,
 		ConnectImports: nil,
+		// Diagnostics is off at initial scaffold so existing projects don't
+		// suddenly start logging warns on regen. Users flip
+		// `features.diagnostics: true` (and optionally
+		// `features.strict_wiring: true`) in forge.yaml and re-run
+		// `forge generate` to wire the boot-time emit path.
+		DiagnosticsEnabled:  false,
+		StrictWiringEnabled: false,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)

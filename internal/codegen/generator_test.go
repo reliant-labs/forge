@@ -172,7 +172,7 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	if err := GenerateAppGen(false, false, len(services) > 0, false, false, false, targetDir, nil); err != nil {
@@ -385,7 +385,7 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		"adminserver": true,
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -428,7 +428,7 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", ImportPath: "notifications", FieldName: "Notifications", VarName: "notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// app_gen.go owns the App struct definition (with Packages field
@@ -1105,7 +1105,7 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -1240,7 +1240,7 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// App struct (with DB field + database/sql import) now lives in

@@ -45,8 +45,8 @@ The win:
 # Old shape: schema.k / base.k / render.k live in your project's tree.
 ls deploy/kcl/schema.k deploy/kcl/base.k deploy/kcl/render.k 2>/dev/null
 
-# New shape: deploy/kcl/kcl.mod declares a forge dependency.
-grep -E "^forge\s*=" deploy/kcl/kcl.mod 2>/dev/null
+# New shape: kcl.mod has the upstream KCL module pinned.
+grep -E "^[[:space:]]*forge[[:space:]]*=" deploy/kcl/kcl.mod 2>/dev/null
 ```
 
 If both the legacy files exist AND `forge` isn't a kcl.mod dependency
@@ -220,7 +220,7 @@ kcl run dev -S output --format json | jq .
 # 2. Manifests render to YAML kubectl accepts.
 kcl run dev/main.k -S manifests | kubectl apply --dry-run=client -f -
 
-# 3. forge end-to-end still works.
+# 3. The forge build + deploy round-trip still works.
 forge generate
 forge build --env dev
 forge deploy dev --dry-run

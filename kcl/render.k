@@ -72,6 +72,13 @@ _render_resources = lambda r: Resources -> any {
     }
 }
 
+# Lifted above _render_k8s_deploy so K8sCluster's optional cluster_rbac
+# field can project through the deploy dispatch. Operators consume the
+# same helper from below.
+_render_cluster_rbac = lambda rbac: ClusterRBAC -> any {
+    {"rules": rbac.rules}
+}
+
 _render_build_variant = lambda bv: BuildVariant -> any {
     {
         "name": bv.name
@@ -96,14 +103,71 @@ _render_host_deploy = lambda d: HostDeploy -> any {
     }
 }
 
-_render_k8s_deploy = lambda d: K8sDeploy -> any {
+# Renders K8sCluster (full env-wide + per-service shape). The legacy
+# K8sDeploy goes through `_render_k8s_deploy_legacy` below — the
+# discriminator branch in `_render_deploy_populated` picks one by
+# checking whether the instance has a `cluster` field set.
+_render_k8s_cluster = lambda d: K8sCluster -> any {
     {
         "type": "cluster"
+        "cluster": d.cluster
+        "namespace": d.namespace
+        "registry": d.registry
+        "domain": d.domain if d.domain else None
         "replicas": d.replicas
         "ingress": _render_ingress(d.ingress) if d.ingress else None
         "resources": _render_resources(d.resources) if d.resources else None
+        "health_check": d.health_check if d.health_check else None
+        "security_context": d.security_context if d.security_context else None
+        "env_vars": [_render_env_var(e) for e in d.env_vars]
         "platform": d.platform if d.platform else None
         "ports": d.ports
+        "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
+    }
+}
+
+# Renders the legacy K8sDeploy (per-service knobs only — no env-wide
+# fields). The env-wide fields (cluster/namespace/registry/domain)
+# project as null so the Go-side dispatch knows to fall back to
+# forge.yaml. Kept for one migration cycle.
+_render_k8s_deploy = lambda d: K8sDeploy -> any {
+    {
+        "type": "cluster"
+        "cluster": None
+        "namespace": None
+        "registry": None
+        "domain": None
+        "replicas": d.replicas
+        "ingress": _render_ingress(d.ingress) if d.ingress else None
+        "resources": _render_resources(d.resources) if d.resources else None
+        "health_check": None
+        "security_context": None
+        "env_vars": []
+        "platform": d.platform if d.platform else None
+        "ports": d.ports
+        "cluster_rbac": None
+    }
+}
+
+_render_vm_docker = lambda d: VMDocker -> any {
+    {
+        "type": "vm-docker"
+        "ssh_host": d.ssh_host
+        "image": d.image
+        "tag": d.tag if d.tag else None
+        "deploy_cmd": d.deploy_cmd if d.deploy_cmd else None
+        "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
+        "health_cmd": d.health_cmd if d.health_cmd else None
+        "env_file": d.env_file if d.env_file else None
+    }
+}
+
+_render_compose = lambda d: Compose -> any {
+    {
+        "type": "compose"
+        "compose_file": d.compose_file
+        "service": d.service if d.service else None
+        "env_file": d.env_file if d.env_file else None
     }
 }
 
@@ -114,11 +178,22 @@ _render_build_only = lambda d: BuildOnly -> any {
     }
 }
 
+# The `type == "cluster"` branch needs to distinguish K8sCluster from
+# the legacy K8sDeploy — both share the same discriminator. `typeof(d)`
+# returns the schema name as a string at runtime; K8sCluster carries
+# the env-wide fields, K8sDeploy doesn't.
+_render_cluster_dispatch = lambda d: any -> any {
+    _render_k8s_cluster(d) if typeof(d) == "K8sCluster" else _render_k8s_deploy(d)
+}
+
 # Dispatch on the populated deploy's discriminator. Called only when
-# `d` is not Undefined / None.
+# `d` is not Undefined / None. Five branches: host / cluster (K8sCluster
+# OR legacy K8sDeploy) / vm-docker / compose / build-only.
 _render_deploy_populated = lambda d: any -> any {
     _render_host_deploy(d) if d.type == "host" else \
-        (_render_k8s_deploy(d) if d.type == "cluster" else _render_build_only(d))
+        (_render_cluster_dispatch(d) if d.type == "cluster" else \
+        (_render_vm_docker(d) if d.type == "vm-docker" else \
+        (_render_compose(d) if d.type == "compose" else _render_build_only(d))))
 }
 
 # Top-level deploy dispatcher. An unset deploy projects as null
@@ -136,10 +211,6 @@ _render_service = lambda s: Service -> any {
         "env_vars": [_render_env_var(e) for e in s.env_vars]
         "deploy": _render_deploy(s.deploy)
     }
-}
-
-_render_cluster_rbac = lambda rbac: ClusterRBAC -> any {
-    {"rules": rbac.rules}
 }
 
 _render_operator = lambda o: Operator -> any {

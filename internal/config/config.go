@@ -90,7 +90,16 @@ type ProjectConfig struct {
 	// React Query hook wrappers. When the flag is false (the default)
 	// forge keeps the historic per-frontend layout exactly as before.
 	Frontend  FrontendProjectConfig `yaml:"frontend,omitempty"`
-	Envs      []EnvironmentConfig   `yaml:"environments"`
+	// Envs is the legacy per-environment block, retained for one
+	// migration cycle. The deploy-target-architecture migration
+	// (see the `environments-to-kcl` skill) moves env-wide knobs
+	// (cluster / namespace / registry / domain) onto per-service
+	// `forge.K8sCluster` blocks in KCL; new code should discover
+	// environments via the filesystem (deploy/kcl/<env>/main.k) via
+	// `internal/cli.ListEnvs` rather than reading this slice.
+	//
+	// Deprecated: see `environments-to-kcl` migration skill.
+	Envs []EnvironmentConfig `yaml:"environments"`
 	Database  DatabaseConfig        `yaml:"database"`
 	CI        CIConfig              `yaml:"ci"`
 	Deploy    DeployConfig          `yaml:"deploy,omitempty"`
@@ -289,6 +298,12 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 }
 
 // EnvironmentConfig represents a deployment environment.
+//
+// Deprecated: env-wide deploy info (cluster / namespace / registry /
+// domain) now lives on the per-service `forge.K8sCluster` block in
+// KCL, with refs DRYing the common case across many services.
+// `Config` survives until the migration is complete; see the
+// `environments-to-kcl` skill for the rewrite.
 //
 // Per-env runtime config:
 //

@@ -400,17 +400,10 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 		}
 		// services[].path is intentionally not required: the cli loader
 		// applies a 'handlers/<name>' default when the user omits it.
-		// services[].dev_target controls dev-loop placement. Empty
-		// defaults to "cluster"; only validate when the user set a
-		// non-empty value so old forge.yaml stays accepted as-is.
-		if dt := strings.ToLower(strings.TrimSpace(svc.DevTarget)); dt != "" {
-			if dt != ServiceDevTargetCluster && dt != ServiceDevTargetHost {
-				out = append(out, validationIssue{
-					msg: fmt.Sprintf("%s.dev_target value %q is invalid", prefix, svc.DevTarget),
-					fix: "use one of: cluster, host.",
-				})
-			}
-		}
+		// Host/cluster placement was previously gated here via
+		// services[].dev_target. It moved to the KCL layer (per-env
+		// `deploy:` field on the [Service] schema) — see the
+		// migration/dev-target-to-kcl-deploy skill.
 	}
 
 	for i, fe := range cfg.Frontends {

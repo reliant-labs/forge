@@ -216,51 +216,10 @@ func TestEffectiveTargetArch(t *testing.T) {
 	}
 }
 
-// TestHostDeploymentSkipSet_DevOnly confirms the dev-only host-mode
-// filter expands each host-marked service to both its bare and
-// project-prefixed Deployment name, so the rollout-wait loop matches
-// either binary-shape's KCL render.
-func TestHostDeploymentSkipSet_DevOnly(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Services: []config.ServiceConfig{
-			{Name: "admin-server", DevTarget: "host"},
-			{Name: "workspace-controller"},
-			{Name: "workspace-proxy", DevTarget: "host"},
-		},
-	}
-
-	t.Run("dev env produces both bare and prefixed names", func(t *testing.T) {
-		got := hostDeploymentSkipSet(cfg, "dev")
-		want := []string{"admin-server", "cp-forge-admin-server", "workspace-proxy", "cp-forge-workspace-proxy"}
-		if len(got) != len(want) {
-			t.Fatalf("len(skip set) = %d, want %d (got %v)", len(got), len(want), got)
-		}
-		for _, name := range want {
-			if _, ok := got[name]; !ok {
-				t.Errorf("expected %q in skip set, got %v", name, got)
-			}
-		}
-		// Cluster-mode service must not be in the skip set.
-		if _, ok := got["workspace-controller"]; ok {
-			t.Errorf("cluster-mode service leaked into skip set: %v", got)
-		}
-	})
-
-	t.Run("non-dev env produces empty set", func(t *testing.T) {
-		for _, env := range []string{"staging", "prod", ""} {
-			if got := hostDeploymentSkipSet(cfg, env); len(got) != 0 {
-				t.Errorf("hostDeploymentSkipSet(%q) = %v, want empty", env, got)
-			}
-		}
-	})
-
-	t.Run("nil cfg yields empty set", func(t *testing.T) {
-		if got := hostDeploymentSkipSet(nil, "dev"); len(got) != 0 {
-			t.Errorf("nil cfg should yield empty set, got %v", got)
-		}
-	})
-}
+// Note: TestHostDeploymentSkipSet_DevOnly was removed when
+// services[].dev_target moved to the KCL layer in feat/kcl-orchestration.
+// The replacement filter reads `deploy: "host"` from rendered KCL — see
+// deploy_kcl_test.go for the KCL-side equivalent coverage.
 
 // TestRenderedDeploymentNames verifies the extractor parses the multi-
 // document YAML stream forge produces from KCL, returning only

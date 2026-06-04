@@ -34,6 +34,14 @@ _image_tag = option("image_tag") or "latest"
 # registry created by `deploy/k3d.yaml`.
 _registry = option("registry") or "localhost:5050"
 
+_dev_k8s = forge.K8sCluster {
+    cluster = "k3d-{{.ProjectName}}"
+    namespace = "{{.ProjectName}}-dev"
+    registry = _registry
+    replicas = 1
+    ports = [8080]
+}
+
 _bundle = forge.Bundle {
     services = [
         forge.Service {
@@ -43,10 +51,7 @@ _bundle = forge.Bundle {
                 forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
                 forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{.ProjectName}}"}
             ]
-            deploy = forge.K8sDeploy {
-                replicas = 1
-                ports = [8080]
-            }
+            deploy = _dev_k8s
         }
         # Binaries declared via `forge add binary <name>`. Each runs the
         # same image with a different cobra subcommand. They project as

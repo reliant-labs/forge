@@ -22,6 +22,14 @@ _shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ]
 
+_dev_k8s = forge.K8sCluster {
+    cluster = "k3d-{{.ProjectName}}"
+    namespace = "{{.ProjectName}}-dev"
+    registry = _registry
+    replicas = 1
+    ports = [8080]
+}
+
 _bundle = forge.Bundle {
     services = [
 {{- range .Services}}
@@ -32,10 +40,7 @@ _bundle = forge.Bundle {
             env_vars = _shared_env + [
                 forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
             ]
-            deploy = forge.K8sDeploy {
-                replicas = 1
-                ports = [8080]
-            }
+            deploy = _dev_k8s
         }
 {{- end}}
     ]

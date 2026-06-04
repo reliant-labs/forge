@@ -224,12 +224,12 @@ func entitiesEmpty(e *KCLEntities) bool {
 
 // upBuildCluster builds + pushes the project docker image with the
 // per-env KCL filter applied (deliverable 3's runBuild path). The
-// registry comes from environments[].registry — defaults to
-// localhost:5050 for dev (the canonical k3d mirror).
-func upBuildCluster(ctx context.Context, cfg *config.ProjectConfig, env string) error {
+// registry comes from the rendered KCL's K8sCluster.registry —
+// defaults to localhost:5050 for dev (the canonical k3d mirror).
+func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string) error {
 	registry := "localhost:5050"
-	if e := findEnvironment(cfg, env); e != nil && e.Registry != "" {
-		registry = e.Registry
+	if reg := k8sClusterRegistryForEnv(ctx, env); reg != "" {
+		registry = reg
 	}
 	opts := buildOptions{
 		outputDir:    "bin",
@@ -366,8 +366,8 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background boo
 // shared-binary prefix when forge.yaml declares binary=shared.
 func upPortForwards(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, procs *procRegistry) int {
 	namespace := cfg.Name + "-" + env
-	if envCfg := findEnvironment(cfg, env); envCfg != nil && envCfg.Namespace != "" {
-		namespace = envCfg.Namespace
+	if ns := k8sClusterNamespaceForEnv(ctx, env); ns != "" {
+		namespace = ns
 	}
 
 	failures := 0

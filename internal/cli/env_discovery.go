@@ -5,20 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
-// Environment discovery walks `deploy/kcl/<env>/main.k` rather than
-// reading `cfg.Envs`. This is the deploy-target-architecture
-// migration's source-of-truth: per-env deploy config lives in KCL
-// (a `forge.K8sCluster` ref attached to each service), and the env
-// list is the set of directories under `deploy/kcl/` that contain a
-// `main.k`.
-//
-// The legacy `cfg.Envs []EnvironmentConfig` reader survives for one
-// migration cycle so existing forge.yaml files keep parsing. See the
-// `environments-to-kcl` migration skill for the rewrite.
+// Environment discovery walks `deploy/kcl/<env>/main.k`. This is the
+// deploy-target-architecture source-of-truth: per-env deploy config
+// lives in KCL (a `forge.K8sCluster` ref attached to each service),
+// and the env list is the set of directories under `deploy/kcl/` that
+// contain a `main.k`. forge.yaml no longer declares environments.
 
 // ListEnvs returns the names of every environment declared via a
 // `deploy/kcl/<env>/main.k` file. The list is sorted alphabetically
@@ -71,59 +64,4 @@ func EnvExists(projectDir, env string) (bool, error) {
 	} else {
 		return false, fmt.Errorf("stat %s: %w", mainK, err)
 	}
-}
-
-// ListEnvsForConfig is the migration bridge: it returns the env list
-// for a project regardless of whether the project still uses
-// forge.yaml `environments[]` or has migrated to KCL-only.
-//
-// Resolution: prefer KCL-derived discovery; fall back to forge.yaml's
-// cfg.Envs when no `deploy/kcl/<env>/main.k` files exist. The two
-// paths overlap in projects mid-migration, so the union is also
-// returned — sorted, deduped — when both are non-empty.
-//
-// Emits no warnings here; the deprecation warning fires once at
-// loadProjectConfig time so it doesn't get logged repeatedly from
-// every reader.
-func ListEnvsForConfig(projectDir string, cfg *config.ProjectConfig) []string {
-	kclEnvs, _ := ListEnvs(projectDir)
-	yamlEnvs := envsFromConfig(cfg)
-	if len(kclEnvs) == 0 {
-		return yamlEnvs
-	}
-	if len(yamlEnvs) == 0 {
-		return kclEnvs
-	}
-	seen := map[string]struct{}{}
-	merged := make([]string, 0, len(kclEnvs)+len(yamlEnvs))
-	for _, e := range kclEnvs {
-		if _, ok := seen[e]; ok {
-			continue
-		}
-		seen[e] = struct{}{}
-		merged = append(merged, e)
-	}
-	for _, e := range yamlEnvs {
-		if _, ok := seen[e]; ok {
-			continue
-		}
-		seen[e] = struct{}{}
-		merged = append(merged, e)
-	}
-	sort.Strings(merged)
-	return merged
-}
-
-func envsFromConfig(cfg *config.ProjectConfig) []string {
-	if cfg == nil {
-		return nil
-	}
-	out := make([]string, 0, len(cfg.Envs))
-	for _, e := range cfg.Envs {
-		if e.Name == "" {
-			continue
-		}
-		out = append(out, e.Name)
-	}
-	return out
 }

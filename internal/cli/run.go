@@ -62,14 +62,14 @@ func runProjectDev(opts runOptions) error {
 		fmt.Printf("[run] Running only: %v\n", opts.services)
 	}
 
-	// Resolve per-env config (forge.yaml inline + optional sibling file).
-	// Missing env or empty config is non-fatal — we log it and continue
+	// Resolve per-env config from the config.<env>.yaml sibling file.
+	// Missing file or empty config is non-fatal — we log it and continue
 	// with whatever the binary's startup defaults provide.
 	projectDir, perr := findProjectConfigFile()
 	envExtraEnv := map[string]string{}
 	if perr == nil {
 		dir := filepath.Dir(projectDir)
-		envCfg, lerr := config.LoadEnvironmentConfig(cfg, dir, opts.env)
+		envCfg, lerr := config.LoadEnvironmentConfig(dir, opts.env)
 		if lerr != nil {
 			fmt.Printf("[run] No per-env config for %q (%v); using binary defaults.\n", opts.env, lerr)
 		} else {
@@ -433,21 +433,21 @@ func envConfigToEnvVars(envCfg map[string]any, projectConfigPath string) map[str
 	return out
 }
 
-// loadProjectConfigEnv loads forge.yaml `environments[env].config` and
-// projects it to env-var strings via [envConfigToEnvVars]. Returns an
-// empty map (not nil) on any error so callers can pass the result
-// straight to [hostlaunch.LayerHostEnv] without guarding. Missing env /
-// empty config is non-fatal — `forge run <svc>` runs against whatever
-// defaults the binary's flag/env loader provides when no per-env
-// config is declared.
+// loadProjectConfigEnv loads the per-env config from the sibling
+// `config.<env>.yaml` file and projects it to env-var strings via
+// [envConfigToEnvVars]. Returns an empty map (not nil) on any error
+// so callers can pass the result straight to [hostlaunch.LayerHostEnv]
+// without guarding. Missing file / empty config is non-fatal —
+// `forge run <svc>` runs against whatever defaults the binary's
+// flag/env loader provides when no per-env config is declared.
 //
 // Reuses the same loader + projector as the orchestrator
-// (runProjectDev) so host-mode services see the same forge.yaml config
+// (runProjectDev) so host-mode services see the same per-env config
 // values cluster-mode services get via the ConfigMap projection.
 // Sensitive fields and ${SECRET_REF} placeholders are skipped — those
 // belong in `.env.<env>` (the gitignored dotenv) or the developer
-// shell, not in committed forge.yaml.
-func loadProjectConfigEnv(cfg *config.ProjectConfig, env string) map[string]string {
+// shell, not in committed sibling-file config.
+func loadProjectConfigEnv(_ *config.ProjectConfig, env string) map[string]string {
 	if env == "" {
 		return map[string]string{}
 	}
@@ -456,7 +456,7 @@ func loadProjectConfigEnv(cfg *config.ProjectConfig, env string) map[string]stri
 		return map[string]string{}
 	}
 	projectDir := filepath.Dir(projectPath)
-	envCfg, lerr := config.LoadEnvironmentConfig(cfg, projectDir, env)
+	envCfg, lerr := config.LoadEnvironmentConfig(projectDir, env)
 	if lerr != nil {
 		return map[string]string{}
 	}
@@ -613,7 +613,7 @@ func runHostService(ctx context.Context, name, env, secretsFile string, backgrou
 
 	// Layer KCL-declared env_vars on top of the loaded secrets. EnvVars
 	// only carries inline `value` fields at this surface — secret_ref /
-	// config_map_ref shapes are for K8sDeploy / cluster projection and
+	// config_map_ref shapes are for K8sCluster / cluster projection and
 	// have no meaningful host equivalent. Skip non-value entries.
 	envVars := hostEnvVarsToMap(host)
 	if len(envVars) > 0 {
@@ -807,7 +807,7 @@ func buildRunHostCmd(ctx context.Context, name string, host *HostDeploy) *exec.C
 // other channels (secret_ref, config_map_ref) are cluster-mode
 // projections (Deployment.env.valueFrom.secretKeyRef etc.) with no
 // meaningful host equivalent. Those projection channels stay in KCL
-// for K8sDeploy services; on the host, secrets come from the
+// for K8sCluster services; on the host, secrets come from the
 // gitignored secrets_file.
 //
 // Returns an empty map (not nil) on a nil host, so callers can pass

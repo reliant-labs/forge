@@ -1,6 +1,6 @@
 ---
 name: environments-to-kcl
-description: Migrate forge.yaml `environments[]` into per-env KCL deploy targets. Forge v1.x kept env-wide deploy knobs (cluster / namespace / registry / domain) on `forge.yaml -> environments[]`; v2.x moves them onto per-service `forge.K8sCluster` blocks in KCL, with refs DRYing the common case across many services.
+description: Migrate forge.yaml `environments[]` into per-env KCL deploy targets. Forge no longer reads `environments:` from forge.yaml at all — env-wide deploy knobs (cluster / namespace / registry / domain) live on per-service `forge.K8sCluster` blocks in KCL, and per-env app config lives in sibling `config.<env>.yaml` files.
 applies-from: v1.0.0
 applies-to: v2.0.0
 detection: grep -l "^environments:" forge.yaml
@@ -8,9 +8,9 @@ detection: grep -l "^environments:" forge.yaml
 
 # Migrating forge.yaml `environments[]` to KCL deploy targets
 
-Use this skill when `forge upgrade` reports a jump that crosses v2.0.0
-and `forge.yaml` still declares one or more `environments[]` entries
-with `cluster:` / `namespace:` / `registry:` / `domain:` fields.
+Use this skill when `forge.yaml` still declares an `environments[]` block.
+Forge silently ignores the block now — it never reads it for anything —
+but leaving it in place hides intent. Move every field to its new home.
 
 ## 1. What changed
 
@@ -24,21 +24,29 @@ environments:
     cluster: k3d-myapp
     namespace: myapp-dev
     registry: localhost:5050
+    config:
+      log_level: debug
+      log_format: text
   - name: prod
     type: cloud
     cluster: gke_acme-prod_us-central1_c1
     namespace: myapp-prod
     registry: ghcr.io/acme/myapp
     domain: myapp.com
+    config:
+      log_level: warn
+      database_url: ${prod-db-credentials}
 ```
 
-KCL's `K8sDeploy` carried only per-service knobs (replicas / ingress /
-ports / platform); the env-wide info had to live in forge.yaml because
-each Service couldn't carry the env identifier itself.
+Forge v2.x removes the block entirely. Its fields move to two places:
 
-Forge v2.x introduces a NEW per-service deploy target schema
-(`forge.K8sCluster`) that carries BOTH the env-wide knobs AND the
-per-service knobs:
+- **Deploy target** (`cluster` / `namespace` / `registry` / `domain`) →
+  per-service `forge.K8sCluster` blocks in KCL.
+- **Per-env app config** (`config:` map) → sibling `config.<env>.yaml`
+  files next to `forge.yaml`.
+
+Forge no longer reads `environments:` for anything — leaving it in
+forge.yaml is harmless (silently ignored) but misleading. Strip it.
 
 ```kcl
 import forge
@@ -80,41 +88,32 @@ Why move? Three reasons:
    `forge.yaml -> environments[]` (the env-wide fields are cluster-
    specific) and now slot in cleanly alongside `K8sCluster`.
 
-The legacy `forge.yaml -> environments[]` block keeps working for one
-migration cycle so existing projects don't break. Forge emits a
-deprecation notice on every CLI invocation until the block is removed.
-
 ## 2. Detection
 
 ```bash
-# Pre-v2 shape: environments[] in forge.yaml with cluster/namespace/registry fields.
+# Pre-v2 shape: environments[] in forge.yaml.
 grep -E "^environments:" forge.yaml
 
 # Per-env, inspect:
 grep -A6 "^environments:" forge.yaml
 ```
 
-If `forge` emits
-
-> [forge] notice: `environments[]` in forge.yaml is deprecated.
-
-on every command, that's the same signal.
+Forge does NOT print a warning when the block is present — it's
+silently ignored. The detection above is the only signal.
 
 ## 3. Migration (deterministic part)
 
-For each environment in forge.yaml's `environments[]`, declare a
-matching `_<env>_k8s = forge.K8sCluster { ... }` variable at the top
-of `deploy/kcl/<env>/main.k` and attach it to each service.
+For each environment in forge.yaml's `environments[]`:
+
+1. Declare a matching `_<env>_k8s = forge.K8sCluster { ... }` variable
+   at the top of `deploy/kcl/<env>/main.k` and attach it to each service.
+2. Move the `config:` map (if present) into a sibling
+   `config.<env>.yaml` file at the project root, next to forge.yaml.
+3. Delete the env entry from `forge.yaml`.
 
 ```bash
 # 1. Inspect every env's forge.yaml block.
-grep -A6 "^environments:" forge.yaml
-
-# 2. For each env, edit deploy/kcl/<env>/main.k. Example for prod:
-#    BEFORE — forge.yaml carries the env-wide fields; KCL only has
-#    K8sDeploy with per-service replicas/ingress/ports.
-#    AFTER — KCL's _prod_k8s ref carries everything; forge.yaml's
-#    environments[prod] block becomes a stub (or is removed entirely).
+grep -A8 "^environments:" forge.yaml
 ```
 
 Worked example — before:
@@ -128,6 +127,9 @@ environments:
     namespace: myapp-prod
     registry: ghcr.io/acme/myapp
     domain: myapp.com
+    config:
+      log_level: warn
+      database_url: ${prod-db-credentials}
 ```
 
 ```kcl
@@ -143,10 +145,6 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, forge.RenderEnv {
-    namespace = "myapp-prod"
-    image_registry = "ghcr.io/acme/myapp"
-})
 ```
 
 After:
@@ -173,20 +171,17 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, forge.RenderEnv {
-    namespace = _prod_k8s.namespace
-    image_registry = _prod_k8s.registry
-})
 ```
 
 ```yaml
-# forge.yaml — environments[] block can now be removed (or kept as a
-# stub for the `name`/`type` fields if other tooling still consults it).
-# The deploy-target fields (cluster/namespace/registry/domain) ALL
-# move to KCL.
-environments:
-  - name: prod
-    type: cloud
+# config.prod.yaml (sibling file next to forge.yaml)
+log_level: warn
+database_url: ${prod-db-credentials}
+```
+
+```yaml
+# forge.yaml — environments[] block removed entirely.
+# Per-env config now lives in config.<env>.yaml sibling files.
 ```
 
 Repeat for every env (dev, staging, prod, …).
@@ -212,12 +207,10 @@ What user code / config might need to change:
   ]
   ```
 
-- **Per-env config (forge.yaml `environments[].config`).** That field
-  is OUT OF SCOPE for this migration — it survives unchanged. v2
-  keeps `environments[].config` as the canonical source for the
-  per-env ConfigMap projection (`(forge.v1.config)`-annotated proto
-  fields). Only the deploy-target fields (cluster/namespace/registry/
-  domain) move.
+- **Per-env config (`environments[].config`).** Move the map to a
+  sibling `config.<env>.yaml` file at the project root. Forge reads
+  `config.<env>.yaml` automatically for the per-env ConfigMap
+  projection AND for `forge run` / `forge up` host-mode env injection.
 
 - **CI workflows that read `environments[]` to gate deploy jobs.**
   Update them to source the env list from the filesystem
@@ -225,12 +218,11 @@ What user code / config might need to change:
   already use `forge ci validate-kcl` which discovers envs by
   filesystem walk.
 
-- **forge.yaml `environments[].cluster` for the kubectl-context guard.**
-  Pre-v2 the guard read `environments[<env>].cluster` to know which
-  context `forge deploy <env>` was supposed to land in. v2 reads it
-  from `K8sCluster.cluster` instead. Until you remove `environments[]`
-  entirely, the legacy field still works; once it's gone, the guard
-  picks up the K8sCluster ref automatically.
+- **Per-env cluster guard.** Pre-v2 the guard read
+  `environments[<env>].cluster` to know which context
+  `forge deploy <env>` was supposed to land in. v2 reads it from
+  `K8sCluster.cluster` instead. Forge no longer reads
+  `environments[].cluster` at all.
 
 ## 5. Verification
 
@@ -247,9 +239,8 @@ forge deploy dev --dry-run > /tmp/v1-dev.yaml
 git stash pop
 diff /tmp/v1-dev.yaml /tmp/v2-dev.yaml  # should be empty
 
-# Confirm the deprecation notice stops firing once `environments[]`
-# is removed from forge.yaml.
-forge audit 2>&1 | grep -i "deprecat"  # should be empty
+# Confirm `environments:` is no longer in forge.yaml.
+grep -E "^environments:" forge.yaml  # should print nothing
 ```
 
 ## 6. Rollback
@@ -258,16 +249,15 @@ If the v2 shape breaks something:
 
 ```bash
 # Restore forge.yaml and deploy/kcl/ from git.
-git checkout HEAD -- forge.yaml deploy/kcl/
+git checkout HEAD -- forge.yaml deploy/kcl/ config.*.yaml
 
 # Downgrade the CLI binary via forge upgrade.
 forge upgrade --to <prior-v1-version>
 ```
 
-The v1 shape works unchanged in v1 — the schema change is
-additive-then-deprecated (K8sCluster added, K8sDeploy deprecated but
-still functional), so reverting the KCL + forge.yaml restores the v1
-loop without binary downgrade in most cases.
+The v1 shape works unchanged in v1. The schema change is one-way
+(`environments[]` removed in v2) — restoring forge.yaml + the older
+binary is the supported rollback.
 
 ## See also
 
@@ -276,5 +266,5 @@ loop without binary downgrade in most cases.
 - `deploy` skill — the per-group dispatch architecture and how
   K8sClusterProvider wraps the existing cluster.Apply pipeline.
 - `v0.x-to-env-config` skill — the parallel migration that introduced
-  `forge.yaml -> environments[].config`; the per-env config map
-  survives this migration unchanged.
+  per-env config; the `config.<env>.yaml` sibling-file path is now
+  the canonical home for those values.

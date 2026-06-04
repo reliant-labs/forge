@@ -7,7 +7,7 @@ the common case across many services. Exercises:
 
   * Reference-and-share via assignment to a `_prod_k8s` var.
   * Per-service override via `_prod_k8s | { replicas = 5 }`.
-  * Discriminator still projects as "cluster" (shared with K8sDeploy).
+  * Discriminator projects as "cluster".
   * env-wide fields project on the rendered output (not null).
 """
 
@@ -41,7 +41,7 @@ output = forge.render(_bundle)
 
 # ── Invariants ─────────────────────────────────────────────────────
 
-# Discriminator is "cluster" for K8sCluster (shared with K8sDeploy).
+# Discriminator is "cluster" for K8sCluster.
 assert_a_discriminator = output.services[0].deploy.type == "cluster"
 assert_b_discriminator = output.services[1].deploy.type == "cluster"
 

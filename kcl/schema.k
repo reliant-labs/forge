@@ -5,10 +5,10 @@ Four typed entities (Service / Operator / Frontend / CronJob) capture
 the orchestration shapes a forge project deploys. Plus six shared
 sub-schemas (EnvVar / Resources / Ingress / ClusterRBAC / HealthCheck /
 BuildVariant / SecurityContext) and a polymorphic deploy union
-(HostDeploy | K8sDeploy | BuildOnly) discriminated by a `type` field
-on the deploy subschema itself — KCL emits the discriminator into
-JSON automatically so the consumer can dispatch without a side
-channel.
+(HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly) discriminated
+by a `type` field on the deploy subschema itself — KCL emits the
+discriminator into JSON automatically so the consumer can dispatch
+without a side channel.
 
 JSON contract (stable; missing optional fields project as `null`):
 
@@ -39,7 +39,7 @@ HostDeploy splits per-env config from secrets:
 
   * `env_vars` — KCL-declared, version-controlled config (DATABASE_URL,
     NATS_URL, LOG_LEVEL, …). Composes with `base.DB_ENV` /
-    `cfg.APP_ENV` the same way K8sDeploy services do, so host and
+    `cfg.APP_ENV` the same way K8sCluster services do, so host and
     cluster services see the same per-env config source.
   * `secrets_file` — path (gitignored) to a `KEY=VALUE` dotenv carrying
     JUST the secrets (STRIPE_*, SUPABASE_*, JWT_PUBLIC_KEY, …). The
@@ -93,7 +93,7 @@ schema Resources:
     memory_limit: str = "512Mi"
 
 schema Ingress:
-    """Cluster ingress for Service.deploy = K8sDeploy."""
+    """Cluster ingress for Service.deploy = K8sCluster."""
     host: str
     tls: bool = True
     cert_manager_issuer: str = "letsencrypt-prod"
@@ -181,8 +181,9 @@ schema SecurityContext:
 #
 # The `type` discriminator lives on the deploy subschema so the JSON
 # output is self-describing. KCL union types let `Service.deploy:
-# HostDeploy | K8sDeploy | BuildOnly` accept any of the three at
-# instantiation; the consumer dispatches on `deploy.type`.
+# HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly` accept any
+# of the variants at instantiation; the consumer dispatches on
+# `deploy.type`.
 # ---------------------------------------------------------------------------
 
 schema HostDeploy:
@@ -197,7 +198,7 @@ schema HostDeploy:
     Env composition splits config from secrets:
       * `env_vars` — KCL-declared per-env config. Reproducible,
         version-controlled, mergeable with `base.DB_ENV`/`cfg.APP_ENV`.
-        Same source K8sDeploy services see via the Deployment's `env`.
+        Same source K8sCluster services see via the Deployment's `env`.
       * `secrets_file` — gitignored dotenv with JUST the secrets.
         Loaded first by the runner; `env_vars` is layered on top
         (KCL wins on conflict so per-env config can't drift between
@@ -219,34 +220,6 @@ schema HostDeploy:
         delve_port > 0 and delve_port < 65536, \
             "HostDeploy.delve_port must be 1..65535"
 
-schema K8sDeploy:
-    """DEPRECATED — superseded by K8sCluster (per-service deploy target
-    that carries the env-wide cluster/namespace/registry/domain).
-
-    K8sDeploy was the original cluster-deploy block, carrying only the
-    per-service knobs (replicas, ingress, ports, platform) while the
-    env-wide knobs lived on the now-deprecated `Environment` schema and
-    in `forge.yaml -> environments[]`. Forge v2.x moves those env-wide
-    knobs onto the per-service deploy block itself so KCL refs can DRY
-    the common case across many services without forge.yaml's
-    `environments[]` block at all. See the `environments-to-kcl`
-    migration skill for the rewrite.
-
-    The schema is kept for one migration cycle so existing
-    `deploy/kcl/<env>/main.k` files keep rendering during the upgrade.
-    New code should declare `forge.K8sCluster` instead.
-    """
-    type: str = "cluster"
-    replicas: int = 1
-    ingress?: Ingress
-    resources?: Resources
-    platform?: str
-    ports: [int] = []
-
-    check:
-        type == "cluster", "K8sDeploy.type must be 'cluster'"
-        replicas > 0, "K8sDeploy.replicas must be positive"
-
 schema K8sCluster:
     """Service runs in-cluster as a Deployment + Service on a specific
     Kubernetes cluster. Per-service deploy block that ALSO carries the
@@ -265,11 +238,6 @@ schema K8sCluster:
 
         forge.Service { name = "trader", deploy = _prod_k8s }
         forge.Service { name = "admin",  deploy = _prod_k8s | { replicas = 5 } }
-
-    The polymorphic discriminator (`type = "cluster"`) is shared with
-    `K8sDeploy` so the existing `_render_k8s_deploy` dispatch handles
-    both schemas — K8sCluster is a superset of K8sDeploy with the
-    env-wide fields tacked on.
     """
     type: str = "cluster"
     # Env-wide knobs — same value across every service in a deploy
@@ -279,7 +247,7 @@ schema K8sCluster:
     namespace: str
     registry: str
     domain?: str
-    # Per-service knobs (same as K8sDeploy).
+    # Per-service knobs.
     replicas: int = 1
     ingress?: Ingress
     resources?: Resources
@@ -361,8 +329,7 @@ schema Service:
     The `deploy` field's runtime type decides intent:
       * HostDeploy  — forge launches it on the host.
       * K8sCluster  — forge deploys to a Kubernetes cluster as
-                       Deployment + Service. Supersedes K8sDeploy.
-      * K8sDeploy   — DEPRECATED — see K8sCluster.
+                       Deployment + Service.
       * VMDocker    — DECLARATIVE-ONLY — Docker-on-VM via SSH (stub).
       * Compose     — DECLARATIVE-ONLY — docker-compose (stub).
       * BuildOnly   — forge builds the artifact only (CLI shape).
@@ -374,7 +341,7 @@ schema Service:
     image?: str
     command: [str] = []
     env_vars: [EnvVar] = []
-    deploy?: HostDeploy | K8sCluster | K8sDeploy | VMDocker | Compose | BuildOnly
+    deploy?: HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly
 
     check:
         name, "Service.name is required"

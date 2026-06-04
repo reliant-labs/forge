@@ -18,7 +18,10 @@ _bundle = forge.Bundle {
         forge.Service {
             name = "workspace-proxy"
             image = "example"
-            deploy = forge.K8sDeploy {
+            deploy = forge.K8sCluster {
+                cluster = "k3d-example"
+                namespace = "example-dev"
+                registry = "localhost:5050"
                 replicas = 1
                 ports = [8080]
                 ingress = forge.Ingress {

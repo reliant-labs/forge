@@ -163,13 +163,11 @@ message Config {
 }
 ```
 
-After — `forge.yaml` (or `config.prod.yaml` sibling):
+After — `config.prod.yaml` sibling file at the project root:
 
 ```yaml
-environments:
-  prod:
-    config:
-      database_url: "${prod-db-credentials}"   # overrides default secret name
+# config.prod.yaml
+database_url: "${prod-db-credentials}"   # overrides default secret name
 ```
 
 After — `deploy/kcl/prod/main.k`:

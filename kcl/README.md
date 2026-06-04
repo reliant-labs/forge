@@ -14,7 +14,10 @@ forge.Service {
 forge.Service {
     name = "workspace-proxy"
     image = "myapp:dev"
-    deploy = forge.K8sDeploy {
+    deploy = forge.K8sCluster {
+        cluster = "k3d-myapp"
+        namespace = "myapp-dev"
+        registry = "localhost:5050"
         replicas = 1
         ingress = forge.Ingress { host = "workspaces.localhost", tls = False }
     }
@@ -55,10 +58,10 @@ forge CLI can dispatch on intent rather than infer it:
 | `CronJob`  | Scheduled job. Omit `schedule` → renders a Job.       | `cronjobs[]`  |
 
 `Service.deploy` is a polymorphic union — one of `HostDeploy`,
-`K8sDeploy`, or `BuildOnly`. The `type` discriminator lives ON the
-deploy subschema so KCL's JSON output is self-describing. Forge's CLI
-reads the discriminator to decide whether to run on host, schedule in
-cluster, or just produce a build artifact.
+`K8sCluster`, `VMDocker`, `Compose`, or `BuildOnly`. The `type`
+discriminator lives ON the deploy subschema so KCL's JSON output is
+self-describing. Forge's CLI reads the discriminator to decide whether
+to run on host, schedule in cluster, or just produce a build artifact.
 
 `HostDeploy` splits per-env config from secrets:
 
@@ -70,7 +73,7 @@ cluster, or just produce a build artifact.
 Forge's `forge run` / `forge up` host phase loads `secrets_file` first
 (if set), then layers `env_vars` on top so KCL-declared config wins on
 conflict. Host services see the same per-env config source that
-`K8sDeploy` services see via the Deployment's `env` block — the split
+`K8sCluster` services see via the Deployment's `env` block — the split
 keeps host and cluster from drifting.
 
 `CLI` / `Job` collapse:

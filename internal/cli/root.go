@@ -112,6 +112,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
+	rootCmd.AddCommand(newUnforkCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	rootCmd.AddCommand(newComponentCmd())
@@ -142,26 +143,63 @@ func newVersionCmd() *cobra.Command {
 }
 
 // newRunCmd creates the run command.
+//
+// Three usage shapes share one cobra command:
+//
+//  1. `forge run` — orchestrator: starts every service + frontend +
+//     docker compose infra. The pre-host/cluster-split default.
+//  2. `forge run <service>` — host-mode single-service runner: execs
+//     `go run ./cmd server <service>` with `.env.<env>` loaded onto
+//     the child environment. PID is tracked under
+//     `~/.cache/forge/run/<service>.pid` for `--background`.
+//  3. `forge run <service> stop` — kills the background process for
+//     <service>. No-op when nothing is tracked.
+//
+// The host-mode runner is the inner loop for services with
+// `dev_target: host`: faster iteration than building+pushing a docker
+// image and waiting on a cluster rollout. Mirrors the
+// `forge dev port-forward --background` PID-tracking pattern.
 func newRunCmd() *cobra.Command {
 	var opts runOptions
 	var serviceFlag string
+	var background bool
+	var envFile string
 
 	runCmd := &cobra.Command{
-		Use:   "run",
-		Short: "Run a Forge project with hot reload",
+		Use:   "run [service]",
+		Short: "Run a Forge project with hot reload, or a single host-mode service",
 		Long: `Run a Forge project with the specified environment configuration.
 
-This starts all infrastructure (via docker compose), Go services (via Air),
-and Next.js apps (via npm run dev), with color-coded log output.
+With no positional arg, runs the orchestrator: docker compose infra, every
+Go service (via Air), and every Next.js app, with color-coded log output.
 
-Press Ctrl+C to stop all processes.
+With a positional service name, runs that single service as a host process —
+the inner loop for services marked dev_target: host in forge.yaml. Loads
+.env.<env> (default .env.dev) onto the child env so DATABASE_URL and friends
+come from the local file rather than the cluster's Secret.
+
+Press Ctrl+C to stop. With --background, the process detaches and PID is
+tracked under ~/.cache/forge/run/<service>.pid for ` + "`forge run <service> stop`" + `.
 
 Examples:
-  forge run                        # Run with default dev configuration
-  forge run --env=staging          # Run with staging environment
-  forge run --no-infra             # Skip docker-compose infrastructure
-  forge run --service api-gateway  # Run only a specific service`,
+  forge run                              # Orchestrator: every service + infra
+  forge run --env=staging                # Orchestrator with staging env vars
+  forge run --no-infra                   # Orchestrator, skip docker-compose
+  forge run --service api-gateway        # Orchestrator, filter to one service
+  forge run admin-server                 # Host-mode single-service runner
+  forge run admin-server --background    # Detach, track PID for later stop
+  forge run admin-server stop            # Kill the tracked background PID
+  forge run admin-server --env-file .env.local  # Custom env file`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// `forge run <service> stop` short-circuits to the PID kill.
+			if len(args) == 2 && args[1] == "stop" {
+				return runHostServiceStop(args[0])
+			}
+			// `forge run <service>` is the host-mode single-service runner.
+			if len(args) == 1 && args[0] != "stop" {
+				return runHostService(cmd.Context(), args[0], opts.env, envFile, background)
+			}
+			// Otherwise: the orchestrator (existing behaviour).
 			if serviceFlag != "" {
 				opts.services = []string{serviceFlag}
 			}
@@ -169,10 +207,12 @@ Examples:
 		},
 	}
 
-	runCmd.Flags().StringVar(&opts.env, "env", "dev", "Environment to run (dev, staging, prod)")
-	runCmd.Flags().BoolVar(&opts.noInfra, "no-infra", false, "Skip starting infrastructure via docker-compose")
-	runCmd.Flags().StringVar(&serviceFlag, "service", "", "Run only a specific service or app by name")
-	runCmd.Flags().BoolVar(&opts.debug, "debug", false, "Start with Delve debugger (hot-reload + debug on :2345)")
+	runCmd.Flags().StringVar(&opts.env, "env", "dev", "Environment to run (dev, staging, prod) — selects which .env.<env> file the host-mode runner loads")
+	runCmd.Flags().BoolVar(&opts.noInfra, "no-infra", false, "Skip starting infrastructure via docker-compose (orchestrator only)")
+	runCmd.Flags().StringVar(&serviceFlag, "service", "", "Run only a specific service or app by name (orchestrator only)")
+	runCmd.Flags().BoolVar(&opts.debug, "debug", false, "Start with Delve debugger (hot-reload + debug on :2345) — orchestrator only")
+	runCmd.Flags().BoolVar(&background, "background", false, "Detach the host-mode runner and return immediately (stop with `forge run <service> stop`)")
+	runCmd.Flags().StringVar(&envFile, "env-file", "", "Override the env file loaded by the host-mode runner (default .env.<env>)")
 
 	return runCmd
 }

@@ -12,20 +12,17 @@
 package starters
 
 import (
-	"bytes"
 	"embed"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
-	"text/template"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/installkit"
 )
 
 //go:embed all:stripe all:twilio all:clerk-webhook
@@ -193,33 +190,23 @@ func (s *Starter) Add(opts AddOptions) (*AddResult, error) {
 	}
 
 	for _, f := range s.Files {
-		dest, err := renderPathTemplate(f.Destination, data)
-		if err != nil {
-			return result, fmt.Errorf("render destination %q: %w", f.Destination, err)
+		policy := installkit.OnceSkip
+		if opts.Force {
+			policy = installkit.Always
 		}
-		target := filepath.Join(opts.ProjectDir, dest)
-
-		if !opts.Force {
-			if _, err := os.Stat(target); err == nil {
-				logf("  Skipping (exists): %s\n", dest)
-				continue
-			}
-		}
-
 		basePath := path.Join(s.Name, "templates")
-		content, err := templates.RenderFromFS(startersFS, basePath, f.Source, data)
+		outcome, err := installkit.RenderAndWrite(
+			startersFS, basePath, f.Source, f.Destination, opts.ProjectDir, data,
+			installkit.WriteOpts{OverwritePolicy: policy, LogFunc: logf},
+		)
 		if err != nil {
-			return result, fmt.Errorf("render template %s: %w", f.Source, err)
+			return result, err
 		}
-
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return result, fmt.Errorf("create directory for %s: %w", dest, err)
+		if outcome.Skipped {
+			logf("  Skipping (exists): %s\n", outcome.ResolvedOutput)
+			continue
 		}
-		if err := os.WriteFile(target, content, 0o644); err != nil {
-			return result, fmt.Errorf("write %s: %w", dest, err)
-		}
-		logf("  Created: %s\n", dest)
-		if strings.HasSuffix(dest, ".proto") {
+		if installkit.IsProtoFile(outcome.ResolvedOutput) {
 			result.PendingProtoGenerate = true
 		}
 	}
@@ -243,35 +230,8 @@ func (s *Starter) Add(opts AddOptions) (*AddResult, error) {
 }
 
 // ValidStarterName mirrors packs.ValidPackName — the starter slug
-// must be safe enough to use as a path segment.
+// must be safe enough to use as a path segment. Delegates to
+// installkit.ValidSlug, which packs.ValidPackName also calls.
 func ValidStarterName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, c := range name {
-		isLower := c >= 'a' && c <= 'z'
-		isDigit := c >= '0' && c <= '9'
-		if !isLower && !isDigit && c != '-' && c != '_' {
-			return false
-		}
-	}
-	return !strings.HasPrefix(name, "-") && !strings.HasPrefix(name, "_")
-}
-
-// renderPathTemplate is the same plain-string short-circuited Go
-// template helper packs/pack.go uses, copied to avoid a cross-package
-// dependency on a private symbol.
-func renderPathTemplate(in string, data map[string]any) (string, error) {
-	if !strings.Contains(in, "{{") {
-		return in, nil
-	}
-	tmpl, err := template.New("path").Parse(in)
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
+	return installkit.ValidSlug(name)
 }

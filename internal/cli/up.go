@@ -178,7 +178,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	defer procs.shutdownOnExit()
 
 	// Phase 3: host-mode services.
-	hostFailures := upHostServices(ctx, entities, opts.env, opts.background, procs)
+	hostFailures := upHostServices(ctx, cfg, entities, opts.env, opts.background, procs)
 	if hostFailures > 0 {
 		fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
 	}
@@ -253,13 +253,13 @@ func upDeployCluster(ctx context.Context, env string) error {
 // dispatching on deploy.Host.Runner. Returns the count of services that
 // failed to start (logged but not fatal — the orchestrator brings up as
 // many as it can rather than bailing on the first failure).
-func upHostServices(ctx context.Context, e *KCLEntities, env string, background bool, procs *procRegistry) int {
+func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, procs *procRegistry) int {
 	failures := 0
 	for _, svc := range e.Services {
 		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
 			continue
 		}
-		cmd, name, err := buildHostServiceCmd(ctx, svc, env)
+		cmd, name, err := buildHostServiceCmd(ctx, cfg, svc, env)
 		if err != nil {
 			fmt.Printf("[up] host %s: %v\n", svc.Name, err)
 			failures++
@@ -275,12 +275,14 @@ func upHostServices(ctx context.Context, e *KCLEntities, env string, background 
 
 // buildHostServiceCmd composes the exec.Cmd for a host-mode service
 // based on its deploy.Host.Runner. Thin shim over hostlaunch.BuildCmd
-// with the secrets_file + env_vars composition done here.
+// with the secrets_file + env_vars + forge.yaml config composition done
+// here. cfg / env feed the projectConfig layer (forge.yaml
+// environments[<env>].config); a nil cfg or empty env skips that layer
+// without erroring.
 //
-// Env layering (secrets_file → env_vars → os.Environ() wins last) is
-// declared on the KCL HostDeploy block — no per-env default path; the
-// env name is no longer needed at this surface and is accepted as `_`
-// for caller symmetry with upFrontends / upPortForwards.
+// Env layering matches `forge run <svc>` exactly: projectConfig →
+// secrets_file → env_vars → os.Environ() wins last. See
+// hostlaunch.LayerHostEnv for the full precedence rationale.
 //
 // Unlike `forge run <svc>`, `forge up` is strict about unknown runners:
 // a typo in KCL is fail-loud here because the orchestrator owns the
@@ -288,7 +290,7 @@ func upHostServices(ctx context.Context, e *KCLEntities, env string, background 
 // pin the user meant to apply. The hostlaunch package itself falls
 // through to go-run on unknown runners; the explicit IsKnownRunner
 // gate is what makes this call site strict.
-func buildHostServiceCmd(ctx context.Context, svc ServiceEntity, _ string) (*exec.Cmd, string, error) {
+func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc ServiceEntity, env string) (*exec.Cmd, string, error) {
 	host := svc.Deploy.Host
 	if !hostlaunch.IsKnownRunner(host.Runner) {
 		return nil, "", fmt.Errorf("unknown host runner %q (expected go-run/air/binary/delve)", host.Runner)
@@ -300,10 +302,11 @@ func buildHostServiceCmd(ctx context.Context, svc ServiceEntity, _ string) (*exe
 	}
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
-	// Env composition: secrets_file → env_vars → os.Environ() wins last.
-	// Missing secrets_file is non-fatal (warn-and-continue); parse /
-	// permission errors are fatal because they signal a broken KCL pin
-	// rather than a developer who hasn't created the file yet.
+	// Env composition: projectConfig → secrets_file → env_vars →
+	// os.Environ() wins last. Missing secrets_file is non-fatal
+	// (warn-and-continue); parse / permission errors are fatal because
+	// they signal a broken KCL pin rather than a developer who hasn't
+	// created the file yet.
 	secrets, lerr := hostlaunch.LoadSecretsFile(host.SecretsFile)
 	switch {
 	case lerr == nil:
@@ -313,14 +316,15 @@ func buildHostServiceCmd(ctx context.Context, svc ServiceEntity, _ string) (*exe
 		return nil, "", fmt.Errorf("host %s: read secrets file %s: %w", svc.Name, host.SecretsFile, lerr)
 	}
 	envVars := hostEnvVarsToMap(host)
-	// projectConfig (forge.yaml environments[].config) isn't surfaced
-	// here yet — `forge run <svc>` already layers it; `forge up` host
-	// phase should follow once it has a clean way to plumb the env name
-	// + project config through buildHostServiceCmd (this call site
-	// deliberately doesn't take the ProjectConfig today). Until then the
-	// KCL env_vars channel is the canonical source for per-env config on
-	// the host. Tracked under the same friction-log item as `forge run`.
-	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), nil, secrets, envVars)
+	// projectConfig layer: forge.yaml environments[<env>].config projected
+	// to env-var strings. Same source the cluster ConfigMap projection
+	// uses; layering it here keeps `forge up` host services in sync with
+	// `forge run <svc>`. nil cfg / empty env collapses to an empty map.
+	var projectConfigEnv map[string]string
+	if cfg != nil && env != "" {
+		projectConfigEnv = loadProjectConfigEnv(cfg, env)
+	}
+	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, secrets, envVars)
 
 	return cmd, svc.Name, nil
 }

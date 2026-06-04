@@ -220,7 +220,7 @@ func TestBootstrapOnlyScopeExcludesStompedSteps(t *testing.T) {
 		t.Fatal("scopedStepAllowlist is missing the bootstrap-only entry")
 	}
 	stomped := []string{
-		"CI workflows",            // .github/workflows/ci.yml
+		"CI workflows",                 // .github/workflows/ci.yml
 		"config loader (proto/config)", // pkg/config/config.go (+ cmd/server.go re-render)
 		"frontend mocks + transport",   // frontends/<name>/src/lib/mock-transport.ts
 		"regenerate infra files",       // deploy/ / Dockerfile.* / etc.

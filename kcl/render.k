@@ -9,7 +9,7 @@ Two responsibilities:
      `kcl run deploy/kcl/<env>/ -S output --format json`.
 
   2. `render_manifests(bundle, env)` — emit the Kubernetes manifest
-     list for the cluster-targeted entities (K8sDeploy services,
+     list for the cluster-targeted entities (K8sCluster services,
      operators, scheduled cronjobs). Host-mode services and BuildOnly
      services are skipped — those live outside the cluster manifest
      boundary.
@@ -25,8 +25,8 @@ forge`).
 KCL union-type dispatch
 =======================
 
-`Service.deploy: HostDeploy | K8sDeploy | BuildOnly`. The
-discriminator field (`type`) is declared ON each variant subschema,
+`Service.deploy: HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly`.
+The discriminator field (`type`) is declared ON each variant subschema,
 so the JSON projection is self-describing — the consumer dispatches
 on `deploy.type` directly. The render lambdas here mirror that
 contract: one branch per discriminator value, always producing a
@@ -103,10 +103,8 @@ _render_host_deploy = lambda d: HostDeploy -> any {
     }
 }
 
-# Renders K8sCluster (full env-wide + per-service shape). The legacy
-# K8sDeploy goes through `_render_k8s_deploy_legacy` below — the
-# discriminator branch in `_render_deploy_populated` picks one by
-# checking whether the instance has a `cluster` field set.
+# Renders K8sCluster — env-wide knobs (cluster/namespace/registry/domain)
+# plus the per-service knobs.
 _render_k8s_cluster = lambda d: K8sCluster -> any {
     {
         "type": "cluster"
@@ -123,29 +121,6 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
         "platform": d.platform if d.platform else None
         "ports": d.ports
         "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
-    }
-}
-
-# Renders the legacy K8sDeploy (per-service knobs only — no env-wide
-# fields). The env-wide fields (cluster/namespace/registry/domain)
-# project as null so the Go-side dispatch knows to fall back to
-# forge.yaml. Kept for one migration cycle.
-_render_k8s_deploy = lambda d: K8sDeploy -> any {
-    {
-        "type": "cluster"
-        "cluster": None
-        "namespace": None
-        "registry": None
-        "domain": None
-        "replicas": d.replicas
-        "ingress": _render_ingress(d.ingress) if d.ingress else None
-        "resources": _render_resources(d.resources) if d.resources else None
-        "health_check": None
-        "security_context": None
-        "env_vars": []
-        "platform": d.platform if d.platform else None
-        "ports": d.ports
-        "cluster_rbac": None
     }
 }
 
@@ -178,20 +153,12 @@ _render_build_only = lambda d: BuildOnly -> any {
     }
 }
 
-# The `type == "cluster"` branch needs to distinguish K8sCluster from
-# the legacy K8sDeploy — both share the same discriminator. `typeof(d)`
-# returns the schema name as a string at runtime; K8sCluster carries
-# the env-wide fields, K8sDeploy doesn't.
-_render_cluster_dispatch = lambda d: any -> any {
-    _render_k8s_cluster(d) if typeof(d) == "K8sCluster" else _render_k8s_deploy(d)
-}
-
 # Dispatch on the populated deploy's discriminator. Called only when
-# `d` is not Undefined / None. Five branches: host / cluster (K8sCluster
-# OR legacy K8sDeploy) / vm-docker / compose / build-only.
+# `d` is not Undefined / None. Five branches: host / cluster
+# (K8sCluster) / vm-docker / compose / build-only.
 _render_deploy_populated = lambda d: any -> any {
     _render_host_deploy(d) if d.type == "host" else \
-        (_render_cluster_dispatch(d) if d.type == "cluster" else \
+        (_render_k8s_cluster(d) if d.type == "cluster" else \
         (_render_vm_docker(d) if d.type == "vm-docker" else \
         (_render_compose(d) if d.type == "compose" else _render_build_only(d))))
 }

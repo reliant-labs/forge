@@ -64,18 +64,19 @@ func newCIValidateKCLCmd() *cobra.Command {
 		Short: "Validate KCL deploy manifests for all environments",
 		Long:  "Validates KCL deploy manifests by running kcl on each environment's main.k file defined in forge.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
-			if err != nil {
+			if _, err := loadProjectConfig(); err != nil {
 				return fmt.Errorf("load project config: %w", err)
 			}
 
 			// Source of truth for the env list is the filesystem
-			// (deploy/kcl/<env>/main.k presence). cfg.Envs is the
-			// deprecated fallback for projects mid-migration.
+			// (deploy/kcl/<env>/main.k presence).
 			projectDir := projectDirForKCL()
-			envs := ListEnvsForConfig(projectDir, cfg)
+			envs, lerr := ListEnvs(projectDir)
+			if lerr != nil {
+				return fmt.Errorf("list envs: %w", lerr)
+			}
 			if len(envs) == 0 {
-				fmt.Println("No environments declared (no deploy/kcl/<env>/main.k and no forge.yaml environments[]) — nothing to validate.")
+				fmt.Println("No environments declared (no deploy/kcl/<env>/main.k) — nothing to validate.")
 				return nil
 			}
 

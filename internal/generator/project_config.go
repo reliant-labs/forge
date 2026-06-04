@@ -59,35 +59,6 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		HotReload:    g.isService(), // hot-reload only meaningful for long-running servers
 		Features:     g.buildFeaturesConfig(),
 		Stack:        stack,
-		Envs: []config.EnvironmentConfig{
-			{
-				Name: "dev",
-				Type: "local",
-				Config: map[string]any{
-					"log_level":   "debug",
-					"log_format":  "text",
-					"environment": "development",
-				},
-			},
-			{
-				Name: "staging",
-				Type: "cloud",
-				Config: map[string]any{
-					"log_level":   "info",
-					"log_format":  "json",
-					"environment": "production",
-				},
-			},
-			{
-				Name: "prod",
-				Type: "cloud",
-				Config: map[string]any{
-					"log_level":   "warn",
-					"log_format":  "json",
-					"environment": "production",
-				},
-			},
-		},
 		Database: config.DatabaseConfig{
 			Driver:        "postgres",
 			MigrationsDir: "db/migrations",

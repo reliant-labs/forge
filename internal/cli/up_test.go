@@ -138,10 +138,10 @@ func TestUpStatePath(t *testing.T) {
 }
 
 // TestBuildHostServiceCmd_LayersProjectConfig pins the symmetry with
-// `forge run <svc>`: forge.yaml environments[<env>].config must reach
-// the host child process via cmd.Env just like the run path does. The
-// host phase previously dropped this layer (the call site took a `_
-// string` env and passed nil to LayerHostEnv); this test guards against
+// `forge run <svc>`: the sibling `config.<env>.yaml` must reach the
+// host child process via cmd.Env just like the run path does. The host
+// phase previously dropped this layer (the call site took a `_ string`
+// env and passed nil to LayerHostEnv); this test guards against
 // regressing back to that shape.
 func TestBuildHostServiceCmd_LayersProjectConfig(t *testing.T) {
 	dir := t.TempDir()
@@ -154,15 +154,15 @@ services:
     type: go_service
     path: handlers/api
     port: 8080
-environments:
-  - name: dev-host
-    type: local
-    config:
-      environment: development
-      log_level: debug
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
+	}
+	siblingContent := `environment: development
+log_level: debug
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.dev-host.yaml"), []byte(siblingContent), 0o644); err != nil {
+		t.Fatalf("write sibling config: %v", err)
 	}
 	t.Chdir(dir)
 

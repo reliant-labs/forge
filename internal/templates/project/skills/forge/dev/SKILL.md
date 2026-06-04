@@ -119,15 +119,18 @@ Every `forge dev` command runs against `k3d-<cluster-name>` (resolved from
 you cannot accidentally `forge dev cluster reload` into staging or prod.
 
 `forge deploy <env>` enforces the same guard: before applying, it verifies the
-current kubectl context matches `environments[<env>].cluster` from forge.yaml.
-For dev this defaults to `k3d-<project>`; for staging/prod declare the expected
-context explicitly:
+current kubectl context matches the env's `forge.K8sCluster.cluster` declared
+in `deploy/kcl/<env>/main.k`. For dev this defaults to `k3d-<project>`; for
+staging/prod declare the expected context explicitly:
 
-```yaml
-# forge.yaml
-environments:
-  - name: prod
-    cluster: gke_acme-prod_us-central1_cluster-1
+```kcl
+# deploy/kcl/prod/main.k
+import forge
+
+_prod_k8s = forge.K8sCluster {
+    cluster = "gke_acme-prod_us-central1_cluster-1"
+    namespace = "myapp-prod"
+}
 ```
 
 CI deploy-bots that legitimately target multiple envs from one context use

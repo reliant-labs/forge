@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestListEnvs_FromFilesystem confirms the kcl-dir walker finds every
@@ -74,51 +72,5 @@ func TestEnvExists(t *testing.T) {
 	ok, err = EnvExists(dir, "nope")
 	if err != nil || ok {
 		t.Errorf("expected nope=false, got (%v, %v)", ok, err)
-	}
-}
-
-// TestListEnvsForConfig_KCLPreferred confirms that when KCL declares
-// envs, those win over forge.yaml. The yaml entries are merged in for
-// the in-flight migration case but kcl is the source of truth.
-func TestListEnvsForConfig_KCLPreferred(t *testing.T) {
-	dir := t.TempDir()
-	for _, env := range []string{"dev", "prod"} {
-		envDir := filepath.Join(dir, "deploy", "kcl", env)
-		if err := os.MkdirAll(envDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte(""), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cfg := &config.ProjectConfig{
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev"},
-			{Name: "staging"}, // yaml-only env — picked up via merge
-		},
-	}
-	got := ListEnvsForConfig(dir, cfg)
-	want := map[string]bool{"dev": true, "prod": true, "staging": true}
-	if len(got) != 3 {
-		t.Fatalf("len: got %v want 3", got)
-	}
-	for _, e := range got {
-		if !want[e] {
-			t.Errorf("unexpected env %q", e)
-		}
-	}
-}
-
-// TestListEnvsForConfig_FallbackToYAML confirms forge.yaml is the
-// fallback when no KCL envs are present (legacy projects).
-func TestListEnvsForConfig_FallbackToYAML(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev"}, {Name: "prod"},
-		},
-	}
-	got := ListEnvsForConfig(t.TempDir(), cfg)
-	if len(got) != 2 {
-		t.Fatalf("want 2 envs, got %v", got)
 	}
 }

@@ -2,13 +2,11 @@
 // surface that maps a rendered KCL Service.deploy block to a concrete
 // pipeline that ships the service somewhere.
 //
-// Architectural shift from the pre-v2 shape: deploy config used to
-// live in two places — `forge.yaml -> environments[]` for the env-wide
-// knobs (cluster, namespace, registry, domain) and KCL's `K8sDeploy`
-// for the per-service knobs (replicas, ingress, ports). v2 collapses
-// both onto KCL by introducing per-service deploy-target schemas that
-// also carry the env-wide info (`K8sCluster`, `VMDocker`, `Compose`).
-// KCL refs DRY the common case across many services:
+// Deploy config is fully owned by KCL: per-service deploy-target
+// schemas (`K8sCluster`, `VMDocker`, `Compose`) carry both the env-wide
+// info (cluster, namespace, registry, domain) and the per-service
+// knobs (replicas, ingress, ports). KCL refs DRY the common case
+// across many services:
 //
 //	_prod_k8s = forge.K8sCluster {
 //	    cluster = "prod-cluster"; namespace = "kalshi-prod"
@@ -207,9 +205,7 @@ func (r *Registry) Lookup(id string) Provider {
 // pattern (single K8sCluster ref attached to many services) AND
 // per-service overrides via `_prod_k8s | { replicas = 5 }` (which
 // preserves cluster/namespace/registry so the override service joins
-// the same group). When a service has a legacy K8sDeploy (no env-wide
-// fields), the group's Cluster/Namespace/Registry are taken from
-// forge.yaml at the dispatch layer.
+// the same group).
 //
 // VMDocker grouping rule: services sharing an SSHHost end up in one
 // group. Compose grouping rule: services sharing a ComposeFile end up

@@ -168,7 +168,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 
 	report.Categories["version"] = auditVersion(cfg)
 	report.Categories["shape"] = auditShape(cfg, abs)
-	report.Categories["environments"] = auditEnvironments(cfg)
+	report.Categories["environments"] = auditEnvironments(abs)
 	report.Categories["conventions"] = auditConventions(cfg, abs)
 	report.Categories["codegen"] = auditCodegen(cfg, abs)
 	report.Categories["packs"] = auditPacks(cfg)
@@ -294,53 +294,38 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
 }
 
-// auditEnvironments checks that every declared environment has the
-// fields a deploy run needs to be safe — most importantly, that
-// non-dev environments declare `cluster:` so the kubectl-context guard
-// in `forge deploy <env>` can refuse to apply against the wrong
-// cluster. Dev's cluster defaults to k3d-<project> when omitted; for
-// staging/prod there is no safe default, so we warn.
-func auditEnvironments(cfg *config.ProjectConfig) AuditCategory {
-	if cfg == nil || len(cfg.Envs) == 0 {
+// auditEnvironments inventories every environment declared via a
+// `deploy/kcl/<env>/main.k` file. Source of truth is the filesystem —
+// forge.yaml no longer declares environments. Per-env deploy info
+// (cluster / namespace / registry / domain) lives in the rendered
+// KCL on `forge.K8sCluster` blocks; this audit just confirms the env
+// directories exist and lists them.
+func auditEnvironments(projectDir string) AuditCategory {
+	envs, err := ListEnvs(projectDir)
+	if err != nil {
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("env discovery failed: %v", err),
+		}
+	}
+	if len(envs) == 0 {
 		return AuditCategory{
 			Status:  AuditStatusOK,
-			Summary: "no environments declared (n/a)",
+			Summary: "no environments declared (no deploy/kcl/<env>/main.k)",
 		}
 	}
 	type envEntry struct {
-		Name    string `json:"name"`
-		Cluster string `json:"cluster,omitempty"`
-		Status  string `json:"status"`
+		Name   string `json:"name"`
+		Status string `json:"status"`
 	}
-	var entries []envEntry
-	var missing []string
-	for _, env := range cfg.Envs {
-		entry := envEntry{Name: env.Name, Cluster: env.Cluster}
-		switch {
-		case env.Cluster != "":
-			entry.Status = "ok"
-		case env.Name == "dev":
-			// Dev has a safe default (k3d-<project>); not a warning.
-			entry.Status = "default (k3d-" + cfg.Name + ")"
-		default:
-			entry.Status = "missing cluster"
-			missing = append(missing, env.Name)
-		}
-		entries = append(entries, entry)
+	entries := make([]envEntry, 0, len(envs))
+	for _, env := range envs {
+		entries = append(entries, envEntry{Name: env, Status: "ok"})
 	}
 	details := map[string]any{"environments": entries}
-	if len(missing) > 0 {
-		details["missing_cluster"] = missing
-		details["hint"] = "declare `environments[].cluster: <context-name>` in forge.yaml for each non-dev env so `forge deploy <env>` can guard against wrong-context applies"
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("%d env(s) without cluster: %s", len(missing), strings.Join(missing, ", ")),
-			Details: details,
-		}
-	}
 	return AuditCategory{
 		Status:  AuditStatusOK,
-		Summary: fmt.Sprintf("%d environment(s) declared, all have cluster: set", len(cfg.Envs)),
+		Summary: fmt.Sprintf("%d environment(s) declared (deploy/kcl/<env>/main.k)", len(envs)),
 		Details: details,
 	}
 }

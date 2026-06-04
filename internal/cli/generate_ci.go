@@ -162,11 +162,9 @@ func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 	testCfg := cfg.CI.Test
 	allTestDefault := testCfg == (config.CITestConfig{})
 
-	// Collect environments for KCL validation
-	var envs []string
-	for _, e := range cfg.Envs {
-		envs = append(envs, e.Name)
-	}
+	// Collect environments for KCL validation — source of truth is
+	// the filesystem (deploy/kcl/<env>/main.k presence).
+	envs, _ := ListEnvs(projectDirForKCL())
 
 	return templates.CIWorkflowData{
 		ProjectName:  cfg.Name,
@@ -226,7 +224,10 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 			URL:        e.URL,
 		})
 	}
-	// If no deploy environments configured, derive defaults from project envs.
+	// If no deploy environments configured, derive defaults from the
+	// envs declared on the filesystem (deploy/kcl/<env>/main.k). The
+	// "dev" env is treated as local-only and skipped; every non-dev env
+	// is treated as cloud.
 	// Convention (matches the hardcoded defaults in new-project scaffolding):
 	//   * the first cloud env auto-deploys after a successful image build
 	//     (workflow_run trigger) — this is typically "staging"
@@ -236,12 +237,12 @@ func buildDeployWorkflowData(cfg *config.ProjectConfig) templates.DeployWorkflow
 	// branch never fires, leaving the workflow_run trigger at the top of the
 	// file unreachable from any job `if:` (H-5).
 	if len(envs) == 0 {
-		for _, e := range cfg.Envs {
-			if e.Type == "cloud" {
-				envs = append(envs, templates.DeployEnv{
-					Name: e.Name,
-				})
+		discovered, _ := ListEnvs(projectDirForKCL())
+		for _, name := range discovered {
+			if name == "dev" {
+				continue
 			}
+			envs = append(envs, templates.DeployEnv{Name: name})
 		}
 		if len(envs) > 0 {
 			envs[0].Auto = true

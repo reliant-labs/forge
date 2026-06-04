@@ -473,8 +473,8 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 	}
 
 	if namespace == "" {
-		if env := findEnvironment(cfg, "dev"); env != nil && env.Namespace != "" {
-			namespace = env.Namespace
+		if ns := k8sClusterNamespaceForEnv(ctx, "dev"); ns != "" {
+			namespace = ns
 		} else {
 			namespace = cfg.Name + "-dev"
 		}

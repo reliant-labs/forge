@@ -90,16 +90,6 @@ type ProjectConfig struct {
 	// React Query hook wrappers. When the flag is false (the default)
 	// forge keeps the historic per-frontend layout exactly as before.
 	Frontend  FrontendProjectConfig `yaml:"frontend,omitempty"`
-	// Envs is the legacy per-environment block, retained for one
-	// migration cycle. The deploy-target-architecture migration
-	// (see the `environments-to-kcl` skill) moves env-wide knobs
-	// (cluster / namespace / registry / domain) onto per-service
-	// `forge.K8sCluster` blocks in KCL; new code should discover
-	// environments via the filesystem (deploy/kcl/<env>/main.k) via
-	// `internal/cli.ListEnvs` rather than reading this slice.
-	//
-	// Deprecated: see `environments-to-kcl` migration skill.
-	Envs []EnvironmentConfig `yaml:"environments"`
 	Database  DatabaseConfig        `yaml:"database"`
 	CI        CIConfig              `yaml:"ci"`
 	Deploy    DeployConfig          `yaml:"deploy,omitempty"`
@@ -295,48 +285,6 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 		}
 	}
 	return false
-}
-
-// EnvironmentConfig represents a deployment environment.
-//
-// Deprecated: env-wide deploy info (cluster / namespace / registry /
-// domain) now lives on the per-service `forge.K8sCluster` block in
-// KCL, with refs DRYing the common case across many services.
-// `Config` survives until the migration is complete; see the
-// `environments-to-kcl` skill for the rewrite.
-//
-// Per-env runtime config:
-//
-// The Config map carries environment-scoped values for the project's
-// AppConfig fields (proto/config/v1/config.proto). Keys correspond to
-// proto field names (snake_case); values are scalars (string, int, bool)
-// or "${SECRET_NAME}" references for sensitive fields.
-//
-// Two storage shapes are supported and both deserialise into Config:
-//
-//  1. Inline under environments[].config in forge.yaml (good for dev /
-//     staging where values aren't secret).
-//  2. A sibling file `config.<env>.yaml` next to forge.yaml (good for
-//     prod where values mix secret refs with non-secret toggles). The
-//     sibling file is a flat YAML map; its keys override any inline
-//     entries.
-//
-// Use [LoadEnvironmentConfig] to read the merged map for an environment.
-type EnvironmentConfig struct {
-	Name      string   `yaml:"name"` // dev, staging, prod
-	Type      string   `yaml:"type"` // "local", "cloud"
-	Services  []string `yaml:"services,omitempty"`
-	Registry  string   `yaml:"registry,omitempty"`
-	Namespace string   `yaml:"namespace,omitempty"`
-	Domain    string   `yaml:"domain,omitempty"`
-	// Cluster is the expected kubectl context name for this
-	// environment. When set, `forge deploy <env>` refuses to apply
-	// unless the current kubectl context matches (override via
-	// --context). For dev this defaults to k3d-<project-name>; for
-	// staging/prod the user declares the expected context explicitly
-	// (e.g. "gke_acme-prod_us-central1_cluster-1").
-	Cluster string         `yaml:"cluster,omitempty"`
-	Config  map[string]any `yaml:"config,omitempty"`
 }
 
 // DatabaseConfig holds database-related settings.

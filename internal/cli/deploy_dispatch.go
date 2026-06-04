@@ -6,28 +6,21 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/cluster"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 // buildDeployGroups walks the rendered entities and produces the
 // deploy groups the dispatcher will dispatch in turn.
 //
-// Two paths feed the same return value:
-//
-//  1. Services that carry K8sCluster fields (Cluster/Namespace/Registry
-//     non-empty on the rendered K8sDeploy union view) group natively
-//     by the (Cluster, Namespace, Registry) tuple.
-//
-//  2. Services using the legacy K8sDeploy schema (env-wide fields
-//     empty) are collected into a SINGLE synthetic group keyed by the
-//     forge.yaml-derived (cluster, namespace, registry) tuple. This
-//     preserves the pre-v2 single-apply behaviour for projects that
-//     haven't migrated.
+// Services that carry K8sCluster fields group natively by the
+// (Cluster, Namespace, Registry) tuple. The namespace defaults to the
+// deploy-time fallback when KCL leaves it blank — typically the
+// user-supplied --namespace or the auto-computed `<project>-<env>`
+// shape.
 //
 // vm-docker and compose services flow through GroupServices unchanged.
 // host / build-only / no-deploy services are skipped.
-func buildDeployGroups(envName string, cfg *config.ProjectConfig, entities *KCLEntities, fallbackNamespace, fallbackRegistry string) ([]deploytarget.ServiceGroup, error) {
+func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace string) ([]deploytarget.ServiceGroup, error) {
 	if entities == nil {
 		return nil, nil
 	}
@@ -39,31 +32,17 @@ func buildDeployGroups(envName string, cfg *config.ProjectConfig, entities *KCLE
 			if c == nil {
 				continue
 			}
-			// Legacy K8sDeploy → empty env-wide fields. Synthesize
-			// the group keys from forge.yaml + flag defaults so
-			// pre-v2 projects keep working.
-			clusterName := c.Cluster
 			namespace := c.Namespace
-			registry := c.Registry
-			domain := c.Domain
 			if namespace == "" {
 				namespace = fallbackNamespace
-			}
-			if registry == "" {
-				registry = fallbackRegistry
-			}
-			if clusterName == "" {
-				// Use the expected kubectl context for grouping —
-				// it's the natural per-cluster key.
-				clusterName = expectedClusterForEnv(cfg, envName)
 			}
 			raw = append(raw, deploytarget.RawService{
 				Name: svc.Name,
 				K8sCluster: &deploytarget.RawK8sCluster{
-					Cluster:   clusterName,
+					Cluster:   c.Cluster,
 					Namespace: namespace,
-					Registry:  registry,
-					Domain:    domain,
+					Registry:  c.Registry,
+					Domain:    c.Domain,
 					Spec: &deploytarget.K8sClusterSpec{
 						Replicas: c.Replicas,
 						Platform: c.Platform,

@@ -123,7 +123,7 @@ func (l *Library) IndexBarrel() string {
 	for _, p := range primitives {
 		exportName := defaultExportName(p.Name)
 		path := fmt.Sprintf("./components/%s", p.Name)
-		sb.WriteString(fmt.Sprintf("export { default as %s } from \"%s\";\n", exportName, path))
+		fmt.Fprintf(&sb, "export { default as %s } from \"%s\";\n", exportName, path)
 	}
 	// Stack also exports HStack / VStack named exports — surface them
 	// alongside the default.

@@ -23,8 +23,8 @@ type Service interface {
 // Deps wires the cross-package collaborators docs needs. Each defaults
 // to the canonical implementation when nil.
 type Deps struct {
-	CodegenParser codegen.Parser    // descriptor + go.mod parsing
-	Contract      contract.Service  // contract.go AST parsing
+	CodegenParser codegen.Parser   // descriptor + go.mod parsing
+	Contract      contract.Service // contract.go AST parsing
 }
 
 // New constructs a docs.Service. nil Deps fields are filled with the

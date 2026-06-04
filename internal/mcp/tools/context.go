@@ -20,7 +20,7 @@ func getListProtosTool() Tool {
 
 Scans the proto/ directory for all .proto files and extracts key information.`,
 		InputSchema: map[string]interface{}{
-			"type": "object",
+			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
 	}
@@ -53,17 +53,17 @@ func executeListProtos(arguments json.RawMessage) (string, error) {
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Found %d .proto file(s):\n\n", len(protoFiles)))
+	fmt.Fprintf(&result, "Found %d .proto file(s):\n\n", len(protoFiles))
 
 	for _, pf := range protoFiles {
-		result.WriteString(fmt.Sprintf("  %s\n", pf.Path))
+		fmt.Fprintf(&result, "  %s\n", pf.Path)
 		if pf.Error != "" {
-			result.WriteString(fmt.Sprintf("    Error: %s\n", pf.Error))
+			fmt.Fprintf(&result, "    Error: %s\n", pf.Error)
 			continue
 		}
-		result.WriteString(fmt.Sprintf("    Package: %s\n", pf.Package))
-		result.WriteString(fmt.Sprintf("    Services: %d\n", pf.ServiceCount))
-		result.WriteString(fmt.Sprintf("    Messages: %d\n", pf.MessageCount))
+		fmt.Fprintf(&result, "    Package: %s\n", pf.Package)
+		fmt.Fprintf(&result, "    Services: %d\n", pf.ServiceCount)
+		fmt.Fprintf(&result, "    Messages: %d\n", pf.MessageCount)
 		result.WriteString("\n")
 	}
 
@@ -83,7 +83,7 @@ func parseProtoFileInfo(path string) (*protoFileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	info := &protoFileInfo{Path: path}
 	scanner := bufio.NewScanner(file)
@@ -116,7 +116,7 @@ func getListServicesTool() Tool {
 
 Scans proto/ for service definitions and extracts method signatures.`,
 		InputSchema: map[string]interface{}{
-			"type": "object",
+			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
 	}
@@ -149,16 +149,16 @@ func executeListServices(arguments json.RawMessage) (string, error) {
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Found %d service(s):\n\n", len(services)))
+	fmt.Fprintf(&result, "Found %d service(s):\n\n", len(services))
 
 	for _, svc := range services {
-		result.WriteString(fmt.Sprintf("  Service: %s\n", svc.Name))
-		result.WriteString(fmt.Sprintf("  File: %s\n", svc.File))
-		result.WriteString(fmt.Sprintf("  Package: %s\n", svc.Package))
+		fmt.Fprintf(&result, "  Service: %s\n", svc.Name)
+		fmt.Fprintf(&result, "  File: %s\n", svc.File)
+		fmt.Fprintf(&result, "  Package: %s\n", svc.Package)
 		if len(svc.Methods) > 0 {
 			result.WriteString("  Methods:\n")
 			for _, m := range svc.Methods {
-				result.WriteString(fmt.Sprintf("    - %s\n", m))
+				fmt.Fprintf(&result, "    - %s\n", m)
 			}
 		}
 		result.WriteString("\n")
@@ -310,8 +310,8 @@ func executeGetServiceContract(arguments json.RawMessage) (string, error) {
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Service: %s\n", args.ServiceName))
-	result.WriteString(fmt.Sprintf("File: %s\n", foundPath))
+	fmt.Fprintf(&result, "Service: %s\n", args.ServiceName)
+	fmt.Fprintf(&result, "File: %s\n", foundPath)
 	result.WriteString(strings.Repeat("=", 60))
 	result.WriteString("\n\n")
 	result.WriteString(string(data))
@@ -327,7 +327,7 @@ func getGetProjectConfigTool() Tool {
 
 Reads forge.yaml from the project root and returns it as formatted JSON.`,
 		InputSchema: map[string]interface{}{
-			"type": "object",
+			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
 	}
@@ -370,7 +370,7 @@ func executeGetProjectConfig(arguments json.RawMessage) (string, error) {
 	}
 
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Config file: %s\n", configPath))
+	fmt.Fprintf(&result, "Config file: %s\n", configPath)
 	result.WriteString(strings.Repeat("=", 60))
 	result.WriteString("\n\n")
 	result.WriteString(string(jsonData))

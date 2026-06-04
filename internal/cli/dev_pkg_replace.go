@@ -350,7 +350,7 @@ func copyFileIfDifferent(src, dst string, perm os.FileMode) (bool, error) {
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := io.Copy(tmp, strings.NewReader(string(srcData))); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return false, err
 	}
 	if err := tmp.Close(); err != nil {

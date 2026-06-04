@@ -214,8 +214,8 @@ func scanPackageFiles(pkgDir string) (pkgEntries, bool, bool, error) {
 	// receiver type name; the value is true if the type embeds a
 	// third-party (non-stdlib) struct. We also track every type that has
 	// an exported method so we can require ALL such types to be embed-y.
-	embedFlags := map[string]bool{}    // typeName -> embeds third-party
-	exportedOn := map[string]bool{}    // typeName -> has exported method
+	embedFlags := map[string]bool{} // typeName -> embeds third-party
+	exportedOn := map[string]bool{} // typeName -> has exported method
 	allGoFilesGenerated := true
 	hasAnyGoFile := false
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -73,7 +74,7 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
 		},
 	}
 
@@ -183,7 +184,8 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 	return kind, plugins, binary, nil
 }
 
-func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
+//nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -430,9 +432,9 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 	//   - go is not on PATH (we'll surface a clearer error from generate later)
 	if !skipTools && bufPluginsNormalized == "local" && kindNormalized == config.ProjectKindService {
 		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
-		if err := runToolsInstall("latest", false); err != nil {
+		if err := runToolsInstall(ctx, "latest", false); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
-			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", CLIName(), CLIName())
+			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", Name(), Name())
 		}
 	}
 
@@ -443,7 +445,7 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 	// (Go-side codegen has no such dependency; the order swap is safe.)
 	if len(frontendNames) > 0 {
 		fmt.Println("🔧 Installing frontend dependencies (this generates package-lock.json)...")
-		if err := runNpmInstall(targetPath, frontendNames); err != nil {
+		if err := runNpmInstall(ctx, targetPath, frontendNames); err != nil {
 			fmt.Printf("Warning: npm install failed: %v\n", err)
 			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'npm install' in each frontends/<name>/ before 'forge generate'.")
 			fmt.Println("    CI also requires package-lock.json to exist.")
@@ -457,7 +459,7 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 		fmt.Println("\n🔧 Bootstrapping generated proto code...")
 		if err := bootstrapGeneratedCode(targetPath); err != nil {
 			fmt.Fprintf(os.Stderr, "\n⚠️  Project scaffolded but initial code generation failed: %v\n", err)
-			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", CLIName(), CLIName())
+			fmt.Fprintf(os.Stderr, "    Run '%s generate && %s build' to retry.\n", Name(), Name())
 		}
 	}
 
@@ -476,12 +478,12 @@ func runNew(projectName, projectPath, modulePath, kindFlag string, serviceNames 
 
 	// Initialize git repository
 	fmt.Println("\n🔧 Initializing git repository...")
-	if err := initGitRepository(targetPath); err != nil {
+	if err := initGitRepository(ctx, targetPath); err != nil {
 		fmt.Printf("Warning: failed to initialize git repository: %v\n", err)
 	}
 
 	fmt.Println("🔧 Running go mod tidy...")
-	if err := runGoModTidy(targetPath); err != nil {
+	if err := runGoModTidy(ctx, targetPath); err != nil {
 		fmt.Printf("Warning: go mod tidy failed: %v\n", err)
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
@@ -563,20 +565,20 @@ plugins:
 }
 
 // initGitRepository initializes a git repository and makes initial commit
-func initGitRepository(path string) error {
-	cmd := exec.Command("git", "init")
+func initGitRepository(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, "git", "init")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init failed: %s", string(output))
 	}
 
-	cmd = exec.Command("git", "add", ".")
+	cmd = exec.CommandContext(ctx, "git", "add", ".")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git add failed: %s", string(output))
 	}
 
-	cmd = exec.Command("git", "commit", "-m", "Initial commit from forge")
+	cmd = exec.CommandContext(ctx, "git", "commit", "-m", "Initial commit from forge")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git commit failed: %s", string(output))
@@ -588,7 +590,7 @@ func initGitRepository(path string) error {
 // runNpmInstall runs `npm install` in each frontend directory so that a
 // package-lock.json exists before first commit. CI relies on `npm ci` which
 // requires the lockfile.
-func runNpmInstall(root string, frontends []string) error {
+func runNpmInstall(ctx context.Context, root string, frontends []string) error {
 	if _, err := exec.LookPath("npm"); err != nil {
 		return fmt.Errorf("npm not found on PATH: %w", err)
 	}
@@ -597,7 +599,7 @@ func runNpmInstall(root string, frontends []string) error {
 		if _, err := os.Stat(filepath.Join(feDir, "package.json")); err != nil {
 			continue
 		}
-		cmd := exec.Command("npm", "install", "--no-audit", "--no-fund")
+		cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund")
 		cmd.Dir = feDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -609,7 +611,7 @@ func runNpmInstall(root string, frontends []string) error {
 }
 
 // runGoModTidy runs go mod tidy in the project root and gen/ directories when safe.
-func runGoModTidy(path string) error {
+func runGoModTidy(ctx context.Context, path string) error {
 
 	shouldTidyRoot, err := shouldRunRootGoModTidy(path)
 	if err != nil {
@@ -617,7 +619,7 @@ func runGoModTidy(path string) error {
 	}
 
 	if shouldTidyRoot {
-		cmd := exec.Command("go", "mod", "tidy")
+		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = path
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -625,12 +627,12 @@ func runGoModTidy(path string) error {
 			return fmt.Errorf("go mod tidy (root) failed: %w", err)
 		}
 	} else {
-		fmt.Printf("ℹ️  Skipping root go mod tidy until generated proto code exists. Run '%s generate' first.\n", CLIName())
+		fmt.Printf("ℹ️  Skipping root go mod tidy until generated proto code exists. Run '%s generate' first.\n", Name())
 	}
 
 	genDir := filepath.Join(path, "gen")
 	if _, err := os.Stat(filepath.Join(genDir, "go.mod")); err == nil {
-		cmd := exec.Command("go", "mod", "tidy")
+		cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 		cmd.Dir = genDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

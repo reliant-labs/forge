@@ -17,10 +17,11 @@ import (
 	"strings"
 	"unicode"
 
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 )
 
 // entityInfo holds parsed entity metadata for a single annotated message.
@@ -111,7 +112,7 @@ func parseEntity(msg *protogen.Message) (entityInfo, bool, error) {
 		return entityInfo{}, true, fmt.Errorf(
 			"entity %q (in %s) is missing a primary key annotation: "+
 				"mark the PK field with `[(forge.v1.field) = { pk: true }]`. "+
-				"Auto-detection by field name was removed in forge v0.6.",
+				"Auto-detection by field name was removed in forge v0.6",
 			msg.Desc.Name(), msg.Desc.ParentFile().Path(),
 		)
 	}

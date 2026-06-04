@@ -3,8 +3,9 @@ package contract_test
 import (
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/linter/contract"
 	"golang.org/x/tools/go/analysis/analysistest"
+
+	"github.com/reliant-labs/forge/internal/linter/contract"
 )
 
 func TestAnalyzer_Good(t *testing.T) {

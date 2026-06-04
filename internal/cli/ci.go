@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,7 +36,7 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve forge binary: %w", err)
 			}
-			genCmd := exec.Command(parts[0], append(parts[1:], "generate")...)
+			genCmd := exec.CommandContext(cmd.Context(), parts[0], append(parts[1:], "generate")...)
 			genCmd.Stdout = os.Stdout
 			genCmd.Stderr = os.Stderr
 			if err := genCmd.Run(); err != nil {
@@ -43,11 +44,11 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 			}
 
 			// Check for uncommitted changes.
-			diffCmd := exec.Command("git", "diff", "--exit-code")
+			diffCmd := exec.CommandContext(cmd.Context(), "git", "diff", "--exit-code")
 			diffCmd.Stdout = os.Stdout
 			diffCmd.Stderr = os.Stderr
 			if err := diffCmd.Run(); err != nil {
-				fmt.Fprintln(os.Stderr, "Error: generated code is out of date. Run 'forge generate' and commit the changes.")
+				_, _ = fmt.Fprintln(os.Stderr, "Error: generated code is out of date. Run 'forge generate' and commit the changes.")
 				return fmt.Errorf("generated code is out of date")
 			}
 
@@ -78,7 +79,7 @@ func newCIValidateKCLCmd() *cobra.Command {
 				mainK := filepath.Join("deploy", "kcl", env.Name, "main.k")
 				fmt.Printf("Validating %s ... ", mainK)
 
-				kclCmd := exec.Command("kcl", "run", mainK)
+				kclCmd := exec.CommandContext(cmd.Context(), "kcl", "run", mainK)
 				kclCmd.Stdout = nil // discard output; we only care about exit code
 				kclCmd.Stderr = os.Stderr
 				if err := kclCmd.Run(); err != nil {
@@ -161,14 +162,14 @@ func newCIVulnScanCmd() *cobra.Command {
 			hasFailed := false
 
 			if runGo {
-				if err := ciRunGovulncheck(); err != nil {
+				if err := ciRunGovulncheck(cmd.Context()); err != nil {
 					fmt.Fprintf(os.Stderr, "❌ govulncheck failed: %v\n", err)
 					hasFailed = true
 				}
 			}
 
 			if runNPM {
-				if err := ciRunNPMAudit(cfg); err != nil {
+				if err := ciRunNPMAudit(cmd.Context(), cfg); err != nil {
 					fmt.Fprintf(os.Stderr, "❌ npm audit failed: %v\n", err)
 					hasFailed = true
 				}
@@ -190,20 +191,20 @@ func newCIVulnScanCmd() *cobra.Command {
 	return cmd
 }
 
-func ciRunGovulncheck() error {
+func ciRunGovulncheck(ctx context.Context) error {
 	if _, err := exec.LookPath("govulncheck"); err != nil {
 		fmt.Println("⚠️  govulncheck not found on PATH — skipping")
 		return nil
 	}
 
 	fmt.Println("Running govulncheck ./...")
-	cmd := exec.Command("govulncheck", "./...")
+	cmd := exec.CommandContext(ctx, "govulncheck", "./...")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-func ciRunNPMAudit(cfg *config.ProjectConfig) error {
+func ciRunNPMAudit(ctx context.Context, cfg *config.ProjectConfig) error {
 	if len(cfg.Frontends) == 0 {
 		fmt.Println("No frontends defined — skipping npm audit.")
 		return nil
@@ -213,7 +214,7 @@ func ciRunNPMAudit(cfg *config.ProjectConfig) error {
 	for _, fe := range cfg.Frontends {
 		dir := fe.Path
 		fmt.Printf("Running npm audit in %s ...\n", dir)
-		cmd := exec.Command("npm", "audit", "--audit-level=high")
+		cmd := exec.CommandContext(ctx, "npm", "audit", "--audit-level=high")
 		cmd.Dir = dir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

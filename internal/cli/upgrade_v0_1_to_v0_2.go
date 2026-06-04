@@ -257,6 +257,8 @@ func commentInAnyRange(cg *ast.CommentGroup, ranges [][2]token.Pos) bool {
 //     guard, no longer reachable in v0.2's wire-gen world).
 //   - Either of the above nested inside an outer guard IfStmt (e.g.
 //     `if app.Services != nil { ... }`).
+//
+//nolint:revive // TODO: codemod helper threading rewrite state; refactoring needs an explicit pass-state struct.
 func rewriteApplyDepsBlock(block *ast.BlockStmt, fset *token.FileSet, auto *[]string, manual *[]ManualItem, insertedFields map[string]bool, didChange *bool, removedRanges *[][2]token.Pos) {
 	if block == nil {
 		return
@@ -491,8 +493,8 @@ func codemodHandlersGo(path, projectDir string) ([]string, []ManualItem, error) 
 	}
 
 	var (
-		auto    []string
-		manual  []ManualItem
+		auto      []string
+		manual    []ManualItem
 		didChange bool
 	)
 
@@ -674,4 +676,3 @@ func exprToString(expr ast.Expr) string {
 	}
 	return buf.String()
 }
-

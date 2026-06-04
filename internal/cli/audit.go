@@ -53,6 +53,7 @@ import (
 // the JSON shape is easy to grep / jq against.
 type AuditStatus string
 
+// AuditStatus enum values.
 const (
 	AuditStatusOK    AuditStatus = "ok"
 	AuditStatusWarn  AuditStatus = "warn"
@@ -72,12 +73,12 @@ type AuditCategory struct {
 // AuditReport is the top-level JSON structure emitted by `forge audit --json`.
 // Field order is stable so diffing two audits is human-readable.
 type AuditReport struct {
-	ProjectName    string                   `json:"project_name"`
-	ProjectKind    string                   `json:"project_kind"`
-	BinaryVersion  string                   `json:"binary_version"`
-	GeneratedAt    time.Time                `json:"generated_at"`
-	Categories     map[string]AuditCategory `json:"categories"`
-	OverallStatus  AuditStatus              `json:"overall_status"`
+	ProjectName   string                   `json:"project_name"`
+	ProjectKind   string                   `json:"project_kind"`
+	BinaryVersion string                   `json:"binary_version"`
+	GeneratedAt   time.Time                `json:"generated_at"`
+	Categories    map[string]AuditCategory `json:"categories"`
+	OverallStatus AuditStatus              `json:"overall_status"`
 }
 
 // auditCategoryOrder pins the print-order so human output stays stable
@@ -214,7 +215,7 @@ func auditVersion(cfg *config.ProjectConfig) AuditCategory {
 		"binary_version": binv,
 	}
 	if warning := forgeVersionMismatchWarning(cfg.ForgeVersion, binv); warning != "" {
-		details["hint"] = fmt.Sprintf("run `%s upgrade` to align", CLIName())
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to align", Name())
 		return AuditCategory{
 			Status:  AuditStatusWarn,
 			Summary: warning,
@@ -415,7 +416,7 @@ func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategor
 		Summary: summary,
 		Details: map[string]any{
 			"counts": counts,
-			"hint":   fmt.Sprintf("run `%s lint` for full output (golangci, contractlint, etc.)", CLIName()),
+			"hint":   fmt.Sprintf("run `%s lint` for full output (golangci, contractlint, etc.)", Name()),
 		},
 	}
 }
@@ -433,8 +434,8 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 
 	details := map[string]any{
-		"tracked_files":  len(cs.Files),
-		"forge_version":  cs.ForgeVersion,
+		"tracked_files": len(cs.Files),
+		"forge_version": cs.ForgeVersion,
 	}
 
 	// .forge/checksums.json mtime as a rough "last generate" timestamp.
@@ -978,8 +979,8 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) AuditCat
 	}
 
 	details := map[string]any{
-		"migration_count":   migCount,
-		"migrations_dir":    migDir,
+		"migration_count": migCount,
+		"migrations_dir":  migDir,
 	}
 	if latestName != "" {
 		details["latest_migration"] = latestName
@@ -1029,7 +1030,7 @@ func auditWireCoverage(projectDir string) AuditCategory {
 			Summary: fmt.Sprintf("could not open wire_gen.go: %v", err),
 		}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	findings, err := scanWireGen(f, path, projectDir)
 	if err != nil {
@@ -1062,10 +1063,10 @@ func auditWireCoverage(projectDir string) AuditCategory {
 	sort.Strings(components)
 
 	details := map[string]any{
-		"unresolved_count":      len(findings),
-		"affected_components":   components,
-		"by_component":          byComponent,
-		"hint":                  fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", CLIName()),
+		"unresolved_count":    len(findings),
+		"affected_components": components,
+		"by_component":        byComponent,
+		"hint":                fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", Name()),
 	}
 	return AuditCategory{
 		Status:  AuditStatusWarn,
@@ -1111,8 +1112,8 @@ func auditDeps(projectDir string) AuditCategory {
 // header, then one block per category in auditCategoryOrder, then a
 // trailing overall verdict.
 func printAuditReport(w *os.File, r *AuditReport) {
-	fmt.Fprintf(w, "Forge audit — %s (kind=%s, binary=%s)\n", r.ProjectName, r.ProjectKind, r.BinaryVersion)
-	fmt.Fprintf(w, "Generated at %s\n\n", r.GeneratedAt.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(w, "Forge audit — %s (kind=%s, binary=%s)\n", r.ProjectName, r.ProjectKind, r.BinaryVersion)
+	_, _ = fmt.Fprintf(w, "Generated at %s\n\n", r.GeneratedAt.Format(time.RFC3339))
 
 	printed := map[string]struct{}{}
 	for _, key := range auditCategoryOrder {
@@ -1133,7 +1134,7 @@ func printAuditReport(w *os.File, r *AuditReport) {
 		printAuditCategory(w, k, r.Categories[k])
 	}
 
-	fmt.Fprintf(w, "Overall: %s\n", strings.ToUpper(string(r.OverallStatus)))
+	_, _ = fmt.Fprintf(w, "Overall: %s\n", strings.ToUpper(string(r.OverallStatus)))
 }
 
 func printAuditCategory(w *os.File, key string, cat AuditCategory) {
@@ -1144,7 +1145,7 @@ func printAuditCategory(w *os.File, key string, cat AuditCategory) {
 	case AuditStatusError:
 		icon = "✗"
 	}
-	fmt.Fprintf(w, "%s %s — %s\n", icon, key, cat.Summary)
+	_, _ = fmt.Fprintf(w, "%s %s — %s\n", icon, key, cat.Summary)
 	if len(cat.Details) > 0 {
 		// Print details indented; primitives inline, slices/maps collapsed.
 		keys := make([]string, 0, len(cat.Details))
@@ -1154,10 +1155,10 @@ func printAuditCategory(w *os.File, key string, cat AuditCategory) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			v := cat.Details[k]
-			fmt.Fprintf(w, "    %s: %s\n", k, formatDetailValue(v))
+			_, _ = fmt.Fprintf(w, "    %s: %s\n", k, formatDetailValue(v))
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }
 
 func formatDetailValue(v any) string {

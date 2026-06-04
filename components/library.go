@@ -13,6 +13,9 @@ var componentsFS embed.FS
 // Category groups components by type.
 type Category string
 
+// Category enum values. Each value tags a component template with the
+// kind of artifact it produces (HTML layout, SVG chart, diagram, deck
+// slide, or generic UI primitive).
 const (
 	CategoryLayouts  Category = "layouts"
 	CategoryCharts   Category = "charts"
@@ -256,17 +259,17 @@ func FormatComponentList(entries []Entry) string {
 	order := []Category{CategoryLayouts, CategoryCharts, CategoryDiagrams, CategoryDeck, CategoryUI}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d components:\n", len(entries)))
+	fmt.Fprintf(&sb, "Found %d components:\n", len(entries))
 
 	for _, cat := range order {
 		items, ok := grouped[cat]
 		if !ok {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("\n## %s (%d)\n", strings.ToUpper(string(cat)), len(items)))
+		fmt.Fprintf(&sb, "\n## %s (%d)\n", strings.ToUpper(string(cat)), len(items))
 		for _, item := range items {
-			sb.WriteString(fmt.Sprintf("  • %s — %s\n", item.Name, item.Description))
-			sb.WriteString(fmt.Sprintf("    Tags: %s\n", strings.Join(item.Tags, ", ")))
+			fmt.Fprintf(&sb, "  • %s — %s\n", item.Name, item.Description)
+			fmt.Fprintf(&sb, "    Tags: %s\n", strings.Join(item.Tags, ", "))
 		}
 	}
 

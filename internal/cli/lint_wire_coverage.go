@@ -101,7 +101,7 @@ func runWireCoverageLint(projectDir string) error {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
 		got, err := scanWireGen(f, path, projectDir)
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			return fmt.Errorf("scan %s: %w", path, err)
 		}
@@ -174,14 +174,14 @@ func formatPlaceholderErrors(w io.Writer, placeholders []codegen.UnresolvedPlace
 	if len(placeholders) == 0 {
 		return
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	for _, p := range placeholders {
-		fmt.Fprintf(w, "  ✗ [forge-wire-coverage] pkg/app/app_extras.go\n")
-		fmt.Fprintf(w, "      %s carries `forge:placeholder: %s` but is still typed `%s`\n", p.FieldName, p.TargetType, p.CurrentType)
-		fmt.Fprintf(w, "      → tighten the declaration in app_extras.go from `%s %s` to `%s %s`, then re-run `forge generate`\n", p.FieldName, p.CurrentType, p.FieldName, p.TargetType)
+		_, _ = fmt.Fprintf(w, "  ✗ [forge-wire-coverage] pkg/app/app_extras.go\n")
+		_, _ = fmt.Fprintf(w, "      %s carries `forge:placeholder: %s` but is still typed `%s`\n", p.FieldName, p.TargetType, p.CurrentType)
+		_, _ = fmt.Fprintf(w, "      → tighten the declaration in app_extras.go from `%s %s` to `%s %s`, then re-run `forge generate`\n", p.FieldName, p.CurrentType, p.FieldName, p.TargetType)
 	}
-	fmt.Fprintf(w, "\n%d unresolved forge:placeholder annotation(s) in pkg/app/app_extras.go.\n", len(placeholders))
-	fmt.Fprintln(w, "(errors — failing the build; the placeholder marker promised the field would be tightened)")
+	_, _ = fmt.Fprintf(w, "\n%d unresolved forge:placeholder annotation(s) in pkg/app/app_extras.go.\n", len(placeholders))
+	_, _ = fmt.Fprintln(w, "(errors — failing the build; the placeholder marker promised the field would be tightened)")
 }
 
 // scanWireGen extracts all wire-TODO findings from one wire_gen.go.
@@ -275,7 +275,7 @@ func enclosingFunc(funcs []wireFuncSpan, line int) string {
 // a summary tail. Empty findings print a single success line.
 func formatWireCoverage(w io.Writer, findings []wireCoverageFinding) {
 	if len(findings) == 0 {
-		fmt.Fprintln(w, "  wire coverage clean — no unresolved Deps fields")
+		_, _ = fmt.Fprintln(w, "  wire coverage clean — no unresolved Deps fields")
 		return
 	}
 	// Stable order: by file, then line.
@@ -286,13 +286,13 @@ func formatWireCoverage(w io.Writer, findings []wireCoverageFinding) {
 		return findings[i].Line < findings[j].Line
 	})
 	for _, f := range findings {
-		fmt.Fprintf(w, "  ⚠ [forge-wire-coverage] %s:%d\n", f.File, f.Line)
+		_, _ = fmt.Fprintf(w, "  ⚠ [forge-wire-coverage] %s:%d\n", f.File, f.Line)
 		if f.Function != "" {
-			fmt.Fprintf(w, "      %s in %s is unresolved — wire_gen emitted a typed-zero placeholder\n", f.Field, f.Function)
+			_, _ = fmt.Fprintf(w, "      %s in %s is unresolved — wire_gen emitted a typed-zero placeholder\n", f.Field, f.Function)
 		} else {
-			fmt.Fprintf(w, "      %s is unresolved — wire_gen emitted a typed-zero placeholder\n", f.Field)
+			_, _ = fmt.Fprintf(w, "      %s is unresolved — wire_gen emitted a typed-zero placeholder\n", f.Field)
 		}
-		fmt.Fprintf(w, "      → add `%s <Type>` to AppExtras in pkg/app/app_extras.go and assign in setup.go, OR mark the field `// forge:optional-dep` if it's intentionally optional\n", f.Field)
+		_, _ = fmt.Fprintf(w, "      → add `%s <Type>` to AppExtras in pkg/app/app_extras.go and assign in setup.go, OR mark the field `// forge:optional-dep` if it's intentionally optional\n", f.Field)
 	}
 
 	// Summary: "<N> unresolved deps across <M> components: <c1>, <c2>, ..."
@@ -309,10 +309,10 @@ func formatWireCoverage(w io.Writer, findings []wireCoverageFinding) {
 	sort.Strings(components)
 
 	if len(components) == 0 {
-		fmt.Fprintf(w, "\n%d unresolved Deps field(s) in wire_gen.go.\n", len(findings))
+		_, _ = fmt.Fprintf(w, "\n%d unresolved Deps field(s) in wire_gen.go.\n", len(findings))
 	} else {
-		fmt.Fprintf(w, "\n%d unresolved Deps field(s) across %d component(s): %s\n",
+		_, _ = fmt.Fprintf(w, "\n%d unresolved Deps field(s) across %d component(s): %s\n",
 			len(findings), len(components), strings.Join(components, ", "))
 	}
-	fmt.Fprintln(w, "(warnings only — not failing the build)")
+	_, _ = fmt.Fprintln(w, "(warnings only — not failing the build)")
 }

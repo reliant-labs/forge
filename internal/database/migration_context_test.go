@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -525,7 +526,7 @@ message UserPreference {
 		ProtoDir: protoDir,
 	}
 
-	if err := CreateMigration("add_preferences", migDir, opts); err != nil {
+	if err := CreateMigration(context.Background(), "add_preferences", migDir, opts); err != nil {
 		t.Fatalf("CreateMigration() error = %v", err)
 	}
 
@@ -593,7 +594,7 @@ message UserPreference {
 		FromProto: true,
 	}
 
-	if err := CreateMigration("add_preferences", migDir, opts); err != nil {
+	if err := CreateMigration(context.Background(), "add_preferences", migDir, opts); err != nil {
 		t.Fatalf("CreateMigration() error = %v", err)
 	}
 

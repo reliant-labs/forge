@@ -35,23 +35,23 @@ import (
 // for directories it is sorted alphabetically (dirs first, then files,
 // each group ordered by name).
 type MapNode struct {
-	Path        string    `json:"path"`
-	Name        string    `json:"name"`
-	IsDir       bool      `json:"is_dir"`
-	Ownership   string    `json:"ownership,omitempty"`
-	Flags       []string  `json:"flags,omitempty"`
-	Children    []*MapNode `json:"children,omitempty"`
+	Path      string     `json:"path"`
+	Name      string     `json:"name"`
+	IsDir     bool       `json:"is_dir"`
+	Ownership string     `json:"ownership,omitempty"`
+	Flags     []string   `json:"flags,omitempty"`
+	Children  []*MapNode `json:"children,omitempty"`
 }
 
 // Ownership classes used in the output. We pick a narrow set so a
 // downstream agent can switch on them.
 const (
-	OwnershipUser           = "user-owned"
-	OwnershipForgeSpace     = "forge-space, regenerated"
-	OwnershipForgeDrifted   = "forge-space, hand-edited (drift from regen)"
-	OwnershipScaffold       = "scaffold, FORGE_SCAFFOLD markers present"
-	OwnershipScaffoldOnce   = "user-owned, scaffolded once"
-	OwnershipUnknown        = ""
+	OwnershipUser         = "user-owned"
+	OwnershipForgeSpace   = "forge-space, regenerated"
+	OwnershipForgeDrifted = "forge-space, hand-edited (drift from regen)"
+	OwnershipScaffold     = "scaffold, FORGE_SCAFFOLD markers present"
+	OwnershipScaffoldOnce = "user-owned, scaffolded once"
+	OwnershipUnknown      = ""
 )
 
 // mapWalkSkip names directories that pollute the map without adding
@@ -162,6 +162,7 @@ func buildMapTree(projectDir string, cs *generator.FileChecksums, filter string,
 	return root, nil
 }
 
+//nolint:revive // TODO: collapse into a walkForMapOptions struct; depth/filter/entity tables are recursive state and don't combine cleanly without one.
 func walkForMap(projectDir, rel string, parent *MapNode, cs *generator.FileChecksums,
 	filter string, maxDepth, curDepth int,
 	migTables, entityTables map[string]struct{},
@@ -359,7 +360,7 @@ func protoEntityMissingFromMigrations(path string, migTables map[string]struct{}
 func printMapTree(w *os.File, n *MapNode, indent string) {
 	// Print self.
 	if indent == "" {
-		fmt.Fprintln(w, n.Name)
+		_, _ = fmt.Fprintln(w, n.Name)
 	}
 	for i, child := range n.Children {
 		isLast := i == len(n.Children)-1
@@ -380,7 +381,7 @@ func printMapTree(w *os.File, n *MapNode, indent string) {
 			}
 			annot = "    [" + strings.Join(parts, ", ") + "]"
 		}
-		fmt.Fprintf(w, "%s%s%s%s\n", indent, branch, child.Name, annot)
+		_, _ = fmt.Fprintf(w, "%s%s%s%s\n", indent, branch, child.Name, annot)
 		if child.IsDir {
 			printMapTree(w, child, nextIndent)
 		}

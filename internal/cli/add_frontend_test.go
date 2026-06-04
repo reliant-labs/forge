@@ -63,9 +63,6 @@ services:
     type: go_service
     path: handlers/api
     port: 8080
-environments:
-  - name: dev
-    type: local
 database:
   driver: postgres
   migrations_dir: db/migrations

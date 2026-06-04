@@ -2,7 +2,7 @@
 Forge KCL — per-Service k8s manifest builders.
 
 Pure render functions that take a typed forge.Service with
-`deploy = K8sDeploy{...}` and emit Deployment + Service + (optional)
+`deploy = K8sCluster{...}` and emit Deployment + Service + (optional)
 Ingress. Host-mode and BuildOnly services produce nothing here —
 those paths are owned by the forge CLI runtime, not the cluster
 manifest layer.
@@ -93,7 +93,7 @@ _default_resources = {
     memory_limit = "512Mi"
 }
 
-# Render a Service whose deploy is K8sDeploy. Returns
+# Render a Service whose deploy is K8sCluster. Returns
 # [Deployment, Service] (+ [Ingress] when set).
 render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = svc.name

@@ -354,12 +354,13 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 }
 
 // generatePerEnvDeployConfig renders deploy/kcl/<env>/config_gen.k for
-// every environment declared in forge.yaml. It folds together:
+// every environment declared on the filesystem (deploy/kcl/<env>/main.k).
+// It folds together:
 //
 //   - the proto annotations (sensitive, category, env_var) parsed from
 //     proto/config/, and
-//   - the merged per-env config map (forge.yaml inline + optional
-//     config.<env>.yaml sibling).
+//   - the per-env config map loaded from the sibling `config.<env>.yaml`
+//     file.
 //
 // The result is one file per env that the env's hand-edited main.k can
 // import to wire the rendered EnvVar lists into the application's env_vars.
@@ -391,27 +392,30 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	kclDirAbs := filepath.Join(projectDir, kclDir)
 
-	for _, env := range cfg.Envs {
-		envCfg, err := config.LoadEnvironmentConfig(cfg, projectDir, env.Name)
+	envs, lerr := ListEnvs(projectDir)
+	if lerr != nil {
+		return fmt.Errorf("list envs: %w", lerr)
+	}
+	for _, envName := range envs {
+		envCfg, err := config.LoadEnvironmentConfig(projectDir, envName)
 		if err != nil {
-			// An env with no inline config + no sibling file is fine —
-			// just emit the file with secret-only fields and skip
-			// non-sensitive ones (no values to inline).
+			// An env with no sibling file is fine — just emit the file
+			// with secret-only fields and skip non-sensitive ones (no
+			// values to inline).
 			envCfg = map[string]any{}
 		}
 		if err := codegen.GenerateDeployConfig(codegen.DeployConfigGenInput{
 			ProjectName: cfg.Name,
-			EnvName:     env.Name,
+			EnvName:     envName,
 			KCLDir:      kclDirAbs,
 			ProjectDir:  projectDir,
 			Fields:      fields,
 			EnvConfig:   envCfg,
-			Envs:        cfg.Envs,
 			Checksums:   cs,
 		}); err != nil {
-			return fmt.Errorf("emit %s config_gen.k: %w", env.Name, err)
+			return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
 		}
 	}
-	fmt.Printf("  ✅ Generated deploy/kcl/<env>/config_gen.k for %d environments\n", len(cfg.Envs))
+	fmt.Printf("  ✅ Generated deploy/kcl/<env>/config_gen.k for %d environments\n", len(envs))
 	return nil
 }

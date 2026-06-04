@@ -17,6 +17,21 @@ _shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ]
 
+_staging_k8s = forge.K8sCluster {
+    # Set to the kubectl context name for the staging cluster.
+    cluster = "{{.ProjectName}}-staging"
+    namespace = "{{.ProjectName}}-staging"
+    registry = _registry
+    replicas = 2
+    ports = [8080]
+    resources = forge.Resources {
+        cpu_request = "250m"
+        memory_request = "256Mi"
+        cpu_limit = "1000m"
+        memory_limit = "512Mi"
+    }
+}
+
 _bundle = forge.Bundle {
     services = [
 {{- range .Services}}
@@ -27,16 +42,7 @@ _bundle = forge.Bundle {
             env_vars = _shared_env + [
                 forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
             ]
-            deploy = forge.K8sDeploy {
-                replicas = 2
-                ports = [8080]
-                resources = forge.Resources {
-                    cpu_request = "250m"
-                    memory_request = "256Mi"
-                    cpu_limit = "1000m"
-                    memory_limit = "512Mi"
-                }
-            }
+            deploy = _staging_k8s
         }
 {{- end}}
     ]

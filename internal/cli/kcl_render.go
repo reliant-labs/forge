@@ -12,9 +12,10 @@ import (
 )
 
 // KCLEntities is the typed, dispatched view of the JSON the sibling
-// KCL deploy module emits. Agent A's typed schema module exports
-// polymorphic `deploy: HostDeploy | K8sDeploy | BuildOnly` per service;
-// the JSON discriminator is `deploy.type ∈ {"host","cluster","build-only"}`
+// KCL deploy module emits. The typed schema module exports the
+// polymorphic `deploy: HostDeploy | K8sCluster | VMDocker | Compose |
+// BuildOnly` union per service; the JSON discriminator is
+// `deploy.type ∈ {"host","cluster","vm-docker","compose","build-only"}`
 // (services only — operators/cronjobs are always cluster-shaped).
 //
 // Callers (`forge build --env`, `forge deploy <env>`, `forge up --env`,
@@ -46,7 +47,7 @@ type ServiceEntity struct {
 type DeployConfigEntity struct {
 	Type      string           // "host" | "cluster" | "vm-docker" | "compose" | "build-only"
 	Host      *HostDeploy      // populated when Type=="host"
-	Cluster   *K8sDeploy       // populated when Type=="cluster"
+	Cluster   *K8sCluster      // populated when Type=="cluster"
 	VMDocker  *VMDockerDeploy  // populated when Type=="vm-docker"
 	Compose   *ComposeDeploy   // populated when Type=="compose"
 	BuildOnly *BuildOnlyDeploy // populated when Type=="build-only"
@@ -88,7 +89,7 @@ type ComposeDeploy struct {
 //     is layered on top so KCL wins on conflict.
 //
 // Previously HostDeploy carried a single `env_file` that conflated
-// config and secrets and silently drifted from K8sDeploy services
+// config and secrets and silently drifted from K8sCluster services
 // (which already saw config via the Deployment's `env` block).
 type HostDeploy struct {
 	Runner      string      `json:"runner,omitempty"`       // "go-run" | "air" | "binary" | "delve"
@@ -98,18 +99,15 @@ type HostDeploy struct {
 	DelvePort   int         `json:"delve_port,omitempty"`   // when Runner=="delve"; default 2345
 }
 
-// K8sDeploy is the deploy block for a cluster-mode service. Mirrors the
-// JSON contract emitted by `_render_k8s_cluster` / `_render_k8s_deploy`
-// in kcl/render.k.
+// K8sCluster is the deploy block for a cluster-mode service. Mirrors
+// the JSON contract emitted by `_render_k8s_cluster` in kcl/render.k.
 //
-// Note: as of forge v2 the cluster-shape covers BOTH the legacy
-// `K8sDeploy` schema (per-service knobs only) AND the new `K8sCluster`
-// schema (env-wide knobs + per-service knobs). Both render with
-// `type = "cluster"`. The env-wide fields (Cluster/Namespace/Registry/
-// Domain) project as empty string for legacy K8sDeploy renders — the
-// Go-side dispatch in deploy.go falls back to forge.yaml in that case.
-type K8sDeploy struct {
-	// Env-wide knobs (K8sCluster only; empty for legacy K8sDeploy).
+// Cluster/Namespace/Registry are mandatory env-wide fields the
+// KCL-side `K8sCluster` schema declares as required — an empty value
+// here indicates a malformed render rather than a legacy shape.
+type K8sCluster struct {
+	// Env-wide knobs — same value across every service in a deploy
+	// group.
 	Cluster   string `json:"cluster,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	Registry  string `json:"registry,omitempty"`
@@ -334,7 +332,7 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 		}
 		return DeployConfigEntity{Type: "host", Host: &h}, nil
 	case "cluster":
-		var c K8sDeploy
+		var c K8sCluster
 		if err := json.Unmarshal(raw, &c); err != nil {
 			return DeployConfigEntity{}, fmt.Errorf("service %q: parse cluster deploy: %w", svcName, err)
 		}

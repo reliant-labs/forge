@@ -406,10 +406,10 @@ func TestWritePendingMigrationsJSON_StableShape(t *testing.T) {
 // temp dir so the command's project-root walk-up succeeds. Returns the
 // project root path.
 //
-// The forge.yaml mirrors the strict-loader schema: module_path,
-// environments[], and version are all required, so a too-small fixture
-// causes LoadStrict to fail and the project-version probe falls back
-// to "" (which would silently pass version-range filters).
+// The forge.yaml mirrors the strict-loader schema: module_path and
+// version are required, so a too-small fixture causes LoadStrict to
+// fail and the project-version probe falls back to "" (which would
+// silently pass version-range filters).
 func newTestProject(t *testing.T) string {
 	t.Helper()
 	return newTestProjectWithVersion(t, "")
@@ -429,9 +429,6 @@ module_path: github.com/example/test
 version: 0.1.0
 services: []
 frontends: []
-environments:
-  - name: dev
-    type: local
 `)
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), cfg, 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

@@ -333,11 +333,11 @@ func TestHostEnvComposition_SecretsUnreadable(t *testing.T) {
 	}
 }
 
-// TestLoadProjectConfigEnv_ProjectsForgeYAMLConfig confirms forge.yaml
-// `environments[<env>].config` is read and projected to env-var
-// strings — the layer downstream cp-forge flagged as missing from the
-// host-mode runner. snake_case keys are uppercased to SCREAMING_SNAKE
-// when no proto descriptor is available (the common fresh-project case).
+// TestLoadProjectConfigEnv_ProjectsForgeYAMLConfig confirms the sibling
+// `config.<env>.yaml` file is read and projected to env-var strings —
+// the layer downstream cp-forge flagged as missing from the host-mode
+// runner. snake_case keys are uppercased to SCREAMING_SNAKE when no
+// proto descriptor is available (the common fresh-project case).
 func TestLoadProjectConfigEnv_ProjectsForgeYAMLConfig(t *testing.T) {
 	dir := t.TempDir()
 	yamlContent := `name: testproj
@@ -349,16 +349,16 @@ services:
     type: go_service
     path: handlers/api
     port: 8080
-environments:
-  - name: dev-host
-    type: local
-    config:
-      environment: development
-      log_format: text
-      log_level: debug
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
+	}
+	siblingContent := `environment: development
+log_format: text
+log_level: debug
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.dev-host.yaml"), []byte(siblingContent), 0o644); err != nil {
+		t.Fatalf("write sibling config: %v", err)
 	}
 	t.Chdir(dir)
 
@@ -394,9 +394,6 @@ services:
     type: go_service
     path: handlers/api
     port: 8080
-environments:
-  - name: dev
-    type: local
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

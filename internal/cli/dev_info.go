@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -49,8 +50,8 @@ func runDevInfo(configPath string) error {
 	expectedCtx := "k3d-" + clusterName
 
 	registry := "localhost:5050"
-	if env := findEnvironment(cfg, "dev"); env != nil && env.Registry != "" {
-		registry = env.Registry
+	if reg := k8sClusterRegistryForEnv(context.Background(), "dev"); reg != "" {
+		registry = reg
 	}
 
 	fmt.Printf("Project:                    %s\n", cfg.Name)

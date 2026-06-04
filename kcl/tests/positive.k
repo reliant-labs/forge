@@ -26,11 +26,14 @@ _svc_host = forge.Service {
     }
 }
 
-# A Service with K8sDeploy + Ingress.
+# A Service with K8sCluster + Ingress.
 _svc_cluster = forge.Service {
     name = "workspace-proxy"
     image = "myapp:dev"
-    deploy = forge.K8sDeploy {
+    deploy = forge.K8sCluster {
+        cluster = "k3d-myapp"
+        namespace = "myapp-dev"
+        registry = "localhost:5050"
         replicas = 2
         ports = [8080, 9090]
         ingress = forge.Ingress {host = "workspaces.example.com"}
@@ -108,7 +111,7 @@ assert_host_delve_port_default = output.services[0].deploy.delve_port == 2345
 assert_cluster_resources_null = output.services[1].deploy.resources == None
 assert_cluster_platform_null = output.services[1].deploy.platform == None
 
-# K8sDeploy.ingress projects with all keys, not just host.
+# K8sCluster.ingress projects with all keys, not just host.
 assert_ingress_path_default = output.services[1].deploy.ingress.path == "/"
 assert_ingress_tls_default = output.services[1].deploy.ingress.tls == True
 

@@ -42,9 +42,10 @@ For dev environments, the command ensures a k3d cluster exists and pushes images
 to the local registry at localhost:5050.
 
 Safety: before applying, forge verifies the current kubectl context matches
-the environment's expected cluster (configured under environments[].cluster
-in forge.yaml; defaults to k3d-<project> for dev). The check ALSO runs under
---dry-run so wrong-context mistakes surface before the strict apply.
+the environment's expected cluster (read from the rendered KCL's
+forge.K8sCluster.cluster; defaults to k3d-<project> for dev). The check
+ALSO runs under --dry-run so wrong-context mistakes surface before the
+strict apply.
 
 Use --context to override when a single CI deploy-bot context legitimately
 targets multiple environments. Use --explain to print the resolved guard
@@ -102,7 +103,7 @@ func runDeployExplain(ctx context.Context, envName, override string) error {
 	if err != nil {
 		return err
 	}
-	expected := expectedClusterForEnv(cfg, envName)
+	expected := expectedClusterForEnv(ctx, cfg, envName)
 	current := strings.TrimSpace(currentKubectlContext(ctx))
 
 	fmt.Printf("forge deploy %s — env-cluster guard\n", envName)
@@ -115,7 +116,7 @@ func runDeployExplain(ctx context.Context, envName, override string) error {
 		return nil
 	}
 	if expected == "" {
-		fmt.Printf("  hint:             declare `environments[%s].cluster: <context>` in forge.yaml to enable the guard\n", envName)
+		fmt.Printf("  hint:             declare `forge.K8sCluster.cluster` in deploy/kcl/%s/main.k to enable the guard\n", envName)
 		fmt.Println("  verdict: ALLOW (no expectation declared — guard skipped)")
 		return printDeployExplainHostSkip(cfg, envName)
 	}
@@ -209,8 +210,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	// Resolve namespace.
 	if namespace == "" {
-		if env := findEnvironment(cfg, envName); env != nil && env.Namespace != "" {
-			namespace = env.Namespace
+		if ns := k8sClusterNamespaceForEnv(ctx, envName); ns != "" {
+			namespace = ns
 		} else {
 			namespace = cfg.Name + "-" + envName
 		}
@@ -255,7 +256,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// pipeline (deploy/kcl/<env>/config_gen.k) and aren't piped through
 	// here. Missing per-env config is non-fatal.
 	envCfgKV := map[string]string{}
-	if envConfig, lerr := config.LoadEnvironmentConfig(cfg, projectDir, envName); lerr == nil {
+	if envConfig, lerr := config.LoadEnvironmentConfig(projectDir, envName); lerr == nil {
 		for k, v := range envConfig {
 			if s, ok := v.(string); ok && strings.HasPrefix(strings.TrimSpace(s), "${") {
 				continue // secret refs handled by config_gen.k
@@ -281,67 +282,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	fmt.Printf("Generating manifests from %s...\n", mainK)
 
-	// Namespace-mismatch guard: render manifests once for inspection,
-	// then walk every `metadata.namespace` and every container env-var
-	// for in-cluster DNS references (`*.<ns>.svc.cluster.local`). If
-	// any reference disagrees with the effective namespace we're about
-	// to apply to, refuse with a concrete fix hint pointing at
-	// forge.yaml.
-	//
-	// This catches the cp-forge-class silent-failure: KCL hardcoded
-	// `cp-forge-dev` in env-var DNS values + `RenderEnv.namespace`,
-	// forge.yaml had no `environments[dev-host].namespace`, so the
-	// default `<project>-<env>` rule resolved to `cp-forge-dev-host`
-	// and every pod CrashLooped on cryptic DNS errors after the apply
-	// succeeded. Runs under --dry-run too — wrong-namespace mistakes
-	// belong in the surfaced-before-it-ships bucket, not papered over.
-	//
-	// The "source" hint differentiates the silent-failure path (default
-	// `<project>-<env>`, no forge.yaml declaration) from the explicit
-	// path (forge.yaml `environments[].namespace` or `--namespace`)
-	// because the suggested fix is different — declaring the missing
-	// forge.yaml entry vs. editing main.k to match what was declared.
-	effectiveNSSource := namespaceResolutionSource(cfg, envName, opts.namespace)
-	rendered, rerr := cluster.RenderManifests(ctx, mainK, imageTag, namespace, envCfgKV)
-	if rerr != nil {
-		return fmt.Errorf("KCL manifest generation failed: %w", rerr)
-	}
-
 	// Build deploy groups from the rendered entities. Services bucket
 	// by deploy target type: K8sCluster groups by (cluster, ns,
 	// registry); VMDocker by ssh_host; Compose by compose_file. Host
 	// / build-only services are skipped (those are forge run /
 	// forge build territory).
-	fallbackRegistry := ""
-	if env := findEnvironment(cfg, envName); env != nil && env.Registry != "" {
-		fallbackRegistry = env.Registry
-	}
-	groups, gerr := buildDeployGroups(envName, cfg, entities, namespace, fallbackRegistry)
+	groups, gerr := buildDeployGroups(envName, entities, namespace)
 	if gerr != nil {
 		return fmt.Errorf("group services for deploy: %w", gerr)
-	}
-
-	// Namespace-mismatch check — anchors on the effective namespace
-	// of every K8sCluster group. For pre-v2 projects with no entities
-	// (e.g. empty KCL render) we fall back to the single-namespace
-	// check shape so existing test expectations keep matching.
-	if len(groups) == 0 {
-		if err := checkNamespaceConsistency(rendered, cfg.Name, envName, namespace, effectiveNSSource); err != nil {
-			return err
-		}
-	} else {
-		for _, g := range groups {
-			if g.ProviderID != "k8s-cluster" {
-				continue
-			}
-			groupNS := g.Namespace
-			if groupNS == "" {
-				groupNS = namespace
-			}
-			if err := checkNamespaceConsistency(rendered, cfg.Name, envName, groupNS, effectiveNSSource); err != nil {
-				return err
-			}
-		}
 	}
 
 	// When no K8sCluster groups are present, the rendered set carries
@@ -388,27 +336,6 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
-}
-
-// namespaceResolutionSource returns a human-readable description of
-// how runDeploy resolved the effective namespace, so the namespace-
-// mismatch error can render an actionable fix hint that distinguishes
-// the silent-failure path (defaulted `<project>-<env>` because no
-// forge.yaml entry existed) from the explicit-declaration path
-// (forge.yaml `environments[].namespace` or `--namespace`). The
-// suggested fix differs between the two — see formatNamespaceMismatchError.
-//
-// Mirrors runDeploy's resolution priority so the description stays in
-// lock-step with the actual effective namespace: --namespace flag >
-// forge.yaml > default `<project>-<env>`.
-func namespaceResolutionSource(cfg *config.ProjectConfig, envName, flagNamespace string) string {
-	if flagNamespace != "" {
-		return "explicit `--namespace " + flagNamespace + "` CLI flag"
-	}
-	if env := findEnvironment(cfg, envName); env != nil && env.Namespace != "" {
-		return "explicit `environments[" + envName + "].namespace` in forge.yaml"
-	}
-	return "default `<project>-<env>` (no `environments[" + envName + "].namespace` in forge.yaml)"
 }
 
 // oneShotJobNamesFromKCL returns the names of every CronJob entity with
@@ -595,8 +522,8 @@ func writeFallbackRegistriesYAML() (string, error) {
 
 func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targetArchFlag string) error {
 	registry := "localhost:5050"
-	if env := findEnvironment(cfg, "dev"); env != nil && env.Registry != "" {
-		registry = env.Registry
+	if reg := k8sClusterRegistryForEnv(ctx, "dev"); reg != "" {
+		registry = reg
 	}
 
 	// Build and push the single project image from root Dockerfile.
@@ -716,18 +643,77 @@ func isInsecureRegistry(ref string) bool {
 
 // expectedClusterForEnv returns the expected kubectl context name for
 // an environment. Resolution priority:
-//  1. environments[<env>].cluster from forge.yaml
+//  1. The rendered KCL's first K8sCluster.cluster for env <envName>
 //  2. For dev: k3d-<project-name>
 //  3. Empty string — no expectation declared (skip the guard)
-func expectedClusterForEnv(cfg *config.ProjectConfig, envName string) string {
-	if env := findEnvironment(cfg, envName); env != nil && env.Cluster != "" {
-		return env.Cluster
+//
+// Reads the rendered KCL via RenderKCL using a background context so
+// the lookup remains usable from the explain path where we don't carry
+// a request context. Failures fall through to the dev default / empty
+// — the env-cluster guard is a recommendation, not a hard dependency.
+func expectedClusterForEnv(ctx context.Context, cfg *config.ProjectConfig, envName string) string {
+	if cluster := firstK8sClusterField(ctx, envName, "cluster"); cluster != "" {
+		return cluster
 	}
-	if envName == "dev" {
+	if envName == "dev" && cfg != nil {
 		// Dev's default is the k3d cluster forge deploy dev creates.
 		return "k3d-" + cfg.Name
 	}
 	return ""
+}
+
+// firstK8sClusterField reads the rendered KCL for env and returns the
+// requested field ("cluster" / "namespace" / "registry" / "domain")
+// from the first service whose Deploy is K8sCluster-shaped. Returns ""
+// when KCL can't be rendered, no service is cluster-shaped, or the
+// requested field is empty across every service.
+func firstK8sClusterField(ctx context.Context, envName, field string) string {
+	if envName == "" {
+		return ""
+	}
+	entities, err := RenderKCL(ctx, projectDirForKCL(), envName)
+	if err != nil || entities == nil {
+		return ""
+	}
+	for _, svc := range entities.Services {
+		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
+			continue
+		}
+		c := svc.Deploy.Cluster
+		switch field {
+		case "cluster":
+			if c.Cluster != "" {
+				return c.Cluster
+			}
+		case "namespace":
+			if c.Namespace != "" {
+				return c.Namespace
+			}
+		case "registry":
+			if c.Registry != "" {
+				return c.Registry
+			}
+		case "domain":
+			if c.Domain != "" {
+				return c.Domain
+			}
+		}
+	}
+	return ""
+}
+
+// k8sClusterNamespaceForEnv reads the rendered KCL and returns the
+// first K8sCluster.namespace declared for env. Returns "" when no
+// cluster-shaped service is declared or the field is unset.
+func k8sClusterNamespaceForEnv(ctx context.Context, envName string) string {
+	return firstK8sClusterField(ctx, envName, "namespace")
+}
+
+// k8sClusterRegistryForEnv reads the rendered KCL and returns the
+// first K8sCluster.registry declared for env. Returns "" when no
+// cluster-shaped service is declared or the field is unset.
+func k8sClusterRegistryForEnv(ctx context.Context, envName string) string {
+	return firstK8sClusterField(ctx, envName, "registry")
 }
 
 // verifyKubectlContext refuses the deploy when the current kubectl
@@ -749,12 +735,12 @@ func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envNam
 		return nil
 	}
 
-	expected := expectedClusterForEnv(cfg, envName)
+	expected := expectedClusterForEnv(ctx, cfg, envName)
 	if expected == "" {
 		// No expectation declared for this env. Print a one-liner
 		// reminder so users know they can lock it down, but don't
 		// block the deploy (backwards-compatible default).
-		fmt.Printf("Note: no environments[%s].cluster declared in forge.yaml — kubectl-context guard skipped.\n", envName)
+		fmt.Printf("Note: no forge.K8sCluster.cluster declared in deploy/kcl/%s/main.k — kubectl-context guard skipped.\n", envName)
 		return nil
 	}
 

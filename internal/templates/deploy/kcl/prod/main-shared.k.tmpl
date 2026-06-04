@@ -17,6 +17,21 @@ _shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ]
 
+_prod_k8s = forge.K8sCluster {
+    # Set to the kubectl context name for the prod cluster.
+    cluster = "{{.ProjectName}}-prod"
+    namespace = "{{.ProjectName}}-prod"
+    registry = _registry
+    replicas = 3
+    ports = [8080]
+    resources = forge.Resources {
+        cpu_request = "500m"
+        memory_request = "512Mi"
+        cpu_limit = "2000m"
+        memory_limit = "1Gi"
+    }
+}
+
 _bundle = forge.Bundle {
     services = [
 {{- range .Services}}
@@ -27,16 +42,7 @@ _bundle = forge.Bundle {
             env_vars = _shared_env + [
                 forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
             ]
-            deploy = forge.K8sDeploy {
-                replicas = 3
-                ports = [8080]
-                resources = forge.Resources {
-                    cpu_request = "500m"
-                    memory_request = "512Mi"
-                    cpu_limit = "2000m"
-                    memory_limit = "1Gi"
-                }
-            }
+            deploy = _prod_k8s
         }
 {{- end}}
     ]

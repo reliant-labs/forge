@@ -25,7 +25,6 @@ module_path: github.com/test/test-project
 version: 0.0.1
 forge_version: dev
 services: []
-environments: []
 database: {}
 ci: {}
 docker: {}
@@ -87,53 +86,33 @@ docs: {}
 	}
 }
 
-// TestAuditEnvironments_WarnsOnMissingCluster confirms the env-cluster
-// audit warns when a non-dev environment is declared without cluster:
-// (so `forge deploy <env>` can't guard against wrong-context applies).
-// Dev gets a safe default (k3d-<project>) so it does NOT warn.
-func TestAuditEnvironments_WarnsOnMissingCluster(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev"},     // OK — defaults to k3d-cp-forge
-			{Name: "staging"}, // warn — no default
-			{Name: "prod", Cluster: "gke_acme-prod"},
-		},
+// TestAuditEnvironments_ListsFilesystem confirms the audit walks
+// deploy/kcl/<env>/main.k to enumerate envs and emits one entry per
+// declared env.
+func TestAuditEnvironments_ListsFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	for _, env := range []string{"dev", "prod"} {
+		envDir := filepath.Join(dir, "deploy", "kcl", env)
+		if err := os.MkdirAll(envDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	cat := auditEnvironments(cfg)
-	if cat.Status != AuditStatusWarn {
-		t.Fatalf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
-	}
-	if !strings.Contains(cat.Summary, "staging") {
-		t.Errorf("summary should mention the offending env, got %q", cat.Summary)
-	}
-	if !strings.Contains(cat.Summary, "1 env(s)") {
-		t.Errorf("summary should report the count (only staging), got %q", cat.Summary)
-	}
-}
-
-// TestAuditEnvironments_AllSet returns ok when every non-dev env
-// declares cluster: explicitly.
-func TestAuditEnvironments_AllSet(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev"},
-			{Name: "staging", Cluster: "gke_acme-staging"},
-			{Name: "prod", Cluster: "gke_acme-prod"},
-		},
-	}
-	cat := auditEnvironments(cfg)
+	cat := auditEnvironments(dir)
 	if cat.Status != AuditStatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
+	if !strings.Contains(cat.Summary, "2 environment(s)") {
+		t.Errorf("summary should report 2 envs, got %q", cat.Summary)
+	}
 }
 
-// TestAuditEnvironments_NoEnvs returns ok (n/a) when forge.yaml has
-// no environments declared at all.
+// TestAuditEnvironments_NoEnvs returns ok (n/a) when no deploy/kcl/<env>
+// directories are present.
 func TestAuditEnvironments_NoEnvs(t *testing.T) {
-	cfg := &config.ProjectConfig{Name: "cp-forge"}
-	cat := auditEnvironments(cfg)
+	cat := auditEnvironments(t.TempDir())
 	if cat.Status != AuditStatusOK {
 		t.Errorf("status: want ok, got %q", cat.Status)
 	}

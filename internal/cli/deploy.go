@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -305,22 +306,80 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	if rerr != nil {
 		return fmt.Errorf("KCL manifest generation failed: %w", rerr)
 	}
-	if err := checkNamespaceConsistency(rendered, cfg.Name, envName, namespace, effectiveNSSource); err != nil {
-		return err
+
+	// Build deploy groups from the rendered entities. Services bucket
+	// by deploy target type: K8sCluster groups by (cluster, ns,
+	// registry); VMDocker by ssh_host; Compose by compose_file. Host
+	// / build-only services are skipped (those are forge run /
+	// forge build territory).
+	fallbackRegistry := ""
+	if env := findEnvironment(cfg, envName); env != nil && env.Registry != "" {
+		fallbackRegistry = env.Registry
+	}
+	groups, gerr := buildDeployGroups(envName, cfg, entities, namespace, fallbackRegistry)
+	if gerr != nil {
+		return fmt.Errorf("group services for deploy: %w", gerr)
 	}
 
-	if err := cluster.Apply(ctx, cluster.ApplyOpts{
-		MainK:        mainK,
-		ImageTag:     imageTag,
-		Namespace:    namespace,
-		EnvConfigKV:  envCfgKV,
-		DryRun:       dryRun,
-		DryRunFramed: true,
-		Prune:        prune,
-		HostSkip:     hostDeploymentSkipSetFromKCL(cfg, entities),
-		OneShotJobs:  oneShotJobNamesFromKCL(entities),
-	}); err != nil {
-		return err
+	// Namespace-mismatch check — anchors on the effective namespace
+	// of every K8sCluster group. For pre-v2 projects with no entities
+	// (e.g. empty KCL render) we fall back to the single-namespace
+	// check shape so existing test expectations keep matching.
+	if len(groups) == 0 {
+		if err := checkNamespaceConsistency(rendered, cfg.Name, envName, namespace, effectiveNSSource); err != nil {
+			return err
+		}
+	} else {
+		for _, g := range groups {
+			if g.ProviderID != "k8s-cluster" {
+				continue
+			}
+			groupNS := g.Namespace
+			if groupNS == "" {
+				groupNS = namespace
+			}
+			if err := checkNamespaceConsistency(rendered, cfg.Name, envName, groupNS, effectiveNSSource); err != nil {
+				return err
+			}
+		}
+	}
+
+	// When no K8sCluster groups are present, the rendered set carries
+	// only vm-docker / compose / host / build-only — nothing to apply
+	// via the cluster pipeline. Skip the check above (no namespace)
+	// and let dispatchDeployGroups handle the stub paths or no-op
+	// trivially.
+	if len(groups) == 0 {
+		// Nothing to dispatch — historical behaviour was to still run
+		// cluster.Apply against the env's main.k in case host-only
+		// entities still produced manifests (CronJobs etc.). Preserve
+		// that with one direct call.
+		if err := cluster.Apply(ctx, cluster.ApplyOpts{
+			MainK:        mainK,
+			ImageTag:     imageTag,
+			Namespace:    namespace,
+			EnvConfigKV:  envCfgKV,
+			DryRun:       dryRun,
+			DryRunFramed: true,
+			Prune:        prune,
+			HostSkip:     hostDeploymentSkipSetFromKCL(cfg, entities),
+			OneShotJobs:  oneShotJobNamesFromKCL(entities),
+		}); err != nil {
+			return err
+		}
+	} else {
+		// Dispatch each group through its provider. The K8sCluster
+		// provider wraps cluster.Apply via the builder closure so the
+		// per-call envelope (mainK / image tag / env config / dry-run
+		// / prune / host-skip / one-shot jobs) flows through verbatim.
+		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
+		oneShotJobs := oneShotJobNamesFromKCL(entities)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envCfgKV, dryRun, prune, hostSkip, oneShotJobs)
+		registry := deploytarget.NewRegistry()
+		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
+		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
+			return err
+		}
 	}
 
 	if dryRun {

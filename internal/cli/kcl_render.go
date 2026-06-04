@@ -41,13 +41,37 @@ type ServiceEntity struct {
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
 // deploy block. The raw JSON shape is a tagged union — Type carries
-// the tag; exactly one of Host/Cluster/BuildOnly is non-nil after
-// [unmarshalDeploy] runs.
+// the tag; exactly one of Host/Cluster/VMDocker/Compose/BuildOnly is
+// non-nil after [dispatchServiceDeploy] runs.
 type DeployConfigEntity struct {
-	Type      string           // "host" | "cluster" | "build-only"
+	Type      string           // "host" | "cluster" | "vm-docker" | "compose" | "build-only"
 	Host      *HostDeploy      // populated when Type=="host"
 	Cluster   *K8sDeploy       // populated when Type=="cluster"
+	VMDocker  *VMDockerDeploy  // populated when Type=="vm-docker"
+	Compose   *ComposeDeploy   // populated when Type=="compose"
 	BuildOnly *BuildOnlyDeploy // populated when Type=="build-only"
+}
+
+// VMDockerDeploy is the deploy block for a Docker-on-VM service. The
+// Go-side dispatch ships as a stub in this release; the type and
+// dispatch wiring exist so the migration skill can point at a real
+// type and so future implementations slot in cleanly.
+type VMDockerDeploy struct {
+	SSHHost     string `json:"ssh_host,omitempty"`
+	Image       string `json:"image,omitempty"`
+	Tag         string `json:"tag,omitempty"`
+	DeployCmd   string `json:"deploy_cmd,omitempty"`
+	RollbackCmd string `json:"rollback_cmd,omitempty"`
+	HealthCmd   string `json:"health_cmd,omitempty"`
+	EnvFile     string `json:"env_file,omitempty"`
+}
+
+// ComposeDeploy is the deploy block for a docker-compose service. The
+// Go-side dispatch ships as a stub in this release.
+type ComposeDeploy struct {
+	ComposeFile string `json:"compose_file,omitempty"`
+	Service     string `json:"service,omitempty"`
+	EnvFile     string `json:"env_file,omitempty"`
 }
 
 // HostDeploy is the deploy block for a service that runs as a host
@@ -74,13 +98,29 @@ type HostDeploy struct {
 	DelvePort   int         `json:"delve_port,omitempty"`   // when Runner=="delve"; default 2345
 }
 
-// K8sDeploy is the deploy block for a cluster-mode service. Replicas
-// / Ingress / Ports / Platform mirror the KCL schema's K8sDeploy fields.
+// K8sDeploy is the deploy block for a cluster-mode service. Mirrors the
+// JSON contract emitted by `_render_k8s_cluster` / `_render_k8s_deploy`
+// in kcl/render.k.
+//
+// Note: as of forge v2 the cluster-shape covers BOTH the legacy
+// `K8sDeploy` schema (per-service knobs only) AND the new `K8sCluster`
+// schema (env-wide knobs + per-service knobs). Both render with
+// `type = "cluster"`. The env-wide fields (Cluster/Namespace/Registry/
+// Domain) project as empty string for legacy K8sDeploy renders — the
+// Go-side dispatch in deploy.go falls back to forge.yaml in that case.
 type K8sDeploy struct {
+	// Env-wide knobs (K8sCluster only; empty for legacy K8sDeploy).
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Registry  string `json:"registry,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+
+	// Per-service knobs.
 	Replicas int             `json:"replicas,omitempty"`
 	Ingress  *K8sIngressSpec `json:"ingress,omitempty"`
 	Platform string          `json:"platform,omitempty"` // GOARCH override; empty = use forge.yaml deploy.target_arch
 	Ports    []int           `json:"ports,omitempty"`
+	EnvVars  []KCLEnvVar     `json:"env_vars,omitempty"`
 }
 
 // K8sIngressSpec is the rendered ingress for a cluster service.
@@ -299,6 +339,18 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 			return DeployConfigEntity{}, fmt.Errorf("service %q: parse cluster deploy: %w", svcName, err)
 		}
 		return DeployConfigEntity{Type: "cluster", Cluster: &c}, nil
+	case "vm-docker":
+		var v VMDockerDeploy
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return DeployConfigEntity{}, fmt.Errorf("service %q: parse vm-docker deploy: %w", svcName, err)
+		}
+		return DeployConfigEntity{Type: "vm-docker", VMDocker: &v}, nil
+	case "compose":
+		var c ComposeDeploy
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return DeployConfigEntity{}, fmt.Errorf("service %q: parse compose deploy: %w", svcName, err)
+		}
+		return DeployConfigEntity{Type: "compose", Compose: &c}, nil
 	case "build-only":
 		var b BuildOnlyDeploy
 		if err := json.Unmarshal(raw, &b); err != nil {
@@ -306,9 +358,9 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 		}
 		return DeployConfigEntity{Type: "build-only", BuildOnly: &b}, nil
 	case "":
-		return DeployConfigEntity{}, fmt.Errorf("service %q: deploy.type missing (expected host/cluster/build-only)", svcName)
+		return DeployConfigEntity{}, fmt.Errorf("service %q: deploy.type missing (expected host/cluster/vm-docker/compose/build-only)", svcName)
 	default:
-		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/build-only)", svcName, probe.Type)
+		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/vm-docker/compose/build-only)", svcName, probe.Type)
 	}
 }
 

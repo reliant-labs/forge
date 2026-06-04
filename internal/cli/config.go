@@ -115,7 +115,37 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		}
 	}
 
+	// Deprecation notice — emitted once per process at load time so
+	// the warning doesn't spam every reader. Suppressed when the
+	// FORGE_SUPPRESS_ENVIRONMENTS_DEPRECATION env var is set (CI
+	// pipelines that already track the migration via their backlog).
+	maybeWarnEnvironmentsDeprecated(&cfg)
+
 	return &cfg, nil
+}
+
+// environmentsDeprecationWarned tracks whether the deprecation notice
+// has already fired in this process so it doesn't spam every call
+// site that reads forge.yaml.
+var environmentsDeprecationWarned bool
+
+func maybeWarnEnvironmentsDeprecated(cfg *config.ProjectConfig) {
+	if environmentsDeprecationWarned {
+		return
+	}
+	if len(cfg.Envs) == 0 {
+		return
+	}
+	if os.Getenv("FORGE_SUPPRESS_ENVIRONMENTS_DEPRECATION") != "" {
+		return
+	}
+	environmentsDeprecationWarned = true
+	fmt.Fprintln(os.Stderr,
+		"[forge] notice: `environments[]` in forge.yaml is deprecated.\n"+
+			"        Move env-wide deploy config (cluster/namespace/registry/domain)\n"+
+			"        onto per-service `forge.K8sCluster` blocks in KCL — see the\n"+
+			"        `environments-to-kcl` migration skill. Suppress this notice with\n"+
+			"        FORGE_SUPPRESS_ENVIRONMENTS_DEPRECATION=1.")
 }
 
 // normalizeEnum canonicalizes an enum-like YAML string value to lowercase

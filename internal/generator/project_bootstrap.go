@@ -300,6 +300,10 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			ReturnStatement string
 		}
 	}
+	type unresolvedStub struct {
+		FieldName string
+		TypeExpr  string
+	}
 	type bootstrapTestService struct {
 		Name                   string
 		Package                string
@@ -315,7 +319,8 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		// service has no Deps fields beyond the bare-Deps trio at this
 		// point. The post-codegen GenerateBootstrapTesting pass populates
 		// it once handlers/<svc>/service.go exists.
-		AutoStubs []autoStub
+		AutoStubs       []autoStub
+		UnresolvedStubs []unresolvedStub
 	}
 
 	type bootstrapPackage struct {
@@ -356,6 +361,16 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		connectImports = []string{connectImport}
 	}
 
+	// extraImport mirrors codegen.ExtraImport. We can't pull the codegen
+	// type directly (the generator package is upstream of codegen in the
+	// build graph), but the template only reads .Alias / .Path so a
+	// structurally-identical local type works. The initial-scaffold
+	// pass never has cross-package auto-stubs, so this stays nil here.
+	type extraImport struct {
+		Alias string
+		Path  string
+	}
+
 	data := struct {
 		Module             string
 		Services           []bootstrapTestService
@@ -363,6 +378,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		Packages           []bootstrapPackage
 		MultiTenantEnabled bool
 		AnyServiceHasDB    bool
+		ExtraImports       []extraImport
 	}{
 		Module:             g.ModulePath,
 		Services:           services,
@@ -370,6 +386,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		Packages:           nil,   // No packages at initial project creation
 		MultiTenantEnabled: false, // Multi-tenancy configured post-creation via forge generate
 		AnyServiceHasDB:    false, // DB deps are added later by forge generate
+		ExtraImports:       nil,   // No cross-package auto-stubs at initial scaffold time
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)

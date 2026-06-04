@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestMergeCoverageProfiles_MultipleDirs verifies the merge concatenates
@@ -274,6 +276,59 @@ func TestResolveBuildArch(t *testing.T) {
 			if got != c.want {
 				t.Errorf("resolveBuildArch(cfg=%q, flag=%q, docker=%v) = %q, want %q",
 					c.cfgArch, c.flagArch, c.dockerCtx, got, c.want)
+			}
+		})
+	}
+}
+
+// TestHostDevTargetServices verifies the dev_target filter used by
+// `forge build --env dev` and `forge deploy dev` returns host-mode
+// services in declared order, and that legacy projects (no dev_target
+// anywhere) return nil so callers can branch on len() == 0 cheaply.
+func TestHostDevTargetServices(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *config.ProjectConfig
+		want []string
+	}{
+		{
+			name: "nil cfg",
+			cfg:  nil,
+			want: nil,
+		},
+		{
+			name: "no services",
+			cfg:  &config.ProjectConfig{Services: nil},
+			want: nil,
+		},
+		{
+			name: "all cluster (legacy)",
+			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
+				{Name: "a"},
+				{Name: "b", DevTarget: "cluster"},
+			}},
+			want: nil,
+		},
+		{
+			name: "mixed",
+			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
+				{Name: "admin-server", DevTarget: "host"},
+				{Name: "workspace-controller"},
+				{Name: "workspace-proxy", DevTarget: "host"},
+			}},
+			want: []string{"admin-server", "workspace-proxy"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := hostDevTargetServices(c.cfg)
+			if len(got) != len(c.want) {
+				t.Fatalf("len mismatch: got %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("[%d]: got %q, want %q", i, got[i], c.want[i])
+				}
 			}
 		})
 	}

@@ -43,6 +43,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"announce project",
 		"pre-codegen contract check",
 		"detect proto directories",
+		"ensure gen/go.mod",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
 		"OpenAPI specs (protoc-gen-connect-openapi)",

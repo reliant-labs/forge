@@ -196,13 +196,34 @@ type UnresolvedPlaceholder struct {
 // `wireSvcBillingDeps` from this file when "billing" collides with
 // internal/billing.
 func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, projectDir string, ormEnabled bool, cs *checksums.FileChecksums) error {
+	_, err := GenerateWireGenData(services, packages, workers, operators, modulePath, projectDir, ormEnabled, cs)
+	return err
+}
+
+// WireGenData is the per-component wire-resolution result GenerateWireGenData
+// returns. Used by downstream codegen (diagnostics_gen.go) that needs to know
+// which Deps fields landed at typed-zero so the runtime registry can name them
+// at boot. The shape mirrors the template inputs used internally — same
+// FieldName / UnresolvedFields semantics.
+type WireGenData struct {
+	Services  []WireGenServiceData
+	Workers   []WireGenServiceData
+	Operators []WireGenServiceData
+}
+
+// GenerateWireGenData is the variant of GenerateWireGen that also
+// returns the per-component WireGenData. Callers that need the
+// post-resolution view of the project (diagnostics codegen, future
+// tooling) use this; the GenerateWireGen entry point is the
+// backwards-compatible thin wrapper.
+func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, projectDir string, ormEnabled bool, cs *checksums.FileChecksums) (WireGenData, error) {
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
-		return nil
+		return WireGenData{}, nil
 	}
 
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
+		return WireGenData{}, err
 	}
 
 	// Parse the existing App struct so we can resolve unconventional
@@ -210,7 +231,7 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 	// still cover the bare-Deps trio.
 	appFields, err := ParseAppFields(appDir)
 	if err != nil {
-		return fmt.Errorf("parse pkg/app for App fields: %w", err)
+		return WireGenData{}, fmt.Errorf("parse pkg/app for App fields: %w", err)
 	}
 	// appFieldByName is the lookup wireExpressionForApp consumes —
 	// carries Type AND Placeholder so the resolver can emit a typed
@@ -261,7 +282,7 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 		msg.WriteString("(or its comment-shape equivalent) to\n")
 		msg.WriteString("    <Field> <Type>\n")
 		msg.WriteString("then re-run `forge generate`. The marker becomes a no-op once the field type matches its target.\n")
-		return fmt.Errorf("%s", msg.String())
+		return WireGenData{}, fmt.Errorf("%s", msg.String())
 	}
 
 	// Resolvers collected across all services, workers, operators —
@@ -358,11 +379,11 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 	// attribute key ("worker" / "operator" instead of "service").
 	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
 	if err != nil {
-		return fmt.Errorf("build worker wire data: %w", err)
+		return WireGenData{}, fmt.Errorf("build worker wire data: %w", err)
 	}
 	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
 	if err != nil {
-		return fmt.Errorf("build operator wire data: %w", err)
+		return WireGenData{}, fmt.Errorf("build operator wire data: %w", err)
 	}
 
 	// Sort resolvers by name so the rendered file is stable across
@@ -393,13 +414,17 @@ func GenerateWireGen(services []ServiceDef, packages []BootstrapPackageData, wor
 
 	content, err := templates.ProjectTemplates().Render("wire_gen.go.tmpl", tmplData)
 	if err != nil {
-		return fmt.Errorf("render wire_gen.go.tmpl: %w", err)
+		return WireGenData{}, fmt.Errorf("render wire_gen.go.tmpl: %w", err)
 	}
 
 	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "wire_gen.go"), content, cs, true); err != nil {
-		return fmt.Errorf("write pkg/app/wire_gen.go: %w", err)
+		return WireGenData{}, fmt.Errorf("write pkg/app/wire_gen.go: %w", err)
 	}
-	return nil
+	return WireGenData{
+		Services:  wireSvcs,
+		Workers:   wireWorkers,
+		Operators: wireOperators,
+	}, nil
 }
 
 // buildWireComponentData constructs WireGenServiceData entries for

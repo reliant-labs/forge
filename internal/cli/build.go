@@ -54,6 +54,12 @@ type buildOptions struct {
 	// everything", preserving the pre-orchestration behaviour so CI
 	// builds for staging/prod aren't affected.
 	env string
+	// tag, when set, overrides the git-derived image tag computed by
+	// resolveImageTag. CI pipelines that pin the image to a release
+	// number (e.g. `--tag v1.2.3`) use this. Empty (the default) means
+	// "compute from git" — the same resolution `forge deploy` falls
+	// back to when no build-state file is present.
+	tag string
 }
 
 func newBuildCmd() *cobra.Command {
@@ -102,6 +108,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.pushRegistry, "push", "", "Push docker images to this registry after build (implies --docker)")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
+	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
 
 	return cmd
 }
@@ -152,6 +159,23 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 
+	// Resolve the docker image tag once, up front. Both the docker
+	// build/push path below and the post-push build-state write consume
+	// this; resolving once guarantees the tag the user sees printed
+	// equals the tag that lands in .forge/state/build-<env>.json and the
+	// tag that subsequent `forge deploy` reads back. Override priority
+	// matches the deploy side: --tag flag > resolveImageTag from git.
+	resolvedTag := opts.tag
+	if resolvedTag == "" && opts.buildDocker {
+		// Only resolve when we'll actually use a tag — avoids surfacing
+		// "not a git repo" errors on a plain `forge build` (no docker).
+		t, terr := resolveImageTag(ctx, opts.env)
+		if terr != nil {
+			return fmt.Errorf("resolve image tag: %w (pass --tag to override)", terr)
+		}
+		resolvedTag = t
+	}
+
 	fmt.Printf("[build] Building project: %s\n", cfg.Name)
 	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
 	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
@@ -159,6 +183,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	fmt.Printf("[build]   Docker:   %v\n", opts.buildDocker)
 	if opts.env != "" {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
+	}
+	if opts.buildDocker {
+		fmt.Printf("[build]   Tag:      %s\n", resolvedTag)
 	}
 
 	// When --env is set, read the rendered KCL to drive the docker-skip
@@ -233,9 +260,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	var results []buildResult
 
 	if opts.parallel {
-		results = buildParallel(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, opts)
+		results = buildParallel(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, opts)
 	} else {
-		results = buildSequential(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, opts)
+		results = buildSequential(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, opts)
 	}
 
 	// Build-only variants from KCL: each declared variant produces one
@@ -254,6 +281,39 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			failed = append(failed, r)
 		} else {
 			succeeded = append(succeeded, r)
+		}
+	}
+
+	// Persist build state when the project docker image was pushed
+	// successfully. Skipped when --push was not set (no push → nothing
+	// to record), when the project docker build itself failed, or when
+	// the project docker build was skipped (host-only env, no Dockerfile).
+	// This is the contract that `forge deploy <env>` reads to pin the
+	// image-tag to what `forge build` actually pushed, eliminating the
+	// build/deploy tag divergence the user hit on dirty working trees.
+	if opts.buildDocker && opts.pushRegistry != "" && resolvedTag != "" && !skipProjectDocker {
+		projectDockerSucceeded := false
+		for _, r := range succeeded {
+			if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
+				projectDockerSucceeded = true
+				break
+			}
+		}
+		if projectDockerSucceeded {
+			state := BuildState{
+				Image:    cfg.Name,
+				Tag:      resolvedTag,
+				Registry: opts.pushRegistry,
+				PushedAt: nowRFC3339(),
+			}
+			if werr := WriteBuildState(projectDirForKCL(), opts.env, state); werr != nil {
+				// Non-fatal: the build succeeded; recording the state is
+				// a convenience for the downstream deploy. Print a
+				// warning so the user knows deploy may fall back to git.
+				fmt.Printf("[build]   Warning: failed to write build-state file: %v\n", werr)
+			} else {
+				fmt.Printf("[build]   Wrote build state: %s\n", buildStatePath(projectDirForKCL(), opts.env))
+			}
 		}
 	}
 
@@ -279,7 +339,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	return nil
 }
 
-func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker string, opts buildOptions) []buildResult {
+func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, opts buildOptions) []buildResult {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
@@ -330,7 +390,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -340,7 +400,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 			wg.Add(1)
 			go func(f config.FrontendConfig) {
 				defer wg.Done()
-				r := dockerBuild(ctx, cfg, f.Name, f.Path, opts.pushRegistry, dockerArch)
+				r := dockerBuild(ctx, cfg, f.Name, f.Path, opts.pushRegistry, dockerArch, resolvedTag)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -352,7 +412,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	return results
 }
 
-func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker string, opts buildOptions) []buildResult {
+func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, opts buildOptions) []buildResult {
 	var results []buildResult
 
 	if buildBinary {
@@ -374,14 +434,14 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	if opts.buildDocker {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if buildBinary && !skipProjectDocker {
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch)
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag)
 			results = append(results, r)
 			if r.err != nil {
 				return results
 			}
 		}
 		for _, fe := range dockerFrontends {
-			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry, dockerArch)
+			r := dockerBuild(ctx, cfg, fe.Name, fe.Path, opts.pushRegistry, dockerArch, resolvedTag)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -469,15 +529,10 @@ func gitVersionInfo(ctx context.Context) versionInfo {
 	return info
 }
 
-// gitVersionTag returns the git-describe version if this is a git repo,
-// or the empty string otherwise. Used to add a version tag to docker images.
-func gitVersionTag(ctx context.Context) string {
-	out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--always", "--dirty").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
+// (gitVersionTag was removed when build/deploy converged on the single
+// `resolveImageTag` helper — see internal/cli/image_tag.go. The same
+// `git describe --tags --always --dirty` shape now lives there as the
+// shared source of truth both `forge build` and `forge deploy` consume.)
 
 func buildFrontend(ctx context.Context, fe config.FrontendConfig) buildResult {
 	start := time.Now()
@@ -531,7 +586,7 @@ func withForcedEnv(env []string, key, value string) []string {
 // so the resulting image runs on a node whose arch matches the deploy
 // target rather than the build host. Empty means "let docker use the
 // host arch" — appropriate when host == target.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch string) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -551,8 +606,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 	}
 	latestTag := fmt.Sprintf("%s/%s:latest", registry, cfg.Name)
 	versionTag := ""
-	if v := gitVersionTag(ctx); v != "" {
-		versionTag = fmt.Sprintf("%s/%s:%s", registry, cfg.Name, v)
+	if resolvedTag != "" {
+		versionTag = fmt.Sprintf("%s/%s:%s", registry, cfg.Name, resolvedTag)
 	}
 
 	dockerArgs := []string{"build"}
@@ -581,8 +636,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 		if i == 0 {
 			pushTags = append(pushTags, pushLatest)
 		}
-		if v := gitVersionTag(ctx); v != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, v)
+		if resolvedTag != "" {
+			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, resolvedTag)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
 			if i == 0 {
 				pushTags = append(pushTags, pushVersion)
@@ -677,7 +732,7 @@ func countTags(args []string) int {
 // so frontends destined for the deploy-target node arch are built
 // correctly even on a different host arch. Same semantics as
 // dockerBuildProject.
-func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry, crossArch string) buildResult {
+func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pushRegistry, crossArch, resolvedTag string) buildResult {
 	start := time.Now()
 	dockerfile := filepath.Join(path, "Dockerfile")
 
@@ -697,8 +752,8 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 	}
 	latestTag := fmt.Sprintf("%s/%s:latest", registry, name)
 	versionTag := ""
-	if v := gitVersionTag(ctx); v != "" {
-		versionTag = fmt.Sprintf("%s/%s:%s", registry, name, v)
+	if resolvedTag != "" {
+		versionTag = fmt.Sprintf("%s/%s:%s", registry, name, resolvedTag)
 	}
 
 	dockerArgs := []string{"build"}
@@ -725,8 +780,8 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 		if i == 0 {
 			pushTags = append(pushTags, pushLatest)
 		}
-		if v := gitVersionTag(ctx); v != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, v)
+		if resolvedTag != "" {
+			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, resolvedTag)
 			dockerArgs = append(dockerArgs, "-t", pushVersion)
 			if i == 0 {
 				pushTags = append(pushTags, pushVersion)

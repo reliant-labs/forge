@@ -73,7 +73,7 @@ func runProjectDev(opts runOptions) error {
 		if lerr != nil {
 			fmt.Printf("[run] No per-env config for %q (%v); using binary defaults.\n", opts.env, lerr)
 		} else {
-			envExtraEnv = envConfigToEnvVars(envCfg, cfg, projectDir, opts.env)
+			envExtraEnv = envConfigToEnvVars(envCfg, projectDir)
 			if len(envExtraEnv) > 0 {
 				fmt.Printf("[run] Loaded %d per-env config values from environment %q.\n", len(envExtraEnv), opts.env)
 			}
@@ -219,7 +219,7 @@ func runProjectDev(opts runOptions) error {
 		// Existing process env wins (a developer can still override
 		// inline) — we apply the per-env values first, then anything
 		// already set in os.Environ().
-		baseEnv := mergeEnv(envExtraEnv, os.Environ())
+		baseEnv := hostlaunch.MergeEnv(envExtraEnv, os.Environ())
 		if opts.debug {
 			baseEnv = append(baseEnv, "ENVIRONMENT=development")
 			cmd.Env = baseEnv
@@ -397,12 +397,17 @@ func streamWithPrefix(prefix string, r io.Reader, mu *sync.Mutex) {
 // is unavailable (fresh project, no descriptor yet) we fall back to
 // converting snake_case → SCREAMING_SNAKE.
 //
+// projectConfigPath is the path to forge.yaml; the parent dir is used
+// to resolve proto/config/ for the annotation lookup. The surface
+// deliberately takes the file path (not the dir) so callers can pass
+// `findProjectConfigFile()`'s return value directly.
+//
 // Sensitive fields are skipped here — `forge run` is a local dev tool
 // and shouldn't be plumbing secret refs through env vars. Set the
 // secret value in your local env (.env / direnv) instead.
-func envConfigToEnvVars(envCfg map[string]any, _ *config.ProjectConfig, projectDir, _ string) map[string]string {
+func envConfigToEnvVars(envCfg map[string]any, projectConfigPath string) map[string]string {
 	out := map[string]string{}
-	annotations := loadConfigAnnotations(filepath.Dir(projectDir))
+	annotations := loadConfigAnnotations(filepath.Dir(projectConfigPath))
 
 	for key, val := range envCfg {
 		envVar := strings.ToUpper(key)
@@ -455,7 +460,7 @@ func loadProjectConfigEnv(cfg *config.ProjectConfig, env string) map[string]stri
 	if lerr != nil {
 		return map[string]string{}
 	}
-	return envConfigToEnvVars(envCfg, cfg, projectPath, env)
+	return envConfigToEnvVars(envCfg, projectPath)
 }
 
 // configAnnotation is a lightweight projection of ConfigField used by
@@ -832,15 +837,3 @@ func declaredServiceNames(cfg *config.ProjectConfig) []string {
 	return out
 }
 
-// readDotEnvFile is a thin shim over hostlaunch.ReadDotEnvFile; the
-// parser lives in hostlaunch so the `forge up` host phase can share it.
-func readDotEnvFile(path string) (map[string]string, error) {
-	return hostlaunch.ReadDotEnvFile(path)
-}
-
-// mergeEnv is a thin shim over hostlaunch.MergeEnv. Base wins on key
-// collisions so a developer's shell override always beats the loaded
-// .env values.
-func mergeEnv(extra map[string]string, base []string) []string {
-	return hostlaunch.MergeEnv(extra, base)
-}

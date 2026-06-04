@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
 func TestRunDebugFlagExists(t *testing.T) {
@@ -205,9 +207,9 @@ WITH_HASH=val#not-a-comment
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := readDotEnvFile(path)
+	got, err := hostlaunch.ReadDotEnvFile(path)
 	if err != nil {
-		t.Fatalf("readDotEnvFile: %v", err)
+		t.Fatalf("hostlaunch.ReadDotEnvFile: %v", err)
 	}
 	want := map[string]string{
 		"EMPTY":         "",
@@ -233,7 +235,7 @@ WITH_HASH=val#not-a-comment
 // underlying syscall error string.
 func TestReadDotEnvFile_Missing(t *testing.T) {
 	dir := t.TempDir()
-	_, err := readDotEnvFile(filepath.Join(dir, "does-not-exist"))
+	_, err := hostlaunch.ReadDotEnvFile(filepath.Join(dir, "does-not-exist"))
 	if !os.IsNotExist(err) {
 		t.Errorf("want os.ErrNotExist, got %v", err)
 	}

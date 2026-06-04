@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -77,7 +79,10 @@ func TestBuildHostServiceCmd(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cmd, _, err := buildHostServiceCmd(ctx, c.svc, "dev")
+			// nil cfg is the test-shaped projectConfig — the dispatch
+			// matrix shouldn't depend on forge.yaml layering at all,
+			// and a nil cfg makes that explicit.
+			cmd, _, err := buildHostServiceCmd(ctx, nil, c.svc, "dev")
 			if c.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 					t.Fatalf("want err containing %q, got %v", c.wantErr, err)
@@ -129,6 +134,67 @@ func TestUpStatePath(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "/.cache/forge/up/dev.pids") {
 		t.Errorf("upStatePath: got %q, want suffix /.cache/forge/up/dev.pids", got)
+	}
+}
+
+// TestBuildHostServiceCmd_LayersProjectConfig pins the symmetry with
+// `forge run <svc>`: forge.yaml environments[<env>].config must reach
+// the host child process via cmd.Env just like the run path does. The
+// host phase previously dropped this layer (the call site took a `_
+// string` env and passed nil to LayerHostEnv); this test guards against
+// regressing back to that shape.
+func TestBuildHostServiceCmd_LayersProjectConfig(t *testing.T) {
+	dir := t.TempDir()
+	yamlContent := `name: testproj
+module_path: github.com/example/testproj
+version: "0.1.0"
+binary: shared
+services:
+  - name: api
+    type: go_service
+    path: handlers/api
+    port: 8080
+environments:
+  - name: dev-host
+    type: local
+    config:
+      environment: development
+      log_level: debug
+`
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+	t.Chdir(dir)
+
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		t.Fatalf("loadProjectConfig: %v", err)
+	}
+
+	svc := ServiceEntity{
+		Name: "api",
+		Deploy: DeployConfigEntity{
+			Type: "host",
+			Host: &HostDeploy{Runner: "go-run"},
+		},
+	}
+	cmd, _, err := buildHostServiceCmd(context.Background(), cfg, svc, "dev-host")
+	if err != nil {
+		t.Fatalf("buildHostServiceCmd: %v", err)
+	}
+
+	wantPairs := []string{"ENVIRONMENT=development", "LOG_LEVEL=debug"}
+	for _, p := range wantPairs {
+		found := false
+		for _, e := range cmd.Env {
+			if e == p {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("cmd.Env missing %q. Got env:\n%s", p, strings.Join(cmd.Env, "\n"))
+		}
 	}
 }
 

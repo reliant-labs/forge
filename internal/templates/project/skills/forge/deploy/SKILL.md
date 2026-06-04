@@ -5,6 +5,8 @@ description: Ship code — lint, build, deploy to k3d/staging/prod, and verify.
 
 # Ship It
 
+> **Scope: Kubernetes only.** `forge deploy` currently targets Kubernetes (k3d for dev, real clusters for staging/prod). Compose, docker-run, and bare-binary deploys are out of scope for this command — drive those from your own Taskfile / Makefile.
+
 The full shipping workflow: pre-flight checks, build, deploy, verify, rollback.
 
 ## Pre-flight checks

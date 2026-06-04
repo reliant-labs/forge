@@ -187,6 +187,7 @@ func generateSteps() []GenStep {
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
 		{Name: "pre-codegen contract check", Gate: always, Run: stepPreCodegenContractCheck, Tag: "validate"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
+		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, Run: stepDescriptorGenerate, Tag: "proto"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, Run: stepOpenAPIGenerate, Tag: "proto"},
@@ -595,6 +596,19 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 		fmt.Println()
 	}
 	return nil
+}
+
+// stepEnsureGenModule bootstraps a missing `gen/go.mod` before any step
+// that runs `buf generate` / `go list` / `go build` fires. Fresh git
+// worktrees can carry a `go.work` that declares `use gen` but lack the
+// actual `gen/go.mod` file (it's gitignored in some setups), which makes
+// every Go-tooling invocation fail with "cannot load module gen". Doing
+// the synthesis here — once, before the pipeline hits the proto/tools
+// steps — keeps the rest of the pipeline ignorant of the bootstrap
+// concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
+// conditions.
+func stepEnsureGenModule(ctx *pipelineContext) error {
+	return ensureGenGoMod(ctx.ProjectDir)
 }
 
 // stepBufGenerateGo — was Step 1.

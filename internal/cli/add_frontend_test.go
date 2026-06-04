@@ -22,6 +22,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,7 +92,7 @@ auth:
 func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 	dir := withTempProject(t, freshServiceForgeYAML)
 
-	if err := runAddFrontend("dashboard", 0, ""); err != nil {
+	if err := runAddFrontend(context.Background(), "dashboard", 0, ""); err != nil {
 		t.Fatalf("runAddFrontend: %v", err)
 	}
 
@@ -145,7 +146,7 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := withTempProject(t, freshServiceForgeYAML)
 
-			if err := runAddFrontend("app", 0, tc.kind); err != nil {
+			if err := runAddFrontend(context.Background(), "app", 0, tc.kind); err != nil {
 				t.Fatalf("runAddFrontend(kind=%q): %v", tc.kind, err)
 			}
 
@@ -171,7 +172,7 @@ func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
 		"framework: none", "framework: svelte", 1)
 	dir := withTempProject(t, customYAML)
 
-	if err := runAddFrontend("app", 0, ""); err != nil {
+	if err := runAddFrontend(context.Background(), "app", 0, ""); err != nil {
 		t.Fatalf("runAddFrontend: %v", err)
 	}
 

@@ -26,6 +26,7 @@ func newDeployCmd() *cobra.Command {
 		contextOverride string
 		explain         bool
 		targetArch      string
+		prune           bool
 	)
 
 	cmd := &cobra.Command{
@@ -67,6 +68,7 @@ Examples:
 				namespace:       namespace,
 				contextOverride: contextOverride,
 				targetArch:      targetArch,
+				prune:           prune,
 			})
 		},
 	}
@@ -77,6 +79,7 @@ Examples:
 	cmd.Flags().StringVar(&contextOverride, "context", "", "Override expected kubectl context (skips the env-cluster guard)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print the env-cluster guard decision (expected/current/verdict) and exit")
 	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
+	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 
 	return cmd
 }
@@ -154,6 +157,14 @@ type deployOptions struct {
 	namespace       string
 	contextOverride string
 	targetArch      string
+	// prune, when true, deletes forge-managed Deployments in the
+	// namespace that the just-applied KCL render no longer produces.
+	// Opt-in to start: pruning is destructive (deletes resources the
+	// user didn't ask to remove) and surprising behaviour during an
+	// in-progress KCL refactor would be costly to roll back. The dev
+	// loop benefits most — `forge deploy dev` after a host-mode
+	// refactor leaves stale Deployments behind otherwise.
+	prune bool
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -162,6 +173,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	namespace := opts.namespace
 	contextOverride := opts.contextOverride
 	targetArchFlag := opts.targetArch
+	prune := opts.prune
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -274,6 +286,18 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	fmt.Println("Applying manifests...")
 	if err := kubectlApply(ctx, manifests); err != nil {
 		return fmt.Errorf("kubectl apply failed: %w", err)
+	}
+
+	// Prune orphans: delete forge-managed Deployments in the namespace
+	// that the just-rendered manifests no longer produce. Opt-in via
+	// --prune; otherwise stale Deployments stay around (the
+	// pre-2026-06-03 behaviour). The label query is the source of truth
+	// — KCL renders set `app.kubernetes.io/managed-by=forge` on every
+	// Deployment it owns, so this won't touch user-applied resources.
+	if prune {
+		if err := pruneOrphanDeployments(ctx, manifests, namespace); err != nil {
+			fmt.Printf("Warning: prune: %v\n", err)
+		}
 	}
 
 	// Wait for rollouts. Discover the actually-applied Deployment names
@@ -648,6 +672,88 @@ func listDeployments(ctx context.Context, namespace string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// renderedDeploymentNames returns the names of every Deployment in a
+// rendered KCL manifest stream. The stream is `---`-separated YAML
+// documents; only `kind: Deployment` documents contribute names.
+// Malformed entries are skipped (callers get a best-effort list).
+//
+// Used by the --prune logic to compute the desired set against which
+// the namespace's actual forge-managed Deployments are diffed.
+func renderedDeploymentNames(manifests string) []string {
+	docs := strings.Split(manifests, "\n---\n")
+	var out []string
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		var m struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
+			continue
+		}
+		if m.Kind == "Deployment" && m.Metadata.Name != "" {
+			out = append(out, m.Metadata.Name)
+		}
+	}
+	return out
+}
+
+// pruneOrphanDeployments deletes every forge-managed Deployment in
+// namespace that is NOT in the rendered manifest stream. The "managed
+// by forge" guard comes from the kubectl get label filter inside
+// listDeployments — only resources carrying
+// `app.kubernetes.io/managed-by=forge` are eligible for prune. This
+// invariant protects user-applied Deployments living alongside forge-
+// owned ones in the same namespace.
+//
+// Errors during the list or per-Deployment delete are returned to the
+// caller (which logs them as warnings rather than failing the whole
+// deploy — pruning is a maintenance step, not a correctness gate).
+func pruneOrphanDeployments(ctx context.Context, manifests, namespace string) error {
+	desired := map[string]struct{}{}
+	for _, n := range renderedDeploymentNames(manifests) {
+		desired[n] = struct{}{}
+	}
+	if len(desired) == 0 {
+		// Empty desired set means no Deployments at all in the render —
+		// almost certainly a misuse case (the user pointed at the wrong
+		// env dir). Bail rather than pruning every forge-managed
+		// Deployment in the namespace.
+		fmt.Println("Skipping prune (no Deployments in render).")
+		return nil
+	}
+	current, err := listDeployments(ctx, namespace)
+	if err != nil {
+		return fmt.Errorf("list deployments: %w", err)
+	}
+	var orphans []string
+	for _, dep := range current {
+		if _, keep := desired[dep]; !keep {
+			orphans = append(orphans, dep)
+		}
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+	fmt.Printf("Pruning %d orphan Deployment(s) in %s: %s\n",
+		len(orphans), namespace, strings.Join(orphans, ", "))
+	for _, name := range orphans {
+		delCmd := exec.CommandContext(ctx, "kubectl", "delete", "deployment", name,
+			"-n", namespace, "--ignore-not-found=true")
+		delCmd.Stdout = os.Stdout
+		delCmd.Stderr = os.Stderr
+		if err := delCmd.Run(); err != nil {
+			fmt.Printf("  Warning: delete %s: %v\n", name, err)
+		}
+	}
+	return nil
 }
 
 // hostDeploymentSkipSet returns the set of Deployment names that the

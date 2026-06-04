@@ -261,3 +261,69 @@ func TestHostDeploymentSkipSet_DevOnly(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderedDeploymentNames verifies the extractor parses the multi-
+// document YAML stream forge produces from KCL, returning only
+// Deployment kind names. Non-Deployments and malformed docs are skipped.
+func TestRenderedDeploymentNames(t *testing.T) {
+	manifests := `apiVersion: v1
+kind: Service
+metadata:
+  name: workspace-controller
+spec:
+  ports: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-controller
+  labels:
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cp-forge-config
+data:
+  KEY: value
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-proxy
+spec: {}
+`
+	got := renderedDeploymentNames(manifests)
+	want := []string{"workspace-controller", "workspace-proxy"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("[%d]: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestRenderedDeploymentNames_EmptyAndMalformed confirms the extractor
+// degrades gracefully on edge cases: empty input, all-non-Deployment,
+// and unparseable docs all return an empty slice rather than panicking.
+func TestRenderedDeploymentNames_EmptyAndMalformed(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"whitespace", "   \n\n  "},
+		{"no Deployments", "kind: Service\nmetadata:\n  name: x\n"},
+		{"malformed YAML", "this is not yaml: : :"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := renderedDeploymentNames(c.in); len(got) != 0 {
+				t.Errorf("expected empty slice, got %v", got)
+			}
+		})
+	}
+}

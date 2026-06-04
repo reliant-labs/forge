@@ -528,6 +528,24 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		return nil
 	}
 
+	// Mid-merge detection: when git is in the middle of a merge /
+	// cherry-pick / rebase, the Tier-1 drift we're seeing is almost
+	// always upstream changes the operation brought in — NOT a real
+	// hand-edit. Surface a friendlier message that points the user at
+	// the right escape hatch (`--accept` to re-stamp the checksums).
+	if state := detectGitMergeState(ctx.AbsPath); state != "" {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Tier-1 stomp guard tripped while git is mid-%s.\n\n", state)
+		fmt.Fprintf(&b, "%d Tier-1 file(s) drifted from their recorded checksum:\n", len(drift))
+		for _, d := range drift {
+			fmt.Fprintf(&b, "  • %s\n", d.Path)
+		}
+		fmt.Fprintf(&b, "\nDuring a mid-%s state this is almost always upstream changes the merge brought in (not real hand-edits). Two options:\n", state)
+		fmt.Fprintf(&b, "  1. Resolve the %s first (`git status`), then re-run `forge generate`.\n", state)
+		fmt.Fprintf(&b, "  2. Run `forge generate --accept` to re-stamp the recorded checksums to the merged-in content, then proceed.\n")
+		return errMidMergeTier1Drift{state: state, msg: b.String()}
+	}
+
 	// Default: error with a batched report.
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d Tier-1 file(s) modified after last `forge generate`:\n\n", len(drift))
@@ -542,6 +560,83 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	fmt.Fprintf(&b, "  3. Re-run with `--accept` to keep your edits and refresh the recorded checksum (rare; documents an intentional fork).\n")
 	fmt.Fprintf(&b, "  4. Move your customization into a Tier-2 file (`// forge:scaffold one-shot`) — see the `frontend` skill for the nav.tsx / nav_gen.tsx pattern.\n")
 	return fmt.Errorf("Tier-1 file-stomp guard:\n%s", b.String())
+}
+
+// errMidMergeTier1Drift is the typed error returned by
+// stepCheckTier1Drift when it has detected the host repo is mid-merge /
+// mid-cherry-pick / mid-rebase. Callers that want to render a different
+// fixup hint can type-assert with errors.As — the default cobra error
+// path just prints msg.
+type errMidMergeTier1Drift struct {
+	state string // "merge" / "cherry-pick" / "rebase"
+	msg   string
+}
+
+func (e errMidMergeTier1Drift) Error() string { return e.msg }
+
+// GitMergeState reports the in-flight git operation state, if any.
+// Returns "" when no merge / cherry-pick / rebase is in progress.
+func (e errMidMergeTier1Drift) GitMergeState() string { return e.state }
+
+// detectGitMergeState returns the in-flight git operation if any:
+// "merge", "cherry-pick", "rebase", or "" when none. The probe order
+// matches `git status`'s — MERGE_HEAD wins over CHERRY_PICK_HEAD which
+// wins over the rebase directories. .git is also accepted as a regular
+// file (worktrees use a gitfile pointing at the main repo's .git/
+// worktrees/<name>/ — the merge-state files still live in that
+// per-worktree directory, so stat-ing relative to <projectDir>/.git
+// works there too when .git is a directory).
+func detectGitMergeState(projectDir string) string {
+	gitDir := resolveGitDir(projectDir)
+	if gitDir == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "MERGE_HEAD")); err == nil {
+		return "merge"
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "CHERRY_PICK_HEAD")); err == nil {
+		return "cherry-pick"
+	}
+	if fi, err := os.Stat(filepath.Join(gitDir, "rebase-merge")); err == nil && fi.IsDir() {
+		return "rebase"
+	}
+	if fi, err := os.Stat(filepath.Join(gitDir, "rebase-apply")); err == nil && fi.IsDir() {
+		return "rebase"
+	}
+	return ""
+}
+
+// resolveGitDir locates the .git directory for the project. Returns
+// .git when it's a regular directory; for git-worktree checkouts (.git
+// is a file containing `gitdir: <path>`) it follows the redirect.
+// Returns "" when neither shape applies.
+func resolveGitDir(projectDir string) string {
+	gitPath := filepath.Join(projectDir, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	if fi.IsDir() {
+		return gitPath
+	}
+	// .git is a file — typically a worktree pointer.
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+	prefix := "gitdir:"
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		dir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(projectDir, dir)
+		}
+		return dir
+	}
+	return ""
 }
 
 // short truncates a hex digest for human-readable error messages. Full

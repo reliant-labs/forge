@@ -551,6 +551,31 @@ type DockerConfig struct {
 type LintConfig struct {
 	Contract bool               `yaml:"contract"`
 	Frontend FrontendLintConfig `yaml:"frontend,omitempty"`
+	// HandlerFileMaxLOC is the per-file LOC threshold above which the
+	// forgeconv-handler-file-size analyzer warns. Counts non-blank, non-
+	// comment Go source lines under handlers/<svc>/*.go. A value of 0 (or
+	// the field unset) is treated as the built-in default — see
+	// [LintConfig.EffectiveHandlerFileMaxLOC] for the canonical value.
+	HandlerFileMaxLOC int `yaml:"handler_file_max_loc,omitempty"`
+}
+
+// DefaultHandlerFileMaxLOC is the built-in threshold used by the
+// forgeconv-handler-file-size analyzer when the project does not set
+// lint.handler_file_max_loc in forge.yaml. Picked at 1000 because that
+// roughly tracks "two screens of any modern editor" plus generous
+// buffer — files past that point materially harm review velocity and
+// almost always benefit from the per-RPC split that `forge add
+// handler-file` is intended to support.
+const DefaultHandlerFileMaxLOC = 1000
+
+// EffectiveHandlerFileMaxLOC returns the LOC threshold for the
+// handler-file-size analyzer, defaulting to [DefaultHandlerFileMaxLOC]
+// when the config value is zero or unset.
+func (c LintConfig) EffectiveHandlerFileMaxLOC() int {
+	if c.HandlerFileMaxLOC <= 0 {
+		return DefaultHandlerFileMaxLOC
+	}
+	return c.HandlerFileMaxLOC
 }
 
 // FrontendLintConfig configures the frontend slice of `forge lint`:

@@ -14,7 +14,12 @@ const sampleKCLJSON = `{
         "type": "host",
         "runner": "air",
         "air_config": ".air.toml",
-        "env_file": ".env.dev"
+        "env_vars": [
+          {"name": "LOG_LEVEL", "value": "debug"},
+          {"name": "DATABASE_URL", "value": "postgres://localhost:5432/x?sslmode=disable"}
+        ],
+        "secrets_file": ".env.dev.secrets",
+        "delve_port": 2345
       },
       "env_vars": [{"name": "FOO", "value": "bar"}],
       "command": ["server", "admin-server"]
@@ -108,8 +113,14 @@ func TestParseKCLEntities_DispatchByDeployType(t *testing.T) {
 	if admin.Deploy.Host.AirConfig != ".air.toml" {
 		t.Errorf("admin-server air_config: got %q", admin.Deploy.Host.AirConfig)
 	}
-	if admin.Deploy.Host.EnvFile != ".env.dev" {
-		t.Errorf("admin-server env_file: got %q", admin.Deploy.Host.EnvFile)
+	if admin.Deploy.Host.SecretsFile != ".env.dev.secrets" {
+		t.Errorf("admin-server secrets_file: got %q", admin.Deploy.Host.SecretsFile)
+	}
+	if got := len(admin.Deploy.Host.EnvVars); got != 2 {
+		t.Errorf("admin-server env_vars count: got %d, want 2", got)
+	}
+	if admin.Deploy.Host.DelvePort != 2345 {
+		t.Errorf("admin-server delve_port: got %d, want 2345", admin.Deploy.Host.DelvePort)
 	}
 
 	// workspace-proxy: cluster
@@ -191,5 +202,54 @@ func TestParseKCLEntities_EmptyJSON(t *testing.T) {
 	}
 	if len(entities.Services) != 0 || len(entities.Operators) != 0 {
 		t.Errorf("expected empty entities, got %+v", entities)
+	}
+}
+
+// TestParseKCLEntities_OutputWrapper pins the wrapper-aware behavior:
+// the canonical generated main.k declares
+//
+//	output    = forge.render(_bundle)
+//	manifests = forge.render_manifests(_bundle, _env)
+//
+// so `kcl run --format json` emits `{"output": {...services, ...}, "manifests": [...]}`
+// at the top level. parseKCLEntities must unwrap `output` and then
+// parse the inner entity set. Without this, every consumer
+// (forge build/run/up/deploy) silently degrades to zero entities and
+// no error — see the bug fixed in commit 8ceef73.
+func TestParseKCLEntities_OutputWrapper(t *testing.T) {
+	wrapped := `{
+  "output": ` + sampleKCLJSON + `,
+  "manifests": [
+    {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "x"}}
+  ]
+}`
+	entities, err := parseKCLEntities([]byte(wrapped))
+	if err != nil {
+		t.Fatalf("parseKCLEntities on wrapped JSON: %v", err)
+	}
+	if got := len(entities.Services); got != 3 {
+		t.Errorf("wrapped services: got %d, want 3", got)
+	}
+	if got := len(entities.Operators); got != 1 {
+		t.Errorf("wrapped operators: got %d, want 1", got)
+	}
+	// Dispatch must still work through the wrapper.
+	if admin := entities.FindService("admin-server"); admin == nil || admin.Deploy.Type != "host" {
+		t.Errorf("admin-server lost dispatch through wrapper: %+v", admin)
+	}
+}
+
+// TestParseKCLEntities_FlatShapeStillWorks confirms backward compat:
+// callers that pass the raw `{services: [...], operators: [...], ...}`
+// shape (e.g. tests using FORGE_KCL_RENDER_FIXTURE files written in
+// the unwrapped form, or future main.k templates that drop the
+// `output` wrapper) parse identically.
+func TestParseKCLEntities_FlatShapeStillWorks(t *testing.T) {
+	entities, err := parseKCLEntities([]byte(sampleKCLJSON))
+	if err != nil {
+		t.Fatalf("parseKCLEntities flat: %v", err)
+	}
+	if got := len(entities.Services); got != 3 {
+		t.Errorf("flat services: got %d, want 3", got)
 	}
 }

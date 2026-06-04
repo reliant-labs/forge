@@ -37,6 +37,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
 // upOptions bundles flags for `forge up`.
@@ -273,50 +274,53 @@ func upHostServices(ctx context.Context, e *KCLEntities, env string, background 
 }
 
 // buildHostServiceCmd composes the exec.Cmd for a host-mode service
-// based on its deploy.Host.Runner. EnvFile loads onto cmd.Env via the
-// existing readDotEnvFile helper; missing env file is non-fatal.
-func buildHostServiceCmd(ctx context.Context, svc ServiceEntity, env string) (*exec.Cmd, string, error) {
+// based on its deploy.Host.Runner. Thin shim over hostlaunch.BuildCmd
+// with the secrets_file + env_vars composition done here.
+//
+// Env layering (secrets_file → env_vars → os.Environ() wins last) is
+// declared on the KCL HostDeploy block — no per-env default path; the
+// env name is no longer needed at this surface and is accepted as `_`
+// for caller symmetry with upFrontends / upPortForwards.
+//
+// Unlike `forge run <svc>`, `forge up` is strict about unknown runners:
+// a typo in KCL is fail-loud here because the orchestrator owns the
+// whole environment and silent fallback to go-run could mask a deploy
+// pin the user meant to apply. The hostlaunch package itself falls
+// through to go-run on unknown runners; the explicit IsKnownRunner
+// gate is what makes this call site strict.
+func buildHostServiceCmd(ctx context.Context, svc ServiceEntity, _ string) (*exec.Cmd, string, error) {
 	host := svc.Deploy.Host
-	runner := strings.TrimSpace(host.Runner)
-	if runner == "" {
-		runner = "go-run"
+	if !hostlaunch.IsKnownRunner(host.Runner) {
+		return nil, "", fmt.Errorf("unknown host runner %q (expected go-run/air/binary/delve)", host.Runner)
 	}
+	spec := hostlaunch.RunnerSpec{
+		Runner:    host.Runner,
+		AirConfig: host.AirConfig,
+		DelvePort: host.DelvePort,
+	}
+	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
-	var cmd *exec.Cmd
-	switch runner {
-	case "go-run":
-		cmd = exec.CommandContext(ctx, "go", "run", "./cmd", "server", svc.Name)
-	case "air":
-		airConfig := host.AirConfig
-		if airConfig == "" {
-			airConfig = ".air.toml"
-		}
-		cmd = exec.CommandContext(ctx, "air", "-c", airConfig)
-	case "binary":
-		cmd = exec.CommandContext(ctx, "./bin/"+svc.Name)
-	case "delve":
-		port := host.DelvePort
-		if port == 0 {
-			port = 2345
-		}
-		listen := fmt.Sprintf("--listen=:%d", port)
-		cmd = exec.CommandContext(ctx, "dlv", "exec", "--headless", listen,
-			"--api-version=2", "--accept-multiclient", "--continue",
-			"./bin/"+svc.Name)
+	// Env composition: secrets_file → env_vars → os.Environ() wins last.
+	// Missing secrets_file is non-fatal (warn-and-continue); parse /
+	// permission errors are fatal because they signal a broken KCL pin
+	// rather than a developer who hasn't created the file yet.
+	secrets, lerr := hostlaunch.LoadSecretsFile(host.SecretsFile)
+	switch {
+	case lerr == nil:
+	case errors.Is(lerr, os.ErrNotExist):
+		fmt.Printf("[up] host %s: warning: secrets file %s missing; continuing without it\n", svc.Name, host.SecretsFile)
 	default:
-		return nil, "", fmt.Errorf("unknown host runner %q (expected go-run/air/binary/delve)", runner)
+		return nil, "", fmt.Errorf("host %s: read secrets file %s: %w", svc.Name, host.SecretsFile, lerr)
 	}
-
-	envFile := host.EnvFile
-	if envFile == "" {
-		envFile = ".env." + env
-	}
-	extra, lerr := readDotEnvFile(envFile)
-	if lerr == nil {
-		cmd.Env = mergeEnv(extra, os.Environ())
-	} else if !errors.Is(lerr, os.ErrNotExist) {
-		fmt.Printf("[up] host %s: warning: read %s: %v\n", svc.Name, envFile, lerr)
-	}
+	envVars := hostEnvVarsToMap(host)
+	// projectConfig (forge.yaml environments[].config) isn't surfaced
+	// here yet — `forge run <svc>` already layers it; `forge up` host
+	// phase should follow once it has a clean way to plumb the env name
+	// + project config through buildHostServiceCmd (this call site
+	// deliberately doesn't take the ProjectConfig today). Until then the
+	// KCL env_vars channel is the canonical source for per-env config on
+	// the host. Tracked under the same friction-log item as `forge run`.
+	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), nil, secrets, envVars)
 
 	return cmd, svc.Name, nil
 }
@@ -338,9 +342,9 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background boo
 		if envFile == "" {
 			envFile = ".env." + env
 		}
-		extra, lerr := readDotEnvFile(envFile)
+		extra, lerr := hostlaunch.ReadDotEnvFile(envFile)
 		if lerr == nil {
-			cmd.Env = mergeEnv(extra, os.Environ())
+			cmd.Env = hostlaunch.MergeEnv(extra, os.Environ())
 		}
 
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {

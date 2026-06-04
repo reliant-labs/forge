@@ -86,6 +86,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"refresh ORM output mtimes",
 		"post-gen validation",
 		"detect renamed Tier-1 exports",
+		"check forked-sibling dangling refs",
 		"go build (validate generated code)",
 	}
 

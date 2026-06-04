@@ -170,7 +170,7 @@ whichever shape the active forge build produces.
 
 ## See also
 
-- `migration/upgrade` — the top-level upgrade skill explaining how
+- `migration-upgrade` — the top-level upgrade skill explaining how
   `forge upgrade` chooses between auto-update and skip.
 - `internal/checksums/checksums.go` — package docs covering the JSON
   format, the `MatchesAnyKnownRender` helper, and the `historyLimit`

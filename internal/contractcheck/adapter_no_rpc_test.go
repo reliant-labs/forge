@@ -1,9 +1,19 @@
-package forgeconv
+// File: internal/contractcheck/adapter_no_rpc_test.go
+//
+// Ported from internal/linter/forgeconv/adapter_no_rpc_test.go on
+// 2026-06-04. Fixtures and assertions are unchanged; only the entry
+// point swapped from LintAdapterNoRPC to Inspect with a single-rule
+// Options.
+
+package contractcheck
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
 // TestLintAdapterNoRPC_Fires verifies the rule fires when a
@@ -12,16 +22,19 @@ import (
 // service.
 func TestLintAdapterNoRPC_Fires(t *testing.T) {
 	t.Parallel()
-	res, err := LintAdapterNoRPC(filepath.Join("testdata", "adapter_with_rpc"))
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "adapter_with_rpc"),
+		Options{Rules: []Rule{RuleAdapterNoRPC}},
+	)
 	if err != nil {
-		t.Fatalf("LintAdapterNoRPC: %v", err)
+		t.Fatalf("Inspect: %v", err)
 	}
-	got := findingsForRule(res.Findings, "forgeconv-adapter-no-rpc")
+	got := findingsForRule(fs, string(RuleAdapterNoRPC))
 	if len(got) != 1 {
-		t.Fatalf("expected 1 finding, got %d:\n%s", len(got), res.FormatText())
+		t.Fatalf("expected 1 finding, got %d:\n%s", len(got), AsResult(fs).FormatText())
 	}
 	f := got[0]
-	if f.Severity != SeverityWarning {
+	if f.Severity != forgeconv.SeverityWarning {
 		t.Errorf("rule should be a warning, got %s", f.Severity)
 	}
 	if !strings.Contains(f.Message, "forge:adapter") {
@@ -34,7 +47,7 @@ func TestLintAdapterNoRPC_Fires(t *testing.T) {
 		t.Errorf("remediation should point at the adapter skill; got: %s", f.Remediation)
 	}
 	// Warnings must not gate the build.
-	if res.HasErrors() {
+	if HasErrors(fs) {
 		t.Errorf("rule must not gate the build; HasErrors() = true")
 	}
 }
@@ -43,13 +56,17 @@ func TestLintAdapterNoRPC_Fires(t *testing.T) {
 // adapter package produces no findings.
 func TestLintAdapterNoRPC_CleanFixture(t *testing.T) {
 	t.Parallel()
-	res, err := LintAdapterNoRPC(filepath.Join("testdata", "adapter_clean"))
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "adapter_clean"),
+		Options{Rules: []Rule{RuleAdapterNoRPC}},
+	)
 	if err != nil {
-		t.Fatalf("LintAdapterNoRPC: %v", err)
+		t.Fatalf("Inspect: %v", err)
 	}
-	got := findingsForRule(res.Findings, "forgeconv-adapter-no-rpc")
+	got := findingsForRule(fs, string(RuleAdapterNoRPC))
 	if len(got) != 0 {
-		t.Fatalf("expected 0 findings on clean fixture, got %d:\n%s", len(got), res.FormatText())
+		t.Fatalf("expected 0 findings on clean fixture, got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
 	}
 }
 
@@ -59,11 +76,13 @@ func TestLintAdapterNoRPC_CleanFixture(t *testing.T) {
 func TestLintAdapterNoRPC_NoInternalDir(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	res, err := LintAdapterNoRPC(tmp)
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleAdapterNoRPC}},
+	)
 	if err != nil {
-		t.Fatalf("LintAdapterNoRPC on empty project: %v", err)
+		t.Fatalf("Inspect on empty project: %v", err)
 	}
-	if len(res.Findings) != 0 {
-		t.Errorf("empty project should produce 0 findings, got %d", len(res.Findings))
+	if len(fs) != 0 {
+		t.Errorf("empty project should produce 0 findings, got %d", len(fs))
 	}
 }

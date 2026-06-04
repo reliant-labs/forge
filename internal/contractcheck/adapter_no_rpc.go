@@ -1,10 +1,10 @@
-// File: internal/linter/forgeconv/adapter_no_rpc.go
+// File: internal/contractcheck/adapter_no_rpc.go
 //
-// The forgeconv-adapter-no-rpc analyzer warns when a package marked
-// with the `// forge:adapter` directive also imports
-// `connectrpc.com/connect` and registers Connect RPC handlers (i.e.,
-// calls something matching `connect.NewXxxHandler(...)` or appears as
-// a `RegisterXxx` route binding).
+// The forgeconv-adapter-no-rpc rule warns when a package marked with
+// the `// forge:adapter` directive also imports `connectrpc.com/connect`
+// and registers Connect RPC handlers (i.e., calls something matching
+// `connect.NewXxxHandler(...)` or appears as a `RegisterXxx` route
+// binding).
 //
 // Why this exists
 //
@@ -35,8 +35,12 @@
 // import connect for type re-exports, and the cost of a stray warning
 // is low compared to the cost of letting an adapter quietly grow into
 // a service.
+//
+// Migrated from internal/linter/forgeconv/adapter_no_rpc.go on
+// 2026-06-04. Detection logic is preserved verbatim; only the
+// surrounding API moved.
 
-package forgeconv
+package contractcheck
 
 import (
 	"fmt"
@@ -48,16 +52,18 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
-// LintAdapterNoRPC walks rootDir/internal/ for packages marked
+// lintAdapterNoRPC walks rootDir/internal/ for packages marked
 // `// forge:adapter` and warns when any file in the package registers
 // a Connect RPC handler. Returns findings in deterministic order
 // (file, then line). A missing internal/ tree is not an error.
-func LintAdapterNoRPC(rootDir string) (Result, error) {
+func lintAdapterNoRPC(rootDir string) (forgeconv.Result, error) {
 	internalDir := filepath.Join(rootDir, "internal")
 	if _, err := os.Stat(internalDir); os.IsNotExist(err) {
-		return Result{}, nil
+		return forgeconv.Result{}, nil
 	}
 
 	// Collect package directories under internal/ — one warning per
@@ -87,15 +93,15 @@ func LintAdapterNoRPC(rootDir string) (Result, error) {
 		return nil
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("walk %s: %w", internalDir, err)
+		return forgeconv.Result{}, fmt.Errorf("walk %s: %w", internalDir, err)
 	}
 	sort.Strings(pkgDirs)
 
-	var result Result
+	var result forgeconv.Result
 	for _, dir := range pkgDirs {
 		findings, lintErr := lintAdapterPkg(dir, rootDir)
 		if lintErr != nil {
-			return Result{}, lintErr
+			return forgeconv.Result{}, lintErr
 		}
 		result.Findings = append(result.Findings, findings...)
 	}
@@ -116,7 +122,7 @@ func LintAdapterNoRPC(rootDir string) (Result, error) {
 // If the package carries the `forge:adapter` marker AND any file
 // invokes a Connect RPC handler shape, emit one warning per offending
 // file (so the user can chase down each call site independently).
-func lintAdapterPkg(pkgDir, rootDir string) ([]Finding, error) {
+func lintAdapterPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
@@ -159,15 +165,15 @@ func lintAdapterPkg(pkgDir, rootDir string) ([]Finding, error) {
 
 	// One finding per offending call site. Use module-relative paths
 	// for stable output across machines.
-	var findings []Finding
+	var findings []forgeconv.Finding
 	for _, hit := range rpcHits {
 		rel, relErr := filepath.Rel(rootDir, hit.path)
 		if relErr != nil {
 			rel = hit.path
 		}
-		findings = append(findings, Finding{
-			Rule:     "forgeconv-adapter-no-rpc",
-			Severity: SeverityWarning,
+		findings = append(findings, forgeconv.Finding{
+			Rule:     string(RuleAdapterNoRPC),
+			Severity: forgeconv.SeverityWarning,
 			File:     rel,
 			Line:     hit.line,
 			Message: fmt.Sprintf(
@@ -216,6 +222,10 @@ func hasAdapterMarker(f *ast.File) bool {
 // in the comment text. Mirrors the existing conventions
 // (`// forge:entity`, `// forge:operator-scheme`) — match the `forge:`
 // prefix + role token, ignoring leading slash/space variations.
+//
+// Shared between the adapter and interactor rules so a single
+// convention change (e.g. adopting `//forge:` without the space) lands
+// in one place.
 func containsForgeMarker(text, role string) bool {
 	needle := "forge:" + role
 	for _, line := range strings.Split(text, "\n") {

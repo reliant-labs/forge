@@ -56,6 +56,13 @@ type ContractFile struct {
 	// Used by the zero-value generator to emit "nil" for interface-typed
 	// returns instead of the invalid composite literal "T{}".
 	InterfaceNames map[string]bool
+	// PrimitiveAliases maps a named type (e.g. "BalanceCapReason") to its
+	// underlying primitive kind (e.g. "string"). Populated by scanning
+	// contract.go and its sibling .go files for `type X <primitive>`
+	// declarations. Used by the zero-value generator to emit the
+	// underlying primitive's zero (`""`, `0`, `false`) instead of the
+	// invalid composite literal `BalanceCapReason{}`.
+	PrimitiveAliases map[string]string
 }
 
 // Options controls optional aspects of mock generation. The zero value is
@@ -141,9 +148,10 @@ func ParseContract(path string) (*ContractFile, error) {
 	}
 
 	cf := &ContractFile{
-		Package:        file.Name.Name,
-		Imports:        make(map[string]string),
-		InterfaceNames: make(map[string]bool),
+		Package:          file.Name.Name,
+		Imports:          make(map[string]string),
+		InterfaceNames:   make(map[string]bool),
+		PrimitiveAliases: make(map[string]string),
 	}
 
 	// Scan sibling .go files in the same package directory and record any
@@ -170,8 +178,14 @@ func ParseContract(path string) (*ContractFile, error) {
 				continue // best-effort: skip unparseable siblings
 			}
 			collectInterfaceNames(siblingFile, cf.InterfaceNames)
+			collectPrimitiveAliases(siblingFile, cf.PrimitiveAliases)
 		}
 	}
+
+	// Also collect primitive aliases declared in contract.go itself, so the
+	// zero-value generator handles `type X string` defined alongside the
+	// Service interface in the same file.
+	collectPrimitiveAliases(file, cf.PrimitiveAliases)
 
 	// Collect imports: build a map from local name → import path.
 	for _, imp := range file.Imports {
@@ -283,6 +297,76 @@ func collectInterfaceNames(file *ast.File, names map[string]bool) {
 			}
 		}
 	}
+}
+
+// primitiveKinds enumerates the underlying Go primitive identifiers the
+// zero-value generator can resolve for a named alias. Limited to types
+// whose zero value is unambiguous and renders to a Go literal — pointers,
+// slices, maps, channels, funcs, etc. already have their own branches in
+// zeroValue and are not alias targets here.
+var primitiveKinds = map[string]bool{
+	"bool":    true,
+	"string":  true,
+	"int":     true,
+	"int8":    true,
+	"int16":   true,
+	"int32":   true,
+	"int64":   true,
+	"uint":    true,
+	"uint8":   true,
+	"uint16":  true,
+	"uint32":  true,
+	"uint64":  true,
+	"uintptr": true,
+	"float32": true,
+	"float64": true,
+	"byte":    true,
+	"rune":    true,
+}
+
+// collectPrimitiveAliases records any `type X <primitive>` declarations
+// from file into the aliases map (name → underlying primitive kind). Used
+// so the zero-value generator emits the underlying primitive's zero
+// (e.g. `""` for `type BalanceCapReason string`) rather than the invalid
+// composite literal `BalanceCapReason{}`.
+func collectPrimitiveAliases(file *ast.File, aliases map[string]string) {
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			ident, ok := typeSpec.Type.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			if primitiveKinds[ident.Name] {
+				aliases[typeSpec.Name.Name] = ident.Name
+			}
+		}
+	}
+}
+
+// primitiveZero returns the zero-value literal for a primitive kind name.
+// Returns ("", false) if kind is not a recognized primitive.
+func primitiveZero(kind string) (string, bool) {
+	switch kind {
+	case "bool":
+		return "false", true
+	case "string":
+		return `""`, true
+	case "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+		"byte", "rune":
+		return "0", true
+	case "float32", "float64":
+		return "0", true
+	}
+	return "", false
 }
 
 // extractMethod builds a MethodDef from a *ast.FuncType.
@@ -398,10 +482,11 @@ func writeMock(cf *ContractFile, dir string, opts Options) error {
 	}
 
 	data := templateData{
-		Package:        cf.Package,
-		Imports:        imports,
-		Interfaces:     cf.Interfaces,
-		InterfaceNames: interfaceNames,
+		Package:          cf.Package,
+		Imports:          imports,
+		Interfaces:       cf.Interfaces,
+		InterfaceNames:   interfaceNames,
+		PrimitiveAliases: cf.PrimitiveAliases,
 	}
 
 	var buf bytes.Buffer
@@ -543,10 +628,15 @@ func (m MethodDef) FuncFieldType() string {
 // parsed contract; passed through to zeroValue so interface-typed returns
 // emit "nil" rather than the invalid composite literal "T{}".
 //
+// primitiveAliases maps locally-declared named primitive types (e.g.
+// `type BalanceCapReason string`) to their underlying kind; passed
+// through so the mock emits the primitive's zero value ("") rather than
+// the invalid composite literal `BalanceCapReason{}`.
+//
 // The trailing error result is rendered as contractkit.MockNotSet so the
 // canonical "Mock<Iface>.<Method>Func not set" error string lives in the
 // library; bumping the format is now a one-place change.
-func (m MethodDef) ZeroResults(mockName string, interfaceNames map[string]bool) string {
+func (m MethodDef) ZeroResults(mockName string, interfaceNames map[string]bool, primitiveAliases map[string]string) string {
 	if len(m.Results) == 0 {
 		return ""
 	}
@@ -556,7 +646,7 @@ func (m MethodDef) ZeroResults(mockName string, interfaceNames map[string]bool) 
 		if i == len(m.Results)-1 && r.TypeExpr == "error" {
 			parts = append(parts, fmt.Sprintf(`contractkit.MockNotSet(%q, %q)`, mockName, m.Name))
 		} else {
-			parts = append(parts, zeroValue(r.TypeExpr, interfaceNames))
+			parts = append(parts, zeroValue(r.TypeExpr, interfaceNames, primitiveAliases))
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -696,7 +786,12 @@ func isInterfaceType(typeExpr string, interfaceNames map[string]bool) bool {
 // the parsed ContractFile; types in that set (or in the cross-package
 // allow-list) emit "nil" instead of "T{}" because composite literals are
 // not valid for interface types.
-func zeroValue(typeExpr string, interfaceNames map[string]bool) string {
+//
+// primitiveAliases maps locally-declared named primitive types (e.g.
+// `type BalanceCapReason string`) to their underlying kind. Types in
+// this map emit the underlying primitive's zero value (`""`, `0`,
+// `false`) instead of the invalid composite literal `T{}`.
+func zeroValue(typeExpr string, interfaceNames map[string]bool, primitiveAliases map[string]string) string {
 	switch {
 	case typeExpr == "bool":
 		return "false"
@@ -729,6 +824,15 @@ func zeroValue(typeExpr string, interfaceNames map[string]bool) string {
 		// composite literal "T{}" is invalid for interfaces, so emit
 		// "nil" — the typed-nil-interface zero value.
 		return "nil"
+	case primitiveAliases[typeExpr] != "":
+		// Named primitive alias declared in the package (e.g.
+		// `type BalanceCapReason string`). A composite literal `T{}`
+		// is invalid for primitive-underlying named types, so emit the
+		// underlying primitive's zero value.
+		if z, ok := primitiveZero(primitiveAliases[typeExpr]); ok {
+			return z
+		}
+		return typeExpr + "{}"
 	case localNamedTypeRe.MatchString(typeExpr),
 		qualifiedNamedTypeRe.MatchString(typeExpr):
 		// Named type — assume a struct value and emit the composite-literal

@@ -694,7 +694,7 @@ func TestRelevantMigrationSkills_FindsCanonicalContractkit(t *testing.T) {
 	skills := relevantMigrationSkills("0.5.0", "1.6.0")
 	var found bool
 	for _, s := range skills {
-		if s.Path == "migration/v0.x-to-contractkit" {
+		if s.Path == "migrations/v0.x-to-contractkit" {
 			found = true
 			if s.Description == "" {
 				t.Errorf("skill %q has empty description (frontmatter unparsed?)", s.Path)
@@ -707,7 +707,7 @@ func TestRelevantMigrationSkills_FindsCanonicalContractkit(t *testing.T) {
 		for _, s := range skills {
 			paths = append(paths, s.Path)
 		}
-		t.Errorf("relevantMigrationSkills(0.5.0 → 1.6.0) did not include migration/v0.x-to-contractkit. Got: %v", paths)
+		t.Errorf("relevantMigrationSkills(0.5.0 → 1.6.0) did not include migrations/v0.x-to-contractkit. Got: %v", paths)
 	}
 }
 
@@ -721,13 +721,13 @@ func TestRelevantMigrationSkills_LegacyTreatedAsSurfaceAll(t *testing.T) {
 	}
 	var found bool
 	for _, s := range skills {
-		if s.Path == "migration/v0.x-to-contractkit" {
+		if s.Path == "migrations/v0.x-to-contractkit" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("legacy 0.0.0 → latest path missing canonical migration/v0.x-to-contractkit skill")
+		t.Errorf("legacy 0.0.0 → latest path missing canonical migrations/v0.x-to-contractkit skill")
 	}
 }
 

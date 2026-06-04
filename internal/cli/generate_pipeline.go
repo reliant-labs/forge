@@ -258,6 +258,7 @@ func generateSteps() []GenStep {
 		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
+		{Name: "check forked-sibling dangling refs", Gate: always, Run: stepCheckForkedDanglingRefs, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
@@ -300,7 +301,49 @@ var scopedStepAllowlist = map[string]map[string]bool{
 		"rehash tracked files":             true,
 		"post-gen validation":              true,
 		"detect renamed Tier-1 exports":    true,
+		"check forked-sibling dangling refs": true,
 		"go build (validate generated code)": true,
+	},
+	// The "mocks" scope covers the fast-path "I just edited contract.go,
+	// regenerate mock_gen.go" workflow. Mocks live behind a "DO NOT EDIT"
+	// banner and are deterministic from contract.go + the service proto;
+	// they cannot stomp any Tier-1 file. So:
+	//
+	//   - Skip "check Tier-1 file-stomp guard" entirely. The guard exists
+	//     to protect Tier-1 files from being overwritten by codegen
+	//     emitters; the mock emitter only touches internal/<svc>/mock_gen.go,
+	//     which is itself Tier-1 owned by forge. Forcing the user to
+	//     reconcile unrelated Tier-1 drift (a hand-edited workflow yaml,
+	//     a touched cmd/server.go) before they can regen a mock has no
+	//     payoff — there's no file the mock step could clobber that the
+	//     unrelated edits put at risk.
+	//
+	//   - Run only the strictly required prereqs for stepServiceMocks:
+	//     load config + checksums (so the writer has somewhere to record),
+	//     detect proto directories (HasServices feeds the gate),
+	//     ensure gen/go.mod (parser-side dependency), parse services
+	//     + module path (the mock emitter walks ctx.Services), and the
+	//     mock step itself. Goimports + rehash tail keeps the just-
+	//     written file consistent with the audit machinery, but we skip
+	//     the validate `go build ./...` and the post-gen heuristic
+	//     warnings — the user already has a tight inner-loop ("contract
+	//     change → regen mock → run unit tests") that runs `go build`
+	//     itself.
+	//
+	// FRICTION 2026-06-04: two downstream projects reported that they
+	// could not regen mock_gen.go after a contract.go change without
+	// first reconciling unrelated Tier-1 file edits sitting in their
+	// tree (e.g. modified .github/workflows/ci.yml). The mocks-only
+	// scope makes the inner-loop hermetic.
+	"mocks": {
+		"load project config":          true,
+		"load checksums":                true,
+		"detect proto directories":     true,
+		"ensure gen/go.mod":             true,
+		"parse services + module path": true,
+		"service mocks":                 true,
+		"goimports on generated Go":     true,
+		"rehash tracked files":          true,
 	},
 }
 

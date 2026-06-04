@@ -1,5 +1,5 @@
 ---
-name: upgrade
+name: migration-upgrade
 description: Upgrade a forge project to a newer forge binary version — version pinning in forge.yaml, per-version migration skills, and the deprecation cycle policy.
 ---
 
@@ -42,7 +42,7 @@ forge upgrade --force
 
 `forge upgrade` runs in three phases:
 
-1. **Discover migration skills.** It walks `skills/forge/migration/v*-to-*`
+1. **Discover migration skills.** It walks `skills/forge/migrations/v*-to-*`
    in the embedded skill registry and surfaces any whose `from` prefix
    matches the project's current `forge_version` major/minor family.
    Each skill prints with a `forge skill load <path>` command.
@@ -54,9 +54,9 @@ forge upgrade --force
 
 ## Reading per-version migration skills
 
-A migration skill at `migration/v<from>-to-<feature>` is the playbook
+A migration skill at `migrations/v<from>-to-<feature>` is the playbook
 for crossing one version boundary. Every skill follows the same
-six-section shape (see `migration/v0.x-to-contractkit` as the canonical
+six-section shape (see `migrations/v0.x-to-contractkit` as the canonical
 example):
 
 1. **What changed.** A one-paragraph technical description.
@@ -94,7 +94,7 @@ When forge changes the shape of a generated artifact:
 
 ## When to write a new migration skill
 
-Forge core authors should add a new `migration/v<from>-to-<feature>`
+Forge core authors should add a new `migrations/v<from>-to-<feature>`
 skill whenever a release changes the *shape* of a generated artifact
 in a way that user code or downstream tooling can observe. Pure
 internal refactors (e.g. swapping the regex engine that parses
@@ -106,29 +106,29 @@ helper, a changed file layout — those do.
 - `migration` — the top-level skill for porting a non-forge project
   *into* forge in the first place. This skill is for upgrading an
   already-forge project.
-- `migration/v0.x-to-contractkit` — the canonical per-version
+- `migrations/v0.x-to-contractkit` — the canonical per-version
   migration example (mock/middleware/tracing/metrics → contractkit).
-- `migration/v0.x-to-observe-libs` — per-package wrapper codegen →
+- `migrations/v0.x-to-observe-libs` — per-package wrapper codegen →
   `forge/pkg/observe` Connect interceptors.
-- `migration/v0.x-to-crud-lib` — `handlers_crud_gen.go` inline
+- `migrations/v0.x-to-crud-lib` — `handlers_crud_gen.go` inline
   lifecycle → `forge/pkg/crud` delegation shims.
-- `migration/v0.x-to-authz-lib` — `handlers/<svc>/authorizer_gen.go`
+- `migrations/v0.x-to-authz-lib` — `handlers/<svc>/authorizer_gen.go`
   inline matching logic → `forge/pkg/authz` interface-driven shim.
-- `migration/v0.x-to-tdd-rpccases` — `handlers_crud_gen_test.go`
+- `migrations/v0.x-to-tdd-rpccases` — `handlers_crud_gen_test.go`
   per-RPC inline test boilerplate → `tdd.RunRPCCases` row-driven shims.
-- `migration/v0.x-to-pack-starter-split` — stripe / twilio /
+- `migrations/v0.x-to-pack-starter-split` — stripe / twilio /
   clerk-webhook demoted from packs to one-time-copy starters.
-- `migration/v0.x-to-env-config` — hand-curated KCL env-var groups →
+- `migrations/v0.x-to-env-config` — hand-curated KCL env-var groups →
   `forge.yaml environments[].config` + sensitive-field projection.
-- `migration/v0.x-to-testkit` — bootstrap_testing.go inlined sub-helpers
+- `migrations/v0.x-to-testkit` — bootstrap_testing.go inlined sub-helpers
   (discard logger, in-memory SQLite, httptest harness, permissive
   authorizer, WithTestTenant) → `forge/pkg/testkit` library.
-- `migration/v0.x-to-strict-contract-names` — internal-package
+- `migrations/v0.x-to-strict-contract-names` — internal-package
   `contract.go` files must declare `type Service interface`, `type Deps
   struct`, and `func New(Deps) Service` exactly. Lint-enforced via
   `forgeconv-internal-package-contract-names`; non-canonical names
   previously produced silently-broken bootstrap codegen.
-- `migration/v0.x-to-checksum-history` — `.forge/checksums.json` flat
+- `migrations/v0.x-to-checksum-history` — `.forge/checksums.json` flat
   shape (path -> hex string) -> structured shape (path -> {hash, history[]})
   so `forge upgrade` distinguishes stale codegen from real user edits.
   Transparent migration — most users will not notice.

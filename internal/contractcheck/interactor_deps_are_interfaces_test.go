@@ -1,9 +1,17 @@
-package forgeconv
+// File: internal/contractcheck/interactor_deps_are_interfaces_test.go
+//
+// Ported from internal/linter/forgeconv/interactor_deps_are_interfaces_test.go
+// on 2026-06-04. Fixtures and assertions are unchanged.
+
+package contractcheck
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
 // TestLintInteractorDepsAreInterfaces_Fires verifies the rule fires
@@ -12,16 +20,20 @@ import (
 // designed for.
 func TestLintInteractorDepsAreInterfaces_Fires(t *testing.T) {
 	t.Parallel()
-	res, err := LintInteractorDepsAreInterfaces(filepath.Join("testdata", "interactor_concrete_deps"))
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "interactor_concrete_deps"),
+		Options{Rules: []Rule{RuleInteractorDepsAreInterfaces}},
+	)
 	if err != nil {
-		t.Fatalf("LintInteractorDepsAreInterfaces: %v", err)
+		t.Fatalf("Inspect: %v", err)
 	}
-	got := findingsForRule(res.Findings, "forgeconv-interactor-deps-are-interfaces")
+	got := findingsForRule(fs, string(RuleInteractorDepsAreInterfaces))
 	if len(got) != 1 {
-		t.Fatalf("expected 1 finding (Charger field), got %d:\n%s", len(got), res.FormatText())
+		t.Fatalf("expected 1 finding (Charger field), got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
 	}
 	f := got[0]
-	if f.Severity != SeverityWarning {
+	if f.Severity != forgeconv.SeverityWarning {
 		t.Errorf("rule should be a warning, got %s", f.Severity)
 	}
 	if !strings.Contains(f.Message, "Charger") {
@@ -33,7 +45,7 @@ func TestLintInteractorDepsAreInterfaces_Fires(t *testing.T) {
 	if !strings.Contains(f.Remediation, "forge skill load interactor") {
 		t.Errorf("remediation should point at the interactor skill; got: %s", f.Remediation)
 	}
-	if res.HasErrors() {
+	if HasErrors(fs) {
 		t.Errorf("rule must not gate the build; HasErrors() = true")
 	}
 }
@@ -43,13 +55,17 @@ func TestLintInteractorDepsAreInterfaces_Fires(t *testing.T) {
 // always-allowed Logger) produces no findings.
 func TestLintInteractorDepsAreInterfaces_CleanFixture(t *testing.T) {
 	t.Parallel()
-	res, err := LintInteractorDepsAreInterfaces(filepath.Join("testdata", "interactor_clean"))
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "interactor_clean"),
+		Options{Rules: []Rule{RuleInteractorDepsAreInterfaces}},
+	)
 	if err != nil {
-		t.Fatalf("LintInteractorDepsAreInterfaces: %v", err)
+		t.Fatalf("Inspect: %v", err)
 	}
-	got := findingsForRule(res.Findings, "forgeconv-interactor-deps-are-interfaces")
+	got := findingsForRule(fs, string(RuleInteractorDepsAreInterfaces))
 	if len(got) != 0 {
-		t.Fatalf("expected 0 findings on clean fixture, got %d:\n%s", len(got), res.FormatText())
+		t.Fatalf("expected 0 findings on clean fixture, got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
 	}
 }
 
@@ -59,11 +75,13 @@ func TestLintInteractorDepsAreInterfaces_CleanFixture(t *testing.T) {
 func TestLintInteractorDepsAreInterfaces_NoInternalDir(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	res, err := LintInteractorDepsAreInterfaces(tmp)
+	fs, err := Inspect(context.Background(), tmp,
+		Options{Rules: []Rule{RuleInteractorDepsAreInterfaces}},
+	)
 	if err != nil {
-		t.Fatalf("LintInteractorDepsAreInterfaces on empty project: %v", err)
+		t.Fatalf("Inspect on empty project: %v", err)
 	}
-	if len(res.Findings) != 0 {
-		t.Errorf("empty project should produce 0 findings, got %d", len(res.Findings))
+	if len(fs) != 0 {
+		t.Errorf("empty project should produce 0 findings, got %d", len(fs))
 	}
 }

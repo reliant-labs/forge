@@ -31,7 +31,7 @@ const (
 // invoke `./project <svc>` directly, and KCL emits a single
 // MultiServiceApplication (one image, N Deployments) instead of N
 // Applications. See FORGE_BACKLOG.md "Layer B" + the
-// migration/v0.x-to-binary-shared/ skill for tradeoffs.
+// migrations/v0.x-to-binary-shared/ skill for tradeoffs.
 const (
 	ProjectBinaryPerService = "per-service"
 	ProjectBinaryShared     = "shared"

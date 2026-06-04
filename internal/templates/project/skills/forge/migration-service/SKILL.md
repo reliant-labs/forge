@@ -1,11 +1,11 @@
 ---
-name: service
+name: migration-service
 description: Migrate a server-shaped project to forge — services, operators, workers, webhooks, packs, multi-binary cmd/, k8s manifests.
 ---
 
 # Migrate a Server-Shaped Project
 
-Use this skill when the existing project is network-facing: HTTP/gRPC servers, background workers, webhook receivers, k8s deployments. For CLI / library shapes see `migration/cli`. For prerequisites and the overall flow see `migration`.
+Use this skill when the existing project is network-facing: HTTP/gRPC servers, background workers, webhook receivers, k8s deployments. For CLI / library shapes see `migration-cli`. For prerequisites and the overall flow see `migration`.
 
 ## Scaffold
 
@@ -205,6 +205,6 @@ forge deploy dev        # local k3d
 
 ## When this skill is not enough
 
-- **CLI / library shape** — see `migration/cli`.
+- **CLI / library shape** — see `migration-cli`.
 - **Designing the contract surface** for ported internal packages — see `contracts`.
 - **Pack-specific config** (auth, billing, SMS) — see `packs`, `auth`, and the per-pack docs in `forge pack list`.

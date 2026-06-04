@@ -182,9 +182,9 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | Where | Form | Example |
 |---|---|---|
 | `forge.yaml` service / worker / operator display name | kebab-case | `admin-server`, `git-credential` |
-| `forge.yaml` `path:` field (and on-disk directory) | snake_case | `services/admin_server`, `handlers/git_credential` |
-| Go package directory under `handlers/` / `internal/` | snake_case | `handlers/admin_server/`, `internal/billing_flow/` |
-| Go package declaration | single lowercase identifier, no separators | `package admin` (NOT `admin_server`) |
+| `forge.yaml` `path:` field (and on-disk directory) | lowercase, `-` and `_` stripped | `handlers/adminserver`, `handlers/gitcredential` |
+| Go package directory under `handlers/` / `internal/` | lowercase, `-` and `_` stripped | `handlers/adminserver/`, `internal/billingflow/` |
+| Go package declaration | matches the directory — single lowercase identifier, no separators | `package adminserver` |
 | Go exported type / interface / method | PascalCase | `type Service interface`, `func (s *svc) DoThing(...)` |
 | Go exported field on `*App` | PascalCase | `app.AdminServer`, `app.BillingFlow` |
 | Go variable / parameter | camelCase (initialisms stay capitalized) | `orgID`, `createdAt`, `userID` |
@@ -200,7 +200,7 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | TS hook / variable export | camelCase | `useListUsers`, `pageSize` |
 | URL route param / query key | kebab-case | `/audit-events`, `?page-token=...` |
 
-**Same identifier, three forms in one sentence.** When discussing `admin-server`'s `AdminServer.GetUser` RPC handler in `handlers/admin_server/handlers.go` — that's the kebab-case service display name, the PascalCase `*App` field plus the PascalCase RPC method, and the snake_case directory path. All three are intentional and all three are correct.
+**Same identifier, three forms in one sentence.** When discussing `admin-server`'s `AdminServer.GetUser` RPC handler in `handlers/adminserver/handlers.go` — that's the kebab-case service display name, the PascalCase `*App` field plus the PascalCase RPC method, and the canonicalized directory path. All three are intentional and all three are correct. The service / worker / operator canonicalization rule (`strings.ToLower` then strip `-` and `_`) lives in `generator.ServicePackageName`; the `workers` skill Naming section is the source of truth for the on-disk consequences and the migration gotcha.
 
 **Lint enforces the structural ones.** `forgeconv-pk-annotation`, `forgeconv-tenant-annotation`, `forgeconv-one-service-per-file`, `forgeconv-internal-package-contract-names`, and the `--scaffolds` analyzer enforce the proto / contract / scaffold halves of this table mechanically. The Go-style rules (`PascalCase` exports, `camelCase` locals) are enforced by `gofmt` / `goimports` / `staticcheck` already.
 

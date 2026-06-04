@@ -27,16 +27,17 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch         bool
-		force         bool
-		accept        bool
-		explain       bool
-		skipValidate  bool
-		skipPreChecks bool
-		resetTier2    bool
-		assumeYes     bool
-		checkOnly     bool
-		scope         string
+		watch          bool
+		force          bool
+		accept         bool
+		explain        bool
+		skipValidate   bool
+		skipPreChecks  bool
+		resetTier2     bool
+		assumeYes      bool
+		checkOnly      bool
+		steps          string
+		deprecatedScope string // hidden alias for --steps, kept for one release
 	)
 
 	cmd := &cobra.Command{
@@ -69,7 +70,7 @@ Examples:
   forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
   forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
   forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree
-  forge generate --scope=mocks      # Fast path: regen only mock_gen.go after a contract.go change (skips Tier-1 drift guard)`,
+  forge generate --steps=mocks      # Fast path: regen only mock_gen.go after a contract.go change (skips Tier-1 drift guard)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
 				return runGenerateCheck()
@@ -93,6 +94,21 @@ Examples:
 					"pick one — --force to regenerate from templates, or --accept to refresh checksums and keep your edits")
 			}
 
+			// Backwards-compat: --scope was renamed to --steps in this
+			// release. Cobra itself emits the deprecation warning (via
+			// MarkDeprecated below). We just forward the value here, and
+			// reject the ambiguous case where both flags are passed with
+			// different values.
+			if deprecatedScope != "" {
+				if steps != "" && steps != deprecatedScope {
+					return cliutil.UserErr("forge generate",
+						fmt.Sprintf("--steps=%q conflicts with deprecated --scope=%q", steps, deprecatedScope),
+						"",
+						"pass only --steps; --scope is a deprecated alias and will be removed")
+				}
+				steps = deprecatedScope
+			}
+
 			generateMu.Lock()
 			err := runGeneratePipelineFlags(".", pipelineFlags{
 				Force:         force,
@@ -101,7 +117,7 @@ Examples:
 				SkipPreChecks: skipPreChecks,
 				ResetTier2:    resetTier2,
 				AssumeYes:     assumeYes,
-				Scope:         scope,
+				Steps:         steps,
 			})
 			generateMu.Unlock()
 
@@ -136,7 +152,18 @@ Examples:
 	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Auto-confirm interactive prompts (currently consumed by --reset-tier2)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
-	cmd.Flags().StringVar(&scope, "scope", "", "Narrow the pipeline to a named subset of steps. Valid values: \"bootstrap-only\" (used internally by `forge add worker`), \"mocks\" (regen only mock_gen.go after a contract.go change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
+	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge add worker'), \"mocks\" (regen only mock_gen.go after a contract.go change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
+	// Deprecated alias for --steps. The flag previously called --scope
+	// was renamed in this release to free up the word "scope" for the
+	// file-ownership concept (see internal/checksums/inspector.go).
+	// Hidden so `--help` shows only the canonical --steps; still
+	// functional for one release so existing scripts don't break
+	// overnight.
+	cmd.Flags().StringVar(&deprecatedScope, "scope", "", "(deprecated) renamed to --steps")
+	// cobra's MarkDeprecated both hides the flag from --help and emits
+	// a one-line deprecation message to stderr the first time the user
+	// passes it. One-release alias — drop after the next minor bump.
+	_ = cmd.Flags().MarkDeprecated("scope", "use --steps instead")
 
 	return cmd
 }
@@ -186,21 +213,28 @@ type pipelineFlags struct {
 	// AssumeYes auto-confirms y/N prompts. Currently only consumed by
 	// the per-file Tier-2 overwrite prompt under --reset-tier2.
 	AssumeYes bool
-	// Scope narrows the set of pipeline steps the runner executes. The
-	// empty string runs the full pipeline (the historical default). The
-	// "bootstrap-only" value runs JUST the load/parse/bootstrap/validate
-	// subset — used by `forge add worker` so adding a single worker
-	// doesn't trigger a full project regen that stomps unrelated Tier-1
-	// files (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
-	// pkg/config/config.go). The step allowlist lives in
-	// scopedStepAllowlist (generate_pipeline.go).
+	// Steps names a step preset that narrows the set of pipeline steps
+	// the runner executes. The empty string runs the full pipeline (the
+	// historical default). The "bootstrap-only" value runs JUST the
+	// load/parse/bootstrap/validate subset — used by `forge add worker`
+	// so adding a single worker doesn't trigger a full project regen
+	// that stomps unrelated Tier-1 files (.github/workflows/ci.yml,
+	// cmd/server.go, frontend mocks, pkg/config/config.go). The step
+	// preset allowlist lives in stepPresetAllowlist
+	// (generate_pipeline.go).
+	//
+	// (Field previously named Scope; renamed because "scope" was
+	// overloaded with the file-ownership concept in
+	// internal/checksums/inspector.go. The CLI flag spelling moved from
+	// --scope to --steps in the same release; --scope is preserved as a
+	// hidden deprecated alias for one release.)
 	//
 	// FRICTION 2026-06-03: cp-forge port-workers ran `forge add worker`
 	// 7× and watched regen rewrite 5 unrelated Tier-1 files per call.
 	// Composes with the existing tier1OwnerRegistry scoping in
 	// generate_tier1_scope.go — both narrow what `forge add worker`
 	// touches, just at different layers (drift-guard vs step execution).
-	Scope string
+	Steps string
 }
 
 // runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
@@ -262,17 +296,18 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 	}()
 
-	// Scope filter — when flags.Scope is non-empty, drop steps not in the
-	// allowlist BEFORE the Gate check. The gate is a project-shape
-	// predicate ("does this project have services?"); the scope is a
-	// caller-intent predicate ("am I doing a bootstrap-only regen?").
-	// They compose: a step that's allowlisted by scope still has to pass
-	// its Gate, and a step gated off would skip regardless of scope.
+	// Step-preset filter — when flags.Steps is non-empty, drop steps not
+	// in the allowlist BEFORE the Gate check. The gate is a project-shape
+	// predicate ("does this project have services?"); the step preset is
+	// a caller-intent predicate ("am I doing a bootstrap-only regen?").
+	// They compose: a step that's allowlisted by the preset still has to
+	// pass its Gate, and a step gated off would skip regardless of the
+	// preset.
 	steps := generateSteps()
-	if flags.Scope != "" {
-		allow, ok := scopedStepAllowlist[flags.Scope]
+	if flags.Steps != "" {
+		allow, ok := stepPresetAllowlist[flags.Steps]
 		if !ok {
-			return fmt.Errorf("unknown pipeline scope %q (valid: %s)", flags.Scope, knownScopeNames())
+			return fmt.Errorf("unknown pipeline step preset %q (valid: %s)", flags.Steps, knownStepPresetNames())
 		}
 		filtered := steps[:0:0]
 		for _, step := range steps {
@@ -280,7 +315,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 				filtered = append(filtered, step)
 			}
 		}
-		fmt.Printf("⏩ scope=%s: running %d of %d pipeline steps\n", flags.Scope, len(filtered), len(steps))
+		fmt.Printf("⏩ steps=%s: running %d of %d pipeline steps\n", flags.Steps, len(filtered), len(steps))
 		steps = filtered
 	}
 

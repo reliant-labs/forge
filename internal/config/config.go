@@ -503,6 +503,35 @@ type DeployConfig struct {
 	Concurrency    DeployConcurrency `yaml:"concurrency,omitempty"`
 	FrontendDeploy string            `yaml:"frontend_deploy,omitempty"` // "firebase", "vercel", "none"
 	MigrationTest  bool              `yaml:"migration_test,omitempty"`  // test migrations before deploy
+
+	// TargetArch is the GOARCH the deploy target cluster runs on. When
+	// unset, forge defaults to amd64 (the predominant k8s host arch).
+	// Setting this at the project level means Mac/arm64 dev machines
+	// will cross-compile the Go binary (GOOS=linux GOARCH=<target>
+	// CGO_ENABLED=0) and pass --platform=linux/<target> to docker
+	// buildx so the image kubelet pulls actually runs on the node.
+	//
+	// Without cross-compile, an arm64-built image deployed onto an
+	// amd64 node fails at pod startup with the opaque kernel-level
+	// "exec format error". The CLI's --target-arch flag overrides
+	// this per-invocation.
+	TargetArch string `yaml:"target_arch,omitempty"`
+}
+
+// EffectiveTargetArch returns the deploy-target GOARCH. Order of
+// precedence: explicit override (caller-provided), forge.yaml's
+// deploy.target_arch, then the default "amd64". The "amd64" default
+// reflects the empirical reality that the vast majority of k8s nodes
+// are amd64; arm64 deployments must opt in via forge.yaml or
+// --target-arch.
+func (d *DeployConfig) EffectiveTargetArch(override string) string {
+	if override != "" {
+		return override
+	}
+	if d.TargetArch != "" {
+		return d.TargetArch
+	}
+	return "amd64"
 }
 
 // DeployEnvConfig defines a deployment environment.

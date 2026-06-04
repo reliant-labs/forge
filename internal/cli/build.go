@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,17 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 )
+
+// sortedKeys returns map keys in deterministic order. Used so docker
+// build args are stable across runs (relevant for layer caching).
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // buildOptions holds the flag values for the build command.
 type buildOptions struct {
@@ -47,7 +59,15 @@ Examples:
   forge build -o bin                         # Output binaries to bin/
   forge build --docker                       # Also build Docker images
   forge build --debug                        # Build with debug symbols for Delve
-  forge build --push ghcr.io/acme            # Build + retag + docker push to a registry`,
+  forge build --push ghcr.io/acme            # Build + retag + docker push to a registry
+  forge build --push localhost:5051          # k3d: auto-mirrors to registry.localhost:5051
+
+For k3d clusters, --push localhost:<port> also tags the image as
+registry.localhost:<port>/<name> (LOCAL alias only — the host can't
+DNS-resolve registry.localhost, so we don't push it; the containerd
+mirror config inside k3d resolves the manifest reference at pull time).
+This lets deployed manifests reference the in-cluster-resolvable name
+without forcing the user to add /etc/hosts entries on the host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --push implies --docker so users don't have to pass both.
 			if opts.pushRegistry != "" {
@@ -411,17 +431,38 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
 	}
-	// Tag for the push registry too when requested.
+	// Tag for the push registry too when requested. For localhost:<port>
+	// we also tag the k3d in-cluster mirror (registry.localhost:<port>)
+	// so deployed manifests can reference the in-cluster-resolvable name —
+	// but we only PUSH to the user-specified registry, since the host
+	// can't DNS-resolve `registry.localhost` (it's a k3d-internal name).
+	// The mirror tag is a local-only alias that downstream manifest
+	// references resolve via the containerd mirror config inside k3d.
 	var pushTags []string
-	if pushRegistry != "" {
-		pushLatest := fmt.Sprintf("%s/%s:latest", pushRegistry, cfg.Name)
+	for i, reg := range expandPushRegistries(pushRegistry) {
+		pushLatest := fmt.Sprintf("%s/%s:latest", reg, cfg.Name)
 		dockerArgs = append(dockerArgs, "-t", pushLatest)
-		pushTags = append(pushTags, pushLatest)
-		if v := gitVersionTag(); v != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", pushRegistry, cfg.Name, v)
-			dockerArgs = append(dockerArgs, "-t", pushVersion)
-			pushTags = append(pushTags, pushVersion)
+		// Only the first (user-specified) registry gets pushed. The
+		// auto-mirrored registry.localhost:<port> tag is local-alias-only.
+		if i == 0 {
+			pushTags = append(pushTags, pushLatest)
 		}
+		if v := gitVersionTag(); v != "" {
+			pushVersion := fmt.Sprintf("%s/%s:%s", reg, cfg.Name, v)
+			dockerArgs = append(dockerArgs, "-t", pushVersion)
+			if i == 0 {
+				pushTags = append(pushTags, pushVersion)
+			}
+		}
+	}
+	// Additional build contexts from forge.yaml's docker.build_contexts.
+	// Each becomes a `--build-context name=path` arg, letting the
+	// Dockerfile pull files from outside the normal context via
+	// `COPY --from=name`. Typical use: sibling-checkout local replace
+	// directives where the replaced module lives outside the project tree.
+	for _, name := range sortedKeys(cfg.Docker.BuildContexts) {
+		path := cfg.Docker.BuildContexts[name]
+		dockerArgs = append(dockerArgs, "--build-context", name+"="+path)
 	}
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
@@ -461,6 +502,25 @@ func dockerBuildProject(cfg *config.ProjectConfig, pushRegistry string) buildRes
 		duration: time.Since(start),
 		err:      nil,
 	}
+}
+
+// expandPushRegistries returns the set of registries to tag a built
+// image against. For non-localhost registries this is just the single
+// pushRegistry the caller passed. For `localhost:<port>` it also adds
+// `registry.localhost:<port>` — the canonical k3d pattern where the
+// host pushes to localhost and kubelet inside the node container pulls
+// from registry.localhost (the deploy/k3d.yaml mirrors block maps both
+// to the same backend). Returns nil when pushRegistry is empty.
+func expandPushRegistries(pushRegistry string) []string {
+	if pushRegistry == "" {
+		return nil
+	}
+	registries := []string{pushRegistry}
+	if strings.HasPrefix(pushRegistry, "localhost:") {
+		port := strings.TrimPrefix(pushRegistry, "localhost:")
+		registries = append(registries, "registry.localhost:"+port)
+	}
+	return registries
 }
 
 // countTags counts the `-t` flags in a docker build arg list for the
@@ -506,16 +566,33 @@ func dockerBuild(cfg *config.ProjectConfig, name, path, pushRegistry string) bui
 	if versionTag != "" {
 		dockerArgs = append(dockerArgs, "-t", versionTag)
 	}
+	// For localhost:<port> we also tag the k3d in-cluster mirror
+	// (registry.localhost:<port>) so deployed manifests can reference
+	// the in-cluster-resolvable name. See expandPushRegistries. We only
+	// PUSH to the first (user-specified) registry — the host can't
+	// DNS-resolve registry.localhost, so the mirror tag is a local
+	// alias that downstream manifests resolve via the containerd mirror
+	// config inside k3d. Matches the dockerBuildProject behaviour.
 	var pushTags []string
-	if pushRegistry != "" {
-		pushLatest := fmt.Sprintf("%s/%s:latest", pushRegistry, name)
+	for i, reg := range expandPushRegistries(pushRegistry) {
+		pushLatest := fmt.Sprintf("%s/%s:latest", reg, name)
 		dockerArgs = append(dockerArgs, "-t", pushLatest)
-		pushTags = append(pushTags, pushLatest)
-		if v := gitVersionTag(); v != "" {
-			pushVersion := fmt.Sprintf("%s/%s:%s", pushRegistry, name, v)
-			dockerArgs = append(dockerArgs, "-t", pushVersion)
-			pushTags = append(pushTags, pushVersion)
+		if i == 0 {
+			pushTags = append(pushTags, pushLatest)
 		}
+		if v := gitVersionTag(); v != "" {
+			pushVersion := fmt.Sprintf("%s/%s:%s", reg, name, v)
+			dockerArgs = append(dockerArgs, "-t", pushVersion)
+			if i == 0 {
+				pushTags = append(pushTags, pushVersion)
+			}
+		}
+	}
+	// Additional build contexts from forge.yaml. Same semantics as
+	// dockerBuildProject — useful when the frontend Dockerfile needs
+	// to reference paths outside its own subtree.
+	for _, k := range sortedKeys(cfg.Docker.BuildContexts) {
+		dockerArgs = append(dockerArgs, "--build-context", k+"="+cfg.Docker.BuildContexts[k])
 	}
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)

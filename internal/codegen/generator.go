@@ -1515,6 +1515,40 @@ func GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, ta
 	return os.WriteFile(setupPath, content, 0644)
 }
 
+// GeneratePostBootstrap writes pkg/app/post_bootstrap.go ONCE — it's a
+// Tier-3 user-owned scaffold whose default body is a no-op. Users own
+// the file after first emit and forge generate never overwrites it
+// (same rule as GenerateSetup and GenerateAppExtras).
+//
+// The hook exists so projects can run wiring that depends on a
+// constructed component (e.g. setting a snapshot saver onto a
+// concrete worker singleton); wire_gen only resolves Deps fields, so
+// post-construct registrations can't live in Setup.
+//
+// cmd/server.go.tmpl calls `app.PostBootstrap(application)` after
+// Bootstrap returns and propagates any returned error as a fatal boot
+// failure.
+func GeneratePostBootstrap(targetDir string) error {
+	appDir := filepath.Join(targetDir, "pkg", "app")
+	hookPath := filepath.Join(appDir, "post_bootstrap.go")
+
+	// Never overwrite — this is user-owned code.
+	if _, err := os.Stat(hookPath); err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		return err
+	}
+
+	content, err := templates.ProjectTemplates().Render("post_bootstrap.go.tmpl", struct{}{})
+	if err != nil {
+		return fmt.Errorf("render post_bootstrap.go.tmpl: %w", err)
+	}
+
+	return os.WriteFile(hookPath, content, 0644)
+}
+
 // hasFallibleConstructor returns true if any service, package, worker, operator, or function has a fallible constructor.
 func hasFallibleConstructor(services []BootstrapServiceData, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData) bool {
 	for _, s := range services {

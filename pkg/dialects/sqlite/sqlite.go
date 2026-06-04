@@ -52,6 +52,11 @@ func (d *Dialect) MapFieldType(fieldType orm.FieldType) string {
 		return "INTEGER" // SQLite uses INTEGER for auto-increment
 	case orm.TypeBigSerial:
 		return "INTEGER" // SQLite uses INTEGER for auto-increment
+	case orm.TypeReal, orm.TypeDoublePrecision:
+		// SQLite has REAL affinity (8-byte IEEE 754) for both float32
+		// and float64. Map both proto kinds onto REAL so introspection
+		// roundtrips cleanly without breaking driver Scan paths.
+		return "REAL"
 	default:
 		return "TEXT"
 	}
@@ -145,10 +150,14 @@ func (d *Dialect) ParseColumnType(dbType string) (orm.FieldType, error) {
 		return orm.TypeBytea, nil
 	}
 
-	// REAL affinity
-	if strings.Contains(dbType, "REAL") || strings.Contains(dbType, "FLOA") ||
-		strings.Contains(dbType, "DOUB") {
-		return orm.TypeText, nil // Map floating point to TEXT for safety
+	// REAL affinity — surface the proto-side distinction (REAL vs DOUBLE
+	// PRECISION) so DDL introspection roundtrips agree with the typed
+	// schema; both still land in SQLite's 8-byte REAL column at runtime.
+	if strings.Contains(dbType, "DOUB") {
+		return orm.TypeDoublePrecision, nil
+	}
+	if strings.Contains(dbType, "REAL") || strings.Contains(dbType, "FLOA") {
+		return orm.TypeReal, nil
 	}
 
 	// Special types
@@ -160,9 +169,11 @@ func (d *Dialect) ParseColumnType(dbType string) (orm.FieldType, error) {
 		return orm.TypeBoolean, nil
 	}
 
-	// NUMERIC affinity - default to TEXT for safety
+	// NUMERIC affinity — arbitrary precision; default to double for
+	// proto wire-compatibility (was TEXT for safety before TypeReal /
+	// TypeDoublePrecision landed).
 	if strings.Contains(dbType, "NUMERIC") || strings.Contains(dbType, "DECIMAL") {
-		return orm.TypeText, nil
+		return orm.TypeDoublePrecision, nil
 	}
 
 	// If empty or unknown, default to TEXT (SQLite's default affinity)

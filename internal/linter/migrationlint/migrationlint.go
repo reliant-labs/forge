@@ -125,6 +125,18 @@ var (
 )
 
 func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
+	// Honor in-file pragmas before stripping comments. The destructive-
+	// change rule accepts two opt-out forms anywhere in the file:
+	//   -- forge:allow-destructive
+	//   -- forge-safety: allow-destructive
+	// Both mean "I, the author of this migration, accept the destructive
+	// op; please don't make me round-trip through forge.yaml's
+	// AllowedDestructive globs." Useful for one-off destructive moves
+	// (replace-this-table migrations etc.) where editing the project
+	// config is out-of-scope for the lane. See
+	// migrationlint-no-per-file-destructive-pragma in FORGE_BACKLOG.
+	allowDestructive := hasAllowDestructivePragma(content)
+
 	clean := stripSQLComments(content)
 	statements := splitStatements(clean)
 	backfilledColumns := map[string]bool{}
@@ -136,7 +148,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			continue
 		}
 
-		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !isAllowedDestructive(file, cfg.AllowedDestructive) {
+		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive && !isAllowedDestructive(file, cfg.AllowedDestructive) {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
@@ -250,6 +262,19 @@ func severityFor(value string) Severity {
 	default:
 		return ""
 	}
+}
+
+// allowDestructivePragmaRe matches either of the supported in-file opt-out
+// forms. Whitespace between tokens is permissive; the leading `--` must be
+// a SQL line comment. Examples that match:
+//
+//	-- forge:allow-destructive
+//	-- forge-safety: allow-destructive
+//	--   FORGE:ALLOW-DESTRUCTIVE
+var allowDestructivePragmaRe = regexp.MustCompile(`(?im)^\s*--\s*(?:forge:allow-destructive\b|forge-safety:\s*allow-destructive\b)`)
+
+func hasAllowDestructivePragma(content string) bool {
+	return allowDestructivePragmaRe.MatchString(content)
 }
 
 func isAllowedDestructive(file string, patterns []string) bool {

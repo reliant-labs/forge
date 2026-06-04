@@ -34,6 +34,33 @@ var (
 )
 
 {{range .CRUDMethods}}
+{{- if .ShapeMismatch}}
+// FORGE_CRUD_SHAPE_MISMATCH: {{.MismatchReason}}
+//
+// The matching CRUD body generator emitted a CodeUnimplemented stub for
+// {{.MethodName}} because the request/response messages don't fit the
+// AIP-158-style template (see handlers_crud_gen.go). Templating an
+// AIP-158 happy-path row here would dereference fields the request type
+// doesn't have (e.g. Id on a string-Ticker request) and break the build.
+//
+// To exercise this RPC, hand-write a test in handlers_test.go that
+// constructs the bespoke request shape and asserts on the real handler
+// body in handlers/{{$.Package}}/handlers.go.
+func TestUnit_{{.MethodName}}(t *testing.T) {
+	t.Parallel()
+	svc := app.NewTest{{$.TestHelperName}}(t)
+
+	// FORGE_SCAFFOLD: shape-mismatch stub — replace with a hand-written
+	// case in handlers_test.go once the real handler body lands.
+	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{.InputType}}, pb.{{.OutputType}}]{
+		{
+			Name:    "scaffold_unimplemented",
+			Req:     connect.NewRequest(&pb.{{.InputType}}{}),
+			WantErr: connect.CodeUnimplemented,
+		},
+	}, svc.{{.MethodName}})
+}
+{{- else}}
 func TestUnit_{{.MethodName}}(t *testing.T) {
 	t.Parallel()
 	svc := app.NewTest{{$.TestHelperName}}(t)
@@ -70,4 +97,5 @@ func TestUnit_{{.MethodName}}(t *testing.T) {
 		},
 	}, svc.{{.MethodName}})
 }
+{{- end}}
 {{end}}

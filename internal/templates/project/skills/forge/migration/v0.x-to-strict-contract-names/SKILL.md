@@ -1,9 +1,19 @@
 ---
 name: v0.x-to-strict-contract-names
-description: Internal-package contract.go files must declare `type Service interface`, `type Deps struct`, and `func New(Deps) Service` exactly. The convention is now lint-enforced; non-canonical names previously produced silently-broken bootstrap codegen.
+description: Internal-package contract.go files must declare `type Service interface`, `type Deps struct`, and `func New(Deps) (Service, error)` (or the legacy single-result `func New(Deps) Service`). The convention is now lint-enforced; non-canonical names previously produced silently-broken bootstrap codegen.
 ---
 
 # Migrating to strict internal-package contract names
+
+> **Canonical New signature.** The current scaffold and the canonical
+> shape is the two-result form: `func New(Deps) (Service, error)`. The
+> single-result form `func New(Deps) Service` is still accepted by the
+> linter for backward compatibility, but the `forge add package` and
+> `forge generate` scaffolds emit the two-result form and the
+> `contract_test.go` auto-scaffold targets it. If you write the
+> single-result form, you keep ownership of `contract_test.go` (forge
+> will skip the auto-scaffold to avoid emitting a non-compiling
+> `_, err := pkg.New(...)` call).
 
 Use this skill when `forge generate` or `forge lint` reports a
 `forgeconv-internal-package-contract-names` violation, or when upgrading
@@ -91,9 +101,20 @@ For each violating package:
    +type Deps struct{}
    ```
 
-3. **Rename the constructor to `New(Deps) Service`.** Pointer receivers
-   for the parameter are intentionally rejected (`func New(*Deps) Service`)
-   — the bootstrap template emits a value, not a pointer.
+3. **Rename the constructor to `New(Deps) (Service, error)`** (canonical
+   two-result form) or `New(Deps) Service` (legacy single-result form,
+   still accepted by the lint). Pointer receivers for the parameter are
+   intentionally rejected (`func New(*Deps) Service`) — the bootstrap
+   template emits a value, not a pointer.
+
+   Canonical two-result form (matches the `forge add package` scaffold):
+   ```diff
+   -func NewSender(_ Config) Sender                 { return &svc{} }
+   +func New(_ Deps) (Service, error)               { return &svc{}, nil }
+   ```
+
+   Legacy single-result form (still lint-clean, but disables the
+   `contract_test.go` auto-scaffold — you own that file by hand):
    ```diff
    -func NewSender(_ Config) Sender { return &svc{} }
    +func New(_ Deps) Service        { return &svc{} }

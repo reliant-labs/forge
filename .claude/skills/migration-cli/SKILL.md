@@ -33,15 +33,17 @@ The Cobra `Use:` field inside `internal/cli/root.go` (or whatever your CLI sourc
 
 ## Adding a second binary
 
-There is **no `forge add binary` today.** To add a second entrypoint:
+Use `forge add binary <name>`. See the `binaries` skill for the full lifecycle; the short version:
 
 ```bash
-mkdir -p cmd/<second-binary>
-# Write cmd/<second-binary>/main.go directly
-# Add to go.work `use(...)` if it's its own module
+forge add binary <second-binary>                      # default --kind long-running
+forge add binary <second-binary> --kind cron          # cron-shaped (schedule via --schedule)
+forge add binary <second-binary> --kind oneshot       # one-shot (Run returns when work is done)
 ```
 
-This is a documented gap. Most "extra binary" cases (lint helpers, code generators, one-off ops tools) work fine as a hand-rolled `cmd/<name>/main.go` under the main module. If you find yourself adding three or more, consider whether they should be sub-commands of the primary CLI instead.
+This scaffolds `cmd/<name>.go` (a Cobra subcommand registered on the shared root) plus `internal/<name>/{contract.go,<name>.go,<name>_test.go}` and appends a `binaries:` entry to `forge.yaml`.
+
+For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary> dump-state`, `<binary> reset-foo`), `forge add binary` is still the right starting point: the scaffolded `<name>Cmd` Cobra command happily hosts both its own `RunE` body and child commands registered via `<name>Cmd.AddCommand(...)`. Add child subcommands as sibling files under `cmd/<name>_<subcmd>.go`. The `workaround-cmd-not-in-binaries` lint can fire on those sibling files in current forge — it's a known false-positive on subcommand-glue files; treat the warning as advisory until the heuristic is tightened.
 
 ## Pure-utility packages — three options
 
@@ -122,7 +124,7 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 ## Rules
 
 - Use `--kind cli` (or `--kind library`) at scaffold time. Don't try to disable server-shaped emission post-hoc.
-- Hand-roll second binaries under `cmd/<name>/main.go`. No `forge add binary` exists.
+- Use `forge add binary <name>` for second binaries (see the `binaries` skill for `--kind long-running|cron|oneshot`). The scaffolded Cobra command also hosts child subcommands via `<name>Cmd.AddCommand(...)` — same parent works as an admin-CLI host.
 - For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge package new`.
 - `forge generate` is mostly a no-op for `--kind cli`, but contract-bearing packages still need it for mocks/middleware.
 - `pkg/` sub-module: workspace `use` OR `replace`, not both.

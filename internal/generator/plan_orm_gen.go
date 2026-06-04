@@ -82,7 +82,7 @@ type ormField struct {
 	nullable    bool // should scan as pointer
 }
 
-func writeORMEntity(dbDir, modulePath, serviceName string, ent config.PlanEntity) error {
+func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	msgName := ent.Name
 	tableName := ent.TableName
 	if tableName == "" {
@@ -165,7 +165,7 @@ func writeORMEntity(dbDir, modulePath, serviceName string, ent config.PlanEntity
 	return os.WriteFile(filepath.Join(dbDir, fileName), []byte(b.String()), 0o644)
 }
 
-func writeORMImports(b *strings.Builder, hasTimestamp, softDelete, hasTenant bool) {
+func writeORMImports(b *strings.Builder, hasTimestamp, _, _ bool) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
 	if hasTimestamp {
@@ -185,7 +185,7 @@ func writeORMImports(b *strings.Builder, hasTimestamp, softDelete, hasTenant boo
 }
 
 // writeORMScanFunc writes a standalone scan<Entity> function.
-func writeORMScanFunc(b *strings.Builder, msgName, lowerMsg string, fields []ormField) {
+func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) {
 	fmt.Fprintf(b, "// scan%s scans a database row into a %s.\n", msgName, msgName)
 	fmt.Fprintf(b, "func scan%s(scanner interface{ Scan(...interface{}) error }) (*%s, error) {\n", msgName, msgName)
 	fmt.Fprintf(b, "\tentity := &%s{}\n", msgName)
@@ -243,7 +243,7 @@ func writeORMScanFunc(b *strings.Builder, msgName, lowerMsg string, fields []orm
 	b.WriteString("}\n\n")
 }
 
-func writeORMCreate(b *strings.Builder, msgName, tableName, lowerMsg string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField) {
+func writeORMCreate(b *strings.Builder, msgName, tableName, _ string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField) {
 	fmt.Fprintf(b, "// Create%s inserts a new %s row into the database.\n", msgName, msgName)
 	if hasTenant {
 		fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s, tenantID string) error {\n", msgName, msgName)

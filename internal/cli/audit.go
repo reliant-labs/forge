@@ -699,20 +699,7 @@ func countLineStartScaffoldMarkers(data []byte) int {
 	return count
 }
 
-// isLikelyTextFile keeps the scaffold-marker walk cheap by only opening
-// files whose extension is plausibly source (Go, proto, TS, YAML, MD,
-// SQL, KCL). Everything else (.png, .pdf, .so) is skipped.
-func isLikelyTextFile(name string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	switch ext {
-	case ".go", ".proto", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml",
-		".md", ".sql", ".k", ".sh", ".tmpl", ".toml", ".json":
-		return true
-	}
-	return false
-}
-
-// isMarkerScannable narrows isLikelyTextFile down to file types whose
+// isMarkerScannable identifies file types whose
 // FORGE_SCAFFOLD markers are real unfilled placeholders rather than
 // documentation references. Markdown and JSON commonly cite the marker
 // syntax in prose / fixtures, so they're excluded — those occurrences

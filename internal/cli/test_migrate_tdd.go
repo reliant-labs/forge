@@ -563,7 +563,7 @@ func extractRow(elt ast.Expr, plan *migrationPlan, isClient bool) (rpcRow, error
 
 // extractRPCCall walks the body of `call: func(...) error { ... }` and
 // pulls out (method name, request type name without pb. prefix).
-func extractRPCCall(fn *ast.FuncLit, plan *migrationPlan, isClient bool) (string, string, error) {
+func extractRPCCall(fn *ast.FuncLit, plan *migrationPlan, _ bool) (string, string, error) {
 	var rpcCall *ast.CallExpr
 
 	for _, stmt := range fn.Body.List {
@@ -673,7 +673,7 @@ func exprText(e ast.Expr) string {
 // TestHandlers/TestIntegration function and emits per-RPC TestXxx_Generated
 // functions in its place. Imports are rewritten to add `forge/pkg/tdd` and
 // drop unused packages.
-func renderMigratedFile(file *ast.File, src []byte, plan migrationPlan) ([]byte, error) {
+func renderMigratedFile(_ *ast.File, src []byte, plan migrationPlan) ([]byte, error) {
 	// Strategy: textual splice. We locate the byte range of the origin
 	// function (including its leading doc-comment) and replace it with the
 	// rendered per-RPC functions. Sibling test funcs and authz tests stay
@@ -775,7 +775,7 @@ func generateReplacementFuncs(plan migrationPlan) string {
 
 // patchImports removes "context" (no longer needed) and adds forge/pkg/tdd.
 // Other imports are left as-is.
-func patchImports(src []byte, plan migrationPlan) ([]byte, error) {
+func patchImports(src []byte, _ migrationPlan) ([]byte, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "in.go", src, parser.ParseComments)
 	if err != nil {

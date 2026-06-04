@@ -333,6 +333,18 @@ type BootstrapComponentData struct {
 	// and-drops) until the next forge generate cycle. wire_gen has had
 	// this logic for services; this brings packages to parity.
 	AppFieldRefs []AppFieldRef
+	// ConnectPkg is the import alias of the generated Connect package for
+	// this service (e.g. "echov1connect") — used by the bootstrap template
+	// to reference the `<X>ServiceName` constant when building vanguard
+	// REST services. Only populated for services and only when
+	// `api.rest: true`; empty for non-services or when REST is off.
+	ConnectPkg string
+	// ProtoServiceName is the PascalCase proto service identifier (e.g.
+	// "EchoService") used to look up the `<ProtoServiceName>Name` constant
+	// in the connect-generated package. Combined with ConnectPkg, the
+	// bootstrap template emits `<connectPkg>.<ProtoServiceName>Name` as
+	// the Connect path passed to vanguard.NewService.
+	ProtoServiceName string
 }
 
 // AppFieldRef pairs a package Deps field name with the app.<name>
@@ -637,7 +649,10 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		return err
 	}
 
+	restEnabled := projectAPIRESTEnabled(projectDir)
+
 	var bootstrapSvcs []BootstrapServiceData
+	var connectImports []string
 	for _, svc := range services {
 		pkg := toServicePackage(svc.Name)
 		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
@@ -649,6 +664,15 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		// the snake-case package name, which silently dropped the cobra
 		// invocation under shared-binary mode (admin-server vs admin_server).
 		runtimeName := strings.ReplaceAll(pkg, "_", "-")
+		// ConnectPkg + ProtoServiceName drive the vanguard.NewService call
+		// site when REST is enabled. The proto service name is the proto
+		// handler name (e.g. "EchoService") which matches the `<X>Name`
+		// constant exposed by connect-generated packages.
+		connectPkg := pkg + "v1connect"
+		protoServiceName := naming.ToPascalCase(pkg) + "Service"
+		if restEnabled {
+			connectImports = append(connectImports, modulePath+"/gen/services/"+pkg+"/v1/"+connectPkg)
+		}
 		bootstrapSvcs = append(bootstrapSvcs, BootstrapServiceData{
 			Name:       runtimeName,
 			Package:    pkg,
@@ -657,11 +681,13 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 			// same exported field name as the unit/integration test templates,
 			// which call `app.NewTest{{.ServiceName | pascalCase}}` (e.g.
 			// "admin_server" -> "AdminServer").
-			FieldName:   fieldName,
-			VarName:     lowerFirst(fieldName),
-			Fallible:    fallible,
-			Alias:       pkg,
-			HasWebhooks: webhookServices[pkg],
+			FieldName:        fieldName,
+			VarName:          lowerFirst(fieldName),
+			Fallible:         fallible,
+			Alias:            pkg,
+			HasWebhooks:      webhookServices[pkg],
+			ConnectPkg:       connectPkg,
+			ProtoServiceName: protoServiceName,
 		})
 	}
 
@@ -692,27 +718,31 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	binaryShared := projectBinaryShared(projectDir)
 
 	data := struct {
-		Module       string
-		Services     []BootstrapServiceData
-		Packages     []BootstrapPackageData
-		Workers      []BootstrapWorkerData
-		Operators    []BootstrapOperatorData
-		HasDatabase  bool
-		OrmEnabled   bool
-		HasFallible  bool
-		BinaryShared bool
-		ConfigFields map[string]bool
+		Module         string
+		Services       []BootstrapServiceData
+		Packages       []BootstrapPackageData
+		Workers        []BootstrapWorkerData
+		Operators      []BootstrapOperatorData
+		HasDatabase    bool
+		OrmEnabled     bool
+		HasFallible    bool
+		BinaryShared   bool
+		ConfigFields   map[string]bool
+		RESTEnabled    bool
+		ConnectImports []string
 	}{
-		Module:       modulePath,
-		Services:     bootstrapSvcs,
-		Packages:     packages,
-		Workers:      workers,
-		Operators:    operators,
-		HasDatabase:  hasDatabase,
-		OrmEnabled:   ormEnabled,
-		HasFallible:  hasFallible,
-		BinaryShared: binaryShared,
-		ConfigFields: configFields,
+		Module:         modulePath,
+		Services:       bootstrapSvcs,
+		Packages:       packages,
+		Workers:        workers,
+		Operators:      operators,
+		HasDatabase:    hasDatabase,
+		OrmEnabled:     ormEnabled,
+		HasFallible:    hasFallible,
+		BinaryShared:   binaryShared,
+		ConfigFields:   configFields,
+		RESTEnabled:    restEnabled,
+		ConnectImports: connectImports,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)
@@ -754,6 +784,7 @@ func GenerateAppGen(hasDatabase bool, ormEnabled bool, hasServices bool, hasWork
 		Workers     bool
 		Operators   bool
 		Packages    bool
+		RESTEnabled bool
 	}{
 		HasDatabase: hasDatabase,
 		OrmEnabled:  ormEnabled,
@@ -761,6 +792,7 @@ func GenerateAppGen(hasDatabase bool, ormEnabled bool, hasServices bool, hasWork
 		Workers:     hasWorkers,
 		Operators:   hasOperators,
 		Packages:    hasPackages,
+		RESTEnabled: hasServices && projectAPIRESTEnabled(projectDir),
 	}
 
 	content, err := templates.ProjectTemplates().Render("app_gen.go.tmpl", data)

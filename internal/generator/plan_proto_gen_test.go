@@ -356,3 +356,156 @@ func TestGeneratePlanProtoFileEntityAutoID(t *testing.T) {
 		t.Error("done should be field 3 when id is auto-injected")
 	}
 }
+
+// TestGeneratePlanProtoFile_RESTDisabled_NoAnnotations verifies that
+// without `api.rest: true` in forge.yaml, the generated proto file has
+// no google.api.http annotations and no annotations.proto import, even
+// for CRUD-prefixed RPCs. This is the default-off contract — existing
+// projects regenerate byte-identically.
+func TestGeneratePlanProtoFile_RESTDisabled_NoAnnotations(t *testing.T) {
+	root := t.TempDir()
+
+	rpcs := []config.PlanRPC{
+		{Name: "CreatePatient", Request: []config.PlanField{{Name: "name", Type: "string"}}, Response: []config.PlanField{{Name: "patient", Type: "Patient"}}},
+		{Name: "GetPatient", Request: []config.PlanField{{Name: "id", Type: "string"}}, Response: []config.PlanField{{Name: "patient", Type: "Patient"}}},
+	}
+
+	// No forge.yaml in root → projectAPIRESTEnabled returns false.
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "careflow", rpcs, nil); err != nil {
+		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "proto", "services", "careflow", "v1", "careflow.proto"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	proto := string(content)
+	if strings.Contains(proto, "google/api/annotations.proto") {
+		t.Errorf("proto should NOT import annotations.proto when api.rest is off; got:\n%s", proto)
+	}
+	if strings.Contains(proto, "google.api.http") {
+		t.Errorf("proto should NOT contain google.api.http annotations when api.rest is off; got:\n%s", proto)
+	}
+}
+
+// TestGeneratePlanProtoFile_RESTEnabled_CRUDAnnotations verifies that
+// CRUD-prefixed RPCs get the standard REST annotations when
+// `api.rest: true` is declared in forge.yaml. Non-CRUD RPCs in the
+// same service are left unannotated — users add HTTP rules by hand.
+func TestGeneratePlanProtoFile_RESTEnabled_CRUDAnnotations(t *testing.T) {
+	root := t.TempDir()
+
+	// Write forge.yaml with api.rest enabled.
+	yaml := "name: app\nmodule_path: example.com/myapp\napi:\n  rest: true\n"
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+
+	rpcs := []config.PlanRPC{
+		{Name: "CreatePatient", Request: []config.PlanField{{Name: "name", Type: "string"}}, Response: []config.PlanField{{Name: "patient", Type: "Patient"}}},
+		{Name: "GetPatient", Request: []config.PlanField{{Name: "id", Type: "string"}}, Response: []config.PlanField{{Name: "patient", Type: "Patient"}}},
+		{Name: "ListPatients", Request: []config.PlanField{{Name: "page_size", Type: "int32"}}, Response: []config.PlanField{{Name: "patients", Type: "repeated Patient"}}},
+		{Name: "UpdatePatient", Request: []config.PlanField{{Name: "id", Type: "string"}, {Name: "patient", Type: "Patient"}}, Response: []config.PlanField{{Name: "patient", Type: "Patient"}}},
+		{Name: "DeletePatient", Request: []config.PlanField{{Name: "id", Type: "string"}}, Response: []config.PlanField{{Name: "ok", Type: "bool"}}},
+		// Non-CRUD RPC: should NOT get an annotation.
+		{Name: "ApprovePatient", Request: []config.PlanField{{Name: "id", Type: "string"}}, Response: []config.PlanField{{Name: "ok", Type: "bool"}}},
+	}
+
+	if err := GeneratePlanProtoFile(root, "example.com/myapp", "careflow", rpcs, nil); err != nil {
+		t.Fatalf("GeneratePlanProtoFile() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "proto", "services", "careflow", "v1", "careflow.proto"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	proto := string(content)
+
+	// Annotations import must be present.
+	if !strings.Contains(proto, `import "google/api/annotations.proto";`) {
+		t.Errorf("proto should import annotations.proto when api.rest is on; got:\n%s", proto)
+	}
+
+	cases := []struct {
+		method   string
+		expected string
+	}{
+		{"CreatePatient", `option (google.api.http) = { post: "/v1/patients" body: "*" };`},
+		{"GetPatient", `option (google.api.http) = { get: "/v1/patients/{id}" };`},
+		{"ListPatients", `option (google.api.http) = { get: "/v1/patients" };`},
+		{"UpdatePatient", `option (google.api.http) = { patch: "/v1/patients/{id}" body: "*" };`},
+		{"DeletePatient", `option (google.api.http) = { delete: "/v1/patients/{id}" };`},
+	}
+	for _, c := range cases {
+		if !strings.Contains(proto, c.expected) {
+			t.Errorf("%s should have annotation %q; got proto:\n%s", c.method, c.expected, proto)
+		}
+	}
+
+	// Non-CRUD RPC must not have an annotation.
+	approveBlock := proto[strings.Index(proto, "ApprovePatient"):]
+	if idx := strings.Index(approveBlock, "\n}"); idx > 0 {
+		approveBlock = approveBlock[:idx]
+	}
+	if strings.Contains(approveBlock, "google.api.http") {
+		t.Errorf("ApprovePatient is non-CRUD and should NOT have an annotation; got:\n%s", approveBlock)
+	}
+}
+
+// TestRegenerateInfraFiles_BufYAML_RESTToggle verifies that buf.yaml
+// switches between the bare default and the googleapis-dep block based
+// on `api.rest`. This exercises the upgrade flow: a project regenerates
+// buf.yaml from forge.yaml on every `forge upgrade` / `forge generate
+// --regen-infra`, so the dep must be added when REST flips on and
+// removed when it flips off.
+func TestRegenerateInfraFiles_BufYAML_RESTToggle(t *testing.T) {
+	root := t.TempDir()
+	g := NewProjectGenerator("buf-toggle", filepath.Join(root, "app"), "example.com/buf-toggle")
+	g.ServiceName = "api"
+	if err := g.Generate(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig error = %v", err)
+	}
+
+	// REST off → bare deps comment block.
+	if err := RegenerateInfraFiles(g.Path, cfg); err != nil {
+		t.Fatalf("RegenerateInfraFiles(off) error = %v", err)
+	}
+	buf, err := os.ReadFile(filepath.Join(g.Path, "buf.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(buf.yaml) error = %v", err)
+	}
+	if strings.Contains(string(buf), "\n  - buf.build/googleapis/googleapis") {
+		t.Errorf("buf.yaml should NOT declare googleapis dep when api.rest is off; got:\n%s", buf)
+	}
+
+	// Flip REST on → re-render — googleapis dep appears.
+	cfg.API.REST = true
+	if err := RegenerateInfraFiles(g.Path, cfg); err != nil {
+		t.Fatalf("RegenerateInfraFiles(on) error = %v", err)
+	}
+	buf, err = os.ReadFile(filepath.Join(g.Path, "buf.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(buf.yaml) error = %v", err)
+	}
+	if !strings.Contains(string(buf), "\n  - buf.build/googleapis/googleapis") {
+		t.Errorf("buf.yaml should declare googleapis dep when api.rest is on; got:\n%s", buf)
+	}
+
+	// Flip REST back off → re-render — dep disappears (no on-disk drift).
+	cfg.API.REST = false
+	if err := RegenerateInfraFiles(g.Path, cfg); err != nil {
+		t.Fatalf("RegenerateInfraFiles(off again) error = %v", err)
+	}
+	buf, err = os.ReadFile(filepath.Join(g.Path, "buf.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(buf.yaml, off again) error = %v", err)
+	}
+	if strings.Contains(string(buf), "\n  - buf.build/googleapis/googleapis") {
+		t.Errorf("buf.yaml should remove googleapis dep when api.rest flips back off; got:\n%s", buf)
+	}
+}

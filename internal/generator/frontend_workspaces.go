@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/components"
+	nativecomponents "github.com/reliant-labs/forge/components/native"
 )
 
 // Frontend-workspaces emitters.
@@ -40,20 +44,33 @@ type FrontendWorkspaceLayout struct {
 	// HooksPackage is the fully-qualified npm package name for the
 	// hooks workspace (e.g. "@myapp/hooks").
 	HooksPackage string
+	// UIWebPackage is the fully-qualified npm package name for the
+	// shared web-UI component workspace (e.g. "@myapp/ui-web"). It
+	// holds the React/Tailwind component library that all browser-
+	// targeted frontends import from instead of duplicating per-
+	// frontend copies under src/components/.
+	UIWebPackage string
+	// UINativePackage is the fully-qualified npm package name for the
+	// React Native primitives workspace (e.g. "@myapp/ui-native").
+	// Only emitted when the project has at least one RN frontend AND
+	// workspaces are enabled — empty otherwise.
+	UINativePackage string
 }
 
 // NewFrontendWorkspaceLayout builds the canonical layout from a raw
-// project name. Falls back to "@app/api" / "@app/hooks" when the
-// project name doesn't produce a valid npm scope segment.
+// project name. Falls back to "@app/api" / "@app/hooks" / "@app/ui-web"
+// when the project name doesn't produce a valid npm scope segment.
 func NewFrontendWorkspaceLayout(projectName string) FrontendWorkspaceLayout {
 	scope := sanitizeNpmScopeSegment(projectName)
 	if scope == "" {
 		scope = "app"
 	}
 	return FrontendWorkspaceLayout{
-		Scope:        scope,
-		ApiPackage:   "@" + scope + "/api",
-		HooksPackage: "@" + scope + "/hooks",
+		Scope:           scope,
+		ApiPackage:      "@" + scope + "/api",
+		HooksPackage:    "@" + scope + "/hooks",
+		UIWebPackage:    "@" + scope + "/ui-web",
+		UINativePackage: "@" + scope + "/ui-native",
 	}
 }
 
@@ -88,6 +105,7 @@ func sanitizeNpmScopeSegment(name string) string {
 //   - pnpm-workspace.yaml at the project root
 //   - packages/api/package.json + tsconfig.json + .gitignore
 //   - packages/hooks/package.json + tsconfig.json + use-api-{query,mutation}.ts
+//   - packages/ui-web/package.json + tsconfig.json + src/components/*.tsx
 //
 // Idempotent: writes files only if they do not already exist, so re-
 // running `forge generate` after the user customizes (e.g.) the
@@ -111,7 +129,29 @@ func WriteFrontendWorkspaceFiles(projectDir, projectName string, workspaces bool
 	if err := writeHooksPackage(projectDir, layout); err != nil {
 		return err
 	}
+	if err := writeUIWebPackage(projectDir, layout); err != nil {
+		return err
+	}
 	return nil
+}
+
+// WriteUIWebPackageFiles emits packages/ui-web/ — the shared web-UI
+// component library workspace. Idempotent (write-if-missing); safe to
+// call from `forge generate` cycles after the user customizes the
+// scaffolded files.
+//
+// No-op when workspaces is false so existing single-frontend projects
+// regenerate byte-identically.
+//
+// Split from WriteFrontendWorkspaceFiles so callers that want to refresh
+// just the ui-web scaffold (e.g. ensure-step in `forge generate`) don't
+// have to touch the api/hooks packages.
+func WriteUIWebPackageFiles(projectDir, projectName string, workspaces bool) error {
+	if !workspaces {
+		return nil
+	}
+	layout := NewFrontendWorkspaceLayout(projectName)
+	return writeUIWebPackage(projectDir, layout)
 }
 
 // writePnpmWorkspaceYaml writes the root pnpm-workspace.yaml so pnpm
@@ -465,6 +505,221 @@ export {};
 	return nil
 }
 
+// writeUIWebPackage emits packages/ui-web/{package.json, tsconfig.json,
+// src/components/<all core components>.tsx, src/index.ts, README.md}.
+//
+// The ui-web package holds the shared React/Tailwind component library
+// that all browser-targeted frontends (Next.js, Vite SPA) import from.
+// In the non-workspaces layout the same components are copied per-
+// frontend; centralising them here eliminates the divergence problem
+// when a project has 2+ web frontends.
+//
+// Write-if-missing semantics across the board: once a file lands on
+// disk the user owns it. `forge generate` never overwrites edits to
+// these scaffolded components — this matches the philosophy laid out
+// in the frontend-workspaces skill.
+//
+// React Native is OUT of scope here. RN uses platform-specific
+// primitives and does not consume web components; mobile frontends
+// don't get the workspace dep.
+func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout) error {
+	uiDir := filepath.Join(projectDir, "packages", "ui-web")
+	// Components live under src/components/ui/<name>.tsx — mirroring the
+	// per-frontend layout (frontends/<n>/src/components/ui/<name>.tsx).
+	// This lets the tsconfig path mapping target `@/components/ui/*`
+	// specifically, leaving `@/components/<other>/*` (e.g. the auth pack's
+	// `@/components/auth/`) resolving against the per-frontend src tree.
+	componentsDir := filepath.Join(uiDir, "src", "components", "ui")
+	if err := os.MkdirAll(componentsDir, 0o755); err != nil {
+		return fmt.Errorf("create packages/ui-web: %w", err)
+	}
+
+	// Deps mirror what the shadcn-style component library typically
+	// reaches for. Today's embedded components only import "react", but
+	// the package surface anticipates future components (clsx /
+	// tailwind-merge for class merging, lucide-react for icons, cva for
+	// variant styling). Frontend package.json templates already declare
+	// lucide-react etc., so listing them here doesn't expand the install.
+	pkg := fmt.Sprintf(`{
+  "name": "%s",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./components/ui/*": "./src/components/ui/*.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-dom": "*"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "lucide-react": "^1.17.0",
+    "tailwind-merge": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.8.0"
+  }
+}
+`, layout.UIWebPackage)
+	if err := writeIfMissing(filepath.Join(uiDir, "package.json"), pkg); err != nil {
+		return err
+	}
+
+	// tsconfig — DOM is on (these ARE the DOM-targeted components) and
+	// JSX is preserved so consuming Next.js / Vite SPA owns the JSX
+	// transform pass. Keeping declaration: true means `pnpm -r
+	// typecheck` covers the package even if it's never built.
+	tsconfig := `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "declaration": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
+`
+	if err := writeIfMissing(filepath.Join(uiDir, "tsconfig.json"), tsconfig); err != nil {
+		return err
+	}
+
+	// Copy the same core components that installCoreComponents() lays
+	// down per-frontend in the non-workspaces case. Same names, same
+	// content — the workspaces flag is purely about WHERE the files
+	// land, not WHICH files.
+	lib := components.NewLibrary()
+	for _, name := range coreComponents {
+		content, err := lib.Get(name)
+		if err != nil {
+			return fmt.Errorf("get ui-web component %s: %w", name, err)
+		}
+		dest := filepath.Join(componentsDir, name+".tsx")
+		if err := writeIfMissing(dest, content); err != nil {
+			return fmt.Errorf("write ui-web component %s: %w", name, err)
+		}
+	}
+
+	// src/index.ts re-export barrel. Built deterministically from the
+	// coreComponents list (sorted) so the barrel is stable across runs
+	// — important for diff hygiene and snapshot tests. Each export uses
+	// `export { default as <Pascal> } from "./components/<name>";` so
+	// consumers can write `import { Button, DataTable } from "@my/ui-web"`.
+	if err := writeUIWebBarrel(uiDir); err != nil {
+		return err
+	}
+
+	readme := fmt.Sprintf("# %s\n\n"+
+		"Shared React + Tailwind UI components for the project's browser\n"+
+		"frontends (Next.js, Vite SPA). Replaces the per-frontend\n"+
+		"`src/components/ui/` copies that single-frontend projects get.\n\n"+
+		"## Ownership\n\n"+
+		"`forge generate` writes these files **once**, on first scaffold.\n"+
+		"After that the user owns them — re-running `forge generate` is a\n"+
+		"no-op for every file under this package. Edit, delete, or rename\n"+
+		"freely; nothing here will be clobbered.\n\n"+
+		"## Adding a component\n\n"+
+		"Drop a new `.tsx` file under `src/components/ui/`, then re-export\n"+
+		"it from `src/index.ts`. Frontends can then\n"+
+		"`import { MyThing } from \"%s\"`, or use the path-mapped form\n"+
+		"`import MyThing from \"@/components/ui/my_thing\"` if you prefer.\n\n"+
+		"## Why this isn't on npm\n\n"+
+		"This package is project-specific scaffolding, not a shared\n"+
+		"library. forge seeds a starting set and gets out of the way —\n"+
+		"the components are yours to fork, restyle, or rewrite to match\n"+
+		"your product. Publishing to npm would defeat the point.\n",
+		layout.UIWebPackage, layout.UIWebPackage)
+	if err := writeIfMissing(filepath.Join(uiDir, "README.md"), readme); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// writeUIWebBarrel seeds packages/ui-web/src/index.ts as a re-export
+// barrel over every .tsx file currently in src/components/ui/. Built
+// from the on-disk file list (not the coreComponents constant) so the
+// barrel reflects whatever the user has accumulated.
+//
+// Write-if-missing semantics, like every other ui-web file: the
+// barrel is seeded on first scaffold and then owned by the user. If
+// you add a new component and want it re-exported, edit the barrel —
+// `forge generate` won't fight you. Stable sorted on the first emit
+// so initial diffs are clean.
+func writeUIWebBarrel(uiDir string) error {
+	indexPath := filepath.Join(uiDir, "src", "index.ts")
+	if _, err := os.Stat(indexPath); err == nil {
+		return nil
+	}
+
+	componentsDir := filepath.Join(uiDir, "src", "components", "ui")
+	entries, err := os.ReadDir(componentsDir)
+	if err != nil {
+		return fmt.Errorf("read ui-web components dir: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".tsx") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(name, ".tsx"))
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("// Re-export barrel for @<scope>/ui-web — seeded by forge on first\n")
+	b.WriteString("// scaffold from the contents of src/components/ui/, then owned by you.\n")
+	b.WriteString("// Add/remove exports below as you add/remove components; subsequent\n")
+	b.WriteString("// `forge generate` runs will NOT clobber edits to this file.\n")
+	b.WriteString("//\n")
+	b.WriteString("// Each component file exports its component as default; the barrel\n")
+	b.WriteString("// re-names it to PascalCase for ergonomic named imports:\n")
+	b.WriteString("//   import { Button, DataTable } from \"@<scope>/ui-web\";\n\n")
+	for _, name := range names {
+		pascal := toPascalCase(name)
+		fmt.Fprintf(&b, "export { default as %s } from \"./components/ui/%s\";\n", pascal, name)
+	}
+	if len(names) == 0 {
+		// Keep the file a valid module even when there are no components.
+		b.WriteString("export {};\n")
+	}
+	return os.WriteFile(indexPath, []byte(b.String()), 0o644)
+}
+
+// toPascalCase converts snake_case component names (the convention in
+// components/library.go) to PascalCase for named exports. "data_table"
+// -> "DataTable", "login_form" -> "LoginForm".
+func toPascalCase(name string) string {
+	parts := strings.Split(name, "_")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, "")
+}
+
 // writeIfMissing writes content to path only if the file does not exist.
 // Treats the file as user-owned once it's on disk — `forge generate` is
 // not supposed to clobber edits to package.json, tsconfig.json, etc.
@@ -473,4 +728,150 @@ func writeIfMissing(path, content string) error {
 		return nil
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// WriteUINativePackageFiles emits the packages/ui-native/ scaffold:
+//
+//   - packages/ui-native/package.json (workspace member)
+//   - packages/ui-native/tsconfig.json (no DOM lib, React JSX)
+//   - packages/ui-native/src/tokens.ts (design tokens)
+//   - packages/ui-native/src/index.ts (re-export barrel)
+//   - packages/ui-native/src/components/<primitive>.tsx (one per primitive)
+//   - packages/ui-native/README.md
+//
+// Idempotent: write-if-missing throughout. Once a user edits a
+// primitive (or rewrites the tokens), `forge generate` will not
+// clobber the edit — the package is effectively scaffolded once and
+// owned by the project after.
+//
+// Guarded by the two preconditions documented at the call sites in
+// generate_pipeline.go and add.go:
+//
+//  1. `frontend.workspaces: true`
+//  2. At least one frontend with `type: react-native`
+//
+// When either is false this function should not be called (callers
+// gate); calling it directly still works but emits files that have
+// no consumer.
+func WriteUINativePackageFiles(projectDir string, layout FrontendWorkspaceLayout) error {
+	uiDir := filepath.Join(projectDir, "packages", "ui-native")
+	componentsDir := filepath.Join(uiDir, "src", "components")
+	if err := os.MkdirAll(componentsDir, 0o755); err != nil {
+		return fmt.Errorf("create packages/ui-native: %w", err)
+	}
+
+	pkg := fmt.Sprintf(`{
+  "name": "%s",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens": "./src/tokens.ts",
+    "./components/*": "./src/components/*.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "react-native-safe-area-context": "*"
+  },
+  "devDependencies": {
+    "@types/react": "~18.3.0",
+    "typescript": "^5.8.0"
+  }
+}
+`, layout.UINativePackage)
+	if err := writeIfMissing(filepath.Join(uiDir, "package.json"), pkg); err != nil {
+		return err
+	}
+
+	// tsconfig: NO DOM lib — this package must compile under the same
+	// constraints as the React Native runtime (no document/window).
+	// JSX preserved so Metro's babel pass handles it.
+	tsconfig := `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "jsx": "react-jsx",
+    "declaration": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
+`
+	if err := writeIfMissing(filepath.Join(uiDir, "tsconfig.json"), tsconfig); err != nil {
+		return err
+	}
+
+	// Copy embedded primitives + tokens. Write-if-missing so user
+	// edits survive a regen.
+	lib := nativecomponents.NewLibrary()
+	for _, p := range lib.Primitives() {
+		src, err := lib.Get(p.Name)
+		if err != nil {
+			return fmt.Errorf("read native primitive %s: %w", p.Name, err)
+		}
+		dest := filepath.Join(componentsDir, p.Name+".tsx")
+		if err := writeIfMissing(dest, src); err != nil {
+			return err
+		}
+	}
+	tokens, err := lib.Tokens()
+	if err != nil {
+		return fmt.Errorf("read tokens: %w", err)
+	}
+	if err := writeIfMissing(filepath.Join(uiDir, "src", "tokens.ts"), tokens); err != nil {
+		return err
+	}
+
+	// Index barrel is generated from the primitive registry so adding
+	// a new primitive automatically surfaces it. Write-if-missing
+	// so user-curated barrels survive — they can pin the export
+	// list to whatever subset they want without forge clobbering it.
+	if err := writeIfMissing(filepath.Join(uiDir, "src", "index.ts"), lib.IndexBarrel()); err != nil {
+		return err
+	}
+
+	readme := fmt.Sprintf("# %s\n\n"+
+		"Thin React Native primitive set for the project's mobile frontends.\n\n"+
+		"This is **not** a full design system — it's ~10 primitives that mirror\n"+
+		"the web component library's semantic names (Button, Card, Stack, Text,\n"+
+		"…) so cross-platform code can carry the same mental model without\n"+
+		"forge having to ship a Tamagui or Unistyles fork.\n\n"+
+		"## Ownership\n\n"+
+		"`forge generate` writes these files **once** at scaffold time. Edits to\n"+
+		"any file under `src/` survive subsequent runs — the package is\n"+
+		"effectively yours after the initial copy. If you want forge to re-emit\n"+
+		"a primitive from the embedded source, delete the file and re-run\n"+
+		"`forge generate`.\n\n"+
+		"## When to outgrow this\n\n"+
+		"If you need:\n\n"+
+		"- A single design system across web AND native (write components once,\n"+
+		"  render on both).\n"+
+		"- Runtime theme switching, brand variants, a token graph.\n"+
+		"- DataTable / Sidebar / NavHeader equivalents for mobile.\n\n"+
+		"…install **Tamagui** or **Unistyles** and replace this package. See the\n"+
+		"`ui-native-package` skill for the migration shape.\n\n"+
+		"## What ships\n\n"+
+		"Button, Input, Label, Card, Stack (+ HStack/VStack), Text, Spinner,\n"+
+		"Switch, Pressable, SafeAreaView, plus `tokens.ts` for colors / spacing\n"+
+		"/ radius / text sizes.\n\n"+
+		"Frontends consume the package via `\"%s\": \"workspace:*\"` and\n"+
+		"`import { Button, Stack } from \"%s\"`.\n",
+		layout.UINativePackage, layout.UINativePackage, layout.UINativePackage)
+	if err := writeIfMissing(filepath.Join(uiDir, "README.md"), readme); err != nil {
+		return err
+	}
+	return nil
 }

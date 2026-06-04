@@ -69,6 +69,110 @@ func TestFrontendPackageJson_WorkspaceDepsWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestReactNativePackageJson_UINativeWorkspaceDep asserts the React
+// Native package.json declares "@<scope>/ui-native": "workspace:*"
+// when Workspaces is on. This is the bridge between the workspace
+// emit (packages/ui-native/) and the frontend that consumes it.
+func TestReactNativePackageJson_UINativeWorkspaceDep(t *testing.T) {
+	data := FrontendTemplateData{
+		FrontendName:    "mobile",
+		ProjectName:     "myapp",
+		ApiUrl:          "http://localhost:8080",
+		ApiPort:         "8080",
+		Module:          "example.com/myapp",
+		Workspaces:      true,
+		ApiPackage:      "@myapp/api",
+		HooksPackage:    "@myapp/hooks",
+		UINativePackage: "@myapp/ui-native",
+	}
+	out, err := FrontendTemplates().Render("react-native/package.json.tmpl", data)
+	if err != nil {
+		t.Fatalf("render react-native/package.json.tmpl: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `"@myapp/ui-native": "workspace:*"`) {
+		t.Errorf("react-native/package.json should declare @myapp/ui-native workspace dep, got:\n%s", s)
+	}
+	if !strings.Contains(s, "react-native-safe-area-context") {
+		t.Errorf("react-native/package.json should include react-native-safe-area-context dep (SafeAreaView primitive depends on it), got:\n%s", s)
+	}
+}
+
+// TestReactNativePackageJson_NoUINativeByDefault asserts no
+// `ui-native` reference appears when workspaces is off. Snapshot
+// stability for projects that haven't opted in.
+func TestReactNativePackageJson_NoUINativeByDefault(t *testing.T) {
+	data := FrontendTemplateData{
+		FrontendName: "mobile",
+		ProjectName:  "myapp",
+		ApiUrl:       "http://localhost:8080",
+		ApiPort:      "8080",
+		Module:       "example.com/myapp",
+	}
+	out, err := FrontendTemplates().Render("react-native/package.json.tmpl", data)
+	if err != nil {
+		t.Fatalf("render react-native/package.json.tmpl: %v", err)
+	}
+	if strings.Contains(string(out), "ui-native") {
+		t.Errorf("react-native/package.json should not mention ui-native by default, got:\n%s", out)
+	}
+}
+
+// TestReactNativeIndexScreen_UsesUINativeWhenEnabled asserts the
+// scaffolded home screen imports the ui-native primitives when
+// workspaces is on — gives the user a working visual reference for
+// the package out-of-the-box rather than a bare-RN starting point.
+func TestReactNativeIndexScreen_UsesUINativeWhenEnabled(t *testing.T) {
+	data := FrontendTemplateData{
+		FrontendName:    "mobile",
+		ProjectName:     "myapp",
+		ApiUrl:          "http://localhost:8080",
+		ApiPort:         "8080",
+		Module:          "example.com/myapp",
+		Workspaces:      true,
+		ApiPackage:      "@myapp/api",
+		HooksPackage:    "@myapp/hooks",
+		UINativePackage: "@myapp/ui-native",
+	}
+	out, err := FrontendTemplates().Render("react-native/app/index.tsx.tmpl", data)
+	if err != nil {
+		t.Fatalf("render react-native/app/index.tsx.tmpl: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `from "@myapp/ui-native"`) {
+		t.Errorf("workspaces home screen should import from @myapp/ui-native, got:\n%s", s)
+	}
+	for _, sym := range []string{"Button", "Stack", "Text", "Card", "SafeAreaView"} {
+		if !strings.Contains(s, sym) {
+			t.Errorf("workspaces home screen should reference %s, got:\n%s", sym, s)
+		}
+	}
+}
+
+// TestReactNativeIndexScreen_BareWhenDisabled asserts the default
+// (workspaces=off) home screen stays the pure-RN reference that
+// existed before this change — byte-stable for non-opted-in projects.
+func TestReactNativeIndexScreen_BareWhenDisabled(t *testing.T) {
+	data := FrontendTemplateData{
+		FrontendName: "mobile",
+		ProjectName:  "myapp",
+		ApiUrl:       "http://localhost:8080",
+		ApiPort:      "8080",
+		Module:       "example.com/myapp",
+	}
+	out, err := FrontendTemplates().Render("react-native/app/index.tsx.tmpl", data)
+	if err != nil {
+		t.Fatalf("render react-native/app/index.tsx.tmpl: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "ui-native") {
+		t.Errorf("default home screen should not reference ui-native, got:\n%s", s)
+	}
+	if !strings.Contains(s, `from "react-native"`) {
+		t.Errorf("default home screen should still import from react-native, got:\n%s", s)
+	}
+}
+
 // TestFrontendConnect_ImportsWorkspaceHooks asserts that when
 // Workspaces is true the rendered connect.ts.tmpl wires
 // setApiTransport from the shared hooks package — without that the

@@ -175,6 +175,12 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		// Static cmd files
 		{templateName: "otel.go", destPath: "cmd/otel.go", templated: false, tier: Tier1},
 
+		// buf.yaml is templated against `api.rest` so the googleapis BSR
+		// dep is added/removed in lockstep with the runtime vanguard wrap.
+		// Tier 1 (regenerated) because the dep choice is fully derived from
+		// forge.yaml and users shouldn't be hand-editing it.
+		{templateName: "buf.yaml.tmpl", destPath: "buf.yaml", templated: true, tier: Tier1},
+
 		// ── Tier 2: Checksum-protected, committed to git ──
 
 		// Templated config files
@@ -250,6 +256,10 @@ type upgradeTemplateData struct {
 	// a corresponding `COPY .forge-pkg/ ./.forge-pkg/` line so docker
 	// builds resolve the same replace target as host builds.
 	LocalForgePkgVendored bool
+	// RESTEnabled mirrors forge.yaml's `api.rest` toggle. Used by the
+	// buf.yaml template to add the googleapis BSR dep when REST is on
+	// (so vanguard's `google/api/annotations.proto` imports resolve).
+	RESTEnabled bool
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -338,6 +348,7 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		Services:               services,
 		ConfigFields:           configFields,
 		LocalForgePkgVendored:  localForgePkgVendored,
+		RESTEnabled:            cfg.API.REST,
 	}
 }
 

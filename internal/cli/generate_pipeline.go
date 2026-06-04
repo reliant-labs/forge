@@ -702,6 +702,16 @@ func stepFrontendWorkspaces(ctx *pipelineContext) error {
 	if err := generator.WriteFrontendWorkspaceFiles(ctx.ProjectDir, ctx.Cfg.Name, true); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: frontend workspace scaffold failed: %v\n", err)
 	}
+	// The native primitives package only matters when there's an RN
+	// frontend to consume it — gating on HasReactNativeFrontend keeps
+	// projects with only a Next.js or Vite SPA frontend from getting
+	// useless files under packages/ui-native/.
+	if ctx.Cfg.HasReactNativeFrontend() {
+		layout := generator.NewFrontendWorkspaceLayout(ctx.Cfg.Name)
+		if err := generator.WriteUINativePackageFiles(ctx.ProjectDir, layout); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: ui-native package scaffold failed: %v\n", err)
+		}
+	}
 	return nil
 }
 

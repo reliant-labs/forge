@@ -19,6 +19,9 @@
       }
     ],
     "paths": {
+{{- if .Workspaces}}
+      "@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"],
+{{- end}}
       "@/*": ["./src/*"]
     }
   },

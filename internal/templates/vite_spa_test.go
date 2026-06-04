@@ -18,8 +18,8 @@ func TestViteSPATemplatesList(t *testing.T) {
 
 	expected := []string{
 		"package.json.tmpl",
-		"vite.config.ts",
-		"tsconfig.json",
+		"vite.config.ts.tmpl",
+		"tsconfig.json.tmpl",
 		"tsconfig.node.json",
 		"index.html.tmpl",
 		".gitignore",

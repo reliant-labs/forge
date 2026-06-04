@@ -21,6 +21,9 @@ import (
 	"slices"
 
 	"connectrpc.com/connect"
+{{- if and .RESTEnabled .Services}}
+	"connectrpc.com/vanguard"
+{{- end}}
 {{- if .Operators}}
 	ctrl "sigs.k8s.io/controller-runtime"
 {{- end}}
@@ -31,6 +34,11 @@ import (
 {{- end}}
 {{range .Services}}
 	{{.Alias}} "{{$.Module}}/handlers/{{.Package}}"
+{{- end}}
+{{- if and .RESTEnabled .Services}}
+{{- range .ConnectImports}}
+	"{{.}}"
+{{- end}}
 {{- end}}
 {{- range .Workers}}
 	{{.Alias}} "{{$.Module}}/workers/{{.Package}}"
@@ -337,6 +345,26 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 {{- end}}
 {{- end}}
 {{end}}
+{{- if and .RESTEnabled .Services}}
+	// REST transcoder: vanguard wraps the Connect mux and translates
+	// REST↔Connect at runtime based on google.api.http annotations on
+	// RPCs. The wrapped handler is stored on the App; cmd-server.go reads
+	// app.RESTHandler when non-nil and serves it in place of the bare mux.
+	// CRUD RPCs gain default REST URLs via the crud-gen annotation pass;
+	// hand-written RPCs need the annotation in their .proto to participate.
+	{
+		vanguardSvcs := []*vanguard.Service{
+{{- range .Services}}
+			vanguard.NewService({{.ConnectPkg}}.{{.ProtoServiceName}}Name, mux),
+{{- end}}
+		}
+		transcoder, terr := vanguard.NewTranscoder(vanguardSvcs)
+		if terr != nil {
+			return nil, fmt.Errorf("init vanguard REST transcoder: %w", terr)
+		}
+		app.RESTHandler = transcoder
+	}
+{{- end}}
 	return app, nil
 }
 
@@ -510,5 +538,25 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- end}}
 {{- end}}
 {{end}}
+{{- if and .RESTEnabled .Services}}
+	// REST transcoder: vanguard wraps the Connect mux and translates
+	// REST↔Connect at runtime based on google.api.http annotations on
+	// RPCs. The wrapped handler is stored on the App; cmd-server.go reads
+	// app.RESTHandler when non-nil and serves it in place of the bare mux.
+	// CRUD RPCs gain default REST URLs via the crud-gen annotation pass;
+	// hand-written RPCs need the annotation in their .proto to participate.
+	{
+		vanguardSvcs := []*vanguard.Service{
+{{- range .Services}}
+			vanguard.NewService({{.ConnectPkg}}.{{.ProtoServiceName}}Name, mux),
+{{- end}}
+		}
+		transcoder, terr := vanguard.NewTranscoder(vanguardSvcs)
+		if terr != nil {
+			return nil, fmt.Errorf("init vanguard REST transcoder: %w", terr)
+		}
+		app.RESTHandler = transcoder
+	}
+{{- end}}
 	return app, nil
 }

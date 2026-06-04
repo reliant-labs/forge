@@ -70,14 +70,25 @@ frontend's code.
           users-hooks.ts
           orders-hooks.ts
           index.ts
+    ui-web/                    # @<project>/ui-web — shared web components
+      package.json
+      src/
+        components/
+          ui/                  # React/Tailwind component library
+            button.tsx
+            card.tsx
+            ...
+        index.ts               # re-export barrel
   frontends/
     web/                       # Next.js
       package.json             # declares "@<project>/api": "workspace:*"
+                               # plus "@<project>/ui-web": "workspace:*"
+      tsconfig.json            # paths: "@/components/ui/*" → ui-web
       src/
         lib/connect.ts         # builds Transport, calls setApiTransport()
         ...
     mobile/                    # Expo / React Native
-      package.json             # same workspace deps
+      package.json             # api+hooks deps; NOT ui-web (web-only)
       ...
 ```
 
@@ -141,14 +152,97 @@ Connect client against whichever Transport is registered. The hook
 files themselves don't import from frontend-specific paths, so they
 work identically in every workspace member.
 
+## The `ui-web` package
+
+`packages/ui-web/` holds the shared React + Tailwind component library
+that browser-targeted frontends (Next.js, Vite SPA) import from. In the
+non-workspaces layout the same components get copied into EVERY
+`frontends/<name>/src/components/ui/` directory. With workspaces on
+they live ONCE under `packages/ui-web/src/components/ui/`, and per-
+frontend tsconfig path mapping redirects the existing
+`@/components/ui/*` imports to the shared package.
+
+The mapping is scoped to `/ui/` deliberately — non-ui local paths
+like the auth-ui pack's `@/components/auth/...` keep resolving
+against the per-frontend `src/` tree, so packs that install their own
+components keep working unchanged.
+
+### Ownership rule
+
+forge writes `packages/ui-web/` files **once**, on first scaffold.
+After that re-running `forge generate` is a no-op for every file under
+the package — the user owns them. Edit, restyle, delete, rename
+freely; nothing here will be clobbered.
+
+`src/index.ts` (the re-export barrel) is seeded once from the
+components directory and then owned by you too. Add or remove
+`export { default as ... }` lines as you grow the library — forge
+won't fight you.
+
+### How frontends import from it
+
+Templates keep their existing `@/components/ui/...` import sites
+unchanged — no rewrite required when flipping workspaces on. The
+redirection happens at the tsconfig + bundler level:
+
+```jsonc
+// frontends/web/tsconfig.json (workspaces mode)
+"paths": {
+  "@/components/ui/*": ["../../packages/ui-web/src/components/ui/*"],
+  "@/*": ["./src/*"]
+}
+```
+
+For Vite frontends the same alias is mirrored in `vite.config.ts` so
+the bundler resolves to the same paths the type-checker sees.
+
+Next.js reads `tsconfig.json` paths directly through its webpack
+config — no extra wiring needed.
+
+### Adding a new component
+
+```bash
+# 1. write the component file:
+$EDITOR packages/ui-web/src/components/ui/my_widget.tsx
+
+# 2. expose it from the barrel:
+$EDITOR packages/ui-web/src/index.ts
+#   add: export { default as MyWidget } from "./components/ui/my_widget";
+```
+
+Then in a frontend:
+
+```typescript
+import MyWidget from "@/components/ui/my_widget";    // path-mapped, default
+// or
+import { MyWidget } from "@<scope>/ui-web";          // named barrel export
+```
+
+### React Native does NOT consume `ui-web`
+
+`packages/ui-web/` is web-targeted (DOM lib enabled, Tailwind
+utility classes). React Native frontends use platform-specific
+primitives and don't depend on the package. The forge generator
+skips the workspace dep when scaffolding RN frontends.
+
+### Why this isn't on npm
+
+`packages/ui-web/` is project-specific scaffolding, not a shared
+library. forge seeds a starting set (button, card, data table, etc.)
+and gets out of the way — components are yours to fork, restyle, or
+rewrite to match your product. Publishing to npm would defeat the
+point of giving every project its own forkable design system.
+
 ## Adding a new shared package
 
 You can add your own shared packages alongside the forge-generated
-`packages/api/` and `packages/hooks/`. Common examples:
+`packages/api/`, `packages/hooks/`, and `packages/ui-web/`. Common
+examples:
 
-- `packages/ui/` — shared React components.
 - `packages/types/` — shared TypeScript types not derived from protos.
 - `packages/utils/` — shared helpers.
+- `packages/ui-mobile/` — if you want a React Native primitives layer
+  paralleling `ui-web`.
 
 ```bash
 mkdir packages/ui
@@ -180,6 +274,10 @@ Forge will never touch your own packages — only `packages/api/` and
 | `packages/hooks/package.json` | forge (initial), you (after) | only if missing |
 | `packages/hooks/src/use-api-*.ts` | forge (initial), you (after) | only if missing |
 | `packages/hooks/src/generated/` | forge | every run |
+| `packages/ui-web/package.json` | forge (initial), you (after) | only if missing |
+| `packages/ui-web/tsconfig.json` | forge (initial), you (after) | only if missing |
+| `packages/ui-web/src/components/ui/*.tsx` | forge (initial), you (after) | only if missing |
+| `packages/ui-web/src/index.ts` | forge (initial), you (after) | only if missing |
 | `frontends/<name>/src/lib/connect.ts` | forge (initial), you (after) | only if missing |
 
 Rule of thumb: the `src/gen/` and `src/generated/` directories are

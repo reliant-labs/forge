@@ -312,22 +312,31 @@ func parseMigrationFrontmatter(content []byte) migrationMeta {
 //   - Empty `version` (no project pin): EVERY migration applies. This
 //     matches the spec: "a project with no .forge/version.json lists
 //     every migration as pending".
-//   - "0.0.0" sentinel from EffectiveForgeVersion (no forge_version
-//     field): same as empty — every migration applies. Legacy projects
-//     benefit from seeing the full upgrade story.
+//   - Pre-v0.1 baselines per isPreV01Baseline (the "0.0.0" sentinel
+//     OR a "v0.0.0-<timestamp>-<sha>" pseudoversion from `go install`
+//     against an untagged checkout): every migration applies. These
+//     projects predate the formal upgrade story and should see the
+//     full worklist.
 //   - Empty `from`: range is (-inf, to).
 //   - Empty `to`:   range is [from, +inf).
 //   - Both empty:   migration always applies.
 //
 // Versions are compared as SemVer-ish tuples after stripping the
-// leading "v". Non-parseable versions are treated as "below everything"
-// — i.e. always considered in-range so we never silently hide a
-// migration from a weirdly-pinned project.
+// leading "v". Non-parseable versions fall through to the cmpVersion
+// fallback, which treats unknown components lexicographically.
 func versionInRange(version, from, to string) bool {
-	v := normaliseVersion(version)
-	if v == "" || v == "0.0.0" {
+	if strings.TrimSpace(version) == "" {
 		return true
 	}
+	// Pre-v0.1 baselines (sentinel + pseudoversions) predate the
+	// codemod chain — see isPreV01Baseline in upgrade.go. Treating
+	// them like "no pin" surfaces every migration so real-world
+	// projects pinned to a pseudoversion (cp-forge, kalshi-trader)
+	// see the full worklist instead of an empty list.
+	if isPreV01Baseline(version) {
+		return true
+	}
+	v := normaliseVersion(version)
 	if from != "" {
 		if cmpVersion(v, normaliseVersion(from)) < 0 {
 			return false

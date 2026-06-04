@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -1043,8 +1045,37 @@ func runAddFrontend(name string, port int, kind string) error {
 		return fmt.Errorf("update project config: %w", err)
 	}
 
+	// Install the new frontend's npm dependencies so the user can run
+	// the dev server (or `forge generate` post-codegen for the hooks
+	// import) without an extra manual step. Failures here are non-fatal:
+	// if `npm` isn't on PATH, the scaffold is still on disk and we just
+	// nudge the user to install dependencies themselves.
+	frontendDir := filepath.Join(root, "frontends", name)
+	if err := runFrontendNpmInstall(frontendDir); err != nil {
+		fmt.Printf("\n⚠️  %v\n", err)
+	}
+
 	fmt.Printf("\n✅ Frontend '%s' added successfully!\n", name)
 
+	return nil
+}
+
+// runFrontendNpmInstall runs `npm install` in the freshly scaffolded
+// frontend directory so the user can immediately run the dev server.
+// A missing `npm` binary is treated as a soft warning — the scaffold
+// itself succeeded and the user can install dependencies later.
+func runFrontendNpmInstall(frontendDir string) error {
+	cmd := exec.Command("npm", "install")
+	cmd.Dir = frontendDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	fmt.Printf("\nRunning `npm install` in %s ...\n", frontendDir)
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("npm not found on PATH; run `npm install` in %s manually", frontendDir)
+		}
+		return fmt.Errorf("npm install failed in %s: %v (run it manually to see full output)", frontendDir, err)
+	}
 	return nil
 }
 

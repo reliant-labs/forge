@@ -60,6 +60,19 @@ deploy subschema so KCL's JSON output is self-describing. Forge's CLI
 reads the discriminator to decide whether to run on host, schedule in
 cluster, or just produce a build artifact.
 
+`HostDeploy` splits per-env config from secrets:
+
+| Field          | Source              | Reproducible? |
+|----------------|---------------------|---------------|
+| `env_vars`     | KCL (this file)     | Yes — version-controlled |
+| `secrets_file` | gitignored dotenv   | No — per developer |
+
+Forge's `forge run` / `forge up` host phase loads `secrets_file` first
+(if set), then layers `env_vars` on top so KCL-declared config wins on
+conflict. Host services see the same per-env config source that
+`K8sDeploy` services see via the Deployment's `env` block — the split
+keeps host and cluster from drifting.
+
 `CLI` / `Job` collapse:
 - A CLI tool is a `Service` with `deploy = forge.BuildOnly{...}`.
 - A one-shot Job is a `CronJob` with `schedule = ""` (renders as a Job

@@ -132,3 +132,24 @@ helper, a changed file layout — those do.
   shape (path -> hex string) -> structured shape (path -> {hash, history[]})
   so `forge upgrade` distinguishes stale codegen from real user edits.
   Transparent migration — most users will not notice.
+
+## Post-merge gotchas
+
+Two things to know when `forge upgrade` interacts with branches:
+
+- **Recommended branch order: upgrade on `main` first, then merge into
+  work branches.** The reverse (running `forge upgrade` on a work
+  branch and then merging `main` back in) produces ApplyDeps codemod
+  conflicts that are painful to reconcile — the bootstrap/wire layer
+  gets rewritten twice from different baselines, and the textual merge
+  cannot tell which side owns which call. Treat `forge upgrade` like a
+  global codemod: land it on `main`, then rebase every open branch.
+- **`.forge/checksums.json` conflict recipe: union the `history[]`
+  blocks, then re-stamp.** When both branches re-stamped a generated
+  file the JSON merge will conflict on the per-file `history[]` array.
+  Accept BOTH `history[]` blocks (union them by hash — the array is
+  append-only so duplicates are safe to dedupe later), then run
+  `forge generate --accept` to regenerate the active `Hash` field
+  against the merged tree. Never blindly accept one side — the merge
+  will silently drop the other branch's stamp and the next `forge
+  upgrade` will misreport that branch's files as "user-modified".

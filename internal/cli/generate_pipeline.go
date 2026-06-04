@@ -537,7 +537,13 @@ func stepSyncDevForgePkg(ctx *pipelineContext) error {
 func stepAnnounceProject(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		if warning := forgeVersionMismatchWarning(ctx.Cfg.ForgeVersion, buildinfo.Version()); warning != "" {
-			fmt.Fprintln(os.Stderr, warning)
+			// Per-binary-path sentinel keeps the nudge from spamming every
+			// `forge generate` invocation — fires once per shell session
+			// (approximated via $TMPDIR).
+			binPath, _ := os.Executable()
+			if shouldEmitVersionWarn(warning, binPath) {
+				fmt.Fprintln(os.Stderr, warning)
+			}
 		}
 		fmt.Printf("📦 Generating code for project: %s\n\n", ctx.Cfg.Name)
 		return nil

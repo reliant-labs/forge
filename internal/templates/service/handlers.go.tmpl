@@ -14,6 +14,7 @@ import (
 // {{.Name}} implements the {{.Name}} bidirectional streaming RPC.
 // FORGE_SCAFFOLD: implement business logic for {{.Name}}.
 // Remove this comment after editing.
+// forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
 	stream *connect.BidiStream[pb.{{.InputType}}, pb.{{.OutputType}}],
@@ -24,6 +25,7 @@ func (s *Service) {{.Name}}(
 // {{.Name}} implements the {{.Name}} client streaming RPC.
 // FORGE_SCAFFOLD: implement business logic for {{.Name}}.
 // Remove this comment after editing.
+// forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
 	stream *connect.ClientStream[pb.{{.InputType}}],
@@ -34,6 +36,7 @@ func (s *Service) {{.Name}}(
 // {{.Name}} implements the {{.Name}} server streaming RPC.
 // FORGE_SCAFFOLD: implement business logic for {{.Name}}.
 // Remove this comment after editing.
+// forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
@@ -45,6 +48,7 @@ func (s *Service) {{.Name}}(
 // {{.Name}} implements the {{.Name}} RPC.
 // FORGE_SCAFFOLD: implement business logic for {{.Name}}.
 // Remove this comment after editing.
+// forge:gen unwired-stub symbol={{$.ServicePackage}}.{{.Name}}
 func (s *Service) {{.Name}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],

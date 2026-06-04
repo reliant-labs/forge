@@ -78,9 +78,12 @@ tmp/
 *.air.toml.bak
 
 # ── Forge internal state ──
-# .forge/ contains debug-session.json, caches, and other runtime state.
-# checksums.json is the exception — it tracks what forge generated so
-# other developers' `forge generate` can detect user modifications.
+# .forge/ contains debug-session.json, caches, .forge/state/build-<env>.json
+# (handoff from `forge build --push` to `forge deploy`), and other runtime
+# state. checksums.json is the exception — it tracks what forge generated
+# so other developers' `forge generate` can detect user modifications.
+# Everything else under .forge/ is per-developer state and intentionally
+# excluded by the broad `.forge/` rule below.
 .forge/
 !.forge/checksums.json
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/installkit"
 	"github.com/reliant-labs/forge/internal/packs"
 )
 
@@ -288,15 +289,11 @@ func runPackListDeps() error {
 	return nil
 }
 
-// indexByte returns the first index of c in s, or -1 if absent. Inlined to
-// avoid pulling in strings just for this one call.
+// indexByte returns the first index of c in s, or -1 if absent. Thin
+// shim over installkit.FirstByteIndex to keep the original two-line
+// CLI callsites readable.
 func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
+	return installkit.FirstByteIndex(s, c)
 }
 
 func runPackInstall(ctx context.Context, name string, configPairs []string) error {

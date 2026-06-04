@@ -29,6 +29,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/cluster"
 )
 
 // defaultK3dConfigPath is the canonical location of the project's k3d
@@ -481,31 +483,17 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 	fmt.Printf("Reloading dev manifests for cluster %q (namespace=%s, tag=%s)...\n",
 		clusterName, namespace, imageTag)
 
-	manifests, err := runKCL(ctx, mainK, imageTag, namespace, nil)
-	if err != nil {
-		return fmt.Errorf("KCL render: %w", err)
-	}
-
-	if dryRun {
-		fmt.Println(manifests)
-		return nil
-	}
-
-	if err := kubectlApply(ctx, manifests); err != nil {
-		return fmt.Errorf("kubectl apply: %w", err)
-	}
-
-	deployments, err := listDeployments(ctx, namespace)
-	if err != nil {
-		fmt.Printf("Warning: list deployments: %v\n", err)
-		return nil
-	}
-	for _, dep := range deployments {
-		if err := waitForRollout(ctx, dep, namespace); err != nil {
-			fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
-		} else {
-			fmt.Printf("  %s: ready\n", dep)
-		}
-	}
-	return nil
+	// Reload deliberately skips the deploy-time extras: no per-env
+	// config projection (rebuilds defeat the inner-loop purpose), no
+	// prune, no host-skip filter, no one-shot Job wait. Quiet=true
+	// suppresses the section-header banners and matches the shorter
+	// error wraps the pre-extraction reload used. The dry-run output
+	// is unframed (raw manifests).
+	return cluster.Apply(ctx, cluster.ApplyOpts{
+		MainK:     mainK,
+		ImageTag:  imageTag,
+		Namespace: namespace,
+		DryRun:    dryRun,
+		Quiet:     true,
+	})
 }

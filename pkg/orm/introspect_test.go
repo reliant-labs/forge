@@ -577,13 +577,18 @@ func TestIntrospectTable_Types(t *testing.T) {
 		"col_clob":    TypeText,
 		// BLOB affinity
 		"col_blob": TypeBytea,
-		// REAL affinity (mapped to TEXT for safety)
-		"col_real":   TypeText,
-		"col_double": TypeText,
-		"col_float":  TypeText,
-		// NUMERIC affinity (mapped to TEXT for safety)
-		"col_numeric": TypeText,
-		"col_decimal": TypeText,
+		// REAL affinity — mapped through to the dedicated float/double
+		// types. Before TypeReal / TypeDoublePrecision existed these
+		// all reported as TypeText, which made TableSchema lie about
+		// numeric columns whenever introspection consulted it. See
+		// orm-typetext-for-double in FORGE_BACKLOG.
+		"col_real":   TypeReal,
+		"col_double": TypeDoublePrecision,
+		"col_float":  TypeReal,
+		// NUMERIC affinity — arbitrary precision, defaults to double for
+		// the proto wire-compatibility story.
+		"col_numeric": TypeDoublePrecision,
+		"col_decimal": TypeDoublePrecision,
 		// Special types
 		"col_boolean":   TypeBoolean,
 		"col_datetime":  TypeTimestampTZ,

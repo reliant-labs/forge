@@ -518,6 +518,14 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 type DockerConfig struct {
 	Registry   string            `yaml:"registry"`
 	BaseImages map[string]string `yaml:"base_images,omitempty"`
+	// BuildContexts maps a build-context name to a host path (relative
+	// to the project root). Each entry becomes a `--build-context name=path`
+	// arg to `docker build`, letting Dockerfiles reference paths outside
+	// the normal context via `COPY --from=name`. The typical use is a
+	// sibling-checkout local replace directive (e.g. a `replace x => ../x`
+	// in go.mod where ../x is outside the cp-forge build context). Empty
+	// when not set.
+	BuildContexts map[string]string `yaml:"build_contexts,omitempty"`
 }
 
 // LintConfig holds lint-related settings.

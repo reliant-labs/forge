@@ -218,6 +218,16 @@ func runServer(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 {
 			logger.Info("started with service filter", "services", args)
 		}
+		// Post-bootstrap user hook (see pkg/app/post_bootstrap.go).
+		// PostBootstrap is the single forge-blessed chokepoint for
+		// wiring that depends on a CONSTRUCTED component — wire_gen
+		// only resolves Deps fields, so post-construct registrations
+		// (e.g. assigning collaborators onto a worker singleton) must
+		// happen after Bootstrap returns. Default body is a no-op;
+		// projects own pkg/app/post_bootstrap.go after first emit.
+		if hookErr := app.PostBootstrap(application); hookErr != nil {
+			return fmt.Errorf("post-bootstrap hook failed: %w", hookErr)
+		}
 	}
 
 	// Liveness probe: always 200 if the process is alive

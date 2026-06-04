@@ -234,6 +234,7 @@ func canConvertType(from, to FieldType) bool {
 		TypeInteger: {TypeBigInt, TypeText},                   // INT -> BIGINT is safe
 		TypeSerial:  {TypeBigSerial, TypeInteger, TypeBigInt}, // SERIAL conversions
 		TypeText:    {TypeVarchar},                            // TEXT -> VARCHAR (with potential truncation warning)
+		TypeReal:    {TypeDoublePrecision},                    // float32 -> float64 widen is safe
 	}
 
 	allowedTargets, exists := safeConversions[from]

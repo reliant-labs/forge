@@ -27,7 +27,10 @@ import (
 )
 
 func newDevPortForwardCmd() *cobra.Command {
-	var configPath string
+	var (
+		configPath string
+		background bool
+	)
 	cmd := &cobra.Command{
 		Use:   "port-forward",
 		Short: "Forward every declared service port; Ctrl-C cleans up",
@@ -38,11 +41,41 @@ parallel against the matching Deployment in the dev namespace. PIDs
 are written to $HOME/.cache/forge/dev/<cluster>/<ns>.pids so other
 forge dev commands can see what's running. Ctrl-C kills every forward.
 
+With --background, the forwards detach from the current shell and the
+command returns immediately. Use ` + "`forge dev port-forward stop`" + ` to tear
+them down. Useful for orchestration scripts (cloud-dev.sh, CI smoke
+tests) that need port-forwards running alongside other steps.
+
 Examples:
   forge dev port-forward
+  forge dev port-forward --background
+  forge dev port-forward stop
   forge dev port-forward --config deploy/k3d.custom.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevPortForward(configPath)
+			return runDevPortForward(configPath, background)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
+	cmd.Flags().BoolVar(&background, "background", false, "Run port-forwards detached and return immediately (stop with `forge dev port-forward stop`)")
+	cmd.AddCommand(newDevPortForwardStopCmd())
+	return cmd
+}
+
+// newDevPortForwardStopCmd reads the PID file written by --background
+// (or a still-running foreground invocation) and terminates every
+// listed kubectl port-forward process.
+func newDevPortForwardStopCmd() *cobra.Command {
+	var configPath string
+	cmd := &cobra.Command{
+		Use:   "stop",
+		Short: "Stop background port-forwards started by `forge dev port-forward --background`",
+		Long: `Stop background port-forwards.
+
+Reads $HOME/.cache/forge/dev/<cluster>/<ns>.pids and sends SIGTERM
+to each tracked PID. Removes the state file on success. Safe to run
+when no forwards are active — it just prints "(none)" and returns 0.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDevPortForwardStop(configPath)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -59,7 +92,7 @@ type portForwardEntry struct {
 	StartedAt  string `json:"started_at"`
 }
 
-func runDevPortForward(configPath string) error {
+func runDevPortForward(configPath string, background bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -142,6 +175,22 @@ func runDevPortForward(configPath string) error {
 		fmt.Printf("Warning: write state file %s: %v\n", statePath, err)
 	}
 
+	// Background mode: detach from the spawned processes and return.
+	// kubectl port-forward inherits stdout/stderr but we explicitly
+	// don't Wait() — Go's child processes survive parent exit on
+	// posix systems, and the PID file is the handle for stop.
+	if background {
+		fmt.Printf("\n%d port-forward(s) running in background. Stop with `forge dev port-forward stop`.\n", len(procs))
+		fmt.Printf("State file: %s\n", statePath)
+		// Release process handles so Go's runtime doesn't reap on exit.
+		for _, p := range procs {
+			if p.Process != nil {
+				_ = p.Process.Release()
+			}
+		}
+		return nil
+	}
+
 	// Wait for SIGINT/SIGTERM, then kill every forward.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -157,6 +206,45 @@ func runDevPortForward(configPath string) error {
 	}
 	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("Warning: remove state file %s: %v\n", statePath, err)
+	}
+	return nil
+}
+
+// runDevPortForwardStop reads the per-namespace PID file and sends
+// SIGTERM to every tracked process, then removes the state file. Each
+// kill is best-effort: a missing process (already-dead, restarted host)
+// is logged but doesn't abort the rest. Returns nil for the "no
+// forwards running" case so orchestration scripts can call stop
+// unconditionally on teardown.
+func runDevPortForwardStop(configPath string) error {
+	clusterName, err := resolveClusterName(configPath)
+	if err != nil {
+		return err
+	}
+	ns := devNamespace(clusterName)
+	entries := readPortForwardState(clusterName, ns)
+	if len(entries) == 0 {
+		fmt.Println("No background port-forwards tracked. (none)")
+		return nil
+	}
+	fmt.Printf("Stopping %d port-forward(s)...\n", len(entries))
+	for _, e := range entries {
+		proc, ferr := os.FindProcess(e.PID)
+		if ferr != nil {
+			fmt.Printf("  %s (pid=%d): find: %v\n", e.Service, e.PID, ferr)
+			continue
+		}
+		if err := proc.Signal(syscall.SIGTERM); err != nil {
+			fmt.Printf("  %s (pid=%d): SIGTERM: %v\n", e.Service, e.PID, err)
+			continue
+		}
+		fmt.Printf("  %s (pid=%d): stopped\n", e.Service, e.PID)
+	}
+	statePath, err := portForwardStatePath(clusterName, ns)
+	if err == nil {
+		if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+			fmt.Printf("Warning: remove state file %s: %v\n", statePath, err)
+		}
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -269,6 +270,29 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		if err := os.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0644); err != nil {
 			return fmt.Errorf("write contract_test.go: %w", err)
 		}
+
+		// Emit a stub mock_gen.go right now off the (empty) Service
+		// interface in the freshly-written contract.go. The codegen
+		// pipeline will overwrite this file on the next `forge generate`
+		// (unconditionally — it's a _gen.go file), but emitting it on
+		// add gives downstream consumers a real `<pkg>.MockService`
+		// symbol to import immediately. Without this step the package
+		// "exists" in forge.yaml but the mock is missing until the user
+		// runs the full generator, which is too coarse-grained for
+		// incremental package adds in a multi-agent migration where
+		// other generated files (wire_gen.go, app_gen.go, etc.) may be
+		// concurrently edited and not safe to rewrite.
+		//
+		// We tolerate Generate failures here as a soft warning rather
+		// than a hard error: the canonical fix for any generator bug is
+		// to run `forge generate` once the project is in a quiescent
+		// state, and a broken stub shouldn't block package creation
+		// itself.
+		contractPath := filepath.Join(pkgDir, "contract.go")
+		if err := contract.Generate(contractPath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not emit stub mock_gen.go for %s: %v\n", name, err)
+			fmt.Fprintln(os.Stderr, "         run `forge generate` to retry.")
+		}
 	}
 
 	// Update forge.yaml. Type is recorded only when non-default so existing
@@ -286,6 +310,13 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n✅ Internal package '%s' created!\n", name)
+	// Hint at the next step. As of the kalshi-trader friction round 6
+	// fix, `forge add package` emits contract.go + service.go +
+	// contract_test.go *and* a stub mock_gen.go off the empty Service
+	// interface, so downstream packages can import `<pkg>.MockService`
+	// without running the whole generator. Once you add methods to
+	// Service, `forge generate` regenerates mock_gen.go to match.
+	fmt.Printf("   Next: edit internal/%s/contract.go to declare the Service interface, then run `forge generate` to refresh mock_gen.go to match.\n", name)
 
 	return nil
 }

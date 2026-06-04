@@ -19,12 +19,15 @@ func newDevInfoCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "info",
-		Short: "Dump dev-loop config: cluster, context, namespace, port mappings",
-		Long: `Diagnostic dump of the dev-loop config.
+		Short: "Print static dev-loop config (cluster name, expected context, declared ports)",
+		Long: `Print the static dev-loop config declared in forge.yaml + deploy/k3d.yaml.
 
-Prints the canonical values forge dev uses so you can sanity-check
-mismatches between forge.yaml, deploy/k3d.yaml, and your kubectl
-context before diving into port-forward / logs / reload.`,
+Static means "what the project says it expects" — cluster name, expected
+kubectl context, registry URL, declared service/frontend ports. It does
+NOT contact the cluster or check pod state.
+
+For dynamic state (is the cluster up? are pods running? are port-forwards
+active?) use ` + "`forge dev status`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevInfo(configPath)
 		},
@@ -43,7 +46,6 @@ func runDevInfo(configPath string) error {
 		return err
 	}
 	ns := devNamespace(clusterName)
-	currentCtx := currentKubectlContext()
 	expectedCtx := "k3d-" + clusterName
 
 	registry := "localhost:5050"
@@ -51,16 +53,12 @@ func runDevInfo(configPath string) error {
 		registry = env.Registry
 	}
 
-	fmt.Printf("Project:                 %s\n", cfg.Name)
-	fmt.Printf("Cluster:                 %s\n", clusterName)
-	fmt.Printf("Namespace:               %s\n", ns)
-	fmt.Printf("Registry:                %s\n", registry)
+	fmt.Printf("Project:                    %s\n", cfg.Name)
+	fmt.Printf("Cluster (declared):         %s\n", clusterName)
+	fmt.Printf("Namespace (declared):       %s\n", ns)
+	fmt.Printf("Registry (declared):        %s\n", registry)
 	fmt.Printf("kubectl context (expected): %s\n", expectedCtx)
-	fmt.Printf("kubectl context (current):  %s\n", currentCtx)
-	if currentCtx != "" && currentCtx != expectedCtx {
-		fmt.Println("WARNING: current context does not match expected — run `forge dev cluster up` or `kubectl config use-context` to fix.")
-	}
-	fmt.Printf("k3d config:              %s\n", configPath)
+	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()
 	fmt.Println("Declared service ports:")
 	printServicePorts(cfg.Services)
@@ -69,6 +67,8 @@ func runDevInfo(configPath string) error {
 		fmt.Println("Declared frontend ports:")
 		printFrontendPorts(cfg.Frontends)
 	}
+	fmt.Println()
+	fmt.Println("For dynamic state (cluster up/down, pods, port-forwards), run `forge dev status`.")
 	return nil
 }
 

@@ -31,6 +31,7 @@ type lintFlags struct {
 	exportedVars      bool
 	conventions       bool
 	frontendPacks     bool
+	frontendStores    bool
 	scaffolds         bool
 	tests             bool
 	banners           bool
@@ -70,6 +71,8 @@ Examples:
   forge lint --exported-vars     # Run exported vars linter
   forge lint --conventions       # Run forge convention rules on proto files
   forge lint --frontend-packs   # Flag third-party UI imports in frontend pack templates
+  forge lint --frontend-stores  # Flag Zustand stores that import generated Connect
+                                # clients (server data belongs in React Query)
   forge lint --scaffolds        # Flag committed FORGE_SCAFFOLD markers and
                                 # _gen files missing the canonical header
   forge lint --tests            # Nudge handler tests toward tdd.RunRPCCases AND
@@ -107,6 +110,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.migrationSafety, "migration-safety", false, "Run SQL migration safety checks")
 	cmd.Flags().BoolVar(&flags.conventions, "conventions", false, "Run forge convention rules on proto files")
 	cmd.Flags().BoolVar(&flags.frontendPacks, "frontend-packs", false, "Flag third-party UI imports in frontend pack templates (warnings only)")
+	cmd.Flags().BoolVar(&flags.frontendStores, "frontend-stores", false, "Flag Zustand stores that import generated Connect clients (warnings only)")
 	cmd.Flags().BoolVar(&flags.scaffolds, "scaffolds", false, "Enforce forge ownership boundary (FORGE_SCAFFOLD markers + _gen file headers)")
 	cmd.Flags().BoolVar(&flags.tests, "tests", false, "Run test-convention rules (handler-tests-use-tdd + frontend-hook-tests; warnings only)")
 	cmd.Flags().BoolVar(&flags.banners, "banners", false, "Verify forge templates carry the right Tier-1 / Tier-2 lifecycle banner (warnings only; no-op outside the forge repo)")
@@ -177,6 +181,9 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	}
 	if flags.frontendPacks {
 		return runFrontendPackLint()
+	}
+	if flags.frontendStores {
+		return runFrontendStoresLint()
 	}
 	if flags.scaffolds {
 		return runScaffoldsLint()
@@ -439,6 +446,25 @@ func runConventionLint() error {
 			return fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
+
+		// Handler-file size — warns when any handlers/<svc>/*.go grows
+		// past lint.handler_file_max_loc (default 1000). The threshold
+		// is project-configurable via forge.yaml. Warnings only — the
+		// nudge points at the future `forge add handler-file` split
+		// subcommand rather than blocking on file size.
+		cfg, cfgErr := loadProjectConfig()
+		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+			return fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
+		}
+		threshold := config.DefaultHandlerFileMaxLOC
+		if cfg != nil {
+			threshold = cfg.Lint.EffectiveHandlerFileMaxLOC()
+		}
+		sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
+		if err != nil {
+			return fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
+		}
+		combined.Findings = append(combined.Findings, sizeRes.Findings...)
 	}
 
 	// Component-tree analyzers — also run on workers/ and operators/
@@ -511,6 +537,35 @@ func runFrontendPackLint() error {
 
 	fmt.Print(res.FormatText())
 	// Soft rule — never gate the build, even on warnings.
+	return nil
+}
+
+// runFrontendStoresLint scans frontends/<name>/src/stores/*.ts and the
+// historic web/src/store/*.ts for files that both spin up a Zustand
+// store AND import a generated Connect client — the canonical
+// "server data in client-only state" foot-gun. Warnings only; the
+// build is never gated. See the frontend/state skill for the
+// canonical placement (generated React Query hooks).
+func runFrontendStoresLint() error {
+	fmt.Println("🔍 Running frontend-stores convention lint...")
+	fmt.Println()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+
+	res, err := forgeconv.LintFrontendStores(cwd)
+	if err != nil {
+		return fmt.Errorf("frontend-stores lint failed: %w", err)
+	}
+	if len(res.Findings) == 0 {
+		fmt.Println("✓ no frontend store / generated-client mixing detected.")
+		return nil
+	}
+	fmt.Print(res.FormatText())
+	// Warnings only — never gate.
+	fmt.Println("(warnings only — not failing the build)")
 	return nil
 }
 

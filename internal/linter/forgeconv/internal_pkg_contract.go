@@ -36,6 +36,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // LintInternalContracts walks rootDir/internal/ for contract.go files and
@@ -54,21 +56,17 @@ func LintInternalContracts(rootDir string, excludes []string) (Result, error) {
 		return Result{}, nil
 	}
 
-	// Mirror config.ContractsConfig.IsExcluded semantics: equality, suffix
-	// match against `/pattern`, or substring match. Keeps the two surfaces
-	// (lint and bootstrap-skip) in sync without depending on the config
-	// package (the analyzer must stay importable from anywhere).
+	// Delegate to the canonical [config.MatchExclude]. Pre-2026-06 this
+	// analyzer hand-rolled the equality / "/"-suffix / substring rule
+	// inline to avoid depending on internal/config. The three copies
+	// (config, contract/exclude, this file) drifted over time on
+	// empty-pattern handling and slash normalisation, which produced
+	// the exact bug class the lint exists to prevent: a path that
+	// matched under `forge lint --contract` but not under the
+	// pre-codegen check (or vice versa). One shared helper, one
+	// behaviour.
 	isExcluded := func(relSlash string) bool {
-		for _, pat := range excludes {
-			pat = filepath.ToSlash(pat)
-			if pat == "" {
-				continue
-			}
-			if pat == relSlash || strings.HasSuffix(relSlash, "/"+pat) || strings.Contains(relSlash, pat) {
-				return true
-			}
-		}
-		return false
+		return config.MatchExclude(excludes, relSlash)
 	}
 
 	// Collect package directories that contain a contract.go. The shape

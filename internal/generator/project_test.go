@@ -248,6 +248,7 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "cmd", "version.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "bootstrap.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "setup.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "app", "post_bootstrap.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
 	assertPathExists(t, filepath.Join(root, "forge.yaml"))

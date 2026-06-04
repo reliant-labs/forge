@@ -1709,3 +1709,126 @@ type Service struct {
 	}
 }
 
+// TestGenerateCRUDTests_StubsOnShapeMismatch pins the test-scaffold
+// counterpart of TestGenerateCRUDHandlers_StubsOnShapeMismatch: when
+// validateCRUDShape returns false for an RPC, the per-RPC test row in
+// handlers_crud_gen_test.go must NOT emit an AIP-158 happy-path literal
+// that dereferences fields the request type doesn't have (e.g.
+// `Id: 1` on a GetMarketRequest whose key is `string ticker`). Instead
+// the row is replaced with a CodeUnimplemented scaffold matching the
+// CRUD body generator's stub, so the test file stays compileable
+// against the real proto shape.
+//
+// Surfaced-by: kalshi-trader migration round (3 friction reports —
+// add-model-performance-entity, add-get-model-performance-rpc — all
+// hit the same template bug from different proto angles).
+func TestGenerateCRUDTests_StubsOnShapeMismatch(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "markets")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// service.go must be present for buildCRUDTestTemplateData to
+	// resolve its TestHelperName lookup.
+	serviceGo := `package markets
+
+type Deps struct{}
+type Service struct{ deps Deps }
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "MarketsService",
+		GoPackage:  "example.com/test/gen/proto/services/markets/v1",
+		PkgName:    "marketsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListMarkets", InputType: "ListMarketsRequest", OutputType: "ListMarketsResponse"},
+			{Name: "GetMarket", InputType: "GetMarketRequest", OutputType: "GetMarketResponse"},
+			{Name: "CreateMarket", InputType: "CreateMarketRequest", OutputType: "CreateMarketResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			"ListMarketsRequest": {
+				{Name: "limit", ProtoType: "int32"},
+				{Name: "cursor", ProtoType: "string"},
+			},
+			"ListMarketsResponse": {
+				{Name: "markets", ProtoType: "message"},
+			},
+			"GetMarketRequest": {
+				{Name: "ticker", ProtoType: "string"},
+			},
+			"GetMarketResponse": {
+				{Name: "market", ProtoType: "message"},
+			},
+			"CreateMarketRequest": {
+				{Name: "ticker", ProtoType: "string"},
+			},
+			"CreateMarketResponse": {
+				{Name: "markets", ProtoType: "message"},
+			},
+		},
+	}
+
+	entities := []EntityDef{{
+		Name: "Market", TableName: "markets", PkField: "id", PkGoType: "int64",
+		Fields: []EntityField{
+			{Name: "id", GoName: "ID", GoType: "int64"},
+			{Name: "ticker", GoName: "Ticker", GoType: "string"},
+		},
+	}}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if err := GenerateCRUDTests(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDTests() error = %v", err)
+	}
+
+	unit, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud_gen_test.go"))
+	if err != nil {
+		t.Fatalf("read unit test file: %v", err)
+	}
+	content := string(unit)
+
+	// 1. The non-compiling AIP-158 happy-path literals must NOT appear.
+	//    These are the exact strings that broke kalshi-trader's build
+	//    on the freshly-regenerated test scaffold.
+	for _, bad := range []string{
+		"&pb.GetMarketRequest{\n\t\t\t\tId:",
+		"&pb.ListMarketsRequest{PageSize:",
+		"PageSize: 10",
+	} {
+		if strings.Contains(content, bad) {
+			t.Errorf("unexpected AIP-158 literal %q in shape-mismatch test scaffold:\n%s", bad, content)
+		}
+	}
+
+	// 2. Each mismatched method must carry the FORGE_CRUD_SHAPE_MISMATCH
+	//    marker so the user can grep for it from the test file too.
+	if c := strings.Count(content, "FORGE_CRUD_SHAPE_MISMATCH"); c < 3 {
+		t.Errorf("expected >=3 FORGE_CRUD_SHAPE_MISMATCH markers in test scaffold, got %d in:\n%s", c, content)
+	}
+
+	// 3. Each stub row must assert WantErr: connect.CodeUnimplemented so
+	//    the test exercises (and pins) the matching handler stub.
+	if c := strings.Count(content, "connect.CodeUnimplemented"); c < 3 {
+		t.Errorf("expected >=3 connect.CodeUnimplemented assertions in test scaffold, got %d", c)
+	}
+
+	// 4. Each method's TestUnit_ function must still be present so the
+	//    proto interface stays covered by at least one row.
+	for _, want := range []string{"TestUnit_ListMarkets", "TestUnit_GetMarket", "TestUnit_CreateMarket"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("expected %s in shape-mismatch test scaffold:\n%s", want, content)
+		}
+	}
+
+	// 5. The generated file must parse as valid Go — the whole point of
+	//    the stub fallback is that the test file keeps compiling
+	//    against the real proto shape.
+	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud_gen_test.go", content, parser.SkipObjectResolution); err != nil {
+		t.Errorf("generated test file is not valid Go: %v\n----\n%s", err, content)
+	}
+}

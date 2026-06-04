@@ -1,0 +1,45 @@
+package app
+
+// PostBootstrap is the user-owned hook called from cmd/server.go AFTER
+// Bootstrap returns and BEFORE the listener begins accepting requests.
+// Its job is to wire collaborators that wire_gen cannot reach — values
+// stashed on AppExtras for late binding, post-construct registrations
+// onto generated worker singletons, etc.
+//
+// Lifecycle:
+//
+//  1. Bootstrap allocates *App and runs Setup (which assigns infra +
+//     external clients onto App / AppExtras).
+//  2. wire_gen resolves each component's Deps from App + AppExtras and
+//     constructs services/workers via their `New(...)` constructors.
+//  3. Bootstrap returns the populated *App.
+//  4. cmd/server.go calls PostBootstrap(app) — THIS function — before
+//     starting the listener or any worker. An error here aborts the
+//     server boot with the returned message.
+//
+// Why this hook exists (vs. doing the work in Setup): wire_gen only
+// runs in step 2, so collaborators that depend on a constructed
+// service/worker reference (e.g. "set this snapshot saver onto the
+// trader worker singleton") can't be wired before step 3. PostBootstrap
+// is the single forge-blessed chokepoint for that pattern.
+//
+// Default body is a no-op; the user owns the file after first emit and
+// forge generate will not overwrite it.
+//
+// To add post-bootstrap wiring:
+//
+//   - Read the collaborators you need off `app` (App / AppExtras fields
+//     populated by Setup).
+//   - Reach into the constructed component you want to extend, e.g.
+//     `app.Workers.Trader.WireProductionHooks(...)`.
+//   - Return any unrecoverable construction error so the boot fails
+//     loudly instead of silently degrading.
+//
+// This file is YOUR code — forge generate will never overwrite it.
+//
+//forge:scaffold one-shot
+//forge:allow
+func PostBootstrap(app *App) error {
+	_ = app
+	return nil
+}

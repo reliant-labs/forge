@@ -432,6 +432,7 @@ Example:
 func newAddWorkerCmd() *cobra.Command {
 	var kind string
 	var schedule string
+	var noGenerate bool
 
 	cmd := &cobra.Command{
 		Use:   "worker <name>",
@@ -442,23 +443,33 @@ A worker is a long-running process that doesn't serve HTTP but participates
 in the single-binary lifecycle. It has Start(ctx)/Stop(ctx) methods, health
 reporting, and the same Deps injection as services.
 
+The --no-generate flag suppresses the post-scaffold ` + "`forge generate`" + ` run.
+The scaffold itself (workers/<name>/*.go + forge.yaml services append) is the
+only step the verb promises; the pipeline run is a convenience that becomes
+hostile under parallel-agent work (see kalshi-trader migration round friction
+forge-add-worker-runs-full-pipeline). Pass --no-generate when staging
+scaffold-only changes in a multi-lane round and follow up with an explicit
+` + "`forge generate`" + ` at a coordination point.
+
 Example:
   forge add worker email_sender
   forge add worker order_processor
-  forge add worker cleanup --kind cron --schedule "*/5 * * * *"`,
+  forge add worker cleanup --kind cron --schedule "*/5 * * * *"
+  forge add worker engine_shadow --kind cron --schedule "0 3 * * *" --no-generate`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddWorker(args[0], kind, schedule)
+			return runAddWorker(args[0], kind, schedule, noGenerate)
 		},
 	}
 
 	cmd.Flags().StringVar(&kind, "kind", "", "worker kind (use cron for scheduled workers)")
 	cmd.Flags().StringVar(&schedule, "schedule", "", "cron schedule for --kind cron workers")
+	cmd.Flags().BoolVar(&noGenerate, "no-generate", false, "skip the post-scaffold `forge generate` run (scaffold-only mode for parallel-agent rounds)")
 
 	return cmd
 }
 
-func runAddWorker(name, kind, schedule string) error {
+func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 	ctxLabel := fmt.Sprintf("forge add worker %s", name)
 	if err := validateIdentifier(name); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "invalid worker name", "",
@@ -536,6 +547,24 @@ func runAddWorker(name, kind, schedule string) error {
 		return fmt.Errorf("update project config: %w", err)
 	}
 
+	// --no-generate: scaffold-only mode. Skip the post-scaffold generate
+	// pipeline so parallel-agent rounds can stage worker scaffolding
+	// without triggering project-wide codegen churn (which races sibling
+	// agents holding the api-service / mock_gen / wire_gen lanes). The
+	// operator is responsible for running `forge generate` at a
+	// coordination point. See friction
+	// forge-add-worker-runs-full-pipeline (kalshi-trader migration
+	// round, filed-not-fixed entry: "no --no-generate / --scope=worker
+	// flag, so the worker-add path always runs the full codegen
+	// pipeline").
+	if noGenerate {
+		fmt.Printf("\n⏩ --no-generate: skipping post-scaffold `forge generate` run.\n")
+		fmt.Printf("    Worker '%s' scaffolded. Run `forge generate` at a coordination point\n", name)
+		fmt.Printf("    to update pkg/app/{bootstrap,wire_gen,testing}.go for the new worker.\n")
+		fmt.Printf("\n✅ Worker '%s' scaffold-only mode complete!\n", name)
+		return nil
+	}
+
 	// Run the generation pipeline to update bootstrap.go and cmd-server.go
 	fmt.Println("\n🔧 Running generation pipeline...")
 	generateMu.Lock()
@@ -553,6 +582,7 @@ func runAddWorker(name, kind, schedule string) error {
 		// in the visual noise.
 		fmt.Fprintf(os.Stderr, "\nwarning: generation pipeline failed: %v\n", err)
 		fmt.Printf("\n⚠️  Worker '%s' files written, but `forge generate` failed — fix the build before running it again.\n", name)
+		fmt.Printf("    Tip: pass --no-generate to `forge add worker` to suppress the post-scaffold pipeline run.\n")
 		return nil
 	}
 

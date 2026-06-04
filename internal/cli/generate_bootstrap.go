@@ -65,6 +65,15 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return fmt.Errorf("failed to generate setup.go: %w", err)
 	}
 
+	// Generate post_bootstrap.go (user-owned, never overwritten). The
+	// generated cmd/server.go calls `app.PostBootstrap(application)`
+	// after Bootstrap, so the file must exist before downstream
+	// compilation. Default body is a no-op; users own it after first
+	// emit.
+	if err := codegen.GeneratePostBootstrap(projectDir); err != nil {
+		return fmt.Errorf("failed to generate post_bootstrap.go: %w", err)
+	}
+
 	// Generate wire_gen.go after bootstrap + app_gen + app_extras.
 	// wire_gen parses each service/worker/operator Deps struct + the
 	// live *App struct (from pkg/app/app_gen.go) + the user's AppExtras

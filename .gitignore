@@ -18,6 +18,9 @@ vendor/
 # Go workspace (go.work.sum is generated — only go.work needs committing)
 go.work.sum
 
+# KCL — auto-generated when `kcl run` resolves module dependencies.
+**/kcl.mod.lock
+
 # ── Node.js / Next.js ──
 node_modules/
 .next/

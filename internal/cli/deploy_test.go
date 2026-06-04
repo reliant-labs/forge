@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -114,5 +115,215 @@ func TestDeployDryRunHelpMentionsGuard(t *testing.T) {
 	}
 	if !strings.Contains(f.Usage, "guard") {
 		t.Errorf("--dry-run usage should mention the env-cluster guard, got %q", f.Usage)
+	}
+}
+
+// TestDeployTargetArchFlagRegistered confirms `forge deploy
+// --target-arch` is wired so users can cross-compile from a Mac/arm64
+// host onto an amd64 cluster without editing forge.yaml.
+func TestDeployTargetArchFlagRegistered(t *testing.T) {
+	cmd := newDeployCmd()
+	f := cmd.Flags().Lookup("target-arch")
+	if f == nil {
+		t.Fatal("--target-arch flag not registered on deploy command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--target-arch default = %q, want empty", f.DefValue)
+	}
+}
+
+// TestResolveDeployArch verifies the deploy-side arch resolver. Unlike
+// resolveBuildArch in build.go, this one ALWAYS falls back to amd64 (no
+// "host arch" branch) since deploy is always building an image for a
+// cluster node. Returns the empty string only when the resolved target
+// matches the host arch — the signal to skip `--platform`.
+func TestResolveDeployArch(t *testing.T) {
+	otherArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		otherArch = "arm64"
+	}
+
+	cases := []struct {
+		name     string
+		cfgArch  string
+		flagArch string
+		want     string
+	}{
+		{
+			name:     "no config, no flag → amd64 default",
+			cfgArch:  "",
+			flagArch: "",
+			want: func() string {
+				if runtime.GOARCH == "amd64" {
+					return ""
+				}
+				return "amd64"
+			}(),
+		},
+		{
+			name:     "cfg arch matches host → empty",
+			cfgArch:  runtime.GOARCH,
+			flagArch: "",
+			want:     "",
+		},
+		{
+			name:     "cfg arch differs from host → cross-compile",
+			cfgArch:  otherArch,
+			flagArch: "",
+			want:     otherArch,
+		},
+		{
+			name:     "flag overrides cfg",
+			cfgArch:  runtime.GOARCH,
+			flagArch: otherArch,
+			want:     otherArch,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveDeployArch(c.cfgArch, c.flagArch)
+			if got != c.want {
+				t.Errorf("resolveDeployArch(cfg=%q, flag=%q) = %q, want %q",
+					c.cfgArch, c.flagArch, got, c.want)
+			}
+		})
+	}
+}
+
+// TestEffectiveTargetArch covers the DeployConfig.EffectiveTargetArch
+// precedence chain: explicit override > forge.yaml field > "amd64"
+// default. This is the project-level reader; the CLI-level resolver
+// (resolveDeployArch) layers runtime.GOARCH comparison on top of this.
+func TestEffectiveTargetArch(t *testing.T) {
+	cases := []struct {
+		name     string
+		field    string
+		override string
+		want     string
+	}{
+		{"empty → amd64", "", "", "amd64"},
+		{"field wins over default", "arm64", "", "arm64"},
+		{"override wins over field", "arm64", "amd64", "amd64"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := &config.DeployConfig{TargetArch: c.field}
+			if got := d.EffectiveTargetArch(c.override); got != c.want {
+				t.Errorf("EffectiveTargetArch(override=%q) with field=%q = %q, want %q",
+					c.override, c.field, got, c.want)
+			}
+		})
+	}
+}
+
+// TestHostDeploymentSkipSet_DevOnly confirms the dev-only host-mode
+// filter expands each host-marked service to both its bare and
+// project-prefixed Deployment name, so the rollout-wait loop matches
+// either binary-shape's KCL render.
+func TestHostDeploymentSkipSet_DevOnly(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Name: "cp-forge",
+		Services: []config.ServiceConfig{
+			{Name: "admin-server", DevTarget: "host"},
+			{Name: "workspace-controller"},
+			{Name: "workspace-proxy", DevTarget: "host"},
+		},
+	}
+
+	t.Run("dev env produces both bare and prefixed names", func(t *testing.T) {
+		got := hostDeploymentSkipSet(cfg, "dev")
+		want := []string{"admin-server", "cp-forge-admin-server", "workspace-proxy", "cp-forge-workspace-proxy"}
+		if len(got) != len(want) {
+			t.Fatalf("len(skip set) = %d, want %d (got %v)", len(got), len(want), got)
+		}
+		for _, name := range want {
+			if _, ok := got[name]; !ok {
+				t.Errorf("expected %q in skip set, got %v", name, got)
+			}
+		}
+		// Cluster-mode service must not be in the skip set.
+		if _, ok := got["workspace-controller"]; ok {
+			t.Errorf("cluster-mode service leaked into skip set: %v", got)
+		}
+	})
+
+	t.Run("non-dev env produces empty set", func(t *testing.T) {
+		for _, env := range []string{"staging", "prod", ""} {
+			if got := hostDeploymentSkipSet(cfg, env); len(got) != 0 {
+				t.Errorf("hostDeploymentSkipSet(%q) = %v, want empty", env, got)
+			}
+		}
+	})
+
+	t.Run("nil cfg yields empty set", func(t *testing.T) {
+		if got := hostDeploymentSkipSet(nil, "dev"); len(got) != 0 {
+			t.Errorf("nil cfg should yield empty set, got %v", got)
+		}
+	})
+}
+
+// TestRenderedDeploymentNames verifies the extractor parses the multi-
+// document YAML stream forge produces from KCL, returning only
+// Deployment kind names. Non-Deployments and malformed docs are skipped.
+func TestRenderedDeploymentNames(t *testing.T) {
+	manifests := `apiVersion: v1
+kind: Service
+metadata:
+  name: workspace-controller
+spec:
+  ports: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-controller
+  labels:
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cp-forge-config
+data:
+  KEY: value
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-proxy
+spec: {}
+`
+	got := renderedDeploymentNames(manifests)
+	want := []string{"workspace-controller", "workspace-proxy"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("[%d]: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestRenderedDeploymentNames_EmptyAndMalformed confirms the extractor
+// degrades gracefully on edge cases: empty input, all-non-Deployment,
+// and unparseable docs all return an empty slice rather than panicking.
+func TestRenderedDeploymentNames_EmptyAndMalformed(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"whitespace", "   \n\n  "},
+		{"no Deployments", "kind: Service\nmetadata:\n  name: x\n"},
+		{"malformed YAML", "this is not yaml: : :"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := renderedDeploymentNames(c.in); len(got) != 0 {
+				t.Errorf("expected empty slice, got %v", got)
+			}
+		})
 	}
 }

@@ -74,7 +74,7 @@ Every forge frontend ships a small set of low-level primitives at scaffold time,
 | `button` | `import Button from "@/components/ui/button"` | Generic button — `primary` / `secondary` / `outline` / `ghost` / `danger` variants, sizes, loading state. |
 | `input` | `import Input from "@/components/ui/input"` | Generic text input — sizes, invalid state, forwarded ref. Pair with `<Label>`. |
 | `label` | `import Label from "@/components/ui/label"` | Form field label with optional required-asterisk. |
-| `form` | `import Form, { FormField, FormError, FormActions } from "@/components/ui/form"` | Form structural primitives — root `<form>` plus field/error/actions wrappers. |
+| `form` | `import Form, { FormField, FormError, FormActions } from "@/components/ui/form"` | Form structural primitives — root `<form>` plus field/error/actions wrappers. `<FormField>` mints an id and exposes it via `FormFieldContext` so child `<Label>` / `<Input>` / `<Select>` auto-bind without `htmlFor` / `id` boilerplate. |
 | `card` | `import Card, { CardHeader, CardBody, CardFooter } from "@/components/ui/card"` | Generic surface primitive. Distinct from `MetricCard`/`StatCards` (domain components). |
 | `avatar` | `import Avatar from "@/components/ui/avatar"` | User avatar with image, initials fallback, status indicator. |
 | `tabs` | `import Tabs from "@/components/ui/tabs"` | Tab navigation with underline/pills/boxed variants. |
@@ -85,13 +85,91 @@ Every forge frontend ships a small set of low-level primitives at scaffold time,
 
 Plus the higher-level domain components scaffolded out of the box: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`.
 
+Two of those higher-level components have well-defined canonical APIs
+plus accepted aliases — write new code against the canonical names,
+keep the aliases only as a migration-friendly back door:
+
+- **`Badge`** — canonical variants are `error` / `success` / `warning` /
+  `info` / `neutral`. Aliases: `danger → error`, `default → neutral`.
+  The aliases exist for source-port compatibility (codebases that name
+  the destructive badge `danger` and the chrome-less badge `default`
+  don't need an adapter table at every call site). New code should use
+  the canonical names; reach for an alias only when porting existing
+  code and rewriting every call site would be churn.
+
+- **`Modal`** — accepts a footer EITHER as a `footer` slot prop OR
+  embedded inside `children`. Canonical is the **`footer` prop** — it
+  composes cleanly with `<Modal.Body>`-style headers/bodies, keeps the
+  footer styled by the Modal itself (border, padding, button alignment),
+  and survives any future Modal API evolution. The
+  footer-in-children shape is a source-port shorthand; rewrite to the
+  slot prop when you next touch the code.
+
+  ```tsx
+  // Canonical: footer slot prop
+  <Modal
+    open={open}
+    onClose={close}
+    title="Delete project"
+    footer={
+      <>
+        <Button variant="ghost" onClick={close}>Cancel</Button>
+        <Button variant="danger" onClick={confirm}>Delete</Button>
+      </>
+    }
+  >
+    Are you sure?
+  </Modal>
+
+  // Accepted (source-port shorthand): footer inline in children
+  <Modal open={open} onClose={close} title="Delete project">
+    <p>Are you sure?</p>
+    <div className="mt-4 flex justify-end gap-2">
+      <Button variant="ghost" onClick={close}>Cancel</Button>
+      <Button variant="danger" onClick={confirm}>Delete</Button>
+    </div>
+  </Modal>
+  ```
+
 These primitives are written as `overwrite: once` from the scaffolder — once installed, they are yours to edit. If you find yourself re-inlining a button or input shape in a page or pack, stop and use the primitive instead.
+
+### Form field auto-binding
+
+`<FormField>` mints a unique id via `React.useId()` and provides it
+through `FormFieldContext`. Child `<Label>` reads the context for
+`htmlFor`; child `<Input>` / `<Select>` reads the context for `id`.
+The page-author writes neither:
+
+```tsx
+<Form>
+  <FormField>
+    <Label required>Email</Label>
+    <Input type="email" value={email} onChange={onEmail} />
+  </FormField>
+
+  <FormField>
+    <Label>Plan</Label>
+    <Select
+      options={[{ value: "pro", label: "Pro" }, { value: "team", label: "Team" }]}
+    />
+  </FormField>
+</Form>
+```
+
+Clicking either label focuses its input. Explicit `htmlFor` on the
+Label or `id` on the input still wins, so deterministic ids (for tour
+highlights, `aria-describedby` from another node, etc.) remain
+straightforward. Custom form controls can opt into the same pattern by
+reading `FormFieldContext` themselves — see the doc comment in
+`@/components/ui/form`.
 
 ### Variant naming conventions
 
-- `Badge` accepts `success | warning | error | info | neutral` as canonical variants, plus `danger` (alias for `error`) and `default` (alias for `neutral`) so ports from codebases using either naming work without an adapter table.
-- `Button` ships `primary | secondary | outline | ghost | danger` — destructive action is `danger`, not `error`, because Button is action-shaped and Badge is status-shaped.
-- `Modal` accepts a `footer` slot prop AND inline footer markup in `children`. Both shapes are first-class — pick whichever the source codebase already uses to minimise port churn.
+- `Button` ships `primary | secondary | outline | ghost | danger` —
+  destructive action is `danger`, not `error`, because Button is
+  action-shaped and Badge is status-shaped. (Badge's destructive
+  variant has the opposite spelling for the same reason — see
+  the Badge entry above for canonical names and accepted aliases.)
 
 ## Connect RPC Clients
 
@@ -220,6 +298,7 @@ These files are created by `forge add frontend` and are yours to modify:
 - `src/lib/event-context.tsx` — Event bus React context and hooks.
 - `src/stores/ui-store.ts` — Zustand base UI store. Extend or create domain stores in `src/stores/`.
 - `src/lib/format-utils.ts` — Shared formatting utilities used by generated pages.
+- `src/lib/admin-url.ts` — `adminUrl(path)` + `absoluteAdminUrl(path)` helpers for any string passed to an external system that round-trips back to this frontend (Stripe `success_url`, OAuth `redirect_uri`, share links, magic-link emails). Reads `process.env.NEXT_PUBLIC_BASE_PATH` so the runtime value tracks `next.config.js`'s `basePath`. Use these instead of hand-concatenating origin + path — the basePath leaks through `<Link>` for free but NOT into raw URL strings, and `forge`'s Next.js scaffold supports the `/admin`-mounted layout out of the box.
 
 ## Dev Workflow
 

@@ -4,6 +4,8 @@ import (
 	"flag"
 	"strings"
 	"sync"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // excludeMu guards excludePatterns.
@@ -33,26 +35,17 @@ func GetExcludes() []string {
 	return out
 }
 
-// IsExcluded reports whether the given package path matches any configured
-// exclude pattern. The matching semantics mirror
-// config.ContractsConfig.IsExcluded: an entry matches if it equals the path,
-// is a "/"-suffix of the path, or is a substring of the path. We deliberately
-// duplicate the logic here so the linter has no dependency on internal/config
-// (which would cause an import cycle for the analyzer's own package tests).
+// IsExcluded reports whether the given package path matches any
+// configured exclude pattern. The matching rule is the canonical
+// [config.MatchExclude] (equality | "/"-suffix | substring, with empty
+// patterns skipped and forward-slash normalisation). Pre-2026-06 this
+// package hand-rolled the same rule so it could stay zero-dependency
+// on internal/config — but the three copies drifted on empty-pattern
+// handling, and a single sourced helper is cheaper to keep correct.
 func IsExcluded(pkgPath string) bool {
 	excludeMu.RLock()
 	defer excludeMu.RUnlock()
-	for _, pattern := range excludePatterns {
-		if pattern == "" {
-			continue
-		}
-		if pattern == pkgPath ||
-			strings.HasSuffix(pkgPath, "/"+pattern) ||
-			strings.Contains(pkgPath, pattern) {
-			return true
-		}
-	}
-	return false
+	return config.MatchExclude(excludePatterns, pkgPath)
 }
 
 // excludeFlag is a flag.Value that accepts comma-separated package paths and

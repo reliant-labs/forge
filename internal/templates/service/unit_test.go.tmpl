@@ -9,6 +9,11 @@
 // Setup/Check hook — the runner iterates rows as t.Run subtests and
 // asserts on either a Connect error code or a happy-path response.
 //
+// CRUD RPCs are intentionally absent from this file — their per-RPC
+// rows live in handlers_crud_gen_test.go (shape-aware: AIP-158 Id/PageSize/
+// update_mask literals derived from the proto). Each method has exactly
+// one per-RPC test owner; never both.
+//
 // Once you customise these tests:
 //   - rename this file to `handlers_test.go` (forge stops touching it),
 //   - or replace the scaffold rows below with real WantErr / Check rows

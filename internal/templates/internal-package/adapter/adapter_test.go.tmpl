@@ -25,11 +25,14 @@ func TestHealthCheck_OK(t *testing.T) {
 	}))
 	defer stub.Close()
 
-	svc := New(Deps{
+	svc, err := New(Deps{
 		Logger:     slog.Default(),
 		HTTPClient: stub.Client(),
 		BaseURL:    stub.URL,
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	if err := svc.HealthCheck(context.Background()); err != nil {
 		t.Fatalf("HealthCheck: %v", err)
@@ -47,11 +50,14 @@ func TestHealthCheck_Down(t *testing.T) {
 	}))
 	defer stub.Close()
 
-	svc := New(Deps{
+	svc, err := New(Deps{
 		Logger:     slog.Default(),
 		HTTPClient: stub.Client(),
 		BaseURL:    stub.URL,
 	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	if err := svc.HealthCheck(context.Background()); err == nil {
 		t.Fatal("HealthCheck should error when downstream is unhealthy")

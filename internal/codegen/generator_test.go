@@ -172,7 +172,7 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -266,7 +266,7 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	if err := GenerateAppGen(false, false, len(services) > 0, false, false, false, targetDir, nil); err != nil {
@@ -379,12 +379,13 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},      // no webhooks
 	}
 
-	// Snake-case package names match codegen.toServicePackage output.
+	// Compact-lowercase package names match codegen.toServicePackage output
+	// (post-2026 snake/kebab-stripping rule — "AdminServerService" -> "adminserver").
 	webhookServices := map[string]bool{
-		"admin_server": true,
+		"adminserver": true,
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -427,7 +428,7 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", ImportPath: "notifications", FieldName: "Notifications", VarName: "notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// app_gen.go owns the App struct definition (with Packages field
@@ -1104,7 +1105,7 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -1239,7 +1240,7 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil, nil, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// App struct (with DB field + database/sql import) now lives in
@@ -1271,6 +1272,13 @@ func TestToServicePackage(t *testing.T) {
 		{"OrdersService", "orders"},
 		{"Service", "service"},
 		{"notifications", "notifications"},
+		// Multi-word PascalCase compacts to a single lowercase identifier
+		// (separators stripped) so the result agrees with
+		// generator.ServicePackageName on the equivalent CLI name
+		// ("admin-server" / "admin_server" -> "adminserver").
+		{"AdminServerService", "adminserver"},
+		{"admin-server", "adminserver"},
+		{"admin_server", "adminserver"},
 	}
 
 	for _, tt := range tests {
@@ -1375,22 +1383,27 @@ func TestComputeTestHelperName(t *testing.T) {
 // Workers struct field + the `wireWorkerCalibratorRefitDeps` function name,
 // not the underscore-preserving `Calibrator_refit` form that revive /
 // staticcheck ST1003 would flag.
+//
+// Post-2026: the on-disk Package + Go package identifier also compacts
+// ("calibrator_refit" -> "calibratorrefit") so workers/operators match Go
+// style. FieldName still derives from the original separator-bearing name
+// so the exported identifier reads as multiple words.
 func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 	cases := []struct {
-		name              string
-		wantPackage       string
-		wantFieldName     string
-		wantVarName       string
+		name          string
+		wantPackage   string
+		wantFieldName string
+		wantVarName   string
 	}{
-		// Snake-case → PascalCase via ToPascalCase. The directory + Go
-		// package stay snake_case so they remain filesystem-friendly.
-		{"calibrator_refit", "calibrator_refit", "CalibratorRefit", "calibratorRefit"},
-		// Hyphenated → underscored Package; PascalCase FieldName.
-		{"email-sender", "email_sender", "EmailSender", "emailSender"},
+		// Snake-case → compact pkg; PascalCase via ToPascalCase from the
+		// original name so word boundaries survive.
+		{"calibrator_refit", "calibratorrefit", "CalibratorRefit", "calibratorRefit"},
+		// Hyphenated → same compact rule.
+		{"email-sender", "emailsender", "EmailSender", "emailSender"},
 		// Single-word stays as-is (just upper-cased first letter).
 		{"refresh", "refresh", "Refresh", "refresh"},
 		// Initialism — ToPascalCase recognizes API and uppercases it.
-		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
+		{"api_poll", "apipoll", "APIPoll", "aPIPoll"},
 	}
 	for _, c := range cases {
 		got := WorkerDataFromNames([]string{c.name}, "")
@@ -1420,5 +1433,87 @@ func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
 	got := OperatorDataFromNames([]string{"cert_rotator"}, "")
 	if len(got) != 1 || got[0].FieldName != "CertRotator" {
 		t.Errorf("OperatorDataFromNames(\"cert_rotator\")[0].FieldName = %q, want \"CertRotator\"", got[0].FieldName)
+	}
+}
+
+// TestGenerateMissingHandlerStubs_UnitTestSkipsCRUDMethods pins the
+// per-RPC test owner-rule: handlers_crud_gen_test.go owns CRUD-method
+// rows (shape-aware: AIP-158 Id/PageSize/update_mask literals), so the
+// regen path of handlers_scaffold_test.go must NOT also emit a
+// Test<CRUDMethod>_Generated row for the same method. Without this
+// filter the user sees two scaffold tests per CRUD RPC, one in each
+// file, and any future shape change has to be applied twice.
+//
+// Regression guard: the previous implementation passed `fullData` (every
+// RPC) into unit_test.go.tmpl, producing the overlap that this test
+// pins against.
+func TestGenerateMissingHandlerStubs_UnitTestSkipsCRUDMethods(t *testing.T) {
+	projectDir := t.TempDir()
+	targetDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a placeholder handlers_scaffold_test.go so the regen branch
+	// (isPlaceholderUnitTest → true) actually fires.
+	placeholder := `// Code generated by forge. DO NOT EDIT.
+package patients_test
+
+// forge-unit-test-placeholder: this file is regenerated once RPCs are
+// defined in the proto file. Run 'forge generate' after adding RPCs.
+`
+	if err := os.WriteFile(filepath.Join(targetDir, "handlers_scaffold_test.go"), []byte(placeholder), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a placeholder integration_test.go and a minimal handlers.go so
+	// scanExistingMethods doesn't trip.
+	intPlaceholder := `// Code generated by forge. DO NOT EDIT.
+package patients_test
+
+// forge-integration-test-placeholder
+`
+	if err := os.WriteFile(filepath.Join(targetDir, "integration_test.go"), []byte(intPlaceholder), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		Package:    "patients.v1",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		ProtoFile:  "proto/services/patients/v1/patients.proto",
+		Methods: []Method{
+			{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
+			{Name: "GetPatient", InputType: "GetPatientRequest", OutputType: "GetPatientResponse"},
+			{Name: "Echo", InputType: "EchoRequest", OutputType: "EchoResponse"},
+		},
+	}
+
+	crudMethodNames := map[string]bool{
+		"CreatePatient": true,
+		"GetPatient":    true,
+	}
+
+	if _, err := GenerateMissingHandlerStubs(svc, projectDir, targetDir, crudMethodNames, nil); err != nil {
+		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(targetDir, "handlers_scaffold_test.go"))
+	if err != nil {
+		t.Fatalf("read handlers_scaffold_test.go: %v", err)
+	}
+	got := string(content)
+
+	// CRUD methods must NOT appear — handlers_crud_gen_test.go owns them.
+	for _, crud := range []string{"TestCreatePatient_Generated", "TestGetPatient_Generated"} {
+		if strings.Contains(got, crud) {
+			t.Errorf("handlers_scaffold_test.go should not contain %s (CRUD methods are owned by handlers_crud_gen_test.go); got:\n%s", crud, got)
+		}
+	}
+	// Non-CRUD method must still appear — unit_test.go.tmpl owns it.
+	if !strings.Contains(got, "TestEcho_Generated") {
+		t.Errorf("handlers_scaffold_test.go should contain TestEcho_Generated (non-CRUD method); got:\n%s", got)
 	}
 }

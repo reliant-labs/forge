@@ -1,51 +1,55 @@
 package templates
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestKCLSchemaExposesClusterRBACFlag asserts the embedded schema.k and
-// render.k carry the cluster_rbac opt-in surface: schema.Application
-// declares `cluster_rbac` + `cluster_rbac_rules`, and render.k branches
-// between ClusterRole/ClusterRoleBinding and the namespaced default.
+// TestKCLModuleExposesClusterRBAC asserts the upstream KCL module
+// surface still carries the cluster-RBAC opt-in: Operator declares a
+// `cluster_rbac: ClusterRBAC` field and the rbac lib emits both
+// ClusterRole + ClusterRoleBinding (operator path) and namespaced
+// Role + RoleBinding (service / cronjob path).
 //
 // FRICTION 2026-06-02: cp-forge layer 8 had to hand-port a cluster-RBAC
-// renderer into a sibling lib/rbac.k because forge's default Application
-// only emits namespaced Role + RoleBinding. The workspace-controller
-// (cross-namespace operator) needed cluster-scope perms.
-func TestKCLSchemaExposesClusterRBACFlag(t *testing.T) {
-	schemaContent, err := DeployTemplates().Get("kcl/schema.k")
+// renderer because the legacy Application only emitted namespaced
+// Role + RoleBinding. The workspace-controller (cross-namespace
+// operator) needed cluster-scope perms. The new Operator type makes
+// the intent typed.
+func TestKCLModuleExposesClusterRBAC(t *testing.T) {
+	root := kclModuleRoot(t)
+
+	schemaBytes, err := os.ReadFile(filepath.Join(root, "schema.k"))
 	if err != nil {
 		t.Fatalf("read kcl/schema.k: %v", err)
 	}
-	schema := string(schemaContent)
-
+	schema := string(schemaBytes)
 	for _, want := range []string{
-		"cluster_rbac: bool = False",
-		"cluster_rbac_rules: [{str: any}] = []",
+		"schema ClusterRBAC:",
+		"cluster_rbac: ClusterRBAC = ClusterRBAC {}",
 	} {
 		if !strings.Contains(schema, want) {
-			t.Errorf("schema.k missing %q (cluster_rbac opt-in field absent)", want)
+			t.Errorf("schema.k missing %q (cluster_rbac opt-in absent)", want)
 		}
 	}
 
-	renderContent, err := DeployTemplates().Get("kcl/render.k")
+	rbacBytes, err := os.ReadFile(filepath.Join(root, "lib", "rbac.k"))
 	if err != nil {
-		t.Fatalf("read kcl/render.k: %v", err)
+		t.Fatalf("read kcl/lib/rbac.k: %v", err)
 	}
-	render := string(renderContent)
-
+	rbac := string(rbacBytes)
 	for _, want := range []string{
-		"app.cluster_rbac",
-		"kind = \"ClusterRole\"",
-		"kind = \"ClusterRoleBinding\"",
-		// And the non-cluster path still emits the namespaced Role/RoleBinding.
-		"kind = \"Role\"",
-		"kind = \"RoleBinding\"",
+		"render_cluster_rbac",
+		"render_namespaced_rbac",
+		`kind = "ClusterRole"`,
+		`kind = "ClusterRoleBinding"`,
+		`kind = "Role"`,
+		`kind = "RoleBinding"`,
 	} {
-		if !strings.Contains(render, want) {
-			t.Errorf("render.k missing %q (cluster_rbac branch absent)", want)
+		if !strings.Contains(rbac, want) {
+			t.Errorf("lib/rbac.k missing %q (cluster_rbac branch absent)", want)
 		}
 	}
 }

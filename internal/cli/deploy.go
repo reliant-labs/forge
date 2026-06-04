@@ -28,8 +28,10 @@ func newDeployCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "deploy <environment>",
-		Short: "Deploy services to a Kubernetes environment",
-		Long: `Deploy services to the specified Kubernetes environment using KCL manifests.
+		Short: "Deploy services to a Kubernetes environment (Kubernetes-only)",
+		Long: `Note: forge deploy currently targets Kubernetes only — compose, docker-run, and bare-binary deploys are out of scope for this command.
+
+Deploy services to the specified Kubernetes environment using KCL manifests.
 
 The environment must correspond to a directory under deploy/kcl/<env>/.
 

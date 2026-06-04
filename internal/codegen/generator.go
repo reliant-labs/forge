@@ -437,17 +437,17 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 
 // WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
 // projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// Hyphens in the user-facing name are normalized to underscores for Package (the on-disk
-// directory + Go package name) while FieldName uses ToPascalCase so snake_case worker
-// names (`calibrator_refit`) produce idiomatic exported identifiers
+// Hyphens and underscores in the user-facing name are stripped for Package (the on-disk
+// directory + Go package name) so `calibrator_refit` becomes `calibratorrefit`, matching
+// Go style. FieldName is derived from the ORIGINAL name (which retains its separators)
+// via ToPascalCase so snake_case worker names still produce idiomatic exported identifiers
 // (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than the
-// underscore-preserving `Workers.Calibrator_refit` shape that revive / staticcheck ST1003
-// would flag.
+// run-together `Workers.Calibratorrefit` shape ToPascalCase would otherwise emit.
 func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
 	var workers []BootstrapWorkerData
 	for _, name := range names {
 		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(pkg)
+		fieldName := naming.ToPascalCase(name)
 		fallible := false
 		if projectDir != "" {
 			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "workers", pkg))
@@ -474,7 +474,7 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 	var operators []BootstrapOperatorData
 	for _, name := range names {
 		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(pkg)
+		fieldName := naming.ToPascalCase(name)
 		fallible := false
 		if projectDir != "" {
 			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "operators", pkg))
@@ -493,12 +493,17 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 }
 
 // toGoPackage normalizes a CLI/forge.yaml-style name into a valid Go package
-// identifier: lowercase with hyphens replaced by underscores. This mirrors
-// generator.ServicePackageName but is duplicated here to keep codegen free of
-// a generator dependency (the generator package already imports codegen).
+// identifier: lowercase with both hyphen and underscore separators stripped
+// (so "calibrator_refit" becomes "calibratorrefit", matching Go style). This
+// mirrors generator.ServicePackageName but is duplicated here to keep codegen
+// free of a generator dependency (the generator package already imports codegen).
 func toGoPackage(name string) string {
-	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
+	return toGoPackageReplacer.Replace(strings.ToLower(name))
 }
+
+// toGoPackageReplacer mirrors generator.servicePackageReplacer — see that
+// var's comment for why both separators are stripped.
+var toGoPackageReplacer = strings.NewReplacer("-", "", "_", "")
 
 // lowerFirst returns s with the first rune lowercased — used to derive a
 // lowerCamel local-variable prefix from a PascalCase FieldName so generated
@@ -656,20 +661,30 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	for _, svc := range services {
 		pkg := toServicePackage(svc.Name)
 		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
-		fieldName := naming.ToPascalCase(pkg)
-		// Runtime name is the kebab form derived from the snake package
-		// directory — matches what cobra subcommands pass to runServer
+		// FieldName mirrors the PascalCase proto-service name without the
+		// "Service" suffix ("AdminServerService" -> "AdminServer"). We derive
+		// it from svc.Name (which retains separators / PascalCase boundaries)
+		// rather than from pkg, because pkg is the compact form
+		// ("adminserver") that ToPascalCase can't split back into words.
+		fieldName := naming.ToPascalCase(strings.TrimSuffix(svc.Name, "Service"))
+		if fieldName == "" {
+			fieldName = naming.ToPascalCase(svc.Name)
+		}
+		// Runtime name is the kebab form of the original svc.Name (proto
+		// PascalCase) — matches what cobra subcommands pass to runServer
 		// (cmd-shared-service.go.tmpl uses {{.ServiceName}} which is the
-		// kebab form from forge.yaml). Pre-2026-04-30 this was set to
-		// the snake-case package name, which silently dropped the cobra
+		// kebab form from forge.yaml). Pre-2026-04-30 this was derived
+		// from the snake-case package name, which silently dropped the cobra
 		// invocation under shared-binary mode (admin-server vs admin_server).
-		runtimeName := strings.ReplaceAll(pkg, "_", "-")
+		// The kebab form preserves the original word boundaries that the
+		// compact pkg form loses.
+		runtimeName := naming.ToKebabCase(strings.TrimSuffix(svc.Name, "Service"))
 		// ConnectPkg + ProtoServiceName drive the vanguard.NewService call
 		// site when REST is enabled. The proto service name is the proto
 		// handler name (e.g. "EchoService") which matches the `<X>Name`
 		// constant exposed by connect-generated packages.
 		connectPkg := pkg + "v1connect"
-		protoServiceName := naming.ToPascalCase(pkg) + "Service"
+		protoServiceName := fieldName + "Service"
 		if restEnabled {
 			connectImports = append(connectImports, modulePath+"/gen/services/"+pkg+"/v1/"+connectPkg)
 		}
@@ -1590,18 +1605,21 @@ func hasFallibleConstructor(services []BootstrapServiceData, packages []Bootstra
 }
 
 // toServicePackage converts a proto service name like "EchoService" to its
-// Go-package form ("echo"). Multi-word PascalCase names are snake-cased so the
-// result is a valid Go identifier matching the dir created at scaffold time
-// (e.g. "AdminServerService" -> "admin_server" matches handlers/admin_server/).
-// Hyphens (which can appear when downstream callers feed in the CLI form
-// directly) are also normalized to underscores.
+// Go-package form ("echo"). Multi-word PascalCase names compact to a single
+// lowercase identifier matching the dir created at scaffold time
+// (e.g. "AdminServerService" -> "adminserver" matches handlers/adminserver/).
+// Hyphens / underscores (which can appear when downstream callers feed in the
+// CLI form directly) are also stripped.
+//
+// This must agree with generator.ServicePackageName for any single service so
+// that bootstrap/codegen keys and the on-disk handler directory match. See the
+// matching toGoPackageReplacer for the separator policy.
 func toServicePackage(name string) string {
 	trimmed := strings.TrimSuffix(name, "Service")
 	if trimmed == "" {
 		trimmed = name
 	}
-	// ToSnakeCase handles PascalCase ("AdminServer" -> "admin_server") and
-	// preserves all-lowercase input ("orders" -> "orders"). Replace any
-	// stray hyphens defensively in case a caller passed in a CLI name.
-	return strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
+	// ToSnakeCase handles PascalCase ("AdminServer" -> "admin_server"); strip
+	// the resulting separators so we match ServicePackageName's compact form.
+	return toGoPackage(naming.ToSnakeCase(trimmed))
 }

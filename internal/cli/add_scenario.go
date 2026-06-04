@@ -127,6 +127,15 @@ func runAddScenario(name, frontend, from, description string) error {
 			"check filesystem permissions on the frontend directory", err)
 	}
 
+	// Scenarios import typed handlers from the Connect-RPC TS stubs under
+	// src/gen/. If the frontend hasn't been generated yet (or src/gen was
+	// wiped) the new file's import path won't resolve — warn but continue.
+	genDir := filepath.Join(root, feDir, "src", "gen")
+	if _, err := os.Stat(genDir); os.IsNotExist(err) {
+		fmt.Printf("⚠️  %s is missing — run `forge generate` first or the scenario import path won't resolve.\n",
+			filepath.Join(feDir, "src", "gen"))
+	}
+
 	outPath := filepath.Join(scenariosDir, name+".ts")
 	if _, err := os.Stat(outPath); err == nil {
 		return cliutil.UserErr(ctxLabel,

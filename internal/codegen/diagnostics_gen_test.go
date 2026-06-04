@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+// scaffoldMarkerToken is the FORGE_SCAFFOLD marker without the leading
+// "// ", spliced into raw-string test fixtures so that the scaffolds
+// linter (which matches "// FORGE_SCAFFOLD:" at line start) doesn't
+// fire on this test file's source bytes.
+const scaffoldMarkerToken = "FORGE_SCAFFOLD:"
+
 // TestGenerateDiagnostics_NoComponentsSkips asserts the diagnostics
 // codegen is a no-op for a project with no services / workers /
 // operators — there's no pkg/app/ either in that shape, so writing the
@@ -112,7 +118,7 @@ import (
 )
 
 // Ping implements the Ping RPC.
-// FORGE_SCAFFOLD: implement business logic for Ping.
+// ` + scaffoldMarkerToken + ` implement business logic for Ping.
 // Remove this comment after editing.
 // forge:gen unwired-stub symbol=api.Ping
 func (s *Service) Ping(ctx context.Context, req *connect.Request[any]) (*connect.Response[any], error) {

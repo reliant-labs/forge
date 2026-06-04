@@ -85,13 +85,61 @@ Every forge frontend ships a small set of low-level primitives at scaffold time,
 
 Plus the higher-level domain components scaffolded out of the box: `sidebar_layout`, `page_header`, `badge`, `modal`, `skeleton_loader`, `pagination`, `search_input`, `alert_banner`, `key_value_list`, `login_form`.
 
+Two of those higher-level components have well-defined canonical APIs
+plus accepted aliases — write new code against the canonical names,
+keep the aliases only as a migration-friendly back door:
+
+- **`Badge`** — canonical variants are `error` / `success` / `warning` /
+  `info` / `neutral`. Aliases: `danger → error`, `default → neutral`.
+  The aliases exist for source-port compatibility (codebases that name
+  the destructive badge `danger` and the chrome-less badge `default`
+  don't need an adapter table at every call site). New code should use
+  the canonical names; reach for an alias only when porting existing
+  code and rewriting every call site would be churn.
+
+- **`Modal`** — accepts a footer EITHER as a `footer` slot prop OR
+  embedded inside `children`. Canonical is the **`footer` prop** — it
+  composes cleanly with `<Modal.Body>`-style headers/bodies, keeps the
+  footer styled by the Modal itself (border, padding, button alignment),
+  and survives any future Modal API evolution. The
+  footer-in-children shape is a source-port shorthand; rewrite to the
+  slot prop when you next touch the code.
+
+  ```tsx
+  // Canonical: footer slot prop
+  <Modal
+    open={open}
+    onClose={close}
+    title="Delete project"
+    footer={
+      <>
+        <Button variant="ghost" onClick={close}>Cancel</Button>
+        <Button variant="danger" onClick={confirm}>Delete</Button>
+      </>
+    }
+  >
+    Are you sure?
+  </Modal>
+
+  // Accepted (source-port shorthand): footer inline in children
+  <Modal open={open} onClose={close} title="Delete project">
+    <p>Are you sure?</p>
+    <div className="mt-4 flex justify-end gap-2">
+      <Button variant="ghost" onClick={close}>Cancel</Button>
+      <Button variant="danger" onClick={confirm}>Delete</Button>
+    </div>
+  </Modal>
+  ```
+
 These primitives are written as `overwrite: once` from the scaffolder — once installed, they are yours to edit. If you find yourself re-inlining a button or input shape in a page or pack, stop and use the primitive instead.
 
 ### Variant naming conventions
 
-- `Badge` accepts `success | warning | error | info | neutral` as canonical variants, plus `danger` (alias for `error`) and `default` (alias for `neutral`) so ports from codebases using either naming work without an adapter table.
-- `Button` ships `primary | secondary | outline | ghost | danger` — destructive action is `danger`, not `error`, because Button is action-shaped and Badge is status-shaped.
-- `Modal` accepts a `footer` slot prop AND inline footer markup in `children`. Both shapes are first-class — pick whichever the source codebase already uses to minimise port churn.
+- `Button` ships `primary | secondary | outline | ghost | danger` —
+  destructive action is `danger`, not `error`, because Button is
+  action-shaped and Badge is status-shaped. (Badge's destructive
+  variant has the opposite spelling for the same reason — see
+  the Badge entry above for canonical names and accepted aliases.)
 
 ## Connect RPC Clients
 

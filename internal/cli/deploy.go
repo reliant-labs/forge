@@ -59,7 +59,13 @@ Examples:
 			if explain {
 				return runDeployExplain(cmd.Context(), args[0], contextOverride)
 			}
-			return runDeploy(cmd.Context(), args[0], imageTag, dryRun, namespace, contextOverride, targetArch)
+			return runDeploy(cmd.Context(), args[0], deployOptions{
+				imageTag:        imageTag,
+				dryRun:          dryRun,
+				namespace:       namespace,
+				contextOverride: contextOverride,
+				targetArch:      targetArch,
+			})
 		},
 	}
 
@@ -117,7 +123,25 @@ func emptyAs(s, alt string) string {
 	return s
 }
 
-func runDeploy(ctx context.Context, envName, imageTag string, dryRun bool, namespace, contextOverride, targetArchFlag string) error {
+// deployOptions bundles the flag values for `forge deploy`. The
+// runDeploy function previously took six discrete parameters; growing
+// it to seven tipped revive's argument-limit lint. The struct form
+// makes the call site self-documenting and keeps the per-flag default
+// (e.g. dryRun=false) co-located with the field declaration.
+type deployOptions struct {
+	imageTag        string
+	dryRun          bool
+	namespace       string
+	contextOverride string
+	targetArch      string
+}
+
+func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
+	imageTag := opts.imageTag
+	dryRun := opts.dryRun
+	namespace := opts.namespace
+	contextOverride := opts.contextOverride
+	targetArchFlag := opts.targetArch
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return err

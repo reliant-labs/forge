@@ -30,6 +30,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -653,7 +654,7 @@ func stepInitialMigration(ctx *pipelineContext) error {
 	if hasSQLMigrations(ctx.ProjectDir) {
 		return nil
 	}
-	if err := maybeGenerateInitialMigration(ctx.ProjectDir); err != nil {
+	if err := maybeGenerateInitialMigration(context.Background(), ctx.ProjectDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: initial migration generation failed: %v\n", err)
 	}
 	return nil

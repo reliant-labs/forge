@@ -33,12 +33,12 @@ func forgeVersionMismatchWarning(yamlVersion, binaryVersion string) string {
 	// Case 1: legacy project, no forge_version pinned. Treat as "0.0.0"
 	// per EffectiveForgeVersion semantics.
 	if yamlVersion == "" {
-		return fmt.Sprintf("⚠️  no forge_version declared in forge.yaml — run '%s upgrade' to set baseline (binary is %s).", CLIName(), binaryVersion)
+		return fmt.Sprintf("⚠️  no forge_version declared in forge.yaml — run '%s upgrade' to set baseline (binary is %s).", Name(), binaryVersion)
 	}
 
 	if yamlVersion == binaryVersion {
 		return ""
 	}
 
-	return fmt.Sprintf("⚠️  forge.yaml declares forge_version: %s but binary is %s. Run '%s upgrade' to migrate.", yamlVersion, binaryVersion, CLIName())
+	return fmt.Sprintf("⚠️  forge.yaml declares forge_version: %s but binary is %s. Run '%s upgrade' to migrate.", yamlVersion, binaryVersion, Name())
 }

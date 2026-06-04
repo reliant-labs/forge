@@ -220,7 +220,8 @@ func runProjectDev(opts runOptions) error {
 		// already set in os.Environ().
 		baseEnv := mergeEnv(envExtraEnv, os.Environ())
 		if opts.debug {
-			cmd.Env = append(baseEnv, "ENVIRONMENT=development")
+			baseEnv = append(baseEnv, "ENVIRONMENT=development")
+			cmd.Env = baseEnv
 		} else if len(envExtraEnv) > 0 {
 			cmd.Env = baseEnv
 		}
@@ -311,20 +312,35 @@ func runProjectDev(opts runOptions) error {
 		<-allDone
 	}
 
-	// Tear down infrastructure (unless --no-infra).
 	if !opts.noInfra {
-		composePath := "docker-compose.yml"
-		if _, err := os.Stat(composePath); err == nil {
-			fmt.Println("[run] Stopping infrastructure...")
-			downCmd := exec.Command("docker", "compose", "-f", composePath, "down")
-			downCmd.Stdout = os.Stdout
-			downCmd.Stderr = os.Stderr
-			_ = downCmd.Run()
-		}
+		teardownInfrastructure()
 	}
 
 	fmt.Println("[run] All processes stopped.")
 	return nil
+}
+
+// teardownInfrastructure runs `docker compose down` if a project-level
+// docker-compose.yml exists. Best-effort: errors are logged via the
+// command's stderr inherit but never surfaced to the caller, since
+// `forge run` is already shutting down.
+//
+// Uses a fresh Background context with a 30s timeout because runProjectDev
+// only reaches this point after its own ctx has been cancelled by
+// SIGINT/SIGTERM — passing that cancelled ctx to `docker compose down`
+// would no-op the teardown.
+func teardownInfrastructure() {
+	composePath := "docker-compose.yml"
+	if _, err := os.Stat(composePath); err != nil {
+		return
+	}
+	fmt.Println("[run] Stopping infrastructure...")
+	downCtx, downCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer downCancel()
+	downCmd := exec.CommandContext(downCtx, "docker", "compose", "-f", composePath, "down")
+	downCmd.Stdout = os.Stdout
+	downCmd.Stderr = os.Stderr
+	_ = downCmd.Run()
 }
 
 // filterServicesByNames returns only services whose name matches one of the given names.
@@ -423,7 +439,7 @@ type configAnnotation struct {
 // any error (the caller falls back to snake→SCREAMING_SNAKE).
 func loadConfigAnnotations(projectDir string) map[string]configAnnotation {
 	out := map[string]configAnnotation{}
-	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
+	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
 	if err != nil || len(messages) == 0 {
 		return out
 	}

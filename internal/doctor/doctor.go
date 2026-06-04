@@ -17,6 +17,7 @@ import (
 // Status represents the outcome of a single health check.
 type Status string
 
+// Status enum values.
 const (
 	StatusPass Status = "pass"
 	StatusFail Status = "fail"
@@ -231,25 +232,25 @@ func printReport(w io.Writer, report Report, verbose bool) {
 	for _, r := range report.Checks {
 		icon := statusIcon(r.Status)
 		name := fmt.Sprintf("%-20s", r.Name)
-		fmt.Fprintf(w, "  %s %s %s", icon, name, r.Message)
+		_, _ = fmt.Fprintf(w, "  %s %s %s", icon, name, r.Message)
 		if r.Duration > 0 {
-			fmt.Fprintf(w, "  %s(%s)%s", colorGray, r.Duration.Round(time.Millisecond), colorReset)
+			_, _ = fmt.Fprintf(w, "  %s(%s)%s", colorGray, r.Duration.Round(time.Millisecond), colorReset)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 
 		if verbose && r.Evidence != "" {
 			for _, line := range strings.Split(r.Evidence, "\n") {
-				fmt.Fprintf(w, "    %s%s%s\n", colorGray, line, colorReset)
+				_, _ = fmt.Fprintf(w, "    %s%s%s\n", colorGray, line, colorReset)
 			}
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
 	switch report.Overall {
 	case StatusPass:
-		fmt.Fprintf(w, "  %s All checks passed %s(%s)%s\n", colorGreen+"✓"+colorReset, colorGray, report.Duration.Round(time.Millisecond), colorReset)
+		_, _ = fmt.Fprintf(w, "  %s All checks passed %s(%s)%s\n", colorGreen+"✓"+colorReset, colorGray, report.Duration.Round(time.Millisecond), colorReset)
 	case StatusWarn:
-		fmt.Fprintf(w, "  %s Some checks have warnings %s(%s)%s\n", colorYellow+"!"+colorReset, colorGray, report.Duration.Round(time.Millisecond), colorReset)
+		_, _ = fmt.Fprintf(w, "  %s Some checks have warnings %s(%s)%s\n", colorYellow+"!"+colorReset, colorGray, report.Duration.Round(time.Millisecond), colorReset)
 	case StatusFail:
 		var failures int
 		for _, r := range report.Checks {
@@ -257,7 +258,7 @@ func printReport(w io.Writer, report Report, verbose bool) {
 				failures++
 			}
 		}
-		fmt.Fprintf(w, "  %s %d check(s) failed %s(%s)%s\n", colorRed+"✗"+colorReset, failures, colorGray, report.Duration.Round(time.Millisecond), colorReset)
+		_, _ = fmt.Fprintf(w, "  %s %d check(s) failed %s(%s)%s\n", colorRed+"✗"+colorReset, failures, colorGray, report.Duration.Round(time.Millisecond), colorReset)
 	}
 }
 

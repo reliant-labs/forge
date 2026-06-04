@@ -250,7 +250,7 @@ func copyScenarioFrom(scenariosDir, from, newName, outPath string) error {
 	// emits double quotes; users may have switched to single quotes by
 	// hand. Anchoring on the exact source name keeps the replace narrow.
 	pattern := regexp.MustCompile(`name:\s*["']` + regexp.QuoteMeta(from) + `["']`)
-	updated := pattern.ReplaceAllString(string(srcBytes), fmt.Sprintf(`name: "%s"`, newName))
+	updated := pattern.ReplaceAllString(string(srcBytes), fmt.Sprintf(`name: %q`, newName))
 
 	if updated == string(srcBytes) {
 		// No name field found — bail rather than write a scenario whose

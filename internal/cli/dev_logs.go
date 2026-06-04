@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,7 +37,7 @@ Examples:
   forge dev logs --service api --tail 200
   forge dev logs --no-follow           # one-shot, no streaming`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevLogs(configPath, service, tail, follow)
+			return runDevLogs(cmd.Context(), configPath, service, tail, follow)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -46,7 +47,7 @@ Examples:
 	return cmd
 }
 
-func runDevLogs(configPath, service string, tail int, follow bool) error {
+func runDevLogs(ctx context.Context, configPath, service string, tail int, follow bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -70,7 +71,7 @@ func runDevLogs(configPath, service string, tail int, follow bool) error {
 		args = append(args, "--max-log-requests=20", "-l", "app.kubernetes.io/managed-by=forge")
 	}
 
-	cmd := exec.Command("kubectl", args...)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

@@ -187,7 +187,7 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil //nolint:nilerr
+			return nil //nolint:nilerr // unreadable file is treated as no findings; walk continues
 		}
 		matches := castHelperRE.FindAllStringSubmatch(string(data), -1)
 		seen := make(map[string]bool)
@@ -254,7 +254,7 @@ func readDeclaredBinaries(path string) map[string]bool {
 	if err != nil {
 		return out
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	inBinaries := false

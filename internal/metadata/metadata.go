@@ -19,7 +19,7 @@ type ProjectMetadata struct {
 // Load reads project metadata from .reliant/project.json
 func Load(projectRoot string) (*ProjectMetadata, error) {
 	metadataPath := filepath.Join(projectRoot, ".reliant", "project.json")
-	
+
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata: %w", err)
@@ -39,7 +39,7 @@ func LoadFromCwd() (*ProjectMetadata, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current directory: %w", err)
 	}
-	
+
 	return Load(cwd)
 }
 

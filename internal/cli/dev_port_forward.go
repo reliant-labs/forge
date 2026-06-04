@@ -11,6 +11,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -52,7 +53,7 @@ Examples:
   forge dev port-forward stop
   forge dev port-forward --config deploy/k3d.custom.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevPortForward(configPath, background)
+			return runDevPortForward(cmd.Context(), configPath, background)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -92,7 +93,7 @@ type portForwardEntry struct {
 	StartedAt  string `json:"started_at"`
 }
 
-func runDevPortForward(configPath string, background bool) error {
+func runDevPortForward(ctx context.Context, configPath string, background bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -104,7 +105,7 @@ func runDevPortForward(configPath string, background bool) error {
 		return err
 	}
 
-	if err := pinKubectlContext(clusterName); err != nil {
+	if err := pinKubectlContext(ctx, clusterName); err != nil {
 		return err
 	}
 
@@ -132,7 +133,7 @@ func runDevPortForward(configPath string, background bool) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
@@ -150,7 +151,7 @@ func runDevPortForward(configPath string, background bool) error {
 		ref := "deployment/" + t.name
 		args := []string{"port-forward", "-n", ns, ref,
 			fmt.Sprintf("%d:%d", t.port, t.port)}
-		cmd := exec.Command("kubectl", args...)
+		cmd := exec.CommandContext(ctx, "kubectl", args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Start(); err != nil {
@@ -275,7 +276,7 @@ func writePortForwardState(path string, entries []portForwardEntry) error {
 		sb.Write(b)
 		sb.WriteByte('\n')
 	}
-	return os.WriteFile(path, []byte(sb.String()), 0644)
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }
 
 // readPortForwardState reads the per-namespace PID file written by

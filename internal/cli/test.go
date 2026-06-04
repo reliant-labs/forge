@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,7 +38,7 @@ Examples:
   forge test --service api-gateway  # Test specific service only
   forge test -V                     # Verbose test output`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTestAll(flags)
+			return runTestAll(cmd.Context(), flags)
 		},
 	}
 
@@ -53,7 +54,7 @@ Examples:
   forge test unit -V
   forge test unit --service api-gateway`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTestUnit(flags)
+			return runTestUnit(cmd.Context(), flags)
 		},
 	}
 
@@ -68,7 +69,7 @@ Examples:
   forge test integration
   forge test integration --service api-gateway`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTestIntegration(flags)
+			return runTestIntegration(cmd.Context(), flags)
 		},
 	}
 
@@ -85,7 +86,7 @@ Examples:
   forge test e2e
   forge test e2e -V`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTestE2E(flags)
+			return runTestE2E(cmd.Context(), flags)
 		},
 	}
 
@@ -112,17 +113,17 @@ type testResult struct {
 	Output   string
 }
 
-func runTestAll(flags testFlags) error {
+func runTestAll(ctx context.Context, flags testFlags) error {
 	fmt.Println("[test] Running all tests (unit + integration)...")
 	fmt.Println()
 
 	var (
-		results      []testResult
+		results       []testResult
 		discoveryErrs []error
 	)
 
 	// Run Go unit tests
-	unitResults, err := runGoTests("./...", []string{"-count=1"}, flags)
+	unitResults, err := runGoTests(ctx, "./...", []string{"-count=1"}, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[test] Go unit test discovery failed: %v\n", err)
 		discoveryErrs = append(discoveryErrs, fmt.Errorf("unit test discovery: %w", err))
@@ -130,7 +131,7 @@ func runTestAll(flags testFlags) error {
 	results = append(results, unitResults...)
 
 	// Run Go integration tests
-	integrationResults, err := runGoTests("./...", []string{"-tags", "integration"}, flags)
+	integrationResults, err := runGoTests(ctx, "./...", []string{"-tags", "integration"}, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[test] Go integration test discovery failed: %v\n", err)
 		discoveryErrs = append(discoveryErrs, fmt.Errorf("integration test discovery: %w", err))
@@ -138,44 +139,44 @@ func runTestAll(flags testFlags) error {
 	results = append(results, integrationResults...)
 
 	// Run frontend tests if frontends/ exists
-	frontendResults := runFrontendTests(flags)
+	frontendResults := runFrontendTests(ctx, flags)
 	results = append(results, frontendResults...)
 
-	return printTestSummary(results, discoveryErrs, flags)
+	return printTestSummary(ctx, results, discoveryErrs, flags)
 }
 
-func runTestUnit(flags testFlags) error {
+func runTestUnit(ctx context.Context, flags testFlags) error {
 	fmt.Println("[test] Running unit tests...")
 	fmt.Println()
 
 	var discoveryErrs []error
-	results, err := runGoTests("./...", []string{"-count=1"}, flags)
+	results, err := runGoTests(ctx, "./...", []string{"-count=1"}, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[test] Go unit test discovery failed: %v\n", err)
 		discoveryErrs = append(discoveryErrs, fmt.Errorf("unit test discovery: %w", err))
 	}
 
 	// Also run frontend tests
-	frontendResults := runFrontendTests(flags)
+	frontendResults := runFrontendTests(ctx, flags)
 	results = append(results, frontendResults...)
 
-	return printTestSummary(results, discoveryErrs, flags)
+	return printTestSummary(ctx, results, discoveryErrs, flags)
 }
 
-func runTestIntegration(flags testFlags) error {
+func runTestIntegration(ctx context.Context, flags testFlags) error {
 	fmt.Println("[test] Running integration tests...")
 	fmt.Println()
 
 	var discoveryErrs []error
-	results, err := runGoTests("./...", []string{"-tags", "integration"}, flags)
+	results, err := runGoTests(ctx, "./...", []string{"-tags", "integration"}, flags)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[test] Go integration test discovery failed: %v\n", err)
 		discoveryErrs = append(discoveryErrs, fmt.Errorf("integration test discovery: %w", err))
 	}
-	return printTestSummary(results, discoveryErrs, flags)
+	return printTestSummary(ctx, results, discoveryErrs, flags)
 }
 
-func runTestE2E(flags testFlags) error {
+func runTestE2E(ctx context.Context, flags testFlags) error {
 	fmt.Println("[test] Running e2e tests...")
 	fmt.Println()
 
@@ -200,15 +201,15 @@ func runTestE2E(flags testFlags) error {
 	// E2E tests live under e2e/, not handlers/.
 	// E2E test files are guarded by `//go:build e2e`, so we must pass
 	// the build tag for them to compile and run.
-	result := runGoTestInDir(".", pkg, []string{"-tags", "e2e"}, flags)
-	return printTestSummary([]testResult{result}, nil, flags)
+	result := runGoTestInDir(ctx, ".", pkg, []string{"-tags", "e2e"}, flags)
+	return printTestSummary(ctx, []testResult{result}, nil, flags)
 }
 
 // runGoTests runs go test with the given package pattern and optional extra args.
 // It uses `go list` to discover testable packages, skipping patterns that resolve
 // to zero packages (e.g. directories with no Go files) instead of treating them
 // as test failures.
-func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, error) {
+func runGoTests(ctx context.Context, pkg string, extraArgs []string, flags testFlags) ([]testResult, error) {
 	// If --service is specified, scope to that service directory
 	if flags.service != "" {
 		svcDir := filepath.Join("handlers", flags.service)
@@ -230,20 +231,20 @@ func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, 
 	serviceDirs := discoverGoServices()
 	if len(serviceDirs) == 0 {
 		// No service dirs — run from root with the original package pattern
-		pkgs := goListPackages(".", pkg)
+		pkgs := goListPackages(ctx, ".", pkg)
 		if len(pkgs) == 0 {
 			return nil, nil
 		}
-		return []testResult{runGoTestInDir(".", strings.Join(pkgs, " "), extraArgs, flags)}, nil
+		return []testResult{runGoTestInDir(ctx, ".", strings.Join(pkgs, " "), extraArgs, flags)}, nil
 	}
 
 	// If we have a specific package pattern from --service, run from root
 	if flags.service != "" {
-		pkgs := goListPackages(".", pkg)
+		pkgs := goListPackages(ctx, ".", pkg)
 		if len(pkgs) == 0 {
 			return nil, nil
 		}
-		return []testResult{runGoTestInDir(".", strings.Join(pkgs, " "), extraArgs, flags)}, nil
+		return []testResult{runGoTestInDir(ctx, ".", strings.Join(pkgs, " "), extraArgs, flags)}, nil
 	}
 
 	var (
@@ -257,13 +258,13 @@ func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, 
 		// Build the package pattern relative to the project root
 		svcPkg := "./" + dir + "/..."
 		// Use go list to discover actual packages; skip if none found
-		pkgs := goListPackages(".", svcPkg)
+		pkgs := goListPackages(ctx, ".", svcPkg)
 		if len(pkgs) == 0 {
 			continue
 		}
 		resolvedPkg := strings.Join(pkgs, " ")
 		run := func() {
-			result := runGoTestInDir(".", resolvedPkg, extraArgs, flags)
+			result := runGoTestInDir(ctx, ".", resolvedPkg, extraArgs, flags)
 			mu.Lock()
 			results = append(results, result)
 			mu.Unlock()
@@ -287,8 +288,8 @@ func runGoTests(pkg string, extraArgs []string, flags testFlags) ([]testResult, 
 // goListPackages runs `go list <pattern>` in the given directory and returns
 // the list of discovered packages. If the pattern resolves to nothing (e.g.
 // a directory tree with no Go files), it returns nil instead of an error.
-func goListPackages(dir, pattern string) []string {
-	cmd := exec.Command("go", "list", pattern)
+func goListPackages(ctx context.Context, dir, pattern string) []string {
+	cmd := exec.CommandContext(ctx, "go", "list", pattern)
 	cmd.Dir = dir
 	output, err := cmd.Output()
 	if err != nil {
@@ -305,7 +306,7 @@ func goListPackages(dir, pattern string) []string {
 	return pkgs
 }
 
-func runGoTestInDir(dir, pkg string, extraArgs []string, flags testFlags) testResult {
+func runGoTestInDir(ctx context.Context, dir, pkg string, extraArgs []string, flags testFlags) testResult {
 	start := time.Now()
 	name := dir
 	if name == "." {
@@ -328,13 +329,11 @@ func runGoTestInDir(dir, pkg string, extraArgs []string, flags testFlags) testRe
 	}
 	args = append(args, extraArgs...)
 	// pkg may contain multiple space-separated packages from go list
-	for _, p := range strings.Fields(pkg) {
-		args = append(args, p)
-	}
+	args = append(args, strings.Fields(pkg)...)
 
 	fmt.Printf("[test] %s: go %s\n", name, strings.Join(args, " "))
 
-	cmd := exec.Command("go", args...)
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 
 	output, err := cmd.CombinedOutput()
@@ -409,7 +408,7 @@ func hasGoFiles(dir string) bool {
 }
 
 // runFrontendTests discovers and runs tests for each Next.js frontend in frontends/.
-func runFrontendTests(flags testFlags) []testResult {
+func runFrontendTests(ctx context.Context, flags testFlags) []testResult {
 	if !dirExists("frontends") {
 		return nil
 	}
@@ -421,7 +420,7 @@ func runFrontendTests(flags testFlags) []testResult {
 			return nil
 		}
 		// Only test this specific frontend
-		return runFrontendTestInDirWithFlags(flags.service, feDir, flags)
+		return runFrontendTestInDirWithFlags(ctx, flags.service, feDir, flags)
 	}
 
 	entries, err := os.ReadDir("frontends")
@@ -435,20 +434,16 @@ func runFrontendTests(flags testFlags) []testResult {
 			continue
 		}
 		feDir := filepath.Join("frontends", e.Name())
-		results = append(results, runFrontendTestInDirWithFlags(e.Name(), feDir, flags)...)
+		results = append(results, runFrontendTestInDirWithFlags(ctx, e.Name(), feDir, flags)...)
 	}
 
 	return results
 }
 
-func runFrontendTestInDir(name, feDir string) []testResult {
-	return runFrontendTestInDirWithFlags(name, feDir, testFlags{})
-}
-
 // runFrontendTestInDirWithFlags is the flag-aware variant — when
 // --coverage is set, passes `-- --coverage` to npm test so the frontend
 // test runner emits its own coverage report.
-func runFrontendTestInDirWithFlags(name, feDir string, flags testFlags) []testResult {
+func runFrontendTestInDirWithFlags(ctx context.Context, name, feDir string, flags testFlags) []testResult {
 	pkgJSON := filepath.Join(feDir, "package.json")
 	if _, err := os.Stat(pkgJSON); err != nil {
 		return nil
@@ -463,7 +458,7 @@ func runFrontendTestInDirWithFlags(name, feDir string, flags testFlags) []testRe
 	}
 	fmt.Printf("[test] %s: npm %s\n", displayName, strings.Join(npmArgs, " "))
 
-	cmd := exec.Command("npm", npmArgs...)
+	cmd := exec.CommandContext(ctx, "npm", npmArgs...)
 	cmd.Dir = feDir
 	output, runErr := cmd.CombinedOutput()
 	duration := time.Since(start)
@@ -481,7 +476,7 @@ func runFrontendTestInDirWithFlags(name, feDir string, flags testFlags) []testRe
 	}}
 }
 
-func printTestSummary(results []testResult, discoveryErrs []error, flags testFlags) error {
+func printTestSummary(ctx context.Context, results []testResult, discoveryErrs []error, flags testFlags) error {
 	fmt.Println()
 	fmt.Println("[test] Summary")
 	fmt.Println(strings.Repeat("=", 50))
@@ -526,7 +521,7 @@ func printTestSummary(results []testResult, discoveryErrs []error, flags testFla
 	// one-line total summary. Best-effort: failures here do not turn a
 	// passing test run into a failure.
 	if flags.coverage {
-		emitCoverageReport()
+		emitCoverageReport(ctx)
 	}
 
 	fmt.Println()
@@ -542,7 +537,7 @@ func printTestSummary(results []testResult, discoveryErrs []error, flags testFla
 // The per-dir profiles live at <dir>/coverage.out (handlers/<svc>/...,
 // internal/, pkg/, cmd/) because each `go test` invocation gets its own
 // CWD. We merge by concatenating with a single `mode:` header on top.
-func emitCoverageReport() {
+func emitCoverageReport(ctx context.Context) {
 	mergedPath := "coverage.out"
 	if err := mergeCoverageProfiles(mergedPath); err != nil {
 		fmt.Printf("[test] --coverage: merge profiles: %v\n", err)
@@ -554,14 +549,14 @@ func emitCoverageReport() {
 	}
 
 	// HTML report.
-	htmlCmd := exec.Command("go", "tool", "cover", "-html="+mergedPath, "-o", "coverage.html")
+	htmlCmd := exec.CommandContext(ctx, "go", "tool", "cover", "-html="+mergedPath, "-o", "coverage.html")
 	if out, err := htmlCmd.CombinedOutput(); err != nil {
 		fmt.Printf("[test] --coverage: go tool cover -html failed: %v\n%s\n", err, string(out))
 		return
 	}
 
 	// Total %.
-	pctCmd := exec.Command("go", "tool", "cover", "-func="+mergedPath)
+	pctCmd := exec.CommandContext(ctx, "go", "tool", "cover", "-func="+mergedPath)
 	out, err := pctCmd.Output()
 	if err != nil {
 		fmt.Printf("[test] --coverage: go tool cover -func failed: %v\n", err)
@@ -630,5 +625,5 @@ func mergeCoverageProfiles(mergedPath string) error {
 			}
 		}
 	}
-	return os.WriteFile(mergedPath, []byte(sb.String()), 0644)
+	return os.WriteFile(mergedPath, []byte(sb.String()), 0o644)
 }

@@ -38,6 +38,7 @@ import (
 // analyzer only emits warnings — it is intentionally non-blocking.
 type Severity string
 
+// Severity enum values.
 const (
 	SeverityWarning Severity = "warn"
 )
@@ -154,10 +155,7 @@ func LintPackDir(packDir string) (Result, error) {
 		// Only scan TypeScript/TSX templates. .ts.tmpl and .tsx.tmpl, plus
 		// raw .ts/.tsx that are sometimes shipped untemplated.
 		base := info.Name()
-		if !(strings.HasSuffix(base, ".ts.tmpl") ||
-			strings.HasSuffix(base, ".tsx.tmpl") ||
-			strings.HasSuffix(base, ".ts") ||
-			strings.HasSuffix(base, ".tsx")) {
+		if !strings.HasSuffix(base, ".ts.tmpl") && !strings.HasSuffix(base, ".tsx.tmpl") && !strings.HasSuffix(base, ".ts") && !strings.HasSuffix(base, ".tsx") {
 			return nil
 		}
 		body, err := os.ReadFile(path)

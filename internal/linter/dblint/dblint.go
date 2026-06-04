@@ -13,6 +13,7 @@ import (
 // Severity indicates how important a finding is.
 type Severity string
 
+// Severity enum values.
 const (
 	SeverityWarning Severity = "warning"
 	SeverityInfo    Severity = "info"
@@ -49,7 +50,7 @@ func (r Result) FormatText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d DB lint issue(s):\n\n", len(r.Findings)))
+	fmt.Fprintf(&sb, "Found %d DB lint issue(s):\n\n", len(r.Findings))
 
 	for _, f := range r.Findings {
 		icon := "⚠️ "
@@ -57,9 +58,9 @@ func (r Result) FormatText() string {
 			icon = "ℹ️ "
 		}
 		if f.Field != "" {
-			sb.WriteString(fmt.Sprintf("  %s[%s] %s.%s: %s\n", icon, f.Rule, f.Entity, f.Field, f.Message))
+			fmt.Fprintf(&sb, "  %s[%s] %s.%s: %s\n", icon, f.Rule, f.Entity, f.Field, f.Message)
 		} else {
-			sb.WriteString(fmt.Sprintf("  %s[%s] %s: %s\n", icon, f.Rule, f.Entity, f.Message))
+			fmt.Fprintf(&sb, "  %s[%s] %s: %s\n", icon, f.Rule, f.Entity, f.Message)
 		}
 	}
 

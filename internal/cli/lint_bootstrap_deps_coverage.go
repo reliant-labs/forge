@@ -120,7 +120,7 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 // `forge lint` shape. Empty findings print a single success line.
 func formatBootstrapCoverage(w io.Writer, findings []bootstrapCoverageFinding) {
 	if len(findings) == 0 {
-		fmt.Fprintln(w, "  bootstrap deps coverage clean — every name-matched AppExtras field is wired")
+		_, _ = fmt.Fprintln(w, "  bootstrap deps coverage clean — every name-matched AppExtras field is wired")
 		return
 	}
 	sort.SliceStable(findings, func(i, j int) bool {
@@ -130,12 +130,12 @@ func formatBootstrapCoverage(w io.Writer, findings []bootstrapCoverageFinding) {
 		return findings[i].Field < findings[j].Field
 	})
 	for _, f := range findings {
-		fmt.Fprintf(w, "  ✗ [forge-bootstrap-deps-coverage] internal/%s/contract.go\n", f.Package)
-		fmt.Fprintf(w, "      %s matches AppExtras.%s by name but the types diverge\n", f.Field, f.Field)
-		fmt.Fprintf(w, "      Deps.%s        = %s\n", f.Field, f.DepsType)
-		fmt.Fprintf(w, "      AppExtras.%s   = %s\n", f.Field, f.AppType)
-		fmt.Fprintf(w, "      → align AppExtras.%s to %s, OR wire manually in pkg/app/setup.go after Bootstrap returns\n", f.Field, f.DepsType)
+		_, _ = fmt.Fprintf(w, "  ✗ [forge-bootstrap-deps-coverage] internal/%s/contract.go\n", f.Package)
+		_, _ = fmt.Fprintf(w, "      %s matches AppExtras.%s by name but the types diverge\n", f.Field, f.Field)
+		_, _ = fmt.Fprintf(w, "      Deps.%s        = %s\n", f.Field, f.DepsType)
+		_, _ = fmt.Fprintf(w, "      AppExtras.%s   = %s\n", f.Field, f.AppType)
+		_, _ = fmt.Fprintf(w, "      → align AppExtras.%s to %s, OR wire manually in pkg/app/setup.go after Bootstrap returns\n", f.Field, f.DepsType)
 	}
-	fmt.Fprintf(w, "\n%d bootstrap-deps-coverage gap(s) in pkg/app/app_extras.go.\n", len(findings))
-	fmt.Fprintln(w, "(errors — bootstrap silently drops these wires; the feature no-ops at runtime)")
+	_, _ = fmt.Fprintf(w, "\n%d bootstrap-deps-coverage gap(s) in pkg/app/app_extras.go.\n", len(findings))
+	_, _ = fmt.Fprintln(w, "(errors — bootstrap silently drops these wires; the feature no-ops at runtime)")
 }

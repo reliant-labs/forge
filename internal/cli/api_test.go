@@ -258,7 +258,7 @@ func TestResolveServiceMethod_TableDriven(t *testing.T) {
 }
 
 // TestShellQuoteSingle pins the single-quote escape strategy: a string
-// containing a single quote must come back as `'…'\''…'` so the shell
+// containing a single quote must come back as `'…'\”…'` so the shell
 // re-assembles it correctly.
 func TestShellQuoteSingle(t *testing.T) {
 	cases := []struct {
@@ -288,9 +288,9 @@ func TestMatchServicePort(t *testing.T) {
 		PkgName: "usersv1",
 	}
 	cases := []struct {
-		name  string
-		cfg   *config.ProjectConfig
-		want  int
+		name string
+		cfg  *config.ProjectConfig
+		want int
 	}{
 		{
 			name: "matches by package leaf",

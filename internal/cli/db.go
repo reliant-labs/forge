@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,9 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/database"
-	"github.com/spf13/cobra"
 )
 
 const defaultMigrationsDir = "db/migrations"
@@ -120,7 +122,7 @@ Examples:
   forge db squash --from-dir db/migrations --to 00001_baseline
   forge db squash --to 20260506_baseline --out-dir db/baselines/`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBSquash(squashOptions{
+			return runDBSquash(cmd.Context(), squashOptions{
 				FromDir:  fromDir,
 				Baseline: baseline,
 				OutDir:   outDir,
@@ -157,7 +159,7 @@ type squashOptions struct {
 // boot, migrate up, pg_dump, strip, write, teardown. The function is
 // careful to tear the container down even on error paths so a failed
 // squash doesn't leak a hanging container into `docker ps`.
-func runDBSquash(opts squashOptions) error {
+func runDBSquash(ctx context.Context, opts squashOptions) error {
 	if err := requireMigrate(); err != nil {
 		return err
 	}
@@ -201,7 +203,7 @@ func runDBSquash(opts squashOptions) error {
 	// Allocate a host port via docker's `-p :5432` so multiple squashes
 	// on the same machine don't fight for a single port. We discover the
 	// allocated port via `docker port` after start.
-	fmt.Fprintf(os.Stdout, "Starting ephemeral postgres (%s)...\n", opts.Image)
+	_, _ = fmt.Fprintf(os.Stdout, "Starting ephemeral postgres (%s)...\n", opts.Image)
 	runArgs := []string{
 		"run", "-d", "--rm",
 		"--name", container,
@@ -211,20 +213,21 @@ func runDBSquash(opts squashOptions) error {
 		"-p", "127.0.0.1::5432",
 		opts.Image,
 	}
-	if out, err := exec.Command("docker", runArgs...).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "docker", runArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker run: %w\n%s", err, out)
 	}
 
 	// Best-effort teardown — runs on every exit path so an error during
-	// migrate/pg_dump still cleans up the container.
+	// migrate/pg_dump still cleans up the container. Uses Background so
+	// teardown still runs after the parent ctx has been canceled.
 	defer func() {
-		stopCmd := exec.Command("docker", "stop", container)
+		stopCmd := exec.CommandContext(context.Background(), "docker", "stop", container)
 		stopCmd.Stdout = nil
 		stopCmd.Stderr = nil
 		_ = stopCmd.Run()
 	}()
 
-	host, port, err := dockerPort(container, "5432/tcp")
+	host, port, err := dockerPort(ctx, container, "5432/tcp")
 	if err != nil {
 		return fmt.Errorf("discover postgres host port: %w", err)
 	}
@@ -232,23 +235,23 @@ func runDBSquash(opts squashOptions) error {
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		opts.DBUser, opts.DBPass, host, port, opts.DBName)
 
-	if err := waitForPostgres(dsn, 60*time.Second); err != nil {
+	if err := waitForPostgres(ctx, dsn, 60*time.Second); err != nil {
 		return fmt.Errorf("postgres did not become ready: %w", err)
 	}
 
-	fmt.Fprintln(os.Stdout, "Applying migrations...")
-	upCmd := exec.Command("migrate", "-path", absFrom, "-database", dsn, "up")
+	_, _ = fmt.Fprintln(os.Stdout, "Applying migrations...")
+	upCmd := exec.CommandContext(ctx, "migrate", "-path", absFrom, "-database", dsn, "up")
 	upCmd.Stdout = os.Stdout
 	upCmd.Stderr = os.Stderr
 	if err := upCmd.Run(); err != nil {
 		return fmt.Errorf("migrate up failed: %w", err)
 	}
 
-	fmt.Fprintln(os.Stdout, "Dumping schema + seed data via pg_dump...")
+	_, _ = fmt.Fprintln(os.Stdout, "Dumping schema + seed data via pg_dump...")
 	// Run pg_dump inside the container via `docker exec` so we reuse
 	// the postgres image's bundled pg_dump and don't require the host
 	// to have postgresql-client installed at a matching major version.
-	dumpCmd := exec.Command("docker", "exec",
+	dumpCmd := exec.CommandContext(ctx, "docker", "exec",
 		"-e", "PGPASSWORD="+opts.DBPass,
 		container,
 		"pg_dump",
@@ -285,11 +288,11 @@ func runDBSquash(opts squashOptions) error {
 		return fmt.Errorf("write baseline down: %w", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "\n  Wrote %s\n  Wrote %s\n", upPath, downPath)
-	fmt.Fprintln(os.Stdout, "\nNext steps:")
-	fmt.Fprintln(os.Stdout, "  1. Review the baseline; ensure no app-state INSERTs leaked into seed data.")
-	fmt.Fprintln(os.Stdout, "  2. Move existing migrations out of --from-dir into an archive (or keep & adopt the new ID).")
-	fmt.Fprintln(os.Stdout, "  3. `migrate force <id>` against any pre-existing databases so they accept the new baseline.")
+	_, _ = fmt.Fprintf(os.Stdout, "\n  Wrote %s\n  Wrote %s\n", upPath, downPath)
+	_, _ = fmt.Fprintln(os.Stdout, "\nNext steps:")
+	_, _ = fmt.Fprintln(os.Stdout, "  1. Review the baseline; ensure no app-state INSERTs leaked into seed data.")
+	_, _ = fmt.Fprintln(os.Stdout, "  2. Move existing migrations out of --from-dir into an archive (or keep & adopt the new ID).")
+	_, _ = fmt.Fprintln(os.Stdout, "  3. `migrate force <id>` against any pre-existing databases so they accept the new baseline.")
 
 	return nil
 }
@@ -299,8 +302,8 @@ func runDBSquash(opts squashOptions) error {
 // `docker port <name> <spec>` is one line of `0.0.0.0:32768` (or
 // `[::]:32768`) per binding. We take the first IPv4 binding since that's
 // what `127.0.0.1::5432` gives us.
-func dockerPort(container, spec string) (string, string, error) {
-	out, err := exec.Command("docker", "port", container, spec).Output()
+func dockerPort(ctx context.Context, container, spec string) (string, string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "port", container, spec).Output()
 	if err != nil {
 		return "", "", fmt.Errorf("docker port: %w", err)
 	}
@@ -328,23 +331,23 @@ func dockerPort(container, spec string) (string, string, error) {
 // ready, or the timeout fires. The container takes ~1-2s to accept
 // connections on first boot; we poll every 500ms and bail with a useful
 // error rather than letting `migrate up` hit a connection-refused.
-func waitForPostgres(dsn string, timeout time.Duration) error {
+func waitForPostgres(ctx context.Context, dsn string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	last := error(nil)
 	for time.Now().Before(deadline) {
-		db, err := database.ConnectDB(dsn)
+		db, err := database.ConnectDB(ctx, dsn)
 		if err != nil {
 			last = err
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		if err := db.Ping(); err != nil {
-			db.Close()
+		if err := db.PingContext(ctx); err != nil {
+			_ = db.Close()
 			last = err
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
-		db.Close()
+		_ = db.Close()
 		return nil
 	}
 	if last != nil {
@@ -423,7 +426,7 @@ Examples:
 				ProtoDir:  protoDir,
 				FromProto: fromProto,
 			}
-			return database.CreateMigration(args[0], migDir, opts)
+			return database.CreateMigration(cmd.Context(), args[0], migDir, opts)
 		},
 	}
 	newCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
@@ -480,7 +483,7 @@ func newDBMigrateUpCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand("up", resolved, migDir)
+			return runMigrateCommand(cmd.Context(), "up", resolved, migDir)
 		},
 	}
 
@@ -504,7 +507,7 @@ func newDBMigrateDownCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand("down", resolved, migDir, "1")
+			return runMigrateCommand(cmd.Context(), "down", resolved, migDir, "1")
 		},
 	}
 
@@ -528,7 +531,7 @@ func newDBMigrateStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateStatus(resolved, migDir)
+			return runMigrateStatus(cmd.Context(), resolved, migDir)
 		},
 	}
 
@@ -552,7 +555,7 @@ func newDBMigrateVersionCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateVersion(resolved, migDir)
+			return runMigrateVersion(cmd.Context(), resolved, migDir)
 		},
 	}
 
@@ -577,7 +580,7 @@ func newDBMigrateForceCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMigrateCommand("force", resolved, migDir, args[0])
+			return runMigrateCommand(cmd.Context(), "force", resolved, migDir, args[0])
 		},
 	}
 
@@ -606,7 +609,7 @@ Examples:
   forge db introspect --dsn "$DATABASE_URL" --table users
   forge db introspect --dsn "$DATABASE_URL" --format json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBIntrospect(dsn, table, format)
+			return runDBIntrospect(cmd.Context(), dsn, table, format)
 		},
 	}
 
@@ -649,7 +652,7 @@ Examples:
   forge db proto sync-from-db --dsn "$DATABASE_URL" --table users
   forge db proto sync-from-db --dsn "$DATABASE_URL" --out proto/db/v1/`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBProtoSync(syncDSN, syncOut, syncTable)
+			return runDBProtoSync(cmd.Context(), syncDSN, syncOut, syncTable)
 		},
 	}
 	syncCmd.Flags().StringVar(&syncDSN, "dsn", "", "PostgreSQL connection string (required)")
@@ -674,7 +677,7 @@ Examples:
   forge db proto check --dsn "postgres://user:pass@localhost/mydb?sslmode=disable"
   forge db proto check --dsn "$DATABASE_URL" --proto-dir proto/db/`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBProtoCheck(checkDSN, checkProtoDir)
+			return runDBProtoCheck(cmd.Context(), checkDSN, checkProtoDir)
 		},
 	}
 	checkCmd.Flags().StringVar(&checkDSN, "dsn", "", "PostgreSQL connection string (required)")
@@ -702,14 +705,14 @@ Examples:
 	}
 }
 
-func runDBIntrospect(dsn, tableFilter, format string) error {
-	db, err := database.ConnectDB(dsn)
+func runDBIntrospect(ctx context.Context, dsn, tableFilter, format string) error {
+	db, err := database.ConnectDB(ctx, dsn)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	tables, err := database.IntrospectSchema(db, tableFilter)
+	tables, err := database.IntrospectSchema(ctx, db, tableFilter)
 	if err != nil {
 		return fmt.Errorf("introspecting schema: %w", err)
 	}
@@ -736,14 +739,14 @@ func runDBIntrospect(dsn, tableFilter, format string) error {
 	return nil
 }
 
-func runDBProtoSync(dsn, outputDir, tableFilter string) error {
-	db, err := database.ConnectDB(dsn)
+func runDBProtoSync(ctx context.Context, dsn, outputDir, tableFilter string) error {
+	db, err := database.ConnectDB(ctx, dsn)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	tables, err := database.IntrospectSchema(db, tableFilter)
+	tables, err := database.IntrospectSchema(ctx, db, tableFilter)
 	if err != nil {
 		return fmt.Errorf("introspecting schema: %w", err)
 	}
@@ -774,14 +777,14 @@ func runDBProtoSync(dsn, outputDir, tableFilter string) error {
 	return nil
 }
 
-func runDBProtoCheck(dsn, protoDir string) error {
-	db, err := database.ConnectDB(dsn)
+func runDBProtoCheck(ctx context.Context, dsn, protoDir string) error {
+	db, err := database.ConnectDB(ctx, dsn)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
-	tables, err := database.IntrospectSchema(db, "")
+	tables, err := database.IntrospectSchema(ctx, db, "")
 	if err != nil {
 		return fmt.Errorf("introspecting schema: %w", err)
 	}
@@ -807,7 +810,7 @@ func requireMigrate() error {
 	return nil
 }
 
-func runMigrateCommand(action, dsn, migDir string, extraArgs ...string) error {
+func runMigrateCommand(ctx context.Context, action, dsn, migDir string, extraArgs ...string) error {
 	if err := requireMigrate(); err != nil {
 		return err
 	}
@@ -816,7 +819,7 @@ func runMigrateCommand(action, dsn, migDir string, extraArgs ...string) error {
 	args = append(args, action)
 	args = append(args, extraArgs...)
 
-	cmd := exec.Command("migrate", args...)
+	cmd := exec.CommandContext(ctx, "migrate", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -827,12 +830,12 @@ func runMigrateCommand(action, dsn, migDir string, extraArgs ...string) error {
 	return nil
 }
 
-func runMigrateVersion(dsn, migDir string) error {
+func runMigrateVersion(ctx context.Context, dsn, migDir string) error {
 	if err := requireMigrate(); err != nil {
 		return err
 	}
 
-	cmd := exec.Command("migrate", "-path", migDir, "-database", dsn, "version")
+	cmd := exec.CommandContext(ctx, "migrate", "-path", migDir, "-database", dsn, "version")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -843,12 +846,12 @@ func runMigrateVersion(dsn, migDir string) error {
 	return nil
 }
 
-func runMigrateStatus(dsn, migDir string) error {
+func runMigrateStatus(ctx context.Context, dsn, migDir string) error {
 	if err := requireMigrate(); err != nil {
 		return err
 	}
 
-	if err := runMigrateVersion(dsn, migDir); err != nil {
+	if err := runMigrateVersion(ctx, dsn, migDir); err != nil {
 		fmt.Println("Migration version check returned an error; this can happen when no migrations have been applied yet.")
 		return err
 	}

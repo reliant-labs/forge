@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,7 +25,7 @@ func writeLicenseFile(targetPath, license, author string) error {
 	}
 
 	dest := filepath.Join(targetPath, "LICENSE")
-	if err := os.WriteFile(dest, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(dest, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write LICENSE: %w", err)
 	}
 	return nil
@@ -61,7 +62,11 @@ func detectGitUserName() string {
 	if err != nil {
 		return ""
 	}
-	out, err := exec.Command(path, "config", "user.name").Output()
+	// Short-lived helper called once during scaffold; bounded context
+	// keeps a stuck `git config` from hanging the whole command.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "config", "user.name").Output()
 	if err != nil {
 		return ""
 	}

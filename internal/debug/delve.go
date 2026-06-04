@@ -1,6 +1,7 @@
 package debug
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -36,11 +37,11 @@ func NewDelveDebugger() *DelveDebugger {
 
 // Start launches dlv exec in headless mode for the given binary and connects.
 // If listenPort > 0, it is used as the debugger listen port; otherwise a free port is chosen.
-func (d *DelveDebugger) Start(binary string, args []string, listenPort int) error {
+func (d *DelveDebugger) Start(ctx context.Context, binary string, args []string, listenPort int) error {
 	port := listenPort
 	if port <= 0 {
 		var err error
-		port, err = freePort()
+		port, err = freePort(ctx)
 		if err != nil {
 			return fmt.Errorf("finding free port: %w", err)
 		}
@@ -59,7 +60,7 @@ func (d *DelveDebugger) Start(binary string, args []string, listenPort int) erro
 		dlvArgs = append(dlvArgs, args...)
 	}
 
-	d.cmd = exec.Command("dlv", dlvArgs...)
+	d.cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
 	// Start dlv in its own process group and detach IO so it survives
 	// after the parent (forge) exits.
 	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -67,7 +68,7 @@ func (d *DelveDebugger) Start(binary string, args []string, listenPort int) erro
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", os.DevNull, err)
 	}
-	defer devNull.Close()
+	defer func() { _ = devNull.Close() }()
 	d.cmd.Stdin = devNull
 	d.cmd.Stdout = devNull
 	d.cmd.Stderr = devNull
@@ -75,7 +76,7 @@ func (d *DelveDebugger) Start(binary string, args []string, listenPort int) erro
 		return fmt.Errorf("starting dlv: %w", err)
 	}
 
-	if err := waitForServer(addr, 5*time.Second); err != nil {
+	if err := waitForServer(ctx, addr, 5*time.Second); err != nil {
 		_ = d.cmd.Process.Kill()
 		return fmt.Errorf("waiting for dlv: %w", err)
 	}
@@ -90,8 +91,8 @@ func (d *DelveDebugger) Start(binary string, args []string, listenPort int) erro
 }
 
 // StartAttach launches dlv attach in headless mode for the given PID.
-func (d *DelveDebugger) StartAttach(pid int) error {
-	port, err := freePort()
+func (d *DelveDebugger) StartAttach(ctx context.Context, pid int) error {
+	port, err := freePort(ctx)
 	if err != nil {
 		return fmt.Errorf("finding free port: %w", err)
 	}
@@ -105,12 +106,12 @@ func (d *DelveDebugger) StartAttach(pid int) error {
 		strconv.Itoa(pid),
 	}
 
-	d.cmd = exec.Command("dlv", dlvArgs...)
+	d.cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
 	if err := d.cmd.Start(); err != nil {
 		return fmt.Errorf("starting dlv attach: %w", err)
 	}
 
-	if err := waitForServer(addr, 5*time.Second); err != nil {
+	if err := waitForServer(ctx, addr, 5*time.Second); err != nil {
 		_ = d.cmd.Process.Kill()
 		return fmt.Errorf("waiting for dlv: %w", err)
 	}
@@ -156,6 +157,7 @@ func (d *DelveDebugger) PID() int { return d.pid }
 // Breakpoints
 // ---------------------------------------------------------------------------
 
+// SetBreakpoint sets a source-line breakpoint with an optional condition.
 func (d *DelveDebugger) SetBreakpoint(file string, line int, condition string) (*BreakpointInfo, error) {
 	bp, err := d.client.CreateBreakpoint(&api.Breakpoint{
 		File: file,
@@ -168,6 +170,7 @@ func (d *DelveDebugger) SetBreakpoint(file string, line int, condition string) (
 	return apiBreakpointToInfo(bp), nil
 }
 
+// SetFunctionBreakpoint sets a breakpoint on a function entry by name.
 func (d *DelveDebugger) SetFunctionBreakpoint(funcName string, condition string) (*BreakpointInfo, error) {
 	bp, err := d.client.CreateBreakpoint(&api.Breakpoint{
 		FunctionName: funcName,
@@ -179,6 +182,7 @@ func (d *DelveDebugger) SetFunctionBreakpoint(funcName string, condition string)
 	return apiBreakpointToInfo(bp), nil
 }
 
+// ListBreakpoints returns every breakpoint currently set in the debugger.
 func (d *DelveDebugger) ListBreakpoints() ([]BreakpointInfo, error) {
 	bps, err := d.client.ListBreakpoints(false)
 	if err != nil {
@@ -191,6 +195,7 @@ func (d *DelveDebugger) ListBreakpoints() ([]BreakpointInfo, error) {
 	return out, nil
 }
 
+// ClearBreakpoint removes the breakpoint with the given ID.
 func (d *DelveDebugger) ClearBreakpoint(id int) error {
 	_, err := d.client.ClearBreakpoint(id)
 	return err
@@ -200,6 +205,7 @@ func (d *DelveDebugger) ClearBreakpoint(id int) error {
 // Execution control
 // ---------------------------------------------------------------------------
 
+// Continue resumes execution until the next breakpoint or program exit.
 func (d *DelveDebugger) Continue() (*StopState, error) {
 	ch := d.client.Continue()
 	for state := range ch {
@@ -214,6 +220,7 @@ func (d *DelveDebugger) Continue() (*StopState, error) {
 	return nil, fmt.Errorf("continue: channel closed without state")
 }
 
+// StepOver advances to the next source line in the current function.
 func (d *DelveDebugger) StepOver() (*StopState, error) {
 	state, err := d.client.Next()
 	if err != nil {
@@ -222,6 +229,7 @@ func (d *DelveDebugger) StepOver() (*StopState, error) {
 	return stateToStopState(state), nil
 }
 
+// StepInto steps into the call on the current line.
 func (d *DelveDebugger) StepInto() (*StopState, error) {
 	state, err := d.client.Step()
 	if err != nil {
@@ -230,6 +238,7 @@ func (d *DelveDebugger) StepInto() (*StopState, error) {
 	return stateToStopState(state), nil
 }
 
+// StepOut runs until the current function returns.
 func (d *DelveDebugger) StepOut() (*StopState, error) {
 	state, err := d.client.StepOut()
 	if err != nil {
@@ -242,6 +251,7 @@ func (d *DelveDebugger) StepOut() (*StopState, error) {
 // Inspection
 // ---------------------------------------------------------------------------
 
+// Eval evaluates an expression in the current goroutine's scope.
 func (d *DelveDebugger) Eval(expr string) (*Variable, error) {
 	scope := api.EvalScope{GoroutineID: -1}
 	v, err := d.client.EvalVariable(scope, expr, defaultLoadConfig)
@@ -252,6 +262,7 @@ func (d *DelveDebugger) Eval(expr string) (*Variable, error) {
 	return &out, nil
 }
 
+// Locals returns the local variables of the current stack frame.
 func (d *DelveDebugger) Locals() ([]Variable, error) {
 	scope, err := d.currentScope()
 	if err != nil {
@@ -264,6 +275,7 @@ func (d *DelveDebugger) Locals() ([]Variable, error) {
 	return apiVarsToVariables(vars), nil
 }
 
+// Args returns the function arguments of the current stack frame.
 func (d *DelveDebugger) Args() ([]Variable, error) {
 	scope, err := d.currentScope()
 	if err != nil {
@@ -276,6 +288,7 @@ func (d *DelveDebugger) Args() ([]Variable, error) {
 	return apiVarsToVariables(vars), nil
 }
 
+// Stacktrace returns up to depth stack frames for the current goroutine.
 func (d *DelveDebugger) Stacktrace(depth int) ([]StackFrame, error) {
 	frames, err := d.client.Stacktrace(-1, depth, 0, api.StacktraceOptions(0), &defaultLoadConfig)
 	if err != nil {
@@ -294,6 +307,7 @@ func (d *DelveDebugger) Stacktrace(depth int) ([]StackFrame, error) {
 	return out, nil
 }
 
+// Goroutines lists every goroutine known to the debugger.
 func (d *DelveDebugger) Goroutines() ([]GoroutineInfo, error) {
 	goroutines, _, err := d.client.ListGoroutines(0, 0)
 	if err != nil {
@@ -320,6 +334,7 @@ func (d *DelveDebugger) Goroutines() ([]GoroutineInfo, error) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+// Stop detaches and kills the debugger process.
 func (d *DelveDebugger) Stop() error {
 	if d.client != nil {
 		_ = d.client.Detach(true)
@@ -333,6 +348,7 @@ func (d *DelveDebugger) Stop() error {
 	return nil
 }
 
+// Disconnect closes the RPC connection without killing the debugee.
 func (d *DelveDebugger) Disconnect() {
 	if d.client != nil {
 		_ = d.client.Disconnect(false) // false = don't kill the debugged process
@@ -445,22 +461,24 @@ func goroutineStatus(status uint64) string {
 	}
 }
 
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+func freePort(ctx context.Context) (int, error) {
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	_ = l.Close()
 	return port, nil
 }
 
-func waitForServer(addr string, timeout time.Duration) error {
+func waitForServer(ctx context.Context, addr string, timeout time.Duration) error {
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)

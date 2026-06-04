@@ -91,7 +91,7 @@ or paste into a debugger / Postman / HTTPie session.`,
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), out)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), out)
 			return nil
 		},
 	}
@@ -261,16 +261,16 @@ func resolveServiceMethod(services []codegen.ServiceDef, target string) (codegen
 // service names, used in the "not found" error to guide the next attempt.
 // Truncates beyond a small threshold so the error stays readable.
 func availableServicesHint(services []codegen.ServiceDef) string {
-	const max = 5
+	const limit = 5
 	names := make([]string, 0, len(services))
 	for _, s := range services {
 		names = append(names, s.Package+"."+s.Name)
 	}
 	sort.Strings(names)
-	if len(names) <= max {
+	if len(names) <= limit {
 		return strings.Join(names, ", ")
 	}
-	return strings.Join(names[:max], ", ") + fmt.Sprintf(", … (%d more)", len(names)-max)
+	return strings.Join(names[:limit], ", ") + fmt.Sprintf(", … (%d more)", len(names)-limit)
 }
 
 // lookupServicePort scans forge.yaml's services[] for a service whose

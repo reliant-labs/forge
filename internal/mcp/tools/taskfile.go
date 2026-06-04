@@ -2,11 +2,13 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // getTaskfileTool returns the taskfile tool definition
@@ -119,7 +121,9 @@ func executeTaskfile(arguments json.RawMessage) (string, error) {
 	}
 	cmdArgs = append(cmdArgs, args.Args...)
 
-	cmd := exec.Command("task", cmdArgs...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "task", cmdArgs...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -129,7 +133,7 @@ func executeTaskfile(arguments json.RawMessage) (string, error) {
 
 	// Combine output
 	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Task: %s\n", args.Task))
+	fmt.Fprintf(&result, "Task: %s\n", args.Task)
 	result.WriteString(strings.Repeat("=", 60))
 	result.WriteString("\n\n")
 
@@ -146,7 +150,7 @@ func executeTaskfile(arguments json.RawMessage) (string, error) {
 	}
 
 	if err != nil {
-		result.WriteString(fmt.Sprintf("\nTask failed with error: %v\n", err))
+		fmt.Fprintf(&result, "\nTask failed with error: %v\n", err)
 		return result.String(), nil // Return error in output, not as error
 	}
 

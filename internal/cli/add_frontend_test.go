@@ -74,7 +74,6 @@ ci:
 docker:
   registry: ghcr.io
 k8s:
-  provider: k3d
   kcl_dir: deploy/kcl
 lint:
   contract: true

@@ -24,7 +24,7 @@ The litmus test for binary vs worker is: **does this need its own Deployment?** 
 
 ```bash
 forge add binary workspace-proxy
-forge add binary auth-sidecar --kind long-running
+forge add binary auth-sidecar
 ```
 
 This creates four files:

@@ -126,8 +126,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 			Registry: "ghcr.io",
 		},
 		K8s: config.K8sConfig{
-			Provider: "k3d",
-			KCLDir:   "deploy/kcl",
+			KCLDir: "deploy/kcl",
 		},
 		Lint: config.LintConfig{
 			Contract: true,

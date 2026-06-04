@@ -470,95 +470,92 @@
   see "Local forge/pkg replace auto-vendored on `forge generate`" under
   Fixed in-session.)**
 
-- **(2026-04-30 reliant-discovery) Bidirectional gRPC service template
-  missing.** Forge `services` skill has unary and server-streaming
-  shapes; no template for `stream In returns stream Out` services, and
-  none for the "direction-reversed" shape where the server-side of the
-  RPC is the daemon listening (reliant's `ConnectGateway` is a
-  server-streaming RPC where the gateway-side server is actually the
-  daemon process). When forge is asked to scaffold tools_daemon-style
-  services, it can't. Status (2026-06-03): partial — the handler scaffold
-  generator (`internal/templates/service/handlers_gen.go.tmpl` lines
-  31-58, mirrored in `handlers.go.tmpl` and the test scaffolds) now
-  branches on `ClientStreaming` + `ServerStreaming` and emits a
-  bidi-stream stub (`*connect.BidiStream[Req, Resp]`) alongside
-  client-stream and server-stream stubs. So bidi-stream RPCs do produce
-  compiling Go. The "direction-reversed" daemon-as-server pattern still
-  has no template, no skill page, and no documented convention.
+- **`forge.yaml` lacks an `entity_codegen: disabled` switch.** Projects
+  using sqlc + hand-written migrations don't want forge looking at proto
+  entity annotations (`(forge.v1.field) = { pk: true }` etc.). Today the
+  workaround is to omit the annotations and rely on lint staying quiet,
+  but there's no affirmative declaration. Add an `entity_codegen:
+  disabled` (or `features.orm: false`) toggle that turns the ORM
+  generator off explicitly and makes the lint exemption intentional.
 
-- **(2026-04-30 reliant-discovery) No "stream → React Query cache
-  bridge" pattern in `frontend/state` skill.** Real apps that ingest
-  primary server data via long-lived server-streams (reliant's
-  `StreamUserUpdates` fans 21 distinct event types out to N domain
-  caches) have no canonical place to put the dispatcher. Suggested
-  addition: a `createStreamCacheBridge(client, dispatcherMap)` helper
-  that maps stream events to `queryClient.setQueryData(...)` /
-  `queryClient.invalidateQueries(...)` invocations, plus a
-  frontend/state skill section explaining when to reach for it. Without
-  this, every project re-invents the pattern (reliant's
-  `globalUpdatesStore` is exhibit A).
+- **Per-handler-file size lint + `forge add handler-file`.** As handler
+  packages grow, a single `handlers/<svc>/handlers.go` can balloon past
+  1k–4k LOC long before anyone notices the splittable RPC groups inside.
+  Two complementary pieces: (a) a `forge lint` warning when any file
+  inside `handlers/<svc>/` crosses a configurable LOC threshold
+  (suggested default 1000), (b) a `forge add handler-file <svc> <name>`
+  scaffold that places a new RPC-group file alongside the existing
+  service.go / handlers_gen.go and threads it through `mock_gen.go`.
 
-- **(2026-04-30 reliant-discovery) `forge.yaml` lacks an "entities
-  disabled" / "ORM-off" switch.** Projects using sqlc + hand-written
-  migrations (reliant) don't want forge looking at proto entity
-  annotations (`(forge.v1.field) = { pk: true }` etc.). Today the
-  workaround is to not write the annotations and rely on lint staying
-  quiet, but there's no affirmative declaration. Suggested
-  `forge.yaml`: `entity_codegen: disabled` (or similar).
+- **`forge lint --frontend-stores` rule for "server data in Zustand."**
+  The `frontend/state` skill documents the rule (server data goes into
+  React Query, never Zustand); lint doesn't enforce it. Heuristic:
+  any `web/src/store/*.ts` (or `frontends/*/src/stores/*.ts`) that
+  imports from a generated Connect client AND defines a `create<…>`
+  Zustand store is suspect.
 
-- **(2026-04-30 reliant-discovery) CommandRegistry / dynamic
-  command-envelope pattern undocumented.** Reliant's
-  `DaemonCommandRequest { string command_type; bytes payload; }` lets
-  the daemon add new commands without proto/oneof/router changes —
-  handlers register at runtime keyed by `command_type`. Useful
-  extensibility pattern; forge has no skill page or template for it.
+- **`forge generate --force` discards Tier-2 hand-edits.** (BIGGEST.)
+  `--force` is documented as "rebuild Tier-1 even if checksums match";
+  in practice it also overwrites Tier-2 scaffolds (`service.go`,
+  `handlers.go`, etc.) the user has hand-edited. Two safer behaviors:
+  (a) scope `--force` strictly to Tier-1 files and never touch Tier-2,
+  printing a one-line summary of the Tier-2 files preserved; (b) when
+  the user really wants to reset Tier-2, require an explicit second
+  flag (`--reset-tier2`) that prompts per-file with a diff preview.
 
-- **(2026-04-30 reliant-discovery) NATS pack missing.** Both reliant
-  (`internal/natsutil/`) and control-plane-next (`internal/natsio/`)
-  hand-roll a NATS client wrapper. `forge pack add nats` could emit
-  client + JetStream config + OTel-wrapped publisher + contract.go
-  and serve both projects plus future event-driven multi-service work.
+- **Tier-1 stomp guard should detect mid-merge state and offer a
+  checksum-restamp path.** When the working tree is mid-merge / mid-
+  cherry-pick / mid-rebase, the Tier-1 stomp guard fires on files
+  whose checksums legitimately drift from `.forge/checksums.json`
+  because the merge introduced upstream changes the local index
+  hasn't reconciled yet. The guard currently treats these as "user
+  edited the generated file" and refuses to regenerate. Detect git
+  state via `.git/MERGE_HEAD` / `.git/CHERRY_PICK_HEAD` / `.git/rebase-*`
+  and prompt the user with `forge generate --accept` (or an equivalent
+  restamp helper) so the post-merge regen path is one command, not a
+  manual delete-and-rerun dance.
 
-- **(2026-04-30 reliant-discovery) Temporal pack missing.** Reliant
-  uses Temporal externally (cloud) AND embedded (monolith). Any
-  project with a workflow engine re-implements activity registration
-  / worker boot. External-Temporal pack is high-value; embedded-
-  Temporal is more exotic (skill-page material).
+- **`forge.yaml` `contracts.exclude` behavior diverges from its
+  documented intent.** Comment + skill text describe `contracts.exclude`
+  as "skip the contract linter for these paths"; observed behavior on
+  the algos branch was that some exclude entries were honored only by
+  the precodegen contract check, not by `forge lint --contract`, so
+  the same path produced different verdicts depending on entry point.
+  Audit `internal/linter/forgeconv/internal_pkg_contract.go` and
+  `internal/cli/precodegen_contract.go` for the two readers of the
+  list and unify them (one helper, one source of truth) so the
+  observed and documented behavior match.
 
-- **(2026-04-30 reliant-discovery) Electron desktop shell template
-  (out-of-scope candidate).** Reliant's monolith mode = Electron +
-  embedded Go server + embedded daemon. Not worth templating today,
-  but worth flagging as a recurring shape if AI-tooling projects keep
-  landing on forge.
+- **`forge deploy` assumes Kubernetes; host-shape is ambiguous for
+  compose / docker-run targets.** `forge deploy <env>` resolves to a
+  `kubectl apply -k` flow under the hood and requires the
+  `forge.yaml: k8s:` block to be populated. Projects that ship as a
+  docker-compose stack, a bare `docker run`, or a static binary have
+  no path through `forge deploy`. Either (a) extend `forge.yaml` to
+  declare `deploy.target: k8s | compose | binary` and dispatch
+  accordingly, or (b) document loudly that `forge deploy` is k8s-only
+  and provide a separate `forge ship` / `forge release` for the other
+  shapes.
 
-- **(2026-04-30 reliant-discovery) `migration_safety` doesn't extend
-  to dual-driver (SQLite + Postgres) parity.** Reliant has 181 SQLite
-  migrations + 36 Postgres migrations and a custom
-  `scripts/db-driver-audit.sh` that detects drift between the two
-  trees. Suggested: `migration_safety.dual_driver: error` mode that
-  runs the parity check at `forge lint` time.
+- **Cross-compile-on-Mac → amd64-host friction.** Building on Mac
+  (arm64) targeting Linux amd64 (the typical k3d host shape) is a
+  manual `GOOS=linux GOARCH=amd64 go build ...` invocation today.
+  `forge build` and `forge deploy` should detect that the local arch
+  differs from the deploy-target arch and either (a) cross-compile
+  automatically before the docker build (with a CGO-disabled default),
+  or (b) require an explicit `--target-arch` flag with a clear error
+  pointing at the workaround. Today the symptom is an opaque "exec
+  format error" from kubelet in the deployed pod.
 
-- **(2026-04-30 reliant-discovery) Per-handler-file size guidance +
-  `forge add handler-file`.** Reliant's `internal/grpc/services/chat.go`
-  is **4,331 LOC**, worktree.go 1,767, settings.go 1,457, workflow.go
-  1,413. Forge could (a) lint-warn at >1000 LOC per file inside
-  `handlers/<svc>/`, (b) provide `forge add handler-file <svc> <name>`
-  to scaffold a new method file in an existing handler dir.
-
-- **(2026-04-30 reliant-discovery) `forge lint --frontend-stores`
-  rule for "server data in Zustand."** The `frontend/state` skill has
-  the rule; lint doesn't enforce it. ~20 of reliant's 40 stores would
-  flag. Heuristic: any `web/src/store/*.ts` that imports from
-  `gen/.*-grpc` AND defines a `create<…>` Zustand store is suspect.
-
-- **(2026-04-30 reliant-discovery) `forge migrate-service` command
-  for flat-file → `handlers/<svc>/` porting.** Reliant has 26 flat
-  handler files in `internal/grpc/services/<name>.go`, several over
-  1,000 LOC. A `forge migrate-service <name>` that splits the file
-  into the canonical `handlers/<svc>/{service.go, handlers_gen.go,
-  <rpc>.go, ...}` shape (one method file per RPC group) would
-  massively reduce migration risk for any project in this flat-file
-  shape.
+- **`forge upgrade` post-merge gotcha undocumented in the
+  `migration-upgrade` skill.** When a user runs `forge upgrade` and
+  then merges another branch that also ran `forge upgrade`, the
+  resulting tree carries two layered codemod outputs that don't
+  always cleanly merge (one notable case: both branches reset
+  `.forge/checksums.json` to their own snapshot). The
+  `migration-upgrade` skill should call out the recommended order:
+  upgrade on `main`, merge into work branches; never the other way.
+  And note the `.forge/checksums.json` conflict resolution recipe.
 
 - ~~**(2026-04-30 LLM-port) `forge generate` REWRITES hand-written
   `handlers/<svc>/service.go` files back to scaffold...**~~

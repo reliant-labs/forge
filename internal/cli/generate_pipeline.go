@@ -1254,7 +1254,17 @@ func stepBootstrap(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	if err := generateBootstrap(ctx.Services, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, ctx.Checksums); err != nil {
+	// Diagnostics / strict-wiring feature toggles flow from forge.yaml
+	// straight into the bootstrap template so the diagnostics.Default.Boot
+	// call (and its StrictEmitter wrap) is only emitted when the project
+	// opted in. Default off — existing projects don't suddenly start
+	// logging warns on regen.
+	var bootstrapFeatures codegen.BootstrapFeatures
+	if ctx.Cfg != nil {
+		bootstrapFeatures.DiagnosticsEnabled = ctx.Cfg.Features.DiagnosticsEnabled()
+		bootstrapFeatures.StrictWiringEnabled = ctx.Cfg.Features.StrictWiringEnabled()
+	}
+	if err := generateBootstrap(ctx.Services, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap generation failed: %w", err)
 	}
 	return nil

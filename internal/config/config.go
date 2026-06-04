@@ -654,6 +654,19 @@ type FeaturesConfig struct {
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
+
+	// Diagnostics enables runtime emission of pkg/diagnostics records at
+	// Bootstrap time — slog warn lines for every unwired scaffold the
+	// codegen pipeline registered (Tier-1 stubs, nil-wired Deps fields).
+	// Default OFF: existing projects don't suddenly start logging warns on
+	// regen. Opt-in by setting `features.diagnostics: true` in forge.yaml.
+	Diagnostics *bool `yaml:"diagnostics,omitempty"`
+
+	// StrictWiring upgrades the Diagnostics emitter to StrictEmitter, so
+	// any registered diagnostic terminates the process after the summary
+	// line. Implies Diagnostics: true at the wire site — production-grade
+	// projects use this to fail-fast in CI. Default OFF.
+	StrictWiring *bool `yaml:"strict_wiring,omitempty"`
 }
 
 // featureEnabled returns true if the *bool is nil (default) or explicitly true.
@@ -729,6 +742,30 @@ func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Ob
 
 // HotReloadEnabled reports whether the hot-reload feature is on (default: on).
 func (f FeaturesConfig) HotReloadEnabled() bool { return featureEnabled(f.HotReload) }
+
+// DiagnosticsEnabled reports whether the pkg/diagnostics runtime emit
+// is wired by bootstrap (default: OFF). When OFF, codegen still emits
+// pkg/app/diagnostics_gen.go (so `forge audit` can roll the data up
+// from the file), but Bootstrap does not call diagnostics.Default.Boot
+// — no slog lines, no strict-mode exit.
+//
+// Strict-wiring implies Diagnostics: enabling strict without diagnostics
+// is a no-op, so we treat StrictWiringEnabled as forcing diagnostics on.
+func (f FeaturesConfig) DiagnosticsEnabled() bool {
+	if f.StrictWiring != nil && *f.StrictWiring {
+		return true
+	}
+	return f.Diagnostics != nil && *f.Diagnostics
+}
+
+// StrictWiringEnabled reports whether the diagnostics strict-mode
+// exit is wired by bootstrap (default: OFF). Used in tandem with
+// DiagnosticsEnabled — strict-mode wraps the LogEmitter with
+// StrictEmitter so any registered diagnostic terminates the process
+// after the summary line.
+func (f FeaturesConfig) StrictWiringEnabled() bool {
+	return f.StrictWiring != nil && *f.StrictWiring
+}
 
 // StackConfig declares the technology choices for the project.
 // These are forward-looking declarations — forge may not support all

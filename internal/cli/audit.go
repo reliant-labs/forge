@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +98,7 @@ var auditCategoryOrder = []string{
 	"wire_coverage",
 	"scaffold_markers",
 	"crud_stubs",
+	"diagnostics",
 	"deps",
 }
 
@@ -176,6 +178,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["wire_coverage"] = auditWireCoverage(abs)
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
+	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
 	report.Categories["deps"] = auditDeps(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
@@ -861,6 +864,129 @@ func auditCRUDStubs(projectDir string) AuditCategory {
 		Status:  status,
 		Summary: summary,
 		Details: map[string]any{"files": fileNames, "total_stubs": total, "stubs": stubs},
+	}
+}
+
+// diagnosticsRegisterStubRE matches the codegen-emitted line shape
+// `diagnostics.Default.RegisterStub("symbol", "file", 123)`. The
+// quoted strings allow any non-quote char (codegen never embeds
+// escaped quotes); the line number is the bare-int third arg. The
+// regex deliberately tolerates extra whitespace so a future gofmt
+// shift on the emitted file doesn't invalidate the parse.
+var diagnosticsRegisterStubRE = regexp.MustCompile(`diagnostics\.Default\.RegisterStub\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(\d+)\s*\)`)
+
+// diagnosticsRegisterNilDepRE matches the codegen-emitted line shape
+// `diagnostics.Default.RegisterNilDep("component", "dep", "file", 123)`.
+// Four args; component and dep are the runtime registration shape's
+// distinguishing fields.
+var diagnosticsRegisterNilDepRE = regexp.MustCompile(`diagnostics\.Default\.RegisterNilDep\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*(\d+)\s*\)`)
+
+// auditDiagnostics surfaces the runtime diagnostics registry shape at
+// audit time. Sources the data by parsing pkg/app/diagnostics_gen.go
+// for the Register* calls the codegen emitted at last generate (parse
+// approach — cheap; the alternative is running the binary briefly
+// and snapshotting Registry.Default, which is heavy and brittle).
+//
+// Even when the project hasn't enabled `features.diagnostics`, the
+// category still appears with status=ok and an empty list, so
+// downstream consumers (CI, dashboards) can rely on the key being
+// present and additive-extension contract holds — see the
+// `audit-json` skill for the contract details.
+func auditDiagnostics(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+	path := filepath.Join(projectDir, "pkg", "app", "diagnostics_gen.go")
+	enabled := cfg != nil && cfg.Features.DiagnosticsEnabled()
+	strict := cfg != nil && cfg.Features.StrictWiringEnabled()
+
+	type diagEntry struct {
+		Kind      string `json:"kind"`
+		Symbol    string `json:"symbol"`
+		File      string `json:"file"`
+		Line      int    `json:"line"`
+		Component string `json:"component,omitempty"`
+		DepName   string `json:"dep_name,omitempty"`
+	}
+
+	// Default details payload — always present so the additive
+	// contract holds. `enabled` is the runtime feature gate; the
+	// presence of entries is the codegen-time signal. We surface both
+	// independently so a consumer can tell `unwired scaffolds exist
+	// but bootstrap isn't emitting them` apart from `clean project`.
+	details := map[string]any{
+		"diagnostics":           []diagEntry{},
+		"runtime_enabled":       enabled,
+		"strict_wiring_enabled": strict,
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// File missing is the common case for projects that haven't
+		// regenerated since hooks 1+2 landed (or library/cli projects
+		// with no pkg/app/). Report ok with the empty list — the
+		// additive contract requires the category to exist regardless.
+		if os.IsNotExist(err) {
+			return AuditCategory{
+				Status:  AuditStatusOK,
+				Summary: "no pkg/app/diagnostics_gen.go (n/a — pre-codegen or library project)",
+				Details: details,
+			}
+		}
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("could not read diagnostics_gen.go: %v", err),
+			Details: details,
+		}
+	}
+
+	var entries []diagEntry
+	for _, m := range diagnosticsRegisterStubRE.FindAllStringSubmatch(string(data), -1) {
+		line, _ := strconv.Atoi(m[3])
+		entries = append(entries, diagEntry{
+			Kind:   "stub-impl",
+			Symbol: m[1],
+			File:   m[2],
+			Line:   line,
+		})
+	}
+	for _, m := range diagnosticsRegisterNilDepRE.FindAllStringSubmatch(string(data), -1) {
+		line, _ := strconv.Atoi(m[4])
+		entries = append(entries, diagEntry{
+			Kind:      "nil-dep",
+			Symbol:    m[1] + "." + m[2],
+			Component: m[1],
+			DepName:   m[2],
+			File:      m[3],
+			Line:      line,
+		})
+	}
+	// Stable sort (kind, symbol) for deterministic JSON.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Kind != entries[j].Kind {
+			return entries[i].Kind < entries[j].Kind
+		}
+		return entries[i].Symbol < entries[j].Symbol
+	})
+	details["diagnostics"] = entries
+
+	if len(entries) == 0 {
+		return AuditCategory{
+			Status:  AuditStatusOK,
+			Summary: "0 unwired scaffolds registered",
+			Details: details,
+		}
+	}
+
+	// Status semantics: warn when entries exist, error when strict_wiring
+	// is on AND entries exist (the project will fail to boot in this
+	// configuration). Matches the runtime emit policy — operators and
+	// CI both get the same verdict from one audit run.
+	status := AuditStatusWarn
+	if strict {
+		status = AuditStatusError
+	}
+	return AuditCategory{
+		Status:  status,
+		Summary: fmt.Sprintf("%d unwired scaffold(s) registered", len(entries)),
+		Details: details,
 	}
 }
 

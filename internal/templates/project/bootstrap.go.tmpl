@@ -28,6 +28,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 {{- end}}
 
+{{- if .DiagnosticsEnabled}}
+	"github.com/reliant-labs/forge/pkg/diagnostics"
+{{- end}}
 	"{{.Module}}/pkg/config"
 {{- if .Services}}
 	"{{.Module}}/pkg/middleware"
@@ -240,6 +243,25 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 	if err := Setup(app, cfg); err != nil {
 		return nil, fmt.Errorf("setup: %w", err)
 	}
+{{- if .DiagnosticsEnabled}}
+
+	// Emit any unwired-scaffold diagnostics the codegen pipeline
+	// recorded in pkg/app/diagnostics_gen.go's init(). One structured
+	// warn log line per registered entry, then a summary roll-up. The
+	// emit happens AFTER Setup so the operator can read the warnings
+	// before any service / worker starts.
+	//
+	// Toggled by `forge.yaml: features.diagnostics: true` — default off
+	// so existing projects don't suddenly start logging warns on regen.
+	// `features.strict_wiring: true` swaps LogEmitter for StrictEmitter,
+	// which os.Exit(1)s after the summary when any diagnostic is
+	// registered (production-grade enforcement).
+{{- if .StrictWiringEnabled}}
+	diagnostics.Default.Boot(diagnostics.NewStrictEmitter(diagnostics.NewLogEmitter(logger)))
+{{- else}}
+	diagnostics.Default.Boot(diagnostics.NewLogEmitter(logger))
+{{- end}}
+{{- end}}
 {{if .Packages}}
 	// Construct internal packages (services may depend on them).
 {{- range .Packages}}
@@ -439,6 +461,16 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 	if err := Setup(app, cfg); err != nil {
 		return nil, fmt.Errorf("setup: %w", err)
 	}
+{{- if .DiagnosticsEnabled}}
+
+	// Emit unwired-scaffold diagnostics after Setup (see Bootstrap for
+	// the full rationale). Same emit path; same feature gates.
+{{- if .StrictWiringEnabled}}
+	diagnostics.Default.Boot(diagnostics.NewStrictEmitter(diagnostics.NewLogEmitter(logger)))
+{{- else}}
+	diagnostics.Default.Boot(diagnostics.NewLogEmitter(logger))
+{{- end}}
+{{- end}}
 {{if .Packages}}
 	// Construct internal packages (always — services may depend on them
 	// regardless of which services are selected).

@@ -281,13 +281,15 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 			Name, Package, FieldName, Alias, VarName string
 			Fallible                                 bool
 		}
-		HasDatabase    bool
-		OrmEnabled     bool
-		HasFallible    bool
-		BinaryShared   bool
-		ConfigFields   map[string]bool
-		RESTEnabled    bool
-		ConnectImports []string
+		HasDatabase         bool
+		OrmEnabled          bool
+		HasFallible         bool
+		BinaryShared        bool
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
 	}{
 		Module:       "example.com/fullproject",
 		ConfigFields: map[string]bool{},

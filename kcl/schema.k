@@ -5,7 +5,7 @@ Four typed entities (Service / Operator / Frontend / CronJob) capture
 the orchestration shapes a forge project deploys. Plus six shared
 sub-schemas (EnvVar / Resources / Ingress / ClusterRBAC / HealthCheck /
 BuildVariant / SecurityContext) and a polymorphic deploy union
-(HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly) discriminated
+(HostDeploy | K8sCluster | External | Compose | BuildOnly) discriminated
 by a `type` field on the deploy subschema itself — KCL emits the
 discriminator into JSON automatically so the consumer can dispatch
 without a side channel.
@@ -181,7 +181,7 @@ schema SecurityContext:
 #
 # The `type` discriminator lives on the deploy subschema so the JSON
 # output is self-describing. KCL union types let `Service.deploy:
-# HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly` accept any
+# HostDeploy | K8sCluster | External | Compose | BuildOnly` accept any
 # of the variants at instantiation; the consumer dispatches on
 # `deploy.type`.
 # ---------------------------------------------------------------------------
@@ -265,37 +265,45 @@ schema K8sCluster:
         registry, "K8sCluster.registry is required (image registry, e.g. ghcr.io/org/proj)"
         replicas > 0, "K8sCluster.replicas must be positive"
 
-schema VMDocker:
-    """DECLARATIVE-ONLY — Service runs as a Docker container on a
-    single VM reached over SSH. The Go-side dispatch ships as a stub
-    that returns 'not yet implemented'; the schema is here so projects
-    can declare the shape they want, and so the migration skill has
-    something concrete to point at.
+schema External:
+    """Generic shell-command deploy target. Use this for any deploy
+    target driven by a CLI: Fly.io (`flyctl`), Cloudflare Workers
+    (`wrangler`), Cloud Run (`gcloud run`), AWS ECS (`aws ecs`),
+    Vercel, Railway, systemd-on-VM, etc.
 
-    Substitutions accepted in `deploy_cmd` / `rollback_cmd` / `health_cmd`:
-      * ${IMAGE} — image name (from `image`)
-      * ${TAG}   — image tag (from `tag`; falls back to build-resolved)
-      * ${HOST}  — SSH host (from `ssh_host`)
+    The provider exec's `deploy_cmd` via `sh -c` after substituting
+    the following tokens:
+
+      * ${IMAGE}       forge-built image name
+      * ${TAG}         current tag (build-resolved or overridden)
+      * ${LAST_TAG}    previous tag from state file (rollback only)
+      * ${SERVICE}     Service.name
+      * ${ENV}         env name (e.g. dev, staging, prod)
+      * ${ENV_FILE}    path declared in env_file (if any)
+      * ${PROJECT_DIR} project root
+      * Any keys declared in `env`.
+
+    `rollback_cmd` is optional — forge rollback errors loudly when it
+    isn't set rather than guessing. `health_cmd` runs after a
+    successful deploy; failures short-circuit before the state-file
+    write so the recorded last-good tag stays clean.
     """
-    type: str = "vm-docker"
-    ssh_host: str
-    image: str
-    tag?: str
-    deploy_cmd?: str
+    type: str = "external"
+    deploy_cmd: str
     rollback_cmd?: str
     health_cmd?: str
     env_file?: str
+    env?: {str: str}
 
     check:
-        type == "vm-docker", "VMDocker.type must be 'vm-docker'"
-        ssh_host, "VMDocker.ssh_host is required (e.g. 'user@host')"
-        image, "VMDocker.image is required"
+        type == "external", "External.type must be 'external'"
+        deploy_cmd, "External.deploy_cmd is required"
 
 schema Compose:
-    """DECLARATIVE-ONLY — Service runs under docker-compose on the
-    target host. The Go-side dispatch ships as a stub that returns
-    'not yet implemented'; the schema is here so projects can declare
-    the shape they want.
+    """Service runs under docker-compose on the target host. forge
+    invokes `docker compose pull` + `docker compose up -d` against the
+    declared compose file. Rollback writes a temporary override file
+    pinning the previous image:tag.
 
     `service` defaults to the parent Service.name when unset.
     """
@@ -330,8 +338,9 @@ schema Service:
       * HostDeploy  — forge launches it on the host.
       * K8sCluster  — forge deploys to a Kubernetes cluster as
                        Deployment + Service.
-      * VMDocker    — DECLARATIVE-ONLY — Docker-on-VM via SSH (stub).
-      * Compose     — DECLARATIVE-ONLY — docker-compose (stub).
+      * External    — forge runs a user-supplied CLI command
+                       (Fly.io, Cloud Run, Cloudflare Workers, ECS, …).
+      * Compose     — forge runs docker-compose up -d.
       * BuildOnly   — forge builds the artifact only (CLI shape).
 
     Omit `deploy` entirely to mean "just build the binary" — the
@@ -341,7 +350,7 @@ schema Service:
     image?: str
     command: [str] = []
     env_vars: [EnvVar] = []
-    deploy?: HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly
+    deploy?: HostDeploy | K8sCluster | External | Compose | BuildOnly
 
     check:
         name, "Service.name is required"

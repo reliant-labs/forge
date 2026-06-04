@@ -31,21 +31,26 @@ func newDeployCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "deploy <environment>",
-		Short: "Deploy services to a Kubernetes environment (Kubernetes-only)",
-		Long: `Note: forge deploy currently targets Kubernetes only — compose, docker-run, and bare-binary deploys are out of scope for this command.
+		Short: "Deploy services to the target declared in deploy/kcl/<env>/",
+		Long: `Deploy each service to the target declared on its Service.deploy block.
 
-Deploy services to the specified Kubernetes environment using KCL manifests.
+Supported deploy targets (declared in deploy/kcl/<env>/main.k):
 
-The environment must correspond to a directory under deploy/kcl/<env>/.
+  * forge.K8sCluster — Kubernetes deployment via render → kubectl apply
+    → wait-rollouts. Forge auto-creates a k3d cluster for dev.
+  * forge.External   — generic shell-command escape hatch. Forge runs
+    sh -c <deploy_cmd> with ${IMAGE}/${TAG}/${SERVICE} etc. expanded;
+    use for Fly.io, Cloud Run, Cloudflare Workers, ECS, Vercel, etc.
+  * forge.Compose    — docker compose pull + up -d.
 
-For dev environments, the command ensures a k3d cluster exists and pushes images
-to the local registry at localhost:5050.
+forge.HostDeploy and forge.BuildOnly are skipped by deploy — those are
+owned by forge run / forge up and forge build respectively.
 
-Safety: before applying, forge verifies the current kubectl context matches
-the environment's expected cluster (read from the rendered KCL's
-forge.K8sCluster.cluster; defaults to k3d-<project> for dev). The check
-ALSO runs under --dry-run so wrong-context mistakes surface before the
-strict apply.
+Safety: before applying K8sCluster groups, forge verifies the current
+kubectl context matches the environment's expected cluster (read from
+the rendered KCL's forge.K8sCluster.cluster; defaults to k3d-<project>
+for dev). The check ALSO runs under --dry-run so wrong-context mistakes
+surface before the strict apply.
 
 Use --context to override when a single CI deploy-bot context legitimately
 targets multiple environments. Use --explain to print the resolved guard
@@ -284,8 +289,8 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	// Build deploy groups from the rendered entities. Services bucket
 	// by deploy target type: K8sCluster groups by (cluster, ns,
-	// registry); VMDocker by ssh_host; Compose by compose_file. Host
-	// / build-only services are skipped (those are forge run /
+	// registry); External by deploy_cmd; Compose by compose_file.
+	// Host / build-only services are skipped (those are forge run /
 	// forge build territory).
 	groups, gerr := buildDeployGroups(envName, entities, namespace)
 	if gerr != nil {
@@ -293,10 +298,10 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	}
 
 	// When no K8sCluster groups are present, the rendered set carries
-	// only vm-docker / compose / host / build-only — nothing to apply
+	// only external / compose / host / build-only — nothing to apply
 	// via the cluster pipeline. Skip the check above (no namespace)
-	// and let dispatchDeployGroups handle the stub paths or no-op
-	// trivially.
+	// and let dispatchDeployGroups handle the per-provider paths or
+	// no-op trivially.
 	if len(groups) == 0 {
 		// Nothing to dispatch — historical behaviour was to still run
 		// cluster.Apply against the env's main.k in case host-only

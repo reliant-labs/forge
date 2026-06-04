@@ -25,7 +25,7 @@ forge`).
 KCL union-type dispatch
 =======================
 
-`Service.deploy: HostDeploy | K8sCluster | VMDocker | Compose | BuildOnly`.
+`Service.deploy: HostDeploy | K8sCluster | External | Compose | BuildOnly`.
 The discriminator field (`type`) is declared ON each variant subschema,
 so the JSON projection is self-describing — the consumer dispatches
 on `deploy.type` directly. The render lambdas here mirror that
@@ -124,16 +124,14 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
     }
 }
 
-_render_vm_docker = lambda d: VMDocker -> any {
+_render_external = lambda d: External -> any {
     {
-        "type": "vm-docker"
-        "ssh_host": d.ssh_host
-        "image": d.image
-        "tag": d.tag if d.tag else None
-        "deploy_cmd": d.deploy_cmd if d.deploy_cmd else None
+        "type": "external"
+        "deploy_cmd": d.deploy_cmd
         "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
         "health_cmd": d.health_cmd if d.health_cmd else None
         "env_file": d.env_file if d.env_file else None
+        "env": d.env if d.env else {}
     }
 }
 
@@ -155,11 +153,11 @@ _render_build_only = lambda d: BuildOnly -> any {
 
 # Dispatch on the populated deploy's discriminator. Called only when
 # `d` is not Undefined / None. Five branches: host / cluster
-# (K8sCluster) / vm-docker / compose / build-only.
+# (K8sCluster) / external / compose / build-only.
 _render_deploy_populated = lambda d: any -> any {
     _render_host_deploy(d) if d.type == "host" else \
         (_render_k8s_cluster(d) if d.type == "cluster" else \
-        (_render_vm_docker(d) if d.type == "vm-docker" else \
+        (_render_external(d) if d.type == "external" else \
         (_render_compose(d) if d.type == "compose" else _render_build_only(d))))
 }
 

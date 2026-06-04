@@ -1,8 +1,6 @@
 package deploytarget
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"testing"
 )
@@ -62,7 +60,7 @@ func TestGroupServices_K8sClusterMixed(t *testing.T) {
 // host / build-only / no-deploy, owned by forge run / forge build.
 func TestGroupServices_SkipsHostAndBuildOnly(t *testing.T) {
 	groups, err := GroupServices("dev", []RawService{
-		{Name: "host-svc"},  // no K8sCluster/VMDocker/Compose → skipped
+		{Name: "host-svc"},  // no K8sCluster/External/Compose → skipped
 		{Name: "build-svc"}, // same
 		{Name: "deployable", K8sCluster: &RawK8sCluster{Cluster: "c", Namespace: "n", Registry: "r", Spec: &K8sClusterSpec{}}},
 	})
@@ -77,18 +75,20 @@ func TestGroupServices_SkipsHostAndBuildOnly(t *testing.T) {
 	}
 }
 
-// TestGroupServices_VMDockerByHost: vm-docker services grouped by SSH host.
-func TestGroupServices_VMDockerByHost(t *testing.T) {
+// TestGroupServices_ExternalByDeployCmd: external services grouped by
+// identical deploy_cmd — the natural batching signal for a shared KCL
+// ref that points at one External value.
+func TestGroupServices_ExternalByDeployCmd(t *testing.T) {
 	groups, err := GroupServices("prod", []RawService{
-		{Name: "a", VMDocker: &VMDockerSpec{SSHHost: "host-a"}},
-		{Name: "b", VMDocker: &VMDockerSpec{SSHHost: "host-a"}},
-		{Name: "c", VMDocker: &VMDockerSpec{SSHHost: "host-b"}},
+		{Name: "a", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
+		{Name: "b", External: &ExternalSpec{DeployCmd: "flyctl deploy"}},
+		{Name: "c", External: &ExternalSpec{DeployCmd: "gcloud run deploy"}},
 	})
 	if err != nil {
 		t.Fatalf("GroupServices: %v", err)
 	}
 	if len(groups) != 2 {
-		t.Fatalf("want 2 groups (split by ssh_host), got %d", len(groups))
+		t.Fatalf("want 2 groups (split by deploy_cmd), got %d", len(groups))
 	}
 }
 
@@ -107,50 +107,11 @@ func TestGroupServices_ComposeByFile(t *testing.T) {
 	}
 }
 
-// TestVMDockerProvider_NotImplemented confirms the VMDocker stub
-// returns a structured error wrapping ErrProviderNotImplemented so
-// callers can distinguish stub paths from real failures via errors.Is.
-func TestVMDockerProvider_NotImplemented(t *testing.T) {
-	err := VMDockerProvider{}.Deploy(context.Background(), ServiceGroup{
-		Env:        "prod",
-		ProviderID: "vm-docker",
-		Services: []ResolvedService{
-			{Name: "edge", VMDocker: &VMDockerSpec{SSHHost: "host"}},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected stub error, got nil")
-	}
-	if !errors.Is(err, ErrProviderNotImplemented) {
-		t.Errorf("want errors.Is(ErrProviderNotImplemented), got %v", err)
-	}
-	if !strings.Contains(err.Error(), "vm-docker") && !strings.Contains(err.Error(), "VMDocker") {
-		t.Errorf("error should mention vm-docker, got %q", err)
-	}
-}
-
-// TestComposeProvider_NotImplemented mirrors the VMDocker stub check.
-func TestComposeProvider_NotImplemented(t *testing.T) {
-	err := ComposeProvider{}.Deploy(context.Background(), ServiceGroup{
-		Env:        "prod",
-		ProviderID: "compose",
-		Services: []ResolvedService{
-			{Name: "worker", Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"}},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected stub error, got nil")
-	}
-	if !errors.Is(err, ErrProviderNotImplemented) {
-		t.Errorf("want errors.Is(ErrProviderNotImplemented), got %v", err)
-	}
-}
-
 // TestRegistry_DefaultProviders confirms the canonical Registry comes
 // pre-populated with the three providers forge ships in this release.
 func TestRegistry_DefaultProviders(t *testing.T) {
 	r := NewRegistry()
-	for _, id := range []string{"k8s-cluster", "vm-docker", "compose"} {
+	for _, id := range []string{"k8s-cluster", "external", "compose"} {
 		if r.Lookup(id) == nil {
 			t.Errorf("Registry missing provider %q", id)
 		}

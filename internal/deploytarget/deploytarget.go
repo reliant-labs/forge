@@ -3,7 +3,7 @@
 // pipeline that ships the service somewhere.
 //
 // Deploy config is fully owned by KCL: per-service deploy-target
-// schemas (`K8sCluster`, `VMDocker`, `Compose`) carry both the env-wide
+// schemas (`K8sCluster`, `External`, `Compose`) carry both the env-wide
 // info (cluster, namespace, registry, domain) and the per-service
 // knobs (replicas, ingress, ports). KCL refs DRY the common case
 // across many services:
@@ -21,13 +21,17 @@
 //
 // Providers in this release:
 //
-//   - K8sClusterProvider — full Go implementation. Wraps
-//     internal/cluster.Apply (the existing render-KCL → kubectl-apply
-//     → wait-rollouts pipeline). Group-level cluster/namespace come
-//     from the first service's K8sCluster.{Cluster,Namespace}.
-//   - VMDockerProvider   — stub. Returns "not yet implemented" so the
-//     declared shape is visible but the SSH dispatch is deferred.
-//   - ComposeProvider    — stub. Same deal for docker-compose.
+//   - K8sClusterProvider — wraps internal/cluster.Apply (the existing
+//     render-KCL → kubectl-apply → wait-rollouts pipeline). Group-
+//     level cluster/namespace come from the first service's
+//     K8sCluster.{Cluster,Namespace}.
+//   - ExternalProvider   — generic shell-command escape hatch. Run
+//     `sh -c <deploy_cmd>` with ${IMAGE}/${TAG}/${SERVICE}/etc.
+//     substituted; record last-good tag in .forge/state for rollback.
+//     Covers Fly.io / Cloud Run / Cloudflare Workers / ECS / Vercel
+//     / systemd-on-VM and any other CLI-driven deploy target.
+//   - ComposeProvider    — docker compose pull/up -d. Rollback writes a
+//     generated override file pinning the previous tag.
 //
 // HostDeploy and BuildOnly aren't providers — `forge run` / `forge up`
 // own the host story, and BuildOnly is consumed by `forge build`.
@@ -43,7 +47,7 @@ import (
 )
 
 // Provider is the dispatch surface for one deploy target type. Each
-// concrete provider owns the pipeline for its target (k8s, vm-docker,
+// concrete provider owns the pipeline for its target (k8s, external,
 // compose, etc.); the dispatcher in forge deploy hands it a
 // ServiceGroup and the provider does the rest.
 //
@@ -84,7 +88,7 @@ type ServiceGroup struct {
 	Env string
 
 	// ProviderID identifies the provider type — "k8s-cluster",
-	// "vm-docker", "compose". Used by the dispatcher to look the
+	// "external", "compose". Used by the dispatcher to look the
 	// provider up and by log output to tag lines per-group.
 	ProviderID string
 
@@ -107,7 +111,7 @@ type ServiceGroup struct {
 }
 
 // ResolvedService is one service in a group, with its deploy block
-// already dispatched by type. Exactly one of K8sCluster/VMDocker/
+// already dispatched by type. Exactly one of K8sCluster/External/
 // Compose is non-nil; the dispatcher discards services with
 // HostDeploy/BuildOnly (those aren't in any deploy-target group).
 type ResolvedService struct {
@@ -118,7 +122,7 @@ type ResolvedService struct {
 	// so each provider's Deploy method can type-assert against its
 	// own concrete shape without a runtime switch.
 	K8sCluster *K8sClusterSpec
-	VMDocker   *VMDockerSpec
+	External   *ExternalSpec
 	Compose    *ComposeSpec
 }
 
@@ -139,16 +143,23 @@ type IngressSpec struct {
 	Path string
 }
 
-// VMDockerSpec is the per-service Docker-on-VM deploy spec. Mirrors
-// the kcl/schema.k VMDocker schema.
-type VMDockerSpec struct {
-	SSHHost     string
+// ExternalSpec is the per-service shell-command deploy spec. Mirrors
+// the kcl/schema.k External schema.
+//
+// Image isn't on the KCL schema itself — it's hoisted from the
+// surrounding Service.image so the ${IMAGE} substitution token has a
+// well-defined value without forcing the user to duplicate the
+// service's image string on the deploy block.
+type ExternalSpec struct {
 	Image       string
-	Tag         string
 	DeployCmd   string
 	RollbackCmd string
 	HealthCmd   string
 	EnvFile     string
+	// Env is the user-declared substitution map merged underneath the
+	// built-in tokens (IMAGE / TAG / LAST_TAG / SERVICE / ENV /
+	// ENV_FILE / PROJECT_DIR).
+	Env map[string]string
 }
 
 // ComposeSpec is the per-service docker-compose deploy spec. Mirrors
@@ -159,9 +170,11 @@ type ComposeSpec struct {
 	EnvFile     string
 }
 
-// ErrProviderNotImplemented is returned by stub providers (VMDocker,
-// Compose) — the schema exists so projects can declare the shape they
-// want; the runtime dispatch lands in a future release.
+// ErrProviderNotImplemented is the sentinel future providers (Lambda,
+// EdgeWorker, etc.) wrap when their dispatch lands as a stub. Keep
+// using errors.Is to distinguish "feature deferred" from "real
+// failure" — the active K8sCluster / External / Compose providers do
+// NOT return this; they implement the full pipeline.
 var ErrProviderNotImplemented = errors.New("forge: deploy provider not yet implemented in this release")
 
 // Registry holds the set of Providers registered with the dispatcher.
@@ -172,13 +185,13 @@ type Registry struct {
 }
 
 // NewRegistry returns a Registry pre-populated with the canonical
-// forge providers (k8s-cluster + vm-docker stub + compose stub).
-// Callers that need to inject test doubles should construct an empty
-// Registry and Register the doubles directly.
+// forge providers (k8s-cluster + external + compose). Callers that
+// need to inject test doubles should construct an empty Registry and
+// Register the doubles directly.
 func NewRegistry() *Registry {
 	r := &Registry{providers: map[string]Provider{}}
 	r.Register(K8sClusterProvider{})
-	r.Register(VMDockerProvider{})
+	r.Register(ExternalProvider{})
 	r.Register(ComposeProvider{})
 	return r
 }
@@ -207,9 +220,15 @@ func (r *Registry) Lookup(id string) Provider {
 // preserves cluster/namespace/registry so the override service joins
 // the same group).
 //
-// VMDocker grouping rule: services sharing an SSHHost end up in one
-// group. Compose grouping rule: services sharing a ComposeFile end up
-// in one group.
+// External grouping rule: services sharing an identical deploy_cmd
+// end up in one group. KCL refs that point at the same External var
+// render to identical deploy_cmd strings, which is the natural
+// batching signal. Without a shared ref, every service ends up in
+// its own group — which is fine because external providers
+// typically deploy one service per invocation anyway.
+//
+// Compose grouping rule: services sharing a ComposeFile end up in
+// one group.
 //
 // The returned groups are sorted by ProviderID then by the
 // target-identifier so test output is deterministic.
@@ -241,20 +260,20 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 				K8sCluster: s.K8sCluster.Spec,
 			})
 
-		case s.VMDocker != nil:
-			key := fmt.Sprintf("vm-docker|%s", s.VMDocker.SSHHost)
+		case s.External != nil:
+			key := fmt.Sprintf("external|%s", s.External.DeployCmd)
 			grp, ok := groups[key]
 			if !ok {
 				grp = &ServiceGroup{
 					Env:        env,
-					ProviderID: "vm-docker",
+					ProviderID: "external",
 				}
 				groups[key] = grp
 				keyOrder = append(keyOrder, key)
 			}
 			grp.Services = append(grp.Services, ResolvedService{
 				Name:     s.Name,
-				VMDocker: s.VMDocker,
+				External: s.External,
 			})
 
 		case s.Compose != nil:
@@ -289,7 +308,7 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 
 // RawService is the input shape for GroupServices — one entry per
 // rendered Service, with the deploy union already dispatched to the
-// matching variant. Exactly one of K8sCluster / VMDocker / Compose
+// matching variant. Exactly one of K8sCluster / External / Compose
 // is non-nil for services the dispatcher should ship; all three nil
 // means "skip" (host / build-only / no deploy declared).
 type RawService struct {
@@ -299,7 +318,7 @@ type RawService struct {
 	// and the per-service spec (carried through to the provider).
 	K8sCluster *RawK8sCluster
 
-	VMDocker *VMDockerSpec
+	External *ExternalSpec
 	Compose  *ComposeSpec
 }
 
@@ -332,11 +351,11 @@ func groupTarget(g ServiceGroup) string {
 	switch g.ProviderID {
 	case "k8s-cluster":
 		return fmt.Sprintf("cluster=%s ns=%s", g.Cluster, g.Namespace)
-	case "vm-docker":
-		if len(g.Services) > 0 && g.Services[0].VMDocker != nil {
-			return "ssh=" + g.Services[0].VMDocker.SSHHost
+	case "external":
+		if len(g.Services) > 0 && g.Services[0].External != nil {
+			return "cmd=" + truncForSummary(g.Services[0].External.DeployCmd)
 		}
-		return "ssh=?"
+		return "cmd=?"
 	case "compose":
 		if len(g.Services) > 0 && g.Services[0].Compose != nil {
 			return "file=" + g.Services[0].Compose.ComposeFile
@@ -345,4 +364,16 @@ func groupTarget(g ServiceGroup) string {
 	default:
 		return ""
 	}
+}
+
+// truncForSummary keeps the FormatGroupSummary line readable when the
+// user's deploy_cmd is long (e.g. a flyctl command with several
+// flags). Truncates with an ellipsis after 60 chars — enough to see
+// the CLI binary and the first flag, which is what users grep for.
+func truncForSummary(s string) string {
+	const max = 60
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }

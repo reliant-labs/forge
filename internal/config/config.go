@@ -629,14 +629,15 @@ func (c ContractsConfig) IsStrict() bool {
 	return c.Strict
 }
 
-// IsExcluded returns true if the given package path matches any exclude pattern.
+// IsExcluded returns true if the given package path matches any
+// exclude pattern. Delegates to [MatchExclude] — the shared matcher
+// used by the contract analyzer and the forgeconv lint surface so all
+// three places agree on what "excluded" means. See the doc on
+// MatchExclude for the matching rules and the deliberate exit from the
+// pre-2026-06 inline implementation (empty-pattern handling +
+// slash-normalisation).
 func (c ContractsConfig) IsExcluded(pkgPath string) bool {
-	for _, pattern := range c.Exclude {
-		if pattern == pkgPath || strings.HasSuffix(pkgPath, "/"+pattern) || strings.Contains(pkgPath, pattern) {
-			return true
-		}
-	}
-	return false
+	return MatchExclude(c.Exclude, pkgPath)
 }
 
 // FeaturesConfig controls which forge features are active.

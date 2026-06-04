@@ -115,12 +115,6 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		}
 	}
 
-	// Normalize Kubernetes provider casing (accept "K3D" from older
-	// generators and canonicalize to lowercase).
-	if cfg.K8s.Provider != "" {
-		cfg.K8s.Provider = normalizeEnum(cfg.K8s.Provider)
-	}
-
 	return &cfg, nil
 }
 

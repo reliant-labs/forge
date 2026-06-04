@@ -177,7 +177,7 @@ version: "0.1.0"
 	if !strings.Contains(cl, "type client struct") {
 		t.Errorf("client.go missing client struct, got:\n%s", cl)
 	}
-	if !strings.Contains(cl, "func New(deps Deps) Service") {
+	if !strings.Contains(cl, "func New(deps Deps) (Service, error)") {
 		t.Errorf("client.go missing New constructor, got:\n%s", cl)
 	}
 	if !strings.Contains(cl, "net/http") {

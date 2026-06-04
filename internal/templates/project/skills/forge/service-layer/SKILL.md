@@ -102,14 +102,14 @@ type svc struct {
     deps Deps
 }
 
-func New(deps Deps) Service {
+func New(deps Deps) (Service, error) {
     if deps.Now == nil {
         deps.Now = time.Now
     }
     if deps.NewID == nil {
         deps.NewID = newULID
     }
-    return &svc{deps: deps}
+    return &svc{deps: deps}, nil
 }
 
 func (s *svc) DoThing(ctx context.Context, in DoThingInput) (DoThingResult, error) {

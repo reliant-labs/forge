@@ -1357,6 +1357,21 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	// don't checksum them — we want forge audit to leave them alone.
 	fullData := mapServiceDefToTemplateData(svc, projectDir)
 
+	// Filter CRUD methods out of the unit-test scaffold so per-RPC rows
+	// don't overlap with handlers_crud_gen_test.go (which owns shape-aware
+	// per-CRUD-RPC rows). Same filter rule as the initial-gen path in
+	// GenerateServiceStub — one source of truth per method, no duplication.
+	unitTestData := fullData
+	if len(crudMethodNames) > 0 {
+		var nonCRUD []MethodTemplateData
+		for _, m := range fullData.Methods {
+			if !crudMethodNames[m.Name] {
+				nonCRUD = append(nonCRUD, m)
+			}
+		}
+		unitTestData.Methods = nonCRUD
+	}
+
 	integrationTestPath := filepath.Join(targetDir, "integration_test.go")
 	if isPlaceholderIntegrationTest(integrationTestPath) {
 		testContent, err := templates.ServiceTemplates().Render("integration_test.go.tmpl", fullData)
@@ -1370,7 +1385,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 
 	handlersTestPath := filepath.Join(targetDir, "handlers_scaffold_test.go")
 	if isPlaceholderUnitTest(handlersTestPath) {
-		testContent, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", fullData)
+		testContent, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", unitTestData)
 		if err != nil {
 			return nil, fmt.Errorf("render unit_test.go.tmpl: %w", err)
 		}

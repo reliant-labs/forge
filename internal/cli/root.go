@@ -155,10 +155,10 @@ func newVersionCmd() *cobra.Command {
 //  3. `forge run <service> stop` — kills the background process for
 //     <service>. No-op when nothing is tracked.
 //
-// The host-mode runner is the inner loop for services with
-// `dev_target: host`: faster iteration than building+pushing a docker
-// image and waiting on a cluster rollout. Mirrors the
-// `forge dev port-forward --background` PID-tracking pattern.
+// The host-mode runner is the inner loop for services declared
+// `deploy = "host"` in `deploy/kcl/<env>/`: faster iteration than
+// building+pushing a docker image and waiting on a cluster rollout.
+// Mirrors the `forge dev port-forward --background` PID-tracking pattern.
 func newRunCmd() *cobra.Command {
 	var opts runOptions
 	var serviceFlag string
@@ -174,9 +174,9 @@ With no positional arg, runs the orchestrator: docker compose infra, every
 Go service (via Air), and every Next.js app, with color-coded log output.
 
 With a positional service name, runs that single service as a host process —
-the inner loop for services marked dev_target: host in forge.yaml. Loads
-.env.<env> (default .env.dev) onto the child env so DATABASE_URL and friends
-come from the local file rather than the cluster's Secret.
+the inner loop for services declared deploy = "host" in deploy/kcl/<env>/.
+Loads .env.<env> (default .env.dev) onto the child env so DATABASE_URL and
+friends come from the local file rather than the cluster's Secret.
 
 Press Ctrl+C to stop. With --background, the process detaches and PID is
 tracked under ~/.cache/forge/run/<service>.pid for ` + "`forge run <service> stop`" + `.

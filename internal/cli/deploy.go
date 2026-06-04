@@ -119,21 +119,12 @@ func runDeployExplain(ctx context.Context, envName, override string) error {
 	return nil
 }
 
-// printDeployExplainHostSkip surfaces the dev-only host-mode service
-// list under `forge deploy <env> --explain` so users can see, without
-// running an apply, which services would be skipped from rollout wait
-// + prune. No-op for non-dev envs and for projects with no host-mode
-// services, so it composes safely with the verdict-only path.
-func printDeployExplainHostSkip(cfg *config.ProjectConfig, envName string) error {
-	if envName != "dev" {
-		return nil
-	}
-	hosts := hostDevTargetServices(cfg)
-	if len(hosts) == 0 {
-		return nil
-	}
-	fmt.Printf("  host-mode (dev_target: host): %s — run via `forge run <name>` (rollout wait skipped)\n",
-		strings.Join(hosts, ", "))
+// printDeployExplainHostSkip is a placeholder for the post-orchestration
+// shape: once the KCL-side `deploy: "host"` filter lands (deliverable 4)
+// this helper renders the host-mode service list for `forge deploy <env>
+// --explain`. Kept as a stub so the call site keeps compiling while the
+// re-wire is in progress.
+func printDeployExplainHostSkip(_ *config.ProjectConfig, _ string) error {
 	return nil
 }
 
@@ -305,32 +296,22 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// prefixes shared-binary deployments with `<project>-<svc>` and KCL
 	// renders may add suffixes for component types (operator/worker).
 	//
-	// Dev-only host-mode filter: when env=dev, services with
-	// `dev_target: host` are excluded from the rollout wait so the
-	// 120s/service kubectl rollout-status budget isn't burned waiting on
-	// Deployments that don't exist (or that the deploy intentionally
-	// pruned). For staging/prod every Deployment is awaited unchanged.
+	// The per-env host-mode rollout skip is re-implemented in
+	// deliverable 4 from the rendered KCL output. Until that lands, every
+	// Deployment in the namespace is awaited (the pre-dev_target
+	// behaviour). Services that don't actually have a Deployment will
+	// simply not show up in listDeployments.
 	fmt.Println("Waiting for rollouts...")
 	deployments, err := listDeployments(ctx, namespace)
 	if err != nil {
 		fmt.Printf("  Warning: list deployments: %v\n", err)
 	} else {
-		hostSkip := hostDeploymentSkipSet(cfg, envName)
-		var skipped []string
 		for _, dep := range deployments {
-			if _, skip := hostSkip[dep]; skip {
-				skipped = append(skipped, dep)
-				continue
-			}
 			if err := waitForRollout(ctx, dep, namespace); err != nil {
 				fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
 			} else {
 				fmt.Printf("  %s: ready\n", dep)
 			}
-		}
-		if len(skipped) > 0 {
-			fmt.Printf("Skipped rollout wait for %d service(s) with dev_target: host: %s\n",
-				len(skipped), strings.Join(skipped, ", "))
 		}
 	}
 
@@ -756,29 +737,6 @@ func pruneOrphanDeployments(ctx context.Context, manifests, namespace string) er
 	return nil
 }
 
-// hostDeploymentSkipSet returns the set of Deployment names that the
-// dev-only host-mode filter should skip when waiting on rollouts (or
-// pruning stale resources). For env != "dev" the set is empty — the
-// filter only applies to the local dev loop.
-//
-// Each host-mode service name expands to two keys:
-//   - the bare name ("admin-server"), matching per-service-binary mode
-//   - the project-prefixed name ("<project>-admin-server"), matching
-//     shared-binary mode where KCL renders `<project>-<svc>` Deployments
-//
-// Returning both is cheap and lets the caller iterate over the actually-
-// applied Deployment names without re-deriving the project-prefix rule.
-func hostDeploymentSkipSet(cfg *config.ProjectConfig, envName string) map[string]struct{} {
-	out := map[string]struct{}{}
-	if cfg == nil || envName != "dev" {
-		return out
-	}
-	for _, name := range hostDevTargetServices(cfg) {
-		out[name] = struct{}{}
-		out[cfg.Name+"-"+name] = struct{}{}
-	}
-	return out
-}
 
 // expectedClusterForEnv returns the expected kubectl context name for
 // an environment. Resolution priority:

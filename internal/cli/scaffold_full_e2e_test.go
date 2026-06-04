@@ -118,6 +118,9 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"frontends/web/package.json",
 		"frontends/web/go.mod",
 		"frontends/web/buf.gen.yaml",
+		// admin-url helper — basePath-aware URL builder for Stripe success
+		// URLs, OAuth callbacks, etc. (see frontend skill for canonical usage).
+		"frontends/web/src/lib/admin-url.ts",
 
 		// Core UI components — installed during scaffold.
 		"frontends/web/src/components/ui/sidebar_layout.tsx",

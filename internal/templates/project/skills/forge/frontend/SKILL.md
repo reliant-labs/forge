@@ -298,6 +298,7 @@ These files are created by `forge add frontend` and are yours to modify:
 - `src/lib/event-context.tsx` — Event bus React context and hooks.
 - `src/stores/ui-store.ts` — Zustand base UI store. Extend or create domain stores in `src/stores/`.
 - `src/lib/format-utils.ts` — Shared formatting utilities used by generated pages.
+- `src/lib/admin-url.ts` — `adminUrl(path)` + `absoluteAdminUrl(path)` helpers for any string passed to an external system that round-trips back to this frontend (Stripe `success_url`, OAuth `redirect_uri`, share links, magic-link emails). Reads `process.env.NEXT_PUBLIC_BASE_PATH` so the runtime value tracks `next.config.js`'s `basePath`. Use these instead of hand-concatenating origin + path — the basePath leaks through `<Link>` for free but NOT into raw URL strings, and `forge`'s Next.js scaffold supports the `/admin`-mounted layout out of the box.
 
 ## Dev Workflow
 

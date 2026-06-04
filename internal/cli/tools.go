@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,13 +81,13 @@ Examples:
   forge tools install --version v1.34.2
   forge tools install --force`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runToolsInstall(version, force); err != nil {
+			if err := runToolsInstall(cmd.Context(), version, force); err != nil {
 				return err
 			}
 			// Also install the local TS plugin in any scaffolded frontend
 			// dirs we can find under cwd. Best-effort — never fatal because
 			// many forge projects (cli/library kinds) have no frontends.
-			installFrontendTSPlugin(".", force)
+			installFrontendTSPlugin(cmd.Context(), ".", force)
 			return nil
 		},
 	}
@@ -102,7 +103,7 @@ Examples:
 // has a package.json but no node_modules/.bin/protoc-gen-es. Skips silently
 // when npm is not on PATH (with a one-line message) so this doesn't block
 // users on no-frontend projects.
-func installFrontendTSPlugin(projectDir string, force bool) {
+func installFrontendTSPlugin(ctx context.Context, projectDir string, force bool) {
 	frontendsDir := filepath.Join(projectDir, "frontends")
 	entries, err := os.ReadDir(frontendsDir)
 	if err != nil {
@@ -134,7 +135,7 @@ func installFrontendTSPlugin(projectDir string, force bool) {
 			}
 		}
 		fmt.Printf("📦 Installing %-26s in frontends/%s/ (npm install --save-dev %s)\n", "protoc-gen-es", entry.Name(), frontendTSPluginPackage)
-		cmd := exec.Command("npm", "install", "--save-dev", "--no-audit", "--no-fund", frontendTSPluginPackage)
+		cmd := exec.CommandContext(ctx, "npm", "install", "--save-dev", "--no-audit", "--no-fund", frontendTSPluginPackage)
 		cmd.Dir = feDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -153,13 +154,13 @@ func installFrontendTSPlugin(projectDir string, force bool) {
 // runToolsInstall installs the required proto plugins. Returns the first
 // install error (if any) but always tries every tool so users see the
 // full picture.
-func runToolsInstall(version string, force bool) error {
+func runToolsInstall(ctx context.Context, version string, force bool) error {
 	if version == "" {
 		version = "latest"
 	}
 
 	if _, err := exec.LookPath("go"); err != nil {
-		return fmt.Errorf("'go' not found on PATH — install Go before running '%s tools install'", CLIName())
+		return fmt.Errorf("'go' not found on PATH — install Go before running '%s tools install'", Name())
 	}
 
 	var firstErr error
@@ -173,7 +174,7 @@ func runToolsInstall(version string, force bool) error {
 
 		spec := t.Module + "@" + version
 		fmt.Printf("📦 Installing %-26s (go install %s)\n", t.Binary, spec)
-		out, err := exec.Command("go", "install", spec).CombinedOutput()
+		out, err := exec.CommandContext(ctx, "go", "install", spec).CombinedOutput()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ❌ go install %s failed: %v\n", spec, err)
 			if len(out) > 0 {

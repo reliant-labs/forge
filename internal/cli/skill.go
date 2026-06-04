@@ -84,9 +84,9 @@ func newSkillListCmd() *cobra.Command {
 				return writeSkillsJSON(cmd.OutOrStdout(), skills)
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
+			_, _ = fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
 			for _, s := range skills {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Path, s.Scope, s.Name, s.Description)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Path, s.Scope, s.Name, s.Description)
 			}
 			return w.Flush()
 		},
@@ -115,7 +115,7 @@ func newSkillLoadCmd() *cobra.Command {
 			_ = scope // available if we want to log; load is silent.
 
 			// Rewrite CLI command references if running under a different binary name.
-			cliName := CLIName()
+			cliName := Name()
 			if cliName != "forge" {
 				content = forgeCmdRE.ReplaceAll(content, []byte(cliName+"$1"))
 			}
@@ -146,14 +146,14 @@ func newSkillSearchCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if len(results) == 0 {
-				fmt.Fprintf(out, "No skills found matching query: %s\n", query)
+				_, _ = fmt.Fprintf(out, "No skills found matching query: %s\n", query)
 				return nil
 			}
-			fmt.Fprintf(out, "Skills matching %q:\n\n", query)
+			_, _ = fmt.Fprintf(out, "Skills matching %q:\n\n", query)
 			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "SCORE\tPATH\tSCOPE\tDESCRIPTION")
+			_, _ = fmt.Fprintln(w, "SCORE\tPATH\tSCOPE\tDESCRIPTION")
 			for _, r := range results {
-				fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", r.Score, r.Skill.Path, r.Skill.Scope, r.Skill.Description)
+				_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", r.Score, r.Skill.Path, r.Skill.Scope, r.Skill.Description)
 			}
 			return w.Flush()
 		},
@@ -197,7 +197,7 @@ func searchSkills(query string) ([]skillSearchResult, error) {
 				score += 3
 			}
 			if strings.Contains(descLower, word) {
-				score += 1
+				score++
 			}
 		}
 
@@ -206,7 +206,7 @@ func searchSkills(query string) ([]skillSearchResult, error) {
 			bodyLower := strings.ToLower(string(body))
 			for _, word := range queryWords {
 				if strings.Contains(bodyLower, word) {
-					score += 1
+					score++
 				}
 			}
 		}

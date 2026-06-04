@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -80,7 +81,7 @@ func connectToSession() (debug.Debugger, error) {
 
 func printStopState(state *debug.StopState, jsonOutput bool) {
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(state)
+		_ = json.NewEncoder(os.Stdout).Encode(state)
 		return
 	}
 	fmt.Printf("Stopped at %s:%d (%s)\n", state.File, state.Line, state.Function)
@@ -113,7 +114,7 @@ func printVariable(v debug.Variable, indent string) {
 
 func printBreakpoint(bp debug.BreakpointInfo, jsonOutput bool) {
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(bp)
+		_ = json.NewEncoder(os.Stdout).Encode(bp)
 		return
 	}
 	loc := fmt.Sprintf("%s:%d", bp.File, bp.Line)
@@ -129,7 +130,7 @@ func printBreakpoint(bp debug.BreakpointInfo, jsonOutput bool) {
 
 func printVariables(vars []debug.Variable, jsonOutput bool) {
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(vars)
+		_ = json.NewEncoder(os.Stdout).Encode(vars)
 		return
 	}
 	if len(vars) == 0 {
@@ -143,7 +144,7 @@ func printVariables(vars []debug.Variable, jsonOutput bool) {
 
 func printStacktrace(frames []debug.StackFrame, jsonOutput bool) {
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(frames)
+		_ = json.NewEncoder(os.Stdout).Encode(frames)
 		return
 	}
 	for i, f := range frames {
@@ -153,7 +154,7 @@ func printStacktrace(frames []debug.StackFrame, jsonOutput bool) {
 
 func printGoroutines(goroutines []debug.GoroutineInfo, jsonOutput bool) {
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(goroutines)
+		_ = json.NewEncoder(os.Stdout).Encode(goroutines)
 		return
 	}
 	fmt.Printf("%-8s %-12s %-50s %s\n", "ID", "STATUS", "FUNCTION", "LOCATION")
@@ -193,15 +194,15 @@ Examples:
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dockerMode {
-				return runDebugStartDocker()
+				return runDebugStartDocker(cmd.Context())
 			}
 			if attachPID > 0 {
-				return runDebugStartAttach(attachPID, jsonOutput)
+				return runDebugStartAttach(cmd.Context(), attachPID, jsonOutput)
 			}
 			if len(args) == 0 {
 				return fmt.Errorf("provide a service name or path, or use --attach <pid>")
 			}
-			return runDebugStartService(args[0], port, jsonOutput)
+			return runDebugStartService(cmd.Context(), args[0], port, jsonOutput)
 		},
 	}
 
@@ -213,9 +214,9 @@ Examples:
 	return cmd
 }
 
-func runDebugStartAttach(pid int, jsonOutput bool) error {
+func runDebugStartAttach(ctx context.Context, pid int, jsonOutput bool) error {
 	d := debug.NewDelveDebugger()
-	if err := d.StartAttach(pid); err != nil {
+	if err := d.StartAttach(ctx, pid); err != nil {
 		return fmt.Errorf("attaching to PID %d: %w", pid, err)
 	}
 
@@ -231,7 +232,7 @@ func runDebugStartAttach(pid int, jsonOutput bool) error {
 	}
 
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(session)
+		_ = json.NewEncoder(os.Stdout).Encode(session)
 	} else {
 		fmt.Printf("Attached to PID %d\n", pid)
 		fmt.Printf("Delve listening at %s\n", d.Addr())
@@ -239,7 +240,7 @@ func runDebugStartAttach(pid int, jsonOutput bool) error {
 	return nil
 }
 
-func runDebugStartService(target string, port int, jsonOutput bool) error {
+func runDebugStartService(ctx context.Context, target string, port int, jsonOutput bool) error {
 	buildPath := target
 	serviceName := target
 
@@ -282,7 +283,7 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 	}
 
 	fmt.Printf("Building %s with debug flags...\n", buildPath)
-	buildCmd := exec.Command("go", "build", "-gcflags=all=-N -l", "-o", outputBinary, buildPath)
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", outputBinary, buildPath)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
@@ -303,7 +304,7 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 	}
 
 	d := debug.NewDelveDebugger()
-	if err := d.Start(absBinary, binArgs, port); err != nil {
+	if err := d.Start(ctx, absBinary, binArgs, port); err != nil {
 		return fmt.Errorf("starting Delve: %w", err)
 	}
 
@@ -319,7 +320,7 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 	}
 
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(session)
+		_ = json.NewEncoder(os.Stdout).Encode(session)
 	} else {
 		fmt.Printf("Debug session started for %s\n", serviceName)
 		fmt.Printf("Delve listening at %s\n", d.Addr())
@@ -327,9 +328,9 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 	return nil
 }
 
-func runDebugStartDocker() error {
+func runDebugStartDocker(ctx context.Context) error {
 	// Start the debug container.
-	startCmd := exec.Command("docker", "compose", "--profile", "debug", "up", "-d", "app-debug")
+	startCmd := exec.CommandContext(ctx, "docker", "compose", "--profile", "debug", "up", "-d", "app-debug")
 	startCmd.Stdout = os.Stdout
 	startCmd.Stderr = os.Stderr
 	if err := startCmd.Run(); err != nil {
@@ -341,7 +342,7 @@ func runDebugStartDocker() error {
 	time.Sleep(5 * time.Second)
 
 	// Discover Delve port.
-	addr, err := discoverDelvePort()
+	addr, err := discoverDelvePort(ctx)
 	if err != nil {
 		return fmt.Errorf("discovering Delve port: %w", err)
 	}
@@ -370,8 +371,8 @@ func runDebugStartDocker() error {
 	return nil
 }
 
-func discoverDelvePort() (string, error) {
-	out, err := exec.Command("docker", "compose", "port", "app-debug", "2345").Output()
+func discoverDelvePort(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "compose", "port", "app-debug", "2345").Output()
 	if err != nil {
 		return "", fmt.Errorf("docker compose port: %w", err)
 	}
@@ -504,7 +505,7 @@ func runDebugBreakpoints(jsonOutput bool) error {
 	}
 
 	if jsonOutput {
-		json.NewEncoder(os.Stdout).Encode(bps)
+		_ = json.NewEncoder(os.Stdout).Encode(bps)
 		return nil
 	}
 
@@ -545,7 +546,7 @@ func newDebugClearCmd() *cobra.Command {
 			}
 
 			if jsonOutput {
-				json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "cleared": true})
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"id": id, "cleared": true})
 			} else {
 				fmt.Printf("Breakpoint %d cleared.\n", id)
 			}
@@ -695,7 +696,7 @@ Examples:
 				return fmt.Errorf("evaluating expression: %w", err)
 			}
 			if jsonOutput {
-				json.NewEncoder(os.Stdout).Encode(v)
+				_ = json.NewEncoder(os.Stdout).Encode(v)
 			} else {
 				printVariable(*v, "")
 			}
@@ -838,7 +839,7 @@ func newDebugStopCmd() *cobra.Command {
 			if err != nil {
 				// Can't connect (timeout, refused, etc.).
 				if session != nil && session.Docker {
-					stopCmd := exec.Command("docker", "compose", "--profile", "debug", "stop", "app-debug")
+					stopCmd := exec.CommandContext(cmd.Context(), "docker", "compose", "--profile", "debug", "stop", "app-debug")
 					_ = stopCmd.Run()
 				} else if session != nil && session.PID > 0 {
 					if p, findErr := os.FindProcess(session.PID); findErr == nil {
@@ -854,7 +855,7 @@ func newDebugStopCmd() *cobra.Command {
 
 			if session != nil && session.Docker {
 				dbg.Disconnect()
-				stopCmd := exec.Command("docker", "compose", "--profile", "debug", "stop", "app-debug")
+				stopCmd := exec.CommandContext(cmd.Context(), "docker", "compose", "--profile", "debug", "stop", "app-debug")
 				_ = stopCmd.Run()
 			} else {
 				if err := dbg.Stop(); err != nil {

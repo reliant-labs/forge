@@ -9,8 +9,8 @@ import (
 )
 
 // NewRootCmd returns the fully assembled Forge root command.
-// When embedded in another CLI (e.g. "reliant forge"), the CLIName()
-// function automatically adjusts user-facing command references.
+// When embedded in another CLI (e.g. "reliant forge"), the internal
+// Name() helper automatically adjusts user-facing command references.
 func NewRootCmd() *cobra.Command {
 	return internalcli.NewRootCmd()
 }

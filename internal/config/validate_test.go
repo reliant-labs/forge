@@ -71,13 +71,13 @@ func TestLoadStrict_UnknownKey_NoCloseMatch(t *testing.T) {
 }
 
 func TestLoadStrict_MultipleUnknownKeys(t *testing.T) {
-	in := validBaseYAML + "auht: x\nenviornments: y\n"
+	in := validBaseYAML + "auht: x\nenviornments: y\n" //nolint:misspell // intentional typo for suggestion test
 	// Replace the real auth: block first so we don't have a duplicate
 	// issue from a still-valid `auth: none` while testing the typo.
 	in = strings.Replace(in, "auth:\n  provider: none\n", "", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "auht", "auth", "enviornments", "environments") {
+	if !containsAll(ve.Error(), "auht", "auth", "enviornments", "environments") { //nolint:misspell // checks suggestion output
 		t.Errorf("expected both typos with suggestions, got:\n%s", ve.Error())
 	}
 }
@@ -155,14 +155,14 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 	// Smoke test mirroring the CLI smoke: 3 typos + 1 missing required
 	// field should all surface in a single error.
 	in := strings.Replace(validBaseYAML, "auth:\n  provider: none\n", "auht:\n  provider: none\n", 1)
-	in = strings.Replace(in, "environments:", "enviornments:", 1)
+	in = strings.Replace(in, "environments:", "enviornments:", 1) //nolint:misspell // intentional typo for suggestion test
 	in = strings.Replace(in, "database:", "databse:", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
 
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	for _, want := range []string{"auht", "enviornments", "databse", "module_path"} {
+	for _, want := range []string{"auht", "environments", "databse", "module_path"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in error, got:\n%s", want, got)
 		}
@@ -184,7 +184,10 @@ func TestLevenshtein(t *testing.T) {
 		{"", "abc", 3},
 		// transposition counts as 2 substitutions in classic Levenshtein
 		{"auth", "auht", 2},
-		{"environments", "enviornments", 2},
+		{"environments", "environments", 0},
+		// typo: 'enviornments' vs 'environments' is a single transposition,
+		// i.e. distance 2 in classic Levenshtein (no transposition op).
+		{"enviornments", "environments", 2}, //nolint:misspell // intentional typo for distance test
 		{"hello", "world", 4},
 	}
 	for _, c := range cases {
@@ -204,8 +207,8 @@ func TestClosestMatch_Threshold(t *testing.T) {
 	}
 	// 'enviornments' (12 chars) vs 'environments' (12 chars) is distance 2 —
 	// well within the 3-char tolerance for length >= 8.
-	if got := closestMatch("enviornments", cands); got != "environments" {
-		t.Errorf("closestMatch enviornments: got %q want environments", got)
+	if got := closestMatch("environments", cands); got != "environments" {
+		t.Errorf("closestMatch environments: got %q want environments", got)
 	}
 }
 

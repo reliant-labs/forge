@@ -141,11 +141,11 @@ func splitMinor(v string) (int, int, bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	min, err := atoiSafe(parts[1])
+	minor, err := atoiSafe(parts[1])
 	if err != nil {
 		return 0, 0, false
 	}
-	return maj, min, true
+	return maj, minor, true
 }
 
 // atoiSafe is strconv.Atoi with the import dependency hidden. Kept

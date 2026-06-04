@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,7 +33,7 @@ Examples:
   forge dev instances
   forge dev instances --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevInstances(jsonOut)
+			return runDevInstances(cmd.Context(), jsonOut)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
@@ -40,20 +41,20 @@ Examples:
 }
 
 type devInstance struct {
-	Cluster    string `json:"cluster"`
-	Namespace  string `json:"namespace"`
-	PodCount   int    `json:"pod_count"`
-	PFRunning  int    `json:"port_forwards_running"`
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	PodCount  int    `json:"pod_count"`
+	PFRunning int    `json:"port_forwards_running"`
 }
 
-func runDevInstances(jsonOut bool) error {
-	clusters, err := listK3dClusters()
+func runDevInstances(ctx context.Context, jsonOut bool) error {
+	clusters, err := listK3dClusters(ctx)
 	if err != nil {
 		return err
 	}
 	if len(clusters) == 0 {
 		if jsonOut {
-			os.Stdout.WriteString("[]\n")
+			_, _ = os.Stdout.WriteString("[]\n")
 			return nil
 		}
 		fmt.Println("No k3d clusters found.")
@@ -62,10 +63,10 @@ func runDevInstances(jsonOut bool) error {
 
 	var instances []devInstance
 	for _, c := range clusters {
-		ctx := "k3d-" + c.Name
-		nsList := listForgeNamespaces(ctx)
+		kubeCtx := "k3d-" + c.Name
+		nsList := listForgeNamespaces(ctx, kubeCtx)
 		for _, ns := range nsList {
-			pc := podCount(ctx, ns)
+			pc := podCount(ctx, kubeCtx, ns)
 			pfs := readPortForwardState(c.Name, ns)
 			instances = append(instances, devInstance{
 				Cluster:   c.Name,
@@ -96,8 +97,8 @@ func runDevInstances(jsonOut bool) error {
 // listForgeNamespaces queries a specific kubectl context for all
 // forge-managed namespaces. Failures (cluster down, context missing)
 // return nil so the caller can keep walking remaining clusters.
-func listForgeNamespaces(context string) []string {
-	cmd := exec.Command("kubectl", "--context", context,
+func listForgeNamespaces(ctx context.Context, kubeCtx string) []string {
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx,
 		"get", "namespaces",
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}")
@@ -117,8 +118,8 @@ func listForgeNamespaces(context string) []string {
 
 // podCount returns the number of pods in a namespace via the given
 // context. Best-effort: failures return 0.
-func podCount(context, namespace string) int {
-	cmd := exec.Command("kubectl", "--context", context, "get", "pods",
+func podCount(ctx context.Context, kubeCtx, namespace string) int {
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx, "get", "pods",
 		"-n", namespace, "--no-headers",
 		"-o", "name")
 	out, err := cmd.Output()

@@ -108,9 +108,9 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 // `./<bin> server`. The empty-case fix must not regress that path.
 func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias    string
-		Fallible, HasWebhooks              bool
-		ConnectPkg, ProtoServiceName       string
+		Name, Package, FieldName, Alias string
+		Fallible, HasWebhooks           bool
+		ConnectPkg, ProtoServiceName    string
 	}
 	data := struct {
 		Module         string
@@ -194,6 +194,7 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 		t.Fatalf("rendered testing.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
 	}
 }
+
 // TestEntityExampleProto_HyphenatedPackageIsSnakeCased is a regression test
 // for the stripe-latent bug: project names with hyphens (e.g. "my-app")
 // would render as `package my-app.db.v1;` which is invalid proto. The fix

@@ -112,14 +112,14 @@ func runUpgrade(check, force bool, toVersion string) error {
 			fmt.Sprintf("minor-hop only: cannot upgrade %s → %s in one step (each per-version codemod must run against a clean baseline)", from, target),
 			"",
 			fmt.Sprintf("run '%s upgrade --to v%s' first, then re-run '%s upgrade --to %s' (one minor at a time)",
-				CLIName(), nextMinor(from), CLIName(), target),
+				Name(), nextMinor(from), Name(), target),
 		)
 	}
 
 	if check {
-		fmt.Printf("%s upgrade --check (dry run): %s → %s\n", CLIName(), from, target)
+		fmt.Printf("%s upgrade --check (dry run): %s → %s\n", Name(), from, target)
 	} else {
-		fmt.Printf("%s upgrade: %s → %s\n", CLIName(), from, target)
+		fmt.Printf("%s upgrade: %s → %s\n", Name(), from, target)
 	}
 	fmt.Println()
 
@@ -130,7 +130,7 @@ func runUpgrade(check, force bool, toVersion string) error {
 		fmt.Println("📚 Per-version migration skills relevant to this upgrade:")
 		for _, s := range skills {
 			fmt.Printf("    - %s\n      %s\n      Load with: %s skill load %s\n",
-				s.Path, s.Description, CLIName(), s.Path)
+				s.Path, s.Description, Name(), s.Path)
 		}
 		fmt.Println()
 		fmt.Println("    The deterministic steps (regen, build) run automatically below.")
@@ -175,26 +175,26 @@ func runUpgrade(check, force bool, toVersion string) error {
 		switch r.Status {
 		case generator.UpgradeUpToDate:
 			upToDate++
-			fmt.Fprintf(os.Stdout, "  %-35s up to date\n", r.Path)
+			_, _ = fmt.Fprintf(os.Stdout, "  %-35s up to date\n", r.Path)
 		case generator.UpgradeUpdated:
 			updated++
 			if check {
-				fmt.Fprintf(os.Stdout, "  %-35s would update\n", r.Path)
+				_, _ = fmt.Fprintf(os.Stdout, "  %-35s would update\n", r.Path)
 			} else {
-				fmt.Fprintf(os.Stdout, "  %-35s updated\n", r.Path)
+				_, _ = fmt.Fprintf(os.Stdout, "  %-35s updated\n", r.Path)
 			}
 		case generator.UpgradeUserModified:
 			userModified++
-			fmt.Fprintf(os.Stdout, "  %-35s user-modified (skipped)\n", r.Path)
+			_, _ = fmt.Fprintf(os.Stdout, "  %-35s user-modified (skipped)\n", r.Path)
 			if r.Diff != "" {
 				// Indent the diff for readability
 				for _, line := range splitLines(r.Diff) {
-					fmt.Fprintf(os.Stdout, "    %s\n", line)
+					_, _ = fmt.Fprintf(os.Stdout, "    %s\n", line)
 				}
 			}
 		case generator.UpgradeSkipped:
 			skipped++
-			fmt.Fprintf(os.Stdout, "  %-35s skipped\n", r.Path)
+			_, _ = fmt.Fprintf(os.Stdout, "  %-35s skipped\n", r.Path)
 		}
 	}
 
@@ -286,11 +286,11 @@ func isPreV01Baseline(v string) bool {
 // the input string — the caller's error message is still informative
 // even with the fallback. Used by the minor-hop guard's error message.
 func nextMinor(v string) string {
-	maj, min, ok := splitMinor(v)
+	maj, minor, ok := splitMinor(v)
 	if !ok {
 		return v
 	}
-	return fmt.Sprintf("%d.%d", maj, min+1)
+	return fmt.Sprintf("%d.%d", maj, minor+1)
 }
 
 // migrationSkillRef holds the metadata for a migration skill that's

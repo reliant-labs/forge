@@ -85,7 +85,7 @@ func CheckPprof(ctx context.Context, env *Environment) CheckResult {
 // httpGetBody performs a GET request and returns the response body as a string.
 // It returns an error if the status code is not 200.
 func httpGetBody(ctx context.Context, client *http.Client, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", err
 	}
@@ -94,7 +94,7 @@ func httpGetBody(ctx context.Context, client *http.Client, url string) (string, 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {

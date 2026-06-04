@@ -28,8 +28,8 @@ func TestLintWorkaroundsRoot_Firing(t *testing.T) {
 		t.Fatalf("LintWorkaroundsRoot returned error: %v", err)
 	}
 	wantRules := map[string]bool{
-		"workaround-wire-cast-helper":   false,
-		"workaround-testing-extras":     false,
+		"workaround-wire-cast-helper":    false,
+		"workaround-testing-extras":      false,
 		"workaround-cmd-not-in-binaries": false,
 	}
 	for _, f := range res.Findings {

@@ -18,6 +18,11 @@ import (
 // non-letter (flags like -t, paths like handlers/..., quoted strings, comments
 // starting with #, positional placeholders like <name>) terminates the match.
 //
+// `forge` must NOT be preceded by an identifier char or `-`, so names like
+// "cp-forge" in example output (e.g. namespace tables) don't get parsed as a
+// `forge` invocation. We can't use \b here — \b matches between `-` and `f`,
+// causing "cp-forge cp-forge-dev" to be read as "forge cp-forge-dev".
+//
 // Examples of what this matches:
 //
 //	"forge generate"              -> ["generate"]
@@ -25,7 +30,7 @@ import (
 //	"forge debug break file:42"   -> ["debug", "break"]
 //	"forge run --debug"           -> ["run"]
 //	"forge package new <name>"    -> ["package", "new"]
-var forgeCommandRE = regexp.MustCompile(`\bforge\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2})`)
+var forgeCommandRE = regexp.MustCompile(`(?:^|[^\w-])forge\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,2})`)
 
 // extractFencedBlocks returns the concatenated contents of every fenced code
 // block (``` ... ```) in a markdown document. We only scan for `forge`

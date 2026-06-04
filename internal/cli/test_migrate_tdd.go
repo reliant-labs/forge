@@ -179,9 +179,9 @@ type migrateResult struct {
 
 // rpcRow is a single extracted RPC case row from the hand-rolled slice.
 type rpcRow struct {
-	Name        string // value of the `name:` field, e.g. "GetCurrentUser"
-	Method      string // RPC method name, e.g. "GetCurrentUser"
-	RequestType string // request type name without package prefix, e.g. "GetCurrentUserRequest"
+	Name         string // value of the `name:` field, e.g. "GetCurrentUser"
+	Method       string // RPC method name, e.g. "GetCurrentUser"
+	RequestType  string // request type name without package prefix, e.g. "GetCurrentUserRequest"
 	ResponseType string // response type name, derived from RequestType (Request → Response)
 	PbAlias      string // package alias used for proto types (usually "pb")
 }
@@ -246,16 +246,16 @@ func migrateTDDFile(path string, dryRun bool) (migrateResult, error) {
 // migrationPlan is the extracted shape of a hand-rolled handler test, ready
 // for re-emission as per-RPC `RunRPCCases` functions.
 type migrationPlan struct {
-	OriginFunc        string // name of the source func, e.g. "TestHandlers"
-	IsClientVariant   bool   // true if `call func(client X) error` shape
-	ReceiverVarName   string // "svc" or "client" — the variable feeding the handler
-	ConstructorCall   string // verbatim "app.NewTestUser(t)" / "_, client := app.NewTestUserServer(t)"
-	ConstructorIsTwo  bool   // ConstructorCall has the (_, client) := tuple form
-	Rows              []rpcRow
-	PbImportPath      string // import path under pb alias, e.g. ".../gen/services/user/v1"
-	PbAlias           string // alias used (typically "pb")
-	BuildTagComment   string // verbatim build tag comment block (for integration)
-	OriginFuncDecl    *ast.FuncDecl
+	OriginFunc       string // name of the source func, e.g. "TestHandlers"
+	IsClientVariant  bool   // true if `call func(client X) error` shape
+	ReceiverVarName  string // "svc" or "client" — the variable feeding the handler
+	ConstructorCall  string // verbatim "app.NewTestUser(t)" / "_, client := app.NewTestUserServer(t)"
+	ConstructorIsTwo bool   // ConstructorCall has the (_, client) := tuple form
+	Rows             []rpcRow
+	PbImportPath     string // import path under pb alias, e.g. ".../gen/services/user/v1"
+	PbAlias          string // alias used (typically "pb")
+	BuildTagComment  string // verbatim build tag comment block (for integration)
+	OriginFuncDecl   *ast.FuncDecl
 }
 
 func planMigration(file *ast.File) (migrationPlan, error) {
@@ -512,8 +512,8 @@ func extractRow(elt ast.Expr, plan *migrationPlan, isClient bool) (rpcRow, error
 	}
 
 	var (
-		name    string
-		callFn  *ast.FuncLit
+		name   string
+		callFn *ast.FuncLit
 	)
 	for _, kv := range rowLit.Elts {
 		kvExpr, ok := kv.(*ast.KeyValueExpr)
@@ -687,8 +687,8 @@ func renderMigratedFile(_ *ast.File, src []byte, plan migrationPlan) ([]byte, er
 	}
 
 	var (
-		startPos token.Pos = plan.OriginFuncDecl.Pos()
-		endPos   token.Pos = plan.OriginFuncDecl.End()
+		startPos = plan.OriginFuncDecl.Pos()
+		endPos   = plan.OriginFuncDecl.End()
 	)
 	// Pull in the leading doc comment if present.
 	for _, cg := range reparsed.Comments {

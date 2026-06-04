@@ -570,10 +570,17 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 		return nil
 	}
 
-	// Run the generation pipeline to update bootstrap.go and cmd-server.go
-	fmt.Println("\n🔧 Running generation pipeline...")
+	// Run the generation pipeline, narrowed to the bootstrap-only scope,
+	// so adding a worker regenerates pkg/app/{bootstrap,testing,migrate}.go
+	// and nothing else. The full pipeline would also rewrite every Tier-1
+	// file in its catalog (.github/workflows/ci.yml, cmd/server.go,
+	// frontend mocks, pkg/config/config.go) — friction reported by the
+	// cp-forge port-workers round where `forge add worker` × 7 rewrote 5
+	// unrelated Tier-1 files per invocation. The scoped step set lives in
+	// scopedStepAllowlist["bootstrap-only"] (generate_pipeline.go).
+	fmt.Println("\n🔧 Running generation pipeline (bootstrap-only scope)...")
 	generateMu.Lock()
-	err = runGeneratePipeline(root, false, false)
+	err = runGeneratePipelineFlags(root, pipelineFlags{Scope: "bootstrap-only"})
 	generateMu.Unlock()
 	if err != nil {
 		// Non-fatal: the worker files were created successfully, but the

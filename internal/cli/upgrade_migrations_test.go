@@ -102,6 +102,11 @@ func TestVersionInRange(t *testing.T) {
 		// "0.0.0" sentinel (EffectiveForgeVersion fallback) treated
 		// like empty for the same reason.
 		{"0.0.0 sentinel", "0.0.0", "v0.5.0", "v0.6.0", true},
+		// Pseudoversion from `go install` against an untagged checkout
+		// — real-world projects like cp-forge are pinned to one of
+		// these. Must surface every migration, not silently filter
+		// them out as "newer than the range".
+		{"go install pseudoversion", "v0.0.0-20260530233501-ec0254f463b3+dirty", "v0.5.0", "v0.6.0", true},
 		{"in range", "v0.5.0", "v0.5.0", "v0.6.0", true},
 		{"in range mid", "v0.5.3", "v0.5.0", "v0.6.0", true},
 		{"below range", "v0.4.9", "v0.5.0", "v0.6.0", false},

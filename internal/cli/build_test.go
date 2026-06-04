@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -183,6 +184,7 @@ func TestBuildAllFlagsRegistered(t *testing.T) {
 		{"parallel", "true"},
 		{"docker", "false"},
 		{"debug", "false"},
+		{"target-arch", ""},
 	}
 
 	for _, tt := range expected {
@@ -194,5 +196,85 @@ func TestBuildAllFlagsRegistered(t *testing.T) {
 		if f.DefValue != tt.defValue {
 			t.Errorf("flag --%s default = %q, want %q", tt.name, f.DefValue, tt.defValue)
 		}
+	}
+}
+
+// TestResolveBuildArch covers the three branches of the resolveBuildArch
+// helper: host matches target → empty (no cross-compile), host differs
+// from target → resolved arch, explicit flag overrides the cfg default.
+//
+// We use runtime.GOARCH for the "host matches" cases so the test is
+// portable across CI archs (both arm64 macOS and amd64 Linux runners).
+// We use a guaranteed-mismatch string ("xyz") for the "host differs"
+// cases — any non-matching arch token triggers the cross-compile branch.
+func TestResolveBuildArch(t *testing.T) {
+	otherArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		otherArch = "arm64"
+	}
+
+	cases := []struct {
+		name      string
+		cfgArch   string
+		flagArch  string
+		dockerCtx bool
+		want      string
+	}{
+		{
+			name:      "plain go build, no target → host arch (empty)",
+			cfgArch:   "",
+			flagArch:  "",
+			dockerCtx: false,
+			want:      "",
+		},
+		{
+			name:      "docker build, no target → amd64 default",
+			cfgArch:   "",
+			flagArch:  "",
+			dockerCtx: true,
+			want: func() string {
+				if runtime.GOARCH == "amd64" {
+					return ""
+				}
+				return "amd64"
+			}(),
+		},
+		{
+			name:      "docker build with cfg arch differs from host → cross-compile",
+			cfgArch:   otherArch,
+			flagArch:  "",
+			dockerCtx: true,
+			want:      otherArch,
+		},
+		{
+			name:      "host matches cfg target → empty",
+			cfgArch:   runtime.GOARCH,
+			flagArch:  "",
+			dockerCtx: true,
+			want:      "",
+		},
+		{
+			name:      "explicit flag overrides cfg",
+			cfgArch:   runtime.GOARCH, // would otherwise match host → empty
+			flagArch:  otherArch,
+			dockerCtx: false,
+			want:      otherArch,
+		},
+		{
+			name:      "flag matching host returns empty (no-op cross-compile)",
+			cfgArch:   "",
+			flagArch:  runtime.GOARCH,
+			dockerCtx: false,
+			want:      "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveBuildArch(c.cfgArch, c.flagArch, c.dockerCtx)
+			if got != c.want {
+				t.Errorf("resolveBuildArch(cfg=%q, flag=%q, docker=%v) = %q, want %q",
+					c.cfgArch, c.flagArch, c.dockerCtx, got, c.want)
+			}
+		})
 	}
 }

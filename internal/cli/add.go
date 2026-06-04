@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -894,7 +895,7 @@ Example:
   forge add frontend admin --kind vite-spa`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddFrontend(args[0], port, kind)
+			return runAddFrontend(cmd.Context(), args[0], port, kind)
 		},
 	}
 
@@ -921,7 +922,7 @@ func validateFrontendName(name string) error {
 	return nil
 }
 
-func runAddFrontend(name string, port int, kind string) error {
+func runAddFrontend(ctx context.Context, name string, port int, kind string) error {
 	if err := validateFrontendName(name); err != nil {
 		return fmt.Errorf("invalid frontend name: %w", err)
 	}
@@ -1051,7 +1052,7 @@ func runAddFrontend(name string, port int, kind string) error {
 	// if `npm` isn't on PATH, the scaffold is still on disk and we just
 	// nudge the user to install dependencies themselves.
 	frontendDir := filepath.Join(root, "frontends", name)
-	if err := runFrontendNpmInstall(frontendDir); err != nil {
+	if err := runFrontendNpmInstall(ctx, frontendDir); err != nil {
 		fmt.Printf("\n⚠️  %v\n", err)
 	}
 
@@ -1064,8 +1065,8 @@ func runAddFrontend(name string, port int, kind string) error {
 // frontend directory so the user can immediately run the dev server.
 // A missing `npm` binary is treated as a soft warning — the scaffold
 // itself succeeded and the user can install dependencies later.
-func runFrontendNpmInstall(frontendDir string) error {
-	cmd := exec.Command("npm", "install")
+func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
+	cmd := exec.CommandContext(ctx, "npm", "install")
 	cmd.Dir = frontendDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

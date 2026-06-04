@@ -1,21 +1,26 @@
 """
 Development environment configuration for {{.ProjectName}}.
 
+This file declares typed forge entities (Service / Operator / Frontend
+/ CronJob). The schemas live in the upstream `forge` KCL module pinned
+in `deploy/kcl/kcl.mod`. Run `forge upgrade` to bump the module
+version.
+
+Two outputs:
+
+  * `output` — JSON contract that the forge CLI consumes
+    (`forge build`, `forge run`, `forge deploy`).
+    Select with `kcl run dev -S output --format json`.
+
+  * `manifests` — Kubernetes manifest list rendered for the env.
+    Pipe to `kubectl apply -f -` or `forge deploy dev`.
+
 Top-level identifiers `image_tag` and `registry` are overridable via
 `kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
 flag only binds top-level names, not nested struct fields.
-
-Running multiple services off ONE Docker image? See
-`schema.MultiServiceApplication` + `render.multi_service_apps(...)` in
-`deploy/kcl/schema.k` / `deploy/kcl/render.k`. That shape collapses N
-image builds to 1 by running the shared binary with a different cobra
-subcommand per Deployment. To regenerate this file in that shape, set
-`binary: shared` in forge.yaml and re-run `forge generate`.
 """
 
-import deploy.kcl.schema
-import deploy.kcl.base
-import deploy.kcl.render
+import forge
 
 # Per-environment config (generated from forge.yaml + proto annotations).
 # Run `forge generate` to refresh after editing forge.yaml or the config
@@ -26,79 +31,50 @@ import deploy.kcl.dev.config_gen as cfg
 _image_tag = option("image_tag") or "latest"
 
 # Overridable via `kcl run -D registry=...`. Local dev defaults to the k3d
-# _registry created by `deploy/k3d.yaml`.
+# registry created by `deploy/k3d.yaml`.
 _registry = option("registry") or "localhost:5050"
 
-_env = schema.Environment {
-    name = "dev"
+_bundle = forge.Bundle {
+    services = [
+        forge.Service {
+            name = "{{.ProjectName}}"
+            image = "{{.ProjectName}}"
+            env_vars = forge.COMMON_ENV + cfg.APP_ENV + [
+                forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
+                forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{.ProjectName}}"}
+            ]
+            deploy = forge.K8sDeploy {
+                replicas = 1
+                ports = [8080]
+            }
+        }
+        # Binaries declared via `forge add binary <name>`. Each runs the
+        # same image with a different cobra subcommand. They project as
+        # BuildOnly services because forge handles their orchestration
+        # via the CLI, not k8s manifests.
+{{- range .Binaries}}
+        forge.Service {
+            name = "{{$.ProjectName}}-{{.Name}}"
+            image = "{{$.ProjectName}}"
+            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
+            env_vars = forge.COMMON_ENV + cfg.APP_ENV + [
+                forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
+            ]
+            deploy = forge.BuildOnly {}
+        }
+{{- end}}
+    ]
+    config_maps = cfg.CONFIG_MAPS
+}
+
+# JSON contract consumed by forge build/run/deploy.
+output = forge.render(_bundle)
+
+# k8s manifests for `kubectl apply -f -`.
+_env = forge.RenderEnv {
     namespace = "{{.ProjectName}}-dev"
     image_registry = _registry
     image_tag = _image_tag
     network_policies = False
-    # Generated ConfigMap(s) carrying non-sensitive per-env config.
-    # Sensitive fields project to externally-managed Secrets via
-    # `secret_ref` and are intentionally NOT generated here.
-    config_maps = cfg.CONFIG_MAPS
-    applications = {
-        "{{.ProjectName}}" = schema.Application {
-            name = "{{.ProjectName}}"
-            image = "{{.ProjectName}}"
-            replicas = 1
-            ports = [
-                schema.ServicePort {
-                    name = "http"
-                    port = 80
-                    target_port = 8080
-                }
-            ]
-            resources = schema.Resources {
-                cpu_request = "100m"
-                memory_request = "128Mi"
-                cpu_limit = "500m"
-                memory_limit = "256Mi"
-            }
-            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
-                schema.EnvVar {
-                    name = "SERVICE_NAME"
-                    value = "{{.ProjectName}}"
-                }
-                schema.EnvVar {
-                    name = "OTEL_SERVICE_NAME"
-                    value = "{{.ProjectName}}"
-                }
-            ]
-            health_check = schema.HealthCheck {
-                liveness_path = "/healthz"
-                readiness_path = "/readyz"
-                http_port = 8080
-            }
-        }
-        # Binaries declared via `forge add binary <name>`. Each runs the
-        # same image with a different cobra subcommand. No Service /
-        # Ingress is emitted — binaries are off-RPC processes; if your
-        # binary needs to expose a port (proxy / sidecar), hand-edit
-        # this entry to add `ports:` after running `forge generate`.
-{{- range .Binaries}}
-        "{{$.ProjectName}}-{{.Name}}" = schema.Application {
-            name = "{{$.ProjectName}}-{{.Name}}"
-            image = "{{$.ProjectName}}"
-            replicas = 1
-            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
-            resources = schema.Resources {
-                cpu_request = "100m"
-                memory_request = "128Mi"
-                cpu_limit = "500m"
-                memory_limit = "256Mi"
-            }
-            env_vars = base.COMMON_ENV + cfg.APP_ENV + [
-                schema.EnvVar {
-                    name = "OTEL_SERVICE_NAME"
-                    value = "{{$.ProjectName}}-{{.Name}}"
-                }
-            ]
-        }
-{{- end}}
-    }
 }
-
-manifests = render.render_environment(_env)
+manifests = forge.render_manifests(_bundle, _env)

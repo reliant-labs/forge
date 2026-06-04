@@ -12,7 +12,11 @@ import (
 func (g *ProjectGenerator) generateKCLDeploy() error {
 	deployDir := filepath.Join(g.Path, "deploy", "kcl")
 
-	// Generate kcl.mod at project root so KCL imports like deploy.kcl.schema resolve.
+	// Generate kcl.mod at project root so KCL imports like
+	// `deploy.kcl.dev.config_gen` resolve. The kcl.mod also declares
+	// the `forge` module dependency that the per-env main.k files
+	// import — the schemas live upstream in `forge/kcl/`, not in
+	// the project's tree.
 	kclModData := struct {
 		ProjectName string
 	}{
@@ -26,29 +30,10 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		return fmt.Errorf("write kcl.mod: %w", err)
 	}
 
-	// Static files (no templating needed)
-	staticFiles := []struct {
-		templateName string
-		dest         string
-	}{
-		{"kcl/schema.k", "schema.k"},
-		{"kcl/render.k", "render.k"},
-		{"kcl/base.k", "base.k"},
-	}
-
-	for _, f := range staticFiles {
-		content, err := templates.DeployTemplates().Get(f.templateName)
-		if err != nil {
-			return fmt.Errorf("read deploy template %s: %w", f.templateName, err)
-		}
-		destPath := filepath.Join(deployDir, f.dest)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(destPath, content, 0644); err != nil {
-			return fmt.Errorf("write %s: %w", f.dest, err)
-		}
-	}
+	// The legacy in-tree `deploy/kcl/schema.k` + `base.k` + `render.k`
+	// files were retired in favor of the upstream `forge` KCL module.
+	// Projects now `import forge` from each env's main.k. See the
+	// `kcl-schemas-to-module` migration SKILL.md for the upgrade path.
 
 	// Templated per-env files. binary=shared projects emit a parallel
 	// set of templates that produce a single MultiServiceApplication

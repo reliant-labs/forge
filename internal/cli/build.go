@@ -46,15 +46,13 @@ type buildOptions struct {
 	// resolveBuildArch.
 	targetArch string
 	// env, when set, scopes the build to a specific deploy environment.
-	// Today its only effect is the dev-mode host-target filter: when
-	// env=="dev", services with `dev_target: host` are EXCLUDED from
-	// the build summary (since they run as host processes in the dev
-	// loop and don't belong in the dev image's runtime service set).
-	// The Go binary itself still compiles every service — the host/
-	// cluster split is a runtime placement decision, not a code one.
-	// Empty (the default) means "build everything", preserving the
-	// pre-dev_target behaviour so CI builds for staging/prod aren't
-	// affected.
+	// Reads `deploy/kcl/<env>/` to determine which services run as host
+	// processes (deploy: "host" in the rendered KCL) and excludes them
+	// from the docker build/push. The Go binary itself still compiles
+	// every service — the host/cluster split is a runtime placement
+	// decision, not a code one. Empty (the default) means "build
+	// everything", preserving the pre-orchestration behaviour so CI
+	// builds for staging/prod aren't affected.
 	env string
 }
 
@@ -103,7 +101,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().StringVar(&opts.pushRegistry, "push", "", "Push docker images to this registry after build (implies --docker)")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
-	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set to dev, services with dev_target: host are excluded from the dev-image service set (informational; the Go binary still includes their code).")
+	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 
 	return cmd
 }
@@ -162,15 +160,10 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if opts.env != "" {
 		fmt.Printf("[build]   Env:      %s\n", opts.env)
 	}
-	// Dev-mode informational notice: when --env=dev, services with
-	// dev_target: host are placed on the host, not the cluster, so they
-	// should NOT appear in the dev image's runtime service set. The Go
-	// binary still ships their code (single-binary architecture) — the
-	// notice exists so users see, in one line, which services they'll
-	// be running locally via `forge run <svc>`.
-	if hostSvcs := hostDevTargetServices(cfg); opts.env == "dev" && len(hostSvcs) > 0 {
-		fmt.Printf("[build]   Host-mode services (dev): %s — run via `forge run <name>`\n", strings.Join(hostSvcs, ", "))
-	}
+	// Per-env host-mode notice is re-implemented in the KCL-orchestration
+	// batch (deliverable 3): when --env is set, the build reads the
+	// rendered KCL for services declared deploy: "host" and skips the
+	// docker build/push for them. Hooked up in a follow-up commit.
 	fmt.Println()
 
 	// Create output directory
@@ -746,20 +739,3 @@ func filterFrontends(frontends []config.FrontendConfig, target string) []config.
 	return nil
 }
 
-// hostDevTargetServices returns the names of services marked
-// `dev_target: host` in forge.yaml, in declared order. Used by
-// `forge build --env dev` and `forge deploy dev` to communicate which
-// services bypass the cluster in the dev loop. Returns nil when no
-// services opt into host mode (the common case for legacy projects).
-func hostDevTargetServices(cfg *config.ProjectConfig) []string {
-	if cfg == nil {
-		return nil
-	}
-	var out []string
-	for _, s := range cfg.Services {
-		if s.IsHostDevTarget() {
-			out = append(out, s.Name)
-		}
-	}
-	return out
-}

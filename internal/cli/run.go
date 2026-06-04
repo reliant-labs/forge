@@ -493,9 +493,9 @@ func stringifyEnvValue(v any) string {
 }
 
 // runHostService executes a single service as a host process — the
-// inner loop for services declared `dev_target: host` in forge.yaml.
-// Mechanically equivalent to `go run ./cmd server <service>` with
-// .env.<env> loaded onto the child environment.
+// inner loop for services declared `deploy = "host"` in the env's
+// rendered KCL. Mechanically equivalent to `go run ./cmd server
+// <service>` with .env.<env> loaded onto the child environment.
 //
 // Foreground mode streams stdout/stderr with a `[<service>]` prefix and
 // blocks until Ctrl-C. Background mode (background=true) detaches the
@@ -516,11 +516,10 @@ func runHostService(ctx context.Context, name, env, envFile string, background b
 		return fmt.Errorf("service name required (usage: forge run <service>)")
 	}
 
-	// Verify the service exists in forge.yaml. We don't enforce
-	// dev_target: host here — `forge run <svc>` against a cluster-mode
-	// service is fine for ad-hoc local runs (e.g. debugging an operator
-	// reconciler against a kubeconfig). The warning makes the unusual
-	// case visible without blocking it.
+	// Verify the service exists in forge.yaml. The KCL `deploy:` field
+	// (when declared) is the source of truth for host vs cluster
+	// placement, but `forge run <svc>` doesn't gate on it — running a
+	// cluster-mode service locally is fine for ad-hoc debugging.
 	var svc *config.ServiceConfig
 	for i := range cfg.Services {
 		if cfg.Services[i].Name == name {
@@ -531,9 +530,6 @@ func runHostService(ctx context.Context, name, env, envFile string, background b
 	if svc == nil {
 		return fmt.Errorf("service %q not found in forge.yaml (declared services: %s)",
 			name, strings.Join(declaredServiceNames(cfg), ", "))
-	}
-	if !svc.IsHostDevTarget() {
-		fmt.Printf("[run] Note: service %q is not marked dev_target: host. Running it locally anyway — set dev_target in forge.yaml to silence this notice.\n", name)
 	}
 
 	if envFile == "" {

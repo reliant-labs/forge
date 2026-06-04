@@ -212,6 +212,67 @@ func TestLibraryFindSimilar(t *testing.T) {
 	}
 }
 
+// TestFormFieldAutoBinding pins the contract that the form/label/input/
+// select primitives all participate in the FormFieldContext shape so a
+// page-author can write `<FormField><Label/><Input/></FormField>` and
+// get a correctly-bound htmlFor/id pair without writing either prop.
+//
+// The check is intentionally string-level on the embedded sources —
+// these .tsx files only ever ship to user projects as text, never
+// compile here — so a regression in the wiring (e.g. removing the
+// `useContext(FormFieldContext)` line from Input) trips this test
+// before users discover the broken auto-binding.
+func TestFormFieldAutoBinding(t *testing.T) {
+	lib := NewLibrary()
+
+	form, err := lib.Get("form")
+	if err != nil {
+		t.Fatalf("get form: %v", err)
+	}
+	if !strings.Contains(form, "FormFieldContext") {
+		t.Error("form.tsx must export FormFieldContext for auto-binding")
+	}
+	if !strings.Contains(form, "React.useId()") {
+		t.Error("form.tsx FormField must mint id via React.useId()")
+	}
+	if !strings.Contains(form, "FormFieldContext.Provider") {
+		t.Error("form.tsx FormField must provide FormFieldContext")
+	}
+
+	label, err := lib.Get("label")
+	if err != nil {
+		t.Fatalf("get label: %v", err)
+	}
+	if !strings.Contains(label, "FormFieldContext") {
+		t.Error("label.tsx must read FormFieldContext for auto-binding")
+	}
+	if !strings.Contains(label, "htmlFor ?? ctx?.id") {
+		t.Error("label.tsx must fall back to ctx?.id when htmlFor is unset")
+	}
+
+	input, err := lib.Get("input")
+	if err != nil {
+		t.Fatalf("get input: %v", err)
+	}
+	if !strings.Contains(input, "FormFieldContext") {
+		t.Error("input.tsx must read FormFieldContext for auto-binding")
+	}
+	if !strings.Contains(input, "id ?? ctx?.id") {
+		t.Error("input.tsx must fall back to ctx?.id when id is unset")
+	}
+
+	sel, err := lib.Get("select")
+	if err != nil {
+		t.Fatalf("get select: %v", err)
+	}
+	if !strings.Contains(sel, "FormFieldContext") {
+		t.Error("select.tsx must read FormFieldContext for auto-binding")
+	}
+	if !strings.Contains(sel, "id ?? ctx?.id") {
+		t.Error("select.tsx must fall back to ctx?.id when id is unset")
+	}
+}
+
 func TestFormatComponentList(t *testing.T) {
 	entries := []Entry{
 		{Name: "test_chart", Category: CategoryCharts, Description: "A test chart", Tags: []string{"chart"}},

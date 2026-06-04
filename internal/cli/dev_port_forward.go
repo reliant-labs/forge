@@ -75,7 +75,11 @@ func runDevPortForward(configPath string) error {
 		return err
 	}
 
-	// Collect services with declared ports + frontends with declared ports.
+	// Collect services with declared ports. Frontends are intentionally
+	// excluded: in dev mode they run as host processes (e.g. Next.js
+	// `npm run dev` with HMR), not as cluster deployments. Trying to
+	// `kubectl port-forward deployment/<frontend>` for them returns
+	// NotFound and breaks the entire port-forward batch.
 	type target struct {
 		name string
 		port int
@@ -84,11 +88,6 @@ func runDevPortForward(configPath string) error {
 	for _, s := range cfg.Services {
 		if s.Port > 0 {
 			targets = append(targets, target{name: s.Name, port: s.Port})
-		}
-	}
-	for _, f := range cfg.Frontends {
-		if f.Port > 0 {
-			targets = append(targets, target{name: f.Name, port: f.Port})
 		}
 	}
 	if len(targets) == 0 {

@@ -99,6 +99,15 @@ type pipelineContext struct {
 	// per-commit port 8050178.
 	SkipValidate bool
 
+	// SkipPreChecks bypasses the pre-codegen Step 0c contract-shape
+	// check (LintInternalContracts). Same motivation as SkipValidate:
+	// during parallel-lane work an unrelated `internal/<other-lane>/
+	// contract.go` violation would otherwise block regen across every
+	// lane. Distinct from SkipValidate — that one gates the FINAL
+	// `go build`; this one gates the PRE-codegen guard. Both are
+	// available so the user can opt-out of either side independently.
+	SkipPreChecks bool
+
 	// Cfg may be nil — that's the directory-scan fallback path.
 	Cfg *config.ProjectConfig
 
@@ -168,6 +177,25 @@ func newPipelineContextWithOpts(projectDir string, force, accept, skipValidate b
 	}, nil
 }
 
+// newPipelineContextWithFlags is the typed-flags variant. New optional
+// pipeline toggles land on the pipelineFlags struct rather than as a new
+// positional argument — keeps the call-site self-documenting and avoids
+// churning every test fixture when a flag is added.
+func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipelineContext, error) {
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
+	}
+	return &pipelineContext{
+		ProjectDir:    projectDir,
+		AbsPath:       abs,
+		Force:         flags.Force,
+		Accept:        flags.Accept,
+		SkipValidate:  flags.SkipValidate,
+		SkipPreChecks: flags.SkipPreChecks,
+	}, nil
+}
+
 // generateSteps returns the ordered step plan. The slice is the
 // authoritative ordering — comments alongside each entry replace the
 // pre-refactor "Step Nx" numbering. Reorder cautiously; the
@@ -185,7 +213,7 @@ func generateSteps() []GenStep {
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
-		{Name: "pre-codegen contract check", Gate: always, Run: stepPreCodegenContractCheck, Tag: "validate"},
+		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, Run: stepPreCodegenContractCheck, Tag: "validate"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
 		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, Run: stepBufGenerateGo, Tag: "proto"},
@@ -244,6 +272,14 @@ func always(_ *pipelineContext) bool { return true }
 // doc on pipelineContext for the per-lane-migration rationale.
 func gateValidateNotSkipped(ctx *pipelineContext) bool {
 	return !ctx.SkipValidate
+}
+
+// gatePreChecksNotSkipped suppresses the pre-codegen Step 0c contract-
+// shape check when --skip-pre-checks is set. The caller already prints a
+// warn line about the bypass in runGeneratePipelineFlags so users see
+// the skip in their generate output.
+func gatePreChecksNotSkipped(ctx *pipelineContext) bool {
+	return !ctx.SkipPreChecks
 }
 
 // Gate helpers. Pure predicates over ctx — no I/O. Tests assert these

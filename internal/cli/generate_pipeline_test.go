@@ -202,6 +202,20 @@ func TestGateValidateNotSkipped(t *testing.T) {
 	}
 }
 
+// TestGatePreChecksNotSkipped mirrors TestGateValidateNotSkipped for
+// the --skip-pre-checks counterpart. Default is OFF (the gate is ON,
+// the check runs) until the user passes --skip-pre-checks.
+func TestGatePreChecksNotSkipped(t *testing.T) {
+	on := &pipelineContext{SkipPreChecks: false}
+	if !gatePreChecksNotSkipped(on) {
+		t.Error("gatePreChecksNotSkipped(SkipPreChecks=false) = false, want true (default-on)")
+	}
+	off := &pipelineContext{SkipPreChecks: true}
+	if gatePreChecksNotSkipped(off) {
+		t.Error("gatePreChecksNotSkipped(SkipPreChecks=true) = true, want false (--skip-pre-checks honored)")
+	}
+}
+
 // stepNames extracts the ordered names from a step slice. Helper for
 // the determinism test.
 func stepNames(steps []GenStep) []string {

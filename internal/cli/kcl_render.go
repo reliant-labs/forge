@@ -13,9 +13,9 @@ import (
 
 // KCLEntities is the typed, dispatched view of the JSON the sibling
 // KCL deploy module emits. The typed schema module exports the
-// polymorphic `deploy: HostDeploy | K8sCluster | VMDocker | Compose |
+// polymorphic `deploy: HostDeploy | K8sCluster | External | Compose |
 // BuildOnly` union per service; the JSON discriminator is
-// `deploy.type ∈ {"host","cluster","vm-docker","compose","build-only"}`
+// `deploy.type ∈ {"host","cluster","external","compose","build-only"}`
 // (services only — operators/cronjobs are always cluster-shaped).
 //
 // Callers (`forge build --env`, `forge deploy <env>`, `forge up --env`,
@@ -42,33 +42,31 @@ type ServiceEntity struct {
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
 // deploy block. The raw JSON shape is a tagged union — Type carries
-// the tag; exactly one of Host/Cluster/VMDocker/Compose/BuildOnly is
+// the tag; exactly one of Host/Cluster/External/Compose/BuildOnly is
 // non-nil after [dispatchServiceDeploy] runs.
 type DeployConfigEntity struct {
-	Type      string           // "host" | "cluster" | "vm-docker" | "compose" | "build-only"
+	Type      string           // "host" | "cluster" | "external" | "compose" | "build-only"
 	Host      *HostDeploy      // populated when Type=="host"
 	Cluster   *K8sCluster      // populated when Type=="cluster"
-	VMDocker  *VMDockerDeploy  // populated when Type=="vm-docker"
+	External  *ExternalDeploy  // populated when Type=="external"
 	Compose   *ComposeDeploy   // populated when Type=="compose"
 	BuildOnly *BuildOnlyDeploy // populated when Type=="build-only"
 }
 
-// VMDockerDeploy is the deploy block for a Docker-on-VM service. The
-// Go-side dispatch ships as a stub in this release; the type and
-// dispatch wiring exist so the migration skill can point at a real
-// type and so future implementations slot in cleanly.
-type VMDockerDeploy struct {
-	SSHHost     string `json:"ssh_host,omitempty"`
-	Image       string `json:"image,omitempty"`
-	Tag         string `json:"tag,omitempty"`
-	DeployCmd   string `json:"deploy_cmd,omitempty"`
-	RollbackCmd string `json:"rollback_cmd,omitempty"`
-	HealthCmd   string `json:"health_cmd,omitempty"`
-	EnvFile     string `json:"env_file,omitempty"`
+// ExternalDeploy is the deploy block for a generic shell-command
+// deploy target — Fly.io / Cloudflare Workers / Cloud Run / ECS /
+// Vercel / etc. The forge-side ExternalProvider exec's DeployCmd via
+// `sh -c` after substituting ${IMAGE}/${TAG}/${SERVICE}/etc. and runs
+// HealthCmd / RollbackCmd through the same path.
+type ExternalDeploy struct {
+	DeployCmd   string            `json:"deploy_cmd,omitempty"`
+	RollbackCmd string            `json:"rollback_cmd,omitempty"`
+	HealthCmd   string            `json:"health_cmd,omitempty"`
+	EnvFile     string            `json:"env_file,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 }
 
-// ComposeDeploy is the deploy block for a docker-compose service. The
-// Go-side dispatch ships as a stub in this release.
+// ComposeDeploy is the deploy block for a docker-compose service.
 type ComposeDeploy struct {
 	ComposeFile string `json:"compose_file,omitempty"`
 	Service     string `json:"service,omitempty"`
@@ -337,12 +335,12 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 			return DeployConfigEntity{}, fmt.Errorf("service %q: parse cluster deploy: %w", svcName, err)
 		}
 		return DeployConfigEntity{Type: "cluster", Cluster: &c}, nil
-	case "vm-docker":
-		var v VMDockerDeploy
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return DeployConfigEntity{}, fmt.Errorf("service %q: parse vm-docker deploy: %w", svcName, err)
+	case "external":
+		var e ExternalDeploy
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return DeployConfigEntity{}, fmt.Errorf("service %q: parse external deploy: %w", svcName, err)
 		}
-		return DeployConfigEntity{Type: "vm-docker", VMDocker: &v}, nil
+		return DeployConfigEntity{Type: "external", External: &e}, nil
 	case "compose":
 		var c ComposeDeploy
 		if err := json.Unmarshal(raw, &c); err != nil {
@@ -356,9 +354,9 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 		}
 		return DeployConfigEntity{Type: "build-only", BuildOnly: &b}, nil
 	case "":
-		return DeployConfigEntity{}, fmt.Errorf("service %q: deploy.type missing (expected host/cluster/vm-docker/compose/build-only)", svcName)
+		return DeployConfigEntity{}, fmt.Errorf("service %q: deploy.type missing (expected host/cluster/external/compose/build-only)", svcName)
 	default:
-		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/vm-docker/compose/build-only)", svcName, probe.Type)
+		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/external/compose/build-only)", svcName, probe.Type)
 	}
 }
 

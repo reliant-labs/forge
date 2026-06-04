@@ -18,7 +18,7 @@ import (
 // user-supplied --namespace or the auto-computed `<project>-<env>`
 // shape.
 //
-// vm-docker and compose services flow through GroupServices unchanged.
+// external and compose services flow through GroupServices unchanged.
 // host / build-only / no-deploy services are skipped.
 func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace string) ([]deploytarget.ServiceGroup, error) {
 	if entities == nil {
@@ -51,21 +51,24 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 					},
 				},
 			})
-		case "vm-docker":
-			v := svc.Deploy.VMDocker
-			if v == nil {
+		case "external":
+			e := svc.Deploy.External
+			if e == nil {
 				continue
 			}
 			raw = append(raw, deploytarget.RawService{
 				Name: svc.Name,
-				VMDocker: &deploytarget.VMDockerSpec{
-					SSHHost:     v.SSHHost,
-					Image:       v.Image,
-					Tag:         v.Tag,
-					DeployCmd:   v.DeployCmd,
-					RollbackCmd: v.RollbackCmd,
-					HealthCmd:   v.HealthCmd,
-					EnvFile:     v.EnvFile,
+				External: &deploytarget.ExternalSpec{
+					// Image is hoisted from the surrounding Service.image
+					// so the ${IMAGE} substitution token resolves without
+					// forcing the user to duplicate the string on the
+					// deploy block.
+					Image:       svc.Image,
+					DeployCmd:   e.DeployCmd,
+					RollbackCmd: e.RollbackCmd,
+					HealthCmd:   e.HealthCmd,
+					EnvFile:     e.EnvFile,
+					Env:         e.Env,
 				},
 			})
 		case "compose":

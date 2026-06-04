@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -21,13 +22,13 @@ type Table struct {
 
 // Column represents a database column.
 type Column struct {
-	Name      string  `json:"name"`
-	Type      string  `json:"type"`
-	Nullable  bool    `json:"nullable"`
-	Default   string  `json:"default,omitempty"`
-	IsPrimary bool    `json:"is_primary"`
-	MaxLength *int    `json:"max_length,omitempty"`
-	UDTName   string  `json:"udt_name,omitempty"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Nullable  bool   `json:"nullable"`
+	Default   string `json:"default,omitempty"`
+	IsPrimary bool   `json:"is_primary"`
+	MaxLength *int   `json:"max_length,omitempty"`
+	UDTName   string `json:"udt_name,omitempty"`
 }
 
 // Index represents a database index.
@@ -46,13 +47,13 @@ type ForeignKey struct {
 }
 
 // ConnectDB opens a database connection using the pgx driver.
-func ConnectDB(dsn string) (*sql.DB, error) {
+func ConnectDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 	return db, nil
@@ -60,15 +61,15 @@ func ConnectDB(dsn string) (*sql.DB, error) {
 
 // IntrospectSchema connects to the database and returns the full schema.
 // If tableFilter is non-empty, only that table is returned.
-func IntrospectSchema(db *sql.DB, tableFilter string) ([]Table, error) {
-	tables, err := listTables(db, tableFilter)
+func IntrospectSchema(ctx context.Context, db *sql.DB, tableFilter string) ([]Table, error) {
+	tables, err := listTables(ctx, db, tableFilter)
 	if err != nil {
 		return nil, fmt.Errorf("listing tables: %w", err)
 	}
 
 	var result []Table
 	for _, tableName := range tables {
-		t, err := IntrospectTable(db, tableName)
+		t, err := IntrospectTable(ctx, db, tableName)
 		if err != nil {
 			return nil, fmt.Errorf("introspecting table %s: %w", tableName, err)
 		}
@@ -78,13 +79,13 @@ func IntrospectSchema(db *sql.DB, tableFilter string) ([]Table, error) {
 }
 
 // IntrospectTable returns full metadata for a single table.
-func IntrospectTable(db *sql.DB, tableName string) (*Table, error) {
+func IntrospectTable(ctx context.Context, db *sql.DB, tableName string) (*Table, error) {
 	t := &Table{
 		Name:   tableName,
 		Schema: "public",
 	}
 
-	columns, err := getColumns(db, tableName)
+	columns, err := getColumns(ctx, db, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("getting columns: %w", err)
 	}
@@ -97,13 +98,13 @@ func IntrospectTable(db *sql.DB, tableName string) (*Table, error) {
 		}
 	}
 
-	indexes, err := getIndexes(db, tableName)
+	indexes, err := getIndexes(ctx, db, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("getting indexes: %w", err)
 	}
 	t.Indexes = indexes
 
-	fks, err := getForeignKeys(db, tableName)
+	fks, err := getForeignKeys(ctx, db, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("getting foreign keys: %w", err)
 	}
@@ -112,7 +113,7 @@ func IntrospectTable(db *sql.DB, tableName string) (*Table, error) {
 	return t, nil
 }
 
-func listTables(db *sql.DB, filter string) ([]string, error) {
+func listTables(ctx context.Context, db *sql.DB, filter string) ([]string, error) {
 	query := `
 		SELECT table_name
 		FROM information_schema.tables
@@ -126,11 +127,11 @@ func listTables(db *sql.DB, filter string) ([]string, error) {
 	}
 	query += " ORDER BY table_name"
 
-	rows, err := db.Query(query, args...)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tables []string
 	for rows.Next() {
@@ -143,7 +144,7 @@ func listTables(db *sql.DB, filter string) ([]string, error) {
 	return tables, rows.Err()
 }
 
-func getColumns(db *sql.DB, tableName string) ([]Column, error) {
+func getColumns(ctx context.Context, db *sql.DB, tableName string) ([]Column, error) {
 	query := `
 		SELECT
 			c.column_name,
@@ -169,11 +170,11 @@ func getColumns(db *sql.DB, tableName string) ([]Column, error) {
 		ORDER BY c.ordinal_position
 	`
 
-	rows, err := db.Query(query, tableName)
+	rows, err := db.QueryContext(ctx, query, tableName)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var columns []Column
 	for rows.Next() {
@@ -208,7 +209,7 @@ func getColumns(db *sql.DB, tableName string) ([]Column, error) {
 	return columns, rows.Err()
 }
 
-func getIndexes(db *sql.DB, tableName string) ([]Index, error) {
+func getIndexes(ctx context.Context, db *sql.DB, tableName string) ([]Index, error) {
 	query := `
 		SELECT
 			i.relname AS index_name,
@@ -227,11 +228,11 @@ func getIndexes(db *sql.DB, tableName string) ([]Index, error) {
 		ORDER BY i.relname
 	`
 
-	rows, err := db.Query(query, tableName)
+	rows, err := db.QueryContext(ctx, query, tableName)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var indexes []Index
 	for rows.Next() {
@@ -252,7 +253,7 @@ func getIndexes(db *sql.DB, tableName string) ([]Index, error) {
 	return indexes, rows.Err()
 }
 
-func getForeignKeys(db *sql.DB, tableName string) ([]ForeignKey, error) {
+func getForeignKeys(ctx context.Context, db *sql.DB, tableName string) ([]ForeignKey, error) {
 	query := `
 		SELECT
 			tc.constraint_name,
@@ -272,11 +273,11 @@ func getForeignKeys(db *sql.DB, tableName string) ([]ForeignKey, error) {
 		ORDER BY tc.constraint_name
 	`
 
-	rows, err := db.Query(query, tableName)
+	rows, err := db.QueryContext(ctx, query, tableName)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var fks []ForeignKey
 	for rows.Next() {
@@ -297,10 +298,10 @@ func FormatSchemaText(tables []Table) string {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("Table: %s.%s\n", t.Schema, t.Name))
+		fmt.Fprintf(&sb, "Table: %s.%s\n", t.Schema, t.Name)
 
 		if len(t.PrimaryKey) > 0 {
-			sb.WriteString(fmt.Sprintf("Primary Key: %s\n", strings.Join(t.PrimaryKey, ", ")))
+			fmt.Fprintf(&sb, "Primary Key: %s\n", strings.Join(t.PrimaryKey, ", "))
 		}
 
 		sb.WriteString("\nColumns:\n")
@@ -335,12 +336,11 @@ func FormatSchemaText(tables []Table) string {
 				constraints = append(constraints, fmt.Sprintf("DEFAULT %s", c.Default))
 			}
 
-			sb.WriteString(fmt.Sprintf("  %-*s  %-*s  %-8s  %s\n",
+			fmt.Fprintf(&sb, "  %-*s  %-*s  %-8s  %s\n",
 				nameWidth, c.Name,
 				typeWidth, columnTypeDisplay(c),
 				nullable,
-				strings.Join(constraints, ", "),
-			))
+				strings.Join(constraints, ", "))
 		}
 
 		if len(t.Indexes) > 0 {
@@ -350,14 +350,14 @@ func FormatSchemaText(tables []Table) string {
 				if idx.Unique {
 					unique = " UNIQUE"
 				}
-				sb.WriteString(fmt.Sprintf("  %s%s (%s)\n", idx.Name, unique, strings.Join(idx.Columns, ", ")))
+				fmt.Fprintf(&sb, "  %s%s (%s)\n", idx.Name, unique, strings.Join(idx.Columns, ", "))
 			}
 		}
 
 		if len(t.ForeignKeys) > 0 {
 			sb.WriteString("\nForeign Keys:\n")
 			for _, fk := range t.ForeignKeys {
-				sb.WriteString(fmt.Sprintf("  %s: %s -> %s.%s\n", fk.Name, fk.Column, fk.ReferencedTable, fk.ReferencedColumn))
+				fmt.Fprintf(&sb, "  %s: %s -> %s.%s\n", fk.Name, fk.Column, fk.ReferencedTable, fk.ReferencedColumn)
 			}
 		}
 	}

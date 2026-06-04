@@ -104,3 +104,7 @@ tmp/
 #
 # Do not add these to .gitignore. If you need to keep local-only overrides,
 # create a `.mcp.local.json` or similar and ignore that instead.
+
+# ── Claude Code runtime artifacts (skill docs under .claude/skills/ stay tracked) ──
+.claude/scheduled_tasks.lock
+.claude/worktrees/

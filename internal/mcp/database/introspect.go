@@ -1,9 +1,11 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // TableInfo represents database table metadata
@@ -42,20 +44,23 @@ func newSchemaIntrospector(db *sql.DB) *schemaIntrospector {
 
 // IntrospectTable gets complete information about a table
 func (si *schemaIntrospector) introspectTable(tableName string) (*TableInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	table := &TableInfo{
 		Name:   tableName,
 		Schema: "public",
 	}
 
 	// Get columns
-	columns, err := si.getColumns(tableName)
+	columns, err := si.getColumns(ctx, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get columns: %w", err)
 	}
 	table.Columns = columns
 
 	// Get indexes
-	indexes, err := si.getIndexes(tableName)
+	indexes, err := si.getIndexes(ctx, tableName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get indexes: %w", err)
 	}
@@ -65,7 +70,7 @@ func (si *schemaIntrospector) introspectTable(tableName string) (*TableInfo, err
 }
 
 // getColumns retrieves column information for a table
-func (si *schemaIntrospector) getColumns(tableName string) ([]*ColumnInfo, error) {
+func (si *schemaIntrospector) getColumns(ctx context.Context, tableName string) ([]*ColumnInfo, error) {
 	query := `
 		SELECT
 			c.column_name,
@@ -87,11 +92,11 @@ func (si *schemaIntrospector) getColumns(tableName string) ([]*ColumnInfo, error
 		ORDER BY c.ordinal_position
 	`
 
-	rows, err := si.db.Query(query, tableName)
+	rows, err := si.db.QueryContext(ctx, query, tableName)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var columns []*ColumnInfo
 	for rows.Next() {
@@ -115,7 +120,7 @@ func (si *schemaIntrospector) getColumns(tableName string) ([]*ColumnInfo, error
 }
 
 // getIndexes retrieves index information for a table
-func (si *schemaIntrospector) getIndexes(tableName string) ([]*IndexInfo, error) {
+func (si *schemaIntrospector) getIndexes(ctx context.Context, tableName string) ([]*IndexInfo, error) {
 	query := `
 		SELECT
 			i.relname as index_name,
@@ -131,11 +136,11 @@ func (si *schemaIntrospector) getIndexes(tableName string) ([]*IndexInfo, error)
 		ORDER BY i.relname
 	`
 
-	rows, err := si.db.Query(query, tableName)
+	rows, err := si.db.QueryContext(ctx, query, tableName)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var indexes []*IndexInfo
 	for rows.Next() {
@@ -160,6 +165,9 @@ func (si *schemaIntrospector) getIndexes(tableName string) ([]*IndexInfo, error)
 
 // ListTables returns all tables in the database
 func (si *schemaIntrospector) listTables() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	query := `
 		SELECT table_name
 		FROM information_schema.tables
@@ -168,11 +176,11 @@ func (si *schemaIntrospector) listTables() ([]string, error) {
 		ORDER BY table_name
 	`
 
-	rows, err := si.db.Query(query)
+	rows, err := si.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var tables []string
 	for rows.Next() {
@@ -186,11 +194,11 @@ func (si *schemaIntrospector) listTables() ([]string, error) {
 	return tables, rows.Err()
 }
 
-// formatTableInfo formats table information as a readable string
+// FormatTableInfo formats table information as a readable string.
 func FormatTableInfo(table *TableInfo) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Table: %s.%s\n", table.Schema, table.Name))
+	fmt.Fprintf(&sb, "Table: %s.%s\n", table.Schema, table.Name)
 	sb.WriteString("\nColumns:\n")
 
 	for _, col := range table.Columns {
@@ -209,8 +217,8 @@ func FormatTableInfo(table *TableInfo) string {
 			defaultVal = fmt.Sprintf(" DEFAULT %s", *col.DefaultValue)
 		}
 
-		sb.WriteString(fmt.Sprintf("  - %s %s%s%s%s\n",
-			col.Name, col.DataType, nullable, defaultVal, pk))
+		fmt.Fprintf(&sb, "  - %s %s%s%s%s\n",
+			col.Name, col.DataType, nullable, defaultVal, pk)
 	}
 
 	if len(table.Indexes) > 0 {
@@ -220,24 +228,10 @@ func FormatTableInfo(table *TableInfo) string {
 			if idx.IsUnique {
 				unique = " UNIQUE"
 			}
-			sb.WriteString(fmt.Sprintf("  - %s%s (%s)\n",
-				idx.Name, unique, strings.Join(idx.Columns, ", ")))
+			fmt.Fprintf(&sb, "  - %s%s (%s)\n",
+				idx.Name, unique, strings.Join(idx.Columns, ", "))
 		}
 	}
 
 	return sb.String()
-}
-
-// CompareWithProto compares database schema with proto definitions
-func (si *schemaIntrospector) compareWithProto(tableName, protoFile string) (string, error) {
-	table, err := si.introspectTable(tableName)
-	if err != nil {
-		return "", err
-	}
-
-	result := FormatTableInfo(table)
-	result += "\n\nProto comparison: Not yet implemented\n"
-	result += "To implement: Parse proto file and compare field definitions with columns\n"
-
-	return result, nil
 }

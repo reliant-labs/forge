@@ -28,16 +28,16 @@ var validPackageKinds = map[string]bool{
 // validPackageTypes lists the supported --type values for `forge add package`.
 //
 //   - service:    default; classic Service/Deps/New(Deps) Service shape that
-//                 codegen wires into bootstrap. The same scaffold used since
-//                 the start of forge.
+//     codegen wires into bootstrap. The same scaffold used since
+//     the start of forge.
 //   - adapter:    outbound boundary translator (third-party API client,
-//                 queue producer, storage gateway). No RPC handlers; expects
-//                 to be wired via Setup() and called by interactors/services.
-//                 See `forge skill load adapter`.
+//     queue producer, storage gateway). No RPC handlers; expects
+//     to be wired via Setup() and called by interactors/services.
+//     See `forge skill load adapter`.
 //   - interactor: use-case orchestrator that composes 2+ adapters/services
-//                 to fulfill a workflow. Deps are interfaces only. Designed
-//                 to be unit-tested with all-mock deps.
-//                 See `forge skill load interactor`.
+//     to fulfill a workflow. Deps are interfaces only. Designed
+//     to be unit-tested with all-mock deps.
+//     See `forge skill load interactor`.
 var validPackageTypes = map[string]bool{
 	"service":    true,
 	"adapter":    true,
@@ -180,7 +180,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Creating internal package '%s'...\n", name)
 
 	// Create directory
-	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		return fmt.Errorf("create package directory: %w", err)
 	}
 
@@ -218,7 +218,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("render %s: %w", tmplFile, err)
 			}
 			outName := strings.TrimSuffix(tmplFile, ".tmpl")
-			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
 				return fmt.Errorf("write %s: %w", outName, err)
 			}
 		}
@@ -237,7 +237,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 
 			// Strip .tmpl suffix for the output filename.
 			outName := strings.TrimSuffix(tmplFile, ".tmpl")
-			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0644); err != nil {
+			if err := os.WriteFile(filepath.Join(pkgDir, outName), content, 0o644); err != nil {
 				return fmt.Errorf("write %s: %w", outName, err)
 			}
 		}
@@ -247,7 +247,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("render contract.go: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0o644); err != nil {
 			return fmt.Errorf("write contract.go: %w", err)
 		}
 
@@ -255,7 +255,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("render service.go: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0o644); err != nil {
 			return fmt.Errorf("write service.go: %w", err)
 		}
 
@@ -267,7 +267,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("render contract_test.go: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0o644); err != nil {
 			return fmt.Errorf("write contract_test.go: %w", err)
 		}
 

@@ -184,7 +184,7 @@ func (s *Starter) Add(opts AddOptions) (*AddResult, error) {
 	if out == nil {
 		out = os.Stdout
 	}
-	logf := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+	logf := func(format string, a ...any) { _, _ = fmt.Fprintf(out, format, a...) }
 
 	data := map[string]any{
 		"ModulePath":  opts.ModulePath,
@@ -249,7 +249,9 @@ func ValidStarterName(name string) bool {
 		return false
 	}
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+		isLower := c >= 'a' && c <= 'z'
+		isDigit := c >= '0' && c <= '9'
+		if !isLower && !isDigit && c != '-' && c != '_' {
 			return false
 		}
 	}

@@ -13,9 +13,10 @@ import (
 	"unicode"
 
 	"github.com/jinzhu/inflection"
-	"github.com/reliant-labs/forge/internal/naming"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 //go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
@@ -380,10 +381,17 @@ type NavPageData struct {
 type FrontendTemplateData struct {
 	FrontendName string
 	ProjectName  string
-	ApiUrl       string
-	ApiPort      string
-	Module       string
-	Pages        []NavPageData
+	// ApiUrl / ApiPort / ApiPackage are exposed to text/template files
+	// under internal/templates/frontend/. Renaming to APIUrl / APIPort /
+	// APIPackage would force a coordinated rename of dozens of .tmpl
+	// files (vite, react-native, nextjs scaffolds) and break any
+	// downstream project that references {{.ApiUrl}} in a customized
+	// template. Keep the mixed-case field names; the revive var-naming
+	// rule is suppressed on each line.
+	ApiUrl  string //nolint:revive // template field name; see comment above
+	ApiPort string //nolint:revive // template field name; see comment above
+	Module  string
+	Pages   []NavPageData
 	// Workspaces reports whether the project opted into the pnpm-
 	// workspaces layout. When true, frontend templates emit imports
 	// of ApiPackage / HooksPackage instead of relative @/gen and
@@ -397,7 +405,7 @@ type FrontendTemplateData struct {
 	// ApiPackage is the npm package name for the shared Connect TS
 	// clients workspace, e.g. "@myapp/api". Empty when Workspaces is
 	// false.
-	ApiPackage string
+	ApiPackage string //nolint:revive // template field name; matches ApiUrl above
 	// HooksPackage is the npm package name for the shared React Query
 	// hooks workspace, e.g. "@myapp/hooks". Empty when Workspaces is
 	// false.

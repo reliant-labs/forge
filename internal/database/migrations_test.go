@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ func TestSanitizeMigrationName(t *testing.T) {
 func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := CreateMigration("Add Users Table", dir, nil); err != nil {
+	if err := CreateMigration(context.Background(), "Add Users Table", dir, nil); err != nil {
 		t.Fatalf("CreateMigration() error = %v", err)
 	}
 
@@ -87,7 +88,7 @@ func TestCreateMigrationCreatesUpAndDownFiles(t *testing.T) {
 func TestCreateMigrationRejectsEmptySanitizedName(t *testing.T) {
 	dir := t.TempDir()
 
-	err := CreateMigration("!!!", dir, nil)
+	err := CreateMigration(context.Background(), "!!!", dir, nil)
 	if err == nil {
 		t.Fatal("expected error for empty sanitized migration name")
 	}

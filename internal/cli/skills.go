@@ -63,7 +63,7 @@ The skill content is the same body returned by ` + "`forge skill load <name>`" +
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "wrote %d skills to %s (style=%s)\n", n, outDir, s)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %d skills to %s (style=%s)\n", n, outDir, s)
 			return nil
 		},
 	}

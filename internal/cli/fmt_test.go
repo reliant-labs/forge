@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,7 +108,7 @@ func main() {
 	writeFmtFile(t, filepath.Join(dir, "foo", "foo.go"), "package foo\n\nvar X = 1\n")
 
 	withFmtDir(t, dir, func() {
-		if err := runFmt([]string{"main.go"}); err != nil {
+		if err := runFmt(context.Background(), []string{"main.go"}); err != nil {
 			t.Fatalf("runFmt: %v", err)
 		}
 	})

@@ -19,6 +19,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -73,7 +74,7 @@ Examples:
   forge dev cluster up --wait
   forge dev cluster up --config deploy/k3d.custom.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevClusterUp(configPath, wait)
+			return runDevClusterUp(cmd.Context(), configPath, wait)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -87,7 +88,7 @@ func newDevClusterDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Delete the k3d cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevClusterDown(configPath)
+			return runDevClusterDown(cmd.Context(), configPath)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -103,7 +104,7 @@ func newDevClusterStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show cluster up/down state, registry, and API port",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevClusterStatus(configPath, jsonOut)
+			return runDevClusterStatus(cmd.Context(), configPath, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -120,10 +121,10 @@ func newDevClusterResetCmd() *cobra.Command {
 		Use:   "reset",
 		Short: "Delete then recreate the cluster",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runDevClusterDown(configPath); err != nil {
+			if err := runDevClusterDown(cmd.Context(), configPath); err != nil {
 				return err
 			}
-			return runDevClusterUp(configPath, wait)
+			return runDevClusterUp(cmd.Context(), configPath, wait)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -153,7 +154,7 @@ Examples:
   forge dev cluster reload --image-tag dev-2026-06-01
   forge dev cluster reload --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevClusterReload(configPath, imageTag, namespace, dryRun)
+			return runDevClusterReload(cmd.Context(), configPath, imageTag, namespace, dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
@@ -175,9 +176,9 @@ type k3dSimpleConfig struct {
 // k3dClusterListEntry mirrors the `k3d cluster list -o json` element
 // shape — only the fields we read.
 type k3dClusterListEntry struct {
-	Name        string `json:"name"`
-	ServersRunning int `json:"serversRunning"`
-	AgentsRunning  int `json:"agentsRunning"`
+	Name           string `json:"name"`
+	ServersRunning int    `json:"serversRunning"`
+	AgentsRunning  int    `json:"agentsRunning"`
 }
 
 // readK3dClusterName parses the k3d config file and returns the cluster
@@ -215,8 +216,8 @@ func resolveClusterName(configPath string) (string, error) {
 // listK3dClusters shells out to `k3d cluster list -o json` and returns
 // the parsed list. An empty array (no clusters) returns a nil slice with
 // no error.
-func listK3dClusters() ([]k3dClusterListEntry, error) {
-	out, err := exec.Command("k3d", "cluster", "list", "-o", "json").Output()
+func listK3dClusters(ctx context.Context) ([]k3dClusterListEntry, error) {
+	out, err := exec.CommandContext(ctx, "k3d", "cluster", "list", "-o", "json").Output()
 	if err != nil {
 		return nil, fmt.Errorf("k3d cluster list: %w (install k3d: https://k3d.io)", err)
 	}
@@ -233,8 +234,8 @@ func listK3dClusters() ([]k3dClusterListEntry, error) {
 
 // clusterExists returns true when a cluster of the given name is listed
 // by k3d.
-func clusterExists(name string) (bool, error) {
-	entries, err := listK3dClusters()
+func clusterExists(ctx context.Context, name string) (bool, error) {
+	entries, err := listK3dClusters(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -250,41 +251,41 @@ func clusterExists(name string) (bool, error) {
 // k3d names its kubeconfig contexts as `k3d-<cluster-name>` by
 // convention, so this is the one-liner guard rail that prevents the
 // rest of `forge dev` from leaking commands into a non-dev context.
-func pinKubectlContext(clusterName string) error {
-	ctx := "k3d-" + clusterName
-	cmd := exec.Command("kubectl", "config", "use-context", ctx)
+func pinKubectlContext(ctx context.Context, clusterName string) error {
+	target := "k3d-" + clusterName
+	cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("kubectl config use-context %s: %w", ctx, err)
+		return fmt.Errorf("kubectl config use-context %s: %w", target, err)
 	}
 	return nil
 }
 
 // currentKubectlContext returns the current kubectl context name, or ""
 // on error. Used for non-fatal display in `status` / `info`.
-func currentKubectlContext() string {
-	out, err := exec.Command("kubectl", "config", "current-context").Output()
+func currentKubectlContext(ctx context.Context) string {
+	out, err := exec.CommandContext(ctx, "kubectl", "config", "current-context").Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
 }
 
-func runDevClusterUp(configPath string, wait bool) error {
+func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
 	}
 
-	exists, err := clusterExists(clusterName)
+	exists, err := clusterExists(ctx, clusterName)
 	if err != nil {
 		return err
 	}
 	if exists {
 		fmt.Printf("k3d cluster %q already exists — no-op\n", clusterName)
 		// Still pin context so subsequent kubectl calls are safe.
-		if err := pinKubectlContext(clusterName); err != nil {
+		if err := pinKubectlContext(ctx, clusterName); err != nil {
 			return err
 		}
 		return nil
@@ -294,7 +295,7 @@ func runDevClusterUp(configPath string, wait bool) error {
 	// the same fallback path forge deploy dev has used historically.
 	if _, statErr := os.Stat(configPath); statErr == nil {
 		fmt.Printf("Creating k3d cluster from %s...\n", configPath)
-		create := exec.Command("k3d", "cluster", "create", "--config", configPath)
+		create := exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", configPath)
 		create.Stdout = os.Stdout
 		create.Stderr = os.Stderr
 		if err := create.Run(); err != nil {
@@ -304,18 +305,18 @@ func runDevClusterUp(configPath string, wait bool) error {
 		// Reuse the existing ensureDevCluster path so the fallback
 		// registries.yaml mirror config stays in one place.
 		fmt.Printf("No %s found — falling back to forge default cluster shape...\n", configPath)
-		if err := ensureDevCluster(); err != nil {
+		if err := ensureDevCluster(ctx); err != nil {
 			return err
 		}
 	}
 
-	if err := pinKubectlContext(clusterName); err != nil {
+	if err := pinKubectlContext(ctx, clusterName); err != nil {
 		return err
 	}
 
 	if wait {
 		fmt.Println("Waiting for cluster nodes to report Ready...")
-		waitCmd := exec.Command("kubectl", "wait", "--for=condition=Ready",
+		waitCmd := exec.CommandContext(ctx, "kubectl", "wait", "--for=condition=Ready",
 			"nodes", "--all", "--timeout=120s")
 		waitCmd.Stdout = os.Stdout
 		waitCmd.Stderr = os.Stderr
@@ -328,13 +329,13 @@ func runDevClusterUp(configPath string, wait bool) error {
 	return nil
 }
 
-func runDevClusterDown(configPath string) error {
+func runDevClusterDown(ctx context.Context, configPath string) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
 	}
 
-	exists, err := clusterExists(clusterName)
+	exists, err := clusterExists(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -344,7 +345,7 @@ func runDevClusterDown(configPath string) error {
 	}
 
 	fmt.Printf("Deleting k3d cluster %q...\n", clusterName)
-	del := exec.Command("k3d", "cluster", "delete", clusterName)
+	del := exec.CommandContext(ctx, "k3d", "cluster", "delete", clusterName)
 	del.Stdout = os.Stdout
 	del.Stderr = os.Stderr
 	if err := del.Run(); err != nil {
@@ -365,13 +366,13 @@ type clusterStatusSummary struct {
 	ConfigFound bool   `json:"config_found"`
 }
 
-func runDevClusterStatus(configPath string, jsonOut bool) error {
+func runDevClusterStatus(ctx context.Context, configPath string, jsonOut bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
 	}
 
-	exists, _ := clusterExists(clusterName)
+	exists, _ := clusterExists(ctx, clusterName)
 	_, statErr := os.Stat(configPath)
 
 	summary := clusterStatusSummary{
@@ -384,7 +385,7 @@ func runDevClusterStatus(configPath string, jsonOut bool) error {
 
 	// Pull registry/port from the k3d cluster list entry when up.
 	if exists {
-		if entries, err := listK3dClusters(); err == nil {
+		if entries, err := listK3dClusters(ctx); err == nil {
 			for _, e := range entries {
 				if e.Name == clusterName {
 					// k3d exposes ports via the cluster info; we
@@ -429,14 +430,14 @@ func foundOrMissing(b bool) string {
 // wait-rollout code path forge deploy dev uses, with cluster bootstrap
 // and docker build/push skipped. Pins kubectl context first so a stale
 // non-dev context can't leak the apply somewhere unintended.
-func runDevClusterReload(configPath, imageTag, namespace string, dryRun bool) error {
+func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace string, dryRun bool) error {
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
 	}
 
 	if !dryRun {
-		if err := pinKubectlContext(clusterName); err != nil {
+		if err := pinKubectlContext(ctx, clusterName); err != nil {
 			return err
 		}
 	}
@@ -462,7 +463,7 @@ func runDevClusterReload(configPath, imageTag, namespace string, dryRun bool) er
 	if imageTag == "" {
 		// Reload assumes the image is already in the cluster's
 		// registry; default to the most recent SHA we have.
-		tag, err := gitShortSHA()
+		tag, err := gitShortSHA(ctx)
 		if err != nil {
 			return fmt.Errorf("git rev-parse --short HEAD: %w (use --image-tag)", err)
 		}
@@ -480,7 +481,7 @@ func runDevClusterReload(configPath, imageTag, namespace string, dryRun bool) er
 	fmt.Printf("Reloading dev manifests for cluster %q (namespace=%s, tag=%s)...\n",
 		clusterName, namespace, imageTag)
 
-	manifests, err := runKCL(mainK, imageTag, namespace, nil)
+	manifests, err := runKCL(ctx, mainK, imageTag, namespace, nil)
 	if err != nil {
 		return fmt.Errorf("KCL render: %w", err)
 	}
@@ -490,17 +491,17 @@ func runDevClusterReload(configPath, imageTag, namespace string, dryRun bool) er
 		return nil
 	}
 
-	if err := kubectlApply(manifests); err != nil {
+	if err := kubectlApply(ctx, manifests); err != nil {
 		return fmt.Errorf("kubectl apply: %w", err)
 	}
 
-	deployments, err := listDeployments(namespace)
+	deployments, err := listDeployments(ctx, namespace)
 	if err != nil {
 		fmt.Printf("Warning: list deployments: %v\n", err)
 		return nil
 	}
 	for _, dep := range deployments {
-		if err := waitForRollout(dep, namespace); err != nil {
+		if err := waitForRollout(ctx, dep, namespace); err != nil {
 			fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
 		} else {
 			fmt.Printf("  %s: ready\n", dep)

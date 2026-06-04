@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -76,7 +77,7 @@ Examples:
   forge starter add clerk-webhook --service api`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStarterAdd(args[0], serviceFlag, forceFlag, cmd.OutOrStdout())
+			return runStarterAdd(cmd.Context(), args[0], serviceFlag, forceFlag, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&serviceFlag, "service", "",
@@ -94,22 +95,22 @@ func runStarterList(out interface {
 		return fmt.Errorf("list starters: %w", err)
 	}
 	if len(available) == 0 {
-		fmt.Fprintln(out, "No starters available.")
+		_, _ = fmt.Fprintln(out, "No starters available.")
 		return nil
 	}
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tDESCRIPTION")
+	_, _ = fmt.Fprintln(w, "NAME\tDESCRIPTION")
 	for _, s := range available {
 		desc := s.Description
 		if i := indexByte(desc, '\n'); i >= 0 {
 			desc = desc[:i]
 		}
-		fmt.Fprintf(w, "%s\t%s\n", s.Name, desc)
+		_, _ = fmt.Fprintf(w, "%s\t%s\n", s.Name, desc)
 	}
 	return w.Flush()
 }
 
-func runStarterAdd(name, service string, force bool, out interface {
+func runStarterAdd(ctx context.Context, name, service string, force bool, out interface {
 	Write(p []byte) (int, error)
 }) error {
 	if !starters.ValidStarterName(name) {
@@ -132,12 +133,12 @@ func runStarterAdd(name, service string, force bool, out interface {
 		return err
 	}
 
-	fmt.Fprintf(out, "Adding starter '%s'...\n", starter.Name)
+	_, _ = fmt.Fprintf(out, "Adding starter '%s'...\n", starter.Name)
 	if service != "" {
-		fmt.Fprintf(out, "  Routing into service: %s\n", service)
+		_, _ = fmt.Fprintf(out, "  Routing into service: %s\n", service)
 	}
 	if force {
-		fmt.Fprintln(out, "  --force enabled: existing files will be overwritten")
+		_, _ = fmt.Fprintln(out, "  --force enabled: existing files will be overwritten")
 	}
 
 	addResult, err := starter.Add(starters.AddOptions{
@@ -169,11 +170,11 @@ func runStarterAdd(name, service string, force bool, out interface {
 	// step is theirs.
 	switch {
 	case pendingProtoGenerate:
-		fmt.Fprintln(out, "\n  Skipping go mod tidy: starter added .proto files; run 'forge generate' to produce gen/ output and tidy.")
+		_, _ = fmt.Fprintln(out, "\n  Skipping go mod tidy: starter added .proto files; run 'forge generate' to produce gen/ output and tidy.")
 	default:
 		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
-			fmt.Fprintln(out, "\n  Running go mod tidy...")
-			tidy := exec.Command("go", "mod", "tidy")
+			_, _ = fmt.Fprintln(out, "\n  Running go mod tidy...")
+			tidy := exec.CommandContext(ctx, "go", "mod", "tidy")
 			tidy.Dir = root
 			tidy.Stdout = os.Stdout
 			tidy.Stderr = os.Stderr
@@ -183,14 +184,14 @@ func runStarterAdd(name, service string, force bool, out interface {
 				// starters reference packages the user must `go get`
 				// themselves (StarterDeps.Go is intentionally
 				// echo-not-install) so a tidy failure here is plausible.
-				fmt.Fprintf(out, "  Warning: go mod tidy failed (%v) — run it manually after adding the listed Go deps.\n", err)
+				_, _ = fmt.Fprintf(out, "  Warning: go mod tidy failed (%v) — run it manually after adding the listed Go deps.\n", err)
 			}
 		}
 	}
 
-	fmt.Fprintf(out, "\nStarter '%s' scaffolded. You own these files now — forge will not regenerate them.\n", starter.Name)
+	_, _ = fmt.Fprintf(out, "\nStarter '%s' scaffolded. You own these files now — forge will not regenerate them.\n", starter.Name)
 	if pendingProtoGenerate {
-		fmt.Fprintf(out, "\nRun `%s generate` to compile new proto definitions and finish `go mod tidy`.\n", CLIName())
+		_, _ = fmt.Fprintf(out, "\nRun `%s generate` to compile new proto definitions and finish `go mod tidy`.\n", Name())
 	}
 	return nil
 }

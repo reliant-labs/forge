@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -112,7 +113,7 @@ Examples:
 func newPackInstallCmd() *cobra.Command {
 	var configPairs []string
 	cmd := &cobra.Command{
-		Use:   "install <name>",
+		Use: "install <name>",
 		// `add` is the alias to mirror `forge add operator/worker/crd` — the
 		// "install vs add" inconsistency was a real LLM friction point during
 		// the control-plane-next port. Both verbs map to the same RunE.
@@ -137,7 +138,7 @@ Examples:
   forge pack install auth-ui --config provider=clerk`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPackInstall(args[0], configPairs)
+			return runPackInstall(cmd.Context(), args[0], configPairs)
 		},
 	}
 	cmd.Flags().StringSliceVar(&configPairs, "config", nil,
@@ -188,7 +189,7 @@ func runPackList() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tVERSION\tSUBPATH\tSTATUS\tDESCRIPTION")
+	_, _ = fmt.Fprintln(w, "NAME\tVERSION\tSUBPATH\tSTATUS\tDESCRIPTION")
 	for _, p := range available {
 		status := ""
 		if installed != nil && installed[p.Name] {
@@ -205,7 +206,7 @@ func runPackList() error {
 		if i := indexByte(desc, '\n'); i >= 0 {
 			desc = desc[:i]
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.Name, p.Version, subpath, status, desc)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", p.Name, p.Version, subpath, status, desc)
 	}
 	return w.Flush()
 }
@@ -253,8 +254,8 @@ func runPackListDeps() error {
 	// a future cycle (forbidden but possible in author error) doesn't
 	// loop forever.
 	visited := map[string]bool{}
-	var print func(name string, depth int)
-	print = func(name string, depth int) {
+	var walk func(name string, depth int)
+	walk = func(name string, depth int) {
 		if visited[name] {
 			fmt.Printf("%s- %s (cycle detected — already visited)\n",
 				strings.Repeat("  ", depth), name)
@@ -269,11 +270,11 @@ func runPackListDeps() error {
 		kids := append([]string(nil), consumers[name]...)
 		sort.Strings(kids)
 		for _, k := range kids {
-			print(k, depth+1)
+			walk(k, depth+1)
 		}
 	}
 	for _, r := range roots {
-		print(r, 0)
+		walk(r, 0)
 	}
 
 	// Orphan check: any pack neither in roots nor reachable from a root
@@ -298,7 +299,7 @@ func indexByte(s string, c byte) int {
 	return -1
 }
 
-func runPackInstall(name string, configPairs []string) error {
+func runPackInstall(ctx context.Context, name string, configPairs []string) error {
 	ctxLabel := fmt.Sprintf("forge pack add %s", name)
 
 	if !packs.ValidPackName(name) {
@@ -421,7 +422,7 @@ func runPackInstall(name string, configPairs []string) error {
 			fmt.Printf("  Config overrides: %v\n", thisOverrides)
 		}
 
-		installResult, installErr := pack.InstallWithConfig(root, cfg, thisOverrides)
+		installResult, installErr := pack.InstallWithConfig(ctx, root, cfg, thisOverrides)
 		if installResult != nil && installResult.PendingProtoGenerate {
 			pendingProtoGenerate = true
 		}
@@ -443,7 +444,7 @@ func runPackInstall(name string, configPairs []string) error {
 
 		fmt.Printf("\n✅ Pack '%s' installed successfully!\n", pack.Name)
 		if len(pack.Generate) > 0 {
-			fmt.Printf("\nThis pack has generate hooks. Run '%s generate' to generate pack code.\n", CLIName())
+			fmt.Printf("\nThis pack has generate hooks. Run '%s generate' to generate pack code.\n", Name())
 		}
 	}
 
@@ -453,7 +454,7 @@ func runPackInstall(name string, configPairs []string) error {
 	// closing instruction so the user knows the install is half-done by
 	// design and the next step is theirs.
 	if pendingProtoGenerate {
-		fmt.Printf("\nRun `%s generate` to compile new proto definitions and finish `go mod tidy`.\n", CLIName())
+		fmt.Printf("\nRun `%s generate` to compile new proto definitions and finish `go mod tidy`.\n", Name())
 	}
 
 	return nil

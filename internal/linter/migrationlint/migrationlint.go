@@ -11,13 +11,17 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
+// Severity tags a Finding as either a build-blocking error or an
+// advisory warning.
 type Severity string
 
+// Severity enum values.
 const (
 	SeverityError Severity = "error"
 	SeverityWarn  Severity = "warn"
 )
 
+// Finding is one violation surfaced by the migration linter.
 type Finding struct {
 	File     string
 	Line     int
@@ -26,10 +30,12 @@ type Finding struct {
 	Message  string
 }
 
+// Result aggregates every Finding from a migration-dir lint pass.
 type Result struct {
 	Findings []Finding
 }
 
+// HasErrors reports whether any Finding is of severity Error.
 func (r Result) HasErrors() bool {
 	for _, finding := range r.Findings {
 		if finding.Severity == SeverityError {
@@ -39,6 +45,7 @@ func (r Result) HasErrors() bool {
 	return false
 }
 
+// FormatText renders the result as a human-readable text report.
 func (r Result) FormatText() string {
 	if len(r.Findings) == 0 {
 		return "✅ No migration safety warnings!\n"
@@ -51,6 +58,9 @@ func (r Result) FormatText() string {
 	return b.String()
 }
 
+// RuleConfig is the per-rule severity configuration consumed by
+// LintMigrationsDir. Mirrors config.MigrationSafetyConfig but is
+// pre-resolved (no nil enabled, severities as strings).
 type RuleConfig struct {
 	Enabled            bool
 	UnsafeAddColumn    string
@@ -59,6 +69,8 @@ type RuleConfig struct {
 	AllowedDestructive []string
 }
 
+// ConfigFromProject lifts a config.MigrationSafetyConfig into a
+// migrationlint.RuleConfig by resolving defaults.
 func ConfigFromProject(cfg config.MigrationSafetyConfig) RuleConfig {
 	return RuleConfig{
 		Enabled:            cfg.IsEnabled(),
@@ -69,6 +81,8 @@ func ConfigFromProject(cfg config.MigrationSafetyConfig) RuleConfig {
 	}
 }
 
+// DefaultConfig returns the migration-lint defaults: all three rules
+// at error/error/warn, enabled.
 func DefaultConfig() RuleConfig {
 	return RuleConfig{
 		Enabled:           true,
@@ -78,6 +92,9 @@ func DefaultConfig() RuleConfig {
 	}
 }
 
+// LintMigrationsDir walks dir for *.up.sql files and returns a Result
+// containing every rule violation it finds. Returns an empty Result
+// when cfg.Enabled is false or the directory doesn't exist.
 func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	if !cfg.Enabled {
 		return Result{}, nil

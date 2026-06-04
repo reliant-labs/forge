@@ -241,12 +241,12 @@ module_path: example.com/testproject
 		{"cache", false},
 		{"my_cache", false},
 		{"cache2", false},
-		{"Cache", true},       // uppercase
-		{"my-cache", true},    // hyphen
-		{"2cache", true},      // starts with digit
-		{"", true},            // empty (caught by cobra ExactArgs, but regex won't match)
-		{"my cache", true},    // space
-		{"cache.v1", true},    // dot
+		{"Cache", true},    // uppercase
+		{"my-cache", true}, // hyphen
+		{"2cache", true},   // starts with digit
+		{"", true},         // empty (caught by cobra ExactArgs, but regex won't match)
+		{"my cache", true}, // space
+		{"cache.v1", true}, // dot
 	}
 
 	for _, tt := range tests {

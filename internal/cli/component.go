@@ -78,7 +78,7 @@ auto-detects the nearest frontend directory.`,
 				dir = detected
 			}
 
-			if err := os.MkdirAll(dir, 0755); err != nil {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return fmt.Errorf("create directory %s: %w", dir, err)
 			}
 
@@ -92,7 +92,7 @@ auto-detects the nearest frontend directory.`,
 					return fmt.Errorf("component %q not found", name)
 				}
 				dest := filepath.Join(dir, name+".tsx")
-				if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
+				if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
 					return fmt.Errorf("write component %s: %w", name, err)
 				}
 				fmt.Printf("  Installed %s -> %s\n", name, dest)

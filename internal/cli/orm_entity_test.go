@@ -105,19 +105,19 @@ func TestInferTableName(t *testing.T) {
 		want        string
 	}{
 		{"Patient", "patients"},
-		{"Category", "categories"},  // -y → -ies
-		{"Address", "addresses"},    // -s → -ses
+		{"Category", "categories"}, // -y → -ies
+		{"Address", "addresses"},   // -s → -ses
 		{"User", "users"},
-		{"Status", "statuses"},      // -s → -ses
-		{"Company", "companies"},    // -y → -ies
-		{"Policy", "policies"},      // -y → -ies
-		{"Key", "keies"},            // simple -y → -ies (no vowel check)
-		{"Bus", "buses"},            // toSnake("Bus")="bus" → bus+es
-		{"Tax", "taxs"},             // no special -x handling
-		{"Dish", "dishs"},           // no special -sh handling
-		{"Match", "matchs"},         // no special -ch handling
-		{"Boy", "boies"},            // simple -y → -ies (no vowel check)
-		{"Day", "daies"},            // simple -y → -ies (no vowel check)
+		{"Status", "statuses"},   // -s → -ses
+		{"Company", "companies"}, // -y → -ies
+		{"Policy", "policies"},   // -y → -ies
+		{"Key", "keies"},         // simple -y → -ies (no vowel check)
+		{"Bus", "buses"},         // toSnake("Bus")="bus" → bus+es
+		{"Tax", "taxs"},          // no special -x handling
+		{"Dish", "dishs"},        // no special -sh handling
+		{"Match", "matchs"},      // no special -ch handling
+		{"Boy", "boies"},         // simple -y → -ies (no vowel check)
+		{"Day", "daies"},         // simple -y → -ies (no vowel check)
 	}
 
 	for _, tt := range tests {
@@ -218,4 +218,3 @@ func TestIsIntegerKind(t *testing.T) {
 		}
 	}
 }
-

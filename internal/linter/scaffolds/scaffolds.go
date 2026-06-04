@@ -32,6 +32,7 @@ import (
 // Severity indicates how important a finding is.
 type Severity string
 
+// Severity enum values.
 const (
 	SeverityError   Severity = "error"
 	SeverityWarning Severity = "warning"
@@ -67,14 +68,14 @@ func (r Result) FormatText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d scaffold ownership issue(s):\n\n", len(r.Findings)))
+	fmt.Fprintf(&sb, "Found %d scaffold ownership issue(s):\n\n", len(r.Findings))
 
 	for _, f := range r.Findings {
 		icon := "❌"
 		if f.Severity == SeverityWarning {
 			icon = "⚠️ "
 		}
-		sb.WriteString(fmt.Sprintf("  %s [%s] %s: %s\n", icon, f.Rule, f.Path, f.Message))
+		fmt.Fprintf(&sb, "  %s [%s] %s: %s\n", icon, f.Rule, f.Path, f.Message)
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -262,11 +263,6 @@ func relPath(path, root string) string {
 // byte slices without allocating a string copy of the entire haystack.
 func bytesContains(haystack, needle []byte) bool {
 	return strings.Contains(string(haystack), string(needle))
-}
-
-// bytesCount counts non-overlapping occurrences of needle in haystack.
-func bytesCount(haystack, needle []byte) int {
-	return strings.Count(string(haystack), string(needle))
 }
 
 // countScaffoldMarkers counts lines whose first non-whitespace content

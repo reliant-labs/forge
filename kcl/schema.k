@@ -30,9 +30,21 @@ JSON contract (stable; missing optional fields project as `null`):
 
 For Service.deploy the dispatch keys are:
 
-    { "type": "host",       "runner", "air_config", "env_file" }
+    { "type": "host",       "runner", "air_config",
+                            "env_vars", "secrets_file", "delve_port" }
     { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports" }
     { "type": "build-only", "build_variants" }
+
+HostDeploy splits per-env config from secrets:
+
+  * `env_vars` — KCL-declared, version-controlled config (DATABASE_URL,
+    NATS_URL, LOG_LEVEL, …). Composes with `base.DB_ENV` /
+    `cfg.APP_ENV` the same way K8sDeploy services do, so host and
+    cluster services see the same per-env config source.
+  * `secrets_file` — path (gitignored) to a `KEY=VALUE` dotenv carrying
+    JUST the secrets (STRIPE_*, SUPABASE_*, JWT_PUBLIC_KEY, …). The
+    forge CLI loads it first, then layers `env_vars` on top — KCL wins
+    on conflict so config is reproducible across machines.
 
 KCL v0.11 quirk — schema literals in lambda bodies
 ==================================================
@@ -181,11 +193,22 @@ schema HostDeploy:
       * runner = "air"    — `air -c <air_config>` for live-reload
       * runner = "binary" — pre-built binary in ./bin
       * runner = "delve"  — `dlv exec --headless` for debugging
+
+    Env composition splits config from secrets:
+      * `env_vars` — KCL-declared per-env config. Reproducible,
+        version-controlled, mergeable with `base.DB_ENV`/`cfg.APP_ENV`.
+        Same source K8sDeploy services see via the Deployment's `env`.
+      * `secrets_file` — gitignored dotenv with JUST the secrets.
+        Loaded first by the runner; `env_vars` is layered on top
+        (KCL wins on conflict so per-env config can't drift between
+        developer machines).
     """
     type: str = "host"
     runner: str = "go-run"
     air_config?: str
-    env_file?: str
+    env_vars: [EnvVar] = []
+    secrets_file?: str
+    delve_port: int = 2345
 
     check:
         type == "host", "HostDeploy.type must be 'host'"
@@ -193,6 +216,8 @@ schema HostDeploy:
             "HostDeploy.runner must be 'go-run' | 'air' | 'binary' | 'delve'"
         air_config == Undefined or runner == "air", \
             "HostDeploy.air_config is only valid when runner = 'air'"
+        delve_port > 0 and delve_port < 65536, \
+            "HostDeploy.delve_port must be 1..65535"
 
 schema K8sDeploy:
     """Service runs in-cluster as a Deployment + Service.

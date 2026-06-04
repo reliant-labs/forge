@@ -1,4 +1,5 @@
 import React from "react";
+import { FormFieldContext } from "./form";
 
 /**
  * Select — generic select primitive. Wraps a native <select> with
@@ -10,7 +11,10 @@ import React from "react";
  *   1. Pass an `options` array — `[{ value, label, disabled? }, ...]`.
  *   2. Pass `<option>` children directly for full control.
  *
- * Pair with the <Label> primitive for labelling.
+ * Pair with the <Label> primitive for labelling. When used inside a
+ * <FormField>, Select auto-picks-up the FormField's generated id so a
+ * sibling <Label> can wire `htmlFor` to it without the caller writing
+ * any id/htmlFor boilerplate.
  */
 export type SelectSize = "sm" | "md" | "lg";
 
@@ -37,9 +41,13 @@ const sizeStyles: Record<SelectSize, string> = {
 };
 
 const Select = React.forwardRef<HTMLSelectElement, SelectProps>(function Select(
-  { options, selectSize = "md", invalid, className, children, ...rest },
+  { options, selectSize = "md", invalid, className, children, id, ...rest },
   ref,
 ) {
+  // Pull id from FormFieldContext when the caller didn't pass one.
+  const ctx = React.useContext(FormFieldContext);
+  const resolvedId = id ?? ctx?.id;
+
   const composed = [
     "block w-full appearance-none rounded-md border bg-white shadow-sm",
     "focus:outline-none focus:ring-1",
@@ -55,7 +63,7 @@ const Select = React.forwardRef<HTMLSelectElement, SelectProps>(function Select(
 
   return (
     <div className="relative">
-      <select ref={ref} className={composed} {...rest}>
+      <select ref={ref} id={resolvedId} className={composed} {...rest}>
         {options
           ? options.map((o) => (
               <option key={String(o.value)} value={o.value} disabled={o.disabled}>

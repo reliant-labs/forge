@@ -1,4 +1,5 @@
 import React from "react";
+import { FormFieldContext } from "./form";
 
 /**
  * Input — generic text input primitive. Wraps a native <input> with
@@ -7,6 +8,9 @@ import React from "react";
  * forwarded; pass `className` to extend or override.
  *
  * Pair with the <Label> primitive for labelling and accessibility.
+ * When used inside a <FormField>, Input auto-picks-up the FormField's
+ * generated id so a sibling <Label> can wire `htmlFor` to it without
+ * the caller writing any id/htmlFor boilerplate.
  */
 export type InputSize = "sm" | "md" | "lg";
 
@@ -25,9 +29,15 @@ const sizeStyles: Record<InputSize, string> = {
 };
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
-  { inputSize = "md", invalid, className, type, ...rest },
+  { inputSize = "md", invalid, className, type, id, ...rest },
   ref,
 ) {
+  // Pull id from FormFieldContext when the caller didn't pass one.
+  // Explicit id wins — preserves the ability to wire to an external
+  // aria-describedby / aria-labelledby reference.
+  const ctx = React.useContext(FormFieldContext);
+  const resolvedId = id ?? ctx?.id;
+
   const composed = [
     "block w-full rounded-md border bg-white shadow-sm",
     "placeholder:text-gray-400",
@@ -42,7 +52,15 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
     .filter(Boolean)
     .join(" ");
 
-  return <input ref={ref} type={type ?? "text"} className={composed} {...rest} />;
+  return (
+    <input
+      ref={ref}
+      id={resolvedId}
+      type={type ?? "text"}
+      className={composed}
+      {...rest}
+    />
+  );
 });
 
 export default Input;

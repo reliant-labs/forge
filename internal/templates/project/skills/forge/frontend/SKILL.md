@@ -74,7 +74,7 @@ Every forge frontend ships a small set of low-level primitives at scaffold time,
 | `button` | `import Button from "@/components/ui/button"` | Generic button — `primary` / `secondary` / `outline` / `ghost` / `danger` variants, sizes, loading state. |
 | `input` | `import Input from "@/components/ui/input"` | Generic text input — sizes, invalid state, forwarded ref. Pair with `<Label>`. |
 | `label` | `import Label from "@/components/ui/label"` | Form field label with optional required-asterisk. |
-| `form` | `import Form, { FormField, FormError, FormActions } from "@/components/ui/form"` | Form structural primitives — root `<form>` plus field/error/actions wrappers. |
+| `form` | `import Form, { FormField, FormError, FormActions } from "@/components/ui/form"` | Form structural primitives — root `<form>` plus field/error/actions wrappers. `<FormField>` mints an id and exposes it via `FormFieldContext` so child `<Label>` / `<Input>` / `<Select>` auto-bind without `htmlFor` / `id` boilerplate. |
 | `card` | `import Card, { CardHeader, CardBody, CardFooter } from "@/components/ui/card"` | Generic surface primitive. Distinct from `MetricCard`/`StatCards` (domain components). |
 | `avatar` | `import Avatar from "@/components/ui/avatar"` | User avatar with image, initials fallback, status indicator. |
 | `tabs` | `import Tabs from "@/components/ui/tabs"` | Tab navigation with underline/pills/boxed variants. |
@@ -132,6 +132,36 @@ keep the aliases only as a migration-friendly back door:
   ```
 
 These primitives are written as `overwrite: once` from the scaffolder — once installed, they are yours to edit. If you find yourself re-inlining a button or input shape in a page or pack, stop and use the primitive instead.
+
+### Form field auto-binding
+
+`<FormField>` mints a unique id via `React.useId()` and provides it
+through `FormFieldContext`. Child `<Label>` reads the context for
+`htmlFor`; child `<Input>` / `<Select>` reads the context for `id`.
+The page-author writes neither:
+
+```tsx
+<Form>
+  <FormField>
+    <Label required>Email</Label>
+    <Input type="email" value={email} onChange={onEmail} />
+  </FormField>
+
+  <FormField>
+    <Label>Plan</Label>
+    <Select
+      options={[{ value: "pro", label: "Pro" }, { value: "team", label: "Team" }]}
+    />
+  </FormField>
+</Form>
+```
+
+Clicking either label focuses its input. Explicit `htmlFor` on the
+Label or `id` on the input still wins, so deterministic ids (for tour
+highlights, `aria-describedby` from another node, etc.) remain
+straightforward. Custom form controls can opt into the same pattern by
+reading `FormFieldContext` themselves — see the doc comment in
+`@/components/ui/form`.
 
 ### Variant naming conventions
 

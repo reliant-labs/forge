@@ -37,8 +37,8 @@ func TestGenerateDeployConfig_BasicValuesAndSecrets(t *testing.T) {
 	}
 	body := string(got)
 
-	mustContain(t, body, "APP_ENV: [schema.EnvVar] = [")
-	mustContain(t, body, "STRIPE_ENV: [schema.EnvVar] = [")
+	mustContain(t, body, "APP_ENV: [forge.EnvVar] = [")
+	mustContain(t, body, "STRIPE_ENV: [forge.EnvVar] = [")
 	// Non-sensitive value-bearing fields project through the per-env
 	// ConfigMap (myapp-dev-config) instead of inline `value=`.
 	mustContain(t, body, `name = "LOG_LEVEL", config_map_ref = "myapp-dev-config", config_map_key = "LOG_LEVEL"`)
@@ -50,7 +50,7 @@ func TestGenerateDeployConfig_BasicValuesAndSecrets(t *testing.T) {
 	mustContain(t, body, `name = "STRIPE_KEY", secret_ref = "myapp-secrets", secret_key = "stripe_key"`)
 	mustContain(t, body, `name = "STRIPE_WEBHOOK_SECRET", secret_ref = "myapp-secrets", secret_key = "stripe_webhook_secret"`)
 	// Non-sensitive values land in the generated ConfigMap's `data` block.
-	mustContain(t, body, "CONFIG_MAPS: [schema.ConfigMap] = [")
+	mustContain(t, body, "CONFIG_MAPS: [forge.ConfigMap] = [")
 	mustContain(t, body, `name = "myapp-dev-config"`)
 	mustContain(t, body, `"LOG_LEVEL" = "debug"`)
 	mustContain(t, body, `"RATE_LIMIT_RPS" = "100"`)
@@ -132,7 +132,7 @@ func TestGenerateDeployConfig_SecretKeyOverride(t *testing.T) {
 // Empty-category elision: when every field in a category is a
 // non-sensitive default-only (no per-env override), the category-list
 // is omitted entirely so config_gen.k doesn't carry a noisy
-// `BILLING_ENV: [schema.EnvVar] = []` stub. Categories that DO emit
+// `BILLING_ENV: [forge.EnvVar] = []` stub. Categories that DO emit
 // at least one entry still appear.
 func TestGenerateDeployConfig_OmitsEmptyCategoryLists(t *testing.T) {
 	tmp := t.TempDir()
@@ -159,13 +159,13 @@ func TestGenerateDeployConfig_OmitsEmptyCategoryLists(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(in.KCLDir, "dev", "config_gen.k"))
 	body := string(got)
 
-	mustContain(t, body, "APP_ENV: [schema.EnvVar] = [")
-	mustContain(t, body, "STRIPE_ENV: [schema.EnvVar] = [")
+	mustContain(t, body, "APP_ENV: [forge.EnvVar] = [")
+	mustContain(t, body, "STRIPE_ENV: [forge.EnvVar] = [")
 	if strings.Contains(body, "BILLING_ENV") {
 		t.Errorf("empty BILLING_ENV category should be elided, got:\n%s", body)
 	}
-	// Defensive: no `[schema.EnvVar] = []` stubs anywhere.
-	if strings.Contains(body, "[schema.EnvVar] = [\n]") || strings.Contains(body, "[schema.EnvVar] = []") {
+	// Defensive: no `[forge.EnvVar] = []` stubs anywhere.
+	if strings.Contains(body, "[forge.EnvVar] = [\n]") || strings.Contains(body, "[forge.EnvVar] = []") {
 		t.Errorf("expected no empty EnvVar list stubs, got:\n%s", body)
 	}
 }

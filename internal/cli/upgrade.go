@@ -52,6 +52,13 @@ Examples:
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite user-modified files without prompting")
 	cmd.Flags().StringVar(&toVersion, "to", "", "Target forge version (defaults to the current binary version)")
 
+	// `forge upgrade list` and `forge upgrade apply <id>` cover the
+	// migration-skill surface (see upgrade_migrations.go). They share
+	// the upgrade noun with the template-drift upgrader above but are
+	// independent: list/apply work even on projects whose forge_version
+	// is unpinned, and don't touch any user-owned files.
+	attachMigrationSubcommands(cmd)
+
 	return cmd
 }
 

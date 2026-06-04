@@ -15,7 +15,7 @@ import (
 // `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go` class of drift the
 // 2026-05-06 dogfood review caught.
 //
-// Migration skills (those under migration/v0.x-to-*) are allow-listed because
+// Migration skills (those under migrations/v0.x-to-*) are allow-listed because
 // their entire job is to describe the OLD shape so users can detect and remove
 // it. Touching them here would defeat their purpose.
 //
@@ -66,15 +66,17 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	// Migration skills are off-limits to this test — they describe historical
 	// shapes by design.
 	migrationAllowlist := []string{
-		// "forge/migration/v0.x-to-y" template — match any version pair.
-		// Matches v0.1-to-v0.2, v0.2-to-v0.3, etc. The original literal
-		// "v0.x-to-" never matched anything; the per-pair migration
+		// "forge/migrations/v0.x-to-y" template — match any version pair.
+		// Matches v0.1-to-v0.2, v0.2-to-v0.3, etc. The per-pair migration
 		// skills (v0.1-to-v0.2 etc.) describe historical Tier-1 file
 		// shapes (app_gen.go, wire_gen.go) by design.
-		"forge/migration/v0.",
-		"forge/migration/upgrade/",
-		"forge/migration/service/",
-		"forge/migration/cli/",
+		"forge/migrations/v0.",
+		// The migration-* top-level skills (migration-cli,
+		// migration-service, migration-upgrade) likewise document old
+		// shapes during porting/upgrade work.
+		"forge/migration-upgrade/",
+		"forge/migration-service/",
+		"forge/migration-cli/",
 	}
 	isMigration := func(p string) bool {
 		for _, prefix := range migrationAllowlist {

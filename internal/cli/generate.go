@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -16,8 +17,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
 // generateMu protects the generation pipeline from concurrent runs.
@@ -35,6 +36,7 @@ func newGenerateCmd() *cobra.Command {
 		resetTier2    bool
 		assumeYes     bool
 		checkOnly     bool
+		scope         string
 	)
 
 	cmd := &cobra.Command{
@@ -66,7 +68,8 @@ Examples:
   forge generate --skip-validate    # Skip the final 'go build ./...' validate step
   forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
   forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
-  forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree`,
+  forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree
+  forge generate --scope=mocks      # Fast path: regen only mock_gen.go after a contract.go change (skips Tier-1 drift guard)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
 				return runGenerateCheck()
@@ -98,6 +101,7 @@ Examples:
 				SkipPreChecks: skipPreChecks,
 				ResetTier2:    resetTier2,
 				AssumeYes:     assumeYes,
+				Scope:         scope,
 			})
 			generateMu.Unlock()
 
@@ -132,6 +136,7 @@ Examples:
 	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Auto-confirm interactive prompts (currently consumed by --reset-tier2)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
+	cmd.Flags().StringVar(&scope, "scope", "", "Narrow the pipeline to a named subset of steps. Valid values: \"bootstrap-only\" (used internally by `forge add worker`), \"mocks\" (regen only mock_gen.go after a contract.go change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
 
 	return cmd
 }
@@ -407,31 +412,40 @@ func goBuildValidateFixHint(errOutput string) string {
 	return "ensure all referenced types are imported and re-run 'forge generate'"
 }
 
-// preCodegenContractCheck runs the forgeconv internal-package contract
-// shape analyzer BEFORE any code generators write files. The bootstrap
-// codegen template (internal/templates/project/bootstrap.go.tmpl)
-// hardcodes references to <pkg>.Service / <pkg>.Deps / <pkg>.New(...) for
-// every internal package; a contract.go that uses different names produces
-// a bootstrap.go that doesn't compile. Catching this at validation time
-// (rather than at the final `go build` step) gives the user a clear,
-// actionable error pointing at their contract.go rather than a build
-// error pointing at generated code.
+// preCodegenContractCheck runs the internal-package contract shape rule
+// BEFORE any code generators write files. The bootstrap codegen template
+// (internal/templates/project/bootstrap.go.tmpl) hardcodes references to
+// <pkg>.Service / <pkg>.Deps / <pkg>.New(...) for every internal package;
+// a contract.go that uses different names produces a bootstrap.go that
+// doesn't compile. Catching this at validation time (rather than at the
+// final `go build` step) gives the user a clear, actionable error
+// pointing at their contract.go rather than a build error pointing at
+// generated code.
 //
 // Honors `contracts.exclude` from forge.yaml so analyzer sub-packages and
 // other non-bootstrap-managed internal packages can opt out.
+//
+// Only the contract-names rule runs here. The adapter-no-rpc and
+// interactor-deps rules are warnings that don't gate codegen — they
+// surface under `forge lint --conventions` instead. Keeping the
+// pre-codegen check tight to "what would break the next `go build`"
+// is the design discipline from the validation-vs-lint split.
 func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error {
 	internalDir := filepath.Join(projectDir, "internal")
 	if _, err := os.Stat(internalDir); os.IsNotExist(err) {
 		return nil
 	}
 	excludes := contractExcludesFromConfig(cfg)
-	res, err := forgeconv.LintInternalContracts(projectDir, excludes)
+	fs, err := contractcheck.Inspect(context.Background(), projectDir, contractcheck.Options{
+		Rules:    []contractcheck.Rule{contractcheck.RuleInternalPackageContractNames},
+		Excludes: excludes,
+	})
 	if err != nil {
 		// Best-effort: a walk error shouldn't block generate.
 		fmt.Fprintf(os.Stderr, "Warning: pre-codegen contract check failed: %v\n", err)
 		return nil
 	}
-	if !res.HasErrors() {
+	if !contractcheck.HasErrors(fs) {
 		return nil
 	}
 
@@ -439,7 +453,7 @@ func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error
 	// command would emit, then abort the pipeline.
 	fmt.Fprintln(os.Stderr, "\n❌ Internal-package contract convention violations:")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprint(os.Stderr, res.FormatText())
+	fmt.Fprint(os.Stderr, contractcheck.AsResult(fs).FormatText())
 	fmt.Fprintln(os.Stderr, "Aborting before bootstrap codegen — fix the contract.go names above and retry.")
 	return cliutil.UserErr("forge generate (pre-codegen contract check)",
 		"internal-package contracts must declare 'type Service interface', 'type Deps struct', and 'func New(Deps) Service'",

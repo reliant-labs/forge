@@ -42,40 +42,12 @@ import (
 // snippet — when present, it runs in the project root and the migration
 // is treated as "needed" only if the command exits 0 (matched something).
 
-// migrationSkillSources are the embedded-template path prefixes where
-// migration skills live. We walk BOTH:
-//
-//   - "migrations" — the new convention (Agent A's kcl-schemas-to-module
-//     and Agent D's dev-target-to-kcl-deploy land here). Every subdir is
-//     a migration; nothing else lives in this tree.
-//   - "migration" — the legacy tree carries v*-to-* migration skills
-//     (e.g. v0.1-to-v0.2, v0.x-to-contractkit) alongside non-migration
-//     sub-skills (cli, service, upgrade, top-level SKILL.md). We only
-//     pick up subdirs that match the v*-to-* shape so the general
-//     migration sub-skills don't leak into `forge upgrade list`.
-//
-// Both trees ship `name:` / `description:` / `applies-from:` /
-// `applies-to:` / `detection:` frontmatter, so the parser is shared.
-var migrationSkillSources = []migrationSource{
-	{root: "migrations", filter: nil},          // new — accept every subdir
-	{root: "migration", filter: isVersionDir},  // legacy — accept v*-to-* only
-}
-
-// migrationSource is one entry in migrationSkillSources: an embedded
-// template root plus an optional dir-name filter applied to direct
-// children. A nil filter means "accept every subdir".
-type migrationSource struct {
-	root   string
-	filter func(dir string) bool
-}
-
-// isVersionDir reports whether `dir` looks like a v*-to-* migration
-// directory (e.g. "v0.1-to-v0.2", "v0.x-to-contractkit"). Used to filter
-// the legacy `migration/` tree down to actual migrations and drop the
-// non-migration sub-skills that share the dir (cli, service, upgrade).
-func isVersionDir(dir string) bool {
-	return strings.HasPrefix(dir, "v") && strings.Contains(dir, "-to-")
-}
+// migrationSkillsRoot is the embedded-template path prefix where every
+// migration skill lives. Every direct subdirectory of this root is a
+// migration; nothing else lives here. Migration skills ship `name:` /
+// `description:` / `applies-from:` / `applies-to:` / `detection:`
+// frontmatter, parsed by parseMigrationFrontmatter below.
+const migrationSkillsRoot = "migrations"
 
 // migrationsStateFile is the on-disk record of applied migrations,
 // relative to the project root. The file is JSON; absent file means
@@ -251,46 +223,26 @@ func computePendingMigrations() ([]pendingMigration, error) {
 	return out, nil
 }
 
-// loadMigrationMetas enumerates every SKILL.md under each root in
-// migrationSkillSources in the embedded templates and parses its
-// frontmatter. IDs are deduplicated across sources — the first source
-// to declare a given ID wins, which keeps the new `migrations/` tree as
-// the authoritative location when a migration moves from legacy to new.
+// loadMigrationMetas enumerates every SKILL.md under
+// skills/forge/migrations/ in the embedded templates and parses its
+// frontmatter. Every direct subdirectory of migrationSkillsRoot is a
+// migration — the tree is single-purpose, so no filtering is required.
 func loadMigrationMetas() ([]migrationMeta, error) {
-	var out []migrationMeta
-	seen := map[string]bool{}
-	for _, src := range migrationSkillSources {
-		metas := loadMigrationMetasFrom(src)
-		for _, m := range metas {
-			if seen[m.ID] {
-				continue
-			}
-			seen[m.ID] = true
-			out = append(out, m)
-		}
-	}
-	return out, nil
-}
-
-// loadMigrationMetasFrom scans one migrationSource and returns the
-// migrations found there. A missing root (e.g. `migrations/` in a build
-// that predates Agent A) yields nil, not an error — the outer loop
-// happily skips empty sources.
-func loadMigrationMetasFrom(src migrationSource) []migrationMeta {
 	// The skills tree is rooted under "forge" in the embedded FS, so
-	// the relative scan path is "forge/<root>".
-	relRoot := path.Join("forge", src.root)
+	// the relative scan path is "forge/<migrationSkillsRoot>".
+	relRoot := path.Join("forge", migrationSkillsRoot)
 	entries, err := templates.ProjectTemplates().List(path.Join("skills", relRoot))
 	if err != nil {
-		// Missing root is fine — the other source(s) may still have
-		// migrations. Callers see an empty slice here.
-		return nil
+		// Missing root — no migrations shipped. Not an error: an
+		// installation might predate the migration-skill convention.
+		return nil, nil
 	}
 
 	var out []migrationMeta
 	for _, rel := range entries {
-		// `entries` are paths relative to skills/forge/<root>, e.g.
-		// "dev-target-to-kcl-deploy/SKILL.md" or "v0.1-to-v0.2/SKILL.md".
+		// `entries` are paths relative to skills/forge/migrations/,
+		// e.g. "dev-target-to-kcl-deploy/SKILL.md" or
+		// "v0.1-to-v0.2/SKILL.md".
 		if !strings.HasSuffix(rel, "/SKILL.md") {
 			continue
 		}
@@ -301,12 +253,6 @@ func loadMigrationMetasFrom(src migrationSource) []migrationMeta {
 		if strings.Contains(id, "/") {
 			continue
 		}
-		// Apply the source-specific filter — the legacy `migration/`
-		// tree mixes general sub-skills (cli, service, upgrade) in with
-		// the v*-to-* migrations, so the filter narrows it down.
-		if src.filter != nil && !src.filter(id) {
-			continue
-		}
 
 		content, err := templates.ProjectTemplates().Get(path.Join("skills", relRoot, rel))
 		if err != nil {
@@ -314,10 +260,10 @@ func loadMigrationMetasFrom(src migrationSource) []migrationMeta {
 		}
 		m := parseMigrationFrontmatter(content)
 		m.ID = id
-		m.SkillPath = path.Join(src.root, id)
+		m.SkillPath = path.Join(migrationSkillsRoot, id)
 		out = append(out, m)
 	}
-	return out
+	return out, nil
 }
 
 // parseMigrationFrontmatter extracts the migration-skill-specific fields

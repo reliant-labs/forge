@@ -22,7 +22,7 @@ category) tells you which one you're in:
   an initial migration from the entities. Proto leads, migrations track.
 
 - **Migrated (migrations authoritative).** When you bring an existing
-  schema into forge via `migration/service` or `migration/cli`, the
+  schema into forge via `migration-service` or `migration-cli`, the
   migrations carry the schema and proto entities become **advisory**.
   `forge generate` does not regenerate migrations from proto. If you
   removed proto entities entirely, `forge audit` reports

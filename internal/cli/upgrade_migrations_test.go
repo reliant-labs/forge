@@ -45,20 +45,19 @@ func TestLoadMigrationMetas_FindsDevTargetSkill(t *testing.T) {
 	}
 }
 
-// TestLoadMigrationMetas_FindsLegacyVersionDirs verifies the walker
-// also picks up v*-to-* skills from the legacy `migration/` tree (e.g.
-// v0.1-to-v0.2, v0.x-to-contractkit). These predate the dedicated
-// `migrations/` tree but should still surface in `forge upgrade list`
-// so projects pinned to old forge versions see their full worklist.
-func TestLoadMigrationMetas_FindsLegacyVersionDirs(t *testing.T) {
+// TestLoadMigrationMetas_FindsVersionDirs verifies the walker picks up
+// v*-to-* migration skills (e.g. v0.1-to-v0.2, v0.x-to-contractkit).
+// These shipped for several forge versions and are stable anchors for
+// pinning the discovery convention.
+func TestLoadMigrationMetas_FindsVersionDirs(t *testing.T) {
 	metas, err := loadMigrationMetas()
 	if err != nil {
 		t.Fatalf("loadMigrationMetas: %v", err)
 	}
 
-	// Spot-check a couple of legacy IDs that should be present. We don't
-	// pin the full set — new migrations land all the time — but these
-	// have shipped for several forge versions and are stable anchors.
+	// Spot-check a couple of IDs that should be present. We don't pin
+	// the full set — new migrations land all the time — but these have
+	// shipped for several forge versions and are stable anchors.
 	wantSome := []string{"v0.1-to-v0.2", "v0.x-to-contractkit"}
 	got := make(map[string]string)
 	for _, m := range metas {
@@ -71,37 +70,14 @@ func TestLoadMigrationMetas_FindsLegacyVersionDirs(t *testing.T) {
 			for k := range got {
 				ids = append(ids, k)
 			}
-			t.Fatalf("legacy migration %q not discovered; got IDs: %v", id, ids)
+			t.Fatalf("migration %q not discovered; got IDs: %v", id, ids)
 		}
-		// Legacy migrations live under "migration/" (singular). The
+		// All migrations live under "migrations/" (plural). The
 		// SkillPath flows into `forge skill load <path>` so the prefix
 		// must reflect the on-disk root.
-		want := "migration/" + id
+		want := "migrations/" + id
 		if skillPath != want {
-			t.Errorf("legacy %s SkillPath = %q, want %q", id, skillPath, want)
-		}
-	}
-}
-
-// TestLoadMigrationMetas_SkipsLegacyNonMigrationSubskills ensures the
-// non-migration sub-skills that live alongside v*-to-* dirs (cli,
-// service, upgrade, the top-level migration SKILL.md) are NOT surfaced
-// as migrations. Those are general-purpose skills, not version-gated
-// migrations, and would noise up `forge upgrade list` if they leaked.
-func TestLoadMigrationMetas_SkipsLegacyNonMigrationSubskills(t *testing.T) {
-	metas, err := loadMigrationMetas()
-	if err != nil {
-		t.Fatalf("loadMigrationMetas: %v", err)
-	}
-	bad := map[string]bool{
-		"cli":       true,
-		"service":   true,
-		"upgrade":   true,
-		"migration": true, // top-level SKILL.md if it ever flattened
-	}
-	for _, m := range metas {
-		if bad[m.ID] {
-			t.Errorf("non-migration sub-skill %q leaked into migration list", m.ID)
+			t.Errorf("%s SkillPath = %q, want %q", id, skillPath, want)
 		}
 	}
 }

@@ -22,18 +22,16 @@
 //   - users own the extension shape (AppExtras) — never touched.
 package app
 
-{{- if or .HasDatabase .OrmEnabled}}
-
 import (
 {{- if .HasDatabase}}
 	"database/sql"
 {{- end}}
+	"net/http"
 {{- if .OrmEnabled}}
 
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 )
-{{- end}}
 
 // App holds the complete bootstrapped application.
 //
@@ -65,6 +63,13 @@ type App struct {
 {{- if .OrmEnabled}}
 	ORM      *orm.Client
 {{- end}}
+	// RESTHandler is the vanguard-wrapped Connect mux installed when
+	// `api.rest: true`. It serves REST↔Connect↔gRPC on the same handler
+	// chain; cmd-server.go reads this and substitutes it for the bare mux
+	// when non-nil. nil (default, REST off) means cmd-server falls back to
+	// the bare mux. The field is always emitted so cmd-server.go can read
+	// it unconditionally — keeping the templated branch out of cmd-server.
+	RESTHandler http.Handler
 
 	// AppExtras is the user-owned extension surface (see pkg/app/app_extras.go).
 	// Embedded as a pointer so user fields are reachable via app.<Field>

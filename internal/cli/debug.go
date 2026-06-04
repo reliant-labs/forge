@@ -193,7 +193,7 @@ Examples:
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dockerMode {
-				return runDebugStartDocker(cmd)
+				return runDebugStartDocker()
 			}
 			if attachPID > 0 {
 				return runDebugStartAttach(attachPID, jsonOutput)
@@ -327,7 +327,7 @@ func runDebugStartService(target string, port int, jsonOutput bool) error {
 	return nil
 }
 
-func runDebugStartDocker(cmd *cobra.Command) error {
+func runDebugStartDocker() error {
 	// Start the debug container.
 	startCmd := exec.Command("docker", "compose", "--profile", "debug", "up", "-d", "app-debug")
 	startCmd.Stdout = os.Stdout

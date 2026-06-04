@@ -99,9 +99,10 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		// use EqualFold against the hyphenated literal.
 		cfg.Frontends[i].Type = strings.ToLower(strings.TrimSpace(cfg.Frontends[i].Type))
 		// Accept legacy snake_case spellings from earlier forge generators.
-		if cfg.Frontends[i].Type == "react_native" {
+		switch cfg.Frontends[i].Type {
+		case "react_native":
 			cfg.Frontends[i].Type = "react-native"
-		} else if cfg.Frontends[i].Type == "vite_spa" {
+		case "vite_spa":
 			cfg.Frontends[i].Type = "vite-spa"
 		}
 	}

@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,6 +245,124 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 	// Without packages, should not contain Packages struct
 	if strings.Contains(content, `type Packages struct`) {
 		t.Error("bootstrap.go without packages should not contain Packages struct")
+	}
+}
+
+// TestGenerateBootstrap_RESTDisabled_NoVanguard verifies the default
+// path: when `api.rest:` is absent / false, the generated bootstrap.go
+// has no vanguard import, no transcoder wiring, and is byte-identical
+// to the pre-vanguard shape. Existing projects must regenerate
+// unchanged.
+func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
+	targetDir := t.TempDir()
+
+	// Write a forge.yaml that does NOT set api.rest. The bootstrap should
+	// see this as the canonical Connect-only mode.
+	yaml := "name: proj\nmodule_path: example.com/proj\n"
+	if err := os.WriteFile(filepath.Join(targetDir, "forge.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
+	}
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "connectrpc.com/vanguard") {
+		t.Error("bootstrap.go should NOT import vanguard when api.rest is off")
+	}
+	if strings.Contains(content, "vanguard.NewTranscoder") {
+		t.Error("bootstrap.go should NOT call vanguard.NewTranscoder when api.rest is off")
+	}
+	if strings.Contains(content, "app.RESTHandler =") {
+		t.Error("bootstrap.go should NOT assign app.RESTHandler when api.rest is off")
+	}
+}
+
+// TestGenerateBootstrap_RESTEnabled_WrapsMux verifies that a project
+// with `api.rest: true` in forge.yaml regenerates bootstrap.go with:
+//   - a `connectrpc.com/vanguard` import,
+//   - a `vanguard.NewTranscoder(...)` call inside both Bootstrap and
+//     BootstrapOnly, populated with one entry per service keyed by the
+//     Connect-generated `<X>ServiceName` constant, and
+//   - the wrapped handler stored on `app.RESTHandler`.
+//
+// The generated app_gen.go grows a `RESTHandler http.Handler` field;
+// this test confirms the field is always emitted so cmd-server.go can
+// read it unconditionally without a templated branch.
+func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
+	targetDir := t.TempDir()
+
+	yaml := "name: proj\nmodule_path: example.com/proj\napi:\n  rest: true\n"
+	if err := os.WriteFile(filepath.Join(targetDir, "forge.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
+		{Name: "OrdersService", ModulePath: "example.com/proj"},
+	}
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+	if err := GenerateAppGen(false, false, len(services) > 0, false, false, false, targetDir, nil); err != nil {
+		t.Fatalf("GenerateAppGen() error = %v", err)
+	}
+
+	bootstrap, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(bootstrap) error = %v", err)
+	}
+	bContent := string(bootstrap)
+
+	if !strings.Contains(bContent, `"connectrpc.com/vanguard"`) {
+		t.Error("bootstrap.go should import connectrpc.com/vanguard when api.rest is on")
+	}
+	if !strings.Contains(bContent, "vanguard.NewTranscoder(vanguardSvcs)") {
+		t.Errorf("bootstrap.go should call vanguard.NewTranscoder; got:\n%s", bContent)
+	}
+	// Per-service NewService call with the connect ServiceName constant.
+	if !strings.Contains(bContent, "apiv1connect.APIServiceName") {
+		t.Error("bootstrap.go should reference apiv1connect.APIServiceName for APIService")
+	}
+	if !strings.Contains(bContent, "ordersv1connect.OrdersServiceName") {
+		t.Error("bootstrap.go should reference ordersv1connect.OrdersServiceName for OrdersService")
+	}
+	if !strings.Contains(bContent, "app.RESTHandler = transcoder") {
+		t.Error("bootstrap.go should assign the transcoder to app.RESTHandler")
+	}
+	// Both Bootstrap and BootstrapOnly should wrap — count occurrences.
+	if got := strings.Count(bContent, "vanguard.NewTranscoder"); got != 2 {
+		t.Errorf("bootstrap.go should call vanguard.NewTranscoder twice (Bootstrap + BootstrapOnly); got %d", got)
+	}
+	// Connect imports should appear in the import block.
+	if !strings.Contains(bContent, `"example.com/proj/gen/services/api/v1/apiv1connect"`) {
+		t.Errorf("bootstrap.go should import the apiv1connect package; got:\n%s", bContent)
+	}
+
+	appGen, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "app_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(app_gen) error = %v", err)
+	}
+	if !strings.Contains(string(appGen), "RESTHandler http.Handler") {
+		t.Error("app_gen.go should declare RESTHandler http.Handler on App")
+	}
+
+	// Sanity-parse the generated bootstrap.go to catch templating bugs
+	// that produce non-Go syntax (mismatched braces, double-emitted
+	// blocks, etc.) — the REST wrap nests two blocks per Bootstrap
+	// function and is easy to mis-edit.
+	fset := token.NewFileSet()
+	if _, perr := parser.ParseFile(fset, "bootstrap.go", bContent, parser.AllErrors); perr != nil {
+		t.Fatalf("rendered bootstrap.go does not parse as valid Go:\n%v\n\nSource:\n%s", perr, bContent)
 	}
 }
 

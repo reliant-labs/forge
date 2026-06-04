@@ -969,6 +969,18 @@ func runAddFrontend(name string, port int, kind string) error {
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
+	// When the frontend just added is React Native AND workspaces are
+	// on, scaffold the @<scope>/ui-native primitives package alongside.
+	// The forge.yaml hasn't been written back to disk yet at this
+	// point so HasReactNativeFrontend(cfg) can't see the new entry —
+	// we detect via the explicit `kind == "mobile"` we already
+	// branched on a few lines up.
+	if workspaces && kind == "mobile" {
+		layout := generator.NewFrontendWorkspaceLayout(cfg.Name)
+		if err := generator.WriteUINativePackageFiles(root, layout); err != nil {
+			return fmt.Errorf("write ui-native package files: %w", err)
+		}
+	}
 
 	// Update forge.yaml
 	cfg.Frontends = append(cfg.Frontends, config.FrontendConfig{

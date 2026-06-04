@@ -190,7 +190,7 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 // recordFrozenChecksums records checksums for all frozen files managed by
 // `forge upgrade`. This must be called after the frozen files have been
 // written to disk so that new projects have baseline checksums.
-func (g *ProjectGenerator) recordFrozenChecksums(templateData interface{}) error {
+func (g *ProjectGenerator) recordFrozenChecksums() error {
 	return RecordFrozenChecksums(g.Path, g.effectiveBinary(), g.effectiveKind())
 }
 

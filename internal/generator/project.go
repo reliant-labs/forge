@@ -269,6 +269,12 @@ func (g *ProjectGenerator) Generate() error {
 		// at forge/pkg. The Dockerfile template uses this to gate the
 		// COPY .forge-pkg/ ./.forge-pkg/ line.
 		LocalForgePkgVendored bool
+		// RESTEnabled mirrors the `api.rest` toggle in forge.yaml. At
+		// scaffold time this is always false (REST is opt-in via post-
+		// scaffold edit), but the field is declared here so buf.yaml's
+		// dep gate has a known input shape; `forge upgrade` regenerates
+		// buf.yaml from the live forge.yaml's api.rest value.
+		RESTEnabled bool
 	}{
 		Name:                   g.Name,
 		ProtoName:              protoName,
@@ -286,6 +292,10 @@ func (g *ProjectGenerator) Generate() error {
 		// false by default — only flipped by RegenerateInfraFiles after
 		// dev-mode vendoring has run.
 		LocalForgePkgVendored: false,
+		// REST is off at scaffold time; users opt-in post-scaffold by
+		// editing forge.yaml's `api.rest:` and re-running `forge generate`
+		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
+		RESTEnabled: false,
 	}
 
 	// Strip migration-related config fields when migrations are disabled.
@@ -367,7 +377,7 @@ func (g *ProjectGenerator) Generate() error {
 		files = append(files,
 			struct{ template, dest string }{"go.work.tmpl", "go.work"},
 			struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"},
-			struct{ template, dest string }{"buf.yaml", "buf.yaml"},
+			struct{ template, dest string }{"buf.yaml.tmpl", "buf.yaml"},
 			struct{ template, dest string }{"buf.gen.yaml", "buf.gen.yaml"},
 			struct{ template, dest string }{"tools.go.tmpl", "tools/tools.go"},
 		)
@@ -377,7 +387,7 @@ func (g *ProjectGenerator) Generate() error {
 		files = append(files,
 			struct{ template, dest string }{"go.work.tmpl", "go.work"},
 			struct{ template, dest string }{"gen-go.mod.tmpl", "gen/go.mod"},
-			struct{ template, dest string }{"buf.yaml", "buf.yaml"},
+			struct{ template, dest string }{"buf.yaml.tmpl", "buf.yaml"},
 			struct{ template, dest string }{"buf.gen.yaml", "buf.gen.yaml"},
 			struct{ template, dest string }{"tools.go.tmpl", "tools/tools.go"},
 		)
@@ -619,7 +629,7 @@ func (g *ProjectGenerator) Generate() error {
 	// Record checksums for frozen (Tier-2) files now that every managed
 	// file has been written. `forge upgrade` uses these checksums to
 	// distinguish stale codegen from user edits.
-	if err := g.recordFrozenChecksums(templateData); err != nil {
+	if err := g.recordFrozenChecksums(); err != nil {
 		return fmt.Errorf("failed to record frozen file checksums: %w", err)
 	}
 
@@ -801,6 +811,13 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	if err := WriteFrontendWorkspaceFiles(g.Path, g.Name, g.FrontendWorkspaces); err != nil {
 		return fmt.Errorf("write frontend workspace files: %w", err)
 	}
+	// `forge new` doesn't currently support scaffolding an RN frontend
+	// as the initial one (the FrontendName path always uses Next.js —
+	// kind="" → frontendTemplateDir returns "nextjs"). So WriteUINativePackageFiles
+	// isn't reachable here in practice; users add the RN frontend via
+	// `forge add frontend --kind mobile` which already wires it up.
+	// If the initial-RN-frontend path ever lands, gate the call here
+	// the same way add.go does.
 	return GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
 		Workspaces: g.FrontendWorkspaces,
 	})

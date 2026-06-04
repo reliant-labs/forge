@@ -79,6 +79,13 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	if opts.Workspaces {
 		data.ApiPackage = layout.ApiPackage
 		data.HooksPackage = layout.HooksPackage
+		data.UIWebPackage = layout.UIWebPackage
+		// UINativePackage only surfaces in mobile (RN) templates —
+		// the nextjs and vite-spa templates don't reference it (the
+		// `{{.UINativePackage}}` tag never appears under those template
+		// trees). Populate unconditionally for workspaces=on so the
+		// RN package.json can refer to it; Next.js renders ignore it.
+		data.UINativePackage = layout.UINativePackage
 	}
 
 	for _, file := range frontendFiles {
@@ -87,10 +94,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 			return fmt.Errorf("render frontend template %s: %w", file, err)
 		}
 
-		destFile := file
-		if strings.HasSuffix(destFile, ".tmpl") {
-			destFile = strings.TrimSuffix(destFile, ".tmpl")
-		}
+		destFile := strings.TrimSuffix(file, ".tmpl")
 
 		destPath := filepath.Join(frontendDir, destFile)
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
@@ -126,9 +130,16 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	// Install core web UI components for browser-targeted frontends (Next.js
-	// and Vite SPA). React Native uses platform-specific primitives and should
-	// not receive web components.
-	if tmplDir == "nextjs" || tmplDir == "vite-spa" {
+	// and Vite SPA). React Native uses platform-specific primitives and
+	// should not receive web components.
+	//
+	// In workspaces mode the components live ONCE under packages/ui-web/
+	// (emitted separately by WriteUIWebPackageFiles); frontends import them
+	// via the `@<scope>/ui-web` workspace dep + a tsconfig path mapping
+	// that redirects `@/components/*` → `packages/ui-web/src/components/*`.
+	// Skipping the per-frontend copy here is what makes the multi-frontend
+	// case stop diverging.
+	if (tmplDir == "nextjs" || tmplDir == "vite-spa") && !opts.Workspaces {
 		if err := installCoreComponents(frontendDir); err != nil {
 			return fmt.Errorf("install core components: %w", err)
 		}

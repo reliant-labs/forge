@@ -21,7 +21,19 @@ import (
 // browser-targeted frontends (nextjs + vite-spa). Called during `forge
 // generate` so existing projects pick up any new core components added in
 // newer forge versions.
+//
+// In workspaces mode there is no per-frontend src/components/ui/ to
+// populate — the shared component library lives at packages/ui-web/.
+// We ensure it once and skip the per-frontend loop; the tsconfig path
+// mapping (and Vite alias) emitted by the frontend templates routes
+// `@/components/*` imports there.
 func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
+	if cfg.IsFrontendWorkspacesEnabled() {
+		if err := generator.WriteUIWebPackageFiles(projectDir, cfg.Name, true); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: ui-web package scaffold failed: %v\n", err)
+		}
+		return
+	}
 	for _, fe := range cfg.Frontends {
 		feType := strings.ToLower(strings.TrimSpace(fe.Type))
 		if feType != "nextjs" && feType != "vite-spa" {

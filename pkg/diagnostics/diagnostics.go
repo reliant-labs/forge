@@ -6,8 +6,10 @@ package diagnostics
 // JSON-marshalable so `forge audit --json` can roll them up under a
 // new audit category without forcing a separate wire format. Field
 // names match the canonical lint diagnostic shape from
-// `internal/linter/forgeconv/forgeconv.go::Finding` so dashboards that
-// already consume forge JSON don't need new column mappings.
+// `internal/linter/forgeconv/forgeconv.go::Finding` (the canonical
+// lint-finding shape, shared with internal/contractcheck) so
+// dashboards that already consume forge JSON don't need new column
+// mappings.
 
 // Kind classifies an unwired scaffold by detection rule.
 //

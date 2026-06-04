@@ -1,6 +1,6 @@
-// File: internal/linter/forgeconv/interactor_deps_are_interfaces.go
+// File: internal/contractcheck/interactor_deps_are_interfaces.go
 //
-// The forgeconv-interactor-deps-are-interfaces analyzer warns when an
+// The forgeconv-interactor-deps-are-interfaces rule warns when an
 // interactor package declares a `Deps` struct field whose type is a
 // concrete struct pointer (or a concrete struct value) rather than an
 // interface. The marker `// forge:interactor` opts a package into the
@@ -33,8 +33,12 @@
 // Severity is warning. The rule is opinionated and a project may
 // legitimately need a concrete dep (e.g. a process-local cache), so
 // we surface the design pressure without gating the build.
+//
+// Migrated from internal/linter/forgeconv/interactor_deps_are_interfaces.go
+// on 2026-06-04. Detection logic is preserved verbatim; only the
+// surrounding API moved.
 
-package forgeconv
+package contractcheck
 
 import (
 	"fmt"
@@ -46,17 +50,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
-// LintInteractorDepsAreInterfaces walks rootDir/internal/ for packages
+// lintInteractorDepsAreInterfaces walks rootDir/internal/ for packages
 // marked `// forge:interactor`, locates each package's `type Deps
 // struct`, and warns on every concrete-typed field that isn't an
 // interface. Returns findings in deterministic order (file, then
 // line). A missing internal/ tree is not an error.
-func LintInteractorDepsAreInterfaces(rootDir string) (Result, error) {
+func lintInteractorDepsAreInterfaces(rootDir string) (forgeconv.Result, error) {
 	internalDir := filepath.Join(rootDir, "internal")
 	if _, err := os.Stat(internalDir); os.IsNotExist(err) {
-		return Result{}, nil
+		return forgeconv.Result{}, nil
 	}
 
 	var pkgDirs []string
@@ -83,15 +89,15 @@ func LintInteractorDepsAreInterfaces(rootDir string) (Result, error) {
 		return nil
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("walk %s: %w", internalDir, err)
+		return forgeconv.Result{}, fmt.Errorf("walk %s: %w", internalDir, err)
 	}
 	sort.Strings(pkgDirs)
 
-	var result Result
+	var result forgeconv.Result
 	for _, dir := range pkgDirs {
 		findings, lintErr := lintInteractorPkg(dir, rootDir)
 		if lintErr != nil {
-			return Result{}, lintErr
+			return forgeconv.Result{}, lintErr
 		}
 		result.Findings = append(result.Findings, findings...)
 	}
@@ -114,7 +120,7 @@ func LintInteractorDepsAreInterfaces(rootDir string) (Result, error) {
 // and the Deps struct may live in different files (typically
 // contract.go for the marker, interactor.go for the struct), so we
 // have to look at the package as a whole.
-func lintInteractorPkg(pkgDir, rootDir string) ([]Finding, error) {
+func lintInteractorPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
@@ -171,7 +177,7 @@ func lintInteractorPkg(pkgDir, rootDir string) ([]Finding, error) {
 		rel = depsPath
 	}
 
-	var findings []Finding
+	var findings []forgeconv.Finding
 	for _, field := range deps.Fields.List {
 		// Anonymous embedded fields (no Names) — skip; embedding a
 		// concrete type is a different smell that this rule doesn't
@@ -201,9 +207,9 @@ func lintInteractorPkg(pkgDir, rootDir string) ([]Finding, error) {
 		// site that needs an interface lift.
 		for _, n := range field.Names {
 			line := fset.Position(n.NamePos).Line
-			findings = append(findings, Finding{
-				Rule:     "forgeconv-interactor-deps-are-interfaces",
-				Severity: SeverityWarning,
+			findings = append(findings, forgeconv.Finding{
+				Rule:     string(RuleInteractorDepsAreInterfaces),
+				Severity: forgeconv.SeverityWarning,
 				File:     rel,
 				Line:     line,
 				Message: fmt.Sprintf(

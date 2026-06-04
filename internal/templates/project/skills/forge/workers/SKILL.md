@@ -7,6 +7,15 @@ description: Background workers — adding, implementing, and testing workers (i
 
 Workers are long-running background processes that don't serve HTTP but participate in the single-binary lifecycle with the same dependency injection and graceful shutdown as services.
 
+## Naming
+
+Worker names canonicalize to lowercase with `-` and `_` stripped. The canonical form is what appears on disk, in the Go package decl, in `wire_gen.go` imports, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
+
+- `forge add worker calibrator_refit` → directory `workers/calibratorrefit/`, `package calibratorrefit`, `path: workers/calibratorrefit` in `forge.yaml`.
+- `forge add worker email-sender` → directory `workers/emailsender/`, `package emailsender`, `path: workers/emailsender`.
+
+**Migrating from a non-forge codebase:** if you have existing worker directories named `snake_case` or `kebab-case`, rename them to the canonical form *before* running `forge generate`. Otherwise `forge generate` will write `bootstrap.go` / `wire_gen.go` imports pointing at the canonical name (e.g. `workers/calibratorrefit`) while the code lives under the original (`workers/calibrator_refit/`), and the build will fail with missing-package errors. The canonical form in `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+
 ## Adding a Worker
 
 ```bash
@@ -152,7 +161,7 @@ func TestWorkerProcessesMessage(t *testing.T) {
 
 - `Start()` must respect context cancellation — always select on `ctx.Done()`.
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
-- Worker names must be valid Go identifiers (lowercase, no hyphens).
+- Worker names canonicalize to lowercase with `-` and `_` stripped — see the Naming section. On-disk directories must match the canonical form.
 - Use `forge add worker`, not manual directory creation.
 - `bootstrap.go` is regenerated — wire custom dependencies in `setup.go`.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

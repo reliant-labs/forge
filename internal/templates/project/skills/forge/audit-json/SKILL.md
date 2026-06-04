@@ -348,10 +348,10 @@ with mismatched expectations.
 ## When this skill is not enough
 
 - **What `forge generate` is doing under the hood** — see
-  `architecture` and the per-version `migration/v0.x-to-*` skills.
+  `architecture` and the per-version `migrations/v0.x-to-*` skills.
 - **CI workflow generation** (where the audit workflow plugs in) —
   see `ci`.
 - **Tier-1 vs Tier-2 banner classification** — see `architecture`
   ("Three precise classes") and `pack-development`.
 - **Drift remediation** (regenerate vs accept hand-edits) — see
-  `migration/upgrade`.
+  `migration-upgrade`.

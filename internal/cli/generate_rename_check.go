@@ -35,22 +35,17 @@ import (
 //
 // Non-Go Tier-1 files (TypeScript hooks, KCL deploy manifests, CI
 // YAML) are skipped — rename detection is currently scoped to Go.
+//
+// Manifest enumeration goes through checksums.Inspector so the
+// "Tier-1, non-forked, Go-file" classification lives in one place
+// shared with the dangling-ref check.
 func stepSnapshotTier1Exports(ctx *pipelineContext) error {
 	if ctx.Checksums == nil {
 		return nil
 	}
+	insp := checksums.NewInspector(ctx.AbsPath, ctx.Checksums)
 	snap := make(map[string]tier1Exports)
-	for relPath, entry := range ctx.Checksums.Files {
-		// Only Tier-1 (or legacy tier-0, treated as Tier-1).
-		if entry.Tier != 0 && entry.Tier != 1 {
-			continue
-		}
-		if entry.Forked {
-			continue
-		}
-		if !checksums.IsGoPath(relPath) {
-			continue
-		}
+	for _, relPath := range insp.Tier1GoFiles() {
 		content, err := os.ReadFile(filepath.Join(ctx.AbsPath, relPath))
 		if err != nil {
 			// File gone or unreadable — nothing to snapshot.

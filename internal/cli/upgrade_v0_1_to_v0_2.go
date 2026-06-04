@@ -17,7 +17,7 @@ import (
 // upgrade_v0_1_to_v0_2.go — codemod for the wire-gen migration.
 //
 // The migration story (see SKILL.md at
-// internal/templates/project/skills/forge/migration/v0.1-to-v0.2/):
+// internal/templates/project/skills/forge/migrations/v0.1-to-v0.2/):
 //
 //   - Two-phase Bootstrap → Setup → ApplyDeps becomes single-phase
 //     wire-then-construct. Setup builds infra and assigns to *App

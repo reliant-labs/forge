@@ -257,4 +257,4 @@ short enough that the wrapper has no leverage). Just call `buf` directly.
 - **Splitting a service's protos into multiple files** — see
   `proto-split`.
 - **The forge upgrade flow** (when forge itself ships a breaking
-  proto-shape change) — see `migration/upgrade`.
+  proto-shape change) — see `migration-upgrade`.

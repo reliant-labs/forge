@@ -171,7 +171,7 @@ forge upgrade --to <prior-version>      # pin back to the prior version
 - `testing-unit` skill — how to use the testkit helpers from a
   hand-written unit test (the harness pattern `pkg/app/testing.go`
   follows is the same one your tests can compose against).
-- `migration/v0.x-to-observe-libs` — the parallel observability
+- `migrations/v0.x-to-observe-libs` — the parallel observability
   library migration. Both follow the "library + thin shim" pattern.
-- `migration/v0.x-to-crud-lib` — the CRUD library migration; same
+- `migrations/v0.x-to-crud-lib` — the CRUD library migration; same
   shape, larger surface.

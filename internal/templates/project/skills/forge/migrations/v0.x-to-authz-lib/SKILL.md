@@ -205,5 +205,5 @@ older binary.
   alias) flows through unchanged.
 - `api` skill — `required_roles` and `auth_required` proto annotations
   that drive `methodRoles` / `methodAuthRequired`.
-- `migration/v0.x-to-contractkit` — canonical example of a per-version
+- `migrations/v0.x-to-contractkit` — canonical example of a per-version
   migration skill following this same six-section shape.

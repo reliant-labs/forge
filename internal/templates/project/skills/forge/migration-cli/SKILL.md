@@ -1,11 +1,11 @@
 ---
-name: cli
+name: migration-cli
 description: Migrate a CLI / library project to forge — --kind cli, second binaries, when contract.go isn't worth it.
 ---
 
 # Migrate a CLI or Library Project
 
-Use this skill when the existing project is a Cobra CLI binary, a code generator, an ops tool, or a pure Go library. For network-facing apps see `migration/service`. For prerequisites and the overall flow see `migration`.
+Use this skill when the existing project is a Cobra CLI binary, a code generator, an ops tool, or a pure Go library. For network-facing apps see `migration-service`. For prerequisites and the overall flow see `migration`.
 
 ## Scaffold
 
@@ -131,6 +131,6 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 
 ## When this skill is not enough
 
-- **Server-shaped projects** — see `migration/service`.
+- **Server-shaped projects** — see `migration-service`.
 - **Designing the interface in `contract.go`** for non-trivial packages — see `contracts`.
 - **Pre-flight, module path strategy, halt-and-report rule on forge bugs** — see `migration`.

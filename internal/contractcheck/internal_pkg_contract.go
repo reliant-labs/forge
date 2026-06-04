@@ -1,6 +1,6 @@
-// File: internal/linter/forgeconv/internal_pkg_contract.go
+// File: internal/contractcheck/internal_pkg_contract.go
 //
-// The forgeconv-internal-package-contract-names analyzer enforces the
+// The forgeconv-internal-package-contract-names rule enforces the
 // canonical naming convention every internal-package contract.go must
 // follow:
 //
@@ -15,7 +15,7 @@
 // references types that don't exist and the project fails to compile —
 // with errors pointing at generated code the user shouldn't touch.
 //
-// This analyzer surfaces the failure mode as an explicit lint finding before
+// This rule surfaces the failure mode as an explicit lint finding before
 // `forge generate` writes the broken bootstrap.
 //
 // The two-result form `(Service, error)` was introduced in Day-5 polish
@@ -24,8 +24,14 @@
 // scaffold templates emit the two-result form for new packages; the
 // single-result form remains accepted so pre-Day-5 packages continue to
 // pass lint until they're refactored.
+//
+// Migrated from internal/linter/forgeconv/internal_pkg_contract.go on
+// 2026-06-04 as part of collapsing forge's three contract-check entry
+// points onto a shared engine. The detection logic is byte-for-byte
+// preserved; only the surrounding API (export name → lowercase, return
+// type uses forgeconv.Result) changed.
 
-package forgeconv
+package contractcheck
 
 import (
 	"fmt"
@@ -38,22 +44,23 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
-// LintInternalContracts walks rootDir/internal/ for contract.go files and
-// asserts the canonical Service/Deps/New(Deps) Service shape. The excludes
-// argument carries module-relative directory paths (matching forge.yaml
-// `contracts.exclude`) that the walk must skip wholesale: those packages
-// are not bootstrap-managed (analyzer sub-packages, embed-only packages,
-// the cli surface itself), and their contract.go files are allowed to
-// declare alternate shapes.
+// lintInternalContracts walks rootDir/internal/ for contract.go files
+// and asserts the canonical Service/Deps/New(Deps) Service shape. The
+// excludes argument carries module-relative directory paths (matching
+// forge.yaml `contracts.exclude`) that the walk must skip wholesale:
+// those packages are not bootstrap-managed (analyzer sub-packages,
+// embed-only packages, the cli surface itself), and their contract.go
+// files are allowed to declare alternate shapes.
 //
 // Returns findings in deterministic order (file, then position).
-func LintInternalContracts(rootDir string, excludes []string) (Result, error) {
+func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result, error) {
 	internalDir := filepath.Join(rootDir, "internal")
 	if _, err := os.Stat(internalDir); os.IsNotExist(err) {
 		// No internal/ — nothing to check. Common in CLI/library projects.
-		return Result{}, nil
+		return forgeconv.Result{}, nil
 	}
 
 	// Delegate to the canonical [config.MatchExclude]. Pre-2026-06 this
@@ -104,12 +111,12 @@ func LintInternalContracts(rootDir string, excludes []string) (Result, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return Result{}, fmt.Errorf("walk %s: %w", internalDir, walkErr)
+		return forgeconv.Result{}, fmt.Errorf("walk %s: %w", internalDir, walkErr)
 	}
 
 	sort.Strings(pkgDirs)
 
-	var result Result
+	var result forgeconv.Result
 	for _, dir := range pkgDirs {
 		contractPath := filepath.Join(dir, "contract.go")
 		relContract, relErr := filepath.Rel(rootDir, contractPath)
@@ -118,9 +125,9 @@ func LintInternalContracts(rootDir string, excludes []string) (Result, error) {
 		}
 		findings, err := lintInternalContractPackage(relContract, dir)
 		if err != nil {
-			result.Findings = append(result.Findings, Finding{
-				Rule:     "forgeconv-internal-package-contract-names",
-				Severity: SeverityError,
+			result.Findings = append(result.Findings, forgeconv.Finding{
+				Rule:     string(RuleInternalPackageContractNames),
+				Severity: forgeconv.SeverityError,
 				File:     relContract,
 				Message:  fmt.Sprintf("failed to parse package: %v", err),
 				Remediation: "fix the syntax error and re-run; the analyzer needs parseable .go files " +
@@ -157,7 +164,7 @@ func LintInternalContracts(rootDir string, excludes []string) (Result, error) {
 // Returns one finding per missing/wrong piece so a completely-renamed
 // contract surfaces all three at once (Service / Deps / New) rather
 // than drip-feeding one violation per re-run.
-func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, error) {
+func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Finding, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
@@ -165,7 +172,7 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 
 	fset := token.NewFileSet()
 	var (
-		findings            []Finding
+		findings            []forgeconv.Finding
 		hasServiceInterface bool
 		hasDepsStruct       bool
 		hasNewFunc          bool
@@ -253,6 +260,22 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 		}
 	}
 
+	// Utility-package early-out: when the package declares ZERO
+	// interfaces in non-test, non-gen files, it cannot possibly have a
+	// `Service interface` and so isn't a Service-shape package the
+	// bootstrap template binds to. Skip silently. See
+	// utility_skip.go for the full design rationale.
+	//
+	// FRICTION 2026-06-02 / 2026-06-03: cp-forge migration shipped
+	// internal/config, internal/metrics, internal/billing/provideradapters,
+	// internal/db, internal/planlimits, internal/ratelimit (and others)
+	// as constants-and-structs utility packages with no interface
+	// surface. Each required a contracts.exclude entry that this
+	// early-out makes unnecessary.
+	if isUtilityPackage(interfaceCount) {
+		return nil, nil
+	}
+
 	// Interface-catalogue early-out: when the package declares >= 2
 	// interfaces AND no Deps struct AND no New func, it's clearly a
 	// catalogue of narrow interfaces consumed elsewhere — not a
@@ -295,9 +318,9 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 			line = 1
 			found = "no interface"
 		}
-		findings = append(findings, Finding{
-			Rule:     "forgeconv-internal-package-contract-names",
-			Severity: SeverityError,
+		findings = append(findings, forgeconv.Finding{
+			Rule:     string(RuleInternalPackageContractNames),
+			Severity: forgeconv.SeverityError,
 			File:     relPath,
 			Line:     line,
 			Message: fmt.Sprintf(
@@ -318,9 +341,9 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 			line = 1
 			found = "no struct"
 		}
-		findings = append(findings, Finding{
-			Rule:     "forgeconv-internal-package-contract-names",
-			Severity: SeverityError,
+		findings = append(findings, forgeconv.Finding{
+			Rule:     string(RuleInternalPackageContractNames),
+			Severity: forgeconv.SeverityError,
 			File:     relPath,
 			Line:     line,
 			Message: fmt.Sprintf(
@@ -340,9 +363,9 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]Finding, err
 			line = 1
 			found = "no constructor"
 		}
-		findings = append(findings, Finding{
-			Rule:     "forgeconv-internal-package-contract-names",
-			Severity: SeverityError,
+		findings = append(findings, forgeconv.Finding{
+			Rule:     string(RuleInternalPackageContractNames),
+			Severity: forgeconv.SeverityError,
 			File:     relPath,
 			Line:     line,
 			Message: fmt.Sprintf(

@@ -206,7 +206,7 @@ to `tdd.RunRPCCases` per the section-4 example.
 - `testing/unit` skill — the canonical unit-test shape for forge
   handlers.
 - `pkg/tdd/doc.go` — full library surface and design rationale.
-- `migration/v0.x-to-crud-lib` — sibling migration that shrank the
+- `migrations/v0.x-to-crud-lib` — sibling migration that shrank the
   generated CRUD *handler* (not the test) to a thin shim. Same pattern.
 - `forge lint --tests` — runs `forgeconv-handler-tests-use-tdd`, the
   warning-level lint that nudges hand-rolled `tests := []struct{name,

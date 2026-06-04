@@ -9,10 +9,11 @@ import "text/template"
 // preserved so future per-package generators can reuse it without
 // re-deriving Imports / InterfaceNames.
 type templateData struct {
-	Package        string
-	Imports        []string
-	Interfaces     []InterfaceDef
-	InterfaceNames map[string]bool // local interface names (for zeroValue)
+	Package          string
+	Imports          []string
+	Interfaces       []InterfaceDef
+	InterfaceNames   map[string]bool   // local interface names (for zeroValue)
+	PrimitiveAliases map[string]string // local named primitive aliases (for zeroValue)
 }
 
 // contractkitImport is the canonical import path injected for the mock
@@ -61,7 +62,7 @@ func (m *Mock{{ $iface.Name }}) {{ $m.Name }}({{ $m.ParamSignature }}){{ with $m
 		{{ if $m.HasResults }}return {{ end }}m.{{ $m.Name }}Func({{ $m.CallArgs }}){{ if not $m.HasResults }}
 		return{{ end }}
 	}
-{{ if $m.HasResults }}	return {{ $m.ZeroResults (printf "Mock%s" $iface.Name) $.InterfaceNames }}
+{{ if $m.HasResults }}	return {{ $m.ZeroResults (printf "Mock%s" $iface.Name) $.InterfaceNames $.PrimitiveAliases }}
 {{ end }}}
 
 {{ end -}}

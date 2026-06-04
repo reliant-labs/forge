@@ -139,6 +139,7 @@ Subcommands:
   forge add scenario <name>                       Scaffold a frontend mock scenario
   forge add webhook <name> --service S            Add a webhook endpoint to a service
   forge add package <name>                        Add a new internal package (alias for package new)
+  forge add adapter <name>                        Add an outbound adapter (HTTP/queue/storage gateway)
   forge add library <name>                        Scaffold a library-shaped package (no contract.go; pre-excluded)
   forge add handler-file <svc> <name>             Scaffold an additional RPC-group file in handlers/<svc>/`,
 	}
@@ -151,6 +152,7 @@ Subcommands:
 	cmd.AddCommand(newAddScenarioCmd())
 	cmd.AddCommand(newAddWebhookCmd())
 	cmd.AddCommand(newAddPackageCmd())
+	cmd.AddCommand(newAddAdapterCmd())
 	cmd.AddCommand(newAddBinaryCmd())
 	cmd.AddCommand(newAddLibraryCmd())
 	cmd.AddCommand(newAddHandlerFileCmd())

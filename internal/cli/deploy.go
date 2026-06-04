@@ -291,32 +291,109 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 
+	// Read rendered KCL to drive the host-mode rollout skip and the
+	// per-Job waiter for one-shot CronJobs. Missing KCL render is logged
+	// and treated as "no filter" (every Deployment in the namespace is
+	// awaited), preserving the pre-orchestration behaviour for projects
+	// that haven't migrated to the deploy module yet.
+	entities, kerr := RenderKCL(ctx, projectDir, envName)
+	if kerr != nil {
+		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
+	}
+
 	// Wait for rollouts. Discover the actually-applied Deployment names
 	// from the cluster rather than guess from cfg.Services — the schema
 	// prefixes shared-binary deployments with `<project>-<svc>` and KCL
 	// renders may add suffixes for component types (operator/worker).
 	//
-	// The per-env host-mode rollout skip is re-implemented in
-	// deliverable 4 from the rendered KCL output. Until that lands, every
-	// Deployment in the namespace is awaited (the pre-dev_target
-	// behaviour). Services that don't actually have a Deployment will
-	// simply not show up in listDeployments.
+	// Host-mode services declared `deploy: host` in KCL are excluded
+	// from the wait loop — they run as host processes and don't have a
+	// Deployment in the cluster.
 	fmt.Println("Waiting for rollouts...")
 	deployments, err := listDeployments(ctx, namespace)
 	if err != nil {
 		fmt.Printf("  Warning: list deployments: %v\n", err)
 	} else {
+		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
+		var skipped []string
 		for _, dep := range deployments {
+			if _, skip := hostSkip[dep]; skip {
+				skipped = append(skipped, dep)
+				continue
+			}
 			if err := waitForRollout(ctx, dep, namespace); err != nil {
 				fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
 			} else {
 				fmt.Printf("  %s: ready\n", dep)
 			}
 		}
+		if len(skipped) > 0 {
+			fmt.Printf("Skipped rollout wait for %d host-mode service(s): %s\n",
+				len(skipped), strings.Join(skipped, ", "))
+		}
+	}
+
+	// One-shot Job wait: CronJobs with empty Schedule were rendered as
+	// kind=Job (not CronJob), so kubectl wait --for=condition=complete
+	// gives the user a definitive done/fail signal before the deploy
+	// returns. Scheduled CronJobs are NOT waited on — they run on
+	// their own cadence and the deploy is done as soon as the manifest
+	// is applied.
+	if entities != nil {
+		for _, cj := range entities.CronJobs {
+			if cj.Schedule != "" {
+				continue
+			}
+			fmt.Printf("Waiting for one-shot Job %q to complete...\n", cj.Name)
+			if err := waitForJobComplete(ctx, cj.Name, namespace); err != nil {
+				fmt.Printf("  Warning: job %s: %v\n", cj.Name, err)
+			} else {
+				fmt.Printf("  %s: complete\n", cj.Name)
+			}
+		}
 	}
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// hostDeploymentSkipSetFromKCL returns the set of Deployment names that
+// the deploy's rollout wait should skip — services declared `deploy: host`
+// in the rendered KCL. Each host service name expands to two keys:
+//
+//   - the bare name ("admin-server"), matching per-service-binary mode
+//   - the project-prefixed name ("<project>-admin-server"), matching
+//     shared-binary mode where KCL renders `<project>-<svc>` Deployments
+//
+// Returning both is cheap and lets the caller iterate over actually-
+// applied Deployment names without re-deriving the project-prefix rule.
+// Empty entity set → empty skip set (legacy behaviour preserved).
+func hostDeploymentSkipSetFromKCL(cfg *config.ProjectConfig, e *KCLEntities) map[string]struct{} {
+	out := map[string]struct{}{}
+	if cfg == nil || e == nil {
+		return out
+	}
+	for _, name := range e.HostServiceNames() {
+		out[name] = struct{}{}
+		out[cfg.Name+"-"+name] = struct{}{}
+	}
+	return out
+}
+
+// waitForJobComplete blocks until the named Job in namespace reaches
+// `condition=complete`, surfacing a Failed condition or the kubectl
+// wait error verbatim. Timeout is 5m — Jobs in this lane are deploy-
+// time migrations / backfills, which routinely run for minutes.
+func waitForJobComplete(ctx context.Context, name, namespace string) error {
+	cmd := exec.CommandContext(ctx, "kubectl", "wait",
+		"--for=condition=complete",
+		"job/"+name,
+		"-n", namespace,
+		"--timeout=5m",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func gitShortSHA(ctx context.Context) (string, error) {

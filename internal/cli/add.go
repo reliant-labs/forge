@@ -64,9 +64,9 @@ func validateServiceName(name string) error {
 }
 
 // validateIdentifier checks that a name is valid for use as a service, worker,
-// or operator name. Hyphens are allowed since they are valid in module paths
-// and directory names; templates use snakeCase/pascalCase helpers to convert
-// when a Go identifier is needed (e.g. "admin-server" -> package "admin_server"
+// or operator name. Hyphens and underscores are allowed in the display name;
+// templates use snakeCase/pascalCase helpers to convert when a Go identifier
+// is needed (e.g. "admin-server" / "admin_server" -> package "adminserver"
 // and field "AdminServer"). The leading-character and reserved-word rules
 // match validateProjectName so all top-level scaffold names share one shape.
 func validateIdentifier(name string) error {
@@ -339,7 +339,7 @@ func runAddService(name string, port int, resume, force bool) error {
 	// Update forge.yaml (must happen before the generation pipeline
 	// so the pipeline sees the new service in the config). The Path uses
 	// the Go-package form so it matches the directory the scaffolder
-	// actually creates ("admin-server" -> handlers/admin_server).
+	// actually creates ("admin-server" -> handlers/adminserver).
 	//
 	// Under --resume / --force the service entry may already exist in
 	// forge.yaml; only append when this is a fresh add.

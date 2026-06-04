@@ -379,9 +379,10 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},      // no webhooks
 	}
 
-	// Snake-case package names match codegen.toServicePackage output.
+	// Compact-lowercase package names match codegen.toServicePackage output
+	// (post-2026 snake/kebab-stripping rule — "AdminServerService" -> "adminserver").
 	webhookServices := map[string]bool{
-		"admin_server": true,
+		"adminserver": true,
 	}
 
 	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, nil); err != nil {
@@ -1271,6 +1272,13 @@ func TestToServicePackage(t *testing.T) {
 		{"OrdersService", "orders"},
 		{"Service", "service"},
 		{"notifications", "notifications"},
+		// Multi-word PascalCase compacts to a single lowercase identifier
+		// (separators stripped) so the result agrees with
+		// generator.ServicePackageName on the equivalent CLI name
+		// ("admin-server" / "admin_server" -> "adminserver").
+		{"AdminServerService", "adminserver"},
+		{"admin-server", "adminserver"},
+		{"admin_server", "adminserver"},
 	}
 
 	for _, tt := range tests {
@@ -1375,22 +1383,27 @@ func TestComputeTestHelperName(t *testing.T) {
 // Workers struct field + the `wireWorkerCalibratorRefitDeps` function name,
 // not the underscore-preserving `Calibrator_refit` form that revive /
 // staticcheck ST1003 would flag.
+//
+// Post-2026: the on-disk Package + Go package identifier also compacts
+// ("calibrator_refit" -> "calibratorrefit") so workers/operators match Go
+// style. FieldName still derives from the original separator-bearing name
+// so the exported identifier reads as multiple words.
 func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 	cases := []struct {
-		name              string
-		wantPackage       string
-		wantFieldName     string
-		wantVarName       string
+		name          string
+		wantPackage   string
+		wantFieldName string
+		wantVarName   string
 	}{
-		// Snake-case → PascalCase via ToPascalCase. The directory + Go
-		// package stay snake_case so they remain filesystem-friendly.
-		{"calibrator_refit", "calibrator_refit", "CalibratorRefit", "calibratorRefit"},
-		// Hyphenated → underscored Package; PascalCase FieldName.
-		{"email-sender", "email_sender", "EmailSender", "emailSender"},
+		// Snake-case → compact pkg; PascalCase via ToPascalCase from the
+		// original name so word boundaries survive.
+		{"calibrator_refit", "calibratorrefit", "CalibratorRefit", "calibratorRefit"},
+		// Hyphenated → same compact rule.
+		{"email-sender", "emailsender", "EmailSender", "emailSender"},
 		// Single-word stays as-is (just upper-cased first letter).
 		{"refresh", "refresh", "Refresh", "refresh"},
 		// Initialism — ToPascalCase recognizes API and uppercases it.
-		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
+		{"api_poll", "apipoll", "APIPoll", "aPIPoll"},
 	}
 	for _, c := range cases {
 		got := WorkerDataFromNames([]string{c.name}, "")

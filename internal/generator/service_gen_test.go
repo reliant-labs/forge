@@ -8,6 +8,34 @@ import (
 	"testing"
 )
 
+// TestServicePackageName covers the kebab + snake -> compact-lowercase
+// rule. Both separator forms collapse to the same Go-package identifier
+// so the on-disk handler directory matches Go style (no_underscores) even
+// when the display name in forge.yaml uses snake_case.
+func TestServicePackageName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain lowercase passes through", "api", "api"},
+		{"single hyphen is stripped", "admin-server", "adminserver"},
+		{"single underscore is stripped", "calibrator_refit", "calibratorrefit"},
+		{"mixed hyphen and underscore both stripped", "calibrator_refit-worker", "calibratorrefitworker"},
+		{"uppercase is lowercased", "AdminServer", "adminserver"},
+		{"repeated separators all stripped", "a--b__c", "abc"},
+		{"empty stays empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ServicePackageName(tt.in)
+			if got != tt.want {
+				t.Errorf("ServicePackageName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 	root := t.TempDir()
 

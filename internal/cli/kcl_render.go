@@ -196,7 +196,12 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 		return nil, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
 	var out bytes.Buffer
-	cmd := exec.CommandContext(ctx, "kcl", "run", kclDir, "-o", "json")
+	// `kcl run -o <path>` writes to a file in kcl >= 0.11; for stdout
+	// JSON, use `--format json`. The previous `-o json` form was
+	// silently misread as "write to file named json", leaving stdout
+	// empty and every downstream consumer (forge run dispatch,
+	// lookupKCLHostDeploy) degrading to a nil result with no error.
+	cmd := exec.CommandContext(ctx, "kcl", "run", kclDir, "--format", "json")
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -207,9 +212,26 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,
 // dispatching each service's polymorphic deploy block.
+//
+// The forge KCL module convention is to wrap the contract document as
+//
+//	output = forge.render(_bundle)
+//
+// so the rendered JSON has the shape `{ "output": {services, ...},
+// "manifests": [...] }`. We unwrap "output" when present so the
+// in-tree contract (raw {services, ...} at root, no wrapper) and the
+// module-emitted contract (under "output") both parse.
 func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return &KCLEntities{}, nil
+	}
+	// Peek for an "output" wrapper. If present, recurse on its bytes —
+	// the inner shape is the same kclRenderRaw shape we already parse.
+	var wrapper map[string]json.RawMessage
+	if err := json.Unmarshal(data, &wrapper); err == nil {
+		if inner, ok := wrapper["output"]; ok && len(inner) > 0 {
+			data = inner
+		}
 	}
 	var raw kclRenderRaw
 	if err := json.Unmarshal(data, &raw); err != nil {

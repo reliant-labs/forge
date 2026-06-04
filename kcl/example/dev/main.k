@@ -19,12 +19,22 @@ import forge
 _bundle = forge.Bundle {
     services = [
         # Host-mode dev server with live-reload.
+        #
+        # env_vars carries reproducible per-env config (DATABASE_URL,
+        # LOG_LEVEL, …). secrets_file points at a gitignored dotenv
+        # for STRIPE_*, JWT_*, etc. forge run / forge up load
+        # secrets_file first, then layer env_vars on top so KCL wins.
         forge.Service {
             name = "admin-server"
             image = "example"
             deploy = forge.HostDeploy {
                 runner = "air"
                 air_config = ".air.toml"
+                env_vars = [
+                    forge.EnvVar { name = "LOG_LEVEL", value = "debug" }
+                    forge.EnvVar { name = "DATABASE_URL", value = "postgres://localhost:5432/example_dev?sslmode=disable" }
+                ]
+                secrets_file = ".env.dev.secrets"
             }
         }
         # Cluster-deployed proxy with ingress.

@@ -439,6 +439,25 @@ func runConventionLint() error {
 			return fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
+
+		// Handler-file size — warns when any handlers/<svc>/*.go grows
+		// past lint.handler_file_max_loc (default 1000). The threshold
+		// is project-configurable via forge.yaml. Warnings only — the
+		// nudge points at the future `forge add handler-file` split
+		// subcommand rather than blocking on file size.
+		cfg, cfgErr := loadProjectConfig()
+		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+			return fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
+		}
+		threshold := config.DefaultHandlerFileMaxLOC
+		if cfg != nil {
+			threshold = cfg.Lint.EffectiveHandlerFileMaxLOC()
+		}
+		sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
+		if err != nil {
+			return fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
+		}
+		combined.Findings = append(combined.Findings, sizeRes.Findings...)
 	}
 
 	// Component-tree analyzers — also run on workers/ and operators/

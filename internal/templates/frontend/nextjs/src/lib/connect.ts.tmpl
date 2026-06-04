@@ -87,13 +87,32 @@ function buildTransport(): Transport {
   });
 }
 
-export const transport = buildTransport();
+// Active transport. Module-level so the per-call connectClient() helper
+// resolves the current transport (not the one captured at module load) —
+// tests swap this via setTransport() in src/lib/test-utils to drive
+// page-level integration tests against a mock without rebuilding the
+// generated hook modules.
+let _transport: Transport = buildTransport();
+
+export function setTransport(t: Transport): void {
+  _transport = t;
+}
+
+// Re-export the active transport as a getter-backed live binding. Direct
+// access (e.g. `import { transport } from "@/lib/connect"`) always sees
+// the current value, even after a test calls setTransport().
+export const transport = new Proxy({} as Transport, {
+  get(_target, prop, receiver) {
+    return Reflect.get(_transport as object, prop, receiver);
+  },
+});
 {{- if .Workspaces}}
 
 // Wire the workspace-shared hooks package to this frontend's Transport.
 // The hooks package itself is DOM-free and Transport-agnostic; each
 // frontend constructs its own Transport (Next.js fetch here, custom
-// fetch under React Native) and hands it over once at module load.
+// fetch under React Native) and hands it over once at module load. The
+// proxy above keeps setTransport() swaps visible inside the hooks pkg.
 import { setApiTransport } from "{{.HooksPackage}}";
 setApiTransport(transport);
 {{- end}}
@@ -110,6 +129,9 @@ setApiTransport(transport);
  *
  *   const client = connectClient(UserService);
  *   const user = await client.getUser({ id: "1" });
+ *
+ * Resolves the active transport on every call so tests can swap it via
+ * setTransport() between cases.
  */
 export function connectClient<S extends DescService>(service: S) {
   return createClient(service, transport);

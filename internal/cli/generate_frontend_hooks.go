@@ -94,6 +94,20 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 			if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
 				return fmt.Errorf("write hooks file %s: %w", outPath, err)
 			}
+
+			// Emit a one-shot starter test next to the generated hooks file.
+			// React Native uses a different rendering target (no DOM) and
+			// the test-utils.tsx helper doesn't apply there, so skip for
+			// mobile frontends. The starter is written ONLY when neither
+			// the active test file nor the starter already exists — so
+			// once the user activates the test (by renaming .tsx.starter
+			// to .tsx) or hand-writes their own, regen never overwrites
+			// their work.
+			if isWebFrontendType(fe.Type) {
+				if err := writeHookStarterTest(hooksDir, fileName, svc, data); err != nil {
+					return fmt.Errorf("write hook starter test for %s: %w", svc.Name, err)
+				}
+			}
 		}
 
 		// Generate barrel index.ts
@@ -279,4 +293,101 @@ func detectIndexCollisions(hookFiles []hookFileEntry) []indexCollision {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].symbol < out[j].symbol })
 	return out
+}
+
+// isWebFrontendType returns true for frontends that target the browser
+// DOM and therefore can use the Vitest + Testing Library starter test
+// emitted by writeHookStarterTest. React Native uses a different runner
+// (no jsdom) and ignores the starter.
+func isWebFrontendType(t string) bool {
+	return strings.EqualFold(t, "nextjs") || strings.EqualFold(t, "vite-spa")
+}
+
+// hookStarterImport is one `import { use<Method> } from "./<file>";`
+// statement the starter template renders.
+type hookStarterImport struct {
+	Symbol string // "useGetUser"
+	Module string // "user-service-hooks" (no .ts suffix)
+}
+
+// hookStarterMethod is one RPC's row in the starter test template.
+type hookStarterMethod struct {
+	Name     string // "GetUser"
+	HookName string // "useGetUser"
+	IsQuery  bool
+}
+
+// hookStarterData is the template data for hooks.test.tsx.tmpl.
+type hookStarterData struct {
+	ServiceName  string
+	HookImports  []hookStarterImport
+	Methods      []hookStarterMethod
+}
+
+// writeHookStarterTest emits a `<file>.test.tsx.starter` next to the
+// generated hooks file IF neither the active test (`<file>.test.tsx`)
+// nor the starter is already present. The `.starter` suffix is the
+// activation contract: the user renames it to `.tsx` to opt the test
+// into Vitest's include glob (see vitest.config.ts). Once activated,
+// the file is yours — forge never overwrites it.
+//
+// `fileName` is the hooks filename (e.g. "user-service-hooks.ts"); the
+// starter goes next to it as "user-service-hooks.test.tsx.starter".
+func writeHookStarterTest(hooksDir, fileName string, svc codegen.ServiceDef, data codegen.FrontendHookTemplateData) error {
+	base := strings.TrimSuffix(fileName, ".ts")
+	activeTestPath := filepath.Join(hooksDir, base+".test.tsx")
+	starterPath := filepath.Join(hooksDir, base+".test.tsx.starter")
+
+	// Idempotency gate: don't overwrite either the user's active test or
+	// an existing starter. Activated tests stay yours; an unactivated
+	// starter from a previous run stays put so re-running `forge
+	// generate` doesn't churn a file the user is about to rename.
+	if _, err := os.Stat(activeTestPath); err == nil {
+		return nil
+	}
+	if _, err := os.Stat(starterPath); err == nil {
+		return nil
+	}
+
+	tmplBytes, err := templates.FrontendTemplates().Get("hooks.test.tsx.tmpl")
+	if err != nil {
+		return fmt.Errorf("read starter test template: %w", err)
+	}
+	tmpl, err := template.New("hooks.test.tsx.tmpl").Funcs(templates.FuncMap()).Parse(string(tmplBytes))
+	if err != nil {
+		return fmt.Errorf("parse starter test template: %w", err)
+	}
+
+	starterData := hookStarterData{
+		ServiceName: svc.Name,
+		HookImports: []hookStarterImport{{
+			Symbol: "/* one of */ " + strings.Join(hookFileExportedSymbols(data), ", "),
+			Module: base,
+		}},
+		Methods: make([]hookStarterMethod, 0, len(data.Methods)),
+	}
+	// Replace the placeholder one-import-row with a real per-symbol list:
+	// each generated hook gets its own import line so renaming a single
+	// hook later doesn't leave the test importing a wildcard.
+	starterData.HookImports = starterData.HookImports[:0]
+	for _, m := range data.Methods {
+		starterData.HookImports = append(starterData.HookImports, hookStarterImport{
+			Symbol: "use" + m.Name,
+			Module: base,
+		})
+		starterData.Methods = append(starterData.Methods, hookStarterMethod{
+			Name:     m.Name,
+			HookName: "use" + m.Name,
+			IsQuery:  m.IsQuery,
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, starterData); err != nil {
+		return fmt.Errorf("render starter test for %s: %w", svc.Name, err)
+	}
+	if err := os.WriteFile(starterPath, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("write starter test %s: %w", starterPath, err)
+	}
+	return nil
 }

@@ -2,6 +2,25 @@
 
 ## Open
 
+- **(2026-06-04 kalshi-trader parallel-worktree round) `forge generate`
+  does not bootstrap `gen/go.mod` when the directory is missing.** When
+  carving a git worktree from a checkout that has not yet run
+  `forge generate` against the current branch — or when the worktree
+  inherits `go.work` but the on-disk `gen/` directory was never created —
+  every subsequent `go build` / `go test` / `go list` / gopls package-load
+  fails with `go: cannot load module gen listed in go.work file: open
+  gen/go.mod: no such file or directory`. Four parallel worktrees in the
+  kalshi-trader 2026-06-04 session each hit this independently and worked
+  around by copying `gen/go.mod` + `gen/go.sum` from the shared checkout.
+  Running `forge generate` in the worktree should detect the missing
+  module (the `go.work` file declares it via `use gen`) and bootstrap an
+  empty `gen/go.mod` + run the generators inside it. Severity: medium —
+  doesn't break anything that's hard to recover from but forces a manual
+  workaround on every fresh worktree / fresh clone where forge generate
+  is the first command. Where: `internal/codegen/` generate entrypoint
+  (probably the same place that emits the `gen/` tree from proto), plus
+  whatever creates / consumes `go.work`'s `use` directive list.
+
 - **(2026-06-03 kalshi-trader silent-stall incident) Stubbed loaders and
   nil-wired sinks/sources should emit loud, persistent boot warnings.**
   Confirmed root cause of a ~24h silent stall in kalshi-trader production:
@@ -35,46 +54,6 @@
   (template generation + AST detection), `internal/templates/app/wire_gen.go.tmpl`
   (nil-DI emission), `pkg/forge/diagnostics.go` (boot-warn surface — may
   not exist yet, design alongside).
-  AIP-158-shape that doesn't match bespoke list/get protos.** When a proto
-  service method matches a CRUD prefix (`List*`, `Get*`, `Create*`, etc.)
-  the CRUD generator emits a `handlers_crud_gen.go` body assuming the
-  request carries `PageSize`/`PageToken`, the response has a single-entity
-  field named after the entity, the primary key is an integer field named
-  `Id`, and filter fields are untyped string equality. Real-world protos
-  (kalshi-trader's `ListTradesRequest` has `Limit`/`Side enum`/`PnlFilter
-  enum` instead of `PageSize`+string filters; `GetPositionRequest` keys
-  on a string `Ticker`; the response is a repeated message field) miss
-  every one of those assumptions and the generated file is non-compiling
-  Go. Workaround today: write the real `handlers.go` and let
-  `scanExistingMethods` filter out the broken body on the next regen
-  (now also wired for tests — 2026-06-02 fix in this session). Suggested
-  fix: gate CRUD body emission on a deeper shape check — request must
-  carry the expected fields with the expected types, response must be a
-  single message of the expected type — rather than method-name pattern
-  alone. When the shape doesn't match, emit a tagged stub that calls
-  through to a TODO so the file still compiles. Severity: high.
-  Where: `internal/codegen/crud_gen.go` (`MatchCRUDMethods` /
-  `buildCRUDTemplateData`).
-
-- **(2026-06-02 kalshi-trader migration round) `ensureDepsDBField` mutates
-  Tier-2 `service.go` on the first regen for any CRUD-shaped proto.** The
-  first `forge generate` against a proto whose method names match CRUD
-  prefixes silently injects `DB orm.Context` + the orm import into the
-  user-owned `handlers/<svc>/service.go` Deps struct, even when the user
-  intends to hand-write the handlers (and never reach for the DB field).
-  This violates the "Tier-2 = user-owned, never mutated by codegen"
-  convention that the file's banner advertises. The behavior is gated on
-  filteredMethods being non-empty, so once the user hand-writes the
-  matching `handlers.go` and re-runs generate the CRUD body filters out
-  — but the DB field is left in place and the user has to delete it
-  manually. Suggested fix: emit the DB dep as a separate
-  `service_extras_gen.go` (Tier-1) that embeds into the user-owned
-  service.go via Go's struct embedding, rather than mutating service.go
-  directly. Alternative: only inject when the matching `handlers.go` does
-  NOT already exist (so the very first scaffold gets the field but a
-  user who's about to hand-write handlers can skip the field by writing
-  `handlers.go` first). Severity: medium.
-  Where: `internal/codegen/crud_gen.go::ensureDepsDBField` (line ~792).
 
 - **(2026-06-02 kalshi-trader migration round) Cron worker's `Run()` has
   no `context.Context` parameter, so jobs can't honor shutdown.** The
@@ -91,30 +70,6 @@
   forge.yaml knob or document as a v0.3 codemod. Severity: medium.
   Where: `internal/templates/worker-cron/worker.go.tmpl` +
   `internal/templates/worker-cron/worker_test.go.tmpl`.
-
-- **(2026-06-02 kalshi-trader migration round) `forge add worker` runs
-  the full generation pipeline, which auto-scaffolds a Next.js
-  dashboard.** Adding a single Go cron worker via
-  `forge add worker calibrator_refit --kind cron` caused: (a) a complete
-  `frontends/dashboard/` Next.js scaffold (node_modules, package.json,
-  tsconfig, eslint, postcss, vitest, Dockerfile), (b) a `frontends:`
-  block added to forge.yaml, (c) `features.frontend: false → true`
-  flipped — and a follow-up warning that `@bufbuild/protoc-gen-es` isn't
-  installed yet. None of those side effects are appropriate for an
-  "add a Go worker" command. The root cause is that `runAddWorker`
-  calls `runGeneratePipeline` (the full pipeline) and the
-  frontend-creation step in the pipeline auto-creates a default dashboard
-  when `cfg.Frontends` is empty (or when some related gate triggers).
-  Suggested fix: either (a) add a `--scope=worker|full` flag that
-  defaults to `worker` so `add worker` only touches
-  `{workers/<name>/, pkg/app/{bootstrap,wire_gen,testing}.go, forge.yaml}`,
-  or (b) audit the pipeline for any step that creates files when the
-  user hasn't explicitly opted into the corresponding feature. Severity:
-  high (collision risk with parallel agents; surprising scaffold churn).
-  Where: `internal/cli/add.go::runAddWorker` + the frontend-creation
-  step in `internal/cli/generate_pipeline.go`. Same friction applies to
-  `forge add operator` / `forge add service` — once the scoped-pipeline
-  story exists, share it across all `forge add <kind>` commands.
 
 - **(2026-06-02 kalshi-trader migration round) Worker / operator package
   names + parent directory keep the snake_case form (`calibrator_refit`).**
@@ -133,38 +88,6 @@
   `internal/generator/worker_gen.go::ServicePackageName`.
 
 - **(2026-06-02 kalshi-trader migration round) `forge add frontend`
-  updates `features.frontend` and `frontends:` but leaves
-  `stack.frontend.framework: none` untouched.** After
-  `forge add frontend dashboard`, forge.yaml ends up with
-  `features.frontend: true` + `frontends: [{name: dashboard, type: nextjs}]`
-  but `stack.frontend.framework` still says `none`. Downstream tooling
-  that reads `stack.frontend.framework` (lint config, CI templates,
-  codegen branching) will misread the project as having no frontend
-  stack. Fix: `runAddFrontend` should set
-  `cfg.Stack.Frontend.Framework = "nextjs"` (or the matching value for
-  vite-spa / react-native) when the framework field is empty or "none".
-  Severity: high (silently broken downstream tooling). Where:
-  `internal/cli/add.go::runAddFrontend` (around line 950, right after
-  `cfg.Features.Frontend = &frontendOn`).
-
-- **(2026-06-02 kalshi-trader migration round) Frontend ESLint emits 70+
-  warnings against forge's own scaffolded files on first run.** Sources:
-  - `import/no-default-export` flags every `src/mocks/scenarios/<name>.ts`
-    that uses the canonical `export default defineScenario(...)` shape,
-    plus `vitest.config.ts`. The rule and the scaffold disagree.
-  - `import/order` and import-group spacing errors hit `src/lib/otel.ts`,
-    `src/lib/search-schemas.ts`, and the mock scenarios.
-
-  These all land before any user edit, so the "first `npm run lint`
-  after `forge add frontend`" experience is "72 warnings, all in
-  AUTO-GENERATED files". Fix: either relax the ESLint rules to exempt
-  `src/mocks/scenarios/**` (and similar generator outputs), or adjust the
-  scaffolders to emit code that passes the default rule set. Severity:
-  medium. Where: `internal/templates/frontend/eslint.config.mjs.tmpl` +
-  the various scaffold-emitting frontend templates (scenarios,
-  `lib/otel.ts`, `lib/search-schemas.ts`).
-
-- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
   doesn't run `npm install` even though its scaffolded `buf.gen.yaml`
   comment says it does.** The emitted `frontends/<name>/buf.gen.yaml`
   has a comment claiming `forge new does this for you`, but
@@ -178,14 +101,13 @@
   instead of hard-coding `./frontends/dashboard/node_modules/...` so a
   user can rename / multi-host without manual fixup. Severity: medium.
   Where: `internal/cli/add.go::runAddFrontend` (post-step) +
-  `internal/templates/frontend/buf.gen.yaml.tmpl`.
-
-- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
-  usage text references singular `frontend/web` while the actual path
-  layout is plural `frontends/<name>/`.** Confusing for users following
-  the doc copy. Fix: update the CLI usage string + any docs to match the
-  plural directory layout. Severity: low. Where: `internal/cli/add.go`
-  + scaffold docs.
+  `internal/templates/frontend/buf.gen.yaml.tmpl`. Status (2026-06-03):
+  half done — `buf.gen.yaml.tmpl` now templates `{{.FrontendName}}` into
+  the local plugin path (nextjs/vite-spa/react-native variants), so the
+  parameterize-by-name half ships. `runAddFrontend` in
+  `internal/cli/add.go:922` still does not run `npm install` after the
+  scaffold, so the first `forge generate` after `forge add frontend`
+  still misses `@bufbuild/protoc-gen-es`.
 
 - **(2026-06-02 kalshi-trader migration round) `forge.yaml`
   `forge_version` vs binary version warning is noisy during scaffolding
@@ -196,6 +118,11 @@
   scaffolding and risks masking real warnings. Fix: downgrade to a debug
   log when both versions look like dev / pseudoversion forms, or warn
   once per shell session via a sentinel in `$TMPDIR`. Severity: low.
+  Status (2026-06-03): partial — `internal/cli/forge_version.go` now
+  silences the warning when the binary reports `dev` / `(devel)` (the
+  go-build pseudo form), so local-dev-against-tip is quiet. Real-looking
+  pseudoversion skew between two release-shaped binaries still warns on
+  every invocation, and there is no per-session sentinel cache.
 
 - **(2026-06-02 kalshi-trader migration round) `forge add scenario`
   doesn't validate that `src/gen/` exists.** The scaffolded scenario
@@ -206,16 +133,6 @@
   existing `service.method` pair from the project's proto registry so
   the user has a concrete starting point. Severity: low. Where:
   `internal/cli/add_scenario.go` + the scenario template.
-
-- **(2026-06-02 kalshi-trader migration round) Scaffolded frontend
-  `go.mod` inside `frontends/<name>/` is surprising.** The
-  `frontends/dashboard/go.mod` exists purely as a module-boundary
-  marker so `go test ./...` from the project root skips node_modules.
-  Users adding actual Go code in the frontend dir later will hit
-  surprising behaviour. Fix: at minimum, add a comment in the emitted
-  go.mod explaining its sole purpose ("module-boundary marker only —
-  do not add Go code here"). Severity: low. Where: the frontend go.mod
-  template.
 
 - **(2026-06-02 kalshi-trader migration round) Two CRUD test generators
   emit overlapping per-RPC test functions.** `handlers_scaffold_test.go`
@@ -229,81 +146,6 @@
   emit only the lifecycle / cross-cutting tests. Severity: low. Where:
   `internal/templates/service/unit_test.go.tmpl` +
   `internal/templates/service/handlers_crud_test_gen.go.tmpl`.
-
-- **(2026-06-02 kalshi-trader port) `forge new` on a project with no
-  services yet produces unused `runAll` in `pkg/app/bootstrap.go:125`.**
-  Generated `BootstrapOnly` declares `runAll := len(names) == 0` to drive
-  mount-time filtering, but with `services: []` no subsequent block
-  references it. `go build` fails with `declared and not used: runAll`
-  and the post-scaffold validation step in `forge new` reports the
-  failure. Repro: `forge new x --mod github.com/x/x` (no services).
-  Workaround: `forge add service <name>` immediately after `forge new`,
-  or hand-add a `_ = runAll` after the declaration. Suggested fix: (a)
-  emit `_ = runAll` defensively in the empty-services case, (b) guard
-  the declaration with `if len(_app_services) > 0` style preamble, or
-  (c) fold the `runAll` flag into the conditional that consumes it.
-  Tagged to `cmd/forge/new.go` post-validation and the bootstrap
-  template.
-
-- **(2026-06-02 kalshi-trader port) ORM codegen leaves a stale
-  `<entity>_orm_shared.pb.orm.go` redeclaring `ormTracer` when a new
-  entity proto is added to an existing Go package.** Repro: have a
-  `proto/db/v1/foo.proto` with one entity, run `forge generate` (clean
-  output). Add `proto/db/v1/bar.proto` with another entity in the same
-  go_package. Run `forge generate` again. Both `foo_orm_shared.pb.orm.go`
-  and `bar_orm_shared.pb.orm.go` declare `var ormTracer = ...` at file
-  scope → `go build` fails with `ormTracer redeclared in this block`.
-  Workaround: delete the older `*_orm_shared.pb.orm.go` by hand before
-  generate. Suggested fix: emit `orm_shared` exactly once per
-  go_package, keyed off the package directory not the proto file, OR
-  use a sync.Once guard on a package-level init pattern.
-
-- **(2026-06-02 kalshi-trader port) Forge's own `forge.v1` option
-  messages get treated as ORM entities and emit illegal Postgres DDL.**
-  When `proto/db/v1/*.proto` imports `forge/v1/options.proto`, forge's
-  ORM codegen visits every message in scope and produces a CREATE TABLE
-  for the option messages themselves — e.g.
-  `CREATE TABLE entity_options (table TEXT NOT NULL, ...)`. Postgres
-  rejects this because `table` is a reserved word. Worse, the
-  auto-generated migration file `<timestamp>_init.up.sql` includes both
-  the user's entities AND the option-message tables, and uses the
-  literal column name `unique` (also reserved) for the `IndexDef.unique`
-  field. Repro: define any entity proto that imports forge/v1/options
-  and run `forge generate`. Workaround: hand-author the migration file
-  and ignore the auto-generated one. Suggested fix: skip messages with
-  `(forge.v1.skip_orm) = true` (and mark all option-shaped messages
-  with that), or exclude messages from packages matching
-  `forge/v1/*`.
-
-- **(2026-06-02 kalshi-trader port) ORM codegen mis-types
-  google.protobuf wrapper fields.** Entity protos that declare a
-  nullable column via `google.protobuf.DoubleValue` or
-  `google.protobuf.StringValue` produce ORM Go code that assigns
-  `*float64` to a `wrapperspb.DoubleValue` field directly (no
-  conversion through `&wrapperspb.DoubleValue{Value: *v}`) — compile
-  fails. Workaround: use plain proto scalars (sql NULL handled via
-  pointer types in the ORM, or via dedicated `int32 has_x = N` sentinel
-  patterns). Suggested fix: detect wrapper types in the field walker
-  and emit the proper unwrap/wrap on read/write paths in the ORM
-  template.
-
-- **(2026-05-06 cpnext continuation 8) `contractlint` flags `_test`
-  packages with `Test*` exported symbols.** When a package has a
-  `contract.go` declaring a `Service` interface, declaring tests in the
-  conventional `package <name>_test` form trips the contract linter:
-  `internal/entitlement/service_test.go:1:1: package entitlement_test
-  has exported methods but no contract.go`. The test functions are seen
-  as exported symbols in a "different" package (`entitlement_test`),
-  and the linter expects every package with exported symbols to declare
-  a contract. Workaround: use the internal-test form (`package
-  entitlement`, not `package entitlement_test`) — loses the
-  API-boundary discipline. Suggested fixes: (a) treat `*_test` packages
-  as exempt from the exported-method-needs-contract rule; (b) skip
-  files matching `*_test.go` entirely from the contractlint pass — Go
-  test funcs by convention start with `Test*` / `Benchmark*` /
-  `Example*` and are never part of the package's API surface. Likely
-  one- or two-liner in
-  `forge/internal/linter/contract/exported_methods.go`.
 
 - **(2026-05-07 polish-round, surfaced multiple sessions) Internal
   package scaffolds emit single-result `New(Deps) Service` but the
@@ -338,6 +180,21 @@
   discovered them as packages and emitted the canonical bootstrap call
   shape; the package-side Deps need to either match or carry a
   `// forge:not-a-package` opt-out). Backlog item still open.
+
+  Status (2026-06-03): partial — two of the three suggested fixes landed
+  in different shapes. (c) better attribution: the contract linter now
+  scans every non-`_test`, non-`_gen.go` file in the package via
+  `internal/linter/forgeconv/internal_pkg_contract.go`, and the new
+  interface-catalogue early-out (≥2 interfaces + no Deps + no New) skips
+  the rule entirely for catalogue packages — landing some of the
+  false-positive cases. `forge generate --skip-validate` now exists
+  (commit 47823c3) but it only skips the FINAL `go build ./...` step,
+  not the Step 0c pre-codegen contract check. (b) a true
+  `--skip-pre-checks` / scoped pre-codegen flag has not shipped, and (a)
+  scoping the pre-codegen check to packages being regenerated still
+  applies project-wide. Parallel-lane regenerates that need to dodge a
+  sibling violation still have no escape hatch beyond
+  `contracts.exclude`.
 
 - **(2026-05-07 cpnext T2-A) `handlers_scaffold_test.go` factory
   rejects realistic handlers that have required Deps fields.** The
@@ -620,7 +477,14 @@
   RPC is the daemon listening (reliant's `ConnectGateway` is a
   server-streaming RPC where the gateway-side server is actually the
   daemon process). When forge is asked to scaffold tools_daemon-style
-  services, it can't.
+  services, it can't. Status (2026-06-03): partial — the handler scaffold
+  generator (`internal/templates/service/handlers_gen.go.tmpl` lines
+  31-58, mirrored in `handlers.go.tmpl` and the test scaffolds) now
+  branches on `ClientStreaming` + `ServerStreaming` and emits a
+  bidi-stream stub (`*connect.BidiStream[Req, Resp]`) alongside
+  client-stream and server-stream stubs. So bidi-stream RPCs do produce
+  compiling Go. The "direction-reversed" daemon-as-server pattern still
+  has no template, no skill page, and no documented convention.
 
 - **(2026-04-30 reliant-discovery) No "stream → React Query cache
   bridge" pattern in `frontend/state` skill.** Real apps that ingest
@@ -660,15 +524,6 @@
   project with a workflow engine re-implements activity registration
   / worker boot. External-Temporal pack is high-value; embedded-
   Temporal is more exotic (skill-page material).
-
-- **(2026-04-30 reliant-discovery) Multi-binary Cobra-subcommand mode
-  for `kind: service`.** Reliant ships ONE Go binary that role-switches
-  via Cobra subcommand (`reliant server api`, `reliant server worker`,
-  etc.). Forge templates assume one `cmd/<svc>/main.go` per service.
-  Suggested `forge.yaml` knob: `binary_mode: subcommand` emits a single
-  `cmd/<project>/main.go` with Cobra dispatch into per-service `Run`
-  functions, while still letting forge generate per-service
-  `pkg/app/setup.go` wiring.
 
 - **(2026-04-30 reliant-discovery) Electron desktop shell template
   (out-of-scope candidate).** Reliant's monolith mode = Electron +
@@ -967,6 +822,269 @@
   condition. Reverted; tidy stays as-is.
 
 ## Fixed in-session
+
+- **(2026-06-02 kalshi-trader migration round) CRUD body generator emits
+  AIP-158-shape that doesn't match bespoke list/get protos.** When a proto
+  service method matches a CRUD prefix (`List*`, `Get*`, `Create*`, etc.)
+  the CRUD generator emits a `handlers_crud_gen.go` body assuming the
+  request carries `PageSize`/`PageToken`, the response has a single-entity
+  field named after the entity, the primary key is an integer field named
+  `Id`, and filter fields are untyped string equality. Real-world protos
+  (kalshi-trader's `ListTradesRequest` has `Limit`/`Side enum`/`PnlFilter
+  enum` instead of `PageSize`+string filters; `GetPositionRequest` keys
+  on a string `Ticker`; the response is a repeated message field) miss
+  every one of those assumptions and the generated file is non-compiling
+  Go. Workaround today: write the real `handlers.go` and let
+  `scanExistingMethods` filter out the broken body on the next regen
+  (now also wired for tests — 2026-06-02 fix in this session). Suggested
+  fix: gate CRUD body emission on a deeper shape check — request must
+  carry the expected fields with the expected types, response must be a
+  single message of the expected type — rather than method-name pattern
+  alone. When the shape doesn't match, emit a tagged stub that calls
+  through to a TODO so the file still compiles. Severity: high.
+  Where: `internal/codegen/crud_gen.go` (`MatchCRUDMethods` /
+  `buildCRUDTemplateData`).
+
+  Status (2026-06-03): resolved by `internal/codegen/crud_gen.go`'s
+  `validateCRUDShape` pass and the `ShapeMismatch` branch in
+  `internal/templates/service/handlers_crud_gen.go.tmpl` — see commit
+  da77885. Mismatched RPCs now emit a `FORGE_CRUD_SHAPE_MISMATCH`-tagged
+  `CodeUnimplemented` stub so the file keeps compiling. Commit 853f5d8
+  extends the same shape gate to the test scaffold.
+
+- **(2026-06-02 kalshi-trader migration round) `ensureDepsDBField` mutates
+  Tier-2 `service.go` on the first regen for any CRUD-shaped proto.** The
+  first `forge generate` against a proto whose method names match CRUD
+  prefixes silently injects `DB orm.Context` + the orm import into the
+  user-owned `handlers/<svc>/service.go` Deps struct, even when the user
+  intends to hand-write the handlers (and never reach for the DB field).
+  This violates the "Tier-2 = user-owned, never mutated by codegen"
+  convention that the file's banner advertises. The behavior is gated on
+  filteredMethods being non-empty, so once the user hand-writes the
+  matching `handlers.go` and re-runs generate the CRUD body filters out
+  — but the DB field is left in place and the user has to delete it
+  manually. Suggested fix: emit the DB dep as a separate
+  `service_extras_gen.go` (Tier-1) that embeds into the user-owned
+  service.go via Go's struct embedding, rather than mutating service.go
+  directly. Alternative: only inject when the matching `handlers.go` does
+  NOT already exist (so the very first scaffold gets the field but a
+  user who's about to hand-write handlers can skip the field by writing
+  `handlers.go` first). Severity: medium.
+  Where: `internal/codegen/crud_gen.go::ensureDepsDBField` (line ~792).
+
+  Status (2026-06-03): resolved by commit 4a807e6 — `ensureDepsDBField`
+  now skips mutating `service.go` when a sibling `handlers.go` already
+  exists. The "user about to hand-write handlers writes handlers.go
+  first" alternative shipped.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add worker` runs
+  the full generation pipeline, which auto-scaffolds a Next.js
+  dashboard.** Adding a single Go cron worker via
+  `forge add worker calibrator_refit --kind cron` caused: (a) a complete
+  `frontends/dashboard/` Next.js scaffold (node_modules, package.json,
+  tsconfig, eslint, postcss, vitest, Dockerfile), (b) a `frontends:`
+  block added to forge.yaml, (c) `features.frontend: false → true`
+  flipped — and a follow-up warning that `@bufbuild/protoc-gen-es` isn't
+  installed yet. None of those side effects are appropriate for an
+  "add a Go worker" command. The root cause is that `runAddWorker`
+  calls `runGeneratePipeline` (the full pipeline) and the
+  frontend-creation step in the pipeline auto-creates a default dashboard
+  when `cfg.Frontends` is empty (or when some related gate triggers).
+  Suggested fix: either (a) add a `--scope=worker|full` flag that
+  defaults to `worker` so `add worker` only touches
+  `{workers/<name>/, pkg/app/{bootstrap,wire_gen,testing}.go, forge.yaml}`,
+  or (b) audit the pipeline for any step that creates files when the
+  user hasn't explicitly opted into the corresponding feature. Severity:
+  high (collision risk with parallel agents; surprising scaffold churn).
+  Where: `internal/cli/add.go::runAddWorker` + the frontend-creation
+  step in `internal/cli/generate_pipeline.go`. Same friction applies to
+  `forge add operator` / `forge add service` — once the scoped-pipeline
+  story exists, share it across all `forge add <kind>` commands.
+
+  Status (2026-06-03): resolved by commit 1c9422f — `forge add worker`
+  now pins frontend-skip invariants so the auto-scaffold can't trigger.
+  Follow-up commit f017972 added `forge add worker --no-generate` for
+  the fully-scoped case.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
+  updates `features.frontend` and `frontends:` but leaves
+  `stack.frontend.framework: none` untouched.** After
+  `forge add frontend dashboard`, forge.yaml ends up with
+  `features.frontend: true` + `frontends: [{name: dashboard, type: nextjs}]`
+  but `stack.frontend.framework` still says `none`. Downstream tooling
+  that reads `stack.frontend.framework` (lint config, CI templates,
+  codegen branching) will misread the project as having no frontend
+  stack. Fix: `runAddFrontend` should set
+  `cfg.Stack.Frontend.Framework = "nextjs"` (or the matching value for
+  vite-spa / react-native) when the framework field is empty or "none".
+  Severity: high (silently broken downstream tooling). Where:
+  `internal/cli/add.go::runAddFrontend` (around line 950, right after
+  `cfg.Features.Frontend = &frontendOn`).
+
+  Status (2026-06-03): resolved by commits 2c91d04 and fa233f5 —
+  `runAddFrontend` in `internal/cli/add.go:1038` now sets
+  `cfg.Stack.Frontend.Framework` to the matching framework value when
+  the field is empty or "none".
+
+- **(2026-06-02 kalshi-trader migration round) Frontend ESLint emits 70+
+  warnings against forge's own scaffolded files on first run.** Sources:
+  - `import/no-default-export` flags every `src/mocks/scenarios/<name>.ts`
+    that uses the canonical `export default defineScenario(...)` shape,
+    plus `vitest.config.ts`. The rule and the scaffold disagree.
+  - `import/order` and import-group spacing errors hit `src/lib/otel.ts`,
+    `src/lib/search-schemas.ts`, and the mock scenarios.
+
+  These all land before any user edit, so the "first `npm run lint`
+  after `forge add frontend`" experience is "72 warnings, all in
+  AUTO-GENERATED files". Fix: either relax the ESLint rules to exempt
+  `src/mocks/scenarios/**` (and similar generator outputs), or adjust the
+  scaffolders to emit code that passes the default rule set. Severity:
+  medium. Where: `internal/templates/frontend/eslint.config.mjs.tmpl` +
+  the various scaffold-emitting frontend templates (scenarios,
+  `lib/otel.ts`, `lib/search-schemas.ts`).
+
+  Status (2026-06-03): resolved by commit e721050 — fresh frontend
+  scaffolds now pass `npm run lint` clean.
+
+- **(2026-06-02 kalshi-trader migration round) `forge add frontend`
+  usage text references singular `frontend/web` while the actual path
+  layout is plural `frontends/<name>/`.** Confusing for users following
+  the doc copy. Fix: update the CLI usage string + any docs to match the
+  plural directory layout. Severity: low. Where: `internal/cli/add.go`
+  + scaffold docs.
+
+  Status (2026-06-03): resolved — `git grep frontend/web` returns no
+  matches under `internal/cli/` or `internal/templates/`. The
+  `runAddFrontend` path emits `frontends/<name>` consistently
+  (`internal/cli/add.go:1020`).
+
+- **(2026-06-02 kalshi-trader migration round) Scaffolded frontend
+  `go.mod` inside `frontends/<name>/` is surprising.** The
+  `frontends/dashboard/go.mod` exists purely as a module-boundary
+  marker so `go test ./...` from the project root skips node_modules.
+  Users adding actual Go code in the frontend dir later will hit
+  surprising behaviour. Fix: at minimum, add a comment in the emitted
+  go.mod explaining its sole purpose ("module-boundary marker only —
+  do not add Go code here"). Severity: low. Where: the frontend go.mod
+  template.
+
+  Status (2026-06-03): resolved by `internal/generator/frontend_gen.go`
+  lines 123-127 — the emitted go.mod now leads with a three-line
+  explanatory comment ("Nested module boundary so `go test ./...` from
+  the project root / skips node_modules and other frontend assets. This
+  frontend has no / first-party Go code; the module exists solely as a
+  boundary marker.").
+
+- **(2026-06-02 kalshi-trader port) `forge new` on a project with no
+  services yet produces unused `runAll` in `pkg/app/bootstrap.go:125`.**
+  Generated `BootstrapOnly` declares `runAll := len(names) == 0` to drive
+  mount-time filtering, but with `services: []` no subsequent block
+  references it. `go build` fails with `declared and not used: runAll`
+  and the post-scaffold validation step in `forge new` reports the
+  failure. Repro: `forge new x --mod github.com/x/x` (no services).
+  Workaround: `forge add service <name>` immediately after `forge new`,
+  or hand-add a `_ = runAll` after the declaration. Suggested fix: (a)
+  emit `_ = runAll` defensively in the empty-services case, (b) guard
+  the declaration with `if len(_app_services) > 0` style preamble, or
+  (c) fold the `runAll` flag into the conditional that consumes it.
+  Tagged to `cmd/forge/new.go` post-validation and the bootstrap
+  template.
+
+  Status (2026-06-03): resolved by commit 51b09a3 — the bootstrap
+  template now guards the `runAll` declaration on `.Services` so an
+  empty-services project compiles.
+
+- **(2026-06-02 kalshi-trader port) ORM codegen leaves a stale
+  `<entity>_orm_shared.pb.orm.go` redeclaring `ormTracer` when a new
+  entity proto is added to an existing Go package.** Repro: have a
+  `proto/db/v1/foo.proto` with one entity, run `forge generate` (clean
+  output). Add `proto/db/v1/bar.proto` with another entity in the same
+  go_package. Run `forge generate` again. Both `foo_orm_shared.pb.orm.go`
+  and `bar_orm_shared.pb.orm.go` declare `var ormTracer = ...` at file
+  scope → `go build` fails with `ormTracer redeclared in this block`.
+  Workaround: delete the older `*_orm_shared.pb.orm.go` by hand before
+  generate. Suggested fix: emit `orm_shared` exactly once per
+  go_package, keyed off the package directory not the proto file, OR
+  use a sync.Once guard on a package-level init pattern.
+
+  Status (2026-06-03): resolved by commit 591eef7 — orm now emits
+  `orm_shared.pb.orm.go` per package directory, not per proto file.
+
+- **(2026-06-02 kalshi-trader port) Forge's own `forge.v1` option
+  messages get treated as ORM entities and emit illegal Postgres DDL.**
+  When `proto/db/v1/*.proto` imports `forge/v1/options.proto`, forge's
+  ORM codegen visits every message in scope and produces a CREATE TABLE
+  for the option messages themselves — e.g.
+  `CREATE TABLE entity_options (table TEXT NOT NULL, ...)`. Postgres
+  rejects this because `table` is a reserved word. Worse, the
+  auto-generated migration file `<timestamp>_init.up.sql` includes both
+  the user's entities AND the option-message tables, and uses the
+  literal column name `unique` (also reserved) for the `IndexDef.unique`
+  field. Repro: define any entity proto that imports forge/v1/options
+  and run `forge generate`. Workaround: hand-author the migration file
+  and ignore the auto-generated one. Suggested fix: skip messages with
+  `(forge.v1.skip_orm) = true` (and mark all option-shaped messages
+  with that), or exclude messages from packages matching
+  `forge/v1/*`.
+
+  Status (2026-06-03): resolved by commit e7f0216 —
+  `database.ScanProtoModels` now skips `forge.*` option protos so they
+  never reach the ORM/migration emitters.
+
+- **(2026-06-02 kalshi-trader port) ORM codegen mis-types
+  google.protobuf wrapper fields.** Entity protos that declare a
+  nullable column via `google.protobuf.DoubleValue` or
+  `google.protobuf.StringValue` produce ORM Go code that assigns
+  `*float64` to a `wrapperspb.DoubleValue` field directly (no
+  conversion through `&wrapperspb.DoubleValue{Value: *v}`) — compile
+  fails. Workaround: use plain proto scalars (sql NULL handled via
+  pointer types in the ORM, or via dedicated `int32 has_x = N` sentinel
+  patterns). Suggested fix: detect wrapper types in the field walker
+  and emit the proper unwrap/wrap on read/write paths in the ORM
+  template.
+
+  Status (2026-06-03): resolved by commit f9f5c69 — the ORM Scan/Values
+  emitters now bridge `wrapperspb.*` types through the proper
+  unwrap/wrap helpers.
+
+- **(2026-05-06 cpnext continuation 8) `contractlint` flags `_test`
+  packages with `Test*` exported symbols.** When a package has a
+  `contract.go` declaring a `Service` interface, declaring tests in the
+  conventional `package <name>_test` form trips the contract linter:
+  `internal/entitlement/service_test.go:1:1: package entitlement_test
+  has exported methods but no contract.go`. The test functions are seen
+  as exported symbols in a "different" package (`entitlement_test`),
+  and the linter expects every package with exported symbols to declare
+  a contract. Workaround: use the internal-test form (`package
+  entitlement`, not `package entitlement_test`) — loses the
+  API-boundary discipline. Suggested fixes: (a) treat `*_test` packages
+  as exempt from the exported-method-needs-contract rule; (b) skip
+  files matching `*_test.go` entirely from the contractlint pass — Go
+  test funcs by convention start with `Test*` / `Benchmark*` /
+  `Example*` and are never part of the package's API surface. Likely
+  one- or two-liner in
+  `forge/internal/linter/contract/exported_methods.go`.
+
+  Status (2026-06-03): resolved by
+  `internal/linter/contract/require_contract.go:40-42` — the analyzer
+  now early-returns when `pass.Pkg.Name()` ends in `_test`. The
+  accompanying comment explains the rationale (external test packages
+  host black-box tests that aren't part of the API surface).
+
+- **(2026-04-30 reliant-discovery) Multi-binary Cobra-subcommand mode
+  for `kind: service`.** Reliant ships ONE Go binary that role-switches
+  via Cobra subcommand (`reliant server api`, `reliant server worker`,
+  etc.). Forge templates assume one `cmd/<svc>/main.go` per service.
+  Suggested `forge.yaml` knob: `binary_mode: subcommand` emits a single
+  `cmd/<project>/main.go` with Cobra dispatch into per-service `Run`
+  functions, while still letting forge generate per-service
+  `pkg/app/setup.go` wiring.
+
+  Status (2026-06-03): resolved — already shipped as `binary: shared`
+  mode (see existing "`binary: shared` codegen mode (Layer B, 2026-04-30)"
+  entry below). `internal/config/config.go:650-653` exposes
+  `IsBinaryShared()` and `internal/templates/project/cmd-shared-main.go.tmpl`
+  emits the cobra root + per-service subcommand dispatch.
 
 - **(2026-05-06 cpnext continuation 8) Auto-installed Go toolchain
   missing `covdata` tool surfaces as a confusing `task coverage`

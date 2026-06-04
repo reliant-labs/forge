@@ -33,6 +33,7 @@ import (
 // printed but don't gate the build.
 type Severity string
 
+// Severity enum values.
 const (
 	SeverityError   Severity = "error"
 	SeverityWarning Severity = "warning"
@@ -43,7 +44,7 @@ type Finding struct {
 	Rule        string   `json:"rule"`
 	Severity    Severity `json:"severity"`
 	File        string   `json:"file"`
-	Line        int      `json:"line"`     // 1-indexed; 0 if file-level
+	Line        int      `json:"line"` // 1-indexed; 0 if file-level
 	Message     string   `json:"message"`
 	Remediation string   `json:"remediation,omitempty"`
 }
@@ -71,19 +72,19 @@ func (r Result) FormatText() string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Found %d forge convention violation(s):\n\n", len(r.Findings)))
+	fmt.Fprintf(&sb, "Found %d forge convention violation(s):\n\n", len(r.Findings))
 	for _, f := range r.Findings {
 		icon := "✗"
 		if f.Severity == SeverityWarning {
 			icon = "⚠"
 		}
 		if f.Line > 0 {
-			sb.WriteString(fmt.Sprintf("  %s [%s] %s:%d\n      %s\n", icon, f.Rule, f.File, f.Line, f.Message))
+			fmt.Fprintf(&sb, "  %s [%s] %s:%d\n      %s\n", icon, f.Rule, f.File, f.Line, f.Message)
 		} else {
-			sb.WriteString(fmt.Sprintf("  %s [%s] %s\n      %s\n", icon, f.Rule, f.File, f.Message))
+			fmt.Fprintf(&sb, "  %s [%s] %s\n      %s\n", icon, f.Rule, f.File, f.Message)
 		}
 		if f.Remediation != "" {
-			sb.WriteString(fmt.Sprintf("      → %s\n", f.Remediation))
+			fmt.Fprintf(&sb, "      → %s\n", f.Remediation)
 		}
 	}
 	return sb.String()
@@ -290,7 +291,7 @@ func checkTimestampAnnotation(pf parsedProto) []Finding {
 					"timestamp-shaped field %q in entity %q has no explicit annotation and the entity does not set `timestamps: true`",
 					field.Name, msg.Name),
 				Remediation: fmt.Sprintf(
-					"either add `timestamps: true` to `option (forge.v1.entity)` (recommended for created_at/updated_at) "+
+					"either add `timestamps: true` to `option (forge.v1.entity)` (recommended for created_at/updated_at) " +
 						"or annotate the field explicitly: `[(forge.v1.field) = { default_value: \"NOW()\" }]`"),
 			})
 		}
@@ -423,14 +424,14 @@ var (
 	// Field declaration: optional `optional`/`repeated` qualifier, type,
 	// name, `=`, number. Trailing `[ ... ]` annotation block (if any) is
 	// captured separately by the line-aggregation logic below.
-	reField        = regexp.MustCompile(`^\s*(?:(?:optional|repeated)\s+)?([\w.]+)\s+(\w+)\s*=\s*(\d+)`)
-	rePKTrue       = regexp.MustCompile(`\bpk\s*:\s*true\b`)
-	reTenantTrue   = regexp.MustCompile(`\btenant\s*:\s*true\b`)
-	reTimestampTrue = regexp.MustCompile(`\btimestamp\s*:\s*true\b`)
+	reField          = regexp.MustCompile(`^\s*(?:(?:optional|repeated)\s+)?([\w.]+)\s+(\w+)\s*=\s*(\d+)`)
+	rePKTrue         = regexp.MustCompile(`\bpk\s*:\s*true\b`)
+	reTenantTrue     = regexp.MustCompile(`\btenant\s*:\s*true\b`)
+	reTimestampTrue  = regexp.MustCompile(`\btimestamp\s*:\s*true\b`)
 	reTimestampsTrue = regexp.MustCompile(`\btimestamps\s*:\s*true\b`)
 	reSoftDeleteTrue = regexp.MustCompile(`\bsoft_delete\s*:\s*true\b`)
-	reEntityOpt    = regexp.MustCompile(`\(forge\.v1\.entity\)`)
-	reFieldOpt     = regexp.MustCompile(`\(forge\.v1\.field\)`)
+	reEntityOpt      = regexp.MustCompile(`\(forge\.v1\.entity\)`)
+	reFieldOpt       = regexp.MustCompile(`\(forge\.v1\.field\)`)
 )
 
 // parseProtoFile is a forgiving line-and-brace-counting scanner. It
@@ -440,9 +441,9 @@ var (
 //
 //   - multi-line option blocks (`option (forge.v1.entity) = { ... };`)
 //   - field annotations that span multiple lines:
-//       string id = 1 [(forge.v1.field) = {
-//         pk: true
-//       }];
+//     string id = 1 [(forge.v1.field) = {
+//     pk: true
+//     }];
 //   - nested braces (entity options blocks contain `indexes: [{...}]`)
 //
 // We track `messageDepth`, `optionDepth` (depth INSIDE a message option
@@ -457,16 +458,16 @@ func parseProtoFile(path, content string) parsedProto {
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	var (
-		lineNum            int
-		braceDepth         int
-		inMessage          bool
-		currentMessage     *protoMessage
-		messageBraceDepth  int
-		inEntityOpts       bool
-		entityOptsDepth    int
+		lineNum           int
+		braceDepth        int
+		inMessage         bool
+		currentMessage    *protoMessage
+		messageBraceDepth int
+		inEntityOpts      bool
+		entityOptsDepth   int
 		// pendingField holds a field-in-progress when the field's annotation
 		// (the [...] part) spans multiple lines.
-		pendingField     *protoField
+		pendingField        *protoField
 		pendingBracketDepth int
 	)
 
@@ -592,45 +593,20 @@ func parseProtoFile(path, content string) parsedProto {
 
 		// Try to detect a new field declaration.
 		if messageBraceDepth >= 1 && !inEntityOpts {
-			if m := reField.FindStringSubmatch(trimmed); m != nil {
-				// Skip lines that are option declarations dressed up
-				// like fields (e.g. `option foo = bar;`).
-				if strings.HasPrefix(trimmed, "option ") || strings.HasPrefix(trimmed, "reserved ") {
-					// Fall through — not a field.
-				} else {
-					num := 0
-					_, _ = fmt.Sscanf(m[3], "%d", &num)
-					field := protoField{
-						Name:   m[2],
-						Type:   m[1],
-						Number: num,
-						Line:   lineNum,
-					}
-					if reFieldOpt.MatchString(line) {
-						field.HasFieldAnnotation = true
-					}
-					if rePKTrue.MatchString(line) {
-						field.HasPKTrue = true
-					}
-					if reTenantTrue.MatchString(line) {
-						field.HasTenantTrue = true
-					}
-					if reTimestampTrue.MatchString(line) {
-						field.HasTimestampTrue = true
-					}
+			if m := reField.FindStringSubmatch(trimmed); m != nil && !isProtoOptionLine(trimmed) {
+				field := parseProtoFieldLine(m, line, lineNum)
 
-					// Multi-line annotation: opens `[` without closing `]`.
-					openBrackets := strings.Count(line, "[")
-					closeBrackets := strings.Count(line, "]")
-					if openBrackets > closeBrackets {
-						pendingField = &field
-						pendingBracketDepth = openBrackets - closeBrackets
-					} else {
-						if field.HasPKTrue && currentMessage.PKField == "" {
-							currentMessage.PKField = field.Name
-						}
-						currentMessage.Fields = append(currentMessage.Fields, field)
+				// Multi-line annotation: opens `[` without closing `]`.
+				openBrackets := strings.Count(line, "[")
+				closeBrackets := strings.Count(line, "]")
+				if openBrackets > closeBrackets {
+					pendingField = &field
+					pendingBracketDepth = openBrackets - closeBrackets
+				} else {
+					if field.HasPKTrue && currentMessage.PKField == "" {
+						currentMessage.PKField = field.Name
 					}
+					currentMessage.Fields = append(currentMessage.Fields, field)
 				}
 			}
 		}
@@ -645,4 +621,38 @@ func parseProtoFile(path, content string) parsedProto {
 	}
 
 	return pf
+}
+
+// isProtoOptionLine reports whether a trimmed proto line is an option
+// or reserved declaration dressed up to look like a field.
+func isProtoOptionLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "option ") || strings.HasPrefix(trimmed, "reserved ")
+}
+
+// parseProtoFieldLine builds a protoField from a regex match plus the
+// raw line content. Inline forge annotations (pk, tenant, timestamp
+// flags) are extracted by separate regexes against the full line so
+// the parser stays line-based and tolerates ordering quirks.
+func parseProtoFieldLine(m []string, line string, lineNum int) protoField {
+	num := 0
+	_, _ = fmt.Sscanf(m[3], "%d", &num)
+	field := protoField{
+		Name:   m[2],
+		Type:   m[1],
+		Number: num,
+		Line:   lineNum,
+	}
+	if reFieldOpt.MatchString(line) {
+		field.HasFieldAnnotation = true
+	}
+	if rePKTrue.MatchString(line) {
+		field.HasPKTrue = true
+	}
+	if reTenantTrue.MatchString(line) {
+		field.HasTenantTrue = true
+	}
+	if reTimestampTrue.MatchString(line) {
+		field.HasTimestampTrue = true
+	}
+	return field
 }

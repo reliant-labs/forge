@@ -6,6 +6,7 @@ package packs
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,10 +54,10 @@ type Pack struct {
 	//
 	// For frontend packs, Subpath is informational and describes the path
 	// under each frontends/<name>/ directory (e.g. "src/components/data-table").
-	Subpath      string          `yaml:"subpath"`
-	Config       PackConfig      `yaml:"config"`
-	Files        []PackFile      `yaml:"files"`
-	Dependencies []string        `yaml:"dependencies"`
+	Subpath      string     `yaml:"subpath"`
+	Config       PackConfig `yaml:"config"`
+	Files        []PackFile `yaml:"files"`
+	Dependencies []string   `yaml:"dependencies"`
 	// NPMDependencies lists npm package specs (`name` or `name@version`)
 	// installed via `npm install` into each frontend directory. Only
 	// honoured when Kind == "frontend".
@@ -74,7 +75,7 @@ type Pack struct {
 	// (e.g. "@tanstack/react-table" — a headless engine forge wraps with
 	// base library primitives, or "recharts" for a charts pack).
 	// Only honoured when Kind == "frontend".
-	AllowedThirdParty []string        `yaml:"allowed_third_party"`
+	AllowedThirdParty []string `yaml:"allowed_third_party"`
 	// SupportsKinds restricts a frontend pack to specific frontend kinds
 	// (one of "web", "mobile", "vite-spa"). Empty (default) means the pack
 	// supports all kinds. Most legacy frontend packs are Next.js-coded
@@ -225,8 +226,8 @@ type InstallResult struct {
 // iterate over each project frontend and run `npm install` per frontend.
 //
 // Equivalent to InstallWithConfig(projectDir, cfg, nil).
-func (p *Pack) Install(projectDir string, cfg *config.ProjectConfig) (*InstallResult, error) {
-	return p.InstallWithConfig(projectDir, cfg, nil)
+func (p *Pack) Install(ctx context.Context, projectDir string, cfg *config.ProjectConfig) (*InstallResult, error) {
+	return p.InstallWithConfig(ctx, projectDir, cfg, nil)
 }
 
 // InstallWithConfig is Install with per-install config overrides. Overrides
@@ -251,7 +252,7 @@ func (p *Pack) Install(projectDir string, cfg *config.ProjectConfig) (*InstallRe
 // catches the case where a pack ships a service handler/proto whose name
 // the user has already scaffolded — a silent skip would yield a build that
 // still references the user's version while the pack thinks it installed.
-func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, overrides map[string]any) (*InstallResult, error) {
+func (p *Pack) InstallWithConfig(ctx context.Context, projectDir string, cfg *config.ProjectConfig, overrides map[string]any) (*InstallResult, error) {
 	result := &InstallResult{}
 	alreadyInstalled := IsInstalled(p.Name, cfg)
 
@@ -265,7 +266,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 		// it, and the path conventions wouldn't make sense), so the result
 		// is always zero-valued here. We still return a non-nil pointer so
 		// callers can rely on `result != nil` regardless of pack kind.
-		if err := p.installFrontend(projectDir, cfg, effectiveCfg, alreadyInstalled); err != nil {
+		if err := p.installFrontend(ctx, projectDir, cfg, effectiveCfg, alreadyInstalled); err != nil {
 			return result, err
 		}
 		return result, nil
@@ -286,7 +287,12 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	// collisions (e.g. audit-log's handler.go landing on a hand-written file).
 	if !alreadyInstalled {
 		if collisions := p.detectFreshInstallCollisions(projectDir, data); len(collisions) > 0 {
-			return result, fmt.Errorf("pack %q install would clobber %d existing file(s):\n%s\n\nThe pack was not previously installed (not in forge.yaml's `packs:` list), so these files were authored outside the pack. To proceed, either:\n  - rename or delete the conflicting file(s) so the pack can install cleanly, or\n  - move the conflicting code into a different package and re-run install.\n\nIf you intend to RE-install the pack (the previous install half-completed and forge.yaml lost the entry), add %q under `packs:` in forge.yaml and re-run `forge pack install %s` — that triggers resync mode which respects existing files.",
+			//nolint:revive // error-strings: this is a multi-paragraph remediation
+			// guide surfaced directly to the user via cobra's RunE error path;
+			// breaking it up to satisfy the no-newline rule would lose the
+			// numbered "either / or" structure that makes the resolution
+			// actionable.
+			return result, fmt.Errorf("pack %q install would clobber %d existing file(s):\n%s\n\nThe pack was not previously installed (not in forge.yaml's `packs:` list), so these files were authored outside the pack. To proceed, either:\n  - rename or delete the conflicting file(s) so the pack can install cleanly, or\n  - move the conflicting code into a different package and re-run install.\n\nIf you intend to RE-install the pack (the previous install half-completed and forge.yaml lost the entry), add %q under `packs:` in forge.yaml and re-run `forge pack install %s` — that triggers resync mode which respects existing files",
 				p.Name, len(collisions), strings.Join(collisions, "\n"), p.Name, p.Name)
 		}
 	}
@@ -358,7 +364,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 	// Add go dependencies
 	for _, dep := range p.Dependencies {
 		fmt.Printf("  Adding dependency: %s\n", dep)
-		cmd := exec.Command("go", "get", dep)
+		cmd := exec.CommandContext(ctx, "go", "get", dep)
 		cmd.Dir = projectDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -398,7 +404,7 @@ func (p *Pack) InstallWithConfig(projectDir string, cfg *config.ProjectConfig, o
 
 	// Run go mod tidy
 	fmt.Println("  Running go mod tidy...")
-	cmd := exec.Command("go", "mod", "tidy")
+	cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 	cmd.Dir = projectDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -469,7 +475,7 @@ func hasNewProtoFile(files []PackFile) bool {
 // alreadyInstalled disables the fresh-install collision check so that
 // re-running install on a project that already lists the pack is a safe
 // resync rather than a hard error.
-func (p *Pack) installFrontend(projectDir string, cfg *config.ProjectConfig, effectiveCfg map[string]any, alreadyInstalled bool) error {
+func (p *Pack) installFrontend(ctx context.Context, projectDir string, cfg *config.ProjectConfig, effectiveCfg map[string]any, alreadyInstalled bool) error {
 	if len(p.Migrations) > 0 {
 		return fmt.Errorf("frontend pack %q must not declare migrations", p.Name)
 	}
@@ -494,7 +500,9 @@ func (p *Pack) installFrontend(projectDir string, cfg *config.ProjectConfig, eff
 			}
 		}
 		if len(unsupported) > 0 {
-			return fmt.Errorf("pack %q does not support frontend kind(s) in this project: %s\nSupported kinds: %s\n\nRemove or migrate the unsupported frontends, or pick a different pack.",
+			//nolint:revive // error-strings: user-facing remediation guide that
+			// relies on newlines for the supported/unsupported framing.
+			return fmt.Errorf("pack %q does not support frontend kind(s) in this project: %s\nSupported kinds: %s\n\nRemove or migrate the unsupported frontends, or pick a different pack",
 				p.Name, strings.Join(unsupported, ", "), strings.Join(p.SupportsKinds, ", "))
 		}
 	}
@@ -527,7 +535,9 @@ func (p *Pack) installFrontend(projectDir string, cfg *config.ProjectConfig, eff
 		// Go-pack path above.
 		if !alreadyInstalled {
 			if collisions := p.detectFreshInstallCollisions(projectDir, data); len(collisions) > 0 {
-				return fmt.Errorf("pack %q install would clobber %d existing file(s) in frontend %q:\n%s\n\nThe pack was not previously installed. Rename or delete the conflicting file(s), or move the existing code into a different module before re-running install.",
+				//nolint:revive // error-strings: user-facing remediation guide
+				// that relies on newlines to separate the file list from the fix.
+				return fmt.Errorf("pack %q install would clobber %d existing file(s) in frontend %q:\n%s\n\nThe pack was not previously installed. Rename or delete the conflicting file(s), or move the existing code into a different module before re-running install",
 					p.Name, len(collisions), fe.Name, strings.Join(collisions, "\n"))
 			}
 		}
@@ -546,7 +556,7 @@ func (p *Pack) installFrontend(projectDir string, cfg *config.ProjectConfig, eff
 			}
 			args := append([]string{"install", "--save"}, npmDeps...)
 			fmt.Printf("  Running npm install in %s: %s\n", feDir, strings.Join(npmDeps, " "))
-			cmd := exec.Command("npm", args...)
+			cmd := exec.CommandContext(ctx, "npm", args...)
 			cmd.Dir = absFE
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -700,12 +710,12 @@ func (p *Pack) renderFile(f PackFile, projectDir string, data map[string]any) er
 	}
 
 	// Ensure output directory exists
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create directory for %s: %w", resolvedOutput, err)
 	}
 
 	// Write the file
-	if err := os.WriteFile(target, content, 0644); err != nil {
+	if err := os.WriteFile(target, content, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", resolvedOutput, err)
 	}
 
@@ -879,7 +889,7 @@ func nextMigrationID(projectDir string) (int, error) {
 		return 0, err
 	}
 
-	max := 0
+	highest := 0
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -892,11 +902,11 @@ func nextMigrationID(projectDir string) (int, error) {
 		if err != nil {
 			continue
 		}
-		if n > max {
-			max = n
+		if n > highest {
+			highest = n
 		}
 	}
-	return max + 1, nil
+	return highest + 1, nil
 }
 
 // removeMigrationsBySlug deletes migration files whose name matches
@@ -949,7 +959,9 @@ func ValidPackName(name string) bool {
 		return false
 	}
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+		isLower := c >= 'a' && c <= 'z'
+		isDigit := c >= '0' && c <= '9'
+		if !isLower && !isDigit && c != '-' && c != '_' {
 			return false
 		}
 	}

@@ -49,9 +49,9 @@ func TestParseBufLintRuleCounts(t *testing.T) {
 // threshold=N — has to be more.
 func TestSuggestionsAboveThreshold(t *testing.T) {
 	counts := map[string]map[string]bool{
-		"AT_THRESHOLD":    {"a.proto": true, "b.proto": true, "c.proto": true},                   // 3 files = threshold; excluded
-		"ABOVE_THRESHOLD": {"a.proto": true, "b.proto": true, "c.proto": true, "d.proto": true},  // 4 files; included
-		"BELOW_THRESHOLD": {"a.proto": true},                                                     // 1 file; excluded
+		"AT_THRESHOLD":    {"a.proto": true, "b.proto": true, "c.proto": true},                  // 3 files = threshold; excluded
+		"ABOVE_THRESHOLD": {"a.proto": true, "b.proto": true, "c.proto": true, "d.proto": true}, // 4 files; included
+		"BELOW_THRESHOLD": {"a.proto": true},                                                    // 1 file; excluded
 	}
 
 	got := suggestionsAboveThreshold(counts, 3)

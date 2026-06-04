@@ -188,11 +188,11 @@ func lintOptionalDepMarkerPkg(pkgDir, rootDir string) ([]Finding, error) {
 			}
 			pos := fset.Position(cg.Pos())
 			findings = append(findings, Finding{
-				Rule:     "forgeconv-optional-dep-marker-position",
-				Severity: SeverityError,
-				File:     rel,
-				Line:     pos.Line,
-				Message: "`// forge:optional-dep` marker is not attached to a `Deps` struct field — wire_gen and validateDeps will silently ignore it",
+				Rule:        "forgeconv-optional-dep-marker-position",
+				Severity:    SeverityError,
+				File:        rel,
+				Line:        pos.Line,
+				Message:     "`// forge:optional-dep` marker is not attached to a `Deps` struct field — wire_gen and validateDeps will silently ignore it",
 				Remediation: "place the marker on the line directly above (or as the inline comment after) a field declaration in the `Deps` struct. Example:\n        // NATSPublisher publishes domain events; nil disables rollback.\n        // forge:optional-dep\n        NATSPublisher EventPublisher",
 			})
 		}

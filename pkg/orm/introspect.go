@@ -558,11 +558,11 @@ func mapDatabaseTypeToFieldType(dbType string) (FieldType, error) {
 		// and DOUBLE PRECISION (float64) columns; SQLite stores both as
 		// REAL (8-byte) but we still surface the proto distinction so
 		// DDL introspection / contract-sync sees the intended width.
-		"real":                    TypeReal,
-		"float4":                  TypeReal,
-		"double precision":        TypeDoublePrecision,
-		"float8":                  TypeDoublePrecision,
-		"double":                  TypeDoublePrecision,
+		"real":             TypeReal,
+		"float4":           TypeReal,
+		"double precision": TypeDoublePrecision,
+		"float8":           TypeDoublePrecision,
+		"double":           TypeDoublePrecision,
 		// SQLite types
 		"datetime":  TypeTimestampTZ,
 		"timestamp": TypeTimestampTZ,

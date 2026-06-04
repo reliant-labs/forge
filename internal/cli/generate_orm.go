@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -271,7 +272,7 @@ func removeBoilerplateMigrations(migDir string) {
 
 // maybeGenerateInitialMigration auto-generates an initial migration from proto/db entities
 // when db/migrations/ is empty and proto/db has .proto files.
-func maybeGenerateInitialMigration(projectDir string) error {
+func maybeGenerateInitialMigration(ctx context.Context, projectDir string) error {
 	hasProtos, err := hasProtoFilesInDir(filepath.Join(projectDir, "proto", "db"))
 	if err != nil || !hasProtos {
 		return nil
@@ -282,7 +283,7 @@ func maybeGenerateInitialMigration(projectDir string) error {
 	opts := &database.MigrationOptions{
 		FromProto: true,
 	}
-	if err := database.CreateMigration("init", migDir, opts); err != nil {
+	if err := database.CreateMigration(ctx, "init", migDir, opts); err != nil {
 		return fmt.Errorf("auto-generate initial migration: %w", err)
 	}
 	return nil

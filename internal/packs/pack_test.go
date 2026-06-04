@@ -1,6 +1,7 @@
 package packs
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,7 +234,7 @@ func TestPackInstallIdempotentMigrations(t *testing.T) {
 		t.Fatalf("LoadPack: %v", err)
 	}
 
-	if _, err := pack.InstallWithConfig(dir, cfg, nil); err != nil {
+	if _, err := pack.InstallWithConfig(context.Background(), dir, cfg, nil); err != nil {
 		t.Fatalf("re-install: %v", err)
 	}
 
@@ -295,7 +296,7 @@ func TestPackInstallCollisionDetected(t *testing.T) {
 		t.Fatalf("LoadPack: %v", err)
 	}
 
-	_, err = pack.InstallWithConfig(dir, cfg, nil)
+	_, err = pack.InstallWithConfig(context.Background(), dir, cfg, nil)
 	if err == nil {
 		t.Fatal("expected collision error, got nil")
 	}

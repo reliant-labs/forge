@@ -148,7 +148,7 @@ func newBacklogAddCmd() *cobra.Command {
 			if err := appendToFile(file, section); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "added %s\n", id)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "added %s\n", id)
 			return nil
 		},
 	}
@@ -191,7 +191,7 @@ func newBacklogMigrateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "migrated %d items\n", n)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "migrated %d items\n", n)
 			return nil
 		},
 	}
@@ -386,7 +386,7 @@ func filterBacklog(items []BacklogItem, area, status string) []BacklogItem {
 // writeBacklogTable emits a tab-separated, human-friendly view.
 func writeBacklogTable(w io.Writer, items []BacklogItem) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSTATUS\tSEVERITY\tAREA\tTITLE")
+	_, _ = fmt.Fprintln(tw, "ID\tSTATUS\tSEVERITY\tAREA\tTITLE")
 	for _, it := range items {
 		id := it.ID
 		if id == "" {
@@ -400,7 +400,7 @@ func writeBacklogTable(w io.Writer, items []BacklogItem) error {
 		if area == "" {
 			area = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", id, it.Status, sev, area, it.Title)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", id, it.Status, sev, area, it.Title)
 	}
 	return tw.Flush()
 }
@@ -414,7 +414,7 @@ func writeBacklogJSON(w io.Writer, items []BacklogItem) error {
 // nextBacklogID returns the next unused "forge-N" id by scanning existing
 // items for the maximum numeric suffix.
 func nextBacklogID(items []BacklogItem) string {
-	max := 0
+	highest := 0
 	idRe := regexp.MustCompile(`^forge-(\d+)$`)
 	for _, it := range items {
 		m := idRe.FindStringSubmatch(it.ID)
@@ -422,11 +422,11 @@ func nextBacklogID(items []BacklogItem) string {
 			continue
 		}
 		n, _ := strconv.Atoi(m[1])
-		if n > max {
-			max = n
+		if n > highest {
+			highest = n
 		}
 	}
-	return fmt.Sprintf("forge-%d", max+1)
+	return fmt.Sprintf("forge-%d", highest+1)
 }
 
 // renderNewItem produces the markdown section for a new backlog entry.
@@ -444,8 +444,18 @@ func nextBacklogID(items []BacklogItem) string {
 //	```
 //
 //	(empty body — user fills in)
+//
+// `area` is a short ASCII label (auth, codegen, frontend); we capitalize
+// the first byte rather than pull in golang.org/x/text/cases.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
 func renderNewItem(id, severity, area, today, title string) string {
-	header := fmt.Sprintf("## [%s] %s", strings.Title(area), title)
+	header := fmt.Sprintf("## [%s] %s", capitalizeFirst(area), title)
 	yamlBlock := fmt.Sprintf(
 		"```yaml\nid: %s\nseverity: %s\narea: %s\nstatus: open\ncreated_at: %s\n```",
 		id, severity, area, today,
@@ -460,9 +470,12 @@ func appendToFile(path, content string) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
 	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
 	}
 	return nil
 }
@@ -501,7 +514,7 @@ func setBacklogStatus(id, newStatus, fixedAt string, out io.Writer) error {
 	if err := os.WriteFile(file, []byte(updated), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", file, err)
 	}
-	fmt.Fprintf(out, "%s -> status=%s\n", id, newStatus)
+	_, _ = fmt.Fprintf(out, "%s -> status=%s\n", id, newStatus)
 	return nil
 }
 
@@ -663,7 +676,7 @@ func inferStatus(sections []categorySection, line int) string {
 }
 
 func largestForgeN(items []BacklogItem) int {
-	max := 0
+	highest := 0
 	idRe := regexp.MustCompile(`^forge-(\d+)$`)
 	for _, it := range items {
 		m := idRe.FindStringSubmatch(it.ID)
@@ -671,9 +684,9 @@ func largestForgeN(items []BacklogItem) int {
 			continue
 		}
 		n, _ := strconv.Atoi(m[1])
-		if n > max {
-			max = n
+		if n > highest {
+			highest = n
 		}
 	}
-	return max
+	return highest
 }

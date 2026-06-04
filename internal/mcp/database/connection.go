@@ -15,6 +15,7 @@ import (
 // Environment represents a deployment environment
 type Environment string
 
+// Environment enum values.
 const (
 	EnvDev     Environment = "dev"
 	EnvStaging Environment = "staging"
@@ -147,7 +148,7 @@ func (cm *connectionManager) setConfig(env Environment, config *ConnectionConfig
 
 	// Close existing connection if any
 	if conn, exists := cm.connections[env]; exists {
-		conn.Close()
+		_ = conn.Close()
 		delete(cm.connections, env)
 	}
 }
@@ -157,12 +158,15 @@ func (cm *connectionManager) getConnection(env Environment) (*sql.DB, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pingCancel()
+
 	if conn, exists := cm.connections[env]; exists {
-		if err := conn.Ping(); err == nil {
+		if err := conn.PingContext(pingCtx); err == nil {
 			return conn, nil
 		}
 		// Connection is dead, close and remove
-		conn.Close()
+		_ = conn.Close()
 		delete(cm.connections, env)
 	}
 
@@ -188,8 +192,8 @@ func (cm *connectionManager) getConnection(env Environment) (*sql.DB, error) {
 	db.SetConnMaxLifetime(time.Hour)
 
 	// Test connection
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -203,7 +207,7 @@ func (cm *connectionManager) closeAll() {
 	defer cm.mu.Unlock()
 
 	for env, conn := range cm.connections {
-		conn.Close()
+		_ = conn.Close()
 		delete(cm.connections, env)
 	}
 }
@@ -241,13 +245,13 @@ func (cm *connectionManager) executeQuery(env Environment, query string, limit i
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin read-only transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Get column names
 	columns, err := rows.Columns()

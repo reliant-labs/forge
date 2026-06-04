@@ -13,6 +13,10 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
+// Analyzer is the go/analysis analyzer registered by cmd/contractlint.
+// It checks that types implementing contract interfaces (declared in
+// a sibling contract.go) expose no exported methods outside that
+// interface — the "single seam" rule.
 var Analyzer = &analysis.Analyzer{
 	Name:     "contract",
 	Doc:      "checks that types implementing contract interfaces (defined in contract.go) have no exported methods outside the interface",

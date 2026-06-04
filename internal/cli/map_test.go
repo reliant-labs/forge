@@ -44,9 +44,9 @@ func TestBuildMapTree_Basic(t *testing.T) {
 	got := map[string]string{}
 	collectLeaves(root, got)
 	wantOwnership := map[string]string{
-		"internal/billing/service.go":   OwnershipUser,
-		"internal/billing/mock_gen.go":  OwnershipForgeSpace,
-		"internal/billing/scaffold.go":  OwnershipScaffold,
+		"internal/billing/service.go":  OwnershipUser,
+		"internal/billing/mock_gen.go": OwnershipForgeSpace,
+		"internal/billing/scaffold.go": OwnershipScaffold,
 	}
 	for path, want := range wantOwnership {
 		if got[path] != want {

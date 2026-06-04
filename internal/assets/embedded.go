@@ -9,6 +9,10 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
+// EmbeddedFiles bundles the proto annotation definitions shipped
+// with the forge binary so they can be vendored into scaffolded
+// projects without a network fetch.
+//
 //go:embed proto/forge/v1/forge.proto
 var EmbeddedFiles embed.FS
 

@@ -69,7 +69,8 @@ func CheckDelve(ctx context.Context, env *Environment) CheckResult {
 	evidence = append(evidence, fmt.Sprintf("mapped port: %s", addr))
 
 	// 3. Connect to Delve JSON-RPC API.
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return CheckResult{
 			Status:   StatusWarn,
@@ -77,7 +78,7 @@ func CheckDelve(ctx context.Context, env *Environment) CheckResult {
 			Evidence: strings.Join(append(evidence, fmt.Sprintf("dial: %v", err)), "\n"),
 		}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Set a deadline for the entire RPC exchange.
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))

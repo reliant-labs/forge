@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,17 +24,17 @@ import (
 
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
-	contract         bool
-	db               bool
-	migrationSafety  bool
-	fix              bool
-	exportedVars     bool
-	conventions      bool
-	frontendPacks    bool
-	scaffolds        bool
-	tests            bool
-	banners          bool
-	suggestExcludes  bool
+	contract          bool
+	db                bool
+	migrationSafety   bool
+	fix               bool
+	exportedVars      bool
+	conventions       bool
+	frontendPacks     bool
+	scaffolds         bool
+	tests             bool
+	banners           bool
+	suggestExcludes   bool
 	suggestBufExcepts bool
 	wireCoverage      bool
 	bootstrapCoverage bool
@@ -94,7 +95,7 @@ Examples:
 				paths = []string{"./..."}
 			}
 
-			return runLint(flags, paths)
+			return runLint(cmd.Context(), flags, paths)
 		},
 	}
 
@@ -117,7 +118,7 @@ Examples:
 	return cmd
 }
 
-func runLint(flags lintFlags, paths []string) error {
+func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.suggestExcludes {
 		cfg, err := loadProjectConfig()
@@ -127,7 +128,7 @@ func runLint(flags lintFlags, paths []string) error {
 		return runSuggestExcludes(cfg)
 	}
 	if flags.suggestBufExcepts {
-		return runSuggestBufExcepts()
+		return runSuggestBufExcepts(ctx)
 	}
 	if flags.contract {
 		cfg, err := loadProjectConfig()
@@ -138,14 +139,14 @@ func runLint(flags lintFlags, paths []string) error {
 			fmt.Println("contracts feature is disabled in forge.yaml")
 			return nil
 		}
-		return runContractLinter(paths, contractExcludesFromConfig(cfg))
+		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.exportedVars {
 		cfg, err := loadProjectConfig()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
-		return runContractLinter(paths, contractExcludesFromConfig(cfg))
+		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.db {
 		cfg, err := loadProjectConfig()
@@ -215,7 +216,7 @@ func runLint(flags lintFlags, paths []string) error {
 	}
 
 	// No flags set — run ALL linters, each skipping gracefully if tool not available.
-	return runAllLinters(flags.fix, paths, cfg)
+	return runAllLinters(ctx, flags.fix, paths, cfg)
 }
 
 // contractExcludesFromConfig returns the contracts.exclude list from the
@@ -227,11 +228,11 @@ func contractExcludesFromConfig(cfg *config.ProjectConfig) []string {
 	return cfg.Contracts.Exclude
 }
 
-func runContractLinter(paths []string, excludes []string) error {
+func runContractLinter(ctx context.Context, paths []string, excludes []string) error {
 	fmt.Println("🔍 Running contract interface enforcement linter...")
 	fmt.Println()
 
-	binPath, err := resolveContractLintBinary()
+	binPath, err := resolveContractLintBinary(ctx)
 	if err != nil {
 		return err
 	}
@@ -248,10 +249,10 @@ func runContractLinter(paths []string, excludes []string) error {
 	var lintExec *exec.Cmd
 	if strings.HasSuffix(binPath, "main.go") {
 		goArgs := append([]string{"run", binPath}, lintArgs...)
-		lintExec = exec.Command("go", goArgs...)
+		lintExec = exec.CommandContext(ctx, "go", goArgs...)
 		fmt.Printf("Running: go %s\n", strings.Join(goArgs, " "))
 	} else {
-		lintExec = exec.Command(binPath, lintArgs...)
+		lintExec = exec.CommandContext(ctx, binPath, lintArgs...)
 		fmt.Printf("Running: %s %s\n", binPath, strings.Join(lintArgs, " "))
 	}
 
@@ -301,7 +302,7 @@ func runContractLinter(paths []string, excludes []string) error {
 	return nil
 }
 
-func resolveContractLintBinary() (string, error) {
+func resolveContractLintBinary(ctx context.Context) (string, error) {
 	if path, err := exec.LookPath("contractlint"); err == nil {
 		return path, nil
 	}
@@ -317,11 +318,11 @@ func resolveContractLintBinary() (string, error) {
 	}
 
 	fmt.Println("Building contractlint from source...")
-	if err := os.MkdirAll("bin", 0755); err != nil {
+	if err := os.MkdirAll("bin", 0o755); err != nil {
 		return srcPath, nil
 	}
 
-	buildCmd := exec.Command("go", "build", "-o", localBin, "./cmd/contractlint")
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", localBin, "./cmd/contractlint")
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
 	if err := buildCmd.Run(); err != nil {
@@ -720,7 +721,7 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 }
 
 // runAllLinters runs every linter, each skipping gracefully if the required tool isn't installed.
-func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
+func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.ProjectConfig) error {
 	fmt.Println("🔍 Running all linters...")
 	fmt.Println()
 
@@ -729,7 +730,7 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	// 1. Standard Go linters (golangci-lint)
 	if _, err := exec.LookPath("golangci-lint"); err != nil {
 		fmt.Println("⚠️  golangci-lint not found on PATH — skipping")
-	} else if err := runGolangciLint(fix, paths); err != nil {
+	} else if err := runGolangciLint(ctx, fix, paths); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ golangci-lint failed: %v\n", err)
 		hasFailed = true
 	}
@@ -737,9 +738,9 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	// 2. Contract interface enforcement
 	if cfg != nil && !cfg.Features.ContractsEnabled() {
 		fmt.Println("⚠️  contracts feature disabled — skipping contract linter")
-	} else if _, err := resolveContractLintBinary(); err != nil {
+	} else if _, err := resolveContractLintBinary(ctx); err != nil {
 		fmt.Println("⚠️  contractlint not available — skipping")
-	} else if err := runContractLinter(paths, contractExcludesFromConfig(cfg)); err != nil {
+	} else if err := runContractLinter(ctx, paths, contractExcludesFromConfig(cfg)); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ contract linter failed: %v\n", err)
 		hasFailed = true
 	}
@@ -747,13 +748,13 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	// 4. Buf lint
 	if _, err := exec.LookPath("buf"); err != nil {
 		fmt.Println("⚠️  buf not found on PATH — skipping buf lint")
-	} else if err := runBufLint(); err != nil {
+	} else if err := runBufLint(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ buf lint failed: %v\n", err)
 		hasFailed = true
 	}
 
 	// 5. Frontend linters (tsc + eslint)
-	if err := runFrontendLinters(cfg); err != nil {
+	if err := runFrontendLinters(ctx, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Frontend lint failed: %v\n", err)
 		hasFailed = true
 	}
@@ -902,7 +903,7 @@ func runAllLinters(fix bool, paths []string, cfg *config.ProjectConfig) error {
 	return nil
 }
 
-func runGolangciLint(fix bool, paths []string) error {
+func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
 	fmt.Println("Running golangci-lint...")
 
 	args := []string{"run"}
@@ -911,7 +912,7 @@ func runGolangciLint(fix bool, paths []string) error {
 	}
 	args = append(args, paths...)
 
-	cmd := exec.Command("golangci-lint", args...)
+	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -923,7 +924,7 @@ func runGolangciLint(fix bool, paths []string) error {
 	return nil
 }
 
-func runBufLint() error {
+func runBufLint(ctx context.Context) error {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil
 	}
@@ -934,7 +935,7 @@ func runBufLint() error {
 	// print the buf.yaml `except` snippet that resolves them. We still
 	// stream the output to the user's terminal verbatim so nothing is
 	// hidden behind the suggestion.
-	cmd := exec.Command("buf", "lint")
+	cmd := exec.CommandContext(ctx, "buf", "lint")
 	var bufOut strings.Builder
 	cmd.Stdout = io.MultiWriter(os.Stdout, &bufOut)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &bufOut)
@@ -989,9 +990,9 @@ func printBufLintExceptHint(output string) {
 // runFrontendLinters runs TypeScript type-checking and framework-specific linters
 // for each frontend defined in the project config. Falls back to directory scanning
 // if no config is available.
-func runFrontendLinters(cfg *config.ProjectConfig) error {
+func runFrontendLinters(ctx context.Context, cfg *config.ProjectConfig) error {
 	if cfg != nil && len(cfg.Frontends) > 0 {
-		return runFrontendLintersFromConfig(cfg)
+		return runFrontendLintersFromConfig(ctx, cfg)
 	}
 
 	// Fallback: scan frontends/ directory when no config is available
@@ -1010,7 +1011,7 @@ func runFrontendLinters(cfg *config.ProjectConfig) error {
 			continue
 		}
 		feDir := filepath.Join("frontends", e.Name())
-		if err := lintFrontendDir(e.Name(), feDir, "", false); err != nil {
+		if err := lintFrontendDir(ctx, e.Name(), feDir, "", false); err != nil {
 			hasFailed = true
 		}
 	}
@@ -1022,14 +1023,14 @@ func runFrontendLinters(cfg *config.ProjectConfig) error {
 }
 
 // runFrontendLintersFromConfig lints frontends using project config entries.
-func runFrontendLintersFromConfig(cfg *config.ProjectConfig) error {
+func runFrontendLintersFromConfig(ctx context.Context, cfg *config.ProjectConfig) error {
 	hasFailed := false
 	for _, fe := range cfg.Frontends {
 		feDir := fe.Path
 		if feDir == "" {
 			feDir = filepath.Join("frontends", fe.Name)
 		}
-		if err := lintFrontendDir(fe.Name, feDir, fe.Type, cfg.Lint.Frontend.CSSHealth); err != nil {
+		if err := lintFrontendDir(ctx, fe.Name, feDir, fe.Type, cfg.Lint.Frontend.CSSHealth); err != nil {
 			hasFailed = true
 		}
 	}
@@ -1041,7 +1042,7 @@ func runFrontendLintersFromConfig(cfg *config.ProjectConfig) error {
 
 // lintFrontendDir runs linters for a single frontend directory.
 // feType can be "nextjs" or empty (unknown).
-func lintFrontendDir(name, feDir, feType string, cssHealth bool) error {
+func lintFrontendDir(ctx context.Context, name, feDir, feType string, cssHealth bool) error {
 	if !dirExists(feDir) {
 		fmt.Printf("  ⚠️  %s: directory %s not found, skipping\n", name, feDir)
 		return nil
@@ -1066,7 +1067,7 @@ func lintFrontendDir(name, feDir, feType string, cssHealth bool) error {
 	hasFailed := false
 
 	if hasPackageScript(scripts, "lint") {
-		if err := runNPMCommand(feDir, "run", "lint"); err != nil {
+		if err := runNPMCommand(ctx, feDir, "run", "lint"); err != nil {
 			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint failed: %v\n", name, err)
 			hasFailed = true
 		} else {
@@ -1079,7 +1080,7 @@ func lintFrontendDir(name, feDir, feType string, cssHealth bool) error {
 	}
 
 	if hasPackageScript(scripts, "typecheck") {
-		if err := runNPMCommand(feDir, "run", "typecheck"); err != nil {
+		if err := runNPMCommand(ctx, feDir, "run", "typecheck"); err != nil {
 			fmt.Fprintf(os.Stderr, "  ❌ %s: npm run typecheck failed: %v\n", name, err)
 			hasFailed = true
 		} else {
@@ -1091,7 +1092,7 @@ func lintFrontendDir(name, feDir, feType string, cssHealth bool) error {
 
 	if cssHealth {
 		if hasPackageScript(scripts, "lint:styles") {
-			if err := runNPMCommand(feDir, "run", "lint:styles"); err != nil {
+			if err := runNPMCommand(ctx, feDir, "run", "lint:styles"); err != nil {
 				fmt.Fprintf(os.Stderr, "  ❌ %s: npm run lint:styles failed: %v\n", name, err)
 				hasFailed = true
 			} else {
@@ -1131,8 +1132,8 @@ func hasPackageScript(scripts map[string]string, name string) bool {
 }
 
 // runNPMCommand runs an npm command in the given directory.
-func runNPMCommand(dir string, args ...string) error {
-	cmd := exec.Command("npm", args...)
+func runNPMCommand(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "npm", args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

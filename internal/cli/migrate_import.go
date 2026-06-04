@@ -108,7 +108,7 @@ func runMigrateImport(opts migrateImportOptions) error {
 		return err
 	}
 	if len(srcFiles) == 0 {
-		fmt.Fprintf(opts.Stdout, "No .sql files found in %s\n", srcAbs)
+		_, _ = fmt.Fprintf(opts.Stdout, "No .sql files found in %s\n", srcAbs)
 		return nil
 	}
 
@@ -157,9 +157,9 @@ func runMigrateImport(opts migrateImportOptions) error {
 	}
 
 	if opts.DryRun {
-		fmt.Fprintf(opts.Stdout, "Dry run: would write %d migration pair(s) to %s\n\n", len(plans), destAbs)
+		_, _ = fmt.Fprintf(opts.Stdout, "Dry run: would write %d migration pair(s) to %s\n\n", len(plans), destAbs)
 		for _, p := range plans {
-			fmt.Fprintf(opts.Stdout, "  %s\n  %s\n", p.UpPath(destAbs), p.DownPath(destAbs))
+			_, _ = fmt.Fprintf(opts.Stdout, "  %s\n  %s\n", p.UpPath(destAbs), p.DownPath(destAbs))
 		}
 		printImportSkips(opts.Stdout, skipped)
 		printFKWarnings(opts.Stdout, plans)
@@ -177,13 +177,13 @@ func runMigrateImport(opts migrateImportOptions) error {
 		if err := os.WriteFile(p.DownPath(destAbs), []byte(p.DownBody), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", p.DownPath(destAbs), err)
 		}
-		fmt.Fprintf(opts.Stdout, "  Wrote %s\n  Wrote %s\n", p.UpPath(destAbs), p.DownPath(destAbs))
+		_, _ = fmt.Fprintf(opts.Stdout, "  Wrote %s\n  Wrote %s\n", p.UpPath(destAbs), p.DownPath(destAbs))
 	}
 
 	printImportSkips(opts.Stdout, skipped)
 	printFKWarnings(opts.Stdout, plans)
 
-	fmt.Fprintf(opts.Stdout, "\nImported %d migration pair(s).\n", len(plans))
+	_, _ = fmt.Fprintf(opts.Stdout, "\nImported %d migration pair(s).\n", len(plans))
 	return nil
 }
 
@@ -403,24 +403,20 @@ func splitAtGooseDown(content string) (upLines, downLines []string) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	inDown := false
-	sawUp := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if gooseDownMarker.MatchString(line) {
 			inDown = true
 			continue
 		}
-		if gooseUpMarker.MatchString(line) {
-			sawUp = true
-			continue
-		}
-		if gooseNoTransaction.MatchString(line) {
+		// Drop +goose Up / +goose NO TRANSACTION markers — they're
+		// goose-specific directives, not migration content. Lines before
+		// any marker are treated as up-section by default.
+		if gooseUpMarker.MatchString(line) || gooseNoTransaction.MatchString(line) {
 			continue
 		}
 		if inDown {
 			downLines = append(downLines, line)
-		} else if sawUp {
-			upLines = append(upLines, line)
 		} else {
 			upLines = append(upLines, line)
 		}
@@ -452,10 +448,10 @@ func printFKWarnings(w interface{ Write(p []byte) (int, error) }, plans []import
 	if len(fkFiles) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nForeign-key check: the following imported files reference other tables.")
-	fmt.Fprintln(w, "Verify the referenced tables exist in earlier (lower-numbered) migrations:")
+	_, _ = fmt.Fprintln(w, "\nForeign-key check: the following imported files reference other tables.")
+	_, _ = fmt.Fprintln(w, "Verify the referenced tables exist in earlier (lower-numbered) migrations:")
 	for _, f := range fkFiles {
-		fmt.Fprintf(w, "  - %s\n", f)
+		_, _ = fmt.Fprintf(w, "  - %s\n", f)
 	}
 }
 
@@ -463,8 +459,8 @@ func printImportSkips(w interface{ Write(p []byte) (int, error) }, skips []impor
 	if len(skips) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nSkipped:")
+	_, _ = fmt.Fprintln(w, "\nSkipped:")
 	for _, s := range skips {
-		fmt.Fprintf(w, "  - %s: %s\n", filepath.Base(s.Path), s.Reason)
+		_, _ = fmt.Fprintf(w, "  - %s: %s\n", filepath.Base(s.Path), s.Reason)
 	}
 }

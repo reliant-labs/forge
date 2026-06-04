@@ -176,6 +176,28 @@ type PackOverride struct {
 	SkipMigrations bool `yaml:"skip_migrations,omitempty"`
 }
 
+// ServiceDevTarget identifies where a service runs in the local dev
+// loop. Default is "cluster": the service is built into an image, pushed
+// to the dev registry, and reconciled by the k3d cluster like every
+// other forge service. "host" flips it: the service runs as a host
+// process under `forge run <service>` (or the project's Taskfile), is
+// excluded from dev-time image build/push, and dev-time `forge deploy`
+// skips its rollout wait + prunes its leftover Deployment.
+//
+// Host-mode is the right shape for non-operator services that don't
+// need cluster-only primitives (ingress webhooks, CRD watch, sidecar
+// dynamic-config injection) — APIs, business-logic gateways, edge
+// proxies — where the redeploy-into-k3d loop is pure friction. Cluster-
+// mode stays the default so existing forge projects keep their current
+// behaviour.
+//
+// dev_target affects ONLY the dev environment. Staging and prod always
+// build, push, and deploy every service regardless of this field.
+const (
+	ServiceDevTargetCluster = "cluster"
+	ServiceDevTargetHost    = "host"
+)
+
 // ServiceConfig represents a Go service definition.
 type ServiceConfig struct {
 	Name          string          `yaml:"name"`
@@ -197,6 +219,34 @@ type ServiceConfig struct {
 	// operators/<operator>/<crd-name>_controller.go plus
 	// api/<version>/<crd-name>_types.go.
 	CRDs []CRDConfig `yaml:"crds,omitempty"`
+	// DevTarget identifies where this service runs in the local dev loop.
+	// Empty (default) and "cluster" mean the service runs in k3d like
+	// every other forge service. "host" flips it to a host-process for
+	// `forge run <service>` ergonomics — see [ServiceDevTargetHost] and
+	// [ServiceConfig.IsHostDevTarget] for the full semantics. Affects
+	// dev only; staging/prod always build + deploy every service.
+	DevTarget string `yaml:"dev_target,omitempty"`
+}
+
+// EffectiveDevTarget returns the dev-target, defaulting to "cluster"
+// so legacy forge.yaml files without the field keep their existing
+// behaviour. Unknown values also fall through to "cluster" — strict
+// validation lives in forge.yaml load, not here.
+func (s ServiceConfig) EffectiveDevTarget() string {
+	switch strings.ToLower(strings.TrimSpace(s.DevTarget)) {
+	case ServiceDevTargetHost:
+		return ServiceDevTargetHost
+	default:
+		return ServiceDevTargetCluster
+	}
+}
+
+// IsHostDevTarget reports whether the service runs as a host process
+// in the dev loop. Returns false for the default ("cluster") and for
+// any unrecognised value, so the host-skip logic in build/deploy never
+// fires accidentally for a typo'd target.
+func (s ServiceConfig) IsHostDevTarget() bool {
+	return s.EffectiveDevTarget() == ServiceDevTargetHost
 }
 
 // CRDConfig represents a single Custom Resource Definition reconciled

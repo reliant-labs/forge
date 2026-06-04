@@ -54,11 +54,24 @@ type DeployConfigEntity struct {
 // process during `forge up --env=<env>`. The Runner field selects the
 // dispatch (go-run / air / binary / delve) and is consumed by
 // [runHostServiceWithRunner] + the up orchestrator.
+//
+// Env composition splits config from secrets:
+//
+//   - EnvVars: KCL-declared per-env config (DATABASE_URL, NATS_URL,
+//     LOG_LEVEL, …). Reproducible, version-controlled.
+//   - SecretsFile: path to a gitignored dotenv carrying JUST secrets
+//     (STRIPE_*, SUPABASE_*, JWT_PUBLIC_KEY, …). Loaded first; EnvVars
+//     is layered on top so KCL wins on conflict.
+//
+// Previously HostDeploy carried a single `env_file` that conflated
+// config and secrets and silently drifted from K8sDeploy services
+// (which already saw config via the Deployment's `env` block).
 type HostDeploy struct {
-	Runner    string `json:"runner,omitempty"`     // "go-run" | "air" | "binary" | "delve"
-	AirConfig string `json:"air_config,omitempty"` // path relative to project root, default .air.toml
-	EnvFile   string `json:"env_file,omitempty"`   // path relative to project root, default .env.<env>
-	DelvePort int    `json:"delve_port,omitempty"` // when Runner=="delve"; default 2345
+	Runner      string      `json:"runner,omitempty"`       // "go-run" | "air" | "binary" | "delve"
+	AirConfig   string      `json:"air_config,omitempty"`   // path relative to project root, default .air.toml
+	EnvVars     []KCLEnvVar `json:"env_vars,omitempty"`     // KCL-declared per-env config
+	SecretsFile string      `json:"secrets_file,omitempty"` // path relative to project root; gitignored dotenv
+	DelvePort   int         `json:"delve_port,omitempty"`   // when Runner=="delve"; default 2345
 }
 
 // K8sDeploy is the deploy block for a cluster-mode service. Replicas

@@ -13,10 +13,36 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/installkit"
 	"github.com/reliant-labs/forge/internal/packs"
 )
+
+// packsFeatureGate is the single feature gate every `forge pack <sub>`
+// RunE invokes before doing real work. Kept in this file so the
+// pack-command tree owns its own gating, mirroring deploy.go's inline
+// check pattern. A loadProjectConfig failure (no forge.yaml, project
+// not initialised) passes through unchanged so the existing "you must
+// be in a forge project" UX is preserved when the user is outside any
+// project.
+func packsFeatureGate() error {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		// Outside a forge project: let `forge pack list` and friends
+		// fall through so the existing "no forge.yaml" messaging
+		// surfaces from the consumer code path. Returning the error
+		// here would mask that signal behind a feature error.
+		if err == ErrProjectConfigNotFound {
+			return nil
+		}
+		return err
+	}
+	if !cfg.Features.PacksEnabled() {
+		return config.DisabledFeatureError(config.FeaturePacks)
+	}
+	return nil
+}
 
 func newPackCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -77,6 +103,9 @@ Examples:
   forge pack info jwt-auth --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := packsFeatureGate(); err != nil {
+				return err
+			}
 			return runPackInfo(args[0], jsonFlag)
 		},
 	}
@@ -101,6 +130,9 @@ Examples:
   forge pack list
   forge pack list --deps`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := packsFeatureGate(); err != nil {
+				return err
+			}
 			if depsFlag {
 				return runPackListDeps()
 			}
@@ -139,6 +171,9 @@ Examples:
   forge pack install auth-ui --config provider=clerk`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := packsFeatureGate(); err != nil {
+				return err
+			}
 			return runPackInstall(cmd.Context(), args[0], configPairs)
 		},
 	}
@@ -163,6 +198,9 @@ Example:
   forge pack remove jwt-auth`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := packsFeatureGate(); err != nil {
+				return err
+			}
 			return runPackRemove(args[0])
 		},
 	}

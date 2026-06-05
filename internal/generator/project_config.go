@@ -249,6 +249,7 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		Codegen:    orDefault(g.Features.Codegen),
 		Migrations: orDefault(g.Features.Migrations),
 		CI:         orDefault(g.Features.CI),
+		Build:      orDefault(g.Features.Build),
 		Deploy:     orDefault(g.Features.Deploy),
 		Contracts:  orDefault(g.Features.Contracts),
 		Docs:       orDefault(g.Features.Docs),
@@ -260,6 +261,8 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		}(),
 		Observability: orDefault(g.Features.Observability),
 		HotReload:     orDefault(g.Features.HotReload),
+		Packs:         orDefault(g.Features.Packs),
+		Starters:      orDefault(g.Features.Starters),
 	}
 }
 

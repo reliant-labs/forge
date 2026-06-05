@@ -148,18 +148,28 @@ func runUp(ctx context.Context, opts upOptions) error {
 	}
 	summarizeKCLBuildPlan(entities)
 
-	// Cluster phases — build + deploy.
+	// Cluster phases — build + deploy. Both are feature-gated: if the
+	// project's forge.yaml turns either off (`features.build: false`
+	// or `features.deploy: false`), the orchestrator skips the phase
+	// with a one-line log and continues. Direct `forge build` /
+	// `forge deploy` invocations still error — see requireFeature
+	// in feature_gate.go for the strict-gate shape used by the cobra
+	// RunE for those commands.
 	if !opts.hostOnly {
 		if !opts.noBuild {
-			fmt.Println("\n[up] build phase")
-			if err := upBuildCluster(ctx, cfg, opts.env); err != nil {
-				return fmt.Errorf("build: %w", err)
+			if !skipFeature(cfg, config.FeatureBuild, "up:build") {
+				fmt.Println("\n[up] build phase")
+				if err := upBuildCluster(ctx, cfg, opts.env); err != nil {
+					return fmt.Errorf("build: %w", err)
+				}
 			}
 		}
 		if !opts.noDeploy {
-			fmt.Println("\n[up] deploy phase")
-			if err := upDeployCluster(ctx, opts.env); err != nil {
-				return fmt.Errorf("deploy: %w", err)
+			if !skipFeature(cfg, config.FeatureDeploy, "up:deploy") {
+				fmt.Println("\n[up] deploy phase")
+				if err := upDeployCluster(ctx, opts.env); err != nil {
+					return fmt.Errorf("deploy: %w", err)
+				}
 			}
 		}
 	}
@@ -183,10 +193,14 @@ func runUp(ctx context.Context, opts upOptions) error {
 		fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
 	}
 
-	// Phase 4: frontends.
-	feFailures := upFrontends(ctx, entities, opts.env, opts.background, procs)
-	if feFailures > 0 {
-		fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
+	// Phase 4: frontends. Skipped (with a log line) when
+	// features.frontend: false — the orchestrator otherwise tries to
+	// npm-run-dev a tree that the project never scaffolded.
+	if !skipFeature(cfg, config.FeatureFrontend, "up:frontend") {
+		feFailures := upFrontends(ctx, entities, opts.env, opts.background, procs)
+		if feFailures > 0 {
+			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
+		}
 	}
 
 	// Phase 5: port-forwards for cluster services with declared ports.

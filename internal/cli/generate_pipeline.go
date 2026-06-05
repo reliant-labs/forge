@@ -430,7 +430,15 @@ func gateCIWorkflows(ctx *pipelineContext) bool {
 }
 
 func gateHasPacks(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && len(ctx.Cfg.Packs) > 0
+	// Pack generate hooks only fire when the project has packs installed
+	// AND the packs feature is on. Disabling the feature with packs
+	// already installed skips the regenerate-on-generate step silently —
+	// the user opted out of the subsystem, codegen respects it. The
+	// installed packs themselves stay on disk; flipping `features.packs:
+	// true` later resumes the generate hooks without losing state.
+	return ctx.Cfg != nil &&
+		ctx.Cfg.Features.PacksEnabled() &&
+		len(ctx.Cfg.Packs) > 0
 }
 
 func gateDeployEnabled(ctx *pipelineContext) bool {

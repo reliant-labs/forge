@@ -31,6 +31,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // defaultK3dConfigPath is the canonical location of the project's k3d
@@ -275,6 +276,13 @@ func currentKubectlContext(ctx context.Context) string {
 }
 
 func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
+	// Deploy-feature gate: `forge dev cluster up` boots a k3d cluster
+	// whose only purpose is hosting the project's deploy. A library /
+	// CLI project that's opted out of deploy has no reason to spin
+	// one up. Mirrors the deploy gate in runDeploy / runDevClusterReload.
+	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+		return config.DisabledFeatureError(config.FeatureDeploy)
+	}
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -332,6 +340,13 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 }
 
 func runDevClusterDown(ctx context.Context, configPath string) error {
+	// Same gate as runDevClusterUp — tearing down a cluster that
+	// `cluster up` won't create is at worst a no-op, but we keep the
+	// error symmetric so a `forge dev cluster up && forge dev cluster
+	// down` cycle fails uniformly when deploy is off.
+	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+		return config.DisabledFeatureError(config.FeatureDeploy)
+	}
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -449,7 +464,7 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		return err
 	}
 	if !cfg.Features.DeployEnabled() {
-		return fmt.Errorf("deploy feature is disabled in forge.yaml")
+		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
 	kclDir := cfg.K8s.KCLDir

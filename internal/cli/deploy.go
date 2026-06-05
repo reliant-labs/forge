@@ -212,8 +212,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	}
 
 	if !cfg.Features.DeployEnabled() {
-		fmt.Println("deploy feature is disabled in forge.yaml")
-		return nil
+		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
 	// Resolve KCL directory.
@@ -349,6 +348,16 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	groups, gerr := buildDeployGroupsWithOpts(envName, entities, namespace, dryRun)
 	if gerr != nil {
 		return fmt.Errorf("group services for deploy: %w", gerr)
+	}
+	// Propagate the resolved image tag to every group. The cluster
+	// path uses ImageTag implicitly via cluster.Apply, but the
+	// external/compose providers read group.ImageTag for ${TAG}
+	// substitution — without this, External deploy_cmd sees an empty
+	// tag and downstream scripts (vultr-deploy.sh) error out.
+	for i := range groups {
+		if groups[i].ImageTag == "" {
+			groups[i].ImageTag = imageTag
+		}
 	}
 
 	if rollback {

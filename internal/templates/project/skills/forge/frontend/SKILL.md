@@ -303,7 +303,8 @@ These files are created by `forge add frontend` and are yours to modify:
 ## Dev Workflow
 
 ```bash
-forge run    # Full stack: infra + Go (hot reload) + Next.js
+forge run                # Full stack: infra + Go (hot reload) + Next.js
+forge up --env=dev       # Same, but reads deploy/kcl/<env>/ for the host/cluster split
 ```
 
 Changes to frontend code reflect instantly in the browser. After changing `.proto` files, always regenerate:
@@ -311,6 +312,20 @@ Changes to frontend code reflect instantly in the browser. After changing `.prot
 ```bash
 forge generate
 ```
+
+### How `forge up` runs the frontend
+
+`forge up` dev-serves each declared `forge.Frontend` via `npm run dev`
+— it does NOT run `npm run build` in the loop. The prod build is for
+`forge build` / `forge deploy`, not the inner-loop. Dev edits hot-reload
+without a build step.
+
+The frontend's declared port in KCL (`forge.Frontend.port`) is
+**force-injected as the `PORT` env var** into the Next.js child
+process. Next.js binds the declared port even if a stale `PORT=...`
+bled in from the parent shell — drift between the KCL-declared port,
+the generated docker-compose, and the actual dev server is now
+structurally impossible.
 
 ## Scaffolded Systems
 

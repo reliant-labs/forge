@@ -22,9 +22,10 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge dev info` | Diagnostic dump — cluster, context, namespace, registry, declared service/frontend ports. |
 | `forge dev port-forward` | Forward every service in `forge.yaml` (parallel). Ctrl-C cleans up. PIDs in `~/.cache/forge/dev/<cluster>/<ns>.pids`. |
 | `forge dev instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
-| `forge run <service> [--background]` | Host-mode single-service runner. Execs the binary's `server <service>` subcommand with `.env.<env>` loaded. For services marked `dev_target: host`. |
+| `forge run <service> [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), loading `HostDeploy.secrets_file` first then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. |
 | `forge run <service> stop` | Kill the background process tracked by `forge run <service> --background`. |
-| `forge deploy dev [--prune]` | Apply `deploy/kcl/dev/`. Skips rollout wait for `dev_target: host` services. `--prune` deletes orphan forge-managed Deployments. |
+| `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
+| `forge deploy dev [--prune]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. |
 
 ## Host vs cluster: where does each service run in dev?
 
@@ -34,42 +35,80 @@ cluster-only primitives — operators, CRD watchers, ingress webhooks,
 sidecars that depend on dynamic-config injection.
 
 **Host mode** flips a service to run as a host process under `forge run
-<service>`. Mark it in `forge.yaml`:
+<service>`. Set the deploy target in `deploy/kcl/<env>/main.k` to
+`forge.HostDeploy` (per-env — typically only in `dev`, with `staging` and
+`prod` staying on `forge.K8sCluster`):
 
-```yaml
-services:
-  - name: admin-server
-    dev_target: host          # APIs / business logic — fast iteration on host
-  - name: workspace-controller
-    dev_target: cluster       # operator-shape — needs cluster (default)
-  - name: workspace-proxy
-    dev_target: host          # edge proxy — host process is enough for dev
+```kcl
+# deploy/kcl/dev/main.k
+import forge
+
+_bundle = forge.Bundle {
+    services = [
+        forge.Service {
+            name = "admin-server"
+            deploy = forge.HostDeploy {
+                runner = "air"
+                air_config = ".air.toml"
+                env_vars = [
+                    forge.EnvVar { name = "DATABASE_URL", value = "postgres://..." }
+                ]
+                secrets_file = ".env.dev.local"   # gitignored
+            }
+        }
+        forge.Service {
+            name = "workspace-controller"
+            deploy = forge.K8sCluster {           # operator-shape — stays in cluster
+                cluster = "k3d-myapp"
+                namespace = "myapp-dev"
+                registry = "localhost:5050"
+            }
+        }
+    ]
+}
 ```
 
 The decision rule:
 
-| Service shape | Recommended dev_target |
+| Service shape | Recommended dev deploy |
 |---|---|
-| Connect-RPC API, business logic, gateway | `host` |
-| Operator (controller-runtime, watches CRDs) | `cluster` |
-| Webhook ingress / TLS-terminating proxy | depends — `cluster` if it needs an Ingress, `host` if it's an upstream forwarder |
-| Worker (background processor, cron) | `host` for fast iteration; `cluster` to test scheduler interactions |
-| Anything that talks to the cluster API (e.g. `kubectl` shells) | `cluster` |
+| Connect-RPC API, business logic, gateway | `forge.HostDeploy` |
+| Operator (controller-runtime, watches CRDs) | `forge.K8sCluster` |
+| Webhook ingress / TLS-terminating proxy | depends — `forge.K8sCluster` if it needs an Ingress, `forge.HostDeploy` if it's an upstream forwarder |
+| Worker (background processor, cron) | `forge.HostDeploy` for fast iteration; `forge.K8sCluster` to test scheduler interactions |
+| Anything that talks to the cluster API (e.g. `kubectl` shells) | `forge.K8sCluster` |
 
-`dev_target` affects ONLY the dev environment. Staging and prod always
-build, push, and deploy every service regardless of this field.
+The host/cluster split is a per-env concern. `forge up --env=staging` and
+`forge deploy prod` see whatever each env's `main.k` declares — typically
+every service on `forge.K8sCluster` in staging / prod regardless of what
+dev does.
+
+`HostDeploy` env composition splits config from secrets:
+
+- `env_vars` — KCL-declared per-env config (DATABASE_URL, NATS_URL,
+  LOG_LEVEL, …). Reproducible, version-controlled, composes with
+  the same sources `K8sCluster` services see via the Deployment's env block.
+- `secrets_file` — gitignored dotenv with JUST the secrets (STRIPE_*,
+  SUPABASE_*, JWT_PUBLIC_KEY, …). Loaded first; `env_vars` layers on top
+  so KCL wins on conflict and per-env config can't drift between
+  developer machines.
 
 What flipping a service to host mode buys:
 
 - `forge deploy dev` skips its rollout wait (saves 120s/service).
 - `forge deploy dev --prune` deletes its stale in-cluster Deployment.
-- `forge build --env dev` lists it under "host-mode services" so users know
-  they need to run it with `forge run <name>`.
+- `forge build --env=dev` lists it under "host-mode services" so users know
+  they need to run it with `forge run <name>` (or just `forge up --env=dev`).
 - The scaffolded `cmd/server.go` operator-gating helper won't start the
   controller manager when the user filters to host-mode-only services
   (no more spurious "not running in-cluster" errors during a host run).
 
 ## Inner loop: editing a host-mode service
+
+`forge up --env=dev` is the one-command inner loop — it brings up infra,
+applies the cluster-mode services, launches the host-mode services, and
+dev-serves every frontend. Use the breakdown below when you want
+fine-grained control:
 
 ```bash
 # Terminal 1: long-running infra + cluster services
@@ -84,10 +123,12 @@ forge run admin-server --background     # PID at ~/.cache/forge/run/admin-server
 forge run admin-server stop             # later teardown
 ```
 
-`forge run admin-server` reads `.env.dev` automatically (override with
-`--env-file`). DATABASE_URL and friends come from the local file, not
-the cluster's Secret. The child process inherits the host shell's env,
-so anything already exported wins over the .env file values.
+`forge run admin-server` reads the service's `HostDeploy.secrets_file`
+(if declared) FIRST, then layers `HostDeploy.env_vars` on top — KCL
+wins on conflict so per-env config can't drift between developer
+machines. Override the secrets-file path with `--env-file`. The child
+process also inherits the host shell's env, so anything already
+exported wins over both.
 
 ## Composing with Taskfile (cloud-dev pattern)
 
@@ -173,9 +214,10 @@ cp-forge            cp-forge-dev-feat-billing           12     0
 cp-forge            cp-forge-dev-fix-auth               12     0
 ```
 
-Each worktree sets `environments[].namespace` in its branch's forge.yaml (or
-via the `FORGE_DEV_NAMESPACE` env override if supported by your bootstrap)
-so multiple worktrees can run concurrently against one shared cluster.
+Each worktree sets the `namespace` field on its `forge.K8sCluster` block
+in `deploy/kcl/dev/main.k` (or via the `FORGE_DEV_NAMESPACE` env override
+if supported by your bootstrap) so multiple worktrees can run concurrently
+against one shared cluster.
 
 ## What forge does NOT own
 

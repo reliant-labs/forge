@@ -132,6 +132,22 @@ helper, a changed file layout — those do.
   shape (path -> hex string) -> structured shape (path -> {hash, history[]})
   so `forge upgrade` distinguishes stale codegen from real user edits.
   Transparent migration — most users will not notice.
+- `migrations/kcl-schemas-to-module` — in-tree
+  `deploy/kcl/{schema,base,render}.k` deleted; projects `import forge`
+  from the upstream KCL module and instantiate typed entities
+  (`forge.Service`, `forge.Operator`, `forge.Frontend`, `forge.CronJob`)
+  with a polymorphic `deploy` union.
+- `migrations/environments-to-kcl` — `forge.yaml -> environments[]` removed
+  entirely. Env-wide deploy knobs (cluster/namespace/registry/domain)
+  move onto per-service `forge.K8sCluster` blocks; per-env app config
+  moves to sibling `config.<env>.yaml` files next to forge.yaml.
+- `migrations/dev-target-to-kcl-deploy` — `forge.yaml services[].dev_target`
+  removed; deploy target is now `Service.deploy` in KCL with
+  `forge.HostDeploy | forge.K8sCluster | forge.External | forge.Compose | forge.BuildOnly`.
+- `migrations/host-env-file-to-env-vars` — `HostDeploy.env_file` split
+  into `env_vars` (KCL-declared per-env config) + `secrets_file`
+  (gitignored dotenv) so host services see the same per-env config
+  source K8sCluster services see via the Deployment env block.
 
 ## Post-merge gotchas
 

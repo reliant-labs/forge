@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // SkillWriteStyle controls the on-disk layout produced by `forge skill write`.
@@ -22,6 +24,128 @@ const (
 	// SkillWriteStyleMD is a flat layout: <out>/<skill>.md, no per-skill dir.
 	SkillWriteStyleMD SkillWriteStyle = "md"
 )
+
+// SkillAudience names the consumer of a skill emission. Combined with the
+// per-skill frontmatter `emit:` field ([SkillEmit]) it decides which skills
+// are written and how their bodies are rendered:
+//
+//	audience=All ("") — every skill, full body (no stripping). Default.
+//	audience=General  — emit:general|both skills only; @forge-only blocks stripped.
+//	audience=Forge    — emit:forge|both skills only; full body retained.
+type SkillAudience string
+
+const (
+	// SkillAudienceAll disables filtering entirely. Use when bulk-exporting
+	// the canonical catalog (e.g. forge's own .claude/skills/) where the
+	// reader can decide what to surface.
+	SkillAudienceAll SkillAudience = ""
+	// SkillAudienceGeneral targets consumers outside a forge project. The
+	// renderer strips `<!-- @forge-only:start/end -->` blocks from emit:both
+	// skills, and drops emit:forge skills entirely.
+	SkillAudienceGeneral SkillAudience = "general"
+	// SkillAudienceForge targets consumers inside a forge project. Full
+	// body is preserved; emit:general skills are also included.
+	SkillAudienceForge SkillAudience = "forge"
+)
+
+// emitMatchesAudience decides whether a skill should be included in an
+// emission for the given audience. An empty Emit value is treated as
+// SkillEmitForge — legacy skills under templates/project/skills/forge/
+// pre-date the field and are framework-specific by default.
+func emitMatchesAudience(emit SkillEmit, audience SkillAudience) bool {
+	if audience == SkillAudienceAll {
+		return true
+	}
+	if emit == "" {
+		emit = SkillEmitForge
+	}
+	if emit == SkillEmitBoth {
+		return true
+	}
+	return string(emit) == string(audience)
+}
+
+// RenderSkillForAudience returns the skill body filtered for the given
+// audience. For SkillAudienceGeneral, `<!-- @forge-only:start -->` ...
+// `<!-- @forge-only:end -->` blocks are removed (markers included). For
+// every other audience the body is returned unchanged.
+//
+// Exported so out-of-process consumers (e.g. reliant) can apply the same
+// filtering rule when serving a skill loaded via [LoadSkill]. Forge-side
+// callers should generally use WriteSkills, which calls this internally.
+func RenderSkillForAudience(body []byte, audience SkillAudience) []byte {
+	if audience != SkillAudienceGeneral {
+		return body
+	}
+	return stripForgeOnlyBlocks(body)
+}
+
+// stripForgeOnlyBlocks removes every `@forge-only` block from the body,
+// inclusive of the marker lines, and collapses any runs of blank lines
+// created by the removal down to a single blank line. An unterminated
+// block drops content from the start marker to EOF — authors notice via
+// missing content rather than silent passthrough.
+func stripForgeOnlyBlocks(body []byte) []byte {
+	lines := strings.Split(string(body), "\n")
+	out := make([]string, 0, len(lines))
+	inBlock := false
+	for _, line := range lines {
+		switch {
+		case isForgeOnlyMarker(line, "start"):
+			inBlock = true
+		case isForgeOnlyMarker(line, "end"):
+			inBlock = false
+		case inBlock:
+			// skip
+		default:
+			out = append(out, line)
+		}
+	}
+	return []byte(collapseBlankRuns(strings.Join(out, "\n")))
+}
+
+// isForgeOnlyMarker reports whether a single line is the `<!-- @forge-only:start -->`
+// or `<!-- @forge-only:end -->` HTML comment, tolerating surrounding
+// whitespace both around the line and inside the comment.
+func isForgeOnlyMarker(line, kind string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "<!--") || !strings.HasSuffix(trimmed, "-->") {
+		return false
+	}
+	inner := strings.TrimSpace(trimmed[4 : len(trimmed)-3])
+	return inner == "@forge-only:"+kind
+}
+
+// collapseBlankRuns rewrites consecutive blank lines as a single blank
+// line — used after block stripping so removed sections don't leave a
+// visible double-blank gap in the rendered output.
+func collapseBlankRuns(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	prevBlank := false
+	for _, line := range lines {
+		blank := strings.TrimSpace(line) == ""
+		if blank && prevBlank {
+			continue
+		}
+		out = append(out, line)
+		prevBlank = blank
+	}
+	return strings.Join(out, "\n")
+}
+
+// skillStyleForHarness maps a Harness to the SkillWriteStyle that should
+// be used when emitting skills on `forge new`. Returns ("", false) for
+// harnesses with no native skills concept — reliant (auto-discovers via
+// forge.yaml), copilot, codex.
+func skillStyleForHarness(h generator.Harness) (SkillWriteStyle, bool) {
+	switch h {
+	case generator.HarnessClaude:
+		return SkillWriteStyleClaude, true
+	default:
+		return "", false
+	}
+}
 
 // newSkillWriteCmd implements `forge skill write` — bulk-export every bundled
 // skill to a target directory in one of three layouts. The command lives under
@@ -59,7 +183,7 @@ The skill content is the same body returned by ` + "`forge skill load <name>`" +
 			default:
 				return fmt.Errorf("invalid --style %q: valid values are forge, claude, md", style)
 			}
-			n, err := WriteSkills(outDir, s)
+			n, err := WriteSkills(outDir, s, SkillAudienceAll)
 			if err != nil {
 				return err
 			}
@@ -73,10 +197,18 @@ The skill content is the same body returned by ` + "`forge skill load <name>`" +
 	return cmd
 }
 
-// WriteSkills exports every bundled skill into outDir using the requested
-// style. It returns the number of skills written. The function is exported so
-// callers (e.g. the reliant CLI embedding forge) can reuse it.
-func WriteSkills(outDir string, style SkillWriteStyle) (int, error) {
+// WriteSkills exports forge-shipped skills into outDir using the requested
+// style, filtered by audience. SkillAudienceAll ("") writes every skill
+// with the raw body — that's the canonical catalog export used by
+// `forge skill write` from inside the forge repo. SkillAudienceGeneral
+// drops emit:forge skills and strips @forge-only blocks from emit:both
+// skills' bodies. SkillAudienceForge keeps everything for emit:forge|both
+// skills and drops emit:general entries. Returns the number of skills
+// actually written.
+//
+// Exported so out-of-process callers (the reliant CLI embedding forge,
+// the harness emission in `forge new`) can reuse it.
+func WriteSkills(outDir string, style SkillWriteStyle, audience SkillAudience) (int, error) {
 	if outDir == "" {
 		return 0, fmt.Errorf("outDir is required")
 	}
@@ -94,10 +226,14 @@ func WriteSkills(outDir string, style SkillWriteStyle) (int, error) {
 
 	count := 0
 	for _, s := range skills {
+		if !emitMatchesAudience(s.Emit, audience) {
+			continue
+		}
 		body, err := loadSkillContent(s.Path)
 		if err != nil {
 			return count, fmt.Errorf("load skill %q: %w", s.Path, err)
 		}
+		body = RenderSkillForAudience(body, audience)
 
 		// Skill paths can be hierarchical ("debug/investigate"). Flatten
 		// hierarchy into a single dir/file name per skill so the output is

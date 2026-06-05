@@ -12,6 +12,9 @@ import forge
 
 # Per-environment config (generated from forge.yaml + proto annotations).
 import deploy.kcl.staging.config_gen as cfg
+{{- if .IngressEnabled}}
+import deploy.kcl.staging.ingress as ing
+{{- end}}
 
 # Overridable via `kcl run -D image_tag=...`
 _image_tag = option("image_tag") or "staging"
@@ -61,6 +64,11 @@ _bundle = forge.Bundle {
 {{- end}}
     ]
     config_maps = cfg.CONFIG_MAPS
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
+{{- end}}
 }
 
 output = forge.render(_bundle)

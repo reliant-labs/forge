@@ -11,12 +11,14 @@
 //  4. Host phase: start every host-mode service as a host process,
 //     dispatching on deploy.Host.Runner (go-run / air / binary / delve).
 //  5. Frontend phase: start every declared frontend in its path dir.
-//  6. Port-forward phase: kubectl port-forward every cluster service
-//     with deploy.Cluster.Ports.
-//  7. Wait Ctrl-C → cascade cleanup → exit.
+//  6. Wait Ctrl-C → cascade cleanup → exit.
+//
+// Reaching cluster services from the host is the Gateway API ingress
+// path (see `forge dev urls`); ad-hoc shells against stateful workloads
+// stay available via `kubectl port-forward` directly.
 //
 // Replaces the dev-loop bash script every forge project would otherwise
-// hand-write to coordinate build + deploy + run + port-forward.
+// hand-write to coordinate build + deploy + run.
 package cli
 
 import (
@@ -45,7 +47,7 @@ type upOptions struct {
 	env         string
 	noBuild     bool
 	noDeploy    bool
-	clusterOnly bool // build + deploy cluster manifests, skip host/frontend/port-forward
+	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
 }
@@ -55,22 +57,23 @@ func newUpCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Bring the whole dev loop up: build + deploy + host + frontend + port-forward",
+		Short: "Bring the whole dev loop up: build + deploy + host + frontend",
 		Long: `Bring the whole dev loop up for an environment.
 
 Reads deploy/kcl/<env>/ to figure out which services run in-cluster vs
-on the host, which frontends to start, and which port-forwards to open.
+on the host and which frontends to start.
 
 Phases:
-  1. build:        docker build + push every cluster image; go build
-                   each build-only variant
-  2. deploy:       kubectl apply cluster manifests; wait rollouts and
-                   one-shot Jobs
-  3. host:         start every host-mode service (go-run / air / binary
-                   / delve)
-  4. frontend:     start every declared frontend in its path
-  5. port-forward: kubectl port-forward every cluster service with
-                   declared ports
+  1. build:    docker build + push every cluster image; go build
+               each build-only variant
+  2. deploy:   kubectl apply cluster manifests; wait rollouts and
+               one-shot Jobs
+  3. host:     start every host-mode service (go-run / air / binary
+               / delve)
+  4. frontend: start every declared frontend in its path
+
+Reaching cluster services from the host is the Gateway API ingress
+path; run ` + "`forge dev urls`" + ` to list the routes.
 
 Use --no-build / --no-deploy to skip phases when iterating. Use
 --cluster-only / --host-only to scope the orchestrator to one side of
@@ -100,8 +103,8 @@ Examples:
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
-	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend/port-forward")
-	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend + port-forward); skip build/deploy")
+	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
+	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
 
 	cmd.AddCommand(newUpStopCmd())
@@ -129,7 +132,7 @@ func newUpStopCmd() *cobra.Command {
 
 // runUp is the orchestrator. Returns the first error encountered in
 // phases 1-2 (no point bringing host processes up against a busted
-// cluster). Phases 3-5 are collected into the running-process set and
+// cluster). Phases 3-4 are collected into the running-process set and
 // torn down by the Ctrl-C cleanup cascade on exit.
 func runUp(ctx context.Context, opts upOptions) error {
 	cfg, err := loadProjectConfig()
@@ -174,16 +177,16 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
-	// --cluster-only stops here: skip the host/frontend/port-forward
-	// phases. Useful for CI lanes that only care about the apply.
+	// --cluster-only stops here: skip the host/frontend phases. Useful
+	// for CI lanes that only care about the apply.
 	if opts.clusterOnly {
-		fmt.Println("\n[up] --cluster-only: skipping host/frontend/port-forward phases")
+		fmt.Println("\n[up] --cluster-only: skipping host/frontend phases")
 		return nil
 	}
 
-	// Host phases — host services + frontends + port-forwards. These
-	// are tracked under the orchestrator's child-process registry so
-	// Ctrl-C tears them all down together.
+	// Host phases — host services + frontends. These are tracked under
+	// the orchestrator's child-process registry so Ctrl-C tears them
+	// all down together.
 	procs := newProcRegistry(opts.env)
 	defer procs.shutdownOnExit()
 
@@ -203,10 +206,10 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
-	// Phase 5: port-forwards for cluster services with declared ports.
-	pfFailures := upPortForwards(ctx, cfg, entities, opts.env, opts.background, procs)
-	if pfFailures > 0 {
-		fmt.Printf("[up] %d port-forward(s) failed to start (see above)\n", pfFailures)
+	// Ingress replaces the legacy port-forward phase; surface a hint so
+	// users know where to find the host-reachable URLs.
+	if cfg.Features.IngressEnabled() {
+		fmt.Println("[up] ingress URLs available — run `forge dev urls` to list them")
 	}
 
 	if opts.background {
@@ -217,7 +220,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	}
 
 	if procs.count() == 0 {
-		fmt.Println("\n[up] no host/frontend/port-forward processes to wait on; deploy is up.")
+		fmt.Println("\n[up] no host/frontend processes to wait on; deploy is up.")
 		return nil
 	}
 
@@ -406,43 +409,6 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	return cmd
 }
 
-// upPortForwards starts a `kubectl port-forward` for every cluster
-// service with declared ports. Local port == remote port (the simplest
-// shape; users with conflicts can fall back to `forge dev port-forward
-// --local <p>:<r>` manually). Service-name → deployment-name uses the
-// shared-binary prefix when forge.yaml declares binary=shared.
-func upPortForwards(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, procs *procRegistry) int {
-	namespace := cfg.Name + "-" + env
-	if ns := k8sClusterNamespaceForEnv(ctx, env); ns != "" {
-		namespace = ns
-	}
-
-	failures := 0
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
-			continue
-		}
-		for _, port := range svc.Deploy.Cluster.Ports {
-			depName := svc.Name
-			if cfg.IsBinaryShared() {
-				depName = cfg.Name + "-" + svc.Name
-			}
-			pfName := fmt.Sprintf("pf:%s:%d", svc.Name, port)
-			pfArgs := []string{"port-forward",
-				"-n", namespace,
-				"deployment/" + depName,
-				fmt.Sprintf("%d:%d", port, port),
-			}
-			cmd := exec.CommandContext(ctx, "kubectl", pfArgs...)
-			if err := procs.start(pfName, cmd, background); err != nil {
-				fmt.Printf("[up] %s: %v\n", pfName, err)
-				failures++
-			}
-		}
-	}
-	return failures
-}
-
 // procRegistry tracks long-running child processes started by the up
 // orchestrator and provides the cleanup cascade for Ctrl-C teardown.
 // Background mode persists PIDs under ~/.cache/forge/up/<env>/ so
@@ -571,8 +537,9 @@ func (p *procRegistry) shutdown() {
 	copy(procs, p.processes)
 	p.mu.Unlock()
 
-	// Reverse order so port-forwards die before the services they
-	// forward to — keeps the user's last log lines clean.
+	// Reverse order so later-started frontends die before the host
+	// services they may have spoken to — keeps the user's last log
+	// lines clean.
 	for i := len(procs) - 1; i >= 0; i-- {
 		mp := procs[i]
 		if mp.cmd.Process == nil {

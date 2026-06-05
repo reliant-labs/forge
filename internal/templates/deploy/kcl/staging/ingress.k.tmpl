@@ -1,0 +1,27 @@
+"""
+Staging-environment ingress overrides for {{.ProjectName}}.
+
+Same shape as `deploy/kcl/prod/ingress.k`: typically flips listener
+ports to the cloud LB ports (80/443) and adds TLS via cert-manager.
+The block below is commented out — uncomment + fill in the
+ClusterIssuer name and hostname when staging is ready.
+"""
+
+import deploy.kcl.ingress as base
+import forge
+
+# STAGING_PUBLIC = base.PUBLIC | {
+#     host = "staging.example.com"
+#     tls = forge.GatewayTLS {
+#         cert_issuer = "letsencrypt-staging"
+#         secret_name = "{{.ProjectName}}-staging-tls"
+#     }
+#     listeners = [
+#         forge.GatewayListener {name = "http", port = 80, protocol = "HTTP"}
+#         forge.GatewayListener {name = "grpc", port = 443, protocol = "HTTPS"}
+#     ]
+# }
+
+GATEWAYS = base.GATEWAYS
+HTTP_ROUTES = base.HTTP_ROUTES
+GRPC_ROUTES = base.GRPC_ROUTES

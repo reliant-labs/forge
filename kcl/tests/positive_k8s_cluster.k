@@ -58,5 +58,4 @@ assert_a_replicas = output.services[0].deploy.replicas == 1
 
 # Default values for new K8sCluster optional fields.
 assert_a_env_vars_empty = len(output.services[0].deploy.env_vars) == 0
-assert_a_ingress_null = output.services[0].deploy.ingress == None
 assert_a_health_check_null = output.services[0].deploy.health_check == None

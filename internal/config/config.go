@@ -671,6 +671,7 @@ type FeaturesConfig struct {
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
 	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
 	Starters      *bool `yaml:"starters,omitempty"`      // forge starters (one-time business-integration copies)
+	Ingress       *bool `yaml:"ingress,omitempty"`       // Gateway API ingress codegen + Traefik install at `forge dev cluster up`
 
 	// Diagnostics enables runtime emission of pkg/diagnostics records at
 	// Bootstrap time — slog warn lines for every unwired scaffold the
@@ -774,6 +775,14 @@ func (f FeaturesConfig) PacksEnabled() bool { return featureEnabled(f.Packs) }
 // (default: on). Disables `forge starter list/add`.
 func (f FeaturesConfig) StartersEnabled() bool { return featureEnabled(f.Starters) }
 
+// IngressEnabled reports whether Gateway API ingress is wired
+// (default: on for service kind; off-by-default at scaffold time for
+// cli/library kinds via applyKindFeatureDefaults). When off, forge
+// skips ingress codegen, `forge dev cluster up` skips the Traefik +
+// GatewayClass install, `forge dev urls` returns nothing, and the
+// audit ingress category is suppressed.
+func (f FeaturesConfig) IngressEnabled() bool { return featureEnabled(f.Ingress) }
+
 // DisabledFeatureError returns the canonical user-facing error for a
 // disabled feature. Centralised so every gate site emits the same
 // wording — sub-agents and humans grepping for the string find one
@@ -819,6 +828,7 @@ const (
 	FeatureHotReload     FeatureName = "hot_reload"
 	FeaturePacks         FeatureName = "packs"
 	FeatureStarters      FeatureName = "starters"
+	FeatureIngress       FeatureName = "ingress"
 )
 
 // EffectiveFeatures projects the resolved enabled/disabled state of
@@ -841,6 +851,7 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 		FeatureHotReload:     f.HotReloadEnabled(),
 		FeaturePacks:         f.PacksEnabled(),
 		FeatureStarters:      f.StartersEnabled(),
+		FeatureIngress:       f.IngressEnabled(),
 	}
 }
 

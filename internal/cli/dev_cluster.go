@@ -301,11 +301,29 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		return nil
 	}
 
+	// Resolve the effective k3d config. When features.ingress is on
+	// and deploy/k3d-ports.yaml exists, merge the listener-port
+	// fragment into the user's deploy/k3d.yaml (in memory) and pass
+	// k3d a tempfile holding the merged YAML. See dev_cluster_ingress.go
+	// for the merge policy.
+	ingressOn := false
+	if cfg, err := loadProjectConfig(); err == nil {
+		ingressOn = cfg.Features.IngressEnabled()
+	}
+	effective, cleanupCfg, err := mergeK3dConfig(configPath, ingressOn)
+	if err != nil {
+		return err
+	}
+	defer cleanupCfg()
+
 	// Cluster doesn't exist — create from config if present, else use
 	// the same fallback path forge deploy dev has used historically.
-	if _, statErr := os.Stat(configPath); statErr == nil {
+	if _, statErr := os.Stat(effective.path); statErr == nil {
 		fmt.Printf("Creating k3d cluster from %s...\n", configPath)
-		create := exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", configPath)
+		if effective.temporary {
+			fmt.Printf("  (merging deploy/k3d-ports.yaml from project's ingress KCL)\n")
+		}
+		create := exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", effective.path)
 		create.Stdout = os.Stdout
 		create.Stderr = os.Stderr
 		if err := create.Run(); err != nil {
@@ -332,6 +350,24 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		waitCmd.Stderr = os.Stderr
 		if err := waitCmd.Run(); err != nil {
 			return fmt.Errorf("wait for cluster nodes: %w", err)
+		}
+	}
+
+	// Install the ingress bundle (Gateway API CRDs + Traefik +
+	// GatewayClass) when the project has features.ingress enabled.
+	// Runs AFTER the kubectl context is pinned so applies hit the
+	// right cluster.
+	if ingressOn {
+		if err := installIngressBundle(ctx); err != nil {
+			return fmt.Errorf("install ingress: %w", err)
+		}
+		// Provision mkcert TLS Secrets for any dev Gateway that
+		// opted in via tls.mode == "mkcert". Runs AFTER the ingress
+		// bundle so the GatewayClass is ready when the Secret lands;
+		// no-op when no mkcert gateways are declared.
+		projectDir, _ := os.Getwd()
+		if err := provisionMkcertSecrets(ctx, projectDir); err != nil {
+			return fmt.Errorf("provision mkcert TLS: %w", err)
 		}
 	}
 

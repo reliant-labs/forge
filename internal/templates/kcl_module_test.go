@@ -44,39 +44,64 @@ func runKCL(t *testing.T, entry string, args ...string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
-// TestKCLModule_PositiveAssertions runs tests/positive.k and asserts
-// every assert_* identifier evaluates to true. Skips when kcl is not
-// on PATH (local dev shouldn't be forced to install it; CI does).
+// TestKCLModule_PositiveAssertions walks every tests/positive*.k file
+// and asserts that all `assert_*` identifiers each one declares evaluate
+// to true. positive_env_option.k is excluded because it needs the
+// `-D env=<name>` binding plumbed by TestKCLModule_EnvOptionPlumbing.
+// Skips when kcl is not on PATH (local dev shouldn't be forced to
+// install it; CI does).
 func TestKCLModule_PositiveAssertions(t *testing.T) {
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping KCL module assertion test")
 	}
 
 	root := kclModuleRoot(t)
-	out, err := runKCL(t, filepath.Join(root, "tests", "positive.k"))
+	testsDir := filepath.Join(root, "tests")
+	entries, err := os.ReadDir(testsDir)
 	if err != nil {
-		t.Fatalf("kcl run positive.k failed: %v\n%s", err, out)
+		t.Fatalf("read tests dir: %v", err)
 	}
 
-	var parsed map[string]any
-	if err := json.Unmarshal(out, &parsed); err != nil {
-		t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
+	var found int
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "positive") || !strings.HasSuffix(name, ".k") {
+			continue
+		}
+		// Skip the env-option fixture — it expects `-D env=` and
+		// has a dedicated test (TestKCLModule_EnvOptionPlumbing).
+		if name == "positive_env_option.k" {
+			continue
+		}
+		found++
+		t.Run(name, func(t *testing.T) {
+			out, err := runKCL(t, filepath.Join(testsDir, name))
+			if err != nil {
+				t.Fatalf("kcl run %s failed: %v\n%s", name, err, out)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(out, &parsed); err != nil {
+				t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
+			}
+			// Every assert_* identifier must be true. If anything is
+			// false the invariant it guards regressed.
+			for k, v := range parsed {
+				if !strings.HasPrefix(k, "assert_") {
+					continue
+				}
+				b, ok := v.(bool)
+				if !ok {
+					t.Errorf("identifier %q not a bool: %v", k, v)
+					continue
+				}
+				if !b {
+					t.Errorf("assertion %q is false", k)
+				}
+			}
+		})
 	}
-
-	// Every assert_* identifier must be true. If anything is false the
-	// invariant it guards regressed.
-	for k, v := range parsed {
-		if !strings.HasPrefix(k, "assert_") {
-			continue
-		}
-		b, ok := v.(bool)
-		if !ok {
-			t.Errorf("identifier %q not a bool: %v", k, v)
-			continue
-		}
-		if !b {
-			t.Errorf("assertion %q is false", k)
-		}
+	if found == 0 {
+		t.Fatal("no positive*.k tests found")
 	}
 }
 
@@ -184,7 +209,7 @@ func TestKCLModule_JSONContractShape(t *testing.T) {
 	if err := json.Unmarshal(out, &c); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, out)
 	}
-	for _, bucket := range []string{"services", "operators", "frontends", "cronjobs", "config_maps"} {
+	for _, bucket := range []string{"services", "operators", "frontends", "cronjobs", "config_maps", "gateways", "http_routes", "grpc_routes"} {
 		if _, ok := c[bucket]; !ok {
 			t.Errorf("JSON contract missing required bucket %q", bucket)
 		}

@@ -67,6 +67,22 @@ my-app/
 └── .reliant/skills/forge/     # These skills
 ```
 
+### Ingress scaffolding
+
+For `--kind service` projects (the default), forge scaffolds Gateway
+API ingress alongside the deploy config:
+
+- `deploy/kcl/ingress.k` — project-wide gateway topology (one `public`
+  Gateway with `HTTP` + `H2C` listeners by default). User-owned.
+- `deploy/kcl/<env>/ingress.k` — per-env override (dev re-exports the
+  base; staging/prod show commented `tls` blocks ready to fill in).
+- An example commented `HTTPRoute` in the base file showing how to
+  attach the initial service.
+
+Each env's `main.k` wires `ing.GATEWAYS` / `ing.HTTP_ROUTES` /
+`ing.GRPC_ROUTES` into the Bundle. See the `ingress` sub-skill for the
+full story (schemas, TLS, providers, the "no port-forward" contract).
+
 ## The Development Workflow
 
 Proto gets you a working demo fast. After that, your DB schema and entity types evolve independently.

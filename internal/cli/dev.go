@@ -5,8 +5,14 @@
 // in bash:
 //
 //   - cluster up/down/status/reset/reload    (k3d cluster lifecycle)
-//   - port-forward                           (kubectl pf for every service)
+//   - urls                                   (ingress URL table for the env)
 //   - logs / status / info / instances       (per-namespace introspection)
+//
+// kubectl port-forward isn't wrapped here — the Gateway API ingress
+// path (forge dev urls) is the canonical "reach a service from the
+// host" entry point. Ad-hoc port-forwards for stateful workloads
+// (database shells, debug metrics endpoints) are `kubectl
+// port-forward` directly.
 //
 // Project-specific orchestration (sibling-repo deploys, helm bootstraps,
 // Stripe webhook listeners, per-tenant seeds) is NOT owned by forge —
@@ -27,7 +33,7 @@ func newDevCmd() *cobra.Command {
 		Long: `Local-cluster dev loop primitives.
 
 forge dev owns the universal mechanics every k8s-targeting forge project
-needs: cluster lifecycle, port-forwarding, status, logs. Project-specific
+needs: cluster lifecycle, ingress URLs, status, logs. Project-specific
 orchestration (sibling-repo deploys, helm chart bootstraps, webhook
 listeners) lives in your scripts/ and Taskfile.yml — composed with the
 forge dev primitives.
@@ -35,8 +41,8 @@ forge dev primitives.
 Examples:
   forge dev cluster up          # create k3d cluster from deploy/k3d.yaml
   forge dev cluster reload      # re-render KCL + kubectl apply + wait rollout
-  forge dev status              # cluster + pods + port-forwards
-  forge dev port-forward        # forward every declared service port
+  forge dev urls                # print the ingress URL table for the env
+  forge dev status              # cluster + pods + ingress URLs
   forge dev logs --service api  # kubectl logs -f for a service
   forge dev instances           # list every cp-forge dev namespace on the host`,
 	}
@@ -45,7 +51,7 @@ Examples:
 	cmd.AddCommand(newDevStatusCmd())
 	cmd.AddCommand(newDevLogsCmd())
 	cmd.AddCommand(newDevInfoCmd())
-	cmd.AddCommand(newDevPortForwardCmd())
+	cmd.AddCommand(newDevUrlsCmd())
 	cmd.AddCommand(newDevInstancesCmd())
 
 	return cmd

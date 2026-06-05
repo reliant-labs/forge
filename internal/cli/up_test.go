@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
 
 // TestBuildHostServiceCmd covers each runner dispatch — go-run / air /
@@ -199,17 +201,41 @@ log_level: debug
 }
 
 func TestUpLogPath_Sanitises(t *testing.T) {
-	got, err := upLogPath("dev", "pf:admin-server:8080")
+	got, err := upLogPath("dev", "frontend:admin/web")
 	if err != nil {
 		t.Fatalf("upLogPath: %v", err)
 	}
-	// Colons must be replaced so the path is safe.
+	// Colons and slashes must be replaced so the path is safe.
 	if strings.Contains(got, ":") {
 		t.Errorf("upLogPath returned unsanitised path %q", got)
 	}
-	if !strings.HasSuffix(got, "pf_admin-server_8080.log") {
-		t.Errorf("upLogPath: got %q, want pf_admin-server_8080.log suffix", got)
+	if !strings.HasSuffix(got, "frontend_admin_web.log") {
+		t.Errorf("upLogPath: got %q, want frontend_admin_web.log suffix", got)
 	}
+}
+
+// TestUpCmd_NoPortForwardSurface pins the phase-3 ingress refactor:
+// `forge up` no longer mentions port-forward in any user-facing string
+// (Short / Long / Example / flag help). Reaching cluster services from
+// the host is the Gateway API ingress path now (forge dev urls); the
+// orchestrator must not advertise a port-forward phase that doesn't
+// exist.
+func TestUpCmd_NoPortForwardSurface(t *testing.T) {
+	cmd := newUpCmd()
+	surfaces := map[string]string{
+		"Short": cmd.Short,
+		"Long":  cmd.Long,
+	}
+	for label, s := range surfaces {
+		if strings.Contains(strings.ToLower(s), "port-forward") {
+			t.Errorf("%s mentions port-forward: %q", label, s)
+		}
+	}
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if strings.Contains(strings.ToLower(f.Usage), "port-forward") {
+			t.Errorf("flag --%s usage mentions port-forward: %q", f.Name, f.Usage)
+		}
+	})
 }
 
 // TestBuildFrontendCmd_PortFromKCLOverridesParent pins Item 1: the

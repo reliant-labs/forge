@@ -36,6 +36,7 @@ fully-populated dict so the JSON shape is stable.
 import .lib.services as svc_lib
 import .lib.rbac as rbac_lib
 import .lib.netpol as netpol_lib
+import .lib.gateway as gw_lib
 
 # ---------------------------------------------------------------------------
 # JSON contract render — typed Bundle -> stable dict shape.
@@ -51,15 +52,6 @@ _render_env_var = lambda ev: EnvVar -> any {
         "secret_key": ev.secret_key if ev.secret_key else None
         "config_map_ref": ev.config_map_ref if ev.config_map_ref else None
         "config_map_key": ev.config_map_key if ev.config_map_key else None
-    }
-}
-
-_render_ingress = lambda ing: Ingress -> any {
-    {
-        "host": ing.host
-        "tls": ing.tls
-        "cert_manager_issuer": ing.cert_manager_issuer
-        "path": ing.path
     }
 }
 
@@ -114,7 +106,6 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
         "registry": d.registry
         "domain": d.domain if d.domain else None
         "replicas": d.replicas
-        "ingress": _render_ingress(d.ingress) if d.ingress else None
         "resources": _render_resources(d.resources) if d.resources else None
         "health_check": d.health_check if d.health_check else None
         "security_context": d.security_context if d.security_context else None
@@ -203,6 +194,60 @@ _render_frontend = lambda f: Frontend -> any {
     }
 }
 
+_render_gateway_listener = lambda l: GatewayListener -> any {
+    {
+        "name": l.name
+        "port": l.port
+        "protocol": l.protocol
+        "path_prefix": l.path_prefix if l.path_prefix else None
+    }
+}
+
+_render_gateway_tls = lambda t: GatewayTLS -> any {
+    {
+        "cert_issuer": t.cert_issuer if t.cert_issuer else None
+        "secret_name": t.secret_name
+        "mode": t.mode
+    }
+}
+
+_render_gateway = lambda g: Gateway -> any {
+    {
+        "name": g.name
+        "gateway_class_name": g.gateway_class_name
+        "host": g.host if g.host else None
+        "tls": _render_gateway_tls(g.tls) if g.tls else None
+        "listeners": [_render_gateway_listener(l) for l in g.listeners]
+        "raw_policy": g.raw_policy if g.raw_policy else None
+    }
+}
+
+_render_http_route = lambda r: HTTPRoute -> any {
+    {
+        "name": r.name
+        "gateway": r.gateway
+        "listener": r.listener
+        "service": r.service
+        "port": r.port
+        "host": r.host if r.host else None
+        "path": r.path if r.path else None
+        "raw_policy": r.raw_policy if r.raw_policy else None
+    }
+}
+
+_render_grpc_route = lambda r: GRPCRoute -> any {
+    {
+        "name": r.name
+        "gateway": r.gateway
+        "listener": r.listener
+        "service": r.service
+        "port": r.port
+        "host": r.host if r.host else None
+        "path": r.path if r.path else None
+        "raw_policy": r.raw_policy if r.raw_policy else None
+    }
+}
+
 _render_config_map = lambda cm: ConfigMap -> any {
     {
         "name": cm.name
@@ -232,6 +277,9 @@ render = lambda bundle: Bundle -> any {
         "frontends": [_render_frontend(f) for f in bundle.frontends]
         "cronjobs": [_render_cronjob(c) for c in bundle.cronjobs]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
+        "gateways": [_render_gateway(g) for g in bundle.gateways]
+        "http_routes": [_render_http_route(r) for r in bundle.http_routes]
+        "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
     }
 }
 
@@ -311,5 +359,9 @@ render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
         + [item for s in _cluster_services for item in _render_cluster_service(s, env)] \
         + [item for o in bundle.operators for item in _render_operator_manifests(o, env)] \
         + [item for c in bundle.cronjobs for item in _render_cronjob_manifests(c, env)] \
+        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.namespace)] \
+        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, env.namespace)] \
+        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, env.namespace)] \
+        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, env.namespace)] \
         + (netpol_lib.render_network_policies(env.namespace) if env.network_policies else [])
 }

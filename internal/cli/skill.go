@@ -33,6 +33,30 @@ const (
 	SkillScopeUser SkillScope = "user"
 )
 
+// SkillEmit declares which audience(s) a skill is authored for. Read from
+// the YAML frontmatter `emit:` field. Drives the dual-audience compile
+// path: a single SKILL.md source can target general consumers, forge
+// consumers, or both — with `<!-- @forge-only:start/end -->` blocks
+// stripped from the body when emitting to a general audience.
+//
+// An empty value is treated as SkillEmitForge by [emitMatchesAudience] —
+// legacy skills shipped under templates/project/skills/forge/ pre-date
+// the field and are framework-specific by default.
+type SkillEmit string
+
+const (
+	// SkillEmitForge — framework skills (proto, db, api, etc.) that only
+	// make sense in a forge project. The legacy default.
+	SkillEmitForge SkillEmit = "forge"
+	// SkillEmitGeneral — methodology skills (debug, code-review, etc.)
+	// that apply to any project, forge or not.
+	SkillEmitGeneral SkillEmit = "general"
+	// SkillEmitBoth — the body has both general and framework content,
+	// with the latter inside `@forge-only` blocks. The renderer keeps the
+	// whole body for forge audiences and strips the blocks for general.
+	SkillEmitBoth SkillEmit = "both"
+)
+
 // skillMeta holds parsed YAML frontmatter from a SKILL.md file plus the scope
 // the skill was loaded from.
 type skillMeta struct {
@@ -40,6 +64,7 @@ type skillMeta struct {
 	Name        string
 	Description string
 	Scope       SkillScope // forge | project | user (inferred from source)
+	Emit        SkillEmit  // forge | general | both (from frontmatter; empty == legacy forge default)
 
 	// fsPath is non-empty for project/user-scope skills and points at the
 	// SKILL.md on disk. For forge-shipped skills it is empty (content is
@@ -233,6 +258,7 @@ type SkillMetaPublic struct {
 	Name        string
 	Description string
 	Scope       SkillScope
+	Emit        SkillEmit
 }
 
 // ListSkillsAt is the exported wrapper around [listSkillsAt], intended for
@@ -250,6 +276,7 @@ func ListSkillsAt(projectRoot string) ([]SkillMetaPublic, error) {
 			Name:        m.Name,
 			Description: m.Description,
 			Scope:       m.Scope,
+			Emit:        m.Emit,
 		})
 	}
 	return out, nil
@@ -322,9 +349,23 @@ func listSkillsAt(projectRoot string) ([]skillMeta, error) {
 }
 
 // listForgeShippedSkills enumerates the skills embedded under
-// internal/templates/project/skills/forge/. The on-disk path mirrors the
-// skill path (with a "forge" root rolled up to skill path "forge").
+// internal/templates/project/skills/. Two category roots are recognized:
+//
+//   - skills/forge/...    → framework skills, default Emit = "forge".
+//     Path is "<rest>" (e.g. skills/forge/db/SKILL.md → "db"). The
+//     skills/forge/SKILL.md root collapses to the synthetic path "forge".
+//   - skills/general/...  → methodology skills, default Emit = "general".
+//     Path is "<rest>" (e.g. skills/general/code-review/SKILL.md → "code-review").
+//
+// Files outside either root are skipped — every shipped skill must live
+// under one of the two category dirs. Per-skill frontmatter `emit:`
+// overrides the directory-derived default; this is how `debug` (under
+// skills/forge/) declares emit:both to surface in non-forge projects too.
 func listForgeShippedSkills() ([]skillMeta, error) {
+	const (
+		forgeDir   = "forge"
+		generalDir = "general"
+	)
 	files, err := templates.ProjectTemplates().List("skills")
 	if err != nil {
 		return nil, fmt.Errorf("list skill templates: %w", err)
@@ -334,18 +375,31 @@ func listForgeShippedSkills() ([]skillMeta, error) {
 		if !strings.HasSuffix(rel, "/SKILL.md") && rel != "SKILL.md" {
 			continue
 		}
-		skillPath := strings.TrimPrefix(rel, "forge/")
-		skillPath = strings.TrimSuffix(skillPath, "/SKILL.md")
-		skillPath = strings.TrimSuffix(skillPath, "SKILL.md")
-		skillPath = strings.TrimSuffix(skillPath, "/")
-		if skillPath == "" {
-			skillPath = "forge"
+		var (
+			defaultEmit SkillEmit
+			skillPath   string
+		)
+		switch {
+		case rel == forgeDir+"/SKILL.md":
+			defaultEmit = SkillEmitForge
+			skillPath = forgeDir // synthetic "forge" parent skill
+		case strings.HasPrefix(rel, forgeDir+"/"):
+			defaultEmit = SkillEmitForge
+			skillPath = strings.TrimSuffix(strings.TrimPrefix(rel, forgeDir+"/"), "/SKILL.md")
+		case strings.HasPrefix(rel, generalDir+"/"):
+			defaultEmit = SkillEmitGeneral
+			skillPath = strings.TrimSuffix(strings.TrimPrefix(rel, generalDir+"/"), "/SKILL.md")
+		default:
+			continue
 		}
 		content, err := templates.ProjectTemplates().Get(path.Join("skills", rel))
 		if err != nil {
 			continue
 		}
 		meta := parseFrontmatter(content)
+		if meta.Emit == "" {
+			meta.Emit = defaultEmit
+		}
 		meta.Path = skillPath
 		meta.Scope = SkillScopeForge
 		out = append(out, meta)
@@ -429,19 +483,25 @@ func resolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 	return nil, "", fmt.Errorf("skill %q not found", skillPath)
 }
 
-// loadForgeShippedSkill reads a forge-bundled skill's body from the embedded
-// templates FS. Path resolution mirrors the existing convention: the root
-// "forge" skill lives at skills/forge/SKILL.md; everything else lives at
-// skills/forge/<path>/SKILL.md.
+// loadForgeShippedSkill reads a forge-bundled skill's body from the
+// embedded templates FS. Tries the forge category first (back-compat
+// with the long-standing "forge skills live under skills/forge/" path
+// shape, and the synthetic "forge" parent skill at skills/forge/SKILL.md),
+// then falls back to the general category. Returns the body from
+// whichever root resolves; both errors only propagate when neither exists.
 func loadForgeShippedSkill(skillPath string) ([]byte, error) {
 	skillPath = strings.TrimPrefix(skillPath, "forge/")
-	var templatePath string
+	var forgeTemplatePath string
 	if skillPath == "forge" {
-		templatePath = path.Join("skills", "forge", "SKILL.md")
+		forgeTemplatePath = path.Join("skills", "forge", "SKILL.md")
 	} else {
-		templatePath = path.Join("skills", "forge", skillPath, "SKILL.md")
+		forgeTemplatePath = path.Join("skills", "forge", skillPath, "SKILL.md")
 	}
-	return templates.ProjectTemplates().Get(templatePath)
+	if body, err := templates.ProjectTemplates().Get(forgeTemplatePath); err == nil {
+		return body, nil
+	}
+	generalTemplatePath := path.Join("skills", "general", skillPath, "SKILL.md")
+	return templates.ProjectTemplates().Get(generalTemplatePath)
 }
 
 // parseFrontmatter extracts name and description from YAML frontmatter.
@@ -466,6 +526,8 @@ func parseFrontmatter(content []byte) skillMeta {
 				meta.Name = v
 			case "description":
 				meta.Description = v
+			case "emit":
+				meta.Emit = SkillEmit(v)
 			}
 		}
 	}
@@ -500,10 +562,11 @@ type jsonSkill struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
 	Scope       SkillScope `json:"scope"`
+	Emit        SkillEmit  `json:"emit,omitempty"`
 }
 
 func toJSONSkill(s skillMeta) jsonSkill {
-	return jsonSkill{Path: s.Path, Name: s.Name, Description: s.Description, Scope: s.Scope}
+	return jsonSkill{Path: s.Path, Name: s.Name, Description: s.Description, Scope: s.Scope, Emit: s.Emit}
 }
 
 func writeSkillsJSON(w interface{ Write([]byte) (int, error) }, skills []skillMeta) error {

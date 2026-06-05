@@ -249,6 +249,7 @@ func generateSteps() []GenStep {
 		{Name: "pack generate hooks", Gate: gateHasPacks, Run: stepPackGenerateHooks, Tag: "codegen"},
 		{Name: "regenerate infra files", Gate: gateDeployEnabled, Run: stepRegenerateInfra, Tag: "deploy"},
 		{Name: "per-env deploy config", Gate: gateDeployHasConfig, Run: stepPerEnvDeployConfig, Tag: "deploy"},
+		{Name: "ingress k3d ports fragment", Gate: gateIngressEnabled, Run: stepIngressK3dPorts, Tag: "deploy"},
 		{Name: "Grafana dashboards", Gate: gateObservabilityHasCfg, Run: stepGrafanaDashboards, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: gateMigrationsHasDBOrServices, Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, Run: stepFrontendMocks, Tag: "frontend"},
@@ -443,6 +444,17 @@ func gateHasPacks(ctx *pipelineContext) bool {
 
 func gateDeployEnabled(ctx *pipelineContext) bool {
 	return ctx.Cfg == nil || ctx.Cfg.Features.DeployEnabled()
+}
+
+// gateIngressEnabled controls Gateway API codegen — the k3d-ports
+// fragment and (in later phases) other ingress-derived artifacts.
+// Off when features.ingress is explicitly false OR features.deploy
+// is off (no cluster, no k3d, no ingress to wire up).
+func gateIngressEnabled(ctx *pipelineContext) bool {
+	if ctx.Cfg == nil {
+		return false
+	}
+	return ctx.Cfg.Features.DeployEnabled() && ctx.Cfg.Features.IngressEnabled()
 }
 
 func gateDeployHasConfig(ctx *pipelineContext) bool {
@@ -1489,6 +1501,70 @@ func stepPerEnvDeployConfig(ctx *pipelineContext) error {
 		fmt.Fprintf(os.Stderr, "Warning: per-env deploy config generation failed: %v\n", err)
 	}
 	return nil
+}
+
+// stepIngressK3dPorts derives the k3d host→cluster port mappings
+// from the dev env's KCL gateway listeners and writes
+// `deploy/k3d-ports.yaml`. `forge dev cluster up` merges this
+// fragment into the user-owned `deploy/k3d.yaml` at create time —
+// see internal/codegen/ingress_k3d_gen.go for the rendered shape
+// and the why behind the merge-at-create model.
+//
+// When the dev env has no gateways (e.g. the project just enabled
+// features.ingress but hasn't authored ingress.k yet), the existing
+// fragment is removed so a stale port-mapping doesn't linger.
+func stepIngressK3dPorts(ctx *pipelineContext) error {
+	listeners, err := collectDevGatewayListeners(ctx)
+	if err != nil {
+		// KCL render failures here are non-fatal — the project may
+		// not have a dev env yet, or kcl may not be installed locally.
+		// Either way the fragment is best-effort.
+		fmt.Fprintf(os.Stderr, "Warning: k3d-ports.yaml generation skipped: %v\n", err)
+		return nil
+	}
+	if len(listeners) == 0 {
+		if rmErr := codegen.RemoveK3dPorts(ctx.ProjectDir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: remove stale k3d-ports.yaml: %v\n", rmErr)
+		}
+		return nil
+	}
+	if err := codegen.GenerateK3dPorts(codegen.K3dPortsGenInput{
+		ProjectDir: ctx.ProjectDir,
+		Listeners:  listeners,
+		Checksums:  ctx.Checksums,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: write deploy/k3d-ports.yaml: %v\n", err)
+	}
+	return nil
+}
+
+// collectDevGatewayListeners evaluates the dev env's KCL and projects
+// the Gateway listener set into the shape ingress_k3d_gen expects.
+// Returns (nil, nil) when the dev env isn't configured yet — that's
+// a normal first-scaffold state.
+func collectDevGatewayListeners(ctx *pipelineContext) ([]codegen.K3dListener, error) {
+	devKCL := filepath.Join(ctx.ProjectDir, "deploy", "kcl", "dev")
+	if _, err := os.Stat(devKCL); err != nil {
+		return nil, nil
+	}
+	entities, err := RenderKCL(context.Background(), ctx.ProjectDir, "dev")
+	if err != nil {
+		return nil, err
+	}
+	if entities == nil {
+		return nil, nil
+	}
+	var out []codegen.K3dListener
+	for _, gw := range entities.Gateways {
+		for _, l := range gw.Listeners {
+			out = append(out, codegen.K3dListener{
+				GatewayName:  gw.Name,
+				ListenerName: l.Name,
+				Port:         l.Port,
+			})
+		}
+	}
+	return out, nil
 }
 
 // stepGrafanaDashboards — was Step 8d-i.

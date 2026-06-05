@@ -179,6 +179,32 @@ When to skip it:
   `Application` entries.
 - You need only one service — `Application` directly is simpler.
 
+## Cloud ingress prerequisites
+
+Forge declares Gateway API resources (`Gateway`, `HTTPRoute`,
+`GRPCRoute`) from `deploy/kcl/<env>/ingress.k`, but the **GatewayClass
+controller is cluster infrastructure forge does not install in cloud
+envs**. Before `forge deploy staging` / `forge deploy prod` succeeds,
+the cluster operator must have installed:
+
+| Cluster | What to install | `gateway_class_name` |
+|---------|-----------------|----------------------|
+| GKE | GKE Gateway controller (enabled per cluster) | `gke-l7-global-external-managed` (or per-env class) |
+| EKS | [AWS Gateway API Controller](https://github.com/aws/aws-application-networking-k8s) | depends on install |
+| k3d (dev) | _(forge handles it)_ via `forge dev cluster up` | `traefik` |
+
+`forge doctor` verifies the named GatewayClass + (when TLS is declared)
+the cert-manager `ClusterIssuer` exists before deploy.
+
+### Production TLS
+
+Every gateway with `tls` triggers an auto-emitted cert-manager
+`Certificate` resource pointed at the named `ClusterIssuer` (typically
+`letsencrypt-prod`). cert-manager is a cluster-side prerequisite —
+install it once per cluster, then reference its issuer by name from
+`GatewayTLS.cert_issuer`. The full cert-manager + per-env override
+flow (dev plaintext → prod HTTPS) lives in the `ingress` sub-skill.
+
 ## Rollback
 
 Fast revert with `kubectl rollout undo deployment/<name>`, then fix forward via KCL. Never leave a rollback as the permanent state.

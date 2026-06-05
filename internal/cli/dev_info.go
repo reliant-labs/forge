@@ -3,7 +3,7 @@
 // Diagnostic dump of the dev-loop config: which cluster, which context,
 // which namespace, which service ports. Replaces the small bash recipe
 // every project would otherwise hand-write to debug "why is my
-// port-forward going to the wrong place?"
+// ingress URL hitting the wrong service?"
 package cli
 
 import (
@@ -27,8 +27,8 @@ Static means "what the project says it expects" — cluster name, expected
 kubectl context, registry URL, declared service/frontend ports. It does
 NOT contact the cluster or check pod state.
 
-For dynamic state (is the cluster up? are pods running? are port-forwards
-active?) use ` + "`forge dev status`" + `.`,
+For dynamic state (is the cluster up? are pods running? what are the
+live ingress URLs?) use ` + "`forge dev status`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevInfo(configPath)
 		},
@@ -69,7 +69,7 @@ func runDevInfo(configPath string) error {
 		printFrontendPorts(cfg.Frontends)
 	}
 	fmt.Println()
-	fmt.Println("For dynamic state (cluster up/down, pods, port-forwards), run `forge dev status`.")
+	fmt.Println("For dynamic state (cluster up/down, pods, ingress URLs), run `forge dev status`.")
 	return nil
 }
 

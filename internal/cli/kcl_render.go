@@ -23,10 +23,71 @@ import (
 // because deployment placement is a per-env decision that lives in the
 // KCL layer, not on services[] in the project config.
 type KCLEntities struct {
-	Services  []ServiceEntity  `json:"services,omitempty"`
-	Operators []OperatorEntity `json:"operators,omitempty"`
-	Frontends []FrontendEntity `json:"frontends,omitempty"`
-	CronJobs  []CronJobEntity  `json:"cronjobs,omitempty"`
+	Services    []ServiceEntity     `json:"services,omitempty"`
+	Operators   []OperatorEntity    `json:"operators,omitempty"`
+	Frontends   []FrontendEntity    `json:"frontends,omitempty"`
+	CronJobs    []CronJobEntity     `json:"cronjobs,omitempty"`
+	Gateways    []GatewayEntity     `json:"gateways,omitempty"`
+	HTTPRoutes  []HTTPRouteEntity   `json:"http_routes,omitempty"`
+	GRPCRoutes  []GRPCRouteEntity   `json:"grpc_routes,omitempty"`
+}
+
+// GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
+// Tls is nil when the gateway is plaintext.
+type GatewayEntity struct {
+	Name             string                  `json:"name"`
+	GatewayClassName string                  `json:"gateway_class_name,omitempty"`
+	Host             string                  `json:"host,omitempty"`
+	TLS              *GatewayTLSEntity       `json:"tls,omitempty"`
+	Listeners        []GatewayListenerEntity `json:"listeners,omitempty"`
+	RawPolicy        string                  `json:"raw_policy,omitempty"`
+}
+
+// GatewayListenerEntity mirrors the kcl/schema.k GatewayListener.
+// Protocol is "HTTP" | "HTTPS" | "H2C".
+type GatewayListenerEntity struct {
+	Name       string `json:"name"`
+	Port       int    `json:"port"`
+	Protocol   string `json:"protocol"`
+	PathPrefix string `json:"path_prefix,omitempty"`
+}
+
+// GatewayTLSEntity is the TLS block on a Gateway. Mode selects the
+// cert origin: "cert_manager" (default — cert-manager Certificate
+// emitted alongside the Gateway, CertIssuer names a ClusterIssuer)
+// or "mkcert" (Secret populated host-side by `forge dev cluster up`
+// via the mkcert binary; CertIssuer unused).
+type GatewayTLSEntity struct {
+	CertIssuer string `json:"cert_issuer,omitempty"`
+	SecretName string `json:"secret_name"`
+	Mode       string `json:"mode,omitempty"`
+}
+
+// HTTPRouteEntity mirrors the kcl/schema.k HTTPRoute. Service is a
+// backend Service name; Port is the backend port.
+type HTTPRouteEntity struct {
+	Name      string `json:"name"`
+	Gateway   string `json:"gateway"`
+	Listener  string `json:"listener"`
+	Service   string `json:"service"`
+	Port      int    `json:"port"`
+	Host      string `json:"host,omitempty"`
+	Path      string `json:"path,omitempty"`
+	RawPolicy string `json:"raw_policy,omitempty"`
+}
+
+// GRPCRouteEntity mirrors the kcl/schema.k GRPCRoute. Shape matches
+// HTTPRouteEntity — the distinction is the rendered Gateway API
+// resource kind (GRPCRoute vs HTTPRoute).
+type GRPCRouteEntity struct {
+	Name      string `json:"name"`
+	Gateway   string `json:"gateway"`
+	Listener  string `json:"listener"`
+	Service   string `json:"service"`
+	Port      int    `json:"port"`
+	Host      string `json:"host,omitempty"`
+	Path      string `json:"path,omitempty"`
+	RawPolicy string `json:"raw_policy,omitempty"`
 }
 
 // ServiceEntity is one service from rendered KCL. The Deploy field is
@@ -108,6 +169,10 @@ type HostDeploy struct {
 // Cluster/Namespace/Registry are mandatory env-wide fields the
 // KCL-side `K8sCluster` schema declares as required — an empty value
 // here indicates a malformed render rather than a legacy shape.
+//
+// Ingress used to be a per-service field on this struct; it now lives
+// at the Bundle level as Gateway/HTTPRoute/GRPCRoute (see
+// KCLEntities.Gateways etc.). Routes reference services by name.
 type K8sCluster struct {
 	// Env-wide knobs — same value across every service in a deploy
 	// group.
@@ -117,17 +182,10 @@ type K8sCluster struct {
 	Domain    string `json:"domain,omitempty"`
 
 	// Per-service knobs.
-	Replicas int             `json:"replicas,omitempty"`
-	Ingress  *K8sIngressSpec `json:"ingress,omitempty"`
-	Platform string          `json:"platform,omitempty"` // GOARCH override; empty = use forge.yaml deploy.target_arch
-	Ports    []int           `json:"ports,omitempty"`
-	EnvVars  []KCLEnvVar     `json:"env_vars,omitempty"`
-}
-
-// K8sIngressSpec is the rendered ingress for a cluster service.
-type K8sIngressSpec struct {
-	Host string `json:"host,omitempty"`
-	Path string `json:"path,omitempty"`
+	Replicas int         `json:"replicas,omitempty"`
+	Platform string      `json:"platform,omitempty"` // GOARCH override; empty = use forge.yaml deploy.target_arch
+	Ports    []int       `json:"ports,omitempty"`
+	EnvVars  []KCLEnvVar `json:"env_vars,omitempty"`
 }
 
 // BuildOnlyDeploy is the deploy block for services that produce
@@ -222,10 +280,13 @@ type KCLEnvVar struct {
 // -o json`. We unmarshal into this first, then dispatch each service's
 // deploy block by type to populate the typed [KCLEntities].
 type kclRenderRaw struct {
-	Services  []kclServiceRaw  `json:"services,omitempty"`
-	Operators []OperatorEntity `json:"operators,omitempty"`
-	Frontends []FrontendEntity `json:"frontends,omitempty"`
-	CronJobs  []CronJobEntity  `json:"cronjobs,omitempty"`
+	Services   []kclServiceRaw   `json:"services,omitempty"`
+	Operators  []OperatorEntity  `json:"operators,omitempty"`
+	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
+	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
+	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
+	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
+	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
 }
 
 type kclServiceRaw struct {
@@ -328,9 +389,12 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
-		Operators: raw.Operators,
-		Frontends: raw.Frontends,
-		CronJobs:  raw.CronJobs,
+		Operators:  raw.Operators,
+		Frontends:  raw.Frontends,
+		CronJobs:   raw.CronJobs,
+		Gateways:   raw.Gateways,
+		HTTPRoutes: raw.HTTPRoutes,
+		GRPCRoutes: raw.GRPCRoutes,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)

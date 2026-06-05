@@ -26,6 +26,12 @@ import forge
 # Run `forge generate` to refresh after editing forge.yaml or the config
 # proto. Hand-editing this file is not recommended.
 import deploy.kcl.dev.config_gen as cfg
+{{- if .IngressEnabled}}
+
+# Gateway API ingress topology — user-owned. Base lives in
+# `deploy/kcl/ingress.k`; this env may override hosts, ports, or TLS.
+import deploy.kcl.dev.ingress as ing
+{{- end}}
 
 # Overridable via `kcl run -D image_tag=...`
 _image_tag = option("image_tag") or "latest"
@@ -70,6 +76,11 @@ _bundle = forge.Bundle {
 {{- end}}
     ]
     config_maps = cfg.CONFIG_MAPS
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
+{{- end}}
 }
 
 # JSON contract consumed by forge build/run/deploy.

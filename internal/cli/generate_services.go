@@ -257,12 +257,15 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 
 func toServiceDir(serviceName string) string {
 	// EchoService -> handlers/echo
-	// AdminServerService -> handlers/admin_server (snake-case so the generate
-	// pipeline targets the same directory the scaffolder created).
+	// AdminServerService -> handlers/adminserver
+	//
+	// Must agree with generator.ServicePackageName (scaffold path) and
+	// codegen.toServicePackage (descriptor-driven codegen). All three produce
+	// the compact, separator-free Go-package form so the dir, the package
+	// identifier, and the bootstrap key all match.
 	trimmed := strings.TrimSuffix(serviceName, "Service")
 	if trimmed == "" {
 		trimmed = serviceName
 	}
-	name := strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
-	return fmt.Sprintf("handlers/%s", name)
+	return fmt.Sprintf("handlers/%s", generator.ServicePackageName(trimmed))
 }

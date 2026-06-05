@@ -671,16 +671,16 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// The user-owned stub lives at the project root and is auto-loaded
-	// into LLM context every session.
+	// Top-level reliant.md must NOT be written for the reliant harness:
+	// reliant loads the framework content in-memory via
+	// forgecli.RenderProjectMemory whenever it sees forge.yaml, so a
+	// stale on-disk copy would just create upgrade drift.
 	stubPath := filepath.Join(root, "reliant.md")
-	assertPathExists(t, stubPath)
-	stub := readFile(t, stubPath)
-	if !strings.Contains(stub, "# memory-app") {
-		t.Fatalf("expected reliant.md to start with project name heading, got:\n%s", stub)
+	if _, err := os.Stat(stubPath); err == nil {
+		t.Fatalf("top-level reliant.md should NOT exist for --harness=reliant (the framework content is injected in-memory by reliant); found one at %s", stubPath)
 	}
 
-	// The user-owned .reliant/reliant.md project memory file.
+	// The user-owned .reliant/reliant.md project memory file is still written.
 	reliantMemoryPath := filepath.Join(root, ".reliant", "reliant.md")
 	assertPathExists(t, reliantMemoryPath)
 	reliantMemory := readFile(t, reliantMemoryPath)
@@ -725,10 +725,10 @@ func TestProjectGeneratorPreservesExistingReliantMemoryFile(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, ".reliant", "project.json"))
 }
 
-func TestProjectGeneratorMemoryFormatClaude(t *testing.T) {
+func TestProjectGeneratorHarnessClaude(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "claude-app")
 	gen := NewProjectGenerator("claude-app", root, "example.com/claude-app")
-	gen.MemoryFormat = MemoryFormatClaude
+	gen.Harness = HarnessClaude
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -744,17 +744,17 @@ func TestProjectGeneratorMemoryFormatClaude(t *testing.T) {
 
 	// reliant.md should NOT exist at the top level.
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=claude")
+		t.Fatal("reliant.md should not exist when --harness=claude")
 	}
 
 	// .reliant/reliant.md (internal) should still exist.
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
-func TestProjectGeneratorMemoryFormatCursor(t *testing.T) {
+func TestProjectGeneratorHarnessCursor(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "cursor-app")
 	gen := NewProjectGenerator("cursor-app", root, "example.com/cursor-app")
-	gen.MemoryFormat = MemoryFormatCursor
+	gen.Harness = HarnessCursor
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -767,16 +767,16 @@ func TestProjectGeneratorMemoryFormatCursor(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=cursor")
+		t.Fatal("reliant.md should not exist when --harness=cursor")
 	}
 
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
-func TestProjectGeneratorMemoryFormatCopilot(t *testing.T) {
+func TestProjectGeneratorHarnessCopilot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "copilot-app")
 	gen := NewProjectGenerator("copilot-app", root, "example.com/copilot-app")
-	gen.MemoryFormat = MemoryFormatCopilot
+	gen.Harness = HarnessCopilot
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -790,16 +790,16 @@ func TestProjectGeneratorMemoryFormatCopilot(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=copilot")
+		t.Fatal("reliant.md should not exist when --harness=copilot")
 	}
 
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
-func TestProjectGeneratorMemoryFormatCodex(t *testing.T) {
+func TestProjectGeneratorHarnessCodex(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "codex-app")
 	gen := NewProjectGenerator("codex-app", root, "example.com/codex-app")
-	gen.MemoryFormat = MemoryFormatCodex
+	gen.Harness = HarnessCodex
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -812,7 +812,7 @@ func TestProjectGeneratorMemoryFormatCodex(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=codex")
+		t.Fatal("reliant.md should not exist when --harness=codex")
 	}
 
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
@@ -831,7 +831,7 @@ func TestProjectGeneratorPreservesExistingMemoryFileNonReliant(t *testing.T) {
 	}
 
 	gen := NewProjectGenerator("existing-claude-app", root, "example.com/existing-claude-app")
-	gen.MemoryFormat = MemoryFormatClaude
+	gen.Harness = HarnessClaude
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}

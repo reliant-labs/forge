@@ -24,10 +24,6 @@ _bundle = forge.Bundle {
                 registry = "localhost:5050"
                 replicas = 1
                 ports = [8080]
-                ingress = forge.Ingress {
-                    host = "workspaces.localhost"
-                    tls = False
-                }
             }
         }
     ]
@@ -53,6 +49,28 @@ _bundle = forge.Bundle {
             schedule = "@hourly"
             image = "example"
             command = ["./example", "cron", "billing-sweep"]
+        }
+    ]
+    gateways = [
+        forge.Gateway {
+            name = "public"
+            listeners = [
+                forge.GatewayListener {
+                    name = "http"
+                    port = 18080
+                    protocol = "HTTP"
+                }
+            ]
+            host = "workspaces.localhost"
+        }
+    ]
+    http_routes = [
+        forge.HTTPRoute {
+            name = "workspace-proxy"
+            gateway = "public"
+            listener = "http"
+            service = "workspace-proxy"
+            port = 8080
         }
     ]
 }

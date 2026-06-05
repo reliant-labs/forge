@@ -36,6 +36,31 @@ Run `forge skill list` to see all available skills with descriptions. Run `forge
 
 Skills are **opinionated**. They encode project conventions and the non-obvious gotchas. Don't treat them as optional — the shortcuts around them cause pain.
 
+## Dual-audience skills: `emit:` and `@forge-only` blocks
+
+A skill can be authored once and emitted to two audiences: **general** (any project — methodology that doesn't depend on forge) and **forge** (forge projects, which see the full thing including framework-specific tooling). The compiler picks what to include based on per-skill frontmatter and inline block markers.
+
+**Frontmatter `emit:` field** declares which audiences see the skill at all:
+
+```yaml
+emit: forge      # forge projects only (default for framework skills like proto, db, api)
+emit: general    # any project (methodology that has no forge content)
+emit: both       # both audiences (compiler strips @forge-only blocks for general emit)
+```
+
+**Inline `@forge-only` blocks** mark content that only appears in the forge-audience emit. Use HTML comment markers so the raw source still renders cleanly in any markdown viewer:
+
+```markdown
+<!-- @forge-only:start -->
+## Forge-Specific Debug Tools
+
+forge run --debug              # attach Delve debugger
+forge test --race              # run tests with race detector
+<!-- @forge-only:end -->
+```
+
+Content outside `@forge-only` blocks is included in both emits. Keep the general prose generic (don't reference `forge ...` commands inline); push framework specifics into a `@forge-only` block. See `forge/debug/SKILL.md` for a worked example.
+
 ## Adding your own skills
 
 To add project-specific skills, create `.reliant/skills/<name>/SKILL.md` files. Use the existing forge skills as a template:

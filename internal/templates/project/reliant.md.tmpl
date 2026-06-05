@@ -5,6 +5,16 @@ This is a **Forge** project managed by the `{{.CLI}}` CLI.
 
 This file is auto-loaded into LLM context every session. Treat it as the authoritative quick-reference. For depth, load the named skills.
 
+## Use forge skills to guide your work
+
+Forge ships an extensive skill catalog (architecture, proto, db, api, services, testing, frontend, deploy, debug, migrations, packs, starters, observability, and more). **Prefer loading a forge skill before guessing** — they encode the exact conventions this project relies on, and the rules they describe are enforced by `{{.CLI}} lint`.
+
+- Discover what's available: `{{.CLI}} skill list`
+- Load one: `{{.CLI}} skill load <name>` (or, if your harness auto-surfaces them, load by name through your harness's skill mechanism)
+- Reach for one whenever you're about to touch proto, handlers, services, the DB layer, the frontend, tests, or anything cross-cutting. The cost of loading is tiny; the cost of writing code that fights the conventions is not.
+
+If a skill's content seems out of date relative to what you observe in this project, trust the project — and flag it. See the **Forge bug rule** below.
+
 ## Architecture in one screen
 
 The two halves of every domain:

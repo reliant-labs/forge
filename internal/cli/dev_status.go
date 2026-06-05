@@ -1,14 +1,16 @@
 // Package cli — `forge dev status` command.
 //
 // Renders a human- or machine-readable snapshot of the dev cluster,
-// running pods, and active port-forwards. Replaces a 30-line bash recipe
-// every k8s-targeting forge project would otherwise hand-write.
+// running pods, and ingress URLs derived from rendered KCL. Replaces a
+// 30-line bash recipe every k8s-targeting forge project would otherwise
+// hand-write.
 package cli
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -23,13 +25,13 @@ func newDevStatusCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Print dynamic dev-loop state (cluster up/down, pods, port-forwards)",
+		Short: "Print dynamic dev-loop state (cluster up/down, pods, ingress URLs)",
 		Long: `Print the dynamic state of the local dev environment.
 
 Dynamic means "what's actually happening right now" — does the k3d
 cluster exist, what's the current kubectl context, what pods are in
-the dev namespace, what port-forwards are running, what sibling dev
-namespaces exist on this cluster.
+the dev namespace, what ingress URLs are exposed by the dev env's
+KCL gateways, what sibling dev namespaces exist on this cluster.
 
 For static config (declared cluster name, expected context, declared
 service/frontend ports) run ` + "`forge dev info`" + `.
@@ -49,11 +51,11 @@ Examples:
 // devStatusSummary is the rendered shape — kept stable so --json output
 // is consumable by dashboards and scripts.
 type devStatusSummary struct {
-	Cluster      clusterStatusSummary `json:"cluster"`
-	Namespace    string               `json:"namespace"`
-	Pods         []podStatusEntry     `json:"pods"`
-	PortForwards []portForwardEntry   `json:"port_forwards"`
-	Siblings     []string             `json:"siblings"`
+	Cluster     clusterStatusSummary `json:"cluster"`
+	Namespace   string               `json:"namespace"`
+	Pods        []podStatusEntry     `json:"pods"`
+	IngressURLs []ingressURLEntry    `json:"ingress_urls"`
+	Siblings    []string             `json:"siblings"`
 }
 
 type podStatusEntry struct {
@@ -62,6 +64,20 @@ type podStatusEntry struct {
 	Status  string `json:"status"`   // e.g. "Running"
 	Restart string `json:"restarts"` // e.g. "0"
 	Age     string `json:"age"`
+}
+
+// ingressURLEntry is one row of the "Ingress URLs:" section. URL is the
+// already-assembled scheme://host:port/path string callers can curl
+// against; the remaining fields are projected from the underlying
+// HTTPRoute/GRPCRoute so dashboards can filter without re-parsing URL.
+type ingressURLEntry struct {
+	URL      string `json:"url"`
+	Kind     string `json:"kind"` // "HTTPRoute" | "GRPCRoute"
+	Route    string `json:"route"`
+	Gateway  string `json:"gateway"`
+	Listener string `json:"listener"`
+	Service  string `json:"service"`
+	Port     int    `json:"port"`
 }
 
 func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
@@ -87,13 +103,31 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 		Namespace: ns,
 	}
 
+	// Ingress feature gating: when off (or forge.yaml unreadable), the
+	// section stays empty and the human render prints a "disabled" hint.
+	// When on, render KCL for the dev env and project routes into URLs —
+	// best-effort, mirroring the pod listing's "render what you can"
+	// stance. ingressKnown distinguishes "feature gated off" from
+	// "feature on but no routes" / "feature on but KCL unreadable".
+	ingressEnabled := false
+	if cfg, cfgErr := loadProjectConfig(); cfgErr == nil {
+		ingressEnabled = cfg.Features.IngressEnabled()
+	}
+
 	if exists {
 		summary.Pods = listPodsInNamespace(ctx, ns)
-		summary.PortForwards = readPortForwardState(clusterName, ns)
 		summary.Siblings = listSiblingNamespaces(ctx, clusterName, ns)
+	}
+	if ingressEnabled {
+		if entities, kclErr := RenderKCL(ctx, ".", "dev"); kclErr == nil && entities != nil {
+			summary.IngressURLs = buildDevStatusIngressURLs(entities)
+		}
 	}
 
 	if jsonOut {
+		if summary.IngressURLs == nil {
+			summary.IngressURLs = []ingressURLEntry{}
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(summary)
@@ -132,15 +166,7 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Port-forwards:")
-	if len(summary.PortForwards) == 0 {
-		fmt.Println("  (none — run `forge dev port-forward` to start)")
-	} else {
-		fmt.Printf("  %-30s %-8s %s\n", "SERVICE", "PID", "PORT")
-		for _, pf := range summary.PortForwards {
-			fmt.Printf("  %-30s %-8d %d:%d\n", pf.Service, pf.PID, pf.LocalPort, pf.RemotePort)
-		}
-	}
+	writeIngressURLsSection(os.Stdout, summary.IngressURLs, ingressEnabled)
 
 	if len(summary.Siblings) > 0 {
 		fmt.Println()
@@ -152,6 +178,113 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 	fmt.Println()
 	fmt.Println("For declared port mappings, run `forge dev info`.")
 	return nil
+}
+
+// buildDevStatusIngressURLs projects the dev env's rendered KCL gateways +
+// HTTP/GRPC routes into a flat list of URLs the human/JSON renderers
+// consume. Pure — no I/O — so tests can stub *KCLEntities directly.
+//
+// URL construction:
+//   - scheme: "https" when the matched listener.Protocol == "HTTPS";
+//     "grpc" for GRPCRoute; else "http".
+//   - host: route.Host > gateway.Host > "localhost".
+//   - port: matched listener.Port (zero is rendered, callers can
+//     filter if needed — the KCL schema requires Port).
+//   - path: listener.PathPrefix concatenated with route.Path; double
+//     slashes collapsed; empty path becomes "/".
+//
+// Routes whose Gateway or Listener can't be resolved are skipped
+// silently — best-effort, like the surrounding render-what-you-can
+// pattern.
+func buildDevStatusIngressURLs(entities *KCLEntities) []ingressURLEntry {
+	if entities == nil {
+		return nil
+	}
+	gwByName := make(map[string]*GatewayEntity, len(entities.Gateways))
+	for i := range entities.Gateways {
+		gwByName[entities.Gateways[i].Name] = &entities.Gateways[i]
+	}
+	var out []ingressURLEntry
+	for _, r := range entities.HTTPRoutes {
+		if e, ok := buildRouteURL("HTTPRoute", r.Name, r.Gateway, r.Listener, r.Service, r.Port, r.Host, r.Path, gwByName); ok {
+			out = append(out, e)
+		}
+	}
+	for _, r := range entities.GRPCRoutes {
+		if e, ok := buildRouteURL("GRPCRoute", r.Name, r.Gateway, r.Listener, r.Service, r.Port, r.Host, r.Path, gwByName); ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func buildRouteURL(kind, name, gateway, listener, service string, port int, routeHost, routePath string, gwByName map[string]*GatewayEntity) (ingressURLEntry, bool) {
+	gw, ok := gwByName[gateway]
+	if !ok {
+		return ingressURLEntry{}, false
+	}
+	var l *GatewayListenerEntity
+	for i := range gw.Listeners {
+		if gw.Listeners[i].Name == listener {
+			l = &gw.Listeners[i]
+			break
+		}
+	}
+	if l == nil {
+		return ingressURLEntry{}, false
+	}
+	scheme := "http"
+	if kind == "GRPCRoute" {
+		scheme = "grpc"
+	} else if strings.EqualFold(l.Protocol, "HTTPS") {
+		scheme = "https"
+	}
+	host := routeHost
+	if host == "" {
+		host = gw.Host
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	path := collapseSlashes(l.PathPrefix + routePath)
+	if path == "" {
+		path = "/"
+	}
+	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, l.Port, path)
+	return ingressURLEntry{
+		URL:      url,
+		Kind:     kind,
+		Route:    name,
+		Gateway:  gateway,
+		Listener: listener,
+		Service:  service,
+		Port:     port,
+	}, true
+}
+
+// writeIngressURLsSection prints the human-output "Ingress URLs:"
+// section. Factored out so tests can drive the three states (disabled /
+// empty / populated) against a buffer without needing a live cluster.
+func writeIngressURLsSection(w io.Writer, urls []ingressURLEntry, ingressEnabled bool) {
+	fmt.Fprintln(w, "Ingress URLs:")
+	switch {
+	case !ingressEnabled:
+		fmt.Fprintln(w, "  (ingress feature disabled)")
+	case len(urls) == 0:
+		fmt.Fprintln(w, "  (none — see deploy/kcl/dev/ingress.k)")
+	default:
+		fmt.Fprintf(w, "  %-10s %-20s %-15s %s\n", "KIND", "ROUTE", "SERVICE", "URL")
+		for _, u := range urls {
+			fmt.Fprintf(w, "  %-10s %-20s %-15s %s\n", u.Kind, u.Route, u.Service, u.URL)
+		}
+	}
+}
+
+func collapseSlashes(s string) string {
+	for strings.Contains(s, "//") {
+		s = strings.ReplaceAll(s, "//", "/")
+	}
+	return s
 }
 
 // devNamespace resolves the namespace forge dev operates against. Reads

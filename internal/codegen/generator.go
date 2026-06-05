@@ -705,10 +705,24 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		// site when REST is enabled. The proto service name is the proto
 		// handler name (e.g. "EchoService") which matches the `<X>Name`
 		// constant exposed by connect-generated packages.
-		connectPkg := pkg + "v1connect"
+		//
+		// Prefer the proto's declared go_package + PkgName so a service
+		// whose proto lives outside the `services/<svc>/v1` convention
+		// (e.g. several services collected in a single shared.proto under
+		// gen/reliant/v1) still emits the correct *v1connect import. Fall
+		// back to the convention only when both descriptor fields are
+		// empty — synthetic test fixtures and pre-descriptor scaffolds.
+		var connectPkg, connectImport string
+		if svc.GoPackage != "" && svc.PkgName != "" {
+			connectPkg = svc.PkgName + "connect"
+			connectImport = svc.GoPackage + "/" + connectPkg
+		} else {
+			connectPkg = pkg + "v1connect"
+			connectImport = modulePath + "/gen/services/" + pkg + "/v1/" + connectPkg
+		}
 		protoServiceName := fieldName + "Service"
 		if restEnabled {
-			connectImports = append(connectImports, modulePath+"/gen/services/"+pkg+"/v1/"+connectPkg)
+			connectImports = append(connectImports, connectImport)
 		}
 		bootstrapSvcs = append(bootstrapSvcs, BootstrapServiceData{
 			Name:       runtimeName,
@@ -1095,11 +1109,18 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		autoStubs, unresolvedStubs := computeAutoStubs(handlerDir, pkg)
 		// Derive Connect package path/name from the proto's declared
 		// go_package + PkgName instead of guessing from the service name.
-		// Falls back to the convention path when GoPackage is empty (covers
-		// older descriptors and synthetic test fixtures).
+		// This is what lets a service whose proto moved (e.g. from
+		// services/daemon_token/v1 to reliant/v1) regenerate testing.go
+		// with the correct *v1connect import — the convention path
+		// would still point at the old gen/services/<svc>/v1 location.
+		//
+		// Falls back to the convention path only when BOTH descriptor
+		// fields are empty (synthetic test fixtures, pre-descriptor
+		// scaffolds). Falling back on GoPackage alone left connectPkg as
+		// the literal "connect" when PkgName happened to be empty.
 		connectPkg := svc.PkgName + "connect"
 		connectImport := svc.GoPackage + "/" + connectPkg
-		if svc.GoPackage == "" {
+		if svc.GoPackage == "" || svc.PkgName == "" {
 			connectImport = modulePath + "/gen/services/" + pkg + "/v1/" + pkg + "v1connect"
 			connectPkg = pkg + "v1connect"
 		}

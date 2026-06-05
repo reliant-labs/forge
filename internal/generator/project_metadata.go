@@ -13,8 +13,8 @@ import (
 )
 
 // writeProjectMetadata writes everything under .reliant/, the top-level
-// memory file (whose name depends on MemoryFormat), and the project-level
-// .mcp.json files.
+// memory file (whose name depends on the project's Harness), and the
+// project-level .mcp.json files.
 //
 // File ownership model:
 //
@@ -46,22 +46,29 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 	}{Name: g.Name, CLI: cliName()}
 
 	// User-owned .reliant/reliant.md — project memory file. Write only if absent.
-	// This is always generated regardless of --memory format (forge's own memory).
+	// This is always generated regardless of --harness (forge's own memory).
 	if err := writeIfAbsent(filepath.Join(reliantDir, "reliant.md"), "reliant-reliant.md.tmpl", templateData); err != nil {
 		return fmt.Errorf("failed to write .reliant/reliant.md: %w", err)
 	}
 
-	// User-owned top-level memory file — path depends on --memory format.
-	memoryFile := g.MemoryFormat.MemoryFilePath()
-	memoryDest := filepath.Join(g.Path, memoryFile)
-	// Ensure parent directory exists (needed for copilot: .github/).
-	if dir := filepath.Dir(memoryDest); dir != g.Path {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("failed to create directory for %s: %w", memoryFile, err)
+	// User-owned top-level memory file — path depends on --harness.
+	// Skipped for the reliant harness: reliant loads the framework
+	// content in-memory via forgecli.RenderProjectMemory whenever it
+	// detects forge.yaml, so a stale on-disk copy would just create
+	// upgrade drift. Other harnesses (claude/cursor/copilot/codex) have
+	// no such auto-discovery path and still need the file written.
+	if g.Harness != HarnessReliant && g.Harness != "" {
+		memoryFile := g.Harness.MemoryFilePath()
+		memoryDest := filepath.Join(g.Path, memoryFile)
+		// Ensure parent directory exists (needed for copilot: .github/).
+		if dir := filepath.Dir(memoryDest); dir != g.Path {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("failed to create directory for %s: %w", memoryFile, err)
+			}
 		}
-	}
-	if err := writeIfAbsent(memoryDest, "reliant.md.tmpl", templateData); err != nil {
-		return fmt.Errorf("failed to write %s: %w", memoryFile, err)
+		if err := writeIfAbsent(memoryDest, "reliant.md.tmpl", templateData); err != nil {
+			return fmt.Errorf("failed to write %s: %w", memoryFile, err)
+		}
 	}
 
 	// User-owned MCP config — write only if absent.

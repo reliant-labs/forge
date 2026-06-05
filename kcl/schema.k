@@ -93,16 +93,6 @@ schema Resources:
     memory_request: str = "128Mi"
     memory_limit: str = "512Mi"
 
-schema Ingress:
-    """Cluster ingress for Service.deploy = K8sCluster."""
-    host: str
-    tls: bool = True
-    cert_manager_issuer: str = "letsencrypt-prod"
-    path: str = "/"
-
-    check:
-        host, "Ingress.host is required"
-
 schema ClusterRBAC:
     """Cluster-scoped RBAC for Operators that watch resources
     across namespaces. `rules` are PolicyRule dicts in the standard
@@ -164,6 +154,168 @@ schema ConfigMap:
 
     check:
         name, "ConfigMap.name is required"
+
+# ---------------------------------------------------------------------------
+# Gateway API ingress.
+#
+# Forge's ingress story is Kubernetes Gateway API — first-class
+# Gateway / HTTPRoute / GRPCRoute resources rendered alongside the
+# typed entities. A project declares a top-level `deploy/kcl/ingress.k`
+# with its gateway topology, and per-env files in
+# `deploy/kcl/<env>/ingress.k` override hosts / TLS / ports. The env's
+# main.k wires `gateways` / `http_routes` / `grpc_routes` into the
+# Bundle.
+#
+# The GatewayClass resource is cluster-scoped and NOT rendered here —
+# `forge dev cluster up` applies it (and any provider install YAML,
+# e.g. pinned Traefik) once per cluster. Each Gateway references the
+# GatewayClass by `gateway_class_name`.
+#
+# Routes attach to a Gateway+Listener via the `gateway` (name) +
+# `listener` (section name) fields, mirroring Gateway API's
+# `parentRefs[*].name` + `parentRefs[*].sectionName`. A service with no
+# route is unreachable from the host — that is the v1 contract,
+# `forge dev port-forward` having been retired in favor of this model.
+# ---------------------------------------------------------------------------
+
+schema GatewayListener:
+    """One listener on a Gateway. Maps to Gateway API
+    spec.listeners[*].
+
+    Protocol values:
+
+      * HTTP  — plaintext HTTP/1.1 + HTTP/2 (no TLS).
+      * HTTPS — TLS-terminated HTTP. Requires the parent Gateway to
+                declare `tls`.
+      * H2C   — HTTP/2 cleartext. Use this for gRPC routes in dev
+                where TLS is not yet wired; flip to HTTPS in the prod
+                env override.
+    """
+    name: str
+    port: int
+    protocol: "HTTP" | "HTTPS" | "H2C"
+    # path_prefix is prepended to every route attached to this listener.
+    # Use it for multi-worktree dev where two namespaces share a host
+    # port and route by path. Empty in prod where each env owns its
+    # own hostname.
+    path_prefix: str = ""
+
+    check:
+        name, "GatewayListener.name is required"
+        port > 0 and port < 65536, "GatewayListener.port must be 1..65535"
+        path_prefix == "" or path_prefix.startswith("/"), \
+            "GatewayListener.path_prefix must start with '/' when set"
+
+schema GatewayTLS:
+    """TLS config for a Gateway.
+
+    Two cert-origin modes share the same cluster-side shape (Gateway
+    listener is HTTPS, references the Secret by name); only how the
+    Secret gets populated differs:
+
+      * mode = "cert_manager" (default) — cert-manager.io/v1 Certificate
+        is emitted alongside the Gateway; cert-manager watches it and
+        writes the cert+key into the Secret. cert_issuer names a
+        cluster-scoped ClusterIssuer.
+
+      * mode = "mkcert" — Secret is populated host-side by `forge dev
+        cluster up`, which shells out to mkcert (host-trusted CA in the
+        OS keychain → browser-trusted certs without `-k` / warnings).
+        No Certificate resource is emitted; cert_issuer is unused and
+        should be left empty.
+    """
+    cert_issuer: str = ""
+    secret_name: str
+    mode: "cert_manager" | "mkcert" = "cert_manager"
+
+    check:
+        secret_name, "GatewayTLS.secret_name is required"
+        mode != "cert_manager" or cert_issuer, \
+            "GatewayTLS.cert_issuer is required when mode == 'cert_manager'"
+
+schema Gateway:
+    """A Gateway API Gateway. One Gateway exposes one or more listeners
+    on the cluster's load balancer (or k3d host port) and is referenced
+    by HTTPRoute / GRPCRoute parentRefs.
+
+    Multiple Gateways per project are supported and encouraged —
+    public / internal / webhooks each typically gets its own Gateway
+    with its own listeners and TLS.
+
+    `gateway_class_name` names the GatewayClass installed by
+    `forge dev cluster up` (in dev) or the cloud Gateway controller
+    (in prod). Default `traefik` matches forge's dev install.
+
+    `host` is the default hostname for routes on this gateway. Per-
+    route `host:` overrides win. `raw_policy` is the v1 escape hatch
+    for provider-specific policy CRDs (Traefik Middleware, Envoy
+    Gateway BackendTrafficPolicy, etc.) — emitted verbatim alongside
+    the route.
+    """
+    name: str
+    listeners: [GatewayListener]
+    gateway_class_name: str = "traefik"
+    host: str = ""
+    tls?: GatewayTLS
+    raw_policy: str = ""
+
+    check:
+        name, "Gateway.name is required"
+        len(listeners) > 0, "Gateway must declare at least one listener"
+        len({l.name: l for l in listeners}) == len(listeners), \
+            "Gateway.listeners[*].name must be unique within a gateway"
+        len({str(l.port): l for l in listeners}) == len(listeners), \
+            "Gateway.listeners[*].port must be unique within a gateway"
+
+schema HTTPRoute:
+    """An HTTPRoute attached to a Gateway+listener. Forwards HTTP
+    traffic to a backend Service (referenced by name; matches a
+    forge.Service.name in the same env).
+
+    The full request path is `<listener.path_prefix>/<path>`. Empty
+    `path` means the listener's prefix is the only match — useful for
+    a service that owns the listener's path namespace entirely.
+    """
+    name: str
+    gateway: str
+    listener: str
+    service: str
+    port: int
+    host: str = ""
+    path: str = ""
+    raw_policy: str = ""
+
+    check:
+        name, "HTTPRoute.name is required"
+        gateway, "HTTPRoute.gateway is required (target Gateway.name)"
+        listener, "HTTPRoute.listener is required (target GatewayListener.name)"
+        service, "HTTPRoute.service is required (backend Service.name)"
+        port > 0 and port < 65536, "HTTPRoute.port must be 1..65535"
+        path == "" or path.startswith("/"), \
+            "HTTPRoute.path must start with '/' when set"
+
+schema GRPCRoute:
+    """A GRPCRoute attached to a Gateway+listener. Forwards gRPC
+    traffic to a backend Service. The target listener must be H2C or
+    HTTPS — gRPC over HTTP/1.1 isn't a thing.
+    """
+    name: str
+    gateway: str
+    listener: str
+    service: str
+    port: int
+    host: str = ""
+    path: str = ""
+    raw_policy: str = ""
+
+    check:
+        name, "GRPCRoute.name is required"
+        gateway, "GRPCRoute.gateway is required (target Gateway.name)"
+        listener, "GRPCRoute.listener is required (target GatewayListener.name)"
+        service, "GRPCRoute.service is required (backend Service.name)"
+        port > 0 and port < 65536, "GRPCRoute.port must be 1..65535"
+        path == "" or path.startswith("/"), \
+            "GRPCRoute.path must start with '/' when set"
 
 schema SecurityContext:
     """Pod + container security settings. Sane forge defaults
@@ -252,7 +404,6 @@ schema K8sCluster:
     domain?: str
     # Per-service knobs.
     replicas: int = 1
-    ingress?: Ingress
     resources?: Resources
     health_check?: HealthCheck
     security_context?: SecurityContext
@@ -449,6 +600,14 @@ schema Bundle:
     # config proto fields and `forge.yaml -> environments[*].config`.
     # Rendered into ConfigMap manifests by `forge.render_manifests`.
     config_maps: [ConfigMap] = []
+    # Gateway API ingress topology. Declared in `deploy/kcl/ingress.k`
+    # at project level and per-env-overridden in
+    # `deploy/kcl/<env>/ingress.k`. Routes attach to a Gateway+listener
+    # by name. The GatewayClass is NOT in the Bundle — it's
+    # cluster-scoped and installed by `forge dev cluster up`.
+    gateways: [Gateway] = []
+    http_routes: [HTTPRoute] = []
+    grpc_routes: [GRPCRoute] = []
     # Arbitrary extra k8s resources rendered alongside the typed
     # entities. Use for ClusterIssuers, SealedSecrets, hand-typed CRDs
     # — anything that doesn't fit a typed entity. Each entry is a

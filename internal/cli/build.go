@@ -28,6 +28,58 @@ func sortedKeys(m map[string]string) []string {
 	return out
 }
 
+// resolveBuildContext normalises a forge.yaml `docker.build_contexts`
+// value into the exact string `docker buildx --build-context name=…`
+// expects.
+//
+// Scheme-bearing values (anything containing `://`, e.g.
+// `docker-image://my-base:latest`, `oci-layout://./layout`,
+// `https://example.com/foo.tar`) are passed through verbatim — buildkit
+// owns the interpretation and forge has no business rewriting it.
+//
+// Absolute paths are also passed through unchanged.
+//
+// Relative paths are resolved against the project root (the directory
+// holding forge.yaml — the build commands run with cwd at the project
+// root, so an empty projectRoot is treated as "."). Resolving to an
+// absolute path means downstream `docker build` invocations work
+// regardless of which subdirectory the user actually launched forge
+// from and survives the working-directory churn inside test harnesses.
+func resolveBuildContext(value, projectRoot string) string {
+	if strings.Contains(value, "://") {
+		return value
+	}
+	if filepath.IsAbs(value) {
+		return value
+	}
+	if projectRoot == "" {
+		projectRoot = "."
+	}
+	return filepath.Join(projectRoot, value)
+}
+
+// appendBuildContexts extends dockerArgs with one `--build-context
+// name=value` pair per entry in cfg.Docker.BuildContexts, in a
+// deterministic order. Each value is run through resolveBuildContext so
+// relative paths land as absolute paths against projectRoot and
+// scheme-bearing values pass through unchanged. A per-context log line
+// is emitted so users can confirm what buildx will see — useful when
+// debugging a Dockerfile that fails to find a `COPY --from=name`.
+//
+// No-ops when cfg.Docker.BuildContexts is empty, so existing projects
+// see no change in behaviour or output.
+func appendBuildContexts(dockerArgs []string, cfg *config.ProjectConfig, projectRoot string) []string {
+	if len(cfg.Docker.BuildContexts) == 0 {
+		return dockerArgs
+	}
+	for _, name := range sortedKeys(cfg.Docker.BuildContexts) {
+		value := resolveBuildContext(cfg.Docker.BuildContexts[name], projectRoot)
+		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
+		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
+	}
+	return dockerArgs
+}
+
 // buildOptions holds the flag values for the build command.
 type buildOptions struct {
 	outputDir   string
@@ -683,14 +735,13 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 		}
 	}
 	// Additional build contexts from forge.yaml's docker.build_contexts.
-	// Each becomes a `--build-context name=path` arg, letting the
+	// Each becomes a `--build-context name=value` arg, letting the
 	// Dockerfile pull files from outside the normal context via
-	// `COPY --from=name`. Typical use: sibling-checkout local replace
-	// directives where the replaced module lives outside the project tree.
-	for _, name := range sortedKeys(cfg.Docker.BuildContexts) {
-		path := cfg.Docker.BuildContexts[name]
-		dockerArgs = append(dockerArgs, "--build-context", name+"="+path)
-	}
+	// `FROM name` / `COPY --from=name`. See [config.DockerConfig.BuildContexts]
+	// for the supported value shapes (relative path, absolute path,
+	// `docker-image://`, …). cwd is the project root by construction
+	// (forge build runs alongside forge.yaml).
+	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
 
@@ -829,9 +880,7 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 	// Additional build contexts from forge.yaml. Same semantics as
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
-	for _, k := range sortedKeys(cfg.Docker.BuildContexts) {
-		dockerArgs = append(dockerArgs, "--build-context", k+"="+cfg.Docker.BuildContexts[k])
-	}
+	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
 	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
 

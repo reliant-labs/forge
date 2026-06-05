@@ -673,10 +673,11 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 	}
 	buildArgs = append(buildArgs, "-t", imageRef)
 	// Apply docker.build_contexts from forge.yaml so sibling-checkout
-	// replace directives resolve in the deploy-time rebuild too.
-	for _, k := range sortedKeys(cfg.Docker.BuildContexts) {
-		buildArgs = append(buildArgs, "--build-context", k+"="+cfg.Docker.BuildContexts[k])
-	}
+	// replace directives resolve in the deploy-time rebuild too. Shares
+	// the build.go helper so the path-resolution + scheme passthrough
+	// semantics stay in lockstep across `forge build --docker` and
+	// `forge deploy`.
+	buildArgs = appendBuildContexts(buildArgs, cfg, "")
 	buildArgs = append(buildArgs, "-f", dockerfile, ".")
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
 	buildCmd.Stdout = os.Stdout

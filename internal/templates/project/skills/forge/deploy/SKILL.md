@@ -27,6 +27,37 @@ forge build --docker    # Docker images for all services
 forge build --debug     # with debug symbols for Delve
 ```
 
+### Multi-source Docker builds (`docker.build_contexts`)
+
+When a Dockerfile needs files from outside the project tree — a sibling
+checkout the `go.mod` `replace`s against, a shared-libs monorepo
+sibling, a base image you want to pin or override locally — declare the
+extra contexts in `forge.yaml` and let `forge build --docker` (and the
+deploy-time rebuild) pass them to `docker buildx` for you:
+
+```yaml
+docker:
+  registry: ghcr.io/acme
+  build_contexts:
+    shared: ../shared-libs            # relative path, resolved against forge.yaml's dir
+    sibling: ../../other-repo          # sibling checkout (e.g. cp-forge needs reliant code)
+    base: docker-image://acme/base:v3  # registry image — pin or local-override a FROM
+```
+
+Consume them from the Dockerfile via `FROM <name>` or `COPY --from=<name>`:
+
+```dockerfile
+FROM base AS runtime
+COPY --from=shared /go/pkg/mod/cache/ /go/pkg/mod/cache/
+COPY --from=sibling /workspace/internal/ /workspace/sibling-internal/
+```
+
+Each entry becomes a `docker buildx --build-context name=value` arg.
+Relative paths resolve against the project root; anything with a `://`
+scheme (e.g. `docker-image://`, `oci-layout://`) passes through to
+buildkit unchanged. No CLI flag — this is forge.yaml-only, since
+the user already has `docker buildx --build-context` for ad-hoc cases.
+
 ## Deploy
 
 Environment is a positional arg — `forge deploy dev`, not `forge deploy --env dev`.

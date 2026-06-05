@@ -514,13 +514,26 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 type DockerConfig struct {
 	Registry   string            `yaml:"registry"`
 	BaseImages map[string]string `yaml:"base_images,omitempty"`
-	// BuildContexts maps a build-context name to a host path (relative
-	// to the project root). Each entry becomes a `--build-context name=path`
-	// arg to `docker build`, letting Dockerfiles reference paths outside
-	// the normal context via `COPY --from=name`. The typical use is a
-	// sibling-checkout local replace directive (e.g. a `replace x => ../x`
-	// in go.mod where ../x is outside the cp-forge build context). Empty
-	// when not set.
+	// BuildContexts maps a build-context name to anything `docker buildx
+	// --build-context name=value` accepts:
+	//
+	//   - A local filesystem path. Relative paths are resolved against the
+	//     project root (the directory holding forge.yaml). The typical
+	//     case is a sibling-checkout local replace directive (e.g. a
+	//     `replace x => ../x` in go.mod where ../x lives outside the
+	//     project's build context).
+	//   - A `docker-image://<image>` ref. Passed through verbatim so a
+	//     Dockerfile `FROM <name>` can be overridden with a specific image
+	//     at build time (local override of a base image during dev,
+	//     pin-by-digest in CI, etc.).
+	//   - Any other scheme buildkit understands (e.g. `oci-layout://`,
+	//     `https://`). Anything containing `://` is passed through
+	//     unchanged.
+	//
+	// Each entry becomes a `--build-context name=value` arg to `docker
+	// build`, letting Dockerfiles consume it via `FROM <name>` or
+	// `COPY --from=<name>`. Empty when not set; existing projects with no
+	// contexts see no change in build behaviour or output.
 	BuildContexts map[string]string `yaml:"build_contexts,omitempty"`
 }
 

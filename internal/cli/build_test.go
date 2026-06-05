@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestMergeCoverageProfiles_MultipleDirs verifies the merge concatenates
@@ -283,3 +285,123 @@ func TestResolveBuildArch(t *testing.T) {
 // moved to the KCL layer in feat/kcl-orchestration. The replacement
 // host-mode filter reads rendered KCL via [hostServicesFromKCL] — see
 // build_kcl_test.go for the KCL-side equivalent coverage.
+
+// TestResolveBuildContext covers the three branches of the helper that
+// normalises a forge.yaml `docker.build_contexts` value into the string
+// `docker buildx --build-context name=…` expects: scheme passthrough,
+// absolute-path passthrough, and project-root-relative resolution.
+//
+// Scheme detection is `strings.Contains(value, "://")` — wide on
+// purpose so any buildkit-supported scheme (`docker-image://`,
+// `oci-layout://`, `https://`, future additions) passes through
+// without forge needing a per-scheme allowlist.
+func TestResolveBuildContext(t *testing.T) {
+	const root = "/tmp/proj"
+	cases := []struct {
+		name  string
+		value string
+		root  string
+		want  string
+	}{
+		{
+			name:  "docker-image scheme passes through",
+			value: "docker-image://my-base:latest",
+			root:  root,
+			want:  "docker-image://my-base:latest",
+		},
+		{
+			name:  "oci-layout scheme passes through",
+			value: "oci-layout://./layout",
+			root:  root,
+			want:  "oci-layout://./layout",
+		},
+		{
+			name:  "https scheme passes through",
+			value: "https://example.com/ctx.tar",
+			root:  root,
+			want:  "https://example.com/ctx.tar",
+		},
+		{
+			name:  "absolute path passes through",
+			value: "/abs/path/to/shared",
+			root:  root,
+			want:  "/abs/path/to/shared",
+		},
+		{
+			name:  "relative path resolves against project root",
+			value: "../shared-libs",
+			root:  root,
+			want:  filepath.Join(root, "../shared-libs"),
+		},
+		{
+			name:  "dot-prefixed relative path resolves",
+			value: "./subdir/extra",
+			root:  root,
+			want:  filepath.Join(root, "./subdir/extra"),
+		},
+		{
+			name:  "empty project root defaults to cwd-relative",
+			value: "../sibling",
+			root:  "",
+			want:  filepath.Join(".", "../sibling"),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveBuildContext(c.value, c.root); got != c.want {
+				t.Errorf("resolveBuildContext(%q, %q) = %q, want %q",
+					c.value, c.root, got, c.want)
+			}
+		})
+	}
+}
+
+// TestAppendBuildContexts verifies the helper that injects the
+// `--build-context name=value` pairs into a docker buildx arg list:
+//
+//   - An empty BuildContexts map is a no-op (existing projects unchanged).
+//   - Entries appear in lexicographic key order so cache keys + arg
+//     ordering are deterministic across runs.
+//   - Local paths resolve against the project root.
+//   - Scheme-bearing values pass through unchanged.
+func TestAppendBuildContexts(t *testing.T) {
+	t.Run("no-op when empty", func(t *testing.T) {
+		cfg := &config.ProjectConfig{}
+		args := []string{"build", "-t", "foo:latest"}
+		got := appendBuildContexts(args, cfg, "/tmp/proj")
+		if len(got) != len(args) {
+			t.Errorf("expected no-op, got %d args (started with %d): %v",
+				len(got), len(args), got)
+		}
+	})
+
+	t.Run("deterministic order, path resolution, scheme passthrough", func(t *testing.T) {
+		cfg := &config.ProjectConfig{
+			Docker: config.DockerConfig{
+				BuildContexts: map[string]string{
+					"shared": "../shared-libs",
+					"base":   "docker-image://my-base:latest",
+					"abs":    "/etc/already-absolute",
+				},
+			},
+		}
+		args := appendBuildContexts(nil, cfg, "/tmp/proj")
+
+		// 3 contexts × 2 args ("--build-context", "k=v") = 6
+		if len(args) != 6 {
+			t.Fatalf("want 6 args, got %d: %v", len(args), args)
+		}
+
+		// Lexicographic order: abs < base < shared.
+		want := []string{
+			"--build-context", "abs=/etc/already-absolute",
+			"--build-context", "base=docker-image://my-base:latest",
+			"--build-context", "shared=" + filepath.Join("/tmp/proj", "../shared-libs"),
+		}
+		for i, w := range want {
+			if args[i] != w {
+				t.Errorf("args[%d] = %q, want %q (full args: %v)", i, args[i], w, args)
+			}
+		}
+	})
+}

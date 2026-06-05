@@ -617,20 +617,47 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 	return MatchExclude(c.Exclude, pkgPath)
 }
 
-// FeaturesConfig controls which forge features are active.
-// All fields are *bool so that nil means "enabled" (backwards compat).
-// Explicitly set to false to disable a feature.
+// FeaturesConfig controls which forge features are active. The `features:`
+// block in forge.yaml gates major subsystems (deploy, build, frontend, packs,
+// starters, ci, docs, observability, ...). All fields are *bool so the
+// loader can distinguish "absent" (nil → default ENABLED, preserving
+// backward compatibility for existing projects without a features: block)
+// from "explicitly false" (the user opted out). Explicit true and nil both
+// resolve to enabled — kept as a permitted shape so a project can write
+// `features: { deploy: true, ... }` for documentation / clarity without
+// changing behavior.
+//
+// Effect on the CLI surface and codegen pipeline:
+//
+//   - Direct invocations of a disabled subsystem's cobra command return a
+//     clear `feature '<name>' is disabled in forge.yaml. Set
+//     features.<name>: true to enable.` error.
+//   - Implicit invocations from orchestrators (e.g. `forge up` driving
+//     the build/deploy/frontend phases) log a skip line and continue —
+//     letting `forge up` succeed on whatever subsystems ARE enabled.
+//   - Codegen pipeline steps gated on a feature skip silently when off,
+//     mirroring the existing gate function shape under
+//     internal/cli/generate_pipeline.go.
+//
+// New project scaffolding (`forge new --kind`) sets defaults per kind:
+//
+//   - service (default): all features enabled (preserves today's behavior).
+//   - cli:               build/ci/docs enabled; everything else disabled.
+//   - library:           ci/docs enabled; everything else disabled.
 type FeaturesConfig struct {
 	ORM           *bool `yaml:"orm,omitempty"`           // protoc-gen-forge-orm codegen
 	Codegen       *bool `yaml:"codegen,omitempty"`       // service/handler codegen from protos
 	Migrations    *bool `yaml:"migrations,omitempty"`    // auto-generate SQL migrations
 	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows
+	Build         *bool `yaml:"build,omitempty"`         // `forge build` Go binary + docker image pipeline
 	Deploy        *bool `yaml:"deploy,omitempty"`        // generate deploy manifests (KCL, Dockerfiles)
 	Contracts     *bool `yaml:"contracts,omitempty"`     // contract linter enforcement
 	Docs          *bool `yaml:"docs,omitempty"`          // documentation generation
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
+	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
+	Starters      *bool `yaml:"starters,omitempty"`      // forge starters (one-time business-integration copies)
 
 	// Diagnostics enables runtime emission of pkg/diagnostics records at
 	// Bootstrap time — slog warn lines for every unwired scaffold the
@@ -719,6 +746,90 @@ func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Ob
 
 // HotReloadEnabled reports whether the hot-reload feature is on (default: on).
 func (f FeaturesConfig) HotReloadEnabled() bool { return featureEnabled(f.HotReload) }
+
+// BuildEnabled reports whether `forge build` is enabled (default: on).
+// Direct `forge build` invocations error when off; orchestrators like
+// `forge up` log a skip line and continue.
+func (f FeaturesConfig) BuildEnabled() bool { return featureEnabled(f.Build) }
+
+// PacksEnabled reports whether the pack subsystem is enabled (default: on).
+// Disables `forge pack list/info/install/remove` and skips the pack
+// generate-hooks step in the codegen pipeline.
+func (f FeaturesConfig) PacksEnabled() bool { return featureEnabled(f.Packs) }
+
+// StartersEnabled reports whether the starter subsystem is enabled
+// (default: on). Disables `forge starter list/add`.
+func (f FeaturesConfig) StartersEnabled() bool { return featureEnabled(f.Starters) }
+
+// DisabledFeatureError returns the canonical user-facing error for a
+// disabled feature. Centralised so every gate site emits the same
+// wording — sub-agents and humans grepping for the string find one
+// authoritative format. The name argument is the lowercased feature
+// name as it appears in forge.yaml (e.g. "deploy", "build", "packs").
+func DisabledFeatureError(name string) error {
+	return errDisabledFeature{name: name}
+}
+
+// errDisabledFeature carries the feature name so callers can match
+// programmatically (errors.As) without parsing the string. The Error()
+// shape matches forge's existing single-line "feature 'X' is disabled in
+// forge.yaml" idiom used by the pre-feature-block gates in deploy.go,
+// docs.go and ci.go.
+type errDisabledFeature struct {
+	name string
+}
+
+func (e errDisabledFeature) Error() string {
+	return "feature '" + e.name + "' is disabled in forge.yaml. Set features." + e.name + ": true to enable."
+}
+
+// FeatureName is the canonical feature key. Stays a string alias so the
+// constants below are usable directly anywhere the feature name shows up
+// as a config key, a `--disable` flag value, or a `forge audit` field.
+type FeatureName = string
+
+// Feature name constants. These are the wire format — both YAML field
+// names under `features:` and the strings emitted by `forge audit
+// --json | jq '.features'`. Kept exported so external tooling can match
+// against them without re-encoding the spelling.
+const (
+	FeatureORM           FeatureName = "orm"
+	FeatureCodegen       FeatureName = "codegen"
+	FeatureMigrations    FeatureName = "migrations"
+	FeatureCI            FeatureName = "ci"
+	FeatureBuild         FeatureName = "build"
+	FeatureDeploy        FeatureName = "deploy"
+	FeatureContracts     FeatureName = "contracts"
+	FeatureDocs          FeatureName = "docs"
+	FeatureFrontend      FeatureName = "frontend"
+	FeatureObservability FeatureName = "observability"
+	FeatureHotReload     FeatureName = "hot_reload"
+	FeaturePacks         FeatureName = "packs"
+	FeatureStarters      FeatureName = "starters"
+)
+
+// EffectiveFeatures projects the resolved enabled/disabled state of
+// every feature into a stable name→bool map. Used by `forge audit` to
+// surface the project's feature configuration at a glance, and by tests
+// to assert per-kind scaffold defaults. The map is keyed by Feature*
+// constants and is safe to JSON-marshal directly.
+func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
+	return map[string]bool{
+		FeatureORM:           f.ORMEnabled(),
+		FeatureCodegen:       f.CodegenEnabled(),
+		FeatureMigrations:    f.MigrationsEnabled(),
+		FeatureCI:            f.CIEnabled(),
+		FeatureBuild:         f.BuildEnabled(),
+		FeatureDeploy:        f.DeployEnabled(),
+		FeatureContracts:     f.ContractsEnabled(),
+		FeatureDocs:          f.DocsEnabled(),
+		FeatureFrontend:      f.FrontendEnabled(),
+		FeatureObservability: f.ObservabilityEnabled(),
+		FeatureHotReload:     f.HotReloadEnabled(),
+		FeaturePacks:         f.PacksEnabled(),
+		FeatureStarters:      f.StartersEnabled(),
+	}
+}
 
 // DiagnosticsEnabled reports whether the pkg/diagnostics runtime emit
 // is wired by bootstrap (default: OFF). When OFF, codegen still emits

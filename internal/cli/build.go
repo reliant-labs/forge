@@ -101,6 +101,9 @@ mirror config inside k3d resolves the manifest reference at pull time).
 This lets deployed manifests reference the in-cluster-resolvable name
 without forcing the user to add /etc/hosts entries on the host.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := requireFeature(config.FeatureBuild); err != nil {
+				return err
+			}
 			// --push implies --docker so users don't have to pass both.
 			if opts.pushRegistry != "" {
 				opts.buildDocker = true

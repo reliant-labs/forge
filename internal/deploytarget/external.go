@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -121,7 +122,29 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 	// Deploy phase — required; the schema check enforces non-empty
 	// deploy_cmd.
 	expanded := expandVars(spec.DeployCmd, vars)
-	if err := runner.Run(ctx, "sh", "-c", expanded); err != nil {
+
+	// Dry-run: print what we would run for each phase and short-
+	// circuit. No exec, no state-file write — the same "preview
+	// without side effects" contract --dry-run carries on the K8s
+	// cluster path.
+	if group.DryRun {
+		fmt.Printf("  [DRY-RUN] would exec: sh -c %s\n", expanded)
+		if spec.HealthCmd != "" {
+			expandedHealth := expandVars(spec.HealthCmd, vars)
+			fmt.Printf("  [DRY-RUN] would exec: sh -c %s\n", expandedHealth)
+		}
+		return nil
+	}
+
+	// Load env_file (if declared) and merge into the exec'd process
+	// env so the user-supplied CLI sees the variables without having
+	// to remember to wire `--env-file ${ENV_FILE}` themselves.
+	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
+	if ferr != nil {
+		return fmt.Errorf("external %s: env_file: %w", svc.Name, ferr)
+	}
+
+	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
 		return fmt.Errorf("external %s: deploy_cmd: %w", svc.Name, err)
 	}
 
@@ -130,7 +153,7 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 	// didn't come up healthy doesn't clobber the previous good tag.
 	if spec.HealthCmd != "" {
 		expandedHealth := expandVars(spec.HealthCmd, vars)
-		if err := runner.Run(ctx, "sh", "-c", expandedHealth); err != nil {
+		if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expandedHealth); err != nil {
 			return fmt.Errorf("external %s: health check: %w", svc.Name, err)
 		}
 	}
@@ -175,11 +198,44 @@ func (p ExternalProvider) rollbackOne(ctx context.Context, runner commandRunner,
 	currentTag := resolveExternalTag(spec, group)
 	vars := externalVars(spec, group, svc.Name, p.projectDir(), currentTag, target)
 	expanded := expandVars(spec.RollbackCmd, vars)
-	if err := runner.Run(ctx, "sh", "-c", expanded); err != nil {
+	if group.DryRun {
+		fmt.Printf("  [DRY-RUN] would exec: sh -c %s\n", expanded)
+		return nil
+	}
+	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
+	if ferr != nil {
+		return fmt.Errorf("env_file: %w", ferr)
+	}
+	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
 		return fmt.Errorf("rollback_cmd: %w", err)
 	}
 	fmt.Printf("  rollback %s: ok (tag %s)\n", svc.Name, target)
 	return nil
+}
+
+// loadExternalEnvFile parses a dotenv file into the env overlay the
+// runner merges onto os.Environ() before exec. Empty path means "no
+// overlay" (returns nil). Missing-file is a warning rather than a hard
+// error — it matches hostlaunch's secrets_file semantics and lets
+// users commit an env_file path that's optional on some dev machines.
+//
+// File-format errors (permission denied, malformed line) DO propagate —
+// silently dropping a misconfigured file would let the deploy proceed
+// with the wrong env, which is exactly the failure mode env_file is
+// meant to prevent.
+func loadExternalEnvFile(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	m, err := readDotEnvFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("  Warning: env_file %s not found — skipping (no env overlay applied).\n", path)
+			return nil, nil
+		}
+		return nil, err
+	}
+	return m, nil
 }
 
 // resolveExternalTag picks the tag for an external deploy. Precedence

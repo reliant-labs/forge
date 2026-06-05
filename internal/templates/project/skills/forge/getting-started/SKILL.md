@@ -128,6 +128,8 @@ Entity types start as proto aliases (`type User = apiv1.User`). When your DB has
 forge add service <name>              # New Connect RPC service
 forge add service <name> --port 8082  # Specify port
 forge add worker <name>               # Background worker (Start/Stop lifecycle)
+forge add binary <name>               # Standalone long-running binary (own Deployment)
+forge add adapter <name>              # Outbound boundary translator (HTTP client, SDK wrapper)
 forge add frontend <name>             # Next.js frontend
 forge add webhook <name> --service S  # Webhook endpoint on an existing service
 forge add package <name>              # Internal Go package with interface contract
@@ -141,13 +143,32 @@ All `forge add` commands update `forge.yaml` and run the generation pipeline aut
 |---------|-------------|
 | `forge generate` | Regenerates infrastructure from proto (safe to re-run anytime) |
 | `forge run` | Full stack: Docker infra + Go services (hot reload) + frontends |
+| `forge up --env=<env>` | Build + deploy + host launch + frontend dev — one command, reads `deploy/kcl/<env>/` |
 | `forge test` | Unit + integration tests |
 | `forge test e2e` | E2E tests (requires stack running via `forge run`) |
 | `forge lint` | Go + proto + frontend linters |
 | `forge build` | Binaries + frontends + Docker images |
-| `forge deploy dev` | Deploy to local k3d cluster |
+| `forge deploy dev` | Deploy to local k3d cluster (or whatever deploy target dev's KCL declares) |
 | `forge db migration new <name>` | Create a new migration pair |
 | `forge db migrate up --dsn $DSN` | Apply pending migrations |
+
+## Project shape via `--kind`
+
+```bash
+forge new my-app --mod github.com/acme/my-app                   # service (default)
+forge new my-app --mod github.com/acme/my-app --kind cli        # CLI binary, no server
+forge new my-app --mod github.com/acme/my-app --kind library    # pure Go library, no cmd/
+```
+
+Each kind has its own default `features:` block in forge.yaml:
+
+- `service` — every feature enabled (today's behavior).
+- `cli` — build/ci/docs enabled; deploy/frontend/packs/starters/observability/codegen disabled.
+- `library` — docs/contracts enabled; everything else disabled.
+
+Override per-project in forge.yaml's `features:` block — set
+`features.deploy: true` on a CLI to opt back into deploy codegen, etc.
+Disabled commands return a clear error explaining how to enable them.
 
 ## Port Assignment
 

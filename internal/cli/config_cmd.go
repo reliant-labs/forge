@@ -16,32 +16,39 @@ import (
 )
 
 // newConfigCmd builds the `forge config` subcommand surface. Today the
-// only verb is `set`, which programmatically edits forge.yaml's
-// environments[<env>].config[<key>] = <value> map without forcing the
+// only verb is `set`, which programmatically edits the sibling
+// `config.<env>.yaml` file (next to forge.yaml) without forcing the
 // caller to round-trip YAML by hand. The motivating use case is LLM /
-// scripted edits where YAML whitespace fragility (key indentation, new
-// vs. existing environment block, list-vs-mapping under environments)
-// produced silent errors during the control-plane-next port. Type
-// validation (against proto/config/v1/config.proto's field annotations,
-// when present) is a best-effort guard so a typo like
-// `--env dev port not-a-number` fails up front instead of at startup.
+// scripted edits where YAML whitespace fragility (key indentation,
+// quoting of secret refs, accidental flow-style maps) produced silent
+// errors during the control-plane-next port. Type validation (against
+// proto/config/v1/config.proto's field annotations, when present) is a
+// best-effort guard so a typo like `--env dev port not-a-number` fails
+// up front instead of at startup.
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Edit per-environment runtime config (forge.yaml environments[].config)",
-		Long: `Programmatically edit forge.yaml's environments[<env>].config map.
+		Short: "Edit per-environment runtime config (config.<env>.yaml sibling files)",
+		Long: `Programmatically edit a project's per-environment config.<env>.yaml.
 
-The config map carries per-environment values for fields declared in
-proto/config/v1/config.proto (port, log_level, database_url, ...). Two
-storage shapes are supported:
+Per-env app config (runtime AppConfig values keyed by snake_case proto
+field names from proto/config/v1/config.proto — port, log_level,
+database_url, ...) lives in sibling files next to forge.yaml:
 
-  1. Inline under environments[].config in forge.yaml (good for dev /
-     staging where values aren't sensitive)
-  2. A sibling file config.<env>.yaml next to forge.yaml (good for prod
-     where values mix secret refs with toggles)
+  config.dev.yaml
+  config.staging.yaml
+  config.prod.yaml
 
-` + "`forge config set`" + ` always edits the inline shape. For sensitive values
-pass a ${secret-name#secret-key} reference rather than the cleartext.`,
+Each file is a flat top-level YAML mapping of <key>: <value> entries,
+loaded by forge run / forge deploy via internal/config.LoadEnvironmentConfig.
+
+` + "`forge config set`" + ` edits these sibling files. It never touches
+forge.yaml — the legacy ` + "`environments[].config`" + ` inline shape was
+removed in the KCL-canonical refactor.
+
+For sensitive values pass a ${secret-name#secret-key} reference rather
+than cleartext; the reference shape is validated but the secret is not
+resolved.`,
 	}
 	cmd.AddCommand(newConfigSetCmd())
 	return cmd
@@ -54,9 +61,9 @@ func newConfigSetCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "set <key> [value]",
-		Short: "Set or unset environments[<env>].config[<key>] in forge.yaml",
-		Long: `Edit forge.yaml's environments[<env>].config[<key>] entry without
-hand-formatting YAML.
+		Short: "Set or unset <key> in config.<env>.yaml",
+		Long: `Edit the sibling config.<env>.yaml file (next to forge.yaml) by
+setting or unsetting a top-level <key>: <value> entry.
 
 Behaviour:
   - Type-checks <value> against proto/config/v1/config.proto's field
@@ -64,14 +71,14 @@ Behaviour:
     reject non-numeric / non-bool strings up front.
   - Accepts ${secret-name#secret-key} references for sensitive values;
     the reference shape is validated but the secret is NOT resolved.
-  - Creates the environment block on demand if --env names an
-    environment not yet present in forge.yaml.
-  - --unset removes the key from the config map (and removes the map
-    entirely if it becomes empty).
+  - Creates config.<env>.yaml on demand if it doesn't exist yet, with
+    a header comment describing what the file is for.
+  - --unset removes the key (and leaves the now-empty file in place so
+    later sets stay deterministic; never modifies forge.yaml).
 
 Examples:
-  forge config set --env dev log_level debug
-  forge config set --env prod port 9090
+  forge config set --env dev log_level debug     # writes to config.dev.yaml
+  forge config set --env prod port 9090          # writes to config.prod.yaml
   forge config set --env prod database_url '${prod-db#dsn}'
   forge config set --env dev --unset auto_migrate`,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -97,7 +104,7 @@ Examples:
 				return cliutil.UserErr("forge config set",
 					"--env is required",
 					"",
-					"pass --env <name> matching an environments[] entry in forge.yaml (the env block is created if missing)")
+					"pass --env <name> (the sibling file config.<name>.yaml is created if missing)")
 			}
 			key := args[0]
 			value := ""
@@ -107,15 +114,31 @@ Examples:
 			return runConfigSet(envName, key, value, unsetKey)
 		},
 	}
-	cmd.Flags().StringVar(&envName, "env", "", "Environment name (must match an environments[].name entry; created if missing)")
+	cmd.Flags().StringVar(&envName, "env", "", "Environment name (selects config.<env>.yaml sibling file; created if missing)")
 	cmd.Flags().BoolVar(&unsetKey, "unset", false, "Remove the key instead of setting it")
 	return cmd
 }
 
-// runConfigSet locates forge.yaml, edits the environments[<env>].config
-// map, and writes the file back. The yaml.Node round-trip preserves
-// comments and key order in unrelated parts of the file — only the
-// targeted env's config map is mutated.
+// configEnvFileHeader is the comment block prepended to a freshly
+// created config.<env>.yaml. It mirrors the wording in env_loader.go's
+// doc comment so consumers (humans, LLMs) can orient themselves without
+// jumping to the Go source.
+const configEnvFileHeader = `# config.%s.yaml — per-environment runtime config for the %q environment.
+#
+# Flat top-level mapping of <key>: <value> entries, keyed by snake_case
+# field names declared in proto/config/v1/config.proto (port, log_level,
+# database_url, ...). Loaded by forge run / forge deploy via
+# internal/config.LoadEnvironmentConfig. Sensitive values may be a
+# ${secret-name#secret-key} reference instead of cleartext.
+#
+# Edit by hand or via 'forge config set --env %s <key> <value>'.
+`
+
+// runConfigSet locates forge.yaml (to anchor the project directory),
+// then edits the sibling config.<env>.yaml file. The yaml.Node round-
+// trip preserves comments and key order in the file; only the targeted
+// key is mutated. forge.yaml itself is never read or written here —
+// per-env config no longer lives there.
 func runConfigSet(envName, key, rawValue string, unset bool) error {
 	if !validConfigKey(key) {
 		return cliutil.UserErr(fmt.Sprintf("forge config set --env %s", envName),
@@ -124,10 +147,14 @@ func runConfigSet(envName, key, rawValue string, unset bool) error {
 			"use snake_case starting with a lowercase letter (e.g. log_level, database_url)")
 	}
 
-	configPath, err := findProjectConfigFile()
+	// findProjectConfigFile walks up to forge.yaml — we use it as a project
+	// anchor (sibling files live next to it) but never write to forge.yaml.
+	projectAnchor, err := findProjectConfigFile()
 	if err != nil {
 		return err
 	}
+	projectDir := filepath.Dir(projectAnchor)
+	envFilePath := filepath.Join(projectDir, fmt.Sprintf("config.%s.yaml", envName))
 
 	// Type-check the value against proto/config/v1/config.proto, when the
 	// project ships one. Best-effort: if the proto isn't present (CLI/library
@@ -135,97 +162,154 @@ func runConfigSet(envName, key, rawValue string, unset bool) error {
 	// raw string and let the runtime parser surface a mismatch.
 	var coerced any
 	if !unset {
-		typed, err := coerceConfigValue(filepath.Dir(configPath), key, rawValue)
+		typed, err := coerceConfigValue(projectDir, key, rawValue)
 		if err != nil {
 			return err
 		}
 		coerced = typed
 	}
 
-	raw, err := os.ReadFile(configPath)
+	// Load (or initialize) the sibling file. Missing-file on a set is fine —
+	// we'll create it with a header. Missing-file on an unset is a no-op.
+	raw, fileExists, err := readEnvConfigFile(envFilePath)
 	if err != nil {
-		return fmt.Errorf("read forge.yaml: %w", err)
+		return err
+	}
+	if !fileExists && unset {
+		fmt.Printf("%s does not exist; nothing to unset.\n", envFilePath)
+		return nil
+	}
+
+	root, headerComment, err := parseEnvConfigYAML(raw, envName)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", envFilePath, err)
+	}
+
+	if unset {
+		removed := removeMappingEntry(root, key)
+		if !removed {
+			fmt.Printf("Key %q not present in %s; nothing to unset.\n", key, envFilePath)
+			return nil
+		}
+	} else {
+		setMappingScalar(root, key, coerced)
+	}
+
+	out, err := marshalEnvConfigYAML(root, headerComment, envName, fileExists)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", envFilePath, err)
+	}
+	if err := os.WriteFile(envFilePath, out, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", envFilePath, err)
+	}
+
+	if unset {
+		fmt.Printf("Unset %q in %s\n", key, envFilePath)
+	} else {
+		fmt.Printf("Set %q = %v in %s\n", key, coerced, envFilePath)
+	}
+	return nil
+}
+
+// readEnvConfigFile reads config.<env>.yaml, returning (data, true, nil)
+// when the file exists, (nil, false, nil) when it doesn't, and a wrapped
+// error for any other I/O failure. Split out so callers can distinguish
+// "fresh create" from "edit existing" without re-statting.
+func readEnvConfigFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, true, nil
+	}
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("read %s: %w", path, err)
+}
+
+// parseEnvConfigYAML turns the raw file contents into a mapping node
+// rooted at the document, plus the leading header-comment block we
+// preserve verbatim. An empty/absent file yields a fresh mapping node
+// and an empty header (the caller stamps a default header when writing
+// a freshly created file).
+func parseEnvConfigYAML(raw []byte, envName string) (*yaml.Node, string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}, "", nil
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("parse forge.yaml: %w", err)
+		return nil, "", err
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return fmt.Errorf("forge.yaml: expected a YAML document")
+		return nil, "", fmt.Errorf("expected a YAML document")
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return fmt.Errorf("forge.yaml: expected top-level mapping")
+		return nil, "", fmt.Errorf("expected top-level mapping (got kind=%v)", root.Kind)
 	}
+	// yaml.v3 attaches the leading-comment block to the first child of
+	// the root mapping; we extract the raw `#`-prefixed lines so callers
+	// can prepend them ahead of marshal output without yaml escaping
+	// them. For our use-case we rely on a leading-line scan of `raw`
+	// instead, which is robust to empty mappings.
+	header := extractLeadingCommentLines(raw)
+	_ = envName // envName unused here; the marshal path stamps a default header when needed.
+	return root, header, nil
+}
 
-	envsNode := mappingChild(root, "environments")
-	if envsNode == nil {
-		envsNode = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		root.Content = append(root.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "environments"},
-			envsNode,
-		)
-	}
-	if envsNode.Kind != yaml.SequenceNode {
-		return fmt.Errorf("forge.yaml: `environments` must be a sequence (got kind=%v)", envsNode.Kind)
-	}
-
-	envEntry := findEnvNode(envsNode, envName)
-	if envEntry == nil {
-		if unset {
-			// Nothing to remove if the env doesn't exist — quiet success.
-			fmt.Printf("Environment %q not found; nothing to unset.\n", envName)
-			return nil
+// extractLeadingCommentLines returns the contiguous `#`-prefixed (or
+// blank) header block at the top of `raw`, preserving the user's
+// formatting. The scan stops at the first non-comment, non-blank line.
+func extractLeadingCommentLines(raw []byte) string {
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			b.WriteString(line)
+			continue
 		}
-		envEntry = newEnvEntryNode(envName)
-		envsNode.Content = append(envsNode.Content, envEntry)
+		break
 	}
+	return b.String()
+}
 
-	configNode := mappingChild(envEntry, "config")
-	if configNode == nil {
-		if unset {
-			fmt.Printf("environments[%q].config is empty; nothing to unset.\n", envName)
-			return nil
-		}
-		configNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		envEntry.Content = append(envEntry.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "config"},
-			configNode,
-		)
-	}
-	if configNode.Kind != yaml.MappingNode {
-		return fmt.Errorf("environments[%q].config must be a mapping (got kind=%v)", envName, configNode.Kind)
-	}
-
-	if unset {
-		removed := removeMappingEntry(configNode, key)
-		if !removed {
-			fmt.Printf("Key %q not present under environments[%q].config; nothing to unset.\n", key, envName)
-			return nil
-		}
-		// Drop the now-empty config node so the file doesn't accumulate
-		// stub `config: {}` entries after a series of unsets.
-		if len(configNode.Content) == 0 {
-			removeMappingEntry(envEntry, "config")
-		}
-	} else {
-		setMappingScalar(configNode, key, coerced)
-	}
-
-	out, err := yaml.Marshal(&doc)
+// marshalEnvConfigYAML renders the mapping back to bytes, prepending a
+// header comment. For freshly created files we stamp the canonical
+// configEnvFileHeader; for existing files we preserve whatever leading
+// comment block the user already had.
+func marshalEnvConfigYAML(root *yaml.Node, existingHeader, envName string, fileExisted bool) ([]byte, error) {
+	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
+	body, err := yaml.Marshal(doc)
 	if err != nil {
-		return fmt.Errorf("marshal forge.yaml: %w", err)
+		return nil, err
 	}
-	if err := os.WriteFile(configPath, out, 0o644); err != nil {
-		return fmt.Errorf("write forge.yaml: %w", err)
+	// Empty mapping marshals as "{}\n" — strip that to an empty body so
+	// the file reads as "header only, no entries" after the last unset.
+	if bytes.Equal(bytes.TrimSpace(body), []byte("{}")) {
+		body = nil
 	}
 
-	if unset {
-		fmt.Printf("Unset environments[%q].config[%q] in %s\n", envName, key, configPath)
-	} else {
-		fmt.Printf("Set environments[%q].config[%q] = %v in %s\n", envName, key, coerced, configPath)
+	var header string
+	switch {
+	case !fileExisted:
+		header = fmt.Sprintf(configEnvFileHeader, envName, envName, envName)
+	case existingHeader != "":
+		header = existingHeader
 	}
-	return nil
+
+	var out bytes.Buffer
+	if header != "" {
+		out.WriteString(header)
+		if !strings.HasSuffix(header, "\n") {
+			out.WriteString("\n")
+		}
+		// Insert a single blank line between header and body for readability,
+		// unless the header already ends with one.
+		if !strings.HasSuffix(header, "\n\n") && len(body) > 0 {
+			out.WriteString("\n")
+		}
+	}
+	out.Write(body)
+	return out.Bytes(), nil
 }
 
 // validConfigKey returns true if name is a plausible proto field name
@@ -326,51 +410,6 @@ func lookupProtoFieldType(projectDir, name string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-// mappingChild returns the value node for `key` in a mapping node, or
-// nil if absent. yaml.Node represents a mapping as alternating key/value
-// children; this helper hides that layout from callers.
-func mappingChild(parent *yaml.Node, key string) *yaml.Node {
-	if parent == nil || parent.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(parent.Content); i += 2 {
-		k := parent.Content[i]
-		if k.Kind == yaml.ScalarNode && k.Value == key {
-			return parent.Content[i+1]
-		}
-	}
-	return nil
-}
-
-// findEnvNode walks an environments sequence and returns the entry whose
-// `name` scalar matches envName.
-func findEnvNode(seq *yaml.Node, envName string) *yaml.Node {
-	for _, entry := range seq.Content {
-		if entry.Kind != yaml.MappingNode {
-			continue
-		}
-		nameNode := mappingChild(entry, "name")
-		if nameNode != nil && nameNode.Kind == yaml.ScalarNode && nameNode.Value == envName {
-			return entry
-		}
-	}
-	return nil
-}
-
-// newEnvEntryNode constructs a fresh environments[] mapping with
-// `name: <envName>` set. Callers append config entries via
-// setMappingScalar against the returned node.
-func newEnvEntryNode(envName string) *yaml.Node {
-	return &yaml.Node{
-		Kind: yaml.MappingNode,
-		Tag:  "!!map",
-		Content: []*yaml.Node{
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "name"},
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: envName},
-		},
-	}
 }
 
 // removeMappingEntry deletes the `key` entry from a mapping node and

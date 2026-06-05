@@ -19,12 +19,15 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"CodegenEnabled", f.CodegenEnabled},
 		{"MigrationsEnabled", f.MigrationsEnabled},
 		{"CIEnabled", f.CIEnabled},
+		{"BuildEnabled", f.BuildEnabled},
 		{"DeployEnabled", f.DeployEnabled},
 		{"ContractsEnabled", f.ContractsEnabled},
 		{"DocsEnabled", f.DocsEnabled},
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
+		{"PacksEnabled", f.PacksEnabled},
+		{"StartersEnabled", f.StartersEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
@@ -79,12 +82,15 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		Codegen:       boolPtr(false),
 		Migrations:    boolPtr(false),
 		CI:            boolPtr(false),
+		Build:         boolPtr(false),
 		Deploy:        boolPtr(false),
 		Contracts:     boolPtr(false),
 		Docs:          boolPtr(false),
 		Frontend:      boolPtr(false),
 		Observability: boolPtr(false),
 		HotReload:     boolPtr(false),
+		Packs:         boolPtr(false),
+		Starters:      boolPtr(false),
 	}
 
 	methods := []struct {
@@ -95,12 +101,15 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		{"CodegenEnabled", f.CodegenEnabled},
 		{"MigrationsEnabled", f.MigrationsEnabled},
 		{"CIEnabled", f.CIEnabled},
+		{"BuildEnabled", f.BuildEnabled},
 		{"DeployEnabled", f.DeployEnabled},
 		{"ContractsEnabled", f.ContractsEnabled},
 		{"DocsEnabled", f.DocsEnabled},
 		{"FrontendEnabled", f.FrontendEnabled},
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
+		{"PacksEnabled", f.PacksEnabled},
+		{"StartersEnabled", f.StartersEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
@@ -205,6 +214,91 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 	}
 }
 
+// TestFeaturesConfig_NewFeatures_ZeroValue locks in the additive
+// contract for the build/packs/starters fields: a forge.yaml without
+// a `features:` block (or with the block but those fields absent)
+// must report each feature as enabled. This is the backwards-compat
+// promise for projects scaffolded before the field was introduced.
+func TestFeaturesConfig_NewFeatures_ZeroValue(t *testing.T) {
+	var f FeaturesConfig
+	if !f.BuildEnabled() {
+		t.Error("BuildEnabled() on zero-value = false, want true")
+	}
+	if !f.PacksEnabled() {
+		t.Error("PacksEnabled() on zero-value = false, want true")
+	}
+	if !f.StartersEnabled() {
+		t.Error("StartersEnabled() on zero-value = false, want true")
+	}
+}
+
+// TestFeaturesConfig_NewFeatures_ExplicitFalse covers the
+// `features.build/packs/starters: false` opt-out path used by
+// `forge new --kind cli/library` and explicit user disabling.
+func TestFeaturesConfig_NewFeatures_ExplicitFalse(t *testing.T) {
+	f := FeaturesConfig{
+		Build:    boolPtr(false),
+		Packs:    boolPtr(false),
+		Starters: boolPtr(false),
+	}
+	if f.BuildEnabled() {
+		t.Error("BuildEnabled() with explicit false = true, want false")
+	}
+	if f.PacksEnabled() {
+		t.Error("PacksEnabled() with explicit false = true, want false")
+	}
+	if f.StartersEnabled() {
+		t.Error("StartersEnabled() with explicit false = true, want false")
+	}
+}
+
+// TestDisabledFeatureError_Format pins the exact user-visible string
+// produced by the canonical feature-disabled helper. The wording is
+// load-bearing — sub-agents grep for "feature '...' is disabled in
+// forge.yaml" to recognise the gate; humans see it in CLI error
+// output. A drift here without a deliberate spec change would break
+// downstream tooling.
+func TestDisabledFeatureError_Format(t *testing.T) {
+	err := DisabledFeatureError(FeatureDeploy)
+	if err == nil {
+		t.Fatal("DisabledFeatureError returned nil")
+	}
+	want := "feature 'deploy' is disabled in forge.yaml. Set features.deploy: true to enable."
+	if err.Error() != want {
+		t.Errorf("DisabledFeatureError text mismatch\n got: %q\nwant: %q", err.Error(), want)
+	}
+}
+
+// TestEffectiveFeatures_MapShape asserts that every Feature*
+// constant declared by the config package is keyed in the map
+// returned by EffectiveFeatures(). The map is the wire shape
+// `forge audit --json | jq '.features.details.resolved'` reads,
+// and the additive-extension contract requires every constant to
+// be present (sub-agents check `.<feature> == true|false`).
+func TestEffectiveFeatures_MapShape(t *testing.T) {
+	all := []string{
+		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
+		FeatureBuild, FeatureDeploy, FeatureContracts, FeatureDocs,
+		FeatureFrontend, FeatureObservability, FeatureHotReload,
+		FeaturePacks, FeatureStarters,
+	}
+	var f FeaturesConfig
+	resolved := f.EffectiveFeatures()
+	if len(resolved) != len(all) {
+		t.Errorf("EffectiveFeatures len = %d, want %d", len(resolved), len(all))
+	}
+	for _, name := range all {
+		v, ok := resolved[name]
+		if !ok {
+			t.Errorf("EffectiveFeatures missing key %q", name)
+			continue
+		}
+		if !v {
+			t.Errorf("EffectiveFeatures[%q] = false, want true (zero-value defaults)", name)
+		}
+	}
+}
+
 func TestFeaturesConfig_YAMLMissingFeaturesSection(t *testing.T) {
 	// A ProjectConfig YAML with no features key at all.
 	yamlStr := `
@@ -226,12 +320,15 @@ version: "1.0"
 		{"CodegenEnabled", cfg.Features.CodegenEnabled},
 		{"MigrationsEnabled", cfg.Features.MigrationsEnabled},
 		{"CIEnabled", cfg.Features.CIEnabled},
+		{"BuildEnabled", cfg.Features.BuildEnabled},
 		{"DeployEnabled", cfg.Features.DeployEnabled},
 		{"ContractsEnabled", cfg.Features.ContractsEnabled},
 		{"DocsEnabled", cfg.Features.DocsEnabled},
 		{"FrontendEnabled", cfg.Features.FrontendEnabled},
 		{"ObservabilityEnabled", cfg.Features.ObservabilityEnabled},
 		{"HotReloadEnabled", cfg.Features.HotReloadEnabled},
+		{"PacksEnabled", cfg.Features.PacksEnabled},
+		{"StartersEnabled", cfg.Features.StartersEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {

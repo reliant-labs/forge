@@ -88,6 +88,7 @@ type AuditReport struct {
 var auditCategoryOrder = []string{
 	"version",
 	"shape",
+	"features",
 	"environments",
 	"conventions",
 	"codegen",
@@ -168,6 +169,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 
 	report.Categories["version"] = auditVersion(cfg)
 	report.Categories["shape"] = auditShape(cfg, abs)
+	report.Categories["features"] = auditFeatures(cfg)
 	report.Categories["environments"] = auditEnvironments(abs)
 	report.Categories["conventions"] = auditConventions(cfg, abs)
 	report.Categories["codegen"] = auditCodegen(cfg, abs)
@@ -291,6 +293,56 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 	summary := fmt.Sprintf("kind=%s, %d service(s), %d worker(s), %d operator(s), %d frontend(s), %d pack(s)",
 		cfg.EffectiveKind(), len(services), len(workers), len(operators), len(frontends), len(cfg.Packs))
+	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
+}
+
+// auditFeatures surfaces the resolved `features:` block from forge.yaml
+// at audit time. The category lists every feature gated by config —
+// deploy/build/frontend/packs/starters/ci/docs/observability/... — and
+// whether it resolves to enabled (default for nil) or disabled
+// (explicit false). The additive-extension contract holds: new
+// features added to config.FeaturesConfig.EffectiveFeatures() show up
+// here automatically, sub-agents can branch on
+// `.features.details.<name>` directly.
+//
+// Status is always ok — this category is informational. Sub-agents
+// that care about a specific gated subsystem check the boolean in
+// details; humans reading the human-formatted audit see a one-line
+// "N enabled, M disabled" summary plus the per-feature breakdown.
+func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
+	if cfg == nil {
+		return AuditCategory{
+			Status:  AuditStatusError,
+			Summary: "no forge.yaml — features unknown",
+		}
+	}
+	effective := cfg.Features.EffectiveFeatures()
+	// Pre-allocate to non-nil empty slices so the JSON encoder
+	// emits `[]` rather than `null` when nothing falls into a
+	// bucket — sub-agents that `jq '.disabled | length'` need a
+	// numeric length regardless of state.
+	enabled := []string{}
+	disabled := []string{}
+	for name, on := range effective {
+		if on {
+			enabled = append(enabled, name)
+		} else {
+			disabled = append(disabled, name)
+		}
+	}
+	sort.Strings(enabled)
+	sort.Strings(disabled)
+
+	// Surface the resolved map AND the enabled/disabled splits — the
+	// map is the canonical machine shape; the splits give humans a
+	// one-glance answer to "what's off?" without scanning the whole
+	// dict. Both forms cost ~0 bytes and stay stable across versions.
+	details := map[string]any{
+		"resolved": effective,
+		"enabled":  enabled,
+		"disabled": disabled,
+	}
+	summary := fmt.Sprintf("%d feature(s) enabled, %d disabled", len(enabled), len(disabled))
 	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
 }
 

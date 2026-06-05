@@ -10,9 +10,27 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/starters"
 )
+
+// startersFeatureGate is the single feature gate every `forge starter
+// <sub>` RunE invokes. Mirrors packsFeatureGate — outside a forge
+// project we let the standard "no forge.yaml" path own the messaging.
+func startersFeatureGate() error {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		if err == ErrProjectConfigNotFound {
+			return nil
+		}
+		return err
+	}
+	if !cfg.Features.StartersEnabled() {
+		return config.DisabledFeatureError(config.FeatureStarters)
+	}
+	return nil
+}
 
 // newStarterCmd builds the `forge starter` command tree. Starters are
 // the lighter-weight cousin of packs: a one-time copy of opinionated
@@ -53,6 +71,9 @@ func newStarterListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List available starters",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := startersFeatureGate(); err != nil {
+				return err
+			}
 			return runStarterList(cmd.OutOrStdout())
 		},
 	}
@@ -77,6 +98,9 @@ Examples:
   forge starter add clerk-webhook --service api`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := startersFeatureGate(); err != nil {
+				return err
+			}
 			return runStarterAdd(cmd.Context(), args[0], serviceFlag, forceFlag, cmd.OutOrStdout())
 		},
 	}

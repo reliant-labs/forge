@@ -53,7 +53,7 @@ docs: {}
 	}
 
 	wantKeys := []string{
-		"version", "shape", "environments", "conventions", "codegen",
+		"version", "shape", "features", "environments", "conventions", "codegen",
 		"packs", "pack_graph", "proto_migration_alignment",
 		"migration_safety", "wire_coverage", "scaffold_markers",
 		"crud_stubs", "diagnostics", "deps",
@@ -343,5 +343,79 @@ func init() {
 	}
 	if got, ok := cat.Details["strict_wiring_enabled"].(bool); !ok || !got {
 		t.Errorf("strict_wiring_enabled detail = %v, want true", cat.Details["strict_wiring_enabled"])
+	}
+}
+
+// TestAuditFeatures_ZeroConfig asserts the features audit category
+// surfaces every feature as enabled when no `features:` block is set
+// — the backwards-compat default. Pins the additive-extension shape:
+// `.details.resolved.<name>` exists for each Feature* constant.
+//
+// Also pins the empty-disabled-list guarantee: when no feature is
+// off, `details.disabled` is an empty []string not nil, so the JSON
+// encoder emits `[]` and `jq '.disabled | length'` returns 0 rather
+// than failing on a null.
+func TestAuditFeatures_ZeroConfig(t *testing.T) {
+	cat := auditFeatures(&config.ProjectConfig{Name: "t"})
+	if cat.Status != AuditStatusOK {
+		t.Errorf("status = %q, want ok", cat.Status)
+	}
+	resolved, ok := cat.Details["resolved"].(map[string]bool)
+	if !ok {
+		t.Fatalf("details.resolved missing or wrong type: %T", cat.Details["resolved"])
+	}
+	for _, name := range []string{
+		config.FeatureDeploy, config.FeatureBuild, config.FeatureFrontend,
+		config.FeaturePacks, config.FeatureStarters, config.FeatureCI,
+		config.FeatureDocs, config.FeatureObservability,
+	} {
+		if !resolved[name] {
+			t.Errorf("resolved[%q] = false, want true (no features block → all enabled)", name)
+		}
+	}
+	disabled, ok := cat.Details["disabled"].([]string)
+	if !ok {
+		t.Fatalf("details.disabled wrong type: %T", cat.Details["disabled"])
+	}
+	if disabled == nil {
+		t.Error("details.disabled is nil — JSON encoding would emit null instead of []")
+	}
+	if len(disabled) != 0 {
+		t.Errorf("details.disabled = %v, want empty", disabled)
+	}
+}
+
+// TestAuditFeatures_PartialDisable asserts the enabled/disabled
+// splits in the details payload are derived from the resolved map:
+// disabling a couple of features must surface them in `disabled`
+// (alphabetised) and remove them from `enabled`.
+func TestAuditFeatures_PartialDisable(t *testing.T) {
+	off := false
+	cfg := &config.ProjectConfig{
+		Features: config.FeaturesConfig{Deploy: &off, Packs: &off},
+	}
+	cat := auditFeatures(cfg)
+	disabled, ok := cat.Details["disabled"].([]string)
+	if !ok {
+		t.Fatalf("details.disabled wrong type: %T", cat.Details["disabled"])
+	}
+	wantDisabled := map[string]bool{config.FeatureDeploy: true, config.FeaturePacks: true}
+	for _, name := range disabled {
+		if !wantDisabled[name] {
+			t.Errorf("unexpected disabled feature %q", name)
+		}
+	}
+	if len(disabled) != len(wantDisabled) {
+		t.Errorf("disabled count = %d, want %d (%v)", len(disabled), len(wantDisabled), disabled)
+	}
+}
+
+// TestAuditFeatures_NilConfig surfaces "no forge.yaml" as error so
+// sub-agents branching on `.features.status == "error"` don't get
+// a false-ok on a non-forge project.
+func TestAuditFeatures_NilConfig(t *testing.T) {
+	cat := auditFeatures(nil)
+	if cat.Status != AuditStatusError {
+		t.Errorf("nil cfg status = %q, want error", cat.Status)
 	}
 }

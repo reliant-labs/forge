@@ -473,3 +473,75 @@ func TestProjectConfig_HasReactNativeFrontend(t *testing.T) {
 		})
 	}
 }
+
+// TestDockerConfig_BuildContextsYAMLRoundTrip pins the forge.yaml
+// surface for `docker.build_contexts` — both the YAML key spelling and
+// the supported value shapes (local relative path, `docker-image://`
+// scheme ref, registry-style ref). YAML round-trip catches any future
+// rename of the struct tag.
+func TestDockerConfig_BuildContextsYAMLRoundTrip(t *testing.T) {
+	yamlStr := "" +
+		"name: p\n" +
+		"module_path: example.com/p\n" +
+		"docker:\n" +
+		"  registry: ghcr.io/acme\n" +
+		"  build_contexts:\n" +
+		"    shared: ../shared-libs\n" +
+		"    base: docker-image://my-base:latest\n" +
+		"    pinned: ghcr.io/acme/base:v1\n"
+
+	var cfg ProjectConfig
+	if err := yaml.Unmarshal([]byte(yamlStr), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	want := map[string]string{
+		"shared": "../shared-libs",
+		"base":   "docker-image://my-base:latest",
+		"pinned": "ghcr.io/acme/base:v1",
+	}
+	if got := cfg.Docker.BuildContexts; len(got) != len(want) {
+		t.Fatalf("BuildContexts len = %d, want %d (got %v)", len(got), len(want), got)
+	}
+	for k, v := range want {
+		if cfg.Docker.BuildContexts[k] != v {
+			t.Errorf("BuildContexts[%q] = %q, want %q", k, cfg.Docker.BuildContexts[k], v)
+		}
+	}
+
+	// Round-trip: marshal then unmarshal and confirm the map survives.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var cfg2 ProjectConfig
+	if err := yaml.Unmarshal(out, &cfg2); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	for k, v := range want {
+		if cfg2.Docker.BuildContexts[k] != v {
+			t.Errorf("round-trip BuildContexts[%q] = %q, want %q", k, cfg2.Docker.BuildContexts[k], v)
+		}
+	}
+}
+
+// TestDockerConfig_BuildContextsOmittedWhenEmpty pins that an unset
+// build_contexts map does NOT appear in the marshalled YAML — the
+// omitempty tag keeps existing forge.yaml files byte-stable on
+// round-trip when they don't declare any contexts.
+func TestDockerConfig_BuildContextsOmittedWhenEmpty(t *testing.T) {
+	cfg := ProjectConfig{
+		Name:       "p",
+		ModulePath: "example.com/p",
+		Docker:     DockerConfig{Registry: "ghcr.io/acme"},
+	}
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// `contains` lives in api_test.go in the same package — reuse it
+	// instead of dragging in strings just for one substring check.
+	if got := string(out); contains(got, "build_contexts") {
+		t.Errorf("empty BuildContexts should not appear in marshalled YAML, got:\n%s", got)
+	}
+}

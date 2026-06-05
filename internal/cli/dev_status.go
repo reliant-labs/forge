@@ -155,15 +155,16 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 }
 
 // devNamespace resolves the namespace forge dev operates against. Reads
-// the dev environment's namespace from forge.yaml when present; falls
-// back to <project>-dev (which matches forge deploy dev's behavior).
+// the dev environment's namespace from the rendered KCL's K8sCluster
+// when present; falls back to <project>-dev (which matches forge deploy
+// dev's behavior).
 func devNamespace(clusterName string) string {
 	cfg, err := loadProjectConfig()
 	if err != nil {
 		return clusterName + "-dev"
 	}
-	if env := findEnvironment(cfg, "dev"); env != nil && env.Namespace != "" {
-		return env.Namespace
+	if ns := k8sClusterNamespaceForEnv(context.Background(), "dev"); ns != "" {
+		return ns
 	}
 	return cfg.Name + "-dev"
 }

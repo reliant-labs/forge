@@ -31,6 +31,9 @@ func newCIVerifyGeneratedCmd() *cobra.Command {
 		Short: "Verify generated code is up to date",
 		Long:  "Runs forge generate and verifies no files changed. Used in CI to catch stale generated code.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := requireFeature(config.FeatureCI); err != nil {
+				return err
+			}
 			// Run forge generate.
 			parts, err := forgeExecCommand()
 			if err != nil {
@@ -64,19 +67,25 @@ func newCIValidateKCLCmd() *cobra.Command {
 		Short: "Validate KCL deploy manifests for all environments",
 		Long:  "Validates KCL deploy manifests by running kcl on each environment's main.k file defined in forge.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
-			if err != nil {
-				return fmt.Errorf("load project config: %w", err)
+			if _, err := requireFeature(config.FeatureCI); err != nil {
+				return err
 			}
 
-			if len(cfg.Envs) == 0 {
-				fmt.Println("No environments defined in forge.yaml — nothing to validate.")
+			// Source of truth for the env list is the filesystem
+			// (deploy/kcl/<env>/main.k presence).
+			projectDir := projectDirForKCL()
+			envs, lerr := ListEnvs(projectDir)
+			if lerr != nil {
+				return fmt.Errorf("list envs: %w", lerr)
+			}
+			if len(envs) == 0 {
+				fmt.Println("No environments declared (no deploy/kcl/<env>/main.k) — nothing to validate.")
 				return nil
 			}
 
 			hasFailed := false
-			for _, env := range cfg.Envs {
-				mainK := filepath.Join("deploy", "kcl", env.Name, "main.k")
+			for _, env := range envs {
+				mainK := filepath.Join("deploy", "kcl", env, "main.k")
 				fmt.Printf("Validating %s ... ", mainK)
 
 				kclCmd := exec.CommandContext(cmd.Context(), "kcl", "run", mainK)
@@ -110,9 +119,11 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load project config: %w", err)
 			}
+			if !cfg.Features.CIEnabled() {
+				return config.DisabledFeatureError(config.FeatureCI)
+			}
 			if !cfg.Features.MigrationsEnabled() {
-				fmt.Println("migrations feature is disabled in forge.yaml")
-				return nil
+				return config.DisabledFeatureError(config.FeatureMigrations)
 			}
 
 			migrationsDir := cfg.Database.MigrationsDir
@@ -144,9 +155,9 @@ func newCIVulnScanCmd() *cobra.Command {
 		Short: "Run vulnerability scanners based on forge.yaml config",
 		Long:  "Runs govulncheck for Go and npm audit for frontends. Defaults to scanning everything enabled in forge.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
+			cfg, err := requireFeature(config.FeatureCI)
 			if err != nil {
-				return fmt.Errorf("load project config: %w", err)
+				return err
 			}
 
 			// If no specific flag set, default to --all behavior.

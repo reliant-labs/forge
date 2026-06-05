@@ -125,6 +125,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newDevCmd())
 	rootCmd.AddCommand(newAPICmd())
+	rootCmd.AddCommand(newUpCmd())
 
 	return rootCmd
 }
@@ -155,15 +156,19 @@ func newVersionCmd() *cobra.Command {
 //  3. `forge run <service> stop` — kills the background process for
 //     <service>. No-op when nothing is tracked.
 //
-// The host-mode runner is the inner loop for services with
-// `dev_target: host`: faster iteration than building+pushing a docker
-// image and waiting on a cluster rollout. Mirrors the
-// `forge dev port-forward --background` PID-tracking pattern.
+// The host-mode runner is the inner loop for services declared
+// `deploy = "host"` in `deploy/kcl/<env>/`: faster iteration than
+// building+pushing a docker image and waiting on a cluster rollout.
+// Mirrors the `forge dev port-forward --background` PID-tracking pattern.
 func newRunCmd() *cobra.Command {
 	var opts runOptions
 	var serviceFlag string
 	var background bool
-	var envFile string
+	// secretsFile overrides the KCL HostDeploy.secrets_file path. The
+	// flag name stays `--env-file` for muscle-memory continuity even
+	// though the contract is now "gitignored secrets dotenv" rather
+	// than "every env var" — KCL env_vars carry the rest.
+	var secretsFile string
 
 	runCmd := &cobra.Command{
 		Use:   "run [service]",
@@ -174,9 +179,11 @@ With no positional arg, runs the orchestrator: docker compose infra, every
 Go service (via Air), and every Next.js app, with color-coded log output.
 
 With a positional service name, runs that single service as a host process —
-the inner loop for services marked dev_target: host in forge.yaml. Loads
-.env.<env> (default .env.dev) onto the child env so DATABASE_URL and friends
-come from the local file rather than the cluster's Secret.
+the inner loop for services declared deploy = "host" in deploy/kcl/<env>/.
+Env composition: the KCL HostDeploy block's secrets_file (gitignored
+dotenv with API keys) is loaded first, then env_vars (KCL-declared
+per-env config: DATABASE_URL, NATS_URL, …) is layered on top so KCL
+wins on conflict — config stays reproducible across machines.
 
 Press Ctrl+C to stop. With --background, the process detaches and PID is
 tracked under ~/.cache/forge/run/<service>.pid for ` + "`forge run <service> stop`" + `.
@@ -189,7 +196,7 @@ Examples:
   forge run admin-server                 # Host-mode single-service runner
   forge run admin-server --background    # Detach, track PID for later stop
   forge run admin-server stop            # Kill the tracked background PID
-  forge run admin-server --env-file .env.local  # Custom env file`,
+  forge run admin-server --env-file .env.local  # Override KCL secrets_file path`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// `forge run <service> stop` short-circuits to the PID kill.
 			if len(args) == 2 && args[1] == "stop" {
@@ -197,7 +204,7 @@ Examples:
 			}
 			// `forge run <service>` is the host-mode single-service runner.
 			if len(args) == 1 && args[0] != "stop" {
-				return runHostService(cmd.Context(), args[0], opts.env, envFile, background)
+				return runHostService(cmd.Context(), args[0], opts.env, secretsFile, background)
 			}
 			// Otherwise: the orchestrator (existing behaviour).
 			if serviceFlag != "" {
@@ -212,7 +219,7 @@ Examples:
 	runCmd.Flags().StringVar(&serviceFlag, "service", "", "Run only a specific service or app by name (orchestrator only)")
 	runCmd.Flags().BoolVar(&opts.debug, "debug", false, "Start with Delve debugger (hot-reload + debug on :2345) — orchestrator only")
 	runCmd.Flags().BoolVar(&background, "background", false, "Detach the host-mode runner and return immediately (stop with `forge run <service> stop`)")
-	runCmd.Flags().StringVar(&envFile, "env-file", "", "Override the env file loaded by the host-mode runner (default .env.<env>)")
+	runCmd.Flags().StringVar(&secretsFile, "env-file", "", "Override the KCL HostDeploy.secrets_file path (gitignored dotenv with secrets only — config lives in KCL env_vars)")
 
 	return runCmd
 }

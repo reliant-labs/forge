@@ -2,3 +2,13 @@
 name = "{{.ProjectName}}"
 edition = "v0.11.0"
 version = "0.0.1"
+
+# The `forge` KCL module ships the typed schemas this project's
+# main.k files import (Service / Operator / Frontend / CronJob, plus
+# the polymorphic deploy union). Pin a published `kcl-vX.Y.Z` tag.
+#
+# For local development against a checked-out forge clone, override
+# with: `forge = { path = "../forge/kcl" }` (or pass `-E forge=...`
+# directly to `kcl run`).
+[dependencies]
+forge = { git = "https://github.com/reliant-labs/forge.git", tag = "kcl-v0.1.0" }

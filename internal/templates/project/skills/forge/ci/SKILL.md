@@ -19,7 +19,7 @@ without forge ever touching your additions.
 | `.github/workflows/ci.yml` | Tier-1 | Lint (golangci-lint, buf lint, frontend lint+typecheck, migration safety), test (`go test -race -count=1 ./...`, frontend vitest), build (Go binaries with `-trimpath -buildvcs=true`, frontend `next build`), `forge ci verify-generated`, KCL validation, vuln scan (govulncheck, npm audit, Trivy), license check (go-licenses), Docker build, optional E2E |
 | `.github/workflows/proto-breaking.yml` | Tier-1 | `buf breaking` against the `main` branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. See the `proto-breaking` skill for the full deprecation flow. |
 | `.github/workflows/build-images.yml` | Tier-1 | Multi-arch Docker image build + push (when registries are configured) |
-| `.github/workflows/deploy.yml` | Tier-1 | Per-environment deploy via KCL (only when `environments:` is configured in `forge.yaml`) |
+| `.github/workflows/deploy.yml` | Tier-1 | Per-environment deploy via KCL (one job per `deploy/kcl/<env>/main.k` directory) |
 | `.github/workflows/e2e.yml` | Tier-1 | E2E suite (only when `ci.e2e.enabled: true`) — docker-compose or k3d runtime |
 | `.github/dependabot.yml` | Tier-1 | Weekly bumps for `gomod` (root + `/gen` + each frontend), `npm` (frontend), `docker`, and `github-actions` |
 | `.github/CODEOWNERS` | Tier-2 | Starter ownership rules (one-shot scaffold; yours to edit after) |
@@ -166,8 +166,8 @@ release tags), use a parallel Tier-2 workflow file instead.
   Generated `build-images.yml` covers main-branch image pushes;
   release adds tag-driven artifact + image promotion.
 - **Deploy beyond k3d/staging/prod.** The generated `deploy.yml`
-  iterates the `environments:` list in `forge.yaml`. Add a
-  preview-environment Tier-2 workflow keyed on PR labels or a
+  iterates the env directories discovered under `deploy/kcl/<env>/main.k`.
+  Add a preview-environment Tier-2 workflow keyed on PR labels or a
   manual-promotion Tier-2 workflow keyed on `workflow_dispatch`.
 - **Slack / Discord notifications.** Tier-2 `notify.yml` triggered on
   `workflow_run: completed` of `CI` — keeps notification logic out of

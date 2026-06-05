@@ -31,7 +31,7 @@ const (
 // invoke `./project <svc>` directly, and KCL emits a single
 // MultiServiceApplication (one image, N Deployments) instead of N
 // Applications. See FORGE_BACKLOG.md "Layer B" + the
-// migration/v0.x-to-binary-shared/ skill for tradeoffs.
+// migrations/v0.x-to-binary-shared/ skill for tradeoffs.
 const (
 	ProjectBinaryPerService = "per-service"
 	ProjectBinaryShared     = "shared"
@@ -90,7 +90,6 @@ type ProjectConfig struct {
 	// React Query hook wrappers. When the flag is false (the default)
 	// forge keeps the historic per-frontend layout exactly as before.
 	Frontend  FrontendProjectConfig `yaml:"frontend,omitempty"`
-	Envs      []EnvironmentConfig   `yaml:"environments"`
 	Database  DatabaseConfig        `yaml:"database"`
 	CI        CIConfig              `yaml:"ci"`
 	Deploy    DeployConfig          `yaml:"deploy,omitempty"`
@@ -125,8 +124,7 @@ type ProjectConfig struct {
 // BinaryConfig represents a non-server long-running binary scaffolded
 // via `forge add binary <name>`. The shape mirrors ServiceConfig's
 // declarative bits — name, path on disk — without the Connect-RPC
-// fields (Type/Webhooks/CRDs/Group). Kind discriminates the lifecycle
-// shape so deploy and codegen can pick the right template.
+// fields (Type/Webhooks/CRDs/Group).
 type BinaryConfig struct {
 	// Name is the binary identifier in CLI / display form. May contain
 	// hyphens; the Go-package form is derived via ServicePackageName.
@@ -137,30 +135,6 @@ type BinaryConfig struct {
 	// Go-package form of Name. Stored explicitly so future renames can
 	// avoid breaking forge.yaml-driven tooling.
 	Path string `yaml:"path"`
-	// Kind discriminates the binary lifecycle. Today:
-	//   - "long-running" (default): cobra subcommand runs until SIGINT/
-	//     SIGTERM with graceful shutdown. The proxy / sidecar shape.
-	//   - "cron": one-shot per invocation, intended to be invoked by an
-	//     external scheduler (k8s CronJob). Reserved for future use.
-	//   - "oneshot": one-shot per invocation, no scheduler. Reserved
-	//     for future use (migration runners, backfill scripts).
-	// Today only "long-running" emits a full scaffold; the other kinds
-	// are accepted by the parser so forge.yaml stays forward-compatible
-	// when those scaffolds land.
-	Kind string `yaml:"kind,omitempty"`
-}
-
-// EffectiveBinaryKind returns the kind, defaulting to "long-running"
-// so existing entries without an explicit kind keep the canonical shape.
-func (b BinaryConfig) EffectiveBinaryKind() string {
-	switch strings.ToLower(strings.TrimSpace(b.Kind)) {
-	case "cron":
-		return "cron"
-	case "oneshot":
-		return "oneshot"
-	default:
-		return "long-running"
-	}
 }
 
 // PackOverride is a project-level override block for an installed pack,
@@ -176,29 +150,17 @@ type PackOverride struct {
 	SkipMigrations bool `yaml:"skip_migrations,omitempty"`
 }
 
-// ServiceDevTarget identifies where a service runs in the local dev
-// loop. Default is "cluster": the service is built into an image, pushed
-// to the dev registry, and reconciled by the k3d cluster like every
-// other forge service. "host" flips it: the service runs as a host
-// process under `forge run <service>` (or the project's Taskfile), is
-// excluded from dev-time image build/push, and dev-time `forge deploy`
-// skips its rollout wait + prunes its leftover Deployment.
-//
-// Host-mode is the right shape for non-operator services that don't
-// need cluster-only primitives (ingress webhooks, CRD watch, sidecar
-// dynamic-config injection) — APIs, business-logic gateways, edge
-// proxies — where the redeploy-into-k3d loop is pure friction. Cluster-
-// mode stays the default so existing forge projects keep their current
-// behaviour.
-//
-// dev_target affects ONLY the dev environment. Staging and prod always
-// build, push, and deploy every service regardless of this field.
-const (
-	ServiceDevTargetCluster = "cluster"
-	ServiceDevTargetHost    = "host"
-)
-
 // ServiceConfig represents a Go service definition.
+//
+// Host vs cluster placement (was services[].dev_target):
+//
+// An earlier revision (commit cd25640) put per-service host/cluster
+// placement on this struct. The decision moved to the KCL layer in the
+// feat/kcl-orchestration batch: deployment target is an environment
+// concern (which env runs this on the host, which arch, which runner),
+// not a service-shape concern. Per-env placement is now declared in
+// `deploy/kcl/<env>/main.k` via the [Service] schema's `deploy` field.
+// See the `migration/dev-target-to-kcl-deploy` skill for the move.
 type ServiceConfig struct {
 	Name          string          `yaml:"name"`
 	Type          string          `yaml:"type"`           // "go_service", "worker", "operator"
@@ -219,34 +181,6 @@ type ServiceConfig struct {
 	// operators/<operator>/<crd-name>_controller.go plus
 	// api/<version>/<crd-name>_types.go.
 	CRDs []CRDConfig `yaml:"crds,omitempty"`
-	// DevTarget identifies where this service runs in the local dev loop.
-	// Empty (default) and "cluster" mean the service runs in k3d like
-	// every other forge service. "host" flips it to a host-process for
-	// `forge run <service>` ergonomics — see [ServiceDevTargetHost] and
-	// [ServiceConfig.IsHostDevTarget] for the full semantics. Affects
-	// dev only; staging/prod always build + deploy every service.
-	DevTarget string `yaml:"dev_target,omitempty"`
-}
-
-// EffectiveDevTarget returns the dev-target, defaulting to "cluster"
-// so legacy forge.yaml files without the field keep their existing
-// behaviour. Unknown values also fall through to "cluster" — strict
-// validation lives in forge.yaml load, not here.
-func (s ServiceConfig) EffectiveDevTarget() string {
-	switch strings.ToLower(strings.TrimSpace(s.DevTarget)) {
-	case ServiceDevTargetHost:
-		return ServiceDevTargetHost
-	default:
-		return ServiceDevTargetCluster
-	}
-}
-
-// IsHostDevTarget reports whether the service runs as a host process
-// in the dev loop. Returns false for the default ("cluster") and for
-// any unrecognised value, so the host-skip logic in build/deploy never
-// fires accidentally for a typo'd target.
-func (s ServiceConfig) IsHostDevTarget() bool {
-	return s.EffectiveDevTarget() == ServiceDevTargetHost
 }
 
 // CRDConfig represents a single Custom Resource Definition reconciled
@@ -351,42 +285,6 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 		}
 	}
 	return false
-}
-
-// EnvironmentConfig represents a deployment environment.
-//
-// Per-env runtime config:
-//
-// The Config map carries environment-scoped values for the project's
-// AppConfig fields (proto/config/v1/config.proto). Keys correspond to
-// proto field names (snake_case); values are scalars (string, int, bool)
-// or "${SECRET_NAME}" references for sensitive fields.
-//
-// Two storage shapes are supported and both deserialise into Config:
-//
-//  1. Inline under environments[].config in forge.yaml (good for dev /
-//     staging where values aren't secret).
-//  2. A sibling file `config.<env>.yaml` next to forge.yaml (good for
-//     prod where values mix secret refs with non-secret toggles). The
-//     sibling file is a flat YAML map; its keys override any inline
-//     entries.
-//
-// Use [LoadEnvironmentConfig] to read the merged map for an environment.
-type EnvironmentConfig struct {
-	Name      string   `yaml:"name"` // dev, staging, prod
-	Type      string   `yaml:"type"` // "local", "cloud"
-	Services  []string `yaml:"services,omitempty"`
-	Registry  string   `yaml:"registry,omitempty"`
-	Namespace string   `yaml:"namespace,omitempty"`
-	Domain    string   `yaml:"domain,omitempty"`
-	// Cluster is the expected kubectl context name for this
-	// environment. When set, `forge deploy <env>` refuses to apply
-	// unless the current kubectl context matches (override via
-	// --context). For dev this defaults to k3d-<project-name>; for
-	// staging/prod the user declares the expected context explicitly
-	// (e.g. "gke_acme-prod_us-central1_cluster-1").
-	Cluster string         `yaml:"cluster,omitempty"`
-	Config  map[string]any `yaml:"config,omitempty"`
 }
 
 // DatabaseConfig holds database-related settings.
@@ -616,13 +514,26 @@ func (d *DeployConfig) IsConcurrencyEnabled() bool {
 type DockerConfig struct {
 	Registry   string            `yaml:"registry"`
 	BaseImages map[string]string `yaml:"base_images,omitempty"`
-	// BuildContexts maps a build-context name to a host path (relative
-	// to the project root). Each entry becomes a `--build-context name=path`
-	// arg to `docker build`, letting Dockerfiles reference paths outside
-	// the normal context via `COPY --from=name`. The typical use is a
-	// sibling-checkout local replace directive (e.g. a `replace x => ../x`
-	// in go.mod where ../x is outside the cp-forge build context). Empty
-	// when not set.
+	// BuildContexts maps a build-context name to anything `docker buildx
+	// --build-context name=value` accepts:
+	//
+	//   - A local filesystem path. Relative paths are resolved against the
+	//     project root (the directory holding forge.yaml). The typical
+	//     case is a sibling-checkout local replace directive (e.g. a
+	//     `replace x => ../x` in go.mod where ../x lives outside the
+	//     project's build context).
+	//   - A `docker-image://<image>` ref. Passed through verbatim so a
+	//     Dockerfile `FROM <name>` can be overridden with a specific image
+	//     at build time (local override of a base image during dev,
+	//     pin-by-digest in CI, etc.).
+	//   - Any other scheme buildkit understands (e.g. `oci-layout://`,
+	//     `https://`). Anything containing `://` is passed through
+	//     unchanged.
+	//
+	// Each entry becomes a `--build-context name=value` arg to `docker
+	// build`, letting Dockerfiles consume it via `FROM <name>` or
+	// `COPY --from=<name>`. Empty when not set; existing projects with no
+	// contexts see no change in build behaviour or output.
 	BuildContexts map[string]string `yaml:"build_contexts,omitempty"`
 }
 
@@ -719,20 +630,47 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 	return MatchExclude(c.Exclude, pkgPath)
 }
 
-// FeaturesConfig controls which forge features are active.
-// All fields are *bool so that nil means "enabled" (backwards compat).
-// Explicitly set to false to disable a feature.
+// FeaturesConfig controls which forge features are active. The `features:`
+// block in forge.yaml gates major subsystems (deploy, build, frontend, packs,
+// starters, ci, docs, observability, ...). All fields are *bool so the
+// loader can distinguish "absent" (nil → default ENABLED, preserving
+// backward compatibility for existing projects without a features: block)
+// from "explicitly false" (the user opted out). Explicit true and nil both
+// resolve to enabled — kept as a permitted shape so a project can write
+// `features: { deploy: true, ... }` for documentation / clarity without
+// changing behavior.
+//
+// Effect on the CLI surface and codegen pipeline:
+//
+//   - Direct invocations of a disabled subsystem's cobra command return a
+//     clear `feature '<name>' is disabled in forge.yaml. Set
+//     features.<name>: true to enable.` error.
+//   - Implicit invocations from orchestrators (e.g. `forge up` driving
+//     the build/deploy/frontend phases) log a skip line and continue —
+//     letting `forge up` succeed on whatever subsystems ARE enabled.
+//   - Codegen pipeline steps gated on a feature skip silently when off,
+//     mirroring the existing gate function shape under
+//     internal/cli/generate_pipeline.go.
+//
+// New project scaffolding (`forge new --kind`) sets defaults per kind:
+//
+//   - service (default): all features enabled (preserves today's behavior).
+//   - cli:               build/ci/docs enabled; everything else disabled.
+//   - library:           ci/docs enabled; everything else disabled.
 type FeaturesConfig struct {
 	ORM           *bool `yaml:"orm,omitempty"`           // protoc-gen-forge-orm codegen
 	Codegen       *bool `yaml:"codegen,omitempty"`       // service/handler codegen from protos
 	Migrations    *bool `yaml:"migrations,omitempty"`    // auto-generate SQL migrations
 	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows
+	Build         *bool `yaml:"build,omitempty"`         // `forge build` Go binary + docker image pipeline
 	Deploy        *bool `yaml:"deploy,omitempty"`        // generate deploy manifests (KCL, Dockerfiles)
 	Contracts     *bool `yaml:"contracts,omitempty"`     // contract linter enforcement
 	Docs          *bool `yaml:"docs,omitempty"`          // documentation generation
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
+	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
+	Starters      *bool `yaml:"starters,omitempty"`      // forge starters (one-time business-integration copies)
 
 	// Diagnostics enables runtime emission of pkg/diagnostics records at
 	// Bootstrap time — slog warn lines for every unwired scaffold the
@@ -821,6 +759,90 @@ func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Ob
 
 // HotReloadEnabled reports whether the hot-reload feature is on (default: on).
 func (f FeaturesConfig) HotReloadEnabled() bool { return featureEnabled(f.HotReload) }
+
+// BuildEnabled reports whether `forge build` is enabled (default: on).
+// Direct `forge build` invocations error when off; orchestrators like
+// `forge up` log a skip line and continue.
+func (f FeaturesConfig) BuildEnabled() bool { return featureEnabled(f.Build) }
+
+// PacksEnabled reports whether the pack subsystem is enabled (default: on).
+// Disables `forge pack list/info/install/remove` and skips the pack
+// generate-hooks step in the codegen pipeline.
+func (f FeaturesConfig) PacksEnabled() bool { return featureEnabled(f.Packs) }
+
+// StartersEnabled reports whether the starter subsystem is enabled
+// (default: on). Disables `forge starter list/add`.
+func (f FeaturesConfig) StartersEnabled() bool { return featureEnabled(f.Starters) }
+
+// DisabledFeatureError returns the canonical user-facing error for a
+// disabled feature. Centralised so every gate site emits the same
+// wording — sub-agents and humans grepping for the string find one
+// authoritative format. The name argument is the lowercased feature
+// name as it appears in forge.yaml (e.g. "deploy", "build", "packs").
+func DisabledFeatureError(name string) error {
+	return errDisabledFeature{name: name}
+}
+
+// errDisabledFeature carries the feature name so callers can match
+// programmatically (errors.As) without parsing the string. The Error()
+// shape matches forge's existing single-line "feature 'X' is disabled in
+// forge.yaml" idiom used by the pre-feature-block gates in deploy.go,
+// docs.go and ci.go.
+type errDisabledFeature struct {
+	name string
+}
+
+func (e errDisabledFeature) Error() string {
+	return "feature '" + e.name + "' is disabled in forge.yaml. Set features." + e.name + ": true to enable."
+}
+
+// FeatureName is the canonical feature key. Stays a string alias so the
+// constants below are usable directly anywhere the feature name shows up
+// as a config key, a `--disable` flag value, or a `forge audit` field.
+type FeatureName = string
+
+// Feature name constants. These are the wire format — both YAML field
+// names under `features:` and the strings emitted by `forge audit
+// --json | jq '.features'`. Kept exported so external tooling can match
+// against them without re-encoding the spelling.
+const (
+	FeatureORM           FeatureName = "orm"
+	FeatureCodegen       FeatureName = "codegen"
+	FeatureMigrations    FeatureName = "migrations"
+	FeatureCI            FeatureName = "ci"
+	FeatureBuild         FeatureName = "build"
+	FeatureDeploy        FeatureName = "deploy"
+	FeatureContracts     FeatureName = "contracts"
+	FeatureDocs          FeatureName = "docs"
+	FeatureFrontend      FeatureName = "frontend"
+	FeatureObservability FeatureName = "observability"
+	FeatureHotReload     FeatureName = "hot_reload"
+	FeaturePacks         FeatureName = "packs"
+	FeatureStarters      FeatureName = "starters"
+)
+
+// EffectiveFeatures projects the resolved enabled/disabled state of
+// every feature into a stable name→bool map. Used by `forge audit` to
+// surface the project's feature configuration at a glance, and by tests
+// to assert per-kind scaffold defaults. The map is keyed by Feature*
+// constants and is safe to JSON-marshal directly.
+func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
+	return map[string]bool{
+		FeatureORM:           f.ORMEnabled(),
+		FeatureCodegen:       f.CodegenEnabled(),
+		FeatureMigrations:    f.MigrationsEnabled(),
+		FeatureCI:            f.CIEnabled(),
+		FeatureBuild:         f.BuildEnabled(),
+		FeatureDeploy:        f.DeployEnabled(),
+		FeatureContracts:     f.ContractsEnabled(),
+		FeatureDocs:          f.DocsEnabled(),
+		FeatureFrontend:      f.FrontendEnabled(),
+		FeatureObservability: f.ObservabilityEnabled(),
+		FeatureHotReload:     f.HotReloadEnabled(),
+		FeaturePacks:         f.PacksEnabled(),
+		FeatureStarters:      f.StartersEnabled(),
+	}
+}
 
 // DiagnosticsEnabled reports whether the pkg/diagnostics runtime emit
 // is wired by bootstrap (default: OFF). When OFF, codegen still emits
@@ -1026,8 +1048,7 @@ func (j JWTConfig) EffectiveSigningMethod() string {
 
 // K8sConfig holds Kubernetes configuration.
 type K8sConfig struct {
-	Provider string `yaml:"provider"` // "k3d", "gke", "eks"
-	KCLDir   string `yaml:"kcl_dir"`
+	KCLDir string `yaml:"kcl_dir"`
 }
 
 // DocsConfig holds documentation generation settings.

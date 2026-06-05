@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/docs"
 )
 
@@ -45,14 +46,9 @@ contract interfaces, and project configuration.
 Generated docs include a "DO NOT EDIT" header and can be regenerated at any time.
 Customize output by providing your own templates via the custom_templates_dir config.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
+			cfg, err := requireFeature(config.FeatureDocs)
 			if err != nil {
 				return err
-			}
-
-			if !cfg.Features.DocsEnabled() {
-				fmt.Println("docs feature is disabled in forge.yaml")
-				return nil
 			}
 
 			fmt.Printf("📚 Generating documentation for project: %s\n\n", cfg.Name)

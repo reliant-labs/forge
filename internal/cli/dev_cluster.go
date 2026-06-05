@@ -29,6 +29,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // defaultK3dConfigPath is the canonical location of the project's k3d
@@ -273,6 +276,13 @@ func currentKubectlContext(ctx context.Context) string {
 }
 
 func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
+	// Deploy-feature gate: `forge dev cluster up` boots a k3d cluster
+	// whose only purpose is hosting the project's deploy. A library /
+	// CLI project that's opted out of deploy has no reason to spin
+	// one up. Mirrors the deploy gate in runDeploy / runDevClusterReload.
+	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+		return config.DisabledFeatureError(config.FeatureDeploy)
+	}
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -330,6 +340,13 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 }
 
 func runDevClusterDown(ctx context.Context, configPath string) error {
+	// Same gate as runDevClusterUp — tearing down a cluster that
+	// `cluster up` won't create is at worst a no-op, but we keep the
+	// error symmetric so a `forge dev cluster up && forge dev cluster
+	// down` cycle fails uniformly when deploy is off.
+	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+		return config.DisabledFeatureError(config.FeatureDeploy)
+	}
 	clusterName, err := resolveClusterName(configPath)
 	if err != nil {
 		return err
@@ -447,7 +464,7 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		return err
 	}
 	if !cfg.Features.DeployEnabled() {
-		return fmt.Errorf("deploy feature is disabled in forge.yaml")
+		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
 	kclDir := cfg.K8s.KCLDir
@@ -471,8 +488,8 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 	}
 
 	if namespace == "" {
-		if env := findEnvironment(cfg, "dev"); env != nil && env.Namespace != "" {
-			namespace = env.Namespace
+		if ns := k8sClusterNamespaceForEnv(ctx, "dev"); ns != "" {
+			namespace = ns
 		} else {
 			namespace = cfg.Name + "-dev"
 		}
@@ -481,31 +498,18 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 	fmt.Printf("Reloading dev manifests for cluster %q (namespace=%s, tag=%s)...\n",
 		clusterName, namespace, imageTag)
 
-	manifests, err := runKCL(ctx, mainK, imageTag, namespace, nil)
-	if err != nil {
-		return fmt.Errorf("KCL render: %w", err)
-	}
-
-	if dryRun {
-		fmt.Println(manifests)
-		return nil
-	}
-
-	if err := kubectlApply(ctx, manifests); err != nil {
-		return fmt.Errorf("kubectl apply: %w", err)
-	}
-
-	deployments, err := listDeployments(ctx, namespace)
-	if err != nil {
-		fmt.Printf("Warning: list deployments: %v\n", err)
-		return nil
-	}
-	for _, dep := range deployments {
-		if err := waitForRollout(ctx, dep, namespace); err != nil {
-			fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
-		} else {
-			fmt.Printf("  %s: ready\n", dep)
-		}
-	}
-	return nil
+	// Reload deliberately skips the deploy-time extras: no per-env
+	// config projection (rebuilds defeat the inner-loop purpose), no
+	// prune, no host-skip filter, no one-shot Job wait. Quiet=true
+	// suppresses the section-header banners and matches the shorter
+	// error wraps the pre-extraction reload used. The dry-run output
+	// is unframed (raw manifests).
+	return cluster.Apply(ctx, cluster.ApplyOpts{
+		MainK:     mainK,
+		ImageTag:  imageTag,
+		Namespace: namespace,
+		Env:       "dev", // dev cluster reload is dev-only (matches the envDir above)
+		DryRun:    dryRun,
+		Quiet:     true,
+	})
 }

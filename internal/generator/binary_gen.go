@@ -19,15 +19,13 @@ import (
 // The shape is deliberately opinionated: the scaffold solves the
 // boilerplate (signal handling, graceful shutdown, metrics-server-on-
 // separate-port) so the user can hand-write only the binary's actual
-// business logic. Kind today is always "long-running" — see
-// config.BinaryConfig for the forward-compat reservation of cron/
-// oneshot kinds.
+// business logic.
 //
 // CLI/display name (which may contain hyphens) is translated to a Go-
 // package-safe form for the directory and `package` declaration; the
 // hyphenated form is preserved on the cobra `Use:` field so users can
 // invoke `./<bin> workspace-proxy`.
-func GenerateBinaryFiles(root, modulePath, binaryName, kind string) error {
+func GenerateBinaryFiles(root, modulePath, binaryName string) error {
 	binaryPackage := ServicePackageName(binaryName)
 
 	// internal/<package>/ — main loop, contract, test.
@@ -44,19 +42,14 @@ func GenerateBinaryFiles(root, modulePath, binaryName, kind string) error {
 		return fmt.Errorf("create directory %s: %w", cmdDir, err)
 	}
 
-	if kind == "" {
-		kind = "long-running"
-	}
 	data := struct {
 		Name    string // display form, may contain hyphens
 		Package string // Go-package-safe form
 		Module  string
-		Kind    string
 	}{
 		Name:    binaryName,
 		Package: binaryPackage,
 		Module:  modulePath,
-		Kind:    kind,
 	}
 
 	files := []struct {

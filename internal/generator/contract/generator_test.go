@@ -443,6 +443,51 @@ func TestGenerate_SiblingFileInterface(t *testing.T) {
 	assertNotContains(t, mockPath, "Handle{}")
 }
 
+// TestGenerate_PrimitiveAlias is the regression test for the named-
+// primitive-alias zero-value bug: contracts returning a `type X string`
+// (or int/bool/float) must emit the underlying primitive's zero (`""`,
+// `0`, `false`) rather than the invalid composite literal `X{}`.
+// Covers both same-file aliases (BalanceCapReason / AttemptCount /
+// Enabled / Score) and sibling-file aliases (SiblingTag declared in
+// aliases.go).
+func TestGenerate_PrimitiveAlias(t *testing.T) {
+	dir := copyTestdata(t, "testdata/primitive_alias")
+	contractPath := filepath.Join(dir, "contract.go")
+
+	if err := Generate(contractPath); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	mockPath := filepath.Join(dir, "mock_gen.go")
+	assertFileExists(t, mockPath)
+	assertValidGo(t, mockPath)
+
+	// Same-package string alias: must emit "" not BalanceCapReason{}.
+	assertContains(t, mockPath, `return 0, ""`)
+	assertNotContains(t, mockPath, "BalanceCapReason{}")
+
+	// int / bool / float aliases — must emit primitive zeros, not T{}.
+	assertNotContains(t, mockPath, "AttemptCount{}")
+	assertNotContains(t, mockPath, "Enabled{}")
+	assertNotContains(t, mockPath, "Score{}")
+
+	// Sibling-file string alias must also be resolved.
+	assertNotContains(t, mockPath, "SiblingTag{}")
+
+	// Build the generated mock in a sandbox to confirm it actually
+	// compiles end-to-end (the original repro was a build error).
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(buildSandboxGoMod("primitivealiastest")), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	writeSandboxGoSum(t, dir)
+
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build of generated mock failed: %v\n%s", err, string(out))
+	}
+}
+
 func TestParseContract_Embedded(t *testing.T) {
 	cf, err := ParseContract("testdata/embedded/contract.go")
 	if err != nil {

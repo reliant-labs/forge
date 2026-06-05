@@ -32,7 +32,7 @@ User-modified files show a diff and are skipped unless --force is used.
 
 After a successful upgrade the project's forge_version field in forge.yaml
 is bumped to the current binary version (or to --to when provided). Any
-per-version migration skills found at skills/forge/migration/v<from>-to-*
+per-version migration skills found at skills/forge/migrations/v<from>-to-*
 are surfaced so the LLM running upgrade can follow them step-by-step.
 
 Examples:
@@ -51,6 +51,13 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Alias for --check")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite user-modified files without prompting")
 	cmd.Flags().StringVar(&toVersion, "to", "", "Target forge version (defaults to the current binary version)")
+
+	// `forge upgrade list` and `forge upgrade apply <id>` cover the
+	// migration-skill surface (see upgrade_migrations.go). They share
+	// the upgrade noun with the template-drift upgrader above but are
+	// independent: list/apply work even on projects whose forge_version
+	// is unpinned, and don't touch any user-owned files.
+	attachMigrationSubcommands(cmd)
 
 	return cmd
 }
@@ -296,7 +303,7 @@ func nextMinor(v string) string {
 // migrationSkillRef holds the metadata for a migration skill that's
 // relevant to a given upgrade jump.
 type migrationSkillRef struct {
-	Path        string // skill load path, e.g. "migration/v0.x-to-contractkit"
+	Path        string // skill load path, e.g. "migrations/v0.x-to-contractkit"
 	Description string
 }
 
@@ -321,13 +328,13 @@ func relevantMigrationSkills(from, _ string) []migrationSkillRef {
 
 	var out []migrationSkillRef
 	for _, s := range skills {
-		// Skill paths look like "migration/v0.x-to-contractkit". Anything
+		// Skill paths look like "migrations/v0.x-to-contractkit". Anything
 		// else is not a per-version migration skill.
-		if !strings.HasPrefix(s.Path, "migration/v") {
+		if !strings.HasPrefix(s.Path, "migrations/v") {
 			continue
 		}
 
-		leaf := strings.TrimPrefix(s.Path, "migration/")
+		leaf := strings.TrimPrefix(s.Path, "migrations/")
 		// leaf is like "v0.x-to-contractkit" — split on "-to-" to extract
 		// the from-prefix.
 		from, _, ok := strings.Cut(leaf, "-to-")

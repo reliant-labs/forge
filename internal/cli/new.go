@@ -58,8 +58,8 @@ Use --disable to turn off features at creation time:
   forge new my-project --mod ... --disable ci,deploy
   forge new my-project --mod ... --disable orm --disable migrations
 
-Valid feature names: orm, codegen, migrations, ci, deploy, contracts,
-docs, frontend, observability, hot_reload.
+Valid feature names: orm, codegen, migrations, ci, build, deploy,
+contracts, docs, frontend, observability, hot_reload, packs, starters.
 
 Example:
   forge new my-project --mod github.com/example/my-project
@@ -88,7 +88,7 @@ Example:
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
-	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters")
 	cmd.Flags().StringVar(&memoryFormat, "memory", "reliant", "AI memory file format: reliant (default), claude, cursor, copilot, codex")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
@@ -346,6 +346,16 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return err
 	}
 	gen.MemoryFormat = mf
+
+	// Apply kind-aware feature defaults BEFORE --disable so an
+	// explicit --disable always wins. Service is the default and
+	// leaves every feature enabled (today's behavior). CLI and
+	// library kinds turn off the server-shaped features so the
+	// scaffolded forge.yaml accurately describes the project shape
+	// — `forge new --kind cli` should not have working deploy
+	// commands by default. See ApplyKindFeatureDefaults for the
+	// per-kind matrix.
+	gen.ApplyKindFeatureDefaults(kindNormalized)
 
 	// Apply feature disabling
 	if err := applyDisableFlags(gen, disableFeatures); err != nil {
@@ -746,6 +756,8 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.Migrations = f
 		case "ci":
 			gen.Features.CI = f
+		case "build":
+			gen.Features.Build = f
 		case "deploy":
 			gen.Features.Deploy = f
 		case "contracts":
@@ -758,9 +770,13 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.Observability = f
 		case "hot_reload", "hot-reload", "hotreload":
 			gen.Features.HotReload = f
+		case "packs":
+			gen.Features.Packs = f
+		case "starters":
+			gen.Features.Starters = f
 		default:
 			return cliutil.UserErr("forge new --disable",
-				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, deploy, contracts, docs, frontend, observability, hot_reload", name),
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters", name),
 				"",
 				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}

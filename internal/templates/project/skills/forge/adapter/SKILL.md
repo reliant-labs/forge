@@ -21,12 +21,15 @@ internal/stripe-adapter/
 Scaffold one with:
 
 ```
-forge add package stripe-adapter --type adapter
+forge add adapter stripe-adapter
 ```
 
 This emits the four files above with the canonical Service / Deps /
 New(Deps) Service shape and the `// forge:adapter` marker on
-contract.go.
+contract.go, plus a `cache.go` stub for any local caching the adapter
+needs (delete it if you don't). `forge add package <name> --type
+adapter` resolves to the same code path and stays wired for muscle
+memory.
 
 ## When to add an adapter
 

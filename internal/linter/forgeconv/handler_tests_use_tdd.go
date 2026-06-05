@@ -11,7 +11,7 @@
 // landed on `tdd.RunRPCCases`. The library is documented in pkg/tdd/doc.go,
 // and the canonical row shape is documented under
 // `forge skill load testing/patterns` and the migration skill at
-// `forge skill load migration/v0.x-to-tdd-rpccases`.
+// `forge skill load migrations/v0.x-to-tdd-rpccases`.
 //
 // The lint is advisory (warning, not error) — projects that pre-date the
 // scaffold default may legitimately ship the hand-rolled shape until the
@@ -184,7 +184,7 @@ func findHandRolledTable(fset *token.FileSet, file *ast.File, path, relRoot stri
 			Severity: SeverityWarning,
 			File:     rel,
 			Line:     pos.Line,
-			Message: "use `tdd.RunRPCCases` for per-RPC table tests — see migration/v0.x-to-tdd-rpccases skill " +
+			Message: "use `tdd.RunRPCCases` for per-RPC table tests — see migrations/v0.x-to-tdd-rpccases skill " +
 				"or run `forge test migrate-tdd` to convert this file automatically.",
 			Remediation: "import \"github.com/reliant-labs/forge/pkg/tdd\" and replace the `tests := []struct{name, call}` " +
 				"slice with one `func TestXxx_Generated(t *testing.T)` per RPC delegating to `tdd.RunRPCCases`.",

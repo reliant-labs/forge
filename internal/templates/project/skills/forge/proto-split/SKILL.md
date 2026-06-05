@@ -226,4 +226,4 @@ Single commit per step (inventory → shared types → per-service files → for
 
 - **Greenfield proto layout & annotation reference** — see `proto`.
 - **Re-orienting handlers and services** post-split — see `api/handlers` and `service-layer`.
-- **Migration playbook** for porting a legacy multi-service codebase end-to-end — see `migration` and `migration/service`.
+- **Migration playbook** for porting a legacy multi-service codebase end-to-end — see `migration` and `migration-service`.

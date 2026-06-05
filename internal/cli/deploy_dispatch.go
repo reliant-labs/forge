@@ -20,6 +20,24 @@ import (
 //
 // external and compose services flow through GroupServices unchanged.
 // host / build-only / no-deploy services are skipped.
+//
+// buildDeployGroupsWithOpts is the dry-run-aware variant — callers
+// that want to plumb --dry-run through to External / Compose use this
+// shape. buildDeployGroups stays as the legacy shape so older call
+// sites don't need to be touched.
+func buildDeployGroupsWithOpts(envName string, entities *KCLEntities, fallbackNamespace string, dryRun bool) ([]deploytarget.ServiceGroup, error) {
+	groups, err := buildDeployGroups(envName, entities, fallbackNamespace)
+	if err != nil {
+		return nil, err
+	}
+	if dryRun {
+		for i := range groups {
+			groups[i].DryRun = true
+		}
+	}
+	return groups, nil
+}
+
 func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace string) ([]deploytarget.ServiceGroup, error) {
 	if entities == nil {
 		return nil, nil
@@ -126,6 +144,80 @@ func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 				}
 			}
 			return fmt.Errorf("deploy %s: %w", group.ProviderID, err)
+		}
+	}
+	return nil
+}
+
+// rollbackDeployGroups is the `forge deploy <env> --rollback`
+// dispatcher. For each group it looks up the previously-recorded
+// last-good tag (per service, from .forge/state) and asks the
+// provider to revert there.
+//
+// Per-provider error contract:
+//
+//   - k8s-cluster: `kubectl rollout undo deployment/<svc>` doesn't
+//     need a state file (the cluster tracks the previous ReplicaSet),
+//     so the dispatcher hands the provider the empty tag and lets
+//     kubectl do the work. Missing-Deployment is the provider's
+//     concern, not the dispatcher's.
+//   - external / compose: per-service state file is required. A
+//     missing file produces a clear `no previous deploy state
+//     recorded` error so the user knows there's nothing to revert.
+//
+// Group-level failures abort the loop — partial rollbacks are still
+// recovery (a service that can't roll back is louder than a service
+// that quietly stays on the new tag).
+func rollbackDeployGroups(ctx context.Context, registry *deploytarget.Registry, groups []deploytarget.ServiceGroup, projectDir string) error {
+	if registry == nil {
+		return errors.New("rollback dispatch: nil provider registry")
+	}
+	if len(groups) == 0 {
+		fmt.Println("Nothing to roll back — no deploy targets declared for this env.")
+		return nil
+	}
+	for _, group := range groups {
+		p := registry.Lookup(group.ProviderID)
+		if p == nil {
+			return fmt.Errorf("rollback dispatch: no provider for %q (group: %s)", group.ProviderID, deploytarget.FormatGroupSummary(group))
+		}
+		fmt.Printf("\n%s (rollback)\n", deploytarget.FormatGroupSummary(group))
+
+		// For external/compose, validate each service has a state
+		// file BEFORE the provider's Rollback runs — so we can fail
+		// the whole group with a precise per-service message rather
+		// than letting the provider emit a partial-rollback error.
+		if group.ProviderID == "external" || group.ProviderID == "compose" {
+			if err := requireRollbackState(projectDir, group); err != nil {
+				return fmt.Errorf("rollback %s: %w", group.ProviderID, err)
+			}
+		}
+
+		// lastGoodTag is empty for the k8s-cluster path (kubectl owns
+		// the revision history). For external/compose, the provider
+		// reads its own per-service state file inside Rollback — the
+		// dispatcher-supplied lastGoodTag is a fallback only, and we
+		// leave it empty so the state-file tag always wins.
+		if err := p.Rollback(ctx, group, ""); err != nil {
+			return fmt.Errorf("rollback %s: %w", group.ProviderID, err)
+		}
+	}
+	return nil
+}
+
+// requireRollbackState confirms every service in an external/compose
+// group has a recorded last-good deploy. Surfaces a clear per-service
+// error when one is missing — `forge deploy <env> --rollback` against
+// a service that's never deployed should refuse rather than
+// silently no-op or guess.
+func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) error {
+	for _, svc := range group.Services {
+		st, err := deploytarget.ReadDeployState(projectDir, group.ProviderID, group.Env, svc.Name)
+		if err != nil {
+			return err
+		}
+		if st == nil {
+			return fmt.Errorf("no previous deploy state recorded for %s at %s; cannot rollback", svc.Name, group.Env)
 		}
 	}
 	return nil

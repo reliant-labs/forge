@@ -135,9 +135,6 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	//    is current, so it's safe to always run. Surfacing pull
 	//    failures here (rather than at up time) gives a clearer error.
 	pullArgs := []string{"compose", "-f", file, "pull", target}
-	if err := runner.Run(ctx, "docker", pullArgs...); err != nil {
-		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
-	}
 
 	// 2. Up -d — compose decides whether to recreate based on its own
 	//    diff against the running container. We don't force --force-
@@ -149,7 +146,28 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 		upArgs = append(upArgs, "--env-file", spec.EnvFile)
 	}
 	upArgs = append(upArgs, "up", "-d", target)
-	if err := runner.Run(ctx, "docker", upArgs...); err != nil {
+
+	if group.DryRun {
+		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(pullArgs, " "))
+		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(upArgs, " "))
+		return nil
+	}
+
+	// Load env_file (if declared) and merge into the docker-compose
+	// process env so the compose file's `${VAR}` references resolve
+	// even when the user forgets to pre-export. Passing --env-file
+	// only forwards values to *containers*; the compose file itself
+	// reads from the docker-compose process env. Layering both keeps
+	// the two cases in sync.
+	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
+	if ferr != nil {
+		return fmt.Errorf("compose %s: env_file: %w", svc.Name, ferr)
+	}
+
+	if err := runner.RunWithEnv(ctx, envOverlay, "docker", pullArgs...); err != nil {
+		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
+	}
+	if err := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...); err != nil {
 		return fmt.Errorf("compose %s: up: %w", svc.Name, err)
 	}
 
@@ -233,6 +251,18 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 
 	file := composeFile(spec)
 	composeSvc := composeServiceName(spec, svc.Name)
+
+	if group.DryRun {
+		// Don't write the override file on dry-run — the goal is "no
+		// side effects on disk." Show the user the shape of the
+		// override fragment we would have written so the dry-run is
+		// informative.
+		fmt.Printf("  [DRY-RUN] would write override pinning %s to %s:%s\n", composeSvc, imageHint, target)
+		fmt.Printf("  [DRY-RUN] would run: docker compose -f %s -f <override> up -d --force-recreate %s\n",
+			file, composeSvc)
+		return nil
+	}
+
 	overridePath, err := writeComposeOverride(p.projectDir(), group.Env, svc.Name, composeSvc, imageHint, target)
 	if err != nil {
 		return fmt.Errorf("write override: %w", err)
@@ -244,7 +274,11 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 		upArgs = append(upArgs, "--env-file", spec.EnvFile)
 	}
 	upArgs = append(upArgs, "up", "-d", "--force-recreate", composeSvc)
-	if err := runner.Run(ctx, "docker", upArgs...); err != nil {
+	envOverlay, ferr := loadExternalEnvFile(spec.EnvFile)
+	if ferr != nil {
+		return fmt.Errorf("env_file: %w", ferr)
+	}
+	if err := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...); err != nil {
 		return fmt.Errorf("up --force-recreate: %w", err)
 	}
 	fmt.Printf("  rollback %s: ok (tag %s)\n", svc.Name, target)

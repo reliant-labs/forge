@@ -54,6 +54,15 @@ type buildOptions struct {
 	// everything", preserving the pre-orchestration behaviour so CI
 	// builds for staging/prod aren't affected.
 	env string
+	// skipFrontends, when true, drops every frontend from the build set
+	// regardless of deploy type. Set by `forge up`'s build phase because
+	// up dev-serves frontends via `npm run dev` (in upFrontends) and
+	// never consumes the `npm run build` prod artifact. Saves the entire
+	// Next.js prod build time on every `forge up` cycle. Direct
+	// `forge build` callers leave this false to preserve prod-build
+	// behaviour. Independent of the Frontend.deploy-discriminator
+	// filter (which is a no-op until forge.Frontend gets a deploy field).
+	skipFrontends bool
 	// tag, when set, overrides the git-derived image tag computed by
 	// resolveImageTag. CI pipelines that pin the image to a release
 	// number (e.g. `--tag v1.2.3`) use this. Empty (the default) means
@@ -227,6 +236,16 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			// Target is a frontend, skip binary build
 			buildBinary = false
 		}
+	}
+
+	// `forge up` skips frontend prod builds entirely. Its frontend phase
+	// (upFrontends) dev-serves via `npm run dev` and never consumes the
+	// prod artifact. Set explicitly by upBuildCluster.
+	if opts.skipFrontends {
+		if len(frontends) > 0 {
+			fmt.Printf("[build]   Skipping %d frontend(s): forge up dev-serves frontends\n", len(frontends))
+		}
+		frontends = nil
 	}
 
 	// KCL-driven prod-build skip for host-mode frontends. Host-mode

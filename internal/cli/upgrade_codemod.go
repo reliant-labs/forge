@@ -24,7 +24,7 @@ import (
 // codemods (v0.2 → v0.3, etc.) just append to the registry.
 //
 // Per-skill markdown for the LLM-assisted parts of a migration lives
-// alongside in templates/project/skills/forge/migration/<vX-to-vY>/SKILL.md.
+// alongside in templates/project/skills/forge/migrations/<vX-to-vY>/SKILL.md.
 // The codemod handles the deterministic mechanics; the skill describes
 // the intent-bearing parts the LLM/user should review.
 

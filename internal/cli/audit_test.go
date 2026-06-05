@@ -25,7 +25,6 @@ module_path: github.com/test/test-project
 version: 0.0.1
 forge_version: dev
 services: []
-environments: []
 database: {}
 ci: {}
 docker: {}
@@ -54,7 +53,7 @@ docs: {}
 	}
 
 	wantKeys := []string{
-		"version", "shape", "environments", "conventions", "codegen",
+		"version", "shape", "features", "environments", "conventions", "codegen",
 		"packs", "pack_graph", "proto_migration_alignment",
 		"migration_safety", "wire_coverage", "scaffold_markers",
 		"crud_stubs", "diagnostics", "deps",
@@ -87,53 +86,33 @@ docs: {}
 	}
 }
 
-// TestAuditEnvironments_WarnsOnMissingCluster confirms the env-cluster
-// audit warns when a non-dev environment is declared without cluster:
-// (so `forge deploy <env>` can't guard against wrong-context applies).
-// Dev gets a safe default (k3d-<project>) so it does NOT warn.
-func TestAuditEnvironments_WarnsOnMissingCluster(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev"},     // OK — defaults to k3d-cp-forge
-			{Name: "staging"}, // warn — no default
-			{Name: "prod", Cluster: "gke_acme-prod"},
-		},
+// TestAuditEnvironments_ListsFilesystem confirms the audit walks
+// deploy/kcl/<env>/main.k to enumerate envs and emits one entry per
+// declared env.
+func TestAuditEnvironments_ListsFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	for _, env := range []string{"dev", "prod"} {
+		envDir := filepath.Join(dir, "deploy", "kcl", env)
+		if err := os.MkdirAll(envDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	cat := auditEnvironments(cfg)
-	if cat.Status != AuditStatusWarn {
-		t.Fatalf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
-	}
-	if !strings.Contains(cat.Summary, "staging") {
-		t.Errorf("summary should mention the offending env, got %q", cat.Summary)
-	}
-	if !strings.Contains(cat.Summary, "1 env(s)") {
-		t.Errorf("summary should report the count (only staging), got %q", cat.Summary)
-	}
-}
-
-// TestAuditEnvironments_AllSet returns ok when every non-dev env
-// declares cluster: explicitly.
-func TestAuditEnvironments_AllSet(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev"},
-			{Name: "staging", Cluster: "gke_acme-staging"},
-			{Name: "prod", Cluster: "gke_acme-prod"},
-		},
-	}
-	cat := auditEnvironments(cfg)
+	cat := auditEnvironments(dir)
 	if cat.Status != AuditStatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
+	if !strings.Contains(cat.Summary, "2 environment(s)") {
+		t.Errorf("summary should report 2 envs, got %q", cat.Summary)
+	}
 }
 
-// TestAuditEnvironments_NoEnvs returns ok (n/a) when forge.yaml has
-// no environments declared at all.
+// TestAuditEnvironments_NoEnvs returns ok (n/a) when no deploy/kcl/<env>
+// directories are present.
 func TestAuditEnvironments_NoEnvs(t *testing.T) {
-	cfg := &config.ProjectConfig{Name: "cp-forge"}
-	cat := auditEnvironments(cfg)
+	cat := auditEnvironments(t.TempDir())
 	if cat.Status != AuditStatusOK {
 		t.Errorf("status: want ok, got %q", cat.Status)
 	}
@@ -364,5 +343,79 @@ func init() {
 	}
 	if got, ok := cat.Details["strict_wiring_enabled"].(bool); !ok || !got {
 		t.Errorf("strict_wiring_enabled detail = %v, want true", cat.Details["strict_wiring_enabled"])
+	}
+}
+
+// TestAuditFeatures_ZeroConfig asserts the features audit category
+// surfaces every feature as enabled when no `features:` block is set
+// — the backwards-compat default. Pins the additive-extension shape:
+// `.details.resolved.<name>` exists for each Feature* constant.
+//
+// Also pins the empty-disabled-list guarantee: when no feature is
+// off, `details.disabled` is an empty []string not nil, so the JSON
+// encoder emits `[]` and `jq '.disabled | length'` returns 0 rather
+// than failing on a null.
+func TestAuditFeatures_ZeroConfig(t *testing.T) {
+	cat := auditFeatures(&config.ProjectConfig{Name: "t"})
+	if cat.Status != AuditStatusOK {
+		t.Errorf("status = %q, want ok", cat.Status)
+	}
+	resolved, ok := cat.Details["resolved"].(map[string]bool)
+	if !ok {
+		t.Fatalf("details.resolved missing or wrong type: %T", cat.Details["resolved"])
+	}
+	for _, name := range []string{
+		config.FeatureDeploy, config.FeatureBuild, config.FeatureFrontend,
+		config.FeaturePacks, config.FeatureStarters, config.FeatureCI,
+		config.FeatureDocs, config.FeatureObservability,
+	} {
+		if !resolved[name] {
+			t.Errorf("resolved[%q] = false, want true (no features block → all enabled)", name)
+		}
+	}
+	disabled, ok := cat.Details["disabled"].([]string)
+	if !ok {
+		t.Fatalf("details.disabled wrong type: %T", cat.Details["disabled"])
+	}
+	if disabled == nil {
+		t.Error("details.disabled is nil — JSON encoding would emit null instead of []")
+	}
+	if len(disabled) != 0 {
+		t.Errorf("details.disabled = %v, want empty", disabled)
+	}
+}
+
+// TestAuditFeatures_PartialDisable asserts the enabled/disabled
+// splits in the details payload are derived from the resolved map:
+// disabling a couple of features must surface them in `disabled`
+// (alphabetised) and remove them from `enabled`.
+func TestAuditFeatures_PartialDisable(t *testing.T) {
+	off := false
+	cfg := &config.ProjectConfig{
+		Features: config.FeaturesConfig{Deploy: &off, Packs: &off},
+	}
+	cat := auditFeatures(cfg)
+	disabled, ok := cat.Details["disabled"].([]string)
+	if !ok {
+		t.Fatalf("details.disabled wrong type: %T", cat.Details["disabled"])
+	}
+	wantDisabled := map[string]bool{config.FeatureDeploy: true, config.FeaturePacks: true}
+	for _, name := range disabled {
+		if !wantDisabled[name] {
+			t.Errorf("unexpected disabled feature %q", name)
+		}
+	}
+	if len(disabled) != len(wantDisabled) {
+		t.Errorf("disabled count = %d, want %d (%v)", len(disabled), len(wantDisabled), disabled)
+	}
+}
+
+// TestAuditFeatures_NilConfig surfaces "no forge.yaml" as error so
+// sub-agents branching on `.features.status == "error"` don't get
+// a false-ok on a non-forge project.
+func TestAuditFeatures_NilConfig(t *testing.T) {
+	cat := auditFeatures(nil)
+	if cat.Status != AuditStatusError {
+		t.Errorf("nil cfg status = %q, want error", cat.Status)
 	}
 }

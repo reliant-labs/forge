@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/linter/dblint"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
@@ -77,7 +78,7 @@ Examples:
                                 # _gen files missing the canonical header
   forge lint --tests            # Nudge handler tests toward tdd.RunRPCCases AND
                                 # surface generated frontend hooks without sibling tests
-                                # (warnings only — see migration/v0.x-to-tdd-rpccases
+                                # (warnings only — see migrations/v0.x-to-tdd-rpccases
                                 # and the frontend-testing skill)
   forge lint --banners          # Verify every forge template carries the
                                 # right Tier-1 / Tier-2 lifecycle banner
@@ -394,41 +395,34 @@ func runConventionLint() error {
 		fmt.Println("  ⚠️  No proto/ directory found — skipping proto convention lint")
 	}
 
-	// Internal-package contract shape — runs whether or not proto/ exists,
-	// because CLI/library projects without proto can still ship internal/
-	// packages whose bootstrap codegen would silently break on a wrong-named
-	// contract.
+	// Internal-package contract shape, plus the hexagonal-architecture
+	// conventions for `--type=adapter` and `--type=interactor`. All
+	// three rules live in internal/contractcheck and ship through one
+	// Inspect call so the engine controls ordering and de-dup; the
+	// per-rule severity / gating discipline is preserved (contract-names
+	// is an error; the other two are warnings).
+	//
+	// Runs whether or not proto/ exists — CLI/library projects without
+	// proto can still ship internal/ packages whose bootstrap codegen
+	// would silently break on a wrong-named contract.
 	hasInternal := false
 	if _, err := os.Stat("internal"); err == nil {
 		hasInternal = true
 		cfg, cfgErr := loadProjectConfig()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config for contract-name lint: %w", cfgErr)
+			return fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
 		}
-		excludes := contractExcludesFromConfig(cfg)
-		res, err := forgeconv.LintInternalContracts(".", excludes)
+		// runConventionLint is not (yet) ctx-aware; the engine's
+		// inter-rule cancellation hook is a forward-looking concern.
+		// Using context.Background() preserves today's behavior; threading
+		// the cobra cmd.Context() through is a separate cleanup.
+		fs, err := contractcheck.Inspect(context.Background(), ".", contractcheck.Options{
+			Excludes: contractExcludesFromConfig(cfg),
+		})
 		if err != nil {
-			return fmt.Errorf("forge convention lint (contracts) failed: %w", err)
+			return fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
 		}
-		combined.Findings = append(combined.Findings, res.Findings...)
-
-		// Hexagonal-architecture conventions for `--type=adapter` and
-		// `--type=interactor` packages. Both rules are warnings (the
-		// false-positive risk is real for projects that opt out of the
-		// marker convention), but they catch the canonical foot-guns
-		// the patterns are designed to prevent. See `forge skill load
-		// adapter` and `forge skill load interactor`.
-		adapterRes, err := forgeconv.LintAdapterNoRPC(".")
-		if err != nil {
-			return fmt.Errorf("forge convention lint (adapter-no-rpc) failed: %w", err)
-		}
-		combined.Findings = append(combined.Findings, adapterRes.Findings...)
-
-		interactorRes, err := forgeconv.LintInteractorDepsAreInterfaces(".")
-		if err != nil {
-			return fmt.Errorf("forge convention lint (interactor-deps-are-interfaces) failed: %w", err)
-		}
-		combined.Findings = append(combined.Findings, interactorRes.Findings...)
+		combined.Findings = append(combined.Findings, fs...)
 	}
 
 	// Handler-tree analyzers — only run when handlers/ exists. The
@@ -574,7 +568,7 @@ func runFrontendStoresLint() error {
 //   - forgeconv-handler-tests-use-tdd: warns when a handler test file
 //     hand-rolls the `tests := []struct{name, call}` shape instead of
 //     `tdd.RunRPCCases`. See `forge skill load
-//     migration/v0.x-to-tdd-rpccases` for the conversion playbook, or
+//     migrations/v0.x-to-tdd-rpccases` for the conversion playbook, or
 //     run `forge test migrate-tdd` to convert most files automatically.
 //
 //   - forgeconv-frontend-hook-tests: warns when a generated

@@ -202,8 +202,8 @@ of truth; migrations track proto.
 
 ### Migrated projects (migrations authoritative)
 
-When you bring an existing schema into forge (`migration/service`,
-`migration/cli`), the migrations carry the schema and proto entities
+When you bring an existing schema into forge (`migration-service`,
+`migration-cli`), the migrations carry the schema and proto entities
 become **advisory documentation**. `forge generate` does not regenerate
 your migrations from proto. `forge audit` reports
 `migrations authoritative (no proto entities)` if you removed the proto

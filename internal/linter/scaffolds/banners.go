@@ -309,7 +309,7 @@ func isKnownTier2(rel, noTmpl string) bool {
 		case "service.go", "contract.go", "contract_test.go",
 			"client.go", "client_test.go",
 			"service_test.go",
-			"adapter.go", "adapter_test.go",
+			"adapter.go", "adapter_test.go", "cache.go",
 			"interactor.go", "interactor_test.go":
 			return true
 		}

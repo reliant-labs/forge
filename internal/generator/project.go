@@ -691,6 +691,21 @@ package %s
 	return os.WriteFile(filepath.Join(pkgDir, "doc.go"), []byte(doc), 0o644)
 }
 
+// ApplyKindFeatureDefaults is the public entry point invoked by
+// `forge new` after parsing the --kind flag. It delegates to the
+// private applyKindFeatureDefaults helper so the scaffold-time
+// matrix lives in one place. Exposed publicly so other callers
+// (tests, sibling tools) can derive the same defaults from a kind
+// string without duplicating the per-feature decisions.
+func (g *ProjectGenerator) ApplyKindFeatureDefaults(kind string) {
+	// Sync `Kind` so the private helper's isService/isLibrary
+	// predicates resolve correctly. Callers that already set
+	// Kind on the struct (the normal path from new.go) pass the
+	// same value; resetting is idempotent.
+	g.Kind = kind
+	g.applyKindFeatureDefaults()
+}
+
 // applyKindFeatureDefaults force-disables features that don't make sense
 // for CLI/library kinds (so generators that gate on Features still do the
 // right thing without learning about Kind). Explicit user overrides via
@@ -728,11 +743,33 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.Features.HotReload == nil {
 		g.Features.HotReload = off()
 	}
-	// Library projects also disable CI by default (no binaries to build,
-	// no images to push). Users can re-enable manually if they want
-	// lint+test workflows.
-	if g.isLibrary() && g.Features.CI == nil {
-		g.Features.CI = off()
+	// Packs and starters target server-shaped projects. CLI and
+	// library kinds get no useful work out of either: packs install
+	// auth middleware, audit interceptors, payment integrations
+	// (all service-shape); starters scaffold one-time business
+	// integrations against a service. Disabling at scaffold time
+	// matches the per-kind --kind matrix in the prompt.
+	if g.Features.Packs == nil {
+		g.Features.Packs = off()
+	}
+	if g.Features.Starters == nil {
+		g.Features.Starters = off()
+	}
+	// Library: every server-shaped feature is off. CI/Build are
+	// off because there's no binary to lint/test/build — the user
+	// can re-enable manually if they want a lint+test workflow
+	// against the package, but the historic forge convention is
+	// to leave the .github/workflows/ tree absent on a library
+	// scaffold (TestProjectGeneratorKindLibraryScaffold asserts
+	// this). Docs stays on — godoc-style API reference is the
+	// headline output of a library project.
+	if g.isLibrary() {
+		if g.Features.CI == nil {
+			g.Features.CI = off()
+		}
+		if g.Features.Build == nil {
+			g.Features.Build = off()
+		}
 	}
 }
 

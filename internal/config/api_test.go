@@ -10,9 +10,6 @@ func TestAPIConfigRoundTrip(t *testing.T) {
 	data := []byte(`name: test
 module_path: github.com/foo/bar
 version: 0.1.0
-environments:
-  - name: dev
-    type: local
 api:
   openapi: true
   rest: false
@@ -36,9 +33,6 @@ func TestAPIConfigRejectsUnknownKey(t *testing.T) {
 	data := []byte(`name: test
 module_path: github.com/foo/bar
 version: 0.1.0
-environments:
-  - name: dev
-    type: local
 api:
   openpi: true
 `)

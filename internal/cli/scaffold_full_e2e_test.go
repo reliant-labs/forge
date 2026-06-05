@@ -140,10 +140,14 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		".github/workflows/deploy.yml",
 		".github/workflows/e2e.yml",
 
-		// KCL deploy manifests.
-		"deploy/kcl/schema.k",
-		"deploy/kcl/base.k",
-		"deploy/kcl/render.k",
+		// KCL deploy manifests. Per-env main.k files only — the
+		// shared schemas (Service / Operator / Frontend / CronJob,
+		// deploy union, render layer) live in the upstream `forge`
+		// KCL module pinned via kcl.mod.
+		"kcl.mod",
+		"deploy/kcl/dev/main.k",
+		"deploy/kcl/staging/main.k",
+		"deploy/kcl/prod/main.k",
 
 		// Top-level project documentation.
 		"LICENSE",

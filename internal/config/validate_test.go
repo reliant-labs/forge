@@ -17,9 +17,6 @@ services:
   - name: api
     type: go_service
     path: handlers/api
-environments:
-  - name: dev
-    type: local
 database:
   driver: postgres
   migrations_dir: db/migrations
@@ -28,7 +25,6 @@ ci:
 docker:
   registry: ghcr.io
 k8s:
-  provider: k3d
   kcl_dir: deploy/kcl
 lint:
   contract: true
@@ -71,13 +67,13 @@ func TestLoadStrict_UnknownKey_NoCloseMatch(t *testing.T) {
 }
 
 func TestLoadStrict_MultipleUnknownKeys(t *testing.T) {
-	in := validBaseYAML + "auht: x\nenviornments: y\n" //nolint:misspell // intentional typo for suggestion test
+	in := validBaseYAML + "auht: x\nservces: y\n" //nolint:misspell // intentional typo for suggestion test
 	// Replace the real auth: block first so we don't have a duplicate
 	// issue from a still-valid `auth: none` while testing the typo.
 	in = strings.Replace(in, "auth:\n  provider: none\n", "", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "auht", "auth", "enviornments", "environments") { //nolint:misspell // checks suggestion output
+	if !containsAll(ve.Error(), "auht", "auth", "servces", "services") { //nolint:misspell // checks suggestion output
 		t.Errorf("expected both typos with suggestions, got:\n%s", ve.Error())
 	}
 }
@@ -94,7 +90,8 @@ func TestLoadStrict_MissingRequired_ModulePath(t *testing.T) {
 func TestLoadStrict_MissingRequired_Multiple(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "name: demo\n", "", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
-	in = strings.Replace(in, "  - name: dev\n    type: local\n", "  - type: local\n", 1)
+	in = strings.Replace(in, "  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - type: go_service\n    path: handlers/api\n", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
@@ -104,8 +101,8 @@ func TestLoadStrict_MissingRequired_Multiple(t *testing.T) {
 	if !strings.Contains(got, "'module_path' is required") {
 		t.Errorf("expected 'module_path' required, got:\n%s", got)
 	}
-	if !strings.Contains(got, "environments[0].name is required") {
-		t.Errorf("expected environments[0].name required, got:\n%s", got)
+	if !strings.Contains(got, "services[0].name is required") {
+		t.Errorf("expected services[0].name required, got:\n%s", got)
 	}
 }
 
@@ -155,19 +152,19 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 	// Smoke test mirroring the CLI smoke: 3 typos + 1 missing required
 	// field should all surface in a single error.
 	in := strings.Replace(validBaseYAML, "auth:\n  provider: none\n", "auht:\n  provider: none\n", 1)
-	in = strings.Replace(in, "environments:", "enviornments:", 1) //nolint:misspell // intentional typo for suggestion test
+	in = strings.Replace(in, "services:", "servces:", 1) //nolint:misspell // intentional typo for suggestion test
 	in = strings.Replace(in, "database:", "databse:", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
 
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	for _, want := range []string{"auht", "environments", "databse", "module_path"} {
+	for _, want := range []string{"auht", "servces", "databse", "module_path"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in error, got:\n%s", want, got)
 		}
 	}
-	for _, suggestion := range []string{"auth", "environments", "database"} {
+	for _, suggestion := range []string{"auth", "services", "database"} {
 		if !strings.Contains(got, suggestion) {
 			t.Errorf("expected suggestion %q, got:\n%s", suggestion, got)
 		}

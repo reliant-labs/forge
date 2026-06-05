@@ -59,35 +59,6 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		HotReload:    g.isService(), // hot-reload only meaningful for long-running servers
 		Features:     g.buildFeaturesConfig(),
 		Stack:        stack,
-		Envs: []config.EnvironmentConfig{
-			{
-				Name: "dev",
-				Type: "local",
-				Config: map[string]any{
-					"log_level":   "debug",
-					"log_format":  "text",
-					"environment": "development",
-				},
-			},
-			{
-				Name: "staging",
-				Type: "cloud",
-				Config: map[string]any{
-					"log_level":   "info",
-					"log_format":  "json",
-					"environment": "production",
-				},
-			},
-			{
-				Name: "prod",
-				Type: "cloud",
-				Config: map[string]any{
-					"log_level":   "warn",
-					"log_format":  "json",
-					"environment": "production",
-				},
-			},
-		},
 		Database: config.DatabaseConfig{
 			Driver:        "postgres",
 			MigrationsDir: "db/migrations",
@@ -126,8 +97,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 			Registry: "ghcr.io",
 		},
 		K8s: config.K8sConfig{
-			Provider: "k3d",
-			KCLDir:   "deploy/kcl",
+			KCLDir: "deploy/kcl",
 		},
 		Lint: config.LintConfig{
 			Contract: true,
@@ -279,6 +249,7 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		Codegen:    orDefault(g.Features.Codegen),
 		Migrations: orDefault(g.Features.Migrations),
 		CI:         orDefault(g.Features.CI),
+		Build:      orDefault(g.Features.Build),
 		Deploy:     orDefault(g.Features.Deploy),
 		Contracts:  orDefault(g.Features.Contracts),
 		Docs:       orDefault(g.Features.Docs),
@@ -290,6 +261,8 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		}(),
 		Observability: orDefault(g.Features.Observability),
 		HotReload:     orDefault(g.Features.HotReload),
+		Packs:         orDefault(g.Features.Packs),
+		Starters:      orDefault(g.Features.Starters),
 	}
 }
 

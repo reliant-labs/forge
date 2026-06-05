@@ -258,29 +258,39 @@ func generateSteps() []GenStep {
 		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
+		{Name: "check forked-sibling dangling refs", Gate: always, Run: stepCheckForkedDanglingRefs, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
 
-// scopedStepAllowlist maps a pipelineFlags.Scope value to the set of
-// step.Name values the runner is allowed to execute under that scope.
-// An empty Scope (the historical default) bypasses this map entirely
-// and runs every step that passes its Gate.
+// stepPresetAllowlist maps a pipelineFlags.Steps value (a named "step
+// preset") to the set of step.Name values the runner is allowed to
+// execute under that preset. An empty Steps value (the historical
+// default) bypasses this map entirely and runs every step that passes
+// its Gate.
 //
-// Adding a new scope: pick a stable name, enumerate the step.Name values
-// the scope covers, and document the caller's intent in the comment.
-// Step names must match generateSteps() exactly — the
-// TestScopedStepAllowlistMembersExist test verifies this so a typo or a
-// step rename doesn't silently produce a no-op pipeline.
+// Naming note: this used to be called "scope", but the word "scope" is
+// overloaded across forge — it's load-bearing for the file-ownership
+// concept addressed by the Tier-1 inspector in internal/checksums/
+// inspector.go. The pipeline-step concept got renamed to "step preset"
+// so "scope" stays free for the file-ownership concept where it
+// carries weight.
 //
-// The "bootstrap-only" scope covers `forge add worker`: scaffold a new
-// worker, regenerate ONLY pkg/app/{bootstrap,testing,migrate}.go and the
-// validation tail, then exit. Sibling Tier-1 files (.github/workflows/
-// ci.yml, cmd/server.go, frontend mocks, pkg/config/config.go) stay
-// untouched so a sibling agent or hand-curated comment isn't stomped.
-// FRICTION 2026-06-03: cp-forge port-workers ran `forge add worker` 7×
-// and watched regen rewrite 5 unrelated files per call.
-var scopedStepAllowlist = map[string]map[string]bool{
+// Adding a new step preset: pick a stable name, enumerate the
+// step.Name values the preset covers, and document the caller's intent
+// in the comment. Step names must match generateSteps() exactly — the
+// TestStepPresetAllowlistMembersExist test verifies this so a typo or
+// a step rename doesn't silently produce a no-op pipeline.
+//
+// The "bootstrap-only" preset covers `forge add worker`: scaffold a
+// new worker, regenerate ONLY pkg/app/{bootstrap,testing,migrate}.go
+// and the validation tail, then exit. Sibling Tier-1 files
+// (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
+// pkg/config/config.go) stay untouched so a sibling agent or hand-
+// curated comment isn't stomped. FRICTION 2026-06-03: cp-forge
+// port-workers ran `forge add worker` 7× and watched regen rewrite 5
+// unrelated files per call.
+var stepPresetAllowlist = map[string]map[string]bool{
 	"bootstrap-only": {
 		"load project config":              true,
 		"load checksums":                   true,
@@ -300,16 +310,59 @@ var scopedStepAllowlist = map[string]map[string]bool{
 		"rehash tracked files":             true,
 		"post-gen validation":              true,
 		"detect renamed Tier-1 exports":    true,
+		"check forked-sibling dangling refs": true,
 		"go build (validate generated code)": true,
+	},
+	// The "mocks" step preset covers the fast-path "I just edited
+	// contract.go, regenerate mock_gen.go" workflow. Mocks live behind a
+	// "DO NOT EDIT" banner and are deterministic from contract.go + the
+	// service proto; they cannot stomp any Tier-1 file. So:
+	//
+	//   - Skip "check Tier-1 file-stomp guard" entirely. The guard exists
+	//     to protect Tier-1 files from being overwritten by codegen
+	//     emitters; the mock emitter only touches internal/<svc>/mock_gen.go,
+	//     which is itself Tier-1 owned by forge. Forcing the user to
+	//     reconcile unrelated Tier-1 drift (a hand-edited workflow yaml,
+	//     a touched cmd/server.go) before they can regen a mock has no
+	//     payoff — there's no file the mock step could clobber that the
+	//     unrelated edits put at risk.
+	//
+	//   - Run only the strictly required prereqs for stepServiceMocks:
+	//     load config + checksums (so the writer has somewhere to record),
+	//     detect proto directories (HasServices feeds the gate),
+	//     ensure gen/go.mod (parser-side dependency), parse services
+	//     + module path (the mock emitter walks ctx.Services), and the
+	//     mock step itself. Goimports + rehash tail keeps the just-
+	//     written file consistent with the audit machinery, but we skip
+	//     the validate `go build ./...` and the post-gen heuristic
+	//     warnings — the user already has a tight inner-loop ("contract
+	//     change → regen mock → run unit tests") that runs `go build`
+	//     itself.
+	//
+	// FRICTION 2026-06-04: two downstream projects reported that they
+	// could not regen mock_gen.go after a contract.go change without
+	// first reconciling unrelated Tier-1 file edits sitting in their
+	// tree (e.g. modified .github/workflows/ci.yml). The mocks-only
+	// step preset makes the inner-loop hermetic.
+	"mocks": {
+		"load project config":          true,
+		"load checksums":                true,
+		"detect proto directories":     true,
+		"ensure gen/go.mod":             true,
+		"parse services + module path": true,
+		"service mocks":                 true,
+		"goimports on generated Go":     true,
+		"rehash tracked files":          true,
 	},
 }
 
-// knownScopeNames returns a comma-joined string of every registered scope
-// for error messages. Kept as a helper so the error in
-// runGeneratePipelineFlags doesn't have to inline a sort + join.
-func knownScopeNames() string {
-	names := make([]string, 0, len(scopedStepAllowlist))
-	for k := range scopedStepAllowlist {
+// knownStepPresetNames returns a comma-joined string of every
+// registered step preset for error messages. Kept as a helper so the
+// error in runGeneratePipelineFlags doesn't have to inline a sort +
+// join.
+func knownStepPresetNames() string {
+	names := make([]string, 0, len(stepPresetAllowlist))
+	for k := range stepPresetAllowlist {
 		names = append(names, k)
 	}
 	// Tiny sort to keep the error message deterministic.
@@ -377,7 +430,15 @@ func gateCIWorkflows(ctx *pipelineContext) bool {
 }
 
 func gateHasPacks(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && len(ctx.Cfg.Packs) > 0
+	// Pack generate hooks only fire when the project has packs installed
+	// AND the packs feature is on. Disabling the feature with packs
+	// already installed skips the regenerate-on-generate step silently —
+	// the user opted out of the subsystem, codegen respects it. The
+	// installed packs themselves stay on disk; flipping `features.packs:
+	// true` later resumes the generate hooks without losing state.
+	return ctx.Cfg != nil &&
+		ctx.Cfg.Features.PacksEnabled() &&
+		len(ctx.Cfg.Packs) > 0
 }
 
 func gateDeployEnabled(ctx *pipelineContext) bool {
@@ -551,10 +612,15 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	drift, outOfScope := filterTier1DriftInScope(ctx, allDrift,
 		func(d checksums.Tier1DriftEntry) string { return d.Path })
 	if len(outOfScope) > 0 {
-		fmt.Fprintf(os.Stderr, "ℹ️  Tier-1 stomp guard: %d drifted file(s) out of scope for this run (their emitter step is gated off); ignored:\n", len(outOfScope))
+		// Friendly heads-up rather than a bare warning: out-of-scope drift
+		// is the common case when iterating with `--steps=…` and the user
+		// needs to know (a) what "drifted" means here and (b) how to
+		// resolve it. Two escape hatches mirror the in-scope branch.
+		fmt.Fprintf(os.Stderr, "ℹ️  Tier-1 drift detected in %d file(s) — skipped because their emitter step is not in this run's scope:\n", len(outOfScope))
 		for _, d := range outOfScope {
 			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
 		}
+		fmt.Fprintf(os.Stderr, "   To regenerate them, re-run without `--steps=…` (or pass `--accept` to fold their on-disk content into checksums.json without regenerating).\n")
 	}
 	if len(drift) == 0 {
 		return nil

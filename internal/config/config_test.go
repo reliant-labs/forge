@@ -224,76 +224,6 @@ func TestServiceConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
 	}
 }
 
-func TestServiceConfig_DevTargetYAMLRoundTrip(t *testing.T) {
-	tests := []struct {
-		name         string
-		yamlStr      string
-		wantTarget   string
-		wantHostMode bool
-	}{
-		{
-			"explicit host",
-			"name: admin-server\ntype: go_service\npath: handlers/admin-server\ndev_target: host\n",
-			"host",
-			true,
-		},
-		{
-			"explicit cluster",
-			"name: admin-server\ntype: go_service\npath: handlers/admin-server\ndev_target: cluster\n",
-			"cluster",
-			false,
-		},
-		{
-			"omitted (legacy)",
-			"name: admin-server\ntype: go_service\npath: handlers/admin-server\n",
-			"",
-			false,
-		},
-		{
-			"upper-case host",
-			"name: x\ntype: go_service\npath: handlers/x\ndev_target: HOST\n",
-			"HOST",
-			true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var cfg ServiceConfig
-			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
-			if cfg.DevTarget != tt.wantTarget {
-				t.Errorf("DevTarget = %q, want %q", cfg.DevTarget, tt.wantTarget)
-			}
-			if got := cfg.IsHostDevTarget(); got != tt.wantHostMode {
-				t.Errorf("IsHostDevTarget() = %v, want %v", got, tt.wantHostMode)
-			}
-			// EffectiveDevTarget normalises unknown / missing values to "cluster".
-			eff := cfg.EffectiveDevTarget()
-			if tt.wantHostMode && eff != ServiceDevTargetHost {
-				t.Errorf("EffectiveDevTarget() = %q, want host", eff)
-			}
-			if !tt.wantHostMode && eff != ServiceDevTargetCluster {
-				t.Errorf("EffectiveDevTarget() = %q, want cluster", eff)
-			}
-
-			// Round-trip.
-			out, err := yaml.Marshal(&cfg)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			var cfg2 ServiceConfig
-			if err := yaml.Unmarshal(out, &cfg2); err != nil {
-				t.Fatalf("unmarshal round-trip: %v", err)
-			}
-			if cfg2.IsHostDevTarget() != tt.wantHostMode {
-				t.Errorf("round-trip IsHostDevTarget() = %v, want %v", cfg2.IsHostDevTarget(), tt.wantHostMode)
-			}
-		})
-	}
-}
-
 func TestFrontendConfig_KindYAMLRoundTrip(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -541,5 +471,77 @@ func TestProjectConfig_HasReactNativeFrontend(t *testing.T) {
 				t.Errorf("HasReactNativeFrontend() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDockerConfig_BuildContextsYAMLRoundTrip pins the forge.yaml
+// surface for `docker.build_contexts` — both the YAML key spelling and
+// the supported value shapes (local relative path, `docker-image://`
+// scheme ref, registry-style ref). YAML round-trip catches any future
+// rename of the struct tag.
+func TestDockerConfig_BuildContextsYAMLRoundTrip(t *testing.T) {
+	yamlStr := "" +
+		"name: p\n" +
+		"module_path: example.com/p\n" +
+		"docker:\n" +
+		"  registry: ghcr.io/acme\n" +
+		"  build_contexts:\n" +
+		"    shared: ../shared-libs\n" +
+		"    base: docker-image://my-base:latest\n" +
+		"    pinned: ghcr.io/acme/base:v1\n"
+
+	var cfg ProjectConfig
+	if err := yaml.Unmarshal([]byte(yamlStr), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	want := map[string]string{
+		"shared": "../shared-libs",
+		"base":   "docker-image://my-base:latest",
+		"pinned": "ghcr.io/acme/base:v1",
+	}
+	if got := cfg.Docker.BuildContexts; len(got) != len(want) {
+		t.Fatalf("BuildContexts len = %d, want %d (got %v)", len(got), len(want), got)
+	}
+	for k, v := range want {
+		if cfg.Docker.BuildContexts[k] != v {
+			t.Errorf("BuildContexts[%q] = %q, want %q", k, cfg.Docker.BuildContexts[k], v)
+		}
+	}
+
+	// Round-trip: marshal then unmarshal and confirm the map survives.
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var cfg2 ProjectConfig
+	if err := yaml.Unmarshal(out, &cfg2); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	for k, v := range want {
+		if cfg2.Docker.BuildContexts[k] != v {
+			t.Errorf("round-trip BuildContexts[%q] = %q, want %q", k, cfg2.Docker.BuildContexts[k], v)
+		}
+	}
+}
+
+// TestDockerConfig_BuildContextsOmittedWhenEmpty pins that an unset
+// build_contexts map does NOT appear in the marshalled YAML — the
+// omitempty tag keeps existing forge.yaml files byte-stable on
+// round-trip when they don't declare any contexts.
+func TestDockerConfig_BuildContextsOmittedWhenEmpty(t *testing.T) {
+	cfg := ProjectConfig{
+		Name:       "p",
+		ModulePath: "example.com/p",
+		Docker:     DockerConfig{Registry: "ghcr.io/acme"},
+	}
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// `contains` lives in api_test.go in the same package — reuse it
+	// instead of dragging in strings just for one substring check.
+	if got := string(out); contains(got, "build_contexts") {
+		t.Errorf("empty BuildContexts should not appear in marshalled YAML, got:\n%s", got)
 	}
 }

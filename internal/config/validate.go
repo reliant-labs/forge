@@ -130,6 +130,26 @@ type validationIssue struct {
 	fix  string // "Fix: rename to 'auth' or remove if unused."
 }
 
+// isDeprecatedTopLevelKey returns true for top-level forge.yaml keys
+// that were once part of the schema but have been removed. Strict
+// validation skips them rather than reporting "unknown key" so
+// projects that haven't run the corresponding migration skill yet
+// still load.
+//
+// Currently:
+//   - `environments`: removed in the deploy-target-architecture
+//     migration. Per-env deploy info (cluster/namespace/registry/
+//     domain) now lives in KCL `forge.K8sCluster` blocks; per-env
+//     app config lives in sibling `config.<env>.yaml` files. See
+//     the `environments-to-kcl` migration skill.
+func isDeprecatedTopLevelKey(key string) bool {
+	switch key {
+	case "environments":
+		return true
+	}
+	return false
+}
+
 // walkUnknownKeys recursively descends a yaml.Node mapping against the
 // reflected Go type. Unknown keys produce issues with line numbers and
 // suggestions; known keys recurse if they map to nested struct or slice
@@ -160,6 +180,12 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			continue
 		}
 		key := keyNode.Value
+		// Deprecated keys at the top level: silently ignored so
+		// projects mid-migration don't fail validation. The
+		// `environments-to-kcl` skill handles user-facing communication.
+		if path == "" && isDeprecatedTopLevelKey(key) {
+			continue
+		}
 		field, ok := known[key]
 		if !ok {
 			suggestion := closestMatch(key, knownNames(known))
@@ -400,17 +426,10 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 		}
 		// services[].path is intentionally not required: the cli loader
 		// applies a 'handlers/<name>' default when the user omits it.
-		// services[].dev_target controls dev-loop placement. Empty
-		// defaults to "cluster"; only validate when the user set a
-		// non-empty value so old forge.yaml stays accepted as-is.
-		if dt := strings.ToLower(strings.TrimSpace(svc.DevTarget)); dt != "" {
-			if dt != ServiceDevTargetCluster && dt != ServiceDevTargetHost {
-				out = append(out, validationIssue{
-					msg: fmt.Sprintf("%s.dev_target value %q is invalid", prefix, svc.DevTarget),
-					fix: "use one of: cluster, host.",
-				})
-			}
-		}
+		// Host/cluster placement was previously gated here via
+		// services[].dev_target. It moved to the KCL layer (per-env
+		// `deploy:` field on the [Service] schema) — see the
+		// migration/dev-target-to-kcl-deploy skill.
 	}
 
 	for i, fe := range cfg.Frontends {
@@ -430,30 +449,6 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 				out = append(out, validationIssue{
 					msg: fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
 					fix: "use one of: nextjs, react-native, vite-spa.",
-				})
-			}
-		}
-	}
-
-	for i, env := range cfg.Envs {
-		prefix := fmt.Sprintf("environments[%d]", i)
-		if strings.TrimSpace(env.Name) == "" {
-			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name is required", prefix),
-				fix: "add a 'name:' for this environment entry.",
-			})
-		}
-		if strings.TrimSpace(env.Type) == "" {
-			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.type is required", prefix),
-				fix: "add 'type: local' or 'type: cloud'.",
-			})
-		} else {
-			t := strings.ToLower(strings.TrimSpace(env.Type))
-			if t != "local" && t != "cloud" {
-				out = append(out, validationIssue{
-					msg: fmt.Sprintf("%s.type value %q is invalid", prefix, env.Type),
-					fix: "use one of: local, cloud.",
 				})
 			}
 		}

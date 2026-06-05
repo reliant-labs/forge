@@ -51,7 +51,7 @@ const (
 	DefaultAirConfig = ".air.toml"
 )
 
-// RunnerSpec is the dispatch input. The three Runner/AirConfig/DelvePort
+// RunnerSpec is the dispatch input. The Runner/AirConfig/DelvePort
 // fields mirror the KCL HostDeploy block; env composition (env_vars
 // from KCL + an optional gitignored secrets dotenv) is layered by the
 // caller via [LoadSecretsFile] and [MergeEnv] so this package stays
@@ -59,10 +59,34 @@ const (
 //
 // An empty Runner falls through to the legacy go-run shape so projects
 // that haven't migrated to the deploy module yet keep working.
+//
+// WorkingDir + ProjectDir control the subprocess's working directory.
+// When WorkingDir is empty, the subprocess inherits the parent's cwd
+// (the project root, where forge was invoked). When WorkingDir is set:
+//
+//   - absolute paths are used as-is;
+//   - relative paths resolve against ProjectDir (which the CLI sets to
+//     the forge project root).
+//
+// The cross-repo Air case is the load-bearing example: a forge project
+// declares `WorkingDir: "../sibling-repo"` so an Air config that lives
+// in the sibling repo and references build paths relative to ITS own
+// repo root resolves correctly even though forge itself runs from the
+// caller's project root.
 type RunnerSpec struct {
 	Runner    string // "" | "go-run" | "air" | "binary" | "delve"
 	AirConfig string // path relative to project root; default DefaultAirConfig
 	DelvePort int    // dlv --listen=:<port>; default DefaultDelvePort
+
+	// WorkingDir is the subprocess cwd override. Empty = inherit parent.
+	// Relative paths resolve against ProjectDir; absolute paths are
+	// used verbatim.
+	WorkingDir string
+	// ProjectDir is the forge project root used to resolve a relative
+	// WorkingDir. Ignored when WorkingDir is empty or absolute. Empty
+	// ProjectDir + relative WorkingDir falls through to the parent's
+	// cwd interpretation (exec.Cmd default).
+	ProjectDir string
 }
 
 // BuildCmd composes the *exec.Cmd for a host-mode service.
@@ -80,28 +104,51 @@ type RunnerSpec struct {
 // first and report their own error.
 func BuildCmd(ctx context.Context, name string, spec RunnerSpec) *exec.Cmd {
 	runner := strings.TrimSpace(spec.Runner)
+	var cmd *exec.Cmd
 	switch runner {
 	case "air":
 		cfg := spec.AirConfig
 		if cfg == "" {
 			cfg = DefaultAirConfig
 		}
-		return exec.CommandContext(ctx, "air", "-c", cfg)
+		cmd = exec.CommandContext(ctx, "air", "-c", cfg)
 	case "binary":
-		return exec.CommandContext(ctx, "./bin/"+name)
+		cmd = exec.CommandContext(ctx, "./bin/"+name)
 	case "delve":
 		port := spec.DelvePort
 		if port <= 0 {
 			port = DefaultDelvePort
 		}
-		return exec.CommandContext(ctx, "dlv", "exec", "--headless",
+		cmd = exec.CommandContext(ctx, "dlv", "exec", "--headless",
 			fmt.Sprintf("--listen=:%d", port),
 			"--api-version=2", "--accept-multiclient",
 			"--continue", "./bin/"+name)
 	default:
 		// "go-run" or "" or unknown — the legacy shape.
-		return exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
+		cmd = exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
 	}
+	if dir := resolveWorkingDir(spec.WorkingDir, spec.ProjectDir); dir != "" {
+		cmd.Dir = dir
+	}
+	return cmd
+}
+
+// resolveWorkingDir returns the effective cmd.Dir for the given spec.
+// Empty workingDir = empty result (inherit parent cwd). Absolute
+// workingDir = workingDir verbatim. Relative workingDir + non-empty
+// projectDir = filepath.Join(projectDir, workingDir) so cross-repo
+// configs (e.g. WorkingDir="../sibling") resolve against the forge
+// project root rather than wherever the parent shell happens to live.
+// Relative workingDir + empty projectDir falls through to workingDir
+// verbatim (the exec.Cmd default — interpret against caller cwd).
+func resolveWorkingDir(workingDir, projectDir string) string {
+	if workingDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(workingDir) || projectDir == "" {
+		return workingDir
+	}
+	return filepath.Join(projectDir, workingDir)
 }
 
 // IsKnownRunner reports whether the runner name is one of the

@@ -95,6 +95,11 @@ type HostDeploy struct {
 	EnvVars     []KCLEnvVar `json:"env_vars,omitempty"`     // KCL-declared per-env config
 	SecretsFile string      `json:"secrets_file,omitempty"` // path relative to project root; gitignored dotenv
 	DelvePort   int         `json:"delve_port,omitempty"`   // when Runner=="delve"; default 2345
+	// WorkingDir overrides the launched subprocess's working directory.
+	// Relative paths resolve against the project root. Use this for
+	// cross-repo binaries whose runner config (e.g. Air's build_cmd
+	// paths) resolves relative to a sibling repo. Default: project root.
+	WorkingDir string `json:"working_dir,omitempty"`
 }
 
 // K8sCluster is the deploy block for a cluster-mode service. Mirrors
@@ -164,13 +169,33 @@ type RBACSpec struct{}
 // FrontendEntity is one frontend from rendered KCL. Frontends are
 // host-only in the dev loop (no in-cluster Deployment for the dev env);
 // the DevRunner field selects npm/pnpm/yarn.
+//
+// Deploy is the optional discriminator that lets `forge build` skip the
+// production build for frontends that ship via host-mode dev server
+// only (no production artifact ever consumed). When absent (legacy
+// projects whose KCL doesn't emit a frontend `deploy` block) callers
+// fall back to "always build", preserving the pre-discriminator
+// behaviour. Unlike ServiceEntity.Deploy this is a thin Type-only
+// struct — frontends don't carry per-mode config blocks on the Go
+// side; the type discriminator is the only thing the build pipeline
+// needs to make the skip/build decision.
 type FrontendEntity struct {
-	Name      string `json:"name"`
-	Type      string `json:"type,omitempty"`       // "nextjs" | "vite-spa" | "react-native"
-	Path      string `json:"path"`
-	DevRunner string `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port      int    `json:"port,omitempty"`
-	EnvFile   string `json:"env_file,omitempty"`
+	Name      string                  `json:"name"`
+	Type      string                  `json:"type,omitempty"`       // "nextjs" | "vite-spa" | "react-native"
+	Path      string                  `json:"path"`
+	DevRunner string                  `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port      int                     `json:"port,omitempty"`
+	EnvFile   string                  `json:"env_file,omitempty"`
+	Deploy    *FrontendDeployEntity   `json:"deploy,omitempty"`
+}
+
+// FrontendDeployEntity carries the deploy.type discriminator for a
+// frontend. The full per-mode config (replicas, registry, etc.) lives
+// in the KCL output as additional fields the Go side doesn't currently
+// need — only the type drives the build skip-list. Adding new dispatch
+// keys later is a pure additive change.
+type FrontendDeployEntity struct {
+	Type string `json:"type"` // "host" | "cluster" | "external" | "compose"
 }
 
 // CronJobEntity is one cron-shaped binary from rendered KCL. Empty
@@ -233,6 +258,11 @@ func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error
 
 // renderKCLRaw is the side-effecting half — shell or fixture file —
 // kept separate so parseKCLEntities is unit-testable from a literal []byte.
+//
+// The env name is passed to KCL as `-D env=<env>` so user main.k files
+// can conditionally include manifests via the `option("env")` builtin
+// (e.g. only ship in-cluster NATS to k3d, skip it for dev-host where
+// docker-compose provides it).
 func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	if fixture := os.Getenv("FORGE_KCL_RENDER_FIXTURE"); fixture != "" {
 		return os.ReadFile(fixture)
@@ -250,13 +280,24 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// silently misread as "write to file named json", leaving stdout
 	// empty and every downstream consumer (forge run dispatch,
 	// lookupKCLHostDeploy) degrading to a nil result with no error.
-	cmd := exec.CommandContext(ctx, "kcl", "run", kclDir, "--format", "json")
+	cmd := exec.CommandContext(ctx, "kcl", kclRunArgs(kclDir, env)...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("kcl run %s: %w", kclDir, err)
 	}
 	return out.Bytes(), nil
+}
+
+// kclRunArgs returns the `kcl run` argv used by [renderKCLRaw]. Split
+// out so the env-name plumbing can be asserted from a unit test without
+// shelling a real kcl binary.
+func kclRunArgs(kclDir, env string) []string {
+	return []string{
+		"run", kclDir,
+		"--format", "json",
+		"-D", "env=" + env,
+	}
 }
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,

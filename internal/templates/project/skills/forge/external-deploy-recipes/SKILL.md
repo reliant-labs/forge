@@ -69,7 +69,7 @@ forge.Service {
     name = "edge-worker"
     deploy = forge.External {
         deploy_cmd = r"wrangler deploy --name ${SERVICE} --env ${ENV}"
-        rollback_cmd = r"wrangler rollback --name ${SERVICE} --message 'forge rollback to ${LAST_TAG}'"
+        rollback_cmd = r"wrangler rollback --name ${SERVICE} --message 'rollback to ${LAST_TAG}'"
         health_cmd = r"curl -fsS https://${SERVICE}.workers.dev/health"
     }
 }

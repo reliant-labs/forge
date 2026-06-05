@@ -261,6 +261,27 @@ The v1 shape works unchanged in v1. The schema change is one-way
 (`environments[]` removed in v2) — restoring forge.yaml + the older
 binary is the supported rollback.
 
+## Per-env conditional includes
+
+The forge CLI passes the current env name to KCL as `-D env=<env>` on
+every `kcl run` invocation. Use `option("env")` in `main.k` to gate
+fields per-env — typically `additional_manifests` for in-cluster infra
+that should ship to k3d / staging / prod but not to `dev-host` envs
+where docker-compose provides the same services:
+
+```kcl
+_env_name = option("env")
+_is_dev_host = _env_name == "dev-host"
+
+_bundle = forge.Bundle {
+    additional_manifests = [] if _is_dev_host else [
+        # in-cluster NATS, Temporal, LiteLLM, etc.
+    ]
+}
+```
+
+See `kcl/README.md` for the full pattern.
+
 ## See also
 
 - `architecture` skill — where K8sCluster sits in the deploy/kcl

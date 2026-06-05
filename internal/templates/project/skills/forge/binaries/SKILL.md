@@ -24,7 +24,7 @@ The litmus test for binary vs worker is: **does this need its own Deployment?** 
 
 ```bash
 forge add binary workspace-proxy
-forge add binary auth-sidecar --kind long-running
+forge add binary auth-sidecar
 ```
 
 This creates four files:
@@ -91,9 +91,38 @@ Drop this line if your binary needs a strict subset of flags. Add binary-specifi
 
 ## Deploy
 
-The `binaries:` block in forge.yaml is consumed by the KCL deploy templates: each entry produces a Deployment that runs the cobra subcommand (`./<bin> <name>`). The Deployment shape mirrors `cmd/server.go`'s — same image, different command — so your binaries inherit the project's image-pull, registry, and resource-limit defaults without re-stating them.
+The `binaries:` block in forge.yaml seeds `deploy/kcl/<env>/main.k`
+with a `forge.Service { name = "<bin>", command = ["./<bin>", "<name>"], ... }`
+entry — the same `forge.Service` schema services use, just with a
+different `command`. Attach whichever deploy target fits per env:
 
-If a binary needs an Ingress, port forwarding, or extra env vars beyond the shared `pkg/config` set, hand-edit `deploy/kcl/<env>/main.k` to extend the binary's Deployment after `forge generate`.
+```kcl
+# deploy/kcl/prod/main.k
+import forge
+
+_prod_k8s = forge.K8sCluster {
+    cluster = "gke_acme-prod_us-central1_c1"
+    namespace = "myapp-prod"
+    registry = "ghcr.io/acme/myapp"
+}
+
+_bundle = forge.Bundle {
+    services = [
+        forge.Service { name = "api", deploy = _prod_k8s }
+        forge.Service {
+            name = "workspace-proxy"
+            command = ["./myapp", "workspace-proxy"]
+            deploy = _prod_k8s | { replicas = 2 }
+        }
+    ]
+}
+```
+
+Binaries can target any deploy provider (K8sCluster / External /
+Compose / HostDeploy / BuildOnly) — same dispatch as services. If a
+binary needs an Ingress, extra env vars, or per-binary resources, set
+them on the `forge.Service` block directly (`ingress`, `env_vars`,
+`resources` fields on `K8sCluster`).
 
 ## Common patterns
 

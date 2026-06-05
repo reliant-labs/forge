@@ -33,8 +33,8 @@ forge new <name>-next --kind <service|cli|library> --mod <module-path>
 
 | Kind | Use when |
 |------|----------|
-| `service` (default) | Network-facing app: Connect-RPC server, middleware stack, observability, k8s deploy. See `migration/service`. |
-| `cli` | Cobra-based CLI binary. No `pkg/middleware/`, no `cmd/server.go`, no `deploy/`, no service protos. See `migration/cli`. |
+| `service` (default) | Network-facing app: Connect-RPC server, middleware stack, observability, k8s deploy. See `migration-service`. |
+| `cli` | Cobra-based CLI binary. No `pkg/middleware/`, no `cmd/server.go`, no `deploy/`, no service protos. See `migration-cli`. |
 | `library` | Pure Go module with `internal/` and `pkg/` skeletons; no `cmd/` at all. For shared libraries. |
 
 **Pick this at scaffold time.** `--disable` flags only toggle `forge.yaml` features; they do NOT prevent server-shaped files from being emitted. If you scaffold with the wrong kind, wipe and start over rather than pruning by hand.
@@ -139,9 +139,10 @@ If you hit a forge issue mid-migration, **halt the migration**, file/fix the for
 - Specify env: `export PATH=/path/to/go/bin:$PATH`.
 - Halt-and-report rule on new forge bugs (don't fix forge themselves — bring back to the orchestrator).
 
-## Sub-skills
+## Sibling skills
 
-- `migration/service` — server-shaped projects (services, operators, workers, webhooks, packs, k8s)
-- `migration/cli` — CLI / library projects (`cmd/`, second binaries, when contract.go isn't worth it)
+- `migration-service` — server-shaped projects (services, operators, workers, webhooks, packs, k8s)
+- `migration-cli` — CLI / library projects (`cmd/`, second binaries, when contract.go isn't worth it)
+- `migration-upgrade` — upgrading an *already-forge* project to a newer forge binary version
 
 For contract design — applies during migrations and to greenfield code alike — see the top-level `contracts` skill.

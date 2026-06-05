@@ -63,9 +63,6 @@ services:
     type: go_service
     path: handlers/api
     port: 8080
-environments:
-  - name: dev
-    type: local
 database:
   driver: postgres
   migrations_dir: db/migrations
@@ -74,7 +71,6 @@ ci:
 docker:
   registry: ghcr.io
 k8s:
-  provider: k3d
   kcl_dir: deploy/kcl
 lint:
   contract: true

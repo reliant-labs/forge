@@ -245,7 +245,7 @@ Scaffolds `internal/<name>/`:
 - `<name>.go` with a stub implementation
 - The four `*_gen.go` files via `forge generate`
 
-It will refuse if the directory already exists. For ports of existing packages, hand-write `contract.go` first (extracted from the source's exported surface), run `forge generate`, then copy the implementation behind the interface. See `migration/cli` and `migration/service` for the porting flow.
+It will refuse if the directory already exists. For ports of existing packages, hand-write `contract.go` first (extracted from the source's exported surface), run `forge generate`, then copy the implementation behind the interface. See `migration-cli` and `migration-service` for the porting flow.
 
 ## Per-phase lint gate
 

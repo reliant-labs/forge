@@ -6,7 +6,8 @@
 //
 //   - internal/config/config.go      (ContractsConfig.IsExcluded)
 //   - internal/linter/contract/exclude.go (the `go vet`-driven shim)
-//   - internal/linter/forgeconv/internal_pkg_contract.go (inline closure)
+//   - internal/contractcheck/internal_pkg_contract.go (inline closure;
+//     was internal/linter/forgeconv/internal_pkg_contract.go pre-2026-06-04)
 //
 // All three implemented the SAME high-level rule (equality | "/"-suffix
 // | substring) but had silently diverged in two places:

@@ -5,7 +5,23 @@ description: Ship code — lint, build, deploy to k3d/staging/prod, and verify.
 
 # Ship It
 
-> **Scope: Kubernetes only.** `forge deploy` currently targets Kubernetes (k3d for dev, real clusters for staging/prod). Compose, docker-run, and bare-binary deploys are out of scope for this command — drive those from your own Taskfile / Makefile.
+`forge deploy <env>` dispatches per-service on the deploy target declared
+in `deploy/kcl/<env>/main.k`. KCL is canonical: forge.yaml no longer
+carries an `environments:` block, and there is no separate "deploy mode"
+flag — the provider is whatever the service's `deploy = ...` resolves to:
+
+| KCL deploy schema | Provider | Use for |
+|---|---|---|
+| `forge.K8sCluster` | k8s native (`cluster.Apply`) | Anything in a k8s cluster you control (k3d / GKE / EKS) |
+| `forge.External` | generic shell-command | Fly.io, Cloud Run, Cloudflare Workers, ECS, Lambda, Vercel, Railway, systemd-on-VM — anything CLI-driven |
+| `forge.Compose` | docker-compose | Docker-compose on a remote host |
+| `forge.HostDeploy` | host process | Dev-loop only — `forge run` / `forge up` launches it locally |
+| `forge.BuildOnly` | build, don't deploy | CLIs and library binaries with no runtime scheduling |
+
+All four runtime providers honour `--dry-run` and `--rollback` (with the
+caveat that `External` rollback requires `rollback_cmd` set in the KCL
+block). See the `external-deploy-recipes` skill for copy-paste KCL for
+the most common External targets.
 
 The full shipping workflow: pre-flight checks, build, deploy, verify, rollback.
 
@@ -22,22 +38,91 @@ forge test              # full test suite must pass
 ## Build
 
 ```
-forge build             # binary + frontends
-forge build --docker    # Docker images for all services
-forge build --debug     # with debug symbols for Delve
+forge build                     # binary + frontends
+forge build --docker            # Docker images for all services
+forge build --env=<env>         # filter to services NOT in host-only mode for that env
+forge build --tag=<tag>         # override image tag (default: commit SHA)
+forge build --target-arch=arm64 # cross-compile + buildx --platform override
+forge build --debug             # with debug symbols for Delve
 ```
+
+`forge build --env=<env>` reads `deploy/kcl/<env>/main.k` and skips any
+service whose `deploy.type == "host"` — those services live on a
+developer machine, not in an image. The same filter applies inside
+`forge up --env=<env>`.
+
+### Multi-source Docker builds (`docker.build_contexts`)
+
+When a Dockerfile needs files from outside the project tree — a sibling
+checkout the `go.mod` `replace`s against, a shared-libs monorepo
+sibling, a base image you want to pin or override locally — declare the
+extra contexts in `forge.yaml` and let `forge build --docker` (and the
+deploy-time rebuild) pass them to `docker buildx` for you:
+
+```yaml
+docker:
+  registry: ghcr.io/acme
+  build_contexts:
+    shared: ../shared-libs            # relative path, resolved against forge.yaml's dir
+    sibling: ../../other-repo          # sibling checkout (e.g. cp-forge needs reliant code)
+    base: docker-image://acme/base:v3  # registry image — pin or local-override a FROM
+```
+
+Consume them from the Dockerfile via `FROM <name>` or `COPY --from=<name>`:
+
+```dockerfile
+FROM base AS runtime
+COPY --from=shared /go/pkg/mod/cache/ /go/pkg/mod/cache/
+COPY --from=sibling /workspace/internal/ /workspace/sibling-internal/
+```
+
+Each entry becomes a `docker buildx --build-context name=value` arg.
+Relative paths resolve against the project root; anything with a `://`
+scheme (e.g. `docker-image://`, `oci-layout://`) passes through to
+buildkit unchanged. No CLI flag — this is forge.yaml-only, since
+the user already has `docker buildx --build-context` for ad-hoc cases.
 
 ## Deploy
 
 Environment is a positional arg — `forge deploy dev`, not `forge deploy --env dev`.
 
 ```
-forge deploy dev              # local k3d (auto-creates cluster, pushes to localhost:5050)
+forge deploy dev              # auto-detects provider per service (K8sCluster/External/Compose)
 forge deploy staging          # staging environment
 forge deploy prod             # production (must explicitly type "prod")
-forge deploy dev --dry-run    # render manifests without applying — eyeball the YAML first
-forge deploy dev --image-tag  # override image tag (default: commit SHA)
+forge deploy dev --dry-run    # render/print without applying — works for every provider
+forge deploy prod --rollback  # roll back to the previous good tag (mutually exclusive with --tag)
+forge deploy dev --tag=<tag>  # override image tag (default: commit SHA)
 ```
+
+`--dry-run` and `--rollback` are honoured across all four runtime
+providers (K8sCluster, External, Compose, HostDeploy). For External,
+`--rollback` reads the last good tag from
+`.forge/state/external-<env>-<service>.json` and substitutes it into
+`rollback_cmd`; deploys with no `rollback_cmd` declared error loudly
+rather than guessing.
+
+## forge up — full local-dev orchestrator
+
+```
+forge up --env=dev              # build + deploy + host launch + frontend dev — single command
+forge up --env=dev --no-build   # skip the build phase
+forge up --env=dev --no-deploy  # skip the cluster apply
+forge up --env=dev --cluster-only  # only the in-cluster services
+forge up --env=dev --host-only     # only the host-mode services
+forge up --env=dev --background    # detach + return immediately
+```
+
+`forge up` reads `deploy/kcl/<env>/main.k` to split services by
+provider, runs `forge build --env=<env>` (host services skipped),
+applies cluster manifests via `internal/cluster.Apply`, launches host
+services via `internal/hostlaunch`, then dev-serves every frontend.
+
+`forge up` does NOT run `npm run build` for frontends — it `npm run
+dev`s them so the dev server picks up source changes. The declared
+`forge.Frontend.port` is force-injected as `PORT` into the Next.js
+subprocess so the dev server binds the canonical port regardless of
+whatever bled in from the parent env.
 
 ## Verify
 
@@ -64,17 +149,20 @@ Fast revert with `kubectl rollout undo deployment/<name>`, then fix forward via 
 ## Per-env config rendering (`config_gen.k`)
 
 `forge generate` emits `deploy/kcl/<env>/config_gen.k` from
-`proto/config/v1/config.proto` + `forge.yaml -> environments[<env>].config`.
-A few things are surprising on first read:
+`proto/config/v1/config.proto` + the sibling `config.<env>.yaml` file
+next to forge.yaml. (Per-env config used to live in
+`forge.yaml -> environments[].config`; that block was removed — see
+the `environments-to-kcl` migration skill.) A few things are
+surprising on first read:
 
 - **Default-only fields don't appear.** If a proto field has a
-  `default_value:` and no per-env override in `forge.yaml`, the
+  `default_value:` and no per-env override in `config.<env>.yaml`, the
   generated KCL skips the env-var entirely. The binary applies the
   default at startup via `pkg/config/config.go::Load()`. The rendered
   Deployment will NOT show the default as a literal env var, and that
   is intentional — defaults are the binary's contract, not the
   manifest's. To make a default visible in the rendered manifest, add
-  the value (or a `${secret-ref}`) to `environments[<env>].config`.
+  the value (or a `${secret-ref}`) to `config.<env>.yaml`.
 - **Empty categories are elided.** A category that ends up with no
   emitted entries (e.g. all of its fields are non-sensitive defaults)
   is skipped from the generated file rather than emitting an empty
@@ -83,9 +171,43 @@ A few things are surprising on first read:
   and concatenate only the categories that actually produced entries.
 - **Sensitive fields always emit.** Every `(forge.v1.config) = {
   sensitive: true }` field projects to a `secret_ref` EnvVar
-  regardless of whether the env config provides a `${...}` override —
-  the project-level default secret name + lowercased env-var key
-  apply unconditionally.
+  regardless of whether `config.<env>.yaml` provides a `${...}`
+  override — the project-level default secret name + lowercased
+  env-var key apply unconditionally.
+
+## Per-env conditional manifests via `option("env")`
+
+The forge CLI passes the current env name to KCL as `-D env=<env>` on
+every render invocation. Use `option("env")` in `main.k` to gate
+fields per-env — typically `additional_manifests` for in-cluster infra
+that should ship to k3d / staging / prod but not to a `dev-host` env
+where docker-compose provides the same dependencies:
+
+```kcl
+_env = option("env")
+
+_bundle = forge.Bundle {
+    additional_manifests = [] if _env == "dev-host" else [
+        # in-cluster NATS, Temporal, LiteLLM, etc.
+    ]
+}
+```
+
+## `features:` block — disabling subsystems
+
+`forge.yaml` carries a `features:` block that gates `forge deploy`,
+`forge build`, frontend codegen, packs, starters, CI, docs, and
+observability. Defaults differ per `kind:`:
+
+- `service` (default): every feature enabled.
+- `cli`: build/ci/docs enabled; deploy/frontend/packs/starters/
+  observability/codegen disabled.
+- `library`: docs/contracts enabled; everything else disabled.
+
+Disabled commands return `feature 'X' is disabled in forge.yaml.
+Set features.X: true to enable.`. Disabled phases inside `forge up`
+log a skip line and continue — `forge up` succeeds against whatever
+subsystems are turned on.
 
 ## k3d local-registry mirror (`localhost:5050` ↔ `registry.localhost:5000`)
 

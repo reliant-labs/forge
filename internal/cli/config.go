@@ -107,20 +107,6 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		}
 	}
 
-	// Normalize environment type casing (accept "LOCAL"/"CLOUD" from older
-	// generators and canonicalize to lowercase).
-	for i := range cfg.Envs {
-		if cfg.Envs[i].Type != "" {
-			cfg.Envs[i].Type = normalizeEnum(cfg.Envs[i].Type)
-		}
-	}
-
-	// Normalize Kubernetes provider casing (accept "K3D" from older
-	// generators and canonicalize to lowercase).
-	if cfg.K8s.Provider != "" {
-		cfg.K8s.Provider = normalizeEnum(cfg.K8s.Provider)
-	}
-
 	return &cfg, nil
 }
 
@@ -129,14 +115,4 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 // spellings continue to work alongside newly generated projects.
 func normalizeEnum(v string) string {
 	return strings.ToLower(strings.ReplaceAll(v, "-", "_"))
-}
-
-// findEnvironment looks up an environment by name from the project config.
-func findEnvironment(c *config.ProjectConfig, name string) *config.EnvironmentConfig {
-	for i := range c.Envs {
-		if c.Envs[i].Name == name {
-			return &c.Envs[i]
-		}
-	}
-	return nil
 }

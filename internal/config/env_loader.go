@@ -9,57 +9,43 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// ErrEnvironmentNotFound is returned when an env name does not match any
-// EnvironmentConfig in the project config and there is no sibling file
-// to fall back on.
-var ErrEnvironmentNotFound = errors.New("environment not found in forge.yaml or as a config.<env>.yaml sibling file")
+// ErrEnvironmentNotFound is returned when no sibling `config.<env>.yaml`
+// file exists for envName.
+var ErrEnvironmentNotFound = errors.New("environment not found: no config.<env>.yaml sibling file")
 
-// LoadEnvironmentConfig returns the merged per-environment config map for
-// envName, layering the optional sibling file `config.<env>.yaml` on top
-// of the inline `environments[<envName>].config` in forge.yaml.
+// LoadEnvironmentConfig returns the per-environment config map loaded
+// from the sibling file `config.<env>.yaml` next to forge.yaml.
 //
-// projectDir is the directory containing forge.yaml (used to locate the
-// sibling file). cfg is the already-loaded ProjectConfig.
+// projectDir is the directory containing forge.yaml. envName names the
+// environment (`dev`, `staging`, `prod`, …).
 //
-// Resolution order (later wins):
-//  1. environments[<envName>].config from forge.yaml (the inline shape).
-//  2. sibling file config.<envName>.yaml at projectDir.
+// Returns [ErrEnvironmentNotFound] when no `config.<env>.yaml` is
+// present. Returns an empty map (and nil error) when the file is
+// present but empty.
 //
-// Both sources are optional. If neither exists and there is no matching
-// EnvironmentConfig entry, [ErrEnvironmentNotFound] is returned. An empty
-// non-nil map is returned when an env exists but defines no config.
-func LoadEnvironmentConfig(cfg *ProjectConfig, projectDir, envName string) (map[string]any, error) {
-	merged := map[string]any{}
-	envExists := false
-
-	// 1. Inline config from forge.yaml.
-	for _, env := range cfg.Envs {
-		if env.Name == envName {
-			envExists = true
-			for k, v := range env.Config {
-				merged[k] = v
-			}
-			break
-		}
-	}
-
-	// 2. Sibling file config.<env>.yaml (overrides inline).
+// Per-env app config (runtime AppConfig values keyed by snake_case
+// proto field names) lives exclusively in sibling files now —
+// forge.yaml `environments[]` is gone. Per-env deploy config
+// (cluster/namespace/registry/domain) lives in KCL `forge.K8sCluster`
+// blocks.
+func LoadEnvironmentConfig(projectDir, envName string) (map[string]any, error) {
 	siblingPath := filepath.Join(projectDir, fmt.Sprintf("config.%s.yaml", envName))
-	if data, err := os.ReadFile(siblingPath); err == nil {
-		envExists = true
-		var sibling map[string]any
-		if err := yaml.Unmarshal(data, &sibling); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", siblingPath, err)
+	data, err := os.ReadFile(siblingPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %q", ErrEnvironmentNotFound, envName)
 		}
-		for k, v := range sibling {
-			merged[k] = v
-		}
-	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read %s: %w", siblingPath, err)
 	}
-
-	if !envExists {
-		return nil, fmt.Errorf("%w: %q", ErrEnvironmentNotFound, envName)
+	merged := map[string]any{}
+	if len(data) == 0 {
+		return merged, nil
+	}
+	if err := yaml.Unmarshal(data, &merged); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", siblingPath, err)
+	}
+	if merged == nil {
+		merged = map[string]any{}
 	}
 	return merged, nil
 }

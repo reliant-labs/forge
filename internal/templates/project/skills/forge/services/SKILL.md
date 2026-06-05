@@ -37,7 +37,7 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 - **Always use `forge add` or `forge package new`** — never copy-paste an existing service or package directory.
 - **One service per proto package** — keep proto definitions focused on a single domain.
 - **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
-- **Service names accept hyphens** in `forge add service <name>` (e.g. `admin-server`). Forge stores the kebab-case form as the `forge.yaml` display key, snake-cases the on-disk directory (`handlers/admin_server/`), and uses a single lowercase Go identifier (`package admin`) for the package decl. **Go package decls themselves must be lowercase with no separators.** See `architecture` for the full naming-conventions table.
+- **Service names canonicalize** the same way worker names do: lowercase with `-` and `_` stripped. `forge add service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk directory, Go package decl, and `forge.yaml` `path:` are all `adminserver` (`handlers/adminserver/`, `package adminserver`, `path: handlers/adminserver`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
 
 ## When This Skill Is Not Enough
 

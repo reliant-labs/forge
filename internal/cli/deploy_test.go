@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -8,29 +11,41 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
+// writeKCLFixture writes a JSON fixture file the RenderKCL helper
+// picks up via FORGE_KCL_RENDER_FIXTURE. Returns the fixture path so
+// the test can pass it through t.Setenv.
+func writeKCLFixture(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "render.json")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return p
+}
+
 // TestExpectedClusterForEnv_DevDefault confirms the dev default
-// of `k3d-<project>` so existing projects don't need to add a
-// `cluster:` field to forge.yaml to benefit from the guard.
+// of `k3d-<project>` so existing projects don't need to declare a
+// K8sCluster to benefit from the guard.
 func TestExpectedClusterForEnv_DevDefault(t *testing.T) {
+	// Empty KCL render → fall through to the dev default.
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, `{}`))
 	cfg := &config.ProjectConfig{Name: "cp-forge"}
-	got := expectedClusterForEnv(cfg, "dev")
+	got := expectedClusterForEnv(context.Background(), cfg, "dev")
 	want := "k3d-cp-forge"
 	if got != want {
 		t.Errorf("dev default: want %q, got %q", want, got)
 	}
 }
 
-// TestExpectedClusterForEnv_ExplicitDeclaration confirms that
-// `environments[].cluster` in forge.yaml takes precedence over
+// TestExpectedClusterForEnv_KCLDeclaration confirms that
+// `forge.K8sCluster.cluster` in rendered KCL takes precedence over
 // the dev default.
-func TestExpectedClusterForEnv_ExplicitDeclaration(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "prod", Cluster: "gke_acme-prod_us-central1_cluster-1"},
-		},
-	}
-	got := expectedClusterForEnv(cfg, "prod")
+func TestExpectedClusterForEnv_KCLDeclaration(t *testing.T) {
+	body := `{"services":[{"name":"api","deploy":{"type":"cluster","cluster":"gke_acme-prod_us-central1_cluster-1"}}]}`
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, body))
+	cfg := &config.ProjectConfig{Name: "cp-forge"}
+	got := expectedClusterForEnv(context.Background(), cfg, "prod")
 	want := "gke_acme-prod_us-central1_cluster-1"
 	if got != want {
 		t.Errorf("explicit declaration: want %q, got %q", want, got)
@@ -41,29 +56,23 @@ func TestExpectedClusterForEnv_ExplicitDeclaration(t *testing.T) {
 // envs without an explicit cluster — the guard is skipped (with a
 // notice), preserving backwards compatibility.
 func TestExpectedClusterForEnv_NoDeclaration(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "staging"},
-		},
-	}
-	got := expectedClusterForEnv(cfg, "staging")
+	body := `{"services":[{"name":"api","deploy":{"type":"cluster"}}]}`
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, body))
+	cfg := &config.ProjectConfig{Name: "cp-forge"}
+	got := expectedClusterForEnv(context.Background(), cfg, "staging")
 	if got != "" {
 		t.Errorf("no declaration should return empty, got %q", got)
 	}
 }
 
 // TestExpectedClusterForEnv_DevExplicitOverride confirms that even for
-// dev, an explicit declaration wins over the k3d-<project> default —
+// dev, an explicit KCL declaration wins over the k3d-<project> default —
 // supports projects with a non-default k3d cluster name.
 func TestExpectedClusterForEnv_DevExplicitOverride(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Envs: []config.EnvironmentConfig{
-			{Name: "dev", Cluster: "k3d-my-custom-name"},
-		},
-	}
-	got := expectedClusterForEnv(cfg, "dev")
+	body := `{"services":[{"name":"api","deploy":{"type":"cluster","cluster":"k3d-my-custom-name"}}]}`
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", writeKCLFixture(t, body))
+	cfg := &config.ProjectConfig{Name: "cp-forge"}
+	got := expectedClusterForEnv(context.Background(), cfg, "dev")
 	want := "k3d-my-custom-name"
 	if got != want {
 		t.Errorf("dev explicit override: want %q, got %q", want, got)
@@ -216,114 +225,12 @@ func TestEffectiveTargetArch(t *testing.T) {
 	}
 }
 
-// TestHostDeploymentSkipSet_DevOnly confirms the dev-only host-mode
-// filter expands each host-marked service to both its bare and
-// project-prefixed Deployment name, so the rollout-wait loop matches
-// either binary-shape's KCL render.
-func TestHostDeploymentSkipSet_DevOnly(t *testing.T) {
-	cfg := &config.ProjectConfig{
-		Name: "cp-forge",
-		Services: []config.ServiceConfig{
-			{Name: "admin-server", DevTarget: "host"},
-			{Name: "workspace-controller"},
-			{Name: "workspace-proxy", DevTarget: "host"},
-		},
-	}
+// Note: TestHostDeploymentSkipSet_DevOnly was removed when
+// services[].dev_target moved to the KCL layer in feat/kcl-orchestration.
+// The replacement filter reads `deploy: "host"` from rendered KCL — see
+// deploy_kcl_test.go for the KCL-side equivalent coverage.
 
-	t.Run("dev env produces both bare and prefixed names", func(t *testing.T) {
-		got := hostDeploymentSkipSet(cfg, "dev")
-		want := []string{"admin-server", "cp-forge-admin-server", "workspace-proxy", "cp-forge-workspace-proxy"}
-		if len(got) != len(want) {
-			t.Fatalf("len(skip set) = %d, want %d (got %v)", len(got), len(want), got)
-		}
-		for _, name := range want {
-			if _, ok := got[name]; !ok {
-				t.Errorf("expected %q in skip set, got %v", name, got)
-			}
-		}
-		// Cluster-mode service must not be in the skip set.
-		if _, ok := got["workspace-controller"]; ok {
-			t.Errorf("cluster-mode service leaked into skip set: %v", got)
-		}
-	})
-
-	t.Run("non-dev env produces empty set", func(t *testing.T) {
-		for _, env := range []string{"staging", "prod", ""} {
-			if got := hostDeploymentSkipSet(cfg, env); len(got) != 0 {
-				t.Errorf("hostDeploymentSkipSet(%q) = %v, want empty", env, got)
-			}
-		}
-	})
-
-	t.Run("nil cfg yields empty set", func(t *testing.T) {
-		if got := hostDeploymentSkipSet(nil, "dev"); len(got) != 0 {
-			t.Errorf("nil cfg should yield empty set, got %v", got)
-		}
-	})
-}
-
-// TestRenderedDeploymentNames verifies the extractor parses the multi-
-// document YAML stream forge produces from KCL, returning only
-// Deployment kind names. Non-Deployments and malformed docs are skipped.
-func TestRenderedDeploymentNames(t *testing.T) {
-	manifests := `apiVersion: v1
-kind: Service
-metadata:
-  name: workspace-controller
-spec:
-  ports: []
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: workspace-controller
-  labels:
-    app.kubernetes.io/managed-by: forge
-spec: {}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cp-forge-config
-data:
-  KEY: value
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: workspace-proxy
-spec: {}
-`
-	got := renderedDeploymentNames(manifests)
-	want := []string{"workspace-controller", "workspace-proxy"}
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Errorf("[%d]: got %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-// TestRenderedDeploymentNames_EmptyAndMalformed confirms the extractor
-// degrades gracefully on edge cases: empty input, all-non-Deployment,
-// and unparseable docs all return an empty slice rather than panicking.
-func TestRenderedDeploymentNames_EmptyAndMalformed(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-	}{
-		{"empty", ""},
-		{"whitespace", "   \n\n  "},
-		{"no Deployments", "kind: Service\nmetadata:\n  name: x\n"},
-		{"malformed YAML", "this is not yaml: : :"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := renderedDeploymentNames(c.in); len(got) != 0 {
-				t.Errorf("expected empty slice, got %v", got)
-			}
-		})
-	}
-}
+// Note: TestRenderedDeploymentNames and the empty/malformed variant
+// were moved to internal/cluster/cluster_test.go alongside the function
+// they exercise (cluster.RenderedDeploymentNames) when the cluster
+// pipeline was lifted out of internal/cli.

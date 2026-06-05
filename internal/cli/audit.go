@@ -88,6 +88,7 @@ type AuditReport struct {
 var auditCategoryOrder = []string{
 	"version",
 	"shape",
+	"features",
 	"environments",
 	"conventions",
 	"codegen",
@@ -168,7 +169,8 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 
 	report.Categories["version"] = auditVersion(cfg)
 	report.Categories["shape"] = auditShape(cfg, abs)
-	report.Categories["environments"] = auditEnvironments(cfg)
+	report.Categories["features"] = auditFeatures(cfg)
+	report.Categories["environments"] = auditEnvironments(abs)
 	report.Categories["conventions"] = auditConventions(cfg, abs)
 	report.Categories["codegen"] = auditCodegen(cfg, abs)
 	report.Categories["packs"] = auditPacks(cfg)
@@ -294,53 +296,88 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
 }
 
-// auditEnvironments checks that every declared environment has the
-// fields a deploy run needs to be safe — most importantly, that
-// non-dev environments declare `cluster:` so the kubectl-context guard
-// in `forge deploy <env>` can refuse to apply against the wrong
-// cluster. Dev's cluster defaults to k3d-<project> when omitted; for
-// staging/prod there is no safe default, so we warn.
-func auditEnvironments(cfg *config.ProjectConfig) AuditCategory {
-	if cfg == nil || len(cfg.Envs) == 0 {
+// auditFeatures surfaces the resolved `features:` block from forge.yaml
+// at audit time. The category lists every feature gated by config —
+// deploy/build/frontend/packs/starters/ci/docs/observability/... — and
+// whether it resolves to enabled (default for nil) or disabled
+// (explicit false). The additive-extension contract holds: new
+// features added to config.FeaturesConfig.EffectiveFeatures() show up
+// here automatically, sub-agents can branch on
+// `.features.details.<name>` directly.
+//
+// Status is always ok — this category is informational. Sub-agents
+// that care about a specific gated subsystem check the boolean in
+// details; humans reading the human-formatted audit see a one-line
+// "N enabled, M disabled" summary plus the per-feature breakdown.
+func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
+	if cfg == nil {
+		return AuditCategory{
+			Status:  AuditStatusError,
+			Summary: "no forge.yaml — features unknown",
+		}
+	}
+	effective := cfg.Features.EffectiveFeatures()
+	// Pre-allocate to non-nil empty slices so the JSON encoder
+	// emits `[]` rather than `null` when nothing falls into a
+	// bucket — sub-agents that `jq '.disabled | length'` need a
+	// numeric length regardless of state.
+	enabled := []string{}
+	disabled := []string{}
+	for name, on := range effective {
+		if on {
+			enabled = append(enabled, name)
+		} else {
+			disabled = append(disabled, name)
+		}
+	}
+	sort.Strings(enabled)
+	sort.Strings(disabled)
+
+	// Surface the resolved map AND the enabled/disabled splits — the
+	// map is the canonical machine shape; the splits give humans a
+	// one-glance answer to "what's off?" without scanning the whole
+	// dict. Both forms cost ~0 bytes and stay stable across versions.
+	details := map[string]any{
+		"resolved": effective,
+		"enabled":  enabled,
+		"disabled": disabled,
+	}
+	summary := fmt.Sprintf("%d feature(s) enabled, %d disabled", len(enabled), len(disabled))
+	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
+}
+
+// auditEnvironments inventories every environment declared via a
+// `deploy/kcl/<env>/main.k` file. Source of truth is the filesystem —
+// forge.yaml no longer declares environments. Per-env deploy info
+// (cluster / namespace / registry / domain) lives in the rendered
+// KCL on `forge.K8sCluster` blocks; this audit just confirms the env
+// directories exist and lists them.
+func auditEnvironments(projectDir string) AuditCategory {
+	envs, err := ListEnvs(projectDir)
+	if err != nil {
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("env discovery failed: %v", err),
+		}
+	}
+	if len(envs) == 0 {
 		return AuditCategory{
 			Status:  AuditStatusOK,
-			Summary: "no environments declared (n/a)",
+			Summary: "no environments declared (no deploy/kcl/<env>/main.k)",
 		}
 	}
 	type envEntry struct {
-		Name    string `json:"name"`
-		Cluster string `json:"cluster,omitempty"`
-		Status  string `json:"status"`
+		Name   string `json:"name"`
+		Status string `json:"status"`
 	}
-	var entries []envEntry
-	var missing []string
-	for _, env := range cfg.Envs {
-		entry := envEntry{Name: env.Name, Cluster: env.Cluster}
-		switch {
-		case env.Cluster != "":
-			entry.Status = "ok"
-		case env.Name == "dev":
-			// Dev has a safe default (k3d-<project>); not a warning.
-			entry.Status = "default (k3d-" + cfg.Name + ")"
-		default:
-			entry.Status = "missing cluster"
-			missing = append(missing, env.Name)
-		}
-		entries = append(entries, entry)
+	entries := make([]envEntry, 0, len(envs))
+	for _, env := range envs {
+		entries = append(entries, envEntry{Name: env, Status: "ok"})
 	}
 	details := map[string]any{"environments": entries}
-	if len(missing) > 0 {
-		details["missing_cluster"] = missing
-		details["hint"] = "declare `environments[].cluster: <context-name>` in forge.yaml for each non-dev env so `forge deploy <env>` can guard against wrong-context applies"
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("%d env(s) without cluster: %s", len(missing), strings.Join(missing, ", ")),
-			Details: details,
-		}
-	}
 	return AuditCategory{
 		Status:  AuditStatusOK,
-		Summary: fmt.Sprintf("%d environment(s) declared, all have cluster: set", len(cfg.Envs)),
+		Summary: fmt.Sprintf("%d environment(s) declared (deploy/kcl/<env>/main.k)", len(envs)),
 		Details: details,
 	}
 }

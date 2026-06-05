@@ -5,7 +5,6 @@
 package packs
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -15,12 +14,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/template"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/installkit"
 )
 
 // PackKind identifies the language/runtime a pack targets.
@@ -432,7 +430,7 @@ func installedPacksWithUnrenderedProto(projectDir string, cfg *config.ProjectCon
 			continue
 		}
 		for _, f := range ip.Files {
-			if !strings.HasSuffix(f.Output, ".proto") {
+			if !installkit.IsProtoFile(f.Output) {
 				continue
 			}
 			// proto/<ns>/<version>/<file>.proto → gen/<ns>/<version>/
@@ -459,7 +457,7 @@ func installedPacksWithUnrenderedProto(projectDir string, cfg *config.ProjectCon
 // imports in adjacent pack files point at not-yet-generated gen/<x>/v1 paths.
 func hasNewProtoFile(files []PackFile) bool {
 	for _, f := range files {
-		if strings.HasSuffix(f.Output, ".proto") {
+		if installkit.IsProtoFile(f.Output) {
 			return true
 		}
 	}
@@ -604,7 +602,7 @@ func (p *Pack) Remove(projectDir string, cfg *config.ProjectConfig) error {
 	// frontend packs; one set total for Go packs).
 	for _, ds := range dataSets {
 		for _, f := range p.Files {
-			rendered, err := renderPathTemplate(f.Output, ds)
+			rendered, err := installkit.RenderPathTemplate(f.Output, ds)
 			if err != nil {
 				fmt.Printf("  Warning: could not resolve %s: %v\n", f.Output, err)
 				continue
@@ -633,7 +631,7 @@ func (p *Pack) Remove(projectDir string, cfg *config.ProjectConfig) error {
 	// Also remove generate-hook outputs
 	for _, ds := range dataSets {
 		for _, f := range p.Generate {
-			rendered, err := renderPathTemplate(f.Output, ds)
+			rendered, err := installkit.RenderPathTemplate(f.Output, ds)
 			if err != nil {
 				fmt.Printf("  Warning: could not resolve %s: %v\n", f.Output, err)
 				continue
@@ -681,63 +679,68 @@ func (p *Pack) RenderGenerateFiles(projectDir string, cfg *config.ProjectConfig)
 // write into frontends/{{.FrontendName}}/... without hardcoding a name.
 // For pack manifests with no `{{` in the path the input is returned
 // unchanged (no parsing cost).
+//
+// This is a thin wrapper over installkit.RenderAndWrite. The wrapper
+// maps PackFile.Overwrite ("always"/"once"/"never") to the installkit
+// policy enum and emits the pack-specific log line for skips — historical
+// pack behaviour printed distinct strings for "never" vs "once"
+// ("Skipping (exists)" vs "Skipping (already exists)"), so we preserve
+// both rather than collapse them.
 func (p *Pack) renderFile(f PackFile, projectDir string, data map[string]any) error {
-	resolvedOutput, err := renderPathTemplate(f.Output, data)
+	policy := overwritePolicyFor(f.Overwrite)
+	basePath := filepath.Join(p.Name, "templates")
+	outcome, err := installkit.RenderAndWrite(
+		packsFS, basePath, f.Template, f.Output, projectDir, data,
+		installkit.WriteOpts{
+			OverwritePolicy: policy,
+			LogFunc:         func(format string, args ...any) { fmt.Printf(format, args...) },
+		},
+	)
 	if err != nil {
-		return fmt.Errorf("render output path %q: %w", f.Output, err)
+		return err
 	}
-	target := filepath.Join(projectDir, resolvedOutput)
-
-	// Check overwrite policy
-	if f.Overwrite == "never" || f.Overwrite == "once" {
-		if _, err := os.Stat(target); err == nil {
-			if f.Overwrite == "never" {
-				fmt.Printf("  Skipping (exists): %s\n", resolvedOutput)
-				return nil
-			}
-			// "once" means skip if already written by pack before
-			// For simplicity, treat same as "never" on re-install
-			fmt.Printf("  Skipping (already exists): %s\n", resolvedOutput)
-			return nil
+	if outcome.Skipped {
+		// Preserve the two distinct pack-historical log strings: "never"
+		// uses "(exists)" and "once" uses "(already exists)". The
+		// behaviour is the same — only the message differs.
+		if strings.EqualFold(strings.TrimSpace(f.Overwrite), "never") {
+			fmt.Printf("  Skipping (exists): %s\n", outcome.ResolvedOutput)
+		} else {
+			fmt.Printf("  Skipping (already exists): %s\n", outcome.ResolvedOutput)
 		}
 	}
-
-	// Render template using the shared template engine
-	basePath := filepath.Join(p.Name, "templates")
-	content, err := templates.RenderFromFS(packsFS, basePath, f.Template, data)
-	if err != nil {
-		return fmt.Errorf("render template %s: %w", f.Template, err)
-	}
-
-	// Ensure output directory exists
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("create directory for %s: %w", resolvedOutput, err)
-	}
-
-	// Write the file
-	if err := os.WriteFile(target, content, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", resolvedOutput, err)
-	}
-
-	fmt.Printf("  Created: %s\n", resolvedOutput)
 	return nil
 }
 
-// renderPathTemplate evaluates a Go-template string against data. Plain
-// (template-free) inputs short-circuit so the common case has no cost.
+// renderPathTemplate is a thin alias for installkit.RenderPathTemplate,
+// retained for the in-package test that locks the plain-string short-circuit
+// behaviour. Production callers should use installkit.RenderPathTemplate
+// directly.
 func renderPathTemplate(in string, data map[string]any) (string, error) {
-	if !strings.Contains(in, "{{") {
-		return in, nil
+	return installkit.RenderPathTemplate(in, data)
+}
+
+// overwritePolicyFor maps PackFile.Overwrite to an installkit policy. The
+// pack manifest values are "always" / "once" / "never"; anything else
+// (including empty) is treated as "once" to preserve the historical
+// default (the renderFile logic shipped before this refactor treated
+// missing Overwrite as a no-special-case write, i.e. "always" — but that
+// was a bug masked by manifests always setting the field. The safer
+// default is OnceSkip).
+//
+// Test note: pack manifests in this repo always set Overwrite explicitly,
+// so this default is never exercised by the existing test suite.
+func overwritePolicyFor(s string) installkit.OverwritePolicy {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "always":
+		return installkit.Always
+	case "never":
+		return installkit.NeverSkip
+	case "once":
+		return installkit.OnceSkip
+	default:
+		return installkit.Always
 	}
-	tmpl, err := template.New("path").Parse(in)
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
 }
 
 // IsInstalled checks whether a pack is in the installed list.
@@ -807,7 +810,7 @@ func (p *Pack) detectFreshInstallCollisions(projectDir string, data map[string]a
 		if strings.EqualFold(strings.TrimSpace(f.Overwrite), "always") {
 			return
 		}
-		rendered, err := renderPathTemplate(f.Output, data)
+		rendered, err := installkit.RenderPathTemplate(f.Output, data)
 		if err != nil {
 			// If we can't even render the path, fall back to flagging the
 			// raw template — better a confusing message than a silent skip.
@@ -954,18 +957,10 @@ func removeMigrationsBySlug(projectDir, slug string) ([]string, error) {
 }
 
 // ValidPackName checks that a pack name contains only safe characters.
+// Delegates to installkit.ValidSlug so the same character class governs
+// packs, starters, and any future installable thing.
 func ValidPackName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, c := range name {
-		isLower := c >= 'a' && c <= 'z'
-		isDigit := c >= '0' && c <= '9'
-		if !isLower && !isDigit && c != '-' && c != '_' {
-			return false
-		}
-	}
-	return !strings.HasPrefix(name, "-") && !strings.HasPrefix(name, "_")
+	return installkit.ValidSlug(name)
 }
 
 // mergePackConfig produces the PackConfig map exposed to templates: a

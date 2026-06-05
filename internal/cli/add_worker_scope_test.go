@@ -242,3 +242,75 @@ func TestBootstrapOnlyScopeExcludesStompedSteps(t *testing.T) {
 		}
 	}
 }
+
+// TestMocksScopeSkipsTier1DriftGuard pins the load-bearing semantic of the
+// `mocks` scope: the Tier-1 file-stomp guard MUST NOT be in the allowlist.
+// The whole point of the scope is to let users regen mock_gen.go after a
+// contract.go change without first reconciling unrelated Tier-1 drift
+// (a hand-edited workflow yaml, a touched cmd/server.go) — mocks live
+// behind a "DO NOT EDIT" banner and are deterministic from contract.go,
+// so they cannot stomp any Tier-1 file. FRICTION 2026-06-04: two
+// downstream projects reported this exact friction.
+func TestMocksScopeSkipsTier1DriftGuard(t *testing.T) {
+	allow := scopedStepAllowlist["mocks"]
+	if allow == nil {
+		t.Fatal("scopedStepAllowlist is missing the mocks entry")
+	}
+	if allow["check Tier-1 file-stomp guard"] {
+		t.Errorf("mocks scope must NOT include \"check Tier-1 file-stomp guard\" — " +
+			"the scope's reason to exist is letting users regen mock_gen.go without " +
+			"first reconciling unrelated Tier-1 drift. Mocks are deterministic from " +
+			"contract.go and cannot stomp any Tier-1 file.")
+	}
+}
+
+// TestMocksScopeRunsMockStep pins the other half of the semantic: the
+// mock-regen step itself MUST be in the allowlist (otherwise the scope
+// is a no-op).
+func TestMocksScopeRunsMockStep(t *testing.T) {
+	allow := scopedStepAllowlist["mocks"]
+	if allow == nil {
+		t.Fatal("scopedStepAllowlist is missing the mocks entry")
+	}
+	if !allow["service mocks"] {
+		t.Errorf("mocks scope must include \"service mocks\" — without it the scope " +
+			"would skip the very step it's named for and produce a no-op generate.")
+	}
+}
+
+// TestMocksScopeExcludesUnrelatedHeavyEmitters keeps the scope's surface
+// area tight. The point is a fast scoped regen — if a future refactor
+// drags in the full bootstrap/CI/frontend emitter set, the scope loses
+// its reason to exist (it becomes just "the full pipeline minus the
+// Tier-1 guard", which is what `--force` is for). This test trips when
+// any of the unrelated-to-mocks heavyweight emitters slip into the
+// allowlist.
+func TestMocksScopeExcludesUnrelatedHeavyEmitters(t *testing.T) {
+	allow := scopedStepAllowlist["mocks"]
+	if allow == nil {
+		t.Fatal("scopedStepAllowlist is missing the mocks entry")
+	}
+	unrelated := []string{
+		"CI workflows",                  // .github/workflows/ci.yml
+		"regenerate infra files",        // deploy/ / Dockerfile.* / etc.
+		"per-env deploy config",         // deploy/ env-specific KCL
+		"Grafana dashboards",            // observability dashboards
+		"frontend hooks",                // frontends/<name>/src/hooks/*-hooks.ts
+		"frontend CRUD pages",           // frontends/<name>/src/app/<svc>/page.tsx
+		"frontend nav + dashboard",      // frontends/<name>/src/components/nav.tsx
+		"frontend mocks + transport",    // frontends/<name>/src/lib/mock-transport.ts
+		"pkg/app/bootstrap.go",          // bootstrap-only scope's territory
+		"pkg/app/testing.go",            // bootstrap-only scope's territory
+		"pkg/app/migrate.go",            // bootstrap-only scope's territory
+		"service stubs",                 // hand-editable service.go scaffolds
+		"go build (validate generated code)", // user runs go test in their loop
+	}
+	for _, name := range unrelated {
+		if allow[name] {
+			t.Errorf("mocks scope must NOT include step %q — the scope is a fast-path "+
+				"for mock-only regen. Including heavyweight or unrelated emitters defeats "+
+				"the reason the scope exists.",
+				name)
+		}
+	}
+}

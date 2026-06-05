@@ -301,6 +301,205 @@ func TestExternal_Rollback_NoRollbackCmd(t *testing.T) {
 	}
 }
 
+// TestExternal_Deploy_DryRun confirms --dry-run prints the resolved
+// deploy_cmd + health_cmd lines but does NOT exec anything and does
+// NOT write the state file. The trap this guards against: a user runs
+// `forge deploy prod --dry-run` expecting a preview and instead ships
+// their external CLI for real.
+func TestExternal_Deploy_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env:        "prod",
+		ProviderID: "external",
+		ImageTag:   "v9",
+		DryRun:     true,
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				External: &ExternalSpec{
+					Image:     "x/edge",
+					DeployCmd: "flyctl deploy --image ${IMAGE}:${TAG} --app ${SERVICE}",
+					HealthCmd: "flyctl status --app ${SERVICE}",
+				},
+			},
+		},
+	}
+	out := captureStdout(t, func() {
+		if err := p.Deploy(context.Background(), group); err != nil {
+			t.Fatalf("Deploy: %v", err)
+		}
+	})
+	if len(r.calls) != 0 {
+		t.Fatalf("dry-run should NOT exec, got %d call(s): %v", len(r.calls), r.calls)
+	}
+	wantLines := []string{
+		"[DRY-RUN] would exec: sh -c flyctl deploy --image x/edge:v9 --app edge",
+		"[DRY-RUN] would exec: sh -c flyctl status --app edge",
+	}
+	for _, want := range wantLines {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout should contain %q, got:\n%s", want, out)
+		}
+	}
+	// And confirm no state file was written.
+	statePath := filepath.Join(dir, ".forge/state/external-prod-edge.json")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("state file should NOT exist after dry-run, got err=%v", err)
+	}
+}
+
+// TestExternal_Rollback_DryRun confirms the rollback dry-run path
+// prints the substituted rollback_cmd and exec's nothing.
+func TestExternal_Rollback_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := WriteDeployState(dir, "external", "prod", "edge", DeployState{
+		Image: "x/edge",
+		Tag:   "v1.0.0",
+	}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "external", DryRun: true,
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				External: &ExternalSpec{
+					Image:       "x/edge",
+					DeployCmd:   "flyctl deploy",
+					RollbackCmd: "flyctl deploy --image ${IMAGE}:${LAST_TAG}",
+				},
+			},
+		},
+	}
+	out := captureStdout(t, func() {
+		if err := p.Rollback(context.Background(), group, ""); err != nil {
+			t.Fatalf("Rollback: %v", err)
+		}
+	})
+	if len(r.calls) != 0 {
+		t.Fatalf("dry-run rollback should NOT exec, got %d call(s): %v", len(r.calls), r.calls)
+	}
+	want := "[DRY-RUN] would exec: sh -c flyctl deploy --image x/edge:v1.0.0"
+	if !strings.Contains(out, want) {
+		t.Errorf("stdout should contain %q, got:\n%s", want, out)
+	}
+}
+
+// TestExternal_Deploy_EnvFileMerges confirms a declared env_file is
+// parsed and threaded onto the exec'd process's env. The user-supplied
+// CLI sees API_KEY=secret-value without having to write `--env-file
+// ${ENV_FILE}` in deploy_cmd.
+func TestExternal_Deploy_EnvFileMerges(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env.prod")
+	if err := os.WriteFile(envFile, []byte("API_KEY=secret-value\n# a comment\nREGION=us-east-1\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "external", ImageTag: "v1",
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				External: &ExternalSpec{
+					Image:     "x/edge",
+					DeployCmd: "flyctl deploy",
+					EnvFile:   envFile,
+				},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(r.envCalls) != 1 {
+		t.Fatalf("want 1 RunWithEnv call, got %d", len(r.envCalls))
+	}
+	env := r.envCalls[0]
+	if env["API_KEY"] != "secret-value" {
+		t.Errorf("API_KEY: want secret-value, got %q", env["API_KEY"])
+	}
+	if env["REGION"] != "us-east-1" {
+		t.Errorf("REGION: want us-east-1, got %q", env["REGION"])
+	}
+}
+
+// TestExternal_Deploy_EnvFileMissing confirms a missing env_file path
+// is a warning, not a hard error — same semantic hostlaunch's
+// secrets_file uses. Lets users commit an env_file path that's
+// optional on some dev machines.
+func TestExternal_Deploy_EnvFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "external", ImageTag: "v1",
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				External: &ExternalSpec{
+					Image:     "x/edge",
+					DeployCmd: "flyctl deploy",
+					EnvFile:   filepath.Join(dir, "does-not-exist.env"),
+				},
+			},
+		},
+	}
+	out := captureStdout(t, func() {
+		if err := p.Deploy(context.Background(), group); err != nil {
+			t.Fatalf("Deploy should not fail on missing env_file, got %v", err)
+		}
+	})
+	if !strings.Contains(out, "env_file") || !strings.Contains(out, "not found") {
+		t.Errorf("expected env_file missing warning in stdout, got:\n%s", out)
+	}
+	// The exec must still happen — the env_file is optional, not a gate.
+	if len(r.calls) != 1 {
+		t.Fatalf("deploy should still exec when env_file missing, got %d calls", len(r.calls))
+	}
+}
+
+// TestExternal_EnvFileVar_StillExposed confirms the ${ENV_FILE}
+// substitution token is preserved alongside the new auto-merge
+// behaviour, so users who DO want to reference the path in their
+// command (e.g. `docker run --env-file ${ENV_FILE}`) still can.
+func TestExternal_EnvFileVar_StillExposed(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env.prod")
+	if err := os.WriteFile(envFile, []byte("X=1\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "external", ImageTag: "v1",
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				External: &ExternalSpec{
+					Image:     "x/edge",
+					DeployCmd: "docker run --env-file ${ENV_FILE} ${IMAGE}:${TAG}",
+					EnvFile:   envFile,
+				},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d (%v)", len(r.calls), r.calls)
+	}
+	if !strings.Contains(r.calls[0], "--env-file "+envFile) {
+		t.Errorf("call should reference --env-file %s, got %q", envFile, r.calls[0])
+	}
+}
+
 // TestExpandVars_Basic confirms the substitution helper handles the
 // documented ${X} tokens and leaves unknown keys empty.
 func TestExpandVars_Basic(t *testing.T) {

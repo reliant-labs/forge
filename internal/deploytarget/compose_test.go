@@ -208,6 +208,138 @@ func TestCompose_ComposeServiceName_Override(t *testing.T) {
 	}
 }
 
+// TestCompose_Deploy_DryRun confirms --dry-run prints the pull and
+// up commands but does NOT exec anything and does NOT write the state
+// file. Same contract External honors — preview without side effects.
+func TestCompose_Deploy_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "compose", ImageTag: "v1.2.3",
+		DryRun: true,
+		Services: []ResolvedService{
+			{
+				Name:    "edge",
+				Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"},
+			},
+		},
+	}
+	out := captureStdout(t, func() {
+		if err := p.Deploy(context.Background(), group); err != nil {
+			t.Fatalf("Deploy: %v", err)
+		}
+	})
+	if len(r.calls) != 0 {
+		t.Fatalf("dry-run should NOT exec, got %d call(s): %v", len(r.calls), r.calls)
+	}
+	wantLines := []string{
+		"[DRY-RUN] would run: docker compose -f docker-compose.yml pull edge",
+		"[DRY-RUN] would run: docker compose -f docker-compose.yml up -d edge",
+	}
+	for _, want := range wantLines {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout should contain %q, got:\n%s", want, out)
+		}
+	}
+	statePath := filepath.Join(dir, ".forge/state/compose-prod-edge.json")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("state file should NOT exist after dry-run, got err=%v", err)
+	}
+}
+
+// TestCompose_Rollback_DryRun confirms the rollback dry-run path
+// prints the override + up commands without writing the override file
+// or exec'ing docker.
+func TestCompose_Rollback_DryRun(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := WriteDeployState(dir, "compose", "prod", "edge", DeployState{
+		Image: "ghcr.io/x/edge",
+		Tag:   "v1.0.0",
+	}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	r := &fakeRunner{}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "compose", DryRun: true,
+		Services: []ResolvedService{
+			{Name: "edge", Compose: &ComposeSpec{ComposeFile: "docker-compose.yml"}},
+		},
+	}
+	out := captureStdout(t, func() {
+		if err := p.Rollback(context.Background(), group, ""); err != nil {
+			t.Fatalf("Rollback: %v", err)
+		}
+	})
+	if len(r.calls) != 0 {
+		t.Fatalf("dry-run rollback should NOT exec, got %d call(s): %v", len(r.calls), r.calls)
+	}
+	for _, want := range []string{
+		"[DRY-RUN] would write override",
+		"ghcr.io/x/edge:v1.0.0",
+		"[DRY-RUN] would run: docker compose -f docker-compose.yml",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout should contain %q, got:\n%s", want, out)
+		}
+	}
+	// Override file should NOT have been written.
+	matches, _ := filepath.Glob(filepath.Join(dir, ".forge/state", "compose-prod-edge-rollback.override.yml"))
+	if len(matches) > 0 {
+		t.Errorf("override file should NOT exist after dry-run rollback, found %v", matches)
+	}
+}
+
+// TestCompose_Deploy_EnvFileMerges confirms the dotenv contents are
+// threaded onto the docker-compose process env so `${VAR}` references
+// in the compose file resolve even when the user forgets to export.
+func TestCompose_Deploy_EnvFileMerges(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env.prod")
+	if err := os.WriteFile(envFile, []byte("POSTGRES_PASSWORD=hunter2\n"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	r := &fakeRunner{
+		outputs: map[string]string{
+			"docker compose -f docker-compose.yml ps": "edge_1   Up\n",
+		},
+	}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env: "prod", ProviderID: "compose",
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				Compose: &ComposeSpec{
+					ComposeFile: "docker-compose.yml",
+					EnvFile:     envFile,
+				},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	// The pull and up calls should both carry the env overlay; the
+	// ps call (Output, not Run) does not.
+	var pullEnv, upEnv map[string]string
+	for i, c := range r.calls {
+		if strings.Contains(c, "pull edge") {
+			pullEnv = r.envCalls[i]
+		}
+		if strings.Contains(c, "up -d edge") {
+			upEnv = r.envCalls[i]
+		}
+	}
+	if pullEnv == nil || pullEnv["POSTGRES_PASSWORD"] != "hunter2" {
+		t.Errorf("pull env should include POSTGRES_PASSWORD=hunter2, got %v", pullEnv)
+	}
+	if upEnv == nil || upEnv["POSTGRES_PASSWORD"] != "hunter2" {
+		t.Errorf("up env should include POSTGRES_PASSWORD=hunter2, got %v", upEnv)
+	}
+}
+
 // TestComposeHasRunningLine_Header confirms the header line is
 // skipped when scanning compose ps output.
 func TestComposeHasRunningLine_Header(t *testing.T) {

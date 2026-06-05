@@ -108,6 +108,14 @@ type ServiceGroup struct {
 	Namespace string
 	Registry  string
 	Domain    string
+
+	// DryRun, when true, instructs the provider to print the exact
+	// commands it would exec instead of running them, and skip any
+	// state-file writes. Providers honor this independently of the
+	// cluster.ApplyOpts.DryRun knob (K8sCluster's provider plumbs it
+	// through ApplyOpts; External and Compose check this field
+	// directly because they don't go through cluster.Apply).
+	DryRun bool
 }
 
 // ResolvedService is one service in a group, with its deploy block
@@ -197,7 +205,13 @@ func NewRegistry() *Registry {
 }
 
 // Register adds (or replaces) a provider under its declared Name().
+// Safe on a zero-value Registry (lazy-inits the map) so tests can do
+// `r := &Registry{}; r.Register(fake)` without going through
+// NewRegistry — matches the package doc-comment promise.
 func (r *Registry) Register(p Provider) {
+	if r.providers == nil {
+		r.providers = map[string]Provider{}
+	}
 	r.providers[p.Name()] = p
 }
 

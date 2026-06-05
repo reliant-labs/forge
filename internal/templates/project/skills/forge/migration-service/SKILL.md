@@ -173,16 +173,17 @@ Forge's defaults are opinionated by design. A clean port should land with at mos
 `forge add service` emits one `cmd/<service>/main.go` per service. If the source repo has additional binaries (CLI tools, background daemons, ops scripts) that aren't first-class forge components:
 
 - For binaries that wrap forge-managed services or workers, prefer `forge add` and let forge own the wiring.
-- For genuinely standalone binaries (one-off cron jobs, dev tooling), drop them under `cmd/<name>/main.go` directly. There is no `forge add binary` today; this gap is intentional — most "extra binary" cases are better modeled as workers or operators.
+- For genuinely standalone binaries (proxies, sidecars, off-service consumers) that need their own Deployment, use `forge add binary <name>` — see the `binaries` skill for the decision tree.
+- For tiny one-off scripts that don't deserve a contract.go (a dev seed script, a one-shot migration helper), drop them under `cmd/<name>/main.go` directly without an `internal/<name>/` package.
 
 ## k8s manifests
 
-Forge emits `deploy/kcl/<env>/` (KCL-based manifests, one dir per environment: `dev`, `staging`, `prod`). Do NOT port hand-written YAML over the KCL output — KCL generates the YAML. Either:
+Forge emits `deploy/kcl/<env>/` (KCL-based manifests, one dir per environment: `dev`, `staging`, `prod`). KCL is canonical — there is no "disable KCL, ship hand-written YAML" mode. Either:
 
-- **Adopt KCL.** Translate hand-written manifest customizations into KCL overrides. Recommended.
-- **Disable KCL.** Set `deploy: { mode: manual }` in `forge.yaml` and bring your own manifests under `deploy/k8s/`. You lose forge's per-env diff and validation.
+- **Adopt KCL.** Translate hand-written manifest customizations into KCL overrides. Use `additional_manifests = [...]` on the Bundle for raw manifest dicts that don't fit a typed entity (ClusterIssuers, SealedSecrets, hand-typed CRDs). Recommended.
+- **Disable the deploy feature.** Set `features.deploy: false` in `forge.yaml` and bring your own manifests under any tree you like. `forge deploy <env>` and the deploy half of `forge generate` then short-circuit with a clear "feature 'deploy' is disabled" message.
 
-`forge deploy <env>` runs against the active mode; verify which is configured before pushing.
+Per-env config that used to live in `forge.yaml -> environments[].config` now lives in sibling `config.<env>.yaml` files next to forge.yaml; per-env deploy knobs (cluster/namespace/registry/domain) live on `forge.K8sCluster` blocks in KCL. See the `environments-to-kcl` migration skill if you're porting a project that pre-dates this split.
 
 ## Final checks before declaring done
 

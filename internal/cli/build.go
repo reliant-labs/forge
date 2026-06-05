@@ -229,11 +229,27 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 	}
 
-	// KCL-driven docker skip: with --env set, frontends are always
-	// host-only in the dev loop (no in-cluster frontend Deployment), so
-	// skip the per-frontend docker build. Also skip the project docker
-	// build when every declared service is host or build-only (no
-	// cluster service in this env → no image to push to the cluster).
+	// KCL-driven prod-build skip for host-mode frontends. Host-mode
+	// frontends only ever run via `npm run dev` (the dev loop in
+	// `forge up`); they never consume the `npm run build` artifact, so
+	// running the full Next.js prod build is wasted minutes. Skip them
+	// from `frontends` (the input to buildFrontend → `npm run build`)
+	// while keeping their entry in cfg.Frontends so other commands
+	// (forge generate, forge up's frontend phase) see them unchanged.
+	//
+	// Frontends without a Deploy block (legacy KCL that doesn't emit
+	// frontend deploy yet) fall through to "build" — preserving the
+	// pre-discriminator behaviour so projects upgrade lazily.
+	if entities != nil {
+		frontends = filterFrontendsForBuild(frontends, entities)
+	}
+
+	// KCL-driven docker skip: with --env set, frontends that ship as
+	// images (cluster / external / compose deploy) still need a docker
+	// build; host-mode frontends and the legacy "no deploy block" case
+	// stay docker-free. Also skip the project docker build when every
+	// declared service is host or build-only (no cluster service in
+	// this env → no image to push to the cluster).
 	dockerFrontends := frontends
 	skipProjectDocker := false
 	if entities != nil {
@@ -840,6 +856,51 @@ func filterFrontends(frontends []config.FrontendConfig, target string) []config.
 		}
 	}
 	return nil
+}
+
+// filterFrontendsForBuild drops frontends whose KCL `deploy.type` is
+// "host" — the host-mode dev server (`npm run dev` in forge up) doesn't
+// consume the production build artifact, so running `npm run build`
+// for it is a pure waste. Per-frontend lookup goes by name; a frontend
+// in cfg.Frontends with no matching KCL entry (or whose KCL entry has
+// no deploy block) falls through to "build" — preserving the
+// pre-discriminator behaviour so legacy projects keep working.
+//
+// Prints a one-line note per skipped frontend so users can see at a
+// glance why their build finished early.
+func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities) []config.FrontendConfig {
+	if entities == nil {
+		return frontends
+	}
+	kept := make([]config.FrontendConfig, 0, len(frontends))
+	for _, fe := range frontends {
+		mode := frontendDeployMode(entities, fe.Name)
+		if mode == "host" {
+			fmt.Printf("[build] skipping prod build for %s (host-mode deploy)\n", fe.Name)
+			continue
+		}
+		kept = append(kept, fe)
+	}
+	return kept
+}
+
+// frontendDeployMode returns the deploy.type for the named frontend in
+// the rendered KCL, or "" when the frontend isn't found or has no
+// deploy block. Lower-cased for case-insensitive comparison.
+func frontendDeployMode(entities *KCLEntities, name string) string {
+	if entities == nil {
+		return ""
+	}
+	for _, fe := range entities.Frontends {
+		if fe.Name != name {
+			continue
+		}
+		if fe.Deploy == nil {
+			return ""
+		}
+		return strings.ToLower(strings.TrimSpace(fe.Deploy.Type))
+	}
+	return ""
 }
 
 // projectDirForKCL resolves the project root directory used as the

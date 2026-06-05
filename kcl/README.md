@@ -136,6 +136,31 @@ Then:
 kcl run deploy/kcl/dev/ -S output --format json
 ```
 
+## Per-env conditional manifests
+
+The forge CLI passes the current environment name to KCL via
+`-D env=<env_name>` on every `kcl run` invocation. Your `main.k` can
+read it through KCL's `option()` builtin and conditionally include
+`additional_manifests` (or any other field) per-env.
+
+Canonical use — skip in-cluster infra on `dev-host` envs where
+docker-compose already provides those services:
+
+```kcl
+_env_name = option("env")
+_is_dev_host = _env_name == "dev-host"
+
+_bundle = forge.Bundle {
+    services = [...]
+    additional_manifests = [] if _is_dev_host else [
+        # in-cluster NATS, Temporal, LiteLLM, etc.
+    ]
+}
+```
+
+The `image_tag` and `registry` options are already passed for the
+same reason — `env` is the third member of the standard set.
+
 ## Versioning
 
 Pin a `kcl-vX.Y.Z` git tag from your project's `kcl.mod`. The forge CLI

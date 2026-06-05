@@ -211,3 +211,96 @@ func TestUpLogPath_Sanitises(t *testing.T) {
 		t.Errorf("upLogPath: got %q, want pf_admin-server_8080.log suffix", got)
 	}
 }
+
+// TestBuildFrontendCmd_PortFromKCLOverridesParent pins Item 1: the
+// frontend's KCL-declared port is force-injected into the child env,
+// overriding any PORT bleeding in from the orchestrator's own
+// os.Environ(). Before this fix a parent shell with `PORT=8080`
+// exported for an unrelated service silently shifted the dev server's
+// bind port out from under the user.
+func TestBuildFrontendCmd_PortFromKCLOverridesParent(t *testing.T) {
+	parent := []string{"PATH=/usr/bin", "PORT=8080", "EDITOR=vim"}
+	fe := FrontendEntity{Name: "web", Path: "frontend", Port: 3000, EnvFile: "/does/not/exist"}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+
+	// PORT=3000 (KCL) must be present, PORT=8080 (parent) must NOT.
+	hasKCLPort := false
+	for _, kv := range cmd.Env {
+		if kv == "PORT=3000" {
+			hasKCLPort = true
+		}
+		if kv == "PORT=8080" {
+			t.Errorf("parent PORT=8080 leaked into child env: %v", cmd.Env)
+		}
+	}
+	if !hasKCLPort {
+		t.Errorf("expected PORT=3000 from KCL; got env: %v", cmd.Env)
+	}
+	// Sanity: the rest of the parent env passed through.
+	hasPath := false
+	for _, kv := range cmd.Env {
+		if kv == "PATH=/usr/bin" {
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		t.Errorf("expected parent PATH to survive; got env: %v", cmd.Env)
+	}
+}
+
+// TestBuildFrontendCmd_PortZeroLeavesParentPortAlone confirms the
+// fe.Port == 0 fallback (legacy projects whose KCL doesn't emit the
+// port field): we don't force-inject "PORT=0" because that would crash
+// the dev server. The parent's PORT (if any) is left untouched.
+func TestBuildFrontendCmd_PortZeroLeavesParentPortAlone(t *testing.T) {
+	parent := []string{"PORT=8080"}
+	fe := FrontendEntity{Name: "web", Path: "frontend", Port: 0, EnvFile: "/does/not/exist"}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+
+	for _, kv := range cmd.Env {
+		if kv == "PORT=0" {
+			t.Errorf("PORT=0 must not be injected for fe.Port==0; got %v", cmd.Env)
+		}
+	}
+	found := false
+	for _, kv := range cmd.Env {
+		if kv == "PORT=8080" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected parent PORT=8080 to pass through when fe.Port==0; got env: %v", cmd.Env)
+	}
+}
+
+// TestUpNoDeployFlag pins Item 5: the --no-deploy flag is registered
+// on `forge up` with the expected help text. The actual short-circuit
+// behaviour is read straight off opts.noDeploy in runUp (`if !opts.noDeploy`
+// gate around the deploy phase) — this test guards the flag wiring so
+// a future refactor can't quietly delete the surface.
+func TestUpNoDeployFlag(t *testing.T) {
+	cmd := newUpCmd()
+	flag := cmd.Flags().Lookup("no-deploy")
+	if flag == nil {
+		t.Fatal("--no-deploy flag missing from forge up")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--no-deploy default: got %q, want false", flag.DefValue)
+	}
+	if !strings.Contains(flag.Usage, "cluster apply") {
+		t.Errorf("--no-deploy usage: got %q, want a phrase mentioning 'cluster apply'", flag.Usage)
+	}
+	// Verify the flag actually parses into opts.noDeploy by exercising
+	// the cobra parser. We can't easily run the RunE without a project,
+	// but flag parse is enough to confirm the BoolVar wiring is intact.
+	if err := cmd.ParseFlags([]string{"--env=dev", "--no-deploy"}); err != nil {
+		t.Fatalf("parse --no-deploy: %v", err)
+	}
+	got, err := cmd.Flags().GetBool("no-deploy")
+	if err != nil {
+		t.Fatalf("GetBool --no-deploy: %v", err)
+	}
+	if !got {
+		t.Errorf("--no-deploy: parsed value got false, want true")
+	}
+}

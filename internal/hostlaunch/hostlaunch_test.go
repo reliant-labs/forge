@@ -93,6 +93,86 @@ func TestBuildCmd_RunnerMatrix(t *testing.T) {
 	}
 }
 
+// TestBuildCmd_WorkingDir pins the cross-repo cmd.Dir contract. The
+// motivating case: a project declares `WorkingDir: "../sibling-repo"`
+// on a HostDeploy whose Air config lives in a sibling repo and resolves
+// build paths relative to that repo's root. With ProjectDir set to the
+// caller's forge project root, the launched subprocess must chdir to
+// the sibling so Air's `build_cmd` paths resolve correctly.
+//
+// Four cases — empty (inherit parent cwd), absolute, relative+project,
+// relative-without-project (verbatim fallback). The runner is "air"
+// throughout but the cwd resolution is runner-agnostic so the dispatch
+// matrix (go-run/binary/delve) inherits the same behavior automatically.
+func TestBuildCmd_WorkingDir(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		workingDir string
+		projectDir string
+		wantDir    string
+	}{
+		{
+			name:       "empty WorkingDir leaves cmd.Dir empty (inherit parent cwd)",
+			workingDir: "",
+			projectDir: "/forge/project",
+			wantDir:    "",
+		},
+		{
+			name:       "absolute WorkingDir is used verbatim",
+			workingDir: "/abs/sibling",
+			projectDir: "/forge/project",
+			wantDir:    "/abs/sibling",
+		},
+		{
+			name:       "relative WorkingDir resolves against ProjectDir",
+			workingDir: "../sibling",
+			projectDir: "/forge/project",
+			wantDir:    "/forge/sibling",
+		},
+		{
+			name:       "relative WorkingDir with empty ProjectDir falls through verbatim",
+			workingDir: "../sibling",
+			projectDir: "",
+			wantDir:    "../sibling",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := BuildCmd(ctx, "api", RunnerSpec{
+				Runner:     "air",
+				WorkingDir: c.workingDir,
+				ProjectDir: c.projectDir,
+			})
+			if cmd.Dir != c.wantDir {
+				t.Errorf("cmd.Dir: got %q, want %q", cmd.Dir, c.wantDir)
+			}
+		})
+	}
+}
+
+// TestBuildCmd_WorkingDir_AppliesAcrossRunners confirms the cwd is set
+// for every runner dispatch path (air, binary, delve, go-run), not just
+// the runner that surfaced the cross-repo use case.
+func TestBuildCmd_WorkingDir_AppliesAcrossRunners(t *testing.T) {
+	ctx := context.Background()
+	const projectDir = "/forge/project"
+	const workingDir = "../sibling"
+	const wantDir = "/forge/sibling"
+	for _, runner := range []string{"air", "binary", "delve", "go-run", ""} {
+		t.Run("runner="+runner, func(t *testing.T) {
+			cmd := BuildCmd(ctx, "api", RunnerSpec{
+				Runner:     runner,
+				WorkingDir: workingDir,
+				ProjectDir: projectDir,
+			})
+			if cmd.Dir != wantDir {
+				t.Errorf("cmd.Dir: got %q, want %q", cmd.Dir, wantDir)
+			}
+		})
+	}
+}
+
 // TestIsKnownRunner: only the four documented runners are known; empty
 // counts as known (the legacy go-run shape).
 func TestIsKnownRunner(t *testing.T) {

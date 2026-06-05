@@ -31,7 +31,8 @@ JSON contract (stable; missing optional fields project as `null`):
 For Service.deploy the dispatch keys are:
 
     { "type": "host",       "runner", "air_config",
-                            "env_vars", "secrets_file", "delve_port" }
+                            "env_vars", "secrets_file", "delve_port",
+                            "working_dir" }
     { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports" }
     { "type": "build-only", "build_variants" }
 
@@ -210,6 +211,8 @@ schema HostDeploy:
     env_vars: [EnvVar] = []
     secrets_file?: str
     delve_port: int = 2345
+    working_dir?: str
+    """Working directory for the launched process. Relative paths are resolved against the project root. Use this for cross-repo binaries whose runner config (e.g. Air's build_cmd paths) resolves relative to a sibling repo. Default: project root."""
 
     check:
         type == "host", "HostDeploy.type must be 'host'"

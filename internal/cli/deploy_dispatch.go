@@ -138,7 +138,7 @@ func dispatchDeployGroups(ctx context.Context, registry *deploytarget.Registry, 
 // overrides the closure's namespace — that's the new path where the
 // per-service deploy block dictates the namespace rather than
 // forge.yaml.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
@@ -148,6 +148,7 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace string, envC
 			MainK:        mainK,
 			ImageTag:     imageTag,
 			Namespace:    ns,
+			Env:          env,
 			EnvConfigKV:  envCfgKV,
 			DryRun:       dryRun,
 			DryRunFramed: true,

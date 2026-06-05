@@ -96,6 +96,7 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 		config.FeatureCodegen:       false, // existing forge default — no proto/services to codegen
 		config.FeatureMigrations:    false,
 		config.FeatureHotReload:     false,
+		config.FeatureIngress:       false,
 	}
 	for name, expect := range want {
 		if effective[name] != expect {
@@ -133,6 +134,7 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 		config.FeatureCodegen:       false,
 		config.FeatureMigrations:    false,
 		config.FeatureHotReload:     false,
+		config.FeatureIngress:       false,
 	}
 	for name, expect := range want {
 		if effective[name] != expect {

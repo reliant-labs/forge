@@ -94,7 +94,9 @@ _default_resources = {
 }
 
 # Render a Service whose deploy is K8sCluster. Returns
-# [Deployment, Service] (+ [Ingress] when set).
+# [Deployment, Service]. Ingress is no longer rendered here — see
+# kcl/lib/gateway.k for Gateway API resources owned by the project's
+# top-level `deploy/kcl/ingress.k` file.
 render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = svc.name
     _labels = _managed_labels(_name)
@@ -156,48 +158,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
         }
     }
 
-    _ingress_list = [{
-        apiVersion = "networking.k8s.io/v1"
-        kind = "Ingress"
-        metadata = {
-            name = "${_name}-ingress"
-            namespace = namespace
-            labels = _labels
-            annotations = {
-                "cert-manager.io/cluster-issuer" = _deploy.ingress.cert_manager_issuer
-            } if _deploy.ingress.tls else {}
-        }
-        spec = {
-            if _deploy.ingress.tls:
-                tls = [
-                    {
-                        hosts = [_deploy.ingress.host]
-                        secretName = "${_name}-tls"
-                    }
-                ]
-            rules = [
-                {
-                    host = _deploy.ingress.host
-                    http = {
-                        paths = [
-                            {
-                                path = _deploy.ingress.path
-                                pathType = "Prefix"
-                                backend = {
-                                    service = {
-                                        name = _name
-                                        port = {number = _ports[0]}
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            ]
-        }
-    }] if _deploy.ingress else []
-
-    [_deployment, _service] + _ingress_list
+    [_deployment, _service]
 }
 
 # Render a CronJob (or one-shot Job when schedule == "").

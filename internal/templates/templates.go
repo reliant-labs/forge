@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
+//go:embed all:project all:deploy all:frontend all:ci all:test all:ingress service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
 var templateFS embed.FS
 
 // FuncMap returns the shared template function map used across all templates.
@@ -107,6 +107,14 @@ func FrontendTemplates() TemplateCategory { return TemplateCategory{basePath: "f
 
 // DeployTemplates returns the category for deploy-scaffold templates.
 func DeployTemplates() TemplateCategory { return TemplateCategory{basePath: "deploy"} }
+
+// IngressTemplates returns the embedded Gateway API install assets
+// (vendored Traefik install, GatewayClass) keyed under
+// `internal/templates/ingress/<provider>/`. The Gateway API CRDs
+// themselves are fetched from the upstream GitHub release at
+// `forge dev cluster up` time and cached under ~/.cache/forge/ —
+// see internal/cli/dev_cluster_ingress.go for the download path.
+func IngressTemplates() TemplateCategory { return TemplateCategory{basePath: "ingress"} }
 
 // TestTemplates returns the category for test-scaffold templates.
 func TestTemplates() TemplateCategory { return TemplateCategory{basePath: "test"} }

@@ -99,6 +99,17 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		if generated[pkg] {
 			continue
 		}
+		// Canonical handler dirs are compact Go identifiers — no hyphens
+		// or underscores. A name with separators is a legacy snake/kebab
+		// dir left behind by a pre-2026-06 scaffold (handlers/admin_server)
+		// and must NOT be used as a Go package identifier — emitting
+		// `package admin_server` here would silently revert the rename
+		// the user just did to align with the proto-driven compact form
+		// (handlers/adminserver). Skip it so cleanup/dangling-check can
+		// surface the stale dir for removal instead.
+		if pkg != toGoPackage(pkg) {
+			continue
+		}
 		// Only generate if authorizer.go exists (confirming this is a service dir)
 		if _, err := os.Stat(filepath.Join(handlersDir, pkg, "authorizer.go")); os.IsNotExist(err) {
 			continue

@@ -8,7 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // cleanupStaleArtifacts walks generated-artifact directories and removes paths
@@ -64,7 +64,7 @@ func cleanupStaleArtifacts(cfg *config.ProjectConfig, services []codegen.Service
 }
 
 // currentServicePackageSet returns the set of forge-derived package names
-// (e.g. "admin_server" for "AdminServerService") that have a corresponding
+// (e.g. "adminserver" for "AdminServerService") that have a corresponding
 // proto service in the current descriptor. Stale-cleanup compares directory
 // names against this set.
 func currentServicePackageSet(services []codegen.ServiceDef) map[string]struct{} {
@@ -77,14 +77,19 @@ func currentServicePackageSet(services []codegen.ServiceDef) map[string]struct{}
 }
 
 // serviceNameToPackage converts a proto service name like "EchoService" or
-// "AdminServerService" into the snake_case package form used for handler
-// directories and gen package paths ("echo", "admin_server").
+// "AdminServerService" into the compact Go-package form used for handler
+// directories and gen/services/<pkg>/v1 paths ("echo", "adminserver").
+//
+// Must agree with generator.ServicePackageName (scaffold) and
+// codegen.toServicePackage (codegen). All three produce the same compact,
+// separator-free identifier — the buf-generated gen/services/<pkg>/v1 dir
+// names this set compares against use that compact form too.
 func serviceNameToPackage(name string) string {
 	trimmed := strings.TrimSuffix(name, "Service")
 	if trimmed == "" {
 		trimmed = name
 	}
-	return strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
+	return generator.ServicePackageName(trimmed)
 }
 
 // cleanupStaleGenServices removes gen/services/<pkg>/ subdirectories whose

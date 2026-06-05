@@ -88,6 +88,13 @@ func TestToServiceDir(t *testing.T) {
 		{"UserService", "handlers/user"},
 		{"NotificationService", "handlers/notification"},
 		{"Foo", "handlers/foo"},
+		// Multi-word PascalCase compacts (no separators) to match the
+		// scaffold path (generator.ServicePackageName) and the codegen
+		// path (codegen.toServicePackage). Pre-2026-06 this returned
+		// snake-case ("admin_server"), which forced the codegen
+		// pipeline to chase two parallel forms.
+		{"AdminServerService", "handlers/adminserver"},
+		{"DaemonTokenService", "handlers/daemontoken"},
 	}
 
 	for _, tt := range tests {

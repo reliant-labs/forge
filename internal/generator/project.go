@@ -43,7 +43,7 @@ type ProjectGenerator struct {
 	FrontendWorkspaces bool
 	GoVersionOverride  string                // if set, use this Go version instead of detecting
 	Features           config.FeaturesConfig // feature flags for generation
-	MemoryFormat       MemoryFormat          // AI memory file format (default: reliant)
+	Harness            Harness               // AI harness (default: reliant) — controls memory file path and skill emission
 }
 
 // effectiveBinary returns the binary mode, defaulting to "per-service".
@@ -754,6 +754,12 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	}
 	if g.Features.Starters == nil {
 		g.Features.Starters = off()
+	}
+	// Ingress generates Gateway API resources and installs Traefik at
+	// `forge dev cluster up`. CLI and library kinds have no cluster
+	// shape, so skip the install + codegen.
+	if g.Features.Ingress == nil {
+		g.Features.Ingress = off()
 	}
 	// Library: every server-shaped feature is off. CI/Build are
 	// off because there's no binary to lint/test/build — the user

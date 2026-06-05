@@ -9,7 +9,7 @@
 //                     scaffolder writes into the user project).
 //   - ConfigService — read / write / mutate forge.yaml on disk.
 //
-// Data carriers (FileChecksums, MemoryFormat, ProjectGenerator,
+// Data carriers (FileChecksums, Harness, ProjectGenerator,
 // SeedEntity, E2EMethodInfo, UpgradeResult, ServiceInfo, *TemplateData
 // structs) remain plain types — they have no behavioural seam to mock.
 package generator

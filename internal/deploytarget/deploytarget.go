@@ -137,18 +137,14 @@ type ResolvedService struct {
 // K8sClusterSpec is the per-service portion of a K8sCluster deploy
 // target. Env-wide fields (cluster/namespace/registry/domain) live on
 // the ServiceGroup, not here.
+//
+// Ingress used to be a per-service field; it now lives at the
+// Gateway/HTTPRoute level (see kcl/schema.k, internal/cli/kcl_render.go
+// KCLEntities.Gateways), with routes referencing services by name.
 type K8sClusterSpec struct {
 	Replicas int
 	Platform string
 	Ports    []int
-	// Ingress holds the ingress shape if declared; nil otherwise.
-	Ingress *IngressSpec
-}
-
-// IngressSpec is the per-service ingress declaration projected from KCL.
-type IngressSpec struct {
-	Host string
-	Path string
 }
 
 // ExternalSpec is the per-service shell-command deploy spec. Mirrors

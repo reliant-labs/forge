@@ -74,6 +74,20 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 		return err
 	}
 
+	// Ingress checks live alongside the signal checks but are wired
+	// at the cli layer because they need RenderKCL + ListEnvs +
+	// kubectl, none of which the internal/doctor package has access
+	// to. Skips when features.ingress is off or the signal filter
+	// excludes them.
+	appendIngressChecksToReport(&report, runIngressDoctorChecks(ctx, cfg, projectDir, signal))
+
+	// Tool checks verify every host binary forge shells out to is
+	// installed (+ meets a minimum version where pinned). Wired at
+	// the cli layer for the same reason as ingress: the predicate
+	// for mkcert needs RenderKCL/ListEnvs, and the install hints
+	// are user-facing CLI guidance.
+	appendIngressChecksToReport(&report, runToolDoctorChecks(ctx, cfg, projectDir, signal))
+
 	if jsonOutput {
 		return d.PrintJSON(os.Stdout, report)
 	}

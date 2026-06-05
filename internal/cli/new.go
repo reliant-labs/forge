@@ -28,7 +28,7 @@ func newNewCmd() *cobra.Command {
 		license         string
 		licenseAuthor   string
 		disableFeatures []string
-		memoryFormat    string
+		harness         string
 		skipTools       bool
 		bufPlugins      string
 		binaryMode      string
@@ -74,7 +74,7 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
 		},
 	}
 
@@ -89,7 +89,7 @@ Example:
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters")
-	cmd.Flags().StringVar(&memoryFormat, "memory", "reliant", "AI memory file format: reliant (default), claude, cursor, copilot, codex")
+	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for: reliant (default; reliant CLI auto-discovers skills via forge.yaml), claude (writes CLAUDE.md + .claude/skills/), cursor (.cursorrules), copilot (.github/copilot-instructions.md), codex (AGENTS.md)")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
@@ -185,7 +185,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 }
 
 //nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -340,12 +340,12 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	}
 	gen.FrontendWorkspaces = frontendWorkspaces
 
-	// Apply memory format
-	mf, err := generator.ParseMemoryFormat(memoryFormat)
+	// Apply harness
+	h, err := generator.ParseHarness(harness)
 	if err != nil {
 		return err
 	}
-	gen.MemoryFormat = mf
+	gen.Harness = h
 
 	// Apply kind-aware feature defaults BEFORE --disable so an
 	// explicit --disable always wins. Service is the default and
@@ -370,6 +370,28 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	// Write LICENSE file if requested
 	if err := writeLicenseFile(targetPath, license, licenseAuthor); err != nil {
 		return fmt.Errorf("failed to write LICENSE: %w", err)
+	}
+
+	// Emit forge skills to disk for harnesses that have a native skills
+	// concept (e.g. claude → .claude/skills/). Reliant skips this — the
+	// reliant CLI auto-discovers forge skills via the project's
+	// forge.yaml, so no on-disk emission is needed. Copilot / codex
+	// skip too — no native skills mechanism.
+	if dir := gen.Harness.SkillsDir(); dir != "" {
+		style, ok := skillStyleForHarness(gen.Harness)
+		if ok {
+			skillsDir := filepath.Join(targetPath, dir)
+			// SkillAudienceAll means "all" — a new forge project always
+			// has forge.yaml, so the harness gets both general
+			// methodology and framework skills with full bodies (no
+			// @forge-only stripping).
+			n, err := WriteSkills(skillsDir, style, SkillAudienceAll)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to write forge skills to %s: %v\n", skillsDir, err)
+			} else {
+				fmt.Printf("📚 Wrote %d forge skills to %s\n", n, dir)
+			}
+		}
 	}
 
 	// Generate additional services beyond the first (if any).

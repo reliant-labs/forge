@@ -11,7 +11,7 @@ import (
 // SKILL.md per skill, and every bundled skill is represented.
 func TestWriteSkills_Forge(t *testing.T) {
 	dir := t.TempDir()
-	n, err := WriteSkills(dir, SkillWriteStyleForge)
+	n, err := WriteSkills(dir, SkillWriteStyleForge, "")
 	if err != nil {
 		t.Fatalf("WriteSkills: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestWriteSkills_Forge(t *testing.T) {
 // pass-through here, plus the synthetic-frontmatter helper directly.
 func TestWriteSkills_Claude(t *testing.T) {
 	dir := t.TempDir()
-	n, err := WriteSkills(dir, SkillWriteStyleClaude)
+	n, err := WriteSkills(dir, SkillWriteStyleClaude, "")
 	if err != nil {
 		t.Fatalf("WriteSkills: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestEnsureFrontmatter_PassthroughWhenPresent(t *testing.T) {
 // TestWriteSkills_MD verifies the flat layout writes one .md file per skill.
 func TestWriteSkills_MD(t *testing.T) {
 	dir := t.TempDir()
-	n, err := WriteSkills(dir, SkillWriteStyleMD)
+	n, err := WriteSkills(dir, SkillWriteStyleMD, "")
 	if err != nil {
 		t.Fatalf("WriteSkills: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestWriteSkills_MD(t *testing.T) {
 // TestWriteSkills_RejectEmptyOut ensures the writer fails fast when called
 // without an output directory.
 func TestWriteSkills_RejectEmptyOut(t *testing.T) {
-	if _, err := WriteSkills("", SkillWriteStyleForge); err == nil {
+	if _, err := WriteSkills("", SkillWriteStyleForge, ""); err == nil {
 		t.Fatal("expected error when outDir is empty")
 	}
 }

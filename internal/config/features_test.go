@@ -28,6 +28,7 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"HotReloadEnabled", f.HotReloadEnabled},
 		{"PacksEnabled", f.PacksEnabled},
 		{"StartersEnabled", f.StartersEnabled},
+		{"IngressEnabled", f.IngressEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
@@ -91,6 +92,7 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		HotReload:     boolPtr(false),
 		Packs:         boolPtr(false),
 		Starters:      boolPtr(false),
+		Ingress:       boolPtr(false),
 	}
 
 	methods := []struct {
@@ -110,6 +112,7 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		{"HotReloadEnabled", f.HotReloadEnabled},
 		{"PacksEnabled", f.PacksEnabled},
 		{"StartersEnabled", f.StartersEnabled},
+		{"IngressEnabled", f.IngressEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
@@ -280,7 +283,7 @@ func TestEffectiveFeatures_MapShape(t *testing.T) {
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
 		FeatureBuild, FeatureDeploy, FeatureContracts, FeatureDocs,
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
-		FeaturePacks, FeatureStarters,
+		FeaturePacks, FeatureStarters, FeatureIngress,
 	}
 	var f FeaturesConfig
 	resolved := f.EffectiveFeatures()
@@ -329,6 +332,7 @@ version: "1.0"
 		{"HotReloadEnabled", cfg.Features.HotReloadEnabled},
 		{"PacksEnabled", cfg.Features.PacksEnabled},
 		{"StartersEnabled", cfg.Features.StartersEnabled},
+		{"IngressEnabled", cfg.Features.IngressEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {

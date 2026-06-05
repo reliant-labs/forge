@@ -1,6 +1,7 @@
 ---
 name: debug
-description: Debug methodology — triage, parallel investigation, and synthesis for Forge projects.
+description: Debug methodology — triage, parallel investigation, and synthesis.
+emit: both
 ---
 
 # Debug Methodology
@@ -9,11 +10,11 @@ description: Debug methodology — triage, parallel investigation, and synthesis
 
 Classify the bug before diving in:
 
-- **Crash / panic** → check logs, attach debugger (`forge run --debug` or `forge debug start <svc>`)
+- **Crash / panic** → check logs, attach a debugger
 - **Wrong behavior** → trace code path, form hypotheses (see `investigate` sub-skill)
-- **Only in multi-service flows** → reproduce with e2e test (see `reproduce` sub-skill)
-- **Flaky test** → run in loop, check for races (`forge test --race`)
-- **Stale generated code** → run `forge generate` first, then retest
+- **Only in multi-service flows** → reproduce with an e2e test (see `reproduce` sub-skill)
+- **Flaky test** → run in a loop with the race detector enabled
+- **Stale generated code** → regenerate first, then retest
 
 ## Parallel Investigation
 
@@ -31,6 +32,7 @@ Combine findings from all tracks:
 - **Evidence** from each investigation track
 - **Recommended fix** approach — hand off to an implementer, don't fix in debug mode
 
+<!-- @forge-only:start -->
 ## Forge-Specific Debug Tools
 
 ```
@@ -41,6 +43,8 @@ forge debug continue           # resume execution past breakpoint
 forge debug eval               # evaluate expression in debug context
 forge test --service <name> -V # verbose isolated test runs
 forge test e2e                 # full-stack reproduction
+forge test --race              # run tests with race detector
+forge generate                 # regenerate code (use when stale gen is suspected)
 ```
 
 Use chrome-devtools MCP tools for frontend bugs (snapshots, console, network).
@@ -58,6 +62,7 @@ Use chrome-devtools MCP tools for frontend bugs (snapshots, console, network).
 The app auto-connects: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` pushes traces and metrics. `PPROF_ADDR=localhost:6060` exposes pprof for Pyroscope scraping.
 
 For LLM-driven observability, enable the Grafana MCP server from `.mcp.json.example` — it lets agents query Prometheus, Loki, Tempo, and dashboards directly.
+<!-- @forge-only:end -->
 
 ## Sub-Skills
 

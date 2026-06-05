@@ -44,7 +44,6 @@ type devInstance struct {
 	Cluster   string `json:"cluster"`
 	Namespace string `json:"namespace"`
 	PodCount  int    `json:"pod_count"`
-	PFRunning int    `json:"port_forwards_running"`
 }
 
 func runDevInstances(ctx context.Context, jsonOut bool) error {
@@ -67,12 +66,10 @@ func runDevInstances(ctx context.Context, jsonOut bool) error {
 		nsList := listForgeNamespaces(ctx, kubeCtx)
 		for _, ns := range nsList {
 			pc := podCount(ctx, kubeCtx, ns)
-			pfs := readPortForwardState(c.Name, ns)
 			instances = append(instances, devInstance{
 				Cluster:   c.Name,
 				Namespace: ns,
 				PodCount:  pc,
-				PFRunning: len(pfs),
 			})
 		}
 	}
@@ -87,9 +84,9 @@ func runDevInstances(ctx context.Context, jsonOut bool) error {
 		fmt.Println("No forge-managed dev namespaces found.")
 		return nil
 	}
-	fmt.Printf("%-20s %-35s %-6s %s\n", "CLUSTER", "NAMESPACE", "PODS", "PORT-FORWARDS")
+	fmt.Printf("%-20s %-35s %s\n", "CLUSTER", "NAMESPACE", "PODS")
 	for _, ins := range instances {
-		fmt.Printf("%-20s %-35s %-6d %d\n", ins.Cluster, ins.Namespace, ins.PodCount, ins.PFRunning)
+		fmt.Printf("%-20s %-35s %d\n", ins.Cluster, ins.Namespace, ins.PodCount)
 	}
 	return nil
 }

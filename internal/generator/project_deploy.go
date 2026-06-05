@@ -85,14 +85,17 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	}
 	var kclBinaries []kclBinary // empty at scaffold time
 
+	ingressOn := g.Features.IngressEnabled()
 	templateData := struct {
-		ProjectName string
-		Services    []kclService
-		Binaries    []kclBinary
+		ProjectName     string
+		Services        []kclService
+		Binaries        []kclBinary
+		IngressEnabled  bool
 	}{
-		ProjectName: g.Name,
-		Services:    kclServices,
-		Binaries:    kclBinaries,
+		ProjectName:    g.Name,
+		Services:       kclServices,
+		Binaries:       kclBinaries,
+		IngressEnabled: ingressOn,
 	}
 
 	for _, f := range envTemplates {
@@ -106,6 +109,36 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
+		}
+	}
+
+	// Gateway API ingress scaffolding. The base topology
+	// (`deploy/kcl/ingress.k`) is user-owned and shared across envs;
+	// each env's `deploy/kcl/<env>/ingress.k` re-exports the base
+	// with optional overrides. Both render once at `forge new`; not
+	// regenerated on subsequent `forge generate` runs.
+	if ingressOn {
+		ingressFiles := []struct {
+			templateName string
+			dest         string
+		}{
+			{"kcl/ingress.k.tmpl", "ingress.k"},
+			{"kcl/dev/ingress.k.tmpl", "dev/ingress.k"},
+			{"kcl/staging/ingress.k.tmpl", "staging/ingress.k"},
+			{"kcl/prod/ingress.k.tmpl", "prod/ingress.k"},
+		}
+		for _, f := range ingressFiles {
+			content, err := templates.DeployTemplates().Render(f.templateName, templateData)
+			if err != nil {
+				return fmt.Errorf("render ingress template %s: %w", f.templateName, err)
+			}
+			destPath := filepath.Join(deployDir, f.dest)
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(destPath, content, 0644); err != nil {
+				return fmt.Errorf("write %s: %w", f.dest, err)
+			}
 		}
 	}
 

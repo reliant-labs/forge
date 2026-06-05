@@ -37,7 +37,8 @@ _bundle = forge.Bundle {
                 secrets_file = ".env.dev.secrets"
             }
         }
-        # Cluster-deployed proxy with ingress.
+        # Cluster-deployed proxy. Routed via Gateway API — see the
+        # `gateways` and `http_routes` blocks below.
         forge.Service {
             name = "workspace-proxy"
             image = "example"
@@ -47,10 +48,6 @@ _bundle = forge.Bundle {
                 registry = "localhost:5050"
                 replicas = 1
                 ports = [8080]
-                ingress = forge.Ingress {
-                    host = "workspaces.localhost"
-                    tls = False
-                }
             }
         }
         # Build-only CLI with two ldflag variants.
@@ -108,6 +105,30 @@ _bundle = forge.Bundle {
             name = "db-bootstrap"
             image = "example"
             command = ["./example", "migrate", "up"]
+        }
+    ]
+    # Gateway API ingress topology. In a real project this block lives
+    # in deploy/kcl/ingress.k and per-env files re-export with
+    # overrides; inlined here for the single-file example.
+    gateways = [
+        forge.Gateway {
+            name = "public"
+            listeners = [
+                forge.GatewayListener {
+                    name = "http"
+                    port = 18080
+                    protocol = "HTTP"
+                }
+            ]
+        }
+    ]
+    http_routes = [
+        forge.HTTPRoute {
+            name = "workspace-proxy"
+            gateway = "public"
+            listener = "http"
+            service = "workspace-proxy"
+            port = 8080
         }
     ]
 }

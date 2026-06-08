@@ -78,6 +78,7 @@ func GetGitCommit() string {
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
 	var verbose bool
+	var silenceExperimental bool
 
 	rootCmd := &cobra.Command{
 		Use:   "forge",
@@ -89,9 +90,28 @@ It enables easy mocking, middleware injection, spec-driven development,
 and component swapping - all while maintaining a single, consistent
 interface pattern throughout the entire stack.`,
 		Version: fmt.Sprintf("%s (built %s, commit %s)", version, buildDate, gitCommit),
+		// PersistentPreRun fires once per invocation regardless of
+		// which subcommand the user typed. We use it to emit a single
+		// "experimental features on" warning so users running with
+		// `features.experimental.<x>: true` are reminded the schema
+		// may break between versions. Suppress with
+		// --silence-experimental (or FORGE_SILENCE_EXPERIMENTAL=1 in
+		// CI). Errors loading config are swallowed — a missing
+		// forge.yaml is the normal "outside-a-project" path.
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
+				return
+			}
+			cfg, err := loadProjectConfig()
+			if err != nil || cfg == nil {
+				return
+			}
+			emitExperimentalWarning(cmd.ErrOrStderr(), cfg.Features.EnabledExperimentalFeatures())
+		},
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVar(&silenceExperimental, "silence-experimental", false, "suppress the experimental-features warning (also: FORGE_SILENCE_EXPERIMENTAL=1)")
 
 	// Add all commands
 	rootCmd.AddCommand(newRunCmd())
@@ -112,7 +132,10 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
-	rootCmd.AddCommand(newUnforkCmd())
+	// `unfork` lives under `forge generate unfork` so it sits next to
+	// its inverse (`forge generate --accept`). The top-level command
+	// was removed in this release — see newGenerateCmd for the new
+	// home.
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	rootCmd.AddCommand(newComponentCmd())
@@ -122,10 +145,12 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newBacklogCmd())
 	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newMapCmd())
+	rootCmd.AddCommand(newIntrospectCmd())
 	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newDevCmd())
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
+	rootCmd.AddCommand(newExperimentalCmd())
 
 	return rootCmd
 }
@@ -220,6 +245,8 @@ Examples:
 	runCmd.Flags().BoolVar(&opts.debug, "debug", false, "Start with Delve debugger (hot-reload + debug on :2345) — orchestrator only")
 	runCmd.Flags().BoolVar(&background, "background", false, "Detach the host-mode runner and return immediately (stop with `forge run <service> stop`)")
 	runCmd.Flags().StringVar(&secretsFile, "env-file", "", "Override the KCL HostDeploy.secrets_file path (gitignored dotenv with secrets only — config lives in KCL env_vars)")
+	runCmd.Flags().IntVar(&opts.proxyPort, "proxy-port", 0, "Cross-frontend dev proxy port (default 8080; env var FORGE_RUN_PROXY_PORT also honoured). Maps <name>.localhost:<port> → each frontend / HTTP-routed service.")
+	runCmd.Flags().BoolVar(&opts.noProxy, "no-proxy", false, "Disable the cross-frontend dev proxy (orchestrator only) — use the raw per-frontend ports instead of the unified <name>.localhost URL.")
 
 	return runCmd
 }

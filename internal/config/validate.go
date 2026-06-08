@@ -2,11 +2,15 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // LoadStrict parses a forge.yaml byte stream into a ProjectConfig with
@@ -50,7 +54,7 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 	}
 	var issues []validationIssue
 	if root != nil && root.Kind == yaml.MappingNode {
-		issues = append(issues, walkUnknownKeys(root, "", reflect.TypeOf(ProjectConfig{}))...)
+		issues = append(issues, walkUnknownKeys(root, "", reflect.TypeFor[ProjectConfig]())...)
 	} else if root != nil && root.Kind != 0 {
 		issues = append(issues, validationIssue{
 			line: root.Line,
@@ -75,6 +79,12 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 
 	// Phase 3: required-field validation.
 	issues = append(issues, validateRequired(&cfg)...)
+
+	// Phase 4: name-shape validation across services/binaries/frontends.
+	// This catches Go-package collisions and reserved-word/identifier
+	// shapes that would otherwise blow up the generator with a confusing
+	// downstream error.
+	issues = append(issues, validateServices(&cfg)...)
 
 	if len(issues) > 0 {
 		return nil, &ValidationError{Path: label, Issues: issues}
@@ -150,6 +160,83 @@ func isDeprecatedTopLevelKey(key string) bool {
 	return false
 }
 
+// removedSchemaKeys maps a fully-qualified dot-notation key path
+// (e.g. "k8s.provider") to a human-readable migration hint. When the
+// validator encounters an unknown key whose path matches an entry
+// here, it reports the migration hint in the "Fix:" suggestion
+// instead of the generic "rename or remove this key" — so users hitting
+// schema-drift get a pointer to the real correction rather than a
+// dead-end "this is a typo" framing.
+//
+// Unlike isDeprecatedTopLevelKey, entries here STILL surface as
+// validation errors — the key must be removed for the file to load.
+// We only fail-soft for keys that are still semi-meaningful during a
+// migration window (currently just top-level `environments`).
+//
+// Path format: dot-separated, matching qualifiedKey output. Slice
+// indices in the path use `[N]` (e.g. "services[0].dev_target") so
+// migration hints can target a field on every element of a slice via
+// the literal "[*]" wildcard.
+var removedSchemaKeys = map[string]string{
+	// k8s.provider was dropped when forge stopped owning cluster-type
+	// detection. The k3d/gke/eks choice now lives in the KCL
+	// `forge.K8sCluster` block (per-env `provider:` field). The forge.yaml
+	// `k8s:` section retains only `kcl_dir`.
+	"k8s.provider": "this key was removed; cluster provider now lives in the per-env KCL `forge.K8sCluster` block. Remove this key.",
+	// services[].dev_target was dropped when host-vs-cluster placement
+	// moved to the KCL layer (per-env `deploy:` field on `forge.Service`).
+	// See the dev-target-to-kcl-deploy migration skill.
+	"services[*].dev_target": "this key was removed; host-vs-cluster placement now lives in the per-env KCL `forge.Service.deploy` field. Remove this key.",
+}
+
+// removedSchemaKeyHint returns the migration hint for a fully-qualified
+// path if one is registered, or "" otherwise. The `[*]` wildcard in
+// the table matches any `[N]` index in the input path so a single
+// entry covers every slice element.
+func removedSchemaKeyHint(path string) string {
+	if hint, ok := removedSchemaKeys[path]; ok {
+		return hint
+	}
+	// Wildcard match: replace each `[N]` in the input with `[*]` and
+	// look up again.
+	wild := wildcardIndices(path)
+	if wild != path {
+		if hint, ok := removedSchemaKeys[wild]; ok {
+			return hint
+		}
+	}
+	return ""
+}
+
+// wildcardIndices replaces every `[<digits>]` substring in s with
+// `[*]`. Used so removedSchemaKeys can register one entry per slice
+// field rather than one per index.
+func wildcardIndices(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != '[' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		// Find matching ']'.
+		j := i + 1
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		if j < len(s) && s[j] == ']' && j > i+1 {
+			b.WriteString("[*]")
+			i = j + 1
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // walkUnknownKeys recursively descends a yaml.Node mapping against the
 // reflected Go type. Unknown keys produce issues with line numbers and
 // suggestions; known keys recurse if they map to nested struct or slice
@@ -160,7 +247,7 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 		return nil
 	}
 	// Unwrap pointer.
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	// We only descend into struct mappings here. Map[string]X with
@@ -188,10 +275,16 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 		}
 		field, ok := known[key]
 		if !ok {
-			suggestion := closestMatch(key, knownNames(known))
-			msg := fmt.Sprintf("unknown key %q", qualifiedKey(path, key))
+			fullPath := qualifiedKey(path, key)
+			msg := fmt.Sprintf("unknown key %q", fullPath)
 			fix := "rename or remove this key."
-			if suggestion != "" {
+			// Schema-drift hints take precedence over typo suggestions:
+			// when we know a key was deliberately removed, "did you mean
+			// <X>" would mislead the user toward an even more wrong
+			// answer.
+			if hint := removedSchemaKeyHint(fullPath); hint != "" {
+				fix = hint
+			} else if suggestion := closestMatch(key, knownNames(known)); suggestion != "" {
 				msg += fmt.Sprintf(" — did you mean %q?", suggestion)
 				fix = fmt.Sprintf("rename to %q or remove if unused.", suggestion)
 			}
@@ -216,7 +309,7 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 					}
 				}
 			}
-		case reflect.Ptr:
+		case reflect.Pointer:
 			if ft.Elem().Kind() == reflect.Struct && valNode.Kind == yaml.MappingNode {
 				childPath := joinPath(path, key)
 				out = append(out, walkUnknownKeys(valNode, childPath, ft.Elem())...)
@@ -245,14 +338,12 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 // keys appear at the parent level (yaml.v3 default behaviour).
 func yamlKeysOf(t reflect.Type) map[string]reflect.StructField {
 	out := make(map[string]reflect.StructField)
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		tag := f.Tag.Get("yaml")
 		if tag == "" || tag == "-" {
 			if f.Anonymous {
-				for k, v := range yamlKeysOf(f.Type) {
-					out[k] = v
-				}
+				maps.Copy(out, yamlKeysOf(f.Type))
 			}
 			continue
 		}
@@ -469,6 +560,134 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 	}
 
 	return out
+}
+
+// goReservedWords is the set of Go keywords plus predeclared identifiers
+// that cannot be used as package names without breaking the build.
+// We use this to flag service / binary / frontend names whose canonical
+// Go-package form (naming.ServicePackage) lands on one of them — e.g.
+// a service named "select" or "type" would compile-fail downstream.
+var goReservedWords = map[string]bool{
+	// Keywords.
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	// Predeclared identifiers that would shadow basic types and break
+	// `package <name>` in the generated tree.
+	"bool": true, "byte": true, "complex64": true, "complex128": true,
+	"error": true, "float32": true, "float64": true, "int": true, "int8": true,
+	"int16": true, "int32": true, "int64": true, "rune": true, "string": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "any": true, "true": true, "false": true, "nil": true,
+	"iota": true, "init": true,
+}
+
+// validateServices walks services / binaries / frontends and rejects
+// name shapes that would silently break codegen downstream:
+//
+//   - empty name (or name that normalises to empty)
+//   - non-Go-legal package shape after normalisation (starts with a
+//     digit, contains punctuation/space that survives `ServicePackage`)
+//   - normalisation collisions across the same slice (e.g.
+//     `admin-server` and `admin_server` both → `adminserver`) AND
+//     across slices (a service and a binary with the same canonical
+//     form would write to the same scaffold directory)
+//   - the canonical form lands on a Go reserved word / predeclared
+//     identifier (e.g. "select", "type"), which would compile-fail
+//
+// The lint is name-shape-only — it does not look at config semantics.
+// Returning the issues batched lets ValidationError surface every
+// problem in one go.
+func validateServices(cfg *ProjectConfig) []validationIssue {
+	var out []validationIssue
+
+	// Track canonical -> first-seen-source so collisions can name both
+	// the earlier and the later entry in the error message.
+	seen := map[string]string{}
+
+	check := func(rawName, source string) {
+		trimmed := strings.TrimSpace(rawName)
+		if trimmed == "" {
+			// Empty-name issues are already reported by validateRequired
+			// for the slices that have a required-name rule. Don't double
+			// up; just skip the canonical check.
+			return
+		}
+		canonical := naming.ServicePackage(trimmed)
+		if canonical == "" {
+			out = append(out, validationIssue{
+				msg: fmt.Sprintf("%s.name %q normalises to an empty Go package", source, rawName),
+				fix: "use at least one ASCII letter or digit in the name.",
+			})
+			return
+		}
+		if !isValidGoPackageIdent(canonical) {
+			out = append(out, validationIssue{
+				msg: fmt.Sprintf("%s.name %q produces invalid Go package %q", source, rawName, canonical),
+				fix: "use ASCII letters, digits, hyphens, and underscores only; must not start with a digit.",
+			})
+			return
+		}
+		if goReservedWords[canonical] {
+			out = append(out, validationIssue{
+				msg: fmt.Sprintf("%s.name %q normalises to Go reserved word %q", source, rawName, canonical),
+				fix: "rename so the compact lowercase form is not a Go keyword or predeclared identifier.",
+			})
+			return
+		}
+		if prev, ok := seen[canonical]; ok {
+			out = append(out, validationIssue{
+				msg: fmt.Sprintf("%s.name %q collides with %s after normalisation (both → %q)", source, rawName, prev, canonical),
+				fix: "rename one of the entries so their compact lowercase forms differ.",
+			})
+			return
+		}
+		seen[canonical] = source
+	}
+
+	for i, svc := range cfg.Services {
+		check(svc.Name, fmt.Sprintf("services[%d]", i))
+	}
+	for i, b := range cfg.Binaries {
+		check(b.Name, fmt.Sprintf("binaries[%d]", i))
+	}
+	for i, fe := range cfg.Frontends {
+		check(fe.Name, fmt.Sprintf("frontends[%d]", i))
+	}
+
+	return out
+}
+
+// isValidGoPackageIdent reports whether s is a syntactically-legal Go
+// package identifier: starts with an ASCII letter or underscore, and
+// the rest are ASCII letters, digits, or underscores. We restrict to
+// ASCII even though Go technically allows broader Unicode-letter
+// package names — every forge-generated import path, directory name,
+// and KCL/k8s identifier downstream assumes ASCII, so a Unicode-letter
+// service name would surface as a downstream error far from the cause.
+func isValidGoPackageIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r > unicode.MaxASCII {
+			return false
+		}
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if !isLetter {
+				return false
+			}
+			continue
+		}
+		if !isLetter && !isDigit {
+			return false
+		}
+	}
+	return true
 }
 
 // looksLikeGoModulePath does a cheap shape check so we catch obvious

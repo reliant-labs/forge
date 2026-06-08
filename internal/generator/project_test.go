@@ -129,21 +129,26 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("bootstrap.go BootstrapOnly should warn about unknown service names, got:\n%s", bootstrapContents)
 	}
 
-	// cmd/server.go should use app.Bootstrap, not registry
+	// cmd/server.go should wire app.Bootstrap through the serverkit shim
+	// (the shim dispatches to app.Bootstrap / app.BootstrapOnly via
+	// Hooks.Bootstrap; the registry pattern is gone).
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
 	if strings.Contains(serverContents, "registry") {
 		t.Fatalf("cmd/server.go should not reference registry, got:\n%s", serverContents)
 	}
 	if !strings.Contains(serverContents, "app.Bootstrap(") {
-		t.Fatalf("cmd/server.go should use app.Bootstrap(), got:\n%s", serverContents)
+		t.Fatalf("cmd/server.go should wire app.Bootstrap() into serverkit.Hooks.Bootstrap, got:\n%s", serverContents)
 	}
-	// A2: Server should call application.Shutdown
-	if !strings.Contains(serverContents, "application.Shutdown(shutdownCtx)") {
-		t.Fatalf("cmd/server.go should call application.Shutdown(), got:\n%s", serverContents)
+	// A2: Server should hand off to serverkit.Run — application.Shutdown
+	// is invoked inside serverkit's graceful-shutdown sequence, not by the
+	// shim. Assert the serverkit handoff instead of a literal Shutdown call.
+	if !strings.Contains(serverContents, "serverkit.Run(") {
+		t.Fatalf("cmd/server.go should hand off lifecycle to serverkit.Run(), got:\n%s", serverContents)
 	}
-	// A7: Server should wrap with CORS when frontend exists
+	// A7: Server should wire the CORS middleware factory when frontend exists.
+	// Serverkit drives the actual wrap based on Config.CORSOrigins.
 	if !strings.Contains(serverContents, "CORSMiddleware") {
-		t.Fatalf("cmd/server.go should use CORSMiddleware when frontend exists, got:\n%s", serverContents)
+		t.Fatalf("cmd/server.go should wire middleware.CORSMiddleware into serverkit.Hooks.CORSMiddleware when frontend exists, got:\n%s", serverContents)
 	}
 
 	// services/all should NOT exist
@@ -988,11 +993,17 @@ func TestFeatureFlag_MigrationsDisabled(t *testing.T) {
 	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "migrate.go"))
 
 	// cmd/server.go should exist (codegen is still enabled) but must NOT
-	// reference AutoMigrate
+	// wire the AutoMigrate hook or call app.AutoMigrate. The string
+	// "AutoMigrate" still appears in the package-level docstring as a
+	// reference to the optional hook surface — gate on the actual call
+	// sites instead of a substring match.
 	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
-	if strings.Contains(serverContents, "AutoMigrate") {
-		t.Fatalf("cmd/server.go should NOT reference AutoMigrate when migrations disabled, got:\n%s", serverContents)
+	if strings.Contains(serverContents, "app.AutoMigrate(") {
+		t.Fatalf("cmd/server.go should NOT call app.AutoMigrate() when migrations disabled, got:\n%s", serverContents)
+	}
+	if strings.Contains(serverContents, "AutoMigrate:") {
+		t.Fatalf("cmd/server.go should NOT wire serverkit.Hooks.AutoMigrate when migrations disabled, got:\n%s", serverContents)
 	}
 }
 
@@ -1028,29 +1039,32 @@ func TestFeatureFlag_CodegenDisabled(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "cmd", "version.go"))
 }
 
-func TestFeatureFlag_DeployDisabled(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "no-deploy")
-	gen := NewProjectGenerator("no-deploy", root, "example.com/no-deploy")
+// TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn locks in
+// the new contract: deploy is experimental (opt-in via
+// features.experimental.deploy: true), but the SCAFFOLD always emits
+// the deploy artefacts for a service-kind project so the user can opt
+// in via a single flag flip with no rescaffold. The previous
+// "deploy=false strips Dockerfile" behaviour is gone — the runtime
+// gate lives on `forge deploy` itself.
+func TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "deploy-shape")
+	gen := NewProjectGenerator("deploy-shape", root, "example.com/deploy-shape")
 	gen.ServiceName = "api"
-	gen.Features = config.FeaturesConfig{
-		Deploy: falsePtr(),
-	}
+	// Zero-value FeaturesConfig — experimental.Deploy is false.
+	gen.Features = config.FeaturesConfig{}
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// Dockerfile and .dockerignore should not exist
-	assertPathNotExists(t, filepath.Join(root, "Dockerfile"))
-	assertPathNotExists(t, filepath.Join(root, ".dockerignore"))
+	// Service-kind scaffolds always ship the deploy shape so the user
+	// can flip the experimental flag without rescaffolding.
+	assertPathExists(t, filepath.Join(root, "Dockerfile"))
+	assertPathExists(t, filepath.Join(root, ".dockerignore"))
+	assertPathExists(t, filepath.Join(root, "docker-compose.yml"))
+	assertPathExists(t, filepath.Join(root, "deploy", "kcl"))
 
-	// docker-compose.yml should not exist (generated by deploy)
-	assertPathNotExists(t, filepath.Join(root, "docker-compose.yml"))
-
-	// deploy/kcl directory should not exist
-	assertPathNotExists(t, filepath.Join(root, "deploy", "kcl"))
-
-	// Non-deploy files should still exist
+	// Non-deploy files exist too.
 	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
 	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
 }
@@ -1202,12 +1216,13 @@ func TestFreshScaffoldDefaults(t *testing.T) {
 	// Features: every flag should serialize to true for --kind service with
 	// no --frontend (frontend defaults to false when no frontend is named —
 	// see buildFeaturesConfig comments).
+	// `deploy` is experimental — default-off, not stamped at scaffold
+	// time. See the experimental block in forge.yaml.
 	wantFeatureLines := []string{
 		"orm: true",
 		"codegen: true",
 		"migrations: true",
 		"ci: true",
-		"deploy: true",
 		"contracts: true",
 		"docs: true",
 		"observability: true",

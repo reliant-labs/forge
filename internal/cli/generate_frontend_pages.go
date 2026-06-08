@@ -27,12 +27,16 @@ import (
 // We ensure it once and skip the per-frontend loop; the tsconfig path
 // mapping (and Vite alias) emitted by the frontend templates routes
 // `@/components/*` imports there.
-func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
+//
+// Returns the first scaffold error encountered. The pipeline caller
+// (stepFrontendComponents) routes the result through ctx.warnOrFail so
+// failures are warn-by-default and fatal under --strict.
+func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) error {
 	if cfg.IsFrontendWorkspacesEnabled() {
 		if err := generator.WriteUIWebPackageFiles(projectDir, cfg.Name, true); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: ui-web package scaffold failed: %v\n", err)
+			return fmt.Errorf("ui-web package scaffold: %w", err)
 		}
-		return
+		return nil
 	}
 	for _, fe := range cfg.Frontends {
 		feType := strings.ToLower(strings.TrimSpace(fe.Type))
@@ -45,9 +49,10 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) {
 		}
 		frontendDir := filepath.Join(projectDir, feDir)
 		if err := generator.EnsureCoreComponents(frontendDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: component install for %s failed: %v\n", fe.Name, err)
+			return fmt.Errorf("component install for %s: %w", fe.Name, err)
 		}
 	}
+	return nil
 }
 
 // generateFrontendPages generates CRUD page files for each entity that has

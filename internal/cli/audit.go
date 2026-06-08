@@ -92,6 +92,7 @@ var auditCategoryOrder = []string{
 	"features",
 	"ingress",
 	"environments",
+	"external_builds",
 	"conventions",
 	"codegen",
 	"packs",
@@ -176,6 +177,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 		report.Categories["ingress"] = auditIngress(cfg, abs)
 	}
 	report.Categories["environments"] = auditEnvironments(abs)
+	report.Categories["external_builds"] = auditExternalBuilds(cfg, abs)
 	report.Categories["conventions"] = auditConventions(cfg, abs)
 	report.Categories["codegen"] = auditCodegen(cfg, abs)
 	report.Categories["packs"] = auditPacks(cfg)
@@ -253,15 +255,23 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	var services, workers, operators []svcInfo
 	var frontends []map[string]string
 
-	// Parse RPC counts when proto/services exists. Failure here is silent —
-	// we still emit the structural shape from forge.yaml so the user gets
-	// the inventory even when codegen is broken.
+	// Parse RPC counts when proto/services exists. We still emit the
+	// structural shape from forge.yaml so the user gets the inventory
+	// even when codegen is broken — but unlike the historic silent-drop
+	// behavior, we surface the parse failure as proto_integrity on the
+	// details map so JSON consumers can `jq '.details.proto_integrity'`
+	// and detect the "RPC count = 0 because parse failed, not because
+	// the service has no methods" case. See B5 in the audit quick-win
+	// backlog.
 	rpcByService := map[string]int{}
+	var protoParseErr string
 	if dirExists(filepath.Join(projectDir, "proto", "services")) {
 		if defs, err := codegen.ParseServicesFromProtos(filepath.Join(projectDir, "proto", "services"), projectDir); err == nil {
 			for _, d := range defs {
 				rpcByService[d.Name] = len(d.Methods)
 			}
+		} else {
+			protoParseErr = err.Error()
 		}
 	}
 
@@ -296,9 +306,24 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		"packs":     cfg.Packs,
 		"packages":  packageNames(cfg.Packages),
 	}
+	// proto_integrity surfaces the RPC-count parse failure (if any) so
+	// JSON consumers don't have to guess whether RPCCount: 0 means
+	// "no methods" or "parse failed". Only emitted when there's an
+	// error to report — under the additive-extension contract, the
+	// field being absent IS the "all good" signal.
+	status := AuditStatusOK
 	summary := fmt.Sprintf("kind=%s, %d service(s), %d worker(s), %d operator(s), %d frontend(s), %d pack(s)",
 		cfg.EffectiveKind(), len(services), len(workers), len(operators), len(frontends), len(cfg.Packs))
-	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
+	if protoParseErr != "" {
+		details["proto_integrity"] = map[string]any{
+			"status": "warn",
+			"reason": "ParseServicesFromProtos failed — RPC counts may be 0 even for services with methods",
+			"error":  protoParseErr,
+		}
+		status = AuditStatusWarn
+		summary += " (warn: proto parse failed — see proto_integrity)"
+	}
+	return AuditCategory{Status: status, Summary: summary, Details: details}
 }
 
 // auditFeatures surfaces the resolved `features:` block from forge.yaml
@@ -326,9 +351,21 @@ func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
 	// emits `[]` rather than `null` when nothing falls into a
 	// bucket — sub-agents that `jq '.disabled | length'` need a
 	// numeric length regardless of state.
+	//
+	// Stable vs experimental are surfaced as separate buckets so
+	// consumers don't have to know the menu to interpret
+	// "disabled": a default-off experimental feature is structurally
+	// different from a user-opted-out stable feature.
 	enabled := []string{}
 	disabled := []string{}
+	experimentalEnabled := []string{}
 	for name, on := range effective {
+		if config.IsExperimentalFeature(name) {
+			if on {
+				experimentalEnabled = append(experimentalEnabled, name)
+			}
+			continue
+		}
 		if on {
 			enabled = append(enabled, name)
 		} else {
@@ -337,17 +374,17 @@ func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
 	}
 	sort.Strings(enabled)
 	sort.Strings(disabled)
+	sort.Strings(experimentalEnabled)
 
-	// Surface the resolved map AND the enabled/disabled splits — the
-	// map is the canonical machine shape; the splits give humans a
-	// one-glance answer to "what's off?" without scanning the whole
-	// dict. Both forms cost ~0 bytes and stay stable across versions.
 	details := map[string]any{
-		"resolved": effective,
-		"enabled":  enabled,
-		"disabled": disabled,
+		"resolved":              effective,
+		"enabled":               enabled,
+		"disabled":              disabled,
+		"experimental_enabled":  experimentalEnabled,
+		"experimental_available": append([]string{}, config.ExperimentalFeatureNames...),
 	}
-	summary := fmt.Sprintf("%d feature(s) enabled, %d disabled", len(enabled), len(disabled))
+	summary := fmt.Sprintf("%d stable feature(s) enabled, %d disabled; %d experimental on",
+		len(enabled), len(disabled), len(experimentalEnabled))
 	return AuditCategory{Status: AuditStatusOK, Summary: summary, Details: details}
 }
 
@@ -635,10 +672,21 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		details["orphan_gen_files"] = orphans
 	}
 
+	// Tracked-but-missing detection: inverse of orphan. Forge recorded
+	// the path in `.forge/checksums.json` but the on-disk file is gone
+	// — the user (or a sibling agent / merge conflict) likely removed
+	// it. We don't auto-recreate; just report so audit can prompt the
+	// user to run `forge generate` (which will re-emit) or remove the
+	// manifest entry if the deletion was deliberate.
+	missing := trackedMissingFiles(projectDir, cs)
+	if len(missing) > 0 {
+		details["tracked_missing_files"] = missing
+	}
+
 	_ = cfg
 	status := AuditStatusOK
-	summary := fmt.Sprintf("%d tracked, %d modified, %d orphans", len(cs.Files), len(modified), len(orphans))
-	if len(modified) > 0 || len(orphans) > 0 {
+	summary := fmt.Sprintf("%d tracked, %d modified, %d orphans, %d missing", len(cs.Files), len(modified), len(orphans), len(missing))
+	if len(modified) > 0 || len(orphans) > 0 || len(missing) > 0 {
 		status = AuditStatusWarn
 	}
 	return AuditCategory{Status: status, Summary: summary, Details: details}

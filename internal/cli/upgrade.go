@@ -239,14 +239,17 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// Bump the project's forge_version after a successful, non-dry-run
 	// upgrade. We do this last so a partial failure above leaves the
 	// existing pin in place rather than silently advancing it.
+	//
+	// Hard error: silently failing to bump leaves the project pinned to
+	// the old version, so the next `forge generate` runs the wrong
+	// template set against an already-migrated tree.
 	if !check && target != "" && target != "dev" && target != "(devel)" {
 		if cfg.ForgeVersion != target {
 			cfg.ForgeVersion = target
 			if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to bump forge_version in forge.yaml: %v\n", err)
-			} else {
-				fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
+				return fmt.Errorf("bump forge_version in forge.yaml: %w", err)
 			}
+			fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
 		}
 	}
 
@@ -255,14 +258,17 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// auto-applied changes + items needing manual attention. Skip on
 	// dry-run — the report would be misleading without the actual
 	// rewrites having happened.
+	//
+	// Hard error: this report is the canonical worklist for manual
+	// follow-up items. Silently dropping it strands the user with no
+	// record of what still needs hand-attention.
 	if !check && (len(codemodReport.Auto) > 0 || len(codemodReport.Manual) > 0) {
 		if err := writeUpgradeNotes(projectDir, from, target, codemodReport); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write UPGRADE_NOTES.md: %v\n", err)
-		} else {
-			fmt.Println()
-			fmt.Println("📝 UPGRADE_NOTES.md written at the project root.")
-			fmt.Println("    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
+			return fmt.Errorf("write UPGRADE_NOTES.md: %w", err)
 		}
+		fmt.Println()
+		fmt.Println("📝 UPGRADE_NOTES.md written at the project root.")
+		fmt.Println("    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
 	}
 
 	return nil

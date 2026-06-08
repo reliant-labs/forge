@@ -290,13 +290,21 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	// referenced from multiple components emits one helper.
 	resolverNeeds := map[string]PlaceholderResolver{}
 
+	// Project-wide assignability matcher — shared across services,
+	// workers, operators so pkg/app + each component package gets
+	// loaded at most once per generate. The matcher is consulted only
+	// when a Deps field has a name match against AppExtras but the
+	// pretty-printed type strings differ — exactly the case the
+	// legacy name-only resolution got wrong.
+	matcher := NewDepsAssignabilityMatcher(projectDir)
+
 	// Build the collision-aware naming map ONCE, shared with bootstrap.
 	// We synthesize service "components" from ServiceDef just so the
 	// counts include service packages; bootstrap does the same in
 	// GenerateBootstrap before calling AssignBootstrapAliases.
 	svcComponents := make([]BootstrapServiceData, 0, len(services))
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
+		pkg := naming.ServicePackage(svc.Name)
 		svcComponents = append(svcComponents, BootstrapServiceData{Package: pkg})
 	}
 	counts := CollisionCounts(svcComponents, packages, workers, operators)
@@ -304,7 +312,7 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	var wireSvcs []WireGenServiceData
 	needsAuthorizerImport := false
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
+		pkg := naming.ServicePackage(svc.Name)
 		// Services use ToPascalCase for FieldName — matches
 		// GenerateBootstrap's per-service mapping. The collision branch
 		// (rare) gets the "SvcXxx" prefix from ResolveCollisionNaming.
@@ -314,11 +322,15 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 		handlerDir := filepath.Join(projectDir, "handlers", pkg)
 		depsFields, parseErr := ParseServiceDeps(handlerDir)
 		if parseErr != nil {
-			// Best-effort: a parse failure here means the handler dir
-			// has a syntactically broken Deps struct. We log and move
-			// on so wire_gen.go is still emitted (with no entry for
-			// this service) and the user sees the real error from
-			// the regular Go compile step.
+			// Intentional soft warning (no --strict promotion): a parse
+			// failure here means the handler dir has a syntactically
+			// broken Deps struct. We log and move on so wire_gen.go is
+			// still emitted (with no entry for this service) and the
+			// user sees the canonical error from the regular Go
+			// compile step. Promoting to fatal here would mask the
+			// richer Go-compiler diagnostic with a redundant codegen
+			// abort. Lives in internal/codegen (no pipelineContext
+			// reach), so no --strict thread.
 			fmt.Fprintf(os.Stderr, "Warning: parsing %s Deps: %v\n", pkg, parseErr)
 			depsFields = nil
 		}
@@ -344,8 +356,9 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 			}
 		}
 
+		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "handlers", pkgDir: pkg}
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds)
+			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, svcTC)
 			// Optional fields that fall through to the typed-zero
 			// branch get the silent treatment: no inline TODO comment,
 			// no contribution to the UNRESOLVED header. The user
@@ -377,11 +390,11 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	// WireGenServiceData carrier — the template treats them identically
 	// other than the import-path prefix and the per-component logger
 	// attribute key ("worker" / "operator" instead of "service").
-	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
+	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher)
 	if err != nil {
 		return WireGenData{}, fmt.Errorf("build worker wire data: %w", err)
 	}
-	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
+	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher)
 	if err != nil {
 		return WireGenData{}, fmt.Errorf("build operator wire data: %w", err)
 	}
@@ -435,7 +448,7 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 //
 // Returns an empty slice (not nil) when comps is empty so range over the
 // result is a no-op without nil-check ceremony at the call site.
-func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, loggerAttrKey, projectDir string, appFieldByName map[string]AppField, ormEnabled bool, counts map[string]int, resolverNeeds map[string]PlaceholderResolver) ([]WireGenServiceData, error) {
+func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, loggerAttrKey, projectDir string, appFieldByName map[string]AppField, ormEnabled bool, counts map[string]int, resolverNeeds map[string]PlaceholderResolver, matcher *DepsAssignabilityMatcher) ([]WireGenServiceData, error) {
 	if len(comps) == 0 {
 		return nil, nil
 	}
@@ -452,6 +465,10 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 		compDir := filepath.Join(projectDir, subdir, c.Package)
 		depsFields, parseErr := ParseServiceDeps(compDir)
 		if parseErr != nil {
+			// Intentional soft warning — same rationale as the service
+			// branch above: a broken Deps struct surfaces a clearer
+			// error from `go build`. No --strict thread because we're
+			// in internal/codegen (no pipelineContext reach).
 			fmt.Fprintf(os.Stderr, "Warning: parsing %s/%s Deps: %v\n", subdir, c.Package, parseErr)
 			depsFields = nil
 		}
@@ -465,8 +482,9 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 			LoggerAttrKey: loggerAttrKey,
 		}
 
+		compTC := &appFieldTypeChecker{matcher: matcher, roleRoot: subdir, pkgDir: c.Package}
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds)
+			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, compTC)
 			// Workers/operators are not expected to declare Authorizer
 			// (no inbound RPCs), so they don't get the devMode hook.
 			// If a Deps struct does declare one, we honor it and set
@@ -511,7 +529,7 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 // All other resolution rules (conventional names, exact-name app
 // match, typed-zero fallback) match wireExpressionFor exactly — the
 // placeholder branch is purely additive.
-func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver) (expr, comment, unresolvedHint string) {
+func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver, tm *appFieldTypeChecker) (expr, comment, unresolvedHint string) {
 	switch df.Name {
 	case "Logger":
 		return fmt.Sprintf("logger.With(\"service\", %q)", runtimeName), "", ""
@@ -542,6 +560,22 @@ func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnable
 				fmt.Sprintf("typed accessor for forge:placeholder %s → %s", df.Name, af.Placeholder),
 				""
 		}
+		// Name matches. Decide whether the types are compatible. The
+		// legacy code emitted `app.<Field>` on name alone, which
+		// produced a compile error when AppExtras.<Field> was typed
+		// incompatibly with Deps.<Field> (the cp-forge audit-no-op bug
+		// class). When the type checker is available and reports a
+		// genuine mismatch, fall through to the unresolved-typed-zero
+		// path so the failure is LOUD (TODO comment + UNRESOLVED
+		// header line + lint finding) rather than a compile error at a
+		// downstream call site.
+		if tm != nil && tm.IsNameMismatch(df.Name, df.Type, af.Type) {
+			hint := fmt.Sprintf("AppExtras.%s is %s but Deps.%s wants %s — types are not assignable; align AppExtras to %s or re-construct %s in pkg/app/setup.go",
+				df.Name, af.Type, df.Name, df.Type, df.Type, df.Name)
+			return zeroValueLiteral(df.Type),
+				fmt.Sprintf("TODO: wire %s — AppExtras.%s type (%s) is not assignable to %s", df.Name, df.Name, af.Type, df.Type),
+				hint
+		}
 		return "app." + df.Name, "", ""
 	}
 
@@ -567,6 +601,31 @@ func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnable
 // shape (AppField with Placeholder) is consumed by wireExpressionForApp
 // above; this thin wrapper exists so existing callers / tests keep
 // working without a signature churn.
+// appFieldTypeChecker is the per-component lens onto the project-wide
+// DepsAssignabilityMatcher. wireExpressionForApp consults it when it
+// has a name match but the AppExtras and Deps type strings differ —
+// the answer decides between "emit `app.<F>`" (assignable) and "emit
+// typed zero + loud UNRESOLVED hint" (mismatch). nil disables the
+// type-aware path entirely (legacy behavior: name-only match).
+type appFieldTypeChecker struct {
+	matcher  *DepsAssignabilityMatcher
+	roleRoot string
+	pkgDir   string
+}
+
+// IsNameMismatch reports true iff the matcher can confirm AppExtras's
+// type is genuinely NOT assignable to the Deps field's declared type.
+// Returns false when the matcher is unavailable (load failure, no
+// pkg/app, etc.) — see the MatchUnavailable docstring; preserves the
+// pre-matcher behavior so codegen never regresses on a mid-edit project.
+func (c *appFieldTypeChecker) IsNameMismatch(depsName, depsType, appType string) bool {
+	if c == nil || c.matcher == nil {
+		return false
+	}
+	kind := c.matcher.Match(c.roleRoot, c.pkgDir, depsName, depsType, appType, true)
+	return kind == MatchNameMismatch
+}
+
 func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled bool, runtimeName string) (expr, comment, unresolvedHint string) {
 	switch df.Name {
 	case "Logger":

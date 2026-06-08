@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -171,6 +172,197 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 	}
 }
 
+// TestLoadStrict_ServiceNameCollision_AfterNormalisation covers the
+// validateServices lint: two service entries whose canonical Go-package
+// form is the same would race for the same scaffold directory. The
+// lint must surface that BEFORE the user discovers it via a confusing
+// downstream codegen error.
+func TestLoadStrict_ServiceNameCollision_AfterNormalisation(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: admin-server\n    type: go_service\n    path: handlers/admin-server\n"+
+			"  - name: admin_server\n    type: go_service\n    path: handlers/admin_server\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	got := ve.Error()
+	if !containsAll(got, "collides", "adminserver") {
+		t.Errorf("expected collision message naming adminserver, got:\n%s", got)
+	}
+}
+
+// TestLoadStrict_ServiceName_ReservedWord_Rejected covers names whose
+// canonical Go-package form lands on a Go keyword / predeclared
+// identifier. The downstream symptom is a broken `package <reserved>`
+// declaration that fails compilation deep in the codegen output; the
+// lint catches it at forge.yaml-parse time.
+func TestLoadStrict_ServiceName_ReservedWord_Rejected(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: select\n    type: go_service\n    path: handlers/select\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "reserved word", "select") {
+		t.Errorf("expected reserved-word rejection, got:\n%s", ve.Error())
+	}
+}
+
+// TestLoadStrict_ServiceName_LeadingDigit_Rejected covers names whose
+// canonical Go-package form starts with a digit. Go package idents must
+// begin with a letter or underscore; the lint guards against the
+// surprising downstream parse error.
+func TestLoadStrict_ServiceName_LeadingDigit_Rejected(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: 2fast\n    type: go_service\n    path: handlers/2fast\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "invalid Go package", "2fast") {
+		t.Errorf("expected leading-digit rejection, got:\n%s", ve.Error())
+	}
+}
+
+// TestLoadStrict_ServiceName_PunctuationSurvivingNormalisation_Rejected
+// covers names containing punctuation that the canonical
+// ServicePackage transform leaves intact (dots, slashes). Those
+// characters can never produce a legal package directory.
+func TestLoadStrict_ServiceName_PunctuationSurvivingNormalisation_Rejected(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: \"foo.bar\"\n    type: go_service\n    path: handlers/foo\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "invalid Go package", "foo.bar") {
+		t.Errorf("expected punctuation rejection, got:\n%s", ve.Error())
+	}
+}
+
+// TestLoadStrict_ServiceVsBinaryCollision verifies the cross-slice
+// collision check: a service and a binary with names that normalise to
+// the same Go package would write to the same scaffold directory.
+func TestLoadStrict_ServiceVsBinaryCollision(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: gateway\n    type: go_service\n    path: handlers/gateway\n",
+		1)
+	in += "binaries:\n  - name: Gateway\n    path: cmd/gateway.go\n"
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "collides", "gateway") {
+		t.Errorf("expected cross-slice collision, got:\n%s", ve.Error())
+	}
+}
+
+// TestLoadStrict_ValidServiceVariants_Accepted is the positive case for
+// the lint: hyphenated, snake_case, and plain-lowercase names all coexist
+// peacefully as long as their canonical forms differ.
+func TestLoadStrict_ValidServiceVariants_Accepted(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: api\n    type: go_service\n    path: handlers/api\n"+
+			"  - name: admin-server\n    type: go_service\n    path: handlers/admin-server\n"+
+			"  - name: billing_v2\n    type: go_service\n    path: handlers/billing_v2\n",
+		1)
+	if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+		t.Fatalf("expected clean load, got: %v", err)
+	}
+}
+
+// TestLoadStrict_NestedUnknownKey_LineAndPath pins down both the
+// dot-notation path and the YAML line number for an unknown nested
+// key. Earlier reports observed the wrong line / wrong path in
+// nested cases, so this test asserts both invariants explicitly: the
+// reported line must be the literal line of the offending key in the
+// input, and the dot-path must match where the key actually lives in
+// the YAML tree.
+func TestLoadStrict_NestedUnknownKey_LineAndPath(t *testing.T) {
+	// Inject an unknown subkey "provider: k3d" inside k8s: at a known
+	// position so we can compute the expected line precisely.
+	in := strings.Replace(validBaseYAML,
+		"k8s:\n  kcl_dir: deploy/kcl\n",
+		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
+		1)
+	wantLine := lineOf(t, in, "  provider: k3d")
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	got := ve.Error()
+	if !strings.Contains(got, `"k8s.provider"`) {
+		t.Errorf("expected key path 'k8s.provider' in error, got:\n%s", got)
+	}
+	wantLineMarker := "line " + strconv.Itoa(wantLine) + ":"
+	if !strings.Contains(got, wantLineMarker) {
+		t.Errorf("expected %q in error (the literal line of `provider: k3d`), got:\n%s", wantLineMarker, got)
+	}
+}
+
+// TestLoadStrict_RemovedSchemaKey_K8sProvider asserts the
+// migration-aware "Fix:" suggestion for a key the forge schema once
+// owned and has since dropped. The generic "rename or remove" framing
+// misleads users into hunting for a typo when the real answer is "this
+// field moved to KCL".
+func TestLoadStrict_RemovedSchemaKey_K8sProvider(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"k8s:\n  kcl_dir: deploy/kcl\n",
+		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	got := ve.Error()
+	if !containsAll(got, `"k8s.provider"`, "removed", "K8sCluster") {
+		t.Errorf("expected schema-drift hint naming K8sCluster, got:\n%s", got)
+	}
+	// The migration hint must replace the generic suggestion — not
+	// stack alongside it. A "did you mean kcl_dir?" tail would be
+	// misleading here.
+	if strings.Contains(got, "did you mean") {
+		t.Errorf("expected schema-drift hint to suppress typo suggestion, got:\n%s", got)
+	}
+}
+
+// TestLoadStrict_RemovedSchemaKey_ServiceDevTarget covers the slice-
+// wildcard arm of the removed-keys table: services[N].dev_target
+// should resolve to the services[*].dev_target migration hint for any
+// index N.
+func TestLoadStrict_RemovedSchemaKey_ServiceDevTarget(t *testing.T) {
+	in := strings.Replace(validBaseYAML,
+		"  - name: api\n    type: go_service\n    path: handlers/api\n",
+		"  - name: api\n    type: go_service\n    path: handlers/api\n    dev_target: host\n",
+		1)
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	got := ve.Error()
+	if !containsAll(got, "services[0].dev_target", "removed", "forge.Service.deploy") {
+		t.Errorf("expected dev_target migration hint, got:\n%s", got)
+	}
+}
+
+// TestWildcardIndices guards the helper that normalises [N] -> [*]
+// before lookup in removedSchemaKeys. Edge cases that previously
+// tripped naive string-replace implementations are pinned here.
+func TestWildcardIndices(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"k8s.provider", "k8s.provider"},
+		{"services[0].dev_target", "services[*].dev_target"},
+		{"services[12].webhooks[3].name", "services[*].webhooks[*].name"},
+		// Non-numeric brackets must pass through (we only want array
+		// indices, not e.g. map keys that happen to be bracketed).
+		{"foo[bar].baz", "foo[bar].baz"},
+		// Empty brackets stay empty (no index inside).
+		{"foo[].bar", "foo[].bar"},
+	}
+	for _, c := range cases {
+		if got := wildcardIndices(c.in); got != c.want {
+			t.Errorf("wildcardIndices(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestLevenshtein(t *testing.T) {
 	cases := []struct {
 		a, b string
@@ -229,3 +421,20 @@ func containsAll(s string, parts ...string) bool {
 	}
 	return true
 }
+
+// lineOf returns the 1-based line number of the first line in input
+// whose trimmed content equals (or starts with) marker. Test helper
+// used to pin "the validator reports the exact line of <X>" without
+// hard-coding fragile line numbers that drift as validBaseYAML
+// evolves.
+func lineOf(t *testing.T, input, marker string) int {
+	t.Helper()
+	for i, line := range strings.Split(input, "\n") {
+		if line == marker || strings.HasPrefix(strings.TrimRight(line, "\r"), marker) {
+			return i + 1
+		}
+	}
+	t.Fatalf("marker %q not found in input", marker)
+	return 0
+}
+

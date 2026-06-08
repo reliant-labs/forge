@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // diagnostics_gen.go — codegen for pkg/app/diagnostics_gen.go.
@@ -112,13 +113,15 @@ func GenerateDiagnostics(services []ServiceDef, workers []BootstrapWorkerData, o
 	// (test scaffolds are not production traffic).
 	var stubEntries []DiagnosticEntry
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
+		pkg := naming.ServicePackage(svc.Name)
 		dir := filepath.Join(projectDir, "handlers", pkg)
 		entries, err := scanStubMarkers(dir, pkg, projectDir)
 		if err != nil {
-			// Best-effort: a parse failure here means the handler dir
-			// has issues already surfaced by the regular Go compile.
-			// Don't fail diagnostics — write what we have and move on.
+			// Intentional soft warning (no --strict promotion): a parse
+			// failure here means the handler dir has issues already
+			// surfaced by the regular Go compile. Don't fail
+			// diagnostics — write what we have and move on. Lives in
+			// internal/codegen so no pipelineContext reach.
 			fmt.Fprintf(os.Stderr, "Warning: scanning %s for stub markers: %v\n", dir, err)
 			continue
 		}

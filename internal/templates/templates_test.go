@@ -404,13 +404,16 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 	}
 }
 
-// TestCmdServerTemplate_CallsPostBootstrap verifies the generated
-// cmd/server.go invokes the user-owned PostBootstrap hook after
-// Bootstrap returns and propagates any error as a fatal boot failure.
-// This is the chokepoint the post-bootstrap user code relies on; if
-// the call disappears from the template, projects that wire
-// post-construct collaborators here will silently no-op.
-func TestCmdServerTemplate_CallsPostBootstrap(t *testing.T) {
+// TestCmdServerTemplate_WiresPostBootstrapHook verifies the generated
+// cmd/server.go wires the user-owned PostBootstrap hook into
+// serverkit.Hooks.PostBootstrap. This is the chokepoint the user code
+// relies on; if the wiring disappears from the template, projects that
+// register post-construct collaborators will silently no-op.
+//
+// The error-propagation contract ("post-bootstrap hook failed: ...")
+// now lives in serverkit.Run (see pkg/serverkit/run.go); the shim only
+// needs to forward the typed *app.App to the hook.
+func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
 	data := struct {
 		Module       string
 		ConfigFields map[string]bool
@@ -425,11 +428,11 @@ func TestCmdServerTemplate_CallsPostBootstrap(t *testing.T) {
 	}
 	rendered := string(content)
 
-	if !strings.Contains(rendered, "app.PostBootstrap(application)") {
-		t.Errorf("cmd-server.go.tmpl must call app.PostBootstrap(application); rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "PostBootstrap:") {
+		t.Errorf("cmd-server.go.tmpl must set serverkit.Hooks.PostBootstrap; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "post-bootstrap hook failed") {
-		t.Errorf("cmd-server.go.tmpl must propagate post-bootstrap errors with a 'post-bootstrap hook failed' message")
+	if !strings.Contains(rendered, "app.PostBootstrap(a.(*app.App))") {
+		t.Errorf("cmd-server.go.tmpl must forward the Application to app.PostBootstrap via type assertion; rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.

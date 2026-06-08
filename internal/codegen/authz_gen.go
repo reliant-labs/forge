@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -37,7 +38,7 @@ type AuthzTemplateData struct {
 // orphan. A nil cs is tolerated.
 func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
 	for _, svc := range services {
-		pkg := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
+		pkg := naming.ServicePackage(svc.Name)
 		svcDir := filepath.Join(targetDir, "handlers", pkg)
 
 		// Only generate if the service directory exists (was scaffolded)
@@ -88,7 +89,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 	// Build set of packages already generated above.
 	generated := make(map[string]bool, len(services))
 	for _, svc := range services {
-		generated[strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))] = true
+		generated[naming.ServicePackage(svc.Name)] = true
 	}
 
 	for _, entry := range entries {
@@ -107,7 +108,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		// the user just did to align with the proto-driven compact form
 		// (handlers/adminserver). Skip it so cleanup/dangling-check can
 		// surface the stale dir for removal instead.
-		if pkg != toGoPackage(pkg) {
+		if pkg != naming.GoPackage(pkg) {
 			continue
 		}
 		// Only generate if authorizer.go exists (confirming this is a service dir)

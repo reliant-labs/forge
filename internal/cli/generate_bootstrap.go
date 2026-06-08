@@ -8,7 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // generateBootstrap regenerates pkg/app/bootstrap.go with explicit service construction.
@@ -22,7 +22,10 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return nil
 	}
 
-	packages := discoverPackages(projectDir)
+	packages, err := discoverPackages(projectDir)
+	if err != nil {
+		return fmt.Errorf("discover internal packages: %w", err)
+	}
 
 	// Build the webhook-services map keyed by snake-case service package
 	// name. The bootstrap template uses this to emit
@@ -128,7 +131,10 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 		return nil
 	}
 
-	packages := discoverPackages(projectDir)
+	packages, err := discoverPackages(projectDir)
+	if err != nil {
+		return fmt.Errorf("discover internal packages: %w", err)
+	}
 
 	if err := codegen.GenerateBootstrapTesting(services, packages, workers, operators, modulePath, multiTenantEnabled, projectDir, cs); err != nil {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
@@ -162,10 +168,14 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 // FieldName/VarName and the bootstrap template can emit the correct import
 // path. Directories listed in cfg.Contracts.Exclude are skipped wholesale,
 // matching the behavior of generate_middleware.go's contract walk.
-func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
+//
+// A walk error is returned so the caller can fail the pipeline rather
+// than silently emit a partial bootstrap (which would surface later as
+// a mysterious "undefined: pkg" go build error in pkg/app/bootstrap.go).
+func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error) {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {
-		return nil
+		return nil, nil
 	}
 
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
@@ -206,14 +216,17 @@ func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
 		return nil
 	})
 	if walkErr != nil && !os.IsNotExist(walkErr) {
-		fmt.Fprintf(os.Stderr, "Warning: walking %s: %v\n", internalDir, walkErr)
-		return nil
+		return nil, fmt.Errorf("walking %s: %w", internalDir, walkErr)
 	}
 
-	return codegen.PackageDataFromNames(names, projectDir)
+	return codegen.PackageDataFromNames(names, projectDir), nil
 }
 
 // discoverWorkers returns BootstrapWorkerData for all worker-type services in the project config.
+// Passes each service's explicit `path:` field through so snake_case dir layouts
+// (e.g. workers/climatology_refresh) produce the correct import line — without
+// `path:`, the legacy compaction would emit workers/climatologyrefresh and the
+// generated bootstrap would fail to compile.
 func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
@@ -221,13 +234,13 @@ func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
 		return nil
 	}
 
-	var names []string
+	var specs []codegen.WorkerSpec
 	for _, svc := range cfg.Services {
 		if strings.EqualFold(svc.Type, "worker") {
-			names = append(names, svc.Name)
+			specs = append(specs, codegen.WorkerSpec{Name: svc.Name, Path: svc.Path})
 		}
 	}
-	return codegen.WorkerDataFromNames(names, projectDir)
+	return codegen.WorkerDataFromSpecs(specs, projectDir)
 }
 
 // discoverWebhookServices returns a set of snake-case service package
@@ -237,10 +250,10 @@ func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
 // mux without the user having to hand-edit the user-owned `RegisterHTTP`
 // body in handlers/<svc>/service.go.
 //
-// Keying matches `codegen.toServicePackage(svc.Name)` for proto-derived
+// Keying matches `naming.ServicePackage(svc.Name)` for proto-derived
 // services: forge.yaml's hyphenated CLI name ("admin-server") and the
 // proto's PascalCase form ("AdminServerService") both normalize to
-// "admin_server", which is also the directory leaf under handlers/.
+// "adminserver", which is also the directory leaf under handlers/.
 func discoverWebhookServices(projectDir string) map[string]bool {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
@@ -253,7 +266,7 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 		if len(svc.Webhooks) == 0 {
 			continue
 		}
-		out[generator.ServicePackageName(svc.Name)] = true
+		out[naming.ServicePackage(svc.Name)] = true
 	}
 	if len(out) == 0 {
 		return nil
@@ -262,6 +275,7 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 }
 
 // discoverOperators returns BootstrapOperatorData for all operator-type services in the project config.
+// Honors the `path:` field for the same reason as discoverWorkers.
 func discoverOperators(projectDir string) []codegen.BootstrapOperatorData {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
@@ -269,11 +283,11 @@ func discoverOperators(projectDir string) []codegen.BootstrapOperatorData {
 		return nil
 	}
 
-	var names []string
+	var specs []codegen.OperatorSpec
 	for _, svc := range cfg.Services {
 		if strings.EqualFold(svc.Type, "operator") {
-			names = append(names, svc.Name)
+			specs = append(specs, codegen.OperatorSpec{Name: svc.Name, Path: svc.Path})
 		}
 	}
-	return codegen.OperatorDataFromNames(names, projectDir)
+	return codegen.OperatorDataFromSpecs(specs, projectDir)
 }

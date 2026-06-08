@@ -83,6 +83,13 @@ func ensureGenGoMod(projectDir string) error {
 
 	modulePath, err := codegen.GetModulePath(projectDir)
 	if err != nil {
+		// Intentional soft warning: this is a best-effort bootstrap for
+		// fresh-checkout worktrees. If we can't read the module path the
+		// project is unusable anyway — the downstream `go list ./...`
+		// step (which the pipeline runs before any codegen) will surface
+		// the canonical "module path missing" error with full context.
+		// Promoting here would only produce a noisier, less actionable
+		// failure for the same underlying cause.
 		fmt.Fprintf(os.Stderr, "Warning: bootstrap gen/go.mod skipped (cannot read project module path): %v\n", err)
 		return nil
 	}

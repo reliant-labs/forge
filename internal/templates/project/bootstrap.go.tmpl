@@ -31,6 +31,7 @@ import (
 {{- if .DiagnosticsEnabled}}
 	"github.com/reliant-labs/forge/pkg/diagnostics"
 {{- end}}
+	"github.com/reliant-labs/forge/pkg/serverkit"
 	"{{.Module}}/pkg/config"
 {{- if .Services}}
 	"{{.Module}}/pkg/middleware"
@@ -115,26 +116,29 @@ type Operators struct {
 {{- end}}
 }
 {{- end}}
-// WorkerList returns all workers as a slice for lifecycle management.
-func (a *App) WorkerList() []*WorkerInstance {
+// WorkerList returns all workers as a slice for serverkit lifecycle
+// management. WorkerInstance satisfies serverkit.Worker by virtue of its
+// Name/Start/Stop methods, so the slice element type is the interface.
+func (a *App) WorkerList() []serverkit.Worker {
 {{- if .Workers}}
-	return []*WorkerInstance{
+	return []serverkit.Worker{
 {{- range .Workers}}
-		{name: "{{.Name}}", start: a.Workers.{{.FieldName}}.Start, stop: a.Workers.{{.FieldName}}.Stop},
+		&WorkerInstance{name: "{{.Name}}", start: a.Workers.{{.FieldName}}.Start, stop: a.Workers.{{.FieldName}}.Stop},
 {{- end}}
 	}
 {{- else}}
 	return nil
 {{- end}}
 }
-// OperatorList returns all operators as a slice for lifecycle management.
-// Emitted unconditionally so the operator-gating helper in cmd/server.go
-// compiles in projects with no operators (returns nil there).
-func (a *App) OperatorList() []*OperatorInstance {
+// OperatorList returns all operators as a slice for serverkit lifecycle
+// gating. OperatorInstance satisfies serverkit.Operator via its Name
+// method. Emitted unconditionally so the serverkit Application contract
+// is satisfied even in projects with no operators (returns nil there).
+func (a *App) OperatorList() []serverkit.Operator {
 {{- if .Operators}}
-	return []*OperatorInstance{
+	return []serverkit.Operator{
 {{- range .Operators}}
-		{name: "{{.Name}}", setupWithManager: a.Operators.{{.FieldName}}.SetupWithManager},
+		&OperatorInstance{name: "{{.Name}}", setupWithManager: a.Operators.{{.FieldName}}.SetupWithManager},
 {{- end}}
 	}
 {{- else}}
@@ -149,14 +153,19 @@ func (a *App) HasOperators() bool {
 
 // RunOperators creates a controller manager, registers all operator controllers,
 // and starts the manager. It blocks until ctx is cancelled or an error occurs.
-// The caller should run this in a goroutine.
+// The caller (serverkit) runs this in a goroutine.
+//
+// healthProbeAddr is forwarded from serverkit.Config.OperatorHealthProbeAddr;
+// when non-empty it binds a /healthz + /readyz listener on that address for
+// the controller-runtime manager. Empty leaves the manager without a probe
+// listener (the default — vanilla forge projects don't bind one).
 //
 // In environments with no Kubernetes cluster reachable (vanilla docker
 // compose dev, fresh laptop, CI without a kind/k3d cluster), kubeconfig
 // resolution returns an error rather than panicking — the binary continues
 // without operators rather than crashing the whole process. NATS already
 // degrades this way; this matches that pattern.
-func (a *App) RunOperators(ctx context.Context, logger *slog.Logger) error {
+func (a *App) RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
 		logger.Warn("operators disabled: no Kubernetes cluster reachable", "error", err)
@@ -164,8 +173,9 @@ func (a *App) RunOperators(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		LeaderElection:   true,
-		LeaderElectionID: "{{$.Module}}-leader",
+		LeaderElection:         true,
+		LeaderElectionID:       "{{$.Module}}-leader",
+		HealthProbeBindAddress: healthProbeAddr,
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
@@ -178,9 +188,16 @@ func (a *App) RunOperators(ctx context.Context, logger *slog.Logger) error {
 	}
 {{- end}}
 
-	// Setup controllers
+	// Setup controllers. OperatorList returns serverkit.Operator values;
+	// we type-assert back to *OperatorInstance to reach SetupWithManager
+	// (the controller-runtime entry point isn't part of the serverkit
+	// interface — it's implementation-specific to this codegen shape).
 	for _, op := range a.OperatorList() {
-		if err := op.SetupWithManager(mgr); err != nil {
+		inst, ok := op.(*OperatorInstance)
+		if !ok {
+			return fmt.Errorf("operator %q has unexpected type %T", op.Name(), op)
+		}
+		if err := inst.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("setting up controller %q: %w", op.Name(), err)
 		}
 		logger.Info("registered operator controller", "controller", op.Name())
@@ -196,7 +213,9 @@ func (a *App) HasOperators() bool {
 }
 
 // RunOperators is a no-op when no operators are configured.
-func (a *App) RunOperators(ctx context.Context, logger *slog.Logger) error {
+// Signature matches serverkit.Application (with healthProbeAddr) so the
+// generated App satisfies the interface unconditionally.
+func (a *App) RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
 	return nil
 }
 {{end}}
@@ -379,8 +398,9 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 {{- if and .RESTEnabled .Services}}
 	// REST transcoder: vanguard wraps the Connect mux and translates
 	// REST↔Connect at runtime based on google.api.http annotations on
-	// RPCs. The wrapped handler is stored on the App; cmd-server.go reads
-	// app.RESTHandler when non-nil and serves it in place of the bare mux.
+	// RPCs. The wrapped handler is stored on the App; serverkit reads it
+	// via app.RESTHandler() (defined in app_gen.go) and serves it in place
+	// of the bare mux when non-nil.
 	// CRUD RPCs gain default REST URLs via the crud-gen annotation pass;
 	// hand-written RPCs need the annotation in their .proto to participate.
 	{
@@ -393,7 +413,7 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 		if terr != nil {
 			return nil, fmt.Errorf("init vanguard REST transcoder: %w", terr)
 		}
-		app.RESTHandler = transcoder
+		app.restHandler = transcoder
 	}
 {{- end}}
 	return app, nil
@@ -444,6 +464,28 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		if !known[n] {
 			logger.Warn("unknown service/worker/operator name, ignoring", "name", n, "known", slices.Collect(maps.Keys(known)))
 		}
+	}
+	// Loud filter banner: when a filter is active, name BOTH the
+	// registered AND excluded services/workers/operators. Silently
+	// 404-ing on excluded RPCs was a real debug-time-sink — naming the
+	// excluded set up front catches "the server doesn't even register
+	// this RPC" in seconds instead of after a CORS/proxy/auth rabbit
+	// hole.
+	if len(names) > 0 {
+		var registered, excluded []string
+		for name := range known {
+			if nameSet[name] {
+				registered = append(registered, name)
+			} else {
+				excluded = append(excluded, name)
+			}
+		}
+		slices.Sort(registered)
+		slices.Sort(excluded)
+		logger.Warn("server filter active — RPCs for excluded names will return 404",
+			"registered", registered,
+			"excluded", excluded,
+		)
 	}
 	app := &App{
 {{- if .Services}}
@@ -582,8 +624,9 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- if and .RESTEnabled .Services}}
 	// REST transcoder: vanguard wraps the Connect mux and translates
 	// REST↔Connect at runtime based on google.api.http annotations on
-	// RPCs. The wrapped handler is stored on the App; cmd-server.go reads
-	// app.RESTHandler when non-nil and serves it in place of the bare mux.
+	// RPCs. The wrapped handler is stored on the App; serverkit reads it
+	// via app.RESTHandler() (defined in app_gen.go) and serves it in place
+	// of the bare mux when non-nil.
 	// CRUD RPCs gain default REST URLs via the crud-gen annotation pass;
 	// hand-written RPCs need the annotation in their .proto to participate.
 	{
@@ -596,7 +639,7 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		if terr != nil {
 			return nil, fmt.Errorf("init vanguard REST transcoder: %w", terr)
 		}
-		app.RESTHandler = transcoder
+		app.restHandler = transcoder
 	}
 {{- end}}
 	return app, nil

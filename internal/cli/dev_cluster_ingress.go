@@ -7,8 +7,16 @@
 //     internal/templates/ingress/traefik/VERSION). Cached under
 //     ~/.cache/forge/ingress/ so subsequent cluster-up runs are
 //     offline-capable.
-//  2. Apply the vendored Traefik controller install
-//     (internal/templates/ingress/traefik/traefik.yaml).
+//  2. Render the vendored Traefik controller install template
+//     (internal/templates/ingress/traefik/traefik.yaml.tmpl) with
+//     one --entrypoints.<name>.address arg, one containerPort, and
+//     one Service port per dev Gateway listener; apply the result.
+//     Traefik v3.2's kubernetesgateway provider does NOT dynamically
+//     create listener sockets from Gateway.spec.listeners[*].port —
+//     each port needs a matching static entrypoint declared at
+//     install time. Re-run `forge dev cluster up` after adding or
+//     removing a listener to install the new entrypoints
+//     (idempotent — the rendered Deployment restarts on apply).
 //  3. Apply the vendored `traefik` GatewayClass.
 //
 // Idempotency comes from `kubectl apply` semantics — re-running these
@@ -34,6 +42,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -183,20 +193,127 @@ func waitForCRDs(ctx context.Context, crds []string, timeout time.Duration) erro
 	return cmd.Run()
 }
 
+// traefikEntrypoint is one Gateway listener projected into the shape
+// the Traefik install template consumes. Name is the listener's KCL
+// name (e.g. "http", "grpc") — used as the entrypoint label and as
+// the containerPort/Service-port name. Traefik's kubernetesgateway
+// provider matches listeners to entrypoints by port number, not name;
+// the name is just a label for log diagnosis. Protocol is carried
+// alongside in case future Traefik versions key off it, but the
+// current entrypoint-arg shape doesn't use it.
+type traefikEntrypoint struct {
+	Name     string
+	Port     int
+	Protocol string
+}
+
+// collectTraefikEntrypoints renders the dev env's KCL and projects
+// Gateway listeners into the entrypoint shape the Traefik template
+// expects. Dedupes by port — a port can have only one entrypoint, so
+// the first listener (sorted by port, then gateway, then name) wins
+// on collisions.
+//
+// Returns (nil, nil) when the dev env has no gateways or the dev KCL
+// directory is missing. That's a normal state — projects with
+// features.ingress on but no ingress.k yet still need the bundle
+// installed; they just get the default `ping` entrypoint and add
+// listeners later via a re-run of `forge dev cluster up`.
+func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefikEntrypoint, error) {
+	if projectDir == "" {
+		return nil, nil
+	}
+	devKCL := filepath.Join(projectDir, "deploy", "kcl", "dev")
+	if _, err := os.Stat(devKCL); err != nil {
+		return nil, nil //nolint:nilerr // missing dev KCL is a normal first-scaffold state
+	}
+	entities, err := RenderKCL(ctx, projectDir, "dev")
+	if err != nil {
+		return nil, err
+	}
+	if entities == nil {
+		return nil, nil
+	}
+
+	type candidate struct {
+		gw   string
+		name string
+		port int
+		proto string
+	}
+	var raw []candidate
+	for _, gw := range entities.Gateways {
+		for _, l := range gw.Listeners {
+			raw = append(raw, candidate{gw: gw.Name, name: l.Name, port: l.Port, proto: l.Protocol})
+		}
+	}
+	// Stable sort: port, then gateway, then listener. Deterministic
+	// output across re-runs and matches the k3d-ports generator's
+	// dedupe order so the two stays in lockstep.
+	sort.SliceStable(raw, func(i, j int) bool {
+		if raw[i].port != raw[j].port {
+			return raw[i].port < raw[j].port
+		}
+		if raw[i].gw != raw[j].gw {
+			return raw[i].gw < raw[j].gw
+		}
+		return raw[i].name < raw[j].name
+	})
+
+	seenPort := map[int]bool{}
+	seenName := map[string]bool{}
+	var out []traefikEntrypoint
+	for _, c := range raw {
+		if seenPort[c.port] {
+			continue
+		}
+		seenPort[c.port] = true
+		// Disambiguate name collisions across gateways. Two gateways
+		// may both name a listener `http`; Traefik requires
+		// entrypoint names to be unique. Suffix `-2`, `-3`, … on
+		// collision. Port-based ordering ensures the lowest port
+		// keeps the bare name.
+		name := c.name
+		for i := 2; seenName[name]; i++ {
+			name = fmt.Sprintf("%s-%d", c.name, i)
+		}
+		seenName[name] = true
+		out = append(out, traefikEntrypoint{Name: name, Port: c.port, Protocol: c.proto})
+	}
+	return out, nil
+}
+
+// renderTraefikInstall executes the vendored Traefik install template
+// against the given entrypoints and returns the rendered YAML bytes.
+// Empty entrypoints are valid — the bundle still installs (Traefik
+// runs with the default `ping` entrypoint) and the user can re-run
+// `forge dev cluster up` after adding listeners.
+func renderTraefikInstall(entrypoints []traefikEntrypoint) ([]byte, error) {
+	return templates.IngressTemplates().Render("traefik/traefik.yaml.tmpl", struct {
+		Entrypoints []traefikEntrypoint
+	}{Entrypoints: entrypoints})
+}
+
 // installIngressBundle is the post-cluster-up wiring entrypoint.
 // Called from runDevClusterUp when features.ingress is on.
 //
 // Order matters:
 //  1. Apply Gateway API CRDs (fetched if not cached).
 //  2. Wait for CRDs Established.
-//  3. Apply the Traefik controller install.
+//  3. Render the Traefik install with one entrypoint per dev Gateway
+//     listener and apply it.
 //  4. Apply the `traefik` GatewayClass (depends on CRDs being live).
+//
+// projectDir is used to evaluate the dev env's KCL gateways for step
+// 3 — same data the k3d-ports generator uses. Adding or removing a
+// listener requires re-running `forge dev cluster up` to install the
+// new entrypoints (idempotent — re-applying the rendered Deployment
+// restarts the pod with the new args).
 //
 // Failure anywhere short-circuits — the cluster is up but ingress
 // isn't, so subsequent `forge deploy dev` will fail apply on the
 // project's Gateway resources. The error message is what the user
 // acts on; we don't try to clean up the partial install.
-func installIngressBundle(ctx context.Context) error {
+func installIngressBundle(ctx context.Context, projectDir string) error {
 	_, gatewayAPIVer, err := ingressPinnedVersions()
 	if err != nil {
 		return err
@@ -226,11 +343,31 @@ func installIngressBundle(ctx context.Context) error {
 		return fmt.Errorf("wait for Gateway API CRDs: %w", err)
 	}
 
-	traefikYAML, err := templates.IngressTemplates().Get("traefik/traefik.yaml")
+	entrypoints, err := collectTraefikEntrypoints(ctx, projectDir)
 	if err != nil {
-		return fmt.Errorf("load vendored Traefik install: %w", err)
+		// Intentional soft warning: KCL render failures here are
+		// non-fatal — the project may not have a dev env yet, or kcl
+		// may not be installed locally. Install the bundle with no
+		// extra entrypoints and let the user re-run cluster-up once
+		// their KCL is ready. `forge dev cluster-up` has no --strict
+		// equivalent because the command is itself a developer-loop
+		// helper, not a CI gate.
+		fmt.Fprintf(os.Stderr, "Warning: could not evaluate dev gateways for Traefik entrypoints; installing without listener-derived entrypoints: %v\n", err)
+		entrypoints = nil
 	}
-	fmt.Println("Installing Traefik controller (traefik-system namespace)...")
+	if len(entrypoints) > 0 {
+		labels := make([]string, len(entrypoints))
+		for i, e := range entrypoints {
+			labels[i] = fmt.Sprintf("%s:%d", e.Name, e.Port)
+		}
+		fmt.Printf("Installing Traefik controller (traefik-system namespace) with entrypoints: %s\n", strings.Join(labels, ", "))
+	} else {
+		fmt.Println("Installing Traefik controller (traefik-system namespace)...")
+	}
+	traefikYAML, err := renderTraefikInstall(entrypoints)
+	if err != nil {
+		return fmt.Errorf("render vendored Traefik install: %w", err)
+	}
 	if err := kubectlApplyBytes(ctx, traefikYAML); err != nil {
 		return err
 	}
@@ -263,11 +400,14 @@ type k3dConfigPath struct {
 // merged YAML. When the fragment is missing the user config is
 // passed through unchanged. Caller invokes Close() to clean up.
 //
-// Merge policy: the fragment's ports[] entries APPEND to whatever
-// the user declared in deploy/k3d.yaml. Duplicates on the host port
-// number cause k3d to reject the config at create time — that's an
-// audit signal that the user's hand-edits and the project's ingress
-// disagree.
+// Merge policy: fragment entries WIN over scaffolded entries on the
+// same host port — the fragment is derived from the current KCL
+// truth, the scaffolded deploy/k3d.yaml is a one-shot from `forge
+// new`. Entries that don't parse as the canonical `<host>:<cluster>`
+// shorthand are passed through unchanged (best-effort: a warning is
+// printed and both entries survive into the merged config — k3d may
+// then reject the config, but the warning gives the user a starting
+// point).
 func mergeK3dConfig(userPath string, ingressOn bool) (k3dConfigPath, func(), error) {
 	cleanup := func() {}
 	if !ingressOn {
@@ -312,9 +452,15 @@ func mergeK3dConfig(userPath string, ingressOn bool) (k3dConfigPath, func(), err
 
 // spliceK3dPorts is the pure YAML-merging half — exposed for tests
 // so the merge policy is unit-testable without temp files. The user
-// YAML's `ports:` list (if present) gets the fragment's entries
-// appended. Other top-level keys pass through unchanged so we don't
-// silently drop registries, agent counts, etc.
+// YAML's `ports:` list (if present) is merged with the fragment's
+// entries: fragment entries WIN on host-port collisions. Other
+// top-level keys pass through unchanged so we don't silently drop
+// registries, agent counts, etc.
+//
+// Host-port extraction handles the canonical `port: <host>:<cluster>`
+// shorthand. Entries we can't parse (alternative forms, missing port
+// key) are passed through verbatim with a warning — k3d may then
+// reject the config, but the warning gives the user a starting point.
 func spliceK3dPorts(userYAML, fragmentYAML []byte) ([]byte, error) {
 	var userDoc map[string]any
 	if err := yaml.Unmarshal(userYAML, &userDoc); err != nil {
@@ -334,10 +480,70 @@ func spliceK3dPorts(userYAML, fragmentYAML []byte) ([]byte, error) {
 		return userYAML, nil
 	}
 	userPorts, _ := userDoc["ports"].([]any)
-	userDoc["ports"] = append(userPorts, fragPorts...)
+
+	// Collect host ports claimed by the fragment. Entries from the
+	// user list that share a host port get dropped (fragment wins).
+	// Entries we can't classify pass through unchanged — caller logs
+	// a warning so the user can investigate if k3d then rejects.
+	fragHosts := map[int]bool{}
+	for _, e := range fragPorts {
+		if host, ok := k3dPortHost(e); ok {
+			fragHosts[host] = true
+		}
+	}
+
+	merged := make([]any, 0, len(userPorts)+len(fragPorts))
+	for _, e := range userPorts {
+		host, ok := k3dPortHost(e)
+		if !ok {
+			// Unrecognized shape — keep it, warn the user. We
+			// don't crash because the alternative forms (structured
+			// `port:` int + hostIP/protocol/nodeFilters siblings) are
+			// legitimate k3d config; we just can't dedupe them.
+			fmt.Fprintf(os.Stderr, "warning: deploy/k3d.yaml ports[] entry not in canonical <host>:<cluster> shorthand; passing through without dedupe: %v\n", e)
+			merged = append(merged, e)
+			continue
+		}
+		if fragHosts[host] {
+			// Fragment wins on this host port — drop the user entry.
+			continue
+		}
+		merged = append(merged, e)
+	}
+	merged = append(merged, fragPorts...)
+	userDoc["ports"] = merged
+
 	out, err := yaml.Marshal(userDoc)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// k3dPortHost extracts the host-port integer from a k3d ports[] entry
+// in the canonical `port: <host>:<cluster>` shorthand. Returns
+// (port, true) on success; (0, false) for anything else (alternative
+// structured forms, missing key, bare `port: <int>`). Callers treat
+// the false case as "don't dedupe this entry".
+func k3dPortHost(entry any) (int, bool) {
+	m, ok := entry.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	raw, ok := m["port"].(string)
+	if !ok {
+		return 0, false
+	}
+	hostStr, _, ok := strings.Cut(raw, ":")
+	if !ok {
+		// Bare `port: 18080` (no cluster side) — possible in k3d but
+		// not the shape we emit. Bail out of the dedupe; caller will
+		// pass through with a warning.
+		return 0, false
+	}
+	host, err := strconv.Atoi(strings.TrimSpace(hostStr))
+	if err != nil {
+		return 0, false
+	}
+	return host, true
 }

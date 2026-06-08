@@ -859,6 +859,12 @@ func newDebugStopCmd() *cobra.Command {
 				_ = stopCmd.Run()
 			} else {
 				if err := dbg.Stop(); err != nil {
+					// Intentional soft warning: the debugger process may
+					// already be dead (user Ctrl-C'd the IDE, OS reaped
+					// the process, etc.). We still need to fall through
+					// to ClearSession() below so the next `forge debug`
+					// invocation doesn't trip the "session already
+					// running" guard on stale state.
 					fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
 				}
 			}

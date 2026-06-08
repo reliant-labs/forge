@@ -53,10 +53,20 @@ type GeneratedAuthorizer = authz.Authorizer
 // proto-annotated role/auth tables above. Customize policy by editing
 // the sibling authorizer.go and either returning a fully custom
 // *authz.Authorizer (built via authz.New) or composing this one.
+//
+// FailMode is FailOpen by default — an RPC reaching this authorizer with
+// no entry in either table (fresh scaffold pre-annotation, or proto
+// drift) returns nil + a slog.Warn rather than 403. The warn names the
+// missing procedure so it can be added to the proto. Projects that want
+// the legacy 1.x fail-closed semantics override here:
+//
+//	r := authz.RolesDecider{MethodRoles: methodRoles, MethodAuthRequired: methodAuthRequired, FailMode: authz.FailClosed}
+//	return authz.New(r)
 func NewGeneratedAuthorizer() *GeneratedAuthorizer {
 	return authz.New(authz.RolesDecider{
 		MethodRoles:        methodRoles,
 		MethodAuthRequired: methodAuthRequired,
+		FailMode:           authz.FailOpen,
 	})
 }
 

@@ -1,10 +1,15 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // TestParseServiceDeps_BareDepsTrio asserts the bare-Deps trio
@@ -648,3 +653,189 @@ func TestExtractPlaceholderType(t *testing.T) {
 		}
 	}
 }
+
+// TestSnakeCanonicalNoCompactDupes is the deep regression test for Bug 8 /
+// the cp-forge "snake↔compact duplicate-dir" bug class. The Jun-8 naming
+// fixes commit (3425d9e) re-introduced the bug a second time after an
+// earlier fix; that motivated a defence-in-depth test that doesn't just
+// pin naming.ServicePackage() (which TestServicePackage already does)
+// but exercises the FULL generate path against a multi-word-service
+// fixture so any future refactor in naming.go, wire_gen.go, authz_gen.go,
+// OR the handler scaffold path that breaks the snake-canonical contract
+// fails THIS test, not a downstream e2e three regen layers later.
+//
+// The cp-forge layout it mirrors:
+//   - Services with multi-word names ("admin-server", "admin_server",
+//     "AdminServerService") and Go-initialism-containing names
+//     ("llm-gateway", "LLMGatewayService") — these are the exact shapes
+//     that historically silently emitted compact dirs.
+//   - Pre-existing snake_case handler dirs (the canonical layout).
+//   - User-owned files in the snake dir whose package decl matches the
+//     snake form — a compact-form regen would orphan them.
+//
+// Assertions exercise the three failure modes the bug actually produced:
+//
+//  1. No `handlers/<compact>/` directory appears alongside the canonical
+//     `handlers/<snake>/`. (Old bug: created `handlers/adminserver/`.)
+//  2. `pkg/app/wire_gen.go` declares `wire<PascalSnake>Deps`, e.g.
+//     `wireAdminServerDeps`, NOT `wireAdminserverDeps`. (Old bug: lower-
+//     case-first-only collapse produced the latter, then bootstrap.go
+//     called a function that didn't exist.)
+//  3. The generated wire_gen.go parses as valid Go — guards against a
+//     future refactor that produces a syntactically broken file even if
+//     the substring assertions happen to pass.
+func TestSnakeCanonicalNoCompactDupes(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// The matrix of multi-word / Go-initialism service names that have
+	// historically tripped the compact-form regression. Snake form is
+	// the canonical handler dir; ProtoServiceName is what protoc-gen-forge
+	// passes to GenerateWireGen / GenerateAuthorizer as ServiceDef.Name.
+	cases := []struct {
+		protoServiceName string // ServiceDef.Name shape (PascalCase + "Service")
+		wantSnakeDir     string // canonical handlers/<snake> dir
+		wantWireFn       string // wire_gen.go function name
+		bannedCompactDir string // dir that must NOT exist (Bug 8 footprint)
+	}{
+		{"AdminServerService", "admin_server", "wireAdminServerDeps", "adminserver"},
+		{"AuditLogService", "audit_log", "wireAuditLogDeps", "auditlog"},
+		{"DaemonAdminService", "daemon_admin", "wireDaemonAdminDeps", "daemonadmin"},
+		{"LLMGatewayService", "llm_gateway", "wireLLMGatewayDeps", "llmgateway"},
+		{"BillingGatewayService", "billing_gateway", "wireBillingGatewayDeps", "billinggateway"},
+	}
+
+	services := make([]ServiceDef, 0, len(cases))
+	for _, c := range cases {
+		// Scaffold the canonical snake handler dir with a minimal
+		// service.go that declares the bare Deps trio — wire_gen.go
+		// needs this to emit a wireXxxDeps entry for the service.
+		handlerDir := filepath.Join(projectDir, "handlers", c.wantSnakeDir)
+		if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// User-owned authorizer.go in the snake dir — would be orphaned
+		// by a compact-form regen, so we can also assert it survives.
+		userAuthz := "package " + c.wantSnakeDir + "\n// hand-written authz\n"
+		if err := os.WriteFile(filepath.Join(handlerDir, "authorizer.go"), []byte(userAuthz), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// service.go declares Deps; wire_gen parses it.
+		serviceGo := `package ` + c.wantSnakeDir + `
+
+import "log/slog"
+
+type Deps struct {
+	Logger     *slog.Logger
+	Config     *Config
+	Authorizer Authorizer
+}
+
+type Config struct{}
+type Authorizer interface{ Check() }
+`
+		if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		services = append(services, ServiceDef{Name: c.protoServiceName, ModulePath: "example.com/proj"})
+	}
+
+	// Run the two generators that historically diverged on the snake↔
+	// compact boundary. Both must agree on the same dir / function name
+	// shape, else bootstrap.go can't link.
+	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {
+		t.Fatalf("GenerateWireGen: %v", err)
+	}
+	if err := GenerateAuthorizer(services, "example.com/proj", projectDir, (*checksums.FileChecksums)(nil)); err != nil {
+		t.Fatalf("GenerateAuthorizer: %v", err)
+	}
+
+	// Assertion 1: NO compact-form handler dir exists alongside the
+	// canonical snake form. This is the on-disk footprint of the bug
+	// class — `handlers/adminserver/` next to `handlers/admin_server/`.
+	for _, c := range cases {
+		compactPath := filepath.Join(projectDir, "handlers", c.bannedCompactDir)
+		if _, err := os.Stat(compactPath); err == nil {
+			t.Errorf("compact-form handler dir leaked: %s exists alongside %s — snake-canonical contract broken",
+				compactPath, c.wantSnakeDir)
+		}
+	}
+
+	// Assertion 2: wire_gen.go declares the snake-respecting wire function.
+	wireGenPath := filepath.Join(projectDir, "pkg", "app", "wire_gen.go")
+	wireData, err := os.ReadFile(wireGenPath)
+	if err != nil {
+		t.Fatalf("read wire_gen.go: %v", err)
+	}
+	wireContent := string(wireData)
+	for _, c := range cases {
+		// Function signature substring — the templated form is
+		// `func wireXxxDeps(app *App, cfg *config.Config, ...)`.
+		wantSig := "func " + c.wantWireFn + "("
+		if !strings.Contains(wireContent, wantSig) {
+			t.Errorf("wire_gen.go missing %q for proto service %q (snake dir %q)",
+				wantSig, c.protoServiceName, c.wantSnakeDir)
+		}
+		// And the BANNED compact form (e.g. wireAdminserverDeps) must
+		// not appear — a future regression that produces the wrong
+		// casing would silently break bootstrap.go calls.
+		bannedFn := "wire" + strings.Title(c.bannedCompactDir) + "Deps" //nolint:staticcheck // strings.Title is fine for ASCII test fixtures
+		if strings.Contains(wireContent, bannedFn+"(") {
+			t.Errorf("wire_gen.go leaked compact-form function %q — bug 8 regression", bannedFn)
+		}
+	}
+
+	// Assertion 3: the rendered wire_gen.go is syntactically valid Go.
+	// Substring assertions can pass on a broken file (e.g. unbalanced
+	// braces from a template refactor); parsing guards against that.
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, wireGenPath, wireData, parser.AllErrors); err != nil {
+		t.Errorf("wire_gen.go failed to parse: %v\n--- content ---\n%s", err, wireContent)
+	}
+
+	// Assertion 4: per-service authorizer_gen.go was emitted INTO the
+	// snake dir (not a sibling compact dir), with the matching package
+	// decl. This is the second-half of the snake-canonical contract
+	// the cp-forge bug also broke (compact-form authorizer.go alongside
+	// snake-form handlers.go → two packages, one dir → won't compile).
+	for _, c := range cases {
+		authPath := filepath.Join(projectDir, "handlers", c.wantSnakeDir, "authorizer_gen.go")
+		authData, err := os.ReadFile(authPath)
+		if err != nil {
+			t.Errorf("authorizer_gen.go not emitted at %s: %v", authPath, err)
+			continue
+		}
+		// Parse and pull the package name — match against the snake form.
+		af, err := parser.ParseFile(fset, authPath, authData, parser.PackageClauseOnly)
+		if err != nil {
+			t.Errorf("%s: parse failed: %v", authPath, err)
+			continue
+		}
+		if af.Name.Name != c.wantSnakeDir {
+			t.Errorf("%s: package = %q, want %q (snake-canonical)",
+				authPath, af.Name.Name, c.wantSnakeDir)
+		}
+	}
+
+	// Assertion 5: the user-owned authorizer.go scaffolded in the snake
+	// dir is still there. A compact-form regen would have scaffolded a
+	// sibling compact dir AND left the snake dir's user file orphaned;
+	// the dangling file would compile-error against a missing package.
+	for _, c := range cases {
+		userFile := filepath.Join(projectDir, "handlers", c.wantSnakeDir, "authorizer.go")
+		if _, err := os.Stat(userFile); err != nil {
+			t.Errorf("user-owned authorizer.go in snake dir was lost: %v", err)
+		}
+	}
+}
+
+// snakeCanonicalRe is a sanity-only regex: any function declaration in
+// wire_gen.go matching `func wire<X>Deps` must have its X be either a
+// PascalCase form whose snake-lowering matches a known handler dir, OR
+// the worker/operator prefix variants. The TestSnakeCanonicalNoCompactDupes
+// test above checks the inverse (banned compact form absent); this
+// pattern is documented here so a future agent who adds new generated
+// wire entry points knows the contract.
+var snakeCanonicalRe = regexp.MustCompile(`^func\s+wire(?:Worker|Operator)?[A-Z]\w*Deps\(`)
+
+var _ = snakeCanonicalRe // documented contract; consumed by future tests

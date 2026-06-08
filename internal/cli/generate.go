@@ -27,17 +27,23 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch          bool
-		force          bool
-		accept         bool
-		explain        bool
-		skipValidate   bool
-		skipPreChecks  bool
-		resetTier2     bool
-		assumeYes      bool
-		checkOnly      bool
-		steps          string
-		deprecatedScope string // hidden alias for --steps, kept for one release
+		watch            bool
+		force            bool
+		accept           bool
+		explain          bool
+		skipValidate     bool
+		skipPreChecks    bool
+		skipConfigCheck  bool
+		resetTier2       bool
+		assumeYes        bool
+		checkOnly        bool
+		forceCleanup     bool
+		templatesOnly    bool
+		strict           bool
+		verbose          bool
+		planOnly         bool
+		steps            string
+		deprecatedScope  string // hidden alias for --steps, kept for one release
 	)
 
 	cmd := &cobra.Command{
@@ -70,10 +76,32 @@ Examples:
   forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
   forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
   forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree
-  forge generate --steps=mocks      # Fast path: regen only mock_gen.go after a contract.go change (skips Tier-1 drift guard)`,
+  forge generate --force-cleanup    # Actually delete stale generated files (default is report-only)
+  forge generate --templates-only   # Re-render template-driven files only (skips cleanup/drift/validate; for propagating a template change into a WIP tree)
+  forge generate --steps=mocks      # Fast path: regen only mock_gen.go after a contract.go change (skips Tier-1 drift guard)
+  forge generate --plan             # Print the pipeline plan ([RUN]/[SKIP] per step + gate reason) and exit
+  forge generate --strict           # Promote pipeline warnings to fatal errors (every "Warning: ..." aborts)
+  forge generate --verbose          # Print one line per gate-off step ("⏩ skipped: <step name> (<reason>)")
+  forge generate --skip-config-check # Bypass the forge.yaml ↔ filesystem cross-check (parallel-lane / mid-migration only)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
 				return runGenerateCheck()
+			}
+			if planOnly {
+				return runGeneratePlan(".", pipelineFlags{
+					Force:           force,
+					Accept:          accept,
+					SkipValidate:    skipValidate,
+					SkipPreChecks:   skipPreChecks,
+					SkipConfigCheck: skipConfigCheck,
+					ResetTier2:      resetTier2,
+					AssumeYes:       assumeYes,
+					ForceCleanup:    forceCleanup,
+					TemplatesOnly:   templatesOnly,
+					Strict:          strict,
+					Verbose:         verbose,
+					Steps:           steps,
+				})
 			}
 			// Capture pre-pipeline checksums so --explain can diff
 			// against post-pipeline state to label rewritten vs idempotent.
@@ -111,22 +139,35 @@ Examples:
 
 			generateMu.Lock()
 			err := runGeneratePipelineFlags(".", pipelineFlags{
-				Force:         force,
-				Accept:        accept,
-				SkipValidate:  skipValidate,
-				SkipPreChecks: skipPreChecks,
-				ResetTier2:    resetTier2,
-				AssumeYes:     assumeYes,
-				Steps:         steps,
+				Force:           force,
+				Accept:          accept,
+				SkipValidate:    skipValidate,
+				SkipPreChecks:   skipPreChecks,
+				SkipConfigCheck: skipConfigCheck,
+				ResetTier2:      resetTier2,
+				AssumeYes:       assumeYes,
+				ForceCleanup:    forceCleanup,
+				TemplatesOnly:   templatesOnly,
+				Strict:          strict,
+				Verbose:         verbose,
+				Steps:           steps,
 			})
 			generateMu.Unlock()
 
 			// Print the explain log even when the pipeline failed — partial
 			// provenance is still useful for diagnosing what got generated
 			// before the build break. The original error is returned below.
+			//
+			// Honor --strict: a failed explain render under strict promotes
+			// to a fatal error (consistent with the rest of the pipeline's
+			// loud-by-default thesis). Outside strict it stays a soft warn
+			// so an explain-log bug doesn't mask a successful generate.
 			if explain {
 				if explainErr := printExplainLog(".", preChecksums); explainErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: explain log failed: %v\n", explainErr)
+					if strict {
+						return fmt.Errorf("explain log failed: %w (--strict)", explainErr)
+					}
+					fmt.Fprintf(os.Stderr, "⚠️  Warning: explain log failed: %v — pass --strict to fail on this\n", explainErr)
 				}
 			}
 
@@ -152,7 +193,19 @@ Examples:
 	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Auto-confirm interactive prompts (currently consumed by --reset-tier2)")
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
+	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Actually delete stale generated files. Default is report-only: print which files WOULD be deleted and leave them in place.")
+	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
 	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge add worker'), \"mocks\" (regen only mock_gen.go after a contract.go change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files).")
+	// Loud-by-default architecture flags. See the per-flag fields on
+	// pipelineFlags for the rationale; runGeneratePlan + warnOrFail consume them.
+	cmd.Flags().BoolVar(&strict, "strict", false, "Promote pipeline warnings to fatal errors. Every 'Warning: ... failed' site that today logs and continues will abort the pipeline instead.")
+	// Note: cobra has a persistent --verbose/-v on root. We rebind the
+	// long form here without a shorthand so generate-specific consumers
+	// (the gate-off skip printer) can read it without conflicting with
+	// the inherited persistent flag.
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
+	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
+	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
 	// Deprecated alias for --steps. The flag previously called --scope
 	// was renamed in this release to free up the word "scope" for the
 	// file-ownership concept (see internal/checksums/inspector.go).
@@ -164,6 +217,12 @@ Examples:
 	// a one-line deprecation message to stderr the first time the user
 	// passes it. One-release alias — drop after the next minor bump.
 	_ = cmd.Flags().MarkDeprecated("scope", "use --steps instead")
+
+	// `forge generate unfork` is the natural pair of `forge generate
+	// --accept`: --accept marks a Tier-1 file as forked (forge stops
+	// regenerating it), `unfork` reverses the decision. Lives under
+	// generate so the two opposites are discoverable side-by-side.
+	cmd.AddCommand(newUnforkCmd())
 
 	return cmd
 }
@@ -203,6 +262,14 @@ type pipelineFlags struct {
 	Accept        bool
 	SkipValidate  bool
 	SkipPreChecks bool
+	// SkipConfigCheck opts out of the forge.yaml ↔ filesystem cross-
+	// check that stepLoadConfig runs after a successful load. The default
+	// is loud-by-default: declared services / frontends / packages with
+	// no on-disk backing (or vice versa) abort the pipeline at load time
+	// with a batched report pointing at both sides of the asymmetry.
+	// Opt-out exists for parallel-lane / mid-migration scenarios where a
+	// transient mismatch is expected.
+	SkipConfigCheck bool
 	// ResetTier2 explicitly opts in to overwriting hand-edited Tier-2
 	// scaffolds (service.go, handlers.go, …). The default for Tier-2 is
 	// "preserve hand-edits even when --force is set" — the scaffold-once
@@ -235,6 +302,53 @@ type pipelineFlags struct {
 	// generate_tier1_scope.go — both narrow what `forge add worker`
 	// touches, just at different layers (drift-guard vs step execution).
 	Steps string
+
+	// ForceCleanup opts in to the destructive stale-artifact sweep.
+	// Default (false) makes stepCleanupStale report-only: it prints
+	// which manifest-recorded files would be deleted but leaves them
+	// on disk. See the matching pipelineContext.ForceCleanup field for
+	// the cp-forge surprise-delete rationale.
+	ForceCleanup bool
+
+	// TemplatesOnly restricts the pipeline to template-driven render
+	// steps only. Skips the Tier-1 drift guard, the validation tail
+	// (pre-codegen contract check, post-gen warnings, `go build`), the
+	// stale-artifact cleanup sweep, and every external generator
+	// (buf/protoc/sqlc/goimports/go mod tidy/KCL).
+	//
+	// Use case: a forge template change (e.g. `bootstrap.go.tmpl` gets a
+	// louder warning) needs to land in a downstream project that has
+	// uncommitted WIP, so a full `forge generate` would either trip the
+	// drift guard or shell out to tooling the partial tree can't build.
+	// `--templates-only` re-renders just the files the changed template
+	// emits, leaving the cleanup/drift/validate machinery for the next
+	// full regen once the WIP settles.
+	//
+	// Composes with Steps: when both are set, only steps that pass BOTH
+	// allowlists run (intersection). When Steps is empty and
+	// TemplatesOnly is set, every template-driven step runs. The
+	// allowlist of template-driven step names lives in
+	// templatesOnlyStepAllow (generate_pipeline.go).
+	TemplatesOnly bool
+
+	// Strict promotes the historically-silent "Warning: ... failed"
+	// sites into hard pipeline-abort errors. Used by the warnOrFail
+	// helper on pipelineContext — steps that opt into the helper get
+	// strict semantics for free without per-site code changes once they
+	// adopt it. The default (false) preserves the historical lenient
+	// behavior so existing CI / local-iteration scripts don't suddenly
+	// fail on a goimports glitch or a missing protoc-gen-connect-openapi.
+	Strict bool
+
+	// Verbose toggles per-step skip messages. The generate pipeline runs
+	// dozens of steps, most of which are gated off by project-shape
+	// predicates (no frontends → skip all frontend steps). The default
+	// (false) is silent skip — the user only sees output from steps that
+	// actually ran. When true, every gated-off step prints one line:
+	// "⏩ skipped: <step name> (gate: <gate name>)". Diagnostic surface
+	// for "why didn't generate touch X?" questions without requiring
+	// --plan.
+	Verbose bool
 }
 
 // runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
@@ -319,8 +433,31 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		steps = filtered
 	}
 
+	// --templates-only filter — intersects with --steps (if both are
+	// set, a step must pass BOTH allowlists). Applied AFTER --steps so
+	// the user-visible "running N of M" count reflects whichever filter
+	// is narrower. See templatesOnlyStepAllow for the included set and
+	// the WIP-tree rationale.
+	if flags.TemplatesOnly {
+		before := len(steps)
+		filtered := steps[:0:0]
+		for _, step := range steps {
+			if templatesOnlyStepAllow[step.Name] {
+				filtered = append(filtered, step)
+			}
+		}
+		fmt.Printf("⏩ --templates-only: running %d of %d pipeline steps (skipping cleanup, drift-guard, validation, external generators)\n", len(filtered), before)
+		steps = filtered
+	}
+
 	for _, step := range steps {
 		if !step.Gate(ctx) {
+			// Verbose mode prints one line per gate-off skip so the user
+			// can answer "why didn't generate touch X?" without --plan.
+			// Default (silent) preserves the historical low-noise output.
+			if ctx.Verbose {
+				fmt.Fprintf(os.Stderr, "⏩ skipped: %s (%s)\n", step.Name, gateSkipReason(step))
+			}
 			continue
 		}
 		if err := step.Run(ctx); err != nil {
@@ -476,9 +613,18 @@ func preCodegenContractCheck(projectDir string, cfg *config.ProjectConfig) error
 		Excludes: excludes,
 	})
 	if err != nil {
-		// Best-effort: a walk error shouldn't block generate.
-		fmt.Fprintf(os.Stderr, "Warning: pre-codegen contract check failed: %v\n", err)
-		return nil
+		// PROMOTED 2026-06-07 from silent warn to hard error: a walk
+		// error here (permission denied, transient I/O glitch) means we
+		// can't confirm contract shape — proceeding silently would let
+		// the pipeline emit bootstrap.go against an unvalidated tree,
+		// and the user would diagnose a confusing build failure later.
+		// The opt-out (--skip-pre-checks) exists for the parallel-lane
+		// scenario where the walk error is expected.
+		return cliutil.WrapUserErr("forge generate (pre-codegen contract check)",
+			"unable to validate contracts (could not read internal/)",
+			"",
+			"check filesystem permissions on internal/, or run with --skip-pre-checks if this is a parallel-lane scenario",
+			err)
 	}
 	if !contractcheck.HasErrors(fs) {
 		return nil

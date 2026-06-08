@@ -282,8 +282,8 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	if strings.Contains(content, "vanguard.NewTranscoder") {
 		t.Error("bootstrap.go should NOT call vanguard.NewTranscoder when api.rest is off")
 	}
-	if strings.Contains(content, "app.RESTHandler =") {
-		t.Error("bootstrap.go should NOT assign app.RESTHandler when api.rest is off")
+	if strings.Contains(content, "app.restHandler =") {
+		t.Error("bootstrap.go should NOT assign app.restHandler when api.rest is off")
 	}
 }
 
@@ -295,9 +295,11 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 //     Connect-generated `<X>ServiceName` constant, and
 //   - the wrapped handler stored on `app.RESTHandler`.
 //
-// The generated app_gen.go grows a `RESTHandler http.Handler` field;
-// this test confirms the field is always emitted so cmd-server.go can
-// read it unconditionally without a templated branch.
+// The generated app_gen.go grows an unexported `restHandler http.Handler`
+// field plus a `RESTHandler() http.Handler` accessor method (required by
+// the serverkit.Application interface); this test confirms both are
+// always emitted so serverkit can call the method unconditionally without
+// a templated branch.
 func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	targetDir := t.TempDir()
 
@@ -336,8 +338,8 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	if !strings.Contains(bContent, "ordersv1connect.OrdersServiceName") {
 		t.Error("bootstrap.go should reference ordersv1connect.OrdersServiceName for OrdersService")
 	}
-	if !strings.Contains(bContent, "app.RESTHandler = transcoder") {
-		t.Error("bootstrap.go should assign the transcoder to app.RESTHandler")
+	if !strings.Contains(bContent, "app.restHandler = transcoder") {
+		t.Error("bootstrap.go should assign the transcoder to app.restHandler (unexported field backing the RESTHandler() method)")
 	}
 	// Both Bootstrap and BootstrapOnly should wrap — count occurrences.
 	if got := strings.Count(bContent, "vanguard.NewTranscoder"); got != 2 {
@@ -352,8 +354,11 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(app_gen) error = %v", err)
 	}
-	if !strings.Contains(string(appGen), "RESTHandler http.Handler") {
-		t.Error("app_gen.go should declare RESTHandler http.Handler on App")
+	if !strings.Contains(string(appGen), "restHandler http.Handler") {
+		t.Error("app_gen.go should declare the unexported restHandler http.Handler field on App")
+	}
+	if !strings.Contains(string(appGen), "func (a *App) RESTHandler() http.Handler") {
+		t.Error("app_gen.go should declare the RESTHandler() http.Handler accessor method on App")
 	}
 
 	// Sanity-parse the generated bootstrap.go to catch templating bugs
@@ -379,7 +384,7 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},      // no webhooks
 	}
 
-	// Compact-lowercase package names match codegen.toServicePackage output
+	// Compact-lowercase package names match naming.ServicePackage output
 	// (post-2026 snake/kebab-stripping rule — "AdminServerService" -> "adminserver").
 	webhookServices := map[string]bool{
 		"adminserver": true,
@@ -1263,31 +1268,10 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 	}
 }
 
-func TestToServicePackage(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"EchoService", "echo"},
-		{"OrdersService", "orders"},
-		{"Service", "service"},
-		{"notifications", "notifications"},
-		// Multi-word PascalCase compacts to a single lowercase identifier
-		// (separators stripped) so the result agrees with
-		// generator.ServicePackageName on the equivalent CLI name
-		// ("admin-server" / "admin_server" -> "adminserver").
-		{"AdminServerService", "adminserver"},
-		{"admin-server", "adminserver"},
-		{"admin_server", "adminserver"},
-	}
-
-	for _, tt := range tests {
-		got := toServicePackage(tt.input)
-		if got != tt.want {
-			t.Errorf("toServicePackage(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
+// TestToServicePackage_MovedToNaming notes the canonical test moved to
+// internal/naming/naming_test.go (TestServicePackage). The codegen
+// helper now delegates to naming.ServicePackage; the table-driven cases
+// live with the canonical implementation.
 // TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper covers
 // the cross-role collision case: when an internal/<svc> directory exists,
 // GenerateBootstrapTesting emits NewTestSvc<Pascal> rather than NewTest<Pascal>.
@@ -1433,6 +1417,136 @@ func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
 	got := OperatorDataFromNames([]string{"cert_rotator"}, "")
 	if len(got) != 1 || got[0].FieldName != "CertRotator" {
 		t.Errorf("OperatorDataFromNames(\"cert_rotator\")[0].FieldName = %q, want \"CertRotator\"", got[0].FieldName)
+	}
+}
+
+// TestWorkerDataFromSpecs_HonorsExplicitPath locks in the fix for the
+// snake_case-worker-dir bug: when forge.yaml declares
+// `path: workers/climatology_refresh`, the generated bootstrap import must
+// be `"<module>/workers/climatology_refresh"` (matching the on-disk dir),
+// NOT the compacted `"<module>/workers/climatologyrefresh"` form that
+// `naming.GoPackage` would produce. Same fix applies to the Alias —
+// it must equal the `package X` declaration in the dir's .go file so
+// call sites like `<Alias>.New(...)` resolve correctly.
+//
+// Coverage:
+//   - Explicit snake_case path → ImportPath + Package + Alias all
+//     preserve the underscore.
+//   - Empty path (legacy entry point) → falls back to compacted form.
+//   - On-disk `package X` declaration overrides the path-derived alias —
+//     ground truth wins when the user renamed the package after scaffolding.
+func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
+	projectDir := t.TempDir()
+	// Seed an on-disk worker dir with the snake_case package declaration
+	// so the ground-truth alias detection has something to read.
+	workerDir := filepath.Join(projectDir, "workers", "climatology_refresh")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	src := "package climatology_refresh\n\ntype Worker struct{}\n\nfunc New(Deps) *Worker { return &Worker{} }\n\ntype Deps struct{}\n"
+	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Mismatched on-disk dir for the "ground truth overrides path leaf" case:
+	// path says workers/widget_v2 but the actual `package X` is `widgetv2`.
+	mismatchDir := filepath.Join(projectDir, "workers", "widget_v2")
+	if err := os.MkdirAll(mismatchDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	mismatchSrc := "package widgetv2\n\ntype Worker struct{}\n"
+	if err := os.WriteFile(filepath.Join(mismatchDir, "worker.go"), []byte(mismatchSrc), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cases := []struct {
+		desc           string
+		spec           WorkerSpec
+		projectDir     string
+		wantPackage    string
+		wantImportPath string
+		wantAlias      string
+		wantFieldName  string
+	}{
+		{
+			desc:           "explicit snake_case path preserves underscore for import + alias",
+			spec:           WorkerSpec{Name: "climatology_refresh", Path: "workers/climatology_refresh"},
+			projectDir:     projectDir,
+			wantPackage:    "climatology_refresh",
+			wantImportPath: "climatology_refresh",
+			wantAlias:      "climatology_refresh",
+			wantFieldName:  "ClimatologyRefresh",
+		},
+		{
+			desc:           "empty path falls back to compacted Go-style form",
+			spec:           WorkerSpec{Name: "calibrator_refit"},
+			projectDir:     "",
+			wantPackage:    "calibratorrefit",
+			wantImportPath: "calibratorrefit",
+			wantAlias:      "calibratorrefit",
+			wantFieldName:  "CalibratorRefit",
+		},
+		{
+			desc:           "on-disk package declaration overrides path-derived alias",
+			spec:           WorkerSpec{Name: "widget_v2", Path: "workers/widget_v2"},
+			projectDir:     projectDir,
+			wantPackage:    "widgetv2", // overridden by ground truth
+			wantImportPath: "widget_v2",
+			wantAlias:      "widgetv2", // overridden by ground truth
+			wantFieldName:  "WidgetV2",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			got := WorkerDataFromSpecs([]WorkerSpec{c.spec}, c.projectDir)
+			if len(got) != 1 {
+				t.Fatalf("WorkerDataFromSpecs returned %d entries, want 1", len(got))
+			}
+			w := got[0]
+			if w.Package != c.wantPackage {
+				t.Errorf("Package = %q, want %q", w.Package, c.wantPackage)
+			}
+			if w.ImportPath != c.wantImportPath {
+				t.Errorf("ImportPath = %q, want %q", w.ImportPath, c.wantImportPath)
+			}
+			if w.Alias != c.wantAlias {
+				t.Errorf("Alias = %q, want %q", w.Alias, c.wantAlias)
+			}
+			if w.FieldName != c.wantFieldName {
+				t.Errorf("FieldName = %q, want %q", w.FieldName, c.wantFieldName)
+			}
+		})
+	}
+}
+
+// TestOperatorDataFromSpecs_HonorsExplicitPath mirrors the worker test —
+// the path-honoring rule applies equally to operators.
+func TestOperatorDataFromSpecs_HonorsExplicitPath(t *testing.T) {
+	projectDir := t.TempDir()
+	opDir := filepath.Join(projectDir, "operators", "cert_rotator")
+	if err := os.MkdirAll(opDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	src := "package cert_rotator\n\ntype Controller struct{}\n"
+	if err := os.WriteFile(filepath.Join(opDir, "controller.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	got := OperatorDataFromSpecs([]OperatorSpec{
+		{Name: "cert_rotator", Path: "operators/cert_rotator"},
+	}, projectDir)
+	if len(got) != 1 {
+		t.Fatalf("OperatorDataFromSpecs returned %d entries, want 1", len(got))
+	}
+	op := got[0]
+	if op.ImportPath != "cert_rotator" {
+		t.Errorf("ImportPath = %q, want %q", op.ImportPath, "cert_rotator")
+	}
+	if op.Alias != "cert_rotator" {
+		t.Errorf("Alias = %q, want %q", op.Alias, "cert_rotator")
+	}
+	if op.FieldName != "CertRotator" {
+		t.Errorf("FieldName = %q, want %q", op.FieldName, "CertRotator")
 	}
 }
 

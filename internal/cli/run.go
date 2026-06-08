@@ -3,12 +3,15 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/devproxy"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
@@ -45,7 +49,21 @@ type runOptions struct {
 	noInfra  bool
 	services []string
 	debug    bool
+	// proxyPort is the localhost port the cross-frontend dev proxy
+	// binds to. 0 (default) uses [defaultDevProxyPort] (8080), unless
+	// FORGE_RUN_PROXY_PORT is set in the env. -1 disables the proxy
+	// (set via --no-proxy) for the rare case the user wants the raw
+	// per-frontend ports without a single unified URL.
+	proxyPort int
+	noProxy   bool
 }
+
+// defaultDevProxyPort is the bind port for the cross-frontend dev
+// proxy when neither --proxy-port nor FORGE_RUN_PROXY_PORT is set.
+// 8080 is the conventional dev-only port — distinct from any
+// Next.js / service default (3000 / 8000 / 50051), so the proxy
+// never collides with a backend's own port.
+const defaultDevProxyPort = 8080
 
 // runProjectDev orchestrates the local development environment.
 func runProjectDev(opts runOptions) error {
@@ -232,10 +250,17 @@ func runProjectDev(opts runOptions) error {
 		}
 	}
 
-	// 3. Start Next.js frontends.
+	// 3. Start Next.js frontends. PORT is force-injected from the
+	// forge.yaml-declared frontend port so the proxy can dispatch to
+	// a deterministic loopback port even if a stale PORT bled in
+	// from the parent shell. Mirrors the `forge up` host-mode shape
+	// (see buildFrontendCmd in up.go).
 	for _, fe := range frontendsToRun {
 		cmd := exec.CommandContext(ctx, "npm", "run", "dev")
 		cmd.Dir = fe.Path
+		if fe.Port > 0 {
+			cmd.Env = withForcedEnv(os.Environ(), "PORT", strconv.Itoa(fe.Port))
+		}
 		if err := startProcess(fe.Name, cmd); err != nil {
 			fmt.Printf("[run] Warning: %v\n", err)
 		}
@@ -246,11 +271,90 @@ func runProjectDev(opts runOptions) error {
 		return nil
 	}
 
+	// 4. Cross-frontend dev proxy. Maps `<name>.localhost:<proxy>` →
+	// the per-component loopback port so every frontend + HTTP service
+	// is reachable under one URL with prod-parity hostnames. KCL
+	// HTTPRoute entities are the source of truth for which host maps
+	// to which backend; frontends contribute a default
+	// `<name>.localhost` entry for any frontend not referenced by an
+	// HTTPRoute (the common dev case, where users haven't yet
+	// declared ingress).
+	// devGoroutineErrCh carries failures from background dev-proxy
+	// goroutines back to the main loop. Pre-2026-06-07 these were swallowed
+	// (a plain `fmt.Printf` inside the goroutine), so a bind failure like
+	// EADDRINUSE on the proxy port printed a single line and then the
+	// process happily reported "N process(es) started" while the proxy was
+	// in fact dead — every frontend request returned ECONNREFUSED.
+	//
+	// Buffered to the number of goroutines we might spawn so a fast-failing
+	// send never blocks. We act on the FIRST error (abort dev-up); later
+	// errors from sibling goroutines are drained-and-logged so the user
+	// sees them too, but only the first triggers the abort.
+	devGoroutineErrCh := make(chan error, 2)
+	if !opts.noProxy {
+		proxyPort := resolveProxyPort(opts.proxyPort)
+		routes := loadDevProxyRoutes(ctx, opts.env)
+		backends := buildDevProxyBackends(frontendsToRun, servicesToRun, routes)
+		if len(backends) == 0 {
+			fmt.Println("[run] Dev proxy: no frontends or HTTP-routed services declared; skipping.")
+		} else {
+			router := devproxy.New(backends)
+			addr := fmt.Sprintf("localhost:%d", proxyPort)
+			srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 10 * time.Second}
+			printDevProxyBanner(proxyPort, backends)
+			go func() {
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					// Non-blocking: if the channel is full, the first
+					// error already won — drop ours rather than block the
+					// goroutine on a reader that's no longer waiting.
+					select {
+					case devGoroutineErrCh <- fmt.Errorf("dev proxy listener on %s: %w", addr, err):
+					default:
+					}
+				}
+			}()
+			// Hook proxy shutdown into the global ctx cancel so it
+			// tears down alongside the child processes on Ctrl-C.
+			go func() {
+				<-ctx.Done()
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(shutdownCtx)
+			}()
+		}
+	}
+
 	fmt.Printf("\n[run] %d process(es) started. Press Ctrl+C to stop.\n\n", len(processes))
 
-	// Wait for signal.
-	<-sigCh
-	fmt.Println("\n[run] Shutting down...")
+	// Startup race: a bind failure (EADDRINUSE) hits ListenAndServe
+	// synchronously, so the goroutine sends on devGoroutineErrCh within
+	// a few hundred microseconds of Start. Give it a short window to
+	// surface before we block on sigCh — without this, the user sees
+	// "N process(es) started" first and the "dev proxy listener:" error
+	// line trails behind, making the proxy look like it might recover.
+	select {
+	case err := <-devGoroutineErrCh:
+		fmt.Fprintf(os.Stderr, "[run] FATAL: %v\n", err)
+		cancel()
+		return fmt.Errorf("dev startup aborted: %w", err)
+	case <-time.After(250 * time.Millisecond):
+		// Proxy bound cleanly (or the goroutine is still in flight; a
+		// later failure during the lifetime of the dev session is rare
+		// — proxy errors after bind are usually per-request, surfaced
+		// to the client, not to stdout).
+	}
+
+	// Wait for signal OR a late-arriving dev-goroutine error. Late
+	// goroutine errors are rare (post-bind ListenAndServe failures only
+	// fire on accept errors that mean the OS revoked the listener
+	// socket — typically EMFILE or similar), but surfacing them is
+	// strictly better than the pre-refactor silent-drop.
+	select {
+	case <-sigCh:
+		fmt.Println("\n[run] Shutting down...")
+	case err := <-devGoroutineErrCh:
+		fmt.Fprintf(os.Stderr, "\n[run] dev proxy died: %v — shutting down\n", err)
+	}
 	cancel()
 
 	// Gracefully stop all child processes.
@@ -547,18 +651,19 @@ func stringifyEnvValue(v any) string {
 //  1. os.Environ() — the parent process env. Wins last so a developer
 //     shell override (`LOG_LEVEL=trace forge run ...`) beats everything
 //     else.
-//  2. forge.yaml `environments[<env>].config` — non-secret per-env
-//     config (environment / log_format / log_level / etc.). Same values
-//     cluster-mode services see via the ConfigMap projection, layered
-//     here so host-mode services don't drift. Sensitive fields and
+//  2. `config.<env>.yaml` sibling file — non-secret per-env config
+//     (environment / log_format / log_level / etc.). Same source the
+//     cluster-mode ConfigMap projection reads, layered here so
+//     host-mode services don't drift. Sensitive fields and
 //     ${SECRET_REF} placeholders are skipped (host-mode dev expects
 //     those in .env.<env> or the developer shell). Lowest precedence
-//     among extras.
+//     among extras. (Pre-`environments-to-kcl` migration this lived in
+//     `forge.yaml`'s removed `environments[<env>].config` block.)
 //  3. secretsFile (`.env.<env>`) — gitignored dotenv of API keys plus
 //     any developer-local overrides. Empty path → skip; missing file →
 //     warn and continue; unreadable (parse / permission) → error. Wins
-//     over forge.yaml config so a developer can shadow a committed
-//     value without editing tracked files.
+//     over per-env config so a developer can shadow a committed value
+//     without editing tracked files.
 //  4. host.EnvVars (KCL) — KCL-declared per-env config. Wins over the
 //     two layers above so reproducible per-env config can't drift
 //     across machines.
@@ -620,10 +725,10 @@ func runHostService(ctx context.Context, name, env, secretsFile string, backgrou
 		fmt.Printf("[run] %s: layering %d KCL env_vars on top of secrets\n", name, len(envVars))
 	}
 
-	// Load forge.yaml environments[<env>].config and project to env-var
+	// Load the `config.<env>.yaml` sibling and project to env-var
 	// strings. Same source as the cluster ConfigMap projection — without
 	// this layer, host-mode services see ONLY .env.<env> (the gitignored
-	// dotenv) and the per-env config that cluster-mode services see via
+	// dotenv) and the per-env config cluster-mode services see via
 	// ConfigMap is invisible on the host. Missing env / empty config is
 	// non-fatal: we log it and continue with whatever the binary's
 	// startup defaults provide.
@@ -837,5 +942,146 @@ func declaredServiceNames(cfg *config.ProjectConfig) []string {
 		out = append(out, s.Name)
 	}
 	return out
+}
+
+// resolveProxyPort picks the bind port for the cross-frontend dev
+// proxy. Precedence: explicit --proxy-port flag > FORGE_RUN_PROXY_PORT
+// env > [defaultDevProxyPort]. A malformed env value is silently
+// ignored — the proxy is best-effort and we don't want a typo in
+// the user's shell to block `forge run`.
+func resolveProxyPort(flagPort int) int {
+	if flagPort > 0 {
+		return flagPort
+	}
+	if env := os.Getenv("FORGE_RUN_PROXY_PORT"); env != "" {
+		if p, err := strconv.Atoi(env); err == nil && p > 0 {
+			return p
+		}
+	}
+	return defaultDevProxyPort
+}
+
+// loadDevProxyRoutes is the KCL-render shim for the run command's
+// dev proxy. Returns nil when KCL isn't available / the env isn't
+// rendered yet — the caller falls back to the implicit
+// `<name>.localhost` per-frontend default. Mirrors the
+// lookupKCLHostDeploy shape (silent fallback) — the proxy is a
+// developer convenience, not a correctness gate.
+func loadDevProxyRoutes(ctx context.Context, env string) []HTTPRouteEntity {
+	if env == "" {
+		return nil
+	}
+	projectDir := projectDirForKCL()
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil || entities == nil {
+		return nil
+	}
+	return entities.HTTPRoutes
+}
+
+// buildDevProxyBackends composes the proxy's dispatch table. Each
+// frontend contributes a default `<name>.localhost` → fe.Port entry;
+// HTTPRoute entities then override or add hostnames so the dev proxy
+// matches the production HTTPRoute hostnames (prod-parity).
+//
+// Service-side HTTPRoutes need a host:port pair: HTTPRouteEntity
+// carries `Service` (backend service name) and `Port`, so we resolve
+// the loopback port directly from the route's `Port` field. When the
+// route declares no `Host` the entry is skipped — root-path routes
+// like `/` are the discouraged path-prefix shape and out of scope
+// for the host-based proxy (basePath gotcha; see SKILL.md).
+func buildDevProxyBackends(
+	frontends []config.FrontendConfig,
+	services []config.ServiceConfig,
+	routes []HTTPRouteEntity,
+) []devproxy.Backend {
+	// Index frontends by name for HTTPRoute lookups + a default
+	// host-table entry per frontend.
+	byName := make(map[string]struct {
+		port int
+		kind string
+	}, len(frontends)+len(services))
+	for _, fe := range frontends {
+		if fe.Port > 0 {
+			byName[fe.Name] = struct {
+				port int
+				kind string
+			}{port: fe.Port, kind: "frontend"}
+		}
+	}
+	for _, svc := range services {
+		if svc.Port > 0 {
+			byName[svc.Name] = struct {
+				port int
+				kind string
+			}{port: svc.Port, kind: "service"}
+		}
+	}
+
+	// Track hosts we've already added so HTTPRoute entries win the
+	// last-write semantics over the auto-generated frontend default.
+	added := map[string]struct{}{}
+	var out []devproxy.Backend
+
+	// Default `<name>.localhost` per frontend. Gives the unified URL
+	// out of the box even before the user declares any HTTPRoutes.
+	for _, fe := range frontends {
+		if fe.Port <= 0 {
+			continue
+		}
+		host := fe.Name + ".localhost"
+		added[host] = struct{}{}
+		out = append(out, devproxy.Backend{
+			Host: host,
+			Port: fe.Port,
+			Kind: "frontend",
+			Name: fe.Name,
+		})
+	}
+
+	// HTTPRoute-declared hosts. Resolve the backend port from the
+	// route's `Service` ref via byName so a service whose port the
+	// HTTPRoute mis-declares falls back to the forge.yaml port. (The
+	// HTTPRoute.Port and forge.yaml port SHOULD agree — `forge audit
+	// ingress` is the cross-check — but we prefer the forge.yaml port
+	// here since that's what the binary actually binds to.)
+	for _, rt := range routes {
+		if rt.Host == "" {
+			continue
+		}
+		info, ok := byName[rt.Service]
+		if !ok || info.port == 0 {
+			// Route references a backend we don't run as a host
+			// process — cluster-only services from a mixed-mode env.
+			// Skip silently; the audit command surfaces these.
+			continue
+		}
+		host := strings.ToLower(rt.Host)
+		if _, dup := added[host]; dup {
+			continue
+		}
+		added[host] = struct{}{}
+		out = append(out, devproxy.Backend{
+			Host: host,
+			Port: info.port,
+			Kind: info.kind,
+			Name: rt.Service,
+		})
+	}
+
+	return out
+}
+
+// printDevProxyBanner writes the one-line proxy summary the user sees
+// after `forge run` finishes its startup phase. The format is stable
+// for screenshot/grep purposes — `[run] Dev URL: http://localhost:<port>
+// (<host1>:<port>, <host2>:<port>, ...)` — and matches the shape the
+// task brief specifies.
+func printDevProxyBanner(port int, backends []devproxy.Backend) {
+	hosts := make([]string, 0, len(backends))
+	for _, b := range backends {
+		hosts = append(hosts, fmt.Sprintf("%s:%d", b.Host, port))
+	}
+	fmt.Printf("\n[run] Dev URL: http://localhost:%d (%s)\n", port, strings.Join(hosts, ", "))
 }
 

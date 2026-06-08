@@ -64,8 +64,8 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 	if svc.ModulePath != "" && svc.GoPackage != "" {
 		// Strip module + "/gen/" prefix and "/v1" suffix
 		prefix := svc.ModulePath + "/gen/"
-		if strings.HasPrefix(svc.GoPackage, prefix) {
-			protoImportPath = strings.TrimPrefix(svc.GoPackage, prefix)
+		if rest, ok := strings.CutPrefix(svc.GoPackage, prefix); ok {
+			protoImportPath = rest
 			// Remove trailing /v1, /v2, etc.
 			if idx := strings.LastIndex(protoImportPath, "/v"); idx >= 0 {
 				protoImportPath = protoImportPath[:idx]
@@ -96,7 +96,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		})
 	}
 
-	pkgName := toServicePackage(svc.Name)
+	pkgName := naming.ServicePackage(svc.Name)
 
 	return ServiceTemplateData{
 		ServiceName:        pkgName,
@@ -264,7 +264,7 @@ func GenerateMock(svc ServiceDef, mockDir string) (written bool, err error) {
 		return false, err
 	}
 
-	mockFile := filepath.Join(mockDir, toServicePackage(svc.Name)+"_mock.go")
+	mockFile := filepath.Join(mockDir, naming.ServicePackage(svc.Name)+"_mock.go")
 	f, err := os.Create(mockFile)
 	if err != nil {
 		return false, err
@@ -378,6 +378,16 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 		appFieldTypes[f.Name] = f.Type
 	}
 
+	// Type-aware backstop for the legacy string-compare matcher.
+	// When the pretty-printed type strings differ but go/types says
+	// the AppExtras field is assignable to the Deps field (narrow-
+	// interface implemented by wide concrete), we wire anyway. When
+	// the matcher reports NameMismatch, we deliberately DO NOT wire —
+	// the post-generate bootstrap-deps-coverage lint surfaces the
+	// gap loudly rather than silently dropping (this was the audit-
+	// no-op bug class).
+	matcher := NewDepsAssignabilityMatcher(projectDir)
+
 	for i := range components {
 		dir := filepath.Join(projectDir, roleRoot, components[i].ImportPath)
 		fields, err := ParseServiceDeps(dir)
@@ -407,27 +417,23 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 				if f.Type == "" || f.Type == "*config.Config" {
 					components[i].HasConfig = true
 				} else {
-					// Domain-local Config — treat like any other field
-					// and let the name+exact-type matcher decide.
-					appType, hasName := appFieldTypes[f.Name]
-					if hasName && appType == f.Type {
+					// Domain-local Config — defer to the name+type
+					// matcher (with assignability) like any other field.
+					if matchedAppField(matcher, roleRoot, components[i].ImportPath, f.Name, f.Type, appFieldTypes) {
 						components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
 					}
 				}
 			default:
-				// Name-match AND exact type-match. Without strict type
-				// comparison the wire would emit `Repo: app.Repo` even
-				// when funding.Deps.Repo is funding.Repository (narrow
-				// domain interface) and app.Repo is *db.PostgresRepository
-				// — type-fails at compile time. Skipping unmatched-type
-				// fields preserves the typed-zero default the Deps zero
-				// value provides; the user can either change app.Repo's
-				// declared type to match the narrow interface OR write a
-				// setup.go adapter — both surfaced clearly by the
-				// bootstrap-deps-coverage lint when name matches but
-				// type doesn't.
-				appType, hasName := appFieldTypes[f.Name]
-				if hasName && appType == f.Type {
+				// Name-match + assignability check. The legacy version
+				// required byte-equal type strings, which silently
+				// dropped the wire when funding.Deps.Repo was
+				// funding.Repository (narrow interface) and
+				// AppExtras.Repo was *db.PostgresRepository (concrete
+				// impl). Using go/types via the matcher closes the
+				// silent-drop class without losing the safety of the
+				// no-name-match → no-emit invariant (the existing
+				// optional-dep mechanism).
+				if matchedAppField(matcher, roleRoot, components[i].ImportPath, f.Name, f.Type, appFieldTypes) {
 					components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
 				}
 			}
@@ -435,75 +441,232 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 	}
 }
 
-// WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
-// projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// Hyphens and underscores in the user-facing name are stripped for Package (the on-disk
-// directory + Go package name) so `calibrator_refit` becomes `calibratorrefit`, matching
-// Go style. FieldName is derived from the ORIGINAL name (which retains its separators)
-// via ToPascalCase so snake_case worker names still produce idiomatic exported identifiers
-// (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than the
-// run-together `Workers.Calibratorrefit` shape ToPascalCase would otherwise emit.
-func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
+// matchedAppField is the central decision for "should bootstrap emit
+// `<Field>: app.<Field>` for this Deps field?". It consults the
+// type-aware matcher with a string-compare pre-check, then degrades to
+// a string compare when the matcher reports Unavailable (load failure,
+// missing pkg/app, project mid-edit).
+//
+// Returns true when:
+//   - the matcher confirms assignability (narrow-interface case), or
+//   - the matcher confirms exact-string match (legacy fast path), or
+//   - the matcher is unavailable AND the legacy string compare holds.
+//
+// Returns false when:
+//   - no AppExtras field of the same name exists (the optional-dep
+//     invariant), or
+//   - name matches but types are NOT assignable (NameMismatch — the
+//     lint will surface the gap).
+func matchedAppField(m *DepsAssignabilityMatcher, roleRoot, pkgDir, depsName, depsType string, appByName map[string]string) bool {
+	appType, hasName := appByName[depsName]
+	if !hasName {
+		return false
+	}
+	kind := m.Match(roleRoot, pkgDir, depsName, depsType, appType, true)
+	switch kind {
+	case MatchExactString, MatchAssignable:
+		return true
+	case MatchNameMismatch:
+		// Intentional silence here — the lint reports loudly. We don't
+		// emit a wire that won't compile, AND we don't pretend the
+		// field doesn't exist (which would have skipped validateDeps).
+		return false
+	case MatchUnavailable:
+		// Type checker couldn't tell us. Fall back to the pre-matcher
+		// behavior so codegen still works on a project mid-edit.
+		return appType == depsType
+	default:
+		return false
+	}
+}
+
+// WorkerSpec carries a worker's user-facing name plus the optional `path:`
+// field declared in forge.yaml. When Path is non-empty, the dir leaf
+// (`filepath.Base(Path)`) becomes the import-path segment and the Go-package
+// alias — preserving snake_case dirs like `workers/climatology_refresh/`
+// whose `package climatology_refresh` declaration would otherwise mismatch
+// the compacted form `naming.GoPackage` produces. When Path is empty,
+// behavior falls back to the legacy compact form (`calibrator_refit` →
+// `calibratorrefit`) for callers that don't have forge.yaml context.
+//
+// OperatorSpec mirrors this for operators (same separator-preserving rule).
+type WorkerSpec struct {
+	Name string // user-facing name from forge.yaml (e.g. "climatology_refresh")
+	Path string // optional dir path from forge.yaml (e.g. "workers/climatology_refresh"); empty falls back to legacy compact form
+}
+
+// OperatorSpec is the operator-side analog of WorkerSpec. See WorkerSpec for
+// the path-honoring rationale.
+type OperatorSpec struct {
+	Name string
+	Path string
+}
+
+// WorkerDataFromSpecs builds BootstrapWorkerData honoring each spec's
+// optional `path:` field. When Path is set, the on-disk dir leaf is used
+// for both ImportPath and the Go package alias — so snake_case dirs like
+// `workers/climatology_refresh/` produce the correct import line
+// `workers/climatology_refresh` rather than the compacted `workers/climatologyrefresh`.
+//
+// When Path is empty (the legacy `WorkerDataFromNames` entry point), Package
+// falls back to `naming.GoPackage(name)` (separators stripped) — preserves
+// pre-existing behavior for callers without forge.yaml context.
+//
+// When projectDir is non-empty AND the worker dir contains parseable Go,
+// the actual `package X` declaration is used as the alias — that's the
+// ground truth the bootstrap import line has to match.
+//
+// Alias-collision note: a worker named `engine_shadow` with path
+// `workers/engine_shadow` now aliases to `engine_shadow` (not the compacted
+// `engineshadow`), so it no longer collides with an internal package
+// `engineshadow`. The cross-role collision logic in AssignBootstrapAliases
+// still kicks in when two roles share an identical Package value.
+func WorkerDataFromSpecs(specs []WorkerSpec, projectDir string) []BootstrapWorkerData {
 	var workers []BootstrapWorkerData
-	for _, name := range names {
-		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(name)
+	for _, spec := range specs {
+		pkg, importPath, alias := resolveComponentNames(spec.Name, spec.Path, projectDir, "workers")
+		fieldName := naming.ToPascalCase(spec.Name)
 		fallible := false
 		if projectDir != "" {
-			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "workers", pkg))
+			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "workers", importPath))
 		}
 		workers = append(workers, BootstrapWorkerData{
-			Name:       name,
+			Name:       spec.Name,
 			Package:    pkg,
-			ImportPath: pkg,
+			ImportPath: importPath,
 			FieldName:  fieldName,
 			VarName:    lowerFirst(fieldName),
 			Fallible:   fallible,
-			Alias:      pkg,
+			Alias:      alias,
 		})
 	}
 	return workers
 }
 
+// WorkerDataFromNames is the legacy entry point — thin wrapper over
+// WorkerDataFromSpecs with empty Path. Preserved for callers (and tests)
+// that don't carry forge.yaml context. New code should use
+// WorkerDataFromSpecs so the explicit `path:` field is honored.
+//
+// Hyphens and underscores in the user-facing name are stripped for Package
+// (the on-disk directory + Go package name) so `calibrator_refit` becomes
+// `calibratorrefit`, matching Go style. FieldName is derived from the
+// ORIGINAL name (which retains its separators) via ToPascalCase so
+// snake_case worker names still produce idiomatic exported identifiers
+// (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than
+// the run-together `Workers.Calibratorrefit` shape ToPascalCase would
+// otherwise emit.
+func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
+	specs := make([]WorkerSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, WorkerSpec{Name: name})
+	}
+	return WorkerDataFromSpecs(specs, projectDir)
+}
+
 type BootstrapOperatorData = BootstrapComponentData
 
-// OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.yaml).
-// projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// See WorkerDataFromNames for the FieldName naming rationale (same snake_case → PascalCase rule).
-func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperatorData {
+// OperatorDataFromSpecs is the operator-side analog of WorkerDataFromSpecs —
+// honors `path:` when set so operator dirs with separator-bearing leaves
+// (e.g. `operators/cert_rotator`) get the correct import line. See
+// WorkerDataFromSpecs for the path/alias rules.
+func OperatorDataFromSpecs(specs []OperatorSpec, projectDir string) []BootstrapOperatorData {
 	var operators []BootstrapOperatorData
-	for _, name := range names {
-		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(name)
+	for _, spec := range specs {
+		pkg, importPath, alias := resolveComponentNames(spec.Name, spec.Path, projectDir, "operators")
+		fieldName := naming.ToPascalCase(spec.Name)
 		fallible := false
 		if projectDir != "" {
-			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "operators", pkg))
+			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "operators", importPath))
 		}
 		operators = append(operators, BootstrapOperatorData{
-			Name:       name,
+			Name:       spec.Name,
 			Package:    pkg,
-			ImportPath: pkg,
+			ImportPath: importPath,
 			FieldName:  fieldName,
 			VarName:    lowerFirst(fieldName),
 			Fallible:   fallible,
-			Alias:      pkg,
+			Alias:      alias,
 		})
 	}
 	return operators
 }
 
-// toGoPackage normalizes a CLI/forge.yaml-style name into a valid Go package
-// identifier: lowercase with both hyphen and underscore separators stripped
-// (so "calibrator_refit" becomes "calibratorrefit", matching Go style). This
-// mirrors generator.ServicePackageName but is duplicated here to keep codegen
-// free of a generator dependency (the generator package already imports codegen).
-func toGoPackage(name string) string {
-	return toGoPackageReplacer.Replace(strings.ToLower(name))
+// OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.yaml).
+// projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
+// See WorkerDataFromNames for the FieldName naming rationale (same snake_case → PascalCase rule).
+// Thin wrapper over OperatorDataFromSpecs preserved for callers without
+// forge.yaml context.
+func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperatorData {
+	specs := make([]OperatorSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, OperatorSpec{Name: name})
+	}
+	return OperatorDataFromSpecs(specs, projectDir)
 }
 
-// toGoPackageReplacer mirrors generator.servicePackageReplacer — see that
-// var's comment for why both separators are stripped.
-var toGoPackageReplacer = strings.NewReplacer("-", "", "_", "")
+// resolveComponentNames computes the (Package, ImportPath, Alias) triple
+// for a worker/operator given its user-facing name, optional path from
+// forge.yaml, and the role-root subdir ("workers" or "operators").
+//
+// Rules:
+//   - ImportPath: when explicitPath is set, `filepath.Base(explicitPath)`
+//     (preserves snake_case dirs). Otherwise `naming.GoPackage(name)` —
+//     the compact form, matching the legacy behavior.
+//   - Package: same as ImportPath — the value must be a valid Go identifier
+//     and equal the `package X` declaration inside the dir for call sites
+//     like `<Alias>.New(...)` to compile. Snake_case is a valid Go
+//     identifier, so the leaf works as-is.
+//   - Alias: matches Package by default. When projectDir is set AND the dir
+//     contains parseable Go, the actual `package X` declaration overrides
+//     it — that's the ground truth and avoids drift if the user renamed
+//     the on-disk package after scaffolding.
+func resolveComponentNames(name, explicitPath, projectDir, roleRoot string) (pkg, importPath, alias string) {
+	if explicitPath != "" {
+		importPath = filepath.Base(filepath.ToSlash(explicitPath))
+	} else {
+		importPath = naming.GoPackage(name)
+	}
+	pkg = importPath
+	alias = pkg
+
+	if projectDir != "" {
+		if onDisk := detectOnDiskPackageName(filepath.Join(projectDir, roleRoot, importPath)); onDisk != "" {
+			alias = onDisk
+			pkg = onDisk
+		}
+	}
+	return pkg, importPath, alias
+}
+
+// detectOnDiskPackageName reads the first non-test .go file in dir and
+// returns its `package X` declaration, or "" if no parseable .go file is
+// found. Used so the import alias generated for a worker/operator matches
+// the ground-truth package name in the on-disk source — important when
+// the user's dir layout differs from what `naming.GoPackage` would
+// produce (e.g. snake_case dirs declared via forge.yaml's `path:` field).
+func detectOnDiskPackageName(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, err := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly)
+		if err != nil || file.Name == nil {
+			continue
+		}
+		return file.Name.Name
+	}
+	return ""
+}
 
 // lowerFirst returns s with the first rune lowercased — used to derive a
 // lowerCamel local-variable prefix from a PascalCase FieldName so generated
@@ -681,7 +844,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	var bootstrapSvcs []BootstrapServiceData
 	var connectImports []string
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
+		pkg := naming.ServicePackage(svc.Name)
 		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
 		// FieldName mirrors the PascalCase proto-service name without the
 		// "Service" suffix ("AdminServerService" -> "AdminServer"). We derive
@@ -887,8 +1050,8 @@ func GenerateAppExtras(projectDir string) error {
 }
 
 // prepareServiceData prepares template data for service generation
-func prepareServiceData(svc ServiceDef) map[string]interface{} {
-	var methods []map[string]interface{}
+func prepareServiceData(svc ServiceDef) map[string]any {
+	var methods []map[string]any
 	needsEmptypb := false
 	needsPb := false
 
@@ -899,7 +1062,7 @@ func prepareServiceData(svc ServiceDef) map[string]interface{} {
 		if !method.IsInputEmpty() || !method.IsOutputEmpty() {
 			needsPb = true
 		}
-		methods = append(methods, map[string]interface{}{
+		methods = append(methods, map[string]any{
 			"Name":       method.Name,
 			"Signature":  buildMethodSignature(method),
 			"ReturnType": buildReturnType(method),
@@ -908,9 +1071,9 @@ func prepareServiceData(svc ServiceDef) map[string]interface{} {
 		})
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"ServiceName":    svc.Name,
-		"ServicePackage": toServicePackage(svc.Name),
+		"ServicePackage": naming.ServicePackage(svc.Name),
 		"GoPackage":      svc.GoPackage,
 		"PkgName":        svc.PkgName,
 		"ModulePath":     svc.ModulePath,
@@ -1087,7 +1250,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 	var testSvcs []BootstrapTestServiceData
 	anyServiceHasDB := false
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
+		pkg := naming.ServicePackage(svc.Name)
 		handlerDir := filepath.Join(projectDir, "handlers", pkg)
 		fallible, _ := DetectFallibleConstructor(handlerDir)
 		hasDB, _ := DetectDepsDBField(handlerDir)
@@ -1409,7 +1572,7 @@ func computeAutoStubs(handlerDir, _ string) ([]DepsAutoStub, []UnresolvedAutoStu
 	}
 	// Make stub-type names predictable + collision-free across the
 	// file: stub<UpperPackage><FieldName>. handlerDir's last segment
-	// IS the service Go-package name (toServicePackage), so use it
+	// IS the service Go-package name (naming.ServicePackage), so use it
 	// directly. The CrossPackage flag does not affect the stub-type
 	// identifier — it lives in pkg/app, not in the imported package,
 	// so the service-name prefix still gives us per-service uniqueness.
@@ -1486,13 +1649,13 @@ func PackageDataFromNames(names []string, projectDir string) []BootstrapPackageD
 		if idx := strings.LastIndex(leaf, "/"); idx >= 0 {
 			leaf = leaf[idx+1:]
 		}
-		leaf = toGoPackage(leaf)
+		leaf = naming.GoPackage(leaf)
 		// FieldName encodes the full path (PascalCase concatenation) so nested
 		// packages with the same leaf name don't share an exported struct
 		// field. ToPascalCase already treats '/' as a separator-ish via the
 		// underscore replacement we apply first.
 		fieldNameSrc := strings.ReplaceAll(importPath, "/", "_")
-		fieldName := naming.ToExportedFieldName(toGoPackage(fieldNameSrc))
+		fieldName := naming.ToExportedFieldName(naming.GoPackage(fieldNameSrc))
 		if strings.Contains(importPath, "/") {
 			// For nested paths, ToExportedFieldName only uppercases the first
 			// rune. ToPascalCase capitalizes every segment, which is what we
@@ -1689,9 +1852,12 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 		path := filepath.Join(dir, entry.Name())
 		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if err != nil {
-			// Soft-skip on per-file parse errors so a transient syntax
-			// error elsewhere in the package doesn't unwind the dedup
-			// — see func doc.
+			// Intentional soft warning (no --strict promotion): per-file
+			// parse errors mustn't unwind the dedup — a transient
+			// syntax error elsewhere in the package would otherwise
+			// strand the user with no scaffold regen. See func doc for
+			// the full rationale. Lives in internal/codegen so no
+			// pipelineContext reach.
 			fmt.Fprintf(os.Stderr, "Warning: scanExistingMethods skipping %s (parse error): %v\n", path, err)
 			continue
 		}
@@ -1813,22 +1979,3 @@ func hasFallibleConstructor(services []BootstrapServiceData, packages []Bootstra
 	return false
 }
 
-// toServicePackage converts a proto service name like "EchoService" to its
-// Go-package form ("echo"). Multi-word PascalCase names compact to a single
-// lowercase identifier matching the dir created at scaffold time
-// (e.g. "AdminServerService" -> "adminserver" matches handlers/adminserver/).
-// Hyphens / underscores (which can appear when downstream callers feed in the
-// CLI form directly) are also stripped.
-//
-// This must agree with generator.ServicePackageName for any single service so
-// that bootstrap/codegen keys and the on-disk handler directory match. See the
-// matching toGoPackageReplacer for the separator policy.
-func toServicePackage(name string) string {
-	trimmed := strings.TrimSuffix(name, "Service")
-	if trimmed == "" {
-		trimmed = name
-	}
-	// ToSnakeCase handles PascalCase ("AdminServer" -> "admin_server"); strip
-	// the resulting separators so we match ServicePackageName's compact form.
-	return toGoPackage(naming.ToSnakeCase(trimmed))
-}

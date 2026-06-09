@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // goKeywords is the set of Go reserved keywords.
@@ -69,9 +70,10 @@ func validateServiceName(name string) error {
 // validateIdentifier checks that a name is valid for use as a service, worker,
 // or operator name. Hyphens and underscores are allowed in the display name;
 // templates use snakeCase/pascalCase helpers to convert when a Go identifier
-// is needed (e.g. "admin-server" / "admin_server" -> package "adminserver"
-// and field "AdminServer"). The leading-character and reserved-word rules
-// match validateProjectName so all top-level scaffold names share one shape.
+// is needed (e.g. "admin-server" / "admin_server" -> package "admin_server"
+// and field "AdminServer" — snake_case is the canonical on-disk form post-
+// 2026-06-08). The leading-character and reserved-word rules match
+// validateProjectName so all top-level scaffold names share one shape.
 func validateIdentifier(name string) error {
 	if name == "" {
 		return fmt.Errorf("name cannot be empty")
@@ -141,7 +143,8 @@ Subcommands:
   forge add package <name>                        Add a new internal package (alias for package new)
   forge add adapter <name>                        Add an outbound adapter (HTTP/queue/storage gateway)
   forge add library <name>                        Scaffold a library-shaped package (no contract.go; pre-excluded)
-  forge add handler-file <svc> <name>             Scaffold an additional RPC-group file in handlers/<svc>/`,
+  forge add handler-file <svc> <name>             Scaffold an additional RPC-group file in handlers/<svc>/
+  forge add rpc <svc> <Name> [--stream M]         Scaffold a single hand-written RPC stub + proto snippet`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
@@ -156,6 +159,7 @@ Subcommands:
 	cmd.AddCommand(newAddBinaryCmd())
 	cmd.AddCommand(newAddLibraryCmd())
 	cmd.AddCommand(newAddHandlerFileCmd())
+	cmd.AddCommand(newAddRPCCmd())
 
 	return cmd
 }
@@ -345,8 +349,8 @@ func runAddService(name string, port int, resume, force bool) error {
 
 	// Update forge.yaml (must happen before the generation pipeline
 	// so the pipeline sees the new service in the config). The Path uses
-	// the Go-package form so it matches the directory the scaffolder
-	// actually creates ("admin-server" -> handlers/adminserver).
+	// the snake_case Go-package form so it matches the directory the
+	// scaffolder actually creates ("admin-server" -> handlers/admin_server).
 	//
 	// Under --resume / --force the service entry may already exist in
 	// forge.yaml; only append when this is a fresh add.
@@ -354,7 +358,7 @@ func runAddService(name string, port int, resume, force bool) error {
 		cfg.Services = append(cfg.Services, config.ServiceConfig{
 			Name: name,
 			Type: "go_service",
-			Path: fmt.Sprintf("handlers/%s", generator.ServicePackageName(name)),
+			Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
 			Port: port,
 		})
 		if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
@@ -547,7 +551,7 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 		Name:     name,
 		Type:     "worker",
 		Kind:     kind,
-		Path:     fmt.Sprintf("workers/%s", generator.ServicePackageName(name)),
+		Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
 		Schedule: schedule,
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
@@ -671,6 +675,9 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
 	}
+	if !cfg.Features.OperatorsEnabled() {
+		return config.DisabledFeatureError(config.FeatureOperators)
+	}
 
 	// Check for name conflict (operators are stored in Services with type "operator")
 	for _, svc := range cfg.Services {
@@ -708,7 +715,7 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	cfg.Services = append(cfg.Services, config.ServiceConfig{
 		Name:    name,
 		Type:    "operator",
-		Path:    fmt.Sprintf("operators/%s", generator.ServicePackageName(name)),
+		Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
 		Group:   group,
 		Version: version,
 	})
@@ -1263,7 +1270,7 @@ func runAddBinary(name string) error {
 		}
 	}
 	// Reserved cobra subcommand names that would shadow the binary.
-	switch generator.ServicePackageName(name) {
+	switch naming.ServicePackage(name) {
 	case "server", "version", "db":
 		return fmt.Errorf("%q conflicts with a reserved cobra subcommand; pick a different name", name)
 	}
@@ -1279,7 +1286,7 @@ func runAddBinary(name string) error {
 	// Update forge.yaml. Path uses the Go-package form so it matches
 	// the directory the scaffolder creates ("workspace-proxy" ->
 	// cmd/workspace_proxy.go).
-	pkg := generator.ServicePackageName(name)
+	pkg := naming.ServicePackage(name)
 	cfg.Binaries = append(cfg.Binaries, config.BinaryConfig{
 		Name: name,
 		Path: fmt.Sprintf("cmd/%s.go", pkg),

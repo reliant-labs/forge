@@ -9,6 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -149,7 +150,11 @@ func (g *ProjectGenerator) Generate() error {
 	if g.Features.MigrationsEnabled() || g.Features.ORMEnabled() {
 		dirs = append(dirs, "db", "db/migrations")
 	}
-	if g.Features.DeployEnabled() {
+	// Service-kind scaffolds always get a deploy/kcl directory so the
+	// user has a complete starting point even when the experimental
+	// deploy feature is off. The `forge deploy` command itself stays
+	// gated on `features.experimental.deploy: true` — see deploy.go.
+	if g.isService() {
 		dirs = append(dirs, "deploy/kcl")
 	}
 	if g.Features.CodegenEnabled() {
@@ -177,7 +182,7 @@ func (g *ProjectGenerator) Generate() error {
 	// form so directories match `package <name>` declarations in generated
 	// Go code (hyphens in CLI names become underscores on disk).
 	if g.ServiceName != "" {
-		svcPkg := ServicePackageName(g.ServiceName)
+		svcPkg := naming.ServicePackage(g.ServiceName)
 		dirs = append(dirs, fmt.Sprintf("handlers/%s", svcPkg))
 		dirs = append(dirs, fmt.Sprintf("proto/services/%s/v1", svcPkg))
 	}
@@ -245,7 +250,7 @@ func (g *ProjectGenerator) Generate() error {
 	// must use ServicePackage; ServiceName is retained for display strings.
 	servicePackage := ""
 	if g.ServiceName != "" {
-		servicePackage = ServicePackageName(g.ServiceName)
+		servicePackage = naming.ServicePackage(g.ServiceName)
 	}
 
 	templateData := struct {
@@ -440,7 +445,10 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	if g.isService() && g.Features.DeployEnabled() {
+	// Service-kind scaffolds always get Dockerfile / .dockerignore — see
+	// the note on the `deploy/kcl` dirs block above. The runtime gate
+	// lives on the `forge deploy` command itself.
+	if g.isService() {
 		files = append(files, struct{ template, dest string }{".dockerignore", ".dockerignore"})
 		files = append(files, struct{ template, dest string }{"Dockerfile.tmpl", "Dockerfile"})
 	}
@@ -526,8 +534,11 @@ func (g *ProjectGenerator) Generate() error {
 		return fmt.Errorf("failed to write project config: %w", err)
 	}
 
-	if g.isService() && g.Features.DeployEnabled() {
-		// Generate KCL deploy files
+	if g.isService() {
+		// Generate KCL deploy files. Always emitted for service-kind so
+		// the scaffold ships a complete project shape — the runtime
+		// gate lives on `forge deploy` itself
+		// (features.experimental.deploy).
 		if err := g.generateKCLDeploy(); err != nil {
 			return fmt.Errorf("failed to generate KCL deploy files: %w", err)
 		}
@@ -731,9 +742,6 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.Features.Migrations == nil {
 		g.Features.Migrations = off()
 	}
-	if g.Features.Deploy == nil {
-		g.Features.Deploy = off()
-	}
 	if g.Features.Observability == nil {
 		g.Features.Observability = off()
 	}
@@ -755,12 +763,8 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.Features.Starters == nil {
 		g.Features.Starters = off()
 	}
-	// Ingress generates Gateway API resources and installs Traefik at
-	// `forge dev cluster up`. CLI and library kinds have no cluster
-	// shape, so skip the install + codegen.
-	if g.Features.Ingress == nil {
-		g.Features.Ingress = off()
-	}
+	// Deploy / Ingress are experimental (default-off for every kind),
+	// so no per-kind override is needed — see ExperimentalConfig.
 	// Library: every server-shaped feature is off. CI/Build are
 	// off because there's no binary to lint/test/build — the user
 	// can re-enable manually if they want a lint+test workflow
@@ -795,7 +799,7 @@ func (g *ProjectGenerator) createExampleProto(data interface{}) error {
 		svcName = g.Name
 	}
 	// Proto package segments require [a-z][a-z0-9_]*, so use the Go-package form.
-	svcPkg := ServicePackageName(svcName)
+	svcPkg := naming.ServicePackage(svcName)
 	destPath := filepath.Join(g.Path, "proto", "services", svcPkg, "v1", fmt.Sprintf("%s.proto", svcPkg))
 	return assets.WriteExampleProto(svcName, destPath, data)
 }
@@ -833,7 +837,7 @@ func (g *ProjectGenerator) generatePkgAppConventions() error {
 // skill for projects that prefer the cmd/<project>/<svc>.go layout.
 func (g *ProjectGenerator) generateSharedSubcommands() error {
 	for _, svcName := range g.allServices() {
-		pkg := ServicePackageName(svcName)
+		pkg := naming.ServicePackage(svcName)
 		data := struct {
 			ServiceName    string
 			ServicePackage string

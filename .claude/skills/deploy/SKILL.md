@@ -7,6 +7,16 @@ description: Ship code — lint, build, deploy to k3d/staging/prod, and verify.
 
 The full shipping workflow: pre-flight checks, build, deploy, verify, rollback.
 
+> **Experimental feature.** `forge deploy` is gated behind
+> `features.experimental.deploy: true` in `forge.yaml`. The command
+> errors with `feature 'deploy' is experimental and opt-in` until you
+> set the flag. The KCL render → kubectl apply pipeline works, but we
+> reserve the right to change the IR or output shape between forge
+> versions until enough projects have shipped it through real cloud
+> providers. The startup warning fires once per invocation when the
+> flag is on; suppress with `--silence-experimental` or
+> `FORGE_SILENCE_EXPERIMENTAL=1`.
+
 ## Pre-flight checks
 
 ```
@@ -204,6 +214,26 @@ Every gateway with `tls` triggers an auto-emitted cert-manager
 install it once per cluster, then reference its issuer by name from
 `GatewayTLS.cert_issuer`. The full cert-manager + per-env override
 flow (dev plaintext → prod HTTPS) lives in the `ingress` sub-skill.
+
+## Build vs deploy escape hatches
+
+The build side and the deploy side are independent axes. Each has its own `sh -c` escape hatch, and a service can use either, both, or neither:
+
+| Axis    | Escape hatch                                | Lives in                            | What it owns                      |
+|---------|---------------------------------------------|-------------------------------------|-----------------------------------|
+| build   | `forge.Service.build_cmd`                   | KCL `forge.Service { build_cmd = ...}`| Build AND `docker push`           |
+| deploy  | `forge.External { deploy_cmd = ... }`       | KCL `Service.deploy`                | Deploy (and `rollback_cmd`/`health_cmd` when set) |
+
+Both run through `sh -c` with the same `${IMAGE}`/`${TAG}`/`${SERVICE}`/`${PROJECT_DIR}` token surface (plus per-side extras — `${TARGETARCH}`/`${REGISTRY}`/`${BUILD_CWD}` for build; `${ENV}`/`${ENV_FILE}`/`${LAST_TAG}` for deploy).
+
+Worked combos:
+
+- **`build_cmd` + `forge.K8sCluster`** — sibling-repo Go binary, deployed as a standard K8s Deployment. The cp-forge daemon-gateway shape: cross-compile the sibling, push to localhost:5051, k8s pulls the same tag. See the `external-builds` skill.
+- **`path:` + `forge.External`** — forge builds your Go service the standard way, then `flyctl` / `gcloud run` ships it. See the `external-deploy-recipes` skill in scaffolded projects.
+- **`build_cmd` + `forge.External`** — both escape hatches engaged. Rust binary in a sibling repo, deployed via Fly.io.
+- **`path:` + `forge.K8sCluster`** — the standard forge shape; you don't need either escape hatch.
+
+Built-in tokens win on conflict with user-declared env keys. `forge audit` warns on collisions; `forge doctor` previews the substituted command before you run build.
 
 ## Rollback
 

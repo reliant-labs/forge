@@ -15,9 +15,10 @@ func TestScaffoldIngressWiresKCLForServiceKind(t *testing.T) {
 	g := generator.NewProjectGenerator("svc-ingress", tmp, "example.com/svc-ingress")
 	g.Kind = config.ProjectKindService
 	g.ApplyKindFeatureDefaults(config.ProjectKindService)
-	if !g.Features.IngressEnabled() {
-		t.Fatal("service kind: IngressEnabled() = false, want true")
-	}
+	// Ingress is experimental — default off. The scaffold still emits
+	// the ingress.k wiring so a project flipping
+	// `features.experimental.ingress: true` doesn't need a rescaffold.
+	// That's what this test pins.
 	if err := g.Generate(); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -50,7 +51,9 @@ func TestScaffoldIngressSkippedForCLIKind(t *testing.T) {
 	g := generator.NewProjectGenerator("cli-noingress", tmp, "example.com/cli-noingress")
 	g.Kind = config.ProjectKindCLI
 	g.ApplyKindFeatureDefaults(config.ProjectKindCLI)
+	// Ingress is experimental — default off for every kind, including
+	// CLI. No explicit per-kind override needed.
 	if g.Features.IngressEnabled() {
-		t.Fatal("cli kind: IngressEnabled() = true, want false")
+		t.Fatal("cli kind: IngressEnabled() = true, want false (experimental default OFF)")
 	}
 }

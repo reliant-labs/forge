@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -26,7 +27,7 @@ import (
 // hyphenated form is preserved on the cobra `Use:` field so users can
 // invoke `./<bin> workspace-proxy`.
 func GenerateBinaryFiles(root, modulePath, binaryName string) error {
-	binaryPackage := ServicePackageName(binaryName)
+	binaryPackage := naming.ServicePackage(binaryName)
 
 	// internal/<package>/ — main loop, contract, test.
 	binaryDir := filepath.Join(root, "internal", binaryPackage)

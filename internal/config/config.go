@@ -127,7 +127,7 @@ type ProjectConfig struct {
 // fields (Type/Webhooks/CRDs/Group).
 type BinaryConfig struct {
 	// Name is the binary identifier in CLI / display form. May contain
-	// hyphens; the Go-package form is derived via ServicePackageName.
+	// hyphens; the Go-package form is derived via naming.ServicePackage.
 	// Example: "workspace-proxy".
 	Name string `yaml:"name"`
 	// Path is the cobra subcommand source file relative to the project
@@ -663,7 +663,6 @@ type FeaturesConfig struct {
 	Migrations    *bool `yaml:"migrations,omitempty"`    // auto-generate SQL migrations
 	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows
 	Build         *bool `yaml:"build,omitempty"`         // `forge build` Go binary + docker image pipeline
-	Deploy        *bool `yaml:"deploy,omitempty"`        // generate deploy manifests (KCL, Dockerfiles)
 	Contracts     *bool `yaml:"contracts,omitempty"`     // contract linter enforcement
 	Docs          *bool `yaml:"docs,omitempty"`          // documentation generation
 	Frontend      *bool `yaml:"frontend,omitempty"`      // frontend scaffolding + codegen
@@ -671,7 +670,6 @@ type FeaturesConfig struct {
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
 	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
 	Starters      *bool `yaml:"starters,omitempty"`      // forge starters (one-time business-integration copies)
-	Ingress       *bool `yaml:"ingress,omitempty"`       // Gateway API ingress codegen + Traefik install at `forge dev cluster up`
 
 	// Diagnostics enables runtime emission of pkg/diagnostics records at
 	// Bootstrap time — slog warn lines for every unwired scaffold the
@@ -680,11 +678,49 @@ type FeaturesConfig struct {
 	// regen. Opt-in by setting `features.diagnostics: true` in forge.yaml.
 	Diagnostics *bool `yaml:"diagnostics,omitempty"`
 
-	// StrictWiring upgrades the Diagnostics emitter to StrictEmitter, so
-	// any registered diagnostic terminates the process after the summary
-	// line. Implies Diagnostics: true at the wire site — production-grade
-	// projects use this to fail-fast in CI. Default OFF.
-	StrictWiring *bool `yaml:"strict_wiring,omitempty"`
+	// Experimental gates surface that hasn't been battle-tested across
+	// real projects + cloud providers. Everything inside is default-OFF
+	// (opt-in), every gated CLI invocation prints a one-line warning the
+	// first time per process, and the schema is allowed to break between
+	// forge versions without a deprecation cycle. Graduates to the
+	// top-level FeaturesConfig (with the usual opt-out default-ON
+	// semantics) when the feature has shipped through enough real
+	// deployments to earn a backwards-compatibility promise.
+	Experimental ExperimentalConfig `yaml:"experimental,omitempty"`
+}
+
+// ExperimentalConfig gates features that are not yet promised. Fields
+// are plain bool (not *bool) — the zero value IS the default, and the
+// default IS off. Loud-warning policy on startup when any field is true.
+//
+// What lives here today:
+//
+//   - Deploy:         the whole `forge deploy` pipeline (KCL render →
+//                     kubectl apply → wait-rollouts). KCL is currently
+//                     the only deploy IR but we treat it as an
+//                     implementation detail; the public contract is
+//                     "forge produces correct k8s manifests" and we
+//                     want the freedom to swap render backends.
+//   - Ingress:        Gateway API codegen + cert-manager + Traefik
+//                     wiring. Provider matrix is fragile and not yet
+//                     proven across real cloud providers.
+//   - ExternalBuilds: KCL `Service.build_cmd` shell escape hatch —
+//                     forge runs `sh -c <build_cmd>` with substitution.
+//                     Useful for sibling-repo or non-Go builds but
+//                     pushes shell-safety onto the user.
+//   - Operators:      controller-runtime managers + CRD codegen. Niche,
+//                     under-exercised, the API may need to change as we
+//                     learn what real operator authors want.
+//   - StrictWiring:   diagnostics fail-fast — any registered diagnostic
+//                     terminates the process after Bootstrap. Implies
+//                     Diagnostics: true. Stays experimental because the
+//                     diagnostics catalogue itself is still settling.
+type ExperimentalConfig struct {
+	Deploy         bool `yaml:"deploy,omitempty"`
+	Ingress        bool `yaml:"ingress,omitempty"`
+	ExternalBuilds bool `yaml:"external_builds,omitempty"`
+	Operators      bool `yaml:"operators,omitempty"`
+	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
 }
 
 // featureEnabled returns true if the *bool is nil (default) or explicitly true.
@@ -743,8 +779,11 @@ func (f FeaturesConfig) MigrationsEnabled() bool { return featureEnabled(f.Migra
 // CIEnabled reports whether the CI feature is on (default: on).
 func (f FeaturesConfig) CIEnabled() bool { return featureEnabled(f.CI) }
 
-// DeployEnabled reports whether the deploy feature is on (default: on).
-func (f FeaturesConfig) DeployEnabled() bool { return featureEnabled(f.Deploy) }
+// DeployEnabled reports whether the deploy feature is on (default: OFF
+// — opt-in under `features.experimental.deploy: true`). Lives under
+// experimental until KCL→k8s render has shipped through enough real
+// deployments to earn a backwards-compatibility promise.
+func (f FeaturesConfig) DeployEnabled() bool { return f.Experimental.Deploy }
 
 // ContractsEnabled reports whether contract enforcement is on (default: on).
 func (f FeaturesConfig) ContractsEnabled() bool { return featureEnabled(f.Contracts) }
@@ -776,12 +815,26 @@ func (f FeaturesConfig) PacksEnabled() bool { return featureEnabled(f.Packs) }
 func (f FeaturesConfig) StartersEnabled() bool { return featureEnabled(f.Starters) }
 
 // IngressEnabled reports whether Gateway API ingress is wired
-// (default: on for service kind; off-by-default at scaffold time for
-// cli/library kinds via applyKindFeatureDefaults). When off, forge
-// skips ingress codegen, `forge dev cluster up` skips the Traefik +
-// GatewayClass install, `forge dev urls` returns nothing, and the
-// audit ingress category is suppressed.
-func (f FeaturesConfig) IngressEnabled() bool { return featureEnabled(f.Ingress) }
+// (default: OFF — opt-in under `features.experimental.ingress: true`).
+// When off, forge skips ingress codegen, `forge dev cluster up` skips
+// the Traefik + GatewayClass install, `forge dev urls` returns nothing,
+// and the audit ingress category is suppressed.
+func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
+
+// ExternalBuildsEnabled reports whether KCL `Service.build_cmd` shell
+// escape hatch is accepted (default: OFF — opt-in under
+// `features.experimental.external_builds: true`). When off, services
+// declaring `build_cmd` are rejected at config-load time, the
+// `forge build --target external` path errors, and the audit
+// external_builds category is suppressed.
+func (f FeaturesConfig) ExternalBuildsEnabled() bool { return f.Experimental.ExternalBuilds }
+
+// OperatorsEnabled reports whether controller-runtime operator codegen
+// + CRD manifest generation is wired (default: OFF — opt-in under
+// `features.experimental.operators: true`). When off, the operator
+// binary codegen + CRD scaffold steps skip silently and
+// `forge add operator` errors.
+func (f FeaturesConfig) OperatorsEnabled() bool { return f.Experimental.Operators }
 
 // DisabledFeatureError returns the canonical user-facing error for a
 // disabled feature. Centralised so every gate site emits the same
@@ -802,6 +855,10 @@ type errDisabledFeature struct {
 }
 
 func (e errDisabledFeature) Error() string {
+	if IsExperimentalFeature(e.name) {
+		return "feature '" + e.name + "' is experimental and opt-in. Set features.experimental." + e.name +
+			": true in forge.yaml to enable; the API may change between forge versions."
+	}
 	return "feature '" + e.name + "' is disabled in forge.yaml. Set features." + e.name + ": true to enable."
 }
 
@@ -811,16 +868,18 @@ func (e errDisabledFeature) Error() string {
 type FeatureName = string
 
 // Feature name constants. These are the wire format — both YAML field
-// names under `features:` and the strings emitted by `forge audit
-// --json | jq '.features'`. Kept exported so external tooling can match
-// against them without re-encoding the spelling.
+// names under `features:` (top-level) or `features.experimental:`
+// (nested) and the strings emitted by `forge audit --json | jq
+// '.features'`. Kept exported so external tooling can match against
+// them without re-encoding the spelling. The Experimental* constants
+// live under the nested block in YAML but flatten back to a single
+// per-name keyspace at the audit-JSON layer.
 const (
 	FeatureORM           FeatureName = "orm"
 	FeatureCodegen       FeatureName = "codegen"
 	FeatureMigrations    FeatureName = "migrations"
 	FeatureCI            FeatureName = "ci"
 	FeatureBuild         FeatureName = "build"
-	FeatureDeploy        FeatureName = "deploy"
 	FeatureContracts     FeatureName = "contracts"
 	FeatureDocs          FeatureName = "docs"
 	FeatureFrontend      FeatureName = "frontend"
@@ -828,30 +887,88 @@ const (
 	FeatureHotReload     FeatureName = "hot_reload"
 	FeaturePacks         FeatureName = "packs"
 	FeatureStarters      FeatureName = "starters"
-	FeatureIngress       FeatureName = "ingress"
+
+	// Experimental feature names — opt-in under
+	// `features.experimental.<name>: true`. Default OFF.
+	FeatureDeploy         FeatureName = "deploy"
+	FeatureIngress        FeatureName = "ingress"
+	FeatureExternalBuilds FeatureName = "external_builds"
+	FeatureOperators      FeatureName = "operators"
+	FeatureStrictWiring   FeatureName = "strict_wiring"
 )
+
+// ExperimentalFeatureNames lists every Feature* constant that lives
+// under `features.experimental:`. Iteration order is the stable display
+// order used by `forge audit`, the startup warning, and
+// `forge experimental list`.
+var ExperimentalFeatureNames = []FeatureName{
+	FeatureDeploy,
+	FeatureIngress,
+	FeatureExternalBuilds,
+	FeatureOperators,
+	FeatureStrictWiring,
+}
+
+// IsExperimentalFeature reports whether a feature name lives under the
+// `features.experimental:` block (i.e. is default-OFF, opt-in, subject
+// to schema change). Centralised so audit, the gate helper, and the
+// startup-warning emitter share one source of truth.
+func IsExperimentalFeature(name FeatureName) bool {
+	for _, n := range ExperimentalFeatureNames {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// EnabledExperimentalFeatures returns the names of experimental
+// features currently turned on, in ExperimentalFeatureNames order.
+// Used by the startup warning and `forge experimental list`.
+func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
+	checks := map[FeatureName]bool{
+		FeatureDeploy:         f.Experimental.Deploy,
+		FeatureIngress:        f.Experimental.Ingress,
+		FeatureExternalBuilds: f.Experimental.ExternalBuilds,
+		FeatureOperators:      f.Experimental.Operators,
+		FeatureStrictWiring:   f.Experimental.StrictWiring,
+	}
+	out := make([]FeatureName, 0, len(checks))
+	for _, name := range ExperimentalFeatureNames {
+		if checks[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // EffectiveFeatures projects the resolved enabled/disabled state of
 // every feature into a stable name→bool map. Used by `forge audit` to
 // surface the project's feature configuration at a glance, and by tests
 // to assert per-kind scaffold defaults. The map is keyed by Feature*
-// constants and is safe to JSON-marshal directly.
+// constants and is safe to JSON-marshal directly. Experimental features
+// are flattened in alongside the stable set under their own keys —
+// audit consumers can branch on IsExperimentalFeature(name) when they
+// need to distinguish the two tiers.
 func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 	return map[string]bool{
-		FeatureORM:           f.ORMEnabled(),
-		FeatureCodegen:       f.CodegenEnabled(),
-		FeatureMigrations:    f.MigrationsEnabled(),
-		FeatureCI:            f.CIEnabled(),
-		FeatureBuild:         f.BuildEnabled(),
-		FeatureDeploy:        f.DeployEnabled(),
-		FeatureContracts:     f.ContractsEnabled(),
-		FeatureDocs:          f.DocsEnabled(),
-		FeatureFrontend:      f.FrontendEnabled(),
-		FeatureObservability: f.ObservabilityEnabled(),
-		FeatureHotReload:     f.HotReloadEnabled(),
-		FeaturePacks:         f.PacksEnabled(),
-		FeatureStarters:      f.StartersEnabled(),
-		FeatureIngress:       f.IngressEnabled(),
+		FeatureORM:            f.ORMEnabled(),
+		FeatureCodegen:        f.CodegenEnabled(),
+		FeatureMigrations:     f.MigrationsEnabled(),
+		FeatureCI:             f.CIEnabled(),
+		FeatureBuild:          f.BuildEnabled(),
+		FeatureContracts:      f.ContractsEnabled(),
+		FeatureDocs:           f.DocsEnabled(),
+		FeatureFrontend:       f.FrontendEnabled(),
+		FeatureObservability:  f.ObservabilityEnabled(),
+		FeatureHotReload:      f.HotReloadEnabled(),
+		FeaturePacks:          f.PacksEnabled(),
+		FeatureStarters:       f.StartersEnabled(),
+		FeatureDeploy:         f.DeployEnabled(),
+		FeatureIngress:        f.IngressEnabled(),
+		FeatureExternalBuilds: f.ExternalBuildsEnabled(),
+		FeatureOperators:      f.OperatorsEnabled(),
+		FeatureStrictWiring:   f.StrictWiringEnabled(),
 	}
 }
 
@@ -864,19 +981,20 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 // Strict-wiring implies Diagnostics: enabling strict without diagnostics
 // is a no-op, so we treat StrictWiringEnabled as forcing diagnostics on.
 func (f FeaturesConfig) DiagnosticsEnabled() bool {
-	if f.StrictWiring != nil && *f.StrictWiring {
+	if f.Experimental.StrictWiring {
 		return true
 	}
 	return f.Diagnostics != nil && *f.Diagnostics
 }
 
 // StrictWiringEnabled reports whether the diagnostics strict-mode
-// exit is wired by bootstrap (default: OFF). Used in tandem with
+// exit is wired by bootstrap (default: OFF — opt-in under
+// `features.experimental.strict_wiring: true`). Used in tandem with
 // DiagnosticsEnabled — strict-mode wraps the LogEmitter with
 // StrictEmitter so any registered diagnostic terminates the process
 // after the summary line.
 func (f FeaturesConfig) StrictWiringEnabled() bool {
-	return f.StrictWiring != nil && *f.StrictWiring
+	return f.Experimental.StrictWiring
 }
 
 // StackConfig declares the technology choices for the project.

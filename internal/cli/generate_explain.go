@@ -28,6 +28,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // ExplainEntry is one row in the per-file provenance log.
@@ -62,7 +63,7 @@ func printExplainLog(projectDir string, preChecksums map[string]string) error {
 	if desc != nil {
 		for _, s := range desc.Services {
 			svcByName[s.Name] = s
-			svcByName[serviceNameToPackage(s.Name)] = s
+			svcByName[naming.ServicePackage(s.Name)] = s
 		}
 	}
 

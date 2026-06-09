@@ -483,16 +483,15 @@ func matchedAppField(m *DepsAssignabilityMatcher, roleRoot, pkgDir, depsName, de
 // WorkerSpec carries a worker's user-facing name plus the optional `path:`
 // field declared in forge.yaml. When Path is non-empty, the dir leaf
 // (`filepath.Base(Path)`) becomes the import-path segment and the Go-package
-// alias — preserving snake_case dirs like `workers/climatology_refresh/`
-// whose `package climatology_refresh` declaration would otherwise mismatch
-// the compacted form `naming.GoPackage` produces. When Path is empty,
-// behavior falls back to the legacy compact form (`calibrator_refit` →
-// `calibratorrefit`) for callers that don't have forge.yaml context.
+// alias — preserving the user's exact dir name. When Path is empty,
+// behavior falls back to `naming.GoPackage(name)` which produces the
+// snake_case canonical form (`calibrator_refit` stays `calibrator_refit`,
+// `email-sender` becomes `email_sender`).
 //
-// OperatorSpec mirrors this for operators (same separator-preserving rule).
+// OperatorSpec mirrors this for operators (same path-honoring rule).
 type WorkerSpec struct {
 	Name string // user-facing name from forge.yaml (e.g. "climatology_refresh")
-	Path string // optional dir path from forge.yaml (e.g. "workers/climatology_refresh"); empty falls back to legacy compact form
+	Path string // optional dir path from forge.yaml (e.g. "workers/climatology_refresh"); empty falls back to naming.GoPackage(name)
 }
 
 // OperatorSpec is the operator-side analog of WorkerSpec. See WorkerSpec for
@@ -505,22 +504,20 @@ type OperatorSpec struct {
 // WorkerDataFromSpecs builds BootstrapWorkerData honoring each spec's
 // optional `path:` field. When Path is set, the on-disk dir leaf is used
 // for both ImportPath and the Go package alias — so snake_case dirs like
-// `workers/climatology_refresh/` produce the correct import line
-// `workers/climatology_refresh` rather than the compacted `workers/climatologyrefresh`.
+// `workers/climatology_refresh/` produce the import line
+// `workers/climatology_refresh`.
 //
 // When Path is empty (the legacy `WorkerDataFromNames` entry point), Package
-// falls back to `naming.GoPackage(name)` (separators stripped) — preserves
-// pre-existing behavior for callers without forge.yaml context.
+// falls back to `naming.GoPackage(name)` which canonicalises to snake_case
+// (`calibrator_refit` stays `calibrator_refit`, `email-sender` becomes
+// `email_sender`).
 //
 // When projectDir is non-empty AND the worker dir contains parseable Go,
 // the actual `package X` declaration is used as the alias — that's the
 // ground truth the bootstrap import line has to match.
 //
-// Alias-collision note: a worker named `engine_shadow` with path
-// `workers/engine_shadow` now aliases to `engine_shadow` (not the compacted
-// `engineshadow`), so it no longer collides with an internal package
-// `engineshadow`. The cross-role collision logic in AssignBootstrapAliases
-// still kicks in when two roles share an identical Package value.
+// Cross-role collision (worker named `audit` vs internal/audit/) is still
+// resolved by AssignBootstrapAliases prefixing one of the colliding aliases.
 func WorkerDataFromSpecs(specs []WorkerSpec, projectDir string) []BootstrapWorkerData {
 	var workers []BootstrapWorkerData
 	for _, spec := range specs {
@@ -548,14 +545,12 @@ func WorkerDataFromSpecs(specs []WorkerSpec, projectDir string) []BootstrapWorke
 // that don't carry forge.yaml context. New code should use
 // WorkerDataFromSpecs so the explicit `path:` field is honored.
 //
-// Hyphens and underscores in the user-facing name are stripped for Package
-// (the on-disk directory + Go package name) so `calibrator_refit` becomes
-// `calibratorrefit`, matching Go style. FieldName is derived from the
-// ORIGINAL name (which retains its separators) via ToPascalCase so
-// snake_case worker names still produce idiomatic exported identifiers
-// (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than
-// the run-together `Workers.Calibratorrefit` shape ToPascalCase would
-// otherwise emit.
+// Package is `naming.GoPackage(name)` which canonicalises to snake_case
+// (`calibrator_refit` stays `calibrator_refit`, `email-sender` becomes
+// `email_sender`). FieldName derives from the ORIGINAL name via
+// ToPascalCase so snake_case worker names still produce idiomatic
+// exported identifiers (`Workers.CalibratorRefit`,
+// `wireWorkerCalibratorRefitDeps`).
 func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
 	specs := make([]WorkerSpec, 0, len(names))
 	for _, name := range names {
@@ -611,12 +606,13 @@ func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperato
 //
 // Rules:
 //   - ImportPath: when explicitPath is set, `filepath.Base(explicitPath)`
-//     (preserves snake_case dirs). Otherwise `naming.GoPackage(name)` —
-//     the compact form, matching the legacy behavior.
+//     (preserves the user's exact dir name). Otherwise
+//     `naming.GoPackage(name)` — the snake_case canonical form.
 //   - Package: same as ImportPath — the value must be a valid Go identifier
 //     and equal the `package X` declaration inside the dir for call sites
 //     like `<Alias>.New(...)` to compile. Snake_case is a valid Go
-//     identifier, so the leaf works as-is.
+//     identifier (Go's spec allows it; `golint` only warns), so the leaf
+//     works as-is.
 //   - Alias: matches Package by default. When projectDir is set AND the dir
 //     contains parseable Go, the actual `package X` declaration overrides
 //     it — that's the ground truth and avoids drift if the user renamed
@@ -644,7 +640,9 @@ func resolveComponentNames(name, explicitPath, projectDir, roleRoot string) (pkg
 // found. Used so the import alias generated for a worker/operator matches
 // the ground-truth package name in the on-disk source — important when
 // the user's dir layout differs from what `naming.GoPackage` would
-// produce (e.g. snake_case dirs declared via forge.yaml's `path:` field).
+// produce (e.g. a project upgrading past the pre-2026-06-08 compact-form
+// interlude where the on-disk dir still uses the old `package adminserver`
+// declaration while the canonical form is now `admin_server`).
 func detectOnDiskPackageName(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -847,10 +845,10 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		pkg := naming.ServicePackage(svc.Name)
 		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
 		// FieldName mirrors the PascalCase proto-service name without the
-		// "Service" suffix ("AdminServerService" -> "AdminServer"). We derive
-		// it from svc.Name (which retains separators / PascalCase boundaries)
-		// rather than from pkg, because pkg is the compact form
-		// ("adminserver") that ToPascalCase can't split back into words.
+		// "Service" suffix ("AdminServerService" -> "AdminServer"). Derived
+		// from svc.Name (which retains PascalCase boundaries) rather than
+		// from pkg (snake_case) — ToPascalCase handles both shapes equally
+		// well, but svc.Name is the unambiguous original.
 		fieldName := naming.ToPascalCase(strings.TrimSuffix(svc.Name, "Service"))
 		if fieldName == "" {
 			fieldName = naming.ToPascalCase(svc.Name)

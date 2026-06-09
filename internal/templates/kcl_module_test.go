@@ -209,7 +209,7 @@ func TestKCLModule_JSONContractShape(t *testing.T) {
 	if err := json.Unmarshal(out, &c); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, out)
 	}
-	for _, bucket := range []string{"services", "operators", "frontends", "cronjobs", "config_maps", "gateways", "http_routes", "grpc_routes"} {
+	for _, bucket := range []string{"services", "operators", "frontends", "cronjobs", "config_maps", "gateways", "http_routes", "grpc_routes", "runtime_classes"} {
 		if _, ok := c[bucket]; !ok {
 			t.Errorf("JSON contract missing required bucket %q", bucket)
 		}

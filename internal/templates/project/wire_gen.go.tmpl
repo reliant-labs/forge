@@ -101,8 +101,9 @@ func resolve{{.Name}}(app *App) {{.TargetType}} {
 //
 // devMode swaps the per-service Authorizer for middleware.DevAuthorizer{}
 // so local iteration doesn't require a full authz policy. Production
-// remains fail-closed; cmd-server.go logs a WARN at startup when devMode
-// is active.{{- end}}{{- if .UnresolvedFields}}
+// remains fail-closed; bootstrap.go logs a loud Warn at startup when
+// devMode is active so a prod manifest accidentally setting
+// ENVIRONMENT=development surfaces at every container start.{{- end}}{{- if .UnresolvedFields}}
 //
 // UNRESOLVED FIELDS (regenerate after extending *App or setup.go):
 {{- range .UnresolvedFields}}

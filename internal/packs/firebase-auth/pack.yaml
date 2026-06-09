@@ -10,6 +10,11 @@ description: |
     firebaseauth.Init(logger)
     interceptors := connect.WithInterceptors(firebaseauth.Interceptor())
 
+  firebaseauth.Init() calls middleware.MarkExternalAuth() so the
+  scaffold's AuthInterceptor (already wired in cmd/server.go) flips to
+  passthrough and this pack's interceptor becomes the source of truth.
+  Both run alongside in the chain — the scaffold stub is not replaced.
+
   Pair with the `auth-ui` frontend pack for the matching
   firebase/auth-backed login/signup forms:
     forge pack install auth-ui --config provider=firebase-auth

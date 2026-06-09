@@ -55,16 +55,22 @@ func TestWriteProjectConfig_StampsForgeVersion(t *testing.T) {
 
 // TestApplyKindFeatureDefaults_Service is a no-op assertion: the
 // default scaffold (`forge new --kind service` or no flag) must leave
-// every feature enabled. Today's behavior is preserved as long as
-// every *Enabled() accessor returns true after the helper runs on a
-// freshly-built generator.
+// every STABLE feature enabled. Experimental features are default-off
+// for every kind (including service) — the user opts in per project
+// via `features.experimental.<name>: true` after scaffolding.
 func TestApplyKindFeatureDefaults_Service(t *testing.T) {
 	g := NewProjectGenerator("svc", "/tmp/svc", "example.com/svc")
 	g.ApplyKindFeatureDefaults(config.ProjectKindService)
 	effective := g.Features.EffectiveFeatures()
 	for name, on := range effective {
+		if config.IsExperimentalFeature(name) {
+			if on {
+				t.Errorf("kind=service: experimental feature %q expected disabled, got enabled", name)
+			}
+			continue
+		}
 		if !on {
-			t.Errorf("kind=service: feature %q expected enabled, got disabled", name)
+			t.Errorf("kind=service: stable feature %q expected enabled, got disabled", name)
 		}
 	}
 }
@@ -145,18 +151,18 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 
 // TestApplyKindFeatureDefaults_PreservesExplicit ensures the per-kind
 // defaults are commutative with --disable: a caller that already set
-// `gen.Features.Deploy = boolPtr(true)` before invoking
+// `gen.Features.Frontend = boolPtr(true)` before invoking
 // ApplyKindFeatureDefaults("cli") keeps the explicit true (the helper
 // only sets fields that were still nil). Matches the doc on
 // ApplyKindFeatureDefaults.
 func TestApplyKindFeatureDefaults_PreservesExplicit(t *testing.T) {
 	g := NewProjectGenerator("c", "/tmp/c", "example.com/c")
 	keepTrue := true
-	g.Features.Deploy = &keepTrue // user explicitly wants deploy ON even in CLI mode
+	g.Features.Frontend = &keepTrue // user explicitly wants frontend ON even in CLI mode
 
 	g.ApplyKindFeatureDefaults(config.ProjectKindCLI)
-	if !g.Features.DeployEnabled() {
-		t.Error("explicit Deploy=true overwritten by ApplyKindFeatureDefaults(cli)")
+	if !g.Features.FrontendEnabled() {
+		t.Error("explicit Frontend=true overwritten by ApplyKindFeatureDefaults(cli)")
 	}
 }
 
@@ -181,10 +187,9 @@ func TestWriteProjectConfig_CLIPersistsFeatureBlock(t *testing.T) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// Deploy must be present-and-false; build must be present-and-true.
-	if cfg.Features.Deploy == nil || *cfg.Features.Deploy {
-		t.Errorf("kind=cli forge.yaml: features.deploy = %v, want explicit false", cfg.Features.Deploy)
-	}
+	// Build must be present-and-true; packs must be present-and-false.
+	// (Deploy is experimental — default-off and not stamped at scaffold
+	// time, so we don't assert against it here.)
 	if cfg.Features.Build == nil || !*cfg.Features.Build {
 		t.Errorf("kind=cli forge.yaml: features.build = %v, want explicit true", cfg.Features.Build)
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -100,14 +99,13 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		if generated[pkg] {
 			continue
 		}
-		// Canonical handler dirs are compact Go identifiers — no hyphens
-		// or underscores. A name with separators is a legacy snake/kebab
-		// dir left behind by a pre-2026-06 scaffold (handlers/admin_server)
-		// and must NOT be used as a Go package identifier — emitting
-		// `package admin_server` here would silently revert the rename
-		// the user just did to align with the proto-driven compact form
-		// (handlers/adminserver). Skip it so cleanup/dangling-check can
-		// surface the stale dir for removal instead.
+		// Canonical handler dirs are snake_case Go identifiers (matching
+		// `naming.GoPackage` output). A name that doesn't round-trip
+		// through GoPackage is a legacy compact/PascalCase dir left
+		// behind by a pre-2026-06-08 scaffold (e.g. handlers/adminserver
+		// from the brief compact-form interlude) — skip it so cleanup /
+		// dangling-check can surface the stale dir for removal instead
+		// of emitting an authorizer with a mismatched package.
 		if pkg != naming.GoPackage(pkg) {
 			continue
 		}
@@ -118,7 +116,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 
 		data := AuthzTemplateData{
 			Package:     pkg,
-			ServiceName: strings.ToUpper(pkg[:1]) + pkg[1:] + "Service",
+			ServiceName: naming.ToPascalCase(pkg) + "Service",
 			Module:      modulePath,
 			Methods:     nil,
 		}

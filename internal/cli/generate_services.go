@@ -138,7 +138,7 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 
 	hasNewStubs := false
 	for _, svc := range services {
-		relServiceDir := toServiceDir(svc.Name)
+		relServiceDir := filepath.Join("handlers", naming.ServicePackage(svc.Name))
 		absServiceDir := filepath.Join(projectDir, relServiceDir)
 
 		// Build the per-service skip set: anything CRUD-shaped that
@@ -210,7 +210,7 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 			continue
 		}
 
-		pkg := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
+		pkg := naming.ServicePackage(svc.Name)
 		if err := codegen.GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs); err != nil {
 			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD generation for %s failed: %v\n", svc.Name, err)
 			continue
@@ -244,7 +244,7 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 		if err != nil {
 			return fmt.Errorf("failed to generate mock for %s: %w", svc.Name, err)
 		}
-		mockName := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
+		mockName := naming.ServicePackage(svc.Name)
 		if written {
 			fmt.Printf("  ✅ Updated handlers/mocks/%s_mock.go\n", mockName)
 		} else {
@@ -255,17 +255,3 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 	return nil
 }
 
-func toServiceDir(serviceName string) string {
-	// EchoService -> handlers/echo
-	// AdminServerService -> handlers/adminserver
-	//
-	// Must agree with generator.ServicePackageName (scaffold path) and
-	// codegen.toServicePackage (descriptor-driven codegen). All three produce
-	// the compact, separator-free Go-package form so the dir, the package
-	// identifier, and the bootstrap key all match.
-	trimmed := strings.TrimSuffix(serviceName, "Service")
-	if trimmed == "" {
-		trimmed = serviceName
-	}
-	return fmt.Sprintf("handlers/%s", generator.ServicePackageName(trimmed))
-}

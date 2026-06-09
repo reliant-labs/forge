@@ -230,11 +230,9 @@ func TestBuildIngressDoctorChecks_NoInputsSkips(t *testing.T) {
 // even skipped placeholders). Doctor output stays tidy for projects
 // that aren't using Gateway API ingress.
 func TestRunIngressDoctorChecks_FeatureOffReturnsNil(t *testing.T) {
-	off := false
-	cfg := &config.ProjectConfig{
-		Name:     "t",
-		Features: config.FeaturesConfig{Ingress: &off},
-	}
+	// Ingress is experimental — default-off, no explicit opt-out
+	// needed to exercise the "ingress off" path.
+	cfg := &config.ProjectConfig{Name: "t"}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "")
 	if results != nil {
 		t.Errorf("want nil results when ingress is off; got %d", len(results))
@@ -245,10 +243,11 @@ func TestRunIngressDoctorChecks_FeatureOffReturnsNil(t *testing.T) {
 // signal also suppresses the ingress checks (the user asked for
 // metrics-only output; ingress is irrelevant).
 func TestRunIngressDoctorChecks_SignalFilter(t *testing.T) {
-	on := true
 	cfg := &config.ProjectConfig{
-		Name:     "t",
-		Features: config.FeaturesConfig{Ingress: &on},
+		Name: "t",
+		Features: config.FeaturesConfig{
+			Experimental: config.ExperimentalConfig{Ingress: true},
+		},
 	}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "metrics")
 	if results != nil {
@@ -260,10 +259,11 @@ func TestRunIngressDoctorChecks_SignalFilter(t *testing.T) {
 // envs are configured (no deploy/kcl/<env>/main.k), we emit a single
 // skipped ingress check with the reason rather than failing.
 func TestRunIngressDoctorChecks_KCLFailureSurfacedAsSkip(t *testing.T) {
-	on := true
 	cfg := &config.ProjectConfig{
-		Name:     "t",
-		Features: config.FeaturesConfig{Ingress: &on},
+		Name: "t",
+		Features: config.FeaturesConfig{
+			Experimental: config.ExperimentalConfig{Ingress: true},
+		},
 	}
 	results := runIngressDoctorChecks(context.Background(), cfg, t.TempDir(), "")
 	if len(results) != 1 {

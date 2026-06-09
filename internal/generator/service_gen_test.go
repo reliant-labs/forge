@@ -8,31 +8,50 @@ import (
 	"testing"
 )
 
-// TestServicePackageName covers the kebab + snake -> compact-lowercase
-// rule. Both separator forms collapse to the same Go-package identifier
-// so the on-disk handler directory matches Go style (no_underscores) even
-// when the display name in forge.yaml uses snake_case.
-func TestServicePackageName(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"plain lowercase passes through", "api", "api"},
-		{"single hyphen is stripped", "admin-server", "adminserver"},
-		{"single underscore is stripped", "calibrator_refit", "calibratorrefit"},
-		{"mixed hyphen and underscore both stripped", "calibrator_refit-worker", "calibratorrefitworker"},
-		{"uppercase is lowercased", "AdminServer", "adminserver"},
-		{"repeated separators all stripped", "a--b__c", "abc"},
-		{"empty stays empty", "", ""},
+// Coverage for the canonical kebab/snake → snake_case rule is owned
+// by internal/naming.ServicePackage; see internal/naming/naming_test.go
+// (TestServicePackage). This file used to host TestServicePackageName for
+// the now-deleted generator.ServicePackageName shim — the test moved with
+// the canonical function.
+
+// TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir is the
+// regression guard for the pre-2026-06-08 bug where `forge add service
+// admin-server` (or any multi-word kebab/PascalCase service name)
+// scaffolded `handlers/adminserver/` (compact, separator-stripped) which
+// collided with the universal snake_case proto layout convention. Post-
+// fix the dir leaf is `handlers/admin_server/`, the proto path is
+// `proto/services/admin_server/v1/`, and both match the proto buf
+// emitted package convention.
+func TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir(t *testing.T) {
+	root := t.TempDir()
+
+	if err := GenerateServiceFiles(root, "example.com/myapp", "admin-server", "myapp", 8090); err != nil {
+		t.Fatalf("GenerateServiceFiles(admin-server) error = %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ServicePackageName(tt.in)
-			if got != tt.want {
-				t.Errorf("ServicePackageName(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
+
+	// Snake_case handler dir + proto path.
+	for _, want := range []string{
+		"handlers/admin_server/service.go",
+		"handlers/admin_server/authorizer.go",
+		"proto/services/admin_server/v1/admin_server.proto",
+	} {
+		if _, err := os.Stat(filepath.Join(root, want)); err != nil {
+			t.Errorf("expected %s to exist: %v", want, err)
+		}
+	}
+
+	// NOT the legacy compact dir.
+	if _, err := os.Stat(filepath.Join(root, "handlers", "adminserver")); !os.IsNotExist(err) {
+		t.Errorf("legacy compact dir handlers/adminserver/ must NOT be created (got err=%v)", err)
+	}
+
+	// service.go's `package` decl must match the snake dir leaf.
+	svc, err := os.ReadFile(filepath.Join(root, "handlers", "admin_server", "service.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(svc), "package admin_server") {
+		t.Errorf("service.go should declare `package admin_server`, got:\n%s", string(svc))
 	}
 }
 

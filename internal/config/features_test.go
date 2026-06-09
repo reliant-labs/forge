@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -8,6 +9,11 @@ import (
 
 func boolPtr(v bool) *bool { return &v }
 
+// TestFeaturesConfig_ZeroValue_StableEnabled locks in the
+// "absent features block → stable features ON" backwards-compat
+// promise. Experimental features (Deploy, Ingress, ExternalBuilds,
+// Operators, StrictWiring) are explicitly OFF on a zero value and are
+// covered by TestFeaturesConfig_ZeroValue_ExperimentalDisabled below.
 func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 	var f FeaturesConfig
 
@@ -20,7 +26,6 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"MigrationsEnabled", f.MigrationsEnabled},
 		{"CIEnabled", f.CIEnabled},
 		{"BuildEnabled", f.BuildEnabled},
-		{"DeployEnabled", f.DeployEnabled},
 		{"ContractsEnabled", f.ContractsEnabled},
 		{"DocsEnabled", f.DocsEnabled},
 		{"FrontendEnabled", f.FrontendEnabled},
@@ -28,12 +33,37 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"HotReloadEnabled", f.HotReloadEnabled},
 		{"PacksEnabled", f.PacksEnabled},
 		{"StartersEnabled", f.StartersEnabled},
-		{"IngressEnabled", f.IngressEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
 			if got := m.fn(); !got {
 				t.Errorf("%s() on zero-value = %v, want true", m.name, got)
+			}
+		})
+	}
+}
+
+// TestFeaturesConfig_ZeroValue_ExperimentalDisabled locks in the
+// inverse: experimental features are OFF on a zero-value config
+// (opt-in only). Keeps the default-OFF semantic asserted at the
+// schema layer so refactors that flip the field type catch the
+// regression here.
+func TestFeaturesConfig_ZeroValue_ExperimentalDisabled(t *testing.T) {
+	var f FeaturesConfig
+	methods := []struct {
+		name string
+		fn   func() bool
+	}{
+		{"DeployEnabled", f.DeployEnabled},
+		{"IngressEnabled", f.IngressEnabled},
+		{"ExternalBuildsEnabled", f.ExternalBuildsEnabled},
+		{"OperatorsEnabled", f.OperatorsEnabled},
+		{"StrictWiringEnabled", f.StrictWiringEnabled},
+	}
+	for _, m := range methods {
+		t.Run(m.name, func(t *testing.T) {
+			if got := m.fn(); got {
+				t.Errorf("%s() on zero-value = %v, want false (experimental default OFF)", m.name, got)
 			}
 		})
 	}
@@ -45,12 +75,14 @@ func TestFeaturesConfig_ExplicitlyTrue(t *testing.T) {
 		Codegen:       boolPtr(true),
 		Migrations:    boolPtr(true),
 		CI:            boolPtr(true),
-		Deploy:        boolPtr(true),
 		Contracts:     boolPtr(true),
 		Docs:          boolPtr(true),
 		Frontend:      boolPtr(true),
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(true),
+		Experimental: ExperimentalConfig{
+			Deploy: true,
+		},
 	}
 
 	methods := []struct {
@@ -84,7 +116,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		Migrations:    boolPtr(false),
 		CI:            boolPtr(false),
 		Build:         boolPtr(false),
-		Deploy:        boolPtr(false),
 		Contracts:     boolPtr(false),
 		Docs:          boolPtr(false),
 		Frontend:      boolPtr(false),
@@ -92,7 +123,8 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		HotReload:     boolPtr(false),
 		Packs:         boolPtr(false),
 		Starters:      boolPtr(false),
-		Ingress:       boolPtr(false),
+		// Experimental fields are plain bool: zero value IS the "off"
+		// case, so we don't need to set them.
 	}
 
 	methods := []struct {
@@ -129,7 +161,9 @@ func TestFeaturesConfig_Mixed(t *testing.T) {
 		Codegen:    boolPtr(false),
 		Migrations: nil, // should default to true
 		CI:         boolPtr(false),
-		Deploy:     boolPtr(true),
+		Experimental: ExperimentalConfig{
+			Deploy: true, // experimental: opt-in
+		},
 		// Contracts, Docs, Frontend, Observability, HotReload all nil
 	}
 
@@ -164,12 +198,14 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		Codegen:       boolPtr(false),
 		Migrations:    nil,
 		CI:            boolPtr(true),
-		Deploy:        boolPtr(false),
 		Contracts:     nil,
 		Docs:          boolPtr(true),
 		Frontend:      boolPtr(false),
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(false),
+		Experimental: ExperimentalConfig{
+			Deploy: true,
+		},
 	}
 
 	data, err := yaml.Marshal(&orig)
@@ -192,12 +228,14 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		{"Codegen", got.Codegen, boolPtr(false)},
 		{"Migrations", got.Migrations, nil},
 		{"CI", got.CI, boolPtr(true)},
-		{"Deploy", got.Deploy, boolPtr(false)},
 		{"Contracts", got.Contracts, nil},
 		{"Docs", got.Docs, boolPtr(true)},
 		{"Frontend", got.Frontend, boolPtr(false)},
 		{"Observability", got.Observability, boolPtr(true)},
 		{"HotReload", got.HotReload, boolPtr(false)},
+	}
+	if !got.Experimental.Deploy {
+		t.Errorf("Experimental.Deploy round-trip: got false, want true")
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -262,13 +300,26 @@ func TestFeaturesConfig_NewFeatures_ExplicitFalse(t *testing.T) {
 // output. A drift here without a deliberate spec change would break
 // downstream tooling.
 func TestDisabledFeatureError_Format(t *testing.T) {
-	err := DisabledFeatureError(FeatureDeploy)
+	// Stable feature uses the historical "is disabled in forge.yaml" idiom.
+	err := DisabledFeatureError(FeatureBuild)
 	if err == nil {
 		t.Fatal("DisabledFeatureError returned nil")
 	}
-	want := "feature 'deploy' is disabled in forge.yaml. Set features.deploy: true to enable."
+	want := "feature 'build' is disabled in forge.yaml. Set features.build: true to enable."
 	if err.Error() != want {
 		t.Errorf("DisabledFeatureError text mismatch\n got: %q\nwant: %q", err.Error(), want)
+	}
+	// Experimental feature carries an experimental-flavoured message.
+	expErr := DisabledFeatureError(FeatureDeploy)
+	if expErr == nil {
+		t.Fatal("DisabledFeatureError(deploy) returned nil")
+	}
+	expGot := expErr.Error()
+	if !strings.Contains(expGot, "feature 'deploy' is experimental") {
+		t.Errorf("experimental DisabledFeatureError missing 'experimental' marker: %q", expGot)
+	}
+	if !strings.Contains(expGot, "features.experimental.deploy: true") {
+		t.Errorf("experimental DisabledFeatureError missing nested opt-in hint: %q", expGot)
 	}
 }
 
@@ -279,25 +330,36 @@ func TestDisabledFeatureError_Format(t *testing.T) {
 // and the additive-extension contract requires every constant to
 // be present (sub-agents check `.<feature> == true|false`).
 func TestEffectiveFeatures_MapShape(t *testing.T) {
-	all := []string{
+	stable := []string{
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
-		FeatureBuild, FeatureDeploy, FeatureContracts, FeatureDocs,
+		FeatureBuild, FeatureContracts, FeatureDocs,
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
-		FeaturePacks, FeatureStarters, FeatureIngress,
+		FeaturePacks, FeatureStarters,
 	}
 	var f FeaturesConfig
 	resolved := f.EffectiveFeatures()
-	if len(resolved) != len(all) {
-		t.Errorf("EffectiveFeatures len = %d, want %d", len(resolved), len(all))
+	wantLen := len(stable) + len(ExperimentalFeatureNames)
+	if len(resolved) != wantLen {
+		t.Errorf("EffectiveFeatures len = %d, want %d", len(resolved), wantLen)
 	}
-	for _, name := range all {
+	for _, name := range stable {
 		v, ok := resolved[name]
 		if !ok {
-			t.Errorf("EffectiveFeatures missing key %q", name)
+			t.Errorf("EffectiveFeatures missing stable key %q", name)
 			continue
 		}
 		if !v {
-			t.Errorf("EffectiveFeatures[%q] = false, want true (zero-value defaults)", name)
+			t.Errorf("EffectiveFeatures[%q] = false, want true (stable zero-value defaults)", name)
+		}
+	}
+	for _, name := range ExperimentalFeatureNames {
+		v, ok := resolved[name]
+		if !ok {
+			t.Errorf("EffectiveFeatures missing experimental key %q", name)
+			continue
+		}
+		if v {
+			t.Errorf("EffectiveFeatures[%q] = true, want false (experimental zero-value defaults)", name)
 		}
 	}
 }
@@ -314,7 +376,9 @@ version: "1.0"
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// All feature methods should return true (backwards compat defaults).
+	// Stable features should return true (backwards compat defaults).
+	// Experimental features are default OFF; they're asserted by
+	// TestFeaturesConfig_ZeroValue_ExperimentalDisabled.
 	methods := []struct {
 		name string
 		fn   func() bool
@@ -324,7 +388,6 @@ version: "1.0"
 		{"MigrationsEnabled", cfg.Features.MigrationsEnabled},
 		{"CIEnabled", cfg.Features.CIEnabled},
 		{"BuildEnabled", cfg.Features.BuildEnabled},
-		{"DeployEnabled", cfg.Features.DeployEnabled},
 		{"ContractsEnabled", cfg.Features.ContractsEnabled},
 		{"DocsEnabled", cfg.Features.DocsEnabled},
 		{"FrontendEnabled", cfg.Features.FrontendEnabled},
@@ -332,7 +395,6 @@ version: "1.0"
 		{"HotReloadEnabled", cfg.Features.HotReloadEnabled},
 		{"PacksEnabled", cfg.Features.PacksEnabled},
 		{"StartersEnabled", cfg.Features.StartersEnabled},
-		{"IngressEnabled", cfg.Features.IngressEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {

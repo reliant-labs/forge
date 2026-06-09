@@ -88,6 +88,12 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	// are user-facing CLI guidance.
 	appendIngressChecksToReport(&report, runToolDoctorChecks(ctx, cfg, projectDir, signal))
 
+	// External-build checks surface per-service warnings for KCL
+	// services that declare build_cmd — missing build_cwd, first
+	// token not on PATH, plus the resolved (substituted) command
+	// preview so the user sees what `forge build` will actually exec.
+	appendExternalBuildChecksToReport(&report, runExternalBuildDoctorChecks(ctx, cfg, projectDir, signal))
+
 	if jsonOutput {
 		return d.PrintJSON(os.Stdout, report)
 	}

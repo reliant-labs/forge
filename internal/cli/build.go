@@ -165,7 +165,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	}
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
-	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all, or a specific service/frontend name)")
+	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires --env.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -280,7 +280,27 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	frontends := cfg.Frontends
 	buildBinary := true
 
-	if opts.buildTarget != "all" {
+	// `--target external` is the explicit "build ONLY the KCL services
+	// with build_cmd" filter. Useful for the cp-forge pattern where the
+	// sibling-repo binary changes faster than the project binary, so the
+	// user wants to iterate the external-build leg without rebuilding
+	// the whole project image / frontends. Requires --env so we have a
+	// rendered KCL set to filter against.
+	if opts.buildTarget == "external" {
+		if !cfg.Features.ExternalBuildsEnabled() {
+			return config.DisabledFeatureError(config.FeatureExternalBuilds)
+		}
+		if opts.env == "" {
+			return fmt.Errorf("--target external requires --env to know which KCL services to build")
+		}
+		if !kclHasExternalBuildService(entities) {
+			return fmt.Errorf("--target external: no KCL services declare build_cmd in env %q", opts.env)
+		}
+		// Skip everything else — only the external dispatcher runs.
+		frontends = nil
+		buildBinary = false
+		opts.skipFrontends = true
+	} else if opts.buildTarget != "all" {
 		frontends = filterFrontends(frontends, opts.buildTarget)
 		if len(frontends) == 0 {
 			// Not a frontend name — check if it matches the project name (binary)
@@ -361,6 +381,52 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// shipped in a release artifact, not container images.
 	if entities != nil {
 		results = append(results, buildKCLBuildOnlyVariants(ctx, entities, opts.outputDir)...)
+	}
+
+	// External-build dispatcher: services whose KCL declares
+	// `build_cmd` get their image constructed by a user-supplied shell
+	// command rather than forge's built-in Go-build + docker-build
+	// pipeline. Mirrors the deploytarget/External provider on the build
+	// side. Runs after Go/docker/variant builds so a failing project
+	// build doesn't waste time on the (likely orthogonal) external
+	// services — but does NOT short-circuit on docker failures because
+	// the external builds may target a different registry / pipeline.
+	//
+	// Skip-with-warn semantics live in the runner: a missing build_cwd
+	// produces a "skipped: …" log line and an external-skip result that
+	// the summary surfaces but doesn't count as a failure.
+	if entities != nil {
+		externalSvcs := externalBuildServices(entities)
+		// Gate: services declaring build_cmd require explicit opt-in via
+		// `features.experimental.external_builds: true`. Fail loud — a
+		// silent skip would leave behind a "image not built" error from
+		// the deploy step, which is harder to diagnose than the gate
+		// error.
+		if len(externalSvcs) > 0 && !cfg.Features.ExternalBuildsEnabled() {
+			return config.DisabledFeatureError(config.FeatureExternalBuilds)
+		}
+		if len(externalSvcs) > 0 {
+			externalRegistry := opts.pushRegistry
+			if externalRegistry == "" {
+				externalRegistry = cfg.Docker.Registry
+			}
+			externalTag := resolvedTag
+			if externalTag == "" {
+				// External-build dispatchers need a stable tag even when the
+				// caller didn't pass --tag (the user's command interpolates
+				// ${TAG} into `docker push <reg>/<img>:${TAG}` and an empty
+				// tag would push :latest accidentally). Resolve the same
+				// git-describe tag the docker path would have used.
+				t, terr := resolveImageTag(ctx, opts.env)
+				if terr != nil {
+					return fmt.Errorf("external build: resolve image tag: %w (pass --tag to override)", terr)
+				}
+				externalTag = t
+			}
+			externalArch := resolveExternalBuildTargetArch(cfgArchForDocker, opts.targetArch)
+			projDir := projectDirForKCL()
+			results = append(results, buildExternalServices(ctx, externalSvcs, opts, externalRegistry, externalTag, projDir, externalArch)...)
+		}
 	}
 
 	// Check for errors

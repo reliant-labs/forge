@@ -281,25 +281,36 @@ func TestCompareVersions(t *testing.T) {
 }
 
 // TestRequiredWhen — the feature-gate predicate skips when a feature
-// is disabled and requires when it's enabled.
+// is disabled and requires when it's enabled. Deploy is experimental
+// (default-off), so the unset config returns "not required" — the
+// stable opt-out case is covered by the Build variant below.
 func TestRequiredWhen(t *testing.T) {
 	pred := requiredWhen(func(f config.FeaturesConfig) bool { return f.DeployEnabled() })
 
-	cfgOn := &config.ProjectConfig{Features: config.FeaturesConfig{Deploy: boolPtr(true)}}
-	cfgOff := &config.ProjectConfig{Features: config.FeaturesConfig{Deploy: boolPtr(false)}}
-	cfgNil := &config.ProjectConfig{} // default → enabled
+	cfgOn := &config.ProjectConfig{
+		Features: config.FeaturesConfig{Experimental: config.ExperimentalConfig{Deploy: true}},
+	}
+	cfgOff := &config.ProjectConfig{} // experimental default off
 
 	if !pred(cfgOn, "") {
 		t.Errorf("Deploy=true should require tool")
 	}
 	if pred(cfgOff, "") {
-		t.Errorf("Deploy=false should not require tool")
-	}
-	if !pred(cfgNil, "") {
-		t.Errorf("Deploy unset (default-on) should require tool")
+		t.Errorf("Deploy unset (experimental default-off) should not require tool")
 	}
 	if pred(nil, "") {
 		t.Errorf("nil cfg should never require tool")
+	}
+
+	// Stable opt-out: Build defaults on, can be opted out.
+	stablePred := requiredWhen(func(f config.FeaturesConfig) bool { return f.BuildEnabled() })
+	cfgBuildOff := &config.ProjectConfig{Features: config.FeaturesConfig{Build: boolPtr(false)}}
+	cfgBuildNil := &config.ProjectConfig{}
+	if stablePred(cfgBuildOff, "") {
+		t.Errorf("Build=false should not require tool")
+	}
+	if !stablePred(cfgBuildNil, "") {
+		t.Errorf("Build unset (default-on) should require tool")
 	}
 }
 
@@ -330,13 +341,14 @@ func TestRequiredForMkcert_IngressDisabled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Ingress is experimental and default off — no explicit opt-out
+	// needed to exercise the "ingress off" mkcert short-circuit.
 	cfg := &config.ProjectConfig{
-		Name:     "demo",
-		Kind:     config.ProjectKindService,
-		Features: config.FeaturesConfig{Ingress: boolPtr(false)},
+		Name: "demo",
+		Kind: config.ProjectKindService,
 	}
 	if requiredForMkcert(cfg, tmp) {
-		t.Errorf("mkcert must not be required when features.ingress is off")
+		t.Errorf("mkcert must not be required when features.experimental.ingress is off")
 	}
 }
 

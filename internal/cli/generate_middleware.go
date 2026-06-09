@@ -77,7 +77,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 			continue
 		}
 
-		svcPkg := generator.ServicePackageName(svc.Name)
+		svcPkg := naming.ServicePackage(svc.Name)
 		svcDir := filepath.Join(projectDir, "handlers", svcPkg)
 		if _, err := os.Stat(svcDir); os.IsNotExist(err) {
 			continue // service directory doesn't exist yet

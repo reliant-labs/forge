@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // GenerateWorkerFiles generates all files for a single worker:
@@ -21,7 +23,7 @@ import (
 // Both the "new project" and "add worker" flows delegate here so the
 // generated output is always identical.
 func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) error {
-	workerPackage := ServicePackageName(workerName)
+	workerPackage := naming.ServicePackage(workerName)
 	workerDir := filepath.Join(root, "workers", workerPackage)
 
 	if err := os.MkdirAll(workerDir, 0755); err != nil {

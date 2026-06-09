@@ -384,10 +384,12 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},      // no webhooks
 	}
 
-	// Compact-lowercase package names match naming.ServicePackage output
-	// (post-2026 snake/kebab-stripping rule — "AdminServerService" -> "adminserver").
+	// Snake_case package names match naming.ServicePackage output
+	// (post-2026-06-08 snake-canonicalisation rule —
+	// "AdminServerService" -> "admin_server", aligning with the
+	// universal on-disk proto / handler dir convention).
 	webhookServices := map[string]bool{
-		"adminserver": true,
+		"admin_server": true,
 	}
 
 	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
@@ -1368,10 +1370,13 @@ func TestComputeTestHelperName(t *testing.T) {
 // not the underscore-preserving `Calibrator_refit` form that revive /
 // staticcheck ST1003 would flag.
 //
-// Post-2026: the on-disk Package + Go package identifier also compacts
-// ("calibrator_refit" -> "calibratorrefit") so workers/operators match Go
-// style. FieldName still derives from the original separator-bearing name
-// so the exported identifier reads as multiple words.
+// Post-2026-06-08: the on-disk Package + Go package identifier is
+// snake_case ("calibrator_refit" stays "calibrator_refit", "email-sender"
+// becomes "email_sender"). Snake_case is a valid Go package identifier
+// and matches the universal on-disk dir convention proto buf emits for
+// multi-word proto packages. FieldName still derives from the original
+// name via ToPascalCase so the exported Go identifier reads as multiple
+// words.
 func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -1379,15 +1384,15 @@ func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 		wantFieldName string
 		wantVarName   string
 	}{
-		// Snake-case → compact pkg; PascalCase via ToPascalCase from the
+		// Snake-case → snake pkg; PascalCase via ToPascalCase from the
 		// original name so word boundaries survive.
-		{"calibrator_refit", "calibratorrefit", "CalibratorRefit", "calibratorRefit"},
-		// Hyphenated → same compact rule.
-		{"email-sender", "emailsender", "EmailSender", "emailSender"},
+		{"calibrator_refit", "calibrator_refit", "CalibratorRefit", "calibratorRefit"},
+		// Hyphenated → normalized to snake.
+		{"email-sender", "email_sender", "EmailSender", "emailSender"},
 		// Single-word stays as-is (just upper-cased first letter).
 		{"refresh", "refresh", "Refresh", "refresh"},
 		// Initialism — ToPascalCase recognizes API and uppercases it.
-		{"api_poll", "apipoll", "APIPoll", "aPIPoll"},
+		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
 	}
 	for _, c := range cases {
 		got := WorkerDataFromNames([]string{c.name}, "")
@@ -1420,21 +1425,23 @@ func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
 	}
 }
 
-// TestWorkerDataFromSpecs_HonorsExplicitPath locks in the fix for the
-// snake_case-worker-dir bug: when forge.yaml declares
+// TestWorkerDataFromSpecs_HonorsExplicitPath locks in the path-
+// honoring rule: when forge.yaml declares
 // `path: workers/climatology_refresh`, the generated bootstrap import must
-// be `"<module>/workers/climatology_refresh"` (matching the on-disk dir),
-// NOT the compacted `"<module>/workers/climatologyrefresh"` form that
-// `naming.GoPackage` would produce. Same fix applies to the Alias —
-// it must equal the `package X` declaration in the dir's .go file so
-// call sites like `<Alias>.New(...)` resolve correctly.
+// be `"<module>/workers/climatology_refresh"` (matching the on-disk dir).
+// Same rule applies to the Alias — it must equal the `package X`
+// declaration in the dir's .go file so call sites like `<Alias>.New(...)`
+// resolve correctly.
 //
 // Coverage:
 //   - Explicit snake_case path → ImportPath + Package + Alias all
 //     preserve the underscore.
-//   - Empty path (legacy entry point) → falls back to compacted form.
+//   - Empty path (legacy entry point) → falls back to
+//     `naming.GoPackage(name)` which canonicalises to snake_case.
 //   - On-disk `package X` declaration overrides the path-derived alias —
-//     ground truth wins when the user renamed the package after scaffolding.
+//     ground truth wins when the user renamed the package after scaffolding
+//     (e.g. legacy `package widgetv2` from the pre-2026-06-08 compact-form
+//     interlude).
 func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 	projectDir := t.TempDir()
 	// Seed an on-disk worker dir with the snake_case package declaration
@@ -1478,12 +1485,12 @@ func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 			wantFieldName:  "ClimatologyRefresh",
 		},
 		{
-			desc:           "empty path falls back to compacted Go-style form",
+			desc:           "empty path falls back to snake_case Go-style form",
 			spec:           WorkerSpec{Name: "calibrator_refit"},
 			projectDir:     "",
-			wantPackage:    "calibratorrefit",
-			wantImportPath: "calibratorrefit",
-			wantAlias:      "calibratorrefit",
+			wantPackage:    "calibrator_refit",
+			wantImportPath: "calibrator_refit",
+			wantAlias:      "calibrator_refit",
 			wantFieldName:  "CalibratorRefit",
 		},
 		{

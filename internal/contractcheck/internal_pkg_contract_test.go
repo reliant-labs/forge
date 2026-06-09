@@ -395,3 +395,48 @@ type Service interface { Do() error }
 		})
 	}
 }
+
+
+// TestInternalContracts_StrategyDirectiveSkipped verifies the
+// `//forge:strategy` directive opts a strategy-registry package out of
+// the canonical Service/Deps/New enforcement.
+//
+// FRICTION 2026-06-03: kalshi `internal/algos` shipped as a strategy
+// registry (one Strategy interface + multiple impl structs each with
+// their own constructor / Deps shape) and required a contracts.exclude
+// entry. The directive replaces the forge.yaml entry with an in-file
+// opt-in.
+func TestInternalContracts_StrategyDirectiveSkipped(t *testing.T) {
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "contracts_strategy"),
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+	if len(got) != 0 {
+		t.Fatalf("strategy-registry package with //forge:strategy directive should produce 0 findings, got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+}
+
+// TestInternalContracts_StrategyShapeWithoutDirectiveStillFires is the
+// other half of the contract: the directive is OPT-IN. A package
+// shaped like a strategy registry but missing the directive should
+// still fire all three findings — we intentionally do not auto-detect
+// the shape (too many false-positives on incomplete service scaffolds).
+func TestInternalContracts_StrategyShapeWithoutDirectiveStillFires(t *testing.T) {
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "contracts_strategy_missing_directive"),
+		Options{Rules: []Rule{RuleInternalPackageContractNames}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleInternalPackageContractNames))
+	if len(got) != 3 {
+		t.Fatalf("strategy-shaped package without directive should fire 3 findings (Service/Deps/New), got %d:\n%s",
+			len(got), AsResult(fs).FormatText())
+	}
+}

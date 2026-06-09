@@ -66,13 +66,18 @@ func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
 	isService := kind == config.ProjectKindService
 
 	// Kind gates first — service-shape files don't apply to CLI/library.
+	// Deploy is experimental, but the SCAFFOLD always emits these files
+	// for service-kind so the project is shippable when the user flips
+	// `features.experimental.deploy: true`. upgrade therefore also
+	// manages them for every service-kind project — the gate would
+	// strand existing scaffolds with un-upgradable Dockerfiles.
 	switch {
 	case strings.HasPrefix(p, "cmd/"):
 		return isService
 	case strings.HasPrefix(p, "pkg/middleware/"):
 		return isService
 	case p == "Dockerfile" || p == "docker-compose.yml":
-		return isService && cfg.Features.DeployEnabled()
+		return isService
 	case p == "deploy/alloy-config.alloy":
 		return isService && cfg.Features.ObservabilityEnabled()
 	}
@@ -80,7 +85,7 @@ func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
 	// Feature gates for files that aren't kind-restricted.
 	switch {
 	case strings.HasPrefix(p, "deploy/") && strings.HasSuffix(p, ".k"):
-		return cfg.Features.DeployEnabled()
+		return isService
 	case p == ".air.toml" || p == ".air-debug.toml":
 		return cfg.Features.HotReloadEnabled()
 	case strings.HasPrefix(p, ".github/workflows/"):
@@ -226,6 +231,66 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		// Alloy config — Tier 1 since it's fully derived from forge.yaml services.
 		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1},
 	}
+}
+
+// UpgradeManagedPaths returns the set of project-relative paths that
+// `forge upgrade` (not `forge generate`) is responsible for emitting.
+// Used by `forge generate`'s stale-artifact sweep to exclude these
+// paths from the "stale codegen" candidate list: they're tracked in
+// `.forge/checksums.json` but only re-rendered by upgrade, so seeing
+// them missing from this run's WrittenThisRun set is the expected
+// state, not a stale signal.
+//
+// The set is the union over every (kind, binary) combination. Forge
+// only ships a small number of these combinations so the union is
+// cheap; computing the union (rather than asking the caller for the
+// project's specific kind/binary) keeps the helper signature simple
+// and means a kind/binary mismatch in detection doesn't accidentally
+// flag a managed file as stale.
+//
+// FRICTION 2026-06-05 (cp-forge audit-cleanup agent): `forge generate`
+// warned 7 "stale" files — .github/CODEOWNERS, .golangci.yml,
+// cmd/main.go, cmd/db.go, cmd/version.go, .github/workflows/e2e.yml,
+// .github/pull_request_template.md — all of which are managed by
+// `forge upgrade`. The user worked around it by hand-flipping
+// `forked: true` in checksums.json, which silenced the warnings but
+// also disconnected the files from the upgrade pipeline. The right
+// fix is for the stale-sweep to know about the upgrade-managed set.
+func UpgradeManagedPaths() map[string]bool {
+	out := map[string]bool{}
+	for _, kind := range []string{
+		config.ProjectKindService,
+		config.ProjectKindCLI,
+		config.ProjectKindLibrary,
+	} {
+		for _, binary := range []string{
+			config.ProjectBinaryPerService,
+			config.ProjectBinaryShared,
+		} {
+			for _, f := range managedFilesForKindBinary(kind, binary) {
+				out[f.destPath] = true
+			}
+		}
+	}
+	// Files emitted by ProjectGenerator outside the managedFiles list —
+	// these still belong to the upgrade lane (templates that scaffold
+	// once and stay user-owned, or one-shot Tier-2 metadata that
+	// `forge generate` never touches). Without the additions below the
+	// stale-sweep would re-flag them with the same false positive the
+	// FRICTION note above describes. Add new upgrade-owned scaffolds
+	// here when surfaces emerge.
+	for _, p := range []string{
+		// .github/* templates emitted by project_metadata.go's GitHub
+		// scaffold pass — Tier-1 in checksums but `forge generate` never
+		// re-emits them; `forge upgrade` does on version bumps.
+		".github/CODEOWNERS",
+		".github/pull_request_template.md",
+		".github/dependabot.yml",
+		".github/workflows/e2e.yml",
+	} {
+		out[p] = true
+	}
+	return out
 }
 
 // ServiceInfo holds the name and port of a service for template rendering.

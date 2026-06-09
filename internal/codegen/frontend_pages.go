@@ -201,7 +201,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 		}
 	}
 
-	hooksFile := strings.TrimSuffix(serviceNameToHookFileName(svc.Name), ".ts")
+	hooksFile := strings.TrimSuffix(naming.ServiceHookFile(svc.Name), ".ts")
 	importPath := ProtoFileToTSImportPath(svc.ProtoFile)
 
 	var pages []PageTemplateData
@@ -289,12 +289,6 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 	}
 
 	return pages
-}
-
-// serviceNameToHookFileName converts a service name to the hook file name.
-// Mirrors the logic in generate_frontend_hooks.go.
-func serviceNameToHookFileName(name string) string {
-	return PascalToKebab(name) + "-hooks.ts"
 }
 
 // PascalToKebab converts PascalCase to kebab-case, respecting Go

@@ -7,17 +7,19 @@ TLS emit no Certificate.
 
 import forge
 
+_k8s = forge.K8sCluster {
+    cluster = "k3d-example"
+    namespace = "example-prod"
+    registry = "localhost:5050"
+    ports = [8080]
+}
+
 _bundle = forge.Bundle {
     services = [
         forge.Service {
             name = "api"
             image = "example"
-            deploy = forge.K8sCluster {
-                cluster = "k3d-example"
-                namespace = "example-prod"
-                registry = "localhost:5050"
-                ports = [8080]
-            }
+            deploy = _k8s
         }
     ]
     gateways = [
@@ -53,8 +55,7 @@ _bundle = forge.Bundle {
 }
 
 _env = forge.RenderEnv {
-    namespace = "example-prod"
-    image_registry = "localhost:5050"
+    cluster = _k8s
     image_tag = "latest"
     network_policies = False
 }

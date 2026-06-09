@@ -126,6 +126,7 @@ forge deploy dev           # Deploy to local k3d cluster
 | `forge new <name>` | Create a new project |
 | `forge add service <name>` | Add a new Connect RPC service |
 | `forge add worker <name>` | Add a background worker |
+| `forge add rpc <svc> <Name> [--stream M]` | Scaffold a single hand-written RPC (unary or streaming) |
 | `forge add frontend <name>` | Add a Next.js frontend |
 | `forge generate` | After any proto change — regenerates infrastructure |
 | `forge db migration new <name>` | When you need to change the DB schema |
@@ -144,6 +145,31 @@ forge deploy dev           # Deploy to local k3d cluster
 - Entity types can (and should) diverge from proto when the domain requires it.
 - Contract enforcement is strict by default — configure exceptions in `forge.yaml`.
 
+## Experimental features
+
+Several feature surfaces live under `features.experimental:` in
+`forge.yaml`. They're default-off (opt-in only), the schema is allowed
+to change between forge versions without a deprecation cycle, and a
+startup warning fires once per invocation when any are on.
+
+| Flag | What it gates |
+|---|---|
+| `deploy` | `forge deploy` (KCL → kubectl apply pipeline) |
+| `ingress` | Gateway API codegen, cert-manager / Traefik install |
+| `external_builds` | KCL `Service.build_cmd` shell escape hatch |
+| `operators` | controller-runtime operator + CRD codegen |
+| `strict_wiring` | diagnostics fail-fast at Bootstrap |
+
+```
+forge experimental list     # which experimental features are on/off
+forge --silence-experimental # suppress the once-per-run warning
+```
+
+When a gated command runs without its flag on, it prints
+`feature '<name>' is experimental and opt-in. Set
+features.experimental.<name>: true ...`. Orchestrators
+(`forge up`) log a skip line for the disabled phase and continue.
+
 ## Sub-skills
 
-Load sub-skills for specific actions: getting-started, services, api, frontend (state, patterns), proto, architecture, db, auth, packs, workers, ingress, observability, debug, deploy, testing.
+Load sub-skills for specific actions: getting-started, services, api, frontend (state, patterns), proto, architecture, db, auth, packs, workers, ingress, observability, debug, deploy, testing, external-builds.

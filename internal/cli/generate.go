@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -223,6 +224,13 @@ Examples:
 	// regenerating it), `unfork` reverses the decision. Lives under
 	// generate so the two opposites are discoverable side-by-side.
 	cmd.AddCommand(newUnforkCmd())
+
+	// `forge generate accept-fork <paths>` pre-flips the `accepted: true`
+	// flag on already-forked entries so the end-of-run forked-skip
+	// report stays quiet for them. Use case: bulk-silence a cohort of
+	// known-long-lived forks (cp-forge has 11) without waiting for the
+	// "loud once" pass to fire 11 times.
+	cmd.AddCommand(newAcceptForkCmd())
 
 	return cmd
 }
@@ -465,9 +473,95 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 	}
 
+	// Surface any Tier-1 forked-skip events accumulated during the
+	// pipeline. These writes were silently dropped because
+	// `.forge/checksums.json` marks the entry as forked (typically
+	// from a prior `forge generate --accept` or a hand-edit). Until
+	// this surface existed, silent skips on regenerated files like
+	// pkg/app/wire_gen.go made downstream edits (e.g. adding a new
+	// Deps field) appear to do nothing — the generator would compute
+	// the right output and then drop it on the floor.
+	//
+	// The summary names every distinct path skipped during the run and
+	// points at `forge generate unfork`, which flips the flag back so
+	// the next regenerate re-renders the template. Aggregating once at
+	// end-of-pipeline rather than warning per-skip keeps the emit loop
+	// quiet on projects with many forks while still making the silent
+	// drop loud.
+	//
+	// Loud-once UX: the report fires only for entries whose Accepted flag
+	// is false. After printing, every reported entry has Accepted flipped
+	// to true (persisted by the SaveChecksums defer above), so the next
+	// run is silent unless a NEW fork shows up or unfork resets the flag.
+	reportForkedSkips(ctx.Checksums)
+
 	fmt.Println()
 	fmt.Println("✅ Code generation complete!")
 	return nil
+}
+
+// reportForkedSkips drains checksums.SkippedForkedThisRun and prints
+// a single aggregate warning naming every path the run silently
+// declined to write because the checksum entry is forked. No-op when
+// the set is empty (the common case for projects that don't fork).
+//
+// Loud-once UX: only entries with Accepted == false are reported. After
+// printing, every reported entry is marked Accepted = true on the in-
+// memory checksums so the deferred SaveChecksums in runGeneratePipeline
+// persists the flip. Subsequent runs see Accepted == true and skip the
+// report entirely — established forks stop nagging, new forks still
+// fire loud. Unfork resets both flags so a future re-fork is loud again.
+//
+// Paths are deduped + sorted for stable output, and printed to stderr
+// so machine-readable downstream pipes (like JSON-mode tooling) aren't
+// polluted by the friendly summary.
+func reportForkedSkips(cs *generator.FileChecksums) {
+	raw := checksums.SkippedForkedThisRun
+	if len(raw) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, p := range raw {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		// Accepted-fork filter: the checksum entry may have been
+		// reported in a prior run already. Skip it now so projects with
+		// stable long-lived forks don't drown out new fork events.
+		// A nil checksums arg (defensive — should not happen under
+		// runGeneratePipeline) falls back to the legacy "report every
+		// time" behaviour.
+		if cs != nil {
+			if entry, ok := cs.Files[p]; ok && entry.Accepted {
+				continue
+			}
+		}
+		paths = append(paths, p)
+	}
+	if len(paths) == 0 {
+		return
+	}
+	sort.Strings(paths)
+	fmt.Fprintf(os.Stderr, "\n⚠️  forge generate skipped %d forked file(s) — the rendered output was dropped because the checksum entry is `forked: true`:\n", len(paths))
+	for _, p := range paths {
+		fmt.Fprintf(os.Stderr, "  - %s\n", p)
+	}
+	fmt.Fprintf(os.Stderr, "If you want forge to resume regenerating these files, run:\n  forge generate unfork %s\n", strings.Join(paths, " "))
+	fmt.Fprintln(os.Stderr, "This is a one-time notice — future runs will stay quiet for these paths unless you `unfork` them.")
+
+	// Mark every reported path as Accepted so the next run is silent.
+	// The deferred SaveChecksums in runGeneratePipeline persists this
+	// to .forge/checksums.json. If cs is nil (defensive), skip — there's
+	// nothing to persist into.
+	if cs != nil {
+		for _, p := range paths {
+			entry := cs.Files[p]
+			entry.Accepted = true
+			cs.Files[p] = entry
+		}
+	}
 }
 
 // makeTier2OverwriteHook returns the checksums.Tier2OverwriteFn the

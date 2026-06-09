@@ -17,14 +17,14 @@ import (
 // as "all routes wired".
 func TestAuditIngress_FeatureOffSkipsCategory(t *testing.T) {
 	dir := t.TempDir()
-	off := false
+	// Ingress is experimental — default off. A forge.yaml with no
+	// `features.experimental.ingress` opt-in produces the same
+	// no-ingress-category shape as the old explicit-disable case.
 	yamlBody := `name: t
 module_path: github.com/test/t
 version: 0.0.1
 forge_version: dev
 services: []
-features:
-  ingress: false
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -34,9 +34,8 @@ features:
 		t.Fatalf("buildAuditReport: %v", err)
 	}
 	if _, ok := report.Categories["ingress"]; ok {
-		t.Error("ingress category present despite features.ingress=false")
+		t.Error("ingress category present despite features.experimental.ingress not opted in")
 	}
-	_ = off
 }
 
 // TestCrossCheckIngress_UnknownService asserts that routes referencing
@@ -135,10 +134,11 @@ func TestCrossCheckIngress_GRPCRoutesAlsoChecked(t *testing.T) {
 // don't ship the kcl toolchain.
 func TestAuditIngress_KCLRenderFailureWarn(t *testing.T) {
 	dir := t.TempDir()
-	on := true
 	cfg := &config.ProjectConfig{
-		Name:     "t",
-		Features: config.FeaturesConfig{Ingress: &on},
+		Name: "t",
+		Features: config.FeaturesConfig{
+			Experimental: config.ExperimentalConfig{Ingress: true},
+		},
 	}
 	cat := auditIngress(cfg, dir) // no deploy/kcl/dev → RenderKCL errors
 	if cat.Status != AuditStatusWarn {

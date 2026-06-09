@@ -13,9 +13,6 @@ import deploy.kcl.prod.config_gen as cfg
 import deploy.kcl.prod.ingress as ing
 {{- end}}
 
-_image_tag = option("image_tag") or "stable"
-_registry = option("registry") or "ghcr.io/OWNER"
-
 _shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ]
@@ -24,7 +21,8 @@ _prod_k8s = forge.K8sCluster {
     # Set to the kubectl context name for the prod cluster.
     cluster = "{{.ProjectName}}-prod"
     namespace = "{{.ProjectName}}-prod"
-    registry = _registry
+    # Overridable via `kcl run -D registry=...`.
+    registry = option("registry") or "ghcr.io/OWNER"
     replicas = 3
     ports = [8080]
     resources = forge.Resources {
@@ -60,9 +58,8 @@ _bundle = forge.Bundle {
 output = forge.render(_bundle)
 
 _env = forge.RenderEnv {
-    namespace = "{{.ProjectName}}-prod"
-    image_registry = _registry
-    image_tag = _image_tag
+    cluster = _prod_k8s
+    image_tag = forge.image_tag("prod")
     network_policies = True
 }
 manifests = forge.render_manifests(_bundle, _env)

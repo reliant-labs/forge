@@ -29,7 +29,11 @@ _managed_labels = lambda name: str -> {str: str} {
 _env_source = lambda ev: any -> any {
     {
         name = ev.name
-        if ev.value:
+        # `ev.value != Undefined` preserves an explicitly-set empty
+        # string (e.g. `value = ""` as a disable sentinel) while still
+        # omitting `value` from the manifest when the field was never
+        # set (secret_ref/config_map_ref-only entries).
+        if ev.value != Undefined:
             value = ev.value
         if ev.secret_ref:
             valueFrom = {

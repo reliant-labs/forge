@@ -327,6 +327,55 @@ bled in from the parent shell — drift between the KCL-declared port,
 the generated docker-compose, and the actual dev server is now
 structurally impossible.
 
+### Multi-frontend dev URLs (`*.localhost:8080`)
+
+`forge run` spins up a single host-based reverse proxy on
+`localhost:8080` that fronts every frontend + HTTP-routed service
+under a unified URL pattern:
+
+```
+http://admin.localhost:8080   → the admin frontend (KCL port)
+http://web.localhost:8080     → the web frontend (KCL port)
+http://api.localhost:8080     → the api service (HTTPRoute host match)
+```
+
+`*.localhost` resolves to `127.0.0.1` automatically per RFC 6761, so
+no `/etc/hosts` edits are needed. The first declared frontend is the
+fallback for unmatched hosts (a bare `http://localhost:8080/` works).
+
+**Why host-based, not path-based?** Path prefixes would require
+setting `basePath` in `next.config.js` — a file forge does not own,
+and a config that affects production routing too. Host-based
+dispatch keeps `next.config.js` untouched and gives prod-parity for
+free: the same KCL `HTTPRoute.host` values route the same way under
+the production Gateway as they do under the dev proxy.
+
+WebSocket upgrades are forwarded with a hijacked TCP splice — this
+is what makes Next.js HMR work end-to-end. If HMR breaks, suspect a
+backend port that drifted out of the KCL declaration rather than the
+proxy itself.
+
+Knobs:
+- `forge run --proxy-port 9090` — override the bind port.
+- `FORGE_RUN_PROXY_PORT=9090 forge run` — same via env.
+- `forge run --no-proxy` — disable the proxy and use the raw per-frontend ports.
+
+Adding service hosts to the dispatch table: declare an HTTPRoute in
+your `deploy/kcl/<env>/main.k` with a `host:` value:
+
+```kcl
+forge.HTTPRoute {
+    name = "api-route"
+    service = "api"
+    port = 8000
+    host = "api.localhost"   # used by `forge run` AND the prod Gateway
+}
+```
+
+Path-based HTTPRoutes (no `host`, with a `/prefix` match) work in
+cluster but are skipped by the dev proxy — the basePath dance is
+intentionally avoided in the dev loop.
+
 ## Scaffolded Systems
 
 The frontend scaffold includes three extensible systems:

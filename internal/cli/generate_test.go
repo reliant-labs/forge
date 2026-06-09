@@ -79,31 +79,12 @@ func TestDirExists(t *testing.T) {
 	}
 }
 
-func TestToServiceDir(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"EchoService", "handlers/echo"},
-		{"UserService", "handlers/user"},
-		{"NotificationService", "handlers/notification"},
-		{"Foo", "handlers/foo"},
-		// Multi-word PascalCase compacts (no separators) to match the
-		// scaffold path (generator.ServicePackageName) and the codegen
-		// path (codegen.toServicePackage). Pre-2026-06 this returned
-		// snake-case ("admin_server"), which forced the codegen
-		// pipeline to chase two parallel forms.
-		{"AdminServerService", "handlers/adminserver"},
-		{"DaemonTokenService", "handlers/daemontoken"},
-	}
-
-	for _, tt := range tests {
-		got := toServiceDir(tt.input)
-		if got != tt.want {
-			t.Errorf("toServiceDir(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
+// TestToServiceDir_MovedToNaming notes the canonical Go-package
+// derivation now lives in internal/naming.ServicePackage; service-dir
+// formation is just `filepath.Join("handlers", naming.ServicePackage(name))`
+// at the (single remaining) call site in generate_services.go.
+// The exhaustive table-driven cases live with the canonical function
+// at internal/naming/naming_test.go (TestServicePackage).
 
 func TestIsPluginAvailable(t *testing.T) {
 	if !isPluginAvailable("go") {

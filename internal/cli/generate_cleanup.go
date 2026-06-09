@@ -48,6 +48,15 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
+// upgradeManagedPaths is a single-load cache of the upgrade-managed
+// path set. The set is constant for the binary's lifetime (it's
+// derived from compiled-in upgrade.go file lists), so loading it once
+// avoids re-walking the kind/binary matrix every cleanup pass. Tests
+// that need to swap it (e.g. to simulate a project shape that doesn't
+// have a particular managed file) can do so by reassigning before
+// invoking cleanupStaleArtifacts.
+var upgradeManagedPaths = generator.UpgradeManagedPaths()
+
 // cleanupStaleArtifacts walks manifest-recorded paths that the current
 // pipeline run did not re-emit and returns them as deletion candidates,
 // plus the list of manifest-tracked-but-on-disk-missing paths (the
@@ -94,6 +103,20 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, missing [
 
 		// This run wrote this path — definitely not stale.
 		if checksums.WrittenThisRun[rel] {
+			continue
+		}
+
+		// Upgrade-managed paths: tracked in the manifest, but `forge
+		// generate` is not the emitter. `forge upgrade` writes these on
+		// version bumps; `forge generate` deliberately leaves them
+		// alone. Without this guard the stale sweep flags every
+		// upgrade-only file (cmd/main.go, .golangci.yml,
+		// .github/CODEOWNERS, …) as a "stale" candidate, terrifies the
+		// user, and the user reaches for the only workaround they can
+		// find: hand-flipping `forked: true`, which silences the
+		// warning but also breaks `forge upgrade`'s ability to re-emit
+		// the file on the next version bump.
+		if upgradeManagedPaths[rel] {
 			continue
 		}
 
@@ -234,6 +257,11 @@ func isForgeGeneratedBanner(path string) bool {
 // Forked entries are excluded — a forked path is user-owned by intent,
 // so its removal is a deliberate "stop tracking me" signal rather than
 // drift worth reporting.
+//
+// Upgrade-managed paths are also excluded for the same reason
+// cleanupStaleArtifacts skips them: `forge generate` is not the
+// emitter, so absence (e.g. a CLI-kind project that doesn't ship
+// .github/workflows/e2e.yml) is the expected state, not drift.
 func trackedMissingFiles(projectDir string, cs *generator.FileChecksums) []string {
 	if cs == nil || len(cs.Files) == 0 {
 		return nil
@@ -241,6 +269,9 @@ func trackedMissingFiles(projectDir string, cs *generator.FileChecksums) []strin
 	var missing []string
 	for rel, entry := range cs.Files {
 		if entry.Forked {
+			continue
+		}
+		if upgradeManagedPaths[rel] {
 			continue
 		}
 		full := filepath.Join(projectDir, rel)

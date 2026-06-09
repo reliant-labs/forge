@@ -31,22 +31,6 @@ const (
 	ScaffoldForce
 )
 
-// ServicePackageName returns the Go-package-safe form of a service name.
-// Hyphens and underscores are valid in CLI/config strings and forge.yaml
-// entries (display form), but Go package style prefers a compact
-// lowercase identifier with no separators. So "admin-server" and
-// "admin_server" both become "adminserver", while "api" stays "api".
-// The display name in forge.yaml retains its original spelling — only
-// the Go-package identifier compacts.
-func ServicePackageName(serviceName string) string {
-	return servicePackageReplacer.Replace(strings.ToLower(serviceName))
-}
-
-// servicePackageReplacer strips both kebab and snake separators from a
-// CLI/forge.yaml name so the result is a Go-style identifier. Declared
-// at package scope so the strings.NewReplacer table is allocated once.
-var servicePackageReplacer = strings.NewReplacer("-", "", "_", "")
-
 // GenerateServiceFiles generates all files for a single Go service:
 //   - handlers/<servicePackage>/service.go (from service/service.go.tmpl)
 //   - proto/services/<servicePackage>/v1/<servicePackage>.proto (inline stub, skipped if exists)
@@ -74,7 +58,7 @@ func GenerateServiceFiles(root, modulePath, serviceName, projectName string, por
 // line per scaffolding step so the CLI can render "skipped" / "overwriting"
 // notices without re-implementing the existence check.
 func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName string, port int, mode ScaffoldMode, progress io.Writer) error {
-	servicePackage := ServicePackageName(serviceName)
+	servicePackage := naming.ServicePackage(serviceName)
 	svcDir := filepath.Join(root, "handlers", servicePackage)
 
 	// Create directories

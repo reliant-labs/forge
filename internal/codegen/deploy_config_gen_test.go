@@ -129,19 +129,21 @@ func TestGenerateDeployConfig_SecretKeyOverride(t *testing.T) {
 	mustContain(t, body, `name = "STRIPE_KEY", secret_ref = "myapp-secrets", secret_key = "stripe_key"`)
 }
 
-// Empty-category elision: when every field in a category is a
-// non-sensitive default-only (no per-env override), the category-list
+// Empty-category elision: when every field in a USER category is a
+// non-sensitive default-only (no per-env override), that category-list
 // is omitted entirely so config_gen.k doesn't carry a noisy
-// `BILLING_ENV: [forge.EnvVar] = []` stub. Categories that DO emit
-// at least one entry still appear.
-func TestGenerateDeployConfig_OmitsEmptyCategoryLists(t *testing.T) {
+// `BILLING_ENV: [forge.EnvVar] = []` stub. APP_ENV is the exception —
+// it's always emitted because the scaffolded main.k.tmpl references
+// `cfg.APP_ENV` unconditionally; see
+// TestGenerateDeployConfig_AlwaysEmitsAppEnv.
+func TestGenerateDeployConfig_OmitsEmptyUserCategoryLists(t *testing.T) {
 	tmp := t.TempDir()
 	in := DeployConfigGenInput{
 		ProjectName: "myapp",
 		EnvName:     "dev",
 		KCLDir:      filepath.Join(tmp, "deploy", "kcl"),
 		Fields: []ConfigField{
-			// APP_ENV: has a value -> emits.
+			// APP_ENV: has a value -> emits with entries.
 			{Name: "log_level", EnvVar: "LOG_LEVEL"},
 			// BILLING_ENV: only non-sensitive default-only fields ->
 			// renderEnvVarEntry returns ok=false for both, so the
@@ -164,10 +166,84 @@ func TestGenerateDeployConfig_OmitsEmptyCategoryLists(t *testing.T) {
 	if strings.Contains(body, "BILLING_ENV") {
 		t.Errorf("empty BILLING_ENV category should be elided, got:\n%s", body)
 	}
-	// Defensive: no `[forge.EnvVar] = []` stubs anywhere.
-	if strings.Contains(body, "[forge.EnvVar] = [\n]") || strings.Contains(body, "[forge.EnvVar] = []") {
-		t.Errorf("expected no empty EnvVar list stubs, got:\n%s", body)
-	}
+}
+
+// APP_ENV is always emitted — even when every default-category field
+// is a non-sensitive default-only (or there are no default-category
+// fields at all). The scaffolded `deploy/kcl/<env>/main.k` references
+// `cfg.APP_ENV` unconditionally; eliding it would make `forge deploy`
+// fail with an undefined-attribute error on a brand-new project.
+func TestGenerateDeployConfig_AlwaysEmitsAppEnv(t *testing.T) {
+	t.Run("no default-category fields at all", func(t *testing.T) {
+		tmp := t.TempDir()
+		in := DeployConfigGenInput{
+			ProjectName: "myapp",
+			EnvName:     "dev",
+			KCLDir:      filepath.Join(tmp, "deploy", "kcl"),
+			Fields: []ConfigField{
+				// Only non-default categories.
+				{Name: "stripe_key", EnvVar: "STRIPE_KEY", Sensitive: true, Category: "stripe"},
+				{Name: "billing_grace_days", EnvVar: "BILLING_GRACE_DAYS", Category: "billing"},
+			},
+			EnvConfig: map[string]any{},
+		}
+		if err := GenerateDeployConfig(in); err != nil {
+			t.Fatalf("GenerateDeployConfig: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(in.KCLDir, "dev", "config_gen.k"))
+		body := string(got)
+		mustContain(t, body, "APP_ENV: [forge.EnvVar] = []")
+		mustContain(t, body, "STRIPE_ENV: [forge.EnvVar] = [")
+		// BILLING_ENV had no emittable entries -> still elided.
+		if strings.Contains(body, "BILLING_ENV") {
+			t.Errorf("empty BILLING_ENV category should be elided, got:\n%s", body)
+		}
+	})
+
+	t.Run("default-category fields all non-sensitive default-only", func(t *testing.T) {
+		tmp := t.TempDir()
+		in := DeployConfigGenInput{
+			ProjectName: "myapp",
+			EnvName:     "dev",
+			KCLDir:      filepath.Join(tmp, "deploy", "kcl"),
+			Fields: []ConfigField{
+				// Fresh project: scaffolded proto fields w/o per-env values.
+				{Name: "log_level", EnvVar: "LOG_LEVEL"},
+				{Name: "port", EnvVar: "PORT"},
+			},
+			EnvConfig: map[string]any{}, // no overrides
+		}
+		if err := GenerateDeployConfig(in); err != nil {
+			t.Fatalf("GenerateDeployConfig: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(in.KCLDir, "dev", "config_gen.k"))
+		body := string(got)
+		mustContain(t, body, "APP_ENV: [forge.EnvVar] = []")
+	})
+
+	t.Run("default-category fields with values still emit entries", func(t *testing.T) {
+		tmp := t.TempDir()
+		in := DeployConfigGenInput{
+			ProjectName: "myapp",
+			EnvName:     "dev",
+			KCLDir:      filepath.Join(tmp, "deploy", "kcl"),
+			Fields: []ConfigField{
+				{Name: "log_level", EnvVar: "LOG_LEVEL"},
+			},
+			EnvConfig: map[string]any{"log_level": "debug"},
+		}
+		if err := GenerateDeployConfig(in); err != nil {
+			t.Fatalf("GenerateDeployConfig: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(in.KCLDir, "dev", "config_gen.k"))
+		body := string(got)
+		// Multi-entry form, not the empty stub.
+		mustContain(t, body, "APP_ENV: [forge.EnvVar] = [\n")
+		mustContain(t, body, `name = "LOG_LEVEL"`)
+		if strings.Contains(body, "APP_ENV: [forge.EnvVar] = []") {
+			t.Errorf("APP_ENV with entries should not use the empty-stub form, got:\n%s", body)
+		}
+	})
 }
 
 func TestParseSecretRef(t *testing.T) {

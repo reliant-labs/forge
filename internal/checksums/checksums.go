@@ -43,7 +43,56 @@ func AddSkipWrite(relPath string) { SkipWrite[relPath] = true }
 // ResetSkipWrite clears the skip-write set. Called at the start of each
 // pipeline run to avoid leaking state across forge invocations in tests
 // or long-lived processes.
-func ResetSkipWrite() { SkipWrite = map[string]bool{} }
+func ResetSkipWrite() {
+	SkipWrite = map[string]bool{}
+	WrittenThisRun = map[string]bool{}
+	SkippedForkedThisRun = nil
+}
+
+// WrittenThisRun is a per-pipeline-run set of relative paths that the
+// current `forge generate` invocation has successfully written (or
+// re-recorded) via the `WriteGeneratedFile*` family. Populated as a
+// side effect of RecordFile so every emit/accept path is captured at
+// a single chokepoint.
+//
+// The manifest-driven stale-artifact sweep consults this set: an entry
+// in `FileChecksums.Files` whose path is NOT in WrittenThisRun is a
+// candidate for removal (forge tracked the path but didn't re-emit it
+// this run, e.g. because the service was renamed or removed). Reset
+// between runs alongside SkipWrite.
+//
+// Stored as a package-level map (not on FileChecksums) for the same
+// reason as SkipWrite: pipeline-run state, not persistent state.
+var WrittenThisRun = map[string]bool{}
+
+// MarkWrittenThisRun records that relPath was written or accept-promoted
+// during the current run. Exposed publicly so tests that bypass the
+// WriteGeneratedFile* chokepoint (e.g. by populating FileChecksums via
+// constructor) can still simulate the post-emit set when exercising
+// downstream cleanup logic.
+func MarkWrittenThisRun(relPath string) { WrittenThisRun[relPath] = true }
+
+// SkippedForkedThisRun is the per-pipeline-run set of Tier-1 paths
+// whose write was skipped because the checksum entry carries
+// `Forked: true`. Populated as a side effect of WriteGeneratedFile*
+// at the same chokepoint as WrittenThisRun.
+//
+// The set exists to make a silently-skipped Tier-1 write LOUD without
+// spamming per-file warnings during the emit loop: the generate
+// pipeline drains this set at end-of-run and prints one aggregate
+// summary naming every file and pointing at `forge generate unfork`.
+//
+// FRICTION 2026-06-05 (cp-forge agent-Z port): pkg/app/wire_gen.go was
+// marked forked by an earlier session. Subsequent `forge generate`
+// runs silently skipped the wire_gen rewrite, so adding a Deps field
+// to a handler appeared to do nothing — wire_gen never grew the
+// resolution. The agent assumed the scanner was buggy and worked
+// around it with a hand-rolled PostBootstrap + SetXxx injectors. The
+// REAL signal — "this file is forked, run unfork to re-enable
+// regeneration" — never reached the user because the skip was silent.
+//
+// Reset between runs alongside SkipWrite and WrittenThisRun.
+var SkippedForkedThisRun []string
 
 // Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
 // it has detected a hand-edited Tier-2 file. Returning true clobbers the
@@ -136,6 +185,16 @@ type FileChecksumEntry struct {
 	// to forked paths; the stomp guard ignores them too (no point
 	// guarding a file forge no longer owns). Persists across runs.
 	Forked bool `json:"forked,omitempty"`
+	// Accepted is the "user has been informed about this fork" flag. The
+	// end-of-pipeline forked-skip report fires only for entries where
+	// Forked && !Accepted, then flips Accepted to true and the next
+	// `forge generate` run is silent. Together with Forked it implements
+	// the loud-once / quiet-forever UX: the first post-fork run confirms
+	// the skip; established forks stop nagging. unfork clears both so a
+	// re-fork later is loud again. FRICTION (cp-forge, 2026-06-08):
+	// 11 long-standing forks reporting every run was drowning out new
+	// fork detections.
+	Accepted bool `json:"accepted,omitempty"`
 	// Exports lists the names of public top-level identifiers (functions,
 	// types, vars) declared in the most recently rendered version of the
 	// file. Used by the post-emit rename-detection pass: when a Tier-1
@@ -325,6 +384,13 @@ func (cs *FileChecksums) RecordFile(relPath string, content []byte) {
 	// Copy to a fresh slice to avoid aliasing the original backing array.
 	entry.History = append([]string(nil), filtered...)
 	cs.Files[relPath] = entry
+
+	// Mark the path as "written this run" so the manifest-driven
+	// stale-artifact sweep knows not to treat it as orphaned. Every
+	// WriteGeneratedFile* helper funnels through here on a successful
+	// write; AcceptTier1Drift does too, which is the right semantics
+	// (forge actively touched the path this run, no matter how).
+	WrittenThisRun[relPath] = true
 }
 
 // WriteGeneratedFile writes content to a file and records its checksum.
@@ -352,6 +418,12 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 			// longer owns it. Skip even when force=true — the user's
 			// intent is "stop touching this file"; --force is for
 			// blowing away current-run hand-edits, not historical forks.
+			//
+			// Record the skip so the pipeline can summarize all
+			// forked-skips at end-of-run. See SkippedForkedThisRun for
+			// the FRICTION context (cp-forge wire_gen.go silently
+			// regenerated nothing for weeks).
+			SkippedForkedThisRun = append(SkippedForkedThisRun, relPath)
 			return false, nil
 		}
 	}
@@ -414,6 +486,13 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 	}
 	if cs != nil {
 		if entry, ok := cs.Files[relPath]; ok && entry.Forked {
+			// Tier-2 forked entries are recorded too, so the
+			// end-of-run summary covers both tiers. Tier-2's normal
+			// "scaffold once, never overwrite" contract means the user
+			// rarely cares about Tier-2 skips, but a forked Tier-2
+			// entry (manually flipped in .forge/checksums.json) is
+			// still worth surfacing for the same diagnostic reason.
+			SkippedForkedThisRun = append(SkippedForkedThisRun, relPath)
 			return false, nil
 		}
 	}

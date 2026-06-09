@@ -190,7 +190,7 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 // handlers_crud_gen.go is recorded so it doesn't show up as an orphan in
 // `forge audit`. A nil cs is tolerated.
 func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := toServicePackage(svc.Name)
+	pkg := naming.ServicePackage(svc.Name)
 	targetDir := filepath.Join(projectDir, "handlers", pkg)
 
 	// Scan existing user-owned methods to avoid generating duplicates
@@ -344,7 +344,7 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 }
 
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTemplateData {
-	pkg := toServicePackage(svc.Name)
+	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as mapServiceDefToTemplateData)
 	protoPackage := ""
@@ -589,7 +589,7 @@ type CRUDTestFieldData struct {
 // the file becomes user-owned and forge stops re-rendering it (and stops
 // updating the checksum). A nil cs is tolerated.
 func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := toServicePackage(svc.Name)
+	pkg := naming.ServicePackage(svc.Name)
 	targetDir := filepath.Join(projectDir, "handlers", pkg)
 
 	unitPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
@@ -689,7 +689,7 @@ func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums
 }
 
 func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string) CRUDTestTemplateData {
-	pkg := toServicePackage(svc.Name)
+	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)
 	protoPackage := ""

@@ -196,7 +196,7 @@ func ToKebabCase(s string) string {
 				}
 				// Compare runes[i:i+il] to init case-insensitively.
 				ok := true
-				for k := 0; k < il; k++ {
+				for k := range il {
 					if !unicode.IsUpper(runes[i+k]) {
 						ok = false
 						break
@@ -286,4 +286,101 @@ func ToExportedFieldName(pkg string) string {
 		return strings.ToUpper(pkg)
 	}
 	return strings.ToUpper(pkg[:1]) + pkg[1:]
+}
+
+// kebabToSnake converts hyphens to underscores. Used as a single-pass
+// transform on inputs known to be ASCII; declared at package scope so
+// the strings.NewReplacer table is allocated once.
+var kebabToSnake = strings.NewReplacer("-", "_")
+
+// normalizeRepeatedUnderscores collapses runs of `__` into a single `_`
+// and trims leading/trailing `_`. This shows up when the input had
+// adjacent separators ("a--b__c") or when ToSnakeCase met an unusual
+// boundary; the on-disk dir name and the Go package name must both be
+// well-formed identifiers, so a stable normalization keeps codegen safe.
+func normalizeRepeatedUnderscores(s string) string {
+	for strings.Contains(s, "__") {
+		s = strings.ReplaceAll(s, "__", "_")
+	}
+	return strings.Trim(s, "_")
+}
+
+// GoPackage normalises a CLI/forge.yaml-style name into a Go package
+// identifier in snake_case form. Hyphens convert to underscores; existing
+// underscores are preserved; PascalCase / camelCase boundaries are split
+// (so "AdminServer" → "admin_server", "calibrator_refit" stays
+// "calibrator_refit", "admin-server" → "admin_server"). Distinct from
+// ServicePackage in that it does NOT strip a trailing "Service" —
+// callers using it for workers, operators, and arbitrary package leaves
+// want the raw form.
+//
+// Snake_case is a valid Go package identifier (Go's spec allows it,
+// `golint` only warns), and matches the on-disk convention proto buf
+// emits for multi-word proto packages (e.g. proto package
+// `services.admin_server.v1` → directory `services/admin_server/v1`).
+// Keeping the package name aligned with the proto path means handler
+// dirs, generated mock files, and wire_gen function names all stay in
+// lockstep without forcing the user to choose between snake on disk and
+// compact in code.
+func GoPackage(name string) string {
+	// camelCase / PascalCase → snake_case (handles HTTPStatus → http_status)
+	snake := ToSnakeCase(name)
+	// kebab → snake
+	snake = kebabToSnake.Replace(snake)
+	// fold to lowercase + collapse repeated separators
+	return normalizeRepeatedUnderscores(strings.ToLower(snake))
+}
+
+// ServicePackage is the single canonical Go-package form for a service,
+// binary, frontend, worker, or operator name.
+//
+// Inputs accepted:
+//
+//   - Forge / CLI names: kebab-case ("admin-server"), snake_case
+//     ("admin_server"), or already-compact ("api").
+//   - Proto service names: PascalCase ending in "Service"
+//     ("EchoService", "AdminServerService").
+//
+// Output is always a single lowercase snake_case Go-style identifier.
+// The PascalCase-with-"Service"-suffix branch first trims the suffix so
+// "EchoService" -> "echo" and "AdminServerService" -> "admin_server".
+// The pure-CLI branch normalises hyphens to underscores and PascalCase
+// boundaries to underscores, so "admin-server" / "admin_server" /
+// "AdminServer" all collapse to "admin_server".
+//
+// One canonical function for every site that emits a handler dir, a
+// generated mock file, a bootstrap import, or a wire alias — keep it
+// the single source of truth so the on-disk dir layout, the codegen
+// keys, and the cleanup sweeper can never disagree.
+//
+// History: pre-2026-06-08 this function (and GoPackage) emitted compact
+// form (separators stripped — "admin_server" → "adminserver"). The
+// compact convention collided with the universal snake_case dir layout
+// projects actually use (protoc-gen-go emits snake for multi-word proto
+// packages, KCL package names use snake, every existing forge project
+// on disk had snake handler dirs). The bug surface was a duplicate-dir
+// failure where `forge generate` created `handlers/adminserver/`
+// alongside the existing `handlers/admin_server/`, then regenerated
+// wire_gen.go to reference the compact form while user-owned
+// bootstrap.go still referenced the snake form — broken build.
+func ServicePackage(name string) string {
+	trimmed := strings.TrimSuffix(name, "Service")
+	if trimmed == "" {
+		trimmed = name
+	}
+	return GoPackage(trimmed)
+}
+
+// ServiceHookFile returns the canonical frontend hook filename for a
+// service. Encodes the rule that the hook file is the service name in
+// kebab-case (with initialisms kept glued) suffixed with `-hooks.ts`.
+//
+// All file-emitter sites AND the re-export indexer must go through this
+// function. If a future caller needs a different suffix or extension,
+// extract a parameterised helper rather than duplicating the kebab
+// transform — the re-export index only stays in lockstep with on-disk
+// filenames because both go through the same canonical splitter
+// (`ToKebabCase`).
+func ServiceHookFile(name string) string {
+	return ToKebabCase(name) + "-hooks.ts"
 }

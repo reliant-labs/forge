@@ -58,7 +58,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"ensure frontend components",
 		"frontend CRUD pages",
 		"frontend nav + dashboard",
-		"cleanup stale codegen",
 		"service stubs",
 		"internal/db/ ORM (entity-driven)",
 		"CRUD handlers",
@@ -77,11 +76,13 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"pack generate hooks",
 		"regenerate infra files",
 		"per-env deploy config",
+		"ingress k3d ports fragment",
 		"Grafana dashboards",
 		"entity-aware seed data",
 		"frontend mocks + transport",
 		"go mod tidy (root)",
 		"goimports on generated Go",
+		"cleanup stale codegen",
 		"rehash tracked files",
 		"refresh ORM output mtimes",
 		"post-gen validation",
@@ -215,6 +216,158 @@ func TestGatePreChecksNotSkipped(t *testing.T) {
 	if gatePreChecksNotSkipped(off) {
 		t.Error("gatePreChecksNotSkipped(SkipPreChecks=true) = true, want false (--skip-pre-checks honored)")
 	}
+}
+
+// TestTemplatesOnlyAllowlistMembersExist asserts every step.Name
+// listed in templatesOnlyStepAllow corresponds to a real step in
+// generateSteps(). A typo or a step rename that drops a member from
+// the live plan would otherwise silently turn `--templates-only` into
+// a no-op — exactly the surface the rest of this file exists to
+// prevent.
+func TestTemplatesOnlyAllowlistMembersExist(t *testing.T) {
+	live := make(map[string]bool, len(generateSteps()))
+	for _, s := range generateSteps() {
+		live[s.Name] = true
+	}
+	for name := range templatesOnlyStepAllow {
+		if !live[name] {
+			t.Errorf("templatesOnlyStepAllow lists %q, but no step in generateSteps() has that name", name)
+		}
+	}
+}
+
+// TestTemplatesOnlyExcludesCleanupAndValidate pins the contract that
+// `--templates-only` skips the cleanup sweep, drift guards, validation
+// tail, and external generators. Updating templatesOnlyStepAllow to
+// include any of these names should be a deliberate, reviewed change —
+// the whole point of the flag is to avoid them.
+func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
+	mustExclude := []string{
+		// Cleanup / rehash.
+		"cleanup stale codegen",
+		"rehash tracked files",
+		// Drift / Tier-1 guards.
+		"check Tier-1 file-stomp guard",
+		"snapshot Tier-1 exports",
+		"detect renamed Tier-1 exports",
+		"check forked-sibling dangling refs",
+		// Validation.
+		"pre-codegen contract check",
+		"post-gen validation",
+		"go build (validate generated code)",
+		// External generators / subprocess tooling.
+		"buf generate (Go stubs)",
+		"descriptor extraction",
+		"OpenAPI specs (protoc-gen-connect-openapi)",
+		"ORM generate (proto/db)",
+		"TypeScript stubs (frontends)",
+		"sqlc generate",
+		"go mod tidy (gen/)",
+		"go mod tidy (root)",
+		"goimports on generated Go",
+		"refresh ORM output mtimes",
+		"ingress k3d ports fragment",
+		// Migration scaffolding (mutates db/migrations — unsafe mid-WIP).
+		"initial migration scaffold",
+		"entity-aware migration",
+		"entity-aware seed data",
+	}
+	for _, name := range mustExclude {
+		if templatesOnlyStepAllow[name] {
+			t.Errorf("templatesOnlyStepAllow must NOT include %q — it's a cleanup/drift/validate/external-generator step", name)
+		}
+	}
+}
+
+// TestTemplatesOnlyIncludesTemplateRenderSteps pins the positive side:
+// the flag must keep the template-driven Tier-1 / Tier-2 / frontend
+// emit steps that the documented use case ("propagate a template
+// change to a WIP project") relies on. If one of these gets dropped
+// the flag silently fails to do its job — the downstream project would
+// run `forge generate --templates-only` and the changed bootstrap.go
+// template would not re-render.
+func TestTemplatesOnlyIncludesTemplateRenderSteps(t *testing.T) {
+	mustInclude := []string{
+		"service stubs",
+		"pkg/app/bootstrap.go",
+		"pkg/app/testing.go",
+		"pkg/app/migrate.go",
+		"CI workflows",
+		"regenerate infra files",
+		"frontend nav + dashboard",
+		"frontend mocks + transport",
+		"service mocks",
+		"internal package contracts",
+		"authorizer",
+		"CRUD handlers",
+	}
+	for _, name := range mustInclude {
+		if !templatesOnlyStepAllow[name] {
+			t.Errorf("templatesOnlyStepAllow MUST include %q — it's a template-driven render step the flag's use case depends on", name)
+		}
+	}
+}
+
+// TestTemplatesOnlyFilterShape exercises the same filter logic
+// runGeneratePipelineFlags applies (allowlist intersection). When the
+// flag is off, every step survives. When the flag is on,
+// stepCleanupStale and stepGoBuildValidate are dropped while
+// stepServiceStubs and stepBootstrap are kept. Mirrors the cobra
+// runtime path without spinning up a real project.
+func TestTemplatesOnlyFilterShape(t *testing.T) {
+	all := generateSteps()
+
+	// Flag off: filter is a no-op — every step survives.
+	t.Run("off", func(t *testing.T) {
+		got := filterByTemplatesOnly(all, false)
+		if len(got) != len(all) {
+			t.Errorf("with TemplatesOnly=false, filter dropped %d steps; want 0", len(all)-len(got))
+		}
+	})
+
+	// Flag on: cleanup + validate drop, template-emit steps survive.
+	t.Run("on", func(t *testing.T) {
+		got := filterByTemplatesOnly(all, true)
+		names := make(map[string]bool, len(got))
+		for _, s := range got {
+			names[s.Name] = true
+		}
+		if names["cleanup stale codegen"] {
+			t.Error("--templates-only should drop \"cleanup stale codegen\" but it survived the filter")
+		}
+		if names["go build (validate generated code)"] {
+			t.Error("--templates-only should drop \"go build (validate generated code)\" but it survived the filter")
+		}
+		if names["check Tier-1 file-stomp guard"] {
+			t.Error("--templates-only should drop \"check Tier-1 file-stomp guard\" but it survived the filter")
+		}
+		if !names["service stubs"] {
+			t.Error("--templates-only must keep \"service stubs\" — it's a template-driven render step")
+		}
+		if !names["pkg/app/bootstrap.go"] {
+			t.Error("--templates-only must keep \"pkg/app/bootstrap.go\" — the canonical template the flag exists to re-render")
+		}
+		if !names["regenerate infra files"] {
+			t.Error("--templates-only must keep \"regenerate infra files\" — Tier-1 infra is template-driven")
+		}
+	})
+}
+
+// filterByTemplatesOnly mirrors the allowlist-intersection filter
+// runGeneratePipelineFlags applies when flags.TemplatesOnly is set.
+// Extracted as a test-only helper so we can exercise the exact filter
+// shape without standing up the full cobra entrypoint.
+func filterByTemplatesOnly(steps []GenStep, on bool) []GenStep {
+	if !on {
+		return steps
+	}
+	out := steps[:0:0]
+	for _, s := range steps {
+		if templatesOnlyStepAllow[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // stepNames extracts the ordered names from a step slice. Helper for

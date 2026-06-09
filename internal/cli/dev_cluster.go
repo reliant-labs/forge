@@ -358,14 +358,14 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// Runs AFTER the kubectl context is pinned so applies hit the
 	// right cluster.
 	if ingressOn {
-		if err := installIngressBundle(ctx); err != nil {
+		projectDir, _ := os.Getwd()
+		if err := installIngressBundle(ctx, projectDir); err != nil {
 			return fmt.Errorf("install ingress: %w", err)
 		}
 		// Provision mkcert TLS Secrets for any dev Gateway that
 		// opted in via tls.mode == "mkcert". Runs AFTER the ingress
 		// bundle so the GatewayClass is ready when the Secret lands;
 		// no-op when no mkcert gateways are declared.
-		projectDir, _ := os.Getwd()
 		if err := provisionMkcertSecrets(ctx, projectDir); err != nil {
 			return fmt.Errorf("provision mkcert TLS: %w", err)
 		}

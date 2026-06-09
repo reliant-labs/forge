@@ -70,7 +70,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// name. FieldName uses ToPascalCase so "admin-server" becomes
 		// "AdminServer" — matching what the unit/integration test templates
 		// emit via `{{.ServiceName | pascalCase}}` (e.g. NewTestAdminServer).
-		pkg := ServicePackageName(g.ServiceName)
+		pkg := naming.ServicePackage(g.ServiceName)
 		fieldName := naming.ToPascalCase(g.ServiceName)
 		services = []bootstrapService{
 			{
@@ -90,7 +90,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	// AppendServiceToConfig/GenerateServiceFiles handles the rest later.
 	if g.isBinaryShared() && len(g.AdditionalServices) > 0 {
 		for _, svcName := range g.AdditionalServices {
-			pkg := ServicePackageName(svcName)
+			pkg := naming.ServicePackage(svcName)
 			fieldName := naming.ToPascalCase(svcName)
 			services = append(services, bootstrapService{
 				Name:      svcName,
@@ -336,7 +336,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	var services []bootstrapTestService
 	var connectImports []string
 	if g.ServiceName != "" {
-		pkg := ServicePackageName(g.ServiceName)
+		pkg := naming.ServicePackage(g.ServiceName)
 		fieldName := naming.ToPascalCase(g.ServiceName)
 		// ProtoServiceName matches what the proto template emits:
 		// `service {{.ServiceName | pascalCase}}Service` (PascalCase handles hyphens).

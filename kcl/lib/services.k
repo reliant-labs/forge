@@ -71,6 +71,46 @@ _image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
         else "${image}:${image_tag}"
 }
 
+# Pick `imagePullPolicy` for a container based on the image tag.
+#
+# Default is `IfNotPresent` (the k8s default for tagged images), which
+# is what we want for committed/clean SHA tags — the kubelet can cache
+# the layer and skip the network round-trip.
+#
+# Two cases force `Always`:
+#
+#   1. Tag ends in `-dirty`. `forge build` appends `-dirty` to the
+#      git-sha image tag whenever the worktree has uncommitted changes.
+#      The SHA doesn't move while the worktree stays dirty, so each
+#      rebuild lands a NEW image under the SAME `<sha>-dirty` tag.
+#      With `IfNotPresent`, the kubelet sees the tag locally already
+#      and runs the stale layer — `forge deploy` then reports
+#      "rollout successful" while the cluster runs the previous binary.
+#      `Always` forces a re-pull on every pod start, which restores
+#      the dev iteration loop. (The long-term answer is content-
+#      addressed tags — see `docs/proposals/image-content-addressed-tags.md`.)
+#
+#   2. Tag is `latest` (the implicit default when no `:tag` is set).
+#      `:latest` is a moving target by definition; the standard k8s
+#      behavior is to flip the default to `Always` for `:latest`. We
+#      do the same explicitly so the policy is grep-able from the
+#      rendered manifest.
+#
+# Only matches when the tag actually *ends* in `-dirty` — an image
+# whose tag happens to contain "dirty" in the middle (e.g.
+# `:dirty-feature-v1`) gets the `IfNotPresent` default.
+_pull_policy = lambda image_ref: str -> str {
+    # `image_ref` is the full reference, e.g. `localhost:5051/foo:abc1234-dirty`
+    # or `ghcr.io/x/y:latest`. The tag is the substring AFTER the last
+    # `:` AFTER the last `/` (the registry-port `:` is before the last
+    # `/`, so the rightmost `/` then rightmost `:` lookup is safe).
+    _last_slash = image_ref.rfind("/")
+    _ref_tail = image_ref[_last_slash + 1:] if _last_slash >= 0 else image_ref
+    _last_colon = _ref_tail.rfind(":")
+    _tag = _ref_tail[_last_colon + 1:] if _last_colon >= 0 else "latest"
+    "Always" if _tag.endswith("-dirty") or _tag == "latest" else "IfNotPresent"
+}
+
 _resource_block = lambda r: any -> any {
     {
         requests = {
@@ -124,6 +164,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                         {
                             name = _name
                             image = _image
+                            imagePullPolicy = _pull_policy(_image)
                             if svc.command:
                                 command = svc.command
                             ports = [
@@ -172,6 +213,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
             {
                 name = _name
                 image = _image
+                imagePullPolicy = _pull_policy(_image)
                 if cj.command:
                     command = cj.command
                 if cj.env_vars:
@@ -235,6 +277,7 @@ render_operator = lambda op: any, namespace: str, image_registry: str, image_tag
                         {
                             name = _name
                             image = _image
+                            imagePullPolicy = _pull_policy(_image)
                             if _all_env:
                                 env = _all_env
                             securityContext = _default_container_security_context

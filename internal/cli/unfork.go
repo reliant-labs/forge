@@ -1,4 +1,4 @@
-// `forge unfork <file>...` — undo Tier-1 fork status.
+// `forge generate unfork <file>...` — undo Tier-1 fork status.
 //
 // `forge generate --accept` lets a user mark a Tier-1 file as "forked":
 // forge stops trying to regenerate it and the stomp guard ignores it.
@@ -56,24 +56,24 @@ func newUnforkCmd() *cobra.Command {
 ` + "`forge generate`" + ` will re-render the template over the file.
 
 ` + "`forge generate --accept`" + ` is the inverse: it marks a Tier-1 file as forked so
-forge stops trying to regenerate it. ` + "`forge unfork`" + ` exists for the case where a
+forge stops trying to regenerate it. ` + "`forge generate unfork`" + ` exists for the case where a
 user wants the file back under forge ownership — usually after a sibling
 generated file regenerates and emits symbols the forked file doesn't carry.
 
 Behavior:
-  forge unfork <path>...       Drop the forked flag on each named path.
-  forge unfork --all           Unfork every currently-forked entry (with confirm).
-  forge unfork --all --yes     Same, without the confirm prompt.
-  forge unfork <path> --dry-run Print what would change without touching state.
+  forge generate unfork <path>...       Drop the forked flag on each named path.
+  forge generate unfork --all           Unfork every currently-forked entry (with confirm).
+  forge generate unfork --all --yes     Same, without the confirm prompt.
+  forge generate unfork <path> --dry-run Print what would change without touching state.
 
 Refuses to unfork:
   - paths that have no entry in .forge/checksums.json (nothing to unfork)
   - paths tagged Tier-2 (scaffold-once files have no fork notion)
 
 Example:
-  forge unfork pkg/app/bootstrap.go
-  forge unfork pkg/app/bootstrap.go pkg/app/wire_gen.go
-  forge unfork --all --dry-run`,
+  forge generate unfork pkg/app/bootstrap.go
+  forge generate unfork pkg/app/bootstrap.go pkg/app/wire_gen.go
+  forge generate unfork --all --dry-run`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUnfork(args, dryRun, all, assumeYes)
@@ -96,13 +96,13 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 	}
 
 	if all && len(args) > 0 {
-		return cliutil.UserErr("forge unfork",
+		return cliutil.UserErr("forge generate unfork",
 			"--all and positional path arguments are mutually exclusive",
 			"",
 			"pass either a list of paths OR --all, not both")
 	}
 	if !all && len(args) == 0 {
-		return cliutil.UserErr("forge unfork",
+		return cliutil.UserErr("forge generate unfork",
 			"no paths specified",
 			"",
 			"pass one or more paths to unfork, or --all to unfork every forked entry")
@@ -110,7 +110,7 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 
 	cs, err := checksums.Load(root)
 	if err != nil {
-		return cliutil.WrapUserErr("forge unfork",
+		return cliutil.WrapUserErr("forge generate unfork",
 			"failed to load .forge/checksums.json", "",
 			"verify the file is valid JSON; if it was hand-edited, restore it from git", err)
 	}
@@ -147,13 +147,13 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 			targets = append(targets, path)
 		}
 		if len(unknown) > 0 {
-			return cliutil.UserErr("forge unfork",
+			return cliutil.UserErr("forge generate unfork",
 				fmt.Sprintf("%d path(s) not in .forge/checksums.json: %s", len(unknown), strings.Join(unknown, ", ")),
 				"",
 				"unfork only operates on tracked Tier-1 generated files; check the path spelling, or run `forge audit` to list tracked entries")
 		}
 		if len(wrongTier) > 0 {
-			return cliutil.UserErr("forge unfork",
+			return cliutil.UserErr("forge generate unfork",
 				fmt.Sprintf("%d path(s) are not Tier-1 generated files (Tier-2 scaffolds have no fork notion): %s", len(wrongTier), strings.Join(wrongTier, ", ")),
 				"",
 				"unfork only applies to Tier-1 (regenerated-every-run) files; Tier-2 files are scaffold-once and forge never auto-overwrites them")
@@ -215,12 +215,17 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 	for _, path := range willFlip {
 		entry := cs.Files[path]
 		entry.Forked = false
+		// Clear Accepted so a future re-fork triggers the loud-once
+		// report again — otherwise the entry would be silently fork-able
+		// (forge sets Forked=true again on accept) without the user
+		// ever seeing the one-time confirmation.
+		entry.Accepted = false
 		cs.Files[path] = entry
 		fmt.Printf("  ✓ unforked %s\n", path)
 	}
 
 	if err := checksums.Save(root, cs); err != nil {
-		return cliutil.WrapUserErr("forge unfork",
+		return cliutil.WrapUserErr("forge generate unfork",
 			"failed to save .forge/checksums.json", "",
 			"check write permissions on .forge/", err)
 	}

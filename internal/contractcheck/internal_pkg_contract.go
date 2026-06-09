@@ -176,6 +176,15 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 		hasServiceInterface bool
 		hasDepsStruct       bool
 		hasNewFunc          bool
+		// hasStrategyDirective is set when any non-test, non-gen file
+		// in the package carries the `//forge:strategy` marker. The
+		// directive is an explicit opt-out from the canonical
+		// Service/Deps/New shape — strategy registries (pluggable
+		// backends behind a single interface, each impl with its own
+		// constructor and Deps shape) don't have a single `Service` or
+		// `New(Deps)` to bind. See contracts.SKILL.md for the canonical
+		// pattern.
+		hasStrategyDirective bool
 		// interfaceCount counts every interface declaration anywhere in
 		// the package. When >= 2 AND no Deps struct AND no New func, the
 		// package is recognized as an "interface-catalogue" shape — a
@@ -208,11 +217,15 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 			continue
 		}
 		fp := filepath.Join(pkgDir, e.Name())
-		file, parseErr := parser.ParseFile(fset, fp, nil, parser.SkipObjectResolution)
+		file, parseErr := parser.ParseFile(fset, fp, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if parseErr != nil {
 			// Surface the parse error, but continue scanning other
 			// files in the package so the user sees the full picture.
 			return nil, parseErr
+		}
+
+		if !hasStrategyDirective && fileHasStrategyDirective(file) {
+			hasStrategyDirective = true
 		}
 
 		for _, decl := range file.Decls {
@@ -258,6 +271,22 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 				}
 			}
 		}
+	}
+
+	// Strategy-pattern early-out: explicit opt-out via the
+	// `//forge:strategy` directive on any file in the package. Strategy
+	// registries (one Strategy interface + multiple impl structs each
+	// with its own constructor / Deps shape) don't fit Service/Deps/New
+	// because the package's public surface is the interface itself —
+	// the impls are private to the registry. Anything that wants a
+	// single `New(Deps) Service` constructor would force the package
+	// to choose one impl as canonical, which defeats the pattern.
+	//
+	// FRICTION 2026-06-03: kalshi `internal/algos` shipped as a
+	// strategy registry and required a contracts.exclude entry. The
+	// `//forge:strategy` directive makes that opt-in instead of opt-out.
+	if hasStrategyDirective {
+		return nil, nil
 	}
 
 	// Utility-package early-out: when the package declares ZERO

@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
@@ -129,7 +130,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 			{
 				Name: g.ServiceName,
 				Type: "go_service",
-				Path: fmt.Sprintf("handlers/%s", ServicePackageName(g.ServiceName)),
+				Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
 				Port: g.ServicePort,
 			},
 		}
@@ -143,7 +144,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 				cfg.Services = append(cfg.Services, config.ServiceConfig{
 					Name: svcName,
 					Type: "go_service",
-					Path: fmt.Sprintf("handlers/%s", ServicePackageName(svcName)),
+					Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
 					Port: g.ServicePort + i + 1,
 				})
 			}
@@ -250,7 +251,6 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		Migrations: orDefault(g.Features.Migrations),
 		CI:         orDefault(g.Features.CI),
 		Build:      orDefault(g.Features.Build),
-		Deploy:     orDefault(g.Features.Deploy),
 		Contracts:  orDefault(g.Features.Contracts),
 		Docs:       orDefault(g.Features.Docs),
 		Frontend: func() *bool {
@@ -263,6 +263,10 @@ func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
 		HotReload:     orDefault(g.Features.HotReload),
 		Packs:         orDefault(g.Features.Packs),
 		Starters:      orDefault(g.Features.Starters),
+		// Experimental features stay default-off at scaffold time.
+		// `forge new --enable-experimental deploy,ingress,...` is the
+		// opt-in entry point (see new.go).
+		Experimental: g.Features.Experimental,
 	}
 }
 
@@ -296,7 +300,7 @@ func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
 	entry := config.ServiceConfig{
 		Name: serviceName,
 		Type: "go_service",
-		Path: fmt.Sprintf("handlers/%s", ServicePackageName(serviceName)),
+		Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
 		Port: port,
 	}
 	return appendToProjectConfigSequence(configPath, "services", entry)

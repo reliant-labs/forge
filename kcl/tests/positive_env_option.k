@@ -49,8 +49,14 @@ _bundle = forge.Bundle {
     additional_manifests = _nats_manifests
 }
 
+_k8s = forge.K8sCluster {
+    cluster = "k3d-myapp"
+    namespace = "myapp-" + _env_name
+    registry = "localhost:5050"
+}
+
 output = forge.render(_bundle)
-manifests = forge.render_manifests(_bundle, forge.RenderEnv {namespace = "myapp-" + _env_name})
+manifests = forge.render_manifests(_bundle, forge.RenderEnv {cluster = _k8s})
 
 # ── Invariants ─────────────────────────────────────────────────────
 

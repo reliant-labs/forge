@@ -9,9 +9,14 @@ import (
 
 func TestIngressTemplatesEmbedded(t *testing.T) {
 	cat := templates.IngressTemplates()
+	// traefik.yaml.tmpl is templated at install time (per-project
+	// Gateway listeners → --entrypoints args); see
+	// internal/cli/dev_cluster_ingress.go. Get() returns the raw
+	// template bytes — the render path is exercised in
+	// ingress_install_test.go.
 	for _, name := range []string{
 		"traefik/VERSION",
-		"traefik/traefik.yaml",
+		"traefik/traefik.yaml.tmpl",
 		"traefik/gatewayclass.yaml",
 	} {
 		b, err := cat.Get(name)

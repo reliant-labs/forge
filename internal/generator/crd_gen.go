@@ -83,7 +83,7 @@ func GenerateCRDFiles(in CRDGenInput) error {
 		return fmt.Errorf("ModulePath is required")
 	}
 
-	operatorPackage := ServicePackageName(in.OperatorName)
+	operatorPackage := naming.ServicePackage(in.OperatorName)
 	operatorDir := filepath.Join(in.Root, "operators", operatorPackage)
 	if _, err := os.Stat(operatorDir); err != nil {
 		return fmt.Errorf("operator %q not found at %s: run `forge add operator %s` first", in.OperatorName, operatorDir, in.OperatorName)

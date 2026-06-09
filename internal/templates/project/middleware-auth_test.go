@@ -5,7 +5,6 @@ package middleware
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,11 +13,38 @@ import (
 // setValidateToken swaps the package-level token validator for the duration
 // of a single subtest and restores it via t.Cleanup. This is the only safe
 // way to exercise the real middleware without stubbing its call tree.
+//
+// It goes through [SetTokenValidator] (not raw assignment) so the configured
+// flag tracks the swap — exercising the real public API path.
 func setValidateToken(t *testing.T, fn func(string) (*Claims, error)) {
 	t.Helper()
-	orig := validateTokenFn
-	validateTokenFn = fn
-	t.Cleanup(func() { validateTokenFn = orig })
+	authMu.Lock()
+	origFn, origConfigured := validateTokenFn, validatorConfigured
+	authMu.Unlock()
+	SetTokenValidator(fn)
+	t.Cleanup(func() {
+		authMu.Lock()
+		validateTokenFn = origFn
+		validatorConfigured = origConfigured
+		authMu.Unlock()
+	})
+}
+
+// withExternalAuth marks external-auth registered for the duration of a
+// single subtest. Tests that exercise [AuthInterceptor] need to either
+// register an external provider, register a real validator, or set an env
+// var — otherwise the constructor panics by design.
+func withExternalAuth(t *testing.T) {
+	t.Helper()
+	authMu.Lock()
+	orig := externalAuthRegistered
+	externalAuthRegistered = true
+	authMu.Unlock()
+	t.Cleanup(func() {
+		authMu.Lock()
+		externalAuthRegistered = orig
+		authMu.Unlock()
+	})
 }
 
 // The AuthInterceptor's public entrypoint forwards to authenticateFromHeader
@@ -158,36 +184,154 @@ func TestVerifyAuth(t *testing.T) {
 	}
 }
 
-// Ensure the default stub ValidateToken still surfaces a clear error so
-// callers that forget to install a real validator don't produce a
-// confusing nil-panic further down the stack.
-func TestValidateToken_DefaultIsNotConfigured(t *testing.T) {
+// Default ValidateToken is a passthrough (nil claims, nil error). The
+// "no auth configured" case is rejected at AuthInterceptor construction
+// time, not per request — see TestAuthInterceptor_UnconfiguredPanics.
+func TestValidateToken_DefaultIsPassthrough(t *testing.T) {
 	// NOT parallel: this reads the package-level validateTokenFn which
 	// TestAuthenticateFromHeader subtests mutate via setValidateToken.
-	_, err := ValidateToken("anything")
-	if err == nil {
-		t.Fatal("default ValidateToken must return an error")
+	claims, err := ValidateToken("anything")
+	if err != nil {
+		t.Fatalf("default ValidateToken must not error: %v", err)
 	}
-	if got := fmt.Sprint(err); got == "" {
-		t.Fatal("default ValidateToken error must not be empty")
+	if claims != nil {
+		t.Fatalf("default ValidateToken must return nil claims, got %+v", claims)
 	}
 }
 
-// The AuthInterceptor itself is a trivial dispatch over its collaborators:
-// it defers to isUnauthenticatedProcedure (tested above) and
-// authenticateFromHeader (tested above). TestAuthInterceptor_Type provides
-// a minimal smoke-test that the constructor returns a non-nil
-// connect.Interceptor satisfying the interface — exercising its
-// branches end-to-end would require spinning up a real Connect
-// server, which is covered at the service integration-test layer.
-func TestAuthInterceptor_Type(t *testing.T) {
-	t.Parallel()
+// AuthInterceptor must panic at construction when no provider is
+// configured AND no dev opt-in is set. Per-request rejection (the old
+// behavior) silently broke pack-installed deployments because the stub
+// would reject before the pack's interceptor ran.
+func TestAuthInterceptor_UnconfiguredPanics(t *testing.T) {
+	// NOT parallel: mutates package-level config flags and env vars that
+	// other subtests in this file also depend on.
+	authMu.Lock()
+	origFn, origConfigured, origExternal := validateTokenFn, validatorConfigured, externalAuthRegistered
+	validateTokenFn = defaultValidateToken
+	validatorConfigured = false
+	externalAuthRegistered = false
+	authMu.Unlock()
+	t.Setenv("ENVIRONMENT", "production")
+	t.Setenv("AUTH_MODE", "")
+	t.Cleanup(func() {
+		authMu.Lock()
+		validateTokenFn = origFn
+		validatorConfigured = origConfigured
+		externalAuthRegistered = origExternal
+		authMu.Unlock()
+	})
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("AuthInterceptor must panic when unconfigured outside dev mode")
+		}
+	}()
+	_ = AuthInterceptor()
+}
+
+// MarkExternalAuth puts the stub in passthrough mode — the pack's own
+// interceptor in the chain is the source of truth and the stub must not
+// reject or even inspect the Authorization header.
+func TestAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
+	withExternalAuth(t)
+
 	ic := AuthInterceptor()
 	if ic == nil {
 		t.Fatal("AuthInterceptor must not return nil")
 	}
-	// WrapUnary must return a non-nil function — checking this guards
-	// against future refactors dropping the wrapping accidentally.
+	// In passthrough mode, WrapUnary returns the next func untouched —
+	// no inspection of the request. Confirm via identity: the wrapped
+	// func must run unconditionally without checking auth.
+	called := false
+	next := connect.UnaryFunc(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		called = true
+		return nil, nil
+	})
+	wrapped := ic.WrapUnary(next)
+	if wrapped == nil {
+		t.Fatal("WrapUnary must return a non-nil UnaryFunc")
+	}
+	// Same address as `next` is the strongest signal of passthrough, but
+	// Go function-value equality isn't guaranteed; assert behavior instead.
+	_, _ = wrapped(context.Background(), nil)
+	if !called {
+		t.Fatal("passthrough WrapUnary must invoke next unconditionally")
+	}
+}
+
+// Dev mode (ENVIRONMENT=development) is an explicit opt-in to running
+// without an auth provider — the constructor must NOT panic, and the
+// interceptor must be a passthrough.
+func TestAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
+	authMu.Lock()
+	origConfigured, origExternal := validatorConfigured, externalAuthRegistered
+	validatorConfigured = false
+	externalAuthRegistered = false
+	authMu.Unlock()
+	t.Setenv("ENVIRONMENT", "development")
+	t.Setenv("AUTH_MODE", "")
+	t.Cleanup(func() {
+		authMu.Lock()
+		validatorConfigured = origConfigured
+		externalAuthRegistered = origExternal
+		authMu.Unlock()
+	})
+
+	ic := AuthInterceptor() // must not panic
+	if ic == nil {
+		t.Fatal("AuthInterceptor must not return nil in dev mode")
+	}
+	called := false
+	wrapped := ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		called = true
+		return nil, nil
+	})
+	_, _ = wrapped(context.Background(), nil)
+	if !called {
+		t.Fatal("dev-mode WrapUnary must invoke next unconditionally")
+	}
+}
+
+// AUTH_MODE=none is the explicit production opt-out — same passthrough
+// behavior as dev mode, but the operator stated it deliberately rather
+// than relying on the dev-mode default.
+func TestAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
+	authMu.Lock()
+	origConfigured, origExternal := validatorConfigured, externalAuthRegistered
+	validatorConfigured = false
+	externalAuthRegistered = false
+	authMu.Unlock()
+	t.Setenv("ENVIRONMENT", "production")
+	t.Setenv("AUTH_MODE", "none")
+	t.Cleanup(func() {
+		authMu.Lock()
+		validatorConfigured = origConfigured
+		externalAuthRegistered = origExternal
+		authMu.Unlock()
+	})
+
+	ic := AuthInterceptor() // must not panic
+	if ic == nil {
+		t.Fatal("AuthInterceptor must not return nil with AUTH_MODE=none")
+	}
+}
+
+// When SetTokenValidator installed a real validator, the interceptor must
+// be the source of truth — NOT a passthrough — and exercise the
+// authenticateFromHeader path on the request.
+func TestAuthInterceptor_ValidatorConfigured(t *testing.T) {
+	setValidateToken(t, func(string) (*Claims, error) {
+		return &Claims{UserID: "u1"}, nil
+	})
+	ic := AuthInterceptor()
+	if ic == nil {
+		t.Fatal("AuthInterceptor must not return nil when configured")
+	}
+	// WrapUnary returns a wrapping function (not identity); we can't check
+	// for exact passthrough here without spinning up a Connect request.
+	// The authenticateFromHeader path is exercised directly by
+	// TestAuthenticateFromHeader.
 	if ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) { return nil, nil }) == nil {
 		t.Fatal("WrapUnary must return a non-nil UnaryFunc")
 	}

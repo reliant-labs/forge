@@ -20,6 +20,12 @@ var validator *Validator
 // Init initializes the JWT validator from environment variables.
 // Call this during server startup before handling requests.
 //
+// Init also calls [middleware.MarkExternalAuth] so the scaffold's stub
+// AuthInterceptor (wired alongside this pack's interceptor in
+// cmd/server.go) flips into passthrough mode. Without that signal the
+// stub panics at startup because it can't tell that a pack is taking
+// over auth.
+//
 // Dev mode (ENVIRONMENT=development) is per-request, not all-or-nothing:
 //   - Requests with no Authorization header get synthetic DevClaims (so
 //     local dev stays frictionless).
@@ -29,6 +35,8 @@ var validator *Validator
 //     real login UX can be tested locally). If JWT_* env vars aren't set,
 //     real-token requests return 500 — a clear "misconfigured" signal.
 func Init(logger *slog.Logger) error {
+	middleware.MarkExternalAuth()
+
 	if DevAuthEnabled() {
 		logger.Warn("DEV MODE: dev-auth bypass enabled — requests with no token (or with the dev-bypass sentinel) receive synthetic claims. Do not enable in production.")
 	}

@@ -120,6 +120,20 @@ func Setup(app *App) error {
 }
 ```
 
+### Decomposing setup.go in worker-heavy projects
+
+`Setup()` in one file is fine up to ~150 LOC. Past that — especially for projects with many workers, each needing its own infrastructure construction — split into sibling files in the same `package app`. Go has no problem with multiple files exporting helpers used by `Setup`:
+
+```
+pkg/app/
+  setup.go              # Setup() — calls helpers below
+  setup_workers.go      # buildWorkerInfra(app) — NATS subscribers, ticker queues
+  setup_handlers.go     # buildHandlerInfra(app) — DB pool, ORM, audit sink
+  setup_external.go     # buildExternalClients(app) — Stripe, SES, third-party SDKs
+```
+
+Each helper builds and assigns to `app.*Extras` fields; `Setup` orchestrates the call order. The convention is owner-driven — forge generates nothing here — but a flat 600-LOC `setup.go` is a code-review hazard. Split early.
+
 `setup.go` is marked with `//forge:allow` and will never be overwritten.
 
 ## Test Harness in testing.go

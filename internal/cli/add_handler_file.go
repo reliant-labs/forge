@@ -22,7 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // newAddHandlerFileCmd is the cobra surface for `forge add handler-file <svc> <name>`.
@@ -94,10 +94,10 @@ func runAddHandlerFile(svc, name string) error {
 		return err
 	}
 
-	// Resolve the on-disk handler dir from <svc>. ServicePackageName
+	// Resolve the on-disk handler dir from <svc>. naming.ServicePackage
 	// matches the convention `forge add service` uses to derive a Go
 	// package name from the proto-shaped service name (hyphens → underscores).
-	pkg := generator.ServicePackageName(svc)
+	pkg := naming.ServicePackage(svc)
 	handlerDir := filepath.Join(root, "handlers", pkg)
 	if _, err := os.Stat(handlerDir); os.IsNotExist(err) {
 		return cliutil.UserErr(ctxLabel,

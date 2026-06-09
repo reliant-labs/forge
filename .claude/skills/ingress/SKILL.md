@@ -10,6 +10,15 @@ Forge's ingress story is Kubernetes Gateway API — first-class `Gateway`,
 entities. There is no `Ingress` resource, no per-controller annotations,
 and no `forge dev port-forward` (deleted in favor of this model).
 
+> **Experimental feature.** Ingress is gated behind
+> `features.experimental.ingress: true` in `forge.yaml`. The Gateway
+> codegen, `forge dev cluster up` Traefik install, the
+> cert-manager wiring, and `forge dev urls` are all off until the flag
+> is on. The scaffold still emits `deploy/kcl/<env>/ingress.k` so a
+> flag flip activates everything with no rescaffold. We treat the
+> cross-provider matrix (k3d / GKE / EKS) as experimental until enough
+> projects have shipped through it without provider-specific patches.
+
 ## Mental model
 
 - **KCL is the source of truth.** Gateways and routes are declared as
@@ -158,6 +167,12 @@ GRPC_ROUTES: [forge.GRPCRoute] = []
 Ports `18080` / `19190` are the dev host-side ports — `forge dev
 cluster up` derives `deploy/k3d-ports.yaml` from the listeners and
 merges it into `deploy/k3d.yaml` so the host can hit the listener.
+It also renders the vendored Traefik install with a matching
+`--entrypoints.<name>.address=:<port>` arg per listener; Traefik
+v3.2's kubernetesgateway provider needs the static entrypoint
+declared at install time. **Adding or removing a listener requires
+re-running `forge dev cluster up`** to install the new entrypoints
+(idempotent — the Traefik Deployment restarts with the new args).
 
 ## Per-env override patterns
 

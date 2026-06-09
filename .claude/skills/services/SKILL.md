@@ -14,6 +14,7 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 | A new network-facing API (Connect RPC)       | `forge add service <name>`     | Proto definition, generated stubs, Go service skeleton |
 | A background worker                          | `forge add worker <name>`      | Worker with Start/Stop lifecycle |
 | A cron-scheduled worker                      | `forge add worker <name> --kind cron --schedule "..."` | Worker with cron scheduler |
+| A streaming or hand-written RPC on an existing service | `forge add rpc <svc> <Name> [--stream server\|client\|bidi]` | Handler stub with the right Connect signature + proto snippet to paste |
 | An internal Go package with interface contract | `forge package new <name>`   | Package directory with contract interface and default implementation |
 | A Next.js web frontend                       | `forge add frontend <name>`    | Next.js app wired into the project |
 | A React Native mobile frontend               | `forge add frontend <name> --kind mobile` | Expo app with Connect-web transport |
@@ -44,3 +45,4 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 - **Simple utility packages** — just create a directory under `pkg/` and write plain Go. No scaffold needed.
 - **CLI-only projects** — use `forge new <name> --mod <module>` without `--service` to create a Cobra CLI binary with no server bootstrap.
 - **One-off scripts or CLI tools within existing projects** — add a `cmd/<name>/main.go` file directly. Forge scaffolding is for wired components, not standalone binaries.
+- **Service source lives outside this Go module** — sibling repos, third-party binaries, non-Go languages. Instead of `path:`, declare `build_cmd` on the KCL `forge.Service` and let your shell command own the build (and the push) end-to-end. See the `external-builds` skill for the full pattern, token reference, and worked examples (sibling-repo Go binary → standard K8s Deployment, Rust binary → Fly.io, etc.).

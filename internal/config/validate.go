@@ -57,9 +57,10 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 		issues = append(issues, walkUnknownKeys(root, "", reflect.TypeFor[ProjectConfig]())...)
 	} else if root != nil && root.Kind != 0 {
 		issues = append(issues, validationIssue{
-			line: root.Line,
-			msg:  "expected a YAML mapping at the top level",
-			fix:  "the file must be a YAML mapping (key: value pairs), not a list or scalar.",
+			line:   root.Line,
+			column: root.Column,
+			msg:    "expected a YAML mapping at the top level",
+			fix:    "the file must be a YAML mapping (key: value pairs), not a list or scalar.",
 		})
 	}
 
@@ -77,14 +78,19 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 		}
 	}
 
-	// Phase 3: required-field validation.
-	issues = append(issues, validateRequired(&cfg)...)
+	// Phase 3: required-field validation. The yaml root is threaded
+	// through so issues can carry the line:col of the *parent* mapping
+	// (or the existing-field's own line, when it's present but invalid).
+	// Without this, "module_path is required" reports no location and
+	// the model has to grep — model-friendly file:line:col on every
+	// issue is the goal of the LoadStrict surface.
+	issues = append(issues, validateRequired(&cfg, root)...)
 
 	// Phase 4: name-shape validation across services/binaries/frontends.
 	// This catches Go-package collisions and reserved-word/identifier
 	// shapes that would otherwise blow up the generator with a confusing
 	// downstream error.
-	issues = append(issues, validateServices(&cfg)...)
+	issues = append(issues, validateServices(&cfg, root)...)
 
 	if len(issues) > 0 {
 		return nil, &ValidationError{Path: label, Issues: issues}
@@ -102,15 +108,12 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string {
 	if len(e.Issues) == 1 {
-		iss := e.Issues[0]
 		var b strings.Builder
-		fmt.Fprintf(&b, "%s", e.Path)
-		if iss.line > 0 {
-			fmt.Fprintf(&b, " line %d", iss.line)
-		}
-		fmt.Fprintf(&b, ": %s", iss.msg)
-		if iss.fix != "" {
-			fmt.Fprintf(&b, " Fix: %s", iss.fix)
+		b.WriteString(formatIssueLocation(e.Path, e.Issues[0]))
+		b.WriteString(": ")
+		b.WriteString(e.Issues[0].msg)
+		if e.Issues[0].fix != "" {
+			fmt.Fprintf(&b, " Fix: %s", e.Issues[0].fix)
 		}
 		return b.String()
 	}
@@ -122,9 +125,8 @@ func (e *ValidationError) Error() string {
 	b.WriteString(":\n")
 	for _, iss := range e.Issues {
 		b.WriteString("  ")
-		if iss.line > 0 {
-			fmt.Fprintf(&b, "line %d: ", iss.line)
-		}
+		b.WriteString(formatIssueLocation(e.Path, iss))
+		b.WriteString(": ")
 		b.WriteString(iss.msg)
 		if iss.fix != "" {
 			fmt.Fprintf(&b, " Fix: %s", iss.fix)
@@ -134,10 +136,28 @@ func (e *ValidationError) Error() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// formatIssueLocation renders the per-issue position in standard
+// compiler/editor format: `path:line:col` when both line and column are
+// known, `path:line` for line-only, `path` when neither. Matches what
+// every editor, LSP client, and `cc`/`go vet`-style tool already
+// understands — a model reading the error can immediately open the
+// right line, no grep round-trip required.
+func formatIssueLocation(path string, iss validationIssue) string {
+	switch {
+	case iss.line > 0 && iss.column > 0:
+		return fmt.Sprintf("%s:%d:%d", path, iss.line, iss.column)
+	case iss.line > 0:
+		return fmt.Sprintf("%s:%d", path, iss.line)
+	default:
+		return path
+	}
+}
+
 type validationIssue struct {
-	line int    // YAML line number (1-based); 0 if unknown.
-	msg  string // primary message ("unknown key 'auht' — did you mean 'auth'?")
-	fix  string // "Fix: rename to 'auth' or remove if unused."
+	line   int    // YAML line number (1-based); 0 if unknown.
+	column int    // YAML column (1-based); 0 if unknown.
+	msg    string // primary message ("unknown key 'auht' — did you mean 'auth'?")
+	fix    string // "Fix: rename to 'auth' or remove if unused."
 }
 
 // isDeprecatedTopLevelKey returns true for top-level forge.yaml keys
@@ -288,7 +308,7 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 				msg += fmt.Sprintf(" — did you mean %q?", suggestion)
 				fix = fmt.Sprintf("rename to %q or remove if unused.", suggestion)
 			}
-			out = append(out, validationIssue{line: keyNode.Line, msg: msg, fix: fix})
+			out = append(out, validationIssue{line: keyNode.Line, column: keyNode.Column, msg: msg, fix: fix})
 			continue
 		}
 		// Recurse into nested structs and slices of structs.
@@ -474,24 +494,41 @@ func splitYAMLErrorLines(err error) []string {
 // be missing are present. The list intentionally stays small — every
 // required field here corresponds to a real downstream breakage when
 // absent (broken go.mod, empty deploy, ambiguous codegen target).
-func validateRequired(cfg *ProjectConfig) []validationIssue {
+func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
+
+	// rootPos is the fallback location for "this required field is
+	// missing entirely from the file" — we point at the top-level
+	// mapping (line 1, col 1) so the model knows it's a forge.yaml-wide
+	// concern, not a nested-block one.
+	var rootLine, rootCol int
+	if root != nil {
+		rootLine, rootCol = root.Line, root.Column
+	}
 
 	if strings.TrimSpace(cfg.Name) == "" {
 		out = append(out, validationIssue{
-			msg: "'name' is required but missing or empty",
-			fix: "add 'name: <project-name>' near the top of forge.yaml.",
+			line:   rootLine,
+			column: rootCol,
+			msg:    "'name' is required but missing or empty",
+			fix:    "add 'name: <project-name>' near the top of forge.yaml.",
 		})
 	}
 	if strings.TrimSpace(cfg.ModulePath) == "" {
 		out = append(out, validationIssue{
-			msg: "'module_path' is required but missing or empty",
-			fix: "add 'module_path: github.com/<org>/<project>' near the top of forge.yaml.",
+			line:   rootLine,
+			column: rootCol,
+			msg:    "'module_path' is required but missing or empty",
+			fix:    "add 'module_path: github.com/<org>/<project>' near the top of forge.yaml.",
 		})
 	} else if !looksLikeGoModulePath(cfg.ModulePath) {
+		// Existing-but-invalid: point at the actual `module_path:` line.
+		line, col := findNodePos(root, []string{"module_path"})
 		out = append(out, validationIssue{
-			msg: fmt.Sprintf("'module_path' value %q does not look like a Go module path", cfg.ModulePath),
-			fix: "use a path like 'github.com/<org>/<project>' (must contain a slash, no spaces).",
+			line:   line,
+			column: col,
+			msg:    fmt.Sprintf("'module_path' value %q does not look like a Go module path", cfg.ModulePath),
+			fix:    "use a path like 'github.com/<org>/<project>' (must contain a slash, no spaces).",
 		})
 	}
 	// Kind defaults to "service" via EffectiveProjectKind, so an empty
@@ -500,9 +537,12 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 		switch k {
 		case ProjectKindService, ProjectKindCLI, ProjectKindLibrary:
 		default:
+			line, col := findNodePos(root, []string{"kind"})
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("'kind' value %q is invalid", cfg.Kind),
-				fix: "use one of: service, cli, library.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("'kind' value %q is invalid", cfg.Kind),
+				fix:    "use one of: service, cli, library.",
 			})
 		}
 	}
@@ -510,9 +550,14 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 	for i, svc := range cfg.Services {
 		prefix := fmt.Sprintf("services[%d]", i)
 		if strings.TrimSpace(svc.Name) == "" {
+			// Position at the parent services[i] mapping so the model
+			// can open the right block and add the missing field.
+			line, col := findNodePos(root, []string{"services", fmt.Sprintf("[%d]", i)})
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name is required", prefix),
-				fix: "add a 'name:' for this service entry.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name is required", prefix),
+				fix:    "add a 'name:' for this service entry.",
 			})
 		}
 		// services[].path is intentionally not required: the cli loader
@@ -526,9 +571,12 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 	for i, fe := range cfg.Frontends {
 		prefix := fmt.Sprintf("frontends[%d]", i)
 		if strings.TrimSpace(fe.Name) == "" {
+			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i)})
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name is required", prefix),
-				fix: "add a 'name:' for this frontend entry.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name is required", prefix),
+				fix:    "add a 'name:' for this frontend entry.",
 			})
 		}
 		// frontends[].type and frontends[].path are filled in by the
@@ -537,9 +585,12 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 		// be a regression for existing forge.yaml files.
 		if t := strings.ToLower(strings.TrimSpace(fe.Type)); t != "" {
 			if t != "nextjs" && t != "react_native" && t != "react-native" && t != "vite-spa" {
+				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "type"})
 				out = append(out, validationIssue{
-					msg: fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
-					fix: "use one of: nextjs, react-native, vite-spa.",
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
+					fix:    "use one of: nextjs, react-native, vite-spa.",
 				})
 			}
 		}
@@ -553,13 +604,74 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 	// breaking change. Explicit `features.orm: true` is the signal that
 	// the user is committing to the ORM and so must declare a driver.
 	if cfg.Features.ORM != nil && *cfg.Features.ORM && strings.TrimSpace(cfg.Database.Driver) == "" {
+		// Point at the `database:` block (or the file root if absent).
+		line, col := findNodePos(root, []string{"database"})
+		if line == 0 {
+			line, col = rootLine, rootCol
+		}
 		out = append(out, validationIssue{
-			msg: "'database.driver' is required when features.orm is explicitly enabled",
-			fix: "add 'database:\\n  driver: postgres' (or 'sqlite').",
+			line:   line,
+			column: col,
+			msg:    "'database.driver' is required when features.orm is explicitly enabled",
+			fix:    "add 'database:\\n  driver: postgres' (or 'sqlite').",
 		})
 	}
 
 	return out
+}
+
+// findNodePos walks a YAML mapping/sequence tree along a dot/index path
+// and returns the line/col of the resolved node. Path segments are
+// either bare keys (e.g. "module_path") or sequence indices in literal
+// `[N]` form (e.g. "[0]") — same shape used in qualifiedKey output so
+// callers can construct paths once and reuse them across issue messages
+// and position lookups. Returns (0, 0) when the path doesn't resolve;
+// callers fall back to the root position (or omit position entirely)
+// in that case.
+func findNodePos(node *yaml.Node, segments []string) (int, int) {
+	if node == nil {
+		return 0, 0
+	}
+	cur := node
+	for _, seg := range segments {
+		if cur == nil {
+			return 0, 0
+		}
+		if strings.HasPrefix(seg, "[") && strings.HasSuffix(seg, "]") {
+			// Sequence index.
+			if cur.Kind != yaml.SequenceNode {
+				return 0, 0
+			}
+			idx := 0
+			if _, err := fmt.Sscanf(seg, "[%d]", &idx); err != nil {
+				return 0, 0
+			}
+			if idx < 0 || idx >= len(cur.Content) {
+				return 0, 0
+			}
+			cur = cur.Content[idx]
+			continue
+		}
+		// Mapping key lookup.
+		if cur.Kind != yaml.MappingNode {
+			return 0, 0
+		}
+		var matched *yaml.Node
+		for i := 0; i+1 < len(cur.Content); i += 2 {
+			if cur.Content[i].Kind == yaml.ScalarNode && cur.Content[i].Value == seg {
+				matched = cur.Content[i+1]
+				break
+			}
+		}
+		if matched == nil {
+			return 0, 0
+		}
+		cur = matched
+	}
+	if cur == nil {
+		return 0, 0
+	}
+	return cur.Line, cur.Column
 }
 
 // goReservedWords is the set of Go keywords plus predeclared identifiers
@@ -591,9 +703,10 @@ var goReservedWords = map[string]bool{
 //   - non-Go-legal package shape after normalisation (starts with a
 //     digit, contains punctuation/space that survives `ServicePackage`)
 //   - normalisation collisions across the same slice (e.g.
-//     `admin-server` and `admin_server` both → `adminserver`) AND
-//     across slices (a service and a binary with the same canonical
-//     form would write to the same scaffold directory)
+//     `admin-server` and `admin_server` both → `admin_server` since
+//     hyphens normalise to underscores) AND across slices (a service
+//     and a binary with the same canonical form would write to the same
+//     scaffold directory)
 //   - the canonical form lands on a Go reserved word / predeclared
 //     identifier (e.g. "select", "type"), which would compile-fail
 //

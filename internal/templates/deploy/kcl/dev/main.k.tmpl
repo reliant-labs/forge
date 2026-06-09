@@ -15,9 +15,10 @@ Two outputs:
   * `manifests` — Kubernetes manifest list rendered for the env.
     Pipe to `kubectl apply -f -` or `forge deploy dev`.
 
-Top-level identifiers `image_tag` and `registry` are overridable via
-`kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
-flag only binds top-level names, not nested struct fields.
+Per-env tag/registry overrides are consumed by the forge KCL helpers
+(`forge.image_tag(env)` reads `option("image_tag")`) and the
+`registry` field on `K8sCluster`. The forge CLI passes `-D image_tag=`
+on every build/deploy.
 """
 
 import forge
@@ -33,17 +34,12 @@ import deploy.kcl.dev.config_gen as cfg
 import deploy.kcl.dev.ingress as ing
 {{- end}}
 
-# Overridable via `kcl run -D image_tag=...`
-_image_tag = option("image_tag") or "latest"
-
-# Overridable via `kcl run -D registry=...`. Local dev defaults to the k3d
-# registry created by `deploy/k3d.yaml`.
-_registry = option("registry") or "localhost:5050"
-
 _dev_k8s = forge.K8sCluster {
     cluster = "k3d-{{.ProjectName}}"
     namespace = "{{.ProjectName}}-dev"
-    registry = _registry
+    # Overridable via `kcl run -D registry=...`. Local dev defaults to
+    # the k3d registry created by `deploy/k3d.yaml`.
+    registry = option("registry") or "localhost:5050"
     replicas = 1
     ports = [8080]
 }
@@ -88,9 +84,8 @@ output = forge.render(_bundle)
 
 # k8s manifests for `kubectl apply -f -`.
 _env = forge.RenderEnv {
-    namespace = "{{.ProjectName}}-dev"
-    image_registry = _registry
-    image_tag = _image_tag
+    cluster = _dev_k8s
+    image_tag = forge.image_tag("dev")
     network_policies = False
 }
 manifests = forge.render_manifests(_bundle, _env)

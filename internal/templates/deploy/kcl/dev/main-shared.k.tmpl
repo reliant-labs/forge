@@ -17,9 +17,6 @@ import deploy.kcl.dev.config_gen as cfg
 import deploy.kcl.dev.ingress as ing
 {{- end}}
 
-_image_tag = option("image_tag") or "latest"
-_registry = option("registry") or "localhost:5050"
-
 # Shared env vars layered into every service.
 _shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
@@ -28,7 +25,8 @@ _shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
 _dev_k8s = forge.K8sCluster {
     cluster = "k3d-{{.ProjectName}}"
     namespace = "{{.ProjectName}}-dev"
-    registry = _registry
+    # Overridable via `kcl run -D registry=...`.
+    registry = option("registry") or "localhost:5050"
     replicas = 1
     ports = [8080]
 }
@@ -58,9 +56,8 @@ _bundle = forge.Bundle {
 output = forge.render(_bundle)
 
 _env = forge.RenderEnv {
-    namespace = "{{.ProjectName}}-dev"
-    image_registry = _registry
-    image_tag = _image_tag
+    cluster = _dev_k8s
+    image_tag = forge.image_tag("dev")
     network_policies = False
 }
 manifests = forge.render_manifests(_bundle, _env)

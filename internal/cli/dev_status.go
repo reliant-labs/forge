@@ -305,9 +305,14 @@ func devNamespace(clusterName string) string {
 // listPodsInNamespace returns a compact pod table for the given
 // namespace. Failures are non-fatal — we return an empty slice and let
 // the caller render "(none)".
+//
+// Uses kubectl's native `get pods` output (no --output= override) so
+// READY renders as "1/1" / "0/1" and AGE as relative ("2m", "3h") —
+// the custom-columns path returned a literal "true"/"false" for READY
+// and an ISO timestamp for AGE, both visually noisy. Standard kubectl
+// output gives exactly five columns: NAME READY STATUS RESTARTS AGE.
 func listPodsInNamespace(ctx context.Context, ns string) []podStatusEntry {
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns, "--no-headers",
-		"-o", "custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[*].ready,STATUS:.status.phase,RESTARTS:.status.containerStatuses[*].restartCount,AGE:.metadata.creationTimestamp")
+	cmd := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns, "--no-headers")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -318,12 +323,19 @@ func listPodsInNamespace(ctx context.Context, ns string) []podStatusEntry {
 		if len(fields) < 5 {
 			continue
 		}
+		// RESTARTS may have a parenthesized suffix like "2 (3m ago)" —
+		// kubectl emits a 6th-or-7th field. Glue the trailing fields
+		// after AGE back into AGE so the table stays 5 columns.
+		age := fields[4]
+		if len(fields) > 5 {
+			age = strings.Join(fields[4:], " ")
+		}
 		entries = append(entries, podStatusEntry{
 			Name:    fields[0],
 			Ready:   fields[1],
 			Status:  fields[2],
 			Restart: fields[3],
-			Age:     fields[4],
+			Age:     age,
 		})
 	}
 	return entries

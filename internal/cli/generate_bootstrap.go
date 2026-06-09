@@ -253,7 +253,8 @@ func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
 // Keying matches `naming.ServicePackage(svc.Name)` for proto-derived
 // services: forge.yaml's hyphenated CLI name ("admin-server") and the
 // proto's PascalCase form ("AdminServerService") both normalize to
-// "adminserver", which is also the directory leaf under handlers/.
+// "admin_server" (post-2026-06-08 snake-canonicalisation), which is
+// also the directory leaf under handlers/.
 func discoverWebhookServices(projectDir string) map[string]bool {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)

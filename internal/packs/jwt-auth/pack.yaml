@@ -8,6 +8,11 @@ description: |
     jwtauth.Init(logger)
     interceptors := connect.WithInterceptors(jwtauth.Interceptor())
 
+  jwtauth.Init() calls middleware.MarkExternalAuth() so the scaffold's
+  AuthInterceptor (already wired in cmd/server.go) flips to passthrough
+  and this pack's interceptor becomes the source of truth. Both run
+  alongside in the chain — the scaffold stub is not replaced.
+
   Pair with the `auth-ui` frontend pack for opinionated login/signup UI:
     forge pack install auth-ui --config provider=jwt-auth
 version: 1.0.0

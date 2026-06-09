@@ -57,7 +57,14 @@ linters:
         - name: function-result-limit
           arguments: [3]
         - name: max-public-structs
-          arguments: [5]
+          # 25 accommodates the forge-canonical interactor/adapter scaffold:
+          # Service + collaborator interfaces (Source/Sink/...) + input/output
+          # structs (RunInput/RunResult/Item/...) routinely hit 6+ public
+          # types in a single package before any user code is added. CRUD
+          # services accumulate request/response and entity types similarly.
+          # Bump further if your package legitimately exposes more (e.g. a
+          # flat config module); refactor if you're past 25 without one.
+          arguments: [25]
         - name: max-control-nesting
           arguments: [4]
     cyclop:

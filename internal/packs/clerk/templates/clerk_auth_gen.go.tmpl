@@ -19,7 +19,15 @@ var validator *Validator
 
 // Init initializes the Clerk JWT validator from environment variables.
 // Call this during server startup before handling requests.
+//
+// Init also calls [middleware.MarkExternalAuth] so the scaffold's stub
+// AuthInterceptor (wired alongside this pack's interceptor in
+// cmd/server.go) flips into passthrough mode. Without that signal the
+// stub panics at startup because it can't tell that a pack is taking
+// over auth.
 func Init(logger *slog.Logger) error {
+	middleware.MarkExternalAuth()
+
 	domain := os.Getenv("CLERK_DOMAIN")
 	if domain == "" {
 		logger.Warn("CLERK_DOMAIN not set — running in dev mode, JWT validation disabled")

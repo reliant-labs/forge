@@ -147,6 +147,174 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 }
 
+// TestBootstrapTemplate_LoudFilterBanner pins the loud-by-default contract
+// for the `./<bin> server <name>...` subcommand filter. The banner names
+// BOTH registered and excluded services/workers/operators so a user who
+// typo'd a name or forgot a service in the args sees it at boot instead of
+// chasing 404s through CORS/proxy/auth. Silent-skip here was a real
+// debug-time-sink; this test stops a future template edit from
+// reintroducing it.
+func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
+	type svc struct {
+		Name, Package, FieldName, Alias, VarName string
+		Fallible, HasWebhooks                    bool
+	}
+	type wkr struct {
+		Name, Package, FieldName, Alias, VarName string
+		Fallible                                 bool
+	}
+	type op struct {
+		Name, Package, FieldName, Alias, VarName string
+		Fallible                                 bool
+	}
+	data := struct {
+		Module              string
+		Services            []svc
+		Packages            []struct{}
+		Workers             []wkr
+		Operators           []op
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
+	}{
+		Module: "example.com/myproject",
+		Services: []svc{
+			{Name: "api", Package: "api", FieldName: "API", Alias: "api", VarName: "api"},
+			{Name: "billing", Package: "billing", FieldName: "Billing", Alias: "billing", VarName: "billing"},
+		},
+		Workers: []wkr{
+			{Name: "indexer", Package: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
+		},
+		Operators: []op{
+			{Name: "scaler", Package: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
+		},
+		ConfigFields: map[string]bool{},
+	}
+
+	content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+	}
+	rendered := string(content)
+
+	// The `known` map is what the banner iterates to compute
+	// registered+excluded. It must include all three component kinds —
+	// excluding workers/operators here would silently drop them from the
+	// excluded report, defeating the whole point.
+	for _, name := range []string{`"api": true`, `"billing": true`, `"indexer": true`, `"scaler": true`} {
+		if !strings.Contains(rendered, name) {
+			t.Errorf("bootstrap `known` map missing %s — banner cannot report this name as excluded", name)
+		}
+	}
+
+	// Unknown-name warning must fire on every unrecognized arg (catches
+	// `./bin server api` typo'd as `./bin server appi`).
+	if !strings.Contains(rendered, `"unknown service/worker/operator name, ignoring"`) {
+		t.Error("bootstrap must emit unknown-name warning for unrecognized filter args")
+	}
+
+	// Banner gate + message + both lists. Together these enforce the
+	// loud-by-default contract.
+	if !strings.Contains(rendered, "if len(names) > 0 {") {
+		t.Error("bootstrap must gate the loud filter banner on len(names) > 0 (unfiltered case is silent by design)")
+	}
+	if !strings.Contains(rendered, "server filter active") {
+		t.Error("bootstrap loud filter banner missing — expected `server filter active` Warn line")
+	}
+	if !strings.Contains(rendered, `"registered", registered,`) || !strings.Contains(rendered, `"excluded", excluded,`) {
+		t.Error("bootstrap loud filter banner must report BOTH registered AND excluded lists (silent-excluded was the original foot-gun)")
+	}
+
+	fset := token.NewFileSet()
+	if _, parseErr := parser.ParseFile(fset, "bootstrap.go", rendered, parser.AllErrors); parseErr != nil {
+		t.Fatalf("rendered bootstrap.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+	}
+}
+
+// TestBootstrapTemplate_DevModeAuthzBanner pins the loud-by-default
+// dev-mode banner. When cfg.Environment == "development" the per-service
+// Authorizer is swapped to middleware.DevAuthorizer{} (allow-all), so a
+// prod manifest that accidentally sets ENVIRONMENT=development would
+// silently ship with authz disabled. The Warn line surfaces this at
+// every container start so leakage between envs is caught immediately
+// rather than by a security review months later.
+//
+// Zero-service projects don't get the swap (no Authorizer to flip) so
+// the banner is gated on .Services like the devMode local is.
+func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
+	type svc struct {
+		Name, Package, FieldName, Alias, VarName string
+		Fallible, HasWebhooks                    bool
+	}
+	mkData := func(services []svc) any {
+		return struct {
+			Module              string
+			Services            []svc
+			Packages            []struct{}
+			Workers             []struct{}
+			Operators           []struct{}
+			ConfigFields        map[string]bool
+			RESTEnabled         bool
+			ConnectImports      []string
+			DiagnosticsEnabled  bool
+			StrictWiringEnabled bool
+		}{
+			Module:       "example.com/myproject",
+			Services:     services,
+			ConfigFields: map[string]bool{"Environment": true},
+		}
+	}
+
+	t.Run("with-services-emits-banner", func(t *testing.T) {
+		data := mkData([]svc{
+			{Name: "api", Package: "api", FieldName: "API", Alias: "api", VarName: "api"},
+		})
+		content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+		if err != nil {
+			t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+		}
+		rendered := string(content)
+
+		// Bootstrap and BootstrapOnly each set devMode independently, so
+		// both must emit the banner — otherwise a per-service subcommand
+		// (which goes through BootstrapOnly) would silently swap to
+		// DevAuthorizer without the warn.
+		if got := strings.Count(rendered, "DEV MODE — authorization checks disabled"); got != 2 {
+			t.Errorf("expected dev-mode Warn in BOTH Bootstrap and BootstrapOnly, found %d occurrence(s)", got)
+		}
+		// Gate must match the devMode local exactly — emitting unconditionally
+		// would print at every prod boot too, which neuters the signal.
+		if !strings.Contains(rendered, "if devMode {") {
+			t.Error("dev-mode banner must be gated on `if devMode {`")
+		}
+		if !strings.Contains(rendered, `"environment", cfg.Environment`) {
+			t.Error("dev-mode banner should attach the actual environment value so operators can see what triggered the swap")
+		}
+
+		fset := token.NewFileSet()
+		if _, parseErr := parser.ParseFile(fset, "bootstrap.go", rendered, parser.AllErrors); parseErr != nil {
+			t.Fatalf("rendered bootstrap.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+		}
+	})
+
+	t.Run("zero-services-suppresses-banner", func(t *testing.T) {
+		data := mkData(nil)
+		content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+		if err != nil {
+			t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+		}
+		rendered := string(content)
+		// No services → no DevAuthorizer swap → no banner. Emitting it
+		// here would force an unused `logger` reference and surface a
+		// misleading warning in CLI-only projects.
+		if strings.Contains(rendered, "DEV MODE — authorization checks disabled") {
+			t.Error("zero-service project must not emit the dev-mode banner (no Authorizer to swap)")
+		}
+	})
+}
+
 // TestBootstrapTemplate_DiagnosticsEmitWhenEnabled asserts that the
 // `features.diagnostics: true` flag is the only thing that wires
 // diagnostics.Default.Boot into the rendered bootstrap. Off → no

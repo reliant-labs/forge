@@ -330,6 +330,16 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 {{- else}}
 	devMode := false
 {{- end}}
+	// Loud-by-default dev-mode banner: when devMode is on the per-service
+	// Authorizer is swapped to middleware.DevAuthorizer{} (allow-all).
+	// A prod manifest that accidentally sets ENVIRONMENT=development gets
+	// a screaming Warn at every container start instead of silently
+	// shipping with authz disabled.
+	if devMode {
+		logger.Warn("DEV MODE — authorization checks disabled (DevAuthorizer is allow-all); set ENVIRONMENT to anything other than \"development\" in non-dev environments",
+			"environment", cfg.Environment,
+		)
+	}
 {{- end}}
 {{- range .Services}}
 	// wireXxxDeps assembles the full Deps from app fields + cfg.
@@ -563,6 +573,15 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- else}}
 	devMode := false
 {{- end}}
+	// Loud-by-default dev-mode banner — see Bootstrap above for the
+	// rationale. BootstrapOnly is reached by per-service subcommands and
+	// host runners alike, so it gets the same banner so neither path
+	// silently ships with authz disabled.
+	if devMode {
+		logger.Warn("DEV MODE — authorization checks disabled (DevAuthorizer is allow-all); set ENVIRONMENT to anything other than \"development\" in non-dev environments",
+			"environment", cfg.Environment,
+		)
+	}
 {{- end}}
 	// Construct services. In binary=per-service mode (default), ALL services
 	// are constructed up-front (they're cheap given wire_gen pulls deps from

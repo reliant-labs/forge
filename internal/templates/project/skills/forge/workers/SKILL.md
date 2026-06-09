@@ -137,6 +137,22 @@ type Deps struct {
 }
 ```
 
+## Late-bound dependencies between workers
+
+When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't put it in B's `Deps` — wire_gen resolves Deps once at construction and both workers are constructed in the same pass, so there's a construction-order cycle.
+
+The seam is `PostBootstrap` in `pkg/app/post_bootstrap.go`, called after `Bootstrap` returns with the fully-constructed `*App`:
+
+```go
+func PostBootstrap(app *App) error {
+    saver := app.Workers.Snapshotter.SnapshotSaver()
+    app.Workers.Trader.SetSnapshotSaver(saver)
+    return nil
+}
+```
+
+`PostBootstrap` is user-owned; forge generate never overwrites it. An error returned here aborts boot loudly. **Don't invent a parallel hook system (`wire_*_hooks.go`, post-Setup passes) for this — PostBootstrap IS that system.** See the `interactor` skill for the full pattern.
+
 ## Testing
 
 The generated test verifies basic start/stop lifecycle. For workers that process messages, inject a mock dependency and verify behavior:

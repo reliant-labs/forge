@@ -120,6 +120,16 @@ func ParseServiceDeps(dir string) ([]DepsField, error) {
 // rule is "the marker is on a Deps field; anywhere else is a typo /
 // misuse" and the lint check needs to scan for the marker in places
 // it shouldn't be.
+//
+// IMPORTANT: callers parsing an *ast.CommentGroup should prefer
+// HasOptionalDepMarkerCommentGroup over passing `cg.Text()` here. Go's
+// ast.CommentGroup.Text() silently drops `//directive` form comments
+// (the no-space variant — same shape as `//go:generate`,
+// `//go:noinline`, etc.) which means `//forge:optional-dep` written
+// without a space would be invisible to this function when fed via
+// .Text(). HasOptionalDepMarkerCommentGroup iterates cg.List directly
+// and recognizes both spaced (`// forge:optional-dep`) and unspaced
+// (`//forge:optional-dep`) forms, matching the user's intent.
 func HasOptionalDepMarker(text string) bool {
 	const needle = "forge:optional-dep"
 	for _, line := range strings.Split(text, "\n") {
@@ -129,6 +139,61 @@ func HasOptionalDepMarker(text string) bool {
 		}
 	}
 	return false
+}
+
+// HasOptionalDepMarkerCommentGroup returns true when any comment in
+// the group is the `forge:optional-dep` marker. Unlike
+// HasOptionalDepMarker (which takes the post-.Text() string), this
+// helper inspects the raw c.Text of each *ast.Comment in cg.List, so
+// it recognizes both the spaced form (`// forge:optional-dep`) and
+// the unspaced directive form (`//forge:optional-dep`).
+//
+// The unspaced form is otherwise invisible to ast.CommentGroup.Text()
+// because Go treats `//<no-space><alnum>` as a compiler/linter
+// directive (same shape as `//go:generate`, `//go:noinline`,
+// `//nolint:...`) and strips it from the joined text. That stripping
+// is a silent footgun for forge users who omit the space — the marker
+// looks present in source but the parser would never see it, so the
+// field would be treated as required, validateDeps would reject nil,
+// and the user's "I marked it optional" intent would be ignored.
+//
+// Both shapes are accepted; the marker must still be the whole comment
+// (after stripping `//`, `/*`, `*/`, and leading/trailing whitespace).
+// A nil group returns false. Inline /* … */ blocks are honored too —
+// the parser logic is symmetric across both Comment kinds.
+func HasOptionalDepMarkerCommentGroup(cg *ast.CommentGroup) bool {
+	if cg == nil {
+		return false
+	}
+	const needle = "forge:optional-dep"
+	for _, c := range cg.List {
+		if trimCommentMarkers(c.Text) == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// trimCommentMarkers strips the comment-syntax wrappers from a raw
+// ast.Comment.Text value, leaving the inner text trimmed of leading and
+// trailing whitespace. Handles both `// ...` line comments (including
+// the directive form `//foo`) and `/* ... */` block comments.
+//
+// Unlike ast.CommentGroup.Text(), this function does not classify any
+// shape as a directive to be dropped — it returns the inner content
+// verbatim (minus whitespace) so callers can apply their own exact-match
+// logic against forge marker spellings.
+func trimCommentMarkers(raw string) string {
+	switch {
+	case strings.HasPrefix(raw, "//"):
+		return strings.TrimSpace(strings.TrimPrefix(raw, "//"))
+	case strings.HasPrefix(raw, "/*"):
+		inner := strings.TrimPrefix(raw, "/*")
+		inner = strings.TrimSuffix(inner, "*/")
+		return strings.TrimSpace(inner)
+	default:
+		return strings.TrimSpace(raw)
+	}
 }
 
 // ExtractPlaceholderType returns the target type from a
@@ -164,6 +229,35 @@ func ExtractPlaceholderType(text string) string {
 		// Tolerate `forge:placeholder: "user.Repository"` (matches
 		// the struct-tag spelling) so users can mentally cargo-cult
 		// from one shape to the other without being punished.
+		typ = strings.Trim(typ, `"`)
+		if typ == "" {
+			continue
+		}
+		return typ
+	}
+	return ""
+}
+
+// ExtractPlaceholderTypeCommentGroup is the AST-level analog of
+// ExtractPlaceholderType. Same parity reason as
+// HasOptionalDepMarkerCommentGroup: Go's CommentGroup.Text() drops the
+// no-space directive form, so a comment written as
+// `//forge:placeholder: user.Repository` (without the space) would be
+// silently invisible to the .Text()-based scan. Iterating cg.List and
+// trimming the raw markers preserves both shapes.
+//
+// Returns the placeholder target type, or "" when no marker is present.
+func ExtractPlaceholderTypeCommentGroup(cg *ast.CommentGroup) string {
+	if cg == nil {
+		return ""
+	}
+	const prefix = "forge:placeholder:"
+	for _, c := range cg.List {
+		trimmed := trimCommentMarkers(c.Text)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		typ := strings.TrimSpace(trimmed[len(prefix):])
 		typ = strings.Trim(typ, `"`)
 		if typ == "" {
 			continue
@@ -226,13 +320,15 @@ func collectDepsFields(fset *token.FileSet, st *ast.StructType) []DepsField {
 			continue
 		}
 		typeStr := printType(fset, field.Type)
-		optional := false
-		if field.Doc != nil && HasOptionalDepMarker(field.Doc.Text()) {
-			optional = true
-		}
-		if !optional && field.Comment != nil && HasOptionalDepMarker(field.Comment.Text()) {
-			optional = true
-		}
+		// AST-level marker check — see HasOptionalDepMarkerCommentGroup
+		// for why we don't go through field.Doc.Text() / field.Comment.Text().
+		// Short version: Go's CommentGroup.Text() silently strips
+		// `//forge:optional-dep` (no space after `//`) because it parses
+		// it as a Go directive, the same way `//go:generate` is dropped.
+		// Iterating the raw cg.List recovers both spaced and unspaced
+		// forms so users who omit the space don't get silently ignored.
+		optional := HasOptionalDepMarkerCommentGroup(field.Doc) ||
+			HasOptionalDepMarkerCommentGroup(field.Comment)
 		for _, name := range field.Names {
 			if !ast.IsExported(name.Name) {
 				continue
@@ -378,11 +474,14 @@ func ParseAppFields(appDir string) ([]AppField, error) {
 					// wouldn't be honored across regenerates).
 					placeholder := ""
 					if typeSpec.Name.Name == "AppExtras" {
-						if field.Doc != nil {
-							placeholder = ExtractPlaceholderType(field.Doc.Text())
-						}
-						if placeholder == "" && field.Comment != nil {
-							placeholder = ExtractPlaceholderType(field.Comment.Text())
+						// AST-level marker check — same parity reason as
+						// HasOptionalDepMarkerCommentGroup. .Text()
+						// strips `//forge:placeholder:` (no space) as a
+						// Go directive; iterating the raw cg.List
+						// recovers both spaced and unspaced forms.
+						placeholder = ExtractPlaceholderTypeCommentGroup(field.Doc)
+						if placeholder == "" {
+							placeholder = ExtractPlaceholderTypeCommentGroup(field.Comment)
 						}
 						if placeholder == "" {
 							placeholder = extractPlaceholderTag(field.Tag)

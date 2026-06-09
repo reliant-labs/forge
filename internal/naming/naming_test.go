@@ -127,6 +127,78 @@ func TestToKebabCase(t *testing.T) {
 	}
 }
 
+// TestServicePackage covers the kebab + snake -> snake-lowercase rule
+// shared by every site that derives a Go-package identifier from a
+// CLI/forge.yaml service/binary/worker/frontend name. Hyphens convert
+// to underscores; PascalCase boundaries split on underscores; existing
+// snake_case passes through. This matches protoc-gen-go's convention
+// for multi-word proto packages (proto package
+// `services.admin_server.v1` -> directory `services/admin_server/v1`)
+// and the universal on-disk dir convention forge projects use.
+//
+// History: pre-2026-06-08 this function emitted compact form
+// (separators stripped). The compact convention silently collided with
+// every project's snake-case handler dirs — see the docstring on
+// ServicePackage for the full repro.
+func TestServicePackage(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain lowercase passes through", "api", "api"},
+		{"single hyphen becomes underscore", "admin-server", "admin_server"},
+		{"snake_case passes through", "calibrator_refit", "calibrator_refit"},
+		{"mixed hyphen and underscore normalize to snake", "calibrator_refit-worker", "calibrator_refit_worker"},
+		{"PascalCase splits on word boundaries", "AdminServer", "admin_server"},
+		{"repeated separators collapse to single", "a--b__c", "a_b_c"},
+		{"empty stays empty", "", ""},
+		// PascalCase + "Service" suffix branch (proto service names).
+		{"proto Service suffix trimmed", "EchoService", "echo"},
+		{"proto multi-word Service suffix produces snake", "AdminServerService", "admin_server"},
+		{"proto Go initialisms produce snake", "LLMGatewayService", "llm_gateway"},
+		{"proto initialism only", "APIService", "api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ServicePackage(tt.in)
+			if got != tt.want {
+				t.Errorf("ServicePackage(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGoPackage pins down the GoPackage helper (no Service-suffix
+// trimming). Like ServicePackage, snake_case is the canonical output
+// form: hyphens convert to underscores, PascalCase splits on word
+// boundaries, snake_case passes through.
+func TestGoPackage(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain lowercase passes through", "api", "api"},
+		{"hyphen to underscore", "admin-server", "admin_server"},
+		{"snake_case preserved", "calibrator_refit", "calibrator_refit"},
+		{"PascalCase to snake", "AdminServer", "admin_server"},
+		{"initialism handling", "HTTPClient", "http_client"},
+		{"empty stays empty", "", ""},
+		// Service suffix is NOT trimmed (that's what distinguishes GoPackage
+		// from ServicePackage).
+		{"Service suffix preserved", "EchoService", "echo_service"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GoPackage(tt.in)
+			if got != tt.want {
+				t.Errorf("GoPackage(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyGoInitialisms_LongerFirst(t *testing.T) {
 	// "Uuid" should become "UUID", not "UuID" (which would happen if "Id" was processed first)
 	got := applyGoInitialisms("Uuid")

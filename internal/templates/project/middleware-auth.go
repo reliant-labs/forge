@@ -5,7 +5,9 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
 )
@@ -32,14 +34,51 @@ func isUnauthenticatedProcedure(procedure string) bool {
 
 // AuthInterceptor creates a Connect RPC authentication interceptor that
 // handles both unary and streaming RPCs.
-// If no Bearer token is present, the request proceeds unauthenticated.
+//
+// Three startup modes (chosen at construction time, not per-request):
+//
+//  1. **Passthrough (pack-installed or external)**: when a pack — e.g.
+//     jwt-auth, clerk, firebase — has called [MarkExternalAuth] during
+//     its Init, OR when the project has called [SetTokenValidator] with
+//     `nil`, this interceptor becomes a no-op identity. The pack's own
+//     interceptor (added alongside via cmd/server.go's interceptor chain)
+//     is the source of truth.
+//
+//  2. **Stub validates**: when the project has called [SetTokenValidator]
+//     with a real validator, this interceptor extracts the Bearer token,
+//     calls the validator, and attaches claims to context.
+//
+//  3. **Dev passthrough**: when ENVIRONMENT=development (or "dev") or
+//     AUTH_MODE=none, this interceptor is a no-op identity even with no
+//     validator and no pack. The frictionless local-dev path.
+//
+// If NONE of (1)-(3) apply, [AuthInterceptor] panics at construction. A
+// production server with no auth provider configured is always a bug;
+// failing loudly at startup is safer than silently accepting every
+// request or silently rejecting every request.
 func AuthInterceptor() connect.Interceptor {
-	return &authInterceptor{}
+	mode := resolveAuthMode()
+	if mode == authModeUnconfigured {
+		panic("middleware.AuthInterceptor: no auth provider configured — " +
+			"install a pack (e.g. `forge pack install jwt-auth`), call " +
+			"middleware.SetTokenValidator with a real validator, or set " +
+			"AUTH_MODE=none (or ENVIRONMENT=development) to explicitly " +
+			"run without authentication. See pkg/middleware/auth.go for details.")
+	}
+	return &authInterceptor{passthrough: mode == authModePassthrough}
 }
 
-type authInterceptor struct{}
+type authInterceptor struct {
+	// passthrough is set at construction time. When true, this interceptor
+	// does not look at the Authorization header — the pack interceptor
+	// later in the chain (or the dev opt-in) is responsible for auth.
+	passthrough bool
+}
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	if a.passthrough {
+		return next
+	}
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		if isUnauthenticatedProcedure(req.Spec().Procedure) {
 			return next(ctx, req)
@@ -59,6 +98,9 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 }
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	if a.passthrough {
+		return next
+	}
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		if isUnauthenticatedProcedure(conn.Spec().Procedure) {
 			return next(ctx, conn)
@@ -124,20 +166,112 @@ func VerifyAuth(ctx context.Context, requiredRoles ...string) error {
 	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("insufficient permissions"))
 }
 
+// authMu guards the package-level configuration flags below. All mutation
+// happens during startup (before the interceptor is constructed), but the
+// mutex makes the data race detector happy when tests swap validators
+// across subtests via t.Cleanup.
+var authMu sync.Mutex
+
 // validateTokenFn is the package-level token validator. It is a variable
 // (rather than a function) so projects with real authentication can swap
-// it in during bootstrap, and so tests can install a stub without resorting
-// to build tags or linker tricks.
+// it in during bootstrap via [SetTokenValidator], and so tests can install
+// a stub without resorting to build tags or linker tricks.
 //
-// The default implementation refuses every token with a clear error; leaving
-// the middleware wired with a dud validator is always a configuration bug.
-var validateTokenFn = func(token string) (*Claims, error) {
-	return nil, fmt.Errorf("token validation is not configured")
+// The default returns (nil, nil) — a no-op. When this default is in place
+// AND no external auth has been registered AND no dev opt-in is set, the
+// [AuthInterceptor] constructor panics rather than letting the default run.
+// See [resolveAuthMode] for the decision table.
+var validateTokenFn func(string) (*Claims, error) = defaultValidateToken
+
+// validatorConfigured reports whether [SetTokenValidator] has been called
+// with a non-nil validator. Setting this to true switches the stub into
+// "validate every request" mode.
+var validatorConfigured bool
+
+// externalAuthRegistered reports whether a pack (or hand-written setup
+// code) has called [MarkExternalAuth] to indicate that auth is handled by
+// another interceptor in the chain. This switches the stub into pure
+// passthrough mode regardless of ENVIRONMENT.
+var externalAuthRegistered bool
+
+// defaultValidateToken is the no-op default. It is only ever reached if
+// the interceptor was constructed in passthrough mode (see resolveAuthMode),
+// in which case the per-request handler skips calling it entirely. It is
+// also called directly by tests against the package — keep the signature
+// stable.
+func defaultValidateToken(string) (*Claims, error) { return nil, nil }
+
+// SetTokenValidator installs a real token validator. Call this during
+// startup, before constructing the interceptor (i.e. before cmd/server.go
+// builds the interceptor chain). Passing nil resets to the no-op default
+// but does NOT clear the external-auth registration.
+func SetTokenValidator(fn func(string) (*Claims, error)) {
+	authMu.Lock()
+	defer authMu.Unlock()
+	if fn == nil {
+		validateTokenFn = defaultValidateToken
+		validatorConfigured = false
+		return
+	}
+	validateTokenFn = fn
+	validatorConfigured = true
+}
+
+// MarkExternalAuth signals that an auth provider (a pack, or hand-rolled
+// code) has installed its own Connect interceptor alongside this one. The
+// stub then becomes a pure passthrough so the external interceptor is the
+// sole source of truth.
+//
+// Packs call this from their Init function (e.g. jwt-auth's Init). Hand-
+// rolled setups can call it directly when adding a custom auth interceptor
+// to the chain.
+func MarkExternalAuth() {
+	authMu.Lock()
+	defer authMu.Unlock()
+	externalAuthRegistered = true
+}
+
+// authMode captures the resolved behavior of [AuthInterceptor] at
+// construction time.
+type authMode int
+
+const (
+	authModeUnconfigured authMode = iota
+	authModeValidate
+	authModePassthrough
+)
+
+// resolveAuthMode reads the package-level config and the environment to
+// decide which mode [AuthInterceptor] should run in. Decision order:
+//  1. A real validator was registered → validate
+//  2. External auth was registered (pack alongside) → passthrough
+//  3. AUTH_MODE=none → passthrough (explicit opt-out)
+//  4. ENVIRONMENT=development|dev → passthrough (dev ergonomics)
+//  5. Otherwise → unconfigured (constructor panics)
+func resolveAuthMode() authMode {
+	authMu.Lock()
+	defer authMu.Unlock()
+	switch {
+	case validatorConfigured:
+		return authModeValidate
+	case externalAuthRegistered:
+		return authModePassthrough
+	case strings.EqualFold(os.Getenv("AUTH_MODE"), "none"):
+		return authModePassthrough
+	}
+	switch strings.ToLower(os.Getenv("ENVIRONMENT")) {
+	case "development", "dev":
+		return authModePassthrough
+	}
+	return authModeUnconfigured
 }
 
 // ValidateToken validates a bearer token by delegating to validateTokenFn.
-// Projects with real authentication should replace validateTokenFn during
-// startup (e.g. with a JWT or API-key validator).
+// Projects with real authentication should replace validateTokenFn via
+// [SetTokenValidator] during startup.
 func ValidateToken(token string) (*Claims, error) {
-	return validateTokenFn(token)
+	authMu.Lock()
+	fn := validateTokenFn
+	authMu.Unlock()
+	return fn(token)
 }

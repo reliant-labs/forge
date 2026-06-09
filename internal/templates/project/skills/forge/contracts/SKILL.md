@@ -51,6 +51,30 @@ The contract analyzer scans **both** `internal/` and `pkg/` by default. The conc
 
 If you keep finding yourself adding `pkg/<X>` entries to `contracts.exclude`, that's a signal — either the package belongs in `internal/` (it has real business state and should follow the contract pattern), or it's genuinely library code and the exclusion is correct. Don't reflexively exclude every `pkg/*` package; ask which side of that line it falls on.
 
+### Strategy registries: `//forge:strategy`
+
+A strategy-pattern package (one interface, multiple impls each with its own constructor, often a `Register()`/`Registry` map) doesn't have a single canonical `Service`/`Deps`/`New(Deps) Service` trio — each strategy is independently constructed. The canonical-names lint can't bind to anything sensible here.
+
+Mark the package with `//forge:strategy` at the package declaration to opt out of the canonical-shape check explicitly:
+
+```go
+// Strategy-registry package. Each algorithm registers itself in init().
+//
+//forge:strategy
+package algos
+
+type Strategy interface {
+    Name() string
+    Run(ctx context.Context, input []float64) (float64, error)
+}
+
+var Registry = map[string]Strategy{}
+
+func Register(s Strategy) { Registry[s.Name()] = s }
+```
+
+Other lint rules (exported-vars, naming, banner enforcement) still apply — the directive only suppresses the `Service`/`Deps`/`New(Deps) Service` enforcement. It's opt-in for a reason: a package that looks strategy-shaped but really is an incomplete Service scaffold should still surface the gap.
+
 ## Prefer narrow per-aggregate interfaces over wide facades
 
 The contract pattern works best when `Service` is **focused** — one cohesive responsibility, methods that belong together by domain. A 100+ method `Repository` interface (one struct exposing every DB operation in the system) defeats the pattern:

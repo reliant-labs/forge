@@ -272,6 +272,21 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	}
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
 
+	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
+	// a project-prefixed `*.svc.cluster.local` reference that disagrees
+	// with the namespace we're about to deploy into, fail BEFORE any
+	// manifest applies. This is the silent CrashLoop the cp-forge-dev
+	// smoke test surfaced — pods land in namespace A, env vars point at
+	// services in namespace B, every dial returns `no such host` and no
+	// step in the pipeline names the misconfiguration. See the helper for
+	// the heuristic that distinguishes legitimate cross-namespace refs
+	// from typos.
+	if hasK8sServices {
+		if err := checkNamespaceReferences(entities, cfg.Name, namespace); err != nil {
+			return err
+		}
+	}
+
 	fmt.Printf("Deploying project: %s\n", cfg.Name)
 	fmt.Printf("  Environment: %s\n", envName)
 	if rollback {

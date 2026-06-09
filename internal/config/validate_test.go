@@ -186,8 +186,11 @@ func TestLoadStrict_ServiceNameCollision_AfterNormalisation(t *testing.T) {
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	if !containsAll(got, "collides", "adminserver") {
-		t.Errorf("expected collision message naming adminserver, got:\n%s", got)
+	// Post-2026-06-08 snake-canonicalisation: "admin-server" and
+	// "admin_server" both normalize to "admin_server" (hyphen → underscore),
+	// so the collision message names the snake form.
+	if !containsAll(got, "collides", "admin_server") {
+		t.Errorf("expected collision message naming admin_server, got:\n%s", got)
 	}
 }
 
@@ -319,6 +322,34 @@ func TestLoadStrict_RemovedSchemaKey_K8sProvider(t *testing.T) {
 	// misleading here.
 	if strings.Contains(got, "did you mean") {
 		t.Errorf("expected schema-drift hint to suppress typo suggestion, got:\n%s", got)
+	}
+}
+
+// TestLoadStrict_StackDeployProvider_NotFalsePositive guards against
+// regressions where the `provider` key inside `stack.deploy:` could
+// accidentally trip the removedSchemaKeys lookup for the old
+// `k8s.provider` location. The validator stores the qualified path as
+// `stack.deploy.provider` (not `k8s.provider`), so the lookup must
+// match exact paths only — never an unqualified suffix.
+//
+// This is the cp-forge dogfood shape: `stack.deploy.target: k8s` plus
+// a sibling `provider: k3d`. Pre-2026-06-08 there was a report (since
+// proven phantom) that the validator misread this as `k8s.provider`;
+// pinning the clean-load behavior here keeps any future path-construction
+// refactor from regressing the case.
+func TestLoadStrict_StackDeployProvider_NotFalsePositive(t *testing.T) {
+	in := validBaseYAML + `stack:
+  deploy:
+    target: k8s
+    provider: k3d
+    registry: ghcr.io
+`
+	cfg, err := LoadStrict([]byte(in), "forge.yaml")
+	if err != nil {
+		t.Fatalf("clean load expected — `stack.deploy.provider` must not be confused with removed `k8s.provider` key. err=%v", err)
+	}
+	if cfg.Stack.Deploy.Provider != "k3d" {
+		t.Errorf("stack.deploy.provider = %q, want %q", cfg.Stack.Deploy.Provider, "k3d")
 	}
 }
 

@@ -36,7 +36,7 @@ func GenerateOperatorFiles(root, modulePath, name, group, version string) error 
 // empty it defaults to PascalCase(apiPackage) when apiPackage is set, or
 // PascalCase(name) otherwise (preserving original behaviour).
 func GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, apiPackage, crdType string) error {
-	operatorPackage := ServicePackageName(name)
+	operatorPackage := naming.ServicePackage(name)
 	operatorDir := filepath.Join(root, "operators", operatorPackage)
 
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
@@ -65,7 +65,7 @@ func GenerateOperatorFilesWithAPI(root, modulePath, name, group, version, apiPac
 	apiImportPath := ""
 	apiTypeRef := resolvedCRDType
 	if splitAPI {
-		apiPackageSlug = ServicePackageName(apiPackage)
+		apiPackageSlug = naming.ServicePackage(apiPackage)
 		apiPackageDir = filepath.Join(root, "api", version, apiPackageSlug)
 		apiPackageDecl = apiPackageSlug
 		apiImportPath = fmt.Sprintf("%s/api/%s/%s", modulePath, version, apiPackageSlug)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -79,12 +80,54 @@ func TestDirExists(t *testing.T) {
 	}
 }
 
-// TestToServiceDir_MovedToNaming notes the canonical Go-package
-// derivation now lives in internal/naming.ServicePackage; service-dir
-// formation is just `filepath.Join("handlers", naming.ServicePackage(name))`
-// at the (single remaining) call site in generate_services.go.
-// The exhaustive table-driven cases live with the canonical function
-// at internal/naming/naming_test.go (TestServicePackage).
+// TestServiceDirResolution covers the service-name → handlers/<dir>
+// mapping generateServiceStubs now derives via the disk-first resolver:
+// the synthesized fallback for brand-new services (the snake_case
+// canonical form from naming.ServicePackage — the exhaustive
+// table-driven cases live at internal/naming/naming_test.go), and the
+// on-disk directory winning whenever one already exists under any
+// historical naming variant.
+func TestServiceDirResolution(t *testing.T) {
+	// Fallback synthesis (no dir on disk yet).
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"EchoService", "echo"},
+		{"UserService", "user"},
+		{"NotificationService", "notification"},
+		{"Foo", "foo"},
+		// Multi-word names canonicalise to snake_case, matching
+		// naming.ServicePackage (post-2026-06-08 scaffold form).
+		{"AdminServerService", "admin_server"},
+	}
+	for _, tt := range tests {
+		res, err := codegen.ResolveServiceComponent(t.TempDir(), tt.input)
+		if err != nil {
+			t.Fatalf("ResolveServiceComponent(%q): %v", tt.input, err)
+		}
+		if res.FromDisk || res.ImportLeaf != tt.want {
+			t.Errorf("ResolveServiceComponent(%q) = %+v, want synthesized leaf %q", tt.input, res, tt.want)
+		}
+	}
+
+	// Disk-first: an existing snake_case dir wins over synthesis.
+	projectDir := t.TempDir()
+	dir := filepath.Join(projectDir, "handlers", "admin_server")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte("package admin_server\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := codegen.ResolveServiceComponent(projectDir, "AdminServerService")
+	if err != nil {
+		t.Fatalf("ResolveServiceComponent: %v", err)
+	}
+	if !res.FromDisk || res.ImportLeaf != "admin_server" || res.PackageName != "admin_server" {
+		t.Errorf("ResolveServiceComponent disk-first = %+v, want admin_server/admin_server", res)
+	}
+}
 
 func TestIsPluginAvailable(t *testing.T) {
 	if !isPluginAvailable("go") {

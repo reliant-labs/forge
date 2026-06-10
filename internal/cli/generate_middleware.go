@@ -77,11 +77,20 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 			continue
 		}
 
-		svcPkg := naming.ServicePackage(svc.Name)
-		svcDir := filepath.Join(projectDir, "handlers", svcPkg)
-		if _, err := os.Stat(svcDir); os.IsNotExist(err) {
+		// Disk-first: webhook_routes_gen.go lands inside the EXISTING
+		// handler dir and must declare that dir's real package clause —
+		// the dir spelling and the clause can both legally differ from
+		// what naming.ServicePackage would synthesize from the forge.yaml
+		// name. See codegen.ResolveComponentDir for the bug class.
+		res, err := codegen.ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		if !res.FromDisk {
 			continue // service directory doesn't exist yet
 		}
+		svcPkg := res.PackageName
+		svcDirLeaf := filepath.FromSlash(res.ImportLeaf)
 
 		var entries []templates.WebhookRouteEntryData
 		for _, wh := range svc.Webhooks {
@@ -101,7 +110,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 			return fmt.Errorf("render webhook routes for %s: %w", svc.Name, err)
 		}
 
-		relPath := filepath.Join("handlers", svcPkg, "webhook_routes_gen.go")
+		relPath := filepath.Join("handlers", svcDirLeaf, "webhook_routes_gen.go")
 		if _, err := generator.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write webhook routes for %s: %w", svc.Name, err)
 		}

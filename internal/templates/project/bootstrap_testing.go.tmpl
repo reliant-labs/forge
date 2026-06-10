@@ -34,8 +34,10 @@ import (
 {{- if .Services}}
 	"{{$.Module}}/pkg/middleware"
 {{- end}}
-{{range .Services}}
-	{{.Alias}} "{{$.Module}}/handlers/{{.Package}}"
+{{/* .ImportPath is the on-disk handlers/ dir leaf (disk-first resolved);
+     .Package is the package CLAUSE and may differ — see bootstrap.go.tmpl. */}}
+{{- range .Services}}
+	{{.Alias}} "{{$.Module}}/handlers/{{.ImportPath}}"
 {{- end}}
 {{range .ConnectImports}}
 	"{{.}}"

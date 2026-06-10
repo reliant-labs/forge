@@ -1467,7 +1467,7 @@ func stepServiceMocks(ctx *pipelineContext) error {
 // canonical Service / Deps / New(Deps) shape from contract.go and
 // surfaces it as the bootstrap step's source of truth.
 func stepInternalContracts(ctx *pipelineContext) error {
-	if err := generateInternalPackageContracts(ctx.ProjectDir, ctx.Cfg); err != nil {
+	if err := generateInternalPackageContracts(ctx.ProjectDir, ctx.Cfg, ctx.Checksums); err != nil {
 		return fmt.Errorf("internal package contract generation failed: %w", err)
 	}
 	return nil

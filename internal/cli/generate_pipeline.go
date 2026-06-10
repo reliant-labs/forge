@@ -252,6 +252,7 @@ func generateSteps() []GenStep {
 		{Name: "Grafana dashboards", Gate: gateObservabilityHasCfg, Run: stepGrafanaDashboards, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: gateMigrationsHasDBOrServices, Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, Run: stepFrontendMocks, Tag: "frontend"},
+		{Name: "agent skills (.claude/skills)", Gate: always, Run: stepAgentSkills, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools"},
 		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},

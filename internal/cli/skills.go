@@ -45,7 +45,12 @@ Layouts:
                             an LLM running Claude Code picks them up.
   --style md                Flat: <dir>/<skill>.md, no per-skill subdirectory.
 
-The skill content is the same body returned by ` + "`forge skill load <name>`" + `.`,
+The skill content is the same body returned by ` + "`forge skill load <name>`" + `.
+
+Note: inside a forge project you don't need this for .claude/skills/ —
+'forge generate' regenerates the forge-shipped skills there on every run
+(Tier-1 tracked), keeping them in sync with the forge binary version.
+'skill write' remains for exporting skills to arbitrary locations.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if outDir == "" {
 				return fmt.Errorf("--out is required")

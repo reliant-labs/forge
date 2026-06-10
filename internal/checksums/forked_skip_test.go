@@ -1,31 +1,32 @@
 // File: internal/checksums/forked_skip_test.go
 //
-// Tests for the SkippedForkedThisRun aggregation. The regression these
-// tests pin: when an entry in `.forge/checksums.json` carries
-// `Forked: true`, every WriteGeneratedFile* call against that path is
-// silently dropped — the rendered content never reaches disk. Before
-// this fix, the silent drop made it look like the codegen had run but
-// done nothing; downstream agents (cp-forge wire_gen.go case)
-// hand-rolled workarounds for what was actually a one-flag-flip away.
+// Tests for the forked-skip aggregation. The regression these tests
+// pin: when an entry in `.forge/checksums.json` carries `Forked: true`,
+// every WriteGeneratedFile* call against that path is dropped — the
+// rendered content never reaches disk (it is parked as a side render
+// instead). Before this fix, the silent drop made it look like the
+// codegen had run but done nothing; downstream agents (cp-forge
+// wire_gen.go case) hand-rolled workarounds for what was actually a
+// one-flag-flip away.
 //
-// The aggregation surface (SkippedForkedThisRun) is what the CLI
-// pipeline reads to print a single end-of-run summary naming every
-// skipped path + the `forge generate unfork` command to re-enable
-// regeneration. These tests pin the recording side; the CLI summary is
-// covered by an integration test under internal/cli.
+// The aggregation surface (NoteForkedSkip / ForkedSkipsThisRun) is what
+// the CLI pipeline reads to print the loud-once fork report naming
+// every skipped path + the `forge unfork --merge` command. These tests
+// pin the recording side; the CLI report is covered under internal/cli.
 package checksums
 
 import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"testing"
 )
 
 func TestWriteGeneratedFile_ForkedSkipRecorded(t *testing.T) {
 	ResetSkipWrite()
+	ResetPerRunState()
 	defer ResetSkipWrite()
+	defer ResetPerRunState()
 
 	root := t.TempDir()
 	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
@@ -50,16 +51,18 @@ func TestWriteGeneratedFile_ForkedSkipRecorded(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "pkg/app/wire_gen.go")); !os.IsNotExist(err) {
 		t.Errorf("file written despite forked-skip: err=%v", err)
 	}
-	// The aggregate must record the path so the CLI summary can name it.
+	// The aggregate must record the path so the CLI report can name it.
 	want := []string{"pkg/app/wire_gen.go"}
-	if !reflect.DeepEqual(SkippedForkedThisRun, want) {
-		t.Errorf("SkippedForkedThisRun = %v, want %v", SkippedForkedThisRun, want)
+	if got := ForkedSkipsThisRun(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ForkedSkipsThisRun() = %v, want %v", got, want)
 	}
 }
 
 func TestWriteGeneratedFile_MultiplePathsAggregate(t *testing.T) {
 	ResetSkipWrite()
+	ResetPerRunState()
 	defer ResetSkipWrite()
+	defer ResetPerRunState()
 
 	root := t.TempDir()
 	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
@@ -74,13 +77,11 @@ func TestWriteGeneratedFile_MultiplePathsAggregate(t *testing.T) {
 		}
 	}
 
-	// a.go and b.go were silently skipped; c.go went through normally.
+	// a.go and b.go were skipped; c.go went through normally.
+	// ForkedSkipsThisRun returns sorted output.
 	want := []string{"a.go", "b.go"}
-	got := append([]string(nil), SkippedForkedThisRun...)
-	sort.Strings(got)
-	sort.Strings(want)
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("SkippedForkedThisRun = %v, want %v", got, want)
+	if got := ForkedSkipsThisRun(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ForkedSkipsThisRun() = %v, want %v", got, want)
 	}
 	// c.go should be on disk because it wasn't forked.
 	if _, err := os.Stat(filepath.Join(root, "c.go")); err != nil {
@@ -88,32 +89,35 @@ func TestWriteGeneratedFile_MultiplePathsAggregate(t *testing.T) {
 	}
 }
 
-func TestWriteGeneratedFile_RepeatedSkipsRecordedEachTime(t *testing.T) {
+func TestWriteGeneratedFile_RepeatedSkipsDeduped(t *testing.T) {
 	ResetSkipWrite()
+	ResetPerRunState()
 	defer ResetSkipWrite()
+	defer ResetPerRunState()
 
 	root := t.TempDir()
 	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
 		"a.go": {Hash: "h", Tier: 1, Forked: true},
 	}}
 	// Same path written 3 times (e.g. multiple emit steps target the
-	// same checksum entry). Recording each call is OK — the CLI summary
-	// is responsible for dedup; we don't want the lower layer guessing
-	// at uniqueness.
+	// same checksum entry). NoteForkedSkip dedupes at the recording
+	// layer so the loud-once report never names a path twice.
 	for i := 0; i < 3; i++ {
 		if _, err := WriteGeneratedFile(root, "a.go", []byte("x"), cs, false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := len(SkippedForkedThisRun); got != 3 {
-		t.Errorf("SkippedForkedThisRun len = %d, want 3 (raw recording, CLI dedupes)", got)
+	if got := ForkedSkipsThisRun(); len(got) != 1 {
+		t.Errorf("ForkedSkipsThisRun() = %v, want exactly one entry (recording layer dedupes)", got)
 	}
 }
 
 func TestWriteGeneratedFileTier2_ForkedSkipRecorded(t *testing.T) {
 	ResetSkipWrite()
+	ResetPerRunState()
 	ResetTier2State()
 	defer ResetSkipWrite()
+	defer ResetPerRunState()
 	defer ResetTier2State()
 
 	root := t.TempDir()
@@ -123,16 +127,17 @@ func TestWriteGeneratedFileTier2_ForkedSkipRecorded(t *testing.T) {
 	if _, err := WriteGeneratedFileTier2(root, "middleware.go", []byte("package m"), cs, false); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(SkippedForkedThisRun, "middleware.go") {
-		t.Errorf("Tier-2 forked-skip not recorded: %v", SkippedForkedThisRun)
+	if !contains(ForkedSkipsThisRun(), "middleware.go") {
+		t.Errorf("Tier-2 forked-skip not recorded: %v", ForkedSkipsThisRun())
 	}
 }
 
-func TestResetSkipWrite_ClearsForkedAggregate(t *testing.T) {
-	SkippedForkedThisRun = []string{"a", "b"}
-	ResetSkipWrite()
-	if SkippedForkedThisRun != nil {
-		t.Errorf("ResetSkipWrite() did not clear SkippedForkedThisRun: %v", SkippedForkedThisRun)
+func TestResetPerRunState_ClearsForkedAggregate(t *testing.T) {
+	NoteForkedSkip("a")
+	NoteForkedSkip("b")
+	ResetPerRunState()
+	if got := ForkedSkipsThisRun(); len(got) != 0 {
+		t.Errorf("ResetPerRunState() did not clear the forked-skip set: %v", got)
 	}
 }
 

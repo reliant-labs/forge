@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -28,23 +27,24 @@ var generateMu sync.Mutex
 
 func newGenerateCmd() *cobra.Command {
 	var (
-		watch            bool
-		force            bool
-		accept           bool
-		explain          bool
-		skipValidate     bool
-		skipPreChecks    bool
-		skipConfigCheck  bool
-		resetTier2       bool
-		assumeYes        bool
-		checkOnly        bool
-		forceCleanup     bool
-		templatesOnly    bool
-		strict           bool
-		verbose          bool
-		planOnly         bool
-		steps            string
-		deprecatedScope  string // hidden alias for --steps, kept for one release
+		watch           bool
+		force           bool
+		accept          bool
+		explain         bool
+		explainDrift    bool
+		skipValidate    bool
+		skipPreChecks   bool
+		skipConfigCheck bool
+		resetTier2      bool
+		assumeYes       bool
+		checkOnly       bool
+		forceCleanup    bool
+		templatesOnly   bool
+		strict          bool
+		verbose         bool
+		planOnly        bool
+		steps           string
+		deprecatedScope string // hidden alias for --steps, kept for one release
 	)
 
 	cmd := &cobra.Command{
@@ -73,6 +73,7 @@ Examples:
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
   forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
   forge generate --explain        # Print per-file provenance log after generate
+  forge generate --explain-drift  # On Tier-1 drift: diff on-disk vs fresh render per drifted file, then fail with the report
   forge generate --skip-validate    # Skip the final 'go build ./...' validate step
   forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
   forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
@@ -142,6 +143,7 @@ Examples:
 			err := runGeneratePipelineFlags(".", pipelineFlags{
 				Force:           force,
 				Accept:          accept,
+				ExplainDrift:    explainDrift,
 				SkipValidate:    skipValidate,
 				SkipPreChecks:   skipPreChecks,
 				SkipConfigCheck: skipConfigCheck,
@@ -189,6 +191,7 @@ Examples:
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
 	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
+	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
 	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
 	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
@@ -278,6 +281,12 @@ type pipelineFlags struct {
 	// Opt-out exists for parallel-lane / mid-migration scenarios where a
 	// transient mismatch is expected.
 	SkipConfigCheck bool
+
+	// ExplainDrift turns a Tier-1 drift abort into a diagnostic run:
+	// drifted paths render to .forge/render/ side files, the run prints
+	// a bounded on-disk-vs-fresh-render diff per file, and then still
+	// fails with the drift report. See generate_explain_drift.go.
+	ExplainDrift bool
 	// ResetTier2 explicitly opts in to overwriting hand-edited Tier-2
 	// scaffolds (service.go, handlers.go, …). The default for Tier-2 is
 	// "preserve hand-edits even when --force is set" — the scaffold-once
@@ -391,6 +400,13 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// hand-edits — the historic safe default. With --reset-tier2 --yes,
 	// the hook auto-approves; without --yes it prompts per file.
 	checksums.ResetTier2State()
+	// Per-run fork-skip tracking starts empty, and whatever accumulates
+	// is reported loudly on the way out — even when a later step fails,
+	// the skips that already happened are real and the user needs to see
+	// them. The coherence-group warning piggybacks on the same exit
+	// point: it needs the full run's changed-render set to know whether
+	// a forked file's siblings moved. See generate_fork_report.go.
+	checksums.ResetPerRunState()
 	if flags.ResetTier2 {
 		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
 		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)
@@ -406,6 +422,16 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)
 		}
+	}()
+
+	// Fork visibility fires on the way out — even when a later step
+	// fails, the skips that already happened are real and the user needs
+	// to see them. Registered AFTER the save defer so it runs BEFORE it
+	// (LIFO) and the loud-once Accepted flip lands in the same save.
+	// See generate_fork_report.go.
+	defer func() {
+		reportForkedSkips(os.Stderr, ctx.Checksums)
+		warnIncoherentForkGroups(os.Stderr, ctx.Checksums)
 	}()
 
 	// Tier-2 preservation summary fires only when --force is set: that's
@@ -469,99 +495,27 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			continue
 		}
 		if err := step.Run(ctx); err != nil {
+			// --explain-drift cleanup still runs on a mid-pipeline
+			// failure: whatever renders were parked are diffed, and the
+			// snapshot restore keeps the deferred SaveChecksums honest.
+			// The step error wins over the drift error.
+			if expErr := finishExplainDrift(ctx); expErr != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", expErr)
+			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
 
-	// Surface any Tier-1 forked-skip events accumulated during the
-	// pipeline. These writes were silently dropped because
-	// `.forge/checksums.json` marks the entry as forked (typically
-	// from a prior `forge generate --accept` or a hand-edit). Until
-	// this surface existed, silent skips on regenerated files like
-	// pkg/app/wire_gen.go made downstream edits (e.g. adding a new
-	// Deps field) appear to do nothing — the generator would compute
-	// the right output and then drop it on the floor.
-	//
-	// The summary names every distinct path skipped during the run and
-	// points at `forge generate unfork`, which flips the flag back so
-	// the next regenerate re-renders the template. Aggregating once at
-	// end-of-pipeline rather than warning per-skip keeps the emit loop
-	// quiet on projects with many forks while still making the silent
-	// drop loud.
-	//
-	// Loud-once UX: the report fires only for entries whose Accepted flag
-	// is false. After printing, every reported entry has Accepted flipped
-	// to true (persisted by the SaveChecksums defer above), so the next
-	// run is silent unless a NEW fork shows up or unfork resets the flag.
-	reportForkedSkips(ctx.Checksums)
+	// --explain-drift: print the per-file diffs and fail with the drift
+	// report — the flag explains the drift, it never approves it. No-op
+	// nil when the guard found no drift (or the flag wasn't set).
+	if err := finishExplainDrift(ctx); err != nil {
+		return err
+	}
 
 	fmt.Println()
 	fmt.Println("✅ Code generation complete!")
 	return nil
-}
-
-// reportForkedSkips drains checksums.SkippedForkedThisRun and prints
-// a single aggregate warning naming every path the run silently
-// declined to write because the checksum entry is forked. No-op when
-// the set is empty (the common case for projects that don't fork).
-//
-// Loud-once UX: only entries with Accepted == false are reported. After
-// printing, every reported entry is marked Accepted = true on the in-
-// memory checksums so the deferred SaveChecksums in runGeneratePipeline
-// persists the flip. Subsequent runs see Accepted == true and skip the
-// report entirely — established forks stop nagging, new forks still
-// fire loud. Unfork resets both flags so a future re-fork is loud again.
-//
-// Paths are deduped + sorted for stable output, and printed to stderr
-// so machine-readable downstream pipes (like JSON-mode tooling) aren't
-// polluted by the friendly summary.
-func reportForkedSkips(cs *generator.FileChecksums) {
-	raw := checksums.SkippedForkedThisRun
-	if len(raw) == 0 {
-		return
-	}
-	seen := map[string]bool{}
-	var paths []string
-	for _, p := range raw {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		// Accepted-fork filter: the checksum entry may have been
-		// reported in a prior run already. Skip it now so projects with
-		// stable long-lived forks don't drown out new fork events.
-		// A nil checksums arg (defensive — should not happen under
-		// runGeneratePipeline) falls back to the legacy "report every
-		// time" behaviour.
-		if cs != nil {
-			if entry, ok := cs.Files[p]; ok && entry.Accepted {
-				continue
-			}
-		}
-		paths = append(paths, p)
-	}
-	if len(paths) == 0 {
-		return
-	}
-	sort.Strings(paths)
-	fmt.Fprintf(os.Stderr, "\n⚠️  forge generate skipped %d forked file(s) — the rendered output was dropped because the checksum entry is `forked: true`:\n", len(paths))
-	for _, p := range paths {
-		fmt.Fprintf(os.Stderr, "  - %s\n", p)
-	}
-	fmt.Fprintf(os.Stderr, "If you want forge to resume regenerating these files, run:\n  forge generate unfork %s\n", strings.Join(paths, " "))
-	fmt.Fprintln(os.Stderr, "This is a one-time notice — future runs will stay quiet for these paths unless you `unfork` them.")
-
-	// Mark every reported path as Accepted so the next run is silent.
-	// The deferred SaveChecksums in runGeneratePipeline persists this
-	// to .forge/checksums.json. If cs is nil (defensive), skip — there's
-	// nothing to persist into.
-	if cs != nil {
-		for _, p := range paths {
-			entry := cs.Files[p]
-			entry.Accepted = true
-			cs.Files[p] = entry
-		}
-	}
 }
 
 // makeTier2OverwriteHook returns the checksums.Tier2OverwriteFn the

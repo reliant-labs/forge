@@ -27,8 +27,9 @@ import (
 	"database/sql"
 {{- end}}
 	"net/http"
-{{- if .OrmEnabled}}
 
+	"github.com/reliant-labs/forge/pkg/appkit"
+{{- if .OrmEnabled}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 )
@@ -70,6 +71,17 @@ type App struct {
 	// the bare mux. The field is always emitted so cmd-server.go can read
 	// it unconditionally — keeping the templated branch out of cmd-server.
 	RESTHandler http.Handler
+
+	// Hooks customizes the appkit-driven bootstrap orchestration
+	// without forking the generated bootstrap.go table. Populate it in
+	// the user-owned pkg/app/setup.go — hooks are read AFTER Setup
+	// returns, so assignments there are always observed:
+	//   - Hooks.ExtraMounts / BeforeMount / AfterMount: extra HTTP
+	//     routes around the generated service mounts.
+	//   - Hooks.ConstructWorker: intercept (or replace) any worker
+	//     row's construction.
+	// See github.com/reliant-labs/forge/pkg/appkit for the full story.
+	Hooks appkit.Hooks
 
 	// AppExtras is the user-owned extension surface (see pkg/app/app_extras.go).
 	// Embedded as a pointer so user fields are reachable via app.<Field>

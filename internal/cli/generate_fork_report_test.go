@@ -64,3 +64,117 @@ func TestReportForkedSkips_SilentWhenClean(t *testing.T) {
 		t.Errorf("expected no output, got %q", b.String())
 	}
 }
+
+// TestWarnForkCoherenceOnAccept: forking a coherence-group member names
+// the still-regenerating siblings; ungrouped paths stay silent.
+func TestWarnForkCoherenceOnAccept(t *testing.T) {
+	tests := []struct {
+		name     string
+		accepted []string
+		wantSubs []string
+		wantNone bool
+	}{
+		{
+			name:     "group member warns and names siblings",
+			accepted: []string{"pkg/app/bootstrap.go"},
+			wantSubs: []string{
+				`fork-coherence group "app-wiring"`,
+				"pkg/app/app_gen.go",
+				"pkg/app/wire_gen.go",
+				"pkg/app/testing.go",
+				"break the build",
+			},
+		},
+		{
+			name:     "ungrouped path is silent",
+			accepted: []string{"pkg/config/config.go"},
+			wantNone: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b strings.Builder
+			warnForkCoherenceOnAccept(&b, tt.accepted)
+			out := b.String()
+			if tt.wantNone {
+				if out != "" {
+					t.Errorf("expected silence, got:\n%s", out)
+				}
+				return
+			}
+			for _, want := range tt.wantSubs {
+				if !strings.Contains(out, want) {
+					t.Errorf("warning missing %q; got:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestWarnIncoherentForkGroups pins the generate-time pairing: warn only
+// when a group has BOTH a forked member and a non-forked sibling whose
+// fresh render changed this run.
+func TestWarnIncoherentForkGroups(t *testing.T) {
+	mkCS := func(forkedPaths ...string) *checksums.FileChecksums {
+		cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+		for _, p := range forkedPaths {
+			cs.Files[p] = checksums.FileChecksumEntry{Hash: "x", Tier: 1, Forked: true}
+		}
+		return cs
+	}
+
+	t.Run("forked member + changed sibling warns", func(t *testing.T) {
+		checksums.ResetPerRunState()
+		defer checksums.ResetPerRunState()
+
+		root := t.TempDir()
+		cs := mkCS("pkg/app/bootstrap.go", "pkg/app/wire_gen.go")
+		// app_gen.go renders with NEW content this run (not forked).
+		if _, err := checksums.WriteGeneratedFile(root, "pkg/app/app_gen.go", []byte("package app // new symbols\n"), cs, false); err != nil {
+			t.Fatal(err)
+		}
+
+		var b strings.Builder
+		warnIncoherentForkGroups(&b, cs)
+		out := b.String()
+		for _, want := range []string{
+			`fork-coherence group "app-wiring"`,
+			"changed this run: pkg/app/app_gen.go",
+			"pkg/app/bootstrap.go, pkg/app/wire_gen.go",
+			"build-break risk",
+			"forge unfork --merge",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("warning missing %q; got:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("no changed sibling — silent", func(t *testing.T) {
+		checksums.ResetPerRunState()
+		defer checksums.ResetPerRunState()
+
+		cs := mkCS("pkg/app/bootstrap.go")
+		var b strings.Builder
+		warnIncoherentForkGroups(&b, cs)
+		if b.Len() != 0 {
+			t.Errorf("expected silence, got:\n%s", b.String())
+		}
+	})
+
+	t.Run("changed sibling but nothing forked — silent", func(t *testing.T) {
+		checksums.ResetPerRunState()
+		defer checksums.ResetPerRunState()
+
+		root := t.TempDir()
+		cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+		if _, err := checksums.WriteGeneratedFile(root, "pkg/app/app_gen.go", []byte("package app\n"), cs, false); err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		warnIncoherentForkGroups(&b, cs)
+		if b.Len() != 0 {
+			t.Errorf("expected silence, got:\n%s", b.String())
+		}
+	})
+}

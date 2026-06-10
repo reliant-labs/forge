@@ -80,12 +80,36 @@ func ForkedSkipsThisRun() []string {
 	return out
 }
 
+// changedRendersThisRun accumulates every path whose freshly rendered
+// content this run did NOT match any previously recorded render (Hash
+// or History) — i.e. the template output genuinely moved, as opposed
+// to an idempotent re-render. Consumed by the fork-coherence warning:
+// when a non-forked member of a coherence group lands here while a
+// sibling is forked, the frozen fork may now be incoherent with the
+// fresh renders (see groups.go).
+var changedRendersThisRun = map[string]bool{}
+
+// noteChangedRender records that relPath's fresh render changed this run.
+func noteChangedRender(relPath string) { changedRendersThisRun[relPath] = true }
+
+// ChangedRendersThisRun returns the sorted list of paths whose fresh
+// render changed during the current pipeline run.
+func ChangedRendersThisRun() []string {
+	out := make([]string, 0, len(changedRendersThisRun))
+	for p := range changedRendersThisRun {
+		out = append(out, p)
+	}
+	sortStrings(out)
+	return out
+}
+
 // ResetPerRunState clears the per-pipeline-run tracking sets (forked
 // skips, changed-render set). Called at the start of each pipeline run
 // alongside ResetSkipWrite / ResetTier2State so a long-lived process
 // (tests, watch mode) doesn't leak state across invocations.
 func ResetPerRunState() {
 	forkedSkipsThisRun = nil
+	changedRendersThisRun = map[string]bool{}
 }
 
 // Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
@@ -421,6 +445,13 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		return false, nil
 	}
 
+	// "Did the template output actually move?" — checked against the
+	// pre-write manifest (RecordFile below would fold the new hash into
+	// History and erase the signal). Feeds the fork-coherence warning:
+	// a changed render next to a frozen forked sibling is the build-
+	// break setup from .forge/backlog.md 2026-06-03.
+	changed := cs != nil && !cs.MatchesAnyKnownRender(relPath, content)
+
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
@@ -430,6 +461,9 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	}
 	if cs != nil {
 		cs.RecordFile(relPath, content)
+		if changed {
+			noteChangedRender(relPath)
+		}
 	}
 	return true, nil
 }
@@ -600,6 +634,12 @@ func (cs *FileChecksums) AcceptTier1Drift(root string, drift []Tier1DriftEntry) 
 		entry.Tier = 1
 		entry.Forked = true
 		entry.ForkedAt = nowRFC3339()
+		// Record the fork-coherence group (groups.go) so audit / doctor
+		// can connect a forked member to its still-regenerating siblings
+		// without re-deriving the pattern match.
+		if g, ok := CoherenceGroupFor(d.Path); ok {
+			entry.Group = g.Name
+		}
 		cs.Files[d.Path] = entry
 	}
 	return nil

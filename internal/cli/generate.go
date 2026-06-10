@@ -272,9 +272,14 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// Per-run fork-skip tracking starts empty, and whatever accumulates
 	// is reported loudly on the way out — even when a later step fails,
 	// the skips that already happened are real and the user needs to see
-	// them. See generate_fork_report.go for the rationale.
+	// them. The coherence-group warning piggybacks on the same exit
+	// point: it needs the full run's changed-render set to know whether
+	// a forked file's siblings moved. See generate_fork_report.go.
 	checksums.ResetPerRunState()
-	defer reportForkedSkips(os.Stderr)
+	defer func() {
+		reportForkedSkips(os.Stderr)
+		warnIncoherentForkGroups(os.Stderr, ctx.Checksums)
+	}()
 	if flags.ResetTier2 {
 		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
 		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)

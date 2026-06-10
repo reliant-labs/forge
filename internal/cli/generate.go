@@ -31,6 +31,7 @@ func newGenerateCmd() *cobra.Command {
 		force          bool
 		accept         bool
 		explain        bool
+		explainDrift   bool
 		skipValidate   bool
 		skipPreChecks  bool
 		resetTier2     bool
@@ -66,6 +67,7 @@ Examples:
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
   forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
   forge generate --explain        # Print per-file provenance log after generate
+  forge generate --explain-drift  # On Tier-1 drift: diff on-disk vs fresh render per drifted file, then fail with the report
   forge generate --skip-validate    # Skip the final 'go build ./...' validate step
   forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
   forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
@@ -113,6 +115,7 @@ Examples:
 			err := runGeneratePipelineFlags(".", pipelineFlags{
 				Force:         force,
 				Accept:        accept,
+				ExplainDrift:  explainDrift,
 				SkipValidate:  skipValidate,
 				SkipPreChecks: skipPreChecks,
 				ResetTier2:    resetTier2,
@@ -147,6 +150,7 @@ Examples:
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
 	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
+	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
 	cmd.Flags().BoolVar(&skipPreChecks, "skip-pre-checks", false, "Bypass the pre-codegen contract-shape check (useful when a parallel lane's contract violation would otherwise block regen of this lane)")
 	cmd.Flags().BoolVar(&resetTier2, "reset-tier2", false, "Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (service.go, handlers.go, …) — prompts per file unless --yes is also passed")
@@ -203,6 +207,11 @@ type pipelineFlags struct {
 	Accept        bool
 	SkipValidate  bool
 	SkipPreChecks bool
+	// ExplainDrift turns a Tier-1 drift abort into a diagnostic run:
+	// drifted paths render to .forge/render/ side files, the run prints
+	// a bounded on-disk-vs-fresh-render diff per file, and then still
+	// fails with the drift report. See generate_explain_drift.go.
+	ExplainDrift bool
 	// ResetTier2 explicitly opts in to overwriting hand-edited Tier-2
 	// scaffolds (service.go, handlers.go, …). The default for Tier-2 is
 	// "preserve hand-edits even when --force is set" — the scaffold-once
@@ -335,8 +344,22 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			continue
 		}
 		if err := step.Run(ctx); err != nil {
+			// --explain-drift cleanup still runs on a mid-pipeline
+			// failure: whatever renders were parked are diffed, and the
+			// snapshot restore keeps the deferred SaveChecksums honest.
+			// The step error wins over the drift error.
+			if expErr := finishExplainDrift(ctx); expErr != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", expErr)
+			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
+	}
+
+	// --explain-drift: print the per-file diffs and fail with the drift
+	// report — the flag explains the drift, it never approves it. No-op
+	// nil when the guard found no drift (or the flag wasn't set).
+	if err := finishExplainDrift(ctx); err != nil {
+		return err
 	}
 
 	fmt.Println()

@@ -78,6 +78,20 @@ func WriteSideRender(root, relPath string, content []byte) error {
 	return os.WriteFile(basePath, content, 0o644)
 }
 
+// WriteSideRenderNoBase writes ONLY `.forge/render/<relpath>` — no
+// merge-base seeding. Used by the `--explain-drift` redirect, where the
+// path is drifted but NOT forked: seeding render-base for a non-forked
+// path would leave a stale base behind that poisons the three-way merge
+// if the user forks the file later (the base must capture the render at
+// fork time, nothing earlier).
+func WriteSideRenderNoBase(root, relPath string, content []byte) error {
+	renderPath := filepath.Join(root, RenderDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(renderPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(renderPath, content, 0o644)
+}
+
 // CleanSideRenders removes both side-render files for relPath. Called
 // when a path is unforked (plain or via --merge) — once forge owns the
 // file again the parked renders are stale and would only confuse a

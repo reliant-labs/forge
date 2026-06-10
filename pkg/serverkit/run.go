@@ -284,7 +284,15 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 		nameSet[n] = true
 	}
 
-	// Start workers in background goroutines.
+	// Start workers in background goroutines. Each worker gets its own
+	// context derived from the shared supervisor context: cancelling
+	// workerCtx on shutdown fans out to every per-worker ctx, and one
+	// worker exiting early can't disturb its siblings.
+	//
+	// Workers that implement the optional ContextWorker interface get
+	// RunContext (the ctx-aware lifecycle, preferred); everything else
+	// falls back to the legacy Start signature unchanged. See the
+	// ContextWorker doc for the full shutdown contract.
 	workerCtx, workerCancel := context.WithCancel(runCtx)
 	defer workerCancel()
 	var workerWg sync.WaitGroup
@@ -297,8 +305,17 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 		workerWg.Add(1)
 		go func(w Worker) {
 			defer workerWg.Done()
+			wctx, wcancel := context.WithCancel(workerCtx)
+			defer wcancel()
+			if cw, ok := w.(ContextWorker); ok {
+				logger.Info("worker starting", "worker", w.Name(), "lifecycle", "run-context")
+				if workErr := cw.RunContext(wctx); workErr != nil && !errors.Is(workErr, context.Canceled) {
+					logger.Error("worker error", "worker", w.Name(), "error", workErr)
+				}
+				return
+			}
 			logger.Info("worker starting", "worker", w.Name())
-			if startErr := w.Start(workerCtx); startErr != nil {
+			if startErr := w.Start(wctx); startErr != nil {
 				logger.Error("worker error", "worker", w.Name(), "error", startErr)
 			}
 		}(w)

@@ -171,6 +171,125 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 	}
 }
 
+// TestLoadStrict_UnknownKeyClassification is the table-driven matrix for
+// the three unknown-key outcomes:
+//
+//  1. removed key  → specific migration hint, NO Levenshtein suggestion
+//  2. typo'd key   → "did you mean" suggestion
+//  3. distant key  → plain unknown-key error, no suggestion, no hint
+//
+// Removed keys must win over suggestions: an agent that sees
+// "did you mean 'kcl_dir'?" for k8s.provider would rename instead of
+// migrating.
+func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(string) string // injects the fault into validBaseYAML
+		wantSubstr []string            // all must appear in the error
+		notSubstr  []string            // none may appear in the error
+	}{
+		{
+			name: "removed key k8s.provider gets migration hint",
+			mutate: func(in string) string {
+				return strings.Replace(in, "k8s:\n  kcl_dir: deploy/kcl\n",
+					"k8s:\n  kcl_dir: deploy/kcl\n  provider: k3d\n", 1)
+			},
+			wantSubstr: []string{
+				`"k8s.provider" was removed in`,
+				"forge.K8sCluster",
+				"migrations/environments-to-kcl",
+			},
+			notSubstr: []string{"did you mean"},
+		},
+		{
+			name: "removed nested key services[].dev_target gets migration hint",
+			mutate: func(in string) string {
+				// Prepend a service carrying the removed key; the indexed
+				// path (services[0].dev_target) must normalize to the
+				// services[].dev_target map entry.
+				return strings.Replace(in, "services:\n",
+					"services:\n  - name: web\n    type: go_service\n    path: handlers/web\n    dev_target: host\n", 1)
+			},
+			wantSubstr: []string{
+				`"services[0].dev_target" was removed in`,
+				"deploy:",
+				"migrations/dev-target-to-kcl-deploy",
+			},
+			notSubstr: []string{"did you mean"},
+		},
+		{
+			name: "removed key binaries[].kind gets migration hint",
+			mutate: func(in string) string {
+				return in + "binaries:\n  - name: proxy\n    path: cmd/proxy.go\n    kind: cron\n"
+			},
+			wantSubstr: []string{
+				`"binaries[0].kind" was removed in`,
+				"long-running",
+			},
+			notSubstr: []string{"did you mean"},
+		},
+		{
+			name: "typo'd key gets a did-you-mean suggestion",
+			mutate: func(in string) string {
+				return strings.Replace(in, "auth:", "auht:", 1)
+			},
+			wantSubstr: []string{"unknown key", "auht", "did you mean", "auth"},
+			notSubstr:  []string{"was removed in"},
+		},
+		{
+			name: "distant key gets plain unknown-key error",
+			mutate: func(in string) string {
+				return in + "completely_unrelated_key: 42\n"
+			},
+			wantSubstr: []string{"unknown key", "completely_unrelated_key"},
+			notSubstr:  []string{"did you mean", "was removed in"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadStrict([]byte(tc.mutate(validBaseYAML)), "forge.yaml")
+			ve := requireValidationError(t, err)
+			got := ve.Error()
+			for _, want := range tc.wantSubstr {
+				if !strings.Contains(got, want) {
+					t.Errorf("expected %q in error, got:\n%s", want, got)
+				}
+			}
+			for _, not := range tc.notSubstr {
+				if strings.Contains(got, not) {
+					t.Errorf("did not expect %q in error, got:\n%s", not, got)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadStrict_DeprecatedEnvironmentsStillLoads pins the whitelist
+// behaviour: the removed top-level `environments` block is silently
+// skipped (mid-migration projects must keep loading), NOT reported as
+// an unknown or removed key.
+func TestLoadStrict_DeprecatedEnvironmentsStillLoads(t *testing.T) {
+	in := validBaseYAML + "environments:\n  - name: dev\n    type: local\n"
+	if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+		t.Fatalf("expected deprecated 'environments' block to load cleanly, got: %v", err)
+	}
+}
+
+func TestNormalizeKeyPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"services[0].dev_target", "services[].dev_target"},
+		{"services[12].dev_target", "services[].dev_target"},
+		{"k8s.provider", "k8s.provider"},
+		{"binaries[3].kind", "binaries[].kind"},
+	}
+	for _, c := range cases {
+		if got := normalizeKeyPath(c.in); got != c.want {
+			t.Errorf("normalizeKeyPath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestLevenshtein(t *testing.T) {
 	cases := []struct {
 		a, b string

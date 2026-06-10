@@ -202,11 +202,12 @@ func TestAcceptFork_QuietsReportForkedSkips(t *testing.T) {
 	}
 
 	// Simulate the silent-skip recording the next generate pipeline would do.
-	checksums.SkippedForkedThisRun = []string{"pkg/app/bootstrap.go"}
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+	checksums.NoteForkedSkip("pkg/app/bootstrap.go")
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(reloaded)
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, reloaded)
 
 	if got := buf.String(); got != "" {
 		t.Errorf("expected silent reportForkedSkips after accept-fork; got %q", got)

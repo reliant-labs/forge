@@ -247,6 +247,36 @@ func TestUnfork_TreatsLegacyTier0AsTier1(t *testing.T) {
 	}
 }
 
+// TestUnfork_CleansSideRenders: dropping the fork flag also removes the
+// parked .forge/render* files — they exist solely to reconcile the
+// fork, and keeping them would feed a stale "theirs" to a later merge.
+func TestUnfork_CleansSideRenders(t *testing.T) {
+	const rel = "pkg/app/wire_gen.go"
+	cs := &checksums.FileChecksums{
+		Files: map[string]checksums.FileChecksumEntry{
+			rel: {Hash: "abc", History: []string{"abc"}, Tier: 1, Forked: true},
+		},
+	}
+	root := withUnforkProjectRoot(t, cs)
+
+	if err := checksums.WriteSideRender(root, rel, []byte("package app // theirs\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runUnfork([]string{rel}, false, false, false); err != nil {
+		t.Fatalf("runUnfork: %v", err)
+	}
+
+	for _, p := range []string{
+		filepath.Join(root, checksums.RenderDir, rel),
+		filepath.Join(root, checksums.RenderBaseDir, rel),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s not cleaned on unfork", p)
+		}
+	}
+}
+
 // TestUnforkCmd_FlagsAndHelp pins the cobra surface: the command exists,
 // exposes --dry-run / --all / --yes, and the help text documents the
 // scenario users reach for it in. A future refactor that drops one of

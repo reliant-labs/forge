@@ -1,8 +1,8 @@
 // File: internal/cli/generate_forked_skip_test.go
 //
 // Tests the end-of-pipeline summary that surfaces silently-skipped
-// forked Tier-1 writes. See checksums.SkippedForkedThisRun and
-// reportForkedSkips() in generate.go for the why.
+// forked Tier-1 writes. See checksums.NoteForkedSkip and
+// reportForkedSkips() in generate_fork_report.go for the why.
 package cli
 
 import (
@@ -31,21 +31,19 @@ func mkForkedChecksums(accepted bool, paths ...string) *checksums.FileChecksums 
 }
 
 func TestReportForkedSkips_PrintsSummary(t *testing.T) {
-	defer checksums.ResetSkipWrite()
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
 
 	// Simulate two forked-skip events recorded by WriteGeneratedFile.
-	checksums.SkippedForkedThisRun = []string{
-		"pkg/app/wire_gen.go",
-		"pkg/app/bootstrap.go",
-		// Duplicate — multiple emit steps may target the same path; the
-		// reporter is responsible for dedup before printing.
-		"pkg/app/wire_gen.go",
-	}
+	// NoteForkedSkip dedupes — multiple emit steps may target the same
+	// path in one run, but the report must name it once.
+	checksums.NoteForkedSkip("pkg/app/wire_gen.go")
+	checksums.NoteForkedSkip("pkg/app/bootstrap.go")
+	checksums.NoteForkedSkip("pkg/app/wire_gen.go")
 	cs := mkForkedChecksums(false, "pkg/app/wire_gen.go", "pkg/app/bootstrap.go")
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(cs)
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, cs)
 
 	out := buf.String()
 	if !strings.Contains(out, "pkg/app/wire_gen.go") {
@@ -54,16 +52,15 @@ func TestReportForkedSkips_PrintsSummary(t *testing.T) {
 	if !strings.Contains(out, "pkg/app/bootstrap.go") {
 		t.Errorf("missing bootstrap.go path: %s", out)
 	}
-	if !strings.Contains(out, "forge generate unfork") {
+	if !strings.Contains(out, "forge unfork --merge") {
 		t.Errorf("missing unfork command hint: %s", out)
 	}
 	// The summary must dedupe wire_gen.go even though it was recorded
-	// twice — otherwise the unfork command line ends up with the same
-	// path twice and looks broken.
-	if c := strings.Count(out, "pkg/app/wire_gen.go"); c != 2 {
-		// Count = 2 because the path appears once in the bullet list
-		// and once in the unfork command line at the end.
-		t.Errorf("wire_gen.go appears %d time(s), want 2 (bullet + command); output:\n%s", c, out)
+	// twice. The path legitimately appears 3 times in its ONE loud line
+	// (bullet, side-render location, merge command) — a 4th+ occurrence
+	// would mean the dedup regressed and the line printed twice.
+	if c := strings.Count(out, "pkg/app/wire_gen.go"); c != 3 {
+		t.Errorf("wire_gen.go appears %d time(s), want 3 (bullet + render path + command); output:\n%s", c, out)
 	}
 	// Count line should say "2 forked file(s)" not 3 — duplicates merged.
 	if !strings.Contains(out, "2 forked file(s)") {
@@ -72,12 +69,11 @@ func TestReportForkedSkips_PrintsSummary(t *testing.T) {
 }
 
 func TestReportForkedSkips_NoopWhenEmpty(t *testing.T) {
-	defer checksums.ResetSkipWrite()
-	checksums.SkippedForkedThisRun = nil
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(nil)
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, nil)
 
 	if got := buf.String(); got != "" {
 		t.Errorf("expected silent no-op when no skips recorded; got: %q", got)
@@ -89,18 +85,16 @@ func TestReportForkedSkips_NoopWhenEmpty(t *testing.T) {
 // forked files were reporting on every generate run, drowning out new
 // fork detections.
 func TestReportForkedSkips_AcceptedAreSilent(t *testing.T) {
-	defer checksums.ResetSkipWrite()
-	checksums.SkippedForkedThisRun = []string{
-		"pkg/app/wire_gen.go",
-		"pkg/app/bootstrap.go",
-	}
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+	checksums.NoteForkedSkip("pkg/app/wire_gen.go")
+	checksums.NoteForkedSkip("pkg/app/bootstrap.go")
 	// All entries already marked Accepted = true (the user has been
 	// informed about these forks in a prior run).
 	cs := mkForkedChecksums(true, "pkg/app/wire_gen.go", "pkg/app/bootstrap.go")
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(cs)
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, cs)
 
 	if got := buf.String(); got != "" {
 		t.Errorf("accepted forks must not print; got:\n%s", got)
@@ -112,19 +106,17 @@ func TestReportForkedSkips_AcceptedAreSilent(t *testing.T) {
 // keeps the new-fork signal loud without re-nagging on established
 // forks.
 func TestReportForkedSkips_MixedAcceptedAndNew(t *testing.T) {
-	defer checksums.ResetSkipWrite()
-	checksums.SkippedForkedThisRun = []string{
-		"pkg/app/wire_gen.go",   // accepted (old)
-		"pkg/app/bootstrap.go",  // not accepted (new fork)
-	}
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+	checksums.NoteForkedSkip("pkg/app/wire_gen.go")  // accepted (old)
+	checksums.NoteForkedSkip("pkg/app/bootstrap.go") // not accepted (new fork)
 	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
 		"pkg/app/wire_gen.go":  {Hash: "x", Forked: true, Accepted: true},
 		"pkg/app/bootstrap.go": {Hash: "y", Forked: true, Accepted: false},
 	}}
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(cs)
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, cs)
 
 	out := buf.String()
 	if strings.Contains(out, "pkg/app/wire_gen.go") {
@@ -144,13 +136,13 @@ func TestReportForkedSkips_MixedAcceptedAndNew(t *testing.T) {
 // The deferred SaveChecksums in runGeneratePipeline persists this to
 // .forge/checksums.json.
 func TestReportForkedSkips_FlipsAcceptedAfterFirstReport(t *testing.T) {
-	defer checksums.ResetSkipWrite()
-	checksums.SkippedForkedThisRun = []string{"pkg/app/wire_gen.go"}
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+	checksums.NoteForkedSkip("pkg/app/wire_gen.go")
 	cs := mkForkedChecksums(false, "pkg/app/wire_gen.go")
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(cs)
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, cs)
 
 	// First call: must have printed.
 	if !strings.Contains(buf.String(), "pkg/app/wire_gen.go") {
@@ -162,10 +154,9 @@ func TestReportForkedSkips_FlipsAcceptedAfterFirstReport(t *testing.T) {
 		t.Errorf("Accepted not set after first report; got entry=%+v", cs.Files["pkg/app/wire_gen.go"])
 	}
 
-	// Second call (same checksums, same SkippedForkedThisRun): silent.
-	buf2, restore2 := captureStderr(t)
-	reportForkedSkips(cs)
-	restore2()
+	// Second call (same checksums, same per-run skip set): silent.
+	var buf2 strings.Builder
+	reportForkedSkips(&buf2, cs)
 	if got := buf2.String(); got != "" {
 		t.Errorf("second report (Accepted: true) must be silent; got:\n%s", got)
 	}
@@ -176,12 +167,12 @@ func TestReportForkedSkips_FlipsAcceptedAfterFirstReport(t *testing.T) {
 // future refactors should not silently break test fixtures that call
 // reportForkedSkips with nil.
 func TestReportForkedSkips_NilChecksumsFallsBack(t *testing.T) {
-	defer checksums.ResetSkipWrite()
-	checksums.SkippedForkedThisRun = []string{"pkg/app/wire_gen.go"}
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+	checksums.NoteForkedSkip("pkg/app/wire_gen.go")
 
-	buf, restore := captureStderr(t)
-	reportForkedSkips(nil) // nil checksums — must not panic, must still report.
-	restore()
+	var buf strings.Builder
+	reportForkedSkips(&buf, nil) // nil checksums — must not panic, must still report.
 
 	if !strings.Contains(buf.String(), "pkg/app/wire_gen.go") {
 		t.Errorf("nil checksums should fall back to legacy report-every-time; got:\n%s", buf.String())

@@ -36,8 +36,14 @@ import (
 {{- if .Services}}
 	"{{.Module}}/pkg/middleware"
 {{- end}}
-{{range .Services}}
-	{{.Alias}} "{{$.Module}}/handlers/{{.Package}}"
+{{/* Import paths use .ImportPath (the directory leaf as it exists ON
+     DISK, resolved by codegen's disk-first resolver) — never .Package,
+     which is the Go package CLAUSE and may legally differ from the
+     directory name (workers/engine_shadow may declare `package
+     engineshadow`). .Alias keeps every selector site working whatever
+     the clause is. */}}
+{{- range .Services}}
+	{{.Alias}} "{{$.Module}}/handlers/{{.ImportPath}}"
 {{- end}}
 {{- if and .RESTEnabled .Services}}
 {{- range .ConnectImports}}
@@ -45,10 +51,10 @@ import (
 {{- end}}
 {{- end}}
 {{- range .Workers}}
-	{{.Alias}} "{{$.Module}}/workers/{{.Package}}"
+	{{.Alias}} "{{$.Module}}/workers/{{.ImportPath}}"
 {{- end}}
 {{- range .Operators}}
-	{{.Alias}} "{{$.Module}}/operators/{{.Package}}"
+	{{.Alias}} "{{$.Module}}/operators/{{.ImportPath}}"
 {{- end}}
 {{- range .Packages}}
 	{{.Alias}} "{{$.Module}}/internal/{{.ImportPath}}"

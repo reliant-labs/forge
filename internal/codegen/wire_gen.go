@@ -173,14 +173,14 @@ type UnresolvedPlaceholder struct {
 // written when there are no services AND no workers AND no operators.
 //
 // Resolution order for each Deps field (services, workers, operators):
-//   1. Conventional names (Logger, Config, Authorizer, DB) get hardcoded
-//      sources matching pkg/app/CONVENTIONS.md.
-//   2. Other field names are matched exact-case against existing *App
-//      fields. A match emits `app.<Field>`.
-//   3. No match emits a typed-zero-value placeholder (e.g. `""` for
-//      string, `0` for int, `false` for bool, `nil` for everything else)
-//      plus a header-comment note. Compile still succeeds; validateDeps
-//      surfaces the gap at startup if the field is marked required.
+//  1. Conventional names (Logger, Config, Authorizer, DB) get hardcoded
+//     sources matching pkg/app/CONVENTIONS.md.
+//  2. Other field names are matched exact-case against existing *App
+//     fields. A match emits `app.<Field>`.
+//  3. No match emits a typed-zero-value placeholder (e.g. `""` for
+//     string, `0` for int, `false` for bool, `nil` for everything else)
+//     plus a header-comment note. Compile still succeeds; validateDeps
+//     surfaces the gap at startup if the field is marked required.
 //
 // Workers and operators get the same wire treatment as services so the
 // per-RPC `if s.deps.X == nil` pattern is also gone for periodic-task
@@ -298,28 +298,58 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	// legacy name-only resolution got wrong.
 	matcher := NewDepsAssignabilityMatcher(projectDir)
 
+	// Resolve each service's handler dir + package clause from disk ONCE
+	// (shared by the collision counts and the per-service loop below).
+	// Disk-first: the import line and the package selector must reflect
+	// what's actually under handlers/, not a re-synthesis of the proto
+	// name — see disk_resolver.go for the broken-imports bug class this
+	// kills. Synthesis only applies to not-yet-scaffolded services.
+	svcResolved := make([]ResolvedComponent, 0, len(services))
+	for _, svc := range services {
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return WireGenData{}, err
+		}
+		svcResolved = append(svcResolved, res)
+	}
+
 	// Build the collision-aware naming map ONCE, shared with bootstrap.
-	// We synthesize service "components" from ServiceDef just so the
-	// counts include service packages; bootstrap does the same in
+	// We synthesize service "components" from the resolved packages just
+	// so the counts include service packages; bootstrap does the same in
 	// GenerateBootstrap before calling AssignBootstrapAliases.
 	svcComponents := make([]BootstrapServiceData, 0, len(services))
-	for _, svc := range services {
-		pkg := naming.ServicePackage(svc.Name)
-		svcComponents = append(svcComponents, BootstrapServiceData{Package: pkg})
+	for _, res := range svcResolved {
+		svcComponents = append(svcComponents, BootstrapServiceData{Package: res.PackageName})
 	}
 	counts := CollisionCounts(svcComponents, packages, workers, operators)
 
 	var wireSvcs []WireGenServiceData
 	needsAuthorizerImport := false
-	for _, svc := range services {
-		pkg := naming.ServicePackage(svc.Name)
-		// Services use ToPascalCase for FieldName — matches
-		// GenerateBootstrap's per-service mapping. The collision branch
-		// (rare) gets the "SvcXxx" prefix from ResolveCollisionNaming.
-		alias, fieldName := ResolveCollisionNaming(pkg, naming.ToPascalCase(pkg), "svc", counts)
-		runtimeName := strings.ReplaceAll(pkg, "_", "-")
+	for i, svc := range services {
+		res := svcResolved[i]
+		pkg := res.PackageName
+		// FieldName derives from svc.Name (which retains separators /
+		// PascalCase boundaries) exactly like GenerateBootstrap's
+		// per-service mapping — bootstrap.go calls wire<FieldName>Deps,
+		// so the two MUST agree even for multi-word names where the
+		// compact package form ("adminserver") can't be split back into
+		// words. The collision branch (rare) gets the "SvcXxx" prefix
+		// from ResolveCollisionNaming.
+		fallbackFieldName := naming.ToPascalCase(strings.TrimSuffix(svc.Name, "Service"))
+		if fallbackFieldName == "" {
+			fallbackFieldName = naming.ToPascalCase(svc.Name)
+		}
+		alias, fieldName := ResolveCollisionNaming(pkg, fallbackFieldName, "svc", counts)
+		// Runtime (slog `service` attr) name: kebab of the original
+		// svc.Name — matches the BootstrapServiceData.Name bootstrap
+		// derives, so log queries by service name line up across both
+		// generated files.
+		runtimeName := naming.ToKebabCase(strings.TrimSuffix(svc.Name, "Service"))
+		if runtimeName == "" {
+			runtimeName = naming.ToKebabCase(svc.Name)
+		}
 
-		handlerDir := filepath.Join(projectDir, "handlers", pkg)
+		handlerDir := res.Dir
 		depsFields, parseErr := ParseServiceDeps(handlerDir)
 		if parseErr != nil {
 			// Intentional soft warning (no --strict promotion): a parse
@@ -336,11 +366,11 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 		}
 
 		data := WireGenServiceData{
-			FieldName:    fieldName,
-			Package:      pkg,
-			Alias:        alias,
-			Name:         runtimeName,
-			ImportPath:   "handlers/" + pkg,
+			FieldName:     fieldName,
+			Package:       pkg,
+			Alias:         alias,
+			Name:          runtimeName,
+			ImportPath:    "handlers/" + res.ImportLeaf,
 			LoggerAttrKey: "service",
 		}
 
@@ -356,7 +386,9 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 			}
 		}
 
-		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "handlers", pkgDir: pkg}
+		// pkgDir is the on-disk directory leaf (res.ImportLeaf), not the
+		// package clause — the matcher loads the package by path.
+		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "handlers", pkgDir: res.ImportLeaf}
 		for _, df := range depsFields {
 			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, svcTC)
 			// Optional fields that fall through to the typed-zero
@@ -460,16 +492,31 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 		// emitted Workers / Operators struct field references. Matching
 		// here keeps wire_gen ↔ bootstrap aligned.
 		alias, fieldName := ResolveCollisionNaming(c.Package, c.FieldName, rolePrefix, counts)
-		runtimeName := strings.ReplaceAll(c.Package, "_", "-")
+		// Runtime (slog attr) name: kebab of the user-facing forge.yaml
+		// name (c.Name), which retains the original word boundaries.
+		// Pre-disk-first this derived from c.Package — fine when Package
+		// was the compact synthesis, but Package is now the on-disk
+		// package CLAUSE, which may not match the user-facing name at all.
+		runtimeName := strings.ReplaceAll(c.Name, "_", "-")
+		if runtimeName == "" {
+			runtimeName = strings.ReplaceAll(c.Package, "_", "-")
+		}
 
-		compDir := filepath.Join(projectDir, subdir, c.Package)
+		// c.ImportPath is the on-disk directory leaf (disk-first, from
+		// WorkerDataFromNames / OperatorDataFromNames) — the only valid
+		// base for BOTH the Deps AST probe and the generated import line.
+		// c.Package is the package clause and may legally differ from the
+		// directory name.
+		compDir := filepath.Join(projectDir, subdir, filepath.FromSlash(c.ImportPath))
 		depsFields, parseErr := ParseServiceDeps(compDir)
 		if parseErr != nil {
 			// Intentional soft warning — same rationale as the service
 			// branch above: a broken Deps struct surfaces a clearer
 			// error from `go build`. No --strict thread because we're
-			// in internal/codegen (no pipelineContext reach).
-			fmt.Fprintf(os.Stderr, "Warning: parsing %s/%s Deps: %v\n", subdir, c.Package, parseErr)
+			// in internal/codegen (no pipelineContext reach). Names the
+			// on-disk dir (c.ImportPath) — that's the path that was
+			// actually parsed.
+			fmt.Fprintf(os.Stderr, "Warning: parsing %s/%s Deps: %v\n", subdir, c.ImportPath, parseErr)
 			depsFields = nil
 		}
 
@@ -478,11 +525,13 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 			Package:       c.Package,
 			Alias:         alias,
 			Name:          runtimeName,
-			ImportPath:    subdir + "/" + c.Package,
+			ImportPath:    subdir + "/" + c.ImportPath,
 			LoggerAttrKey: loggerAttrKey,
 		}
 
-		compTC := &appFieldTypeChecker{matcher: matcher, roleRoot: subdir, pkgDir: c.Package}
+		// pkgDir is the on-disk directory leaf (c.ImportPath), not the
+		// package clause — the matcher loads the package by path.
+		compTC := &appFieldTypeChecker{matcher: matcher, roleRoot: subdir, pkgDir: c.ImportPath}
 		for _, df := range depsFields {
 			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, compTC)
 			// Workers/operators are not expected to declare Authorizer
@@ -724,4 +773,3 @@ func zeroValueLiteral(typeExpr string) string {
 	}
 	return "nil"
 }
-

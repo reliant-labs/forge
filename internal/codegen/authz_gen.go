@@ -42,14 +42,27 @@ type AuthzTemplateData struct {
 // authorizer_gen.go is recorded so `forge audit` doesn't flag it as an
 // orphan. A nil cs is tolerated.
 func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
+	// generatedDirs records the handlers/<dir> leaves covered by the
+	// ServiceDef pass so the directory sweep below doesn't double-emit.
+	// Keyed by the ON-DISK directory name (not the synthesized package)
+	// because the sweep iterates real directory entries.
+	generatedDirs := make(map[string]bool, len(services))
 	for _, svc := range services {
-		pkg := naming.ServicePackage(svc.Name)
-		svcDir := filepath.Join(targetDir, "handlers", pkg)
-
-		// Only generate if the service directory exists (was scaffolded)
-		if _, err := os.Stat(svcDir); os.IsNotExist(err) {
+		// Disk-first: authorizer_gen.go lands INSIDE the existing handler
+		// dir and must carry that dir's REAL package clause — synthesizing
+		// either from the proto name would (a) skip generation entirely
+		// when the dir uses a snake_case spelling the synthesis misses, or
+		// (b) stamp a conflicting `package x` clause into a dir that
+		// declares something else. See disk_resolver.go.
+		res, err := ResolveServiceComponent(targetDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		// Only generate if the service directory exists (was scaffolded).
+		if !res.FromDisk {
 			continue
 		}
+		pkg := res.PackageName
 
 		var methods []AuthzMethodData
 		for _, m := range svc.Methods {
@@ -73,10 +86,15 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 			return fmt.Errorf("render authorizer_gen.go.tmpl for %s: %w", svc.Name, err)
 		}
 
-		relPath := filepath.Join("handlers", pkg, "authorizer_gen.go")
+		// Land the file in the dir that actually exists (res.ImportLeaf),
+		// not the synthesized package name — writing to a synthesized path
+		// here is how the historical handlers/adminserver-vs-admin_server
+		// duplicate-dir bug was born.
+		relPath := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf), "authorizer_gen.go")
 		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", svc.Name, err)
 		}
+		generatedDirs[res.ImportLeaf] = true
 	}
 
 	// Also generate authorizer_gen.go for service directories that exist but
@@ -92,18 +110,12 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		return fmt.Errorf("read handlers dir: %w", err)
 	}
 
-	// Build set of packages already generated above.
-	generated := make(map[string]bool, len(services))
-	for _, svc := range services {
-		generated[naming.ServicePackage(svc.Name)] = true
-	}
-
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		pkg := entry.Name()
-		if generated[pkg] {
+		dirName := entry.Name()
+		if generatedDirs[dirName] {
 			continue
 		}
 		// Canonical handler dirs are snake_case Go identifiers (matching
@@ -113,17 +125,28 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		// from the brief compact-form interlude) — skip it so cleanup /
 		// dangling-check can surface the stale dir for removal instead
 		// of emitting an authorizer with a mismatched package.
-		if pkg != naming.GoPackage(pkg) {
+		if dirName != naming.GoPackage(dirName) {
 			continue
 		}
 		// Only generate if authorizer.go exists (confirming this is a service dir)
-		if _, err := os.Stat(filepath.Join(handlersDir, pkg, "authorizer.go")); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(handlersDir, dirName, "authorizer.go")); os.IsNotExist(err) {
 			continue
+		}
+
+		// Disk-first: the emitted file must declare the SAME package as
+		// the rest of the directory (the dir name and the package clause
+		// may legally differ — e.g. handlers/admin_server declaring
+		// `package adminserver`). authorizer.go exists here, so a clause
+		// must be parseable; a conflicting/broken clause is a real user
+		// error worth failing on.
+		pkg, perr := ParsePackageClause(filepath.Join(handlersDir, dirName))
+		if perr != nil {
+			return fmt.Errorf("generating authorizer_gen.go for handlers/%s: %w", dirName, perr)
 		}
 
 		data := AuthzTemplateData{
 			Package:     pkg,
-			ServiceName: naming.ToPascalCase(pkg) + "Service",
+			ServiceName: naming.ToPascalCase(dirName) + "Service",
 			Module:      modulePath,
 			Methods:     nil,
 		}
@@ -133,7 +156,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 			return fmt.Errorf("render authorizer_gen.go.tmpl for %s: %w", pkg, err)
 		}
 
-		relPath := filepath.Join("handlers", pkg, "authorizer_gen.go")
+		relPath := filepath.Join("handlers", dirName, "authorizer_gen.go")
 		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", pkg, err)
 		}

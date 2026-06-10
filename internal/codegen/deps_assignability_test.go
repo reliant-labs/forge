@@ -10,6 +10,7 @@ package codegen
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -230,5 +231,287 @@ type Deps struct {
 	inspectComponentDepsShape(components, dir, "internal")
 	if len(components[0].AppFieldRefs) != 0 {
 		t.Fatalf("AppFieldRefs = %+v, want 0 (name collision, types unrelated — lint reports)", components[0].AppFieldRefs)
+	}
+}
+
+// --- kalshi-trader FORGE_BACKLOG #13 regressions -------------------------
+//
+// The original matcher loaded pkg/app and the component package in
+// SEPARATE packages.Load calls. go/types identity is pointer identity,
+// so the SAME named type (or the context.Context in a method signature)
+// loaded through two universes is never Identical → AssignableTo /
+// Implements returned false for types that are literally identical in
+// source. Worse, the failure was nondeterministic: when pkg/app
+// transiently didn't type-check (structural regen mid-pipeline) the
+// matcher degraded to Unavailable and the legacy name-match wired
+// `app.<Field>`, while the next steady-state regen flipped the same
+// field to nil — silently un-wiring production collaborators.
+
+// settlementWorkerSrc declares a worker-local interface whose method
+// signature drags in a cross-package named type (context.Context) —
+// the exact shape that defeated the two-universe AssignableTo.
+const settlementWorkerSrc = `package settlement_processor
+
+import "context"
+
+// UnsettledSource feeds the settlement loop.
+type UnsettledSource interface {
+	Pending(ctx context.Context) ([]string, error)
+}
+
+type Deps struct {
+	// Unsettled drives the Brier-score loop.
+	// forge:optional-dep
+	Unsettled UnsettledSource
+}
+`
+
+// TestDepsAssignability_WorkerLocalInterfaceSharedUniverse covers the
+// identity case: AppExtras.Unsettled IS the worker's own named
+// interface type (settlement_processor.UnsettledSource). Trivially
+// assignable in source; the two-universe matcher reported
+// MatchNameMismatch because the two loads produced distinct
+// *types.Named. Must be MatchAssignable.
+func TestDepsAssignability_WorkerLocalInterfaceSharedUniverse(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), `module example.com/proj
+
+go 1.23
+`)
+	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
+	mustWrite(t, filepath.Join(dir, "pkg", "app", "app.go"), `package app
+
+import "example.com/proj/workers/settlement_processor"
+
+type AppExtras struct {
+	Unsettled settlement_processor.UnsettledSource
+}
+
+type App struct {
+	*AppExtras
+}
+`)
+
+	m := NewDepsAssignabilityMatcher(dir)
+	kind := m.Match("workers", "settlement_processor", "Unsettled",
+		"UnsettledSource", "settlement_processor.UnsettledSource", true)
+	if kind != MatchAssignable {
+		t.Fatalf("Match = %v, want MatchAssignable (same named type, one universe)", kind)
+	}
+}
+
+// TestDepsAssignability_CrossPackageAdapterImplementsWorkerInterface
+// covers the reporter's adapter shape: AppExtras holds a CONCRETE
+// adapter type from a third package that satisfies the worker-local
+// interface. types.Implements must hold because both sides (and the
+// context.Context in the method signature) come from one universe.
+func TestDepsAssignability_CrossPackageAdapterImplementsWorkerInterface(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), `module example.com/proj
+
+go 1.23
+`)
+	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
+	mustWrite(t, filepath.Join(dir, "internal", "unsettledadapter", "adapter.go"), `package unsettledadapter
+
+import "context"
+
+// Adapter satisfies settlement_processor.UnsettledSource.
+type Adapter struct{}
+
+func (*Adapter) Pending(ctx context.Context) ([]string, error) { return nil, nil }
+`)
+	mustWrite(t, filepath.Join(dir, "pkg", "app", "app.go"), `package app
+
+import "example.com/proj/internal/unsettledadapter"
+
+type AppExtras struct {
+	Unsettled *unsettledadapter.Adapter
+}
+
+type App struct {
+	*AppExtras
+}
+`)
+
+	m := NewDepsAssignabilityMatcher(dir)
+	kind := m.Match("workers", "settlement_processor", "Unsettled",
+		"UnsettledSource", "*unsettledadapter.Adapter", true)
+	if kind != MatchAssignable {
+		t.Fatalf("Match = %v, want MatchAssignable (adapter implements worker-local interface)", kind)
+	}
+}
+
+// TestGenerateWireGen_WorkerLocalInterfaceWiresAndIsDeterministic is
+// the end-to-end pin: the worker's optional cross-package-satisfied
+// Deps field must wire to `app.Unsettled` — and the rendered
+// wire_gen.go must be byte-identical across (a) a steady-state regen,
+// (b) a repeat regen, and (c) a regen while pkg/app transiently does
+// NOT type-check (the structural mid-pipeline state that previously
+// flipped the resolution between app.<Field> and nil).
+func TestGenerateWireGen_WorkerLocalInterfaceWiresAndIsDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), `module example.com/proj
+
+go 1.23
+`)
+	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
+	mustWrite(t, filepath.Join(dir, "internal", "unsettledadapter", "adapter.go"), `package unsettledadapter
+
+import "context"
+
+type Adapter struct{}
+
+func (*Adapter) Pending(ctx context.Context) ([]string, error) { return nil, nil }
+`)
+	mustWrite(t, filepath.Join(dir, "pkg", "app", "app_extras.go"), `package app
+
+import "example.com/proj/internal/unsettledadapter"
+
+type AppExtras struct {
+	Unsettled *unsettledadapter.Adapter
+}
+
+type App struct {
+	*AppExtras
+}
+`)
+
+	workers := []BootstrapWorkerData{{
+		Name:       "settlement_processor",
+		Package:    "settlement_processor",
+		ImportPath: "settlement_processor",
+		FieldName:  "SettlementProcessor",
+		VarName:    "settlementProcessor",
+	}}
+
+	generate := func(label string) string {
+		t.Helper()
+		if _, err := GenerateWireGenData(nil, nil, workers, nil, "example.com/proj", dir, false, nil); err != nil {
+			t.Fatalf("%s: GenerateWireGenData: %v", label, err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "pkg", "app", "wire_gen.go"))
+		if err != nil {
+			t.Fatalf("%s: read wire_gen.go: %v", label, err)
+		}
+		return string(data)
+	}
+
+	first := generate("steady-state run 1")
+	if !strings.Contains(first, "Unsettled: app.Unsettled") {
+		t.Fatalf("expected `Unsettled: app.Unsettled` wiring, got:\n%s", first)
+	}
+	if strings.Contains(first, "TODO: wire Unsettled") {
+		t.Errorf("assignable optional dep must not carry a TODO:\n%s", first)
+	}
+
+	second := generate("steady-state run 2")
+	if first != second {
+		t.Fatalf("steady-state regen not idempotent:\n--- run1 ---\n%s\n--- run2 ---\n%s", first, second)
+	}
+
+	// Simulate the structural mid-pipeline state: pkg/app references a
+	// symbol that doesn't exist yet (e.g. bootstrap.go calling a
+	// wireWorkerXxxDeps the not-yet-rewritten wire_gen.go lacks). The
+	// file PARSES (so the AST name-match still sees Unsettled) but the
+	// package no longer type-checks → assignability is unprovable →
+	// the fail-loud policy must wire the name match, exactly like the
+	// proven-assignable runs.
+	broken := filepath.Join(dir, "pkg", "app", "transient_broken.go")
+	mustWrite(t, broken, `package app
+
+func transientlyBroken() { callThatDoesNotExistYet() }
+`)
+	third := generate("transiently-broken run")
+	if !strings.Contains(third, "Unsettled: app.Unsettled") {
+		t.Fatalf("transiently-broken regen dropped the wiring:\n%s", third)
+	}
+	if first != third {
+		t.Fatalf("regen output depends on whether pkg/app type-checks (nondeterminism class):\n--- steady ---\n%s\n--- broken ---\n%s", first, third)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestGenerateWireGen_OptionalProvenMismatchStaysLoud pins the policy's
+// other half: when the type checker PROVES a name-matched field is not
+// assignable, the typed-zero fallout must stay loud — TODO comment +
+// UNRESOLVED header — even though the field carries forge:optional-dep.
+// Pre-fix, the optional silent treatment swallowed proven mismatches
+// too, which is how kalshi's downgraded deps produced no signal at all.
+func TestGenerateWireGen_OptionalProvenMismatchStaysLoud(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "go.mod"), `module example.com/proj
+
+go 1.23
+`)
+	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), `package settlement_processor
+
+type UnsettledSource interface {
+	Pending() []string
+}
+
+type Deps struct {
+	// forge:optional-dep
+	Unsettled UnsettledSource
+}
+`)
+	// AppExtras.Unsettled is a concrete type that does NOT implement
+	// the worker interface — a genuine, provable mismatch.
+	mustWrite(t, filepath.Join(dir, "pkg", "app", "app_extras.go"), `package app
+
+type WrongShape struct{}
+
+type AppExtras struct {
+	Unsettled *WrongShape
+}
+
+type App struct {
+	*AppExtras
+}
+`)
+
+	workers := []BootstrapWorkerData{{
+		Name:       "settlement_processor",
+		Package:    "settlement_processor",
+		ImportPath: "settlement_processor",
+		FieldName:  "SettlementProcessor",
+		VarName:    "settlementProcessor",
+	}}
+	if _, err := GenerateWireGenData(nil, nil, workers, nil, "example.com/proj", dir, false, nil); err != nil {
+		t.Fatalf("GenerateWireGenData: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "pkg", "app", "wire_gen.go"))
+	if err != nil {
+		t.Fatalf("read wire_gen.go: %v", err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "Unsettled: app.Unsettled") {
+		t.Errorf("proven mismatch must not wire app.Unsettled:\n%s", content)
+	}
+	if !strings.Contains(content, "TODO: wire Unsettled") {
+		t.Errorf("proven mismatch on an optional dep must keep the TODO marker:\n%s", content)
+	}
+	if !strings.Contains(content, "not assignable") {
+		t.Errorf("expected the not-assignable hint in the UNRESOLVED header:\n%s", content)
+	}
+}
+
+// TestMatchedAppField_UnavailableWiresNameMatch pins Matcher A's side
+// of the deterministic fail-loud policy: when assignability is
+// unprovable (here: no loadable pkg/app at all), a name match WIRES so
+// bootstrap output can't diverge from wire_gen's on the same project
+// state. The compiler arbitrates a wrong wire loudly; nil never does.
+func TestMatchedAppField_UnavailableWiresNameMatch(t *testing.T) {
+	m := NewDepsAssignabilityMatcher(t.TempDir())
+	appByName := map[string]string{"Repo": "*PostgresRepo"}
+	if !matchedAppField(m, "internal", "audit", "Repo", "Repository", appByName) {
+		t.Fatal("unprovable assignability with a name match must wire (fail-loud policy)")
+	}
+	// No name match stays a hard no — the optional-dep invariant.
+	if matchedAppField(m, "internal", "audit", "Sink", "EventSink", appByName) {
+		t.Fatal("no name match must never wire")
 	}
 }

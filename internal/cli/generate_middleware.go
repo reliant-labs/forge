@@ -136,7 +136,15 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 // path, e.g. "internal/linter/contract") are skipped wholesale — the walk does
 // not descend into them. testdata/ subtrees are also skipped because they hold
 // linter fixtures whose contract.go files are not real packages.
-func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConfig) error {
+//
+// cs is the project's checksum tracker. Passing it threads every emitted
+// mock_gen.go through the WriteGeneratedFile chokepoint so the path lands
+// in checksums.WrittenThisRun — without it, the stale-artifact sweep
+// flagged every manifest-tracked mock_gen.go as a deletion candidate on
+// every run (kalshi FORGE_BACKLOG #15). A nil cs is tolerated (the file
+// is still written; no checksum is recorded — and with no manifest there
+// is correspondingly no sweep that could flag it).
+func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {
 		return nil
@@ -154,7 +162,13 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			extraIfaceTypes[t] = true
 		}
 	}
-	contractOpts := contract.Options{ExtraInterfaceTypes: extraIfaceTypes}
+	contractOpts := contract.Options{
+		ExtraInterfaceTypes: extraIfaceTypes,
+		// Route the mock_gen.go write through the manifest chokepoint —
+		// see the cs param doc above for the stale-sweep rationale.
+		ProjectRoot: projectDir,
+		Checksums:   cs,
+	}
 
 	generated := 0
 	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {

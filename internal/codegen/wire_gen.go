@@ -390,14 +390,20 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 		// package clause — the matcher loads the package by path.
 		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "handlers", pkgDir: res.ImportLeaf}
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, svcTC)
+			expr, comment, unresolved, provenMismatch := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, svcTC)
 			// Optional fields that fall through to the typed-zero
 			// branch get the silent treatment: no inline TODO comment,
 			// no contribution to the UNRESOLVED header. The user
 			// explicitly opted in to "may be nil" via
 			// `// forge:optional-dep`, so warning every regenerate
 			// would be noise.
-			if df.Optional && unresolved != "" {
+			//
+			// EXCEPT on a proven name-match type mismatch: that's a
+			// misconfiguration (AppExtras holds a value the user meant
+			// to wire, typed incompatibly), not the intentional-nil
+			// state — staying loud is what surfaces the silent-downgrade
+			// class from kalshi FORGE_BACKLOG #13.
+			if df.Optional && unresolved != "" && !provenMismatch {
 				comment = ""
 				unresolved = ""
 			}
@@ -533,7 +539,7 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 		// package clause — the matcher loads the package by path.
 		compTC := &appFieldTypeChecker{matcher: matcher, roleRoot: subdir, pkgDir: c.ImportPath}
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, compTC)
+			expr, comment, unresolved, provenMismatch := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, compTC)
 			// Workers/operators are not expected to declare Authorizer
 			// (no inbound RPCs), so they don't get the devMode hook.
 			// If a Deps struct does declare one, we honor it and set
@@ -544,8 +550,9 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 				data.NeedsDevMode = true
 			}
 			// Optional Deps fields get the silent treatment — see the
-			// service-loop comment above for the full rationale.
-			if df.Optional && unresolved != "" {
+			// service-loop comment above for the full rationale (and
+			// for why a PROVEN name-match mismatch stays loud).
+			if df.Optional && unresolved != "" && !provenMismatch {
 				comment = ""
 				unresolved = ""
 			}
@@ -578,20 +585,30 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 // All other resolution rules (conventional names, exact-name app
 // match, typed-zero fallback) match wireExpressionFor exactly — the
 // placeholder branch is purely additive.
-func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver, tm *appFieldTypeChecker) (expr, comment, unresolvedHint string) {
+//
+// The fourth return, provenMismatch, is true ONLY when the field
+// name-matched an App/AppExtras field and the type checker PROVED (in
+// a single shared type universe — see deps_assignability.go) that the
+// app side is not assignable to the Deps side. Callers use it to keep
+// the typed-zero fallout LOUD even for `forge:optional-dep` fields: a
+// name-matched type conflict is a misconfiguration the user must see,
+// not the intentional "may be nil" state the optional marker opts
+// into. (kalshi FORGE_BACKLOG #13: optional worker deps were silently
+// downgraded from app.<Field> to nil with no TODO and no lint finding.)
+func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver, tm *appFieldTypeChecker) (expr, comment, unresolvedHint string, provenMismatch bool) {
 	switch df.Name {
 	case "Logger":
-		return fmt.Sprintf("logger.With(\"service\", %q)", runtimeName), "", ""
+		return fmt.Sprintf("logger.With(\"service\", %q)", runtimeName), "", "", false
 	case "Config":
-		return "cfg", "", ""
+		return "cfg", "", "", false
 	case "Authorizer":
-		return "authz", "devMode swap to middleware.DevAuthorizer in development", ""
+		return "authz", "devMode swap to middleware.DevAuthorizer in development", "", false
 	case "DB":
 		switch {
 		case strings.Contains(df.Type, "orm.Context") && ormEnabled:
-			return "app.ORM", "*orm.Client implements orm.Context", ""
+			return "app.ORM", "*orm.Client implements orm.Context", "", false
 		case strings.Contains(df.Type, "sql.DB"):
-			return "app.DB", "", ""
+			return "app.DB", "", "", false
 		}
 	}
 
@@ -607,30 +624,37 @@ func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnable
 			}
 			return fmt.Sprintf("resolve%s(app)", df.Name),
 				fmt.Sprintf("typed accessor for forge:placeholder %s → %s", df.Name, af.Placeholder),
-				""
+				"", false
 		}
 		// Name matches. Decide whether the types are compatible. The
 		// legacy code emitted `app.<Field>` on name alone, which
 		// produced a compile error when AppExtras.<Field> was typed
 		// incompatibly with Deps.<Field> (the cp-forge audit-no-op bug
-		// class). When the type checker is available and reports a
-		// genuine mismatch, fall through to the unresolved-typed-zero
-		// path so the failure is LOUD (TODO comment + UNRESOLVED
-		// header line + lint finding) rather than a compile error at a
-		// downstream call site.
+		// class). When the type checker PROVES a genuine mismatch
+		// (single shared type universe — see deps_assignability.go),
+		// fall through to the unresolved-typed-zero path so the failure
+		// is LOUD (TODO comment + UNRESOLVED header line + lint
+		// finding) rather than a compile error at a downstream call
+		// site.
+		//
+		// When assignability is merely UNPROVEN (project mid-edit, load
+		// failure), IsNameMismatch returns false and we wire the name
+		// match — the deterministic fail-loud policy: the compiler
+		// arbitrates a wrong wire loudly, and the rendered output no
+		// longer flip-flops between structural and steady-state regens.
 		if tm != nil && tm.IsNameMismatch(df.Name, df.Type, af.Type) {
 			hint := fmt.Sprintf("AppExtras.%s is %s but Deps.%s wants %s — types are not assignable; align AppExtras to %s or re-construct %s in pkg/app/setup.go",
 				df.Name, af.Type, df.Name, df.Type, df.Type, df.Name)
 			return zeroValueLiteral(df.Type),
 				fmt.Sprintf("TODO: wire %s — AppExtras.%s type (%s) is not assignable to %s", df.Name, df.Name, af.Type, df.Type),
-				hint
+				hint, true
 		}
-		return "app." + df.Name, "", ""
+		return "app." + df.Name, "", "", false
 	}
 
 	hint := fmt.Sprintf("add `%s %s` to AppExtras in pkg/app/app_extras.go, then assign `app.%s = ...` in pkg/app/setup.go",
 		df.Name, df.Type, df.Name)
-	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", hint
+	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", hint, false
 }
 
 // wireExpressionFor maps one DepsField to the Go expression wire_gen
@@ -662,11 +686,16 @@ type appFieldTypeChecker struct {
 	pkgDir   string
 }
 
-// IsNameMismatch reports true iff the matcher can confirm AppExtras's
-// type is genuinely NOT assignable to the Deps field's declared type.
-// Returns false when the matcher is unavailable (load failure, no
-// pkg/app, etc.) — see the MatchUnavailable docstring; preserves the
-// pre-matcher behavior so codegen never regresses on a mid-edit project.
+// IsNameMismatch reports true iff the matcher can PROVE AppExtras's
+// type is genuinely NOT assignable to the Deps field's declared type
+// (both sides type-checked in one shared universe). Returns false when
+// the matcher is unavailable (load failure, no pkg/app, project
+// mid-edit) — per the deterministic fail-loud policy in
+// deps_assignability.go's header, unproven name matches WIRE so the
+// compiler arbitrates; only a proven mismatch drops to typed-zero.
+// This is what makes wire_gen.go output a pure function of the on-disk
+// project state instead of flip-flopping with whether pkg/app happened
+// to type-check mid-pipeline (kalshi FORGE_BACKLOG #13).
 func (c *appFieldTypeChecker) IsNameMismatch(depsName, depsType, appType string) bool {
 	if c == nil || c.matcher == nil {
 		return false

@@ -44,6 +44,11 @@ Examples:
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Overall timeout for all checks")
 	cmd.Flags().StringVar(&signal, "signal", "", "Check a specific signal only (metrics, traces, logs, profiles)")
 
+	// Subcommands. `parity` is the host-mode vs cluster-mode env+config
+	// divergence detector — surfaces "local wasn't representative of
+	// prod" bugs before deploy.
+	cmd.AddCommand(newDoctorParityCmd())
+
 	return cmd
 }
 

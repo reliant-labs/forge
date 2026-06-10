@@ -36,6 +36,21 @@ var methodAuthRequired = map[string]bool{
 {{- end}}
 }
 
+// methodErrors records the declared Connect/gRPC error codes each method
+// may return, derived from (forge.v1.method).errors. The list is
+// informational today — it documents the typed error contract for
+// handler authors (and LLMs implementing handlers) so the error space
+// is visible at a glance from the generated package. Methods without
+// declared errors are omitted from the map. Values match connect.Code
+// names — e.g. "NotFound", "PermissionDenied", "InvalidArgument".
+var methodErrors = map[string][]string{
+{{- range .Methods}}
+{{- if .Errors}}
+	"{{.Procedure}}": {{"{"}}{{range $i, $e := .Errors}}{{if $i}}, {{end}}"{{$e}}"{{end}}{{"}"}},
+{{- end}}
+{{- end}}
+}
+
 // init wires the project's claims-from-context helper into authz so the
 // library can read claims without a back-import on pkg/middleware.
 // Idempotent across N services in one binary — every shim points authz

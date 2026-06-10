@@ -290,9 +290,26 @@ type CronJobEntity struct {
 // KCLEnvVar is a single env var entry from the rendered KCL. Distinct
 // type so we don't pull in the project-config EnvVar (which carries
 // codegen-specific fields the KCL renderer doesn't know about).
+//
+// Three projection channels mirror the KCL EnvVar schema (kcl/schema.k):
+//
+//   - Value: inline literal. The dominant case host-mode consumes.
+//   - SecretRef + SecretKey: cluster-mode projection from a Secret
+//     (Deployment.env.valueFrom.secretKeyRef). No host equivalent —
+//     host-mode picks the value up from the gitignored secrets_file.
+//   - ConfigMapRef + ConfigMapKey: cluster-mode projection from a
+//     forge-generated ConfigMap.
+//
+// SecretRef / ConfigMapRef are surfaced (rather than dropped) so the
+// `forge doctor parity` diff can attribute cluster-side projected env
+// vars to their source rather than treating an empty Value as "unset".
 type KCLEnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value,omitempty"`
+	Name         string `json:"name"`
+	Value        string `json:"value,omitempty"`
+	SecretRef    string `json:"secret_ref,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	ConfigMapRef string `json:"config_map_ref,omitempty"`
+	ConfigMapKey string `json:"config_map_key,omitempty"`
 }
 
 // kclRenderRaw is the JSON shape emitted by `kcl run deploy/kcl/<env>/

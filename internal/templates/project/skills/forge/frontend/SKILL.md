@@ -7,7 +7,7 @@ description: Write Next.js frontends — generated hooks, component library, Tai
 
 ## Project Structure
 
-Each frontend lives in `frontends/<name>/` as a standalone Next.js app with App Router. Create one with:
+Each frontend lives in `frontends/<name>/` as a Next.js app with App Router. Create one with:
 
 ```bash
 forge add frontend <name>
@@ -20,6 +20,56 @@ Key directories inside `frontends/<name>/`:
 - `src/lib/` — Utilities and Connect RPC client setup
 
 Generated TypeScript clients live in `gen/` at the project root, shared across all frontends.
+
+### Production build shape (`output:`)
+
+`forge add frontend` emits a `next.config.ts` configured for the common forge shape: a Next.js shell that calls a Go backend via Connect RPC. The default is **static export** — production builds emit `out/` (HTML + JS + CSS) that drops straight onto a CDN or object store. No Node runtime in prod → smaller attack surface, free edge caching, no Node image to patch.
+
+The choice is captured in `forge.yaml`:
+
+```yaml
+frontends:
+  - name: admin
+    type: nextjs
+    path: frontends/admin
+    port: 3000
+    output: static       # default — production = static export, dev = next dev
+```
+
+Three values are accepted:
+
+| `output:`    | Production shape                            | Use when                                                                          |
+| ------------ | ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `static`     | Static export (`output: "export"`)          | Pure UI shell — all data/auth/logic in a backend (the default for forge projects). |
+| `standalone` | Node sidecar (`output: "standalone"`)       | Server components, server actions, request-time `redirect()` / `cookies()`.        |
+| `server`     | Full Next.js (no `output:` field)           | Custom server, ISR, managed host (Vercel) where you want `next start` semantics.   |
+
+Opt into a non-default at scaffold time:
+
+```bash
+forge add frontend dashboard --output standalone
+```
+
+The Dockerfile the scaffold ships is sized for `standalone`. Static deployments can ignore (or delete) it — the production artifact is the contents of `out/`. The `output:` field only takes effect at scaffold time; `next.config.ts` is Tier-2 (yours to edit after scaffold) so changing the YAML later does not retroactively rewrite the file.
+
+If a frontend uses server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) it MUST use `output: standalone` or `output: server` — those calls don't work in a static export. The scaffolded `app/page.tsx` (entity tile grid) and `app/layout.tsx` do not use server-only APIs and work under the static default unchanged.
+
+For a root-route redirect (e.g. `/` → `/dashboard`) under static export, do NOT use `redirect()` from `next/navigation` — it requires the Next.js server runtime. Use a client component with `useRouter().replace()`:
+
+```tsx
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+
+export default function RootPage() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace("/dashboard");
+  }, [router]);
+  return null;
+}
+```
 
 For React Native mobile frontends, `forge add frontend <name> --kind mobile` creates an Expo app with the same systems:
 - `app/` — Expo Router screens and layouts

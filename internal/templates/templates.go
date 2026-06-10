@@ -430,6 +430,20 @@ type FrontendTemplateData struct {
 	// React Native templates reference this in their package.json
 	// workspace deps and example screens.
 	UINativePackage string
+	// Output selects the Next.js build/runtime shape. Mirrors
+	// config.FrontendConfig.Output. Only the nextjs templates read it
+	// (`next.config.ts.tmpl`); other template trees ignore it.
+	//
+	// Valid values rendered by templates:
+	//   - "static"     (default): emit `output: "export"` gated on
+	//     NODE_ENV=production. Dev server stays unchanged.
+	//   - "standalone": emit `output: "standalone"` unconditionally.
+	//   - "server":     omit `output` entirely (full Next.js dev+prod).
+	//
+	// Empty string is treated as "static" by the template — pre-1.6
+	// scaffolds that wrote FrontendTemplateData without this field
+	// keep working under the new default.
+	Output string
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

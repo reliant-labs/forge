@@ -23,6 +23,12 @@ type Method struct {
 	ServerStreaming bool
 	AuthRequired    bool     // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
 	RequiredRoles   []string // from forge.options.v1.method_options.required_roles
+	// Errors records the Connect/gRPC error codes this method may return,
+	// derived from (forge.v1.method).errors. Values match connect.Code
+	// names (e.g. "NotFound", "PermissionDenied"). Surfaced through
+	// generated code so handler authors see the typed error contract at
+	// a glance. Informational at runtime — no enforcement (yet).
+	Errors []string
 	// InputProtoFile / OutputProtoFile record the proto file path that
 	// physically declares the input/output message. For RPCs whose
 	// request/response live in the same proto file as the service these

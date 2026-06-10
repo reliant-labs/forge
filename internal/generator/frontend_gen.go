@@ -34,6 +34,15 @@ type FrontendGenOptions struct {
 	// @<scope>/hooks, and templates render imports of those packages
 	// instead of relative @/gen / @/hooks paths.
 	Workspaces bool
+	// Output selects the Next.js build/runtime shape rendered into
+	// `next.config.ts`. Valid values: "static" (default), "standalone",
+	// "server". See config.FrontendConfig.Output for the per-mode
+	// semantics. Empty string defaults to "static" — the new
+	// scaffold default since the static-default switchover.
+	//
+	// Ignored for kind=mobile (react-native) and kind=vite-spa; those
+	// trees have their own production shapes.
+	Output string
 }
 
 // GenerateFrontendFiles generates the frontend directory and files.
@@ -68,6 +77,15 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	layout := NewFrontendWorkspaceLayout(projectName)
+	// Default the Next.js output shape to "static" when unset. Templates
+	// (`next.config.ts.tmpl`) branch on this value; an empty string
+	// would emit a malformed file. We canonicalise here rather than in
+	// every template so callers can pass "" for "use the scaffold
+	// default" without having to know what that default is.
+	output := strings.ToLower(strings.TrimSpace(opts.Output))
+	if output == "" {
+		output = "static"
+	}
 	data := templates.FrontendTemplateData{
 		FrontendName: frontendName,
 		ProjectName:  projectName,
@@ -75,6 +93,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		ApiPort:      fmt.Sprintf("%d", apiPort),
 		Module:       modulePath,
 		Workspaces:   opts.Workspaces,
+		Output:       output,
 	}
 	if opts.Workspaces {
 		data.ApiPackage = layout.ApiPackage

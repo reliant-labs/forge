@@ -144,6 +144,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newToolsCmd())
 	rootCmd.AddCommand(newBacklogCmd())
 	rootCmd.AddCommand(newAuditCmd())
+	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newIntrospectCmd())
 	rootCmd.AddCommand(newConfigCmd())

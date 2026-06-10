@@ -1,11 +1,27 @@
 package templates
 
 import (
+	"go/format"
 	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
 )
+
+// assertGofmtClean fails if src is not already gofmt-formatted. Rendered
+// scaffolds land directly in user repos, so template output must be
+// byte-identical to its gofmt form — a drifted template fails every
+// downstream `gofmt -l` / lint gate on a fresh `forge add`.
+func assertGofmtClean(t *testing.T, name, src string) {
+	t.Helper()
+	formatted, err := format.Source([]byte(src))
+	if err != nil {
+		t.Fatalf("%s does not format as valid Go: %v\n----\n%s", name, err, src)
+	}
+	if string(formatted) != src {
+		t.Errorf("%s rendered output is not gofmt-clean\n---- rendered ----\n%s\n---- gofmt ----\n%s", name, src, formatted)
+	}
+}
 
 // --- Worker templates ---
 
@@ -36,12 +52,31 @@ func TestWorkerTemplatesRenderDefault(t *testing.T) {
 	if !strings.Contains(s, "func (w *Worker) Stop(ctx context.Context) error") {
 		t.Error("worker.go should contain Stop method")
 	}
+	// The scaffolded cycle loop must demonstrate the ctx-aware lifecycle:
+	// select on ctx.Done() each iteration and pass ctx into the per-cycle
+	// work so long cycles observe graceful shutdown mid-flight. Friction
+	// surfaced by kalshi-trader — the prior scaffold parked on
+	// <-ctx.Done() with the loop pattern relegated to a TODO comment, so
+	// hand-written loops routinely dropped the ctx plumbing.
+	if !strings.Contains(s, "case <-ctx.Done():") {
+		t.Errorf("worker.go cycle loop should select on ctx.Done(); got:\n%s", s)
+	}
+	if !strings.Contains(s, "func (w *Worker) runOnce(ctx context.Context) error") {
+		t.Errorf("worker.go should scaffold a ctx-taking runOnce cycle method; got:\n%s", s)
+	}
+	if !strings.Contains(s, "w.runOnce(ctx)") {
+		t.Errorf("worker.go cycle loop should pass ctx into runOnce; got:\n%s", s)
+	}
 	if strings.Contains(s, "robfig/cron") {
 		t.Error("default worker should not import cron")
 	}
 	if strings.Contains(s, "//go:build ignore") {
 		t.Error("rendered output should not retain //go:build ignore")
 	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "worker.go", s, parser.SkipObjectResolution); err != nil {
+		t.Errorf("worker.go template did not parse as valid Go: %v\n----\n%s", err, s)
+	}
+	assertGofmtClean(t, "worker/worker.go.tmpl", s)
 }
 
 func TestWorkerTemplatesRenderTest(t *testing.T) {
@@ -68,6 +103,19 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 	if !strings.Contains(s, "Test") {
 		t.Error("worker_test.go should contain test functions")
 	}
+	// TestWorkerRunOnceAcceptsContext pins the ctx-aware cycle contract
+	// in the scaffolded test so it survives the user replacing the
+	// example body.
+	if !strings.Contains(s, "TestWorkerRunOnceAcceptsContext") {
+		t.Error("worker_test.go should contain TestWorkerRunOnceAcceptsContext")
+	}
+	if !strings.Contains(s, "w.runOnce(ctx)") {
+		t.Error("worker_test.go should exercise the runOnce(ctx) signature")
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "worker_test.go", s, parser.SkipObjectResolution); err != nil {
+		t.Errorf("worker_test.go template did not parse as valid Go: %v\n----\n%s", err, s)
+	}
+	assertGofmtClean(t, "worker/worker_test.go.tmpl", s)
 }
 
 // --- Worker-cron templates ---
@@ -132,6 +180,7 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 	if strings.Contains(s, "//go:build ignore") {
 		t.Error("rendered output should not retain //go:build ignore")
 	}
+	assertGofmtClean(t, "worker-cron/worker.go.tmpl", s)
 }
 
 func TestWorkerCronTemplatesRenderTest(t *testing.T) {
@@ -171,6 +220,7 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 	if _, err := parser.ParseFile(token.NewFileSet(), "worker_test.go", s, parser.SkipObjectResolution); err != nil {
 		t.Errorf("cron worker_test.go template did not parse as valid Go: %v\n----\n%s", err, s)
 	}
+	assertGofmtClean(t, "worker-cron/worker_test.go.tmpl", s)
 }
 
 // --- Operator templates ---

@@ -79,6 +79,83 @@ func (w *stubWorker) Stop(context.Context) error {
 	return nil
 }
 
+// ctxWorker implements the optional ContextWorker extension. It records
+// which lifecycle method the supervisor picked so tests can assert
+// RunContext is PREFERRED over the legacy Start when both exist.
+type ctxWorker struct {
+	name         string
+	runCalled    atomic.Bool
+	startCalled  atomic.Bool
+	cancelledAt  atomic.Int64
+	stopCalled   atomic.Bool
+	runReturnErr error // returned from RunContext after ctx is done
+}
+
+func (w *ctxWorker) Name() string { return w.name }
+
+// Start is the legacy path — it must NOT be called when RunContext is
+// available.
+func (w *ctxWorker) Start(ctx context.Context) error {
+	w.startCalled.Store(true)
+	<-ctx.Done()
+	return nil
+}
+
+func (w *ctxWorker) Stop(context.Context) error {
+	w.stopCalled.Store(true)
+	return nil
+}
+
+func (w *ctxWorker) RunContext(ctx context.Context) error {
+	w.runCalled.Store(true)
+	<-ctx.Done()
+	w.cancelledAt.Store(time.Now().UnixNano())
+	return w.runReturnErr
+}
+
+// cronishWorker mimics the cron worker scaffold at the supervisor level:
+// RunContext schedules ticks and each tick derives a per-tick context
+// from the worker lifecycle ctx. The tick body deliberately blocks until
+// its per-tick ctx is done — like a long-running cron job that only
+// finishes because shutdown interrupted it.
+type cronishWorker struct {
+	name            string
+	tickStarted     atomic.Bool
+	tickInterrupted atomic.Bool
+	stopCalled      atomic.Bool
+}
+
+func (w *cronishWorker) Name() string { return w.name }
+
+func (w *cronishWorker) Start(context.Context) error {
+	return errors.New("legacy Start must not be called for a ContextWorker")
+}
+
+func (w *cronishWorker) Stop(context.Context) error {
+	w.stopCalled.Store(true)
+	return nil
+}
+
+func (w *cronishWorker) RunContext(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Per-tick context derived from the worker lifecycle ctx —
+			// the same shape the cron scaffold's baseCtx produces.
+			tickCtx, cancel := context.WithCancel(ctx)
+			w.tickStarted.Store(true)
+			<-tickCtx.Done() // "job" runs until shutdown interrupts it
+			cancel()
+			w.tickInterrupted.Store(true)
+			return nil
+		}
+	}
+}
+
 // runInBackground starts serverkit.Run on a goroutine and returns a
 // helper that polls /readyz then triggers SIGTERM to drive shutdown.
 // Tests block on the returned error channel.
@@ -244,6 +321,103 @@ func TestRun_WorkerLifecycle(t *testing.T) {
 	}
 	if w.startedAt.Load() > w.stoppedAt.Load() {
 		t.Fatalf("worker stopped (%d) before it started (%d)?", w.stoppedAt.Load(), w.startedAt.Load())
+	}
+}
+
+// TestRun_ContextWorkerPreferred proves the supervisor picks RunContext
+// over the legacy Start when a worker implements ContextWorker, cancels
+// the per-worker ctx on shutdown so the worker exits promptly, and still
+// calls Stop afterwards. A legacy worker rides along in the same app to
+// prove the fallback path is untouched by the new lifecycle.
+func TestRun_ContextWorkerPreferred(t *testing.T) {
+	// Not parallel — sends SIGTERM.
+	addr := freeAddr(t)
+	cw := &ctxWorker{name: "ctx-aware", runReturnErr: context.Canceled}
+	legacy := &stubWorker{name: "legacy"}
+	app := &stubApp{workers: []serverkit.Worker{cw, legacy}}
+	hooks := serverkit.Hooks{
+		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
+			return app, nil
+		},
+	}
+	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	waitReady(t, addr, 2*time.Second)
+
+	// Give the worker goroutines a beat to spin up, then assert the
+	// supervisor chose the ctx-aware method.
+	deadline := time.Now().Add(2 * time.Second)
+	for !cw.runCalled.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !cw.runCalled.Load() {
+		t.Fatal("RunContext was never called for a ContextWorker")
+	}
+
+	start := time.Now()
+	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if cw.startCalled.Load() {
+		t.Fatal("legacy Start was called even though the worker implements ContextWorker")
+	}
+	if cw.cancelledAt.Load() == 0 {
+		t.Fatal("ctx-aware worker never observed ctx cancellation")
+	}
+	if !cw.stopCalled.Load() {
+		t.Fatal("Stop was not called on the ctx-aware worker after RunContext returned")
+	}
+	// RunContext returned context.Canceled — that must be treated as a
+	// clean exit, not a run failure.
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("shutdown took %s — ctx-aware worker did not exit promptly", elapsed)
+	}
+
+	// Legacy worker: unchanged Start/Stop lifecycle.
+	if legacy.startedAt.Load() == 0 {
+		t.Fatal("legacy worker Start was never called")
+	}
+	if legacy.stoppedAt.Load() == 0 {
+		t.Fatal("legacy worker Stop was never called")
+	}
+}
+
+// TestRun_CronShapedContextWorker proves a cron-style RunContext — per-
+// tick contexts derived from the worker lifecycle ctx — observes
+// shutdown mid-tick: the in-flight "job" blocks until its tick ctx is
+// cancelled, which only happens because the supervisor cancelled the
+// worker ctx.
+func TestRun_CronShapedContextWorker(t *testing.T) {
+	// Not parallel — sends SIGTERM.
+	addr := freeAddr(t)
+	cw := &cronishWorker{name: "cronish"}
+	app := &stubApp{workers: []serverkit.Worker{cw}}
+	hooks := serverkit.Hooks{
+		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
+			return app, nil
+		},
+	}
+	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	waitReady(t, addr, 2*time.Second)
+
+	// Wait for a tick to be in flight before triggering shutdown so the
+	// cancellation genuinely interrupts a running job.
+	deadline := time.Now().Add(2 * time.Second)
+	for !cw.tickStarted.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !cw.tickStarted.Load() {
+		t.Fatal("cron-shaped worker never started a tick")
+	}
+
+	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !cw.tickInterrupted.Load() {
+		t.Fatal("in-flight tick did not observe ctx cancellation on shutdown")
+	}
+	if !cw.stopCalled.Load() {
+		t.Fatal("Stop was not called on the cron-shaped worker")
 	}
 }
 
@@ -446,6 +620,13 @@ var _ serverkit.Application = (*stubApp)(nil)
 
 // Compile-time check: stubWorker satisfies Worker.
 var _ serverkit.Worker = (*stubWorker)(nil)
+
+// Compile-time checks: the ctx-aware stubs satisfy ContextWorker (and
+// therefore Worker, which ContextWorker embeds).
+var (
+	_ serverkit.ContextWorker = (*ctxWorker)(nil)
+	_ serverkit.ContextWorker = (*cronishWorker)(nil)
+)
 
 // Used by error-wrap tests that check the message contains a substring.
 var _ = fmt.Sprintf

@@ -190,8 +190,16 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 // handlers_crud_gen.go is recorded so it doesn't show up as an orphan in
 // `forge audit`. A nil cs is tolerated.
 func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := toServicePackage(svc.Name)
-	targetDir := filepath.Join(projectDir, "handlers", pkg)
+	// Disk-first: handlers_crud_gen.go lands inside the EXISTING handler
+	// dir and must declare that dir's real package clause. Re-synthesizing
+	// the path from the proto name is how the historical
+	// handlers/adminserver-vs-admin_server duplicate-dir bug was created.
+	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+	if resErr != nil {
+		return resErr
+	}
+	pkg := res.PackageName
+	targetDir := res.Dir
 
 	// Scan existing user-owned methods to avoid generating duplicates
 	existingMethods, err := scanExistingMethods(targetDir, false)
@@ -220,15 +228,18 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
 	}
 
-	// Build template data
+	// Build template data. Package is overridden with the disk-resolved
+	// clause so the emitted file always matches the directory it lands in
+	// (buildCRUDTemplateData's synthesis only holds for fresh scaffolds).
 	data := buildCRUDTemplateData(svc, filteredMethods, modulePath)
+	data.Package = pkg
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_gen.go.tmpl: %w", err)
 	}
 
-	relPath := filepath.Join("handlers", pkg, "handlers_crud_gen.go")
+	relPath := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf), "handlers_crud_gen.go")
 	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
 		return fmt.Errorf("write handlers_crud_gen.go: %w", err)
 	}
@@ -344,6 +355,9 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 }
 
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTemplateData {
+	// Synthesized Package is a placeholder only: GenerateCRUDHandlers
+	// overrides it with the disk-resolved package clause before rendering
+	// (the file lands inside an EXISTING handler dir).
 	pkg := toServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as mapServiceDefToTemplateData)
@@ -589,8 +603,16 @@ type CRUDTestFieldData struct {
 // the file becomes user-owned and forge stops re-rendering it (and stops
 // updating the checksum). A nil cs is tolerated.
 func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := toServicePackage(svc.Name)
-	targetDir := filepath.Join(projectDir, "handlers", pkg)
+	// Disk-first: same handler-dir + package-clause resolution as
+	// GenerateCRUDHandlers (the two MUST land in the same directory and
+	// declare the same package).
+	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+	if resErr != nil {
+		return resErr
+	}
+	pkg := res.PackageName
+	targetDir := res.Dir
+	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
 
 	unitPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
 	integrationPath := filepath.Join(targetDir, "handlers_crud_integration_test.go")
@@ -619,7 +641,13 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		return nil
 	}
 
+	// Package + TestHelperName are overridden with the disk-resolved
+	// package clause so the emitted test files always match the directory
+	// they land in AND call the `app.NewTest<X>` factory the bootstrap
+	// testing generator (which uses the same resolver) actually emitted.
 	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir)
+	data.Package = pkg
+	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
@@ -629,7 +657,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_test_gen.go.tmpl: %w", err)
 	}
-	if err := writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_gen_test.go"), unitContent, cs); err != nil {
+	if err := writeScaffoldFile(projectDir, filepath.Join(relDir, "handlers_crud_gen_test.go"), unitContent, cs); err != nil {
 		return err
 	}
 
@@ -637,7 +665,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_integration_test.go.tmpl: %w", err)
 	}
-	return writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_integration_test.go"), integrationContent, cs)
+	return writeScaffoldFile(projectDir, filepath.Join(relDir, "handlers_crud_integration_test.go"), integrationContent, cs)
 }
 
 // writeScaffoldFile writes a scaffold-with-placeholders file at
@@ -689,6 +717,9 @@ func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums
 }
 
 func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string) CRUDTestTemplateData {
+	// Synthesized Package/TestHelperName are placeholders only:
+	// GenerateCRUDTests overrides both with disk-resolved values before
+	// rendering — see the call site for the rationale.
 	pkg := toServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)

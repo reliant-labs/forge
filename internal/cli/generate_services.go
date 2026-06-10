@@ -138,8 +138,20 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 
 	hasNewStubs := false
 	for _, svc := range services {
-		relServiceDir := toServiceDir(svc.Name)
-		absServiceDir := filepath.Join(projectDir, relServiceDir)
+		// Disk-first: target the handler directory that actually exists
+		// (snake/compact/kebab — whatever era scaffolded it). Pre-fix this
+		// synthesized a snake_case dir while the scaffolder created the
+		// compact form, so `forge generate` on an AdminServerService could
+		// scaffold a SECOND handlers/admin_server next to the scaffolder's
+		// handlers/adminserver — the duplicate-dir bug class. The fallback
+		// (no dir yet) is the compact form, matching
+		// generator.ServicePackageName so scaffold + generate agree.
+		res, err := codegen.ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		relServiceDir := "handlers/" + res.ImportLeaf
+		absServiceDir := res.Dir
 
 		// Build the per-service skip set: anything CRUD-shaped that
 		// matched an entity (already there from crudMethodNames) PLUS
@@ -255,14 +267,9 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 	return nil
 }
 
-func toServiceDir(serviceName string) string {
-	// EchoService -> handlers/echo
-	// AdminServerService -> handlers/admin_server (snake-case so the generate
-	// pipeline targets the same directory the scaffolder created).
-	trimmed := strings.TrimSuffix(serviceName, "Service")
-	if trimmed == "" {
-		trimmed = serviceName
-	}
-	name := strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
-	return fmt.Sprintf("handlers/%s", name)
-}
+// Service-name → handlers/<dir> mapping is no longer synthesized here:
+// generateServiceStubs resolves the existing directory disk-first via
+// codegen.ResolveServiceComponent (and only synthesizes the compact form
+// for brand-new services). The old toServiceDir helper snake_cased the
+// proto name, which disagreed with generator.ServicePackageName's compact
+// scaffold form and could create duplicate handler dirs on regenerate.

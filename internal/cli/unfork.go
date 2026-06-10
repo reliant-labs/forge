@@ -216,6 +216,12 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 		entry := cs.Files[path]
 		entry.Forked = false
 		cs.Files[path] = entry
+		// The parked side renders (.forge/render*, see checksums/render.go)
+		// exist solely so a fork can be reconciled later; once the file is
+		// back under forge ownership they're stale.
+		if err := checksums.CleanSideRenders(root, path); err != nil {
+			fmt.Fprintf(os.Stderr, "  warning: could not clean side renders for %s: %v\n", path, err)
+		}
 		fmt.Printf("  ✓ unforked %s\n", path)
 	}
 

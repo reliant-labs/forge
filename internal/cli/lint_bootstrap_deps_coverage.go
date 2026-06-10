@@ -76,15 +76,37 @@ type bootstrapCoverageFinding struct {
 // scaffold or library shape just have nothing to lint.
 func runBootstrapDepsCoverageLint(projectDir string) error {
 	fmt.Println("Running bootstrap-deps-coverage lint...")
-	appDir := filepath.Join(projectDir, "pkg", "app")
-	if _, err := os.Stat(appDir); os.IsNotExist(err) {
-		fmt.Println("  no pkg/app — skipping")
+	findings, skipReason, err := collectBootstrapCoverageFindings(projectDir)
+	if err != nil {
+		return err
+	}
+	if skipReason != "" {
+		fmt.Println("  " + skipReason)
 		return nil
+	}
+
+	formatBootstrapCoverage(os.Stdout, findings)
+	if len(findings) > 0 {
+		return fmt.Errorf("%d bootstrap-deps-coverage gap(s) — see output above", len(findings))
+	}
+	return nil
+}
+
+// collectBootstrapCoverageFindings computes the bootstrap-coverage gap
+// set without printing — the shared engine behind
+// runBootstrapDepsCoverageLint (text) and `forge lint --json`. A
+// non-empty skipReason means the project has nothing to lint (missing
+// pkg/app) and findings is nil; missing role roots are tolerated by
+// the per-root scan instead.
+func collectBootstrapCoverageFindings(projectDir string) (findings []bootstrapCoverageFinding, skipReason string, err error) {
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if _, statErr := os.Stat(appDir); os.IsNotExist(statErr) {
+		return nil, "no pkg/app — skipping", nil
 	}
 
 	appFields, err := codegen.ParseAppFields(appDir)
 	if err != nil {
-		return fmt.Errorf("parse pkg/app: %w", err)
+		return nil, "", fmt.Errorf("parse pkg/app: %w", err)
 	}
 	appByName := map[string]string{}
 	for _, f := range appFields {
@@ -96,7 +118,7 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 	// and every static mismatch reports.
 	setupWired, err := scanSetupReconstructions(filepath.Join(appDir, "setup.go"))
 	if err != nil {
-		return fmt.Errorf("parse pkg/app/setup.go: %w", err)
+		return nil, "", fmt.Errorf("parse pkg/app/setup.go: %w", err)
 	}
 
 	// Walk every role root that hosts a *.Deps struct. internal/ was
@@ -106,20 +128,15 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 	// agree on name but not type.
 	roleRoots := []string{"internal", "handlers", "workers", "operators"}
 
-	var findings []bootstrapCoverageFinding
 	for _, role := range roleRoots {
-		roleFindings, err := scanRoleRootForDepsMismatch(projectDir, role, appByName, setupWired)
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", role, err)
+		roleFindings, scanErr := scanRoleRootForDepsMismatch(projectDir, role, appByName, setupWired)
+		if scanErr != nil {
+			return nil, "", fmt.Errorf("scan %s: %w", role, scanErr)
 		}
 		findings = append(findings, roleFindings...)
 	}
 
-	formatBootstrapCoverage(os.Stdout, findings)
-	if len(findings) > 0 {
-		return fmt.Errorf("%d bootstrap-deps-coverage gap(s) — see output above", len(findings))
-	}
-	return nil
+	return findings, "", nil
 }
 
 // scanRoleRootForDepsMismatch walks projectDir/<role>/ — each

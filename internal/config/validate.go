@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -160,6 +161,74 @@ type validationIssue struct {
 	fix    string // "Fix: rename to 'auth' or remove if unused."
 }
 
+// removedKeyHint carries the migration guidance for a forge.yaml key
+// that was deliberately removed from the schema (as opposed to a typo).
+// When strict validation hits one of these, the error message explains
+// what replaced the key instead of emitting a generic
+// "unknown key — did you mean ...?" that would mislead an agent into
+// renaming the key rather than migrating it.
+type removedKeyHint struct {
+	// removedIn names the change that removed the key — a migration /
+	// rework era rather than a semver (forge has no released tags to
+	// pin against). Shown in the error message for context.
+	removedIn string
+	// replacement is the one-line "what to do instead" guidance. It is
+	// emitted as the issue's Fix: hint, so keep it imperative and
+	// self-contained (mention the skill that documents the migration).
+	replacement string
+}
+
+// removedSchemaKeys maps a normalized key path to its migration hint.
+//
+// Path normalization: slice indices are collapsed to "[]" (e.g.
+// "services[3].dev_target" matches the "services[].dev_target" entry),
+// so one entry covers every element of a list. Top-level keys use the
+// bare key name. Map-valued sections (pack_overrides.<name>) carry
+// user-defined segments and so cannot be matched here — no removed key
+// has ever lived under one.
+//
+// Audit trail (git history of config.go):
+//   - k8s.provider: removed in 01bd491 ("remove dead BinaryConfig.Kind
+//     and K8sConfig.Provider fields"). Never load-bearing; per-env
+//     cluster choice lives in KCL `forge.K8sCluster` blocks.
+//   - binaries[].kind: removed in the same commit. The cron/oneshot
+//     kinds were reserved-but-unimplemented; every binary is
+//     long-running today.
+//   - services[].dev_target: added in cd25640, reverted in 16921aa.
+//     Host/cluster placement moved to the per-env `deploy:` field on
+//     the KCL `forge.Service` schema.
+//   - environments (top level): removed in the KCL-canonical cleanup
+//     (8d3e185) — handled separately by isDeprecatedTopLevelKey below
+//     because mid-migration projects must still LOAD; it is silently
+//     skipped rather than reported.
+var removedSchemaKeys = map[string]removedKeyHint{
+	"k8s.provider": {
+		removedIn: "the deploy-target-architecture rework",
+		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
+			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
+	},
+	"binaries[].kind": {
+		removedIn: "the deploy-target-architecture rework",
+		replacement: "remove the key — binary kinds (cron/oneshot) were never implemented; " +
+			"all `forge add binary` entries are long-running.",
+	},
+	"services[].dev_target": {
+		removedIn: "the KCL polymorphic-deploy migration",
+		replacement: "move host/cluster placement to the per-env `deploy:` field on the KCL " +
+			"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
+	},
+}
+
+// sliceIndexRe matches "[<digits>]" path segments so removed-key lookup
+// can collapse "services[3]" to "services[]".
+var sliceIndexRe = regexp.MustCompile(`\[\d+\]`)
+
+// normalizeKeyPath collapses slice indices in a dotted key path so it
+// can be looked up in removedSchemaKeys.
+func normalizeKeyPath(p string) string {
+	return sliceIndexRe.ReplaceAllString(p, "[]")
+}
+
 // isDeprecatedTopLevelKey returns true for top-level forge.yaml keys
 // that were once part of the schema but have been removed. Strict
 // validation skips them rather than reporting "unknown key" so
@@ -178,83 +247,6 @@ func isDeprecatedTopLevelKey(key string) bool {
 		return true
 	}
 	return false
-}
-
-// removedSchemaKeys maps a fully-qualified dot-notation key path
-// (e.g. "k8s.provider") to a human-readable migration hint. When the
-// validator encounters an unknown key whose path matches an entry
-// here, it reports the migration hint in the "Fix:" suggestion
-// instead of the generic "rename or remove this key" — so users hitting
-// schema-drift get a pointer to the real correction rather than a
-// dead-end "this is a typo" framing.
-//
-// Unlike isDeprecatedTopLevelKey, entries here STILL surface as
-// validation errors — the key must be removed for the file to load.
-// We only fail-soft for keys that are still semi-meaningful during a
-// migration window (currently just top-level `environments`).
-//
-// Path format: dot-separated, matching qualifiedKey output. Slice
-// indices in the path use `[N]` (e.g. "services[0].dev_target") so
-// migration hints can target a field on every element of a slice via
-// the literal "[*]" wildcard.
-var removedSchemaKeys = map[string]string{
-	// k8s.provider was dropped when forge stopped owning cluster-type
-	// detection. The k3d/gke/eks choice now lives in the KCL
-	// `forge.K8sCluster` block (per-env `provider:` field). The forge.yaml
-	// `k8s:` section retains only `kcl_dir`.
-	"k8s.provider": "this key was removed; cluster provider now lives in the per-env KCL `forge.K8sCluster` block. Remove this key.",
-	// services[].dev_target was dropped when host-vs-cluster placement
-	// moved to the KCL layer (per-env `deploy:` field on `forge.Service`).
-	// See the dev-target-to-kcl-deploy migration skill.
-	"services[*].dev_target": "this key was removed; host-vs-cluster placement now lives in the per-env KCL `forge.Service.deploy` field. Remove this key.",
-}
-
-// removedSchemaKeyHint returns the migration hint for a fully-qualified
-// path if one is registered, or "" otherwise. The `[*]` wildcard in
-// the table matches any `[N]` index in the input path so a single
-// entry covers every slice element.
-func removedSchemaKeyHint(path string) string {
-	if hint, ok := removedSchemaKeys[path]; ok {
-		return hint
-	}
-	// Wildcard match: replace each `[N]` in the input with `[*]` and
-	// look up again.
-	wild := wildcardIndices(path)
-	if wild != path {
-		if hint, ok := removedSchemaKeys[wild]; ok {
-			return hint
-		}
-	}
-	return ""
-}
-
-// wildcardIndices replaces every `[<digits>]` substring in s with
-// `[*]`. Used so removedSchemaKeys can register one entry per slice
-// field rather than one per index.
-func wildcardIndices(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	i := 0
-	for i < len(s) {
-		if s[i] != '[' {
-			b.WriteByte(s[i])
-			i++
-			continue
-		}
-		// Find matching ']'.
-		j := i + 1
-		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
-			j++
-		}
-		if j < len(s) && s[j] == ']' && j > i+1 {
-			b.WriteString("[*]")
-			i = j + 1
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
 }
 
 // walkUnknownKeys recursively descends a yaml.Node mapping against the
@@ -295,16 +287,24 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 		}
 		field, ok := known[key]
 		if !ok {
-			fullPath := qualifiedKey(path, key)
-			msg := fmt.Sprintf("unknown key %q", fullPath)
+			full := qualifiedKey(path, key)
+			// Removed keys come FIRST: a key that used to be in the
+			// schema gets its specific migration message, never a
+			// Levenshtein "did you mean" (which would suggest renaming
+			// instead of migrating — the exact trap an agent reading
+			// the error would fall into).
+			if hint, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
+				out = append(out, validationIssue{
+					line:   keyNode.Line,
+					column: keyNode.Column,
+					msg:    fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
+					fix:    hint.replacement,
+				})
+				continue
+			}
+			msg := fmt.Sprintf("unknown key %q", full)
 			fix := "rename or remove this key."
-			// Schema-drift hints take precedence over typo suggestions:
-			// when we know a key was deliberately removed, "did you mean
-			// <X>" would mislead the user toward an even more wrong
-			// answer.
-			if hint := removedSchemaKeyHint(fullPath); hint != "" {
-				fix = hint
-			} else if suggestion := closestMatch(key, knownNames(known)); suggestion != "" {
+			if suggestion := closestMatch(key, knownNames(known)); suggestion != "" {
 				msg += fmt.Sprintf(" — did you mean %q?", suggestion)
 				fix = fmt.Sprintf("rename to %q or remove if unused.", suggestion)
 			}

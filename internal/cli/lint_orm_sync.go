@@ -38,15 +38,38 @@ import (
 // CLI projects, projects without entities). Findings are printed to
 // stderr and contribute a warning, not a non-zero exit.
 func runORMSyncLint(projectDir string) error {
+	findings, err := collectORMSyncFindings(projectDir)
+	if err != nil {
+		return err
+	}
+	if len(findings) == 0 {
+		return nil
+	}
+
+	fmt.Println()
+	fmt.Println("proto-orm-out-of-sync:")
+	for _, f := range findings {
+		fmt.Println("  ⚠️  " + f)
+	}
+	fmt.Println("  Remediation: run `forge generate` (it invokes buf generate then the ORM, descriptor, mock, and bootstrap passes).")
+	fmt.Println("  See: forge skill load proto")
+	return nil
+}
+
+// collectORMSyncFindings computes the proto-vs-ORM staleness warnings
+// without printing — the shared engine behind runORMSyncLint (text)
+// and `forge lint --json`. Each returned string is one human-readable
+// warning message (no icon prefix; the caller decorates).
+func collectORMSyncFindings(projectDir string) ([]string, error) {
 	dir := filepath.Join(projectDir, "gen", "db", "v1")
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
-		return nil
+		return nil, nil
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", dir, err)
+		return nil, fmt.Errorf("read %s: %w", dir, err)
 	}
 
 	// Group siblings by base name (e.g. "stripe_entities" groups
@@ -174,28 +197,17 @@ func runORMSyncLint(projectDir string) error {
 			// fall back to: warn unconditionally for files in proto/db/v1
 			// that have no orm sibling.
 			findings = append(findings, fmt.Sprintf(
-				"  ⚠️  gen/db/v1/%s.pb.go has no matching *.pb.orm.go sibling — did you run `buf generate` without `forge generate`?",
+				"gen/db/v1/%s.pb.go has no matching *.pb.orm.go sibling — did you run `buf generate` without `forge generate`?",
 				base))
 			continue
 		}
 		latest := pbORMLatest[base]
 		if g.pbGoMtime.After(latest.Add(time.Second)) {
 			findings = append(findings, fmt.Sprintf(
-				"  ⚠️  gen/db/v1/%s.pb.go is newer than its *.pb.orm.go siblings (proto was regenerated without forge ORM pass).",
+				"gen/db/v1/%s.pb.go is newer than its *.pb.orm.go siblings (proto was regenerated without forge ORM pass).",
 				base))
 		}
 	}
 
-	if len(findings) == 0 {
-		return nil
-	}
-
-	fmt.Println()
-	fmt.Println("proto-orm-out-of-sync:")
-	for _, f := range findings {
-		fmt.Println(f)
-	}
-	fmt.Println("  Remediation: run `forge generate` (it invokes buf generate then the ORM, descriptor, mock, and bootstrap passes).")
-	fmt.Println("  See: forge skill load proto")
-	return nil
+	return findings, nil
 }

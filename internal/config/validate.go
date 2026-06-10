@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -130,6 +131,74 @@ type validationIssue struct {
 	fix  string // "Fix: rename to 'auth' or remove if unused."
 }
 
+// removedKeyHint carries the migration guidance for a forge.yaml key
+// that was deliberately removed from the schema (as opposed to a typo).
+// When strict validation hits one of these, the error message explains
+// what replaced the key instead of emitting a generic
+// "unknown key — did you mean ...?" that would mislead an agent into
+// renaming the key rather than migrating it.
+type removedKeyHint struct {
+	// removedIn names the change that removed the key — a migration /
+	// rework era rather than a semver (forge has no released tags to
+	// pin against). Shown in the error message for context.
+	removedIn string
+	// replacement is the one-line "what to do instead" guidance. It is
+	// emitted as the issue's Fix: hint, so keep it imperative and
+	// self-contained (mention the skill that documents the migration).
+	replacement string
+}
+
+// removedSchemaKeys maps a normalized key path to its migration hint.
+//
+// Path normalization: slice indices are collapsed to "[]" (e.g.
+// "services[3].dev_target" matches the "services[].dev_target" entry),
+// so one entry covers every element of a list. Top-level keys use the
+// bare key name. Map-valued sections (pack_overrides.<name>) carry
+// user-defined segments and so cannot be matched here — no removed key
+// has ever lived under one.
+//
+// Audit trail (git history of config.go):
+//   - k8s.provider: removed in 01bd491 ("remove dead BinaryConfig.Kind
+//     and K8sConfig.Provider fields"). Never load-bearing; per-env
+//     cluster choice lives in KCL `forge.K8sCluster` blocks.
+//   - binaries[].kind: removed in the same commit. The cron/oneshot
+//     kinds were reserved-but-unimplemented; every binary is
+//     long-running today.
+//   - services[].dev_target: added in cd25640, reverted in 16921aa.
+//     Host/cluster placement moved to the per-env `deploy:` field on
+//     the KCL `forge.Service` schema.
+//   - environments (top level): removed in the KCL-canonical cleanup
+//     (8d3e185) — handled separately by isDeprecatedTopLevelKey below
+//     because mid-migration projects must still LOAD; it is silently
+//     skipped rather than reported.
+var removedSchemaKeys = map[string]removedKeyHint{
+	"k8s.provider": {
+		removedIn: "the deploy-target-architecture rework",
+		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
+			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
+	},
+	"binaries[].kind": {
+		removedIn: "the deploy-target-architecture rework",
+		replacement: "remove the key — binary kinds (cron/oneshot) were never implemented; " +
+			"all `forge add binary` entries are long-running.",
+	},
+	"services[].dev_target": {
+		removedIn: "the KCL polymorphic-deploy migration",
+		replacement: "move host/cluster placement to the per-env `deploy:` field on the KCL " +
+			"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
+	},
+}
+
+// sliceIndexRe matches "[<digits>]" path segments so removed-key lookup
+// can collapse "services[3]" to "services[]".
+var sliceIndexRe = regexp.MustCompile(`\[\d+\]`)
+
+// normalizeKeyPath collapses slice indices in a dotted key path so it
+// can be looked up in removedSchemaKeys.
+func normalizeKeyPath(p string) string {
+	return sliceIndexRe.ReplaceAllString(p, "[]")
+}
+
 // isDeprecatedTopLevelKey returns true for top-level forge.yaml keys
 // that were once part of the schema but have been removed. Strict
 // validation skips them rather than reporting "unknown key" so
@@ -188,8 +257,22 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 		}
 		field, ok := known[key]
 		if !ok {
+			full := qualifiedKey(path, key)
+			// Removed keys come FIRST: a key that used to be in the
+			// schema gets its specific migration message, never a
+			// Levenshtein "did you mean" (which would suggest renaming
+			// instead of migrating — the exact trap an agent reading
+			// the error would fall into).
+			if hint, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
+				out = append(out, validationIssue{
+					line: keyNode.Line,
+					msg:  fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
+					fix:  hint.replacement,
+				})
+				continue
+			}
 			suggestion := closestMatch(key, knownNames(known))
-			msg := fmt.Sprintf("unknown key %q", qualifiedKey(path, key))
+			msg := fmt.Sprintf("unknown key %q", full)
 			fix := "rename or remove this key."
 			if suggestion != "" {
 				msg += fmt.Sprintf(" — did you mean %q?", suggestion)

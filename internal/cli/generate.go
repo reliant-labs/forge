@@ -269,6 +269,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// hand-edits — the historic safe default. With --reset-tier2 --yes,
 	// the hook auto-approves; without --yes it prompts per file.
 	checksums.ResetTier2State()
+	// Per-run fork-skip tracking starts empty, and whatever accumulates
+	// is reported loudly on the way out — even when a later step fails,
+	// the skips that already happened are real and the user needs to see
+	// them. See generate_fork_report.go for the rationale.
+	checksums.ResetPerRunState()
+	defer reportForkedSkips(os.Stderr)
 	if flags.ResetTier2 {
 		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
 		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)

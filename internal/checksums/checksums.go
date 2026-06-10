@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const checksumFile = ".forge/checksums.json"
@@ -44,6 +45,48 @@ func AddSkipWrite(relPath string) { SkipWrite[relPath] = true }
 // pipeline run to avoid leaking state across forge invocations in tests
 // or long-lived processes.
 func ResetSkipWrite() { SkipWrite = map[string]bool{} }
+
+// forkedSkipsThisRun accumulates, for the current pipeline run, every
+// Tier-1 path whose write was skipped because the entry is Forked.
+//
+// FRICTION 2026-06-03/05 (.forge/backlog.md): forked wire_gen.go was
+// silently skipped — adding a Deps field "did nothing" and the user had
+// no signal that forge had stopped regenerating the file. The skip list
+// exists so the pipeline can print one loud line per skipped file on
+// EVERY run (not gated behind --explain), making "forge no longer owns
+// this file" impossible to miss.
+//
+// Per-run state, not persistent: reset via ResetPerRunState at the
+// start of each pipeline run.
+var forkedSkipsThisRun []string
+
+// noteForkedSkip records that relPath's write was skipped due to fork
+// status. Deduplicated — multiple emitters may attempt the same path in
+// one run, but the report should name it once.
+func noteForkedSkip(relPath string) {
+	for _, p := range forkedSkipsThisRun {
+		if p == relPath {
+			return
+		}
+	}
+	forkedSkipsThisRun = append(forkedSkipsThisRun, relPath)
+}
+
+// ForkedSkipsThisRun returns the sorted list of Tier-1 paths skipped
+// due to fork status during the current pipeline run.
+func ForkedSkipsThisRun() []string {
+	out := append([]string(nil), forkedSkipsThisRun...)
+	sortStrings(out)
+	return out
+}
+
+// ResetPerRunState clears the per-pipeline-run tracking sets (forked
+// skips, changed-render set). Called at the start of each pipeline run
+// alongside ResetSkipWrite / ResetTier2State so a long-lived process
+// (tests, watch mode) doesn't leak state across invocations.
+func ResetPerRunState() {
+	forkedSkipsThisRun = nil
+}
 
 // Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
 // it has detected a hand-edited Tier-2 file. Returning true clobbers the
@@ -136,6 +179,18 @@ type FileChecksumEntry struct {
 	// to forked paths; the stomp guard ignores them too (no point
 	// guarding a file forge no longer owns). Persists across runs.
 	Forked bool `json:"forked,omitempty"`
+	// ForkedAt records when the fork was accepted (RFC3339 UTC). Set by
+	// AcceptTier1Drift so `forge audit` / `forge doctor` can report how
+	// long a file has been outside forge ownership. Empty for forks
+	// recorded before this field existed.
+	ForkedAt string `json:"forked_at,omitempty"`
+	// Group names the fork-coherence group this path belongs to (see
+	// groups.go), recorded when the file is forked. Files in one group
+	// share generated symbols — forking one while siblings keep
+	// regenerating is the known build-break shape from
+	// .forge/backlog.md 2026-06-03 (forked bootstrap.go vs regenerating
+	// app_gen.go). Empty for ungrouped paths and pre-existing forks.
+	Group string `json:"group,omitempty"`
 	// Exports lists the names of public top-level identifiers (functions,
 	// types, vars) declared in the most recently rendered version of the
 	// file. Used by the post-emit rename-detection pass: when a Tier-1
@@ -352,6 +407,12 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 			// longer owns it. Skip even when force=true — the user's
 			// intent is "stop touching this file"; --force is for
 			// blowing away current-run hand-edits, not historical forks.
+			//
+			// The skip is recorded (and reported loudly at pipeline
+			// exit) rather than silent — silent skips are how the
+			// "edited Deps, regenerated, nothing happened" failure mode
+			// happens (.forge/backlog.md 2026-06-05).
+			noteForkedSkip(relPath)
 			return false, nil
 		}
 	}
@@ -533,10 +594,12 @@ func (cs *FileChecksums) AcceptTier1Drift(root string, drift []Tier1DriftEntry) 
 		cs.RecordFile(d.Path, content)
 		// RecordFile clears any pre-existing tier when it overwrites the
 		// entry value, so re-stamp the Tier-1 tag (so audit still
-		// reports it as a Tier-1-derived file) and mark Forked.
+		// reports it as a Tier-1-derived file) and mark Forked. ForkedAt
+		// gives audit/doctor a "forked since" timestamp.
 		entry := cs.Files[d.Path]
 		entry.Tier = 1
 		entry.Forked = true
+		entry.ForkedAt = nowRFC3339()
 		cs.Files[d.Path] = entry
 	}
 	return nil
@@ -551,4 +614,21 @@ func sortDrift(drift []Tier1DriftEntry) {
 			drift[j-1], drift[j] = drift[j], drift[j-1]
 		}
 	}
+}
+
+// sortStrings sorts a string slice ascending. Same rationale as
+// sortDrift: the slices here are tiny (a handful of forked paths), so
+// an insertion sort beats importing "sort" for two call sites.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
+}
+
+// nowRFC3339 returns the current UTC time in RFC3339. Indirected
+// through a package var so tests can pin a deterministic timestamp.
+var nowRFC3339 = func() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }

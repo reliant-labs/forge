@@ -649,7 +649,15 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		for _, d := range drift {
 			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
 		}
-		fmt.Fprintf(os.Stderr, "   These files are now forks — forge will treat them as Tier-1 going forward but won't notice future template changes.\n")
+		fmt.Fprintf(os.Stderr, "   These files are now forks — forge will NEVER update them again (permanent ownership transfer; reverse with 'forge unfork').\n")
+		// Fork-coherence warning: forking one member of a coupled set
+		// (pkg/app wiring) is the known build-break shape. Body lives in
+		// generate_fork_report.go to keep this hotspot file's diff small.
+		accepted := make([]string, 0, len(drift))
+		for _, d := range drift {
+			accepted = append(accepted, d.Path)
+		}
+		warnForkCoherenceOnAccept(os.Stderr, accepted)
 		return nil
 	}
 

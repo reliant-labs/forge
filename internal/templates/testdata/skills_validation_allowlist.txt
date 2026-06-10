@@ -1,0 +1,12 @@
+# Allowlist for skills_validation_test.go.
+#
+# Format (one entry per line):
+#   <skill rel path under skills/>|<exact claim text>|<justification>
+#
+# A claim is either a command reference ("forge <chain>") or a path
+# reference exactly as the validator reports it. Use skill path "*" to
+# allowlist a claim across every skill. Every entry REQUIRES a
+# justification — unexplained entries fail the test. Entries whose claim
+# no longer appears in the named skill fail TestSkillsAllowlistEntriesStillNeeded.
+
+forge/migrations/v0.x-to-testkit/SKILL.md|pkg/app/bootstrap_testing.go|Historical reference: this migration skill documents the OLD pre-testkit file name being migrated FROM. Current forge emits pkg/app/testing.go; the old name must stay in the skill so upgraders can find their file.

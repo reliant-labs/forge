@@ -143,6 +143,18 @@ func syncDevForgePkgReplace(projectDir string) (vendored bool, err error) {
 		// Look for a sibling forge checkout to refresh from.
 		if sib := siblingForgePkg(projectDir); sib != "" {
 			sourceDir = sib
+		} else {
+			// Already vendored and no sibling checkout to refresh from
+			// (the forge checkout may live anywhere on the host, or
+			// nowhere). The vendored copy IS the source of truth here —
+			// silently no-op. Pre-fix this fell through to
+			// looksLikeForgePkgDir("") and warned `replace target ""
+			// does not look like forge/pkg ... refusing to vendor` on
+			// EVERY generate, which reads like breakage when nothing is
+			// wrong (kalshi-trader FORGE_BACKLOG #14). The warning is
+			// reserved for the case where a sync SOURCE exists but the
+			// sync genuinely fails.
+			return localVendorPresent(projectDir), nil
 		}
 	default:
 		// No replace, or block-form replace, or replace to something

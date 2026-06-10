@@ -110,9 +110,9 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 // `./<bin> server`. The empty-case fix must not regress that path.
 func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
-		ConnectPkg, ProtoServiceName    string
+		Name, Package, ImportPath, FieldName, Alias string
+		Fallible, HasWebhooks                       bool
+		ConnectPkg, ProtoServiceName                string
 	}
 	data := struct {
 		Module              string
@@ -128,7 +128,7 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}{
 		Module: "example.com/myproject",
 		Services: []svc{
-			{Name: "api", Package: "api", FieldName: "API", Alias: "apihandler"},
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "apihandler"},
 		},
 		ConfigFields: map[string]bool{},
 	}
@@ -157,9 +157,9 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 // promise of the opt-in design.
 func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
-		ConnectPkg, ProtoServiceName    string
+		Name, Package, ImportPath, FieldName, Alias string
+		Fallible, HasWebhooks                       bool
+		ConnectPkg, ProtoServiceName                string
 	}
 	mkData := func(diagnostics, strict bool) any {
 		return struct {
@@ -176,7 +176,7 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 		}{
 			Module: "example.com/myproject",
 			Services: []svc{
-				{Name: "api", Package: "api", FieldName: "API", Alias: "api"},
+				{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api"},
 			},
 			ConfigFields:        map[string]bool{},
 			DiagnosticsEnabled:  diagnostics,

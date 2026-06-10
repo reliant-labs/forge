@@ -594,6 +594,22 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
+		// frontends[].output selects the Next.js build/runtime shape.
+		// Only meaningful for type=nextjs; we still validate the value
+		// for other types because changing the type later shouldn't
+		// silently re-validate against a stale value. Defaults to
+		// "static" when empty.
+		if o := strings.ToLower(strings.TrimSpace(fe.Output)); o != "" {
+			if o != "static" && o != "standalone" && o != "server" {
+				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "output"})
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.output value %q is invalid", prefix, fe.Output),
+					fix:    "use one of: static (default), standalone, server.",
+				})
+			}
+		}
 	}
 
 	// Only require database.driver when ORM has been *explicitly* enabled.
@@ -713,14 +729,14 @@ var goReservedWords = map[string]bool{
 // The lint is name-shape-only — it does not look at config semantics.
 // Returning the issues batched lets ValidationError surface every
 // problem in one go.
-func validateServices(cfg *ProjectConfig) []validationIssue {
+func validateServices(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 
 	// Track canonical -> first-seen-source so collisions can name both
 	// the earlier and the later entry in the error message.
 	seen := map[string]string{}
 
-	check := func(rawName, source string) {
+	check := func(rawName, source string, pathSegs []string) {
 		trimmed := strings.TrimSpace(rawName)
 		if trimmed == "" {
 			// Empty-name issues are already reported by validateRequired
@@ -728,32 +744,44 @@ func validateServices(cfg *ProjectConfig) []validationIssue {
 			// up; just skip the canonical check.
 			return
 		}
+		// Resolve position once for whichever issue fires. Falls back to
+		// (0,0) if the path doesn't resolve — formatIssueLocation handles
+		// that by omitting the position part of the error.
+		line, col := findNodePos(root, pathSegs)
 		canonical := naming.ServicePackage(trimmed)
 		if canonical == "" {
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name %q normalises to an empty Go package", source, rawName),
-				fix: "use at least one ASCII letter or digit in the name.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q normalises to an empty Go package", source, rawName),
+				fix:    "use at least one ASCII letter or digit in the name.",
 			})
 			return
 		}
 		if !isValidGoPackageIdent(canonical) {
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name %q produces invalid Go package %q", source, rawName, canonical),
-				fix: "use ASCII letters, digits, hyphens, and underscores only; must not start with a digit.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q produces invalid Go package %q", source, rawName, canonical),
+				fix:    "use ASCII letters, digits, hyphens, and underscores only; must not start with a digit.",
 			})
 			return
 		}
 		if goReservedWords[canonical] {
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name %q normalises to Go reserved word %q", source, rawName, canonical),
-				fix: "rename so the compact lowercase form is not a Go keyword or predeclared identifier.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q normalises to Go reserved word %q", source, rawName, canonical),
+				fix:    "rename so the compact lowercase form is not a Go keyword or predeclared identifier.",
 			})
 			return
 		}
 		if prev, ok := seen[canonical]; ok {
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name %q collides with %s after normalisation (both → %q)", source, rawName, prev, canonical),
-				fix: "rename one of the entries so their compact lowercase forms differ.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q collides with %s after normalisation (both → %q)", source, rawName, prev, canonical),
+				fix:    "rename one of the entries so their compact lowercase forms differ.",
 			})
 			return
 		}
@@ -761,13 +789,13 @@ func validateServices(cfg *ProjectConfig) []validationIssue {
 	}
 
 	for i, svc := range cfg.Services {
-		check(svc.Name, fmt.Sprintf("services[%d]", i))
+		check(svc.Name, fmt.Sprintf("services[%d]", i), []string{"services", fmt.Sprintf("[%d]", i), "name"})
 	}
 	for i, b := range cfg.Binaries {
-		check(b.Name, fmt.Sprintf("binaries[%d]", i))
+		check(b.Name, fmt.Sprintf("binaries[%d]", i), []string{"binaries", fmt.Sprintf("[%d]", i), "name"})
 	}
 	for i, fe := range cfg.Frontends {
-		check(fe.Name, fmt.Sprintf("frontends[%d]", i))
+		check(fe.Name, fmt.Sprintf("frontends[%d]", i), []string{"frontends", fmt.Sprintf("[%d]", i), "name"})
 	}
 
 	return out

@@ -1,3 +1,19 @@
+{{- /*
+  next.config.ts scaffold — branches on the frontend's `output:` field in
+  forge.yaml. Defaults to "static" (the common case: a Next.js shell that
+  calls a Go backend via Connect RPC, no server-side rendering needed in
+  production). Standalone and server modes are opt-in.
+
+  Branches:
+    static     — production export (`output: "export"` gated on
+                 NODE_ENV=production); dev stays as `next dev`. No Node
+                 runtime in prod → drop the build artifacts on a CDN or
+                 object store.
+    standalone — self-contained Node server (`.next/standalone/server.js`).
+                 Pair with the generated Dockerfile.
+    server     — neither; full Next.js dev AND prod (`next start`).
+*/ -}}
+{{- if eq .Output "standalone" -}}
 import path from "node:path";
 import type { NextConfig } from "next";
 import bundleAnalyzer from "@next/bundle-analyzer";
@@ -29,3 +45,66 @@ const nextConfig: NextConfig = {
 };
 
 export default withBundleAnalyzer(nextConfig);
+{{- else if eq .Output "server" -}}
+import type { NextConfig } from "next";
+import bundleAnalyzer from "@next/bundle-analyzer";
+
+const withBundleAnalyzer = bundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+});
+
+const nextConfig: NextConfig = {
+  // No `output:` field — full Next.js for both dev and prod. Production
+  // builds are served via `next start` (or a managed host like Vercel).
+  // Use this when you need server components, server actions, ISR, or
+  // request-time `redirect()` / `cookies()` in production.
+  webpack: (config) => {
+    // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
+    // Next.js with moduleResolution: bundler can't resolve .js to .ts files
+    // without this alias mapping.
+    config.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    };
+    return config;
+  },
+};
+
+export default withBundleAnalyzer(nextConfig);
+{{- else -}}
+import type { NextConfig } from "next";
+import bundleAnalyzer from "@next/bundle-analyzer";
+
+const withBundleAnalyzer = bundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+});
+
+const nextConfig: NextConfig = {
+  // Production: static export. This frontend is a pure UI shell — all data,
+  // auth, and business logic live in a backend (the Go Connect RPC services
+  // under handlers/<name>/). Running a Node sidecar to serve skeleton HTML
+  // before hydration is pure overhead, so production builds emit `out/`
+  // (static HTML + JS + CSS) which can be served straight from a CDN or
+  // object store. No server-side runtime in prod → smaller attack surface,
+  // free edge caching, no Node image to patch.
+  //
+  // Development: full Next.js dev server (HMR, rewrites, server components
+  // for future flexibility). The conditional below keeps `next dev`
+  // unchanged when NODE_ENV !== "production".
+  //
+  // To opt into a Node sidecar runtime, set `output: standalone` on this
+  // frontend in forge.yaml and re-scaffold (or hand-edit this file to use
+  // `output: "standalone"` + `outputFileTracingRoot`).
+  ...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),
+  webpack: (config) => {
+    // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
+    // Next.js with moduleResolution: bundler can't resolve .js to .ts files
+    // without this alias mapping.
+    config.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    };
+    return config;
+  },
+};
+
+export default withBundleAnalyzer(nextConfig);
+{{- end }}

@@ -129,6 +129,37 @@ func TestLoadStrict_NestedUnknownKey(t *testing.T) {
 	}
 }
 
+// TestLoadStrict_FrontendOutput_ValidValues_Accepted covers the three
+// supported `frontends[].output` values: "static" (the new default),
+// "standalone" (Node sidecar, the legacy default), and "server" (full
+// Next.js dev+prod). Empty (unset) is also accepted — the scaffold
+// canonicalises that to "static" downstream.
+func TestLoadStrict_FrontendOutput_ValidValues_Accepted(t *testing.T) {
+	cases := []string{"static", "standalone", "server"}
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    output: " + value + "\n"
+			if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+				t.Errorf("expected output=%q to validate, got: %v", value, err)
+			}
+		})
+	}
+}
+
+// TestLoadStrict_FrontendOutput_InvalidValue_Rejected pins the
+// validator's error shape so anyone adding a new mode (e.g. "edge")
+// must remember to extend the validator at the same time. Catching the
+// invalid value at load time turns a runtime template fall-through
+// into a clear actionable error.
+func TestLoadStrict_FrontendOutput_InvalidValue_Rejected(t *testing.T) {
+	in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    output: edge\n"
+	_, err := LoadStrict([]byte(in), "forge.yaml")
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "frontends[0].output", "invalid", "static", "standalone", "server") {
+		t.Errorf("expected output validation error mentioning the supported values, got:\n%s", ve.Error())
+	}
+}
+
 func TestLoadStrict_ServiceMissingName(t *testing.T) {
 	// services[].path is loader-defaulted, but services[].name is not.
 	in := strings.Replace(validBaseYAML, "  - name: api\n    type: go_service\n    path: handlers/api\n",
@@ -295,7 +326,10 @@ func TestLoadStrict_NestedUnknownKey_LineAndPath(t *testing.T) {
 	if !strings.Contains(got, `"k8s.provider"`) {
 		t.Errorf("expected key path 'k8s.provider' in error, got:\n%s", got)
 	}
-	wantLineMarker := "line " + strconv.Itoa(wantLine) + ":"
+	// Standard compiler/editor format: `path:line:col:`. Lets an LLM
+	// (or human in vim/emacs/VS Code) jump straight to the offending
+	// token without grep round-trips.
+	wantLineMarker := "forge.yaml:" + strconv.Itoa(wantLine) + ":"
 	if !strings.Contains(got, wantLineMarker) {
 		t.Errorf("expected %q in error (the literal line of `provider: k3d`), got:\n%s", wantLineMarker, got)
 	}

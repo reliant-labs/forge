@@ -235,6 +235,17 @@ message MethodOptions {
   // unique key (e.g., an Idempotency-Key header) so the server can safely
   // deduplicate retried mutations.
   bool idempotency_key = 5;
+
+  // Declared Connect/gRPC error codes this method can return. Codegen
+  // surfaces these so handler authors (and LLMs implementing handlers)
+  // can see the typed error contract at a glance. Values match
+  // connect.Code names — e.g. "NotFound", "PermissionDenied",
+  // "InvalidArgument". Empty (or unset) means "no declared errors" — the
+  // method either succeeds or returns an undeclared Connect.Code.
+  //
+  // The list is informational at runtime today; future work may enforce
+  // that handlers can only return declared codes.
+  repeated string errors = 6;
 }
 
 // =============================================================================

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const checksumFile = ".forge/checksums.json"
@@ -46,7 +47,6 @@ func AddSkipWrite(relPath string) { SkipWrite[relPath] = true }
 func ResetSkipWrite() {
 	SkipWrite = map[string]bool{}
 	WrittenThisRun = map[string]bool{}
-	SkippedForkedThisRun = nil
 }
 
 // WrittenThisRun is a per-pipeline-run set of relative paths that the
@@ -72,27 +72,89 @@ var WrittenThisRun = map[string]bool{}
 // downstream cleanup logic.
 func MarkWrittenThisRun(relPath string) { WrittenThisRun[relPath] = true }
 
-// SkippedForkedThisRun is the per-pipeline-run set of Tier-1 paths
-// whose write was skipped because the checksum entry carries
-// `Forked: true`. Populated as a side effect of WriteGeneratedFile*
-// at the same chokepoint as WrittenThisRun.
+
+// forkedSkipsThisRun accumulates, for the current pipeline run, every
+// Tier-1 path whose write was skipped because the entry is Forked.
 //
-// The set exists to make a silently-skipped Tier-1 write LOUD without
-// spamming per-file warnings during the emit loop: the generate
-// pipeline drains this set at end-of-run and prints one aggregate
-// summary naming every file and pointing at `forge generate unfork`.
+// FRICTION 2026-06-03/05 (.forge/backlog.md): forked wire_gen.go was
+// silently skipped — adding a Deps field "did nothing" and the user had
+// no signal that forge had stopped regenerating the file. The skip list
+// exists so the pipeline can print one loud line per skipped file on
+// EVERY run (not gated behind --explain), making "forge no longer owns
+// this file" impossible to miss.
 //
-// FRICTION 2026-06-05 (cp-forge agent-Z port): pkg/app/wire_gen.go was
-// marked forked by an earlier session. Subsequent `forge generate`
-// runs silently skipped the wire_gen rewrite, so adding a Deps field
-// to a handler appeared to do nothing — wire_gen never grew the
-// resolution. The agent assumed the scanner was buggy and worked
-// around it with a hand-rolled PostBootstrap + SetXxx injectors. The
-// REAL signal — "this file is forked, run unfork to re-enable
-// regeneration" — never reached the user because the skip was silent.
-//
-// Reset between runs alongside SkipWrite and WrittenThisRun.
-var SkippedForkedThisRun []string
+// Per-run state, not persistent: reset via ResetPerRunState at the
+// start of each pipeline run.
+var forkedSkipsThisRun []string
+
+// NoteForkedSkip records that relPath's write was skipped due to fork
+// status. Deduplicated — multiple emitters may attempt the same path in
+// one run, but the report should name it once.
+func NoteForkedSkip(relPath string) {
+	for _, p := range forkedSkipsThisRun {
+		if p == relPath {
+			return
+		}
+	}
+	forkedSkipsThisRun = append(forkedSkipsThisRun, relPath)
+}
+
+// ForkedSkipsThisRun returns the sorted list of Tier-1 paths skipped
+// due to fork status during the current pipeline run.
+func ForkedSkipsThisRun() []string {
+	out := append([]string(nil), forkedSkipsThisRun...)
+	sortStrings(out)
+	return out
+}
+
+// changedRendersThisRun accumulates every path whose freshly rendered
+// content this run did NOT match any previously recorded render (Hash
+// or History) — i.e. the template output genuinely moved, as opposed
+// to an idempotent re-render. Consumed by the fork-coherence warning:
+// when a non-forked member of a coherence group lands here while a
+// sibling is forked, the frozen fork may now be incoherent with the
+// fresh renders (see groups.go).
+var changedRendersThisRun = map[string]bool{}
+
+// noteChangedRender records that relPath's fresh render changed this run.
+func noteChangedRender(relPath string) { changedRendersThisRun[relPath] = true }
+
+// ChangedRendersThisRun returns the sorted list of paths whose fresh
+// render changed during the current pipeline run.
+func ChangedRendersThisRun() []string {
+	out := make([]string, 0, len(changedRendersThisRun))
+	for p := range changedRendersThisRun {
+		out = append(out, p)
+	}
+	sortStrings(out)
+	return out
+}
+
+// sideRenderOnly is the per-run set of paths whose Tier-1 writes are
+// redirected to `.forge/render/<relpath>` instead of the real file.
+// Populated by `forge generate --explain-drift`: the drift guard lets
+// the pipeline proceed so the emitters produce a fresh render to diff
+// against, but the user's drifted on-disk content must survive — the
+// whole point of the flag is to SHOW the user what regeneration would
+// change before they choose between the extension point, --force, and
+// --accept. The merge base is deliberately NOT seeded here (the path
+// isn't forked; a stale base would poison a future fork's merge).
+var sideRenderOnly = map[string]bool{}
+
+// AddSideRenderOnly marks relPath as side-render-only for the current
+// run. Idempotent.
+func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
+
+// ResetPerRunState clears the per-pipeline-run tracking sets (forked
+// skips, changed-render set, side-render-only redirects). Called at the
+// start of each pipeline run alongside ResetSkipWrite / ResetTier2State
+// so a long-lived process (tests, watch mode) doesn't leak state across
+// invocations.
+func ResetPerRunState() {
+	forkedSkipsThisRun = nil
+	changedRendersThisRun = map[string]bool{}
+	sideRenderOnly = map[string]bool{}
+}
 
 // Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
 // it has detected a hand-edited Tier-2 file. Returning true clobbers the
@@ -195,6 +257,18 @@ type FileChecksumEntry struct {
 	// 11 long-standing forks reporting every run was drowning out new
 	// fork detections.
 	Accepted bool `json:"accepted,omitempty"`
+	// ForkedAt records when the fork was accepted (RFC3339 UTC). Set by
+	// AcceptTier1Drift so `forge audit` / `forge doctor` can report how
+	// long a file has been outside forge ownership. Empty for forks
+	// recorded before this field existed.
+	ForkedAt string `json:"forked_at,omitempty"`
+	// Group names the fork-coherence group this path belongs to (see
+	// groups.go), recorded when the file is forked. Files in one group
+	// share generated symbols — forking one while siblings keep
+	// regenerating is the known build-break shape from
+	// .forge/backlog.md 2026-06-03 (forked bootstrap.go vs regenerating
+	// app_gen.go). Empty for ungrouped paths and pre-existing forks.
+	Group string `json:"group,omitempty"`
 	// Exports lists the names of public top-level identifiers (functions,
 	// types, vars) declared in the most recently rendered version of the
 	// file. Used by the post-emit rename-detection pass: when a Tier-1
@@ -406,12 +480,6 @@ func (cs *FileChecksums) RecordFile(relPath string, content []byte) {
 // for back-compat. Prefer the typed wrappers (WriteGeneratedFileTier1 /
 // WriteGeneratedFileTier2) at new call sites so the manifest is explicit.
 func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
-	if SkipWrite[relPath] {
-		// `forge generate --accept` opted this path out for the current
-		// run. The user's on-disk content survives; the just-rendered
-		// content is dropped on the floor.
-		return false, nil
-	}
 	if cs != nil {
 		if entry, ok := cs.Files[relPath]; ok && entry.Forked {
 			// User previously ran `--accept` on this path. Forge no
@@ -419,18 +487,54 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 			// intent is "stop touching this file"; --force is for
 			// blowing away current-run hand-edits, not historical forks.
 			//
-			// Record the skip so the pipeline can summarize all
-			// forked-skips at end-of-run. See SkippedForkedThisRun for
-			// the FRICTION context (cp-forge wire_gen.go silently
-			// regenerated nothing for weeks).
-			SkippedForkedThisRun = append(SkippedForkedThisRun, relPath)
+			// The skip is recorded (and reported loudly at pipeline
+			// exit) rather than silent — silent skips are how the
+			// "edited Deps, regenerated, nothing happened" failure mode
+			// happens (.forge/backlog.md 2026-06-05). The fresh render
+			// is parked under .forge/render/ instead of dropped, so
+			// `forge unfork --merge` has a "theirs" to reconcile with.
+			//
+			// This branch deliberately precedes the SkipWrite check: on
+			// the `--accept` run itself the path is in BOTH sets, and
+			// the render produced on that run is the closest thing to
+			// "what the user forked from" — it must reach
+			// WriteSideRender so the merge base gets captured at the
+			// fork point, not one template-evolution later.
+			NoteForkedSkip(relPath)
+			if err := WriteSideRender(root, relPath, content); err != nil {
+				return false, err
+			}
 			return false, nil
 		}
+	}
+	if SkipWrite[relPath] {
+		// `forge generate --accept` opted this path out for the current
+		// run. The user's on-disk content survives; the just-rendered
+		// content is dropped on the floor.
+		return false, nil
+	}
+	if sideRenderOnly[relPath] {
+		// `--explain-drift` redirect: park the fresh render for the
+		// post-pipeline diff, leave the user's drifted content (and the
+		// checksum entry) untouched. Must run BEFORE the IsFileModified
+		// skip below — these paths are drifted by definition, and the
+		// silent skip would discard exactly the render we need.
+		if err := WriteSideRenderNoBase(root, relPath, content); err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 	if cs != nil && !force && cs.IsFileModified(root, relPath) {
 		// User has modified this file — skip
 		return false, nil
 	}
+
+	// "Did the template output actually move?" — checked against the
+	// pre-write manifest (RecordFile below would fold the new hash into
+	// History and erase the signal). Feeds the fork-coherence warning:
+	// a changed render next to a frozen forked sibling is the build-
+	// break setup from .forge/backlog.md 2026-06-03.
+	changed := cs != nil && !cs.MatchesAnyKnownRender(relPath, content)
 
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -441,6 +545,9 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	}
 	if cs != nil {
 		cs.RecordFile(relPath, content)
+		if changed {
+			noteChangedRender(relPath)
+		}
 	}
 	return true, nil
 }
@@ -492,7 +599,7 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 			// rarely cares about Tier-2 skips, but a forked Tier-2
 			// entry (manually flipped in .forge/checksums.json) is
 			// still worth surfacing for the same diagnostic reason.
-			SkippedForkedThisRun = append(SkippedForkedThisRun, relPath)
+			NoteForkedSkip(relPath)
 			return false, nil
 		}
 	}
@@ -612,10 +719,18 @@ func (cs *FileChecksums) AcceptTier1Drift(root string, drift []Tier1DriftEntry) 
 		cs.RecordFile(d.Path, content)
 		// RecordFile clears any pre-existing tier when it overwrites the
 		// entry value, so re-stamp the Tier-1 tag (so audit still
-		// reports it as a Tier-1-derived file) and mark Forked.
+		// reports it as a Tier-1-derived file) and mark Forked. ForkedAt
+		// gives audit/doctor a "forked since" timestamp.
 		entry := cs.Files[d.Path]
 		entry.Tier = 1
 		entry.Forked = true
+		entry.ForkedAt = nowRFC3339()
+		// Record the fork-coherence group (groups.go) so audit / doctor
+		// can connect a forked member to its still-regenerating siblings
+		// without re-deriving the pattern match.
+		if g, ok := CoherenceGroupFor(d.Path); ok {
+			entry.Group = g.Name
+		}
 		cs.Files[d.Path] = entry
 	}
 	return nil
@@ -630,4 +745,21 @@ func sortDrift(drift []Tier1DriftEntry) {
 			drift[j-1], drift[j] = drift[j], drift[j-1]
 		}
 	}
+}
+
+// sortStrings sorts a string slice ascending. Same rationale as
+// sortDrift: the slices here are tiny (a handful of forked paths), so
+// an insertion sort beats importing "sort" for two call sites.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
+}
+
+// nowRFC3339 returns the current UTC time in RFC3339. Indirected
+// through a package var so tests can pin a deterministic timestamp.
+var nowRFC3339 = func() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }

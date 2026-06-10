@@ -625,6 +625,16 @@ func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	}
 }
 
+// auditForkedFile is one entry of the codegen category's `forked_files`
+// detail list: a Tier-1 generated file the user has taken permanent
+// ownership of via `forge generate --accept`. Package-level (rather
+// than function-local) so tests can assert the JSON shape directly.
+type auditForkedFile struct {
+	Path     string `json:"path"`
+	ForkedAt string `json:"forked_at,omitempty"`
+	Group    string `json:"group,omitempty"`
+}
+
 // auditCodegen reports on .forge/checksums.json freshness, hand-edits to
 // forge-space files, and obvious orphan _gen files (those whose source
 // proto / contract.go has been removed).
@@ -662,6 +672,26 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		details["user_edited_gen_files"] = modified
 	}
 
+	// Forked files: Tier-1 entries the user `--accept`-ed. Forge skips
+	// regenerating these on every run — a persistent capability loss the
+	// project owner should keep visible (the fork-skip lines in `forge
+	// generate` output are ephemeral; this is the durable, machine-
+	// readable surface). Tier-2 forked entries are excluded: there a
+	// fork records an intentional scaffold ownership transfer, which is
+	// the expected steady state, not lost regeneration ability.
+	var forked []auditForkedFile
+	for rel, entry := range cs.Files {
+		if !entry.Forked || entry.Tier == 2 {
+			continue
+		}
+		forked = append(forked, auditForkedFile{Path: rel, ForkedAt: entry.ForkedAt, Group: entry.Group})
+	}
+	sort.Slice(forked, func(i, j int) bool { return forked[i].Path < forked[j].Path })
+	if len(forked) > 0 {
+		details["forked_files"] = forked
+		details["forked_hint"] = "forge never regenerates forked files; run `forge unfork --merge <path>` to reconcile with the latest render"
+	}
+
 	// Orphan _gen detection: walk the project for files ending in _gen.go
 	// that aren't tracked by the checksum file at all. These are usually
 	// safe to delete (cleanupStaleArtifacts would do it on next generate),
@@ -685,8 +715,8 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 
 	_ = cfg
 	status := AuditStatusOK
-	summary := fmt.Sprintf("%d tracked, %d modified, %d orphans, %d missing", len(cs.Files), len(modified), len(orphans), len(missing))
-	if len(modified) > 0 || len(orphans) > 0 || len(missing) > 0 {
+	summary := fmt.Sprintf("%d tracked, %d modified, %d forked, %d orphans, %d missing", len(cs.Files), len(modified), len(forked), len(orphans), len(missing))
+	if len(modified) > 0 || len(orphans) > 0 || len(forked) > 0 || len(missing) > 0 {
 		status = AuditStatusWarn
 	}
 	return AuditCategory{Status: status, Summary: summary, Details: details}

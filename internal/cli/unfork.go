@@ -47,6 +47,7 @@ func newUnforkCmd() *cobra.Command {
 		dryRun    bool
 		all       bool
 		assumeYes bool
+		merge     bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,10 +61,18 @@ forge stops trying to regenerate it. ` + "`forge unfork`" + ` exists for the cas
 user wants the file back under forge ownership — usually after a sibling
 generated file regenerates and emits symbols the forked file doesn't carry.
 
+--merge reconciles instead of discarding: it three-way merges your forked
+file (ours) with the latest template render (theirs, parked at
+.forge/render/<path> on every generate) relative to the render captured at
+fork time (base, .forge/render-base/<path>). A clean merge unforks the file;
+conflicts leave standard markers in place for you to resolve, after which
+` + "`forge unfork <path>`" + ` + ` + "`forge generate`" + ` completes the reconcile.
+
 Behavior:
-  forge unfork <path>...       Drop the forked flag on each named path.
-  forge unfork --all           Unfork every currently-forked entry (with confirm).
-  forge unfork --all --yes     Same, without the confirm prompt.
+  forge unfork <path>...        Drop the forked flag on each named path.
+  forge unfork --merge <path>   Three-way merge the fork with the latest render.
+  forge unfork --all            Unfork every currently-forked entry (with confirm).
+  forge unfork --all --yes      Same, without the confirm prompt.
   forge unfork <path> --dry-run Print what would change without touching state.
 
 Refuses to unfork:
@@ -72,10 +81,24 @@ Refuses to unfork:
 
 Example:
   forge unfork pkg/app/bootstrap.go
+  forge unfork --merge pkg/app/wire_gen.go
   forge unfork pkg/app/bootstrap.go pkg/app/wire_gen.go
   forge unfork --all --dry-run`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if merge {
+				// --merge is its own flow: it needs the side renders and
+				// git, and its conflict outcome intentionally does NOT
+				// unfork. Mixing it with --all (mass-unfork) or --dry-run
+				// would blur "reconcile" with "discard"; refuse instead.
+				if all || dryRun {
+					return cliutil.UserErr("forge unfork",
+						"--merge cannot be combined with --all or --dry-run",
+						"",
+						"pass explicit path(s) with --merge; use plain `forge unfork` for the discard-style flows")
+				}
+				return runUnforkMerge(args)
+			}
 			return runUnfork(args, dryRun, all, assumeYes)
 		},
 	}
@@ -83,6 +106,7 @@ Example:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/checksums.json")
 	cmd.Flags().BoolVar(&all, "all", false, "Unfork every currently-forked entry in .forge/checksums.json")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Auto-confirm the --all confirmation prompt")
+	cmd.Flags().BoolVar(&merge, "merge", false, "Three-way merge the forked file with the latest render (ours=on-disk, base=.forge/render-base, theirs=.forge/render) instead of discarding either side")
 
 	return cmd
 }
@@ -213,7 +237,21 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 	}
 
 	for _, path := range willFlip {
+		// Fold the current on-disk content into the render history
+		// BEFORE dropping the fork flag. Unfork's contract is "the next
+		// generate re-renders the template over this file" — if the
+		// content drifted from the fork-time hash (the user kept
+		// editing, or just resolved `unfork --merge` conflict markers),
+		// the drift guard would otherwise block that generate and point
+		// the user straight back at --accept, re-creating the fork.
+		// Recording the content makes it a known render state the guard
+		// auto-heals over. No-op when the file matches the recorded
+		// hash, or is missing from disk.
+		if content, err := os.ReadFile(filepath.Join(root, path)); err == nil {
+			cs.RecordFile(path, content)
+		}
 		entry := cs.Files[path]
+		entry.Tier = 1
 		entry.Forked = false
 		cs.Files[path] = entry
 		// The parked side renders (.forge/render*, see checksums/render.go)

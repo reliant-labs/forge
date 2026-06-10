@@ -15,6 +15,12 @@ type AuthzMethodData struct {
 	Procedure     string   // full RPC procedure path, e.g. "/services.users.v1.UserService/CreateUser"
 	RequiredRoles []string // roles that grant access (empty = any authenticated user)
 	AuthRequired  bool     // whether auth is required for this method
+	// Errors records the Connect/gRPC error codes the method may return,
+	// derived from (forge.v1.method).errors. The template emits a
+	// per-method entry in `methodErrors` so handler readers (including
+	// LLMs) see the typed error contract alongside the role table.
+	// Methods with no declared errors are omitted from the map.
+	Errors []string
 }
 
 // AuthzTemplateData holds the data shape expected by authorizer_gen.go.tmpl.
@@ -51,6 +57,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 				Procedure:     fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name),
 				RequiredRoles: m.RequiredRoles,
 				AuthRequired:  m.AuthRequired,
+				Errors:        m.Errors,
 			})
 		}
 

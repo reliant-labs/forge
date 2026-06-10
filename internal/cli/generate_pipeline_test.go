@@ -67,6 +67,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"auth middleware",
 		"tenant middleware (auto-enable + emit)",
 		"webhook routes",
+		"MCP manifest",
 		"pkg/app/bootstrap.go",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",

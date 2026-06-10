@@ -898,6 +898,7 @@ func runAddCRD(name, group, version, shape, operator string) error {
 func newAddFrontendCmd() *cobra.Command {
 	var port int
 	var kind string
+	var output string
 
 	cmd := &cobra.Command{
 		Use:   "frontend <name>",
@@ -908,19 +909,28 @@ By default this creates a Next.js web frontend with Connect RPC client setup.
 Use --kind mobile to scaffold a React Native app using Expo.
 Use --kind vite-spa to scaffold a Vite + React + tanstack-router SPA.
 
+For Next.js frontends (--kind web, the default), --output selects the
+production build/runtime shape. "static" (the default) emits a static
+export — the right shape when the frontend is a pure UI shell calling a
+Go backend via Connect RPC. Opt into "standalone" when you need a Node
+sidecar (server components, server actions, request-time redirect()).
+Use "server" for full Next.js dev+prod (next start).
+
 Example:
   forge add frontend web
   forge add frontend dashboard --port 3001
   forge add frontend mobile --kind mobile
-  forge add frontend admin --kind vite-spa`,
+  forge add frontend admin --kind vite-spa
+  forge add frontend dashboard --output standalone`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddFrontend(cmd.Context(), args[0], port, kind)
+			return runAddFrontend(cmd.Context(), args[0], port, kind, output)
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
+	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: static (default), standalone, or server. Only applies to --kind web.")
 
 	return cmd
 }
@@ -942,7 +952,7 @@ func validateFrontendName(name string) error {
 	return nil
 }
 
-func runAddFrontend(ctx context.Context, name string, port int, kind string) error {
+func runAddFrontend(ctx context.Context, name string, port int, kind, output string) error {
 	if err := validateFrontendName(name); err != nil {
 		return fmt.Errorf("invalid frontend name: %w", err)
 	}
@@ -952,6 +962,19 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 	case "", "web", "mobile", "vite-spa":
 	default:
 		return fmt.Errorf("invalid frontend kind %q: valid kinds are web, mobile, vite-spa", kind)
+	}
+
+	// --output applies only to Next.js (kind=web / kind=""). Reject
+	// up-front for mobile / vite-spa so the user gets a clear error
+	// instead of silently-ignored flag.
+	output = strings.ToLower(strings.TrimSpace(output))
+	switch output {
+	case "", "static", "standalone", "server":
+	default:
+		return fmt.Errorf("invalid --output %q: valid values are static (default), standalone, server", output)
+	}
+	if output != "" && kind != "" && kind != "web" {
+		return fmt.Errorf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind)
 	}
 
 	root, err := projectRoot()
@@ -1019,6 +1042,7 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 	}
 	if err := generator.GenerateFrontendFilesWithOptions(root, cfg.ModulePath, cfg.Name, name, apiPort, kind, generator.FrontendGenOptions{
 		Workspaces: workspaces,
+		Output:     output,
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
@@ -1035,14 +1059,21 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 		}
 	}
 
-	// Update forge.yaml
-	cfg.Frontends = append(cfg.Frontends, config.FrontendConfig{
+	// Update forge.yaml. Only persist `output:` when the user passed
+	// the flag — keeping the field empty lets the per-frontend
+	// scaffold default (currently "static") evolve without forcing
+	// every existing forge.yaml to track it explicitly.
+	feEntry := config.FrontendConfig{
 		Name: name,
 		Type: frontendType,
 		Kind: frontendKind,
 		Path: fmt.Sprintf("frontends/%s", name),
 		Port: port,
-	})
+	}
+	if output != "" && (kind == "" || kind == "web") {
+		feEntry.Output = output
+	}
+	cfg.Frontends = append(cfg.Frontends, feEntry)
 	// Flip features.frontend on so subsequent `forge generate` runs
 	// pick up the frontend codegen pass. Projects scaffolded with
 	// `forge new --kind service` (no --frontend) leave this field

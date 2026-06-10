@@ -289,6 +289,7 @@ func generateSteps() []GenStep {
 		{Name: "auth middleware", Gate: gateAuthProviderConfigured, GateReason: "auth.provider unset or 'none'", Run: stepAuthMiddleware, Tag: "codegen"},
 		{Name: "tenant middleware (auto-enable + emit)", Gate: gateCodegenHasServicesCfg, GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
 		{Name: "webhook routes", Gate: gateCodegenHasCfg, GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
+		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
 		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
 		{Name: "pkg/app/testing.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
@@ -472,6 +473,7 @@ var templatesOnlyStepAllow = map[string]bool{
 	"auth middleware":                  true,
 	"tenant middleware (auto-enable + emit)": true,
 	"webhook routes":                  true,
+	"MCP manifest":                    true,
 	"pkg/app/bootstrap.go":            true,
 	"pkg/app/testing.go":              true,
 	"pkg/app/migrate.go":              true,
@@ -1509,6 +1511,31 @@ func stepWebhookRoutes(ctx *pipelineContext) error {
 		return fmt.Errorf("webhook route generation failed: %w", err)
 	}
 	return nil
+}
+
+// stepMCPManifest emits gen/mcp/manifest.json: a JSON manifest mapping
+// every RPC in the project to an MCP tool schema. Lets MCP-aware agent
+// hosts discover the project's Connect RPCs as callable tools without
+// per-project wiring. See internal/codegen/mcp_gen.go for the schema.
+//
+// Loud-by-default: fires unconditionally as part of the standard
+// pipeline whenever the project has services. Skips silently when
+// there are no services — the inner emitter no-ops on an empty slice.
+// A best-effort warning surfaces any rare write failure rather than
+// aborting the whole pipeline; the manifest is a static descriptor
+// artifact, not a build-blocker.
+func stepMCPManifest(ctx *pipelineContext) error {
+	projectName := ""
+	if ctx.Cfg != nil {
+		projectName = ctx.Cfg.Name
+	}
+	return ctx.warnOrFail("MCP manifest generation",
+		codegen.GenerateMCPManifest(codegen.MCPGenInput{
+			ProjectDir:  ctx.ProjectDir,
+			ProjectName: projectName,
+			Services:    ctx.Services,
+			Checksums:   ctx.Checksums,
+		}))
 }
 
 // deriveOrmEnabled is the probe order for "should bootstrap.go include

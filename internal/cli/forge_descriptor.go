@@ -204,6 +204,22 @@ func MergeDescriptorFragments(descriptorOut string) error {
 	return nil
 }
 
+// applyMethodOptions copies the proto-level (forge.v1.method) annotations
+// onto a codegen.Method. Kept as a tiny helper so the descriptor's
+// MethodOptions handling stays unit-testable without standing up a full
+// protogen graph — see TestApplyMethodOptions_*.
+func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
+	if mo == nil {
+		return
+	}
+	if mo.AuthRequired != nil {
+		method.AuthRequired = *mo.AuthRequired
+	}
+	if len(mo.Errors) > 0 {
+		method.Errors = append([]string(nil), mo.Errors...)
+	}
+}
+
 // extractService builds a codegen.ServiceDef from a protogen.Service.
 // goPkgName derives the short Go package name from a protogen.File.
 // For a go_package like "github.com/example/gen/services/api/v1;apiv1" it
@@ -272,9 +288,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			ext := proto.GetExtension(methodOpts, forgev1.E_Method)
 			if ext != nil {
 				if mo, ok := ext.(*forgev1.MethodOptions); ok && mo != nil {
-					if mo.AuthRequired != nil {
-						method.AuthRequired = *mo.AuthRequired
-					}
+					applyMethodOptions(&method, mo)
 				}
 			}
 		}
@@ -298,9 +312,23 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 
 	var fields []codegen.MessageFieldDef
 	for _, f := range msg.Fields {
+		// Repeated fields are encoded as "[]<elementKind>" so downstream
+		// codegen (the MCP JSON Schema mapper, frontend hooks, etc.)
+		// can distinguish scalar fields from arrays without inspecting
+		// cardinality separately. FRICTION (cp-forge, 2026-06-09):
+		// the MCP Inspector strict-validated structuredContent against
+		// the declared outputSchema and rejected a List response
+		// because the schema said `items: object` (singular message
+		// type) while the wire data was `items: [array of objects]`.
+		// Root cause was right here — the descriptor dropped
+		// cardinality before it reached any downstream consumer.
+		protoType := protoKindToString(f.Desc.Kind())
+		if f.Desc.Cardinality() == protoreflect.Repeated && !f.Desc.IsMap() {
+			protoType = "[]" + protoType
+		}
 		fd := codegen.MessageFieldDef{
 			Name:       string(f.Desc.Name()),
-			ProtoType:  protoKindToString(f.Desc.Kind()),
+			ProtoType:  protoType,
 			IsOptional: f.Desc.HasOptionalKeyword(),
 		}
 		fields = append(fields, fd)

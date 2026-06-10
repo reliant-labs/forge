@@ -227,6 +227,33 @@ type FrontendConfig struct {
 	Kind string `yaml:"kind,omitempty"` // "web" (default/Next.js), "mobile" (React Native), "vite-spa" (Vite + React + tanstack-router)
 	Path string `yaml:"path"`
 	Port int    `yaml:"port"`
+	// Output selects the Next.js build/runtime shape for this frontend.
+	// Only meaningful when Type == "nextjs"; ignored for react-native and
+	// vite-spa (those have their own production shapes).
+	//
+	// Valid values:
+	//   - "static"     (default): production builds emit a static export
+	//     (`output: "export"` gated on NODE_ENV=production) — pure HTML +
+	//     JS + CSS the user can drop on a CDN or object store. The dev
+	//     server stays unchanged (`next dev`). This is the right default
+	//     for the common Forge shape: Next.js shell calling a Go backend
+	//     via Connect RPC, no SSR / server actions / `redirect()` /
+	//     `cookies()` in production.
+	//   - "standalone": production builds emit a self-contained Node
+	//     server at `.next/standalone/server.js`. Needed when the app
+	//     uses server components, server actions, `redirect()`,
+	//     `cookies()`, etc. at request time. The scaffold ships a
+	//     Dockerfile sized for this shape; static deployments can
+	//     ignore or delete it.
+	//   - "server": full Next.js dev AND prod (no `output:` set). Use
+	//     when you want `next start` semantics in prod for custom edge /
+	//     ISR workflows.
+	//
+	// Defaults to "static" when empty (the new-project default since
+	// the static-default switchover). Pre-existing projects that
+	// scaffolded under the old standalone-default keep their checked-in
+	// `next.config.ts`; the field doesn't retroactively rewrite it.
+	Output string `yaml:"output,omitempty"`
 }
 
 // FrontendProjectConfig holds project-level frontend settings — fields

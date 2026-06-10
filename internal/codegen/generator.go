@@ -28,8 +28,13 @@ type MethodTemplateData struct {
 
 // ServiceTemplateData holds the data shape expected by the embedded service templates.
 type ServiceTemplateData struct {
-	ServiceName        string               // e.g. "EchoService" (or hyphenated CLI form)
-	ServicePackage     string               // Go-package-safe form, e.g. "echo" / "admin_server"
+	ServiceName    string // e.g. "EchoService" (or hyphenated CLI form)
+	ServicePackage string // Go package CLAUSE, e.g. "echo" (disk-resolved for existing dirs)
+	// ServiceImportPath is the handlers/ directory leaf used in scaffolded
+	// test imports (`{{.Module}}/handlers/{{.ServiceImportPath}}`). Equals
+	// ServicePackage for fresh scaffolds; for EXISTING dirs it is the real
+	// directory name, which may legally differ from the package clause.
+	ServiceImportPath  string
 	Module             string               // e.g. "github.com/demo-project"
 	ProtoImportPath    string               // e.g. "proto/services/echo" (without /v1)
 	ProtoPackage       string               // same as ProtoImportPath for handlers.go.tmpl
@@ -96,11 +101,17 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		})
 	}
 
+	// Scaffold-time synthesis: this data shape is consumed when CREATING a
+	// brand-new handler dir (GenerateServiceStub), where forge picks the
+	// name. Callers that re-render into an EXISTING dir must override
+	// ServicePackage / ServiceImportPath / TestHelperName from disk truth
+	// — see GenerateMissingHandlerStubs's applyDiskIdentity.
 	pkgName := toServicePackage(svc.Name)
 
 	return ServiceTemplateData{
 		ServiceName:        pkgName,
 		ServicePackage:     pkgName,
+		ServiceImportPath:  pkgName,
 		Module:             svc.ModulePath,
 		ProtoImportPath:    protoImportPath,
 		ProtoPackage:       protoImportPath,
@@ -264,6 +275,11 @@ func GenerateMock(svc ServiceDef, mockDir string) (written bool, err error) {
 		return false, err
 	}
 
+	// Synthesis is safe here: toServicePackage only picks the FILENAME
+	// inside the shared mocks dir. The file's package clause is the
+	// constant "mocks" and its imports come from the proto descriptor's
+	// GoPackage/PkgName — no handler-dir identity is referenced, so the
+	// disk-first resolver isn't needed.
 	mockFile := filepath.Join(mockDir, toServicePackage(svc.Name)+"_mock.go")
 	f, err := os.Create(mockFile)
 	if err != nil {
@@ -436,60 +452,58 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 }
 
 // WorkerDataFromNames builds BootstrapWorkerData from worker names (e.g. from forge.yaml).
-// projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// Hyphens and underscores in the user-facing name are stripped for Package (the on-disk
-// directory + Go package name) so `calibrator_refit` becomes `calibratorrefit`, matching
-// Go style. FieldName is derived from the ORIGINAL name (which retains its separators)
-// via ToPascalCase so snake_case worker names still produce idiomatic exported identifiers
-// (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`) rather than the
-// run-together `Workers.Calibratorrefit` shape ToPascalCase would otherwise emit.
-func WorkerDataFromNames(names []string, projectDir string) []BootstrapWorkerData {
-	var workers []BootstrapWorkerData
-	for _, name := range names {
-		pkg := toGoPackage(name)
-		fieldName := naming.ToPascalCase(name)
-		fallible := false
-		if projectDir != "" {
-			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "workers", pkg))
-		}
-		workers = append(workers, BootstrapWorkerData{
-			Name:       name,
-			Package:    pkg,
-			ImportPath: pkg,
-			FieldName:  fieldName,
-			VarName:    lowerFirst(fieldName),
-			Fallible:   fallible,
-			Alias:      pkg,
-		})
-	}
-	return workers
+// projectDir is the root project directory; if non-empty, the worker's EXISTING
+// directory + package clause are resolved from disk (ResolveComponentDir), so
+// `engine_shadow` keeps importing workers/engine_shadow with whatever package
+// name that directory actually declares. Synthesis (toGoPackage compact form)
+// applies only when the directory doesn't exist yet — i.e. a brand-new scaffold.
+// FieldName is derived from the ORIGINAL name (which retains its separators)
+// via ToPascalCase so snake_case worker names still produce idiomatic exported
+// identifiers (`Workers.CalibratorRefit`, `wireWorkerCalibratorRefitDeps`)
+// rather than the run-together `Workers.Calibratorrefit` shape.
+//
+// Returns an error when a worker directory exists but its package clause is
+// unparseable/ambiguous (see ParsePackageClause) — guessing here is exactly the
+// broken-imports bug class disk-first resolution eliminates.
+func WorkerDataFromNames(names []string, projectDir string) ([]BootstrapWorkerData, error) {
+	return componentDataFromNames(names, projectDir, "workers")
 }
 
 type BootstrapOperatorData = BootstrapComponentData
 
 // OperatorDataFromNames builds BootstrapOperatorData from operator names (e.g. from forge.yaml).
-// projectDir is the root project directory; if non-empty, it is used to detect fallible constructors.
-// See WorkerDataFromNames for the FieldName naming rationale (same snake_case → PascalCase rule).
-func OperatorDataFromNames(names []string, projectDir string) []BootstrapOperatorData {
-	var operators []BootstrapOperatorData
+// See WorkerDataFromNames for the disk-first resolution + FieldName rationale.
+func OperatorDataFromNames(names []string, projectDir string) ([]BootstrapOperatorData, error) {
+	return componentDataFromNames(names, projectDir, "operators")
+}
+
+// componentDataFromNames is the shared worker/operator builder: disk-first
+// identity per component (real directory leaf for the import line, real
+// package clause for aliases/selectors), synthesized identity only for
+// not-yet-scaffolded names.
+func componentDataFromNames(names []string, projectDir, roleRoot string) ([]BootstrapComponentData, error) {
+	var comps []BootstrapComponentData
 	for _, name := range names {
-		pkg := toGoPackage(name)
+		res, err := ResolveComponentDir(projectDir, roleRoot, name)
+		if err != nil {
+			return nil, err
+		}
 		fieldName := naming.ToPascalCase(name)
 		fallible := false
-		if projectDir != "" {
-			fallible, _ = DetectFallibleConstructor(filepath.Join(projectDir, "operators", pkg))
+		if res.FromDisk {
+			fallible, _ = DetectFallibleConstructor(res.Dir)
 		}
-		operators = append(operators, BootstrapOperatorData{
+		comps = append(comps, BootstrapComponentData{
 			Name:       name,
-			Package:    pkg,
-			ImportPath: pkg,
+			Package:    res.PackageName,
+			ImportPath: res.ImportLeaf,
 			FieldName:  fieldName,
 			VarName:    lowerFirst(fieldName),
 			Fallible:   fallible,
-			Alias:      pkg,
+			Alias:      res.PackageName,
 		})
 	}
-	return operators
+	return comps, nil
 }
 
 // toGoPackage normalizes a CLI/forge.yaml-style name into a valid Go package
@@ -681,12 +695,21 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	var bootstrapSvcs []BootstrapServiceData
 	var connectImports []string
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
-		fallible, _ := DetectFallibleConstructor(filepath.Join(projectDir, "handlers", pkg))
+		// Disk-first: the handler directory + its package clause are the
+		// source of truth for the import line and the package selector.
+		// Synthesis (toServicePackage) only kicks in when the directory
+		// hasn't been scaffolded yet. See disk_resolver.go for the full
+		// rationale (kalshi-trader broken-imports bug class).
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		pkg := res.PackageName
+		fallible, _ := DetectFallibleConstructor(res.Dir)
 		// FieldName mirrors the PascalCase proto-service name without the
 		// "Service" suffix ("AdminServerService" -> "AdminServer"). We derive
 		// it from svc.Name (which retains separators / PascalCase boundaries)
-		// rather than from pkg, because pkg is the compact form
+		// rather than from pkg, because pkg may be the compact form
 		// ("adminserver") that ToPascalCase can't split back into words.
 		fieldName := naming.ToPascalCase(strings.TrimSuffix(svc.Name, "Service"))
 		if fieldName == "" {
@@ -704,25 +727,39 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		// ConnectPkg + ProtoServiceName drive the vanguard.NewService call
 		// site when REST is enabled. The proto service name is the proto
 		// handler name (e.g. "EchoService") which matches the `<X>Name`
-		// constant exposed by connect-generated packages.
-		connectPkg := pkg + "v1connect"
+		// constant exposed by connect-generated packages. Like
+		// GenerateBootstrapTesting, prefer the descriptor's declared
+		// go_package + PkgName (proto truth) over re-synthesizing the gen/
+		// path from the service name; fall back to the convention path for
+		// older descriptors / synthetic fixtures with no GoPackage.
+		connectPkg := svc.PkgName + "connect"
+		connectImport := svc.GoPackage + "/" + connectPkg
+		if svc.GoPackage == "" || svc.PkgName == "" {
+			synth := toServicePackage(svc.Name)
+			connectPkg = synth + "v1connect"
+			connectImport = modulePath + "/gen/services/" + synth + "/v1/" + connectPkg
+		}
 		protoServiceName := fieldName + "Service"
 		if restEnabled {
-			connectImports = append(connectImports, modulePath+"/gen/services/"+pkg+"/v1/"+connectPkg)
+			connectImports = append(connectImports, connectImport)
 		}
 		bootstrapSvcs = append(bootstrapSvcs, BootstrapServiceData{
 			Name:       runtimeName,
 			Package:    pkg,
-			ImportPath: pkg,
+			ImportPath: res.ImportLeaf,
 			// Use ToPascalCase so multi-word service packages produce the
 			// same exported field name as the unit/integration test templates,
 			// which call `app.NewTest{{.ServiceName | pascalCase}}` (e.g.
 			// "admin_server" -> "AdminServer").
-			FieldName:        fieldName,
-			VarName:          lowerFirst(fieldName),
-			Fallible:         fallible,
-			Alias:            pkg,
-			HasWebhooks:      webhookServices[pkg],
+			FieldName: fieldName,
+			VarName:   lowerFirst(fieldName),
+			Fallible:  fallible,
+			Alias:     pkg,
+			// webhookServices is keyed by the SYNTHESIZED package name
+			// (discoverWebhookServices uses generator.ServicePackageName on
+			// the forge.yaml spelling) — keep the lookup keyed the same way
+			// regardless of what the on-disk package clause turned out to be.
+			HasWebhooks:      webhookServices[toServicePackage(svc.Name)],
 			ConnectPkg:       connectPkg,
 			ProtoServiceName: protoServiceName,
 		})
@@ -972,8 +1009,14 @@ func buildCallArgs(m Method) string {
 // when multiple proto services live in a single proto file and share one go
 // package, or when the package name has a custom alias).
 type BootstrapTestServiceData struct {
-	Name                   string // e.g. "api"
-	Package                string // e.g. "api" (Go package name)
+	Name    string // e.g. "api"
+	Package string // e.g. "api" (Go package CLAUSE — may differ from the dir name)
+	// ImportPath is the handler directory leaf under handlers/ as it exists
+	// ON DISK (e.g. "engine_shadow"), resolved by ResolveServiceComponent.
+	// The testing.go template builds its import line from this, never from
+	// Package — a dir may legally declare a package name that differs from
+	// its directory name, and only the directory name belongs in the path.
+	ImportPath             string
 	FieldName              string // e.g. "API" (exported struct field)
 	ProtoServiceName       string // e.g. "ApiService" (proto service name for connect client)
 	ProtoConnectImportPath string // e.g. "github.com/foo/bar/gen/services/api/v1/apiv1connect"
@@ -1073,8 +1116,15 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 	var testSvcs []BootstrapTestServiceData
 	anyServiceHasDB := false
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
-		handlerDir := filepath.Join(projectDir, "handlers", pkg)
+		// Disk-first: same handler-dir + package-clause resolution as
+		// GenerateBootstrap so testing.go's import lines / aliases can
+		// never disagree with bootstrap.go's (see disk_resolver.go).
+		res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+		if resErr != nil {
+			return resErr
+		}
+		pkg := res.PackageName
+		handlerDir := res.Dir
 		fallible, _ := DetectFallibleConstructor(handlerDir)
 		hasDB, _ := DetectDepsDBField(handlerDir)
 		if hasDB {
@@ -1100,12 +1150,14 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		connectPkg := svc.PkgName + "connect"
 		connectImport := svc.GoPackage + "/" + connectPkg
 		if svc.GoPackage == "" {
-			connectImport = modulePath + "/gen/services/" + pkg + "/v1/" + pkg + "v1connect"
-			connectPkg = pkg + "v1connect"
+			synth := toServicePackage(svc.Name)
+			connectImport = modulePath + "/gen/services/" + synth + "/v1/" + synth + "v1connect"
+			connectPkg = synth + "v1connect"
 		}
 		testSvcs = append(testSvcs, BootstrapTestServiceData{
 			Name:                   pkg,
 			Package:                pkg,
+			ImportPath:             res.ImportLeaf,
 			FieldName:              naming.ToPascalCase(pkg),
 			ProtoServiceName:       svc.Name,
 			ProtoConnectImportPath: connectImport,
@@ -1452,20 +1504,39 @@ var MigrationsFS embed.FS
 // "foo/database") don't collide in generated code.
 //
 // projectDir is the root project directory; if non-empty, it is used to detect
-// fallible constructors by inspecting the Go source in internal/<importPath>/.
-func PackageDataFromNames(names []string, projectDir string) []BootstrapPackageData {
+// fallible constructors by inspecting the Go source in internal/<importPath>/,
+// and — disk-first — to read the leaf package's REAL package clause so the
+// generated alias/selector can never disagree with what internal/<importPath>
+// actually declares (a snake_case dir like internal/email_sender may declare
+// either `package email_sender` or `package emailsender`; only the file on
+// disk knows which). Synthesis of the leaf name applies only when the
+// directory doesn't exist (e.g. unit tests passing bare name lists).
+//
+// Returns an error when the package directory exists but its package clause is
+// unparseable or self-conflicting — see ParsePackageClause.
+func PackageDataFromNames(names []string, projectDir string) ([]BootstrapPackageData, error) {
 	var pkgs []BootstrapPackageData
 	for _, name := range names {
 		// Nested paths use forward slashes; flat names work the same way (no
 		// slash → leaf == importPath).
 		importPath := strings.TrimPrefix(filepath.ToSlash(name), "/")
-		// The Go package identifier is always the leaf — that's what `package X`
-		// declares in the contract.go and what call sites use as a qualifier.
+		// The Go package identifier is the leaf's package clause when the
+		// directory exists; the compact synthesized form otherwise.
 		leaf := importPath
 		if idx := strings.LastIndex(leaf, "/"); idx >= 0 {
 			leaf = leaf[idx+1:]
 		}
 		leaf = toGoPackage(leaf)
+		if projectDir != "" {
+			dir := filepath.Join(projectDir, "internal", filepath.FromSlash(importPath))
+			if fi, statErr := os.Stat(dir); statErr == nil && fi.IsDir() {
+				pkgName, perr := ParsePackageClause(dir)
+				if perr != nil {
+					return nil, fmt.Errorf("resolving internal package %q: %w", name, perr)
+				}
+				leaf = pkgName
+			}
+		}
 		// FieldName encodes the full path (PascalCase concatenation) so nested
 		// packages with the same leaf name don't share an exported struct
 		// field. ToPascalCase already treats '/' as a separator-ish via the
@@ -1492,7 +1563,7 @@ func PackageDataFromNames(names []string, projectDir string) []BootstrapPackageD
 			Alias:      leaf,
 		})
 	}
-	return pkgs
+	return pkgs, nil
 }
 
 // MissingHandlerResult holds the result of scanning for missing handler stubs.
@@ -1541,6 +1612,25 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	missingSvc.Methods = missing
 	data := mapServiceDefToTemplateData(missingSvc, projectDir)
 
+	// Disk-first: handlers_gen.go lands inside the EXISTING targetDir and
+	// MUST declare the same package as the files already there — the
+	// synthesized clause from mapServiceDefToTemplateData only holds for
+	// fresh scaffolds. Parsing the live clause here keeps a snake_case
+	// handler dir (or one whose clause differs from its dir name) from
+	// getting a conflicting `package x` stamped into it on regenerate.
+	// The import-path leaf for the *_test scaffolds likewise comes from
+	// the real directory name.
+	diskPkg, perr := ParsePackageClause(targetDir)
+	if perr != nil {
+		return nil, fmt.Errorf("generating handlers_gen.go: %w", perr)
+	}
+	applyDiskIdentity := func(d *ServiceTemplateData) {
+		d.ServicePackage = diskPkg
+		d.ServiceImportPath = filepath.Base(targetDir)
+		d.TestHelperName = ComputeTestHelperName(diskPkg, projectDir)
+	}
+	applyDiskIdentity(&data)
+
 	content, err := templates.ServiceTemplates().Render("handlers_gen.go.tmpl", data)
 	if err != nil {
 		return nil, fmt.Errorf("render handlers_gen.go.tmpl: %w", err)
@@ -1559,6 +1649,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	// These files become user-owned after the placeholder is filled in, so we
 	// don't checksum them — we want forge audit to leave them alone.
 	fullData := mapServiceDefToTemplateData(svc, projectDir)
+	applyDiskIdentity(&fullData)
 
 	// Filter CRUD methods out of the unit-test scaffold so per-RPC rows
 	// don't overlap with handlers_crud_gen_test.go (which owns shape-aware
@@ -1802,6 +1893,14 @@ func hasFallibleConstructor(services []BootstrapServiceData, packages []Bootstra
 // This must agree with generator.ServicePackageName for any single service so
 // that bootstrap/codegen keys and the on-disk handler directory match. See the
 // matching toGoPackageReplacer for the separator policy.
+//
+// DISK-FIRST RULE: this synthesis is only authoritative for components
+// that don't exist on disk yet (fresh scaffolds) and for stable lookup
+// KEYS (e.g. the webhookServices map). Any generator referencing an
+// EXISTING handler/worker/operator directory must resolve identity via
+// ResolveComponentDir / ResolveServiceComponent (disk_resolver.go)
+// instead — re-synthesizing names for existing artifacts is the broken-
+// imports bug class the resolver eliminates.
 func toServicePackage(name string) string {
 	trimmed := strings.TrimSuffix(name, "Service")
 	if trimmed == "" {

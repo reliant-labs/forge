@@ -15,14 +15,23 @@ import (
 func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, bootstrapFeatures codegen.BootstrapFeatures, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
 
-	workers := discoverWorkers(projectDir)
-	operators := discoverOperators(projectDir)
+	workers, err := discoverWorkers(projectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
 		return nil
 	}
 
-	packages := discoverPackages(projectDir)
+	packages, err := discoverPackages(projectDir)
+	if err != nil {
+		return err
+	}
 
 	// Build the webhook-services map keyed by snake-case service package
 	// name. The bootstrap template uses this to emit
@@ -121,14 +130,23 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/testing.go...")
 
-	workers := discoverWorkers(projectDir)
-	operators := discoverOperators(projectDir)
+	workers, err := discoverWorkers(projectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
 		return nil
 	}
 
-	packages := discoverPackages(projectDir)
+	packages, err := discoverPackages(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if err := codegen.GenerateBootstrapTesting(services, packages, workers, operators, modulePath, multiTenantEnabled, projectDir, cs); err != nil {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
@@ -162,10 +180,10 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 // FieldName/VarName and the bootstrap template can emit the correct import
 // path. Directories listed in cfg.Contracts.Exclude are skipped wholesale,
 // matching the behavior of generate_middleware.go's contract walk.
-func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
+func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error) {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {
-		return nil
+		return nil, nil
 	}
 
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
@@ -207,18 +225,21 @@ func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
 	})
 	if walkErr != nil && !os.IsNotExist(walkErr) {
 		fmt.Fprintf(os.Stderr, "Warning: walking %s: %v\n", internalDir, walkErr)
-		return nil
+		return nil, nil
 	}
 
 	return codegen.PackageDataFromNames(names, projectDir)
 }
 
-// discoverWorkers returns BootstrapWorkerData for all worker-type services in the project config.
-func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
+// discoverWorkers returns BootstrapWorkerData for all worker-type services in
+// the project config. The returned error is a disk-first resolution failure
+// (worker dir exists but its package clause is unparseable/conflicting) —
+// see codegen.ResolveComponentDir.
+func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
 	if err != nil || cfg == nil {
-		return nil
+		return nil, nil
 	}
 
 	var names []string
@@ -261,12 +282,13 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 	return out
 }
 
-// discoverOperators returns BootstrapOperatorData for all operator-type services in the project config.
-func discoverOperators(projectDir string) []codegen.BootstrapOperatorData {
+// discoverOperators returns BootstrapOperatorData for all operator-type
+// services in the project config. Error semantics match discoverWorkers.
+func discoverOperators(projectDir string) ([]codegen.BootstrapOperatorData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
 	if err != nil || cfg == nil {
-		return nil
+		return nil, nil
 	}
 
 	var names []string

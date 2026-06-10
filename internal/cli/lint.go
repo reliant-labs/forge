@@ -41,6 +41,7 @@ type lintFlags struct {
 	wireCoverage      bool
 	bootstrapCoverage bool
 	checkWorkarounds  bool
+	jsonOut           bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -92,7 +93,16 @@ Examples:
   forge lint --check-workarounds # Flag cross-lane workarounds (cast<X>Repo helpers in
                                 # pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go,
                                 # cmd/<name>.go files not declared in forge.yaml binaries:)
-  forge lint --fix              # Auto-fix issues where possible`,
+  forge lint --fix              # Auto-fix issues where possible
+  forge lint --json             # Machine-readable output (sub-agents / CI):
+                                # {findings: [{file, line, col, severity, rule,
+                                # message, fix_hint}], summary: {errors, warnings,
+                                # infos, total}, ok}. Raw sub-tool lines that can't
+                                # be structured appear with rule "external"; skipped
+                                # linters appear as severity "info" rule "skipped".
+                                # Exit code matches text mode (non-zero iff ok=false).
+                                # Combines with the targeted flags above, but not
+                                # with --fix / --suggest-*.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var paths []string
 			if len(args) > 0 {
@@ -101,6 +111,9 @@ Examples:
 				paths = []string{"./..."}
 			}
 
+			if flags.jsonOut {
+				return runLintJSON(cmd.Context(), flags, paths)
+			}
 			return runLint(cmd.Context(), flags, paths)
 		},
 	}
@@ -121,6 +134,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
+	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 
 	return cmd
 }
@@ -381,18 +395,53 @@ func runDBLint() error {
 func runConventionLint() error {
 	fmt.Println("Running forge convention rules...")
 
+	combined, notes, hasAny, err := collectConventionFindings()
+	if err != nil {
+		return err
+	}
+	for _, n := range notes {
+		fmt.Println("  ⚠️  " + n)
+	}
+	if !hasAny {
+		return nil
+	}
+
+	if len(combined.Findings) == 0 {
+		fmt.Println("✓ forge conventions passed")
+		return nil
+	}
+
+	fmt.Print(combined.FormatText())
+	if combined.HasErrors() {
+		return cliutil.UserErr("forge lint --conventions",
+			"forge convention violations found",
+			"",
+			"fix the findings above (proto annotations, contract.go names) — see 'forge skill load contracts' and 'forge skill load proto' for the rules")
+	}
+	fmt.Println("(warnings only — not failing the build)")
+	return nil
+}
+
+// collectConventionFindings gathers every forge-convention finding
+// without printing — the shared engine behind runConventionLint (text)
+// and `forge lint --json`. Returns the combined findings, any
+// informational skip notes ("No proto/ directory found — …"), and
+// hasAny=false when none of the lintable trees (proto/, internal/,
+// handlers/, workers/, operators/) exist at all.
+func collectConventionFindings() (forgeconv.Result, []string, bool, error) {
 	combined := forgeconv.Result{}
+	var notes []string
 	hasProto := false
 
 	if _, err := os.Stat("proto"); err == nil {
 		hasProto = true
 		res, err := forgeconv.LintProtoTree("proto")
 		if err != nil {
-			return fmt.Errorf("forge convention lint (proto) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (proto) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 	} else {
-		fmt.Println("  ⚠️  No proto/ directory found — skipping proto convention lint")
+		notes = append(notes, "No proto/ directory found — skipping proto convention lint")
 	}
 
 	// Internal-package contract shape, plus the hexagonal-architecture
@@ -410,9 +459,9 @@ func runConventionLint() error {
 		hasInternal = true
 		cfg, cfgErr := loadProjectConfig()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
+			return combined, notes, false, fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
 		}
-		// runConventionLint is not (yet) ctx-aware; the engine's
+		// The convention lint is not (yet) ctx-aware; the engine's
 		// inter-rule cancellation hook is a forward-looking concern.
 		// Using context.Background() preserves today's behavior; threading
 		// the cobra cmd.Context() through is a separate cleanup.
@@ -420,7 +469,7 @@ func runConventionLint() error {
 			Excludes: contractExcludesFromConfig(cfg),
 		})
 		if err != nil {
-			return fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, fs...)
 	}
@@ -437,7 +486,7 @@ func runConventionLint() error {
 		hasHandlers = true
 		res, err := forgeconv.LintHandlerErrorMapping(".")
 		if err != nil {
-			return fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 
@@ -448,7 +497,7 @@ func runConventionLint() error {
 		// subcommand rather than blocking on file size.
 		cfg, cfgErr := loadProjectConfig()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
+			return combined, notes, false, fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
 		}
 		threshold := config.DefaultHandlerFileMaxLOC
 		if cfg != nil {
@@ -456,7 +505,7 @@ func runConventionLint() error {
 		}
 		sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
 		if err != nil {
-			return fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, sizeRes.Findings...)
 	}
@@ -477,31 +526,15 @@ func runConventionLint() error {
 	if hasComponentTree {
 		res, err := forgeconv.LintOptionalDepMarkerPosition(".")
 		if err != nil {
-			return fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 	}
 
 	// If none of proto/, internal/, handlers/, workers/, or operators/
 	// exist, there's nothing to lint.
-	if !hasProto && !hasInternal && !hasComponentTree {
-		return nil
-	}
-
-	if len(combined.Findings) == 0 {
-		fmt.Println("✓ forge conventions passed")
-		return nil
-	}
-
-	fmt.Print(combined.FormatText())
-	if combined.HasErrors() {
-		return cliutil.UserErr("forge lint --conventions",
-			"forge convention violations found",
-			"",
-			"fix the findings above (proto annotations, contract.go names) — see 'forge skill load contracts' and 'forge skill load proto' for the rules")
-	}
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
+	hasAny := hasProto || hasInternal || hasComponentTree
+	return combined, notes, hasAny, nil
 }
 
 // runFrontendPackLint scans frontend pack templates (under

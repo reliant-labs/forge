@@ -17,7 +17,11 @@
 // committed.
 package checksums
 
-import "path"
+import (
+	"os"
+	"path"
+	"path/filepath"
+)
 
 // Side-render directory roots, project-relative. Exposed as constants
 // so the cli layer can print them in messages without re-deriving.
@@ -40,4 +44,53 @@ func SideRenderRelPath(relPath string) string {
 // merge-base side render for relPath (`.forge/render-base/<relpath>`).
 func SideRenderBaseRelPath(relPath string) string {
 	return path.Join(RenderBaseDir, relPath)
+}
+
+// WriteSideRender parks the fresh render for a forked relPath:
+//
+//   - `.forge/render/<relpath>` is (over)written on every call — it
+//     always holds the LATEST render ("theirs" for a future merge).
+//   - `.forge/render-base/<relpath>` is written only if absent — the
+//     first render captured after the fork is the closest approximation
+//     of the content the user forked FROM, so it serves as the merge
+//     base. Later renders must not clobber it or the three-way merge
+//     would see template evolution as user edits.
+//
+// Failures creating the side-render are returned (not swallowed): a
+// broken `.forge/` is a project-state problem the user should see, and
+// the caller skips the real write either way.
+func WriteSideRender(root, relPath string, content []byte) error {
+	renderPath := filepath.Join(root, RenderDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(renderPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(renderPath, content, 0o644); err != nil {
+		return err
+	}
+
+	basePath := filepath.Join(root, RenderBaseDir, relPath)
+	if _, err := os.Stat(basePath); err == nil {
+		return nil // base already captured — never overwrite
+	}
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(basePath, content, 0o644)
+}
+
+// CleanSideRenders removes both side-render files for relPath. Called
+// when a path is unforked (plain or via --merge) — once forge owns the
+// file again the parked renders are stale and would only confuse a
+// later merge. Missing files are fine; any other removal error is
+// returned.
+func CleanSideRenders(root, relPath string) error {
+	for _, p := range []string{
+		filepath.Join(root, RenderDir, relPath),
+		filepath.Join(root, RenderBaseDir, relPath),
+	} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }

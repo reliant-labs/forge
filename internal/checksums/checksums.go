@@ -419,12 +419,6 @@ func (cs *FileChecksums) RecordFile(relPath string, content []byte) {
 // for back-compat. Prefer the typed wrappers (WriteGeneratedFileTier1 /
 // WriteGeneratedFileTier2) at new call sites so the manifest is explicit.
 func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
-	if SkipWrite[relPath] {
-		// `forge generate --accept` opted this path out for the current
-		// run. The user's on-disk content survives; the just-rendered
-		// content is dropped on the floor.
-		return false, nil
-	}
 	if cs != nil {
 		if entry, ok := cs.Files[relPath]; ok && entry.Forked {
 			// User previously ran `--accept` on this path. Forge no
@@ -435,10 +429,28 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 			// The skip is recorded (and reported loudly at pipeline
 			// exit) rather than silent — silent skips are how the
 			// "edited Deps, regenerated, nothing happened" failure mode
-			// happens (.forge/backlog.md 2026-06-05).
+			// happens (.forge/backlog.md 2026-06-05). The fresh render
+			// is parked under .forge/render/ instead of dropped, so
+			// `forge unfork --merge` has a "theirs" to reconcile with.
+			//
+			// This branch deliberately precedes the SkipWrite check: on
+			// the `--accept` run itself the path is in BOTH sets, and
+			// the render produced on that run is the closest thing to
+			// "what the user forked from" — it must reach
+			// WriteSideRender so the merge base gets captured at the
+			// fork point, not one template-evolution later.
 			noteForkedSkip(relPath)
+			if err := WriteSideRender(root, relPath, content); err != nil {
+				return false, err
+			}
 			return false, nil
 		}
+	}
+	if SkipWrite[relPath] {
+		// `forge generate --accept` opted this path out for the current
+		// run. The user's on-disk content survives; the just-rendered
+		// content is dropped on the floor.
+		return false, nil
 	}
 	if cs != nil && !force && cs.IsFileModified(root, relPath) {
 		// User has modified this file — skip

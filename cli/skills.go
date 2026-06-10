@@ -16,6 +16,20 @@ type Skill struct {
 	Description string
 	// Scope is where the skill was discovered: "forge", "project", or "user".
 	Scope string
+
+	// SkillForgeVersion is the forge version whose embedded templates the
+	// skill content comes from — i.e. the forge module linked into THIS
+	// process, not the project's pin. Empty for project/user-scope skills.
+	SkillForgeVersion string
+	// ProjectForgeVersion is the forge_version pinned in the project's
+	// forge.yaml ("" when projectRoot was empty, no pin is declared, or the
+	// file could not be read).
+	ProjectForgeVersion string
+	// VersionSkew is true when the serving forge version and the project's
+	// pin are both real release versions and differ. Harness consumers
+	// should surface skewed skills with caution: the guidance may describe
+	// a different forge version than the one that generated the project.
+	VersionSkew bool
 }
 
 // ListSkills returns every available forge skill for projectRoot — merging
@@ -34,18 +48,27 @@ func ListSkills(projectRoot string) ([]Skill, error) {
 	out := make([]Skill, 0, len(metas))
 	for _, m := range metas {
 		out = append(out, Skill{
-			Path:        m.Path,
-			Name:        m.Name,
-			Description: m.Description,
-			Scope:       string(m.Scope),
+			Path:                m.Path,
+			Name:                m.Name,
+			Description:         m.Description,
+			Scope:               string(m.Scope),
+			SkillForgeVersion:   m.SkillForgeVersion,
+			ProjectForgeVersion: m.ProjectForgeVersion,
+			VersionSkew:         m.VersionSkew,
 		})
 	}
 	return out, nil
 }
 
-// LoadSkill returns the raw SKILL.md body for skillPath under projectRoot,
+// LoadSkill returns the SKILL.md body for skillPath under projectRoot,
 // honoring the same user > project > forge precedence as ListSkills.
 // Returns an error if the skill is not found.
+//
+// Version-skew advisory: when the skill is forge-shipped and the forge
+// version serving it differs from the project's pinned forge_version
+// (see Skill.VersionSkew), a one-line "Note: this guidance is from
+// forge <X>; this project pins forge <Y>..." advisory is inserted after
+// the YAML frontmatter so downstream readers see the skew inline.
 func LoadSkill(projectRoot, skillPath string) ([]byte, error) {
 	body, _, err := internalcli.ResolveSkillContentAt(projectRoot, skillPath)
 	return body, err

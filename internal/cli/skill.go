@@ -7,12 +7,15 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -105,7 +108,11 @@ func newSkillLoadCmd() *cobra.Command {
 			// Allow both "db" and "forge/db"
 			name = strings.TrimPrefix(name, "forge/")
 
-			content, scope, err := resolveSkillContent(name)
+			// Resolve via the exported wrapper so the version-skew
+			// advisory (running forge vs. project forge_version pin)
+			// is included exactly as harness consumers see it.
+			root, _ := findProjectRoot()
+			content, scope, err := ResolveSkillContentAt(root, name)
 			if err != nil {
 				return cliutil.UserErr(fmt.Sprintf("forge skill load %s", name),
 					fmt.Sprintf("skill %q not found", name),
@@ -233,6 +240,21 @@ type SkillMetaPublic struct {
 	Name        string
 	Description string
 	Scope       SkillScope
+
+	// SkillForgeVersion is the forge version the skill content ships with —
+	// i.e. the version of the forge module/binary serving this listing.
+	// Empty for project/user-scope skills (their content is user-owned and
+	// not tied to a forge release).
+	SkillForgeVersion string
+	// ProjectForgeVersion is the forge_version pinned in the project's
+	// forge.yaml ("" when no project root was given, no pin exists, or the
+	// config could not be read).
+	ProjectForgeVersion string
+	// VersionSkew is true when SkillForgeVersion and ProjectForgeVersion
+	// are both known, comparable release versions and differ — i.e. the
+	// skill content served here comes from a different forge version than
+	// the one the project was generated with.
+	VersionSkew bool
 }
 
 // ListSkillsAt is the exported wrapper around [listSkillsAt], intended for
@@ -243,21 +265,143 @@ func ListSkillsAt(projectRoot string) ([]SkillMetaPublic, error) {
 	if err != nil {
 		return nil, err
 	}
+	binaryVersion := runningForgeVersion()
+	projectVersion := projectForgeVersionAt(projectRoot)
+	skew := isForgeVersionSkew(binaryVersion, projectVersion)
 	out := make([]SkillMetaPublic, 0, len(metas))
 	for _, m := range metas {
-		out = append(out, SkillMetaPublic{
-			Path:        m.Path,
-			Name:        m.Name,
-			Description: m.Description,
-			Scope:       m.Scope,
-		})
+		pub := SkillMetaPublic{
+			Path:                m.Path,
+			Name:                m.Name,
+			Description:         m.Description,
+			Scope:               m.Scope,
+			ProjectForgeVersion: projectVersion,
+		}
+		if m.Scope == SkillScopeForge {
+			pub.SkillForgeVersion = binaryVersion
+			pub.VersionSkew = skew
+		}
+		out = append(out, pub)
 	}
 	return out, nil
 }
 
-// ResolveSkillContentAt is the exported wrapper around [resolveSkillContentAt].
+// ResolveSkillContentAt is the exported wrapper around [resolveSkillContentAt],
+// with one addition for out-of-process consumers: when the skill is
+// forge-shipped and the running forge version differs from the project's
+// pinned forge_version, a one-line advisory is prepended to the body
+// (after the YAML frontmatter) so the reader knows the guidance may not
+// match the project's generated code.
 func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, error) {
-	return resolveSkillContentAt(projectRoot, skillPath)
+	body, scope, err := resolveSkillContentAt(projectRoot, skillPath)
+	if err != nil || scope != SkillScopeForge {
+		return body, scope, err
+	}
+	binaryVersion := runningForgeVersion()
+	projectVersion := projectForgeVersionAt(projectRoot)
+	if !isForgeVersionSkew(binaryVersion, projectVersion) {
+		return body, scope, nil
+	}
+	advisory := fmt.Sprintf("Note: this guidance is from forge %s; this project pins forge %s. Prefer `forge map --json`/`forge audit --json` for current project facts.\n",
+		binaryVersion, projectVersion)
+	return insertAfterFrontmatter(body, []byte(advisory)), scope, nil
+}
+
+// forgeModulePath is forge's Go module path, used to discover the forge
+// version when forge is linked into another binary (e.g. reliant imports
+// forge as a module dependency).
+const forgeModulePath = "github.com/reliant-labs/forge"
+
+// runningForgeVersion returns the version of the forge code that is
+// actually executing — NOT necessarily the main module's version:
+//
+//  1. If the main module IS forge, use buildinfo (ldflags-stamped, with
+//     a module-version fallback).
+//  2. If forge is linked in as a dependency (reliant et al.), return the
+//     dependency's resolved module version.
+//  3. Otherwise fall back to buildinfo (covers ldflags-stamped embedding
+//     binaries and "dev" local builds).
+func runningForgeVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Path != forgeModulePath {
+			for _, dep := range info.Deps {
+				if dep == nil || dep.Path != forgeModulePath {
+					continue
+				}
+				m := dep
+				if m.Replace != nil {
+					m = m.Replace
+				}
+				if m.Version != "" && m.Version != "(devel)" {
+					return m.Version
+				}
+			}
+		}
+	}
+	return buildinfo.Version()
+}
+
+// projectForgeVersionAt reads the forge_version pin from
+// <projectRoot>/forge.yaml. Returns "" when projectRoot is empty, the file
+// is missing/unreadable, or no pin is declared. The parse is intentionally
+// tolerant (single-field unmarshal, not LoadStrict) — version-skew
+// annotation must work even across config-schema drift between forge
+// versions.
+func projectForgeVersionAt(projectRoot string) string {
+	if projectRoot == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(projectRoot, "forge.yaml"))
+	if err != nil {
+		return ""
+	}
+	var pin struct {
+		ForgeVersion string `yaml:"forge_version"`
+	}
+	if err := yaml.Unmarshal(data, &pin); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(pin.ForgeVersion)
+}
+
+// isForgeVersionSkew reports whether the running forge version and the
+// project's pinned forge_version are both real, comparable versions AND
+// differ. Mirrors forgeVersionMismatchWarning's comparability rules:
+// unreleased binary versions (dev / (devel) / pseudoversions) and missing
+// project pins never count as skew — we don't want advisory noise during
+// local tip-of-tree development or on legacy projects without a baseline.
+func isForgeVersionSkew(binaryVersion, projectVersion string) bool {
+	binaryVersion = strings.TrimSpace(binaryVersion)
+	projectVersion = strings.TrimSpace(projectVersion)
+	if isUnreleasedBinaryVersion(binaryVersion) || projectVersion == "" {
+		return false
+	}
+	return strings.TrimPrefix(binaryVersion, "v") != strings.TrimPrefix(projectVersion, "v")
+}
+
+// insertAfterFrontmatter inserts chunk immediately after the YAML
+// frontmatter block of a SKILL.md body (frontmatter must stay at byte 0
+// for skill loaders). When the body has no parseable frontmatter, chunk
+// is prepended.
+func insertAfterFrontmatter(content, chunk []byte) []byte {
+	if len(content) >= 4 && string(content[:4]) == "---\n" {
+		if end := strings.Index(string(content[4:]), "\n---"); end >= 0 {
+			closeStart := 4 + end + 1 // start of the closing "---" line
+			rest := content[closeStart:]
+			if nl := strings.IndexByte(string(rest), '\n'); nl >= 0 {
+				insertAt := closeStart + nl + 1
+				out := make([]byte, 0, len(content)+len(chunk))
+				out = append(out, content[:insertAt]...)
+				out = append(out, chunk...)
+				out = append(out, content[insertAt:]...)
+				return out
+			}
+		}
+	}
+	out := make([]byte, 0, len(content)+len(chunk))
+	out = append(out, chunk...)
+	out = append(out, content...)
+	return out
 }
 
 // listSkills returns all available skills (forge-shipped + project + user),
@@ -402,16 +546,10 @@ func listDiskSkills(root string, scope SkillScope) ([]skillMeta, error) {
 	return out, nil
 }
 
-// resolveSkillContent looks up a skill by path across all scopes, honoring the
-// user > project > forge precedence. Returns the body, the scope it came
-// from, or an error if the skill is unknown.
-func resolveSkillContent(skillPath string) ([]byte, SkillScope, error) {
-	root, _ := findProjectRoot()
-	return resolveSkillContentAt(root, skillPath)
-}
-
-// resolveSkillContentAt is like [resolveSkillContent] but scoped to an explicit
-// project root rather than walking up from cwd.
+// resolveSkillContentAt looks up a skill by path across all scopes, honoring
+// the user > project > forge precedence, scoped to an explicit project root.
+// Returns the body, the scope it came from, or an error if the skill is
+// unknown.
 func resolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, error) {
 	skills, err := listSkillsAt(projectRoot)
 	if err != nil {

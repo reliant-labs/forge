@@ -164,14 +164,14 @@ func TestBootstrapTable_BehaviorMovedToLibrary(t *testing.T) {
 	content := renderRepresentativeBootstrap(t)
 
 	for needle, where := range map[string]string{
-		"runAll":                  "BootstrapOnly name filtering (appkit.Options.Only)",
-		"nameSet":                 "BootstrapOnly name filtering (appkit.Options.Only)",
-		"unknown service/worker":  "unknown-name warning (appkit.Run)",
-		"vanguard.NewTranscoder":  "REST transcoding (appkit.RESTDef)",
-		"vanguard.NewService":     "REST transcoding (appkit.RESTDef)",
-		"diagnostics.Default":     "diagnostics boot (appkit.DiagnosticsMode)",
-		"ctrl.GetConfig":          "controller-manager runtime (operatorkit.Run)",
-		"ctrl.NewManager":         "controller-manager runtime (operatorkit.Run)",
+		"runAll":                       "BootstrapOnly name filtering (appkit.Options.Only)",
+		"nameSet":                      "BootstrapOnly name filtering (appkit.Options.Only)",
+		"unknown service/worker":       "unknown-name warning (appkit.Run)",
+		"vanguard.NewTranscoder":       "REST transcoding (appkit.RESTDef)",
+		"vanguard.NewService":          "REST transcoding (appkit.RESTDef)",
+		"diagnostics.Default":          "diagnostics boot (appkit.DiagnosticsMode)",
+		"ctrl.GetConfig":               "controller-manager runtime (operatorkit.Run)",
+		"ctrl.NewManager":              "controller-manager runtime (operatorkit.Run)",
 		"AddToScheme(mgr.GetScheme())": "scheme registration (operatorkit.Run)",
 	} {
 		if strings.Contains(content, needle) {

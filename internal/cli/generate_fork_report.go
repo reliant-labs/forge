@@ -19,8 +19,11 @@ package cli
 import (
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // reportForkedSkips prints one loud line per Tier-1 path whose write
@@ -36,5 +39,78 @@ func reportForkedSkips(w io.Writer) {
 	for _, p := range skips {
 		fmt.Fprintf(w, "⚠ forked (not regenerated): %s — fresh render at %s; run 'forge unfork --merge %s' to reconcile\n",
 			p, checksums.SideRenderRelPath(p), p)
+	}
+}
+
+// warnForkCoherenceOnAccept prints, for each just-accepted path that
+// belongs to a fork-coherence group (checksums/groups.go), a prominent
+// warning naming the sibling files that will KEEP regenerating. Forking
+// one member of a coupled set is the .forge/backlog.md 2026-06-03
+// build-break shape — the warning fires at the moment of forking, when
+// the user can still back out (git checkout + re-run without --accept).
+func warnForkCoherenceOnAccept(w io.Writer, accepted []string) {
+	for _, p := range accepted {
+		g, ok := checksums.CoherenceGroupFor(p)
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(w, "\n⚠ %s belongs to fork-coherence group %q. These sibling files share its generated symbols and will KEEP regenerating:\n", p, g.Name)
+		for _, sib := range g.SiblingPatterns(p) {
+			fmt.Fprintf(w, "   - %s\n", sib)
+		}
+		fmt.Fprintf(w, "   When a future generate changes a sibling, the forked file can drift out of sync and break the build.\n")
+		fmt.Fprintf(w, "   Prefer moving customizations to a user-owned extension point; reconcile later with 'forge unfork --merge %s'.\n", p)
+	}
+}
+
+// warnIncoherentForkGroups fires at pipeline exit: for every coherence
+// group with at least one forked member AND at least one non-forked
+// member whose fresh render CHANGED this run, print a prominent warning
+// naming the (possibly now-incoherent) forked siblings.
+//
+// This is the runtime pairing of warnForkCoherenceOnAccept: that one
+// warns when the fork is created, this one warns on the run where the
+// risk materializes. The AST-level dangling-reference check
+// (generate_dangling_check.go) hard-errors on the subset it can prove;
+// this warning covers symbol drift the AST check can't see (changed
+// signatures, renamed fields, behavioral coupling).
+//
+// We deliberately don't auto-fork or auto-unfork the rest of the group
+// — both would destroy state the user may need. Loud + actionable is
+// the contract.
+func warnIncoherentForkGroups(w io.Writer, cs *generator.FileChecksums) {
+	if cs == nil {
+		return
+	}
+	changed := checksums.ChangedRendersThisRun()
+	if len(changed) == 0 {
+		return
+	}
+	for _, g := range checksums.CoherenceGroups() {
+		var forked []string
+		for rel, entry := range cs.Files {
+			if entry.Forked && entry.Tier != 2 && g.Matches(rel) {
+				forked = append(forked, rel)
+			}
+		}
+		if len(forked) == 0 {
+			continue
+		}
+		var changedSiblings []string
+		for _, p := range changed {
+			// Changed ⇒ freshly written ⇒ not forked; no extra filter needed.
+			if g.Matches(p) {
+				changedSiblings = append(changedSiblings, p)
+			}
+		}
+		if len(changedSiblings) == 0 {
+			continue
+		}
+		sort.Strings(forked)
+		fmt.Fprintf(w, "\n⚠ fork-coherence group %q: regenerated file(s) changed this run while sibling fork(s) stayed frozen:\n", g.Name)
+		fmt.Fprintf(w, "   changed this run: %s\n", strings.Join(changedSiblings, ", "))
+		fmt.Fprintf(w, "   forked (frozen):  %s\n", strings.Join(forked, ", "))
+		fmt.Fprintf(w, "   The forked file(s) may now be incoherent with the fresh renders (build-break risk — shared generated symbols).\n")
+		fmt.Fprintf(w, "   Reconcile with 'forge unfork --merge <path>', or re-own with 'forge unfork <path>' + 'forge generate'.\n")
 	}
 }

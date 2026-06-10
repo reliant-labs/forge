@@ -62,6 +62,20 @@
 //     workers stop → application shuts down → http.Server shuts down →
 //     pprof shuts down → OTel flushes.
 //
+// # Worker shutdown contract
+//
+// Each worker runs in its own goroutine with a per-worker context
+// derived from the run lifecycle. On SIGINT/SIGTERM that context is
+// cancelled immediately — before the pre-stop drain sleep — so
+// long-running cycles get the full shutdown window to unwind; on a
+// fatal serve error it is cancelled when the worker-stop phase begins.
+// Workers implementing the optional
+// ContextWorker interface run via RunContext(ctx), the preferred
+// ctx-aware lifecycle; all other workers run via the legacy Start(ctx)
+// with the same per-worker context. The supervisor waits for every
+// worker goroutine to return, then calls each worker's Stop bounded by
+// Config.ShutdownTimeout. See ContextWorker for the full contract.
+//
 // # What does not belong here
 //
 // Per-service DI wiring stays in the generated bootstrap.go — that body

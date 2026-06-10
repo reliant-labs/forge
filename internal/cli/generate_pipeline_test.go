@@ -81,6 +81,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"Grafana dashboards",
 		"entity-aware seed data",
 		"frontend mocks + transport",
+		"agent skills (.claude/skills)",
 		"go mod tidy (root)",
 		"goimports on generated Go",
 		"cleanup stale codegen",

@@ -73,6 +73,44 @@ type Worker interface {
 	Stop(ctx context.Context) error
 }
 
+// ContextWorker is an OPTIONAL extension of Worker for context-aware
+// run loops. When a worker returned by Application.WorkerList also
+// implements ContextWorker, the supervisor calls RunContext instead of
+// Start, passing a per-worker context derived from the run lifecycle.
+// Workers that don't implement it keep the legacy Start path unchanged
+// — the supervisor type-asserts at fan-out time, so adopting the
+// interface is purely additive.
+//
+// The shutdown contract:
+//
+//   - ctx is cancelled the moment graceful shutdown begins (SIGINT/
+//     SIGTERM received, or a fatal serve error). RunContext must observe
+//     ctx.Done() inside its cycle loop — and thread ctx into per-tick
+//     work (DB queries, HTTP calls, adapters) — so an in-flight cycle is
+//     interrupted rather than running to completion.
+//   - RunContext must return promptly after cancellation. The supervisor
+//     waits for every worker goroutine to exit before continuing the
+//     shutdown sequence, so a worker that ignores ctx stalls shutdown.
+//   - Returning nil or ctx.Err() after cancellation is a clean exit —
+//     the supervisor does not log context.Canceled as a worker error.
+//     Any other error is logged (never returned from Run, never
+//     restarted), matching the legacy Start error handling.
+//   - Stop is still called afterwards (every WorkerList entry is a
+//     Worker), bounded by Config.ShutdownTimeout. For ContextWorker
+//     implementations Stop is typically a final-drain no-op since
+//     cancellation already unwound the run loop.
+//
+// Cron-scheduled and continuous workers both fit: a continuous worker
+// selects on ctx.Done() in its cycle loop; a cron worker derives each
+// tick's context from ctx so scheduled jobs observe shutdown mid-run.
+type ContextWorker interface {
+	Worker
+
+	// RunContext runs the worker's main loop and returns when ctx is
+	// done. See the interface doc for the full shutdown contract.
+	RunContext(ctx context.Context) error
+}
+
 // Operator is the minimal contract serverkit needs to gate the
 // controller-manager goroutine. The actual controller wiring happens
 // inside Application.RunOperators — this interface only carries Name

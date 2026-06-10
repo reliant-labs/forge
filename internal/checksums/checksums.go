@@ -103,13 +103,30 @@ func ChangedRendersThisRun() []string {
 	return out
 }
 
+// sideRenderOnly is the per-run set of paths whose Tier-1 writes are
+// redirected to `.forge/render/<relpath>` instead of the real file.
+// Populated by `forge generate --explain-drift`: the drift guard lets
+// the pipeline proceed so the emitters produce a fresh render to diff
+// against, but the user's drifted on-disk content must survive — the
+// whole point of the flag is to SHOW the user what regeneration would
+// change before they choose between the extension point, --force, and
+// --accept. The merge base is deliberately NOT seeded here (the path
+// isn't forked; a stale base would poison a future fork's merge).
+var sideRenderOnly = map[string]bool{}
+
+// AddSideRenderOnly marks relPath as side-render-only for the current
+// run. Idempotent.
+func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
+
 // ResetPerRunState clears the per-pipeline-run tracking sets (forked
-// skips, changed-render set). Called at the start of each pipeline run
-// alongside ResetSkipWrite / ResetTier2State so a long-lived process
-// (tests, watch mode) doesn't leak state across invocations.
+// skips, changed-render set, side-render-only redirects). Called at the
+// start of each pipeline run alongside ResetSkipWrite / ResetTier2State
+// so a long-lived process (tests, watch mode) doesn't leak state across
+// invocations.
 func ResetPerRunState() {
 	forkedSkipsThisRun = nil
 	changedRendersThisRun = map[string]bool{}
+	sideRenderOnly = map[string]bool{}
 }
 
 // Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
@@ -450,6 +467,17 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		// `forge generate --accept` opted this path out for the current
 		// run. The user's on-disk content survives; the just-rendered
 		// content is dropped on the floor.
+		return false, nil
+	}
+	if sideRenderOnly[relPath] {
+		// `--explain-drift` redirect: park the fresh render for the
+		// post-pipeline diff, leave the user's drifted content (and the
+		// checksum entry) untouched. Must run BEFORE the IsFileModified
+		// skip below — these paths are drifted by definition, and the
+		// silent skip would discard exactly the render we need.
+		if err := WriteSideRenderNoBase(root, relPath, content); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	if cs != nil && !force && cs.IsFileModified(root, relPath) {

@@ -340,9 +340,11 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		LeaderElectionID    string
 	}{
-		Module:       "example.com/fullproject",
-		ConfigFields: map[string]bool{},
+		Module:           "example.com/fullproject",
+		LeaderElectionID: "fullproject-leader",
+		ConfigFields:     map[string]bool{},
 		Services: []struct {
 			Name, Package, ImportPath, FieldName, Alias, VarName string
 			Fallible                                             bool

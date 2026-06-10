@@ -124,9 +124,12 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if !strings.Contains(bootstrapContents, "func (a *App) Shutdown(ctx context.Context) error") {
 		t.Fatalf("bootstrap.go should contain Shutdown method, got:\n%s", bootstrapContents)
 	}
-	// A3: BootstrapOnly should validate unknown service names
-	if !strings.Contains(bootstrapContents, "unknown service") {
-		t.Fatalf("bootstrap.go BootstrapOnly should warn about unknown service names, got:\n%s", bootstrapContents)
+	// A3: BootstrapOnly name filtering (including the unknown-name
+	// warning) is delegated to appkit.Run — the generated file only
+	// passes the names through as appkit.Options.Only (2026-06 appkit
+	// table migration; the warn string itself lives in pkg/appkit).
+	if !strings.Contains(bootstrapContents, "appkit.Options{Only: names}") {
+		t.Fatalf("bootstrap.go BootstrapOnly should pass names to appkit.Run as Options.Only, got:\n%s", bootstrapContents)
 	}
 
 	// cmd/server.go should use app.Bootstrap, not registry

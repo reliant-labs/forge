@@ -37,21 +37,37 @@ Every worker implements the same contract:
 ```go
 func (w *Worker) Name() string { return "email-sender" }
 
-// Start blocks until ctx is cancelled.
+// Start runs the cycle loop until ctx is cancelled. The supervisor
+// cancels ctx the moment graceful shutdown begins.
 func (w *Worker) Start(ctx context.Context) error {
-    w.deps.Logger.Info("worker started", "worker", w.Name())
-    <-ctx.Done()
-    return nil
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            return nil // graceful shutdown — return promptly
+        case <-ticker.C:
+            if err := w.runOnce(ctx); err != nil {
+                w.deps.Logger.Error("worker cycle failed", "error", err)
+            }
+        }
+    }
 }
 
-// Stop is called during graceful shutdown. Drain in-flight work here.
+// runOnce is a single work cycle. Pass ctx into every context-aware
+// call so a long cycle observes shutdown mid-flight.
+func (w *Worker) runOnce(ctx context.Context) error { /* ... */ return nil }
+
+// Stop is called during graceful shutdown, after the loop returned.
 func (w *Worker) Stop(ctx context.Context) error {
     w.deps.Logger.Info("worker stopping", "worker", w.Name())
     return nil
 }
 ```
 
-Key contract: `Start` must block until `ctx` is cancelled. `Stop` is called after cancellation with a deadline context for cleanup.
+Key contract: `Start` must block until `ctx` is cancelled, then return promptly — the supervisor waits for it before continuing shutdown. `Stop` is called after cancellation with a deadline context for cleanup. Always thread `ctx` into per-cycle work (DB queries, HTTP calls, adapters) so in-flight cycles honor shutdown instead of running to completion.
+
+A worker may also implement serverkit's optional `ContextWorker` extension — `RunContext(ctx context.Context) error` — which the supervisor prefers over `Start` when present (legacy `Start` workers are unaffected). Note: workers wired through the generated `pkg/app/bootstrap.go` are wrapped in `WorkerInstance`, which currently forwards only `Start`/`Stop`; for those, the ctx-aware `Start` loop above is the shutdown seam.
 
 ## Common Patterns
 

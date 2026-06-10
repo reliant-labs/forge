@@ -112,8 +112,18 @@ func GenerateDiagnostics(services []ServiceDef, workers []BootstrapWorkerData, o
 	// (test scaffolds are not production traffic).
 	var stubEntries []DiagnosticEntry
 	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
-		dir := filepath.Join(projectDir, "handlers", pkg)
+		// Disk-first: locate the REAL handler dir (snake/compact/kebab —
+		// whatever is on disk) instead of re-synthesizing it from the
+		// proto name. A resolver error (broken package clauses) downgrades
+		// to the same best-effort warning as a Deps parse failure below —
+		// the bootstrap/wire generators already failed loudly on it.
+		res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+		if resErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: resolving handler dir for %s: %v\n", svc.Name, resErr)
+			continue
+		}
+		pkg := res.PackageName
+		dir := res.Dir
 		entries, err := scanStubMarkers(dir, pkg, projectDir)
 		if err != nil {
 			// Best-effort: a parse failure here means the handler dir

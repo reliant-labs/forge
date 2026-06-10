@@ -26,6 +26,18 @@ post-registration mutation step. Each service's `New()` receives the
 full Deps in one shot, so `validateDeps()` can legitimately enforce
 required fields without breaking startup.
 
+Since 2026-06, `bootstrap.go` is a registration TABLE over
+`github.com/reliant-labs/forge/pkg/appkit`: one row per
+service/worker/operator/package, with the orchestration above executed
+by `appkit.Run`. Never fork `bootstrap.go` to customize behavior —
+populate `app.Hooks` (an `appkit.Hooks` field on `App`) in `setup.go`
+instead:
+
+- `app.Hooks.ExtraMounts` / `BeforeMount` / `AfterMount` — extra HTTP
+  routes around the generated service mounts.
+- `app.Hooks.ConstructWorker` — intercept or replace any worker row's
+  construction.
+
 ## How wire_gen resolves Deps fields
 
 `pkg/app/wire_gen.go` is regenerated on every `forge generate`. For

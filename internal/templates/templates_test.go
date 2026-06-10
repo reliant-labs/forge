@@ -84,15 +84,16 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 		t.Fatal("zero-service bootstrap should not import middleware")
 	}
 
-	// Regression for forge-new-empty-services-unused-runAll: BootstrapOnly
-	// declares `runAll := len(names) == 0` purely to feed the per-service
-	// `if runAll || nameSet["<svc>"]` mux-registration guard. When there are
-	// no services, that guard is never emitted, and `runAll :=` becomes a
-	// "declared and not used" compile error. go/parser doesn't flag unused
-	// locals so the ParseFile check below cannot catch this on its own;
-	// guard the literal declaration string instead.
-	if strings.Contains(rendered, "runAll := ") {
-		t.Fatal("zero-service bootstrap must not declare runAll (no consumer block emitted; would fail 'declared and not used')")
+	// Regression for forge-new-empty-services-unused-locals (originally
+	// the runAll declaration, now devMode after the 2026-06 appkit table
+	// migration): `devMode :=` exists purely to feed the per-service
+	// wireXxxDeps closures. When there are no services, those closures
+	// are never emitted and the declaration becomes a "declared and not
+	// used" compile error. go/parser doesn't flag unused locals so the
+	// ParseFile check below cannot catch this on its own; guard the
+	// literal declaration string instead.
+	if strings.Contains(rendered, "devMode := ") {
+		t.Fatal("zero-service bootstrap must not declare devMode (no service closure emitted; would fail 'declared and not used')")
 	}
 
 	// Verify it parses as valid Go
@@ -104,10 +105,11 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 }
 
 // TestBootstrapTemplate_WithServicesStillDeclaresRunAll guards the other side
-// of the forge-new-empty-services-unused-runAll fix: when services ARE
-// configured, the per-service mux-registration loop relies on `runAll` to
-// implement the "empty names slice == mount everything" identity used by
-// `./<bin> server`. The empty-case fix must not regress that path.
+// of the forge-new-empty-services-unused-locals fix: when services ARE
+// configured, the per-service Construct closures consume `devMode`, and
+// the def table must hand the names filter to appkit.Run (which owns
+// the "empty names slice == mount everything" identity used by
+// `./<bin> server` since the 2026-06 appkit table migration).
 func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	type svc struct {
 		Name, Package, ImportPath, FieldName, Alias string
@@ -139,11 +141,14 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 	rendered := string(content)
 
-	if !strings.Contains(rendered, "runAll := len(names) == 0") {
-		t.Fatal("bootstrap with services must declare runAll for the per-service mux-registration guard")
+	if !strings.Contains(rendered, "devMode := ") {
+		t.Fatal("bootstrap with services must declare devMode for the wireXxxDeps closures")
 	}
-	if !strings.Contains(rendered, "if runAll || nameSet[\"api\"]") {
-		t.Fatal("bootstrap with services must consume runAll in the per-service registration guard")
+	if !strings.Contains(rendered, "wireAPIDeps(app, cfg, logger, devMode)") {
+		t.Fatal("bootstrap with services must consume devMode in the service Construct closure")
+	}
+	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
+		t.Fatal("bootstrap must delegate name filtering to appkit.Run via Options.Only")
 	}
 }
 
@@ -154,6 +159,16 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 // chasing 404s through CORS/proxy/auth. Silent-skip here was a real
 // debug-time-sink; this test stops a future template edit from
 // reintroducing it.
+//
+// Since the 2026-06 appkit table migration the banner BEHAVIOR (known-set
+// computation, unknown-name warning, registered/excluded Warn) lives in
+// appkit.Run — pinned by pkg/appkit's filter-banner tests. What the
+// generated file must still guarantee is the DATA the banner is computed
+// from: a Name row for every service, worker, and operator, and the
+// names slice handed to appkit.Run via Options.Only. Dropping a
+// component kind from the def table would silently drop it from the
+// excluded report, defeating the whole point — exactly the regression
+// this test originally guarded.
 func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	type svc struct {
 		Name, Package, ImportPath, FieldName, Alias, VarName string
@@ -199,32 +214,25 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	}
 	rendered := string(content)
 
-	// The `known` map is what the banner iterates to compute
-	// registered+excluded. It must include all three component kinds —
-	// excluding workers/operators here would silently drop them from the
-	// excluded report, defeating the whole point.
-	for _, name := range []string{`"api": true`, `"billing": true`, `"indexer": true`, `"scaler": true`} {
+	// Every component kind must contribute a Name row to the def table
+	// — appkit.Run computes the banner's known set from these rows, so a
+	// missing kind cannot be reported as excluded.
+	for _, name := range []string{`Name: "api",`, `Name: "billing",`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
 		if !strings.Contains(rendered, name) {
-			t.Errorf("bootstrap `known` map missing %s — banner cannot report this name as excluded", name)
+			t.Errorf("bootstrap def table missing row %s — appkit's filter banner cannot report this name as excluded", name)
 		}
 	}
 
-	// Unknown-name warning must fire on every unrecognized arg (catches
-	// `./bin server api` typo'd as `./bin server appi`).
-	if !strings.Contains(rendered, `"unknown service/worker/operator name, ignoring"`) {
-		t.Error("bootstrap must emit unknown-name warning for unrecognized filter args")
+	// The names filter must reach appkit.Run, which owns the unknown-name
+	// warning and the registered/excluded banner.
+	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
+		t.Error("bootstrap must hand the names filter to appkit.Run via Options.Only — that is where the loud filter banner lives now")
 	}
 
-	// Banner gate + message + both lists. Together these enforce the
-	// loud-by-default contract.
-	if !strings.Contains(rendered, "if len(names) > 0 {") {
-		t.Error("bootstrap must gate the loud filter banner on len(names) > 0 (unfiltered case is silent by design)")
-	}
-	if !strings.Contains(rendered, "server filter active") {
-		t.Error("bootstrap loud filter banner missing — expected `server filter active` Warn line")
-	}
-	if !strings.Contains(rendered, `"registered", registered,`) || !strings.Contains(rendered, `"excluded", excluded,`) {
-		t.Error("bootstrap loud filter banner must report BOTH registered AND excluded lists (silent-excluded was the original foot-gun)")
+	// And the banner behavior itself must NOT leak back inline (the
+	// table-not-program rule).
+	if strings.Contains(rendered, "server filter active") {
+		t.Error("filter banner emission belongs to appkit.Run, not the generated table")
 	}
 
 	fset := token.NewFileSet()
@@ -260,6 +268,7 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 			ConnectImports      []string
 			DiagnosticsEnabled  bool
 			StrictWiringEnabled bool
+			HasFallible         bool
 		}{
 			Module:       "example.com/myproject",
 			Services:     services,
@@ -277,12 +286,14 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 		}
 		rendered := string(content)
 
-		// Bootstrap and BootstrapOnly each set devMode independently, so
-		// both must emit the banner — otherwise a per-service subcommand
-		// (which goes through BootstrapOnly) would silently swap to
-		// DevAuthorizer without the warn.
-		if got := strings.Count(rendered, "DEV MODE — authorization checks disabled"); got != 2 {
-			t.Errorf("expected dev-mode Warn in BOTH Bootstrap and BootstrapOnly, found %d occurrence(s)", got)
+		// Since the 2026-06 appkit table migration Bootstrap is a thin
+		// delegate to BootstrapOnly, so a SINGLE banner site covers both
+		// entry points (pre-migration each function computed devMode and
+		// emitted its own). Per-service subcommands and `./<bin> server`
+		// both flow through BootstrapOnly, so neither path can silently
+		// swap to DevAuthorizer without the warn.
+		if got := strings.Count(rendered, "DEV MODE — authorization checks disabled"); got != 1 {
+			t.Errorf("expected exactly one dev-mode Warn site (BootstrapOnly, shared via the Bootstrap delegate), found %d occurrence(s)", got)
 		}
 		// Gate must match the devMode local exactly — emitting unconditionally
 		// would print at every prod boot too, which neuters the signal.
@@ -317,12 +328,14 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 
 // TestBootstrapTemplate_DiagnosticsEmitWhenEnabled asserts that the
 // `features.diagnostics: true` flag is the only thing that wires
-// diagnostics.Default.Boot into the rendered bootstrap. Off → no
-// import, no call. On + strict_wiring → StrictEmitter wrap.
+// diagnostics into the rendered bootstrap. Since the 2026-06 appkit
+// table migration the emit is a DATA FIELD on the def table
+// (`Diagnostics: appkit.DiagnosticsLog/Strict`) — the Boot call and
+// the pkg/diagnostics import live in appkit.Run. Off → no row.
 //
 // Existing projects without the flag keep their pre-diagnostics
-// bootstrap byte-for-byte (no regression), which is the central
-// promise of the opt-in design.
+// bootstrap shape (no regression), which is the central promise of
+// the opt-in design.
 func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 	type svc struct {
 		Name, Package, ImportPath, FieldName, Alias string
@@ -365,8 +378,8 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 		rendered := render(t, mkData(false, false))
 		// Diagnostics-related symbols must NOT appear when the feature is
 		// off — guards the additive default-off contract.
-		if strings.Contains(rendered, "diagnostics.Default.Boot") {
-			t.Error("diagnostics.Default.Boot should not be emitted when DiagnosticsEnabled=false")
+		if strings.Contains(rendered, "Diagnostics: appkit.Diagnostics") {
+			t.Error("Diagnostics def row should not be emitted when DiagnosticsEnabled=false")
 		}
 		if strings.Contains(rendered, "pkg/diagnostics") {
 			t.Error("pkg/diagnostics import should not be emitted when DiagnosticsEnabled=false")
@@ -375,22 +388,19 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 
 	t.Run("on", func(t *testing.T) {
 		rendered := render(t, mkData(true, false))
-		if !strings.Contains(rendered, "diagnostics.Default.Boot(diagnostics.NewLogEmitter(logger))") {
-			t.Errorf("expected diagnostics.Default.Boot(NewLogEmitter) when DiagnosticsEnabled=true\n--- rendered ---\n%s", rendered)
+		if !strings.Contains(rendered, "Diagnostics: appkit.DiagnosticsLog,") {
+			t.Errorf("expected Diagnostics: appkit.DiagnosticsLog row when DiagnosticsEnabled=true\n--- rendered ---\n%s", rendered)
 		}
-		if !strings.Contains(rendered, `"github.com/reliant-labs/forge/pkg/diagnostics"`) {
-			t.Errorf("expected pkg/diagnostics import")
-		}
-		// Plain LogEmitter (no StrictEmitter wrap) when strict is off.
-		if strings.Contains(rendered, "NewStrictEmitter") {
-			t.Error("StrictEmitter should not appear when StrictWiringEnabled=false")
+		// Plain log mode (no strict escalation) when strict is off.
+		if strings.Contains(rendered, "DiagnosticsStrict") {
+			t.Error("DiagnosticsStrict should not appear when StrictWiringEnabled=false")
 		}
 	})
 
 	t.Run("strict", func(t *testing.T) {
 		rendered := render(t, mkData(true, true))
-		if !strings.Contains(rendered, "diagnostics.Default.Boot(diagnostics.NewStrictEmitter(diagnostics.NewLogEmitter(logger)))") {
-			t.Errorf("expected StrictEmitter wrap when StrictWiringEnabled=true\n--- rendered ---\n%s", rendered)
+		if !strings.Contains(rendered, "Diagnostics: appkit.DiagnosticsStrict,") {
+			t.Errorf("expected Diagnostics: appkit.DiagnosticsStrict row when StrictWiringEnabled=true\n--- rendered ---\n%s", rendered)
 		}
 	})
 }

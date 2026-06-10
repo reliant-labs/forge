@@ -835,8 +835,13 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
 	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
 	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
-	ctx.HasWorkers = len(discoverWorkers(ctx.ProjectDir)) > 0
-	ctx.HasOperators = len(discoverOperators(ctx.ProjectDir)) > 0
+	// discover errors are deferred here: this step only needs the
+	// has-any flag, and the bootstrap step re-runs discovery and
+	// surfaces the disk-first resolution error with full context.
+	workers, _ := discoverWorkers(ctx.ProjectDir)
+	operators, _ := discoverOperators(ctx.ProjectDir)
+	ctx.HasWorkers = len(workers) > 0
+	ctx.HasOperators = len(operators) > 0
 
 	if ctx.Cfg == nil && !ctx.HasServices && !ctx.HasAPI && !ctx.HasDB && !ctx.HasConfig {
 		return fmt.Errorf("no proto files found in proto/api, proto/services, proto/db, or proto/config")

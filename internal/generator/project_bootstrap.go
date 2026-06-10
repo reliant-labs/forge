@@ -22,10 +22,16 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	type bootstrapService struct {
 		Name      string
 		Package   string
-		FieldName string
-		Fallible  bool
-		Alias     string
-		VarName   string
+		// ImportPath is the handlers/ directory leaf the template's import
+		// line uses. At initial-scaffold time forge is about to CREATE the
+		// directory, so this is always the synthesized Package — the
+		// disk-first resolver (codegen.ResolveServiceComponent) only takes
+		// over on later regenerates once the directory exists.
+		ImportPath string
+		FieldName  string
+		Fallible   bool
+		Alias      string
+		VarName    string
 		// HasWebhooks mirrors codegen.BootstrapServiceData.HasWebhooks. The
 		// initial-scaffold pass never declares webhooks (forge.yaml hasn't
 		// grown a webhooks: block yet), so this stays false here; the
@@ -45,21 +51,23 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	}
 
 	type bootstrapWorker struct {
-		Name      string
-		Package   string
-		FieldName string
-		Fallible  bool
-		Alias     string
-		VarName   string
+		Name       string
+		Package    string
+		ImportPath string // see bootstrapService.ImportPath
+		FieldName  string
+		Fallible   bool
+		Alias      string
+		VarName    string
 	}
 
 	type bootstrapOperator struct {
-		Name      string
-		Package   string
-		FieldName string
-		Fallible  bool
-		Alias     string
-		VarName   string
+		Name       string
+		Package    string
+		ImportPath string // see bootstrapService.ImportPath
+		FieldName  string
+		Fallible   bool
+		Alias      string
+		VarName    string
 	}
 
 	var services []bootstrapService
@@ -74,11 +82,12 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		fieldName := naming.ToPascalCase(g.ServiceName)
 		services = []bootstrapService{
 			{
-				Name:      g.ServiceName,
-				Package:   pkg,
-				FieldName: fieldName,
-				Alias:     pkg,
-				VarName:   lowerFirstRune(fieldName),
+				Name:       g.ServiceName,
+				Package:    pkg,
+				ImportPath: pkg,
+				FieldName:  fieldName,
+				Alias:      pkg,
+				VarName:    lowerFirstRune(fieldName),
 			},
 		}
 	}
@@ -93,11 +102,12 @@ func (g *ProjectGenerator) generateBootstrap() error {
 			pkg := ServicePackageName(svcName)
 			fieldName := naming.ToPascalCase(svcName)
 			services = append(services, bootstrapService{
-				Name:      svcName,
-				Package:   pkg,
-				FieldName: fieldName,
-				Alias:     pkg,
-				VarName:   lowerFirstRune(fieldName),
+				Name:       svcName,
+				Package:    pkg,
+				ImportPath: pkg,
+				FieldName:  fieldName,
+				Alias:      pkg,
+				VarName:    lowerFirstRune(fieldName),
 			})
 		}
 	}
@@ -307,6 +317,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	type bootstrapTestService struct {
 		Name                   string
 		Package                string
+		ImportPath             string // handlers/ dir leaf; see generateBootstrap's bootstrapService
 		FieldName              string
 		ProtoServiceName       string
 		ProtoConnectImportPath string
@@ -350,6 +361,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			{
 				Name:                   g.ServiceName,
 				Package:                pkg,
+				ImportPath:             pkg,
 				FieldName:              fieldName,
 				ProtoServiceName:       protoServiceName,
 				ProtoConnectImportPath: connectImport,

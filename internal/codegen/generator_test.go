@@ -289,11 +289,13 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 
 // TestGenerateBootstrap_RESTEnabled_WrapsMux verifies that a project
 // with `api.rest: true` in forge.yaml regenerates bootstrap.go with:
-//   - a `connectrpc.com/vanguard` import,
-//   - a `vanguard.NewTranscoder(...)` call inside both Bootstrap and
-//     BootstrapOnly, populated with one entry per service keyed by the
+//   - an `appkit.RESTDef` row in the def table (the vanguard transcoder
+//     construction itself lives in pkg/appkit, not in the generated
+//     file — "tables, not programs"),
+//   - one `ConnectName:` data field per service row keyed by the
 //     Connect-generated `<X>ServiceName` constant, and
-//   - the wrapped handler stored on `app.RESTHandler`.
+//   - the Assign closure pointing the wrapped handler at
+//     `app.RESTHandler`.
 //
 // The generated app_gen.go grows a `RESTHandler http.Handler` field;
 // this test confirms the field is always emitted so cmd-server.go can
@@ -323,25 +325,23 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	}
 	bContent := string(bootstrap)
 
-	if !strings.Contains(bContent, `"connectrpc.com/vanguard"`) {
-		t.Error("bootstrap.go should import connectrpc.com/vanguard when api.rest is on")
+	// The transcoder construction moved into pkg/appkit — the generated
+	// file carries only the data row that turns it on.
+	if strings.Contains(bContent, "connectrpc.com/vanguard") {
+		t.Error("bootstrap.go should NOT import vanguard directly — the transcoder construction lives in pkg/appkit")
 	}
-	if !strings.Contains(bContent, "vanguard.NewTranscoder(vanguardSvcs)") {
-		t.Errorf("bootstrap.go should call vanguard.NewTranscoder; got:\n%s", bContent)
+	if !strings.Contains(bContent, "REST: &appkit.RESTDef{") {
+		t.Errorf("bootstrap.go should carry an appkit.RESTDef row when api.rest is on; got:\n%s", bContent)
 	}
-	// Per-service NewService call with the connect ServiceName constant.
-	if !strings.Contains(bContent, "apiv1connect.APIServiceName") {
+	// Per-service ConnectName data field with the connect ServiceName constant.
+	if !strings.Contains(bContent, "ConnectName: apiv1connect.APIServiceName") {
 		t.Error("bootstrap.go should reference apiv1connect.APIServiceName for APIService")
 	}
-	if !strings.Contains(bContent, "ordersv1connect.OrdersServiceName") {
+	if !strings.Contains(bContent, "ConnectName: ordersv1connect.OrdersServiceName") {
 		t.Error("bootstrap.go should reference ordersv1connect.OrdersServiceName for OrdersService")
 	}
-	if !strings.Contains(bContent, "app.RESTHandler = transcoder") {
-		t.Error("bootstrap.go should assign the transcoder to app.RESTHandler")
-	}
-	// Both Bootstrap and BootstrapOnly should wrap — count occurrences.
-	if got := strings.Count(bContent, "vanguard.NewTranscoder"); got != 2 {
-		t.Errorf("bootstrap.go should call vanguard.NewTranscoder twice (Bootstrap + BootstrapOnly); got %d", got)
+	if !strings.Contains(bContent, "app.RESTHandler = h") {
+		t.Error("bootstrap.go RESTDef.Assign should point at app.RESTHandler")
 	}
 	// Connect imports should appear in the import block.
 	if !strings.Contains(bContent, `"example.com/proj/gen/services/api/v1/apiv1connect"`) {

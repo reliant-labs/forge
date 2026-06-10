@@ -1,6 +1,7 @@
 package appkit
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,31 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/diagnostics"
 )
+
+// WorkerInstance wraps a worker with its lifecycle methods. The
+// generated pkg/app re-exports it (`type WorkerInstance =
+// appkit.WorkerInstance`) and builds the WorkerList table with
+// [NewWorkerInstance]; cmd/server.go drives Start/Stop.
+type WorkerInstance struct {
+	name  string
+	start func(ctx context.Context) error
+	stop  func(ctx context.Context) error
+}
+
+// NewWorkerInstance builds a WorkerInstance row from a worker's name
+// and Start/Stop methods.
+func NewWorkerInstance(name string, start, stop func(ctx context.Context) error) *WorkerInstance {
+	return &WorkerInstance{name: name, start: start, stop: stop}
+}
+
+// Name returns the worker's identifier.
+func (w *WorkerInstance) Name() string { return w.name }
+
+// Start blocks until ctx is cancelled.
+func (w *WorkerInstance) Start(ctx context.Context) error { return w.start(ctx) }
+
+// Stop is called during graceful shutdown.
+func (w *WorkerInstance) Stop(ctx context.Context) error { return w.stop(ctx) }
 
 // DiagnosticsMode selects how unwired-scaffold diagnostics recorded by
 // the codegen pipeline (pkg/app/diagnostics_gen.go init()) are emitted

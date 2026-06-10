@@ -38,6 +38,13 @@ const (
 // "admin_server" both become "adminserver", while "api" stays "api".
 // The display name in forge.yaml retains its original spelling — only
 // the Go-package identifier compacts.
+//
+// DISK-FIRST RULE: this synthesis names directories forge is ABOUT TO
+// CREATE (scaffolding). Generators that reference a component that
+// already exists on disk must resolve its directory + package clause
+// via codegen.ResolveComponentDir / codegen.ResolveServiceComponent
+// instead, so historical naming-era differences (snake_case dirs,
+// clause-differs-from-dir) never produce broken imports on regenerate.
 func ServicePackageName(serviceName string) string {
 	return servicePackageReplacer.Replace(strings.ToLower(serviceName))
 }

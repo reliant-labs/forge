@@ -110,9 +110,9 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 // `./<bin> server`. The empty-case fix must not regress that path.
 func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
-		ConnectPkg, ProtoServiceName    string
+		Name, Package, ImportPath, FieldName, Alias string
+		Fallible, HasWebhooks                       bool
+		ConnectPkg, ProtoServiceName                string
 	}
 	data := struct {
 		Module              string
@@ -128,7 +128,7 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}{
 		Module: "example.com/myproject",
 		Services: []svc{
-			{Name: "api", Package: "api", FieldName: "API", Alias: "apihandler"},
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "apihandler"},
 		},
 		ConfigFields: map[string]bool{},
 	}
@@ -156,16 +156,16 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 // reintroducing it.
 func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias, VarName string
-		Fallible, HasWebhooks                    bool
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible, HasWebhooks                                bool
 	}
 	type wkr struct {
-		Name, Package, FieldName, Alias, VarName string
-		Fallible                                 bool
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible                                             bool
 	}
 	type op struct {
-		Name, Package, FieldName, Alias, VarName string
-		Fallible                                 bool
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible                                             bool
 	}
 	data := struct {
 		Module              string
@@ -181,14 +181,14 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	}{
 		Module: "example.com/myproject",
 		Services: []svc{
-			{Name: "api", Package: "api", FieldName: "API", Alias: "api", VarName: "api"},
-			{Name: "billing", Package: "billing", FieldName: "Billing", Alias: "billing", VarName: "billing"},
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
+			{Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing", Alias: "billing", VarName: "billing"},
 		},
 		Workers: []wkr{
-			{Name: "indexer", Package: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
+			{Name: "indexer", Package: "indexer", ImportPath: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
 		},
 		Operators: []op{
-			{Name: "scaler", Package: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
+			{Name: "scaler", Package: "scaler", ImportPath: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
 		},
 		ConfigFields: map[string]bool{},
 	}
@@ -245,8 +245,8 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 // the banner is gated on .Services like the devMode local is.
 func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias, VarName string
-		Fallible, HasWebhooks                    bool
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible, HasWebhooks                                bool
 	}
 	mkData := func(services []svc) any {
 		return struct {
@@ -269,7 +269,7 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 
 	t.Run("with-services-emits-banner", func(t *testing.T) {
 		data := mkData([]svc{
-			{Name: "api", Package: "api", FieldName: "API", Alias: "api", VarName: "api"},
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
 		})
 		content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
 		if err != nil {
@@ -325,9 +325,9 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 // promise of the opt-in design.
 func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
-		ConnectPkg, ProtoServiceName    string
+		Name, Package, ImportPath, FieldName, Alias string
+		Fallible, HasWebhooks                       bool
+		ConnectPkg, ProtoServiceName                string
 	}
 	mkData := func(diagnostics, strict bool) any {
 		return struct {
@@ -344,7 +344,7 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 		}{
 			Module: "example.com/myproject",
 			Services: []svc{
-				{Name: "api", Package: "api", FieldName: "API", Alias: "api"},
+				{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api"},
 			},
 			ConfigFields:        map[string]bool{},
 			DiagnosticsEnabled:  diagnostics,

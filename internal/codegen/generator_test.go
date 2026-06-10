@@ -728,7 +728,10 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 }
 
 func TestPackageDataFromNames(t *testing.T) {
-	pkgs := PackageDataFromNames([]string{"cache", "db", "notifications"}, t.TempDir())
+	pkgs, err := PackageDataFromNames([]string{"cache", "db", "notifications"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("PackageDataFromNames: %v", err)
+	}
 
 	if len(pkgs) != 3 {
 		t.Fatalf("expected 3 packages, got %d", len(pkgs))
@@ -749,7 +752,10 @@ func TestPackageDataFromNames(t *testing.T) {
 // distinct ImportPath / FieldName / VarName so two nested packages with the
 // same leaf don't collide in the bootstrap struct.
 func TestPackageDataFromNames_Nested(t *testing.T) {
-	pkgs := PackageDataFromNames([]string{"mcp/database", "cache"}, t.TempDir())
+	pkgs, err := PackageDataFromNames([]string{"mcp/database", "cache"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("PackageDataFromNames: %v", err)
+	}
 	if len(pkgs) != 2 {
 		t.Fatalf("expected 2 packages, got %d", len(pkgs))
 	}
@@ -938,6 +944,11 @@ func TestGenerateMissingHandlerStubs_SkipsTestFiles(t *testing.T) {
 func (s *Service) Echo() {}
 `
 	if err := os.WriteFile(filepath.Join(targetDir, "handlers_test.go"), []byte(testFile), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Real handler dirs always carry a service.go; the disk-first
+	// resolver reads the package clause from it.
+	if err := os.WriteFile(filepath.Join(targetDir, "service.go"), []byte("package echo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1395,7 +1406,10 @@ func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
 	}
 	for _, c := range cases {
-		got := WorkerDataFromNames([]string{c.name}, "")
+		got, err := WorkerDataFromNames([]string{c.name}, "")
+		if err != nil {
+			t.Fatalf("WorkerDataFromNames(%q): %v", c.name, err)
+		}
 		if len(got) != 1 {
 			t.Fatalf("WorkerDataFromNames(%q) returned %d entries, want 1", c.name, len(got))
 		}
@@ -1419,7 +1433,10 @@ func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 // TestOperatorDataFromNames_PascalCaseFieldName mirrors the worker
 // regression test — operators share the snake_case → PascalCase rule.
 func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
-	got := OperatorDataFromNames([]string{"cert_rotator"}, "")
+	got, err := OperatorDataFromNames([]string{"cert_rotator"}, "")
+	if err != nil {
+		t.Fatalf("OperatorDataFromNames: %v", err)
+	}
 	if len(got) != 1 || got[0].FieldName != "CertRotator" {
 		t.Errorf("OperatorDataFromNames(\"cert_rotator\")[0].FieldName = %q, want \"CertRotator\"", got[0].FieldName)
 	}
@@ -1505,7 +1522,10 @@ func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
-			got := WorkerDataFromSpecs([]WorkerSpec{c.spec}, c.projectDir)
+			got, err := WorkerDataFromSpecs([]WorkerSpec{c.spec}, c.projectDir)
+			if err != nil {
+				t.Fatalf("WorkerDataFromSpecs: %v", err)
+			}
 			if len(got) != 1 {
 				t.Fatalf("WorkerDataFromSpecs returned %d entries, want 1", len(got))
 			}
@@ -1539,9 +1559,12 @@ func TestOperatorDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	got := OperatorDataFromSpecs([]OperatorSpec{
+	got, err := OperatorDataFromSpecs([]OperatorSpec{
 		{Name: "cert_rotator", Path: "operators/cert_rotator"},
 	}, projectDir)
+	if err != nil {
+		t.Fatalf("OperatorDataFromSpecs: %v", err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("OperatorDataFromSpecs returned %d entries, want 1", len(got))
 	}
@@ -1595,6 +1618,11 @@ package patients_test
 // forge-integration-test-placeholder
 `
 	if err := os.WriteFile(filepath.Join(targetDir, "integration_test.go"), []byte(intPlaceholder), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Real handler dirs always carry a service.go; the disk-first
+	// resolver reads the package clause from it (test files are skipped).
+	if err := os.WriteFile(filepath.Join(targetDir, "service.go"), []byte("package patients\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

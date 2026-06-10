@@ -15,8 +15,14 @@ import (
 func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, bootstrapFeatures codegen.BootstrapFeatures, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
 
-	workers := discoverWorkers(projectDir)
-	operators := discoverOperators(projectDir)
+	workers, err := discoverWorkers(projectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
 		return nil
@@ -124,8 +130,14 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/testing.go...")
 
-	workers := discoverWorkers(projectDir)
-	operators := discoverOperators(projectDir)
+	workers, err := discoverWorkers(projectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
 		return nil
@@ -219,19 +231,22 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 		return nil, fmt.Errorf("walking %s: %w", internalDir, walkErr)
 	}
 
-	return codegen.PackageDataFromNames(names, projectDir), nil
+	return codegen.PackageDataFromNames(names, projectDir)
 }
 
-// discoverWorkers returns BootstrapWorkerData for all worker-type services in the project config.
-// Passes each service's explicit `path:` field through so snake_case dir layouts
-// (e.g. workers/climatology_refresh) produce the correct import line — without
-// `path:`, the legacy compaction would emit workers/climatologyrefresh and the
-// generated bootstrap would fail to compile.
-func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
+// discoverWorkers returns BootstrapWorkerData for all worker-type services in
+// the project config. Passes each service's explicit `path:` field through so
+// snake_case dir layouts (e.g. workers/climatology_refresh) produce the
+// correct import line — without `path:`, the legacy compaction would emit
+// workers/climatologyrefresh and the generated bootstrap would fail to
+// compile. The returned error is a disk-first resolution failure (worker dir
+// exists but its package clause is unparseable/conflicting) — see
+// codegen.ResolveComponentDir.
+func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
 	if err != nil || cfg == nil {
-		return nil
+		return nil, nil
 	}
 
 	var specs []codegen.WorkerSpec
@@ -275,13 +290,14 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 	return out
 }
 
-// discoverOperators returns BootstrapOperatorData for all operator-type services in the project config.
-// Honors the `path:` field for the same reason as discoverWorkers.
-func discoverOperators(projectDir string) []codegen.BootstrapOperatorData {
+// discoverOperators returns BootstrapOperatorData for all operator-type
+// services in the project config. Honors the `path:` field for the same
+// reason as discoverWorkers; error semantics match discoverWorkers.
+func discoverOperators(projectDir string) ([]codegen.BootstrapOperatorData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
 	cfg, err := loadProjectConfigFrom(cfgPath)
 	if err != nil || cfg == nil {
-		return nil
+		return nil, nil
 	}
 
 	var specs []codegen.OperatorSpec

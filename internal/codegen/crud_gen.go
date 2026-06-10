@@ -22,15 +22,15 @@ type CRUDMethod struct {
 
 // CRUDTemplateData holds all data needed to render the CRUD handlers template.
 type CRUDTemplateData struct {
-	Package       string       // Go package name, e.g. "patients"
-	Module        string       // Go module path, e.g. "github.com/demo-project"
-	ProtoPackage  string       // e.g. "proto/services/patients"
-	DBPackagePath string       // e.g. "github.com/demo-project/gen/db/v1"
-	HasPagination bool         // true if any list method uses pagination
-	HasFilters    bool         // true if any list method has filter fields
-	HasOrderBy    bool         // true if any list method has order_by
-	NeedsORM      bool         // true if pagination, filters, or ordering requires orm import
-	HasTenant     bool         // true if any CRUD method operates on a tenant-scoped entity
+	Package       string // Go package name, e.g. "patients"
+	Module        string // Go module path, e.g. "github.com/demo-project"
+	ProtoPackage  string // e.g. "proto/services/patients"
+	DBPackagePath string // e.g. "github.com/demo-project/gen/db/v1"
+	HasPagination bool   // true if any list method uses pagination
+	HasFilters    bool   // true if any list method has filter fields
+	HasOrderBy    bool   // true if any list method has order_by
+	NeedsORM      bool   // true if pagination, filters, or ordering requires orm import
+	HasTenant     bool   // true if any CRUD method operates on a tenant-scoped entity
 	// NeedsCRUDLib is true when at least one method emits a real CRUD
 	// body (i.e. uses pkg/crud, internal/db, middleware). When every
 	// method's request/response shape failed validation and we emit
@@ -59,10 +59,10 @@ type CRUDMethodTemplateData struct {
 	PaginationStyle   string // "cursor" (default for now)
 	HasFilters        bool   // true if list method has filter fields
 	FilterFields      []FilterFieldData
-	HasOrderBy        bool   // true if list method has order_by field
-	HasTenant         bool   // true when the entity has a tenant key field
-	TenantGoName      string // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
-	TenantColumnName  string // e.g., "org_id", "tenant_id"
+	HasOrderBy        bool              // true if list method has order_by field
+	HasTenant         bool              // true when the entity has a tenant key field
+	TenantGoName      string            // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
+	TenantColumnName  string            // e.g., "org_id", "tenant_id"
 	UpdateEntityField string            // e.g., "Project" — Go field name in the update request that holds the entity
 	CreateFields      []CreateFieldData // fields from the create request message
 	// ShapeMismatch is true when the request/response message shapes
@@ -96,8 +96,6 @@ type FilterFieldData struct {
 	FilterType string // "exact", "search"
 	IsOptional bool   // proto optional keyword
 }
-
-
 
 // MatchCRUDMethods correlates a service's RPC methods with entity definitions
 // and returns the matched CRUD methods. Only unary RPCs are matched.
@@ -190,8 +188,16 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 // handlers_crud_gen.go is recorded so it doesn't show up as an orphan in
 // `forge audit`. A nil cs is tolerated.
 func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := naming.ServicePackage(svc.Name)
-	targetDir := filepath.Join(projectDir, "handlers", pkg)
+	// Disk-first: handlers_crud_gen.go lands inside the EXISTING handler
+	// dir and must declare that dir's real package clause. Re-synthesizing
+	// the path from the proto name is how the historical
+	// handlers/adminserver-vs-admin_server duplicate-dir bug was created.
+	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+	if resErr != nil {
+		return resErr
+	}
+	pkg := res.PackageName
+	targetDir := res.Dir
 
 	// Scan existing user-owned methods to avoid generating duplicates
 	existingMethods, err := scanExistingMethods(targetDir, false)
@@ -220,15 +226,18 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
 	}
 
-	// Build template data
+	// Build template data. Package is overridden with the disk-resolved
+	// clause so the emitted file always matches the directory it lands in
+	// (buildCRUDTemplateData's synthesis only holds for fresh scaffolds).
 	data := buildCRUDTemplateData(svc, filteredMethods, modulePath)
+	data.Package = pkg
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_gen.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_gen.go.tmpl: %w", err)
 	}
 
-	relPath := filepath.Join("handlers", pkg, "handlers_crud_gen.go")
+	relPath := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf), "handlers_crud_gen.go")
 	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
 		return fmt.Errorf("write handlers_crud_gen.go: %w", err)
 	}
@@ -344,6 +353,9 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 }
 
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTemplateData {
+	// Synthesized Package is a placeholder only: GenerateCRUDHandlers
+	// overrides it with the disk-resolved package clause before rendering
+	// (the file lands inside an EXISTING handler dir).
 	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as mapServiceDefToTemplateData)
@@ -531,12 +543,12 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 
 // CRUDTestTemplateData holds all data needed to render the CRUD test template.
 type CRUDTestTemplateData struct {
-	Package       string                    // Go package name, e.g. "patients"
-	Module        string                    // Go module path, e.g. "github.com/demo-project"
-	ProtoPackage  string                    // e.g. "proto/services/patients"
-	HasTenant     bool                      // true if any entity has tenant isolation
-	Entities      []CRUDTestEntityData      // Grouped per-entity test data
-	CRUDMethods   []CRUDMethodTemplateData  // All CRUD methods (for individual error tests)
+	Package      string                   // Go package name, e.g. "patients"
+	Module       string                   // Go module path, e.g. "github.com/demo-project"
+	ProtoPackage string                   // e.g. "proto/services/patients"
+	HasTenant    bool                     // true if any entity has tenant isolation
+	Entities     []CRUDTestEntityData     // Grouped per-entity test data
+	CRUDMethods  []CRUDMethodTemplateData // All CRUD methods (for individual error tests)
 	// TestHelperName mirrors ServiceTemplateData.TestHelperName: the suffix
 	// the bootstrap testing generator emits on `app.NewTest<X>` /
 	// `app.NewTest<X>Server`. CRUD test scaffolds use this rather than
@@ -547,27 +559,27 @@ type CRUDTestTemplateData struct {
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
 type CRUDTestEntityData struct {
-	EntityName       string // "Patient"
-	EntityLower      string // "patient"
-	PkField          string // "Id"
-	PkGoType         string // "int64"
-	HasCreate        bool
-	HasGet           bool
-	HasList          bool
-	HasUpdate        bool
-	HasDelete        bool
-	HasAllCRUD       bool   // true if all 5 operations exist
-	HasTenant        bool   // true when the entity has a tenant key field
-	TenantGoName     string // e.g., "OrgId"
-	TenantColumnName string // e.g., "org_id"
-	CreateMethod     CRUDMethodTemplateData
-	GetMethod        CRUDMethodTemplateData
-	ListMethod       CRUDMethodTemplateData
-	UpdateMethod     CRUDMethodTemplateData
-	DeleteMethod     CRUDMethodTemplateData
-	Fields           []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
-	CreateFields     []CRUDTestFieldData // fields from the CreateRequest message
-	UpdateEntityField string             // Go field name holding entity in UpdateRequest, e.g. "Project"
+	EntityName        string // "Patient"
+	EntityLower       string // "patient"
+	PkField           string // "Id"
+	PkGoType          string // "int64"
+	HasCreate         bool
+	HasGet            bool
+	HasList           bool
+	HasUpdate         bool
+	HasDelete         bool
+	HasAllCRUD        bool   // true if all 5 operations exist
+	HasTenant         bool   // true when the entity has a tenant key field
+	TenantGoName      string // e.g., "OrgId"
+	TenantColumnName  string // e.g., "org_id"
+	CreateMethod      CRUDMethodTemplateData
+	GetMethod         CRUDMethodTemplateData
+	ListMethod        CRUDMethodTemplateData
+	UpdateMethod      CRUDMethodTemplateData
+	DeleteMethod      CRUDMethodTemplateData
+	Fields            []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
+	CreateFields      []CRUDTestFieldData // fields from the CreateRequest message
+	UpdateEntityField string              // Go field name holding entity in UpdateRequest, e.g. "Project"
 }
 
 // CRUDTestFieldData holds per-field data for generating test values.
@@ -589,8 +601,16 @@ type CRUDTestFieldData struct {
 // the file becomes user-owned and forge stops re-rendering it (and stops
 // updating the checksum). A nil cs is tolerated.
 func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := naming.ServicePackage(svc.Name)
-	targetDir := filepath.Join(projectDir, "handlers", pkg)
+	// Disk-first: same handler-dir + package-clause resolution as
+	// GenerateCRUDHandlers (the two MUST land in the same directory and
+	// declare the same package).
+	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+	if resErr != nil {
+		return resErr
+	}
+	pkg := res.PackageName
+	targetDir := res.Dir
+	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
 
 	unitPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
 	integrationPath := filepath.Join(targetDir, "handlers_crud_integration_test.go")
@@ -619,7 +639,13 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		return nil
 	}
 
+	// Package + TestHelperName are overridden with the disk-resolved
+	// package clause so the emitted test files always match the directory
+	// they land in AND call the `app.NewTest<X>` factory the bootstrap
+	// testing generator (which uses the same resolver) actually emitted.
 	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir)
+	data.Package = pkg
+	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
@@ -629,7 +655,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_test_gen.go.tmpl: %w", err)
 	}
-	if err := writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_gen_test.go"), unitContent, cs); err != nil {
+	if err := writeScaffoldFile(projectDir, filepath.Join(relDir, "handlers_crud_gen_test.go"), unitContent, cs); err != nil {
 		return err
 	}
 
@@ -637,7 +663,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	if err != nil {
 		return fmt.Errorf("render handlers_crud_integration_test.go.tmpl: %w", err)
 	}
-	return writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_integration_test.go"), integrationContent, cs)
+	return writeScaffoldFile(projectDir, filepath.Join(relDir, "handlers_crud_integration_test.go"), integrationContent, cs)
 }
 
 // writeScaffoldFile writes a scaffold-with-placeholders file at
@@ -689,6 +715,9 @@ func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums
 }
 
 func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string) CRUDTestTemplateData {
+	// Synthesized Package/TestHelperName are placeholders only:
+	// GenerateCRUDTests overrides both with disk-resolved values before
+	// rendering — see the call site for the rationale.
 	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)

@@ -35,7 +35,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/tdd"
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
-	"{{.Module}}/handlers/{{.ServicePackage}}"
+	{{/* Import path uses the on-disk dir leaf; selectors use the package
+	     clause. The two may legally differ — Go resolves the selector via
+	     the explicit alias. */ -}}
+	{{.ServicePackage}} "{{.Module}}/handlers/{{.ServiceImportPath}}"
 	"{{.Module}}/pkg/app"
 )
 

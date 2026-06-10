@@ -315,21 +315,21 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 	data := struct {
 		Module   string
 		Services []struct {
-			Name, Package, FieldName, Alias, VarName string
-			Fallible                                 bool
-			HasWebhooks                              bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
+			HasWebhooks                                          bool
 		}
 		Packages []struct {
 			Name, Package, ImportPath, FieldName, Alias, VarName string
 			Fallible                                             bool
 		}
 		Workers []struct {
-			Name, Package, FieldName, Alias, VarName string
-			Fallible                                 bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
 		}
 		Operators []struct {
-			Name, Package, FieldName, Alias, VarName string
-			Fallible                                 bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
 		}
 		HasDatabase         bool
 		OrmEnabled          bool
@@ -344,23 +344,23 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 		Module:       "example.com/fullproject",
 		ConfigFields: map[string]bool{},
 		Services: []struct {
-			Name, Package, FieldName, Alias, VarName string
-			Fallible                                 bool
-			HasWebhooks                              bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
+			HasWebhooks                                          bool
 		}{
-			{Name: "api", Package: "api", FieldName: "API", Alias: "api", VarName: "api"},
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
 		},
 		Workers: []struct {
-			Name, Package, FieldName, Alias, VarName string
-			Fallible                                 bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
 		}{
-			{Name: "indexer", Package: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
+			{Name: "indexer", Package: "indexer", ImportPath: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
 		},
 		Operators: []struct {
-			Name, Package, FieldName, Alias, VarName string
-			Fallible                                 bool
+			Name, Package, ImportPath, FieldName, Alias, VarName string
+			Fallible                                             bool
 		}{
-			{Name: "scaler", Package: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
+			{Name: "scaler", Package: "scaler", ImportPath: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
 		},
 		HasDatabase: true,
 	}

@@ -586,6 +586,12 @@ func TestGenerateCRUDTests_BasicGeneration(t *testing.T) {
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Real projects always have a service.go in the handler dir before CRUD
+	// gen runs; the disk-first resolver needs at least one parseable .go
+	// file to read the package clause from.
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte("package patients\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := ServiceDef{
 		Name:       "PatientsService",
@@ -735,6 +741,12 @@ func TestGenerateCRUDTests_PartialCRUD(t *testing.T) {
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Real projects always have a service.go in the handler dir before CRUD
+	// gen runs; the disk-first resolver needs at least one parseable .go
+	// file to read the package clause from.
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte("package patients\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := ServiceDef{
 		Name:       "PatientsService",
@@ -797,6 +809,12 @@ func TestGenerateCRUDTests_CleanupWhenNoMethods(t *testing.T) {
 	projectDir := t.TempDir()
 	handlerDir := filepath.Join(projectDir, "handlers", "patients")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Real projects always have a service.go in the handler dir before CRUD
+	// gen runs; the disk-first resolver needs at least one parseable .go
+	// file to read the package clause from.
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte("package patients\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

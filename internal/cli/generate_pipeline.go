@@ -1022,13 +1022,18 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
 	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
 	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
-	ctx.HasWorkers = len(discoverWorkers(ctx.ProjectDir)) > 0
+	// discover errors are deferred here: this step only needs the
+	// has-any flag, and the bootstrap step re-runs discovery and
+	// surfaces the disk-first resolution error with full context.
+	workers, _ := discoverWorkers(ctx.ProjectDir)
+	operators, _ := discoverOperators(ctx.ProjectDir)
+	ctx.HasWorkers = len(workers) > 0
 	// Operators are experimental — when the feature isn't opted in we
 	// suppress the codegen path entirely. We still detect on-disk
 	// operator dirs so a one-line skip message can fire below; the
 	// pipeline gate functions branch on ctx.HasOperators so flipping
 	// it to false elides every operator step at the same point.
-	rawHasOperators := len(discoverOperators(ctx.ProjectDir)) > 0
+	rawHasOperators := len(operators) > 0
 	if rawHasOperators && ctx.Cfg != nil && !ctx.Cfg.Features.OperatorsEnabled() {
 		fmt.Println("[generate] operator scaffolds detected but features.experimental.operators is off — skipping operator codegen")
 		ctx.HasOperators = false

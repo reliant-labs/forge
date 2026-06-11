@@ -9,12 +9,12 @@
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { FlatCompat } from "@eslint/eslintrc";
 import js from "@eslint/js";
 import importPlugin from "eslint-plugin-import";
 import react from "eslint-plugin-react";
 import unicorn from "eslint-plugin-unicorn";
 import tseslint from "typescript-eslint";
-import { FlatCompat } from "@eslint/eslintrc";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -61,6 +61,13 @@ const config = [
       react,
       import: importPlugin,
       unicorn,
+    },
+    settings: {
+      // Classify "@/..." tsconfig-path imports as the "internal" group
+      // deterministically. Without this, eslint-plugin-import can't
+      // resolve the alias and files drift between "unknown" orderings —
+      // generated code must lint identically on every machine.
+      "import/internal-regex": "^@/",
     },
     rules: {
       complexity: "off",
@@ -111,28 +118,27 @@ const config = [
     },
   },
   {
-    // Next.js requires default exports for pages, layouts, route handlers,
-    // and a handful of other entry-point files. Mock scenarios and tooling
-    // configs (vitest.config.ts, postcss.config.mjs, etc.) also use the
-    // default-export pattern by ecosystem convention. Disable
-    // no-default-export for those paths only — the `**/` prefix on the
+    // Default exports are the CONTRACT in three places, so the
+    // import/no-default-export nudge is noise there:
+    //   - src/app/**: Next.js App Router entry files (page, layout,
+    //     loading, error, global-error, not-found, template, route) must
+    //     default-export. Scoping the whole dir beats enumerating the
+    //     conventions and silently missing one (global-error.tsx used to
+    //     slip through).
+    //   - src/components/ui/**: the forge component library ships one
+    //     default-exported component per file (shadcn-style); generated
+    //     pages import them as defaults.
+    //   - src/mocks/scenarios/**: scenario files default-export
+    //     `defineScenario({...})` so the registry barrel can re-export
+    //     them by name.
+    // Tooling configs (next.config.ts, vitest.config.ts, postcss, ...)
+    // default-export by ecosystem convention — the `**/` prefix on the
     // config glob is load-bearing: bare `*.config.*` matches only the
-    // first path segment under ESLint flat config's minimatch flavour,
-    // which silently skipped sibling configs like vitest.config.ts at the
-    // project root.
+    // first path segment under ESLint flat config's minimatch flavour.
     files: [
-      "src/app/**/page.{ts,tsx}",
-      "src/app/**/layout.{ts,tsx}",
-      "src/app/**/loading.{ts,tsx}",
-      "src/app/**/error.{ts,tsx}",
-      "src/app/**/not-found.{ts,tsx}",
-      "src/app/**/template.{ts,tsx}",
-      "src/app/**/route.{ts,tsx}",
+      "src/app/**/*.{ts,tsx}",
+      "src/components/ui/**/*.{ts,tsx}",
       "src/middleware.{ts,tsx}",
-      // Mock scenarios (src/mocks/scenarios/<name>.ts) define a single
-      // scenario object via `export default defineScenario({...})` so the
-      // registry barrel can re-export them by name. That pattern is the
-      // contract — the `import/no-default-export` warning is noise here.
       "src/mocks/scenarios/**/*.{ts,tsx}",
       "next.config.{js,ts,mjs}",
       "**/*.config.{js,ts,mjs}",

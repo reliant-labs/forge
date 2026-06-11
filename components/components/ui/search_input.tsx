@@ -10,7 +10,7 @@ interface SearchInputProps {
   shortcutKey?: string;
 }
 
-const sizeStyles: Record<string, { input: string; icon: string }> = {
+const sizeStyles: Record<NonNullable<SearchInputProps["size"]>, { input: string; icon: string }> = {
   sm: { input: "h-8 pl-8 pr-8 text-sm", icon: "h-3.5 w-3.5 left-2.5" },
   md: { input: "h-10 pl-10 pr-10 text-sm", icon: "h-4 w-4 left-3" },
   lg: { input: "h-12 pl-12 pr-12 text-base", icon: "h-5 w-5 left-3.5" },

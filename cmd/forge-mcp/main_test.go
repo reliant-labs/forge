@@ -513,3 +513,108 @@ func TestNotification_NoResponse(t *testing.T) {
 		t.Errorf("notifications must not produce a response, got: %s", out.String())
 	}
 }
+
+// TestToolsList_ExcludesStreamingTools: streaming RPCs cannot be called
+// through the bridge (MCP tools are unary), so tools/list must not
+// advertise them — an agent that sees a tool in the list must be able
+// to call it. The streaming entries stay in the manifest (with their
+// "streaming" marker) for non-MCP consumers; initialize's instructions
+// count must match what tools/list actually returns.
+func TestToolsList_ExcludesStreamingTools(t *testing.T) {
+	m := fixtureManifest()
+	m.Tools = append(m.Tools,
+		tool{
+			Name:        "tasks_service__tail",
+			InputSchema: map[string]any{"type": "object"},
+			Service:     "TasksService", Method: "Tail",
+			Procedure: "/services.tasks.v1.TasksService/Tail",
+			Streaming: "server",
+		},
+		tool{
+			Name:        "tasks_service__sync",
+			InputSchema: map[string]any{"type": "object"},
+			Service:     "TasksService", Method: "Sync",
+			Procedure: "/services.tasks.v1.TasksService/Sync",
+			Streaming: "bidi",
+		},
+	)
+
+	resp := roundtrip(t, m, `{"jsonrpc":"2.0","id":11,"method":"tools/list"}`)
+	if resp.Error != nil {
+		t.Fatalf("tools/list errored: %+v", resp.Error)
+	}
+	listed := resp.Result.(map[string]any)["tools"].([]any)
+	if len(listed) != 2 {
+		t.Fatalf("tools/list returned %d tools, want 2 (the unary ones only)", len(listed))
+	}
+	for _, raw := range listed {
+		entry := raw.(map[string]any)
+		name := entry["name"].(string)
+		if name == "tasks_service__tail" || name == "tasks_service__sync" {
+			t.Errorf("streaming tool %q must not be advertised in tools/list", name)
+		}
+	}
+
+	// initialize's instructions count the callable tools, not the
+	// manifest total — agents trust that number.
+	s := &server{manifest: m}
+	if got := s.callableToolCount(); got != 2 {
+		t.Errorf("callableToolCount = %d, want 2", got)
+	}
+}
+
+// TestToolsList_PassesDefsAndRefsThrough: manifest schema_version 1.1
+// emits deep schemas with top-level "$defs" and "$ref" at field sites.
+// The bridge forwards them verbatim — the MCP Tool.inputSchema
+// meta-schema is an open object (only type/properties/required are
+// pinned), so $defs is spec-valid, and inlining at serve time would
+// reintroduce infinite expansion for recursive messages.
+func TestToolsList_PassesDefsAndRefsThrough(t *testing.T) {
+	m := fixtureManifest()
+	m.Tools[0].InputSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"node": map[string]any{"$ref": "#/$defs/demo.v1.Node"},
+		},
+		"required": []any{"node"},
+		"$defs": map[string]any{
+			"demo.v1.Node": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"label": map[string]any{"type": "string"},
+					// Self-referential — exactly the shape that must
+					// survive pass-through untouched.
+					"children": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"$ref": "#/$defs/demo.v1.Node"},
+					},
+				},
+			},
+		},
+	}
+
+	resp := roundtrip(t, m, `{"jsonrpc":"2.0","id":12,"method":"tools/list"}`)
+	if resp.Error != nil {
+		t.Fatalf("tools/list errored: %+v", resp.Error)
+	}
+	listed := resp.Result.(map[string]any)["tools"].([]any)
+	got := listed[0].(map[string]any)["inputSchema"].(map[string]any)
+
+	defs, ok := got["$defs"].(map[string]any)
+	if !ok {
+		t.Fatalf("$defs must pass through tools/list verbatim, got: %#v", got)
+	}
+	node, ok := defs["demo.v1.Node"].(map[string]any)
+	if !ok {
+		t.Fatalf("$defs entry demo.v1.Node missing: %#v", defs)
+	}
+	children := node["properties"].(map[string]any)["children"].(map[string]any)
+	ref := children["items"].(map[string]any)["$ref"]
+	if ref != "#/$defs/demo.v1.Node" {
+		t.Errorf("recursive $ref must survive pass-through, got %v", ref)
+	}
+	nodeProp := got["properties"].(map[string]any)["node"].(map[string]any)
+	if nodeProp["$ref"] != "#/$defs/demo.v1.Node" {
+		t.Errorf("field-site $ref must survive pass-through, got %v", nodeProp["$ref"])
+	}
+}

@@ -31,6 +31,27 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
+// skipNpmInstallInShortMode makes the trailing, non-fatal `npm install`
+// inside runAddFrontend a no-op under `go test -short`.
+//
+// runAddFrontend ends by running a real `npm install` in the scaffolded
+// frontend (~10-15s each, network-bound) purely as a UX nicety — nothing
+// in these tests asserts on node_modules. Under -short we flip the
+// FORGE_SKIP_NPM_INSTALL seam (see runFrontendNpmInstall in add.go) so
+// the install short-circuits. Every assertion in these tests still
+// executes in BOTH modes; the real install still runs in full mode
+// (CI: `go test ./...` without -short), and the npm-driven frontend
+// build is additionally covered by the e2e frontend fixture.
+//
+// This is what makes `go test -short ./internal/cli/` drop from ~80s to
+// a few seconds — see the "Testing tiers" note in CLAUDE.md.
+func skipNpmInstallInShortMode(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
+	}
+}
+
 // freshServiceForgeYAML mirrors what `forge new <name>` emits for a
 // service-kind project that was scaffolded *without* --frontend. Notable
 // state: features.frontend=false and stack.frontend.framework=none.
@@ -86,9 +107,7 @@ auth:
 // that actually got scaffolded) so downstream tooling agrees with
 // features.frontend=true and frontends:[...].
 func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
-	// Scaffold logic only — skip the ~13s npm install (covered by the
-	// e2e frontend fixture). See runFrontendNpmInstall.
-	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
+	skipNpmInstallInShortMode(t)
 	dir := withTempProject(t, freshServiceForgeYAML)
 
 	if err := runAddFrontend(context.Background(), "dashboard", 0, "", "", ""); err != nil {
@@ -131,9 +150,7 @@ func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 // "nextjs". Without this, a mobile or vite-spa frontend would still
 // register itself as "nextjs" in the stack — equally wrong.
 func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
-	// Scaffold logic only — skip the ~13s npm install (covered by the
-	// e2e frontend fixture). See runFrontendNpmInstall.
-	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
+	skipNpmInstallInShortMode(t)
 	cases := []struct {
 		name string
 		kind string
@@ -170,9 +187,7 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 // "svelte" while they wire up their own scaffolding), we must not
 // stomp it. Only "" and "none" are treated as "needs to be filled in".
 func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
-	// Scaffold logic only — skip the ~13s npm install (covered by the
-	// e2e frontend fixture). See runFrontendNpmInstall.
-	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
+	skipNpmInstallInShortMode(t)
 	customYAML := strings.Replace(freshServiceForgeYAML,
 		"framework: none", "framework: svelte", 1)
 	dir := withTempProject(t, customYAML)

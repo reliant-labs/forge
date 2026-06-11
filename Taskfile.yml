@@ -46,6 +46,11 @@ tasks:
       # tests use the `integration` build tag and ship their own task below.
       - go test -race -count=1 -timeout 120s ./...
 
+  test:short:
+    desc: "Inner-loop tests: whole repo in seconds (skips/bypasses >2s tests; see CLAUDE.md Testing tiers)"
+    cmds:
+      - go test -short -count=1 -timeout 60s ./...
+
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)
     cmds:

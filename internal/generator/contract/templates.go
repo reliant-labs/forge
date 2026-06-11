@@ -57,7 +57,7 @@ type Mock{{ $iface.Name }} struct {
 
 {{ range $m := $iface.Methods -}}
 func (m *Mock{{ $iface.Name }}) {{ $m.Name }}({{ $m.ParamSignature }}){{ with $m.ResultSignature }} {{ . }}{{ end }} {
-	m.Record("{{ $m.Name }}"{{ with $m.RecordArgs }}, {{ . }}{{ end }})
+	m.Recorder.Record("{{ $m.Name }}"{{ with $m.RecordArgs }}, {{ . }}{{ end }})
 	if m.{{ $m.Name }}Func != nil {
 		{{ if $m.HasResults }}return {{ end }}m.{{ $m.Name }}Func({{ $m.CallArgs }}){{ if not $m.HasResults }}
 		return{{ end }}

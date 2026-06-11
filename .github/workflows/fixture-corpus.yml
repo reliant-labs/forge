@@ -1,0 +1,68 @@
+# Real-project fixture corpus (internal/cli/fixture_corpus_e2e_test.go).
+#
+# Scaffolds two downstream-shaped projects from the forge binary built
+# at this commit, then drives each through the full lifecycle:
+#   scaffold → generate ×2 (idempotency) → deps-matcher wiring pins →
+#   go build → boot (/healthz=200, clean SIGTERM) → fork round-trip
+#   (drift error → --accept → loud skip + side render → unfork --merge).
+#
+# This exists because the kalshi deps-matcher regression (silent nil for
+# cross-package interface deps) was invisible to unit tests and only
+# surfaced when a real downstream project was regenerated. The corpus
+# moves that detection upstream, onto every PR.
+name: Fixture Corpus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fixture-corpus-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  corpus:
+    name: scaffold → generate → build → boot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-go caches GOMODCACHE + GOCACHE keyed on go.sum. The
+      # fixture projects' module downloads and build artifacts land in
+      # the same caches, so runs after the first are warm.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+
+      - name: Put $HOME/go/bin on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      # The corpus tests build the forge binary themselves (the binary
+      # under test must come from this commit); we install it here only
+      # to get `forge tools install` for the proto codegen plugins
+      # (protoc-gen-go, protoc-gen-connect-go) the generate pipeline
+      # shells out to.
+      - name: Install proto codegen plugins
+        run: |
+          go install ./cmd/forge
+          forge tools install
+
+      - name: Run fixture corpus
+        run: go test -tags e2e -run 'TestE2EFixtureCorpus' -v -timeout 25m ./internal/cli/
+
+      - name: Upload fixture trees on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-corpus-trees
+          path: /tmp/TestE2EFixtureCorpus*
+          retention-days: 7
+          if-no-files-found: ignore

@@ -42,6 +42,7 @@ type lintFlags struct {
 	bootstrapCoverage bool
 	checkWorkarounds  bool
 	optionalDepsGuard bool
+	configDeps        bool
 	jsonOut           bool
 }
 
@@ -99,6 +100,11 @@ Examples:
                                 # nil-guard in the same function (warnings only —
                                 # suppress confirmed-safe sites with a
                                 # "// forge:optional-checked" comment on the deref line)
+  forge lint --config-deps      # Flag scalar Deps fields (string/int/bool/duration —
+                                # the naked-scalar antipattern). Scalars are
+                                # configuration: declare a <Component>Config block in
+                                # proto/config and take it as a typed field instead
+                                # (warnings only)
   forge lint --fix              # Auto-fix issues where possible
   forge lint --json             # Machine-readable output (sub-agents / CI):
                                 # {findings: [{file, line, col, severity, rule,
@@ -140,6 +146,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
 	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of `// forge:optional-dep` Deps fields (warnings only; suppress with `// forge:optional-checked` on the deref line)")
+	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 
@@ -243,6 +250,13 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 			return fmt.Errorf("getwd: %w", err)
 		}
 		return runOptionalDepsGuardLint(cwd)
+	}
+	if flags.configDeps {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runConfigDepsLint(cwd)
 	}
 
 	// Load project config for lint defaults. A missing config file is fine
@@ -1002,6 +1016,24 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 		if err == nil {
 			if err := runOptionalDepsGuardLint(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "⚠️  optional-deps-guard lint: %v\n", err)
+			}
+		}
+	}
+
+	// 13d. Config-deps — flags scalar Deps fields (the naked-scalar
+	// antipattern). Scalars are configuration, not collaborators:
+	// wire_gen can never resolve them from App/AppExtras, so they
+	// regenerate as typed zeros + TODOs forever (kalshi-trader
+	// WTIPersistMaxPerTick, fr-ad24278452) or force the AppExtras +
+	// setup.go hand-projection workaround. The supported shape is a
+	// component config block in proto/config taken as ONE typed field
+	// (`Cfg config.<Component>Config`). Warnings only.
+	if dirExists("internal") || dirExists("handlers") ||
+		dirExists("workers") || dirExists("operators") {
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runConfigDepsLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  config-deps lint: %v\n", err)
 			}
 		}
 	}

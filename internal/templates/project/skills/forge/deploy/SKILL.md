@@ -174,6 +174,13 @@ surprising on first read:
   regardless of whether `config.<env>.yaml` provides a `${...}`
   override — the project-level default secret name + lowercased
   env-var key apply unconditionally.
+- **Component config-block leaves use flat keys.** Fields of a
+  component config block (`message TraderConfig { int32 max_per_tick
+  ... }` composed on `AppConfig` — see the `architecture` skill,
+  "Component config blocks") participate in `config.<env>.yaml` under
+  their own snake_case leaf name (`max_per_tick: 50`), the same flat
+  namespace as root fields, and project to the ConfigMap/env vars
+  identically. Keep leaf names unique across blocks.
 
 ## Cross-references between schemas — declare once, denormalize at render
 

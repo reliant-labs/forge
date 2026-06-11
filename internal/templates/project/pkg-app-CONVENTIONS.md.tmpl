@@ -55,9 +55,16 @@ rules (consulted in order):
 6. **Otherwise**: exact-name match against an exported field on `*App`.
    If `*App` has a field with the same name, wire_gen emits
    `app.<Field>`.
-7. **No match**: emit `nil` plus a `// TODO: wire <Name>` annotation
-   and a header-comment note. Compile still succeeds; if `validateDeps`
-   marks the field required, startup fails with a clear message.
+7. **Config blocks, by TYPE**: a field typed `config.<Block>` or
+   `*config.<Block>` — where `<Block>` is a component config block
+   generated from `proto/config/v1/config.proto` — wires to the unique
+   Config field of that type (`cfg.<Field>` / `&cfg.<Field>`). Zero
+   matches fall through; two Config fields of the same block type are a
+   hard generate error listing the candidates.
+8. **No match**: emit a typed zero plus a `// TODO: wire <Name>`
+   annotation and a header-comment note. Compile still succeeds; if
+   `validateDeps` marks the field required, startup fails with a clear
+   message.
 
 To add a new dep:
 
@@ -67,6 +74,44 @@ To add a new dep:
 - Construct it in `setup.go` and assign to `app.<Field>`.
 - Re-run `forge generate`. wire_gen will resolve the field by name on
   the next regenerate.
+
+## Component config blocks (configuration ≠ collaborators)
+
+Scalar Deps fields (`MaxPerTick int`, `Interval time.Duration`, ...)
+are configuration. wire_gen resolves Deps against *collaborator*
+fields, so a naked scalar regenerates as a typed zero + TODO forever —
+and hand-projecting it through AppExtras + `setup.go` is boilerplate.
+Declare a config block instead:
+
+```proto
+// proto/config/v1/config.proto
+message TraderConfig {
+  int32 max_per_tick = 1 [(forge.v1.config) = {
+    env_var: "TRADER_MAX_PER_TICK", default_value: "10",
+    description: "Maximum persists per tick"
+  }];
+}
+
+message AppConfig {
+  // ... existing fields ...
+  TraderConfig trader = 21; // no annotation needed on this field
+}
+```
+
+```go
+// workers/trader/worker.go
+type Deps struct {
+    Logger *slog.Logger
+    Cfg    config.TraderConfig // wired to cfg.Trader by TYPE
+}
+```
+
+`forge generate` then emits `type TraderConfig struct` + a `Trader`
+field on `Config` in `pkg/config/config.go`, env/flag/default loading
+for the leaves, the `.env.example` entry, and per-env projection: a
+`max_per_tick: 50` line in `config.<env>.yaml` flows into the env's
+ConfigMap + env var exactly like a root field. `forge lint
+--config-deps` flags naked-scalar Deps fields.
 
 ## Cross-lane type placeholders
 

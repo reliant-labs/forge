@@ -10,6 +10,24 @@ import "forge/v1/forge.proto";
 // Each field maps to an environment variable and/or CLI flag via
 // forge.v1.config annotations. Running `forge generate`
 // produces a typed Go config loader in pkg/config/config.go.
+//
+// Component config blocks: a component (worker/service/operator) that
+// needs configuration declares its own message — conventionally
+// `<Component>Config` — and composes it as a field on AppConfig:
+//
+//   message TraderConfig {
+//     int32 max_per_tick = 1 [(forge.v1.config) = {
+//       env_var: "TRADER_MAX_PER_TICK", default_value: "10",
+//       description: "Maximum persists per tick"
+//     }];
+//   }
+//   // inside AppConfig (no annotation needed on the field):
+//   //   TraderConfig trader = <next tag>;
+//
+// The component then takes `Cfg config.TraderConfig` in its Deps and
+// wire_gen resolves it from the loaded Config by type. Per-env values
+// go in config.<env>.yaml under the leaf name (max_per_tick: 50).
+// Never put scalars (string/int/bool/duration) directly in Deps.
 message AppConfig {
   int32 port = 1 [(forge.v1.config) = {
     env_var: "PORT",

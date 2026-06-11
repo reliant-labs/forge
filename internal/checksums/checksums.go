@@ -27,25 +27,12 @@ const checksumFile = ".forge/checksums.json"
 // usage never falls off the back of the window.
 const historyLimit = 20
 
-// SkipWrite is a per-pipeline-run opt-out set: paths in this map will
-// have their `WriteGeneratedFile*` writes silently skipped (the recorded
-// checksum is still kept as-is). Populated by `forge generate --accept`
-// when the user has hand-edited a Tier-1 file and wants to preserve their
-// fork; the codegen emitter still tries to render and write, but the
-// helper short-circuits so the user's content survives.
-//
-// Stored as a package-level map (not on FileChecksums) because it's
-// pipeline-run state, not persistent state. Reset between runs.
-var SkipWrite = map[string]bool{}
-
-// AddSkipWrite marks relPath as opt-out for the current run. Idempotent.
-func AddSkipWrite(relPath string) { SkipWrite[relPath] = true }
-
-// ResetSkipWrite clears the skip-write set. Called at the start of each
-// pipeline run to avoid leaking state across forge invocations in tests
-// or long-lived processes.
+// ResetSkipWrite clears the written-this-run set. Called at the start of
+// each pipeline run to avoid leaking state across forge invocations in
+// tests or long-lived processes. (Historically this also cleared the
+// fork-era SkipWrite opt-out set, which is gone — disowned paths are
+// Tier-2 manifest entries, not per-run state.)
 func ResetSkipWrite() {
-	SkipWrite = map[string]bool{}
 	WrittenThisRun = map[string]bool{}
 }
 
@@ -73,63 +60,6 @@ var WrittenThisRun = map[string]bool{}
 func MarkWrittenThisRun(relPath string) { WrittenThisRun[relPath] = true }
 
 
-// forkedSkipsThisRun accumulates, for the current pipeline run, every
-// Tier-1 path whose write was skipped because the entry is Forked.
-//
-// FRICTION 2026-06-03/05 (.forge/backlog.md): forked wire_gen.go was
-// silently skipped — adding a Deps field "did nothing" and the user had
-// no signal that forge had stopped regenerating the file. The skip list
-// exists so the pipeline can print one loud line per skipped file on
-// EVERY run (not gated behind --explain), making "forge no longer owns
-// this file" impossible to miss.
-//
-// Per-run state, not persistent: reset via ResetPerRunState at the
-// start of each pipeline run.
-var forkedSkipsThisRun []string
-
-// NoteForkedSkip records that relPath's write was skipped due to fork
-// status. Deduplicated — multiple emitters may attempt the same path in
-// one run, but the report should name it once.
-func NoteForkedSkip(relPath string) {
-	for _, p := range forkedSkipsThisRun {
-		if p == relPath {
-			return
-		}
-	}
-	forkedSkipsThisRun = append(forkedSkipsThisRun, relPath)
-}
-
-// ForkedSkipsThisRun returns the sorted list of Tier-1 paths skipped
-// due to fork status during the current pipeline run.
-func ForkedSkipsThisRun() []string {
-	out := append([]string(nil), forkedSkipsThisRun...)
-	sortStrings(out)
-	return out
-}
-
-// changedRendersThisRun accumulates every path whose freshly rendered
-// content this run did NOT match any previously recorded render (Hash
-// or History) — i.e. the template output genuinely moved, as opposed
-// to an idempotent re-render. Consumed by the fork-coherence warning:
-// when a non-forked member of a coherence group lands here while a
-// sibling is forked, the frozen fork may now be incoherent with the
-// fresh renders (see groups.go).
-var changedRendersThisRun = map[string]bool{}
-
-// noteChangedRender records that relPath's fresh render changed this run.
-func noteChangedRender(relPath string) { changedRendersThisRun[relPath] = true }
-
-// ChangedRendersThisRun returns the sorted list of paths whose fresh
-// render changed during the current pipeline run.
-func ChangedRendersThisRun() []string {
-	out := make([]string, 0, len(changedRendersThisRun))
-	for p := range changedRendersThisRun {
-		out = append(out, p)
-	}
-	sortStrings(out)
-	return out
-}
-
 // sideRenderOnly is the per-run set of paths whose Tier-1 writes are
 // redirected to `.forge/render/<relpath>` instead of the real file.
 // Populated by `forge generate --explain-drift`: the drift guard lets
@@ -137,22 +67,19 @@ func ChangedRendersThisRun() []string {
 // against, but the user's drifted on-disk content must survive — the
 // whole point of the flag is to SHOW the user what regeneration would
 // change before they choose between the extension point, --force, and
-// --accept. The merge base is deliberately NOT seeded here (the path
-// isn't forked; a stale base would poison a future fork's merge).
+// `forge disown`.
 var sideRenderOnly = map[string]bool{}
 
 // AddSideRenderOnly marks relPath as side-render-only for the current
 // run. Idempotent.
 func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
 
-// ResetPerRunState clears the per-pipeline-run tracking sets (forked
-// skips, changed-render set, side-render-only redirects). Called at the
-// start of each pipeline run alongside ResetSkipWrite / ResetTier2State
-// so a long-lived process (tests, watch mode) doesn't leak state across
+// ResetPerRunState clears the per-pipeline-run tracking sets (the
+// --explain-drift side-render redirects). Called at the start of each
+// pipeline run alongside ResetSkipWrite / ResetTier2State so a
+// long-lived process (tests, watch mode) doesn't leak state across
 // invocations.
 func ResetPerRunState() {
-	forkedSkipsThisRun = nil
-	changedRendersThisRun = map[string]bool{}
 	sideRenderOnly = map[string]bool{}
 }
 
@@ -223,12 +150,13 @@ type FileChecksums struct {
 //
 // Tier classifies the lifecycle of the file:
 //
-//   - 1 — generated every run (`// Code generated by forge ... DO NOT
-//     EDIT.`). The Tier-1 stomp guard refuses to overwrite a Tier-1 file
-//     that's been hand-edited unless `--force` or `--accept` is set.
-//   - 2 — scaffold-once user-owned (`// forge:scaffold one-shot`). Forge
-//     writes once and never overwrites. Tracked here only so audit can
-//     report drift; the stomp guard ignores Tier-2.
+//   - 1 — forge-owned, generated every run (`// Code generated by forge
+//     ... DO NOT EDIT.`). The Tier-1 stomp guard refuses to overwrite a
+//     Tier-1 file that's been hand-edited unless `--force` is set; the
+//     sanctioned exit from Tier-1 is `forge disown` (one-way → Tier-2).
+//   - 2 — user-owned. Either scaffold-once (`// forge:scaffold
+//     one-shot`) or disowned (see Disowned below). Forge never
+//     overwrites Tier-2 content; the stomp guard ignores it.
 //   - 0 — unset / legacy. Treated as Tier-1-equivalent for the stomp
 //     guard, since pre-tier checksums covered exclusively Tier-1 files.
 //     New writes should always specify a tier; the unset-→-1 default is
@@ -241,34 +169,26 @@ type FileChecksumEntry struct {
 	Hash    string   `json:"hash"`
 	History []string `json:"history,omitempty"`
 	Tier    int      `json:"tier,omitempty"`
-	// Forked records that the user ran `forge generate --accept` on this
-	// path: they intentionally hand-edited a Tier-1 file and want forge to
-	// stop trying to regenerate it. Future codegen passes will skip writes
-	// to forked paths; the stomp guard ignores them too (no point
-	// guarding a file forge no longer owns). Persists across runs.
-	Forked bool `json:"forked,omitempty"`
-	// Accepted is the "user has been informed about this fork" flag. The
-	// end-of-pipeline forked-skip report fires only for entries where
-	// Forked && !Accepted, then flips Accepted to true and the next
-	// `forge generate` run is silent. Together with Forked it implements
-	// the loud-once / quiet-forever UX: the first post-fork run confirms
-	// the skip; established forks stop nagging. unfork clears both so a
-	// re-fork later is loud again. FRICTION (cp-forge, 2026-06-08):
-	// 11 long-standing forks reporting every run was drowning out new
-	// fork detections.
-	Accepted bool `json:"accepted,omitempty"`
-	// ForkedAt records when the fork was accepted (RFC3339 UTC). Set by
-	// AcceptTier1Drift so `forge audit` / `forge doctor` can report how
-	// long a file has been outside forge ownership. Empty for forks
-	// recorded before this field existed.
+	// Disowned records a one-way ownership transfer: the path was Tier-1
+	// (forge-owned) until the user ran `forge disown`, which flipped it
+	// to Tier-2 (user-owned) permanently. The marker distinguishes
+	// disowned files from ordinary scaffold-once starters in `forge
+	// audit` / `forge doctor`. Re-adoption is by deletion: remove the
+	// file and run `forge generate` — the emitter re-emits and the entry
+	// returns to Tier-1 (marker cleared).
+	Disowned bool `json:"disowned,omitempty"`
+	// DisownedAt records when the path was disowned (RFC3339 UTC), so
+	// audit can report how long a file has been outside forge ownership.
+	DisownedAt string `json:"disowned_at,omitempty"`
+	// Forked / Accepted / ForkedAt are the LEGACY fork-era fields
+	// (`forge generate --accept` before forks were removed). They are
+	// never written by current forge; they exist only so the pipeline's
+	// legacy-fork migration (and `forge unfork`, the one-release
+	// migration tool) can read entries recorded by older versions and
+	// convert them to Disowned. New code must not set them.
+	Forked   bool   `json:"forked,omitempty"`
+	Accepted bool   `json:"accepted,omitempty"`
 	ForkedAt string `json:"forked_at,omitempty"`
-	// Group names the fork-coherence group this path belongs to (see
-	// groups.go), recorded when the file is forked. Files in one group
-	// share generated symbols — forking one while siblings keep
-	// regenerating is the known build-break shape from
-	// .forge/backlog.md 2026-06-03 (forked bootstrap.go vs regenerating
-	// app_gen.go). Empty for ungrouped paths and pre-existing forks.
-	Group string `json:"group,omitempty"`
 	// Exports lists the names of public top-level identifiers (functions,
 	// types, vars) declared in the most recently rendered version of the
 	// file. Used by the post-emit rename-detection pass: when a Tier-1
@@ -462,7 +382,7 @@ func (cs *FileChecksums) RecordFile(relPath string, content []byte) {
 	// Mark the path as "written this run" so the manifest-driven
 	// stale-artifact sweep knows not to treat it as orphaned. Every
 	// WriteGeneratedFile* helper funnels through here on a successful
-	// write; AcceptTier1Drift does too, which is the right semantics
+	// write; DisownPaths does too, which is the right semantics
 	// (forge actively touched the path this run, no matter how).
 	WrittenThisRun[relPath] = true
 }
@@ -480,38 +400,32 @@ func (cs *FileChecksums) RecordFile(relPath string, content []byte) {
 // for back-compat. Prefer the typed wrappers (WriteGeneratedFileTier1 /
 // WriteGeneratedFileTier2) at new call sites so the manifest is explicit.
 func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
+	reAdopting := false
 	if cs != nil {
-		if entry, ok := cs.Files[relPath]; ok && entry.Forked {
-			// User previously ran `--accept` on this path. Forge no
-			// longer owns it. Skip even when force=true — the user's
-			// intent is "stop touching this file"; --force is for
-			// blowing away current-run hand-edits, not historical forks.
+		if entry, ok := cs.Files[relPath]; ok && (entry.Disowned || entry.Forked) {
+			// Disowned entry (or a legacy fork-era one awaiting
+			// migration): the file is user-owned — never overwrite, even
+			// with force=true: --force discards current-run hand-edits to
+			// forge-owned files, it does not undo a recorded ownership
+			// transfer.
 			//
-			// The skip is recorded (and reported loudly at pipeline
-			// exit) rather than silent — silent skips are how the
-			// "edited Deps, regenerated, nothing happened" failure mode
-			// happens (.forge/backlog.md 2026-06-05). The fresh render
-			// is parked under .forge/render/ instead of dropped, so
-			// `forge unfork --merge` has a "theirs" to reconcile with.
+			// Exception — re-adoption: if the file is GONE the user
+			// deleted it to hand it back to forge ("delete the file, run
+			// `forge generate`"). Fall through and re-emit; the entry
+			// returns to Tier-1 below.
 			//
-			// This branch deliberately precedes the SkipWrite check: on
-			// the `--accept` run itself the path is in BOTH sets, and
-			// the render produced on that run is the closest thing to
-			// "what the user forked from" — it must reach
-			// WriteSideRender so the merge base gets captured at the
-			// fork point, not one template-evolution later.
-			NoteForkedSkip(relPath)
-			if err := WriteSideRender(root, relPath, content); err != nil {
-				return false, err
+			// Plain (non-disowned) Tier-2 entries deliberately do NOT
+			// take this branch: a Tier-1 emitter targeting one is the
+			// tier-reclassification upgrade path (e.g. scaffold-era
+			// skill files migrating to Tier-1), and the IsFileModified
+			// guard below still protects user edits there.
+			if _, statErr := os.Stat(filepath.Join(root, relPath)); statErr == nil {
+				return false, nil
+			} else if !os.IsNotExist(statErr) {
+				return false, statErr
 			}
-			return false, nil
+			reAdopting = true
 		}
-	}
-	if SkipWrite[relPath] {
-		// `forge generate --accept` opted this path out for the current
-		// run. The user's on-disk content survives; the just-rendered
-		// content is dropped on the floor.
-		return false, nil
 	}
 	if sideRenderOnly[relPath] {
 		// `--explain-drift` redirect: park the fresh render for the
@@ -529,13 +443,6 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		return false, nil
 	}
 
-	// "Did the template output actually move?" — checked against the
-	// pre-write manifest (RecordFile below would fold the new hash into
-	// History and erase the signal). Feeds the fork-coherence warning:
-	// a changed render next to a frozen forked sibling is the build-
-	// break setup from .forge/backlog.md 2026-06-03.
-	changed := cs != nil && !cs.MatchesAnyKnownRender(relPath, content)
-
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
@@ -545,8 +452,21 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	}
 	if cs != nil {
 		cs.RecordFile(relPath, content)
-		if changed {
-			noteChangedRender(relPath)
+		if reAdopting {
+			// Re-adoption completes here: the user deleted a disowned
+			// file and forge just re-emitted it, so the entry returns to
+			// Tier-1 (forge-owned) and the disowned + legacy markers are
+			// cleared. (WriteGeneratedFileTier1 would re-stamp Tier
+			// anyway; doing it at the chokepoint also covers legacy
+			// tier-agnostic callers.)
+			entry := cs.Files[relPath]
+			entry.Tier = 1
+			entry.Disowned = false
+			entry.DisownedAt = ""
+			entry.Forked = false
+			entry.Accepted = false
+			entry.ForkedAt = ""
+			cs.Files[relPath] = entry
 		}
 	}
 	return true, nil
@@ -556,8 +476,8 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 // and tags the checksum entry as Tier-1. The Tier-1 tag drives the
 // pre-pipeline stomp guard: a future `forge generate` run will refuse to
 // overwrite a Tier-1 file that's been hand-edited unless the user passes
-// `--force` (clobber) or `--accept` (refresh recorded checksum to the
-// edited content).
+// `--force` (clobber); the sanctioned permanent exit is `forge disown`
+// (one-way transfer to user ownership).
 //
 // Behaviorally identical to WriteGeneratedFile when force is true — the
 // Tier-1 tag is purely metadata that downstream guards consult. The
@@ -588,19 +508,19 @@ func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileCheck
 func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
 	_ = force // intentionally ignored — see doc above.
 
-	if SkipWrite[relPath] {
-		return false, nil
-	}
 	if cs != nil {
-		if entry, ok := cs.Files[relPath]; ok && entry.Forked {
-			// Tier-2 forked entries are recorded too, so the
-			// end-of-run summary covers both tiers. Tier-2's normal
-			// "scaffold once, never overwrite" contract means the user
-			// rarely cares about Tier-2 skips, but a forked Tier-2
-			// entry (manually flipped in .forge/checksums.json) is
-			// still worth surfacing for the same diagnostic reason.
-			NoteForkedSkip(relPath)
-			return false, nil
+		if entry, ok := cs.Files[relPath]; ok && entry.Disowned {
+			// Disowned entries record the USER's content hash (captured
+			// at disown time), so the modified-file check below would not
+			// protect an unedited disowned file from a re-scaffold. Skip
+			// outright while the file exists; a deleted disowned file
+			// falls through and is re-scaffolded (re-adoption parity with
+			// the Tier-1 writer).
+			if _, statErr := os.Stat(filepath.Join(root, relPath)); statErr == nil {
+				return false, nil
+			} else if !os.IsNotExist(statErr) {
+				return false, statErr
+			}
 		}
 	}
 
@@ -628,6 +548,10 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 		cs.RecordFile(relPath, content)
 		entry := cs.Files[relPath]
 		entry.Tier = 2
+		// A re-scaffold of a deleted disowned file is back to being an
+		// ordinary pristine starter — clear the marker.
+		entry.Disowned = false
+		entry.DisownedAt = ""
 		cs.Files[relPath] = entry
 	}
 	return true, nil
@@ -663,6 +587,9 @@ func (cs *FileChecksums) CheckTier1Drift(root string) []Tier1DriftEntry {
 	}
 	var drift []Tier1DriftEntry
 	for relPath, entry := range cs.Files {
+		// Legacy fork-era entries (pre-disown migration) are skipped —
+		// the pipeline migration converts them to Disowned/Tier-2 before
+		// this guard runs, but out-of-pipeline callers may still see them.
 		if entry.Forked {
 			continue
 		}
@@ -700,38 +627,36 @@ func (cs *FileChecksums) CheckTier1Drift(root string) []Tier1DriftEntry {
 	return drift
 }
 
-// AcceptTier1Drift updates the recorded checksum for each entry in drift
-// to the on-disk content's hash, marks the entry as Forked, and ensures
-// future `WriteGeneratedFile*` calls skip the path. Used by
-// `forge generate --accept` for the rare "I really did mean to fork
-// this Tier-1 file" path. The Forked flag persists across runs so
-// subsequent codegen passes never re-overwrite the user's content.
-func (cs *FileChecksums) AcceptTier1Drift(root string, drift []Tier1DriftEntry) error {
+// DisownPaths performs the one-way ownership transfer for each path:
+// the on-disk content is recorded as the entry's current hash, the
+// entry flips to Tier-2 (user-owned) and is marked Disowned with a
+// timestamp. After this, no `WriteGeneratedFile*` call ever touches the
+// path again (while the file exists) — there is no fork limbo, no
+// side-render parking, no reconcile-later state. Re-adoption is by
+// deletion: remove the file and run `forge generate`.
+//
+// Legacy fork-era flags on the entry are cleared as part of the flip,
+// so converting an old `forked: true` entry through this helper leaves
+// a clean disowned record.
+func (cs *FileChecksums) DisownPaths(root string, relPaths []string) error {
 	if cs == nil {
 		return nil
 	}
-	for _, d := range drift {
-		full := filepath.Join(root, d.Path)
+	for _, p := range relPaths {
+		full := filepath.Join(root, p)
 		content, err := os.ReadFile(full)
 		if err != nil {
 			return err
 		}
-		cs.RecordFile(d.Path, content)
-		// RecordFile clears any pre-existing tier when it overwrites the
-		// entry value, so re-stamp the Tier-1 tag (so audit still
-		// reports it as a Tier-1-derived file) and mark Forked. ForkedAt
-		// gives audit/doctor a "forked since" timestamp.
-		entry := cs.Files[d.Path]
-		entry.Tier = 1
-		entry.Forked = true
-		entry.ForkedAt = nowRFC3339()
-		// Record the fork-coherence group (groups.go) so audit / doctor
-		// can connect a forked member to its still-regenerating siblings
-		// without re-deriving the pattern match.
-		if g, ok := CoherenceGroupFor(d.Path); ok {
-			entry.Group = g.Name
-		}
-		cs.Files[d.Path] = entry
+		cs.RecordFile(p, content)
+		entry := cs.Files[p]
+		entry.Tier = 2
+		entry.Disowned = true
+		entry.DisownedAt = nowRFC3339()
+		entry.Forked = false
+		entry.Accepted = false
+		entry.ForkedAt = ""
+		cs.Files[p] = entry
 	}
 	return nil
 }
@@ -743,17 +668,6 @@ func sortDrift(drift []Tier1DriftEntry) {
 	for i := 1; i < len(drift); i++ {
 		for j := i; j > 0 && drift[j-1].Path > drift[j].Path; j-- {
 			drift[j-1], drift[j] = drift[j], drift[j-1]
-		}
-	}
-}
-
-// sortStrings sorts a string slice ascending. Same rationale as
-// sortDrift: the slices here are tiny (a handful of forked paths), so
-// an insertion sort beats importing "sort" for two call sites.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
 		}
 	}
 }

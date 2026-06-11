@@ -116,10 +116,13 @@ interface pattern throughout the entire stack.`,
 	// Add all commands
 	rootCmd.AddCommand(newRunCmd())
 	rootCmd.AddCommand(newGenerateCmd())
-	// `forge unfork` is ALSO registered under `forge generate unfork`
-	// (see generate.go) — the top-level form is what every fork-skip /
-	// coherence message prints, the nested form survives for muscle
-	// memory. Two cobra instances, same implementation.
+	// `forge disown` is the one-way door from forge-owned (Tier-1) to
+	// user-owned (Tier-2). Top-level because the drift-guard error
+	// message prints it.
+	rootCmd.AddCommand(newDisownCmd())
+	// `forge unfork` survives ONE release as legacy-fork migration
+	// tooling (also registered under `forge generate unfork` for muscle
+	// memory; see generate.go). Two cobra instances, same implementation.
 	rootCmd.AddCommand(newUnforkCmd())
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newMigrateCmd())
@@ -137,10 +140,6 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
-	// `unfork` lives under `forge generate unfork` so it sits next to
-	// its inverse (`forge generate --accept`). The top-level command
-	// was removed in this release — see newGenerateCmd for the new
-	// home.
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	rootCmd.AddCommand(newComponentCmd())

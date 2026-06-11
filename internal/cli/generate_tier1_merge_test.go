@@ -131,7 +131,7 @@ func TestStepCheckTier1Drift_MidMergeReturnsTypedError(t *testing.T) {
 	msg := err.Error()
 	for _, want := range []string{
 		"mid-merge",
-		"forge generate --accept",
+		"forge generate --force",
 		rel,
 	} {
 		if !strings.Contains(msg, want) {

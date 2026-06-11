@@ -95,35 +95,25 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, missing [
 	sort.Strings(paths)
 
 	for _, rel := range paths {
-		// Honor `forge generate --accept`: forked paths are user-owned
-		// forks, forge no longer wants to manage them. Don't delete.
+		// Legacy fork-era entries (pre-disown migration): user-owned by
+		// intent, forge no longer wants to manage them. Don't delete.
 		if cs.Files[rel].Forked {
 			continue
 		}
 
-		// Tier-2 entries are scaffold-once user-owned files. Forge wrote
-		// them exactly once; not being re-written this run is their
-		// PERMANENT steady state, never a stale signal. Deleting one
-		// would destroy user content (the tier-migration step in
-		// generate_tier_migrate.go also relies on this: a reclassified
-		// starter must not become a deletion candidate the moment its
-		// fork flag is cleared).
+		// Tier-2 entries are user-owned files (scaffold-once starters
+		// and disowned files alike). Forge wrote them exactly once; not
+		// being re-written this run is their PERMANENT steady state,
+		// never a stale signal. Deleting one would destroy user content
+		// (the tier-migration step in generate_tier_migrate.go also
+		// relies on this: a reclassified starter must not become a
+		// deletion candidate the moment it flips).
 		if cs.Files[rel].Tier == 2 {
 			continue
 		}
 
 		// This run wrote this path — definitely not stale.
 		if checksums.WrittenThisRun[rel] {
-			continue
-		}
-
-		// Deliberately-skipped-but-alive: `forge generate --accept`
-		// populated SkipWrite for this path, so the emitter rendered
-		// but the write was intentionally short-circuited to preserve
-		// the user's on-disk content. The file is alive by user intent
-		// — never a deletion candidate. (Forked entries — the persistent
-		// cousin of this per-run state — are skipped above.)
-		if checksums.SkipWrite[rel] {
 			continue
 		}
 

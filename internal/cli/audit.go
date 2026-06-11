@@ -247,10 +247,27 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	if cfg == nil {
 		return AuditCategory{Status: AuditStatusError, Summary: "no forge.yaml"}
 	}
+	// rpcInfo is the per-RPC entry under svcInfo.RPCs. Additive
+	// (introduced after rpc_count) — consumers that only read
+	// rpc_count keep working. mcp_callable tells an agent up front
+	// whether the RPC is reachable through the forge-mcp bridge:
+	// streaming RPCs are in the MCP manifest (marked) but excluded
+	// from MCP tools/list because MCP tool calls are unary.
+	type rpcInfo struct {
+		Name string `json:"name"`
+		// Streaming is "", "client", "server", or "bidi" — same
+		// vocabulary as the MCP manifest; omitted for unary RPCs.
+		Streaming   string `json:"streaming,omitempty"`
+		MCPCallable bool   `json:"mcp_callable"`
+	}
 	type svcInfo struct {
 		Name     string `json:"name"`
 		Type     string `json:"type"`
 		RPCCount int    `json:"rpc_count"`
+		// RPCs lists each RPC by name with streaming/MCP-callability
+		// info. Empty when proto parsing was unavailable (see
+		// proto_integrity) — additive field, may be absent.
+		RPCs []rpcInfo `json:"rpcs,omitempty"`
 	}
 	var services, workers, operators []svcInfo
 	var frontends []map[string]string
@@ -263,12 +280,33 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// and detect the "RPC count = 0 because parse failed, not because
 	// the service has no methods" case. See B5 in the audit quick-win
 	// backlog.
-	rpcByService := map[string]int{}
+	rpcByService := map[string][]rpcInfo{}
 	var protoParseErr string
 	if dirExists(filepath.Join(projectDir, "proto", "services")) {
 		if defs, err := codegen.ParseServicesFromProtos(filepath.Join(projectDir, "proto", "services"), projectDir); err == nil {
 			for _, d := range defs {
-				rpcByService[d.Name] = len(d.Methods)
+				rpcs := make([]rpcInfo, 0, len(d.Methods))
+				for _, m := range d.Methods {
+					// Same vocabulary as the MCP manifest's "streaming"
+					// field; "" means unary. Unary RPCs are the only
+					// ones the forge-mcp bridge can dispatch (MCP tool
+					// calls are unary), hence mcp_callable.
+					mode := ""
+					switch {
+					case m.ClientStreaming && m.ServerStreaming:
+						mode = "bidi"
+					case m.ServerStreaming:
+						mode = "server"
+					case m.ClientStreaming:
+						mode = "client"
+					}
+					rpcs = append(rpcs, rpcInfo{
+						Name:        m.Name,
+						Streaming:   mode,
+						MCPCallable: mode == "",
+					})
+				}
+				rpcByService[d.Name] = rpcs
 			}
 		} else {
 			protoParseErr = err.Error()
@@ -278,10 +316,11 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	for _, s := range cfg.Services {
 		info := svcInfo{Name: s.Name, Type: s.Type}
 		// match by ProtoService name suffix (Echo → EchoService)
-		for protoName, count := range rpcByService {
+		for protoName, rpcs := range rpcByService {
 			short := strings.TrimSuffix(protoName, "Service")
 			if strings.EqualFold(short, s.Name) || strings.EqualFold(protoName, s.Name) {
-				info.RPCCount = count
+				info.RPCCount = len(rpcs)
+				info.RPCs = rpcs
 				break
 			}
 		}

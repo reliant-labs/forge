@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -31,6 +33,28 @@ type ConfigTemplateField struct {
 	// The Load/flag plumbing in config.go.tmpl assigns via GoPath so one
 	// flat loop covers both shapes.
 	GoPath string
+
+	// IsDuration marks duration-shaped string fields (see
+	// isDurationField). They are emitted as time.Duration on the Config
+	// struct and parsed ONCE in Load — consumers never re-parse strings,
+	// and a typo'd duration fails startup instead of silently zeroing.
+	IsDuration bool
+
+	// StructGoType is the Go type emitted on the Config struct:
+	// "time.Duration" for duration fields, GoType for everything else.
+	StructGoType string
+
+	// ParseFn names the parse helper Load feeds to loadField for this
+	// field ("parseString", "parseInt32", "parsePort", "parseGoDuration",
+	// …). Selecting it at generate time keeps the emitted Load a flat
+	// list of identical one-liners.
+	ParseFn string
+
+	// AllowEmptyEnv preserves the historical string semantics: a string
+	// env var explicitly set to "" counts as set. Numeric/bool/duration
+	// fields treat an empty env var as unset (parsing "" would always
+	// error).
+	AllowEmptyEnv bool
 }
 
 // ConfigTemplateBlockType is one component config-block struct type the
@@ -181,19 +205,79 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 	return data
 }
 
+// isDurationField reports whether a string config field carries a Go
+// duration. Two signals:
+//
+//  1. The four well-known scaffold duration fields by name — the
+//     generated cmd/server.go assigns them to serverkit's time.Duration
+//     config directly, so their typing is part of the contract.
+//  2. Any other string field whose default parses as a Go duration AND
+//     contains a unit letter (so a plain "0" or numeric default stays a
+//     string).
+func isDurationField(f ConfigField) bool {
+	if f.GoType != "string" {
+		return false
+	}
+	switch f.GoName {
+	case "PreStopDelay", "ShutdownTimeout", "DbConnMaxIdleTime", "DbConnMaxLifetime":
+		return true
+	}
+	if f.DefaultValue == "" {
+		return false
+	}
+	if _, err := time.ParseDuration(f.DefaultValue); err != nil {
+		return false
+	}
+	return strings.ContainsAny(f.DefaultValue, "nsuµmh")
+}
+
+// parseFnFor selects the Load parse helper for a field.
+func parseFnFor(f ConfigField, isDuration bool) string {
+	if isDuration {
+		return "parseGoDuration"
+	}
+	switch f.GoType {
+	case "int32":
+		// Ports get strict uint16 validation.
+		if f.GoName == "Port" || f.Flag == "port" {
+			return "parsePort"
+		}
+		return "parseInt32"
+	case "int64":
+		return "parseInt64"
+	case "bool":
+		return "parseBool"
+	case "float32":
+		return "parseFloat32"
+	case "float64":
+		return "parseFloat64"
+	default:
+		return "parseString"
+	}
+}
+
 // configTemplateField converts one parsed ConfigField to its template
 // shape, pre-parsing typed defaults and recording the assignment path.
 func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
+	isDur := isDurationField(f)
+	structType := f.GoType
+	if isDur {
+		structType = "time.Duration"
+	}
 	tf := ConfigTemplateField{
-		GoName:       f.GoName,
-		GoType:       f.GoType,
-		EnvVar:       f.EnvVar,
-		Flag:         f.Flag,
-		DefaultValue: f.DefaultValue,
-		Description:  f.Description,
-		Required:     f.Required,
-		HasDefault:   f.DefaultValue != "",
-		GoPath:       goPath,
+		GoName:        f.GoName,
+		GoType:        f.GoType,
+		EnvVar:        f.EnvVar,
+		Flag:          f.Flag,
+		DefaultValue:  f.DefaultValue,
+		Description:   f.Description,
+		Required:      f.Required,
+		HasDefault:    f.DefaultValue != "",
+		GoPath:        goPath,
+		IsDuration:    isDur,
+		StructGoType:  structType,
+		ParseFn:       parseFnFor(f, isDur),
+		AllowEmptyEnv: f.GoType == "string" && !isDur,
 	}
 
 	if f.DefaultValue != "" {

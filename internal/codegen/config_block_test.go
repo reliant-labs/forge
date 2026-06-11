@@ -156,9 +156,8 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 		"type TraderConfig struct {",
 		"MaxPerTick int32",
 		"Trader TraderConfig",
-		`if v, ok := os.LookupEnv("TRADER_MAX_PER_TICK"); ok && v != "" {`,
-		"cfg.Trader.MaxPerTick = int32(parsed)",
-		"cfg.Trader.MaxPerTick = 10", // default branch
+		`loadField(cmd, "trader-max-per-tick", "TRADER_MAX_PER_TICK", "10", true, false, false, "Trader.MaxPerTick", parseInt32)`,
+		"cfg.Trader.MaxPerTick, err = loadField",
 		`cmd.Flags().Int32("trader-max-per-tick", 10,`,
 	} {
 		if !strings.Contains(content, want) {

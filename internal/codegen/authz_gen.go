@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -31,6 +32,81 @@ type AuthzTemplateData struct {
 	Methods     []AuthzMethodData // per-method authorization data
 }
 
+// BuildAuthzMethods converts a service's RPC methods into the
+// authorizer-table entries the template emits. It returns BOTH key
+// spellings of the policy universe:
+//
+//   - one entry per RPC keyed by the Connect procedure path (checked by
+//     CanAccess from the auth middleware), and
+//   - one alias entry per CRUD-matched RPC keyed by
+//     "<action>:<resource>" (e.g. "create:patient") — the exact keys the
+//     generated CRUD handler bodies pass to Can. The alias carries the
+//     same required-roles/auth-required flags as its underlying RPC.
+//
+// The aliases are derived from MatchCRUDMethods — the SAME extraction
+// crud_gen uses to emit the Can() call sites — so every generated Can
+// key exists in the generated table by construction. VerifyCanKeyUniverse
+// re-checks that invariant independently at generate time.
+func BuildAuthzMethods(svc ServiceDef, entities []EntityDef) []AuthzMethodData {
+	var methods []AuthzMethodData
+	seen := make(map[string]bool, len(svc.Methods))
+	for _, m := range svc.Methods {
+		methods = append(methods, AuthzMethodData{
+			Procedure:     fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name),
+			RequiredRoles: m.RequiredRoles,
+			AuthRequired:  m.AuthRequired,
+			Errors:        m.Errors,
+		})
+	}
+	for _, cm := range MatchCRUDMethods(svc, entities) {
+		key := operationToAuthAction(cm.Operation) + ":" + strings.ToLower(cm.Entity.Name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		// Look the source RPC back up to carry its roles/auth flags onto
+		// the alias — MatchCRUDMethods returns a reduced shape without
+		// RequiredRoles.
+		for _, m := range svc.Methods {
+			if m.Name != cm.Method.Name {
+				continue
+			}
+			methods = append(methods, AuthzMethodData{
+				Procedure:     key,
+				RequiredRoles: m.RequiredRoles,
+				AuthRequired:  m.AuthRequired,
+			})
+			break
+		}
+	}
+	return methods
+}
+
+// VerifyCanKeyUniverse asserts that every "<action>:<resource>" key a
+// generated CRUD handler will pass to Authorizer.Can exists in the
+// emitted authorizer table. The check recomputes the Can-key set from
+// MatchCRUDMethods (the source of the generated call sites) and compares
+// against the table entries, so any future drift between the two
+// extractions fails `forge generate` loudly instead of shipping an
+// authorizer that warns-and-denies every CRUD request forever.
+func VerifyCanKeyUniverse(svc ServiceDef, entities []EntityDef, methods []AuthzMethodData) error {
+	emitted := make(map[string]bool, len(methods))
+	for _, m := range methods {
+		emitted[m.Procedure] = true
+	}
+	var missing []string
+	for _, cm := range MatchCRUDMethods(svc, entities) {
+		key := operationToAuthAction(cm.Operation) + ":" + strings.ToLower(cm.Entity.Name)
+		if !emitted[key] {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("authorizer table for %s is missing Can() keys used by generated CRUD handlers: %v (key-universe drift between crud_gen and authz_gen — this is a forge bug)", svc.Name, missing)
+	}
+	return nil
+}
+
 // GenerateAuthorizer generates authorizer_gen.go for each service whose
 // handler directory exists. The generated file contains a methodRoles map
 // and a role-checking CanAccess/Can implementation. It is always generated
@@ -53,6 +129,15 @@ type AuthzTemplateData struct {
 // the snake package form (naming.ServicePackage); nil means no
 // types-only services.
 func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
+	// Entities feed the CRUD alias keys ("create:patient") that the
+	// generated CRUD handler bodies pass to Can. A missing/unreadable
+	// descriptor means crud_gen emits no CRUD bodies either, so an empty
+	// entity set keeps the two key universes consistent.
+	entities, err := ParseEntityProtos(targetDir)
+	if err != nil {
+		entities = nil
+	}
+
 	// generatedDirs records the handlers/<dir> leaves covered by the
 	// ServiceDef pass so the directory sweep below doesn't double-emit.
 	// Keyed by the ON-DISK directory name (not the synthesized package)
@@ -75,14 +160,12 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		}
 		pkg := res.PackageName
 
-		var methods []AuthzMethodData
-		for _, m := range svc.Methods {
-			methods = append(methods, AuthzMethodData{
-				Procedure:     fmt.Sprintf("/%s.%s/%s", svc.Package, svc.Name, m.Name),
-				RequiredRoles: m.RequiredRoles,
-				AuthRequired:  m.AuthRequired,
-				Errors:        m.Errors,
-			})
+		methods := BuildAuthzMethods(svc, entities)
+		// Generate-time invariant: every Can() key the CRUD handlers use
+		// must exist in the emitted table. Drift here means steady-state
+		// per-request denials for every CRUD RPC — fail the generate.
+		if verr := VerifyCanKeyUniverse(svc, entities, methods); verr != nil {
+			return verr
 		}
 
 		data := AuthzTemplateData{

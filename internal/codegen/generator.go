@@ -210,14 +210,9 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 		return err
 	}
 
-	// Render integration_test.go from embedded template
-	integrationTestContent, err := templates.ServiceTemplates().Render("integration_test.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render integration_test.go.tmpl: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(targetDir, "integration_test.go"), integrationTestContent, 0644); err != nil {
-		return err
-	}
+	// NOTE: no one-shot integration_test.go scaffold is emitted — see
+	// GenerateMissingHandlerStubs for the rationale (one test philosophy
+	// per service).
 
 	// Render authorizer.go from embedded template
 	authzData := struct {
@@ -1751,6 +1746,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		Packages           []BootstrapPackageData
 		MultiTenantEnabled bool
 		AnyServiceHasDB    bool
+		HasMigrationsFS    bool
 		ExtraImports       []ExtraImport
 	}{
 		Module:             modulePath,
@@ -1759,6 +1755,12 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		Packages:           packages,
 		MultiTenantEnabled: multiTenantEnabled,
 		AnyServiceHasDB:    anyServiceHasDB,
+		// Same predicate GenerateMigrate uses for db/embed.go: when the
+		// project carries SQL migrations, the test default DB is the
+		// MIGRATED in-memory SQLite (testkit.NewMigratedSQLiteDB over
+		// forgedb.MigrationsFS) so generated CRUD/handler tests start
+		// with the real schema instead of an empty database.
+		HasMigrationsFS:    projectHasSQLMigrations(projectDir),
 		ExtraImports:       extraImports,
 	}
 
@@ -1771,6 +1773,25 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		return fmt.Errorf("write pkg/app/testing.go: %w", err)
 	}
 	return nil
+}
+
+// projectHasSQLMigrations reports whether db/migrations/ contains at
+// least one .sql file — the same predicate the CLI uses to decide whether
+// GenerateMigrate embeds db/embed.go's MigrationsFS. Keeping the two in
+// agreement matters: bootstrap_testing.go.tmpl only imports forgedb when
+// this is true, and forgedb.MigrationsFS only exists when GenerateMigrate
+// saw migrations.
+func projectHasSQLMigrations(projectDir string) bool {
+	entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeExtraImports folds every cross-package stub's ExtraImports
@@ -2155,16 +2176,11 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 		unitTestData.Methods = nonCRUD
 	}
 
-	integrationTestPath := filepath.Join(targetDir, "integration_test.go")
-	if isPlaceholderIntegrationTest(integrationTestPath) {
-		testContent, err := templates.ServiceTemplates().Render("integration_test.go.tmpl", fullData)
-		if err != nil {
-			return nil, fmt.Errorf("render integration_test.go.tmpl: %w", err)
-		}
-		if err := os.WriteFile(integrationTestPath, testContent, 0644); err != nil {
-			return nil, fmt.Errorf("write integration_test.go: %w", err)
-		}
-	}
+	// NOTE: forge no longer emits a one-shot integration_test.go scaffold.
+	// One test philosophy per service: the unit scaffold
+	// (handlers_scaffold_test.go) owns per-RPC self-destructing rows, and
+	// handlers_crud_integration_test.go owns the DB-bound CRUD surface.
+	// Existing user-owned integration_test.go files are left untouched.
 
 	handlersTestPath := filepath.Join(targetDir, "handlers_scaffold_test.go")
 	if isPlaceholderUnitTest(handlersTestPath) {
@@ -2183,16 +2199,6 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	}
 
 	return &MissingHandlerResult{NewMethods: names}, nil
-}
-
-// isPlaceholderIntegrationTest checks if the integration test file is still
-// the auto-generated placeholder with no real tests.
-func isPlaceholderIntegrationTest(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(data), `forge-integration-test-placeholder`)
 }
 
 // isPlaceholderUnitTest checks if handlers_scaffold_test.go is still the auto-generated

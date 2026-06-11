@@ -50,9 +50,11 @@ func TestCreateUser(t *testing.T) {
 }
 ```
 
-`tdd.Case[Req, Resp]` rows can also set a `Setup` hook (per-row mock wiring) and an `Ctx` (override the default `context.Background()`; pair with `tdd.WithTimeout` for deadlined cases).
+`tdd.Case[Req, Resp]` rows can also set a `Setup` hook (per-row mock wiring) and a `Ctx` (override the default `context.Background()`). Use `app.AuthedContext(t)` for a claims-bearing context (handlers that call `middleware.GetUser` need it; override claims with `testkit.ClaimsOption` values like `testkit.WithRoles("viewer")`), or `tdd.WithTimeout` for deadlined cases.
 
-When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The integration scaffold (`//go:build integration`) uses the same shape with `app.NewTest<Service>Server` and `client.<Method>`.
+Scaffold contract: forge-generated rows assert `WantErr: connect.CodeUnimplemented` and are SELF-DESTRUCTING — they fail the moment the handler is implemented, forcing real `Check`/`WantErr` assertions to replace them. There is deliberately no "any outcome" mode in `pkg/tdd`: every row must be able to fail.
+
+When to use: validating a single handler's request/response/error contract. This is the default unit-test shape for any RPC. The CRUD integration scaffold (`handlers_crud_integration_test.go`, `//go:build integration`) uses the same shape with `app.NewTest<Service>Server` and `client.<Method>` — the test server mounts the production `middleware.AuthzInterceptor` chain with the permissive test authorizer, so swapping in a real authorizer via `app.WithAuthorizer` exercises genuine denials.
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
 
@@ -185,9 +187,11 @@ The `pkg/tdd` library exports:
 | `tdd.NewMock(opts...)` + `tdd.MockOption[T]` | terse construction of Forge `MockService` (Func-field) mocks |
 | `tdd.AssertConnectError(t, err, code)` | one-line Connect error code assertion |
 | `tdd.WithTimeout(d)` | deadlined `context.Context` for `Case.Ctx` |
+| `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
+| `app.NewMigratedTestDB(t)` / `testkit.NewMigratedSQLiteDB(t, fs)` | in-memory SQLite with embedded `db/migrations` applied — opt in via `app.WithDB(app.NewMigratedTestDB(t))` when a test needs the real schema (fails loudly on non-SQLite-portable SQL) |
 | `tdd.SetupMockDB(t)` | in-memory SQLite `*sql.DB` (driver must be blank-imported) |
 
-Forge's scaffolders emit Pattern 1 (unit + integration) and Pattern 2 (contract) automatically. Hand-write Pattern 3 / Pattern 4 — those don't fit a generic helper.
+Forge's scaffolders emit Pattern 1 (unit; plus CRUD integration when entities exist) and Pattern 2 (contract) automatically. Hand-write Pattern 3 / Pattern 4 — those don't fit a generic helper.
 
 ## Rules
 

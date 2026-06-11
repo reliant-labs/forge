@@ -172,13 +172,15 @@ func warnIfNextConfigIgnoresBasePath(projectDir, feDir, feName, basePath string)
 // re-emits and clobbers existing content — the explicit opt-out for
 // "throw my changes away and re-scaffold from the template".
 //
-// Exception: a FORKED checksum entry survives even --force. Fork is
-// deliberately stickier than --force everywhere else in forge
-// (WriteGeneratedFile's forked branch precedes its force handling) —
-// the user said "stop touching this file", and --force means "discard
-// my CURRENT-run hand-edits", not "undo my recorded ownership". Without
-// this guard, `forge generate --force` silently re-scaffolded a forked
-// page.tsx over a fully rewritten user page.
+// Exception: a DISOWNED checksum entry survives even --force.
+// Disowning is deliberately stickier than --force everywhere else in
+// forge (WriteGeneratedFile's Tier-2 branch precedes its force
+// handling) — the user said "stop touching this file", and --force
+// means "discard my CURRENT-run hand-edits", not "undo my recorded
+// ownership". Without this guard, `forge generate --force` silently
+// re-scaffolded a user-owned page.tsx over a fully rewritten user page.
+// (Legacy `forked: true` entries get the same protection until the
+// pipeline migration converts them.)
 func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData, cs *checksums.FileChecksums, force bool) error {
 	full := filepath.Join(projectDir, relPath)
 	_, statErr := os.Stat(full)
@@ -187,8 +189,7 @@ func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates
 		return nil
 	}
 	if exists && cs != nil {
-		if entry, ok := cs.Files[filepath.ToSlash(relPath)]; ok && entry.Forked {
-			checksums.NoteForkedSkip(filepath.ToSlash(relPath))
+		if entry, ok := cs.Files[filepath.ToSlash(relPath)]; ok && (entry.Disowned || entry.Forked) {
 			return nil
 		}
 	}

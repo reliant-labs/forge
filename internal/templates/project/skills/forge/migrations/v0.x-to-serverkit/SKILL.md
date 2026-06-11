@@ -73,18 +73,17 @@ forge generate
 go build ./...
 ```
 
-## 4. Migration (manual part — forked bootstrap.go)
+## 4. Migration (manual part — disowned bootstrap.go)
 
 The painful case is **projects whose `pkg/app/bootstrap.go` is
-forge-forked** (i.e. `.forge/checksums.json` shows the file as
-user-modified or with `forked: true`). The control-plane reference
-project (`cp-forge`) is the canonical example — it has a hand-rolled
-`constructWorkers` helper and a custom `mountDaemonRegistryAdapter` that
-the codegen wouldn't have produced.
+disowned** (i.e. `.forge/checksums.json` shows the file as
+user-modified, `disowned: true`, or the legacy `forked: true`). The
+control-plane reference project (`cp-forge`) is the canonical example —
+it has a hand-rolled `constructWorkers` helper and a custom
+`mountDaemonRegistryAdapter` that the codegen wouldn't have produced.
 
-For forked projects, `forge generate` will report the bootstrap.go
-mismatch and skip the regen. You must apply the same shape changes by
-hand:
+For disowned projects, `forge generate` leaves bootstrap.go alone (the
+file is user-owned). You must apply the same shape changes by hand:
 
 1. **Add the serverkit import** to the import block:
 
@@ -148,9 +147,9 @@ methods on `*App`.
 
 ## 5. Manual part — custom `cmd/server.go` edits
 
-If your `cmd/server.go` was also forked (rare — most projects leave it
-alone), the regen will skip it the same way. The canonical mapping from
-the old inline scaffold to serverkit hooks:
+If your `cmd/server.go` was also disowned (rare — most projects leave
+it alone), the regen will skip it the same way. The canonical mapping
+from the old inline scaffold to serverkit hooks:
 
 | Old inline code                       | New hook                                  |
 | ------------------------------------- | ----------------------------------------- |

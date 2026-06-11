@@ -14,28 +14,30 @@ import (
 	"testing"
 )
 
-func TestInspector_TierAndForkedClassification(t *testing.T) {
+func TestInspector_TierAndDisownedClassification(t *testing.T) {
 	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
 		"pkg/app/bootstrap.go":     {Tier: 1},
 		"pkg/app/app_extras.go":    {Tier: 2},
 		"db/embed.go":              {Tier: 0}, // legacy → Tier-1
-		"internal/svc/contract.go": {Tier: 1, Forked: true},
+		"internal/svc/contract.go": {Tier: 2, Disowned: true},
+		"internal/svc/legacy.go":   {Tier: 1, Forked: true}, // legacy fork-era entry
 		"web/hooks.ts":             {Tier: 1},
 	}}
 	insp := NewInspector("", cs)
 
 	cases := []struct {
-		path       string
-		wantTier   int
-		wantTier1  bool
-		wantTier2  bool
-		wantForked bool
-		wantGo     bool
+		path         string
+		wantTier     int
+		wantTier1    bool
+		wantTier2    bool
+		wantDisowned bool
+		wantGo       bool
 	}{
 		{"pkg/app/bootstrap.go", 1, true, false, false, true},
 		{"pkg/app/app_extras.go", 2, false, true, false, true},
 		{"db/embed.go", 0, true, false, false, true}, // legacy promotion
-		{"internal/svc/contract.go", 1, true, false, true, true},
+		{"internal/svc/contract.go", 2, false, true, true, true},
+		{"internal/svc/legacy.go", 1, true, false, true, true}, // legacy fork counts as disowned
 		{"web/hooks.ts", 1, true, false, false, false},
 		{"never/seen.go", 0, false, false, false, true}, // untracked
 	}
@@ -49,8 +51,8 @@ func TestInspector_TierAndForkedClassification(t *testing.T) {
 		if got := insp.IsTier2(tc.path); got != tc.wantTier2 {
 			t.Errorf("IsTier2(%q) = %v, want %v", tc.path, got, tc.wantTier2)
 		}
-		if got := insp.IsForked(tc.path); got != tc.wantForked {
-			t.Errorf("IsForked(%q) = %v, want %v", tc.path, got, tc.wantForked)
+		if got := insp.IsDisowned(tc.path); got != tc.wantDisowned {
+			t.Errorf("IsDisowned(%q) = %v, want %v", tc.path, got, tc.wantDisowned)
 		}
 		if got := insp.IsGo(tc.path); got != tc.wantGo {
 			t.Errorf("IsGo(%q) = %v, want %v", tc.path, got, tc.wantGo)
@@ -67,8 +69,8 @@ func TestInspector_NilManifestSafe(t *testing.T) {
 	if insp.IsTracked("anything.go") {
 		t.Errorf("IsTracked on nil manifest should be false")
 	}
-	if insp.IsForked("anything.go") {
-		t.Errorf("IsForked on nil manifest should be false")
+	if insp.IsDisowned("anything.go") {
+		t.Errorf("IsDisowned on nil manifest should be false")
 	}
 	if insp.Tier("anything.go") != 0 {
 		t.Errorf("Tier on nil manifest should be 0")
@@ -76,38 +78,37 @@ func TestInspector_NilManifestSafe(t *testing.T) {
 	if got := insp.Tier1GoFiles(); got != nil {
 		t.Errorf("Tier1GoFiles on nil manifest = %v, want nil", got)
 	}
-	if got := insp.ForkedGoFilesByDir(); len(got) != 0 {
-		t.Errorf("ForkedGoFilesByDir on nil manifest should be empty, got %v", got)
+	if got := insp.DisownedGoFilesByDir(); len(got) != 0 {
+		t.Errorf("DisownedGoFilesByDir on nil manifest should be empty, got %v", got)
 	}
 }
 
-func TestInspector_ForkedGoFilesByDir(t *testing.T) {
+func TestInspector_DisownedGoFilesByDir(t *testing.T) {
 	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
-		"pkg/app/bootstrap.go": {Tier: 1, Forked: true},
-		"pkg/app/wire_gen.go":  {Tier: 1, Forked: true},
-		"pkg/app/app_gen.go":   {Tier: 1}, // not forked
-		"internal/x/x.go":      {Tier: 1, Forked: true},
-		// Non-Go forked entries must NOT appear in the Go grouping —
+		"pkg/app/bootstrap.go": {Tier: 2, Disowned: true},
+		"pkg/app/wire_gen.go":  {Tier: 1, Forked: true}, // legacy fork-era entry counts too
+		"pkg/app/app_gen.go":   {Tier: 1},               // forge-owned
+		"internal/x/x.go":      {Tier: 2, Disowned: true},
+		// Non-Go disowned entries must NOT appear in the Go grouping —
 		// a YAML or TSX file cannot satisfy a Go package-local
 		// reference, so the dangling-ref check ignores them.
-		".github/workflows/ci.yml": {Tier: 1, Forked: true},
-		"web/hooks.ts":             {Tier: 1, Forked: true},
-		"pkg/app/scaffold.go":      {Tier: 2, Forked: true}, // Tier-2 forked: still grouped as forked Go (forked-flag wins)
-		"untracked/sibling.go":     {Tier: 0},               // legacy entry, not forked
-		"unused/never-forked.go":   {Tier: 1},               // not forked
+		".github/workflows/ci.yml": {Tier: 2, Disowned: true},
+		"web/hooks.ts":             {Tier: 2, Disowned: true},
+		"untracked/sibling.go":     {Tier: 0}, // legacy entry, not disowned
+		"unused/owned.go":          {Tier: 1}, // forge-owned
 	}}
 	insp := NewInspector("", cs)
-	got := insp.ForkedGoFilesByDir()
+	got := insp.DisownedGoFilesByDir()
 	want := map[string][]string{
-		"pkg/app":    {"pkg/app/bootstrap.go", "pkg/app/scaffold.go", "pkg/app/wire_gen.go"},
+		"pkg/app":    {"pkg/app/bootstrap.go", "pkg/app/wire_gen.go"},
 		"internal/x": {"internal/x/x.go"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ForkedGoFilesByDir mismatch.\ngot:  %v\nwant: %v", got, want)
+		t.Errorf("DisownedGoFilesByDir mismatch.\ngot:  %v\nwant: %v", got, want)
 	}
 
 	// Second call should return the cached map.
-	if got2 := insp.ForkedGoFilesByDir(); !reflect.DeepEqual(got, got2) {
+	if got2 := insp.DisownedGoFilesByDir(); !reflect.DeepEqual(got, got2) {
 		t.Errorf("second call returned a different map; got %v", got2)
 	}
 }
@@ -116,8 +117,9 @@ func TestInspector_Tier1GoFiles(t *testing.T) {
 	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
 		"db/embed.go":          {Tier: 0}, // legacy → Tier-1
 		"pkg/app/bootstrap.go": {Tier: 1},
-		"pkg/app/forked.go":    {Tier: 1, Forked: true}, // skip forked
-		"scaffold/svc.go":      {Tier: 2},               // skip Tier-2
+		"pkg/app/legacy.go":    {Tier: 1, Forked: true},   // skip legacy fork-era entry
+		"scaffold/svc.go":      {Tier: 2},                 // skip Tier-2
+		"pkg/app/disowned.go":  {Tier: 2, Disowned: true}, // skip disowned (Tier-2)
 		"web/hooks.ts":         {Tier: 1},               // skip non-Go
 	}}
 	insp := NewInspector("", cs)

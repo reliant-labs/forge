@@ -1,18 +1,18 @@
 // Per-file extension-point hints for Tier-1 drift.
 //
 // When the stomp guard catches a hand-edited Tier-1 file, the worst
-// thing the error can do is lead with --accept: agents take the path
-// of least resistance, fork the file, and permanently lose
+// thing the error can do is lead with `forge disown`: agents take the
+// path of least resistance, disown the file, and permanently lose
 // regeneration (the failure chain this whole subsystem exists to
 // prevent). The right answer is almost always "your customization has
 // a designated user-owned home" — these hints name that home, per
 // file shape, so the error message teaches the extension point first
-// and the fork escape hatch last.
+// and the disown one-way door last.
 //
-// The same mapping feeds `forge unfork --merge`'s post-merge guidance:
-// a cleanly merged file is about to be re-rendered by the next
-// generate, so surviving customizations need to move to the same
-// destinations.
+// The same mapping feeds `forge unfork --merge`'s post-merge guidance
+// (legacy-fork migration aid): a cleanly merged file is about to be
+// re-rendered by the next generate, so surviving customizations need
+// to move to the same destinations.
 package cli
 
 import (
@@ -60,11 +60,12 @@ func tier1ExtensionPointHint(relPath string) string {
 // reuse the identical report and (b) the message can be pinned by unit
 // tests without spinning up a pipeline context.
 //
-// Message design: the extension point leads, the fork trails. The old
-// ordering taught --accept as the path of least resistance, and agents
-// dutifully took it — permanently losing regeneration for the file
-// (.forge/backlog.md 2026-06-03/05). --accept stays documented, but as
-// what it is: adopting permanent ownership.
+// Message design: the extension point leads, the disown door trails.
+// The old ordering taught the fork escape hatch as the path of least
+// resistance, and agents dutifully took it — permanently losing
+// regeneration for the file (.forge/backlog.md 2026-06-03/05). Disown
+// stays documented, but as what it is: a one-way transfer to permanent
+// user ownership.
 func formatTier1DriftReport(drift []checksums.Tier1DriftEntry) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d Tier-1 file(s) modified after last `forge generate`:\n\n", len(drift))
@@ -80,6 +81,7 @@ func formatTier1DriftReport(drift []checksums.Tier1DriftEntry) string {
 	fmt.Fprintf(&b, "  1. Move the customization to the designated extension point named above (user-owned; survives every regenerate) — or any Tier-2 file — then revert the generated file (`git checkout -- <path>`) and re-run.\n")
 	fmt.Fprintf(&b, "  2. Re-run with `--explain-drift` to see a diff of each drifted file against a fresh render of the current templates before deciding.\n")
 	fmt.Fprintf(&b, "  3. Re-run with `--force` to discard your edits and regenerate from the current templates.\n")
-	fmt.Fprintf(&b, "  4. Re-run with `--accept` to fork the file — you adopt PERMANENT ownership and forge will never update this file again (reverse with `forge unfork`, reconcile later with `forge unfork --merge`). Pair it with `--reason \"<why>\"`: forks are design feedback, and the reason is recorded in .forge/friction.jsonl (`forge friction list --area fork`).\n")
+	fmt.Fprintf(&b, "  4. If the generated code can't express what you need, record the gap with `forge friction add \"<what you needed>\" --area codegen` so forge can grow the capability — then use option 1 or 3 meanwhile.\n")
+	fmt.Fprintf(&b, "  5. Last resort: `forge disown <path> --reason \"<why>\"` — a ONE-WAY transfer to user ownership. Forge never updates the file again; re-adopt later only by deleting the file and running `forge generate`.\n")
 	return b.String()
 }

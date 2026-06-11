@@ -101,6 +101,17 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, missing [
 			continue
 		}
 
+		// Tier-2 entries are scaffold-once user-owned files. Forge wrote
+		// them exactly once; not being re-written this run is their
+		// PERMANENT steady state, never a stale signal. Deleting one
+		// would destroy user content (the tier-migration step in
+		// generate_tier_migrate.go also relies on this: a reclassified
+		// starter must not become a deletion candidate the moment its
+		// fork flag is cleared).
+		if cs.Files[rel].Tier == 2 {
+			continue
+		}
+
 		// This run wrote this path — definitely not stale.
 		if checksums.WrittenThisRun[rel] {
 			continue

@@ -3,10 +3,12 @@ package generator
 import (
 	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -293,6 +295,59 @@ func UpgradeManagedPaths() map[string]bool {
 	return out
 }
 
+// Tier2ManagedPaths returns the set of project-relative paths whose
+// canonical template tier is Tier-2 (scaffold-once, user-owned after the
+// first write). It is the source of truth for `forge generate`'s
+// tier-migration step (generate_tier_migrate.go in internal/cli): a
+// `.forge/checksums.json` entry for one of these paths that still
+// carries tier=1 (or the legacy unset tier=0) predates the template's
+// reclassification and must be flipped to tier=2 so the file stops
+// being drift-guarded and stops surfacing as a "fork".
+//
+// Two sources:
+//
+//   - The managed-file registry entries tagged Tier2. A destPath's tier
+//     is invariant across the (kind, binary) matrix — only the source
+//     template varies — so the union over combinations is safe (same
+//     posture as UpgradeManagedPaths).
+//   - The one-shot .github scaffolds written once at `forge new` time
+//     (project_ci.go) and never re-emitted by `forge generate`.
+//     CODEOWNERS even carries the `forge:scaffold one-shot — starter`
+//     banner; recording them as Tier-1 was a historical accident that
+//     made hand-editing your own CODEOWNERS trip the Tier-1 stomp
+//     guard. (FRICTION 2026-06-05, cp-forge: users worked around the
+//     misclassification by hand-flipping `forked: true`.)
+//
+// Deliberately NOT in this set: .github/workflows/e2e.yml and
+// .github/dependabot.yml — those are re-rendered by `forge generate`'s
+// CI step when enabled, so Tier-1 is their honest tier.
+func Tier2ManagedPaths() map[string]bool {
+	out := map[string]bool{}
+	for _, kind := range []string{
+		config.ProjectKindService,
+		config.ProjectKindCLI,
+		config.ProjectKindLibrary,
+	} {
+		for _, binary := range []string{
+			config.ProjectBinaryPerService,
+			config.ProjectBinaryShared,
+		} {
+			for _, f := range managedFilesForKindBinary(kind, binary) {
+				if f.tier == Tier2 {
+					out[f.destPath] = true
+				}
+			}
+		}
+	}
+	for _, p := range []string{
+		".github/CODEOWNERS",
+		".github/pull_request_template.md",
+	} {
+		out[p] = true
+	}
+	return out
+}
+
 // ServiceInfo holds the name and port of a service for template rendering.
 type ServiceInfo struct {
 	Name string
@@ -428,6 +483,20 @@ func renderManagedFile(f managedFile, data upgradeTemplateData) ([]byte, error) 
 	}
 	if err != nil {
 		return nil, err
+	}
+	// gofmt Go renders. The generate pipeline runs goimports over
+	// everything it writes, but the upgrade lane historically wrote raw
+	// template output — so conditional templates (cmd-server.go.tmpl's
+	// ConfigFields-gated struct literal) produced misaligned code that
+	// diffed against the on-disk gofmt'd file and surfaced as phantom
+	// "would update"/fork noise. format.Source can't reproduce
+	// goimports' import-group reordering, but it eliminates the
+	// alignment class entirely. Unformattable output (template bug)
+	// falls through unformatted rather than failing the render.
+	if strings.HasSuffix(f.destPath, ".go") {
+		if formatted, ferr := format.Source(content); ferr == nil {
+			content = formatted
+		}
 	}
 	// Canonicalize trailing newline. gofmt-formatted Go files (and most
 	// editor-on-save defaults across yaml/json/md) end with exactly one
@@ -587,6 +656,26 @@ func simpleDiff(path string, old, new []byte) string {
 // source for cmd/main.go (instead of the canonical cmd-root.go.tmpl) so the
 // shared-binary scaffold survives generate cycles.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
+	return RegenerateInfraFilesTracked(projectDir, cfg, nil)
+}
+
+// RegenerateInfraFilesTracked is RegenerateInfraFiles routed through the
+// checksums chokepoint. With a non-nil cs every Tier-1 infra write:
+//
+//   - honors forked entries (the user `--accept`-ed the file: forge
+//     parks the fresh render under .forge/render/ instead of stomping —
+//     the raw os.WriteFile path this replaces violated the "forge never
+//     regenerates forked files" contract for cmd/*.go and friends);
+//   - records the render hash + WrittenThisRun so the stale sweep and
+//     the next run's drift guard see an accurate manifest;
+//   - tags the entry Tier-1 (these files ARE regenerated every run).
+//
+// force=true preserves the historical always-overwrite semantics for
+// non-forked files: the Tier-1 stomp guard ran earlier in the pipeline,
+// so any surviving drift was already adjudicated (--force / --accept).
+//
+// A nil cs falls back to untracked writes (legacy callers).
+func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, cs *FileChecksums) error {
 	data := buildTemplateData(cfg, projectDir)
 	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
 		if f.tier != Tier1 {
@@ -596,11 +685,7 @@ func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 		if err != nil {
 			return fmt.Errorf("render %s: %w", f.destPath, err)
 		}
-		fullPath := filepath.Join(projectDir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(fullPath, content, 0644); err != nil {
+		if _, err := checksums.WriteGeneratedFileTier1(projectDir, f.destPath, content, cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.destPath, err)
 		}
 	}

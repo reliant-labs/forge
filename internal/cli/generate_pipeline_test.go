@@ -37,6 +37,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 	want := []string{
 		"load project config",
 		"load checksums",
+		"migrate reclassified template tiers",
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
 		"sync forge/pkg dev replace",

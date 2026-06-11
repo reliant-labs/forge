@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-binary-shared
 description: Migrate a multi-service forge project from binary=per-service (one Application per service in KCL, one image build per service) to binary=shared (one Go binary, cobra subcommand per service, one Docker image, MultiServiceApplication for KCL deploy). Use when CI image builds dominate cycle time or when services share substantial internal libraries.
+relevance: migration
 ---
 
 # Migrating to `binary: shared`

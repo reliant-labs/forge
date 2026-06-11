@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-testkit
 description: Move pkg/app/bootstrap_testing.go's inlined sub-helpers (discard logger, in-memory SQLite, httptest harness, permissive authorizer, WithTestTenant) onto forge/pkg/testkit. The wiring shim stays codegen.
+relevance: migration
 ---
 
 # Migrating from inlined bootstrap-testing helpers to `forge/pkg/testkit`

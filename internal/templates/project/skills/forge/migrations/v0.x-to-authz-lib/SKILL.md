@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-authz-lib
 description: Migrate per-service authorizer_gen.go from inline matching logic to a thin shim over forge/pkg/authz. Same public API (NewGeneratedAuthorizer / Can / CanAccess); decision logic now lives in one tested library.
+relevance: migration
 ---
 
 # Migrating from inline `authorizer_gen.go` to `forge/pkg/authz`

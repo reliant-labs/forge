@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-checksum-history
 description: Migrate `.forge/checksums.json` from the legacy flat shape (path -> hex string) to the structured shape (path -> {hash, history[]}). The new shape lets `forge upgrade` distinguish stale codegen from genuine user edits, eliminating false-positive "user-modified (skipped)" reports on real template upgrades.
+relevance: migration
 ---
 
 # Prior-render checksum history

@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-observe-libs
 description: Migrate from per-internal-package middleware/tracing/metrics codegen to forge/pkg/observe Connect interceptors + opt-in helpers. Mock stays codegen.
+relevance: migration
 ---
 
 # Migrating from per-package wrapper codegen to `forge/pkg/observe`

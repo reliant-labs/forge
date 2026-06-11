@@ -12,6 +12,24 @@ type ServiceDef struct {
 	ProtoFile  string
 	ModulePath string                       // e.g., "github.com/demo-project"
 	Messages   map[string][]MessageFieldDef // message name → fields (e.g., "ListPatientsRequest" → [...])
+
+	// Schemas is the deep type graph for full JSON-Schema emission
+	// (MCP manifest): fully-qualified message name → fields, covering
+	// every message transitively reachable from any method's input or
+	// output type. Well-known types (google.protobuf.*) are NOT
+	// included — consumers map those to fixed JSON encodings matching
+	// protojson. Empty/nil on descriptors produced by forge versions
+	// before this field existed; consumers must fall back to the
+	// shallow Messages map in that case. Keyed by fully-qualified name
+	// (e.g. "shop.v1.Address") so cross-package short-name collisions
+	// can't alias two different messages.
+	Schemas map[string][]SchemaFieldDef `json:",omitempty"`
+
+	// Enums maps fully-qualified enum name → declared value names, in
+	// proto declaration order, for every enum reachable through
+	// Schemas. protojson encodes enums as their value-name strings, so
+	// this is exactly the "enum" list a JSON Schema needs.
+	Enums map[string][]string `json:",omitempty"`
 }
 
 // Method represents a single RPC method.
@@ -29,6 +47,14 @@ type Method struct {
 	// generated code so handler authors see the typed error contract at
 	// a glance. Informational at runtime — no enforcement (yet).
 	Errors []string
+	// InputTypeFQ / OutputTypeFQ are the fully-qualified names of the
+	// request/response messages (e.g. "shop.v1.CreateOrderRequest",
+	// "google.protobuf.Empty"). They key into ServiceDef.Schemas for
+	// deep JSON-Schema emission. Empty on descriptors produced by
+	// older forge versions — consumers fall back to the short-name
+	// InputType/OutputType + Messages map.
+	InputTypeFQ  string `json:",omitempty"`
+	OutputTypeFQ string `json:",omitempty"`
 	// InputProtoFile / OutputProtoFile record the proto file path that
 	// physically declares the input/output message. For RPCs whose
 	// request/response live in the same proto file as the service these
@@ -47,6 +73,44 @@ type MessageFieldDef struct {
 	Name       string // proto field name: "page_size", "search", "active"
 	ProtoType  string // "int32", "string", "bool"
 	IsOptional bool   // true if the field has the "optional" label
+}
+
+// SchemaFieldDef is the deep-schema sibling of MessageFieldDef: one
+// field of a message in ServiceDef.Schemas, carrying enough type
+// information to project a full (nested) JSON Schema without consulting
+// the proto source. Unlike MessageFieldDef.ProtoType (which collapses
+// messages/enums/maps into opaque strings), this keeps the type graph:
+// message and enum fields name their fully-qualified target so a schema
+// emitter can $ref into a shared definitions block.
+type SchemaFieldDef struct {
+	Name string `json:"name"` // proto field name, snake_case ("page_size")
+	// Kind is the proto scalar kind name ("string", "int32", "bool",
+	// "bytes", ...) or one of the structured markers "message", "enum",
+	// "map".
+	Kind string `json:"kind"`
+	// TypeName is the fully-qualified message/enum name when Kind is
+	// "message" or "enum" (e.g. "shop.v1.Address",
+	// "google.protobuf.Timestamp"). Empty for scalars and maps.
+	TypeName string `json:"type_name,omitempty"`
+	// Repeated marks proto `repeated` fields (JSON arrays). Always
+	// false for maps — proto maps are repeated entry messages under
+	// the hood, but their JSON encoding is an object, not an array.
+	Repeated bool `json:"repeated,omitempty"`
+	// Optional is true when the field carries the explicit `optional`
+	// label (proto3 field presence). Optional fields stay out of JSON
+	// Schema `required` lists.
+	Optional bool `json:"optional,omitempty"`
+	// Oneof is the containing oneof group's name for members of a
+	// real (non-synthetic) oneof. proto3 `optional` fields use a
+	// synthetic oneof internally; those report "" here and Optional
+	// true instead.
+	Oneof string `json:"oneof,omitempty"`
+	// Map-typed fields (Kind == "map") record the key/value kinds.
+	// MapValueTypeName names the fully-qualified message/enum when the
+	// value kind is "message"/"enum".
+	MapKeyKind       string `json:"map_key_kind,omitempty"`
+	MapValueKind     string `json:"map_value_kind,omitempty"`
+	MapValueTypeName string `json:"map_value_type_name,omitempty"`
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.

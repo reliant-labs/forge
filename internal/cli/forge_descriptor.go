@@ -276,6 +276,8 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			Name:            string(m.Desc.Name()),
 			InputType:       string(m.Input.Desc.Name()),
 			OutputType:      string(m.Output.Desc.Name()),
+			InputTypeFQ:     string(m.Input.Desc.FullName()),
+			OutputTypeFQ:    string(m.Output.Desc.FullName()),
 			ClientStreaming: m.Desc.IsStreamingClient(),
 			ServerStreaming: m.Desc.IsStreamingServer(),
 			AuthRequired:    true,
@@ -298,9 +300,120 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		// Extract message field definitions for input and output types
 		extractMessageFields(sd.Messages, m.Input)
 		extractMessageFields(sd.Messages, m.Output)
+
+		// Extract the deep type graph (transitively reachable messages
+		// + enums, keyed by fully-qualified name) for full JSON-Schema
+		// emission in the MCP manifest.
+		extractMessageSchema(&sd, m.Input)
+		extractMessageSchema(&sd, m.Output)
 	}
 
 	return sd
+}
+
+// extractMessageSchema records msg's fields into sd.Schemas (keyed by
+// fully-qualified name) and recurses into every message/enum the fields
+// reference, so sd.Schemas ends up holding the complete type graph
+// reachable from the service's RPC inputs/outputs.
+//
+// Recursion safety: the fully-qualified name is inserted into
+// sd.Schemas BEFORE walking the fields, so self-referential messages
+// (Tree → children []Tree) and mutually-recursive pairs terminate — the
+// second visit hits the early-return.
+//
+// Well-known types (google.protobuf.*) are deliberately NOT recorded:
+// their protojson encodings are fixed (Timestamp → RFC 3339 string,
+// Struct → arbitrary object, ...) and the MCP schema emitter maps them
+// statically. Recording e.g. Struct's internal fields would describe
+// the proto representation, not the JSON wire shape.
+func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
+	fq := string(msg.Desc.FullName())
+	if strings.HasPrefix(fq, "google.protobuf.") {
+		return
+	}
+	if sd.Schemas == nil {
+		sd.Schemas = make(map[string][]codegen.SchemaFieldDef)
+	}
+	if _, done := sd.Schemas[fq]; done {
+		return
+	}
+	sd.Schemas[fq] = nil // recursion guard — overwritten with the real fields below
+
+	fields := make([]codegen.SchemaFieldDef, 0, len(msg.Fields))
+	for _, f := range msg.Fields {
+		fd := codegen.SchemaFieldDef{
+			Name:     string(f.Desc.Name()),
+			Optional: f.Desc.HasOptionalKeyword(),
+		}
+		// Real oneof membership only — proto3 `optional` is implemented
+		// as a synthetic single-member oneof and must not surface as an
+		// exclusivity constraint.
+		if f.Oneof != nil && !f.Oneof.Desc.IsSynthetic() {
+			fd.Oneof = string(f.Oneof.Desc.Name())
+		}
+		switch {
+		case f.Desc.IsMap():
+			fd.Kind = "map"
+			fd.MapKeyKind = protoKindToString(f.Desc.MapKey().Kind())
+			val := f.Desc.MapValue()
+			fd.MapValueKind = protoKindToString(val.Kind())
+			// For message/enum values, f.Message is the synthetic map
+			// entry whose Fields[1] is the value — recurse through it so
+			// the value type lands in the graph too.
+			switch val.Kind() {
+			case protoreflect.MessageKind:
+				fd.MapValueTypeName = string(val.Message().FullName())
+				if f.Message != nil && len(f.Message.Fields) == 2 && f.Message.Fields[1].Message != nil {
+					extractMessageSchema(sd, f.Message.Fields[1].Message)
+				}
+			case protoreflect.EnumKind:
+				fd.MapValueTypeName = string(val.Enum().FullName())
+				if f.Message != nil && len(f.Message.Fields) == 2 && f.Message.Fields[1].Enum != nil {
+					recordEnum(sd, f.Message.Fields[1].Enum)
+				}
+			}
+		case f.Desc.Kind() == protoreflect.MessageKind, f.Desc.Kind() == protoreflect.GroupKind:
+			fd.Kind = "message"
+			fd.Repeated = f.Desc.IsList()
+			fd.TypeName = string(f.Desc.Message().FullName())
+			if f.Message != nil {
+				extractMessageSchema(sd, f.Message)
+			}
+		case f.Desc.Kind() == protoreflect.EnumKind:
+			fd.Kind = "enum"
+			fd.Repeated = f.Desc.IsList()
+			fd.TypeName = string(f.Desc.Enum().FullName())
+			if f.Enum != nil {
+				recordEnum(sd, f.Enum)
+			}
+		default:
+			fd.Kind = protoKindToString(f.Desc.Kind())
+			fd.Repeated = f.Desc.IsList()
+		}
+		fields = append(fields, fd)
+	}
+	sd.Schemas[fq] = fields
+}
+
+// recordEnum stores an enum's declared value names (declaration order)
+// under its fully-qualified name. protojson encodes enum values as
+// their names, so this list is verbatim the JSON Schema "enum" array.
+func recordEnum(sd *codegen.ServiceDef, en *protogen.Enum) {
+	fq := string(en.Desc.FullName())
+	if strings.HasPrefix(fq, "google.protobuf.") {
+		return
+	}
+	if sd.Enums == nil {
+		sd.Enums = make(map[string][]string)
+	}
+	if _, done := sd.Enums[fq]; done {
+		return
+	}
+	vals := make([]string, 0, len(en.Values))
+	for _, v := range en.Values {
+		vals = append(vals, string(v.Desc.Name()))
+	}
+	sd.Enums[fq] = vals
 }
 
 // extractMessageFields populates the Messages map with field definitions for a message.

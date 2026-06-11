@@ -14,20 +14,31 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// TestE2ETypesOnlyService drives the real `forge generate` pipeline
-// through the full types-only (services[].serve: false) lifecycle:
+// TestE2ERegistrationTypesOnlyService drives the real `forge generate`
+// pipeline through the registration-in-code lifecycle (what a binary
+// serves is the row list in the user-owned pkg/app/services.go):
 //
-//	A. never-scaffolded: declare a serve:false service with only a proto
-//	   → types + Connect client + frontend hooks generate; handlers/,
-//	   bootstrap row, and MCP tools do not.
-//	B. flip to served → full scaffold appears (the opt-out is reversible).
-//	C. flip back to serve:false → retirement: bootstrap row + MCP tools
-//	   drop, stale sweep reports the tracked handler files, audit warns.
+//	A. newly added (UNLISTED): a "project" service appears in forge.yaml
+//	   + proto but nowhere in services.go → handlers scaffold + row
+//	   constructor generate (the user might be about to implement it),
+//	   but the binary does NOT serve it: no MCP tools, audit warns "row
+//	   constructor generated but unreferenced", generate prints the
+//	   exact line to add.
+//	B. registered: the user adds the serviceRowProject line → MCP tools
+//	   appear, audit clears. The opt-in is one line of user-owned code.
+//	C. tombstoned (types-only): the user deletes the row and leaves a
+//	   comment naming the serving binary → handlers Tier-1 stops
+//	   regenerating (stale candidates), MCP excludes, audit warns with
+//	   state=tombstoned.
 //	D. --force-cleanup deletes the tracked generated files but never the
-//	   user-written scaffold files.
-//	E. idempotency: with the retired dir removed, a second generate is a
-//	   no-op (stable bootstrap/manifest bytes, no stale warnings).
-func TestE2ETypesOnlyService(t *testing.T) {
+//	   user-written scaffold files; the user removes the dir.
+//	E. steady state + idempotency: the tombstone comment keeps the
+//	   scaffold retired across repeated generates; bootstrap, manifest,
+//	   and services_gen are byte-stable.
+//
+// Plus a runtime probe: BootstrapOnly's registration guard fails
+// pointedly when the unregistered name is passed to `server <name>`.
+func TestE2ERegistrationTypesOnlyService(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -40,8 +51,17 @@ func TestE2ETypesOnlyService(t *testing.T) {
 	projectDir := filepath.Join(dir, "tonly")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 
-	// Declare the types-only "project" service: proto only (no handlers
-	// scaffold — that's the point), serve: false + served_by in forge.yaml.
+	// `forge new` scaffolds the user-owned registration file listing the
+	// initial service — the migration contract for fresh projects.
+	registryPath := filepath.Join(projectDir, "pkg", "app", "services.go")
+	registry := readFileE2E(t, registryPath)
+	if !strings.Contains(registry, "serviceRowAPI(app, cfg, logger, devMode, opts...),") {
+		t.Fatalf("forge new must scaffold pkg/app/services.go with the api row:\n%s", registry)
+	}
+
+	// Declare the second "project" service: proto + forge.yaml entry.
+	// Its canonical implementation will live in a sibling binary
+	// (control-plane); this repo ends up consuming only types/client.
 	protoDir := filepath.Join(projectDir, "proto", "services", "project", "v1")
 	if err := os.MkdirAll(protoDir, 0o755); err != nil {
 		t.Fatalf("mkdir proto dir: %v", err)
@@ -79,68 +99,61 @@ message GetProjectResponse {
 	if err := os.WriteFile(filepath.Join(protoDir, "project.proto"), []byte(projectProto), 0o644); err != nil {
 		t.Fatalf("write project.proto: %v", err)
 	}
-	setProjectServe(t, projectDir, addEntry)
+	addProjectServiceEntry(t, projectDir)
 
 	// Wire the unpublished forge/pkg + gen modules to local sources, same
 	// as the fixture-corpus harness (appkit/serverkit revisions are newer
 	// than any published snapshot).
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// ── Phase A: serve:false from the start ─────────────────────────────
-	runCmd(t, projectDir, forgeBin, "generate")
+	// ── Phase A: newly added — generated but NOT served ─────────────────
+	out := runCmdOutput(t, projectDir, forgeBin, "generate")
 
-	// Types + Connect client still generate.
+	// Types + Connect client + frontend hooks generate (caller-side
+	// artifacts are never gated on registration).
 	assertPathExistsE2E(t, filepath.Join(projectDir, "gen", "services", "project", "v1"))
 	genEntries, err := os.ReadDir(filepath.Join(projectDir, "gen", "services", "project", "v1"))
 	if err != nil || len(genEntries) == 0 {
 		t.Fatalf("expected generated proto types for project service, err=%v entries=%v", err, genEntries)
 	}
-	// Frontend hooks still generate.
 	assertPathExistsE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "hooks", "project-service-hooks.ts"))
-	// Handlers scaffold must NOT exist.
-	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "project")); !os.IsNotExist(err) {
-		t.Fatalf("handlers/project must not be scaffolded for serve:false, stat err = %v", err)
+
+	// The handlers scaffold + row constructor DO generate for a newly
+	// added service — implement-then-register is the supported flow.
+	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "project"))
+	rows := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
+	if !strings.Contains(rows, "func serviceRowProject(") {
+		t.Errorf("services_gen.go must carry the row constructor for the unregistered project service:\n%s", rows)
 	}
 
+	// But the binary does not SERVE it: generate says so, with the exact
+	// line to add.
+	if !strings.Contains(out, "serviceRowProject(app, cfg, logger, devMode, opts...),") {
+		t.Errorf("generate must print the registration line for the unlisted service:\n%s", out)
+	}
+
+	// The bootstrap registration guard knows the full inventory.
 	bootstrap := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if !strings.Contains(bootstrap, `Name: "api"`) {
-		t.Errorf("bootstrap table must contain the served api row")
-	}
-	if strings.Contains(bootstrap, `Name: "project"`) {
-		t.Errorf("bootstrap table must NOT contain a row for the types-only project service")
-	}
-	// The BootstrapOnly name-guard errors helpfully on the unserved name.
-	if !strings.Contains(bootstrap, `case "project":`) || !strings.Contains(bootstrap, "types-only in forge.yaml") {
-		t.Errorf("bootstrap must carry the unserved name-guard for 'project':\n%s", bootstrap)
-	}
-	if !strings.Contains(bootstrap, "served by control-plane") {
-		t.Errorf("served_by documentation must render into the guard error")
+	if !strings.Contains(bootstrap, `"project"`) || !strings.Contains(bootstrap, "not registered in pkg/app/services.go") {
+		t.Errorf("bootstrap must carry the registration guard naming the project inventory entry:\n%s", bootstrap)
 	}
 
 	assertMCPManifestServices(t, projectDir, []string{"APIService"}, []string{"ProjectService"})
-	assertAuditServed(t, projectDir, forgeBin, false /* project served */, false /* retirement finding expected */)
+	assertAuditRegistration(t, projectDir, forgeBin, false /* served */, "unlisted")
 
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// ── Phase B: flip to served — the opt-out is reversible ─────────────
-	setProjectServe(t, projectDir, serveTrue)
+	// ── Phase B: register — one user-owned line serves the service ──────
+	editServiceRegistry(t, registryPath, registerProjectRow)
 	runCmd(t, projectDir, forgeBin, "generate")
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "project"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "project", "authorizer_gen.go"))
-	bootstrap = readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if !strings.Contains(bootstrap, `Name: "project"`) {
-		t.Errorf("after restoring serve, bootstrap must regain the project row")
-	}
-	if strings.Contains(bootstrap, `case "project":`) {
-		t.Errorf("after restoring serve, the unserved guard must disappear")
-	}
 	assertMCPManifestServices(t, projectDir, []string{"APIService", "ProjectService"}, nil)
+	assertAuditRegistration(t, projectDir, forgeBin, true, "")
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// ── Phase C: retire — flip back to serve:false with scaffold on disk ─
-	setProjectServe(t, projectDir, serveFalse)
-	out := runCmdOutput(t, projectDir, forgeBin, "generate")
-	if !strings.Contains(out, "serve: false") {
+	// ── Phase C: retire — delete the row, leave the tombstone comment ───
+	editServiceRegistry(t, registryPath, tombstoneProjectRow)
+	out = runCmdOutput(t, projectDir, forgeBin, "generate")
+	if !strings.Contains(out, "types-only — not registered in pkg/app/services.go") {
 		t.Errorf("generate output must announce the types-only skip:\n%s", out)
 	}
 	// The tracked Tier-1 file under the retired dir is a report-only
@@ -149,12 +162,12 @@ message GetProjectResponse {
 		t.Errorf("generate must report the retired tracked files as stale candidates:\n%s", out)
 	}
 	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "project", "authorizer_gen.go"))
-	bootstrap = readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if strings.Contains(bootstrap, `Name: "project"`) {
-		t.Errorf("retired service must drop out of the bootstrap table")
+	rows = readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
+	if strings.Contains(rows, "serviceRowProject") {
+		t.Errorf("tombstoned service must drop out of services_gen.go")
 	}
 	assertMCPManifestServices(t, projectDir, []string{"APIService"}, []string{"ProjectService"})
-	assertAuditServed(t, projectDir, forgeBin, false, true /* retirement finding */)
+	assertAuditRegistration(t, projectDir, forgeBin, false, "tombstoned")
 
 	// ── Phase D: --force-cleanup removes generated files, never user files ─
 	// --skip-validate: the user-owned authorizer.go references the
@@ -180,8 +193,14 @@ message GetProjectResponse {
 	if strings.Contains(out, "stale generated file") {
 		t.Errorf("steady-state generate must report no stale candidates:\n%s", out)
 	}
-	assertAuditServed(t, projectDir, forgeBin, false, false /* finding cleared */)
+	// The tombstone comment keeps the scaffold retired — generate must
+	// NOT re-scaffold handlers/project for a comment-mentioned service.
+	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "project")); !os.IsNotExist(err) {
+		t.Fatalf("tombstoned service must stay retired (no handlers re-scaffold), stat err = %v", err)
+	}
+	assertAuditRegistration(t, projectDir, forgeBin, false, "")
 	firstBootstrap := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
+	firstRows := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
 	firstManifest := readFileE2E(t, filepath.Join(projectDir, "gen", "mcp", "manifest.json"))
 
 	out = runCmdOutput(t, projectDir, forgeBin, "generate")
@@ -191,13 +210,16 @@ message GetProjectResponse {
 	if got := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go")); got != firstBootstrap {
 		t.Errorf("bootstrap.go must be byte-stable across repeated generates")
 	}
+	if got := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go")); got != firstRows {
+		t.Errorf("services_gen.go must be byte-stable across repeated generates")
+	}
 	if got := readFileE2E(t, filepath.Join(projectDir, "gen", "mcp", "manifest.json")); got != firstManifest {
 		t.Errorf("MCP manifest must be byte-stable across repeated generates")
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// The unserved name-guard is live behavior, not just rendered text:
-	// running the binary with the types-only name must fail pointedly.
+	// The registration guard is live behavior, not just rendered text:
+	// running the binary with the unregistered name must fail pointedly.
 	t.Run("server-name-guard", func(t *testing.T) {
 		cmd := exec.Command("go", "run", "./cmd", "server", "project")
 		cmd.Dir = projectDir
@@ -207,62 +229,68 @@ message GetProjectResponse {
 		cmd.Env = append(os.Environ(), "AUTH_MODE=none", "ENVIRONMENT=development")
 		guardOut, runErr := cmd.CombinedOutput()
 		if runErr == nil {
-			t.Fatalf("running the types-only service name must fail; output:\n%s", guardOut)
+			t.Fatalf("running the unregistered service name must fail; output:\n%s", guardOut)
 		}
-		if !strings.Contains(string(guardOut), "types-only") || !strings.Contains(string(guardOut), "control-plane") {
-			t.Errorf("guard error must name the misconfiguration and served_by:\n%s", guardOut)
+		if !strings.Contains(string(guardOut), "not registered in pkg/app/services.go") {
+			t.Errorf("guard error must name the registration file:\n%s", guardOut)
 		}
 	})
 }
 
-type serveMode int
-
-const (
-	addEntry serveMode = iota
-	serveFalse
-	serveTrue
-)
-
-// setProjectServe edits forge.yaml programmatically: adds the "project"
-// service entry (addEntry) or flips its serve/served_by fields.
-func setProjectServe(t *testing.T, projectDir string, mode serveMode) {
+// addProjectServiceEntry appends the "project" service to forge.yaml —
+// a plain entry; serving is decided in pkg/app/services.go, not yaml.
+func addProjectServiceEntry(t *testing.T, projectDir string) {
 	t.Helper()
 	path := filepath.Join(projectDir, "forge.yaml")
 	cfg, err := loadProjectConfigFrom(path)
 	if err != nil {
 		t.Fatalf("load forge.yaml: %v", err)
 	}
-	notServed := false
-	switch mode {
-	case addEntry:
-		cfg.Services = append(cfg.Services, config.ServiceConfig{
-			Name:     "project",
-			Type:     "go_service",
-			Path:     "handlers/project",
-			Serve:    &notServed,
-			ServedBy: "control-plane",
-		})
-	default:
-		found := false
-		for i := range cfg.Services {
-			if cfg.Services[i].Name != "project" {
-				continue
-			}
-			found = true
-			if mode == serveFalse {
-				cfg.Services[i].Serve = &notServed
-				cfg.Services[i].ServedBy = "control-plane"
-			} else {
-				cfg.Services[i].Serve = nil
-				cfg.Services[i].ServedBy = ""
-			}
-		}
-		if !found {
-			t.Fatalf("project service entry not found in forge.yaml")
-		}
-	}
+	cfg.Services = append(cfg.Services, config.ServiceConfig{
+		Name: "project",
+		Type: "go_service",
+		Path: "handlers/project",
+	})
 	if err := generator.WriteProjectConfigFile(cfg, path); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
+	}
+}
+
+type registryEdit int
+
+const (
+	registerProjectRow registryEdit = iota
+	tombstoneProjectRow
+)
+
+// editServiceRegistry mutates the user-owned pkg/app/services.go the
+// way a user (or their agent) would: adding the project row after the
+// api row, or replacing it with the tombstone comment.
+func editServiceRegistry(t *testing.T, registryPath string, edit registryEdit) {
+	t.Helper()
+	const apiRow = "serviceRowAPI(app, cfg, logger, devMode, opts...),"
+	const projectRow = "serviceRowProject(app, cfg, logger, devMode, opts...),"
+	const tombstone = "// project: types-only — served by control-plane"
+
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read services.go: %v", err)
+	}
+	content := string(data)
+	switch edit {
+	case registerProjectRow:
+		if !strings.Contains(content, apiRow) {
+			t.Fatalf("services.go missing the api row to anchor the edit:\n%s", content)
+		}
+		content = strings.Replace(content, apiRow, apiRow+"\n\t\t"+projectRow, 1)
+	case tombstoneProjectRow:
+		if !strings.Contains(content, projectRow) {
+			t.Fatalf("services.go missing the project row to tombstone:\n%s", content)
+		}
+		content = strings.Replace(content, projectRow, tombstone, 1)
+	}
+	if err := os.WriteFile(registryPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write services.go: %v", err)
 	}
 }
 
@@ -288,20 +316,22 @@ func assertMCPManifestServices(t *testing.T, projectDir string, want, absent []s
 	}
 	for _, svc := range want {
 		if !got[svc] {
-			t.Errorf("MCP manifest missing tools for served service %s: %v", svc, got)
+			t.Errorf("MCP manifest missing tools for registered service %s: %v", svc, got)
 		}
 	}
 	for _, svc := range absent {
 		if got[svc] {
-			t.Errorf("MCP manifest must not advertise types-only service %s: %v", svc, got)
+			t.Errorf("MCP manifest must not advertise unregistered service %s: %v", svc, got)
 		}
 	}
 }
 
-// assertAuditServed runs `forge audit --json` and asserts (a) the shape
-// category carries the additive served flags for the project service and
-// (b) the codegen category carries (or doesn't) the retirement finding.
-func assertAuditServed(t *testing.T, projectDir, forgeBin string, projectServed, wantRetirementFinding bool) {
+// assertAuditRegistration runs `forge audit --json` and asserts (a) the
+// shape category carries the served flag for the project service and
+// (b) the codegen category carries (or doesn't) the
+// unregistered_services finding with the expected state ("" = no
+// finding expected).
+func assertAuditRegistration(t *testing.T, projectDir, forgeBin string, projectServed bool, wantFindingState string) {
 	t.Helper()
 	out := runCmdOutput(t, projectDir, forgeBin, "audit", "--json")
 	var report struct {
@@ -324,15 +354,12 @@ func assertAuditServed(t *testing.T, projectDir, forgeBin string, projectServed,
 		}
 	}
 	if project == nil {
-		t.Fatalf("audit shape must keep the types-only service discoverable: %v", shape.Details)
+		t.Fatalf("audit shape must keep the unregistered service discoverable: %v", shape.Details)
 	}
 	if project["served"] != projectServed {
 		t.Errorf("audit shape project.served = %v, want %v", project["served"], projectServed)
 	}
 	if !projectServed {
-		if project["served_by"] != "control-plane" {
-			t.Errorf("audit shape project.served_by = %v, want control-plane", project["served_by"])
-		}
 		if rpcs, ok := project["rpcs"].([]any); ok {
 			for _, r := range rpcs {
 				m := r.(map[string]any)
@@ -347,12 +374,31 @@ func assertAuditServed(t *testing.T, projectDir, forgeBin string, projectServed,
 	}
 
 	codegen := report.Categories["codegen"]
-	_, hasFinding := codegen.Details["unserved_handler_dirs"]
-	if hasFinding != wantRetirementFinding {
-		t.Errorf("audit codegen unserved_handler_dirs present=%v, want %v (details: %v)",
-			hasFinding, wantRetirementFinding, codegen.Details)
+	findings, hasFinding := codegen.Details["unregistered_services"]
+	if wantFindingState == "" {
+		if hasFinding {
+			t.Errorf("audit codegen unregistered_services present, want absent (details: %v)", codegen.Details)
+		}
+		return
 	}
-	if wantRetirementFinding && codegen.Status != "warn" && codegen.Status != "error" {
-		t.Errorf("retirement finding must degrade codegen status, got %s", codegen.Status)
+	if !hasFinding {
+		t.Fatalf("audit codegen missing unregistered_services finding (details: %v)", codegen.Details)
+	}
+	list, _ := findings.([]any)
+	found := false
+	for _, f := range list {
+		m := f.(map[string]any)
+		if m["service"] == "project" {
+			found = true
+			if m["state"] != wantFindingState {
+				t.Errorf("finding state = %v, want %s", m["state"], wantFindingState)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("unregistered_services has no entry for project: %v", findings)
+	}
+	if codegen.Status != "warn" && codegen.Status != "error" {
+		t.Errorf("registration finding must degrade codegen status, got %s", codegen.Status)
 	}
 }

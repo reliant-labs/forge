@@ -1014,23 +1014,40 @@ type BootstrapFeatures struct {
 	// line. Default false.
 	StrictWiringEnabled bool
 
-	// UnservedServices lists forge.yaml `serve: false` (types-only)
-	// services. These are NOT in the services slice (the caller filters
-	// them out before GenerateBootstrap) — they carry no table row, no
-	// wire function, no diagnostics. The template renders them into (a)
-	// a documentation comment naming the binary that serves each (the
-	// served_by field) and (b) a BootstrapOnly name-guard so passing one
-	// of these names to the `server [services...]` filter fails with a
-	// pointed error instead of appkit's generic unknown-name warning.
-	UnservedServices []UnservedServiceData
+	// AllServiceNames is the project's COMPLETE Connect-service
+	// inventory (runtime kebab names, e.g. "admin-server") — including
+	// services the caller filtered out of the services slice because
+	// pkg/app/services.go does not register them (types-only). The
+	// template renders it into BootstrapOnly's registration guard: a
+	// filter name in this inventory that has no row in the
+	// RegisteredServices result fails with a pointed error naming
+	// pkg/app/services.go instead of appkit's generic unknown-name
+	// warning. The guard checks the LIVE def.Services rows, so it stays
+	// truthful even when services.go is edited without a regenerate.
+	AllServiceNames []string
 }
 
-// UnservedServiceData is one types-only service as rendered into the
-// bootstrap template: the runtime kebab name (what cobra / the name
-// filter pass) plus the optional served_by documentation string.
-type UnservedServiceData struct {
-	Name     string // runtime kebab name, e.g. "project"
-	ServedBy string // forge.yaml services[].served_by; "" when unset
+// ServiceRowPrefix is the name prefix of the generated per-service row
+// constructors in pkg/app/services_gen.go ("serviceRow" + FieldName,
+// e.g. serviceRowBilling). The cli layer's registration parser matches
+// identifiers in the user-owned pkg/app/services.go by this prefix, so
+// the template (services_gen.go.tmpl / services.go.tmpl) and the parser
+// must agree on it.
+const ServiceRowPrefix = "serviceRow"
+
+// ServiceRowFuncName returns the canonical (no-collision) row
+// constructor name for a service, accepting any spelling the codebase
+// uses (proto "AdminServerService", forge.yaml "admin-server", snake
+// "admin_server"). Used for user-facing messages ("add this line:");
+// when a cross-role package collision renames the FieldName (rare),
+// the emitted constructor carries the collision-aware name instead and
+// the registration parser's normalized matching still resolves it.
+func ServiceRowFuncName(svcName string) string {
+	fieldName := naming.ToPascalCase(strings.TrimSuffix(svcName, "Service"))
+	if fieldName == "" {
+		fieldName = naming.ToPascalCase(svcName)
+	}
+	return ServiceRowPrefix + fieldName
 }
 
 // leaderElectionID derives a Kubernetes-valid leader-election lease name
@@ -1176,6 +1193,16 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 
 	binaryShared := projectBinaryShared(projectDir)
 
+	// The guard inventory defaults to the row services when the caller
+	// didn't supply the full inventory (initial scaffold, unit tests):
+	// every row service is part of the project's service inventory.
+	allServiceNames := features.AllServiceNames
+	if allServiceNames == nil {
+		for _, s := range bootstrapSvcs {
+			allServiceNames = append(allServiceNames, s.Name)
+		}
+	}
+
 	data := struct {
 		Module              string
 		Services            []BootstrapServiceData
@@ -1192,7 +1219,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
 		LeaderElectionID    string
-		UnservedServices    []UnservedServiceData
+		AllServiceNames     []string
 	}{
 		Module:              modulePath,
 		LeaderElectionID:    leaderElectionID(modulePath),
@@ -1209,7 +1236,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		ConnectImports:      connectImports,
 		DiagnosticsEnabled:  features.DiagnosticsEnabled,
 		StrictWiringEnabled: features.StrictWiringEnabled,
-		UnservedServices:    features.UnservedServices,
+		AllServiceNames:     allServiceNames,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)
@@ -1220,7 +1247,70 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "bootstrap.go"), content, cs, true); err != nil {
 		return fmt.Errorf("write pkg/app/bootstrap.go: %w", err)
 	}
+
+	// pkg/app/services_gen.go — the per-service row constructors
+	// (serviceRow<X>). Tier-1, regenerated every run, emitted even with
+	// zero row services (header-only file) so a project whose last
+	// service goes types-only can't be left with a stale constructor
+	// referencing a deleted handlers/ dir.
+	rowsContent, err := templates.ProjectTemplates().Render("services_gen.go.tmpl", struct {
+		Module         string
+		Services       []BootstrapServiceData
+		RESTEnabled    bool
+		ConnectImports []string
+	}{
+		Module:         modulePath,
+		Services:       bootstrapSvcs,
+		RESTEnabled:    restEnabled,
+		ConnectImports: connectImports,
+	})
+	if err != nil {
+		return fmt.Errorf("render services_gen.go.tmpl: %w", err)
+	}
+	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "services_gen.go"), rowsContent, cs, true); err != nil {
+		return fmt.Errorf("write pkg/app/services_gen.go: %w", err)
+	}
+
+	// pkg/app/services.go — the user-owned registration list. Scaffolded
+	// ONCE (never overwritten, same rule as setup.go): when missing, it
+	// lists every current row service, which preserves the pre-existing
+	// "declared ⇒ served" behavior with zero semantic change. From then
+	// on the user (or their agent) owns the list — deleting a row is the
+	// types-only opt-out.
+	if err := GenerateServicesRegistry(modulePath, bootstrapSvcs, projectDir); err != nil {
+		return err
+	}
 	return nil
+}
+
+// GenerateServicesRegistry writes pkg/app/services.go if it does not
+// already exist. The file is user-owned and never overwritten — it IS
+// the project's serving decision (one serviceRow line per service this
+// binary serves), so forge only ever scaffolds the starting point.
+func GenerateServicesRegistry(modulePath string, services []BootstrapServiceData, projectDir string) error {
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	registryPath := filepath.Join(appDir, "services.go")
+
+	// Never overwrite — this is user-owned code.
+	if _, err := os.Stat(registryPath); err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		return err
+	}
+
+	content, err := templates.ProjectTemplates().Render("services.go.tmpl", struct {
+		Module   string
+		Services []BootstrapServiceData
+	}{
+		Module:   modulePath,
+		Services: services,
+	})
+	if err != nil {
+		return fmt.Errorf("render services.go.tmpl: %w", err)
+	}
+	return os.WriteFile(registryPath, content, 0644)
 }
 
 // GenerateAppGen writes pkg/app/app_gen.go — the forge-owned canonical

@@ -207,20 +207,43 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		t.Error("bootstrap.go should contain BootstrapOnly function")
 	}
 
-	// Must contain constructor calls. wire_gen owns the Deps literal
-	// now; bootstrap calls wireXxxDeps then passes the result into
-	// xxx.New (2026-05-07 wire-gen migration).
-	if !strings.Contains(content, `api.New(apiDeps)`) {
-		t.Error("bootstrap.go should construct api service with wire_gen-built Deps")
+	// Must contain constructor calls. wire_gen owns the Deps literal;
+	// the row constructors (which call wireXxxDeps then pass the result
+	// into xxx.New) live in services_gen.go since the
+	// registration-in-code rework, and bootstrap.go consumes them via
+	// the user-owned RegisteredServices list.
+	rowsData, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(services_gen.go) error = %v", err)
 	}
-	if !strings.Contains(content, `orders.New(ordersDeps)`) {
-		t.Error("bootstrap.go should construct orders service with wire_gen-built Deps")
+	rows := string(rowsData)
+	if !strings.Contains(rows, `api.New(apiDeps)`) {
+		t.Error("services_gen.go should construct api service with wire_gen-built Deps")
 	}
-	if !strings.Contains(content, `wireAPIDeps(app, cfg, logger`) {
-		t.Error("bootstrap.go should call wireAPIDeps(app, cfg, logger, devMode)")
+	if !strings.Contains(rows, `orders.New(ordersDeps)`) {
+		t.Error("services_gen.go should construct orders service with wire_gen-built Deps")
 	}
-	if !strings.Contains(content, `wireOrdersDeps(app, cfg, logger`) {
-		t.Error("bootstrap.go should call wireOrdersDeps(app, cfg, logger, devMode)")
+	if !strings.Contains(rows, `wireAPIDeps(app, cfg, logger`) {
+		t.Error("services_gen.go should call wireAPIDeps(app, cfg, logger, devMode)")
+	}
+	if !strings.Contains(rows, `wireOrdersDeps(app, cfg, logger`) {
+		t.Error("services_gen.go should call wireOrdersDeps(app, cfg, logger, devMode)")
+	}
+	if !strings.Contains(content, `RegisteredServices(app, cfg, logger, devMode, opts...)`) {
+		t.Error("bootstrap.go should consume the user-owned RegisteredServices row list")
+	}
+	// The scaffold-once user-owned registration file lists every row.
+	registryData, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(services.go) error = %v", err)
+	}
+	for _, line := range []string{
+		"serviceRowAPI(app, cfg, logger, devMode, opts...),",
+		"serviceRowOrders(app, cfg, logger, devMode, opts...),",
+	} {
+		if !strings.Contains(string(registryData), line) {
+			t.Errorf("scaffolded services.go missing row %q", line)
+		}
 	}
 
 	// Must contain generated file header
@@ -335,12 +358,19 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	if !strings.Contains(bContent, "REST: &appkit.RESTDef{") {
 		t.Errorf("bootstrap.go should carry an appkit.RESTDef row when api.rest is on; got:\n%s", bContent)
 	}
-	// Per-service ConnectName data field with the connect ServiceName constant.
-	if !strings.Contains(bContent, "ConnectName: apiv1connect.APIServiceName") {
-		t.Error("bootstrap.go should reference apiv1connect.APIServiceName for APIService")
+	// Per-service ConnectName data field with the connect ServiceName
+	// constant — on the row constructors in services_gen.go since the
+	// registration-in-code rework (the row data moved with the rows).
+	rowsData, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(services_gen.go) error = %v", err)
 	}
-	if !strings.Contains(bContent, "ConnectName: ordersv1connect.OrdersServiceName") {
-		t.Error("bootstrap.go should reference ordersv1connect.OrdersServiceName for OrdersService")
+	rows := string(rowsData)
+	if !strings.Contains(rows, "ConnectName: apiv1connect.APIServiceName") {
+		t.Error("services_gen.go should reference apiv1connect.APIServiceName for APIService")
+	}
+	if !strings.Contains(rows, "ConnectName: ordersv1connect.OrdersServiceName") {
+		t.Error("services_gen.go should reference ordersv1connect.OrdersServiceName for OrdersService")
 	}
 	// The Assign closure must land on the unexported restHandler field
 	// — the backing store for the RESTHandler() accessor that
@@ -349,9 +379,10 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	if !strings.Contains(bContent, "app.restHandler = h") {
 		t.Error("bootstrap.go RESTDef.Assign should point at app.restHandler (unexported field backing the RESTHandler() method)")
 	}
-	// Connect imports should appear in the import block.
-	if !strings.Contains(bContent, `"example.com/proj/gen/services/api/v1/apiv1connect"`) {
-		t.Errorf("bootstrap.go should import the apiv1connect package; got:\n%s", bContent)
+	// Connect imports should appear in services_gen.go's import block
+	// (bootstrap.go no longer references the connect packages).
+	if !strings.Contains(rows, `"example.com/proj/gen/services/api/v1/apiv1connect"`) {
+		t.Errorf("services_gen.go should import the apiv1connect package; got:\n%s", rows)
 	}
 
 	appGen, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "app_gen.go"))
@@ -400,7 +431,9 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	// The mount closures live in services_gen.go since the
+	// registration-in-code rework.
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
@@ -410,20 +443,20 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 	// (2026-05-07 wire-gen migration: services now hang directly off
 	// `app.Services.<Field>` instead of a local `svcs` var.)
 	if !strings.Contains(content, "app.Services.AdminServer.RegisterWebhookRoutes(mux, middleware.HTTPStack(logger))") {
-		t.Errorf("bootstrap.go should auto-wire RegisterWebhookRoutes for admin_server (has webhooks); got:\n%s", content)
+		t.Errorf("services_gen.go should auto-wire RegisterWebhookRoutes for admin_server (has webhooks); got:\n%s", content)
 	}
 
 	// No auto-wire for the service without webhooks.
 	if strings.Contains(content, "app.Services.Orders.RegisterWebhookRoutes(") {
-		t.Errorf("bootstrap.go should NOT auto-wire RegisterWebhookRoutes for orders (no webhooks)")
+		t.Errorf("services_gen.go should NOT auto-wire RegisterWebhookRoutes for orders (no webhooks)")
 	}
 
 	// Both services still get RegisterHTTP — the auto-wire is additive.
 	if !strings.Contains(content, "app.Services.AdminServer.RegisterHTTP(mux, middleware.HTTPStack(logger))") {
-		t.Errorf("bootstrap.go should still call RegisterHTTP for admin_server")
+		t.Errorf("services_gen.go should still call RegisterHTTP for admin_server")
 	}
 	if !strings.Contains(content, "app.Services.Orders.RegisterHTTP(mux, middleware.HTTPStack(logger))") {
-		t.Errorf("bootstrap.go should still call RegisterHTTP for orders")
+		t.Errorf("services_gen.go should still call RegisterHTTP for orders")
 	}
 }
 

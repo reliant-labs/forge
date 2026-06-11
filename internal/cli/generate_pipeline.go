@@ -195,6 +195,15 @@ type pipelineContext struct {
 	EntityDefs   []codegen.EntityDef
 	ConfigFields map[string]bool
 
+	// registry is the memoized parse of the user-owned
+	// pkg/app/services.go registration file (what this binary serves —
+	// see generate_serve.go). Lazily populated via
+	// ctx.serviceRegistry(); registryErr is a sticky parse failure so
+	// every consuming step reports the same pointed error.
+	registry       *serviceRegistry
+	registryErr    error
+	registryLoaded bool
+
 	// PriorExports holds the pre-codegen snapshot of each Tier-1 Go
 	// file's exported top-level identifier names. Populated by
 	// stepSnapshotTier1Exports before any codegen step runs; consumed
@@ -1435,15 +1444,29 @@ func stepCleanupStale(ctx *pipelineContext) error {
 // generator doesn't double-up on names the CRUD handler step (4b)
 // will emit.
 func stepServiceStubs(ctx *pipelineContext) error {
-	// Types-only services (serve: false) get NO handlers/<svc>/ scaffold —
-	// announce each skip so "why is my handlers dir missing?" has a loud
-	// answer in the generate output.
-	served, unserved := servedServiceDefs(ctx.Cfg, ctx.Services)
-	for _, svc := range unserved {
-		fmt.Printf("  ⏭️  Skipped handlers/%s/ (serve: false — types-only service)\n", naming.ServicePackage(svc.Name))
+	// Tombstoned services (mentioned only in a pkg/app/services.go
+	// comment — types-only) get NO handlers/<svc>/ scaffold — announce
+	// each skip so "why is my handlers dir missing?" has a loud answer
+	// in the generate output. Registered AND unlisted (newly added)
+	// services both scaffold; the unlisted ones additionally get a
+	// register-me notice so the user knows the binary won't serve them
+	// until they add the row.
+	reg, err := ctx.serviceRegistry()
+	if err != nil {
+		return err
 	}
-	crudMethodNames := collectCRUDMethodNames(served, ctx.ProjectDir)
-	if err := generateServiceStubs(ctx.Cfg, served, ctx.ProjectDir, crudMethodNames, ctx.Checksums); err != nil {
+	rows, tombstoned := splitServiceDefs(reg, ctx.Services)
+	for _, svc := range tombstoned {
+		fmt.Printf("  ⏭️  Skipped handlers/%s/ (types-only — not registered in %s)\n", naming.ServicePackage(svc.Name), serviceRegistryRelPath)
+	}
+	for _, svc := range rows {
+		if reg.state(svc.Name) == registrationUnlisted {
+			fmt.Printf("  📝 %s is generated but NOT served: add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices in %s\n",
+				svc.Name, codegen.ServiceRowFuncName(svc.Name), serviceRegistryRelPath)
+		}
+	}
+	crudMethodNames := collectCRUDMethodNames(rows, ctx.ProjectDir)
+	if err := generateServiceStubs(ctx.Cfg, rows, ctx.ProjectDir, crudMethodNames, ctx.Checksums); err != nil {
 		return fmt.Errorf("service stub generation failed: %w", err)
 	}
 	return nil
@@ -1497,27 +1520,43 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 // against entity descriptors. Best-effort warning so a single
 // unsupported entity doesn't brick the rest of generate.
 func stepCRUDHandlers(ctx *pipelineContext) error {
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
 	return ctx.warnOrFail("CRUD handler generation",
-		generateCRUDHandlers(ctx.servedServices(), ctx.ModulePath, ctx.ProjectDir, ctx.Checksums))
+		generateCRUDHandlers(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums))
 }
 
 // stepAuthorizer — was Step 4c.
 // Emits the role-mapping authorizer_gen.go from forge proto annotations.
 // Best-effort warning.
 func stepAuthorizer(ctx *pipelineContext) error {
-	// The unserved-dir skip set keeps the orphan-dir sweep inside
+	// The tombstoned-dir skip set keeps the orphan-dir sweep inside
 	// GenerateAuthorizer from re-emitting authorizer_gen.go into a
-	// retired (serve: false) handlers dir — re-emitting would hide the
+	// retired (types-only) handlers dir — re-emitting would hide the
 	// dir's tracked files from the stale-cleanup sweep.
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	skips, err := ctx.tombstonedHandlerDirSkips()
+	if err != nil {
+		return err
+	}
 	return ctx.warnOrFail("authorizer generation",
-		codegen.GenerateAuthorizer(ctx.servedServices(), ctx.ModulePath, ctx.ProjectDir, unservedHandlerDirSkips(ctx.Cfg), ctx.Checksums))
+		codegen.GenerateAuthorizer(rows, ctx.ModulePath, ctx.ProjectDir, skips, ctx.Checksums))
 }
 
 // stepServiceMocks — was Step 5.
 // Always regenerate. Mocks are Tier-1 files; their content is owned by
 // forge and is the test seam frontends import statically.
 func stepServiceMocks(ctx *pipelineContext) error {
-	if err := generateServiceMocks(ctx.servedServices(), ctx.ProjectDir); err != nil {
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	if err := generateServiceMocks(rows, ctx.ProjectDir); err != nil {
 		return fmt.Errorf("mock generation failed: %w", err)
 	}
 	return nil
@@ -1539,10 +1578,16 @@ func stepInternalContracts(ctx *pipelineContext) error {
 // provider (clerk, jwt, etc.). Gated on cfg.Auth.Provider being set
 // to a real provider.
 func stepAuthMiddleware(ctx *pipelineContext) error {
-	// Served-only: the auth interceptor's skip-list enumerates procedures
-	// this binary mounts; a types-only service's RPCs are mounted by the
-	// sibling binary and must not be registered here.
-	if err := generateAuthMiddleware(ctx.Cfg, ctx.servedServices(), ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
+	// Registered-only: the auth interceptor's skip-list enumerates
+	// procedures this binary mounts; a service without a row in
+	// pkg/app/services.go is not mounted here (its RPCs are either
+	// served by a sibling binary or awaiting registration) and must not
+	// be enumerated.
+	registered, err := ctx.registeredServiceDefs()
+	if err != nil {
+		return err
+	}
+	if err := generateAuthMiddleware(ctx.Cfg, registered, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("auth middleware generation failed: %w", err)
 	}
 	return nil
@@ -1603,7 +1648,11 @@ func stepTenantMiddleware(ctx *pipelineContext) error {
 // Emit webhook router from any webhook annotations in the descriptor.
 // No-op when no webhooks are declared.
 func stepWebhookRoutes(ctx *pipelineContext) error {
-	if err := generateWebhookRoutes(ctx.Cfg, ctx.ProjectDir, ctx.Checksums); err != nil {
+	reg, err := ctx.serviceRegistry()
+	if err != nil {
+		return err
+	}
+	if err := generateWebhookRoutes(ctx.Cfg, reg, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("webhook route generation failed: %w", err)
 	}
 	return nil
@@ -1625,14 +1674,19 @@ func stepMCPManifest(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		projectName = ctx.Cfg.Name
 	}
-	// Served-only: advertising a types-only service's RPCs as MCP tools
-	// would be false — this binary doesn't serve them. The audit shape
-	// keeps the unserved RPCs discoverable (served: false, additive).
+	// Registered-only: advertising an unregistered service's RPCs as MCP
+	// tools would be false — this binary doesn't serve them. The audit
+	// shape keeps the unserved RPCs discoverable (served: false,
+	// additive).
+	registered, err := ctx.registeredServiceDefs()
+	if err != nil {
+		return err
+	}
 	return ctx.warnOrFail("MCP manifest generation",
 		codegen.GenerateMCPManifest(codegen.MCPGenInput{
 			ProjectDir:  ctx.ProjectDir,
 			ProjectName: projectName,
-			Services:    ctx.servedServices(),
+			Services:    registered,
 			Checksums:   ctx.Checksums,
 		}))
 }
@@ -1696,14 +1750,22 @@ func stepBootstrap(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		bootstrapFeatures.DiagnosticsEnabled = ctx.Cfg.Features.DiagnosticsEnabled()
 		bootstrapFeatures.StrictWiringEnabled = ctx.Cfg.Features.StrictWiringEnabled()
-		// Types-only (serve: false) services: their names render into a
-		// BootstrapOnly guard that errors helpfully when passed to the
-		// `server [services...]` name filter.
-		bootstrapFeatures.UnservedServices = unservedBootstrapGuards(ctx.Cfg)
 	}
-	// Served-only: the appkit table, wire_gen, and diagnostics rows exist
-	// per service THIS binary constructs and registers.
-	if err := generateBootstrap(ctx.servedServices(), ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
+	// The COMPLETE service inventory (including tombstoned types-only
+	// services) renders into BootstrapOnly's registration guard, which
+	// errors helpfully when an unregistered service name is passed to
+	// the `server [services...]` name filter.
+	bootstrapFeatures.AllServiceNames = allServiceRuntimeNames(ctx.Services)
+	// Row services only (registered + newly-added unlisted): the
+	// serviceRow constructors, wire_gen, and diagnostics rows exist per
+	// service whose handlers scaffold lives in this repo. Which of those
+	// rows the binary SERVES is pkg/app/services.go's call, consumed by
+	// the bootstrap template via RegisteredServices.
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	if err := generateBootstrap(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap generation failed: %w", err)
 	}
 	return nil
@@ -1716,7 +1778,11 @@ func stepBootstrap(ctx *pipelineContext) error {
 // generated testing.go could disagree with the on-disk forge.yaml.
 func stepBootstrapTesting(ctx *pipelineContext) error {
 	mtEnabled := ctx.Cfg != nil && ctx.Cfg.Auth.MultiTenant != nil && ctx.Cfg.Auth.MultiTenant.Enabled
-	if err := generateBootstrapTesting(ctx.servedServices(), ctx.ModulePath, mtEnabled, ctx.ProjectDir, ctx.Checksums); err != nil {
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	if err := generateBootstrapTesting(rows, ctx.ModulePath, mtEnabled, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap testing generation failed: %w", err)
 	}
 	return nil

@@ -56,7 +56,7 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
-		UnservedServices    []struct{ Name, ServedBy string }
+		AllServiceNames     []string
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -129,7 +129,7 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
-		UnservedServices    []struct{ Name, ServedBy string }
+		AllServiceNames     []string
 	}{
 		Module:           "example.com/myproject",
 		LeaderElectionID: "myproject-leader",
@@ -148,8 +148,12 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	if !strings.Contains(rendered, "devMode := ") {
 		t.Fatal("bootstrap with services must declare devMode for the wireXxxDeps closures")
 	}
-	if !strings.Contains(rendered, "wireAPIDeps(app, cfg, logger, devMode)") {
-		t.Fatal("bootstrap with services must consume devMode in the service Construct closure")
+	// Since the registration-in-code rework, the per-service Construct
+	// closures (which consume devMode via wireXxxDeps) live in
+	// services_gen.go; bootstrap consumes devMode by handing it to the
+	// user-owned RegisteredServices row list.
+	if !strings.Contains(rendered, "RegisteredServices(app, cfg, logger, devMode, opts...)") {
+		t.Fatal("bootstrap with services must consume devMode via the RegisteredServices call")
 	}
 	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
 		t.Fatal("bootstrap must delegate name filtering to appkit.Run via Options.Only")
@@ -198,7 +202,7 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
-		UnservedServices    []struct{ Name, ServedBy string }
+		AllServiceNames     []string
 	}{
 		Module:           "example.com/myproject",
 		LeaderElectionID: "myproject-leader",
@@ -221,10 +225,12 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	}
 	rendered := string(content)
 
-	// Every component kind must contribute a Name row to the def table
-	// — appkit.Run computes the banner's known set from these rows, so a
-	// missing kind cannot be reported as excluded.
-	for _, name := range []string{`Name: "api",`, `Name: "billing",`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
+	// Every component kind must contribute Name rows to the def table —
+	// appkit.Run computes the banner's known set from these rows, so a
+	// missing kind cannot be reported as excluded. Service rows come
+	// from the user-owned RegisteredServices (registration-in-code);
+	// worker/operator rows stay inline.
+	for _, name := range []string{`Services: RegisteredServices(app, cfg, logger, devMode, opts...)`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
 		if !strings.Contains(rendered, name) {
 			t.Errorf("bootstrap def table missing row %s — appkit's filter banner cannot report this name as excluded", name)
 		}
@@ -275,7 +281,7 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 			ConnectImports      []string
 			DiagnosticsEnabled  bool
 			StrictWiringEnabled bool
-			UnservedServices    []struct{ Name, ServedBy string }
+			AllServiceNames     []string
 			HasFallible         bool
 		}{
 			Module:       "example.com/myproject",
@@ -362,7 +368,7 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 			ConnectImports      []string
 			DiagnosticsEnabled  bool
 			StrictWiringEnabled bool
-			UnservedServices    []struct{ Name, ServedBy string }
+			AllServiceNames     []string
 		}{
 			Module: "example.com/myproject",
 			Services: []svc{

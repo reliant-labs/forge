@@ -2,8 +2,8 @@
 // Source: forge.yaml (services, workers, operators, packages) + proto/services/*.
 //
 // TABLE, NOT PROGRAM: this file is a registration table over
-// github.com/reliant-labs/forge/pkg/appkit — one dumb row per service,
-// worker, operator, and internal package. All orchestration behavior
+// github.com/reliant-labs/forge/pkg/appkit — one dumb row per worker,
+// operator, and internal package. All orchestration behavior
 // (construction order, BootstrapOnly name filtering, mount hooks, REST
 // vanguard transcoding, diagnostics boot) lives in appkit.Run. Never
 // fork this file to customize behavior: populate app.Hooks in
@@ -12,6 +12,13 @@
 // Hooks.ConstructWorker. See the appkit package docs for the full
 // hook surface. This bootstrap.go is regenerated on every
 // `forge generate` and any edits here are blown away.
+//
+// SERVICE rows are different: what this binary SERVES is code, not
+// config. The per-service row constructors (serviceRow<X>) live in
+// pkg/app/services_gen.go (forge-owned, regenerated), and the list of
+// rows this binary actually serves is the user-owned
+// RegisteredServices in pkg/app/services.go — scaffolded once, then
+// yours. This table consumes RegisteredServices verbatim.
 //
 // The App struct itself lives in pkg/app/app_gen.go (forge-owned base
 // shape) + pkg/app/app_extras.go (user-owned extensions). bootstrap.go
@@ -22,12 +29,12 @@ package app
 
 import (
 	"context"
-{{- if or .Services .HasFallible .UnservedServices}}
+{{- if or .Services .HasFallible .AllServiceNames}}
 	"fmt"
 {{- end}}
 	"log/slog"
 	"net/http"
-{{- if .Services}}
+{{- if .AllServiceNames}}
 	"slices"
 {{- end}}
 
@@ -42,9 +49,6 @@ import (
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
 	"{{.Module}}/pkg/config"
-{{- if .Services}}
-	"{{.Module}}/pkg/middleware"
-{{- end}}
 {{/* Import paths use .ImportPath (the directory leaf as it exists ON
      DISK, resolved by codegen's disk-first resolver) — never .Package,
      which is the Go package CLAUSE and may legally differ from the
@@ -53,11 +57,6 @@ import (
      the clause is. */}}
 {{- range .Services}}
 	{{.Alias}} "{{$.Module}}/handlers/{{.ImportPath}}"
-{{- end}}
-{{- if and .RESTEnabled .Services}}
-{{- range .ConnectImports}}
-	"{{.}}"
-{{- end}}
 {{- end}}
 {{- range .Workers}}
 	{{.Alias}} "{{$.Module}}/workers/{{.ImportPath}}"
@@ -229,21 +228,6 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 // Name filtering — including the unknown-name warning and the loud
 // registered-vs-excluded filter banner — lives in appkit.Run.
 func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, names []string, opts ...connect.HandlerOption) (*App, error) {
-{{- if .UnservedServices}}
-	// Types-only services (forge.yaml `serve: false`) have no row in the
-	// registration table below — their canonical implementation lives in
-	// a sibling binary{{range .UnservedServices}}{{if .ServedBy}} ({{.Name}}: served by {{.ServedBy}}){{end}}{{end}}. Passing one
-	// of their names to the filter is a misconfiguration; fail loudly
-	// instead of letting appkit's unknown-name warning serve nothing.
-	for _, n := range names {
-		switch n {
-{{- range .UnservedServices}}
-		case "{{.Name}}":
-			return nil, fmt.Errorf("service %q is types-only in forge.yaml (serve: false{{if .ServedBy}}; served by {{.ServedBy}}{{end}}) — this binary does not serve it", n)
-{{- end}}
-		}
-	}
-{{- end}}
 	app := &App{
 {{- if .Services}}
 		Services: &Services{},
@@ -349,35 +333,11 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		},
 {{- end}}
 {{- if .Services}}
-		Services: []appkit.ServiceDef{
-{{- range .Services}}
-			{
-				Name: "{{.Name}}",
-{{- if $.RESTEnabled}}
-				ConnectName: {{.ConnectPkg}}.{{.ProtoServiceName}}Name,
-{{- end}}
-				Construct: func() (appkit.Mounter, error) {
-					{{.Package}}Deps := wire{{.FieldName}}Deps(app, cfg, logger, devMode)
-					{{.Package}}Svc, err := {{.Alias}}.New({{.Package}}Deps)
-					if err != nil {
-						return nil, fmt.Errorf("initializing {{.Package}} service: %w", err)
-					}
-					app.Services.{{.FieldName}} = {{.Package}}Svc
-					return func(mux *http.ServeMux) {
-						{{.Package}}Opts := slices.Concat(opts, []connect.HandlerOption{connect.WithInterceptors(
-							middleware.AuthzInterceptor({{.Package}}Deps.Authorizer),
-						)})
-						app.Services.{{.FieldName}}.Register(mux, {{.Package}}Opts...)
-						app.Services.{{.FieldName}}.RegisterHTTP(mux, middleware.HTTPStack(logger))
-{{- if .HasWebhooks}}
-						// Auto-wired webhook routes (declared in forge.yaml).
-						app.Services.{{.FieldName}}.RegisterWebhookRoutes(mux, middleware.HTTPStack(logger))
-{{- end}}
-					}, nil
-				},
-			},
-{{- end}}
-		},
+		// Service rows come from the user-owned registration file
+		// (pkg/app/services.go). Serving a service = listing its
+		// serviceRow there; the row constructors themselves are
+		// generated guardrails in pkg/app/services_gen.go.
+		Services: RegisteredServices(app, cfg, logger, devMode, opts...),
 {{- end}}
 {{- if .Workers}}
 		// Workers — construction passes through app.Hooks.ConstructWorker.
@@ -429,6 +389,32 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- end}}
 	}
 
+{{- if .AllServiceNames}}
+	// Registration guard. The project's full service inventory (from
+	// forge.yaml + proto) is generated below; what this binary SERVES is
+	// whatever rows RegisteredServices (pkg/app/services.go, user-owned)
+	// returned into def.Services above. A filter name the project knows
+	// but services.go does not list is a misconfiguration — fail loudly
+	// instead of letting appkit's generic unknown-name warning serve
+	// nothing. Checking def.Services (not a generated list) keeps the
+	// guard truthful even when services.go was edited without a
+	// regenerate.
+	for _, n := range names {
+		if !slices.Contains([]string{{"{"}}{{range $i, $n := .AllServiceNames}}{{if $i}}, {{end}}"{{$n}}"{{end}}{{"}"}}, n) {
+			continue // not a service name — appkit.Run warns if unknown
+		}
+		registered := false
+		for _, row := range def.Services {
+			if row.Name == n {
+				registered = true
+				break
+			}
+		}
+		if !registered {
+			return nil, fmt.Errorf("service %q is not registered in pkg/app/services.go — this binary does not serve it; add its serviceRow line to RegisteredServices to serve it here (then `forge generate`), or run it from the binary that serves it", n)
+		}
+	}
+{{- end}}
 	if err := appkit.Run(def, mux, logger, appkit.Options{Only: names}); err != nil {
 		return nil, err
 	}

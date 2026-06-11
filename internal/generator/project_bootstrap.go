@@ -20,8 +20,8 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	// VarName is the lowerCamel form of FieldName for any local-var
 	// references the template expands.
 	type bootstrapService struct {
-		Name      string
-		Package   string
+		Name    string
+		Package string
 		// ImportPath is the handlers/ directory leaf the template's import
 		// line uses. At initial-scaffold time forge is about to CREATE the
 		// directory, so this is always the synthesized Package — the
@@ -112,6 +112,15 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		}
 	}
 
+	// AllServiceNames drives BootstrapOnly's registration guard. At
+	// initial scaffold every declared service is registered (services.go
+	// is scaffolded below listing all of them), so the inventory is just
+	// the scaffolded set's runtime names.
+	var allServiceNames []string
+	for _, s := range services {
+		allServiceNames = append(allServiceNames, naming.ToKebabCase(s.Name))
+	}
+
 	data := struct {
 		Module              string
 		Services            []bootstrapService
@@ -127,7 +136,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
-		UnservedServices    []codegen.UnservedServiceData
+		AllServiceNames     []string
 	}{
 		Module:    g.ModulePath,
 		Services:  services,
@@ -153,10 +162,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// `forge generate` to wire the boot-time emit path.
 		DiagnosticsEnabled:  false,
 		StrictWiringEnabled: false,
-		// Initial scaffold never declares types-only services — `forge
-		// new` writes serve-by-default entries; the codegen pipeline
-		// re-renders with the real set when the user flips serve: false.
-		UnservedServices: nil,
+		AllServiceNames:     allServiceNames,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)
@@ -181,6 +187,54 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	destPath := filepath.Join(g.Path, "pkg", "app", "bootstrap.go")
 	if err := os.WriteFile(destPath, content, 0644); err != nil {
 		return err
+	}
+
+	// pkg/app/services_gen.go — the generated serviceRow constructors
+	// bootstrap's RegisteredServices consumption compiles against.
+	// Tier-1; the post-scaffold `forge generate` re-emits it with
+	// disk-resolved identities. Rendered even with zero services (the
+	// template degrades to a header-only file) so the package shape is
+	// identical across project sizes.
+	rowsContent, err := templates.ProjectTemplates().Render("services_gen.go.tmpl", struct {
+		Module         string
+		Services       []bootstrapService
+		RESTEnabled    bool
+		ConnectImports []string
+	}{
+		Module:   g.ModulePath,
+		Services: services,
+		// REST is off at initial scaffold — same rationale as the
+		// bootstrap data above.
+		RESTEnabled:    false,
+		ConnectImports: nil,
+	})
+	if err != nil {
+		return fmt.Errorf("render services_gen.go.tmpl: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(g.Path, "pkg", "app", "services_gen.go"), rowsContent, 0644); err != nil {
+		return err
+	}
+
+	// pkg/app/services.go — the user-owned registration list (what THIS
+	// binary serves is code, not config). Scaffolded once listing every
+	// service `forge new` creates; never rewritten afterwards. Zero-
+	// service projects get the empty-list version so the contract is
+	// visible from day one.
+	registryPath := filepath.Join(g.Path, "pkg", "app", "services.go")
+	if _, statErr := os.Stat(registryPath); os.IsNotExist(statErr) {
+		registryContent, rerr := templates.ProjectTemplates().Render("services.go.tmpl", struct {
+			Module   string
+			Services []bootstrapService
+		}{
+			Module:   g.ModulePath,
+			Services: services,
+		})
+		if rerr != nil {
+			return fmt.Errorf("render services.go.tmpl: %w", rerr)
+		}
+		if err := os.WriteFile(registryPath, registryContent, 0644); err != nil {
+			return err
+		}
 	}
 
 	// Emit wire_gen.go alongside bootstrap.go at scaffold time so the
@@ -218,10 +272,10 @@ type scaffoldWireAssignment struct {
 }
 
 type scaffoldWireService struct {
-	FieldName        string
-	Package          string
-	Alias            string
-	Name             string
+	FieldName string
+	Package   string
+	Alias     string
+	Name      string
 	// ImportPath / LoggerAttrKey mirror the production
 	// codegen.WireGenServiceData fields. The shared template uses
 	// {{.ImportPath}} in the import line so workers/operators can reuse

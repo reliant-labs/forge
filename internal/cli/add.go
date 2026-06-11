@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -398,6 +399,23 @@ func runAddService(name string, port int, resume, force bool) error {
 	}
 
 	fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
+
+	// Registration: pkg/app/services.go is user-owned — forge never
+	// edits it. When the file predates this service (the usual add-flow:
+	// the registry was scaffolded with the project's earlier services),
+	// the new row constructor is generated but unreferenced, so the
+	// binary won't serve the service until the user adds the line. Print
+	// the exact line; `forge audit` keeps the gap visible
+	// (codegen.unregistered_services) until it's resolved. This is
+	// deliberate: the registration line is the one decision the user (or
+	// their agent) writes — forge generates the guardrails around it.
+	if reg, regErr := loadServiceRegistry(root); regErr == nil && reg.Exists && !reg.registered(name) {
+		fmt.Println()
+		fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", serviceRegistryRelPath)
+		fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
+		fmt.Printf("       %s(app, cfg, logger, devMode, opts...),\n\n", codegen.ServiceRowFuncName(name))
+		fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
+	}
 
 	return nil
 }
@@ -1218,11 +1236,15 @@ func runAddWebhook(name, serviceName string) error {
 	if svcIdx == -1 {
 		return fmt.Errorf("service %q not found in forge.yaml", serviceName)
 	}
-	// Webhooks require a serving binary; declaring one on a types-only
-	// service would fail forge.yaml validation on the next load. Reject
-	// at add time with the full story.
-	if !cfg.Services[svcIdx].IsServed() {
-		return fmt.Errorf("service %q is types-only in forge.yaml (serve: false) — webhooks require a serving binary; add the webhook to the binary that serves it or restore serve: true", serviceName)
+	// Webhooks require a serving binary; declaring one on a service this
+	// binary does not register (no serviceRow in pkg/app/services.go)
+	// would fail the next `forge generate`. Reject at add time with the
+	// full story. Best-effort parse: a broken registry falls open here —
+	// the generate-time check is the hard gate.
+	if reg, regErr := loadServiceRegistry(root); regErr == nil &&
+		isConnectServiceConfig(cfg.Services[svcIdx]) && !reg.registered(serviceName) {
+		return fmt.Errorf("service %q is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it",
+			serviceName, serviceRegistryRelPath, codegen.ServiceRowFuncName(serviceName))
 	}
 
 	// Check for duplicate webhook.

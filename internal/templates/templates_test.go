@@ -118,6 +118,7 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 	data := struct {
 		Module              string
+		LeaderElectionID    string
 		Services            []svc
 		Packages            []struct{}
 		Workers             []struct{}
@@ -128,7 +129,8 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
 	}{
-		Module: "example.com/myproject",
+		Module:           "example.com/myproject",
+		LeaderElectionID: "myproject-leader",
 		Services: []svc{
 			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "apihandler"},
 		},
@@ -184,6 +186,7 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	}
 	data := struct {
 		Module              string
+		LeaderElectionID    string
 		Services            []svc
 		Packages            []struct{}
 		Workers             []wkr
@@ -194,7 +197,8 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
 	}{
-		Module: "example.com/myproject",
+		Module:           "example.com/myproject",
+		LeaderElectionID: "myproject-leader",
 		Services: []svc{
 			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
 			{Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing", Alias: "billing", VarName: "billing"},

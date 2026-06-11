@@ -298,3 +298,33 @@ func TestUnforkCmd_FlagsAndHelp(t *testing.T) {
 		}
 	}
 }
+
+// TestUnfork_AllSkipsTier2Entries: `--all` must not sweep up Tier-2
+// forked entries. Tier-2 is scaffold-once with no fork notion (the
+// explicit-path flow already refuses them); before this guard, --all
+// demoted the entry to Tier-1, putting a user-owned scaffold under the
+// stomp guard so the next generate drift-errored on the user's own file.
+func TestUnfork_AllSkipsTier2Entries(t *testing.T) {
+	cs := &checksums.FileChecksums{
+		Files: map[string]checksums.FileChecksumEntry{
+			"pkg/app/bootstrap.go":           {Hash: "a", Tier: 1, Forked: true},
+			"frontends/web/src/app/page.tsx": {Hash: "b", Tier: 2, Forked: true},
+		},
+	}
+	root := withUnforkProjectRoot(t, cs)
+
+	if err := runUnfork(nil, false, true, true); err != nil {
+		t.Fatalf("runUnfork --all --yes: %v", err)
+	}
+
+	got, err := checksums.Load(root)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if e := got.Files["pkg/app/bootstrap.go"]; e.Forked || e.Tier != 1 {
+		t.Errorf("bootstrap.go: got {tier:%d forked:%v}, want {tier:1 forked:false}", e.Tier, e.Forked)
+	}
+	if e := got.Files["frontends/web/src/app/page.tsx"]; !e.Forked || e.Tier != 2 {
+		t.Errorf("page.tsx: got {tier:%d forked:%v}, want untouched {tier:2 forked:true}", e.Tier, e.Forked)
+	}
+}

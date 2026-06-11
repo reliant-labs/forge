@@ -275,6 +275,11 @@ func generateSteps() []GenStep {
 	return []GenStep{
 		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config"},
 		{Name: "load checksums", Gate: always, Run: stepLoadChecksums, Tag: "config"},
+		// Must run between checksum load and the Tier-1 stomp guard:
+		// entries whose template was reclassified Tier-1→Tier-2 flip to
+		// tier=2 here so the guard stops drift-erroring on files the
+		// user now owns. See generate_tier_migrate.go.
+		{Name: "migrate reclassified template tiers", Gate: always, Run: stepMigrateTemplateTiers, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
@@ -472,6 +477,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 var templatesOnlyStepAllow = map[string]bool{
 	"load project config":                    true,
 	"load checksums":                         true,
+	"migrate reclassified template tiers":    true,
 	"sync forge/pkg dev replace":             true,
 	"announce project":                       true,
 	"detect proto directories":               true,
@@ -1780,7 +1786,10 @@ func stepPackGenerateHooks(ctx *pipelineContext) error {
 // silent failure produces drift that bites at deploy time.
 func stepRegenerateInfra(ctx *pipelineContext) error {
 	fmt.Println("\n── Regenerating infrastructure files ──")
-	if err := generator.RegenerateInfraFiles(ctx.AbsPath, ctx.Cfg); err != nil {
+	// Tracked variant: routes every write through the checksums
+	// chokepoint so forked entries are honored (side-rendered, not
+	// stomped) and the manifest records what this run emitted.
+	if err := generator.RegenerateInfraFilesTracked(ctx.AbsPath, ctx.Cfg, ctx.Checksums); err != nil {
 		return fmt.Errorf("regenerate infrastructure files: %w", err)
 	}
 	return nil

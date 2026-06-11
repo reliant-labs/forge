@@ -143,7 +143,13 @@ func runUnfork(args []string, dryRun, all, assumeYes bool) error {
 	var targets []string
 	if all {
 		for path, entry := range cs.Files {
-			if entry.Forked {
+			// Tier-2 forked entries are excluded for the same reason the
+			// explicit-path flow refuses them: Tier-2 is scaffold-once
+			// with no fork notion. Sweeping them up here would demote
+			// the entry to Tier-1 below, putting a user-owned scaffold
+			// under the stomp guard — the next generate would then
+			// drift-error on the user's own file.
+			if entry.Forked && isTier1Entry(entry) {
 				targets = append(targets, path)
 			}
 		}

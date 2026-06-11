@@ -33,7 +33,7 @@ func TestAcceptFork_FlipsAcceptedFlagAndPersists(t *testing.T) {
 	}
 	root := withUnforkProjectRoot(t, cs)
 
-	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false); err != nil {
+	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false, ""); err != nil {
 		t.Fatalf("runAcceptFork: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestAcceptFork_BulkAcceptMultipleEntries(t *testing.T) {
 		"pkg/app/migrate.go",
 		"pkg/app/bootstrap_testing.go",
 	}
-	if err := runAcceptFork(args, false); err != nil {
+	if err := runAcceptFork(args, false, ""); err != nil {
 		t.Fatalf("runAcceptFork: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestAcceptFork_RejectsUnknownPath(t *testing.T) {
 	}
 	withUnforkProjectRoot(t, cs)
 
-	err := runAcceptFork([]string{"not/a/real/path.go"}, false)
+	err := runAcceptFork([]string{"not/a/real/path.go"}, false, "")
 	if err == nil {
 		t.Fatal("expected error for unknown path; got nil")
 	}
@@ -127,7 +127,7 @@ func TestAcceptFork_RejectsNotForked(t *testing.T) {
 	}
 	withUnforkProjectRoot(t, cs)
 
-	err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false)
+	err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false, "")
 	if err == nil {
 		t.Fatal("expected error for non-forked path; got nil")
 	}
@@ -146,7 +146,7 @@ func TestAcceptFork_DryRunPreservesState(t *testing.T) {
 	}
 	root := withUnforkProjectRoot(t, cs)
 
-	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, true); err != nil {
+	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, true, ""); err != nil {
 		t.Fatalf("runAcceptFork --dry-run: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestAcceptFork_IdempotentOnAlreadyAccepted(t *testing.T) {
 	}
 	withUnforkProjectRoot(t, cs)
 
-	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false); err != nil {
+	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false, ""); err != nil {
 		t.Fatalf("runAcceptFork on already-accepted entry should not error; got %v", err)
 	}
 }
@@ -191,7 +191,7 @@ func TestAcceptFork_QuietsReportForkedSkips(t *testing.T) {
 	withUnforkProjectRoot(t, cs)
 
 	// Accept-fork the path.
-	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false); err != nil {
+	if err := runAcceptFork([]string{"pkg/app/bootstrap.go"}, false, ""); err != nil {
 		t.Fatalf("runAcceptFork: %v", err)
 	}
 

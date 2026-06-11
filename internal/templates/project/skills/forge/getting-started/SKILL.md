@@ -11,6 +11,21 @@ description: Create a new Forge project, add components, and understand the deve
 forge new <project-name> --mod <go-module-path>
 ```
 
+A bare `forge new` scaffolds **zero services**: binary shell (`cmd/`),
+`pkg/app` wiring, buf/proto scaffolding, Taskfile/CI/deploy — and
+`services: []` in forge.yaml. The binary is a deployment unit that
+mounts services; it is **not** a domain entity, so forge never invents
+a `<project>Service` from the binary name. The first step after a bare
+scaffold is:
+
+```bash
+forge add service <entity>   # name it after a domain entity (item, order, user), not the binary
+```
+
+Pass `--service <entity>` at creation time to opt into an initial
+service (it ships an example `Item` CRUD proto following the forge
+naming convention).
+
 ### Required flags
 
 | Flag | Description |
@@ -21,7 +36,7 @@ forge new <project-name> --mod <go-module-path>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--service <name>` | _(none)_ | Initial Go service(s) — repeatable or comma-separated |
+| `--service <name>` | _(none — zero services)_ | Initial Go service(s) — repeatable or comma-separated; name after a domain entity, not the binary |
 | `--frontend <name>` | _(none)_ | Initial Next.js frontend(s) — repeatable or comma-separated |
 | `--path <dir>` | `.` | Parent directory for the project |
 | `--in-place` | `false` | Scaffold into the current directory instead of creating a subdirectory |
@@ -33,7 +48,7 @@ forge new <project-name> --mod <go-module-path>
 ### Examples
 
 ```bash
-# Minimal — creates project dir, no initial service
+# Minimal — creates project dir with ZERO services; follow with `forge add service <entity>`
 forge new my-app --mod github.com/acme/my-app
 
 # With service and frontend

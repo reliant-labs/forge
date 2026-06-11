@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 func newNewCmd() *cobra.Command {
@@ -43,6 +44,12 @@ func newNewCmd() *cobra.Command {
 		Use:   "new [project-name] --mod [module-path]",
 		Short: "Create a new Forge project (service / CLI / library)",
 		Long: `Create a new project with the Forge framework structure.
+
+By default no service is scaffolded: the binary is a deployment unit
+that mounts services — it is not a domain entity. Add your first
+service after scaffolding with 'forge add service <entity>' (name it
+after a domain entity like item/order/user, not the binary), or opt
+into an initial service at creation time with --service <entity>.
 
 Pick a project kind with --kind:
 
@@ -81,7 +88,7 @@ Example:
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (required, e.g., github.com/example/my-project)")
 	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
-	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (can be repeated or comma-separated)")
+	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge add service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
@@ -528,8 +535,38 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 
 	success = true
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
+	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames)
 
 	return nil
+}
+
+// printNewNextSteps prints the post-scaffold guidance block. The
+// zero-service default is deliberate: a binary is a deployment unit that
+// mounts services — it is NOT a domain entity, so `forge new` never
+// invents a `<project>Service` with CRUD RPCs nobody asked for. On a
+// bare service-kind scaffold the documented first step is
+// `forge add service <entity>` with a real domain entity name.
+func printNewNextSteps(projectName string, inPlace bool, kind string, serviceNames []string) {
+	n := Name()
+	fmt.Println("\nNext steps:")
+	if !inPlace {
+		fmt.Printf("  cd %s\n", projectName)
+	}
+	switch {
+	case kind == config.ProjectKindCLI:
+		fmt.Println("  go build ./...        # the cobra skeleton compiles out of the box")
+		fmt.Println("  see README.md for the CLI workflow")
+	case kind == config.ProjectKindLibrary:
+		fmt.Println("  go build ./...        # the pkg/ skeleton compiles out of the box")
+		fmt.Println("  add exported types under pkg/ and tests alongside them")
+	case len(serviceNames) == 0:
+		fmt.Printf("  %s add service <entity>   # first step — name it after a DOMAIN ENTITY (e.g. item, order, user), not the binary\n", n)
+		fmt.Printf("  %s run                    # boots the stack; /healthz serves even before any service exists\n", n)
+	default:
+		fmt.Printf("  edit proto/services/%s/v1/ to define your API (the scaffold ships an example Item entity)\n", naming.ServicePackage(serviceNames[0]))
+		fmt.Printf("  %s generate               # regenerate after proto edits\n", n)
+		fmt.Printf("  %s run                    # boots the stack\n", n)
+	}
 }
 
 // rewriteBufGenYamlToRemote switches the scaffolded buf.gen.yaml from

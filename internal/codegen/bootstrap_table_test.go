@@ -280,6 +280,29 @@ func TestBootstrapTable_NoComponents_Parses(t *testing.T) {
 	if _, err := format.Source(data); err != nil {
 		t.Fatalf("format.Source: %v", err)
 	}
+
+	// The zero-component def table is exactly Setup + Hooks: no
+	// ServiceDef / WorkerDef / OperatorDef rows may appear. This is the
+	// bare `forge new` shape (zero services scaffolded by default — a
+	// binary is a deployment unit, not a domain entity), so the table
+	// must compile-and-run with empty rows rather than inventing a
+	// service from the project name.
+	content := string(data)
+	for _, row := range []string{"appkit.ServiceDef", "appkit.WorkerDef", "appkit.OperatorDef"} {
+		if strings.Contains(content, row) {
+			t.Errorf("zero-component bootstrap.go must not emit %s rows; got:\n%s", row, content)
+		}
+	}
+	for _, want := range []string{"Setup: func() error { return Setup(app, cfg) }", "Hooks: func() *appkit.Hooks { return &app.Hooks }"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("zero-component bootstrap.go missing def-table entry %q", want)
+		}
+	}
+	// The empty Services holder still exists so user code referencing
+	// app.Services compiles before the first `forge add service`.
+	if !strings.Contains(content, "type Services struct {\n}") {
+		t.Errorf("zero-component bootstrap.go should declare an empty Services struct; got:\n%s", content)
+	}
 }
 
 // TestAppGen_DeclaresHooksField asserts app_gen.go grew the Hooks

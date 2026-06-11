@@ -12,6 +12,14 @@
     standalone — self-contained Node server (`.next/standalone/server.js`).
                  Pair with the generated Dockerfile.
     server     — neither; full Next.js dev AND prod (`next start`).
+
+  All three branches emit the same base-path block: `basePath` and
+  `assetPrefix` (same value) default to forge.yaml's
+  `frontends[].base_path` and are overridable via the single canonical
+  env var NEXT_PUBLIC_BASE_PATH. The static branch additionally fails
+  the production build when forge.yaml declares a base_path but the
+  override empties it — a static export would bake root-mounted URLs
+  that 404 behind the proxy.
 */ -}}
 {{- if eq .Output "standalone" -}}
 import path from "node:path";
@@ -22,7 +30,26 @@ const withBundleAnalyzer = bundleAnalyzer({
   enabled: process.env.ANALYZE === "true",
 });
 
+// Path prefix this frontend is mounted under (e.g. "/admin" behind a
+// reverse proxy that blends several apps on one host). Empty = served
+// from the host root.
+//
+// Sources, in order:
+//   1. NEXT_PUBLIC_BASE_PATH — the ONLY env var forge reads for the
+//      base path. The NEXT_PUBLIC_ prefix is load-bearing: Next.js
+//      inlines such vars into the client bundle, so the generated
+//      browser-side helper (src/lib/basepath_gen.ts) reads the SAME
+//      name. One name everywhere; a second variant would silently be
+//      ignored.
+//   2. forge.yaml `frontends[].base_path`, baked in by forge: "{{.BasePath}}".
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
+
 const nextConfig: NextConfig = {
+  // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
+  // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
+  // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
+  // behind the proxy and React never hydrates.
+  ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   // "standalone" emits a self-contained Node server at
   // .next/standalone/server.js plus a pruned node_modules tree. This is
   // the shape the Dockerfile copies into the runner image.
@@ -53,11 +80,31 @@ const withBundleAnalyzer = bundleAnalyzer({
   enabled: process.env.ANALYZE === "true",
 });
 
+// Path prefix this frontend is mounted under (e.g. "/admin" behind a
+// reverse proxy that blends several apps on one host). Empty = served
+// from the host root.
+//
+// Sources, in order:
+//   1. NEXT_PUBLIC_BASE_PATH — the ONLY env var forge reads for the
+//      base path. The NEXT_PUBLIC_ prefix is load-bearing: Next.js
+//      inlines such vars into the client bundle, so the generated
+//      browser-side helper (src/lib/basepath_gen.ts) reads the SAME
+//      name. One name everywhere; a second variant would silently be
+//      ignored.
+//   2. forge.yaml `frontends[].base_path`, baked in by forge: "{{.BasePath}}".
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
+
 const nextConfig: NextConfig = {
   // No `output:` field — full Next.js for both dev and prod. Production
   // builds are served via `next start` (or a managed host like Vercel).
   // Use this when you need server components, server actions, ISR, or
   // request-time `redirect()` / `cookies()` in production.
+  //
+  // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
+  // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
+  // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
+  // behind the proxy and React never hydrates.
+  ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -78,7 +125,44 @@ const withBundleAnalyzer = bundleAnalyzer({
   enabled: process.env.ANALYZE === "true",
 });
 
+// Path prefix this frontend is mounted under (e.g. "/admin" behind a
+// reverse proxy that blends several apps on one host). Empty = served
+// from the host root.
+//
+// Sources, in order:
+//   1. NEXT_PUBLIC_BASE_PATH — the ONLY env var forge reads for the
+//      base path. The NEXT_PUBLIC_ prefix is load-bearing: Next.js
+//      inlines such vars into the client bundle, so the generated
+//      browser-side helper (src/lib/basepath_gen.ts) reads the SAME
+//      name. One name everywhere; a second variant would silently be
+//      ignored.
+//   2. forge.yaml `frontends[].base_path`, baked in by forge: "{{.BasePath}}".
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "{{.BasePath}}";
+{{- if .BasePath}}
+
+// forge.yaml declares base_path: "{{.BasePath}}" for this frontend, and a
+// static export bakes the prefix into every emitted URL at build time. If
+// NEXT_PUBLIC_BASE_PATH overrides it to "" the build would silently emit
+// root-mounted URLs that 404 behind the proxy (and there is no server at
+// runtime to compensate). A wrong silent default is worse than an error —
+// fail the production build loudly. To genuinely serve this frontend from
+// the root, remove base_path from forge.yaml and run `forge generate`.
+if (process.env.NODE_ENV === "production" && basePath === "") {
+  throw new Error(
+    "frontend {{.FrontendName}}: forge.yaml declares base_path \"{{.BasePath}}\" but " +
+      "NEXT_PUBLIC_BASE_PATH is empty at build time; refusing to bake a " +
+      "root-mounted static export. Unset the override (or remove base_path " +
+      "from forge.yaml and re-run `forge generate`).",
+  );
+}
+{{- end}}
+
 const nextConfig: NextConfig = {
+  // basePath prefixes routes and <Link>/router URLs; assetPrefix (same
+  // value) prefixes /_next/* asset and RSC chunk URLs. Omitting
+  // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
+  // behind the proxy and React never hydrates.
+  ...(basePath ? { basePath, assetPrefix: basePath } : {}),
   // Production: static export. This frontend is a pure UI shell — all data,
   // auth, and business logic live in a backend (the Go Connect RPC services
   // under handlers/<name>/). Running a Node sidecar to serve skeleton HTML

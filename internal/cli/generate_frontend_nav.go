@@ -55,6 +55,7 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 			FrontendName: fe.Name,
 			ProjectName:  cfg.Name,
 			Pages:        pages,
+			BasePath:     strings.TrimSpace(fe.BasePath),
 		}
 
 		if err := os.MkdirAll(filepath.Join(projectDir, feDir, "src", "components"), 0o755); err != nil {
@@ -62,6 +63,36 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		}
 		if err := os.MkdirAll(filepath.Join(projectDir, feDir, "src", "app"), 0o755); err != nil {
 			return fmt.Errorf("create app dir: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(projectDir, feDir, "src", "lib"), 0o755); err != nil {
+			return fmt.Errorf("create lib dir: %w", err)
+		}
+
+		// ── Tier-1: src/lib/basepath_gen.ts (always regenerated) ──
+		// BASE_PATH + joinBasePath() sourced from forge.yaml's
+		// frontends[].base_path. Regenerated every run so editing
+		// base_path in forge.yaml propagates without re-scaffolding;
+		// next.config.ts (Tier-2, scaffold-once) reads the same value
+		// via the NEXT_PUBLIC_BASE_PATH env var or its baked default.
+		bpGenContent, err := templates.FrontendTemplates().Render(
+			filepath.Join("nextjs", "src", "lib", "basepath_gen.ts.tmpl"), data)
+		if err != nil {
+			return fmt.Errorf("render basepath_gen.ts for %s: %w", fe.Name, err)
+		}
+		bpGenRel := filepath.Join(feDir, "src", "lib", "basepath_gen.ts")
+		if _, err := checksums.WriteGeneratedFileTier1(projectDir, bpGenRel, bpGenContent, cs, true); err != nil {
+			return fmt.Errorf("write basepath_gen.ts: %w", err)
+		}
+
+		// next.config.ts is Tier-2 (user-owned, scaffold-once), so forge
+		// can't rewrite it when base_path is added to forge.yaml later.
+		// A config that never reads NEXT_PUBLIC_BASE_PATH will serve the
+		// app at "/" while basepath_gen.ts prefixes hand-built URLs with
+		// the declared base_path — exactly the silent split-brain this
+		// feature exists to kill. Warn loudly (non-fatal: the user may
+		// have wired basePath by other means).
+		if data.BasePath != "" {
+			warnIfNextConfigIgnoresBasePath(projectDir, feDir, fe.Name, data.BasePath)
 		}
 
 		// ── Tier-1: nav_gen.tsx (always regenerated) ──
@@ -108,6 +139,30 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 	}
 
 	return nil
+}
+
+// warnIfNextConfigIgnoresBasePath prints an advisory when forge.yaml
+// declares frontends[].base_path but the frontend's (user-owned)
+// next.config.ts never references the canonical env var / basePath key.
+// Scaffolds produced after basePath support landed always contain
+// `NEXT_PUBLIC_BASE_PATH`; older hand-rolled configs need the block
+// added by hand (see the frontend skill's "Serving under a path prefix"
+// section). Missing next.config.ts is skipped silently — the scaffold
+// step owns that complaint.
+func warnIfNextConfigIgnoresBasePath(projectDir, feDir, feName, basePath string) {
+	body, err := os.ReadFile(filepath.Join(projectDir, feDir, "next.config.ts"))
+	if err != nil {
+		return
+	}
+	s := string(body)
+	if strings.Contains(s, "NEXT_PUBLIC_BASE_PATH") || strings.Contains(s, "basePath") {
+		return
+	}
+	fmt.Printf("  ⚠️  frontend %s: forge.yaml declares base_path %q but next.config.ts never reads NEXT_PUBLIC_BASE_PATH or sets basePath.\n"+
+		"      Routes/assets will be served at \"/\" while generated helpers prefix URLs with %q. Add to next.config.ts:\n"+
+		"        const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? %q;\n"+
+		"        ...(basePath ? { basePath, assetPrefix: basePath } : {}),\n",
+		feName, basePath, basePath, basePath)
 }
 
 // emitTier2OnceIfMissing writes a Tier-2 ("forge:scaffold one-shot")

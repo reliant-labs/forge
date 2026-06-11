@@ -30,7 +30,7 @@ func TestGenerateFrontendNav_EmitsBasePathGen(t *testing.T) {
 	}
 	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
 
-	if err := generateFrontendNav(cfg, nil, projectDir, cs, false); err != nil {
+	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs, false); err != nil {
 		t.Fatalf("generateFrontendNav: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestGenerateFrontendNav_BasePathGen_RegenIdempotent(t *testing.T) {
 	}
 	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
 
-	if err := generateFrontendNav(cfg, nil, projectDir, cs, false); err != nil {
+	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs, false); err != nil {
 		t.Fatalf("first generateFrontendNav: %v", err)
 	}
 	path := filepath.Join(projectDir, "frontends", "admin", "src", "lib", "basepath_gen.ts")
@@ -88,7 +88,7 @@ func TestGenerateFrontendNav_BasePathGen_RegenIdempotent(t *testing.T) {
 		t.Fatalf("read after first run: %v", err)
 	}
 
-	if err := generateFrontendNav(cfg, nil, projectDir, cs, false); err != nil {
+	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs, false); err != nil {
 		t.Fatalf("second generateFrontendNav: %v", err)
 	}
 	second, err := os.ReadFile(path)
@@ -101,7 +101,7 @@ func TestGenerateFrontendNav_BasePathGen_RegenIdempotent(t *testing.T) {
 
 	// Changing base_path in forge.yaml must flow through on the next run.
 	cfg.Frontends[0].BasePath = "/console"
-	if err := generateFrontendNav(cfg, nil, projectDir, cs, false); err != nil {
+	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs, false); err != nil {
 		t.Fatalf("third generateFrontendNav (base_path changed): %v", err)
 	}
 	third, err := os.ReadFile(path)
@@ -127,7 +127,7 @@ func TestGenerateFrontendNav_BasePathGen_EmptyBasePath(t *testing.T) {
 	}
 	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
 
-	if err := generateFrontendNav(cfg, nil, projectDir, cs, false); err != nil {
+	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs, false); err != nil {
 		t.Fatalf("generateFrontendNav: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(projectDir, "frontends", "web", "src", "lib", "basepath_gen.ts"))

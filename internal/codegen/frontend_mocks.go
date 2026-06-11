@@ -3,6 +3,7 @@ package codegen
 import (
 	"crypto/sha1"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jinzhu/inflection"
@@ -53,6 +54,19 @@ type MockTransportTemplateData struct {
 	SchemaImportGroups []MockTransportSchemaImportGroup
 }
 
+// HasWritableEntities reports whether any entity has a Create or Update
+// RPC — gates the MessageInitShape type import in the transport template
+// (used only by the mutable-store write paths; an unconditional import
+// would trip no-unused-vars on read-only projects).
+func (d MockTransportTemplateData) HasWritableEntities() bool {
+	for _, e := range d.Entities {
+		if e.HasCreate || e.HasUpdate {
+			return true
+		}
+	}
+	return false
+}
+
 // MockTransportSchemaImportGroup bundles every response-schema symbol the
 // mock-transport.ts file imports from a single proto-generated module.
 // Two entities whose schemas live in the same `@/gen/services/api/v1/api_pb`
@@ -95,8 +109,20 @@ func BuildMockTransportSchemaImportGroups(entities []MockTransportEntity) []Mock
 		}
 		if e.HasCreate || e.HasUpdate {
 			add(e.ImportPath, e.CreateResponseType+"Schema")
+			// The mutable store builds new entity records on Create/Update,
+			// so it needs the entity's own schema — from the file that
+			// declares the entity, which may differ from the service file.
+			entityPath := e.EntityImportPath
+			if entityPath == "" {
+				entityPath = e.ImportPath
+			}
+			add(entityPath, e.SchemaImport)
 		}
 	}
+	// Alphabetical group order: the emitted import statements must satisfy
+	// import/order's alphabetize check, so sort by module path rather than
+	// first-seen order.
+	sortStrings(pathOrder)
 	groups := make([]MockTransportSchemaImportGroup, 0, len(pathOrder))
 	for _, path := range pathOrder {
 		syms := make([]string, 0, len(bySym[path]))
@@ -146,7 +172,12 @@ type MockTransportEntity struct {
 	HasCreate        bool
 	HasUpdate        bool
 	HasDelete        bool
-	ImportPath       string // proto import path for type imports
+	ImportPath string // service proto import path for response-schema imports
+	// EntityImportPath is the module declaring the ENTITY message schema
+	// ("db/v1/patients_pb"). May differ from ImportPath when the entity
+	// lives in its own proto file; the mutable-store Create/Update paths
+	// need the entity schema to build new records.
+	EntityImportPath string
 	TypeImport       string // "Patient"
 	SchemaImport     string // "PatientSchema"
 	// Response/request type names
@@ -157,6 +188,67 @@ type MockTransportEntity struct {
 	UpdateRequestType  string
 	GetRequestType     string
 	DeleteRequestType  string
+}
+
+// ScenarioRpcEntry is one unary RPC row in the generated typed scenario
+// handler map (src/mocks/scenario-rpcs_gen.ts).
+type ScenarioRpcEntry struct {
+	Key            string // "demo.v1.TaskService/GetTask" — matches method.parent.typeName dispatch
+	RequestType    string // "GetTaskRequest"
+	ResponseSchema string // "GetTaskResponseSchema"
+}
+
+// ScenarioRpcData drives scenario-rpcs.ts.tmpl: a typed handler map keyed
+// by `${serviceTypeName}/${methodName}` whose values take the TYPED request
+// and must return a MessageInitShape of the response schema. This is what
+// kills the snake_case-payload silent failure: a scenario returning
+// `{ user_name: "x" }` for a `userName` field fails tsc instead of
+// rendering empty cells.
+type ScenarioRpcData struct {
+	Entries     []ScenarioRpcEntry
+	TypeImports []HookImportGroup // type-only imports, grouped per declaring module
+}
+
+// BuildScenarioRpcData collects every unary RPC across all services.
+// Streaming RPCs are reachable through the map's string index signature —
+// there is no canonical typed return shape for an arbitrary stream.
+func BuildScenarioRpcData(services []ServiceDef) ScenarioRpcData {
+	var data ScenarioRpcData
+	buckets := map[string]map[string]struct{}{}
+	add := func(path, sym string) {
+		set, ok := buckets[path]
+		if !ok {
+			set = map[string]struct{}{}
+			buckets[path] = set
+		}
+		set[sym] = struct{}{}
+	}
+
+	for _, svc := range services {
+		for _, m := range svc.Methods {
+			if m.ClientStreaming || m.ServerStreaming {
+				continue
+			}
+			inPath := m.InputProtoFile
+			if inPath == "" {
+				inPath = svc.ProtoFile
+			}
+			outPath := m.OutputProtoFile
+			if outPath == "" {
+				outPath = svc.ProtoFile
+			}
+			add(ProtoFileToTSImportPath(inPath), m.InputType)
+			add(ProtoFileToTSImportPath(outPath), m.OutputType+"Schema")
+			data.Entries = append(data.Entries, ScenarioRpcEntry{
+				Key:            svc.Package + "." + svc.Name + "/" + m.Name,
+				RequestType:    m.InputType,
+				ResponseSchema: m.OutputType + "Schema",
+			})
+		}
+	}
+
+	data.TypeImports = flattenImportGroups(buckets)
+	return data
 }
 
 // mockSeedNamespace matches the namespace used in seed_gen.go for deterministic UUIDs.
@@ -248,8 +340,13 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 			// Only include entities that have corresponding entity definitions
 			// (i.e., actual database entities with mock data). Non-CRUD RPCs
 			// like GetStatus match CRUD patterns but don't have entities.
-			if _, ok := entityMap[page.EntityName]; !ok {
+			entityDef, ok := entityMap[page.EntityName]
+			if !ok {
 				continue
+			}
+			entityImportPath := importPath
+			if entityDef.ProtoFile != "" {
+				entityImportPath = ProtoFileToTSImportPath(entityDef.ProtoFile)
 			}
 			result = append(result, MockTransportEntity{
 				EntityName:         page.EntityName,
@@ -268,6 +365,7 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 				HasUpdate:          page.HasUpdate,
 				HasDelete:          page.HasDelete,
 				ImportPath:         importPath,
+				EntityImportPath:   entityImportPath,
 				TypeImport:         page.EntityName,
 				SchemaImport:       page.EntityName + "Schema",
 				ListResponseType:   page.ListResponseType,
@@ -280,6 +378,10 @@ func ExtractMockTransportEntities(services []ServiceDef, entities []EntityDef) [
 			})
 		}
 	}
+	// Deterministic, alphabetical entity order: the transport template
+	// emits one `import * as <x>Mocks from "@/mocks/<slug>"` per entity,
+	// and import/order's alphabetize check requires ascending paths.
+	sort.Slice(result, func(i, j int) bool { return result[i].EntitySlug < result[j].EntitySlug })
 	return result
 }
 
@@ -381,6 +483,19 @@ func mockGenerateValue(tableName string, f EntityField, i int) string {
 	case "int64", "uint64", "sint64", "fixed64", "sfixed64":
 		return mockGenerateIntegerValue(col, i) + "n"
 	case "float", "double":
+		// Plausibility: probability/rate/ratio-shaped fields stay in
+		// [0, 1); percent-shaped fields stay in [0, 100]. Unbounded values
+		// like 73.5 in a "win_probability" column teach downstream LLMs
+		// (and humans skimming fixtures) the wrong data shape.
+		lower := strings.ToLower(col)
+		switch {
+		case strings.Contains(lower, "probability") || strings.Contains(lower, "ratio") ||
+			strings.HasSuffix(lower, "_rate") || lower == "rate" || strings.Contains(lower, "confidence") ||
+			strings.Contains(lower, "score") && strings.Contains(lower, "normalized"):
+			return fmt.Sprintf("%.2f", float64((i%10))*0.1+0.05)
+		case strings.Contains(lower, "percent") || strings.HasSuffix(lower, "_pct"):
+			return fmt.Sprintf("%.1f", float64((i%20))*5.0)
+		}
 		return fmt.Sprintf("%.2f", float64(i+1)*10.5)
 	}
 

@@ -7,11 +7,12 @@
 
 import { create } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+
 import { {{ .SchemaImport }} } from "@/gen/{{ .ImportPath }}";
 
 void timestampFromDate;
 
-export const {{ .EntitySlug | camelCase }} = [
+export const {{ .EntityNamePlural | camelCase }} = [
 {{- range .Records }}
   create({{ $.SchemaImport }}, {
 {{- range .Fields }}

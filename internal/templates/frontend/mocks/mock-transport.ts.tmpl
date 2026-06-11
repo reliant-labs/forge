@@ -19,10 +19,28 @@
 //
 // Streaming is not supported in v1 — see docs/adr/0002-frontend-scenarios.md.
 
-import type { Transport, UnaryResponse, StreamResponse } from "@connectrpc/connect";
-import { Code, ConnectError } from "@connectrpc/connect";
 import { create } from "@bufbuild/protobuf";
-import * as scenarios from "@/mocks/scenarios";
+import { Code, ConnectError } from "@connectrpc/connect";
+{{/*
+  Import order matters: the emitted file must pass the scaffold's
+  import/order rule (external, then internal sorted, then parent, then
+  type-only imports last — one blank line between groups, none within).
+  Entities and schema groups arrive pre-sorted from Go.
+*/}}
+{{- range .SchemaImportGroups }}
+import { {{range $i, $sym := .Symbols}}{{if $i}}, {{end}}{{$sym}}{{end}} } from "@/gen/{{ .ImportPath }}";
+{{- end }}
+{{- range .Entities }}
+import * as {{ .EntityNamePlural | camelCase }}Mocks from "@/mocks/{{ .EntitySlug }}";
+{{- end }}
+
+import * as scenarios from "../mocks/scenarios";
+{{ if .HasWritableEntities}}
+import type { MessageInitShape } from "@bufbuild/protobuf";
+import type { Transport, UnaryResponse } from "@connectrpc/connect";
+{{- else}}
+import type { Transport, UnaryResponse } from "@connectrpc/connect";
+{{- end}}
 
 /**
  * Normalize whatever a streaming scenario handler returns into an
@@ -63,13 +81,15 @@ async function* toAsyncIterable(value: unknown): AsyncIterable<unknown> {
   Per-entity *mock fixture* imports stay 1:1 with .Entities — each entity
   gets its own `@/mocks/<slug>` module, so there's nothing to dedupe.
 */}}
-{{- range .SchemaImportGroups }}
-import {
-  {{- range $i, $sym := .Symbols }}{{ if $i }},{{ end }} {{ $sym }}{{ end }},
-} from "@/gen/{{ .ImportPath }}";
-{{- end }}
 {{- range .Entities }}
-import * as {{ .EntitySlug }}Mocks from "@/mocks/{{ .EntitySlug }}";
+
+// Mutable session store for {{ .EntityName }} — Create/Update/Delete
+// round-trip within one browser session (a created row appears in the next
+// List; a deleted one disappears). Resets to the deterministic fixtures on
+// reload. Keyed by String(id) so bigint and string ids share a code path.
+const {{ .EntityNamePlural | camelCase }}Store = new Map(
+  {{ .EntityNamePlural | camelCase }}Mocks.{{ .EntityNamePlural | camelCase }}.map((e) => [String(e.id), e]),
+);
 {{- end }}
 
 // Resolve the active scenario once at module init. Reading the URL here
@@ -137,7 +157,7 @@ export function createMockTransport(fallback?: Transport): Transport {
       // 1) Scenario overlay.
       const handler = active.handlers[key];
       if (handler) {
-        const result = await handler(input as unknown);
+        const result = await handler(input as never);
         return makeUnaryResponse(method, result);
       }
 
@@ -148,22 +168,32 @@ export function createMockTransport(fallback?: Transport): Transport {
         return fallback!.unary(method, signal, timeoutMs, header, input, contextValues);
       }
 
-      // 3) Base fixture dispatch — generated from entity definitions.
+      // 3) Base fixture dispatch — generated from entity definitions,
+      //    backed by the mutable per-entity stores above so writes
+      //    round-trip within the session. Misses are REAL errors
+      //    (Code.NotFound), never a silent wrong-record fallback.
       switch (key) {
 {{- range .Entities }}
 {{- if .HasList }}
         case "{{ .ServiceTypeName }}/{{ .ListRPC }}": {
           const result = create({{ .ListResponseType }}Schema, {
-            {{ .EntitySlug | camelCase }}: {{ .EntitySlug }}Mocks.{{ .EntitySlug | camelCase }},
+            {{ .EntityNamePlural | camelCase }}: Array.from({{ .EntityNamePlural | camelCase }}Store.values()),
           });
           return makeUnaryResponse(method, result);
         }
 {{- end }}
 {{- if .HasGet }}
         case "{{ .ServiceTypeName }}/{{ .GetRPC }}": {
-          const req = input as { id?: string };
-          const all = {{ .EntitySlug }}Mocks.{{ .EntitySlug | camelCase }};
-          const found = all.find((e: { id?: string }) => e.id === req?.id) ?? all[0];
+          const req = input as { id?: unknown };
+          const found = {{ .EntityNamePlural | camelCase }}Store.get(String(req?.id));
+          if (!found) {
+            // A miss is NotFound — exactly what the real backend returns.
+            // (Falling back to the first fixture made every detail page
+            // "work" against the wrong record and hid bad-id bugs.)
+            return Promise.reject(
+              new ConnectError(`{{ .EntityName | lower }} ${String(req?.id)} not found`, Code.NotFound),
+            );
+          }
           const result = create({{ .GetResponseType }}Schema, {
             {{ .EntityName | camelCase }}: found,
           });
@@ -172,11 +202,17 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- end }}
 {{- if .HasCreate }}
         case "{{ .ServiceTypeName }}/{{ .CreateRPC }}": {
+          // Create requests carry the entity fields flattened (that's how
+          // the generated form submits); a nested { {{ .EntityName | camelCase }}: {...} }
+          // payload is accepted too.
           const req = input as Record<string, unknown>;
+          const init = { ...((req.{{ .EntityName | camelCase }} ?? req) as Record<string, unknown>) };
+          delete init.$typeName;
+          const id = typeof init.id === "string" && init.id ? init.id : crypto.randomUUID();
+          const created = create({{ .SchemaImport }}, { ...init, id } as MessageInitShape<typeof {{ .SchemaImport }}>);
+          {{ .EntityNamePlural | camelCase }}Store.set(String(id), created);
           const result = create({{ .CreateResponseType }}Schema, {
-            {{ .EntityName | camelCase }}:
-              (req?.{{ .EntityName | camelCase }} as unknown) ??
-              {{ .EntitySlug }}Mocks.{{ .EntitySlug | camelCase }}[0],
+            {{ .EntityName | camelCase }}: created,
           });
           return makeUnaryResponse(method, result);
         }
@@ -184,16 +220,27 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- if .HasUpdate }}
         case "{{ .ServiceTypeName }}/{{ .UpdateRPC }}": {
           const req = input as Record<string, unknown>;
+          const id = String(req.id ?? "");
+          const existing = {{ .EntityNamePlural | camelCase }}Store.get(id);
+          if (!existing) {
+            return Promise.reject(
+              new ConnectError(`{{ .EntityName | lower }} ${id} not found`, Code.NotFound),
+            );
+          }
+          const patch = { ...((req.{{ .EntityName | camelCase }} ?? req) as Record<string, unknown>) };
+          delete patch.$typeName;
+          const updated = create({{ .SchemaImport }}, { ...existing, ...patch, id } as MessageInitShape<typeof {{ .SchemaImport }}>);
+          {{ .EntityNamePlural | camelCase }}Store.set(id, updated);
           const result = create({{ .CreateResponseType }}Schema, {
-            {{ .EntityName | camelCase }}:
-              (req?.{{ .EntityName | camelCase }} as unknown) ??
-              {{ .EntitySlug }}Mocks.{{ .EntitySlug | camelCase }}[0],
+            {{ .EntityName | camelCase }}: updated,
           });
           return makeUnaryResponse(method, result);
         }
 {{- end }}
 {{- if .HasDelete }}
         case "{{ .ServiceTypeName }}/{{ .DeleteRPC }}": {
+          const req = input as { id?: unknown };
+          {{ .EntityNamePlural | camelCase }}Store.delete(String(req?.id));
           // Delete returns an empty response — matches the standard CRUD shape.
           return makeUnaryResponse(method, {});
         }
@@ -254,7 +301,7 @@ export function createMockTransport(fallback?: Transport): Transport {
         // iterable; treat that as an empty request payload.
       }
       const handlerInput = requestMessages.length <= 1 ? requestMessages[0] : requestMessages;
-      const result = handler(handlerInput);
+      const result = handler(handlerInput as never);
       return {
         service: method.parent as never,
         method: method as never,

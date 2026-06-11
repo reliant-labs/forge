@@ -545,15 +545,25 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	assertBasePathGenHelper(t, projectDir, "frontends/console", "/admin")
 	assertGeneratedSrcPrefixClean(t, feDir, "/admin")
 
-	// Non-vacuousness pin: the default scaffold's Item CRUD must surface
-	// as an APP-RELATIVE route in nav_gen.tsx. An empty route table
-	// would make the prefix-clean scan above meaningless, and a
-	// "/admin/items" path would be exactly the hand-prefix bug class it
-	// exists to catch (Link/router add the prefix at render time).
+	// Honest-routes pin (review F2): nav derives from the SAME entity
+	// set that gates page emission. The scaffold's Item message carries
+	// no (forge.v1.entity) annotation, so NO entity pages are emitted —
+	// and nav_gen must therefore advertise NO routes. The old behavior
+	// (nav claiming "/items" while no page existed) was the 404-wall
+	// bug this pin now keeps dead. The annotated-entity frontend path
+	// is exercised end-to-end by TestE2EFixtureCorpusCRUDLifecycle's
+	// project shape; its static-export story (entity [id] pages under
+	// output:"export" need a generateStaticParams design) is a known
+	// open decision tracked in friction.
 	navGen := readFileE2E(t, filepath.Join(feDir, "src", "components", "nav_gen.tsx"))
-	if !strings.Contains(navGen, `path: "/items"`) {
-		t.Errorf("nav_gen.tsx must carry the app-relative \"/items\" route; got:\n%s", navGen)
+	if strings.Contains(navGen, `path: "/`) {
+		t.Errorf("nav_gen.tsx advertises routes but the unannotated scaffold emits no entity pages — the F2 404-wall regression is back; got:\n%s", navGen)
 	}
+	// Non-vacuousness for the prefix-clean scan above: files that DO
+	// exist must be present and app-relative (basepath_gen carries the
+	// only legitimate prefix literal; hooks must exist for the service).
+	assertPathExistsE2E(t, filepath.Join(feDir, "src", "hooks", "api-service-hooks.ts"))
+	assertPathExistsE2E(t, filepath.Join(feDir, "src", "lib", "basepath_gen.ts"))
 
 	// Go-side compile/boot is pinned by fixtures 1–2; this fixture owns
 	// the frontend surface, so no `go build` here (runtime budget).
@@ -1243,7 +1253,7 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string, port int) {
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL=",           // health checks must not need a DB
 		"ENVIRONMENT=development", // dev authorizer; no real authz backend
-		"AUTH_MODE=none",          // explicit no-auth (AuthInterceptor panics otherwise)
+		"AUTH_MODE=none",          // explicit no-auth (NewAuthInterceptor errors at startup otherwise)
 	)
 	var serverOut strings.Builder
 	cmd.Stdout = &serverOut
@@ -1633,7 +1643,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 //   - the scaffold's own proto must never trip FORGE_CRUD_SHAPE_MISMATCH
 //     (the F2 root cause: the descriptor collapsed message-typed fields
 //     to the literal string "message").
-//   - the generated migration guards the id invariant (CHECK (id <> ''))
+//   - the generated migration guards the id invariant (CHECK (id <> ”))
 //     and stores timestamps as timestamps, not TEXT.
 func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	forgeBin := buildforgeBinary(t)

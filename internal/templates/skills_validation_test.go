@@ -248,6 +248,7 @@ var pathRefRE = regexp.MustCompile(`(?:pkg/app|handlers|\.forge)/[A-Za-z0-9_\-./
 // (harvested from filepath.Join(".forge", ...) call sites).
 var knownDotForgeEntries = map[string]bool{
 	"checksums.json":        true,
+	"friction.jsonl":        true,
 	"skills":                true,
 	"state":                 true,
 	"debug":                 true,

@@ -263,11 +263,26 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		// vocabulary as the MCP manifest; omitted for unary RPCs.
 		Streaming   string `json:"streaming,omitempty"`
 		MCPCallable bool   `json:"mcp_callable"`
+		// Served is the additive types-only marker: present (and false)
+		// ONLY when the owning service declares `serve: false` in
+		// forge.yaml — the RPC's types/client still generate but this
+		// binary does not serve it (and it is excluded from the MCP
+		// manifest, hence MCPCallable=false too). Absent means served —
+		// the additive-extension contract keeps rpc-count consumers and
+		// pre-`serve:` readers untouched.
+		Served *bool `json:"served,omitempty"`
 	}
 	type svcInfo struct {
 		Name     string `json:"name"`
 		Type     string `json:"type"`
 		RPCCount int    `json:"rpc_count"`
+		// Served mirrors services[].serve from forge.yaml (default
+		// true). Additive — always present so consumers can filter the
+		// inventory without re-deriving the default.
+		Served bool `json:"served"`
+		// ServedBy is the forge.yaml services[].served_by documentation
+		// string; only present for types-only services that set it.
+		ServedBy string `json:"served_by,omitempty"`
 		// RPCs lists each RPC by name with streaming/MCP-callability
 		// info. Empty when proto parsing was unavailable (see
 		// proto_integrity) — additive field, may be absent.
@@ -318,7 +333,7 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 
 	for _, s := range cfg.Services {
-		info := svcInfo{Name: s.Name, Type: s.Type}
+		info := svcInfo{Name: s.Name, Type: s.Type, Served: s.IsServed(), ServedBy: s.ServedBy}
 		// match by ProtoService name suffix (Echo → EchoService)
 		for protoName, rpcs := range rpcByService {
 			short := strings.TrimSuffix(protoName, "Service")
@@ -327,6 +342,24 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 				info.RPCs = rpcs
 				break
 			}
+		}
+		// Types-only services keep their RPC inventory discoverable but
+		// carry the additive served:false marker on every entry — the
+		// surface stays visible without claiming this binary serves it.
+		// MCPCallable flips false because the RPCs are deliberately
+		// excluded from gen/mcp/manifest.json.
+		if !info.Served && len(info.RPCs) > 0 {
+			notServed := false
+			// Copy before mutating — info.RPCs aliases the shared
+			// rpcByService slice and another cfg entry could match the
+			// same proto service.
+			rpcs := make([]rpcInfo, len(info.RPCs))
+			copy(rpcs, info.RPCs)
+			for i := range rpcs {
+				rpcs[i].Served = &notServed
+				rpcs[i].MCPCallable = false
+			}
+			info.RPCs = rpcs
 		}
 		switch s.Type {
 		case "worker":
@@ -769,13 +802,65 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		details["tracked_missing_files"] = missing
 	}
 
-	_ = cfg
+	// Serve-retirement finding: a service flipped to `serve: false` but
+	// its handlers/<svc>/ scaffold still exists on disk. The generated
+	// Tier-1 files under it stopped being re-emitted, so the stale sweep
+	// reports them (and deletes under `forge generate --force-cleanup`);
+	// user-written Tier-2 files in the dir are never touched — the user
+	// decides whether to move that code or restore serve: true. Additive
+	// detail key under the codegen category.
+	unservedDirs := unservedHandlerDirFindings(cfg, projectDir)
+	if len(unservedDirs) > 0 {
+		details["unserved_handler_dirs"] = unservedDirs
+	}
+
 	status := AuditStatusOK
 	summary := fmt.Sprintf("%d tracked, %d modified, %d forked, %d orphans, %d missing", len(cs.Files), len(modified), len(forked), len(orphans), len(missing))
 	if len(modified) > 0 || len(orphans) > 0 || len(forked) > 0 || len(missing) > 0 {
 		status = AuditStatusWarn
 	}
+	if len(unservedDirs) > 0 {
+		status = AuditStatusWarn
+		summary += fmt.Sprintf(", %d unserved handler dir(s)", len(unservedDirs))
+	}
 	return AuditCategory{Status: status, Summary: summary, Details: details}
+}
+
+// auditUnservedHandlerDir is one retirement finding: a forge.yaml
+// `serve: false` service whose handlers/<svc>/ directory still exists.
+type auditUnservedHandlerDir struct {
+	Service  string `json:"service"`             // forge.yaml services[].name
+	Dir      string `json:"dir"`                 // project-relative handlers dir
+	ServedBy string `json:"served_by,omitempty"` // forge.yaml services[].served_by
+	Message  string `json:"message"`
+}
+
+// unservedHandlerDirFindings resolves each `serve: false` service's
+// handler directory disk-first and reports the ones still present.
+// Resolution errors are skipped (best-effort — audit must not fail on a
+// half-migrated dir); a missing dir is the retired steady state and
+// produces no finding.
+func unservedHandlerDirFindings(cfg *config.ProjectConfig, projectDir string) []auditUnservedHandlerDir {
+	if cfg == nil {
+		return nil
+	}
+	var out []auditUnservedHandlerDir
+	for _, s := range cfg.UnservedServices() {
+		res, err := codegen.ResolveServiceComponent(projectDir, s.Name)
+		if err != nil || !res.FromDisk {
+			continue
+		}
+		dir := "handlers/" + res.ImportLeaf
+		out = append(out, auditUnservedHandlerDir{
+			Service:  s.Name,
+			Dir:      dir,
+			ServedBy: s.ServedBy,
+			Message: fmt.Sprintf("%s exists but services[name=%s].serve=false — remove it (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones) or restore serve: true",
+				dir, s.Name, Name()),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out
 }
 
 // findOrphanGenFiles walks projectDir for *_gen.go files that aren't in

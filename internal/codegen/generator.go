@@ -824,6 +824,24 @@ type BootstrapFeatures struct {
 	// any registered diagnostic exits the process after the summary
 	// line. Default false.
 	StrictWiringEnabled bool
+
+	// UnservedServices lists forge.yaml `serve: false` (types-only)
+	// services. These are NOT in the services slice (the caller filters
+	// them out before GenerateBootstrap) — they carry no table row, no
+	// wire function, no diagnostics. The template renders them into (a)
+	// a documentation comment naming the binary that serves each (the
+	// served_by field) and (b) a BootstrapOnly name-guard so passing one
+	// of these names to the `server [services...]` filter fails with a
+	// pointed error instead of appkit's generic unknown-name warning.
+	UnservedServices []UnservedServiceData
+}
+
+// UnservedServiceData is one types-only service as rendered into the
+// bootstrap template: the runtime kebab name (what cobra / the name
+// filter pass) plus the optional served_by documentation string.
+type UnservedServiceData struct {
+	Name     string // runtime kebab name, e.g. "project"
+	ServedBy string // forge.yaml services[].served_by; "" when unset
 }
 
 // leaderElectionID derives a Kubernetes-valid leader-election lease name
@@ -985,6 +1003,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
 		LeaderElectionID    string
+		UnservedServices    []UnservedServiceData
 	}{
 		Module:              modulePath,
 		LeaderElectionID:    leaderElectionID(modulePath),
@@ -1001,6 +1020,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		ConnectImports:      connectImports,
 		DiagnosticsEnabled:  features.DiagnosticsEnabled,
 		StrictWiringEnabled: features.StrictWiringEnabled,
+		UnservedServices:    features.UnservedServices,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)

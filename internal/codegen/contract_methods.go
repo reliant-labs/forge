@@ -29,8 +29,8 @@ func (s *svc) GenerateMock(svc ServiceDef, mockDir string) (bool, error) {
 	return GenerateMock(svc, mockDir)
 }
 
-func (s *svc) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateAuthorizer(services, modulePath, targetDir, cs)
+func (s *svc) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
+	return GenerateAuthorizer(services, modulePath, targetDir, skipDirs, cs)
 }
 
 func (s *svc) GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error {

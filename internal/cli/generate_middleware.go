@@ -76,6 +76,13 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 		if len(svc.Webhooks) == 0 {
 			continue
 		}
+		// Types-only services never reach here in a validated config
+		// (serve:false + webhooks is a LoadStrict error), but the guard
+		// keeps a hand-edited mid-migration forge.yaml from mounting
+		// routes for a service this binary doesn't serve.
+		if !svc.IsServed() {
+			continue
+		}
 
 		// Disk-first: webhook_routes_gen.go lands inside the EXISTING
 		// handler dir and must declare that dir's real package clause —

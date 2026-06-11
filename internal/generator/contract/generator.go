@@ -25,6 +25,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // InterfaceDef represents a parsed Go interface.
@@ -79,6 +81,24 @@ type Options struct {
 	// Sourced from forge.yaml's `contracts.interface_types` at the CLI
 	// layer; nil / empty is the no-op default.
 	ExtraInterfaceTypes map[string]bool
+
+	// ProjectRoot + Checksums route the mock write through the
+	// checksums.WriteGeneratedFile chokepoint so the emitted
+	// internal/<pkg>/mock_gen.go is recorded in the manifest AND in
+	// the per-run WrittenThisRun set. Without this, the stale-artifact
+	// sweep saw every manifest-tracked mock_gen.go as "tracked but not
+	// re-emitted this run" and flagged it for deletion on every
+	// `forge generate` — and `--force-cleanup` would actually delete
+	// live mocks (kalshi-trader FORGE_BACKLOG #15).
+	//
+	// ProjectRoot is the directory containing .forge/checksums.json;
+	// relative manifest paths are computed against it. Both fields nil
+	// /empty preserve the legacy raw-os.WriteFile behavior for callers
+	// without a manifest in scope (e.g. the `forge add package` stub
+	// emit — its mock is adopted into the manifest on the next full
+	// generate).
+	ProjectRoot string
+	Checksums   *checksums.FileChecksums
 }
 
 // Generate parses contractPath and writes mock_gen.go next to it.
@@ -499,7 +519,30 @@ func writeMock(cf *ContractFile, dir string, opts Options) error {
 		return fmt.Errorf("gofmt mock output: %w\n---\n%s", err, buf.String())
 	}
 
-	return os.WriteFile(filepath.Join(dir, "mock_gen.go"), formatted, 0644)
+	mockPath := filepath.Join(dir, "mock_gen.go")
+
+	// Manifest-aware path: when the caller supplied a project root, the
+	// write MUST go through checksums.WriteGeneratedFile so the path
+	// lands in WrittenThisRun (stale-sweep immunity), honors Forked
+	// entries (`forge generate --accept` forks are parked as side
+	// renders, not stomped), and honors the per-run SkipWrite set.
+	// force=true matches the file's Tier-1 contract: mock_gen.go is
+	// regenerated unconditionally from contract.go every run.
+	if opts.ProjectRoot != "" {
+		rel, relErr := filepath.Rel(opts.ProjectRoot, mockPath)
+		if relErr != nil {
+			return fmt.Errorf("compute project-relative mock path: %w", relErr)
+		}
+		if _, werr := checksums.WriteGeneratedFile(opts.ProjectRoot, rel, formatted, opts.Checksums, true); werr != nil {
+			return fmt.Errorf("write %s: %w", rel, werr)
+		}
+		return nil
+	}
+
+	// Legacy path: no manifest in scope (e.g. `forge add package` stub
+	// emit). Raw write; the file is adopted into the manifest by the
+	// next full `forge generate`.
+	return os.WriteFile(mockPath, formatted, 0644)
 }
 
 // hasAnyMethod reports whether any interface in the set has at least one method.

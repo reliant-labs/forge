@@ -262,7 +262,8 @@ var knownDotForgeEntries = map[string]bool{
 // knownGeneratedHandlerFiles are the per-service generated files codegen
 // emits into handlers/<svc>/ (beyond what the scaffold itself writes).
 var knownGeneratedHandlerFiles = map[string]bool{
-	"handlers_crud_gen.go":      true,
+	"handlers_crud_ops_gen.go":  true,
+	"handlers_crud_gen.go":      true, // legacy pre-split file; still named in legacy/historical context
 	"handlers_crud_gen_test.go": true,
 	"handlers_gen.go":           true,
 	"authorizer_gen.go":         true,

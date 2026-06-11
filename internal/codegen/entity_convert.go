@@ -18,15 +18,25 @@ import (
 // of whether it happens to be named "id" or something else.
 func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 	pe := config.PlanEntity{
-		Name:      entity.Name,
-		TableName: entity.TableName,
-		Fields:    make([]config.PlanEntityField, 0, len(entity.Fields)),
+		Name:       entity.Name,
+		TableName:  entity.TableName,
+		SoftDelete: entity.SoftDelete,
+		Timestamps: entity.Timestamps,
+		Fields:     make([]config.PlanEntityField, 0, len(entity.Fields)),
 	}
 
 	for _, f := range entity.Fields {
+		// Message-typed fields carry their real type name in MessageType
+		// (ProtoType is the unmappable literal "message"). Using it here is
+		// what lets google.protobuf.Timestamp columns map to TIMESTAMPTZ /
+		// *timestamppb.Timestamp instead of degrading to TEXT/string.
+		fieldType := f.ProtoType
+		if f.ProtoType == "message" && f.MessageType != "" {
+			fieldType = f.MessageType
+		}
 		pf := config.PlanEntityField{
 			Name: f.Name,
-			Type: f.ProtoType,
+			Type: fieldType,
 		}
 
 		if entity.PkField != "" && f.Name == entity.PkField {

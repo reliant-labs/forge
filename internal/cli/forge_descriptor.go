@@ -444,6 +444,13 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 			ProtoType:  protoType,
 			IsOptional: f.Desc.HasOptionalKeyword(),
 		}
+		// Carry the referenced type's name for message fields. ProtoType
+		// collapses these to the literal "message", which is unmatchable —
+		// the CRUD shape matcher needs to know that UpdateItemRequest.item
+		// is an Item, not just "a message" (F2 root cause).
+		if f.Desc.Kind() == protoreflect.MessageKind && !f.Desc.IsMap() {
+			fd.MessageType = string(f.Desc.Message().FullName())
+		}
 		fields = append(fields, fd)
 	}
 	messages[name] = fields
@@ -465,9 +472,11 @@ func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.Entit
 	}
 
 	ed := codegen.EntityDef{
-		Name:      string(msg.Desc.Name()),
-		TableName: ent.tableName,
-		ProtoFile: file.Desc.Path(),
+		Name:       string(msg.Desc.Name()),
+		TableName:  ent.tableName,
+		ProtoFile:  file.Desc.Path(),
+		SoftDelete: ent.softDelete,
+		Timestamps: ent.timestamps,
 	}
 
 	for _, fi := range ent.fields {
@@ -476,6 +485,11 @@ func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.Entit
 			GoName:    fi.field.GoName,
 			ProtoType: protoKindToString(fi.field.Desc.Kind()),
 			GoType:    goTypeForField(fi.field),
+		}
+		// Preserve the real type name for message fields ("message" alone
+		// is unmappable downstream — timestamp columns became TEXT).
+		if fi.field.Desc.Kind() == protoreflect.MessageKind && !fi.field.Desc.IsMap() {
+			ef.MessageType = string(fi.field.Desc.Message().FullName())
 		}
 
 		if fi.isPK {

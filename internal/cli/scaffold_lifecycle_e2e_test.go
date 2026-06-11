@@ -179,8 +179,14 @@ func TestE2EScaffoldLifecycle(t *testing.T) {
 		// handlers_gen.go is optional — forge skips it when all methods already
 		// have implementations in service.go from the initial scaffold.
 
-		// handlers_crud_gen.go should exist (CRUD implementations from entity matching)
-		assertPathExistsE2E(t, filepath.Join(handlersDir, "handlers_crud_gen.go"))
+		// The CRUD split: generated wiring in handlers_crud_ops_gen.go
+		// (Tier-1) + user-owned thin shims in handlers_crud.go. The old
+		// Tier-1 implementation file must be gone.
+		assertPathExistsE2E(t, filepath.Join(handlersDir, "handlers_crud_ops_gen.go"))
+		assertPathExistsE2E(t, filepath.Join(handlersDir, "handlers_crud.go"))
+		if _, err := os.Stat(filepath.Join(handlersDir, "handlers_crud_gen.go")); !os.IsNotExist(err) {
+			t.Errorf("handlers_crud_gen.go still emitted — the Tier-1 CRUD implementation file is dead (stat err=%v)", err)
+		}
 	})
 
 	// 4d. Mock files exist with correct imports

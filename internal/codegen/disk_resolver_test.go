@@ -528,15 +528,18 @@ type Service struct{ deps Deps }
 		t.Fatalf("GenerateCRUDHandlers: %v", err)
 	}
 
-	// Must land in the REAL dir, not a synthesized sibling.
-	out := filepath.Join(dir, "handlers_crud_gen.go")
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("handlers_crud_gen.go not written into existing dir: %v", err)
-	}
-	mustParseGo(t, "handlers_crud_gen.go", data)
-	if !strings.Contains(string(data), "package engine_shadow\n") {
-		t.Errorf("handlers_crud_gen.go must declare the dir's real clause:\n%.300s", data)
+	// Both halves of the split must land in the REAL dir, not a
+	// synthesized sibling, and declare the dir's real package clause.
+	for _, name := range []string{"handlers_crud_ops_gen.go", "handlers_crud.go"} {
+		out := filepath.Join(dir, name)
+		data, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatalf("%s not written into existing dir: %v", name, err)
+		}
+		mustParseGo(t, name, data)
+		if !strings.Contains(string(data), "package engine_shadow\n") {
+			t.Errorf("%s must declare the dir's real clause:\n%.300s", name, data)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "engineshadow")); !os.IsNotExist(err) {
 		t.Error("synthesized duplicate dir handlers/engineshadow was created")

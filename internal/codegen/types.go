@@ -73,6 +73,14 @@ type MessageFieldDef struct {
 	Name       string // proto field name: "page_size", "search", "active"
 	ProtoType  string // "int32", "string", "bool"
 	IsOptional bool   // true if the field has the "optional" label
+	// MessageType carries the referenced message's name for message-typed
+	// fields (e.g. "Item" for `Item item = 1;`, "google.protobuf.FieldMask"
+	// for masks). ProtoType collapses every message field to the literal
+	// "message" — which is how the CRUD shape matcher could never match an
+	// update request's entity field against the entity name (the false
+	// FORGE_CRUD_SHAPE_MISMATCH on forge's own scaffold). Additive:
+	// `json:",omitempty"` keeps old descriptors parseable.
+	MessageType string `json:",omitempty"`
 }
 
 // SchemaFieldDef is the deep-schema sibling of MessageFieldDef: one
@@ -147,7 +155,13 @@ type EntityDef struct {
 	PkGoType         string        // "int64"
 	Fields           []EntityField // all fields including PK
 	ProtoFile        string        // "proto/services/patients/v1/patients.proto"
-	HasTenant        bool          // true when the entity has a tenant key field
+	// SoftDelete / Timestamps mirror the (forge.v1.entity) annotation.
+	// Historically the descriptor dropped both, so downstream plan-based
+	// generators (internal/db ORM, db/migrations) silently ignored
+	// soft_delete/timestamps even though the gen/db ORM honored them.
+	SoftDelete bool `json:",omitempty"`
+	Timestamps bool `json:",omitempty"`
+	HasTenant  bool // true when the entity has a tenant key field
 	TenantFieldName  string        // proto field name: "org_id"
 	TenantGoName     string        // Go name: "OrgId"
 	TenantColumnName string        // DB column: "org_id"
@@ -176,6 +190,11 @@ type EntityField struct {
 	Kind      FieldKind // scalar, enum, message, etc.
 	IsFK      bool
 	FKTable   string // "patients" (if FK)
+	// MessageType carries the fully-qualified message name for
+	// message-typed fields (e.g. "google.protobuf.Timestamp"). ProtoType
+	// collapses these to "message", which made every timestamp column
+	// degrade to TEXT in plan-based migrations/ORM. Additive.
+	MessageType string `json:",omitempty"`
 }
 
 // ConfigField represents a single field in a config proto message

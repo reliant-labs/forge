@@ -66,7 +66,7 @@ forge generate
 
 This produces:
 
-- Go service stubs and CRUD handler implementations (`handlers_crud_gen.go` for matching method names — see `api`).
+- Go service stubs and CRUD handler wiring (`handlers_crud_ops_gen.go` op constructors plus thin delegations in the user-owned `handlers_crud.go` for matching method names — see `api`).
 - Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser` in `frontends/<name>/src/hooks/users-hooks.ts`.
 - Generated Connect transport in `src/lib/connect.ts`.
 

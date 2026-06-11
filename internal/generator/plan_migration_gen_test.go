@@ -41,9 +41,13 @@ func TestGeneratePlanMigrations_Basic(t *testing.T) {
 		t.Error("missing CREATE TABLE statement")
 	}
 
-	// Primary key
+	// Primary key. String (TEXT) PKs gain a non-empty CHECK: an empty
+	// app-generated id is always a bug and the database should refuse it.
 	if !strings.Contains(up, "id TEXT PRIMARY KEY") {
 		t.Error("missing primary key constraint on id")
+	}
+	if !strings.Contains(up, "CHECK (id <> '')") {
+		t.Error("missing non-empty CHECK on TEXT primary key")
 	}
 
 	// NOT NULL
@@ -59,12 +63,16 @@ func TestGeneratePlanMigrations_Basic(t *testing.T) {
 		t.Error("missing UNIQUE on slug")
 	}
 
-	// Timestamps
-	if !strings.Contains(up, "created_at TIMESTAMPTZ NOT NULL DEFAULT now()") {
+	// Timestamps. DEFAULT CURRENT_TIMESTAMP (not now()): same semantics
+	// on Postgres, and it also parses on SQLite.
+	if !strings.Contains(up, "created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP") {
 		t.Error("missing created_at timestamp")
 	}
-	if !strings.Contains(up, "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()") {
+	if !strings.Contains(up, "updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP") {
 		t.Error("missing updated_at timestamp")
+	}
+	if strings.Contains(up, "DEFAULT now()") {
+		t.Error("timestamps should default to CURRENT_TIMESTAMP, not now()")
 	}
 
 	// Soft delete
@@ -380,6 +388,43 @@ func TestGeneratePlanMigrations_Empty(t *testing.T) {
 	// db/migrations should not be created
 	if _, err := os.Stat(filepath.Join(root, "db", "migrations")); !os.IsNotExist(err) {
 		t.Error("db/migrations should not exist when no entities")
+	}
+}
+
+func TestGeneratePlanMigrations_DeclaredTimestampsNotDuplicated(t *testing.T) {
+	root := t.TempDir()
+
+	// Entity explicitly declares created_at/updated_at/deleted_at alongside
+	// Timestamps/SoftDelete — the auto-add must dedupe (a duplicate column
+	// is a hard migration failure).
+	entities := []config.PlanEntity{
+		{
+			Name:       "Doc",
+			Timestamps: true,
+			SoftDelete: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "created_at", Type: "google.protobuf.Timestamp", NotNull: true},
+				{Name: "updated_at", Type: "google.protobuf.Timestamp", NotNull: true},
+				{Name: "deleted_at", Type: "google.protobuf.Timestamp"},
+			},
+		},
+	}
+
+	if err := GeneratePlanMigrations(root, entities); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	upContent, err := os.ReadFile(filepath.Join(root, "db", "migrations", "00001_init.up.sql"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	up := string(upContent)
+
+	for _, col := range []string{"created_at", "updated_at", "deleted_at"} {
+		if got := strings.Count(up, "\n    "+col+" "); got != 1 {
+			t.Errorf("column %s defined %d times, want exactly 1:\n%s", col, got, up)
+		}
 	}
 }
 

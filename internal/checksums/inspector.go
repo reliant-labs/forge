@@ -3,11 +3,11 @@
 //
 // Background (2026-06-04 collapse pass): four parallel call sites in the
 // generate pipeline each walked `FileChecksums.Files` and re-derived
-// their own view of forked / Tier-1 / Tier-2 / package-grouped layout:
+// their own view of disowned / Tier-1 / Tier-2 / package-grouped layout:
 //
 //   - generate_pipeline.go: stepCheckTier1Drift (Tier-1 drift filter)
 //   - generate_tier1_scope.go: filterTier1DriftInScope (owner-gate map)
-//   - generate_dangling_check.go: forkedByDir + sibling enumeration
+//   - generate_dangling_check.go: disownedByDir + sibling enumeration
 //   - generate_rename_check.go: snapshot of Tier-1 Go exports
 //
 // Each new check (the dangling-ref one was the immediate trigger)
@@ -48,10 +48,10 @@ type Inspector struct {
 	root string
 	cs   *FileChecksums
 
-	// forkedGoByDir lazily groups forked Go entries by their parent
-	// directory. Populated on first call to ForkedGoFilesByDir or any
+	// disownedGoByDir lazily groups disowned Go entries by their parent
+	// directory. Populated on first call to DisownedGoFilesByDir or any
 	// dependent query. nil means "not yet computed".
-	forkedGoByDir map[string][]string
+	disownedGoByDir map[string][]string
 
 	// declaredTypesCache memoizes DeclaredTypesIn(relPath) results so
 	// the dangling-ref check (which queries the same file multiple times
@@ -94,11 +94,14 @@ func (i *Inspector) IsTracked(relPath string) bool {
 	return ok
 }
 
-// IsForked reports whether relPath was previously `forge generate
-// --accept`-ed. Forked entries are persistently opted out of codegen.
-func (i *Inspector) IsForked(relPath string) bool {
+// IsDisowned reports whether relPath was `forge disown`-ed: a one-way
+// transfer to user ownership (Tier-2 with the disowned marker). Legacy
+// fork-era entries (`forked: true`, pre-migration) answer true too —
+// they are semantically the same "forge no longer regenerates this"
+// state and convert to Disowned on the next pipeline run.
+func (i *Inspector) IsDisowned(relPath string) bool {
 	e, ok := i.entry(relPath)
-	return ok && e.Forked
+	return ok && (e.Disowned || e.Forked)
 }
 
 // Tier returns the lifecycle tier of relPath: 1 (regenerated every
@@ -137,23 +140,24 @@ func (i *Inspector) IsGo(relPath string) bool {
 	return IsGoPath(relPath)
 }
 
-// ForkedGoFilesByDir groups every forked Go file in the manifest by
+// DisownedGoFilesByDir groups every disowned Go file in the manifest by
 // its parent directory. The returned map's values are the
-// project-relative paths of forked entries in each directory, sorted
-// for deterministic iteration.
+// project-relative paths of disowned entries in each directory, sorted
+// for deterministic iteration. Legacy fork-era entries (`forked: true`)
+// are included — same frozen-file semantics, pre-migration.
 //
-// Empty when no Go file is forked. Memoized: subsequent calls return
+// Empty when no Go file is disowned. Memoized: subsequent calls return
 // the same cached map.
-func (i *Inspector) ForkedGoFilesByDir() map[string][]string {
+func (i *Inspector) DisownedGoFilesByDir() map[string][]string {
 	if i == nil || i.cs == nil {
 		return map[string][]string{}
 	}
-	if i.forkedGoByDir != nil {
-		return i.forkedGoByDir
+	if i.disownedGoByDir != nil {
+		return i.disownedGoByDir
 	}
 	out := map[string][]string{}
 	for relPath, entry := range i.cs.Files {
-		if !entry.Forked {
+		if !entry.Disowned && !entry.Forked {
 			continue
 		}
 		if !IsGoPath(relPath) {
@@ -165,14 +169,16 @@ func (i *Inspector) ForkedGoFilesByDir() map[string][]string {
 	for dir := range out {
 		sort.Strings(out[dir])
 	}
-	i.forkedGoByDir = out
+	i.disownedGoByDir = out
 	return out
 }
 
 // Tier1GoFiles returns the sorted list of project-relative paths for
-// every Tier-1 (including legacy Tier-0) Go file in the manifest that
-// is NOT forked. Used by the pre-codegen exports snapshot — rename
-// detection only watches files forge still owns.
+// every Tier-1 (including legacy Tier-0) Go file in the manifest.
+// Used by the pre-codegen exports snapshot — rename detection only
+// watches files forge still owns (disowned files are Tier-2 and fall
+// out via the tier check; legacy forked entries are skipped explicitly
+// until the pipeline migration converts them).
 func (i *Inspector) Tier1GoFiles() []string {
 	if i == nil || i.cs == nil {
 		return nil

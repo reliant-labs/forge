@@ -9,7 +9,7 @@
 // interface deps — caught only when a real downstream project was
 // regenerated).
 //
-// Two fixtures:
+// Three fixtures:
 //
 //   - "cp-forge-shaped" (TestE2EFixtureCorpusCPForgeShaped): 3 services
 //     (one with a webhook), 2 internal packages where one package's
@@ -23,7 +23,15 @@
 //     as a worker-local interface satisfied by a concrete adapter on
 //     AppExtras — the literal kalshi regression shape.
 //
-// Each fixture asserts, in order:
+//   - "frontend-basepath-shaped" (TestE2EFixtureCorpusFrontendBasePath):
+//     1 service + 1 Next.js frontend mounted under base_path /admin.
+//     The first fixture that renders a FRONTEND: it pins next.config.ts
+//     basePath/assetPrefix emission, the generated Tier-1
+//     src/lib/basepath_gen.ts helper, prefix-clean generated TSX, and
+//     (npm-gated) a real static-export `next build` with
+//     /admin-prefixed assets plus the fail-loud empty-override guard.
+//
+// The Go-shaped fixtures assert, in order:
 //
 //  1. `forge generate` succeeds AND is idempotent: a second run
 //     produces zero file changes (full tree hash) and zero fork
@@ -46,8 +54,10 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -450,6 +460,344 @@ type AppExtras struct {
 	t.Logf("kalshi-shaped fixture total: %s", time.Since(start))
 }
 
+// ─────────────────── fixture 3: frontend-basepath-shaped ───────────────────
+
+// TestE2EFixtureCorpusFrontendBasePath is the first corpus fixture that
+// renders a FRONTEND — template features without an end-to-end fixture
+// are exactly how frontend regressions ship. It pins the
+// frontends[].base_path feature end to end:
+//
+//	render level (always, no node needed):
+//	  - forge.yaml persists base_path (it drives regeneration);
+//	  - next.config.ts sources basePath from NEXT_PUBLIC_BASE_PATH with
+//	    the "/admin" literal default, emits basePath AND assetPrefix
+//	    (same value), and carries the static-branch fail-loud guard;
+//	  - src/lib/basepath_gen.ts exists, is Tier-1-tracked in
+//	    .forge/checksums.json, exports BASE_PATH defaulting to "/admin"
+//	    and an idempotent joinBasePath;
+//	  - generated src/ TS/TSX (nav_gen, dashboard_gen, hooks, mocks,
+//	    pages) contains NO hand-prefixed "/admin" string literals —
+//	    Link/router handle basePath; bare literals double-prefix or go
+//	    stale the day the mount point moves.
+//
+//	build level (gated: skipped with a logged reason when npm is not on
+//	PATH or FORGE_E2E_SKIP_NPM is set — CI runs it, laptops may not):
+//	  - `npm run build` with NEXT_PUBLIC_BASE_PATH explicitly "" must
+//	    FAIL with the template's refusal message (a static export would
+//	    bake root-mounted URLs that 404 behind the proxy);
+//	  - `npm run build` with NEXT_PUBLIC_BASE_PATH=/admin must pass and
+//	    the exported HTML must reference /admin/_next assets — the
+//	    field-reported hydration bug class (chunk URLs skipping the
+//	    prefix → JS 404s → React never hydrates).
+//
+// The frontend is named "console" while the base path is "/admin" ON
+// PURPOSE: no path under frontends/console/ contains the substring
+// "/admin", so any "/admin" literal found in generated src/ is
+// attributable to base-path machinery, not the directory layout.
+func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
+	forgeBin := buildforgeBinary(t)
+	dir := t.TempDir()
+	start := time.Now()
+
+	runCmd(t, dir, forgeBin, "new", "febp",
+		"--mod", "example.com/febp",
+		"--service", "api",
+	)
+	projectDir := filepath.Join(dir, "febp")
+	addCorpusForgePkgReplace(t, projectDir)
+
+	// Entity-shape the scaffolded service proto. The scaffold default
+	// uses BARE CRUD names (Create/Get/Update/Delete/List) which do NOT
+	// match the documented List<Entity> convention, so the frontend
+	// codegen (nav routes, hooks, mocks, entity pages) extracts zero
+	// entities from it. Renaming the RPCs to the convention — the
+	// documented user flow — gives the fixture a real "Item" entity, so
+	// the prefix-clean scan below covers genuinely generated route
+	// literals ("/items") instead of an empty route table.
+	apiProto := filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto")
+	for _, r := range [][2]string{
+		{"rpc Create(", "rpc CreateItem("},
+		{"rpc Get(", "rpc GetItem("},
+		{"rpc Update(", "rpc UpdateItem("},
+		{"rpc Delete(", "rpc DeleteItem("},
+		{"rpc List(", "rpc ListItems("},
+	} {
+		mustReplaceInFile(t, apiProto, r[0], r[1])
+	}
+
+	// `forge add frontend --base-path` is the user-facing entry point
+	// for the feature. When npm is on PATH the add also runs
+	// `npm install` in the frontend (forge's own behavior), which lets
+	// `forge generate` exercise the local protoc-gen-es TS-stub pass —
+	// the same path a real user hits.
+	runCmd(t, projectDir, forgeBin, "add", "frontend", "console", "--base-path", "/admin")
+	feDir := filepath.Join(projectDir, "frontends", "console")
+	assertPathExistsE2E(t, filepath.Join(feDir, "package.json"))
+
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "base_path: /admin") {
+		t.Fatalf("forge.yaml does not persist `base_path: /admin` for frontend console — generate would lose the prefix on the next run")
+	}
+
+	// ── 1. generate ×2 — idempotency. Covers basepath_gen.ts, nav/
+	// dashboard/hooks/mocks/pages emission and (when node_modules
+	// exists) the buf TS-stub pass. ───────────────────────────────────
+	generateTwiceIdempotent(t, forgeBin, projectDir)
+
+	// ── 2. render-level pins (no node required) ──────────────────────
+	assertNextConfigBasePath(t, feDir, "/admin")
+	assertBasePathGenHelper(t, projectDir, "frontends/console", "/admin")
+	assertGeneratedSrcPrefixClean(t, feDir, "/admin")
+
+	// Non-vacuousness pin: the default scaffold's Item CRUD must surface
+	// as an APP-RELATIVE route in nav_gen.tsx. An empty route table
+	// would make the prefix-clean scan above meaningless, and a
+	// "/admin/items" path would be exactly the hand-prefix bug class it
+	// exists to catch (Link/router add the prefix at render time).
+	navGen := readFileE2E(t, filepath.Join(feDir, "src", "components", "nav_gen.tsx"))
+	if !strings.Contains(navGen, `path: "/items"`) {
+		t.Errorf("nav_gen.tsx must carry the app-relative \"/items\" route; got:\n%s", navGen)
+	}
+
+	// Go-side compile/boot is pinned by fixtures 1–2; this fixture owns
+	// the frontend surface, so no `go build` here (runtime budget).
+	t.Logf("frontend-basepath fixture render phase: %s", time.Since(start))
+
+	// ── 3. build-level pins (npm-gated) ──────────────────────────────
+	if reason := corpusNpmSkipReason(); reason != "" {
+		t.Logf("SKIPPING npm build phase: %s", reason)
+		t.Logf("frontend-basepath fixture total: %s", time.Since(start))
+		return
+	}
+	npmStart := time.Now()
+
+	// `forge add frontend` already ran an install; re-running is a fast
+	// no-op that also covers the npm-was-missing-at-add-time case. Same
+	// flags as the scaffold-frontend e2e (forge's canonical install).
+	runCmdTimeout(t, feDir, 5*time.Minute,
+		"npm", "install", "--no-audit", "--no-fund", "--prefer-offline")
+
+	// 3a. Fail-loud guard FIRST (near-instant: the throw happens while
+	// next.config.ts is evaluated, before any compilation).
+	out, err := runCorpusCmdEnv(feDir, 2*time.Minute,
+		[]string{"NEXT_PUBLIC_BASE_PATH="}, "npm", "run", "build")
+	if err == nil {
+		t.Fatalf("npm run build with NEXT_PUBLIC_BASE_PATH=\"\" must FAIL (static-export fail-loud guard); output:\n%s", out)
+	}
+	if !strings.Contains(out, "refusing to bake a root-mounted static export") {
+		t.Errorf("empty-override build failed, but without the template's fail-loud message; output:\n%s", out)
+	}
+
+	// 3b. The real build, prefix explicit. The package.json build script
+	// sets NODE_ENV=production, so the static branch emits out/.
+	out, err = runCorpusCmdEnv(feDir, 8*time.Minute,
+		[]string{"NEXT_PUBLIC_BASE_PATH=/admin"}, "npm", "run", "build")
+	if err != nil {
+		t.Fatalf("npm run build (NEXT_PUBLIC_BASE_PATH=/admin) failed: %v\n%s", err, out)
+	}
+
+	// 3c. The export must reference /admin-prefixed assets.
+	assertStaticExportPrefixed(t, feDir, "/admin")
+
+	t.Logf("frontend-basepath fixture npm phase: %s", time.Since(npmStart))
+	t.Logf("frontend-basepath fixture total: %s", time.Since(start))
+}
+
+// assertNextConfigBasePath pins the rendered next.config.ts contract for
+// a declared base_path: the single canonical env var with the forge.yaml
+// literal as default, basePath AND assetPrefix from the same value, and
+// the static-branch fail-loud guard for empty overrides.
+func assertNextConfigBasePath(t *testing.T, feDir, basePath string) {
+	t.Helper()
+	cfg := readFileE2E(t, filepath.Join(feDir, "next.config.ts"))
+
+	wantConst := fmt.Sprintf("const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? %q;", basePath)
+	if !strings.Contains(cfg, wantConst) {
+		t.Errorf("next.config.ts must source basePath from NEXT_PUBLIC_BASE_PATH with the %q literal default; want %q in:\n%s", basePath, wantConst, cfg)
+	}
+	wantSpread := "...(basePath ? { basePath, assetPrefix: basePath } : {}),"
+	if !strings.Contains(cfg, wantSpread) {
+		t.Errorf("next.config.ts must emit basePath AND assetPrefix (same value) — omitting assetPrefix lets chunk URLs skip the prefix and hydration dies; want %q in:\n%s", wantSpread, cfg)
+	}
+	// Static output (the scaffold default) must refuse to bake a
+	// root-mounted export when the override empties the prefix.
+	if !strings.Contains(cfg, `process.env.NODE_ENV === "production" && basePath === ""`) ||
+		!strings.Contains(cfg, "throw new Error") {
+		t.Errorf("next.config.ts (static output) must carry the fail-loud empty-basePath production guard; got:\n%s", cfg)
+	}
+}
+
+// assertBasePathGenHelper pins the generated src/lib/basepath_gen.ts:
+// exists, exports BASE_PATH (env override, declared default) and an
+// idempotent joinBasePath, and is tracked as Tier-1 in
+// .forge/checksums.json (so hand edits trip the stomp guard and
+// `forge generate` keeps regenerating it when base_path changes).
+func assertBasePathGenHelper(t *testing.T, projectDir, feRel, basePath string) {
+	t.Helper()
+	rel := feRel + "/src/lib/basepath_gen.ts"
+	bpPath := filepath.Join(projectDir, filepath.FromSlash(rel))
+	assertPathExistsE2E(t, bpPath)
+	bp := readFileE2E(t, bpPath)
+
+	if !strings.Contains(bp, fmt.Sprintf("process.env.NEXT_PUBLIC_BASE_PATH ?? %q", basePath)) {
+		t.Errorf("basepath_gen.ts must default BASE_PATH to the declared %q with NEXT_PUBLIC_BASE_PATH as the only override; got:\n%s", basePath, bp)
+	}
+	if !strings.Contains(bp, "export const BASE_PATH") {
+		t.Errorf("basepath_gen.ts must export BASE_PATH; got:\n%s", bp)
+	}
+	if !strings.Contains(bp, "export function joinBasePath") {
+		t.Errorf("basepath_gen.ts must export joinBasePath; got:\n%s", bp)
+	}
+	// The idempotency clause: an already-prefixed path passes through
+	// unchanged, so accidental double-wrapping never double-prefixes.
+	if !strings.Contains(bp, "startsWith(`${BASE_PATH}/`)") {
+		t.Errorf("joinBasePath must be idempotent (already-prefixed paths returned unchanged); got:\n%s", bp)
+	}
+
+	// Tier-1 tracking in checksums.json.
+	var cs struct {
+		Files map[string]struct {
+			Hash string `json:"hash"`
+			Tier int    `json:"tier"`
+		} `json:"files"`
+	}
+	raw := readFileE2E(t, filepath.Join(projectDir, ".forge", "checksums.json"))
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		t.Fatalf("parse .forge/checksums.json: %v", err)
+	}
+	entry, ok := cs.Files[rel]
+	switch {
+	case !ok:
+		t.Errorf("%s is not tracked in .forge/checksums.json — hand edits would never trip the Tier-1 stomp guard", rel)
+	case entry.Tier != 1:
+		t.Errorf("%s tracked with tier=%d, want tier=1 (regenerated-every-run)", rel, entry.Tier)
+	case entry.Hash == "":
+		t.Errorf("%s tracked with empty hash in .forge/checksums.json", rel)
+	}
+}
+
+// assertGeneratedSrcPrefixClean walks the frontend's src/ tree and fails
+// on any TS/TSX string literal starting with the base path. Next.js
+// <Link> and the router prepend the configured basePath automatically,
+// and hand-built URLs go through joinBasePath — a bare "/admin..."
+// literal in generated code is the double-prefix / stale-mount bug
+// class. basepath_gen.ts is exempt: it legitimately carries the literal
+// as its baked default.
+func assertGeneratedSrcPrefixClean(t *testing.T, feDir, basePath string) {
+	t.Helper()
+	srcDir := filepath.Join(feDir, "src")
+	litRe := regexp.MustCompile("[\"'`]" + regexp.QuoteMeta(basePath) + `\b`)
+	exempt := filepath.ToSlash(filepath.Join("lib", "basepath_gen.ts"))
+
+	scanned := 0
+	err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		switch filepath.Ext(path) {
+		case ".ts", ".tsx", ".js", ".jsx":
+		default:
+			return nil
+		}
+		rel, rerr := filepath.Rel(srcDir, path)
+		if rerr != nil {
+			return rerr
+		}
+		if filepath.ToSlash(rel) == exempt {
+			return nil
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		scanned++
+		if loc := litRe.Find(body); loc != nil {
+			t.Errorf("src/%s contains a hand-prefixed %q string literal (%q) — Link/router and joinBasePath own the prefix; bare literals double-prefix or go stale when the mount point moves", filepath.ToSlash(rel), basePath, string(loc))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan %s: %v", srcDir, err)
+	}
+	if scanned == 0 {
+		t.Fatalf("prefix-clean scan saw zero TS/TSX files under %s — scaffold shape drifted", srcDir)
+	}
+}
+
+// assertStaticExportPrefixed checks the static-export output (out/) for
+// /admin-prefixed asset URLs: at least one exported HTML document must
+// reference <basePath>/_next. This is the field-reported hydration bug
+// class — chunk/asset URLs that skip the prefix 404 behind the proxy
+// and React never hydrates.
+func assertStaticExportPrefixed(t *testing.T, feDir, basePath string) {
+	t.Helper()
+	outDir := filepath.Join(feDir, "out")
+	assertPathExistsE2E(t, outDir)
+
+	htmlSeen := 0
+	prefixed := false
+	err := filepath.WalkDir(outDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if filepath.Ext(path) != ".html" {
+			return nil
+		}
+		htmlSeen++
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(string(body), basePath+"/_next") {
+			prefixed = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan static export %s: %v", outDir, err)
+	}
+	if htmlSeen == 0 {
+		t.Fatalf("static export at %s contains no HTML files — `output: export` branch did not run", outDir)
+	}
+	if !prefixed {
+		t.Errorf("no exported HTML references %s/_next — assets are root-mounted and would 404 behind the proxy (hydration bug class)", basePath)
+	}
+}
+
+// corpusNpmSkipReason returns a non-empty human-readable reason when the
+// npm build phase should be skipped: explicit env opt-out (laptops) or
+// npm missing from PATH. CI provisions node and runs the full phase.
+func corpusNpmSkipReason() string {
+	if os.Getenv("FORGE_E2E_SKIP_NPM") != "" {
+		return "FORGE_E2E_SKIP_NPM is set"
+	}
+	if _, err := exec.LookPath("npm"); err != nil {
+		return "npm not on PATH"
+	}
+	return ""
+}
+
+// runCorpusCmdEnv runs a command with extra environment entries and a
+// hard timeout, returning combined output and the error (callers assert
+// pass/fail themselves — the fail-loud guard EXPECTS a failure).
+func runCorpusCmdEnv(dir string, timeout time.Duration, extraEnv []string, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), extraEnv...)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("timed out after %s: %w", timeout, ctx.Err())
+	}
+	return string(out), err
+}
+
 // ───────────────────────────── corpus helpers ─────────────────────────────
 
 // addCorpusForgePkgReplace wires the two unpublished forge modules a
@@ -622,7 +970,7 @@ func snapshotSmallFiles(t *testing.T, root string) map[string]string {
 	out := map[string]string{}
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() && d.Name() == ".git" {
+			if d != nil && d.IsDir() && corpusSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -709,9 +1057,20 @@ func assertFieldWired(t *testing.T, file, content, field string) {
 	}
 }
 
+// corpusSkipDir reports whether a directory is excluded from the
+// idempotency tree hash / content snapshot. `.git` is repo machinery;
+// `node_modules` and `.next` are npm/Next-owned trees `forge generate`
+// never writes — hashing them (tens of thousands of files once the
+// frontend fixture installs dependencies) would dominate runtime and,
+// for the content snapshot, memory, without guarding anything.
+func corpusSkipDir(name string) bool {
+	return name == ".git" || name == "node_modules" || name == ".next"
+}
+
 // hashProjectTree walks the project and returns rel-path → sha256 for
-// every regular file. Nothing is excluded: checksums.json, side
-// renders, go.sum — a second generate must leave ALL of it untouched.
+// every regular file. Nothing forge-owned is excluded: checksums.json,
+// side renders, go.sum — a second generate must leave ALL of it
+// untouched. (Only non-forge trees are skipped; see corpusSkipDir.)
 func hashProjectTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -720,7 +1079,7 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if corpusSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil

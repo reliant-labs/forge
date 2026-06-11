@@ -9,8 +9,10 @@
 //   - internal/contractcheck/internal_pkg_contract.go (inline closure;
 //     was internal/linter/forgeconv/internal_pkg_contract.go pre-2026-06-04)
 //
-// All three implemented the SAME high-level rule (equality | "/"-suffix
-// | substring) but had silently diverged in two places:
+// All three implemented the SAME high-level rule (then: equality |
+// "/"-suffix | substring; since the cp-forge authutil incident the
+// substring leg is segment-boundary-aware — see MatchExclude's doc)
+// but had silently diverged in two places:
 //
 //  1. Empty-pattern handling. config.go did NOT skip "" entries, so a
 //     stray empty line in forge.yaml's contracts.exclude: would make
@@ -40,32 +42,49 @@ import (
 )
 
 // MatchExclude reports whether pkgPath matches any of the configured
-// exclude patterns. The matching rule for each pattern is the union of:
+// exclude patterns. A pattern matches only on whole path-segment
+// boundaries — the rule for each pattern is the union of:
 //
 //   - equality      (pattern == pkgPath)
-//   - "/"-suffix    (pkgPath ends with "/"+pattern)
-//   - substring     (pattern appears anywhere in pkgPath)
+//   - "/"-suffix    (pkgPath ends with "/"+pattern — the `mypkg`
+//     shorthand for `internal/mypkg`, and deeper suffixes like
+//     `linter/contract`)
+//   - "/"-prefix    (pkgPath starts with pattern+"/" — excluding a
+//     directory excludes its whole subtree)
+//   - mid-path      (pkgPath contains "/"+pattern+"/" — the pattern
+//     names interior segment(s) of a longer path)
 //
 // Empty patterns are skipped — see the package doc for why. Both
 // pkgPath and patterns are normalised to forward-slash form before
-// comparison so the helper behaves the same on every OS.
+// comparison (and a trailing "/" on a pattern is tolerated) so the
+// helper behaves the same on every OS and on sloppy YAML input.
 //
-// The substring rule is intentionally lenient: it's the only one that
-// catches the common shorthand `mypkg` (rather than `internal/mypkg`),
-// at the cost of also matching unrelated packages whose path happens
-// to embed the pattern as a substring. Project owners who hit the
-// over-match can spell the path out in full — config and linter
-// surfaces all now agree on what "in full" means.
+// History: this used to be a raw strings.Contains substring rule. That
+// was lenient on purpose (it caught the `mypkg` shorthand), but it also
+// matched PARTIAL segments — the cp-forge project excluded
+// `internal/auth` and silently lost codegen for its SIBLING package
+// `internal/authutil`, because "internal/authutil" contains
+// "internal/auth" as a substring. Crucially there was no fuller
+// spelling that could escape the over-match: the pattern already was
+// the full path of the package the owner wanted excluded. The
+// segment-boundary rules above keep every legitimate match the
+// substring rule supported (shorthand leaf, subtree, interior
+// segments) while making "exclude X" stop meaning "exclude anything
+// whose name merely starts with X".
 func MatchExclude(patterns []string, pkgPath string) bool {
 	pkgPath = filepath.ToSlash(pkgPath)
 	for _, pattern := range patterns {
-		pattern = filepath.ToSlash(pattern)
+		// Tolerate a trailing "/" — users write `internal/auth/` in YAML
+		// to mean the directory, and pre-segment-boundary versions of
+		// this matcher happened to accept it via the substring rule.
+		pattern = strings.TrimSuffix(filepath.ToSlash(pattern), "/")
 		if pattern == "" {
 			continue
 		}
 		if pattern == pkgPath ||
 			strings.HasSuffix(pkgPath, "/"+pattern) ||
-			strings.Contains(pkgPath, pattern) {
+			strings.HasPrefix(pkgPath, pattern+"/") ||
+			strings.Contains(pkgPath, "/"+pattern+"/") {
 			return true
 		}
 	}

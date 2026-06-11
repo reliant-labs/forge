@@ -676,6 +676,12 @@ type auditForkedFile struct {
 	Path     string `json:"path"`
 	ForkedAt string `json:"forked_at,omitempty"`
 	Group    string `json:"group,omitempty"`
+	// Reason is the recorded WHY behind the fork — the newest
+	// .forge/friction.jsonl entry with area=fork whose context names
+	// this path (written at accept time by `forge generate --accept
+	// --reason` / `accept-fork --reason`). Additive field per the
+	// audit-json contract; empty when no entry exists.
+	Reason string `json:"reason,omitempty"`
 }
 
 // auditCodegen reports on .forge/checksums.json freshness, hand-edits to
@@ -731,6 +737,13 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 	sort.Slice(forked, func(i, j int) bool { return forked[i].Path < forked[j].Path })
 	if len(forked) > 0 {
+		// Attach each fork's recorded rationale. The friction log is
+		// loaded exactly once (and only when forks exist at all) —
+		// audit stays cheap on the common fork-free project.
+		reasons := forkFrictionReasons(projectDir)
+		for i := range forked {
+			forked[i].Reason = reasons[forked[i].Path]
+		}
 		details["forked_files"] = forked
 		details["forked_hint"] = "forge never regenerates forked files; run `forge unfork --merge <path>` to reconcile with the latest render"
 	}

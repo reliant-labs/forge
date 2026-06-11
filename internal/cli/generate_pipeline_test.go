@@ -68,6 +68,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"tenant middleware (auto-enable + emit)",
 		"webhook routes",
 		"MCP manifest",
+		"go mod tidy (pre-wiring)",
 		"pkg/app/bootstrap.go",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
@@ -385,9 +386,9 @@ func stepNames(steps []GenStep) []string {
 // TestDeriveOrmEnabledMatrix is the golden test guarding step 6's
 // ORM-enable probe order. The pre-refactor inline block did:
 //
-//   1. if hasDB && proto/db has at least one .proto file → ormEnabled=true
-//   2. else if internal/db/types.go exists → ormEnabled=true
-//   3. else ormEnabled=false
+//  1. if hasDB && proto/db has at least one .proto file → ormEnabled=true
+//  2. else if internal/db/types.go exists → ormEnabled=true
+//  3. else ormEnabled=false
 //
 // Reordering or skipping a probe changes which projects emit ORM
 // wire-up in pkg/app/bootstrap.go, which is hard to spot in a smoke
@@ -395,11 +396,11 @@ func stepNames(steps []GenStep) []string {
 // of probe inputs that mattered pre-refactor.
 func TestDeriveOrmEnabledMatrix(t *testing.T) {
 	cases := []struct {
-		name           string
-		hasDB          bool
-		makeProtoFile  bool // create proto/db/v1/*.proto?
-		makeTypesFile  bool // create internal/db/types.go?
-		want           bool
+		name          string
+		hasDB         bool
+		makeProtoFile bool // create proto/db/v1/*.proto?
+		makeTypesFile bool // create internal/db/types.go?
+		want          bool
 	}{
 		{name: "neither: ORM off", want: false},
 		{name: "proto/db dir only (hasDB=true), no .proto files: ORM off", hasDB: true, want: false},

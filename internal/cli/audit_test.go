@@ -57,7 +57,7 @@ docs: {}
 		"conventions", "codegen",
 		"packs", "pack_graph", "proto_migration_alignment",
 		"migration_safety", "wire_coverage", "scaffold_markers",
-		"crud_stubs", "diagnostics", "deps",
+		"crud_stubs", "diagnostics", "deps", "friction",
 	}
 	for _, key := range wantKeys {
 		if _, ok := report.Categories[key]; !ok {

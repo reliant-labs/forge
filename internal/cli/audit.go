@@ -105,6 +105,7 @@ var auditCategoryOrder = []string{
 	"crud_stubs",
 	"diagnostics",
 	"deps",
+	"friction",
 }
 
 func newAuditCmd() *cobra.Command {
@@ -191,6 +192,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
 	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
 	report.Categories["deps"] = auditDeps(abs)
+	report.Categories["friction"] = auditFriction(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
 	return report, nil

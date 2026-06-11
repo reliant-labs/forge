@@ -340,7 +340,7 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
-		UnservedServices    []struct{ Name, ServedBy string }
+		AllServiceNames     []string
 		LeaderElectionID    string
 	}{
 		Module:           "example.com/fullproject",

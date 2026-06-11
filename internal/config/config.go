@@ -10,11 +10,7 @@
 //nolint:revive // max-public-structs: see package doc above.
 package config
 
-import (
-	"strings"
-
-	"github.com/reliant-labs/forge/internal/naming"
-)
+import "strings"
 
 // ProjectKind identifies the shape of a forge project. The default,
 // "service", produces a Connect-RPC service scaffold (handlers,
@@ -185,33 +181,6 @@ type ServiceConfig struct {
 	// operators/<operator>/<crd-name>_controller.go plus
 	// api/<version>/<crd-name>_types.go.
 	CRDs []CRDConfig `yaml:"crds,omitempty"`
-	// Serve declares whether THIS project's binary serves the service.
-	// nil/true (the default — field absent) is today's behavior: the full
-	// scaffold is generated and the service is wired into the bootstrap
-	// table. `serve: false` makes the service "types-only": proto types,
-	// Connect client stubs, frontend hooks/mocks, and descriptor entries
-	// still generate (callers need them), but the handlers/<svc>/ scaffold,
-	// the bootstrap/wire rows, middleware/authz registration, and the
-	// service's MCP manifest tools are all gated off — the canonical
-	// implementation lives in a sibling binary outside this repo.
-	// *bool (not bool) so "absent" and "explicitly true" are
-	// distinguishable while both resolving to served.
-	Serve *bool `yaml:"serve,omitempty"`
-	// ServedBy is pure documentation for `serve: false` services: the
-	// name of the binary/repo that canonically serves this API (e.g.
-	// "control-plane"). Rendered into generated comments and audit
-	// output; carries NO mechanism. Setting it without `serve: false`
-	// is a validation error — on a served service it documents a
-	// contradiction.
-	ServedBy string `yaml:"served_by,omitempty"`
-}
-
-// IsServed reports whether this project's binary serves the service.
-// nil (field absent) and explicit true both mean served — `serve: false`
-// is the only opt-out, so legacy forge.yaml files keep today's behavior
-// with zero migration.
-func (s ServiceConfig) IsServed() bool {
-	return s.Serve == nil || *s.Serve
 }
 
 // CRDConfig represents a single Custom Resource Definition reconciled
@@ -231,51 +200,6 @@ type CRDConfig struct {
 	// no state), "composite" (manages sub-resources). Drives which
 	// template is rendered for the controller shim.
 	Shape string `yaml:"shape,omitempty"`
-}
-
-// ServiceServed is the single chokepoint predicate for "does THIS
-// project's binary serve the named service?". Every enumeration point
-// that previously assumed declared ⇒ served (bootstrap table, wire_gen,
-// handlers scaffold, authz, MCP manifest, audit) routes through here so
-// the matching rule lives in exactly one place.
-//
-// name may be spelled in any of the forms the codebase uses for the
-// same service — the forge.yaml name ("admin-server"), the proto
-// service name ("AdminServerService"), or the snake package form
-// ("admin_server"); all normalize through naming.ServicePackage before
-// comparison. Names with no matching services[] entry return true
-// (served): the predicate only ever *removes* serving for an explicit
-// `serve: false` declaration, never for a lookup miss — fail-open keeps
-// proto-only fixtures and mid-migration trees behaving exactly as
-// before the field existed.
-func (c *ProjectConfig) ServiceServed(name string) bool {
-	if c == nil {
-		return true
-	}
-	canonical := naming.ServicePackage(name)
-	for _, s := range c.Services {
-		if naming.ServicePackage(s.Name) == canonical {
-			return s.IsServed()
-		}
-	}
-	return true
-}
-
-// UnservedServices returns the services declared with `serve: false`,
-// in forge.yaml order. Convenience view over the chokepoint for callers
-// that need the full set (audit retirement findings, the BootstrapOnly
-// name-guard) rather than a per-name answer.
-func (c *ProjectConfig) UnservedServices() []ServiceConfig {
-	if c == nil {
-		return nil
-	}
-	var out []ServiceConfig
-	for _, s := range c.Services {
-		if !s.IsServed() {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // WebhookConfig represents a webhook endpoint within a service.
@@ -822,25 +746,25 @@ type FeaturesConfig struct {
 // What lives here today:
 //
 //   - Deploy:         the whole `forge deploy` pipeline (KCL render →
-//                     kubectl apply → wait-rollouts). KCL is currently
-//                     the only deploy IR but we treat it as an
-//                     implementation detail; the public contract is
-//                     "forge produces correct k8s manifests" and we
-//                     want the freedom to swap render backends.
+//     kubectl apply → wait-rollouts). KCL is currently
+//     the only deploy IR but we treat it as an
+//     implementation detail; the public contract is
+//     "forge produces correct k8s manifests" and we
+//     want the freedom to swap render backends.
 //   - Ingress:        Gateway API codegen + cert-manager + Traefik
-//                     wiring. Provider matrix is fragile and not yet
-//                     proven across real cloud providers.
+//     wiring. Provider matrix is fragile and not yet
+//     proven across real cloud providers.
 //   - ExternalBuilds: KCL `Service.build_cmd` shell escape hatch —
-//                     forge runs `sh -c <build_cmd>` with substitution.
-//                     Useful for sibling-repo or non-Go builds but
-//                     pushes shell-safety onto the user.
+//     forge runs `sh -c <build_cmd>` with substitution.
+//     Useful for sibling-repo or non-Go builds but
+//     pushes shell-safety onto the user.
 //   - Operators:      controller-runtime managers + CRD codegen. Niche,
-//                     under-exercised, the API may need to change as we
-//                     learn what real operator authors want.
+//     under-exercised, the API may need to change as we
+//     learn what real operator authors want.
 //   - StrictWiring:   diagnostics fail-fast — any registered diagnostic
-//                     terminates the process after Bootstrap. Implies
-//                     Diagnostics: true. Stays experimental because the
-//                     diagnostics catalogue itself is still settling.
+//     terminates the process after Bootstrap. Implies
+//     Diagnostics: true. Stays experimental because the
+//     diagnostics catalogue itself is still settling.
 type ExperimentalConfig struct {
 	Deploy         bool `yaml:"deploy,omitempty"`
 	Ingress        bool `yaml:"ingress,omitempty"`

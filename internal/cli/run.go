@@ -149,6 +149,20 @@ func runProjectDev(opts runOptions) error {
 		return nil
 	}
 
+	// Registration view (pkg/app/services.go): what the binary serves
+	// is the user-owned row list, not forge.yaml. Best-effort — a
+	// missing/broken registry falls open to "everything registered";
+	// the generated BootstrapOnly guard is the runtime backstop.
+	reg := &serviceRegistry{Exists: false}
+	if perr == nil {
+		if r, regErr := loadServiceRegistry(filepath.Dir(projectDir)); regErr == nil {
+			reg = r
+		}
+	}
+	notRegistered := func(s config.ServiceConfig) bool {
+		return isConnectServiceConfig(s) && !reg.registered(s.Name)
+	}
+
 	// Filter services/frontends based on --service flag
 	servicesToRun := cfg.Services
 	frontendsToRun := cfg.Frontends
@@ -158,31 +172,27 @@ func runProjectDev(opts runOptions) error {
 		if len(servicesToRun) == 0 && len(frontendsToRun) == 0 {
 			return fmt.Errorf("none of the specified services %v found in project config", opts.services)
 		}
-		// Explicitly requesting a types-only service is a
+		// Explicitly requesting an unregistered service is a
 		// misconfiguration — fail here with the full story instead of
 		// letting the generated BootstrapOnly guard error later.
 		for _, s := range servicesToRun {
-			if !s.IsServed() {
-				hint := ""
-				if s.ServedBy != "" {
-					hint = fmt.Sprintf(" (served by %s)", s.ServedBy)
-				}
-				return fmt.Errorf("service %q is types-only in forge.yaml (serve: false)%s — this project's binary does not serve it", s.Name, hint)
+			if notRegistered(s) {
+				return fmt.Errorf("service %q is not registered in %s — this binary does not serve it; add its serviceRow line to RegisteredServices to serve it here", s.Name, serviceRegistryRelPath)
 			}
 		}
 	} else {
-		// Default run: types-only services have no row in the bootstrap
+		// Default run: unregistered services have no row in the appkit
 		// table, so passing their names to the server would trip the
 		// generated BootstrapOnly guard. Skip them with a notice.
-		var served []config.ServiceConfig
+		var registered []config.ServiceConfig
 		for _, s := range servicesToRun {
-			if s.IsServed() {
-				served = append(served, s)
+			if !notRegistered(s) {
+				registered = append(registered, s)
 				continue
 			}
-			fmt.Printf("[run] skipping %s (serve: false — types-only service)\n", s.Name)
+			fmt.Printf("[run] skipping %s (no serviceRow in %s — not served by this binary)\n", s.Name, serviceRegistryRelPath)
 		}
-		servicesToRun = served
+		servicesToRun = registered
 	}
 
 	// 1. Start infrastructure via docker compose (unless --no-infra).
@@ -720,12 +730,13 @@ func runHostService(ctx context.Context, name, env, secretsFile string, backgrou
 		return fmt.Errorf("service %q not found in forge.yaml (declared services: %s)",
 			name, strings.Join(declaredServiceNames(cfg), ", "))
 	}
-	if !svc.IsServed() {
-		hint := ""
-		if svc.ServedBy != "" {
-			hint = fmt.Sprintf(" (served by %s)", svc.ServedBy)
+	// Registration check (pkg/app/services.go): the binary serves only
+	// the rows the user lists there. Best-effort — a missing/broken
+	// registry falls open; the generated BootstrapOnly guard backstops.
+	if cfgPath, perr := findProjectConfigFile(); perr == nil && isConnectServiceConfig(*svc) {
+		if reg, regErr := loadServiceRegistry(filepath.Dir(cfgPath)); regErr == nil && !reg.registered(name) {
+			return fmt.Errorf("service %q is not registered in %s — this binary does not serve it; add its serviceRow line to RegisteredServices to serve it here", name, serviceRegistryRelPath)
 		}
-		return fmt.Errorf("service %q is types-only in forge.yaml (serve: false)%s — this project's binary does not serve it", name, hint)
 	}
 
 	// Look up the KCL HostDeploy block for this service. When the env's
@@ -1116,4 +1127,3 @@ func printDevProxyBanner(port int, backends []devproxy.Backend) {
 	}
 	fmt.Printf("\n[run] Dev URL: http://localhost:%d (%s)\n", port, strings.Join(hosts, ", "))
 }
-

@@ -101,6 +101,7 @@ var auditCategoryOrder = []string{
 	"migration_safety",
 	"wire_coverage",
 	"optional_deps_guard",
+	"config_deps",
 	"scaffold_markers",
 	"crud_stubs",
 	"diagnostics",
@@ -188,6 +189,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["migration_safety"] = auditMigrationSafety(cfg, abs)
 	report.Categories["wire_coverage"] = auditWireCoverage(abs)
 	report.Categories["optional_deps_guard"] = auditOptionalDepsGuard(abs)
+	report.Categories["config_deps"] = auditConfigDeps(abs)
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
 	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
@@ -1630,6 +1632,57 @@ func auditOptionalDepsGuard(projectDir string) AuditCategory {
 			"affected_packages": pkgs,
 			"by_package":        byPackage,
 			"hint":              fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", Name()),
+		},
+	}
+}
+
+// auditConfigDeps rolls up scalar Deps fields (the config-deps lint).
+// Scalar Deps fields are configuration, not collaborators — wire_gen
+// can never resolve them from App/AppExtras, so they regenerate as
+// typed zeros + TODOs forever (kalshi-trader fr-ad24278452) unless the
+// user hand-projects them via AppExtras + setup.go. The supported
+// shape is a component config block in proto/config taken as one typed
+// field. Findings are warn-level; the category is additive per the
+// audit-json contract (consumers iterate `.categories | keys[]` and
+// tolerate new entries).
+func auditConfigDeps(projectDir string) AuditCategory {
+	findings, err := collectConfigDepsFindings(projectDir)
+	if err != nil {
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("config-deps scan failed: %v", err),
+		}
+	}
+	if len(findings) == 0 {
+		return AuditCategory{
+			Status:  AuditStatusOK,
+			Summary: "config-deps clean — no scalar Deps fields (configuration flows through config blocks)",
+		}
+	}
+
+	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
+	// offending component; per-finding detail lives in
+	// `forge lint --config-deps --json`.
+	byPackage := map[string][]string{}
+	for _, f := range findings {
+		key := f.Role + "/" + f.Package
+		byPackage[key] = append(byPackage[key],
+			fmt.Sprintf("%s:%d Deps.%s %s", f.File, f.Line, f.Field, f.Type))
+	}
+	pkgs := make([]string, 0, len(byPackage))
+	for k := range byPackage {
+		pkgs = append(pkgs, k)
+	}
+	sort.Strings(pkgs)
+
+	return AuditCategory{
+		Status:  AuditStatusWarn,
+		Summary: fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", len(findings), len(pkgs)),
+		Details: map[string]any{
+			"finding_count":     len(findings),
+			"affected_packages": pkgs,
+			"by_package":        byPackage,
+			"hint":              fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", Name()),
 		},
 	}
 }

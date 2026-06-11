@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-strict-contract-names
 description: Internal-package contract.go files must declare `type Service interface`, `type Deps struct`, and `func New(Deps) (Service, error)` (or the legacy single-result `func New(Deps) Service`). The convention is now lint-enforced; non-canonical names previously produced silently-broken bootstrap codegen.
+relevance: migration
 ---
 
 # Migrating to strict internal-package contract names

@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-serverkit
 description: Migrate the generated `cmd/server.go` from the ~520-line inline scaffold to a ~50-line shim over `forge/pkg/serverkit`. The library now owns the HTTP listener, observability chain, healthz/readyz, worker supervisor, operator manager, and graceful-shutdown sequence; the shim only projects config onto serverkit.Config and wires per-project hooks.
+relevance: migration
 ---
 
 # Migrating to the `serverkit` runtime library

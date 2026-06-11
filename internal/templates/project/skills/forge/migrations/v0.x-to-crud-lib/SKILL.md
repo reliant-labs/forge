@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-crud-lib
 description: Migrate handlers_crud_gen.go from inline lifecycle code to thin per-RPC shims that delegate to forge/pkg/crud.
+relevance: migration
 ---
 
 # Migrating CRUD handlers to `forge/pkg/crud`

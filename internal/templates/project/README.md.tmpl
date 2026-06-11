@@ -10,6 +10,16 @@ task deps
 ```
 
 ### 2. Add a component
+{{if not .ServiceName}}
+This project was scaffolded with **zero services** — the binary is a
+deployment unit that mounts services; it is not a domain entity itself.
+Your first step is to add a service named after a real domain entity
+(not the binary name):
+
+```bash
+forge add service item        # or order, user, account, ...
+```
+{{end}}
 ```bash
 forge add service myservice
 forge add worker cleanup --kind cron --schedule "0 * * * *"

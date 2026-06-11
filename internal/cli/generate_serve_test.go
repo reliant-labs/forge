@@ -1,9 +1,10 @@
-// Tests for types-only services (forge.yaml services[].serve: false):
-// the served-filter chokepoint, the MCP manifest gate, the audit
-// surfaces (shape served:false additive marker + codegen retirement
-// finding), and the stale-cleanup retirement path. The full end-to-end
-// flow (real `forge generate` on a scaffolded project) lives in
-// serve_types_only_e2e_test.go behind the e2e build tag.
+// Tests for registration-in-code (the user-owned pkg/app/services.go
+// row list): the registry parser + classification chokepoint, the MCP
+// manifest gate, the audit surfaces (shape served:false additive marker
+// + codegen unregistered_services finding), and the stale-cleanup
+// retirement path. The full end-to-end flow (real `forge generate` on a
+// scaffolded project) lives in serve_types_only_e2e_test.go behind the
+// e2e build tag.
 package cli
 
 import (
@@ -15,32 +16,43 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// serveTestConfig parses a two-service forge.yaml: "api" served (default,
-// field absent) and "project" types-only with served_by documentation.
-func serveTestConfig(t *testing.T) *config.ProjectConfig {
+// writeServiceRegistry drops a pkg/app/services.go into dir with the
+// given body. The body mirrors the scaffold shape: api registered,
+// project tombstoned (comment only), anything else unlisted.
+func writeServiceRegistry(t *testing.T, dir, body string) {
 	t.Helper()
-	yamlBody := `name: demo
-module_path: github.com/example/demo
-services:
-  - name: api
-    type: go_service
-    path: handlers/api
-  - name: project
-    type: go_service
-    path: handlers/project
-    serve: false
-    served_by: control-plane
-`
-	cfg, err := config.LoadStrict([]byte(yamlBody), "forge.yaml")
-	if err != nil {
-		t.Fatalf("load fixture config: %v", err)
+	appDir := filepath.Join(dir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatalf("mkdir pkg/app: %v", err)
 	}
-	return cfg
+	if err := os.WriteFile(filepath.Join(appDir, "services.go"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write services.go: %v", err)
+	}
 }
+
+const registryFixture = `package app
+
+import (
+	"log/slog"
+
+	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/appkit"
+
+	"github.com/example/demo/pkg/config"
+)
+
+// RegisteredServices lists what THIS binary serves.
+func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) []appkit.ServiceDef {
+	return []appkit.ServiceDef{
+		serviceRowAPI(app, cfg, logger, devMode, opts...),
+		// project: types-only — served by control-plane
+	}
+}
+`
 
 func serveTestServiceDefs() []codegen.ServiceDef {
 	return []codegen.ServiceDef{
@@ -51,55 +63,145 @@ func serveTestServiceDefs() []codegen.ServiceDef {
 			{Name: "CreateProject", InputType: "CreateProjectRequest", OutputType: "CreateProjectResponse"},
 			{Name: "GetProject", InputType: "GetProjectRequest", OutputType: "GetProjectResponse"},
 		}},
+		{Name: "LedgerService", Package: "ledger.v1", Methods: []codegen.Method{
+			{Name: "Post", InputType: "PostRequest", OutputType: "PostResponse"},
+		}},
 	}
 }
 
-func TestServedServiceDefs_FiltersTypesOnlyServices(t *testing.T) {
-	cfg := serveTestConfig(t)
-	served, unserved := servedServiceDefs(cfg, serveTestServiceDefs())
-	if len(served) != 1 || served[0].Name != "ApiService" {
-		t.Errorf("served = %+v, want [ApiService]", served)
-	}
-	if len(unserved) != 1 || unserved[0].Name != "ProjectService" {
-		t.Errorf("unserved = %+v, want [ProjectService]", unserved)
-	}
-}
-
-func TestServedServiceDefs_NilConfigServesEverything(t *testing.T) {
-	defs := serveTestServiceDefs()
-	served, unserved := servedServiceDefs(nil, defs)
-	if len(served) != len(defs) || len(unserved) != 0 {
-		t.Errorf("nil cfg must serve everything: served=%d unserved=%d", len(served), len(unserved))
-	}
-}
-
-func TestUnservedHelpers_DirSkipsAndBootstrapGuards(t *testing.T) {
-	cfg := serveTestConfig(t)
-	skips := unservedHandlerDirSkips(cfg)
-	if !skips["project"] || len(skips) != 1 {
-		t.Errorf("unservedHandlerDirSkips = %v, want {project:true}", skips)
-	}
-	guards := unservedBootstrapGuards(cfg)
-	if len(guards) != 1 || guards[0].Name != "project" || guards[0].ServedBy != "control-plane" {
-		t.Errorf("unservedBootstrapGuards = %+v, want [{project control-plane}]", guards)
-	}
-	if got := unservedHandlerDirSkips(nil); got != nil {
-		t.Errorf("nil cfg dir skips = %v, want nil", got)
-	}
-	if got := unservedBootstrapGuards(nil); got != nil {
-		t.Errorf("nil cfg guards = %v, want nil", got)
-	}
-}
-
-// TestStepMCPManifest_ExcludesUnservedRPCs drives the real stepMCPManifest
-// against a synthetic pipeline context and asserts the emitted
-// gen/mcp/manifest.json advertises only the served service's tools.
-func TestStepMCPManifest_ExcludesUnservedRPCs(t *testing.T) {
+func TestServiceRegistry_Classification(t *testing.T) {
 	dir := t.TempDir()
+	writeServiceRegistry(t, dir, registryFixture)
+
+	reg, err := loadServiceRegistry(dir)
+	if err != nil {
+		t.Fatalf("loadServiceRegistry: %v", err)
+	}
+	if !reg.Exists {
+		t.Fatalf("registry must report Exists=true")
+	}
+
+	// Spelling-agnostic: proto, kebab/CLI, and snake forms all resolve.
+	for _, spelling := range []string{"ApiService", "api", "API"} {
+		if got := reg.state(spelling); got != registrationRegistered {
+			t.Errorf("state(%q) = %v, want registered", spelling, got)
+		}
+	}
+	for _, spelling := range []string{"ProjectService", "project"} {
+		if got := reg.state(spelling); got != registrationTombstoned {
+			t.Errorf("state(%q) = %v, want tombstoned (comment mention)", spelling, got)
+		}
+	}
+	// Ledger appears nowhere — newly added.
+	if got := reg.state("LedgerService"); got != registrationUnlisted {
+		t.Errorf("state(LedgerService) = %v, want unlisted", got)
+	}
+}
+
+func TestServiceRegistry_MissingFileServesEverything(t *testing.T) {
+	reg, err := loadServiceRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("loadServiceRegistry on empty dir: %v", err)
+	}
+	if reg.Exists {
+		t.Fatalf("Exists must be false when pkg/app/services.go is absent")
+	}
+	for _, name := range []string{"ApiService", "anything-at-all"} {
+		if !reg.registered(name) {
+			t.Errorf("missing registry must fail open to registered for %q", name)
+		}
+	}
+}
+
+func TestServiceRegistry_ParseErrorIsLoud(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceRegistry(t, dir, "package app\nfunc broken( {")
+	if _, err := loadServiceRegistry(dir); err == nil || !strings.Contains(err.Error(), serviceRegistryRelPath) {
+		t.Fatalf("parse failure must name the registration file, got err=%v", err)
+	}
+
+	// The pipeline accessor propagates (and memoizes) the failure.
+	ctx := &pipelineContext{ProjectDir: dir}
+	if _, err := ctx.serviceRegistry(); err == nil {
+		t.Fatalf("ctx.serviceRegistry must propagate the parse error")
+	}
+	if _, err := ctx.rowServiceDefs(); err == nil {
+		t.Fatalf("rowServiceDefs must propagate the parse error")
+	}
+}
+
+func TestServiceRegistry_CollisionPrefixedRowResolves(t *testing.T) {
+	dir := t.TempDir()
+	// A cross-role collision (service "billing" + internal/billing)
+	// renames the FieldName to SvcBilling; the registered detection must
+	// still resolve the underlying service.
+	writeServiceRegistry(t, dir, `package app
+
+func RegisteredServices() {
+	_ = serviceRowSvcBilling
+}
+`)
+	reg, err := loadServiceRegistry(dir)
+	if err != nil {
+		t.Fatalf("loadServiceRegistry: %v", err)
+	}
+	if !reg.registered("billing") || !reg.registered("BillingService") {
+		t.Errorf("serviceRowSvcBilling reference must register billing in all spellings")
+	}
+}
+
+func TestSplitServiceDefs_AndViews(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceRegistry(t, dir, registryFixture)
+	ctx := &pipelineContext{ProjectDir: dir, Services: serveTestServiceDefs()}
+
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		t.Fatalf("rowServiceDefs: %v", err)
+	}
+	// Registered (api) + unlisted/newly-added (ledger) get rows;
+	// tombstoned (project) does not.
+	if len(rows) != 2 || rows[0].Name != "ApiService" || rows[1].Name != "LedgerService" {
+		t.Errorf("rows = %+v, want [ApiService LedgerService]", rows)
+	}
+
+	registered, err := ctx.registeredServiceDefs()
+	if err != nil {
+		t.Fatalf("registeredServiceDefs: %v", err)
+	}
+	if len(registered) != 1 || registered[0].Name != "ApiService" {
+		t.Errorf("registered = %+v, want [ApiService]", registered)
+	}
+
+	skips, err := ctx.tombstonedHandlerDirSkips()
+	if err != nil {
+		t.Fatalf("tombstonedHandlerDirSkips: %v", err)
+	}
+	if !skips["project"] || len(skips) != 1 {
+		t.Errorf("skips = %v, want {project:true}", skips)
+	}
+}
+
+func TestAllServiceRuntimeNames(t *testing.T) {
+	got := allServiceRuntimeNames([]codegen.ServiceDef{
+		{Name: "AdminServerService"}, {Name: "ApiService"},
+	})
+	if len(got) != 2 || got[0] != "admin-server" || got[1] != "api" {
+		t.Errorf("allServiceRuntimeNames = %v, want [admin-server api]", got)
+	}
+}
+
+// TestStepMCPManifest_ExcludesUnregisteredRPCs drives the real
+// stepMCPManifest against a synthetic pipeline context and asserts the
+// emitted gen/mcp/manifest.json advertises only the registered
+// service's tools — tombstoned AND unlisted services are both excluded
+// (this binary serves neither).
+func TestStepMCPManifest_ExcludesUnregisteredRPCs(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceRegistry(t, dir, registryFixture)
 	ctx := &pipelineContext{
 		ProjectDir: dir,
 		AbsPath:    dir,
-		Cfg:        serveTestConfig(t),
 		Services:   serveTestServiceDefs(),
 		Checksums:  &generator.FileChecksums{Files: map[string]generator.FileChecksumEntry{}},
 	}
@@ -120,20 +222,22 @@ func TestStepMCPManifest_ExcludesUnservedRPCs(t *testing.T) {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
 	if len(manifest.Tools) != 1 {
-		t.Fatalf("tools = %+v, want exactly the served service's 1 RPC", manifest.Tools)
+		t.Fatalf("tools = %+v, want exactly the registered service's 1 RPC", manifest.Tools)
 	}
 	if manifest.Tools[0].Service != "ApiService" || manifest.Tools[0].Method != "Get" {
 		t.Errorf("tools[0] = %+v, want ApiService/Get", manifest.Tools[0])
 	}
-	if strings.Contains(string(data), "ProjectService") {
-		t.Errorf("manifest must not advertise the types-only ProjectService:\n%s", data)
+	for _, absent := range []string{"ProjectService", "LedgerService"} {
+		if strings.Contains(string(data), absent) {
+			t.Errorf("manifest must not advertise unregistered %s:\n%s", absent, data)
+		}
 	}
 }
 
 // TestAuditShape_ServedFalseAdditive pins the audit-json additive
-// contract: unserved services keep their RPC inventory but every entry
-// carries served:false and mcp_callable:false; served services' entries
-// omit the served key entirely.
+// contract: unregistered services keep their RPC inventory but every
+// entry carries served:false and mcp_callable:false; registered
+// services' entries omit the served key entirely.
 func TestAuditShape_ServedFalseAdditive(t *testing.T) {
 	dir := t.TempDir()
 	yamlBody := `name: demo
@@ -145,8 +249,6 @@ services:
   - name: project
     type: go_service
     path: handlers/project
-    serve: false
-    served_by: control-plane
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
@@ -173,6 +275,7 @@ services:
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/example/demo\n"), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
+	writeServiceRegistry(t, dir, registryFixture)
 
 	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
@@ -190,7 +293,7 @@ services:
 	}
 	services := raw["services"].([]any)
 	if len(services) != 2 {
-		t.Fatalf("services = %v, want 2 entries (unserved must NOT disappear)", services)
+		t.Fatalf("services = %v, want 2 entries (unregistered must NOT disappear)", services)
 	}
 	byName := map[string]map[string]any{}
 	for _, s := range services {
@@ -202,12 +305,9 @@ services:
 	if api["served"] != true {
 		t.Errorf("api.served = %v, want true", api["served"])
 	}
-	if _, present := api["served_by"]; present {
-		t.Errorf("api.served_by must be omitted when unset")
-	}
 	apiRPC := api["rpcs"].([]any)[0].(map[string]any)
 	if _, present := apiRPC["served"]; present {
-		t.Errorf("served service's rpc entries must omit the served key (additive contract), got %v", apiRPC)
+		t.Errorf("registered service's rpc entries must omit the served key (additive contract), got %v", apiRPC)
 	}
 	if apiRPC["mcp_callable"] != true {
 		t.Errorf("api rpc mcp_callable = %v, want true", apiRPC["mcp_callable"])
@@ -216,9 +316,6 @@ services:
 	project := byName["project"]
 	if project["served"] != false {
 		t.Errorf("project.served = %v, want false", project["served"])
-	}
-	if project["served_by"] != "control-plane" {
-		t.Errorf("project.served_by = %v, want control-plane", project["served_by"])
 	}
 	projectRPCs := project["rpcs"].([]any)
 	if len(projectRPCs) != 1 {
@@ -233,10 +330,11 @@ services:
 	}
 }
 
-// TestAuditCodegen_UnservedHandlerDirRetirementFinding pins the
-// retirement flow's audit half: serve flipped to false while
-// handlers/<svc>/ still exists → warn finding naming the dir.
-func TestAuditCodegen_UnservedHandlerDirRetirementFinding(t *testing.T) {
+// TestAuditCodegen_UnregisteredServiceFindings pins both registration
+// findings: a tombstoned service whose handlers/<svc>/ still exists
+// (retirement half-done) and an unlisted service whose row constructor
+// is generated but unreferenced (post add-service).
+func TestAuditCodegen_UnregisteredServiceFindings(t *testing.T) {
 	dir := t.TempDir()
 	yamlBody := `name: demo
 module_path: github.com/example/demo
@@ -244,68 +342,94 @@ services:
   - name: project
     type: go_service
     path: handlers/project
-    serve: false
-    served_by: control-plane
+  - name: ledger
+    type: go_service
+    path: handlers/ledger
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	// Pre-existing scaffold: the dir needs a parsable package clause for
-	// the disk-first resolver to report FromDisk.
-	handlerDir := filepath.Join(dir, "handlers", "project")
-	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
-		t.Fatalf("mkdir handlers/project: %v", err)
+	// Pre-existing scaffolds: the dirs need a parsable package clause
+	// for the disk-first resolver to report FromDisk.
+	for _, svc := range []string{"project", "ledger"} {
+		handlerDir := filepath.Join(dir, "handlers", svc)
+		if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+			t.Fatalf("mkdir handlers/%s: %v", svc, err)
+		}
+		if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte("package "+svc+"\n"), 0o644); err != nil {
+			t.Fatalf("write service.go: %v", err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte("package project\n"), 0o644); err != nil {
-		t.Fatalf("write service.go: %v", err)
-	}
+	writeServiceRegistry(t, dir, registryFixture) // project tombstoned, ledger unlisted
 
 	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 
-	findings := unservedHandlerDirFindings(cfg, dir)
-	if len(findings) != 1 {
-		t.Fatalf("findings = %+v, want 1", findings)
+	findings := unregisteredServiceFindings(cfg, dir)
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want 2", findings)
 	}
-	f := findings[0]
-	if f.Service != "project" || f.Dir != "handlers/project" || f.ServedBy != "control-plane" {
-		t.Errorf("finding = %+v", f)
-	}
-	if !strings.Contains(f.Message, "serve=false") || !strings.Contains(f.Message, "restore serve: true") {
-		t.Errorf("message must state the contradiction and both exits, got: %s", f.Message)
+	byService := map[string]auditUnregisteredService{}
+	for _, f := range findings {
+		byService[f.Service] = f
 	}
 
-	// The codegen category carries the finding additively and degrades
+	tomb := byService["project"]
+	if tomb.State != "tombstoned" || tomb.Dir != "handlers/project" {
+		t.Errorf("project finding = %+v", tomb)
+	}
+	if !strings.Contains(tomb.Message, "--force-cleanup") || !strings.Contains(tomb.Message, serviceRegistryRelPath) {
+		t.Errorf("tombstoned message must state both exits and name the registry: %s", tomb.Message)
+	}
+
+	unlisted := byService["ledger"]
+	if unlisted.State != "unlisted" {
+		t.Errorf("ledger finding = %+v", unlisted)
+	}
+	if !strings.Contains(unlisted.Message, "generated but unreferenced") || !strings.Contains(unlisted.Message, codegen.ServiceRowFuncName("ledger")) {
+		t.Errorf("unlisted message must surface the unreferenced row constructor and the exact line: %s", unlisted.Message)
+	}
+
+	// The codegen category carries the findings additively and degrades
 	// to warn.
 	cat := auditCodegen(cfg, dir)
 	if cat.Status != AuditStatusWarn {
 		t.Errorf("codegen status = %s, want warn", cat.Status)
 	}
-	if _, ok := cat.Details["unserved_handler_dirs"]; !ok {
-		t.Errorf("details missing unserved_handler_dirs: %v", cat.Details)
+	if _, ok := cat.Details["unregistered_services"]; !ok {
+		t.Errorf("details missing unregistered_services: %v", cat.Details)
 	}
-	if !strings.Contains(cat.Summary, "unserved handler dir") {
-		t.Errorf("summary must mention the retirement finding: %s", cat.Summary)
+	if !strings.Contains(cat.Summary, "unregistered service") {
+		t.Errorf("summary must mention the registration findings: %s", cat.Summary)
 	}
 
-	// Retired steady state: dir gone → finding clears.
-	if err := os.RemoveAll(handlerDir); err != nil {
+	// Retired steady state: tombstoned dir gone → its finding clears.
+	if err := os.RemoveAll(filepath.Join(dir, "handlers", "project")); err != nil {
 		t.Fatalf("remove handler dir: %v", err)
 	}
-	if got := unservedHandlerDirFindings(cfg, dir); len(got) != 0 {
-		t.Errorf("findings after dir removal = %+v, want none", got)
+	after := unregisteredServiceFindings(cfg, dir)
+	if len(after) != 1 || after[0].Service != "ledger" {
+		t.Errorf("findings after dir removal = %+v, want just the unlisted ledger", after)
+	}
+
+	// No registration file at all (pre-migration tree) → no findings.
+	if err := os.Remove(filepath.Join(dir, "pkg", "app", "services.go")); err != nil {
+		t.Fatalf("remove services.go: %v", err)
+	}
+	if got := unregisteredServiceFindings(cfg, dir); len(got) != 0 {
+		t.Errorf("findings without registry = %+v, want none", got)
 	}
 }
 
-// TestCleanupStale_UnservedHandlerFilesBecomeCandidates pins the
+// TestCleanupStale_TombstonedHandlerFilesBecomeCandidates pins the
 // retirement flow's cleanup half: tracked Tier-1 files under a retired
 // handlers dir (not re-written this run because the emitters are gated)
 // are report-only candidates by default and deleted under
 // --force-cleanup; Tier-2 user-owned files in the same dir are never
 // candidates.
-func TestCleanupStale_UnservedHandlerFilesBecomeCandidates(t *testing.T) {
+func TestCleanupStale_TombstonedHandlerFilesBecomeCandidates(t *testing.T) {
 	checksums.ResetPerRunState()
 	defer checksums.ResetPerRunState()
 
@@ -365,5 +489,44 @@ func TestCleanupStale_UnservedHandlerFilesBecomeCandidates(t *testing.T) {
 	}
 	if _, tracked := cs.Files["handlers/project/handlers_gen.go"]; tracked {
 		t.Errorf("manifest entry must be pruned after deletion")
+	}
+}
+
+// TestGenerateWebhookRoutes_UnregisteredServiceIsHardError pins the
+// reworked validation rule: webhooks on a service without a serviceRow
+// in pkg/app/services.go is a generate-time error naming the
+// registration file (F1 enforced this as a forge.yaml LoadStrict rule;
+// the yaml surface is gone).
+func TestGenerateWebhookRoutes_UnregisteredServiceIsHardError(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceRegistry(t, dir, registryFixture) // project tombstoned
+	yamlBody := `name: demo
+module_path: github.com/example/demo
+services:
+  - name: project
+    type: go_service
+    path: handlers/project
+    webhooks:
+      - name: stripe
+`
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	reg, err := loadServiceRegistry(dir)
+	if err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+	err = generateWebhookRoutes(cfg, reg, dir, nil)
+	if err == nil {
+		t.Fatalf("webhooks on an unregistered service must be a hard error")
+	}
+	for _, want := range []string{serviceRegistryRelPath, "webhooks", codegen.ServiceRowFuncName("project")} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
 	}
 }

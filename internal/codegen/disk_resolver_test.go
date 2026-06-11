@@ -344,19 +344,30 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The wireXxxDeps call site moved into the row constructors
+	// (services_gen.go) with the registration-in-code rework; bootstrap
+	// keeps the Services-struct import of the real dir.
+	rows, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	wg, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "wire_gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustParseGo(t, "bootstrap.go", bs)
+	mustParseGo(t, "services_gen.go", rows)
 	mustParseGo(t, "wire_gen.go", wg)
 
+	if !strings.Contains(string(bs), `engine_shadow "example.com/proj/handlers/engine_shadow"`) {
+		t.Errorf("bootstrap.go missing real-dir import\n--- content ---\n%s", bs)
+	}
 	for _, want := range []string{
 		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
 		"wireEngineShadowDeps(app, cfg, logger, devMode)",
 	} {
-		if !strings.Contains(string(bs), want) {
-			t.Errorf("bootstrap.go missing %q\n--- content ---\n%s", want, bs)
+		if !strings.Contains(string(rows), want) {
+			t.Errorf("services_gen.go missing %q\n--- content ---\n%s", want, rows)
 		}
 	}
 	for _, want := range []string{

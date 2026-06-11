@@ -39,6 +39,7 @@ import (
 // Plus a runtime probe: BootstrapOnly's registration guard fails
 // pointedly when the unregistered name is passed to `server <name>`.
 func TestE2ERegistrationTypesOnlyService(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 

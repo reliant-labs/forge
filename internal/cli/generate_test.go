@@ -483,6 +483,12 @@ func TestWithForcedEnvAddsMissingValue(t *testing.T) {
 }
 
 func TestBootstrapGeneratedCodeRunsGeneratePipelineInProjectDirectory(t *testing.T) {
+	if testing.Short() {
+		// Scaffolds a real project and drives the full generate
+		// pipeline (real subprocess work, ~4s). Full mode (CI:
+		// `go test ./...` without -short) still runs it.
+		t.Skip("skipping real scaffold+pipeline run under -short")
+	}
 	dir := t.TempDir()
 	generator := generator.NewProjectGenerator("sample-app", dir, "example.com/sample-app")
 	generator.ServiceName = "api"

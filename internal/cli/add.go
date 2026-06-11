@@ -1167,10 +1167,12 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 // FORGE_SKIP_NPM_INSTALL=1 short-circuits the install. This is the
 // testing seam: unit tests that exercise the forge.yaml/scaffold logic
 // of `forge add frontend` don't care about node_modules, and the npm
-// install was ~13s apiece — three such tests dominated the entire
-// internal/cli suite (85s → ~18s once skipped). CI/agents can export it
-// for the same reason; the real install is still covered by the e2e
-// frontend fixture, which needs node_modules to actually build.
+// install is ~13s apiece — three such tests dominated the entire
+// internal/cli suite (~80s of an ~85s package). They set this under
+// `go test -short` only (see skipNpmInstallInShortMode in
+// add_frontend_test.go), so full mode still runs the real install; the
+// npm-driven frontend build is additionally covered by the e2e frontend
+// fixture, which needs node_modules to actually build.
 func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
 	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil

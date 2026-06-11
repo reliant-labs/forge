@@ -24,6 +24,7 @@ import (
 //   - a config proto with ConfigFieldOptions
 //   - a full service with 8 RPCs
 func TestE2EScaffoldLifecycle(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 

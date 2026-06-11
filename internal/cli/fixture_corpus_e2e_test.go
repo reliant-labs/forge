@@ -1,5 +1,30 @@
 //go:build e2e
 
+// ── Testing tiers (read this before running tests) ─────────────────────────
+//
+// 1. Inner loop (agents, every edit):   go test -short ./...
+//    Must complete the whole repo in <60s. Any test that takes >2s
+//    (subprocesses, network, real scaffolds) must be -short-gated or
+//    have its slow side-effect bypassed under -short, with the slow
+//    path still exercised in full mode.
+// 2. Package-targeted (pre-commit):     go test ./internal/<pkg>/
+//    Full mode, no tag. internal/cli takes ~80s because the
+//    TestRunAddFrontend_* tests run a real `npm install`.
+// 3. Full gate (once per round / CI):
+//    go test -tags e2e -count=1 -timeout 60m -run TestE2E ./internal/cli/
+//    The e2e corpus: this file's five real-project fixtures, the
+//    scaffold suite (scaffold_*_e2e_test.go), and the registration
+//    lifecycle (serve_types_only_e2e_test.go). Each test scaffolds an
+//    independent project in its own t.TempDir() and runs real
+//    generate/tidy/build/boot, so they are t.Parallel(): wall-clock is
+//    roughly the slowest fixture, not the sum. The forge binary is
+//    built exactly once per process (sync.Once in scaffold_e2e_test.go).
+//    Servers booted by tests must use freePortE2E(t) — never hard-code
+//    a port.
+//
+// See CLAUDE.md "Testing tiers".
+// ────────────────────────────────────────────────────────────────────────────
+
 // File: internal/cli/fixture_corpus_e2e_test.go
 //
 // Real-project fixture corpus: scaffold → generate → build → boot, with
@@ -82,6 +107,7 @@ import (
 // ───────────────────────── fixture 1: cp-forge-shaped ─────────────────────────
 
 func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 	start := time.Now()
@@ -317,7 +343,7 @@ func setupExtras(app *App, cfg *config.Config) error {
 	runCmd(t, projectDir, "go", "build", "./...")
 
 	// ── 4. boots: /healthz 200, clean SIGTERM shutdown ───────────────
-	bootHealthzAndShutdown(t, projectDir, 18931)
+	bootHealthzAndShutdown(t, projectDir)
 
 	// ── 5. disown lifecycle round-trip on pkg/app/wire_gen.go ────────
 	disownRoundTrip(t, forgeBin, projectDir)
@@ -328,6 +354,7 @@ func setupExtras(app *App, cfg *config.Config) error {
 // ───────────────────────── fixture 2: kalshi-shaped ─────────────────────────
 
 func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 	start := time.Now()
@@ -459,7 +486,7 @@ type AppExtras struct {
 	runCmd(t, projectDir, "go", "build", "./...")
 
 	// ── 4. boots with all workers registered; clean shutdown ─────────
-	bootHealthzAndShutdown(t, projectDir, 18932)
+	bootHealthzAndShutdown(t, projectDir)
 
 	// ── 5. disown lifecycle round-trip ────────────────────────────────
 	disownRoundTrip(t, forgeBin, projectDir)
@@ -502,6 +529,7 @@ type AppExtras struct {
 // "/admin", so any "/admin" literal found in generated src/ is
 // attributable to base-path machinery, not the directory layout.
 func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 	start := time.Now()
@@ -830,6 +858,7 @@ func runCorpusCmdEnv(dir string, timeout time.Duration, extraEnv []string, name 
 //  5. The documented first step actually works: `forge add service
 //     item` on the same project → generate → build.
 func TestE2EFixtureCorpusZeroService(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 	start := time.Now()
@@ -863,7 +892,7 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 
 	// ── 4. compiles + boots: /healthz 200, clean SIGTERM ─────────────
 	runCmd(t, projectDir, "go", "build", "./...")
-	bootHealthzAndShutdown(t, projectDir, 18933)
+	bootHealthzAndShutdown(t, projectDir)
 
 	// ── 5. documented first step: forge add service item ─────────────
 	// (`forge add service` runs the generate pipeline itself; the
@@ -1241,8 +1270,13 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 // bootHealthzAndShutdown builds the server binary, boots it, verifies
 // /healthz returns 200, then SIGTERMs it and requires a clean exit
 // within a bounded wait — the appkit-merge boot recipe.
-func bootHealthzAndShutdown(t *testing.T, projectDir string, port int) {
+//
+// The port is allocated via freePortE2E (scaffold_e2e_test.go): the
+// corpus runs t.Parallel(), so a hard-coded per-fixture port would be a
+// collision against any other test (or stray process) on the machine.
+func bootHealthzAndShutdown(t *testing.T, projectDir string) {
 	t.Helper()
+	port := freePortE2E(t)
 
 	serverBin := filepath.Join(projectDir, "corpus-server")
 	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
@@ -1646,6 +1680,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 //   - the generated migration guards the id invariant (CHECK (id <> ”))
 //     and stores timestamps as timestamps, not TEXT.
 func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 	start := time.Now()
@@ -1741,7 +1776,7 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	}
 
 	// ── 6. boots: /healthz 200, clean SIGTERM (no DB attached) ───────
-	bootHealthzAndShutdown(t, projectDir, 18934)
+	bootHealthzAndShutdown(t, projectDir)
 
 	t.Logf("crud-lifecycle fixture total: %s", time.Since(start))
 }

@@ -100,6 +100,7 @@ var auditCategoryOrder = []string{
 	"proto_migration_alignment",
 	"migration_safety",
 	"wire_coverage",
+	"optional_deps_guard",
 	"scaffold_markers",
 	"crud_stubs",
 	"diagnostics",
@@ -185,6 +186,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["proto_migration_alignment"] = auditProtoMigration(cfg, abs)
 	report.Categories["migration_safety"] = auditMigrationSafety(cfg, abs)
 	report.Categories["wire_coverage"] = auditWireCoverage(abs)
+	report.Categories["optional_deps_guard"] = auditOptionalDepsGuard(abs)
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
 	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
@@ -377,10 +379,10 @@ func auditFeatures(cfg *config.ProjectConfig) AuditCategory {
 	sort.Strings(experimentalEnabled)
 
 	details := map[string]any{
-		"resolved":              effective,
-		"enabled":               enabled,
-		"disabled":              disabled,
-		"experimental_enabled":  experimentalEnabled,
+		"resolved":               effective,
+		"enabled":                enabled,
+		"disabled":               disabled,
+		"experimental_enabled":   experimentalEnabled,
 		"experimental_available": append([]string{}, config.ExperimentalFeatureNames...),
 	}
 	summary := fmt.Sprintf("%d stable feature(s) enabled, %d disabled; %d experimental on",
@@ -499,10 +501,10 @@ func crossCheckIngress(services []config.ServiceConfig, backends []string, gatew
 	summary := fmt.Sprintf("%d gateway(s), %d route(s); %d service(s) without route",
 		len(gateways), len(httpRoutes)+len(grpcRoutes), servicesWithoutRoute)
 	details := map[string]any{
-		"gateways":                len(gateways),
-		"http_routes":             len(httpRoutes),
-		"grpc_routes":             len(grpcRoutes),
-		"services_without_route":  servicesWithoutRoute,
+		"gateways":               len(gateways),
+		"http_routes":            len(httpRoutes),
+		"grpc_routes":            len(grpcRoutes),
+		"services_without_route": servicesWithoutRoute,
 	}
 	if len(findings) > 0 {
 		details["findings"] = findings
@@ -1440,6 +1442,56 @@ func auditWireCoverage(projectDir string) AuditCategory {
 		Status:  AuditStatusWarn,
 		Summary: fmt.Sprintf("%d unresolved Deps field(s) across %d component(s)", len(findings), len(components)),
 		Details: details,
+	}
+}
+
+// auditOptionalDepsGuard rolls up unguarded derefs of
+// `// forge:optional-dep` Deps fields (the optional-deps-guard lint).
+// Optional fields skip validateDeps by design, so an unguarded
+// `s.deps.X.Method(...)` is a latent nil-panic no startup gate catches.
+// Findings are warn-level (the walker is conservative, not full
+// dataflow — see lint_optional_deps_guard.go); the category is
+// additive per the audit-json contract (consumers iterate
+// `.categories | keys[]` and tolerate new entries).
+func auditOptionalDepsGuard(projectDir string) AuditCategory {
+	findings, err := collectOptionalDepsGuardFindings(projectDir)
+	if err != nil {
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("optional-deps-guard scan failed: %v", err),
+		}
+	}
+	if len(findings) == 0 {
+		return AuditCategory{
+			Status:  AuditStatusOK,
+			Summary: "optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)",
+		}
+	}
+
+	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
+	// offending component; per-finding detail lives in
+	// `forge lint --optional-deps-guard --json`.
+	byPackage := map[string][]string{}
+	for _, f := range findings {
+		key := f.Role + "/" + f.Package
+		byPackage[key] = append(byPackage[key],
+			fmt.Sprintf("%s:%d %s in %s", f.File, f.Line, f.Expr, f.Method))
+	}
+	pkgs := make([]string, 0, len(byPackage))
+	for k := range byPackage {
+		pkgs = append(pkgs, k)
+	}
+	sort.Strings(pkgs)
+
+	return AuditCategory{
+		Status:  AuditStatusWarn,
+		Summary: fmt.Sprintf("%d unguarded optional-dep deref(s) across %d package(s)", len(findings), len(pkgs)),
+		Details: map[string]any{
+			"finding_count":     len(findings),
+			"affected_packages": pkgs,
+			"by_package":        byPackage,
+			"hint":              fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", Name()),
+		},
 	}
 }
 

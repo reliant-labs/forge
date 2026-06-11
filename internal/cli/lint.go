@@ -41,6 +41,7 @@ type lintFlags struct {
 	wireCoverage      bool
 	bootstrapCoverage bool
 	checkWorkarounds  bool
+	optionalDepsGuard bool
 	jsonOut           bool
 }
 
@@ -93,6 +94,11 @@ Examples:
   forge lint --check-workarounds # Flag cross-lane workarounds (cast<X>Repo helpers in
                                 # pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go,
                                 # cmd/<name>.go files not declared in forge.yaml binaries:)
+  forge lint --optional-deps-guard # Flag derefs of forge:optional-dep Deps fields
+                                # (s.deps.X.Method(...)) that aren't dominated by a
+                                # nil-guard in the same function (warnings only —
+                                # suppress confirmed-safe sites with a
+                                # "// forge:optional-checked" comment on the deref line)
   forge lint --fix              # Auto-fix issues where possible
   forge lint --json             # Machine-readable output (sub-agents / CI):
                                 # {findings: [{file, line, col, severity, rule,
@@ -133,6 +139,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings) and unresolved forge:placeholder annotations in pkg/app/app_extras.go (errors)")
 	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
+	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of `// forge:optional-dep` Deps fields (warnings only; suppress with `// forge:optional-checked` on the deref line)")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 
@@ -229,6 +236,13 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 			return fmt.Errorf("getwd: %w", err)
 		}
 		return runCheckWorkaroundsLint(cwd)
+	}
+	if flags.optionalDepsGuard {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runOptionalDepsGuardLint(cwd)
 	}
 
 	// Load project config for lint defaults. A missing config file is fine
@@ -970,6 +984,24 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 			if err := runBootstrapDepsCoverageLint(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "bootstrap-deps-coverage lint failed: %v\n", err)
 				hasFailed = true
+			}
+		}
+	}
+
+	// 13c. Optional-deps-guard — flags derefs of `// forge:optional-dep`
+	// Deps fields not dominated by a nil-guard in the same function.
+	// Optional fields skip validateDeps by design, so an unguarded
+	// `s.deps.X.Method(...)` is a latent nil-panic no startup gate
+	// catches (cp-forge FRICTION #23/#33/#69; kalshi optional-many
+	// workers). Warnings only — the walker is intentionally not full
+	// dataflow; confirmed-safe sites suppress with
+	// `// forge:optional-checked` on the deref line.
+	if dirExists("internal") || dirExists("handlers") ||
+		dirExists("workers") || dirExists("operators") {
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runOptionalDepsGuardLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  optional-deps-guard lint: %v\n", err)
 			}
 		}
 	}

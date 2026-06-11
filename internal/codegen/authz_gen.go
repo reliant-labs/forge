@@ -43,13 +43,15 @@ type AuthzTemplateData struct {
 // orphan. A nil cs is tolerated.
 //
 // skipDirs lists handlers/<dir> leaves the directory sweep below must NOT
-// touch — the dirs of forge.yaml `serve: false` (types-only) services.
-// Their services never appear in the (already served-filtered) services
-// slice, so without the skip the sweep would misread a retired handler
-// dir as an orphaned scaffold and re-emit authorizer_gen.go into it,
-// re-adding the path to WrittenThisRun and hiding it from the stale-
-// cleanup sweep. Keys are the snake package form (naming.ServicePackage);
-// nil means no types-only services.
+// touch — the dirs of tombstoned (types-only) services: services that
+// pkg/app/services.go deliberately does not register (the row was
+// deleted, a comment names the serving binary). Their services never
+// appear in the (already row-filtered) services slice, so without the
+// skip the sweep would misread a retired handler dir as an orphaned
+// scaffold and re-emit authorizer_gen.go into it, re-adding the path to
+// WrittenThisRun and hiding it from the stale-cleanup sweep. Keys are
+// the snake package form (naming.ServicePackage); nil means no
+// types-only services.
 func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
 	// generatedDirs records the handlers/<dir> leaves covered by the
 	// ServiceDef pass so the directory sweep below doesn't double-emit.
@@ -127,8 +129,9 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		if generatedDirs[dirName] {
 			continue
 		}
-		// Types-only (serve: false) services: leave their retired handler
-		// dirs alone so the stale-cleanup sweep can flag the tracked files.
+		// Types-only (tombstoned in pkg/app/services.go) services: leave
+		// their retired handler dirs alone so the stale-cleanup sweep can
+		// flag the tracked files.
 		if skipDirs[dirName] || skipDirs[naming.ServicePackage(dirName)] {
 			continue
 		}

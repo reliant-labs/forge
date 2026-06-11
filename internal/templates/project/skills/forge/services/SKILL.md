@@ -39,23 +39,27 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 - **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
 - **Service names canonicalize** the same way worker names do: lowercase with `-` and `_` stripped. `forge add service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk directory, Go package decl, and `forge.yaml` `path:` are all `adminserver` (`handlers/adminserver/`, `package adminserver`, `path: handlers/adminserver`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
 
-## Types-Only Services (`serve: false`)
+## Service Registration (`pkg/app/services.go`)
 
-When a service's canonical implementation lives in a **sibling binary outside this repo** but this project still calls it, declare it types-only instead of stubbing it:
+**What this binary serves is code, not config.** Each service gets a generated row constructor `serviceRow<X>` in `pkg/app/services_gen.go` (forge-owned, regenerated -- the compile-checked wiring/construction/mount guardrails). Which rows the binary actually serves is the **user-owned** `pkg/app/services.go`, scaffolded once and never rewritten:
 
-```yaml
-services:
-  - name: project
-    type: go_service
-    path: handlers/project
-    serve: false              # this binary does NOT serve it
-    served_by: control-plane  # documentation only — rendered into comments/audit
+```go
+// RegisteredServices lists what THIS binary serves. Serving a service
+// = listing its row.
+func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) []appkit.ServiceDef {
+    return []appkit.ServiceDef{
+        serviceRowAPI(app, cfg, logger, devMode, opts...),
+        // project: types-only -- served by control-plane
+    }
+}
 ```
 
-- **Still generated**: proto types, Connect client stubs, frontend hooks/mocks, descriptor entries — everything callers need.
-- **Gated off**: the `handlers/<svc>/` scaffold, the service's row in `pkg/app/bootstrap.go`, middleware/authz registration, and its tools in `gen/mcp/manifest.json`. Passing the name to `server [services...]` fails with a pointed error.
-- **Default**: omitting `serve:` means served (today's behavior). `served_by` without `serve: false` is a validation error, as is `serve: false` with webhooks.
-- **Retirement**: flipping an already-scaffolded service to `serve: false` does not silently delete anything. `forge audit` warns (`codegen.unserved_handler_dirs`), and `forge generate` reports the tracked generated files under `handlers/<svc>/` as stale candidates — deleted only with `forge generate --force-cleanup`; your hand-written files in that directory are never touched. Move or delete them yourself, or restore `serve: true`.
+- **Serving** = the row is listed. The generated bootstrap consumes `RegisteredServices` verbatim, so editing this file changes what mounts without touching forge.yaml.
+- **Types-only** (the canonical implementation lives in a sibling binary; this repo only calls it): delete the row and **leave a comment naming the binary that serves it**. The comment is load-bearing -- any mention of the service name in this file means "deliberately not served here" and forge stops regenerating its `handlers/<svc>/` scaffold. Proto types, Connect client stubs, frontend hooks/mocks, and descriptor entries still generate (callers need them); the handlers scaffold, the row constructor, middleware/auth registration, and its tools in `gen/mcp/manifest.json` are gated off. Passing the name to `server [services...]` fails with a pointed error naming this file.
+- **Newly added** (name appears nowhere in the file): `forge add service X` (or a hand-edited forge.yaml + generate) scaffolds handlers and generates the row constructor, but forge **never edits services.go** -- it prints the exact line to add and you (or your agent) write it. Until then the service is generated-but-not-served and `forge audit` warns (`codegen.unregistered_services`, state `unlisted`: "row constructor generated but unreferenced").
+- **Retirement**: deleting the row (leaving the comment) does not silently delete anything. `forge audit` warns (`codegen.unregistered_services`, state `tombstoned`), and `forge generate` reports the tracked generated files under `handlers/<svc>/` as stale candidates -- deleted only with `forge generate --force-cleanup`; your hand-written files in that directory are never touched. Move or delete them yourself, or restore the row.
+- **Webhooks require a serving binary**: declaring webhooks on a service with no row is a generate-time error naming `pkg/app/services.go`.
+- **Migration**: projects without `pkg/app/services.go` get it scaffolded on the next `forge generate`, listing every current service -- zero semantic change. Deleting the whole file regenerates it the same way (everything registered).
 
 ## When This Skill Is Not Enough
 

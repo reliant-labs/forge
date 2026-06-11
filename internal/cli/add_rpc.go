@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -132,15 +133,18 @@ func runAddRPC(svc, rpcName string, mode rpcStreamMode) error {
 		return err
 	}
 
-	// Types-only services (serve: false) have no handler scaffold by
-	// design — adding an RPC handler here would contradict the
-	// declaration. Best-effort config load; a missing forge.yaml falls
+	// Tombstoned services (mentioned only in a pkg/app/services.go
+	// comment — types-only) have no handler scaffold by design: adding
+	// an RPC handler here would contradict the registration file. An
+	// UNLISTED (newly added, not yet registered) service still has a
+	// scaffold and falls through — implementing before registering is a
+	// supported flow. Best-effort parse: a broken registry falls
 	// through to the handler-dir check below.
-	if cfg, cfgErr := loadProjectConfigFrom(filepath.Join(root, defaultProjectConfigFile)); cfgErr == nil && !cfg.ServiceServed(svc) {
+	if reg, regErr := loadServiceRegistry(root); regErr == nil && reg.state(svc) == registrationTombstoned {
 		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("service %q is types-only in forge.yaml (serve: false) — this binary does not serve it, so there is no handler scaffold to add an RPC to", svc),
-			"forge.yaml",
-			"add the RPC to the proto only (the types/client still generate), implement it in the binary named by served_by, or restore serve: true")
+			fmt.Sprintf("service %q is types-only — %s deliberately does not register it (its row was deleted; see the comment there), so this binary has no handler scaffold to add an RPC to", svc, serviceRegistryRelPath),
+			serviceRegistryRelPath,
+			fmt.Sprintf("add the RPC to the proto only (the types/client still generate), implement it in the binary the %s comment names, or restore the `%s(app, cfg, logger, devMode, opts...),` row to serve it here", serviceRegistryRelPath, codegen.ServiceRowFuncName(svc)))
 	}
 
 	pkg := naming.ServicePackage(svc)

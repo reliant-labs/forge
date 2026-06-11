@@ -280,6 +280,12 @@ func (g *ProjectGenerator) Generate() error {
 		// dep gate has a known input shape; `forge upgrade` regenerates
 		// buf.yaml from the live forge.yaml's api.rest value.
 		RESTEnabled bool
+		// ForgePkgVersion / ForgePkgDevReplace drive the forge/pkg
+		// dependency block in go.mod.tmpl. Exactly one (or neither) is
+		// non-empty — see resolveForgePkgDep in project_pkgdep.go and
+		// docs/pkg-versioning.md for the dev-vs-release model.
+		ForgePkgVersion    string
+		ForgePkgDevReplace string
 	}{
 		Name:                   g.Name,
 		ProtoName:              protoName,
@@ -301,6 +307,17 @@ func (g *ProjectGenerator) Generate() error {
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
 		RESTEnabled: false,
+	}
+	templateData.ForgePkgVersion, templateData.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
+	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is
+	// on, the `forge generate` run that `forge new` performs immediately
+	// after will vendor the target into ./.forge-pkg/ — so the Dockerfile
+	// (Tier 2: never auto-regenerated later) must carry the COPY line
+	// from the start or docker builds diverge from host builds. Without
+	// codegen there is no generate run to create the vendor dir, so the
+	// COPY line would reference a missing path; keep it off.
+	if templateData.ForgePkgDevReplace != "" && g.Features.CodegenEnabled() {
+		templateData.LocalForgePkgVendored = true
 	}
 
 	// Strip migration-related config fields when migrations are disabled.

@@ -444,6 +444,20 @@ type FrontendTemplateData struct {
 	// scaffolds that wrote FrontendTemplateData without this field
 	// keep working under the new default.
 	Output string
+	// BasePath mirrors config.FrontendConfig.BasePath — the URL prefix
+	// the frontend is mounted under (e.g. "/admin"), or "" for root.
+	// Read by the nextjs templates only:
+	//
+	//   - next.config.ts.tmpl renders it as the build-time default for
+	//     `basePath` + `assetPrefix` (overridable via the single
+	//     canonical env var NEXT_PUBLIC_BASE_PATH).
+	//   - src/lib/basepath_gen.ts.tmpl bakes it as the fallback for
+	//     BASE_PATH / joinBasePath().
+	//
+	// Already validated by config.LoadStrict (leading "/", no trailing
+	// "/", [A-Za-z0-9._-] segments) — templates splice it verbatim into
+	// TypeScript string literals.
+	BasePath string
 }
 
 // WebhookTemplateData holds data for webhook template rendering.

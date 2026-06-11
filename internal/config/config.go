@@ -254,6 +254,29 @@ type FrontendConfig struct {
 	// scaffolded under the old standalone-default keep their checked-in
 	// `next.config.ts`; the field doesn't retroactively rewrite it.
 	Output string `yaml:"output,omitempty"`
+	// BasePath is the URL path prefix this frontend is mounted under
+	// when it is NOT served from the host root — e.g. "/admin" for an
+	// admin UI that a reverse proxy blends with another app on the same
+	// host. Only meaningful when Type == "nextjs".
+	//
+	// Shape rules (validated by `forge validate` / LoadStrict):
+	//   - must start with "/"            ("/admin", "/internal/admin")
+	//   - must not end with "/"          ("/admin/" is rejected)
+	//   - must not be bare "/"           (root mount == leave it empty)
+	//   - segments are limited to [A-Za-z0-9._-]
+	//
+	// What it drives:
+	//   - next.config.ts: rendered as the build-time default for both
+	//     `basePath` and `assetPrefix` (same value — assetPrefix is what
+	//     keeps RSC/chunk URLs under the prefix so hydration works).
+	//   - src/lib/basepath_gen.ts (Tier-1, regenerated every `forge
+	//     generate`): exports BASE_PATH + joinBasePath() for URLs Next.js
+	//     can't rewrite (window.location-built redirects, share links).
+	//
+	// The single runtime override is the NEXT_PUBLIC_BASE_PATH env var —
+	// the ONLY base-path variable forge ever reads or writes. Empty
+	// (the default) means the frontend is served from the host root.
+	BasePath string `yaml:"base_path,omitempty"`
 }
 
 // FrontendProjectConfig holds project-level frontend settings — fields

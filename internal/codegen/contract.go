@@ -33,7 +33,7 @@ type Service interface {
 	GenerateMock(svc ServiceDef, mockDir string) (bool, error)
 
 	// Authorization / auth middleware / tenant middleware.
-	GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error
+	GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error
 	GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error
 	GenerateTenantMiddleware(mt *config.MultiTenantConfig, targetDir string, cs *checksums.FileChecksums) error
 

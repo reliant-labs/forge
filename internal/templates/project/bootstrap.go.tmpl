@@ -22,7 +22,7 @@ package app
 
 import (
 	"context"
-{{- if or .Services .HasFallible}}
+{{- if or .Services .HasFallible .UnservedServices}}
 	"fmt"
 {{- end}}
 	"log/slog"
@@ -229,6 +229,21 @@ func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts
 // Name filtering — including the unknown-name warning and the loud
 // registered-vs-excluded filter banner — lives in appkit.Run.
 func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, names []string, opts ...connect.HandlerOption) (*App, error) {
+{{- if .UnservedServices}}
+	// Types-only services (forge.yaml `serve: false`) have no row in the
+	// registration table below — their canonical implementation lives in
+	// a sibling binary{{range .UnservedServices}}{{if .ServedBy}} ({{.Name}}: served by {{.ServedBy}}){{end}}{{end}}. Passing one
+	// of their names to the filter is a misconfiguration; fail loudly
+	// instead of letting appkit's unknown-name warning serve nothing.
+	for _, n := range names {
+		switch n {
+{{- range .UnservedServices}}
+		case "{{.Name}}":
+			return nil, fmt.Errorf("service %q is types-only in forge.yaml (serve: false{{if .ServedBy}}; served by {{.ServedBy}}{{end}}) — this binary does not serve it", n)
+{{- end}}
+		}
+	}
+{{- end}}
 	app := &App{
 {{- if .Services}}
 		Services: &Services{},

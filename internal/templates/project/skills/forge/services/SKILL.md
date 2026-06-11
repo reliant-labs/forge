@@ -39,6 +39,24 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 - **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
 - **Service names canonicalize** the same way worker names do: lowercase with `-` and `_` stripped. `forge add service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk directory, Go package decl, and `forge.yaml` `path:` are all `adminserver` (`handlers/adminserver/`, `package adminserver`, `path: handlers/adminserver`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
 
+## Types-Only Services (`serve: false`)
+
+When a service's canonical implementation lives in a **sibling binary outside this repo** but this project still calls it, declare it types-only instead of stubbing it:
+
+```yaml
+services:
+  - name: project
+    type: go_service
+    path: handlers/project
+    serve: false              # this binary does NOT serve it
+    served_by: control-plane  # documentation only — rendered into comments/audit
+```
+
+- **Still generated**: proto types, Connect client stubs, frontend hooks/mocks, descriptor entries — everything callers need.
+- **Gated off**: the `handlers/<svc>/` scaffold, the service's row in `pkg/app/bootstrap.go`, middleware/authz registration, and its tools in `gen/mcp/manifest.json`. Passing the name to `server [services...]` fails with a pointed error.
+- **Default**: omitting `serve:` means served (today's behavior). `served_by` without `serve: false` is a validation error, as is `serve: false` with webhooks.
+- **Retirement**: flipping an already-scaffolded service to `serve: false` does not silently delete anything. `forge audit` warns (`codegen.unserved_handler_dirs`), and `forge generate` reports the tracked generated files under `handlers/<svc>/` as stale candidates — deleted only with `forge generate --force-cleanup`; your hand-written files in that directory are never touched. Move or delete them yourself, or restore `serve: true`.
+
 ## When This Skill Is Not Enough
 
 - **Simple utility packages** — just create a directory under `pkg/` and write plain Go. No scaffold needed.

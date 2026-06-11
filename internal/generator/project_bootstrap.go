@@ -127,6 +127,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		UnservedServices    []codegen.UnservedServiceData
 	}{
 		Module:    g.ModulePath,
 		Services:  services,
@@ -152,6 +153,10 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// `forge generate` to wire the boot-time emit path.
 		DiagnosticsEnabled:  false,
 		StrictWiringEnabled: false,
+		// Initial scaffold never declares types-only services — `forge
+		// new` writes serve-by-default entries; the codegen pipeline
+		// re-renders with the real set when the user flips serve: false.
+		UnservedServices: nil,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)

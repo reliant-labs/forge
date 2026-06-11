@@ -93,6 +93,12 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	// are user-facing CLI guidance.
 	appendIngressChecksToReport(&report, runToolDoctorChecks(ctx, cfg, projectDir, signal))
 
+	// forge/pkg dependency-mode check: warns when the project is still
+	// on the dev-mode .forge-pkg vendoring even though this forge
+	// release publishes a pinned pkg version. See doctor_pkgpin.go and
+	// docs/pkg-versioning.md.
+	appendIngressChecksToReport(&report, runPkgPinDoctorChecks(cfg, projectDir, signal))
+
 	// External-build checks surface per-service warnings for KCL
 	// services that declare build_cmd — missing build_cwd, first
 	// token not on PATH, plus the resolved (substituted) command

@@ -81,12 +81,11 @@ type graphService struct {
 	Deps       []graphDepsField `json:"deps,omitempty"`
 	RPCs       []graphRPC       `json:"rpcs,omitempty"`
 	// Served is the additive types-only marker: present (and false)
-	// only when forge.yaml declares `serve: false` for the service —
-	// the types/client generate here but a sibling binary serves the
-	// API. Absent means served (the default).
+	// only when the user-owned pkg/app/services.go has no serviceRow
+	// for the service — the types/client generate here but this binary
+	// does not serve the API. Absent means served (the default; a
+	// missing registration file serves everything).
 	Served *bool `json:"served,omitempty"`
-	// ServedBy is the forge.yaml served_by documentation string.
-	ServedBy string `json:"served_by,omitempty"`
 }
 
 // graphEnvVar names one env var read by the service. Source is the
@@ -310,15 +309,21 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 	// inventory; KCL fills in deploy type + env vars; descriptor fills
 	// in RPCs; contract.go fills in Deps.
 	if cfg != nil {
+		// Registration view (pkg/app/services.go). Best-effort: a parse
+		// failure falls open to "everything served" — graph is a
+		// read-only inspection surface and must not die mid-migration.
+		reg, regErr := loadServiceRegistry(projectDir)
+		if regErr != nil {
+			reg = &serviceRegistry{Exists: false}
+		}
 		for _, s := range cfg.Services {
 			gs := graphService{
 				Name:    s.Name,
 				Package: servicePackageDir(s),
 			}
-			if !s.IsServed() {
+			if isConnectServiceConfig(s) && !reg.registered(s.Name) {
 				notServed := false
 				gs.Served = &notServed
-				gs.ServedBy = s.ServedBy
 			}
 			if k, ok := kclSvcByName[s.Name]; ok {
 				gs.DeployType = k.Deploy.Type
@@ -545,4 +550,3 @@ func resolveDepsPackage(typeExpr string, pkgByName map[string]graphPackage) stri
 	}
 	return ""
 }
-

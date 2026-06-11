@@ -106,13 +106,25 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("bootstrap.go should contain generated header, got:\n%s", bootstrapContents)
 	}
 	// (2026-05-07 wire-gen migration) wire_gen owns the Deps literal;
-	// bootstrap calls wireXxxDeps(app, cfg, logger, devMode) and feeds
-	// the result into xxx.New.
-	if !strings.Contains(bootstrapContents, "api.New(apiDeps)") {
-		t.Fatalf("bootstrap.go should construct api service with wire_gen-built Deps, got:\n%s", bootstrapContents)
+	// the row constructor calls wireXxxDeps(app, cfg, logger, devMode)
+	// and feeds the result into xxx.New. Since the registration-in-code
+	// rework those row constructors live in services_gen.go, bootstrap
+	// consumes the user-owned RegisteredServices (pkg/app/services.go),
+	// and both companion files must be scaffolded for the project to
+	// compile.
+	rowContents := readFile(t, filepath.Join(root, "pkg", "app", "services_gen.go"))
+	if !strings.Contains(rowContents, "api.New(apiDeps)") {
+		t.Fatalf("services_gen.go should construct api service with wire_gen-built Deps, got:\n%s", rowContents)
 	}
-	if !strings.Contains(bootstrapContents, "wireAPIDeps(app, cfg, logger") {
-		t.Fatalf("bootstrap.go should call wireAPIDeps(...), got:\n%s", bootstrapContents)
+	if !strings.Contains(rowContents, "wireAPIDeps(app, cfg, logger") {
+		t.Fatalf("services_gen.go should call wireAPIDeps(...), got:\n%s", rowContents)
+	}
+	if !strings.Contains(bootstrapContents, "RegisteredServices(app, cfg, logger, devMode, opts...)") {
+		t.Fatalf("bootstrap.go should consume RegisteredServices, got:\n%s", bootstrapContents)
+	}
+	registryContents := readFile(t, filepath.Join(root, "pkg", "app", "services.go"))
+	if !strings.Contains(registryContents, "serviceRowAPI(app, cfg, logger, devMode, opts...),") {
+		t.Fatalf("services.go should list the api row, got:\n%s", registryContents)
 	}
 	if !strings.Contains(bootstrapContents, "func Bootstrap(") {
 		t.Fatalf("bootstrap.go should contain Bootstrap function, got:\n%s", bootstrapContents)
@@ -239,7 +251,6 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("expected root go.mod to replace the local gen module path, got:\n%s", rootGoModContents)
 	}
 }
-
 
 func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "cli-only")
@@ -447,11 +458,11 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 
 func TestParseGoVersion(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantMajor   int
-		wantMinor   int
-		wantPatch   int
-		wantOK      bool
+		input     string
+		wantMajor int
+		wantMinor int
+		wantPatch int
+		wantOK    bool
 	}{
 		{"1.25.3", 1, 25, 3, true},
 		{"1.25", 1, 25, 0, true},

@@ -264,25 +264,26 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		Streaming   string `json:"streaming,omitempty"`
 		MCPCallable bool   `json:"mcp_callable"`
 		// Served is the additive types-only marker: present (and false)
-		// ONLY when the owning service declares `serve: false` in
-		// forge.yaml — the RPC's types/client still generate but this
-		// binary does not serve it (and it is excluded from the MCP
-		// manifest, hence MCPCallable=false too). Absent means served —
-		// the additive-extension contract keeps rpc-count consumers and
-		// pre-`serve:` readers untouched.
+		// ONLY when the owning service has no serviceRow in the
+		// user-owned pkg/app/services.go — the RPC's types/client still
+		// generate but this binary does not serve it (and it is excluded
+		// from the MCP manifest, hence MCPCallable=false too). Absent
+		// means served — the additive-extension contract keeps rpc-count
+		// consumers and older readers untouched.
 		Served *bool `json:"served,omitempty"`
 	}
 	type svcInfo struct {
 		Name     string `json:"name"`
 		Type     string `json:"type"`
 		RPCCount int    `json:"rpc_count"`
-		// Served mirrors services[].serve from forge.yaml (default
-		// true). Additive — always present so consumers can filter the
-		// inventory without re-deriving the default.
+		// Served reports whether THIS binary registers the service —
+		// derived from the user-owned pkg/app/services.go row list (a
+		// missing registration file means everything is served, the
+		// pre-registration behavior). Always present so consumers can
+		// filter the inventory without re-deriving the default. Workers
+		// and operators are always served:true (the registration file
+		// governs Connect services only).
 		Served bool `json:"served"`
-		// ServedBy is the forge.yaml services[].served_by documentation
-		// string; only present for types-only services that set it.
-		ServedBy string `json:"served_by,omitempty"`
 		// RPCs lists each RPC by name with streaming/MCP-callability
 		// info. Empty when proto parsing was unavailable (see
 		// proto_integrity) — additive field, may be absent.
@@ -332,8 +333,17 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		}
 	}
 
+	// Registration view over the user-owned pkg/app/services.go. A parse
+	// failure falls open (everything served) — audit must not die on a
+	// broken tree; the generate pipeline is the fail-loud gate.
+	reg, regErr := loadServiceRegistry(projectDir)
+	if regErr != nil {
+		reg = &serviceRegistry{Exists: false}
+	}
+
 	for _, s := range cfg.Services {
-		info := svcInfo{Name: s.Name, Type: s.Type, Served: s.IsServed(), ServedBy: s.ServedBy}
+		served := !isConnectServiceConfig(s) || reg.registered(s.Name)
+		info := svcInfo{Name: s.Name, Type: s.Type, Served: served}
 		// match by ProtoService name suffix (Echo → EchoService)
 		for protoName, rpcs := range rpcByService {
 			short := strings.TrimSuffix(protoName, "Service")
@@ -343,10 +353,10 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 				break
 			}
 		}
-		// Types-only services keep their RPC inventory discoverable but
-		// carry the additive served:false marker on every entry — the
-		// surface stays visible without claiming this binary serves it.
-		// MCPCallable flips false because the RPCs are deliberately
+		// Unregistered services keep their RPC inventory discoverable
+		// but carry the additive served:false marker on every entry —
+		// the surface stays visible without claiming this binary serves
+		// it. MCPCallable flips false because the RPCs are deliberately
 		// excluded from gen/mcp/manifest.json.
 		if !info.Served && len(info.RPCs) > 0 {
 			notServed := false
@@ -802,16 +812,19 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		details["tracked_missing_files"] = missing
 	}
 
-	// Serve-retirement finding: a service flipped to `serve: false` but
-	// its handlers/<svc>/ scaffold still exists on disk. The generated
-	// Tier-1 files under it stopped being re-emitted, so the stale sweep
-	// reports them (and deletes under `forge generate --force-cleanup`);
-	// user-written Tier-2 files in the dir are never touched — the user
-	// decides whether to move that code or restore serve: true. Additive
-	// detail key under the codegen category.
-	unservedDirs := unservedHandlerDirFindings(cfg, projectDir)
-	if len(unservedDirs) > 0 {
-		details["unserved_handler_dirs"] = unservedDirs
+	// Registration findings: services whose on-disk presence disagrees
+	// with the user-owned pkg/app/services.go row list. Two states:
+	//   - unlisted: the row constructor is generated but unreferenced
+	//     (typically right after `forge add service`) — register or
+	//     tombstone it.
+	//   - tombstoned: deliberately retired (comment in services.go) but
+	//     handlers/<svc>/ still exists — the gated Tier-1 files are
+	//     stale-sweep candidates (deleted under `forge generate
+	//     --force-cleanup`); user-written Tier-2 files are never touched.
+	// Additive detail key under the codegen category.
+	unregistered := unregisteredServiceFindings(cfg, projectDir)
+	if len(unregistered) > 0 {
+		details["unregistered_services"] = unregistered
 	}
 
 	status := AuditStatusOK
@@ -819,45 +832,67 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	if len(modified) > 0 || len(orphans) > 0 || len(forked) > 0 || len(missing) > 0 {
 		status = AuditStatusWarn
 	}
-	if len(unservedDirs) > 0 {
+	if len(unregistered) > 0 {
 		status = AuditStatusWarn
-		summary += fmt.Sprintf(", %d unserved handler dir(s)", len(unservedDirs))
+		summary += fmt.Sprintf(", %d unregistered service(s)", len(unregistered))
 	}
 	return AuditCategory{Status: status, Summary: summary, Details: details}
 }
 
-// auditUnservedHandlerDir is one retirement finding: a forge.yaml
-// `serve: false` service whose handlers/<svc>/ directory still exists.
-type auditUnservedHandlerDir struct {
-	Service  string `json:"service"`             // forge.yaml services[].name
-	Dir      string `json:"dir"`                 // project-relative handlers dir
-	ServedBy string `json:"served_by,omitempty"` // forge.yaml services[].served_by
-	Message  string `json:"message"`
+// auditUnregisteredService is one registration finding: a Connect
+// service with no serviceRow in pkg/app/services.go whose handlers
+// directory still exists on disk.
+type auditUnregisteredService struct {
+	Service string `json:"service"` // forge.yaml services[].name
+	Dir     string `json:"dir"`     // project-relative handlers dir
+	// State is "unlisted" (name appears nowhere in services.go — newly
+	// added, row constructor generated but unreferenced) or
+	// "tombstoned" (mentioned only in a comment — deliberately retired).
+	State   string `json:"state"`
+	Message string `json:"message"`
 }
 
-// unservedHandlerDirFindings resolves each `serve: false` service's
-// handler directory disk-first and reports the ones still present.
-// Resolution errors are skipped (best-effort — audit must not fail on a
-// half-migrated dir); a missing dir is the retired steady state and
-// produces no finding.
-func unservedHandlerDirFindings(cfg *config.ProjectConfig, projectDir string) []auditUnservedHandlerDir {
+// unregisteredServiceFindings resolves each unregistered Connect
+// service's handler directory disk-first and reports the ones still
+// present. Resolution and registry-parse errors are skipped
+// (best-effort — audit must not fail on a half-migrated tree); a
+// missing dir on a tombstoned service is the retired steady state and
+// produces no finding, while a missing services.go means everything is
+// registered (pre-migration trees report nothing).
+func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) []auditUnregisteredService {
 	if cfg == nil {
 		return nil
 	}
-	var out []auditUnservedHandlerDir
-	for _, s := range cfg.UnservedServices() {
-		res, err := codegen.ResolveServiceComponent(projectDir, s.Name)
-		if err != nil || !res.FromDisk {
+	reg, err := loadServiceRegistry(projectDir)
+	if err != nil || !reg.Exists {
+		return nil
+	}
+	var out []auditUnregisteredService
+	for _, s := range cfg.Services {
+		if !isConnectServiceConfig(s) {
+			continue
+		}
+		state := reg.state(s.Name)
+		if state == registrationRegistered {
+			continue
+		}
+		res, resErr := codegen.ResolveServiceComponent(projectDir, s.Name)
+		if resErr != nil || !res.FromDisk {
 			continue
 		}
 		dir := "handlers/" + res.ImportLeaf
-		out = append(out, auditUnservedHandlerDir{
-			Service:  s.Name,
-			Dir:      dir,
-			ServedBy: s.ServedBy,
-			Message: fmt.Sprintf("%s exists but services[name=%s].serve=false — remove it (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones) or restore serve: true",
-				dir, s.Name, Name()),
-		})
+		f := auditUnregisteredService{Service: s.Name, Dir: dir}
+		switch state {
+		case registrationTombstoned:
+			f.State = "tombstoned"
+			f.Message = fmt.Sprintf("%s exists but %s deliberately does not register %s (its row was deleted; the comment there says where it's served) — implement+register it by restoring `%s(app, cfg, logger, devMode, opts...),`, or delete the dir (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones)",
+				dir, serviceRegistryRelPath, s.Name, codegen.ServiceRowFuncName(s.Name), Name())
+		default:
+			f.State = "unlisted"
+			f.Message = fmt.Sprintf("row constructor %s is generated but unreferenced — to serve %s from this binary add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices in %s; to make it types-only delete %s and leave a comment in %s naming the binary that serves it",
+				codegen.ServiceRowFuncName(s.Name), s.Name, codegen.ServiceRowFuncName(s.Name), serviceRegistryRelPath, dir, serviceRegistryRelPath)
+		}
+		out = append(out, f)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
 	return out

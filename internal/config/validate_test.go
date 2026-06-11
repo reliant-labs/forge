@@ -160,6 +160,53 @@ func TestLoadStrict_FrontendOutput_InvalidValue_Rejected(t *testing.T) {
 	}
 }
 
+// TestLoadStrict_FrontendBasePath_ValidValues_Accepted covers the
+// accepted shapes for `frontends[].base_path`: a "/"-prefixed path with
+// no trailing slash, segments limited to [A-Za-z0-9._-]. Multi-segment
+// prefixes are legal (an app proxied two levels deep).
+func TestLoadStrict_FrontendBasePath_ValidValues_Accepted(t *testing.T) {
+	cases := []string{"/admin", "/internal/admin", "/v2.1_beta", "/app-shell"}
+	for _, value := range cases {
+		t.Run(value, func(t *testing.T) {
+			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    base_path: " + value + "\n"
+			if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+				t.Errorf("expected base_path=%q to validate, got: %v", value, err)
+			}
+		})
+	}
+}
+
+// TestLoadStrict_FrontendBasePath_InvalidValues_Rejected pins the shape
+// contract: the literal is spliced verbatim into next.config.ts and
+// generated TypeScript string literals, so anything outside the strict
+// grammar must fail at forge.yaml load time — not as a silently broken
+// deploy. Values are written in their YAML-quoted form where quoting is
+// needed for the YAML parser to see the intended string.
+func TestLoadStrict_FrontendBasePath_InvalidValues_Rejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string // YAML form (quoted where needed)
+	}{
+		{"no_leading_slash", `admin`},
+		{"trailing_slash", `/admin/`},
+		{"bare_root", `"/"`},
+		{"embedded_space", `"/ad min"`},
+		{"double_slash", `"/admin//x"`},
+		{"percent_escape", `"/a%2Fb"`},
+		{"quote_injection", `"/ad\"min"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    base_path: " + tc.value + "\n"
+			_, err := LoadStrict([]byte(in), "forge.yaml")
+			ve := requireValidationError(t, err)
+			if !containsAll(ve.Error(), "frontends[0].base_path", "invalid") {
+				t.Errorf("expected base_path validation error for %s, got:\n%s", tc.value, ve.Error())
+			}
+		})
+	}
+}
+
 func TestLoadStrict_ServiceMissingName(t *testing.T) {
 	// services[].path is loader-defaulted, but services[].name is not.
 	in := strings.Replace(validBaseYAML, "  - name: api\n    type: go_service\n    path: handlers/api\n",

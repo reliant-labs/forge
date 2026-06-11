@@ -43,6 +43,13 @@ type FrontendGenOptions struct {
 	// Ignored for kind=mobile (react-native) and kind=vite-spa; those
 	// trees have their own production shapes.
 	Output string
+	// BasePath is the URL prefix the frontend is mounted under (e.g.
+	// "/admin"), mirroring config.FrontendConfig.BasePath. Rendered
+	// into `next.config.ts` (basePath + assetPrefix defaults) and
+	// `src/lib/basepath_gen.ts` (BASE_PATH / joinBasePath fallback).
+	// Empty = served from the host root. Like Output, only the nextjs
+	// template tree reads it.
+	BasePath string
 }
 
 // GenerateFrontendFiles generates the frontend directory and files.
@@ -94,6 +101,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		Module:       modulePath,
 		Workspaces:   opts.Workspaces,
 		Output:       output,
+		BasePath:     opts.BasePath,
 	}
 	if opts.Workspaces {
 		data.ApiPackage = layout.ApiPackage

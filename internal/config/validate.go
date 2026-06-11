@@ -610,6 +610,24 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
+		// frontends[].base_path mounts the frontend under a URL prefix.
+		// The shape is deliberately strict (see FrontendConfig.BasePath):
+		// the literal is rendered verbatim into next.config.ts and the
+		// generated basepath_gen.ts helper, so a malformed value here
+		// becomes a silently-broken deploy there. As with `output`, we
+		// validate regardless of frontend type so a later type change
+		// can't resurrect a stale invalid value.
+		if bp := strings.TrimSpace(fe.BasePath); bp != "" {
+			if msg, ok := ValidateBasePath(bp); !ok {
+				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "base_path"})
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.base_path value %q is invalid: %s", prefix, fe.BasePath, msg),
+					fix:    `use a "/"-prefixed path with no trailing slash, e.g. "/admin" (omit the field entirely for root mounting).`,
+				})
+			}
+		}
 	}
 
 	// Only require database.driver when ORM has been *explicitly* enabled.
@@ -634,6 +652,41 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	}
 
 	return out
+}
+
+// basePathSegmentRE matches one path segment of frontends[].base_path:
+// letters, digits, dot, underscore, hyphen. Deliberately narrower than
+// what URLs technically allow — the value is spliced verbatim into
+// next.config.ts (basePath / assetPrefix) and into generated TypeScript
+// string literals, so "no fancy chars" is the safety contract.
+var basePathSegmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidateBasePath checks the shape of a non-empty frontends[].base_path
+// value. Returns (reason, false) on failure, ("", true) when valid.
+//
+// Valid:   "/admin", "/internal/admin", "/v2.1_beta"
+// Invalid: "admin" (no leading slash), "/admin/" (trailing slash),
+//
+//	"/" (root mount — omit the field instead), "/ad min", "/a%2Fb".
+func ValidateBasePath(bp string) (string, bool) {
+	if !strings.HasPrefix(bp, "/") {
+		return `must start with "/"`, false
+	}
+	if bp == "/" {
+		return `bare "/" means root mounting — omit base_path instead`, false
+	}
+	if strings.HasSuffix(bp, "/") {
+		return `must not end with "/"`, false
+	}
+	for _, seg := range strings.Split(bp[1:], "/") {
+		if seg == "" {
+			return "must not contain empty segments (\"//\")", false
+		}
+		if !basePathSegmentRE.MatchString(seg) {
+			return fmt.Sprintf("segment %q contains characters outside [A-Za-z0-9._-]", seg), false
+		}
+	}
+	return "", true
 }
 
 // findNodePos walks a YAML mapping/sequence tree along a dot/index path

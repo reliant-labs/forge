@@ -91,6 +91,7 @@ Each category is the same shape:
 | `packs` | per-pack `{name, installed_version, latest_version, status}` |
 | `proto_migration_alignment` | `divergence[]` (entities whose proto definition disagrees with migrations) |
 | `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
+| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (each `{file, method, reason}`) — `FORGE_CRUD_SHAPE_MISMATCH` stubs scanned from the user-owned `handlers_crud.go` (the legacy `handlers_crud_gen.go` is still recognized). Each stubbed RPC returns `CodeUnimplemented` in production, so the category is `warn` whenever `total_stubs > 0`. |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
 | `deps` | `go_mod`, `go_sum` presence flags |
 | `friction` | `count`, `by_severity{}`, `newest_recorded_at`, `hint`, `malformed_lines` (when torn writes were skipped) — standing generator-friction reports from `.forge/friction.jsonl`. Entries describe forge, not the project, so the category stays `ok` (it never gates CI); `warn` only on malformed lines. Run `forge friction list` for the entries. |
@@ -138,8 +139,8 @@ and tolerate unknown extras.
       ]
     },
     {
-      "path": "handlers/users/handlers_crud_gen.go",
-      "name": "handlers_crud_gen.go",
+      "path": "handlers/users/handlers_crud_ops_gen.go",
+      "name": "handlers_crud_ops_gen.go",
       "is_dir": false,
       "ownership": "forge-space, hand-edited (drift from regen)",
       "flags": ["drift"]

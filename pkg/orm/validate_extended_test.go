@@ -40,9 +40,9 @@ func TestValidateOrderBy_Extended(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateOrderBy(tt.clause)
+			err := ValidateOrderBy(tt.clause, nil)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateOrderBy(%q) error = %v, wantErr %v", tt.clause, err, tt.wantErr)
+				t.Errorf("ValidateOrderBy(%q, nil) error = %v, wantErr %v", tt.clause, err, tt.wantErr)
 			}
 		})
 	}

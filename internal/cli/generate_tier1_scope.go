@@ -53,7 +53,7 @@ func tier1OwnerGate(relPath string) func(*pipelineContext) bool {
 //   - prefix: trailing-slash directory prefix (e.g. "pkg/middleware/").
 //   - glob:   suffix-aware shell glob applied per segment using
 //     path.Match semantics (e.g. "pkg/middleware/*_gen.go",
-//     "handlers/*/handlers_crud_gen.go",
+//     "handlers/*/handlers_crud_ops_gen.go",
 //     "frontends/*/src/hooks/*-hooks.ts").
 type tier1OwnerEntry struct {
 	exact  string
@@ -115,11 +115,12 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// stepBootstrap. Same gate — no entrypoints means no wire shape.
 	{exact: "pkg/app/wire_gen.go", gate: gateCodegenHasAnyEntrypoint},
 
-	// handlers/<svc>/handlers_crud_gen.go is emitted by stepCRUDHandlers.
-	// Gated on codegen-enabled AND ctx.HasServices. A no-services project
-	// (e.g. lib/CLI kind) shouldn't see stale CRUD-handler drift block
-	// its run.
-	{glob: "handlers/*/handlers_crud_gen.go", gate: gateCodegenHasServices},
+	// handlers/<svc>/handlers_crud_ops_gen.go is emitted by
+	// stepCRUDHandlers (the Tier-1 projection half of the CRUD split; the
+	// RPC implementations live in user-owned handlers_crud.go). Gated on
+	// codegen-enabled AND ctx.HasServices. A no-services project (e.g.
+	// lib/CLI kind) shouldn't see stale CRUD-handler drift block its run.
+	{glob: "handlers/*/handlers_crud_ops_gen.go", gate: gateCodegenHasServices},
 
 	// pkg/middleware/*_gen.go covers the auth/tenant middleware
 	// emitters (stepAuthMiddleware + stepTenantMiddleware). Both are

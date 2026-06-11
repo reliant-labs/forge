@@ -153,10 +153,11 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		return err
 	}
 
-	integrationTestPath := filepath.Join(svcDir, "integration_test.go")
-	if err := renderAndWriteWithMode(integrationTestPath, "service/integration_test.go.tmpl", testData, mode, progress); err != nil {
-		return err
-	}
+	// No one-shot integration_test.go scaffold: the unit scaffold owns
+	// per-RPC self-destructing rows and handlers_crud_integration_test.go
+	// owns the DB-bound CRUD surface. A second per-RPC file that hardcodes
+	// WantErr for every method goes stale the moment handlers are
+	// implemented and teaches green-means-nothing.
 
 	// -- proto stub --
 	// Historical behavior preserved the proto file even in ScaffoldFail mode

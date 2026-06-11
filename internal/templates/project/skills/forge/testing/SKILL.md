@@ -84,7 +84,7 @@ The same applies to any logged diagnostic output you intend to grep in tests.
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`
 
-The canonical entry point for table-driven tests in a forge project is the `github.com/reliant-labs/forge/pkg/tdd` library. Forge's scaffolders (`forge new`, `forge add service`, `forge package new`, `forge generate`) emit unit / integration / E2E / contract test files that already import it. Treat the helpers below as the default vocabulary for new test files; reach for hand-rolled `for _, tc := range cases` only when the shape doesn't fit.
+The canonical entry point for table-driven tests in a forge project is the `github.com/reliant-labs/forge/pkg/tdd` library. Forge's scaffolders (`forge new`, `forge add service`, `forge package new`, `forge generate`) emit unit / contract test files (plus CRUD integration tests when entities exist) that already import it. Scaffolded per-RPC rows are self-destructing — `WantErr: connect.CodeUnimplemented` fails the moment the handler is implemented, demanding a real assertion in its place; `pkg/tdd` has no permissive any-outcome mode. Treat the helpers below as the default vocabulary for new test files; reach for hand-rolled `for _, tc := range cases` only when the shape doesn't fit.
 
 | Helper | Use |
 |--------|-----|

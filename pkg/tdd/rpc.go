@@ -18,6 +18,12 @@ import (
 // caller-supplied function for asserting on the response (typically used
 // for happy-path cases). If neither is set, the helper only verifies
 // that the call did not return an error.
+//
+// There is deliberately no "tolerate any outcome" mode: every row must be
+// able to fail. Scaffold rows for not-yet-implemented handlers assert
+// WantErr: connect.CodeUnimplemented — such a row self-destructs (goes
+// red) the moment the handler is implemented, forcing it to be rewritten
+// with a real Check / WantErr assertion.
 type Case[Req, Resp any] struct {
 	// Name identifies the row; passed straight to t.Run.
 	Name string
@@ -41,19 +47,6 @@ type Case[Req, Resp any] struct {
 	// Ctx, if non-nil, overrides the default context.Background() passed
 	// to the handler. Use [WithTimeout] for a deadlined context.
 	Ctx context.Context
-
-	// AnyOutcome makes the row tolerate either a successful response or
-	// any Connect error. Use it for scaffold rows where the handler is
-	// not yet implemented (returns CodeUnimplemented), wired to a real
-	// dependency (returns CodeFailedPrecondition), or otherwise in a
-	// state where business-logic errors are acceptable. The intent is
-	// "this RPC dispatches without panicking" — replace with WantErr or
-	// Check once the handler is real.
-	//
-	// AnyOutcome is mutually exclusive with WantErr; if both are set
-	// AnyOutcome wins and WantErr is ignored. Check still runs on
-	// successful responses.
-	AnyOutcome bool
 }
 
 // HandlerFunc is the Connect RPC handler signature TableRPC drives.
@@ -88,17 +81,6 @@ func TableRPC[Req, Resp any](
 			}
 
 			got, err := handler(ctx, tc.Req)
-
-			if tc.AnyOutcome {
-				// Scaffold mode: accept success or any Connect error.
-				// Check still runs on successful responses so callers
-				// can pin happy-path assertions even while the row is
-				// nominally permissive.
-				if err == nil && tc.Check != nil {
-					tc.Check(t, got)
-				}
-				return
-			}
 
 			if tc.WantErr != 0 {
 				AssertConnectError(t, err, tc.WantErr)

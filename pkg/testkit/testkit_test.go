@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/tenant"
@@ -183,5 +184,114 @@ func TestWithTestTenant_EmptyDoesNotPanic(t *testing.T) {
 	ctx := testkit.WithTestTenant(context.Background(), "")
 	if got := tenant.FromContext(ctx); got != "" {
 		t.Fatalf("FromContext = %q, want empty", got)
+	}
+}
+
+func TestNewMigratedSQLiteDB_AppliesUpMigrationsInVersionOrder(t *testing.T) {
+	t.Parallel()
+	// Embed-shaped FS: files under migrations/, golang-migrate naming.
+	// 10_ sorts before 2_ lexically — numeric version order is required
+	// for the INSERT (10) to find the column added in (2).
+	mfs := fstest.MapFS{
+		"migrations/1_init.up.sql":       {Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY);`)},
+		"migrations/1_init.down.sql":     {Data: []byte(`DROP TABLE users;`)},
+		"migrations/2_add_name.up.sql":   {Data: []byte(`ALTER TABLE users ADD COLUMN name TEXT;`)},
+		"migrations/2_add_name.down.sql": {Data: []byte(`ALTER TABLE users DROP COLUMN name;`)},
+		"migrations/10_seed.up.sql":      {Data: []byte(`INSERT INTO users (id, name) VALUES (1, 'ada');`)},
+	}
+	db := testkit.NewMigratedSQLiteDB(t, mfs)
+	row := db.QueryRow(context.Background(), `SELECT name FROM users WHERE id = 1`)
+	var name string
+	if err := row.Scan(&name); err != nil {
+		t.Fatalf("scan: %v (migrations not applied in numeric order?)", err)
+	}
+	if name != "ada" {
+		t.Fatalf("name = %q, want %q", name, "ada")
+	}
+	// down.sql must never run: the table still exists (proven above) and
+	// a second insert still works.
+	if _, err := db.Exec(context.Background(), `INSERT INTO users (id, name) VALUES (2, 'lin')`); err != nil {
+		t.Fatalf("insert after migrate: %v", err)
+	}
+}
+
+func TestNewMigratedSQLiteDB_RootLevelFS(t *testing.T) {
+	t.Parallel()
+	// No migrations/ wrapper dir — files at the FS root still apply.
+	mfs := fstest.MapFS{
+		"0001_init.up.sql": {Data: []byte(`CREATE TABLE things (id INTEGER PRIMARY KEY, v TEXT);`)},
+	}
+	db := testkit.NewMigratedSQLiteDB(t, mfs)
+	if _, err := db.Exec(context.Background(), `INSERT INTO things (v) VALUES ('x')`); err != nil {
+		t.Fatalf("schema not applied from root-level FS: %v", err)
+	}
+}
+
+func TestNewMigratedSQLiteDB_EmptyFSYieldsEmptySchema(t *testing.T) {
+	t.Parallel()
+	db := testkit.NewMigratedSQLiteDB(t, fstest.MapFS{})
+	// Behaves like NewSQLiteMemDB: usable, no tables.
+	if _, err := db.Exec(context.Background(), `CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("exec on empty-migrations DB: %v", err)
+	}
+}
+
+// localClaimsKey mimics the project-local unexported context key the
+// generated pkg/middleware/claims.go uses — AuthedContext must install
+// claims through the caller-supplied setter, never a key of its own.
+type localClaimsKey struct{}
+
+func localWithClaims(ctx context.Context, c *auth.Claims) context.Context {
+	return context.WithValue(ctx, localClaimsKey{}, c)
+}
+
+func localClaimsFrom(ctx context.Context) (*auth.Claims, bool) {
+	c, ok := ctx.Value(localClaimsKey{}).(*auth.Claims)
+	return c, ok
+}
+
+func TestAuthedContext_DefaultsLandViaProjectSetter(t *testing.T) {
+	t.Parallel()
+	ctx := testkit.AuthedContext(t, localWithClaims)
+	claims, ok := localClaimsFrom(ctx)
+	if !ok || claims == nil {
+		t.Fatal("claims not retrievable through the project-shaped lookup")
+	}
+	if claims.UserID != "test-user" {
+		t.Fatalf("UserID = %q, want %q", claims.UserID, "test-user")
+	}
+	if claims.Email != "test-user@example.test" {
+		t.Fatalf("Email = %q", claims.Email)
+	}
+	if claims.Role != "admin" || len(claims.Roles) != 1 || claims.Roles[0] != "admin" {
+		t.Fatalf("Role/Roles = %q/%v, want admin/[admin]", claims.Role, claims.Roles)
+	}
+}
+
+func TestAuthedContext_OptionsOverrideDefaults(t *testing.T) {
+	t.Parallel()
+	ctx := testkit.AuthedContext(t, localWithClaims,
+		testkit.WithUserID("u-42"),
+		testkit.WithEmail("u42@corp.test"),
+		testkit.WithOrgID("org-7"),
+		testkit.WithRoles("viewer", "auditor"),
+	)
+	claims, _ := localClaimsFrom(ctx)
+	if claims.UserID != "u-42" || claims.Email != "u42@corp.test" || claims.OrgID != "org-7" {
+		t.Fatalf("identity fields = %+v", claims)
+	}
+	if claims.Role != "viewer" || len(claims.Roles) != 2 {
+		t.Fatalf("Role/Roles = %q/%v, want viewer/[viewer auditor]", claims.Role, claims.Roles)
+	}
+}
+
+func TestAuthedContext_WithClaimsReplacesWholesale(t *testing.T) {
+	t.Parallel()
+	ctx := testkit.AuthedContext(t, localWithClaims,
+		testkit.WithClaims(auth.Claims{UserID: "only-me"}),
+	)
+	claims, _ := localClaimsFrom(ctx)
+	if claims.UserID != "only-me" || claims.Email != "" || claims.Role != "" {
+		t.Fatalf("WithClaims must replace the defaults wholesale, got %+v", claims)
 	}
 }

@@ -86,6 +86,9 @@ auth:
 // that actually got scaffolded) so downstream tooling agrees with
 // features.frontend=true and frontends:[...].
 func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
+	// Scaffold logic only — skip the ~13s npm install (covered by the
+	// e2e frontend fixture). See runFrontendNpmInstall.
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	dir := withTempProject(t, freshServiceForgeYAML)
 
 	if err := runAddFrontend(context.Background(), "dashboard", 0, "", "", ""); err != nil {
@@ -128,6 +131,9 @@ func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 // "nextjs". Without this, a mobile or vite-spa frontend would still
 // register itself as "nextjs" in the stack — equally wrong.
 func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
+	// Scaffold logic only — skip the ~13s npm install (covered by the
+	// e2e frontend fixture). See runFrontendNpmInstall.
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	cases := []struct {
 		name string
 		kind string
@@ -164,6 +170,9 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 // "svelte" while they wire up their own scaffolding), we must not
 // stomp it. Only "" and "none" are treated as "needs to be filled in".
 func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
+	// Scaffold logic only — skip the ~13s npm install (covered by the
+	// e2e frontend fixture). See runFrontendNpmInstall.
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	customYAML := strings.Replace(freshServiceForgeYAML,
 		"framework: none", "framework: svelte", 1)
 	dir := withTempProject(t, customYAML)

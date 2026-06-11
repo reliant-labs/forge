@@ -153,8 +153,9 @@ func skillStyleForHarness(h generator.Harness) (SkillWriteStyle, bool) {
 // group) so list / load / write share the same noun.
 func newSkillWriteCmd() *cobra.Command {
 	var (
-		outDir string
-		style  string
+		outDir            string
+		style             string
+		includeMigrations bool
 	)
 	cmd := &cobra.Command{
 		Use:   "write --out <dir> [--style claude|forge|md]",
@@ -188,7 +189,7 @@ Note: inside a forge project you don't need this for .claude/skills/ —
 			default:
 				return fmt.Errorf("invalid --style %q: valid values are forge, claude, md", style)
 			}
-			n, err := WriteSkills(outDir, s, SkillAudienceAll)
+			n, err := WriteSkillsWithOptions(outDir, s, SkillAudienceAll, SkillListOptions{IncludeMigrations: includeMigrations})
 			if err != nil {
 				return err
 			}
@@ -198,6 +199,7 @@ Note: inside a forge project you don't need this for .claude/skills/ —
 	}
 	cmd.Flags().StringVar(&outDir, "out", "", "Target directory (created if missing) — required")
 	cmd.Flags().StringVar(&style, "style", string(SkillWriteStyleForge), "Output layout: forge (default), claude, md")
+	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Also export one-time migration skills (relevance: migration)")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd
 }
@@ -213,7 +215,18 @@ Note: inside a forge project you don't need this for .claude/skills/ —
 //
 // Exported so out-of-process callers (the reliant CLI embedding forge,
 // the harness emission in `forge new`) can reuse it.
+//
+// One-time migration skills (relevance: migration) are excluded — they
+// document version transitions, not steady-state conventions, and bulk
+// exports are how skill catalogs reach projects. Use
+// [WriteSkillsWithOptions] with IncludeMigrations to export them too.
 func WriteSkills(outDir string, style SkillWriteStyle, audience SkillAudience) (int, error) {
+	return WriteSkillsWithOptions(outDir, style, audience, SkillListOptions{})
+}
+
+// WriteSkillsWithOptions is [WriteSkills] with explicit listing options.
+// Additive surface — WriteSkills' signature is frozen for embedders.
+func WriteSkillsWithOptions(outDir string, style SkillWriteStyle, audience SkillAudience, opts SkillListOptions) (int, error) {
 	if outDir == "" {
 		return 0, fmt.Errorf("outDir is required")
 	}
@@ -227,6 +240,9 @@ func WriteSkills(outDir string, style SkillWriteStyle, audience SkillAudience) (
 	skills, err := listForgeShippedSkills()
 	if err != nil {
 		return 0, err
+	}
+	if !opts.IncludeMigrations {
+		skills = filterDefaultRelevance(skills)
 	}
 
 	count := 0

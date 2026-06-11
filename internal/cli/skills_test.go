@@ -23,8 +23,10 @@ func TestWriteSkills_Forge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listForgeShippedSkills: %v", err)
 	}
+	// WriteSkills excludes one-time migration skills by default.
+	skills = filterDefaultRelevance(skills)
 	if n != len(skills) {
-		t.Errorf("count mismatch: WriteSkills wrote %d, listSkills returned %d", n, len(skills))
+		t.Errorf("count mismatch: WriteSkills wrote %d, filtered listSkills returned %d", n, len(skills))
 	}
 
 	for _, s := range skills {
@@ -111,6 +113,8 @@ func TestWriteSkills_MD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listForgeShippedSkills: %v", err)
 	}
+	// WriteSkills excludes one-time migration skills by default.
+	skills = filterDefaultRelevance(skills)
 	for _, s := range skills {
 		flat := strings.ReplaceAll(s.Path, "/", "-")
 		dst := filepath.Join(dir, flat+".md")

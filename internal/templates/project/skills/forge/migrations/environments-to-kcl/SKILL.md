@@ -4,6 +4,7 @@ description: Migrate forge.yaml `environments[]` into per-env KCL deploy targets
 applies-from: v1.0.0
 applies-to: v2.0.0
 detection: grep -l "^environments:" forge.yaml
+relevance: migration
 ---
 
 # Migrating forge.yaml `environments[]` to KCL deploy targets

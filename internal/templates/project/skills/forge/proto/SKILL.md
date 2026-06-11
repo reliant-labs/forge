@@ -248,6 +248,6 @@ same boundary.
 
 - **Splitting a multi-service file** — see `proto-split`.
 - **Designing the Go service surface** behind the proto — see `service-layer`.
-- **Handler implementation patterns** — see `api/handlers` and `api`.
+- **Handler implementation patterns** — see `api`.
 - **DB schema lifecycle** (migrations, entity-type evolution) — see `db`.
 - **Entity / migration alignment for migrated projects** — see `migration` and `forge audit`'s `proto_migration_alignment` category.

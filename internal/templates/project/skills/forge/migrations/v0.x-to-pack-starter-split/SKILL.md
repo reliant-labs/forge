@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-pack-starter-split
 description: Migrate stripe / twilio / clerk-webhook from packs to starters. forge versions before 1.6 shipped these as installable packs; 1.6+ ships them as one-time-copy starters that the user owns.
+relevance: migration
 ---
 
 # Migrating business-integration packs to starters

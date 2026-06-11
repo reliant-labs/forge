@@ -67,7 +67,7 @@ func (s *svc) RunStandard(ctx context.Context, projectName, projectDir string) R
 	d.register("pyroscope", CheckPyroscope)
 	d.register("delve", CheckDelve)
 	d.register("covdata", CheckCovdata)
-	d.register("forked files", CheckForkedFiles)
+	d.register("disowned files", CheckDisownedFiles)
 	// Docker discovers ports, so it runs sequentially first. Delve also
 	// runs sequentially because it discovers the dlv port on demand.
 	return d.run(ctx, []string{"docker", "delve"})
@@ -87,7 +87,7 @@ func (s *svc) RunFiltered(ctx context.Context, projectName, projectDir, signal s
 		d.register("Profiles (Pyro)", CheckPyroscope)
 		d.register("Delve", CheckDelve)
 		d.register("covdata", CheckCovdata)
-		d.register("Forked Files", CheckForkedFiles)
+		d.register("Disowned Files", CheckDisownedFiles)
 	case "metrics":
 		d.register("Docker Compose", CheckDocker)
 		d.register("Prometheus", CheckPrometheus)

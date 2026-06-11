@@ -560,12 +560,11 @@ func TestCleanupStaleArtifacts_MockGenOwnerGateWhenContractsDisabled(t *testing.
 	}
 }
 
-// TestCleanupStaleArtifacts_SkipWritePathNotACandidate pins the
-// deliberately-skipped-but-alive rule: a path in the per-run SkipWrite
-// set (populated by `forge generate --accept`) was intentionally left
-// with the user's content this run — alive by user intent, never a
-// deletion candidate.
-func TestCleanupStaleArtifacts_SkipWritePathNotACandidate(t *testing.T) {
+// TestCleanupStaleArtifacts_DisownedPathNotACandidate pins the
+// user-owned-by-intent rule: a disowned entry (Tier-2 + marker) is
+// never re-emitted by forge, so "not written this run" is its permanent
+// steady state — never a deletion candidate.
+func TestCleanupStaleArtifacts_DisownedPathNotACandidate(t *testing.T) {
 	resetCleanupRunState(t)
 	dir := t.TempDir()
 
@@ -575,9 +574,8 @@ func TestCleanupStaleArtifacts_SkipWritePathNotACandidate(t *testing.T) {
 
 	rel := "handlers/keep/handlers_crud_gen.go"
 	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		rel: {Hash: "abc", History: []string{"abc"}, Tier: 1},
+		rel: {Hash: "abc", History: []string{"abc"}, Tier: 2, Disowned: true},
 	}}
-	checksums.AddSkipWrite(rel) // --accept opted this path out for the run
 
 	ctx := newCleanupCtx(dir, cs, []codegen.ServiceDef{{Name: "KeepService"}}, nil)
 	removed, _, err := cleanupStaleArtifacts(ctx)
@@ -585,10 +583,10 @@ func TestCleanupStaleArtifacts_SkipWritePathNotACandidate(t *testing.T) {
 		t.Fatalf("cleanup: %v", err)
 	}
 	if len(removed) != 0 {
-		t.Errorf("removed = %v, want empty (SkipWrite path is alive by intent)", removed)
+		t.Errorf("removed = %v, want empty (disowned path is alive by intent)", removed)
 	}
 	if _, err := os.Stat(kept); err != nil {
-		t.Errorf("SkipWrite path deleted: %v", err)
+		t.Errorf("disowned path deleted: %v", err)
 	}
 }
 

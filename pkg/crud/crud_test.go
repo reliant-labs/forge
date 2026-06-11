@@ -3,12 +3,14 @@ package crud
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Test fixture types: a tiny "User" entity and per-RPC req/resp shapes
@@ -137,8 +139,12 @@ func TestHandleCreate_RepoError_WrappedAsInternal(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "create user:") {
+	if !strings.Contains(cerr.Message(), "create user failed: svcerr: internal") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
+	}
+	// Repo error text must never reach the client.
+	if strings.Contains(cerr.Message(), "db down") {
+		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
 	}
 }
 
@@ -166,7 +172,8 @@ func TestHandleGet_NotFound(t *testing.T) {
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
 		Fetch: func(context.Context, string, string) (*user, error) {
-			return nil, errors.New("no rows")
+			// Repos signal a missing row via orm.ErrNoRows (possibly wrapped).
+			return nil, fmt.Errorf("get users by id: %w", orm.ErrNoRows)
 		},
 		Pack: func(u *user) *getResp { return &getResp{User: u} },
 	})
@@ -175,8 +182,54 @@ func TestHandleGet_NotFound(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeNotFound {
 		t.Fatalf("want NotFound, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "get user:") {
+	// Clean svcerr envelope: entity name + not-found, no repo text.
+	if !strings.Contains(cerr.Message(), "user: svcerr: not found") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "get users by id") {
+		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
+	}
+}
+
+func TestHandleGet_SvcerrNotFound(t *testing.T) {
+	// A repository that already classified the miss via svcerr maps to
+	// NotFound too.
+	h := HandleGet(GetOp[getReq, getResp, *user]{
+		EntityLower: "user",
+		ID:          func(r *getReq) string { return r.ID },
+		Fetch: func(context.Context, string, string) (*user, error) {
+			return nil, svcerr.NotFound("user")
+		},
+		Pack: func(u *user) *getResp { return &getResp{User: u} },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "nope"}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeNotFound {
+		t.Fatalf("want NotFound, got %v", err)
+	}
+}
+
+func TestHandleGet_ArbitraryRepoError_Internal(t *testing.T) {
+	// A non-ErrNoRows repo error is INTERNAL, not NotFound, and its SQL
+	// text must never cross the wire.
+	h := HandleGet(GetOp[getReq, getResp, *user]{
+		EntityLower: "user",
+		ID:          func(r *getReq) string { return r.ID },
+		Fetch: func(context.Context, string, string) (*user, error) {
+			return nil, errors.New("boom: SELECT * FROM x")
+		},
+		Pack: func(u *user) *getResp { return &getResp{User: u} },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "u1"}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
+		t.Fatalf("want Internal, got %v", err)
+	}
+	if !strings.Contains(cerr.Message(), "get user failed: svcerr: internal") {
+		t.Fatalf("error envelope wording changed: %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "SELECT") {
+		t.Fatalf("SQL text leaked into client message: %q", cerr.Message())
 	}
 }
 
@@ -265,8 +318,11 @@ func TestHandleDelete_RepoError_WrappedInternal(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "delete user:") {
+	if !strings.Contains(cerr.Message(), "delete user failed: svcerr: internal") {
 		t.Fatalf("envelope wording changed: %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "fk violation") {
+		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
 	}
 }
 
@@ -430,6 +486,53 @@ func TestHandleList_OrderByValidation(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
 		t.Fatalf("want InvalidArgument from order-by validation, got %v", err)
 	}
+}
+
+// listOrderByOp builds a List handler with the given Columns allowlist
+// for the order-by allowlist tests.
+func listOrderByOp(columns []string) func(context.Context, *connect.Request[listReq]) (*connect.Response[listResp], error) {
+	return HandleList(ListOp[listReq, listResp, *user]{
+		EntityLower:   "user",
+		PkColumnName:  "id",
+		Columns:       columns,
+		HasPagination: true,
+		HasOrderBy:    true,
+		PageToken:     func(r *listReq) string { return r.PageToken },
+		PageSize:      func(r *listReq) int { return r.PageSize },
+		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+		Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+			return nil, nil
+		},
+		EntityID: func(u *user) string { return u.ID },
+		Pack:     func(items []*user, tok string) *listResp { return &listResp{} },
+	})
+}
+
+func TestHandleList_OrderByAllowlist(t *testing.T) {
+	columns := []string{"id", "name", "email"}
+
+	t.Run("declared column accepted", func(t *testing.T) {
+		h := listOrderByOp(columns)
+		if _, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "name DESC"})); err != nil {
+			t.Fatalf("declared column should pass allowlist: %v", err)
+		}
+	})
+
+	t.Run("undeclared column rejected", func(t *testing.T) {
+		h := listOrderByOp(columns)
+		_, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "password_hash ASC"}))
+		cerr := new(connect.Error)
+		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
+			t.Fatalf("want InvalidArgument for undeclared order-by column, got %v", err)
+		}
+	})
+
+	t.Run("nil Columns is shape-only", func(t *testing.T) {
+		h := listOrderByOp(nil)
+		if _, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "password_hash ASC"})); err != nil {
+			t.Fatalf("nil Columns should skip allowlist validation: %v", err)
+		}
+	})
 }
 
 func TestHandleList_TenantPropagated(t *testing.T) {

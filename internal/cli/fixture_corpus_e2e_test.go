@@ -1407,6 +1407,335 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir string) {
 	}
 }
 
+// ─────────────────── fixture 5: executed CRUD lifecycle ───────────────────
+
+// crudLifecycleProbeSrc is the in-project probe test the CRUD-lifecycle
+// fixture writes into handlers/item/ and executes with the project's own
+// `go test`. It drives the REAL generated stack — generated CRUD wiring →
+// pkg/crud lifecycle → internal/db ORM → real SQLite — against the
+// project's OWN migration SQL (db/migrations/*.up.sql applied verbatim),
+// with claims attached the same way the generated middleware would.
+//
+// Every assertion is a real semantic, not AnyOutcome:
+//
+//	create×2     → two rows, distinct non-empty IDs, created_at set
+//	get          → returns the created row
+//	list         → both rows visible
+//	update       → actually mutates (re-read observes the change)
+//	delete → get → NotFound with a CLEAN client message (no SQL text)
+//	list+search  → filter finds the matching row (never silently empty,
+//	               never an Internal error from a phantom column)
+//	order_by     → declared column accepted; undeclared column rejected
+//	               as InvalidArgument (allowlist, not identifier-shape)
+//
+// This is exactly the bug class the 2026-06 generated-output review
+// found shipping: forge validated template RENDERING, never executed
+// behavior.
+const crudLifecycleProbeSrc = `package item_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"connectrpc.com/connect"
+	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/testkit"
+
+	pb "example.com/crudlife/gen/services/item/v1"
+	"example.com/crudlife/pkg/app"
+	"example.com/crudlife/pkg/middleware"
+)
+
+// corpusMigratedDB builds an in-memory DB and applies the project's own
+// migration SQL (db/migrations/*.up.sql, in order) — the schema the
+// generated CRUD code is supposed to run against.
+func corpusMigratedDB(t *testing.T) orm.Context {
+	t.Helper()
+	db := testkit.NewSQLiteMemDB(t)
+	migDir := filepath.Join("..", "..", "db", "migrations")
+	entries, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read project migrations dir: %v", err)
+	}
+	var ups []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".up.sql") {
+			ups = append(ups, e.Name())
+		}
+	}
+	if len(ups) == 0 {
+		t.Fatalf("project has no .up.sql migrations in %s", migDir)
+	}
+	sort.Strings(ups)
+	for _, name := range ups {
+		sql, rerr := os.ReadFile(filepath.Join(migDir, name))
+		if rerr != nil {
+			t.Fatalf("read migration %s: %v", name, rerr)
+		}
+		if _, xerr := db.Exec(context.Background(), string(sql)); xerr != nil {
+			t.Fatalf("apply project migration %s: %v\nSQL:\n%s", name, xerr, sql)
+		}
+	}
+	return db
+}
+
+func authedCtx() context.Context {
+	return middleware.ContextWithClaims(context.Background(),
+		&middleware.Claims{UserID: "corpus-user", Email: "corpus@example.com"})
+}
+
+// requireCleanClientError asserts an error surface fit for clients:
+// the right code and NO leaked SQL/driver internals in the message.
+func requireCleanClientError(t *testing.T, label string, err error, want connect.Code) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected %v error, got nil", label, want)
+	}
+	if got := connect.CodeOf(err); got != want {
+		t.Errorf("%s: code = %v, want %v (err: %v)", label, got, want, err)
+	}
+	msg := err.Error()
+	for _, leak := range []string{"sql:", "SQL", "SELECT", "no rows in result set", "no such column"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("%s: client-visible error leaks driver/SQL text (%q): %s", label, leak, msg)
+		}
+	}
+}
+
+func TestCorpusCRUDLifecycle(t *testing.T) {
+	db := corpusMigratedDB(t)
+	svc := app.NewTestItem(t, app.WithDB(db))
+	ctx := authedCtx()
+
+	// ── create ×2: two rows, distinct non-empty IDs, created_at set ──
+	r1, err := svc.CreateItem(ctx, connect.NewRequest(&pb.CreateItemRequest{Name: "first", Description: "alpha"}))
+	if err != nil {
+		t.Fatalf("create#1: %v", err)
+	}
+	id1 := r1.Msg.GetItem().GetId()
+	if id1 == "" {
+		t.Errorf("create#1 returned an EMPTY id — the generated create path never generates one")
+	}
+	if r1.Msg.GetItem().GetCreatedAt() == nil {
+		t.Errorf("create#1: created_at is nil despite timestamps:true on the entity")
+	}
+
+	r2, err := svc.CreateItem(ctx, connect.NewRequest(&pb.CreateItemRequest{Name: "second", Description: "beta"}))
+	if err != nil {
+		t.Fatalf("create#2: %v", err)
+	}
+	id2 := r2.Msg.GetItem().GetId()
+	if id2 == "" {
+		t.Errorf("create#2 returned an EMPTY id")
+	}
+	if id1 == id2 {
+		t.Errorf("create#1 and create#2 returned the SAME id (%q) — second create overwrote the first (upsert-as-create data loss)", id1)
+	}
+
+	lr, err := svc.ListItems(ctx, connect.NewRequest(&pb.ListItemsRequest{PageSize: 10}))
+	if err != nil {
+		t.Fatalf("list after two creates: %v", err)
+	}
+	if got := len(lr.Msg.GetItems()); got != 2 {
+		t.Errorf("list after two creates: %d row(s), want 2 — creates are not inserts", got)
+	}
+
+	// ── get returns the created row ──────────────────────────────────
+	if id1 != "" {
+		gr, gerr := svc.GetItem(ctx, connect.NewRequest(&pb.GetItemRequest{Id: id1}))
+		if gerr != nil {
+			t.Fatalf("get created row: %v", gerr)
+		}
+		if gr.Msg.GetItem().GetName() != "first" {
+			t.Errorf("get: name = %q, want %q", gr.Msg.GetItem().GetName(), "first")
+		}
+
+		// ── update actually mutates ──────────────────────────────────
+		updated := gr.Msg.GetItem()
+		updated.Name = "renamed"
+		_, uerr := svc.UpdateItem(ctx, connect.NewRequest(&pb.UpdateItemRequest{Item: updated}))
+		if uerr != nil {
+			t.Fatalf("update: %v (the scaffold's own Update RPC must be wired, not a FORGE_CRUD_SHAPE_MISMATCH stub)", uerr)
+		}
+		gr2, gerr2 := svc.GetItem(ctx, connect.NewRequest(&pb.GetItemRequest{Id: id1}))
+		if gerr2 != nil {
+			t.Fatalf("get after update: %v", gerr2)
+		}
+		if gr2.Msg.GetItem().GetName() != "renamed" {
+			t.Errorf("update did not mutate: name = %q, want %q", gr2.Msg.GetItem().GetName(), "renamed")
+		}
+		if gr2.Msg.GetItem().GetCreatedAt() == nil {
+			t.Errorf("update nulled created_at — timestamps must be managed, not round-tripped through the request")
+		}
+
+		// ── delete, then get-missing = clean NotFound ────────────────
+		if _, derr := svc.DeleteItem(ctx, connect.NewRequest(&pb.DeleteItemRequest{Id: id1})); derr != nil {
+			t.Fatalf("delete: %v", derr)
+		}
+		_, gerr3 := svc.GetItem(ctx, connect.NewRequest(&pb.GetItemRequest{Id: id1}))
+		requireCleanClientError(t, "get-after-delete", gerr3, connect.CodeNotFound)
+
+		lr2, lerr2 := svc.ListItems(ctx, connect.NewRequest(&pb.ListItemsRequest{PageSize: 10}))
+		if lerr2 != nil {
+			t.Fatalf("list after delete: %v", lerr2)
+		}
+		if got := len(lr2.Msg.GetItems()); got != 1 {
+			t.Errorf("list after delete: %d row(s), want 1", got)
+		}
+	}
+
+	// ── get a never-existed id = clean NotFound ──────────────────────
+	_, merr := svc.GetItem(ctx, connect.NewRequest(&pb.GetItemRequest{Id: "corpus-never-existed"}))
+	requireCleanClientError(t, "get-missing", merr, connect.CodeNotFound)
+
+	// ── list with the scaffold's own search filter finds the row ─────
+	search := "second"
+	sr, serr := svc.ListItems(ctx, connect.NewRequest(&pb.ListItemsRequest{PageSize: 10, Search: &search}))
+	if serr != nil {
+		t.Fatalf("list with search=%q errored: %v — the generated filter maps to a phantom column instead of the entity's string columns", search, serr)
+	}
+	if got := len(sr.Msg.GetItems()); got != 1 {
+		t.Errorf("list with search=%q: %d row(s), want exactly 1 — search must not silently return nothing", search, got)
+	} else if sr.Msg.GetItems()[0].GetName() != "second" {
+		t.Errorf("list with search=%q returned the wrong row: %q", search, sr.Msg.GetItems()[0].GetName())
+	}
+
+	// ── order_by: declared column accepted, undeclared rejected ──────
+	if _, oerr := svc.ListItems(ctx, connect.NewRequest(&pb.ListItemsRequest{PageSize: 10, OrderBy: "name"})); oerr != nil {
+		t.Errorf("list order_by=name (a declared column) errored: %v", oerr)
+	}
+	_, berr := svc.ListItems(ctx, connect.NewRequest(&pb.ListItemsRequest{PageSize: 10, OrderBy: "password_hash"}))
+	requireCleanClientError(t, "list-orderby-undeclared", berr, connect.CodeInvalidArgument)
+}
+`
+
+// TestE2EFixtureCorpusCRUDLifecycle is the executed-lifecycle gate: the
+// first corpus fixture that asserts what generated CRUD code DOES, not
+// what it renders as. Shape: the default scaffold's Item service with
+// the (forge.v1.entity) annotation added (timestamps + soft_delete) —
+// byte-for-byte what the 2026-06 review probe did at
+// /tmp/review-scratch-svc (see crudLifecycleProbeSrc for the semantics
+// it pins).
+//
+// Also pins the projection-vs-implementation split for CRUD:
+//
+//   - handlers_crud.go — the RPC implementations — is USER-OWNED from
+//     line one (scaffold-once, no DO-NOT-EDIT banner) and THIN: it
+//     never names an entity field, so schema changes never rot it.
+//   - handlers_crud_ops_gen.go — the per-entity wiring (field mapping,
+//     filters, packers) — stays Tier-1 generated.
+//   - handlers_crud_gen.go (the old Tier-1 implementation file) is DEAD
+//     and must not be emitted.
+//   - the scaffold's own proto must never trip FORGE_CRUD_SHAPE_MISMATCH
+//     (the F2 root cause: the descriptor collapsed message-typed fields
+//     to the literal string "message").
+//   - the generated migration guards the id invariant (CHECK (id <> ''))
+//     and stores timestamps as timestamps, not TEXT.
+func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
+	forgeBin := buildforgeBinary(t)
+	dir := t.TempDir()
+	start := time.Now()
+
+	runCmd(t, dir, forgeBin, "new", "crudlife",
+		"--mod", "example.com/crudlife",
+		"--service", "item",
+	)
+	projectDir := filepath.Join(dir, "crudlife")
+	addCorpusForgePkgReplace(t, projectDir)
+
+	// Annotate the scaffold's Item as a DB entity — exactly what the
+	// review probe did, and what the proto skill tells users to do.
+	protoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
+	mustReplaceInFile(t, protoPath, "message Item {\n  string id = 1;",
+		`message Item {
+  option (forge.v1.entity) = {
+    table: "items"
+    soft_delete: true
+    timestamps: true
+  };
+
+  string id = 1 [(forge.v1.field) = {pk: true}];`)
+
+	// ── 1. generate ×2 — idempotent with an entity in play ───────────
+	generateTwiceIdempotent(t, forgeBin, projectDir)
+
+	handlerDir := filepath.Join(projectDir, "handlers", "item")
+
+	// ── 2. projection vs implementation split ────────────────────────
+	// (Non-fatal: a missing file here must not hide the executed-
+	// lifecycle results below — this gate's whole point is maximum
+	// behavioral signal per run.)
+	// The implementation file: user-owned from line one, thin.
+	shimPath := filepath.Join(handlerDir, "handlers_crud.go")
+	if _, err := os.Stat(shimPath); os.IsNotExist(err) {
+		t.Errorf("handlers_crud.go (the user-owned thin CRUD implementation file) was not scaffolded")
+	} else {
+		shim := readFileE2E(t, shimPath)
+		if strings.Contains(shim, "DO NOT EDIT") {
+			t.Errorf("handlers_crud.go carries a DO-NOT-EDIT banner — the CRUD implementation file must be user-owned from line one")
+		}
+		if !strings.Contains(shim, "crud.Handle") {
+			t.Errorf("handlers_crud.go does not delegate to pkg/crud; got:\n%s", shim)
+		}
+		// THIN IS LOAD-BEARING: the owned file must never name entity
+		// fields, or schema changes rot it. "Description" only exists as
+		// an Item field name.
+		if strings.Contains(shim, "Description") {
+			t.Errorf("handlers_crud.go names entity fields — field mapping belongs in the generated ops file, not the owned shim:\n%s", shim)
+		}
+	}
+	// The projection file: Tier-1, regenerated, names the fields.
+	if _, err := os.Stat(filepath.Join(handlerDir, "handlers_crud_ops_gen.go")); os.IsNotExist(err) {
+		t.Errorf("handlers_crud_ops_gen.go (the Tier-1 CRUD wiring projection) was not generated")
+	}
+	// The old Tier-1 implementation file is dead.
+	if _, err := os.Stat(filepath.Join(handlerDir, "handlers_crud_gen.go")); !os.IsNotExist(err) {
+		t.Errorf("handlers_crud_gen.go still emitted — the Tier-1 CRUD implementation file must be dead (stat err=%v)", err)
+	}
+	// The scaffold's own conventions must never mismatch themselves.
+	if entries, err := os.ReadDir(handlerDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			body := readFileE2E(t, filepath.Join(handlerDir, e.Name()))
+			if strings.Contains(body, "FORGE_CRUD_SHAPE_MISMATCH") {
+				t.Errorf("%s contains FORGE_CRUD_SHAPE_MISMATCH — the scaffold's own proto failed the shape matcher (F2)", e.Name())
+			}
+		}
+	}
+
+	// ── 3. migration semantics ───────────────────────────────────────
+	migration := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00001_init.up.sql"))
+	if !strings.Contains(migration, "CHECK (id <> '')") {
+		t.Errorf("migration lacks CHECK (id <> '') on the string PK — empty-id rows were the silent-upsert data-loss vector; got:\n%s", migration)
+	}
+	if !strings.Contains(migration, "created_at TIMESTAMPTZ") {
+		t.Errorf("migration stores created_at as something other than TIMESTAMPTZ (the descriptor collapsed the Timestamp type); got:\n%s", migration)
+	}
+
+	// ── 4. compiles ───────────────────────────────────────────────────
+	runCmd(t, projectDir, "go", "build", "./...")
+
+	// ── 5. the executed lifecycle ─────────────────────────────────────
+	writeCorpusFile(t, filepath.Join(handlerDir, "crud_lifecycle_corpus_test.go"), crudLifecycleProbeSrc)
+	out, err := runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusCRUDLifecycle", "-v", "./handlers/item/")
+	if err != nil {
+		t.Errorf("EXECUTED CRUD lifecycle failed:\n%s", out)
+	} else {
+		t.Logf("executed CRUD lifecycle passed:\n%s", out)
+	}
+
+	// ── 6. boots: /healthz 200, clean SIGTERM (no DB attached) ───────
+	bootHealthzAndShutdown(t, projectDir, 18934)
+
+	t.Logf("crud-lifecycle fixture total: %s", time.Since(start))
+}
+
 // ── small file/exec utilities (corpus-local; no t.Fatal-free variants
 // exist in the sibling e2e files) ──────────────────────────────────────
 

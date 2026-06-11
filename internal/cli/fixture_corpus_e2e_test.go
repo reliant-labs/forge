@@ -506,24 +506,14 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	projectDir := filepath.Join(dir, "febp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// Entity-shape the scaffolded service proto. The scaffold default
-	// uses BARE CRUD names (Create/Get/Update/Delete/List) which do NOT
-	// match the documented List<Entity> convention, so the frontend
-	// codegen (nav routes, hooks, mocks, entity pages) extracts zero
-	// entities from it. Renaming the RPCs to the convention — the
-	// documented user flow — gives the fixture a real "Item" entity, so
-	// the prefix-clean scan below covers genuinely generated route
-	// literals ("/items") instead of an empty route table.
-	apiProto := filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto")
-	for _, r := range [][2]string{
-		{"rpc Create(", "rpc CreateItem("},
-		{"rpc Get(", "rpc GetItem("},
-		{"rpc Update(", "rpc UpdateItem("},
-		{"rpc Delete(", "rpc DeleteItem("},
-		{"rpc List(", "rpc ListItems("},
-	} {
-		mustReplaceInFile(t, apiProto, r[0], r[1])
-	}
+	// The scaffold proto is used AS EMITTED — no renames. The scaffold
+	// ships convention-named CRUD RPCs (CreateItem/GetItem/UpdateItem/
+	// DeleteItem/ListItems), so this fixture pins the true out-of-box
+	// experience: a fresh `forge new` project must yield a real "Item"
+	// entity from frontend codegen (nav routes, hooks, mocks, entity
+	// pages). Historically the scaffold used bare verbs (Create/Get/...)
+	// which matched NO entity, and the very first generate produced a
+	// hollow frontend; this fixture is the regression guard.
 
 	// `forge add frontend --base-path` is the user-facing entry point
 	// for the feature. When npm is on PATH the add also runs

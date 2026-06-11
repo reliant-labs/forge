@@ -127,7 +127,7 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	b.WriteString("package db\n\n")
 
 	// Imports
-	writeORMImports(&b, hasTimestamp, ent.SoftDelete, hasTenant)
+	writeORMImports(&b, hasTimestamp, pkField != nil && pkField.goType == "string")
 
 	// Field name constants
 	fmt.Fprintf(&b, "// Field name constants for %s.\n", msgName)
@@ -138,42 +138,49 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	}
 	b.WriteString(")\n\n")
 
-	// Column list helper (package-level var for the ordered column list)
-	lowerMsg := strings.ToLower(msgName[:1]) + msgName[1:]
-	fmt.Fprintf(&b, "// %sColumns is the ordered list of columns for %s.\n", lowerMsg, msgName)
-	fmt.Fprintf(&b, "var %sColumns = []string{\n", lowerMsg)
+	// Column list helper. EXPORTED: this is the per-entity column
+	// allowlist — handler shims hand it to pkg/crud so user-supplied
+	// order_by/filter columns are validated against declared columns
+	// (identifier-shape validation alone let `order_by=password_hash`
+	// through as a silent no-op).
+	colsVar := msgName + "Columns"
+	fmt.Fprintf(&b, "// %s is the ordered list of declared columns for %s.\n", colsVar, msgName)
+	fmt.Fprintf(&b, "// It doubles as the column allowlist for user-supplied order_by/filter\n")
+	fmt.Fprintf(&b, "// input (see forge/pkg/crud).\n")
+	fmt.Fprintf(&b, "var %s = []string{\n", colsVar)
 	for _, f := range fields {
 		fmt.Fprintf(&b, "\t%q,\n", f.columnName)
 	}
 	b.WriteString("}\n\n")
 
 	// scan function
-	writeORMScanFunc(&b, msgName, lowerMsg, fields)
+	writeORMScanFunc(&b, msgName, colsVar, fields)
 
 	// CRUD functions
-	writeORMCreate(&b, msgName, tableName, lowerMsg, fields, hasTenant, tenantField, pkField)
-	writeORMGetByID(&b, msgName, tableName, lowerMsg, pkCol, pkGoType, hasTenant, ent.SoftDelete)
-	writeORMList(&b, msgName, tableName, lowerMsg, hasTenant, ent.SoftDelete, tenantField)
+	writeORMCreate(&b, msgName, tableName, fields, hasTenant, tenantField, pkField, ent.Timestamps)
+	writeORMGetByID(&b, msgName, tableName, colsVar, pkCol, pkGoType, hasTenant, ent.SoftDelete)
+	writeORMList(&b, msgName, tableName, colsVar, hasTenant, ent.SoftDelete, tenantField)
 	writeORMCount(&b, msgName, tableName, hasTenant, ent.SoftDelete, tenantField)
 	if ent.SoftDelete {
-		writeORMListAll(&b, msgName, tableName, lowerMsg, hasTenant, tenantField)
+		writeORMListAll(&b, msgName, tableName, colsVar, hasTenant, tenantField)
 	}
-	writeORMUpdate(&b, msgName, tableName, lowerMsg, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField)
+	writeORMUpdate(&b, msgName, tableName, colsVar, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
 	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, fields, hasTenant, ent.SoftDelete, tenantField)
 
 	fileName := naming.ToSnakeCase(ent.Name) + "_orm.go"
 	return os.WriteFile(filepath.Join(dbDir, fileName), []byte(b.String()), 0o644)
 }
 
-func writeORMImports(b *strings.Builder, hasTimestamp, _, _ bool) {
+func writeORMImports(b *strings.Builder, hasTimestamp, stringPK bool) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
-	if hasTimestamp {
-		b.WriteString("\t\"database/sql\"\n")
-	}
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"strings\"\n")
 	b.WriteString("\n")
+	if stringPK {
+		// String PKs are generated at the Create chokepoint.
+		b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
+	}
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/attribute\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/codes\"\n")
@@ -202,7 +209,7 @@ func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) 
 		b.WriteString("\tvar (\n")
 		for _, f := range fields {
 			if f.isTimestamp {
-				fmt.Fprintf(b, "\t\tdb%s sql.NullTime\n", f.goName)
+				fmt.Fprintf(b, "\t\tdb%s orm.NullTime\n", f.goName)
 			} else if f.nullable {
 				fmt.Fprintf(b, "\t\tdb%s *%s\n", f.goName, f.goType)
 			}
@@ -243,8 +250,19 @@ func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) 
 	b.WriteString("}\n\n")
 }
 
-func writeORMCreate(b *strings.Builder, msgName, tableName, _ string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField) {
+func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField, timestamps bool) {
+	stringPK := pkField != nil && pkField.goType == "string"
+
 	fmt.Fprintf(b, "// Create%s inserts a new %s row into the database.\n", msgName, msgName)
+	b.WriteString("//\n")
+	b.WriteString("// Create is a plain INSERT — never an upsert. Chokepoint invariants:\n")
+	if stringPK {
+		fmt.Fprintf(b, "//   - msg.%s is generated (ULID) when the caller left it empty;\n", pkField.goName)
+	}
+	if timestamps {
+		b.WriteString("//   - created_at/updated_at are stamped here (timestamps: true);\n")
+	}
+	b.WriteString("// a duplicate primary key is therefore a real error, not a silent overwrite.\n")
 	if hasTenant {
 		fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s, tenantID string) error {\n", msgName, msgName)
 	} else {
@@ -257,6 +275,18 @@ func writeORMCreate(b *strings.Builder, msgName, tableName, _ string, fields []o
 	if hasTenant && tenantField != nil {
 		b.WriteString("\t// Enforce tenant isolation: set tenant field from caller.\n")
 		fmt.Fprintf(b, "\tmsg.%s = tenantID\n\n", tenantField.goName)
+	}
+
+	if stringPK {
+		fmt.Fprintf(b, "\tif msg.%s == \"\" {\n", pkField.goName)
+		fmt.Fprintf(b, "\t\tmsg.%s = ulid.Make().String()\n", pkField.goName)
+		b.WriteString("\t}\n")
+	}
+	if timestamps {
+		writeManagedCreateTimestamps(b, fields)
+	}
+	if stringPK || timestamps {
+		b.WriteString("\n")
 	}
 
 	// Build column list and placeholders for INSERT
@@ -286,47 +316,13 @@ func writeORMCreate(b *strings.Builder, msgName, tableName, _ string, fields []o
 	}
 	b.WriteString("\t}\n\n")
 
-	// Build INSERT with ON CONFLICT (upsert)
-	// Find PK column name for conflict clause
-	pkColName := "id"
-	if pkField != nil {
-		pkColName = pkField.columnName
-	}
-
-	b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s\",\n")
+	b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s (%s) VALUES (%s)\",\n")
 	fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
 	b.WriteString("\t\tstrings.Join(columns, \", \"),\n")
 	b.WriteString("\t\tstrings.Join(placeholders, \", \"),\n")
-	fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkColName)
-
-	// Build SET clause for upsert: exclude PK
-	b.WriteString("\t\tfunc() string {\n")
-	b.WriteString("\t\t\tvar sets []string\n")
-	idx := len(fields) // start placeholders after INSERT values
-	for _, f := range fields {
-		if f.isPK {
-			continue
-		}
-		fmt.Fprintf(b, "\t\t\tsets = append(sets, fmt.Sprintf(\"%%s = %%s\", dialect.QuoteIdentifier(%q), dialect.Placeholder(%d)))\n", f.columnName, idx)
-		idx++
-	}
-	b.WriteString("\t\t\treturn strings.Join(sets, \", \")\n")
-	b.WriteString("\t\t}(),\n")
 	b.WriteString("\t)\n\n")
 
-	// Build upsert args: INSERT values + UPDATE values (excluding PK)
-	b.WriteString("\t// Append update values (excludes PK) for the ON CONFLICT SET clause.\n")
-	b.WriteString("\tupsertArgs := make([]any, 0, len(values)*2)\n")
-	b.WriteString("\tupsertArgs = append(upsertArgs, values...)\n")
-	b.WriteString("\tfor i, col := range columns {\n")
-	fmt.Fprintf(b, "\t\tif col == dialect.QuoteIdentifier(%q) {\n", pkColName)
-	b.WriteString("\t\t\tcontinue\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\t_ = col\n")
-	b.WriteString("\t\tupsertArgs = append(upsertArgs, values[i])\n")
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\t_, err := db.Exec(ctx, query, upsertArgs...)\n")
+	b.WriteString("\t_, err := db.Exec(ctx, query, values...)\n")
 	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
@@ -336,8 +332,39 @@ func writeORMCreate(b *strings.Builder, msgName, tableName, _ string, fields []o
 	b.WriteString("}\n\n")
 }
 
-func writeORMGetByID(b *strings.Builder, msgName, tableName, lowerMsg, pkCol, pkGoType string, hasTenant, softDelete bool) {
+// writeManagedCreateTimestamps emits the created_at/updated_at stamping
+// for entities with timestamps:true. Only fields that actually exist on
+// the entity are touched (resolveORMFields guarantees they do for
+// timestamps:true, whether declared in the proto or auto-added).
+func writeManagedCreateTimestamps(b *strings.Builder, fields []ormField) {
+	var createdAt, updatedAt string
+	for _, f := range fields {
+		switch f.columnName {
+		case "created_at":
+			createdAt = f.goName
+		case "updated_at":
+			updatedAt = f.goName
+		}
+	}
+	if createdAt == "" && updatedAt == "" {
+		return
+	}
+	b.WriteString("\tnow := timestamppb.Now()\n")
+	if createdAt != "" {
+		fmt.Fprintf(b, "\tif msg.%s == nil {\n", createdAt)
+		fmt.Fprintf(b, "\t\tmsg.%s = now\n", createdAt)
+		b.WriteString("\t}\n")
+	}
+	if updatedAt != "" {
+		fmt.Fprintf(b, "\tmsg.%s = now\n", updatedAt)
+	}
+}
+
+func writeORMGetByID(b *strings.Builder, msgName, tableName, colsVar, pkCol, pkGoType string, hasTenant, softDelete bool) {
 	fmt.Fprintf(b, "// Get%sByID retrieves a %s by its primary key.\n", msgName, msgName)
+	b.WriteString("//\n")
+	b.WriteString("// A missing row satisfies errors.Is(err, orm.ErrNoRows) so callers (and\n")
+	b.WriteString("// forge/pkg/crud) can map it to NotFound without string matching.\n")
 	if hasTenant {
 		fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s, tenantID string) (*%s, error) {\n", msgName, pkGoType, msgName)
 	} else {
@@ -363,12 +390,12 @@ func writeORMGetByID(b *strings.Builder, msgName, tableName, lowerMsg, pkCol, pk
 		b.WriteString("\t\treturn nil, err\n")
 		b.WriteString("\t}\n")
 		b.WriteString("\tif len(results) == 0 {\n")
-		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"get %s by id: not found\")\n", tableName)
+		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"get %s by id: %%w\", orm.ErrNoRows)\n", tableName)
 		b.WriteString("\t}\n")
 		b.WriteString("\treturn results[0], nil\n")
 	} else {
 		// Simple case: direct query by PK.
-		fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %sColumns)\n", tableName, lowerMsg)
+		fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %s)\n", tableName, colsVar)
 		fmt.Fprintf(b, "\tqb.Where(%q, orm.Eq, id)\n", pkCol)
 		b.WriteString("\tqb.Limit(1)\n")
 		b.WriteString("\tquery, args := qb.Build()\n")
@@ -384,7 +411,7 @@ func writeORMGetByID(b *strings.Builder, msgName, tableName, lowerMsg, pkCol, pk
 	b.WriteString("}\n\n")
 }
 
-func writeORMList(b *strings.Builder, msgName, tableName, lowerMsg string, hasTenant, softDelete bool, tenantField *ormField) {
+func writeORMList(b *strings.Builder, msgName, tableName, colsVar string, hasTenant, softDelete bool, tenantField *ormField) {
 	fmt.Fprintf(b, "// List%s retrieves %s rows with optional filtering.\n", msgName, msgName)
 	if hasTenant {
 		fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
@@ -405,7 +432,7 @@ func writeORMList(b *strings.Builder, msgName, tableName, lowerMsg string, hasTe
 		b.WriteString("\topts = append([]orm.QueryOption{orm.WhereIsNull(\"deleted_at\")}, opts...)\n\n")
 	}
 
-	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %sColumns)\n", tableName, lowerMsg)
+	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %s)\n", tableName, colsVar)
 	b.WriteString("\tfor _, opt := range opts {\n")
 	b.WriteString("\t\topt(qb)\n")
 	b.WriteString("\t}\n\n")
@@ -473,7 +500,7 @@ func writeORMCount(b *strings.Builder, msgName, tableName string, hasTenant, sof
 	b.WriteString("}\n\n")
 }
 
-func writeORMListAll(b *strings.Builder, msgName, tableName, lowerMsg string, hasTenant bool, tenantField *ormField) {
+func writeORMListAll(b *strings.Builder, msgName, tableName, colsVar string, hasTenant bool, tenantField *ormField) {
 	fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
 	if hasTenant {
 		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
@@ -489,7 +516,7 @@ func writeORMListAll(b *strings.Builder, msgName, tableName, lowerMsg string, ha
 		fmt.Fprintf(b, "\topts = append([]orm.QueryOption{orm.WhereEq(%q, tenantID)}, opts...)\n\n", tenantField.columnName)
 	}
 
-	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %sColumns)\n", tableName, lowerMsg)
+	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %s)\n", tableName, colsVar)
 	b.WriteString("\tfor _, opt := range opts {\n")
 	b.WriteString("\t\topt(qb)\n")
 	b.WriteString("\t}\n\n")
@@ -517,11 +544,26 @@ func writeORMListAll(b *strings.Builder, msgName, tableName, lowerMsg string, ha
 	b.WriteString("}\n\n")
 }
 
-func writeORMUpdate(b *strings.Builder, msgName, tableName, lowerMsg, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField) {
-	// Count updatable fields (excluding PK, deleted_at, tenant key).
+func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
+	// excludeFromSet reports whether a column is never part of the SET
+	// clause: the PK, the tenant key, deleted_at (soft-delete machinery),
+	// and — when timestamps are managed — created_at (immutable after
+	// create; round-tripping it through the request would let an update
+	// NULL or rewrite history).
+	excludeFromSet := func(f ormField) bool {
+		if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
+			return true
+		}
+		if timestamps && f.columnName == "created_at" {
+			return true
+		}
+		return false
+	}
+
+	// Count updatable fields.
 	updatableCount := 0
 	for _, f := range fields {
-		if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
+		if excludeFromSet(f) {
 			continue
 		}
 		updatableCount++
@@ -541,6 +583,11 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, lowerMsg, pkCol stri
 	}
 
 	fmt.Fprintf(b, "// Update%s updates an existing %s by its primary key.\n", msgName, msgName)
+	if timestamps {
+		b.WriteString("//\n")
+		b.WriteString("// updated_at is stamped here (timestamps: true); created_at is immutable\n")
+		b.WriteString("// and excluded from the SET clause.\n")
+	}
 	if hasTenant {
 		fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, tenantID string) error {\n", msgName, msgName)
 	} else {
@@ -550,16 +597,25 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, lowerMsg, pkCol stri
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
 
+	if timestamps {
+		for _, f := range fields {
+			if f.columnName == "updated_at" {
+				fmt.Fprintf(b, "\tmsg.%s = timestamppb.Now()\n\n", f.goName)
+				break
+			}
+		}
+	}
+
 	b.WriteString("\tdialect := db.Dialect()\n\n")
 
-	// Build SET clause excluding PK, deleted_at, and tenant columns.
+	// Build SET clause (see excludeFromSet for what stays out).
 	type setCol struct {
 		field ormField
 		idx   int
 	}
 	var setCols []setCol
 	for i, f := range fields {
-		if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
+		if excludeFromSet(f) {
 			continue
 		}
 		setCols = append(setCols, setCol{field: f, idx: i})
@@ -754,17 +810,28 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 		}})
 	}
 
+	declared := make(map[string]bool, len(ent.Fields))
 	for _, f := range ent.Fields {
+		declared[f.Name] = true
 		entries = append(entries, entry{PlanEntityField: f})
 	}
 
+	// Auto-add timestamp/soft-delete columns ONLY when the entity didn't
+	// declare them — proto entities routinely declare created_at /
+	// updated_at / deleted_at explicitly alongside timestamps:true /
+	// soft_delete:true, and a duplicate field is a compile error in the
+	// generated code (duplicate consts) and a duplicate column in SQL.
 	if ent.Timestamps {
-		entries = append(entries,
-			entry{PlanEntityField: config.PlanEntityField{Name: "created_at", Type: "google.protobuf.Timestamp"}, autoGenerated: true},
-			entry{PlanEntityField: config.PlanEntityField{Name: "updated_at", Type: "google.protobuf.Timestamp"}, autoGenerated: true},
-		)
+		if !declared["created_at"] {
+			entries = append(entries,
+				entry{PlanEntityField: config.PlanEntityField{Name: "created_at", Type: "google.protobuf.Timestamp"}, autoGenerated: true})
+		}
+		if !declared["updated_at"] {
+			entries = append(entries,
+				entry{PlanEntityField: config.PlanEntityField{Name: "updated_at", Type: "google.protobuf.Timestamp"}, autoGenerated: true})
+		}
 	}
-	if ent.SoftDelete {
+	if ent.SoftDelete && !declared["deleted_at"] {
 		entries = append(entries,
 			entry{PlanEntityField: config.PlanEntityField{Name: "deleted_at", Type: "google.protobuf.Timestamp"}, autoGenerated: true},
 		)

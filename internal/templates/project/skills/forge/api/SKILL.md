@@ -29,9 +29,9 @@ type UserService struct {
 
 RPCs are defined in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions matter — they trigger auto-generated features:
 
-- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) matching an entity defined in the service proto → full handler implementations are auto-generated in `handlers_crud_gen.go`.
+- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) matching an entity defined in the service proto → forge generates per-RPC op constructors (request→entity field mapping, filter→column mapping, response packing, auth/tenant hooks) in `handlers_crud_ops_gen.go` (Tier-1, regenerated every run) and scaffolds thin ~3-line delegations into the user-owned `handlers_crud.go`: `return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`. The delegations never name entity fields, so schema changes flow through the regenerated ops file and `handlers_crud.go` never rots. To customize an RPC, replace the delegation right in `handlers_crud.go` — the file is yours; `forge generate` only appends shims for newly added CRUD RPCs and never modifies existing content.
 - **AIP-158 pagination fields** (`page_size`, `page_token`, `next_page_token`) → cursor-based pagination is auto-generated.
-- **`optional` filter fields** on List requests → query filters are auto-generated (`search` → ILIKE, others → exact match). Filter fields must be `optional` in proto, otherwise the generated code can't distinguish "not set" from zero values.
+- **`optional` filter fields** on List requests → query filters are auto-generated (`search`/`query`/`q` → ILIKE across the entity's string columns; any other filter must name a declared entity column or `forge generate` fails loudly). Filter fields must be `optional` in proto, otherwise the generated code can't distinguish "not set" from zero values.
 - **`required_roles` annotation** → per-method RBAC is auto-generated in `authorizer_gen.go`. Custom authorization logic goes in `authorizer.go` — `authorizer_gen.go` is regenerated.
 - **`idempotency_key` annotation** → signals callers to pass an `Idempotency-Key` header.
 
@@ -255,8 +255,8 @@ forge test --service users
 - Never pass `req.Msg` directly into a service. Always convert to an internal input type.
 - Never expose internal error details (SQL, stack traces) to clients. The unknown-error fall-through lands at `CodeInternal` with a generic message.
 - Never reach into the DB or other services from a handler.
-- Hand-written handler methods take priority over generated CRUD — the generator skips any method you implement.
-- Run `forge generate` after any proto change; never hand-edit `gen/`, `handlers_crud_gen.go`, or `authorizer_gen.go` (custom authorization goes in `authorizer.go`).
+- Hand-written handler methods take priority over generated CRUD — the generator skips any method you implement. The primary customization path for a CRUD RPC is replacing its delegation in the user-owned `handlers_crud.go`.
+- Run `forge generate` after any proto change; never hand-edit `gen/`, `handlers_crud_ops_gen.go`, or `authorizer_gen.go` (custom authorization goes in `authorizer.go`; CRUD customization goes in `handlers_crud.go`).
 
 ## Cross-lane type placeholders (`forge:placeholder`)
 

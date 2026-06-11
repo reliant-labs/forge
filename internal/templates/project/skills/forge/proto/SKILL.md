@@ -44,7 +44,7 @@ are produced by `forge generate`'s post-buf passes that read
 adding a new entity in `proto/db/v1/` will:
 
   - produce `gen/db/v1/<entity>.pb.go` (proto types only)
-  - leave `internal/db/<entity>_orm_gen.go` stale or absent
+  - leave `internal/db/<entity>_orm.go` stale or absent
   - produce a confusing "ORM out of sync" lint warning on the next pass
 
 **Always run `forge generate`** — it invokes `buf generate` internally,
@@ -54,9 +54,9 @@ of the forge surface (rare; mostly for debugging the proto pipeline
 itself).
 
 `forge lint` includes a `proto-orm-out-of-sync` check that fires when
-`gen/db/v1/` carries a `.pb.go` for an entity that has no
-corresponding `internal/db/<entity>_orm_gen.go` — typically a sign
-that someone ran `buf generate` instead of `forge generate`.
+`gen/db/v1/` carries a `.pb.go` for an entity with no matching
+`.pb.orm.go` sibling (or one older than the `.pb.go`) — typically a
+sign that someone ran `buf generate` instead of `forge generate`.
 
 ## No Backwards Compatibility
 
@@ -140,8 +140,11 @@ service TaskService {
 
 ## CRUD RPC Naming Convention
 
-Use these exact prefixes — Forge auto-generates handler implementations
-in `handlers_crud_gen.go` for matching methods:
+Use these exact prefixes. For matching methods, forge generates the
+per-RPC op constructors (request→entity mapping, filters, response
+packing) in `handlers_crud_ops_gen.go` (Tier-1, regenerated every run)
+and scaffolds a thin delegation into the user-owned `handlers_crud.go`
+(`return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`):
 
 | RPC Name | Generated behavior |
 |----------|--------------------|
@@ -152,7 +155,15 @@ in `handlers_crud_gen.go` for matching methods:
 | `Delete<Entity>` | Delete (or soft-delete) |
 
 Hand-written handler methods always win — the generator skips anything
-you've already implemented.
+you've already implemented. To customize a generated CRUD RPC, replace
+the delegation body in `handlers_crud.go` directly (the file is yours;
+new CRUD RPCs are appended, existing content is never modified).
+
+When a request/response shape deviates from these conventions, forge
+scaffolds an Unimplemented stub into `handlers_crud.go` carrying a
+`FORGE_CRUD_SHAPE_MISMATCH: <reason>` comment (including the observed
+field list); `forge audit` reports it under `crud_stubs` until you
+implement the body.
 
 ### List Request Conventions (AIP-158)
 
@@ -160,8 +171,8 @@ you've already implemented.
 message ListTasksRequest {
   int32 page_size = 1;
   string page_token = 2;
-  optional string search = 3;   // ILIKE filter (auto-generated)
-  optional string status = 4;   // Exact-match filter (auto-generated)
+  optional string search = 3;   // ILIKE across the entity's string columns
+  optional string status = 4;   // Exact-match filter — must name a declared entity column
 }
 
 message ListTasksResponse {
@@ -172,6 +183,13 @@ message ListTasksResponse {
 
 Filter fields **must** be `optional` — otherwise generated code can't
 distinguish "not set" from zero values.
+
+`search` / `query` / `q` are the fuzzy-search filters: they span the
+entity's non-PK string columns via `orm.WhereILikeAny`. Any other
+filter field must name a declared entity column — `forge generate`
+fails loudly otherwise. A user-supplied `order_by` is validated against
+the entity's declared-column allowlist (`<Entity>Columns`); an
+undeclared column returns `InvalidArgument`, not a silent no-op.
 
 ## Enum Conventions
 

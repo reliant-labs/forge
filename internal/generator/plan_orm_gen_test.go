@@ -85,17 +85,27 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing table name constant")
 	}
 
-	// Column list
-	if !strings.Contains(code, "var projectColumns = []string{") {
-		t.Error("missing projectColumns var")
+	// Column list is EXPORTED — it doubles as the order-by/filter allowlist
+	// handed to pkg/crud.
+	if !strings.Contains(code, "var ProjectColumns = []string{") {
+		t.Error("missing exported ProjectColumns var")
+	}
+	if strings.Contains(code, "var projectColumns") {
+		t.Error("column list should be exported, found lowerCamel projectColumns")
 	}
 
 	// Scan function (standalone)
 	if !strings.Contains(code, "func scanProject(scanner interface{ Scan(...interface{}) error }) (*Project, error) {") {
 		t.Error("missing scanProject function")
 	}
-	if !strings.Contains(code, "sql.NullTime") {
-		t.Error("missing sql.NullTime in scan function for timestamps")
+	if !strings.Contains(code, "orm.NullTime") {
+		t.Error("missing orm.NullTime in scan function for timestamps")
+	}
+	if strings.Contains(code, "sql.NullTime") {
+		t.Error("scan temps should use orm.NullTime, not sql.NullTime")
+	}
+	if strings.Contains(code, `"database/sql"`) {
+		t.Error("generated file should no longer import database/sql")
 	}
 	if !strings.Contains(code, "timestamppb.New(") {
 		t.Error("missing timestamppb.New in scan function")
@@ -144,12 +154,38 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing ListAllProject")
 	}
 
-	// Create uses inline SQL with upsert
+	// Create is a plain INSERT — never an upsert.
 	if !strings.Contains(code, "INSERT INTO") {
 		t.Error("missing INSERT INTO in Create")
 	}
-	if !strings.Contains(code, "ON CONFLICT") {
-		t.Error("missing ON CONFLICT in Create")
+	if strings.Contains(code, "ON CONFLICT") {
+		t.Error("Create must be a plain INSERT, found ON CONFLICT upsert")
+	}
+
+	// String-PK chokepoint: Create generates the ULID when the caller left
+	// the id empty.
+	if !strings.Contains(code, `"github.com/oklog/ulid/v2"`) {
+		t.Error("missing ulid import for string PK generation")
+	}
+	if !strings.Contains(code, `if msg.Id == "" {`) || !strings.Contains(code, "msg.Id = ulid.Make().String()") {
+		t.Error("missing ULID generation chokepoint in Create")
+	}
+
+	// Timestamps chokepoint: created_at/updated_at stamped in Create.
+	if !strings.Contains(code, "now := timestamppb.Now()") {
+		t.Error("missing timestamp stamping in Create")
+	}
+	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
+		t.Error("missing created_at nil-guard in Create")
+	}
+	if !strings.Contains(code, "msg.UpdatedAt = now") {
+		t.Error("missing updated_at stamping in Create")
+	}
+
+	// Soft-delete/tenant GetByID maps a miss to orm.ErrNoRows (no string
+	// matching for callers).
+	if !strings.Contains(code, `fmt.Errorf("get projects by id: %w", orm.ErrNoRows)`) {
+		t.Error("GetProjectByID should return wrapped orm.ErrNoRows on a miss")
 	}
 
 	// List uses QueryBuilder
@@ -420,9 +456,10 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 	}
 	code := string(content)
 
-	// Should have timestamp imports
-	if !strings.Contains(code, `"database/sql"`) {
-		t.Error("missing database/sql import for timestamps")
+	// Should have timestamppb import; database/sql is gone (orm.NullTime
+	// replaced sql.NullTime in scan temps).
+	if strings.Contains(code, `"database/sql"`) {
+		t.Error("generated file should not import database/sql anymore")
 	}
 	if !strings.Contains(code, "timestamppb") {
 		t.Error("missing timestamppb import")
@@ -441,9 +478,28 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Error("should not have deleted_at without soft-delete")
 	}
 
-	// sql.NullTime used for timestamps in scan
-	if !strings.Contains(code, "sql.NullTime") {
-		t.Error("missing sql.NullTime for timestamp scanning")
+	// orm.NullTime used for timestamps in scan
+	if !strings.Contains(code, "orm.NullTime") {
+		t.Error("missing orm.NullTime for timestamp scanning")
+	}
+	if strings.Contains(code, "sql.NullTime") {
+		t.Error("timestamp scan temps should use orm.NullTime, not sql.NullTime")
+	}
+
+	// Create stamps managed timestamps.
+	if !strings.Contains(code, "now := timestamppb.Now()") {
+		t.Error("missing timestamp stamping in Create")
+	}
+	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
+		t.Error("missing created_at nil-guard in Create")
+	}
+	if !strings.Contains(code, "msg.UpdatedAt = now") {
+		t.Error("missing updated_at stamping in Create")
+	}
+
+	// Update re-stamps updated_at.
+	if !strings.Contains(code, "msg.UpdatedAt = timestamppb.Now()") {
+		t.Error("UpdateEvent should stamp updated_at")
 	}
 }
 
@@ -592,19 +648,19 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		t.Error("missing auto-generated id field constant")
 	}
 
-	// id should be the first column in the ordered list
-	colIdx := strings.Index(code, "var widgetColumns = []string{")
+	// id should be the first column in the ordered (exported) list
+	colIdx := strings.Index(code, "var WidgetColumns = []string{")
 	if colIdx == -1 {
-		t.Fatal("missing widgetColumns")
+		t.Fatal("missing exported WidgetColumns")
 	}
 	colSection := code[colIdx : colIdx+200]
 	idIdx := strings.Index(colSection, `"id"`)
 	nameIdx := strings.Index(colSection, `"name"`)
 	if idIdx == -1 {
-		t.Fatal("id not found in widgetColumns")
+		t.Fatal("id not found in WidgetColumns")
 	}
 	if idIdx >= nameIdx {
-		t.Error("id should appear before name in widgetColumns")
+		t.Error("id should appear before name in WidgetColumns")
 	}
 
 	// scan function should include id
@@ -620,9 +676,13 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		t.Error("DeleteWidget should use string type for auto-generated id")
 	}
 
-	// ON CONFLICT (id) should work
-	if !strings.Contains(code, "ON CONFLICT") {
-		t.Error("Create should have ON CONFLICT for upsert")
+	// Create is a plain INSERT; the auto-generated string id is filled in
+	// at the Create chokepoint via ULID.
+	if strings.Contains(code, "ON CONFLICT") {
+		t.Error("Create must be a plain INSERT, found ON CONFLICT upsert")
+	}
+	if !strings.Contains(code, "msg.Id = ulid.Make().String()") {
+		t.Error("Create should generate a ULID for the auto-added string id")
 	}
 }
 
@@ -718,5 +778,73 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	}
 	if strings.Contains(setPartsSection, `"org_id"`) {
 		t.Error("Update SET should not include tenant key (org_id)")
+	}
+	// With timestamps:true, created_at is immutable and excluded from SET;
+	// updated_at stays (re-stamped by Update before building args).
+	if strings.Contains(setPartsSection, `"created_at"`) {
+		t.Error("Update SET should not include created_at (immutable)")
+	}
+	if !strings.Contains(setPartsSection, `"updated_at"`) {
+		t.Error("Update SET should include updated_at")
+	}
+	if !strings.Contains(updateCode, "msg.UpdatedAt = timestamppb.Now()") {
+		t.Error("UpdateTask should stamp updated_at before building args")
+	}
+}
+
+func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
+	root := t.TempDir()
+
+	// Entity DECLARES created_at/updated_at/deleted_at explicitly alongside
+	// Timestamps/SoftDelete — resolveORMFields must not auto-add duplicates
+	// (duplicate consts are a compile error; duplicate columns break SQL).
+	entities := []config.PlanEntity{
+		{
+			Name:       "Doc",
+			Timestamps: true,
+			SoftDelete: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "title", Type: "string", NotNull: true},
+				{Name: "created_at", Type: "google.protobuf.Timestamp"},
+				{Name: "updated_at", Type: "google.protobuf.Timestamp"},
+				{Name: "deleted_at", Type: "google.protobuf.Timestamp"},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "doc_orm.go"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	code := string(content)
+
+	for _, constName := range []string{"DocFieldCreatedAt", "DocFieldUpdatedAt", "DocFieldDeletedAt"} {
+		if got := strings.Count(code, constName+" ="); got != 1 {
+			t.Errorf("%s declared %d times, want exactly 1", constName, got)
+		}
+	}
+	for _, col := range []string{`"created_at",`, `"updated_at",`, `"deleted_at",`} {
+		colIdx := strings.Index(code, "var DocColumns = []string{")
+		if colIdx == -1 {
+			t.Fatal("missing DocColumns")
+		}
+		end := strings.Index(code[colIdx:], "}")
+		section := code[colIdx : colIdx+end]
+		if got := strings.Count(section, col); got != 1 {
+			t.Errorf("column %s appears %d times in DocColumns, want exactly 1", col, got)
+		}
+	}
+
+	// Declared timestamps still get the managed-timestamp chokepoints.
+	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
+		t.Error("Create should stamp declared created_at")
+	}
+	if !strings.Contains(code, "msg.UpdatedAt = timestamppb.Now()") {
+		t.Error("Update should stamp declared updated_at")
 	}
 }

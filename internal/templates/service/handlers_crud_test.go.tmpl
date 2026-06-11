@@ -1,0 +1,183 @@
+// handlers_crud_test.go is YOUR file — forge scaffolded it once and will
+// not rewrite it. It drives the REAL generated stack (handlers → pkg/crud
+// → internal/db → database) against the project's OWN migration SQL, and
+// asserts real semantics: distinct generated IDs, managed timestamps,
+// updates that actually mutate, and clean NotFound mapping. A failure
+// here is a real regression, not scaffolding noise — extend it as your
+// entities grow.
+package {{.Package}}_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"connectrpc.com/connect"
+	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/testkit"
+
+	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+	"{{.Module}}/pkg/app"
+	"{{.Module}}/pkg/middleware"
+)
+
+// crudTestDB builds an in-memory database with the project's own
+// migrations applied (db/migrations/*.up.sql, in order) — the schema the
+// generated CRUD code runs against in production.
+func crudTestDB(t *testing.T) orm.Context {
+	t.Helper()
+	db := testkit.NewSQLiteMemDB(t)
+	migDir := filepath.Join("..", "..", "db", "migrations")
+	entries, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	var ups []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".up.sql") {
+			ups = append(ups, e.Name())
+		}
+	}
+	sort.Strings(ups)
+	for _, name := range ups {
+		sql, rerr := os.ReadFile(filepath.Join(migDir, name))
+		if rerr != nil {
+			t.Fatalf("read migration %s: %v", name, rerr)
+		}
+		if _, xerr := db.Exec(context.Background(), string(sql)); xerr != nil {
+			t.Fatalf("apply migration %s: %v", name, xerr)
+		}
+	}
+	return db
+}
+
+// crudTestCtx returns a context with authenticated test claims attached —
+// what the auth middleware would have produced for a real request.
+func crudTestCtx() context.Context {
+	ctx := middleware.ContextWithClaims(context.Background(),
+		&middleware.Claims{UserID: "test-user", Email: "test@example.com"})
+{{- if .HasTenant}}
+	ctx = middleware.ContextWithTenantID(ctx, "test-tenant")
+{{- end}}
+	return ctx
+}
+
+// assertCleanError asserts a client-facing error: the expected code, and
+// no leaked SQL/driver internals in the message.
+func assertCleanError(t *testing.T, label string, err error, want connect.Code) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected %v error, got nil", label, want)
+	}
+	if got := connect.CodeOf(err); got != want {
+		t.Errorf("%s: code = %v, want %v (err: %v)", label, got, want, err)
+	}
+	for _, leak := range []string{"sql:", "SELECT", "no rows in result set", "no such column"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("%s: client-visible error leaks driver/SQL text (%q): %v", label, leak, err)
+		}
+	}
+}
+{{range .Entities}}
+{{- if and .HasCreate .HasGet (eq .PkGoType "string")}}
+
+// TestCRUD_{{.EntityName}}_Lifecycle exercises the full executed CRUD
+// path for {{.EntityName}} end to end.
+func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
+	db := crudTestDB(t)
+	svc := app.NewTest{{$.TestHelperName}}(t, app.WithDB(db))
+	ctx := crudTestCtx()
+
+	// Two creates must produce two rows with distinct, non-empty IDs.
+	first, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.CreateMethod.InputType}}{
+{{- range .CreateFields}}
+{{- if eq .Kind "scalar" "enum"}}
+		{{.ProtoName}}: {{.TestValue}},
+{{- end}}
+{{- end}}
+	}))
+	if err != nil {
+		t.Fatalf("create #1: %v", err)
+	}
+	second, err := svc.{{.CreateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.CreateMethod.InputType}}{
+{{- range .CreateFields}}
+{{- if eq .Kind "scalar" "enum"}}
+		{{.ProtoName}}: {{.TestValue}},
+{{- end}}
+{{- end}}
+	}))
+	if err != nil {
+		t.Fatalf("create #2: %v", err)
+	}
+	id1 := first.Msg.Get{{.EntityName}}().Get{{.PkField}}()
+	id2 := second.Msg.Get{{.EntityName}}().Get{{.PkField}}()
+	if id1 == "" || id2 == "" {
+		t.Fatalf("create returned empty id(s): %q, %q", id1, id2)
+	}
+	if id1 == id2 {
+		t.Fatalf("two creates returned the same id %q — create must be an insert, never an upsert", id1)
+	}
+{{- if .HasTimestamps}}
+	if first.Msg.Get{{.EntityName}}().GetCreatedAt() == nil {
+		t.Errorf("created_at not set on create (timestamps: true)")
+	}
+{{- end}}
+
+	// Get returns the created row.
+	got, err := svc.{{.GetMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.GetMethod.InputType}}{ {{.PkField}}: id1}))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Msg.Get{{.EntityName}}().Get{{.PkField}}() != id1 {
+		t.Errorf("get returned id %q, want %q", got.Msg.Get{{.EntityName}}().Get{{.PkField}}(), id1)
+	}
+{{- if .HasList}}
+
+	// List sees both rows.
+	listed, err := svc.{{.ListMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.ListMethod.InputType}}{
+{{- if .ListMethod.HasPagination}}
+		PageSize: 10,
+{{- end}}
+	}))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if n := len(listed.Msg.Get{{.EntityName | plural}}()); n != 2 {
+		t.Errorf("list returned %d rows, want 2", n)
+	}
+{{- end}}
+{{- if and .HasUpdate (ne .MutableStringField "")}}
+
+	// Update actually mutates: a re-read observes the change.
+	row := got.Msg.Get{{.EntityName}}()
+	row.{{.MutableStringField}} = "lifecycle-updated"
+	if _, err := svc.{{.UpdateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.UpdateMethod.InputType}}{ {{.UpdateEntityField}}: row})); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	reread, err := svc.{{.GetMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.GetMethod.InputType}}{ {{.PkField}}: id1}))
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if v := reread.Msg.Get{{.EntityName}}().Get{{.MutableStringField}}(); v != "lifecycle-updated" {
+		t.Errorf("update did not mutate: {{.MutableStringField}} = %q, want %q", v, "lifecycle-updated")
+	}
+{{- end}}
+{{- if .HasDelete}}
+
+	// Delete, then a get of the deleted id maps to a clean NotFound.
+	if _, err := svc.{{.DeleteMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.DeleteMethod.InputType}}{ {{.PkField}}: id1})); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_, err = svc.{{.GetMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.GetMethod.InputType}}{ {{.PkField}}: id1}))
+	assertCleanError(t, "get after delete", err, connect.CodeNotFound)
+{{- end}}
+
+	// A never-existed id maps to a clean NotFound too.
+	_, err = svc.{{.GetMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.GetMethod.InputType}}{ {{.PkField}}: "never-existed"}))
+	assertCleanError(t, "get missing", err, connect.CodeNotFound)
+}
+{{- end}}
+{{end}}

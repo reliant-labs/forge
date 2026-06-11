@@ -23,6 +23,22 @@ type Skill struct {
 	// blocks the renderer strips for general audiences). Consumers use
 	// this to decide whether to surface a skill outside a forge project.
 	Emit string
+	// Relevance classifies when the skill is worth surfacing: "" (always —
+	// the default) or "migration" (a one-time upgrade-transition playbook).
+	// ListSkills excludes relevance=migration skills; ListSkillsWithOptions
+	// can opt them back in. Consumers building their own retrieval layer
+	// should treat migration skills as transition-scoped, not steady-state.
+	Relevance string
+	// AppliesFrom / AppliesTo are the migration skill's declared version
+	// bounds (half-open [from, to) over the project's pinned forge_version),
+	// passed through verbatim from the `applies-from:` / `applies-to:`
+	// frontmatter for consumers that want to do their own version gating.
+	// Forge itself gates listings on the relevance class only (binary
+	// versions are routinely dev builds / pseudo-versions, which are not
+	// meaningfully comparable); the authoritative project-aware range +
+	// detection gate is `forge upgrade list`. Empty when undeclared.
+	AppliesFrom string
+	AppliesTo   string
 
 	// SkillForgeVersion is the forge version whose embedded templates the
 	// skill content comes from — i.e. the forge module linked into THIS
@@ -47,8 +63,30 @@ type Skill struct {
 // An empty projectRoot skips the project source. The result is sorted by
 // Path. Returns an error only if the embedded forge-shipped skills cannot be
 // enumerated; missing disk sources are silently skipped.
+//
+// One-time migration skills (Relevance == "migration") are excluded from
+// this default listing — they document specific forge version transitions
+// and are noise for any project not mid-transition. Use
+// [ListSkillsWithOptions] to opt them in; they always remain loadable by
+// exact path via [LoadSkill].
 func ListSkills(projectRoot string) ([]Skill, error) {
-	metas, err := internalcli.ListSkillsAt(projectRoot)
+	return ListSkillsWithOptions(projectRoot, ListSkillsOptions{})
+}
+
+// ListSkillsOptions tunes ListSkillsWithOptions. The zero value matches
+// ListSkills' default behavior.
+type ListSkillsOptions struct {
+	// IncludeMigrationSkills opts relevance=migration skills back into
+	// the listing (e.g. for an upgrade-assistant surface).
+	IncludeMigrationSkills bool
+}
+
+// ListSkillsWithOptions is [ListSkills] with explicit listing options.
+// Additive API — ListSkills' signature is stable for existing consumers.
+func ListSkillsWithOptions(projectRoot string, opts ListSkillsOptions) ([]Skill, error) {
+	metas, err := internalcli.ListSkillsAtWithOptions(projectRoot, internalcli.SkillListOptions{
+		IncludeMigrations: opts.IncludeMigrationSkills,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +98,9 @@ func ListSkills(projectRoot string) ([]Skill, error) {
 			Description:         m.Description,
 			Scope:               string(m.Scope),
 			Emit:                string(m.Emit),
+			Relevance:           string(m.Relevance),
+			AppliesFrom:         m.AppliesFrom,
+			AppliesTo:           m.AppliesTo,
 			SkillForgeVersion:   m.SkillForgeVersion,
 			ProjectForgeVersion: m.ProjectForgeVersion,
 			VersionSkew:         m.VersionSkew,

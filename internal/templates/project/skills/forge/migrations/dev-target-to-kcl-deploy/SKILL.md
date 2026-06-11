@@ -4,6 +4,7 @@ description: Migrate from forge.yaml `services[].dev_target` (host|cluster) to t
 applies-from: v0.5.0
 applies-to: v0.6.0
 detection: grep -l "dev_target" forge.yaml
+relevance: migration
 ---
 
 # Migrating from forge.yaml `dev_target` to KCL `Service.deploy`

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -336,23 +337,45 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-// buildforgeBinary compiles the forge binary once per test run and
-// caches the path.
+// forgeBinaryOnce builds the forge binary exactly once per `go test`
+// process and shares the path across every e2e test. Previously each of
+// the ~8 e2e tests rebuilt it into its own t.TempDir() — ~15s × 8 of
+// pure duplicated compilation per run, the single biggest e2e cost.
+//
+// The binary is built into a process-scoped temp dir (NOT t.TempDir(),
+// which is cleaned when the first test that triggered the build ends —
+// that would yank the binary out from under later tests). The OS reaps
+// /tmp; we don't bother removing it. sync.Once makes concurrent callers
+// (t.Parallel e2e tests) safe.
+var (
+	forgeBinaryOnce sync.Once
+	forgeBinaryPath string
+	forgeBinaryErr  error
+)
+
 func buildforgeBinary(t *testing.T) string {
 	t.Helper()
-
-	// Find the repository root (where go.mod with github.com/reliant-labs/forge lives)
-	repoRoot := findRepoRoot(t)
-
-	bin := filepath.Join(t.TempDir(), "forge")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/forge")
-	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("failed to build forge binary: %v\n%s", err, output)
+	forgeBinaryOnce.Do(func() {
+		repoRoot := findRepoRoot(t)
+		dir, err := os.MkdirTemp("", "forge-e2e-bin-")
+		if err != nil {
+			forgeBinaryErr = err
+			return
+		}
+		bin := filepath.Join(dir, "forge")
+		cmd := exec.Command("go", "build", "-o", bin, "./cmd/forge")
+		cmd.Dir = repoRoot
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+		if output, berr := cmd.CombinedOutput(); berr != nil {
+			forgeBinaryErr = fmt.Errorf("failed to build forge binary: %w\n%s", berr, output)
+			return
+		}
+		forgeBinaryPath = bin
+	})
+	if forgeBinaryErr != nil {
+		t.Fatalf("%v", forgeBinaryErr)
 	}
-	return bin
+	return forgeBinaryPath
 }
 
 

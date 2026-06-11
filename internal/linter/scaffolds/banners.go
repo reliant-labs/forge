@@ -393,8 +393,7 @@ func isKnownTier3(rel, noTmpl string) bool {
 	// Service-package user-owned files.
 	if strings.Contains(rel, "internal/templates/service/") {
 		switch noTmpl {
-		case "service.go", "handlers.go", "authorizer.go",
-			"integration_test.go":
+		case "service.go", "handlers.go", "authorizer.go":
 			return true
 		}
 	}

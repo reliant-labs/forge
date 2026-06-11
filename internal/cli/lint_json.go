@@ -290,6 +290,12 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 			return nil, err
 		}
 		return buildLintJSONReport(fs, false), nil
+	case flags.optionalDepsGuard:
+		fs, err := collectOptionalDepsGuardJSON(cwd)
+		if err != nil {
+			return nil, err
+		}
+		return buildLintJSONReport(fs, false), nil
 	}
 
 	return collectAllLintersJSON(ctx, paths, cfg, cwd)
@@ -444,6 +450,17 @@ func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.Proj
 			collectErr("bootstrap-deps-coverage lint", err, true)
 		} else {
 			add(fs, g)
+		}
+	}
+
+	// 13c. Optional-deps-guard — advisory (warnings only, mirrors text
+	// mode's step 13c).
+	if dirExists("internal") || dirExists("handlers") ||
+		dirExists("workers") || dirExists("operators") {
+		if fs, err := collectOptionalDepsGuardJSON(cwd); err != nil {
+			collectErr("optional-deps-guard lint", err, false)
+		} else {
+			add(fs, false)
 		}
 	}
 
@@ -708,6 +725,30 @@ func collectBootstrapCoverageJSON(projectDir string) ([]lintJSONFinding, bool, e
 		})
 	}
 	return out, len(gaps) > 0, nil
+}
+
+// collectOptionalDepsGuardJSON maps optional-deps-guard findings onto
+// the JSON contract. Always warnings — the walker is deliberately not
+// full dataflow, so findings never gate (see
+// lint_optional_deps_guard.go's header for the conservatism contract).
+func collectOptionalDepsGuardJSON(projectDir string) ([]lintJSONFinding, error) {
+	findings, err := collectOptionalDepsGuardFindings(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("optional-deps-guard lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Col:      f.Col,
+			Severity: lintSevWarning,
+			Rule:     "forge-optional-deps-guard",
+			Message:  fmt.Sprintf("%s dereferences optional dep Deps.%s (marked `// forge:optional-dep` — may be nil) without a dominating nil-guard in %s", f.Expr, f.Field, f.Method),
+			FixHint:  optionalDepsGuardFixHint(f),
+		})
+	}
+	return out, nil
 }
 
 func collectWorkaroundsJSON(cwd string) ([]lintJSONFinding, error) {

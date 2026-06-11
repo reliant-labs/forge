@@ -89,6 +89,7 @@ Each category is the same shape:
 | `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]` |
 | `packs` | per-pack `{name, installed_version, latest_version, status}` |
 | `proto_migration_alignment` | `divergence[]` (entities whose proto definition disagrees with migrations) |
+| `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
 | `deps` | `go_mod`, `go_sum` presence flags |
 

@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 // TestE2EScaffoldBasicProject creates a project with a single service,
 // runs generate, and verifies the full toolchain: build, vet, test, lint.
 func TestE2EScaffoldBasicProject(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -68,6 +70,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 // TestE2EScaffoldMultiServiceProject creates a project with multiple services
 // and a frontend, then verifies everything builds.
 func TestE2EScaffoldMultiServiceProject(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -117,6 +120,7 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 // TestE2EScaffoldWithEntityProto creates a project, adds a DB entity proto
 // with soft-delete, generates ORM code, and verifies it builds.
 func TestE2EScaffoldWithEntityProto(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 
 	dir := t.TempDir()
@@ -213,6 +217,7 @@ message User {
 // TestE2EScaffoldAddService creates a project, then adds a service using
 // `forge add service`, regenerates, and verifies the build.
 func TestE2EScaffoldAddService(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -253,6 +258,7 @@ func TestE2EScaffoldAddService(t *testing.T) {
 
 // TestE2EScaffoldVersion verifies the version subcommand works.
 func TestE2EScaffoldVersion(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 
 	output := runCmdOutput(t, t.TempDir(), forgeBin, "version")
@@ -264,6 +270,7 @@ func TestE2EScaffoldVersion(t *testing.T) {
 // TestE2EScaffoldServerStartup creates a project and verifies the server
 // can start and respond to health checks.
 func TestE2EScaffoldServerStartup(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -283,14 +290,16 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	serverBin := filepath.Join(projectDir, "server")
 	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
 
-	// Start the server with a free port
+	// Start the server with a free port (parallel e2e tests must never
+	// share a hard-coded port).
+	port := freePortE2E(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, serverBin, "server")
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
-		"PORT=18923",
+		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL=", // No DB needed for health check
 	)
 
@@ -308,7 +317,7 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	}()
 
 	// Wait for server to be ready
-	addr := "http://127.0.0.1:18923"
+	addr := fmt.Sprintf("http://127.0.0.1:%d", port)
 	ready := waitForServer(t, addr+"/healthz", 10*time.Second)
 	if !ready {
 		t.Fatalf("server did not become ready within timeout\nserver output:\n%s", serverOutput.String())
@@ -402,6 +411,23 @@ func findRepoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+// freePortE2E asks the kernel for an ephemeral port and returns it.
+// e2e tests that boot servers run in parallel, so a hard-coded port is
+// a collision waiting to happen. There is an inherent TOCTOU window
+// between closing the probe listener and the server binding the port,
+// but ephemeral allocation makes two parallel tests racing for the
+// SAME port vanishingly unlikely (vs. guaranteed with a constant).
+func freePortE2E(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("allocate free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return port
 }
 
 // addforgeReplace adds a replace directive for github.com/reliant-labs/forge

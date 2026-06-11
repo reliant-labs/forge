@@ -92,7 +92,7 @@ interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
     Tracer: tracer,
     Meter:  meter,
     Extras: []connect.Interceptor{
-        middleware.AuthInterceptor(),
+        authInterceptor, // from middleware.NewAuthInterceptor(cfg.Mode().IsDev()) — errors abort startup
         middleware.AuditInterceptor(logger),
     },
 })

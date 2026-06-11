@@ -5,13 +5,15 @@ description: |
   installed into pkg/middleware/auth/jwtauth/ — wire it in pkg/app/setup.go:
 
     import "<module>/pkg/middleware/auth/jwtauth"
-    jwtauth.Init(logger)
+    jwtauth.Init(logger, cfg.Mode())
     interceptors := connect.WithInterceptors(jwtauth.Interceptor())
 
   jwtauth.Init() calls middleware.MarkExternalAuth() so the scaffold's
-  AuthInterceptor (already wired in cmd/server.go) flips to passthrough
+  auth interceptor (already wired in cmd/server.go) flips to passthrough
   and this pack's interceptor becomes the source of truth. Both run
-  alongside in the chain — the scaffold stub is not replaced.
+  alongside in the chain — the scaffold stub is not replaced. The
+  cfg.Mode() argument injects the typed dev-mode gate; the pack never
+  reads ENVIRONMENT itself.
 
   Pair with the `auth-ui` frontend pack for opinionated login/signup UI:
     forge pack install auth-ui --config provider=jwt-auth

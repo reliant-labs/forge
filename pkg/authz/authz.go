@@ -64,6 +64,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"connectrpc.com/connect"
 
@@ -257,29 +258,34 @@ func ClaimsFromContext(ctx context.Context) (*auth.Claims, bool) {
 
 // FailMode controls what [RolesDecider] does when an RPC reaches the
 // authorizer with no entry in either MethodRoles or MethodAuthRequired
-// (the "unknown method" case). The zero value is [FailOpen] — the safe
-// default for fresh scaffolds whose proto hasn't grown annotations yet,
-// since pure fail-closed would 403 every RPC in staging/prod the moment
-// dev mode is turned off. The accompanying [RolesDecider.warnUnknownMethod]
-// still fires under FailOpen so the missing annotation surfaces in logs.
+// (the "unknown method" case). The zero value is [FailClosed]: no policy
+// means no access. An unknown method is always one of (a) proto drift —
+// the running binary predates the RPC, regenerate; (b) a hand-mounted
+// endpoint outside the proto; or (c) an attacker probing procedure
+// names. None of those should be silently allowed in production.
 //
-// Projects that want explicit deny-by-default (e.g. multi-tenant SaaS
-// that treats unannotated as an audit-class bug) opt in via FailClosed.
+// Local-dev permissiveness is the DevAuthorizer's job (the bootstrap
+// dev-mode swap), NOT the policy table's — a freshly-scaffolded service
+// runs allow-all in dev mode and fail-closed everywhere else.
+//
+// The escape hatch is [AllowUnknownMethods], named for exactly what it
+// does. It still emits the unknown-method warning (once per method) so
+// the missing annotation surfaces in logs.
 type FailMode int
 
 const (
-	// FailOpen allows the call but emits the [RolesDecider.warnUnknownMethod]
-	// signal so the missing annotation can be tracked. This is the zero
-	// value because the alternative — fail-closed on uninitialised maps —
-	// reliably bricks a freshly-scaffolded staging deploy the first time
-	// it boots without the dev-mode authorizer swap.
-	FailOpen FailMode = 0
+	// FailClosed denies calls to unknown methods. This is the zero value:
+	// every fork between fail-loud and degrade-silent in the authz path
+	// resolves to fail-loud unless a project explicitly opts out.
+	FailClosed FailMode = 0
 
-	// FailClosed denies the call (legacy 1.x behaviour). The original
-	// rationale was "an unannotated procedure is a bug", which holds for
-	// mature services but blows up new ones. Opt in explicitly when the
-	// project's policy is "no policy means no access".
-	FailClosed FailMode = 1
+	// AllowUnknownMethods allows calls to methods missing from the policy
+	// tables, emitting the once-per-method unknown-method warning. The
+	// name is deliberately self-indicting: setting it means RPCs your
+	// policy tables have never heard of are served. Use only when a
+	// service intentionally mounts procedures outside the generated
+	// tables AND cannot enumerate them in MethodRoles/Default.
+	AllowUnknownMethods FailMode = 1
 )
 
 // RolesDecider is a convenience [Decider] implementation that allows a
@@ -297,11 +303,10 @@ const (
 // (auth_required + required_roles per RPC).
 //
 // When MethodRoles has no entry for the method, behaviour is governed by
-// the combination of FailMode + Default. See [FailMode] for the rationale
-// behind the open-by-default choice. Default still applies under FailOpen
-// — set Default to e.g. []string{"admin"} to require admin for unknown
-// procedures while still permitting the warn-then-allow shape for known
-// procedures whose required-roles slice happens to be empty.
+// the combination of FailMode + Default. The zero value fails closed —
+// see [FailMode]. Set Default to e.g. []string{"admin"} to require admin
+// for unknown procedures instead of denying them outright; an empty
+// (non-nil) Default allows any authenticated user.
 //
 // This is offered as a building block, not a mandate: the design stays
 // interface-driven so projects can swap in OPA, Casbin, or hand-rolled
@@ -322,16 +327,17 @@ type RolesDecider struct {
 	// unknown-but-callable procedures.
 	Default []string
 
-	// FailMode governs the unknown-method branch. Defaults to FailOpen so
-	// uninitialised scaffolds don't 403 every RPC in staging — see the
-	// [FailMode] doc for the longer rationale.
+	// FailMode governs the unknown-method branch. The zero value is
+	// FailClosed (deny) — see the [FailMode] doc for the rationale and
+	// the AllowUnknownMethods opt-out.
 	FailMode FailMode
 
-	// OnUnknownMethod is called once per unknown-method event (allow or
-	// deny, depending on FailMode) so the foot-gun shows up in server logs
-	// alongside the response. nil (the default) emits a slog.Default().Warn
-	// line; pass a no-op to silence (e.g. under attack traffic that hammers
-	// random procedure names) or wire a project-specific log shape.
+	// OnUnknownMethod is called ONCE PER DISTINCT METHOD per process
+	// (allow or deny, depending on FailMode) so the foot-gun shows up in
+	// server logs without flooding them — steady-state traffic against
+	// one missing annotation produces one line, not one per request.
+	// nil (the default) emits a slog.Default().Warn line; pass a no-op
+	// to silence or wire a project-specific log shape.
 	// Unknown here covers BOTH the MethodAuthRequired-missing and the
 	// MethodRoles-missing-with-nil-Default branches — they share the
 	// same operator-visible symptom ("regenerate or check the proto")
@@ -344,15 +350,15 @@ func (r RolesDecider) Decide(ctx context.Context, method string, claims *auth.Cl
 	if r.MethodAuthRequired != nil {
 		authReq, known := r.MethodAuthRequired[method]
 		if !known {
-			// Unknown procedure: warn so the missing annotation surfaces,
-			// then dispatch on FailMode. FailOpen (the zero value) allows
-			// the call so a fresh scaffold's empty-map authorizer doesn't
-			// 403 every RPC; FailClosed preserves the legacy 1.x deny.
+			// Unknown procedure: warn (once per method) so the missing
+			// annotation surfaces, then dispatch on FailMode. FailClosed
+			// (the zero value) denies; AllowUnknownMethods is the
+			// explicit, self-indicting opt-out.
 			r.warnUnknownMethod(method)
-			if r.FailMode == FailClosed {
-				return Deny("unknown method %q is denied by default", method)
+			if r.FailMode == AllowUnknownMethods {
+				return nil
 			}
-			return nil
+			return Deny("unknown method %q is denied by default", method)
 		}
 		if !authReq {
 			return nil // method opted out of auth via proto annotation
@@ -363,10 +369,10 @@ func (r RolesDecider) Decide(ctx context.Context, method string, claims *auth.Cl
 		if r.Default == nil {
 			// Same FailMode dispatch as the MethodAuthRequired-miss branch.
 			r.warnUnknownMethod(method)
-			if r.FailMode == FailClosed {
-				return Deny("unknown method %q is denied by default", method)
+			if r.FailMode == AllowUnknownMethods {
+				return nil
 			}
-			return nil
+			return Deny("unknown method %q is denied by default", method)
 		}
 		roles = r.Default
 	}
@@ -389,21 +395,42 @@ func (r RolesDecider) Decide(ctx context.Context, method string, claims *auth.Cl
 	return Deny("requires one of roles %v", roles)
 }
 
+// warnedUnknownMethods dedups the unknown-method signal: one entry per
+// distinct method string for the life of the process. Package-level
+// (rather than per-decider) because RolesDecider is used by value and a
+// sync.Map must not be copied; method identifiers are process-unique in
+// practice (full procedure paths, or per-entity action keys).
+var warnedUnknownMethods sync.Map
+
+// resetUnknownMethodWarnings clears the once-per-method dedup. Test
+// hook only — production code never forgets a warned method.
+func resetUnknownMethodWarnings() {
+	warnedUnknownMethods.Range(func(k, _ any) bool {
+		warnedUnknownMethods.Delete(k)
+		return true
+	})
+}
+
 // warnUnknownMethod surfaces the foot-gun: a procedure reached the
 // authorizer with no entry in the codegen'd tables, which usually means
 // the proto has drifted from the running binary (forgotten regen, new
 // RPC not yet in `forge generate` output, hand-mounted endpoint outside
-// the proto). The default uses slog.Default() so projects that have
-// configured a logger get structured output for free; projects that
-// haven't still see something on stderr. Override via OnUnknownMethod
-// to plug into a project-specific log shape or to rate-limit / silence
-// under attack-traffic shaped at random procedure names.
+// the proto). The signal fires ONCE per distinct method per process —
+// the deny itself repeats on every request, but the log line doesn't,
+// so a single missing annotation can't flood the logs in steady state.
+// The default uses slog.Default() so projects that have configured a
+// logger get structured output for free; projects that haven't still
+// see something on stderr. Override via OnUnknownMethod to plug into a
+// project-specific log shape or to silence entirely.
 func (r RolesDecider) warnUnknownMethod(method string) {
+	if _, alreadyWarned := warnedUnknownMethods.LoadOrStore(method, struct{}{}); alreadyWarned {
+		return
+	}
 	if r.OnUnknownMethod != nil {
 		r.OnUnknownMethod(method)
 		return
 	}
-	slog.Default().Warn("authz: unknown method — regenerate proto bindings (`forge generate`) or check that this procedure exists in the .proto (FailOpen allows by default; set RolesDecider.FailMode=FailClosed to deny)",
+	slog.Default().Warn("authz: unknown method DENIED — regenerate proto bindings (`forge generate`) or check that this procedure exists in the .proto (set RolesDecider.FailMode=AllowUnknownMethods to allow, at your own risk)",
 		"method", method,
 	)
 }

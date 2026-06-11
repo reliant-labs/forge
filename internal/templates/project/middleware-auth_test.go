@@ -31,9 +31,9 @@ func setValidateToken(t *testing.T, fn func(string) (*Claims, error)) {
 }
 
 // withExternalAuth marks external-auth registered for the duration of a
-// single subtest. Tests that exercise [AuthInterceptor] need to either
-// register an external provider, register a real validator, or set an env
-// var — otherwise the constructor panics by design.
+// single subtest. Tests that exercise [NewAuthInterceptor] need to either
+// register an external provider, register a real validator, or opt out
+// explicitly — otherwise the constructor returns an error by design.
 func withExternalAuth(t *testing.T) {
 	t.Helper()
 	authMu.Lock()
@@ -66,7 +66,11 @@ func TestAuthenticateFromHeader(t *testing.T) {
 		wantClaims    bool
 	}{
 		{
-			name: "missing token passes through unauthenticated",
+			// The explicit allow-list (checked by the callers) is the ONLY
+			// unauthenticated path; a missing header on any other
+			// procedure is rejected, never silently passed through.
+			name:        "missing token is rejected",
+			wantErrCode: connect.CodeUnauthenticated,
 		},
 		{
 			name:          "malformed authorization header is rejected",
@@ -185,8 +189,9 @@ func TestVerifyAuth(t *testing.T) {
 }
 
 // Default ValidateToken is a passthrough (nil claims, nil error). The
-// "no auth configured" case is rejected at AuthInterceptor construction
-// time, not per request — see TestAuthInterceptor_UnconfiguredPanics.
+// "no auth configured" case is rejected at NewAuthInterceptor
+// construction time, not per request — see
+// TestNewAuthInterceptor_UnconfiguredErrors.
 func TestValidateToken_DefaultIsPassthrough(t *testing.T) {
 	// NOT parallel: this reads the package-level validateTokenFn which
 	// TestAuthenticateFromHeader subtests mutate via setValidateToken.
@@ -199,11 +204,12 @@ func TestValidateToken_DefaultIsPassthrough(t *testing.T) {
 	}
 }
 
-// AuthInterceptor must panic at construction when no provider is
-// configured AND no dev opt-in is set. Per-request rejection (the old
-// behavior) silently broke pack-installed deployments because the stub
-// would reject before the pack's interceptor ran.
-func TestAuthInterceptor_UnconfiguredPanics(t *testing.T) {
+// NewAuthInterceptor must return an error at construction when no
+// provider is configured AND no explicit opt-out is set — startup
+// aborts instead of serving with fictional auth. Per-request rejection
+// (the old behavior) silently broke pack-installed deployments because
+// the stub would reject before the pack's interceptor ran.
+func TestNewAuthInterceptor_UnconfiguredErrors(t *testing.T) {
 	// NOT parallel: mutates package-level config flags and env vars that
 	// other subtests in this file also depend on.
 	authMu.Lock()
@@ -212,7 +218,6 @@ func TestAuthInterceptor_UnconfiguredPanics(t *testing.T) {
 	validatorConfigured = false
 	externalAuthRegistered = false
 	authMu.Unlock()
-	t.Setenv("ENVIRONMENT", "production")
 	t.Setenv("AUTH_MODE", "")
 	t.Cleanup(func() {
 		authMu.Lock()
@@ -222,12 +227,13 @@ func TestAuthInterceptor_UnconfiguredPanics(t *testing.T) {
 		authMu.Unlock()
 	})
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("AuthInterceptor must panic when unconfigured outside dev mode")
-		}
-	}()
-	_ = AuthInterceptor()
+	ic, err := NewAuthInterceptor(false)
+	if err == nil {
+		t.Fatal("NewAuthInterceptor must error when unconfigured outside dev mode")
+	}
+	if ic != nil {
+		t.Fatal("NewAuthInterceptor must return a nil interceptor alongside the error")
+	}
 }
 
 // MarkExternalAuth puts the stub in passthrough mode — the pack's own
@@ -236,9 +242,12 @@ func TestAuthInterceptor_UnconfiguredPanics(t *testing.T) {
 func TestAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
 	withExternalAuth(t)
 
-	ic := AuthInterceptor()
+	ic, err := NewAuthInterceptor(false)
+	if err != nil {
+		t.Fatalf("NewAuthInterceptor with external auth must not error: %v", err)
+	}
 	if ic == nil {
-		t.Fatal("AuthInterceptor must not return nil")
+		t.Fatal("NewAuthInterceptor must not return nil")
 	}
 	// In passthrough mode, WrapUnary returns the next func untouched —
 	// no inspection of the request. Confirm via identity: the wrapped
@@ -260,16 +269,15 @@ func TestAuthInterceptor_ExternalAuthIsPassthrough(t *testing.T) {
 	}
 }
 
-// Dev mode (ENVIRONMENT=development) is an explicit opt-in to running
-// without an auth provider — the constructor must NOT panic, and the
-// interceptor must be a passthrough.
-func TestAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
+// Dev mode — injected from the typed config.Mode, NOT read from the
+// environment here — is an explicit opt-in to running without an auth
+// provider: construction succeeds and the interceptor is a passthrough.
+func TestNewAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
 	authMu.Lock()
 	origConfigured, origExternal := validatorConfigured, externalAuthRegistered
 	validatorConfigured = false
 	externalAuthRegistered = false
 	authMu.Unlock()
-	t.Setenv("ENVIRONMENT", "development")
 	t.Setenv("AUTH_MODE", "")
 	t.Cleanup(func() {
 		authMu.Lock()
@@ -278,9 +286,12 @@ func TestAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
 		authMu.Unlock()
 	})
 
-	ic := AuthInterceptor() // must not panic
+	ic, err := NewAuthInterceptor(true)
+	if err != nil {
+		t.Fatalf("NewAuthInterceptor in dev mode must not error: %v", err)
+	}
 	if ic == nil {
-		t.Fatal("AuthInterceptor must not return nil in dev mode")
+		t.Fatal("NewAuthInterceptor must not return nil in dev mode")
 	}
 	called := false
 	wrapped := ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
@@ -296,13 +307,12 @@ func TestAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
 // AUTH_MODE=none is the explicit production opt-out — same passthrough
 // behavior as dev mode, but the operator stated it deliberately rather
 // than relying on the dev-mode default.
-func TestAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
+func TestNewAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
 	authMu.Lock()
 	origConfigured, origExternal := validatorConfigured, externalAuthRegistered
 	validatorConfigured = false
 	externalAuthRegistered = false
 	authMu.Unlock()
-	t.Setenv("ENVIRONMENT", "production")
 	t.Setenv("AUTH_MODE", "none")
 	t.Cleanup(func() {
 		authMu.Lock()
@@ -311,22 +321,28 @@ func TestAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
 		authMu.Unlock()
 	})
 
-	ic := AuthInterceptor() // must not panic
+	ic, err := NewAuthInterceptor(false)
+	if err != nil {
+		t.Fatalf("NewAuthInterceptor with AUTH_MODE=none must not error: %v", err)
+	}
 	if ic == nil {
-		t.Fatal("AuthInterceptor must not return nil with AUTH_MODE=none")
+		t.Fatal("NewAuthInterceptor must not return nil with AUTH_MODE=none")
 	}
 }
 
 // When SetTokenValidator installed a real validator, the interceptor must
 // be the source of truth — NOT a passthrough — and exercise the
 // authenticateFromHeader path on the request.
-func TestAuthInterceptor_ValidatorConfigured(t *testing.T) {
+func TestNewAuthInterceptor_ValidatorConfigured(t *testing.T) {
 	setValidateToken(t, func(string) (*Claims, error) {
 		return &Claims{UserID: "u1"}, nil
 	})
-	ic := AuthInterceptor()
+	ic, err := NewAuthInterceptor(false)
+	if err != nil {
+		t.Fatalf("NewAuthInterceptor with validator must not error: %v", err)
+	}
 	if ic == nil {
-		t.Fatal("AuthInterceptor must not return nil when configured")
+		t.Fatal("NewAuthInterceptor must not return nil when configured")
 	}
 	// WrapUnary returns a wrapping function (not identity); we can't check
 	// for exact passthrough here without spinning up a Connect request.

@@ -45,13 +45,12 @@ The library provides the policy primitives:
 Public API preserved exactly: `NewGeneratedAuthorizer()` still returns
 something with `Can(ctx, claims, action, resource)` and
 `CanAccess(ctx, procedure)`, and the user-owned `authorizer.go`
-delegates as before. Note on the unknown-method contract: at the time
-of this migration the decider denied unknown procedures
-(`TestAuthorizerDenyByDefault`), but `pkg/authz` later grew a
-`FailMode` knob whose default is FailOpen (allow + warn) — newer
-scaffolds emit `TestAuthorizerUnknownMethodFailMode` instead. If your
-project relies on deny-by-default, set `FailMode: FailClosed` on the
-generated RolesDecider explicitly.
+delegates as before. Note on the unknown-method contract: the decider
+fails closed (deny + once-per-method warn) — `FailMode`'s zero value is
+`FailClosed`. Newer scaffolds emit `TestAuthorizerUnknownMethodFailMode`
+pinning the deny. Projects that intentionally serve procedures outside
+the generated tables opt out explicitly with
+`FailMode: authz.AllowUnknownMethods` on the RolesDecider.
 
 ## 2. Detection
 

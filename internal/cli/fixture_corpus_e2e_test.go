@@ -9,7 +9,7 @@
 // interface deps — caught only when a real downstream project was
 // regenerated).
 //
-// Three fixtures:
+// Four fixtures:
 //
 //   - "cp-forge-shaped" (TestE2EFixtureCorpusCPForgeShaped): 3 services
 //     (one with a webhook), 2 internal packages where one package's
@@ -22,6 +22,12 @@
 //     RunContext(ctx), one cron worker, and a worker Deps field typed
 //     as a worker-local interface satisfied by a concrete adapter on
 //     AppExtras — the literal kalshi regression shape.
+//
+//   - "zero-service" (TestE2EFixtureCorpusZeroService): bare `forge new`
+//     with NO --service. Pins the binary-is-not-an-entity contract:
+//     zero services scaffolded, generate idempotent at zero, no mcp
+//     manifest, zero-component appkit table compiles and boots, and
+//     the documented first step (`forge add service item`) works.
 //
 //   - "frontend-basepath-shaped" (TestE2EFixtureCorpusFrontendBasePath):
 //     1 service + 1 Next.js frontend mounted under base_path /admin.
@@ -786,6 +792,130 @@ func runCorpusCmdEnv(dir string, timeout time.Duration, extraEnv []string, name 
 		return string(out), fmt.Errorf("timed out after %s: %w", timeout, ctx.Err())
 	}
 	return string(out), err
+}
+
+// ───────────────────── fixture 4: zero-service scaffold ─────────────────────
+
+// TestE2EFixtureCorpusZeroService pins the bare-scaffold contract: a
+// binary is a deployment unit, NOT a domain entity, so `forge new`
+// without --service must invent NO service from the binary name (the
+// cp-forge field report: an admin-server binary grew an
+// admin_server.v1.AdminServerService with five generic CRUD RPCs, zero
+// callers ever, permanent 501s in every audit).
+//
+// Asserts, in order:
+//
+//  1. Bare `forge new zerosvc` scaffolds zero services: forge.yaml has
+//     `services: []`, no proto/services/zerosvc/, no handlers/zerosvc/,
+//     no frontend (hence no nav route anywhere), and no file in the
+//     tree mentions a zerosvc.v1 proto package.
+//  2. `forge generate` is clean AND idempotent at zero services.
+//  3. gen/mcp/manifest.json is ABSENT — mcp_gen's
+//     no-file-for-zero-services semantics (the manifest's absence is
+//     the "publishes zero tools" signal; an empty file would be a
+//     weaker claim).
+//  4. The zero-component appkit table compiles (`go build ./...`) and
+//     BOOTS: /healthz 200, clean SIGTERM shutdown.
+//  5. The documented first step actually works: `forge add service
+//     item` on the same project → generate → build.
+func TestE2EFixtureCorpusZeroService(t *testing.T) {
+	forgeBin := buildforgeBinary(t)
+	dir := t.TempDir()
+	start := time.Now()
+
+	// Bare scaffold: no --service. (--skip-tools: plugin install is
+	// covered elsewhere; this fixture stays cheap.)
+	runCmd(t, dir, forgeBin, "new", "zerosvc",
+		"--mod", "example.com/zerosvc",
+		"--skip-tools",
+	)
+	projectDir := filepath.Join(dir, "zerosvc")
+	addCorpusForgePkgReplace(t, projectDir)
+
+	// ── 1. zero-service shape: nothing named after the binary ────────
+	assertZeroServiceShape(t, projectDir, "zerosvc")
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "services: []") {
+		t.Fatalf("bare scaffold forge.yaml must declare `services: []`")
+	}
+
+	// ── 2. generate ×2 — clean and idempotent at zero services ───────
+	generateTwiceIdempotent(t, forgeBin, projectDir)
+
+	// Still nothing invented post-generate (descriptor pass, frontend
+	// pass, cleanup pass all ran).
+	assertZeroServiceShape(t, projectDir, "zerosvc")
+
+	// ── 3. mcp manifest absence semantics ────────────────────────────
+	if _, err := os.Stat(filepath.Join(projectDir, "gen", "mcp", "manifest.json")); !os.IsNotExist(err) {
+		t.Errorf("gen/mcp/manifest.json must NOT exist for a zero-service project (absence == publishes zero tools); stat err=%v", err)
+	}
+
+	// ── 4. compiles + boots: /healthz 200, clean SIGTERM ─────────────
+	runCmd(t, projectDir, "go", "build", "./...")
+	bootHealthzAndShutdown(t, projectDir, 18933)
+
+	// ── 5. documented first step: forge add service item ─────────────
+	// (`forge add service` runs the generate pipeline itself; the
+	// explicit generate after it pins that a follow-up run is clean.)
+	runCmd(t, projectDir, forgeBin, "add", "service", "item")
+	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "item", "service.go"))
+	out := runCorpusCmdOK(t, projectDir, forgeBin, "generate")
+	assertNoForkNoise(t, "post-add generate", out)
+	runCmd(t, projectDir, "go", "build", "./...")
+
+	t.Logf("zero-service fixture total: %s", time.Since(start))
+}
+
+// assertZeroServiceShape fails if any trace of an invented <name>
+// service exists in the project: proto dir, handlers dir, frontend nav
+// route, or a `services.<name>.v1` proto-package reference in any
+// non-vendored file.
+func assertZeroServiceShape(t *testing.T, projectDir, name string) {
+	t.Helper()
+	for _, p := range []string{
+		filepath.Join("proto", "services", name),
+		filepath.Join("handlers", name),
+		filepath.Join("gen", "services", name),
+		"frontends", // bare scaffold has no frontend → no nav route can exist
+	} {
+		if _, err := os.Stat(filepath.Join(projectDir, p)); !os.IsNotExist(err) {
+			t.Errorf("bare scaffold must not create %s (stat err=%v)", p, err)
+		}
+	}
+	// Sweep the tree for the invented proto package. Skips .forge-pkg
+	// (vendored library) and git/npm machinery.
+	needle := "services." + name + ".v1"
+	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if corpusSkipDir(d.Name()) || d.Name() == ".forge-pkg" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil || info.Size() > 1<<20 {
+			return nil
+		}
+		body, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if strings.Contains(string(body), needle) {
+			rel, _ := filepath.Rel(projectDir, path)
+			t.Errorf("%s references %q — a %s service was invented from the binary name", rel, needle, name)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("zero-service tree sweep: %v", err)
+	}
 }
 
 // ───────────────────────────── corpus helpers ─────────────────────────────

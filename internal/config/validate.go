@@ -93,12 +93,6 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 	// downstream error.
 	issues = append(issues, validateServices(&cfg, root)...)
 
-	// Phase 5: serve/served_by semantics. `serve: false` (types-only
-	// services) composes badly with declarations that require a serving
-	// binary; catching the contradictions here keeps every downstream
-	// consumer of ServiceServed() free of per-site error handling.
-	issues = append(issues, validateServeFlags(&cfg, root)...)
-
 	if len(issues) > 0 {
 		return nil, &ValidationError{Path: label, Issues: issues}
 	}
@@ -222,6 +216,22 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		removedIn: "the KCL polymorphic-deploy migration",
 		replacement: "move host/cluster placement to the per-env `deploy:` field on the KCL " +
 			"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
+	},
+	// serve/served_by shipped only on an unreleased branch (never adopted
+	// downstream) before being replaced by registration-in-code: what a
+	// binary serves is the row list in pkg/app/services.go, not a yaml
+	// knob.
+	"services[].serve": {
+		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
+		replacement: "delete the key — to stop serving a service from this binary, delete its " +
+			"serviceRow line in pkg/app/services.go and leave a comment naming the binary that " +
+			"serves it; see the `services` skill (Types-Only Services).",
+	},
+	"services[].served_by": {
+		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
+		replacement: "delete the key — document the serving binary as a comment next to the " +
+			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
+			"(Types-Only Services).",
 	},
 }
 
@@ -857,62 +867,6 @@ func validateServices(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		check(fe.Name, fmt.Sprintf("frontends[%d]", i), []string{"frontends", fmt.Sprintf("[%d]", i), "name"})
 	}
 
-	return out
-}
-
-// validateServeFlags enforces the semantic rules around the
-// services[].serve / services[].served_by pair (types-only services):
-//
-//   - `serve: false` with declared webhooks is an error. Webhook routes
-//     are mounted on the serving binary's mux; a types-only service has
-//     no mux in this binary, so the declaration could never take effect.
-//   - `served_by` without `serve: false` is an error, not a warning.
-//     Rationale: LoadStrict has no warning channel (issues are batched
-//     errors by design — see ValidationError), and served_by's ONLY
-//     meaning is "another binary serves this"; on a served service it
-//     documents a contradiction that would mislead every future reader
-//     of forge.yaml. Failing loudly costs one trivial edit; a warning
-//     would let the contradiction persist forever.
-//   - `serve: false` on type=worker/operator is an error. Workers and
-//     operators have no Connect surface to share types from — "types
-//     only" is meaningless for them; remove the entry instead.
-func validateServeFlags(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
-	var out []validationIssue
-	for i, svc := range cfg.Services {
-		prefix := fmt.Sprintf("services[%d]", i)
-		served := svc.IsServed()
-
-		if !served {
-			if len(svc.Webhooks) > 0 {
-				line, col := findNodePos(root, []string{"services", fmt.Sprintf("[%d]", i), "serve"})
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s (name=%s) declares webhooks but sets serve: false — webhooks require a serving binary", prefix, svc.Name),
-					fix:    "remove the webhooks from this entry (the serving binary owns them) or restore serve: true.",
-				})
-			}
-			if t := strings.ToLower(strings.TrimSpace(svc.Type)); t == "worker" || t == "operator" {
-				line, col := findNodePos(root, []string{"services", fmt.Sprintf("[%d]", i), "serve"})
-				out = append(out, validationIssue{
-					line:   line,
-					column: col,
-					msg:    fmt.Sprintf("%s (name=%s) sets serve: false but type=%s — types-only mode applies to Connect services only", prefix, svc.Name, t),
-					fix:    "remove the entry (workers/operators have no shareable Connect types) or restore serve: true.",
-				})
-			}
-		}
-
-		if svc.ServedBy != "" && served {
-			line, col := findNodePos(root, []string{"services", fmt.Sprintf("[%d]", i), "served_by"})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("%s (name=%s) sets served_by: %q but the service is served by this project (serve is not false)", prefix, svc.Name, svc.ServedBy),
-				fix:    "add 'serve: false' to make the service types-only, or remove 'served_by'.",
-			})
-		}
-	}
 	return out
 }
 

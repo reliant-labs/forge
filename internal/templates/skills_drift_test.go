@@ -30,6 +30,10 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"mock_gen.go": {},
 		// pkg/app/wire_gen.go — service/worker/operator Deps wiring.
 		"wire_gen.go": {},
+		// pkg/app/services_gen.go — per-service serviceRow constructors
+		// (registration-in-code; the user-owned pkg/app/services.go
+		// picks which rows the binary serves).
+		"services_gen.go": {},
 		// Per-handler-directory codegen off proto descriptors.
 		"handlers_gen.go":           {},
 		"handlers_crud_gen.go":      {},

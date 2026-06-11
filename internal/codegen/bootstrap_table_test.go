@@ -61,6 +61,33 @@ func renderRepresentativeBootstrap(t *testing.T) string {
 	return string(data)
 }
 
+// renderRepresentativeServiceRows renders the same kitchen-sink config
+// and returns pkg/app/services_gen.go — where the per-service row
+// constructors live since the registration-in-code rework.
+func renderRepresentativeServiceRows(t *testing.T) string {
+	t.Helper()
+	targetDir := t.TempDir()
+
+	yaml := "name: proj\nmodule_path: example.com/proj\napi:\n  rest: true\n"
+	if err := os.WriteFile(filepath.Join(targetDir, "forge.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+	services := []ServiceDef{
+		{Name: "AdminServerService", ModulePath: "example.com/proj"},
+		{Name: "OrdersService", ModulePath: "example.com/proj"},
+	}
+	webhookServices := map[string]bool{"adminserver": true}
+	features := BootstrapFeatures{DiagnosticsEnabled: true, StrictWiringEnabled: true}
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, features, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	return string(data)
+}
+
 // TestBootstrapTable_RepresentativeConfig_ParsesAndFormats is the
 // "rendered template output is valid Go" gate for the full-featured
 // config — the closest offline proxy to the scaffold-and-build e2e.
@@ -134,10 +161,12 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 		t.Error("def table should expose app.Hooks to appkit")
 	}
 
-	// One row per component.
+	// One row per worker/operator/package component. SERVICE rows come
+	// from the user-owned RegisteredServices since the
+	// registration-in-code rework — see the services_gen.go assertions
+	// below.
 	for _, row := range []string{
-		`Name: "admin-server",`,
-		`Name: "orders",`,
+		`Services: RegisteredServices(app, cfg, logger, devMode, opts...)`,
 		`{Name: "cache", Construct: func() error {`,
 		`{Name: "audit", Construct: func() error {`,
 		`{Name: "emailer", Construct: func() error {`,
@@ -149,16 +178,28 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 		}
 	}
 
-	// wire_gen contract intact: the rows reference wireXxxDeps.
+	// wire_gen contract intact: the worker/operator rows reference
+	// wireXxxDeps; service wire calls moved to services_gen.go.
 	for _, wire := range []string{
-		"wireAdminServerDeps(app, cfg, logger, devMode)",
-		"wireOrdersDeps(app, cfg, logger, devMode)",
 		"wireWorkerEmailerDeps(app, cfg, logger)",
 		"wireWorkerTraderDeps(app, cfg, logger)",
 		"wireOperatorScalerDeps(app, cfg, logger)",
 	} {
 		if !strings.Contains(content, wire) {
 			t.Errorf("bootstrap.go missing wire_gen call %q", wire)
+		}
+	}
+
+	// Service row constructors carry the Name rows + wire calls now.
+	rows := renderRepresentativeServiceRows(t)
+	for _, want := range []string{
+		`Name: "admin-server",`,
+		`Name: "orders",`,
+		"wireAdminServerDeps(app, cfg, logger, devMode)",
+		"wireOrdersDeps(app, cfg, logger, devMode)",
+	} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("services_gen.go missing %q", want)
 		}
 	}
 

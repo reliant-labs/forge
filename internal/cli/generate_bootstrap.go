@@ -276,10 +276,23 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 	if err != nil || cfg == nil {
 		return nil
 	}
+	// Best-effort registration view: webhooks on an unregistered service
+	// are a hard error earlier in the pipeline (generateWebhookRoutes),
+	// but this map is also built on standalone paths, so filter here too
+	// rather than emitting a RegisterWebhookRoutes call into a row
+	// constructor whose service the binary doesn't serve. A parse error
+	// falls open to "registered" — the build/pipeline reports it.
+	reg, regErr := loadServiceRegistry(projectDir)
+	if regErr != nil {
+		reg = &serviceRegistry{Exists: false}
+	}
 
 	out := map[string]bool{}
 	for _, svc := range cfg.Services {
-		if len(svc.Webhooks) == 0 || !svc.IsServed() {
+		if len(svc.Webhooks) == 0 {
+			continue
+		}
+		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
 			continue
 		}
 		out[naming.ServicePackage(svc.Name)] = true

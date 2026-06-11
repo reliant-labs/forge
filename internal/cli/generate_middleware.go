@@ -71,17 +71,20 @@ func generateTenantMiddleware(cfg *config.ProjectConfig, projectDir string, cs *
 // cs is the project's checksum tracker — passing it ensures the rendered
 // webhook_routes_gen.go is recorded so it doesn't show up as an orphan
 // in `forge audit`. A nil cs is tolerated.
-func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *generator.FileChecksums) error {
+//
+// reg is the parsed pkg/app/services.go registration view: webhook
+// routes mount on the serving binary's mux, so declaring webhooks on a
+// service this binary does not register is a hard generate-time error
+// naming the registration file — the declaration could never take
+// effect, and skipping it silently would hide a real misconfiguration.
+func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, projectDir string, cs *generator.FileChecksums) error {
 	for _, svc := range cfg.Services {
 		if len(svc.Webhooks) == 0 {
 			continue
 		}
-		// Types-only services never reach here in a validated config
-		// (serve:false + webhooks is a LoadStrict error), but the guard
-		// keeps a hand-edited mid-migration forge.yaml from mounting
-		// routes for a service this binary doesn't serve.
-		if !svc.IsServed() {
-			continue
+		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
+			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
+				svc.Name, serviceRegistryRelPath, codegen.ServiceRowFuncName(svc.Name))
 		}
 
 		// Disk-first: webhook_routes_gen.go lands inside the EXISTING

@@ -119,14 +119,20 @@ func runIntrospectHandlers(w io.Writer, protoDir, format string) error {
 	}
 
 	// The command's contract is "paths the BINARY will register" — drop
-	// types-only services (forge.yaml serve: false): their RPCs exist in
-	// the protos but a sibling binary serves them. Best-effort config
-	// load: no forge.yaml means no serve declarations, serve everything.
-	cfg, cfgErr := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile))
-	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-		return fmt.Errorf("load project config: %w", cfgErr)
+	// services with no serviceRow in the user-owned pkg/app/services.go:
+	// their RPCs exist in the protos but this binary does not mount
+	// them. Best-effort: a missing/broken registry serves everything
+	// (pre-registration behavior).
+	reg, regErr := loadServiceRegistry(projectDir)
+	if regErr != nil {
+		reg = &serviceRegistry{Exists: false}
 	}
-	served, _ := servedServiceDefs(cfg, defs)
+	var served []codegen.ServiceDef
+	for _, d := range defs {
+		if reg.registered(d.Name) {
+			served = append(served, d)
+		}
+	}
 
 	paths := handlerPathsFromServices(served)
 	return writeHandlerPaths(w, paths, format)
@@ -190,4 +196,3 @@ func writeHandlerPaths(w io.Writer, paths []HandlerPath, format string) error {
 	}
 	return nil
 }
-

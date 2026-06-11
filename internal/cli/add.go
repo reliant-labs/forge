@@ -899,6 +899,7 @@ func newAddFrontendCmd() *cobra.Command {
 	var port int
 	var kind string
 	var output string
+	var basePath string
 
 	cmd := &cobra.Command{
 		Use:   "frontend <name>",
@@ -916,21 +917,29 @@ Go backend via Connect RPC. Opt into "standalone" when you need a Node
 sidecar (server components, server actions, request-time redirect()).
 Use "server" for full Next.js dev+prod (next start).
 
+--base-path mounts the frontend under a URL prefix (e.g. /admin behind a
+reverse proxy that blends several apps on one host). It is persisted as
+frontends[].base_path in forge.yaml and rendered into next.config.ts
+(basePath + assetPrefix) and the generated src/lib/basepath_gen.ts
+helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
+
 Example:
   forge add frontend web
   forge add frontend dashboard --port 3001
   forge add frontend mobile --kind mobile
   forge add frontend admin --kind vite-spa
-  forge add frontend dashboard --output standalone`,
+  forge add frontend dashboard --output standalone
+  forge add frontend admin --base-path /admin`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddFrontend(cmd.Context(), args[0], port, kind, output)
+			return runAddFrontend(cmd.Context(), args[0], port, kind, output, basePath)
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
 	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: static (default), standalone, or server. Only applies to --kind web.")
+	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
 
 	return cmd
 }
@@ -952,7 +961,7 @@ func validateFrontendName(name string) error {
 	return nil
 }
 
-func runAddFrontend(ctx context.Context, name string, port int, kind, output string) error {
+func runAddFrontend(ctx context.Context, name string, port int, kind, output, basePath string) error {
 	if err := validateFrontendName(name); err != nil {
 		return fmt.Errorf("invalid frontend name: %w", err)
 	}
@@ -975,6 +984,20 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output str
 	}
 	if output != "" && kind != "" && kind != "web" {
 		return fmt.Errorf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind)
+	}
+
+	// --base-path follows the same Next.js-only rule, plus the strict
+	// shape contract shared with forge.yaml validation (leading "/", no
+	// trailing "/", [A-Za-z0-9._-] segments) — the value is spliced
+	// verbatim into next.config.ts and generated TypeScript literals.
+	basePath = strings.TrimSpace(basePath)
+	if basePath != "" {
+		if msg, ok := config.ValidateBasePath(basePath); !ok {
+			return fmt.Errorf("invalid --base-path %q: %s", basePath, msg)
+		}
+		if kind != "" && kind != "web" {
+			return fmt.Errorf("--base-path only applies to Next.js frontends (--kind web); got --kind %q", kind)
+		}
 	}
 
 	root, err := projectRoot()
@@ -1043,6 +1066,7 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output str
 	if err := generator.GenerateFrontendFilesWithOptions(root, cfg.ModulePath, cfg.Name, name, apiPort, kind, generator.FrontendGenOptions{
 		Workspaces: workspaces,
 		Output:     output,
+		BasePath:   basePath,
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
@@ -1072,6 +1096,11 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output str
 	}
 	if output != "" && (kind == "" || kind == "web") {
 		feEntry.Output = output
+	}
+	// Persist base_path so `forge generate` keeps regenerating the
+	// basepath_gen.ts helper with the right prefix.
+	if basePath != "" && (kind == "" || kind == "web") {
+		feEntry.BasePath = basePath
 	}
 	cfg.Frontends = append(cfg.Frontends, feEntry)
 	// Flip features.frontend on so subsequent `forge generate` runs

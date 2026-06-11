@@ -21,6 +21,7 @@ import (
 // The test intentionally uses the options/v1 annotation format that
 // `forge new` scaffolds for new projects.
 func TestE2EScaffoldComplexTypes(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -580,6 +581,7 @@ message ListAdjustmentsResponse {
 // the descriptor extractor. This is a regression test for the bug where
 // looksLikeEntity() only checked for "db/" in the file path.
 func TestE2EScaffoldEntityInServiceProto(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -714,6 +716,7 @@ message ListTenantsResponse {
 // field names match what the templates reference. This is a regression test
 // for the DatabaseURL vs DatabaseUrl naming mismatch.
 func TestE2EScaffoldConfigNaming(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
@@ -776,6 +779,7 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 // scaffold both proto/forge/v1/forge.proto AND proto/forge/options/v1/*.proto,
 // which would produce conflicting extension tag numbers and break buf generate.
 func TestE2EScaffoldNoConflictingProtos(t *testing.T) {
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 

@@ -128,12 +128,14 @@ left unreferenced (e.g. the `*v1connect` client type alias, or
 `context` once the per-row `connect.NewRequest` calls move into
 `tdd.RPCCase.Req`) are dropped.
 
-Each emitted scaffold row uses `AnyOutcome: true` to match the
-lenient semantics of the hand-rolled shape (which logged but did not
-fail on errors). Replace `AnyOutcome` with `WantErr` (failure mode)
-or `Check` (happy path) once the handler is real — the
-`AnyOutcome` flag is documented in `pkg/tdd/rpc.go` as the
-scaffold-stage knob.
+Each emitted scaffold row asserts `WantErr: connect.CodeUnimplemented`
+— the self-destructing scaffold contract. The hand-rolled shape this
+codemod replaces logged but did not fail on errors; `pkg/tdd`
+deliberately has no such permissive mode (a row that cannot fail
+teaches green-means-nothing). If the handler is still the generated
+stub, the row passes; if the handler is already implemented, the row
+FAILS immediately — replace it with `WantErr` (failure mode) or
+`Check` (happy path) assertions that pin real behavior.
 
 ### Manual part
 

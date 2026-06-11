@@ -749,7 +749,7 @@ func generateReplacementFuncs(plan migrationPlan) string {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		fmt.Fprintf(&b, "// Test%s_Generated — replace AnyOutcome with WantErr/Check once the handler is real.\n", row.Method)
+		fmt.Fprintf(&b, "// Test%s_Generated — self-destructing scaffold row: it passes only while\n// the handler is the generated CodeUnimplemented stub. If %s is already\n// implemented this row FAILS — replace it with real WantErr/Check assertions.\n", row.Method, row.Method)
 		fmt.Fprintf(&b, "func Test%s_Generated(t *testing.T) {\n", row.Method)
 		b.WriteString("\tt.Parallel()\n\n")
 		if plan.ConstructorIsTwo {
@@ -759,13 +759,15 @@ func generateReplacementFuncs(plan migrationPlan) string {
 		}
 		fmt.Fprintf(&b, "\ttdd.RunRPCCases(t, []tdd.RPCCase[%s.%s, %s.%s]{\n",
 			row.PbAlias, row.RequestType, row.PbAlias, row.ResponseType)
-		// Emit AnyOutcome: true to match the lenient semantics of the
-		// hand-rolled shape the codemod is replacing — both stub
-		// (CodeUnimplemented) and wired-but-no-deps (CodeFailedPrecondition)
-		// outcomes were tolerated. Replace with WantErr or Check once
-		// real assertions exist.
-		fmt.Fprintf(&b, "\t\t{Name: %q, Req: connect.NewRequest(&%s.%s{}), AnyOutcome: true},\n",
-			"scaffold_call", row.PbAlias, row.RequestType)
+		// Emit the self-destructing scaffold row (WantErr:
+		// CodeUnimplemented). The hand-rolled shape this codemod replaces
+		// tolerated any outcome — pkg/tdd deliberately has no such mode
+		// (a row that cannot fail teaches green-means-nothing), so the
+		// strictest stub-compatible assertion is emitted instead. For
+		// already-implemented handlers the row fails immediately, telling
+		// the user to write the real assertion the old test never had.
+		fmt.Fprintf(&b, "\t\t{Name: %q, Req: connect.NewRequest(&%s.%s{}), WantErr: connect.CodeUnimplemented},\n",
+			"unimplemented_scaffold", row.PbAlias, row.RequestType)
 		fmt.Fprintf(&b, "\t}, %s.%s)\n", plan.ReceiverVarName, row.Method)
 		b.WriteString("}")
 	}

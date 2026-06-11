@@ -77,10 +77,18 @@ Forge separates the layers:
 db/migrations/              # SQL migrations — THE schema source of truth
 db/queries/                 # SQL query definitions (for sqlc or manual use)
 internal/db/types.go        # Entity types (start as proto aliases, evolve to concrete structs)
-internal/db/<entity>_orm.go # CRUD functions for each entity
+internal/db/<entity>_orm.go # Generated ORM CRUD functions for each entity
 ```
 
-`forge generate` does **NOT** touch the database layer. It never modifies `internal/db/`, `db/migrations/`, or `db/queries/`. You own all of this completely.
+While proto entities drive codegen (greenfield mode, below), `forge generate` regenerates the entity ORM layer — `internal/db/types.go` aliases and `internal/db/<entity>_orm.go`. It never modifies `db/migrations/`, `db/queries/`, or your mappers and custom DB code; the schema itself is always yours.
+
+### Generated ORM semantics
+
+- `Create<Entity>` is a plain `INSERT` — never an upsert. String PKs left unset are generated via `ulid.Make()` at the Create chokepoint.
+- With `timestamps: true`, `created_at`/`updated_at` are stamped on create and `updated_at` on update; `created_at` is immutable on update.
+- Each entity exports `<Entity>Columns` — the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
+- Missing rows surface as `errors.Is(err, orm.ErrNoRows)`; `forge/pkg/crud` maps them through `pkg/svcerr` to a clean `NotFound`. All other repo errors map to `Internal` with safe text — no SQL on the wire.
+- Generated migrations give string PKs `CHECK (id <> '')`; auto-added timestamp columns use `DEFAULT CURRENT_TIMESTAMP`.
 
 ## Proto entities: greenfield vs migrated
 
@@ -117,7 +125,7 @@ task dev-psql                                # interactive shell
 
 ### Queries
 
-- Simple queries: add functions in `internal/db/<entity>_orm.go` using `pgx` directly.
+- Simple queries: add functions in a sibling file you own (e.g. `internal/db/<entity>_queries.go`) using `pgx` directly — `<entity>_orm.go` is regenerated.
 - Complex queries: write SQL in `db/queries/` and use sqlc to generate type-safe Go code. Run `forge generate` to pick up sqlc changes.
 
 ## Auto-generated features (at scaffold time)
@@ -131,7 +139,7 @@ Generated during initial project scaffolding from entity definitions in the plan
 ## Forge-specific rules
 
 - **Don't hand-edit `gen/`** — fix the proto or query, then regenerate.
-- **`forge generate` never touches the DB layer.** You own migrations, entity types, and ORM code. Evolve them freely.
+- **`forge generate` touches only the generated ORM files in the DB layer** (`internal/db/types.go`, `<entity>_orm.go`, from proto entities). You own migrations, queries, and mappers. Evolve them freely.
 - **Seed files and fixtures are regenerated** by `forge generate` — put custom seed data in `db/seeds/0001_*.sql`.
 - **Entity types are expected to diverge from proto.** Start with aliases, evolve to concrete structs when the domain requires it.
 

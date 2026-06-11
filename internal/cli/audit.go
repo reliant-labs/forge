@@ -1181,29 +1181,25 @@ func auditScaffoldMarkers(projectDir string) AuditCategory {
 }
 
 // auditCRUDStubs counts FORGE_CRUD_SHAPE_MISMATCH-tagged CodeUnimplemented
-// stubs in the project's handlers_crud_gen.go files. These stubs are
-// emitted by the CRUD body generator when a request/response message
-// shape diverges from the AIP-158 conventions the template assumes
-// (e.g. a Limit field instead of PageSize, a string Ticker PK instead
-// of int64 Id, or a repeated-entity response where a single one was
-// expected). The stub keeps the file compiling but returns
-// CodeUnimplemented at runtime — production traffic to that RPC will
-// always 501 until a sibling file hand-implements the RPC.
+// stubs in the project's CRUD shim files (user-owned handlers_crud.go,
+// plus legacy handlers_crud_gen.go from pre-split projects). These stubs
+// are scaffolded when a request/response message shape diverges from the
+// CRUD conventions the generator expects. The stub keeps the file
+// compiling but returns CodeUnimplemented at runtime — production
+// traffic to that RPC will always 501 until the body is hand-implemented.
 //
 // Without this audit, the stub is silent: nothing in `forge generate`
 // output, `forge doctor`, or CI tells the operator that an RPC is
-// shipping as Unimplemented. The buried `FORGE_CRUD_SHAPE_MISMATCH`
-// marker lives in a generated file users are told never to edit, so
-// it's easy to miss in code review. This category surfaces the count
-// + per-method list as a structured audit finding so CI can branch on
+// shipping as Unimplemented. This category surfaces the count + per-
+// method list as a structured audit finding so CI can branch on
 // `.crud_stubs.status == "warn"`.
 //
-// We scan files matching `handlers_crud_gen.go` rather than every Go
-// file — both to keep the walk cheap and because the marker is
-// generator-emitted and lives only in those files. Skip set mirrors
-// auditScaffoldMarkers (vendor/.git/etc) plus templates/ and testdata/
-// so forge's own tree doesn't false-positive on its template body
-// (which contains the literal marker as emission text).
+// We scan files matching the CRUD shim names rather than every Go file —
+// both to keep the walk cheap and because the marker is forge-emitted
+// and lives only in those files. Skip set mirrors auditScaffoldMarkers
+// (vendor/.git/etc) plus templates/ and testdata/ so forge's own tree
+// doesn't false-positive on its template body (which contains the
+// literal marker as emission text).
 func auditCRUDStubs(projectDir string) AuditCategory {
 	skip := map[string]struct{}{
 		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
@@ -1223,7 +1219,7 @@ func auditCRUDStubs(projectDir string) AuditCategory {
 			}
 			return nil
 		}
-		if d.Name() != "handlers_crud_gen.go" {
+		if d.Name() != "handlers_crud.go" && d.Name() != "handlers_crud_gen.go" {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)

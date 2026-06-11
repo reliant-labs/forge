@@ -2141,9 +2141,10 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	applyDiskIdentity(&fullData)
 
 	// Filter CRUD methods out of the unit-test scaffold so per-RPC rows
-	// don't overlap with handlers_crud_gen_test.go (which owns shape-aware
-	// per-CRUD-RPC rows). Same filter rule as the initial-gen path in
-	// GenerateServiceStub — one source of truth per method, no duplication.
+	// don't overlap with handlers_crud_test.go (the user-owned lifecycle
+	// test that owns CRUD coverage). Same filter rule as the initial-gen
+	// path in GenerateServiceStub — one source of truth per method, no
+	// duplication.
 	unitTestData := fullData
 	if len(crudMethodNames) > 0 {
 		var nonCRUD []MethodTemplateData
@@ -2241,7 +2242,12 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 		if strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		if !includeGeneratedStubs && (entry.Name() == "handlers_gen.go" || entry.Name() == "handlers_crud_gen.go") {
+		if !includeGeneratedStubs && (entry.Name() == "handlers_gen.go" || entry.Name() == "handlers_crud_gen.go" ||
+			entry.Name() == "handlers_crud.go" || entry.Name() == "handlers_crud_ops_gen.go") {
+			// handlers_crud.go holds the forge-scaffolded thin CRUD shims:
+			// its methods delegate to generated ops, so they must not count
+			// as "user implemented this RPC by hand" (that would suppress
+			// regeneration of the very ops they delegate to).
 			continue
 		}
 

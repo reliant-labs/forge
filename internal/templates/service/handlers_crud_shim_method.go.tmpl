@@ -1,0 +1,37 @@
+{{- if .ShapeMismatch}}
+// {{.MethodName}} implements the {{.MethodName}} RPC.
+//
+// FORGE_CRUD_SHAPE_MISMATCH: {{.MismatchReason}}
+//
+// forge could not auto-wire this RPC — the request/response shape
+// diverges from the CRUD conventions (see `forge skill load proto`).
+// Replace this body with a real implementation (this file is yours);
+// `forge audit` reports it as an unimplemented stub until then.
+func (s *Service) {{.MethodName}}(
+	ctx context.Context,
+	req *connect.Request[pb.{{.InputType}}],
+) (*connect.Response[pb.{{.OutputType}}], error) {
+	_ = ctx
+	_ = req
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("{{.MethodName}} is not implemented"))
+}
+{{- else}}
+// {{.MethodName}} handles the {{.MethodName}} RPC (CRUD {{.Operation}}).
+// The lifecycle (auth, tenant scoping, error mapping{{if eq .Operation "list"}}, pagination,
+// filter/order-by validation{{end}}) lives in forge/pkg/crud; the entity wiring is
+// generated in handlers_crud_ops_gen.go and tracks proto/schema changes
+// automatically. To customize, replace this delegation with a real
+// implementation — this file is yours.
+{{- if eq .Operation "update"}}
+//
+// NOTE: the generated update is a whole-row write; req.Msg.UpdateMask is
+// not yet applied. Swap in a mask-aware update here if partial updates
+// matter to your callers (https://google.aip.dev/134).
+{{- end}}
+func (s *Service) {{.MethodName}}(
+	ctx context.Context,
+	req *connect.Request[pb.{{.InputType}}],
+) (*connect.Response[pb.{{.OutputType}}], error) {
+	return crud.Handle{{.Operation | title}}(s.crud{{.MethodName}}Op())(ctx, req)
+}
+{{- end}}

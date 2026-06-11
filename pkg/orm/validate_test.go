@@ -31,9 +31,39 @@ func TestValidateOrderBy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateOrderBy(tt.clause)
+			err := ValidateOrderBy(tt.clause, nil)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateOrderBy(%q) error = %v, wantErr %v", tt.clause, err, tt.wantErr)
+				t.Errorf("ValidateOrderBy(%q, nil) error = %v, wantErr %v", tt.clause, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateOrderBy_Allowlist(t *testing.T) {
+	columns := []string{"id", "name", "created_at"}
+	tests := []struct {
+		name    string
+		clause  string
+		allowed []string
+		wantErr bool
+	}{
+		{name: "declared column", clause: "name ASC", allowed: columns, wantErr: false},
+		{name: "multiple declared columns", clause: "name ASC, created_at DESC", allowed: columns, wantErr: false},
+		{name: "case-insensitive match", clause: "NAME desc", allowed: columns, wantErr: false},
+		{name: "allowlist declared upper-case", clause: "name", allowed: []string{"NAME"}, wantErr: false},
+		{name: "empty clause with allowlist", clause: "", allowed: columns, wantErr: false},
+		{name: "undeclared column rejected", clause: "password_hash ASC", allowed: columns, wantErr: true},
+		{name: "one undeclared among declared", clause: "name ASC, secret DESC", allowed: columns, wantErr: true},
+		{name: "nil allowlist is shape-only", clause: "password_hash ASC", allowed: nil, wantErr: false},
+		{name: "empty allowlist is shape-only", clause: "password_hash ASC", allowed: []string{}, wantErr: false},
+		{name: "shape still enforced with allowlist", clause: "name; DROP TABLE", allowed: columns, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateOrderBy(tt.clause, tt.allowed)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateOrderBy(%q, %v) error = %v, wantErr %v", tt.clause, tt.allowed, err, tt.wantErr)
 			}
 		})
 	}

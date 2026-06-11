@@ -358,11 +358,13 @@ func isKnownTier2(rel, noTmpl string) bool {
 			return true
 		}
 	}
-	// Service-package one-shot tests with FORGE_SCAFFOLD markers.
+	// Service-package one-shot tests and user-owned CRUD scaffolds
+	// (owned from line one — no banner, no markers required).
 	switch noTmpl {
 	case "unit_test.go",
-		"handlers_crud_test_gen.go",
-		"handlers_crud_integration_test.go":
+		"handlers_crud_test.go",
+		"handlers_crud.go",
+		"handlers_crud_shim_method.go":
 		return true
 	}
 	// CI starter files that ship a default that the user is expected to

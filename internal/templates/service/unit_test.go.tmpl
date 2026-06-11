@@ -9,6 +9,12 @@
 // Setup/Check hook — the runner iterates rows as t.Run subtests and
 // asserts on either a Connect error code or a happy-path response.
 //
+// Scaffold rows are SELF-DESTRUCTING: they assert
+// `WantErr: connect.CodeUnimplemented` against the stub handler, so the
+// row goes red the moment you implement the RPC. That failure is the
+// point — replace the row with real assertions (Check for the happy
+// path, WantErr for failure modes) as part of implementing the handler.
+//
 // CRUD RPCs are intentionally absent from this file — their per-RPC
 // rows live in handlers_crud_gen_test.go (shape-aware: AIP-158 Id/PageSize/
 // update_mask literals derived from the proto). Each method has exactly
@@ -25,9 +31,21 @@
 package {{.ServicePackage}}_test
 
 {{- if .Methods}}
+{{- /* First unary (non-streaming) method, if any — drives the
+       authorizer-chain test, which needs a real RPC to push through
+       the test server's interceptor stack. */ -}}
+{{- $unary := "" }}{{- $unaryIn := "" }}
+{{- range .Methods }}
+{{- if and (not .ClientStreaming) (not .ServerStreaming) (not $unary) }}
+{{- $unary = .Name }}{{- $unaryIn = .InputType }}
+{{- end }}
+{{- end }}
 
 import (
 	"context"
+{{- if $unary}}
+	"errors"
+{{- end}}
 	"testing"
 
 	"connectrpc.com/connect"
@@ -40,6 +58,9 @@ import (
 	     the explicit alias. */ -}}
 	{{.ServicePackage}} "{{.Module}}/handlers/{{.ServiceImportPath}}"
 	"{{.Module}}/pkg/app"
+{{- if $unary}}
+	"{{.Module}}/pkg/middleware"
+{{- end}}
 )
 
 // setup constructs a fresh service instance for one test function. Per
@@ -68,20 +89,21 @@ func Test{{.Name}}_Generated(t *testing.T) {
 
 	tdd.RunRPCCases(t, []tdd.RPCCase[pb.{{.InputType}}, pb.{{.OutputType}}]{
 		{
-			// happy_path — scaffold-tolerant: AnyOutcome accepts the
-			// CodeUnimplemented stub and the eventual real success.
-			// Replace with `Check: func(t, resp) { ... }` once the
-			// handler is implemented and you want to assert on resp.
-			Name:       "happy_path",
-			Req:        connect.NewRequest(&pb.{{.InputType}}{}),
-			AnyOutcome: true,
+			// SELF-DESTRUCTING scaffold row: passes only while {{.Name}}
+			// is the generated CodeUnimplemented stub. Implementing the
+			// handler makes this row FAIL — replace it then with real
+			// assertions, e.g.
+			//   { Name: "happy_path", Req: ..., Ctx: app.AuthedContext(t),
+			//     Check: func(t *testing.T, resp *connect.Response[pb.{{.OutputType}}]) { ... } },
+			//   { Name: "missing_required_field", Req: ...,
+			//     Ctx: app.AuthedContext(t), WantErr: connect.CodeInvalidArgument },
+			// Ctx carries authenticated test claims (UserID "test-user",
+			// role "admin") so middleware.GetUser sees a principal.
+			Name:    "unimplemented_scaffold",
+			Req:     connect.NewRequest(&pb.{{.InputType}}{}),
+			Ctx:     app.AuthedContext(t),
+			WantErr: connect.CodeUnimplemented,
 		},
-		// Uncomment once the handler validates inputs:
-		// {
-		//     Name:    "missing_required_field",
-		//     Req:     connect.NewRequest(&pb.{{.InputType}}{}),
-		//     WantErr: connect.CodeInvalidArgument,
-		// },
 	}, svc.{{.Name}})
 }
 {{- end}}
@@ -110,14 +132,43 @@ func TestAuthorizerUnknownMethodFailMode(t *testing.T) {
 		t.Fatal("empty procedure must be denied unconditionally (pkg/authz defensive bug check), got nil error")
 	}
 }
+{{- if $unary}}
 
-// TestNewTest{{.TestHelperName}}WiresPermissiveAuthorizer verifies the test
-// factory gives services a non-nil, allow-all authorizer by default so
-// CRUD handlers don't nil-panic before hitting business logic.
-func TestNewTest{{.TestHelperName}}WiresPermissiveAuthorizer(t *testing.T) {
+// TestNewTest{{.TestHelperName}}AuthorizerChain verifies the test server
+// mounts the production interceptor chain (middleware.AuthzInterceptor —
+// see pkg/app/services_gen.go) and that the policy is the only delta from
+// production: a deny-all authorizer rejects the call at the interceptor,
+// while the default permissive one lets it through to the handler.
+func TestNewTest{{.TestHelperName}}AuthorizerChain(t *testing.T) {
 	t.Parallel()
-	_ = app.NewTest{{.TestHelperName}}(t)
+
+	// Deny-all: rejected by the authz interceptor before the handler runs.
+	_, denied := app.NewTest{{.TestHelperName}}Server(t, app.WithAuthorizer(denyAllAuthorizer{}))
+	_, err := denied.{{$unary}}(context.Background(), connect.NewRequest(&pb.{{$unaryIn}}{}))
+	tdd.AssertConnectError(t, err, connect.CodePermissionDenied)
+
+	// Default permissive authorizer: the same call must get PAST the
+	// interceptor. The handler itself may still fail (CodeUnimplemented
+	// while scaffolded) — the assertion is that authz did not deny.
+	_, allowed := app.NewTest{{.TestHelperName}}Server(t)
+	_, err = allowed.{{$unary}}(context.Background(), connect.NewRequest(&pb.{{$unaryIn}}{}))
+	if err != nil && connect.CodeOf(err) == connect.CodePermissionDenied {
+		t.Fatalf("default test authorizer must be permissive, got deny: %v", err)
+	}
 }
+
+// denyAllAuthorizer rejects every call — the negative pole for
+// TestNewTest{{.TestHelperName}}AuthorizerChain.
+type denyAllAuthorizer struct{}
+
+func (denyAllAuthorizer) CanAccess(context.Context, string) error {
+	return connect.NewError(connect.CodePermissionDenied, errors.New("deny-all test authorizer"))
+}
+
+func (denyAllAuthorizer) Can(context.Context, *middleware.Claims, string, string) error {
+	return connect.NewError(connect.CodePermissionDenied, errors.New("deny-all test authorizer"))
+}
+{{- end}}
 {{- else}}
 
 // forge-unit-test-placeholder: this file is regenerated once RPCs are

@@ -154,17 +154,7 @@ single append — no existing line is ever read back or rewritten.`,
 				return fmt.Errorf("invalid --severity %q (want p0 | p1 | p2 | note)", severity)
 			}
 
-			entry := FrictionEntry{
-				Schema:       frictionSchemaVersion,
-				RecordedAt:   time.Now().UTC().Truncate(time.Second),
-				ForgeVersion: buildinfo.Version(),
-				Severity:     severity,
-				Area:         area,
-				Source:       source,
-				Context:      contexts,
-				Text:         text,
-			}
-			entry.ID = frictionID(entry)
+			entry := newFrictionEntry(severity, area, source, contexts, text)
 
 			path, err := frictionFilePath()
 			if err != nil {
@@ -194,13 +184,39 @@ func validFrictionSeverity(s string) bool {
 	return false
 }
 
+// newFrictionEntry is the single constructor every friction producer
+// goes through (`forge friction add`, the fork-acceptance recorder in
+// friction_fork.go, future emitters). Centralizing here means the
+// schema stamp, the UTC-second timestamp discipline, and the
+// content-hash ID can never drift apart between producers — the same
+// "one chokepoint" reasoning as appendFrictionEntry below.
+func newFrictionEntry(severity, area, source string, contexts []string, text string) FrictionEntry {
+	e := FrictionEntry{
+		Schema:       frictionSchemaVersion,
+		RecordedAt:   time.Now().UTC().Truncate(time.Second),
+		ForgeVersion: buildinfo.Version(),
+		Severity:     severity,
+		Area:         area,
+		Source:       source,
+		Context:      contexts,
+		Text:         text,
+	}
+	e.ID = frictionID(e)
+	return e
+}
+
 // frictionID derives the short content-hash id. The recorded-at nanos
 // salt means two identical texts recorded at different moments get
 // distinct ids; identical text in the same instant collapsing to one id
-// is fine (it IS the same observation).
+// is fine (it IS the same observation). Context is part of the hash:
+// fork-acceptance entries can share one --reason text across many
+// paths in the same second, and only the context (the forked path)
+// distinguishes them — without it they'd alias to one id. IDs are
+// stamped at write time, so changing the derivation never invalidates
+// already-recorded lines.
 func frictionID(e FrictionEntry) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d|%s|%s|%s|%s", e.RecordedAt.UnixNano(), e.Severity, e.Area, e.Source, e.Text)
+	fmt.Fprintf(h, "%d|%s|%s|%s|%s|%s", e.RecordedAt.UnixNano(), e.Severity, e.Area, e.Source, strings.Join(e.Context, ","), e.Text)
 	return "fr-" + hex.EncodeToString(h.Sum(nil))[:10]
 }
 

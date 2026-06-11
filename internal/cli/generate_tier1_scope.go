@@ -135,6 +135,20 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// stepFrontendHooks. Gated on frontend feature + HasServices
 	// (no services → no proto → nothing to hook).
 	{glob: "frontends/*/src/hooks/*-hooks.ts", gate: gateFrontendHasServices},
+
+	// internal/<pkg>/mock_gen.go is emitted by stepInternalContracts
+	// (gateContractsEnabled). When features.contracts=false the emitter
+	// never runs, so absence-from-WrittenThisRun is uninformative and
+	// the stale sweep must leave the mocks alone — `--force-cleanup`
+	// deleting live mocks that package tests compile against is the
+	// disaster case (kalshi FORGE_BACKLOG #15). Two depth variants
+	// because filepath.Match's `*` doesn't cross `/` and the contracts
+	// walk descends into nested packages (internal/mcp/database).
+	// Deeper nesting falls through to "no registered owner" which is
+	// fail-closed (stays in scope) — same posture as every other
+	// unregistered path.
+	{glob: "internal/*/mock_gen.go", gate: gateContractsEnabled},
+	{glob: "internal/*/*/mock_gen.go", gate: gateContractsEnabled},
 }
 
 // filterTier1DriftInScope returns the subset of `drift` whose owning

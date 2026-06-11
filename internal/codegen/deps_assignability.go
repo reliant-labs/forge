@@ -26,20 +26,63 @@
 //
 // The DepsAssignabilityMatcher uses go/types via x/tools/go/packages to
 // answer the real question — "is AppExtras.<Field> assignable to
-// Deps.<Field>'s declared type?" — and degrades to string-compare when
-// the project doesn't type-check (e.g. early scaffold). Failures of the
-// load are NOT fatal; they fall through to the legacy string compare so
-// codegen never regresses on a project that's mid-edit.
+// Deps.<Field>'s declared type?".
 //
-// Caching: one matcher per generate run. The same pkg/app and each
-// roleRoot/<pkg>/ directory is loaded once via packages.Load, then
-// reused for every Deps field. Without the cache we'd re-load the same
-// packages O(fields) times per component.
+// SINGLE TYPE UNIVERSE (kalshi-trader FORGE_BACKLOG #13): pkg/app and
+// the component package MUST be loaded in ONE packages.Load call.
+// go/types identity is pointer identity — the same named type loaded
+// through two separate packages.Load invocations yields two distinct
+// *types.Named (and two distinct method-signature parameter types like
+// context.Context), so types.AssignableTo / types.Implements report
+// false for types that are literally identical in source. The original
+// implementation loaded pkg/app once and each component once, in
+// separate calls, which made every worker-local interface satisfied by
+// an AppExtras adapter look like a NameMismatch — silently un-wiring
+// production collaborators. One Load per (pkg/app, component) pair
+// keeps both sides in a shared universe where identity holds.
+//
+// DETERMINISTIC FAIL-LOUD POLICY: when a Deps field name-matches an
+// App/AppExtras field but assignability cannot be PROVEN (project
+// doesn't type-check mid-pipeline, load error, field invisible to the
+// type checker), the matcher reports MatchUnavailable and BOTH
+// consumers wire the name match anyway (`app.<Field>`). Rationale:
+//
+//   - The Go compiler is the final arbiter. A wrong wire fails the
+//     build loudly, with the error pointing at the exact assignment.
+//     Silently emitting nil instead un-wires a production collaborator
+//     with NO signal — the disaster mode kalshi actually hit (the
+//     settlement loop no-op'd).
+//   - It preserves the pre-matcher behavior (name match → wire), so a
+//     project mid-edit regenerates exactly as it did before the
+//     matcher existed.
+//   - It makes generate→generate deterministic. The old split policy
+//     (Unavailable → legacy string compare, NameMismatch → drop) meant
+//     wire_gen.go content depended on whether the project happened to
+//     type-check at the instant the matcher loaded it — structural
+//     regens (pkg/app transiently broken) wired `app.<Field>` while
+//     the very next steady-state regen flipped the same field to nil.
+//     Under the unified policy, an unproven name match and a proven
+//     assignable name match emit the SAME wiring, so the transient and
+//     steady-state paths converge.
+//
+// Only a PROVEN mismatch (both sides type-checked in one universe and
+// AssignableTo/Implements still say no) drops the wire — and that drop
+// is loud: typed-zero + TODO comment + UNRESOLVED header + wire-coverage
+// lint finding, even for `forge:optional-dep` fields (a name-matched
+// type conflict is a misconfiguration, not an intentional nil).
+//
+// Caching: one matcher per generate run. Each (pkg/app, component)
+// pair is loaded once via packages.Load, then reused for every Deps
+// field of that component. Loading pkg/app jointly per component costs
+// one extra root per Load versus the old shared-app cache, but go/list
+// caching makes the delta negligible — and correctness (shared
+// universe) is non-negotiable.
 
 package codegen
 
 import (
 	"go/types"
+	"path"
 	"path/filepath"
 	"sync"
 
@@ -48,7 +91,7 @@ import (
 
 // MatchKind classifies the result of one Deps-field → AppExtras-field
 // match attempt. The two matchers (bootstrap and wire_gen) treat the
-// kinds slightly differently — see the comment on Match below.
+// kinds identically — see the policy block in the file header.
 type MatchKind int
 
 const (
@@ -58,21 +101,23 @@ const (
 	// MatchExactString — the pretty-printed type strings are byte-equal.
 	// Legacy fast path: no go/types load required. Both matchers wire.
 	MatchExactString
-	// MatchAssignable — types loaded and AppExtras.<F> is assignable to
-	// Deps.<F>'s declared type per go/types (narrow-interface case).
-	// Both matchers wire.
+	// MatchAssignable — both packages loaded in one shared type universe
+	// and AppExtras.<F> is assignable to Deps.<F>'s declared type per
+	// go/types (narrow-interface case). Both matchers wire.
 	MatchAssignable
-	// MatchNameMismatch — name matches but the types are not assignable
-	// (and not byte-equal). Bootstrap drops the wire and relies on the
-	// post-generate lint to surface the gap; wire_gen drops the
-	// app.<Field> resolution and falls through to typed-zero +
-	// unresolved hint so the silent compile-error class becomes loud.
+	// MatchNameMismatch — name matches but the types are PROVEN not
+	// assignable (both sides type-checked in a single universe).
+	// Bootstrap drops the wire and relies on the post-generate lint to
+	// surface the gap; wire_gen drops the app.<Field> resolution and
+	// falls through to typed-zero + loud unresolved hint so the silent
+	// compile-error class becomes loud.
 	MatchNameMismatch
-	// MatchUnavailable — go/types load failed (project not buildable,
-	// missing go.mod, package unloadable). The matcher falls back to
-	// MatchExactString semantics: byte-equal strings wire, anything else
-	// is treated as MatchNoName. This preserves the pre-matcher
-	// behavior so codegen never regresses on a project mid-edit.
+	// MatchUnavailable — assignability could not be proven either way
+	// (go/types load failed, project not buildable mid-pipeline, field
+	// invisible to the type checker). Per the deterministic fail-loud
+	// policy (file header), BOTH consumers treat this as "wire the name
+	// match": the compiler arbitrates a wrong wire loudly, whereas
+	// emitting nil would silently un-wire a live collaborator.
 	MatchUnavailable
 )
 
@@ -86,18 +131,27 @@ const (
 // Construction is cheap: NewDepsAssignabilityMatcher only stores the
 // project dir. Packages are loaded lazily on the first Match call that
 // requires them. A project that's missing pkg/app or whose source
-// doesn't type-check still constructs fine and degrades to the
-// string-compare fallback.
+// doesn't type-check still constructs fine and reports MatchUnavailable
+// (→ wire-the-name-match, the pre-matcher behavior).
 type DepsAssignabilityMatcher struct {
 	projectDir string
 
-	mu          sync.Mutex
-	appLoaded   bool
-	appPkg      *packages.Package
-	appFields   map[string]types.Type // AppExtras + App promoted fields → declared type
-	depsLoaded  map[string]bool       // key: roleRoot|pkgImportPath
-	depsPkgs    map[string]*packages.Package
-	depsFields  map[string]map[string]types.Type // key: roleRoot|pkgImportPath → field name → declared type
+	mu sync.Mutex
+	// universes caches one shared-universe load per component.
+	// Key: roleRoot|pkgDir. Each entry holds pkg/app's field types AND
+	// the component's Deps field types resolved from the SAME
+	// packages.Load call, so go/types identity holds across them.
+	universes map[string]*matcherUniverse
+}
+
+// matcherUniverse is the cached result of one joint (pkg/app +
+// component) load. ok=false means assignability cannot be proven for
+// any field of this component this run (load error or type errors on
+// either side) — Match degrades to MatchUnavailable.
+type matcherUniverse struct {
+	ok         bool
+	appFields  map[string]types.Type // App + AppExtras exported fields → declared type
+	depsFields map[string]types.Type // component Deps exported fields → declared type
 }
 
 // NewDepsAssignabilityMatcher returns a matcher rooted at projectDir.
@@ -106,20 +160,19 @@ type DepsAssignabilityMatcher struct {
 func NewDepsAssignabilityMatcher(projectDir string) *DepsAssignabilityMatcher {
 	return &DepsAssignabilityMatcher{
 		projectDir: projectDir,
-		depsLoaded: map[string]bool{},
-		depsPkgs:   map[string]*packages.Package{},
-		depsFields: map[string]map[string]types.Type{},
+		universes:  map[string]*matcherUniverse{},
 	}
 }
 
 // Match resolves whether the named Deps field should be wired from
 // AppExtras. roleRoot is "internal" / "handlers" / "workers" /
 // "operators"; pkgDir is the directory name under roleRoot (e.g.
-// "audit", "billing"); depsFieldName is the Go field name on the
-// package's Deps struct; appNameKnown reports whether AppExtras has a
-// same-name field (as parsed by ParseAppFields — the cheap AST path);
-// depsTypeStr / appTypeStr are the pretty-printed type strings the
-// legacy matchers already had.
+// "audit", "billing", possibly nested like "mcp/database");
+// depsFieldName is the Go field name on the package's Deps struct;
+// appNameKnown reports whether AppExtras has a same-name field (as
+// parsed by ParseAppFields — the cheap AST path); depsTypeStr /
+// appTypeStr are the pretty-printed type strings the legacy matchers
+// already had.
 //
 // The matcher uses the cheap inputs to avoid a go/types load when the
 // answer is unambiguous (no name match, or byte-equal strings). It
@@ -134,29 +187,28 @@ func (m *DepsAssignabilityMatcher) Match(roleRoot, pkgDir, depsFieldName, depsTy
 	}
 
 	// Strings differ — we need the type checker to decide. Load
-	// pkg/app and roleRoot/pkgDir lazily.
+	// pkg/app + roleRoot/pkgDir jointly (one universe), lazily.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.appLoaded {
-		m.loadAppLocked()
+	key := roleRoot + "|" + pkgDir
+	u, loaded := m.universes[key]
+	if !loaded {
+		u = m.loadUniverseLocked(roleRoot, pkgDir)
+		m.universes[key] = u
 	}
-	if m.appPkg == nil || m.appFields == nil {
+	if !u.ok {
 		return MatchUnavailable
 	}
-	appT, ok := m.appFields[depsFieldName]
+	appT, ok := u.appFields[depsFieldName]
 	if !ok {
 		// AST said the name was there but the type checker disagrees
 		// (e.g. the field is on a promoted struct we didn't model).
-		// Be safe and decline rather than emit a wire that won't compile.
+		// Unproven — per the fail-loud policy the consumers wire the
+		// name match and let the compiler arbitrate.
 		return MatchUnavailable
 	}
-
-	key := roleRoot + "|" + pkgDir
-	if !m.depsLoaded[key] {
-		m.loadDepsLocked(roleRoot, pkgDir)
-	}
-	depsT, ok := m.depsFields[key][depsFieldName]
+	depsT, ok := u.depsFields[depsFieldName]
 	if !ok {
 		return MatchUnavailable
 	}
@@ -173,60 +225,103 @@ func (m *DepsAssignabilityMatcher) Match(roleRoot, pkgDir, depsFieldName, depsTy
 	return MatchNameMismatch
 }
 
-// loadAppLocked loads pkg/app's types and indexes the AppExtras +
-// App-promoted exported fields by name. Called once per matcher
-// lifetime; caller holds m.mu.
-func (m *DepsAssignabilityMatcher) loadAppLocked() {
-	m.appLoaded = true
-	appDir := filepath.Join(m.projectDir, "pkg", "app")
-	pkg := loadPackageDir(appDir)
-	if pkg == nil {
-		return
-	}
-	m.appPkg = pkg
-	m.appFields = collectAppFieldTypes(pkg)
-}
-
-// loadDepsLocked loads roleRoot/pkgDir and indexes its Deps struct's
-// fields by name. Called once per (roleRoot, pkgDir) pair per matcher
-// lifetime; caller holds m.mu.
-func (m *DepsAssignabilityMatcher) loadDepsLocked(roleRoot, pkgDir string) {
-	key := roleRoot + "|" + pkgDir
-	m.depsLoaded[key] = true
-	dir := filepath.Join(m.projectDir, roleRoot, pkgDir)
-	pkg := loadPackageDir(dir)
-	if pkg == nil {
-		return
-	}
-	m.depsPkgs[key] = pkg
-	m.depsFields[key] = collectDepsFieldTypes(pkg)
-}
-
-// loadPackageDir runs packages.Load against dir. Returns nil on any
-// load failure or type error — callers degrade to MatchUnavailable.
+// loadUniverseLocked runs ONE packages.Load covering both pkg/app and
+// roleRoot/pkgDir, then indexes each side's fields. Caller holds m.mu.
 //
-// Note we reuse the exact Mode shape from ResolveCrossPkgInterface
-// (NeedName|NeedTypes|NeedTypesInfo|NeedDeps|NeedImports|NeedSyntax) —
-// that combination has already been battle-tested against forge's
-// workspace setup. cfg.Dir = the directory we're loading, so module
-// resolution honors the project's go.mod / go.work.
-func loadPackageDir(dir string) *packages.Package {
+// The joint load is the entire point (see file header): named types and
+// their method-signature parameter types are only Identical when both
+// packages come from the same loader universe. Splitting this into two
+// Load calls reintroduces the cross-universe false-negative.
+func (m *DepsAssignabilityMatcher) loadUniverseLocked(roleRoot, pkgDir string) *matcherUniverse {
+	u := &matcherUniverse{}
+
+	absProject, err := filepath.Abs(m.projectDir)
+	if err != nil {
+		return u
+	}
+	appDir := filepath.Join(absProject, "pkg", "app")
+	compDir := filepath.Join(absProject, roleRoot, filepath.FromSlash(pkgDir))
+
+	// Note we reuse the exact Mode shape from ResolveCrossPkgInterface
+	// (NeedName|NeedTypes|NeedTypesInfo|NeedDeps|NeedImports|NeedSyntax) —
+	// that combination has already been battle-tested against forge's
+	// workspace setup. NeedFiles is added so each returned package can
+	// be matched back to its on-disk directory (the loader does not
+	// guarantee result order). cfg.Dir = the project root, so module
+	// resolution honors the project's go.mod / go.work; patterns are
+	// "./"-relative and always slash-separated (go list syntax).
 	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo |
-			packages.NeedDeps | packages.NeedImports | packages.NeedSyntax,
-		Dir: dir,
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedTypes |
+			packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports |
+			packages.NeedSyntax,
+		Dir: absProject,
 	}
-	pkgs, err := packages.Load(cfg, ".")
+	appPattern := "./" + path.Join("pkg", "app")
+	compPattern := "./" + path.Join(filepath.ToSlash(roleRoot), filepath.ToSlash(pkgDir))
+	pkgs, err := packages.Load(cfg, appPattern, compPattern)
 	if err != nil || len(pkgs) == 0 {
-		return nil
+		return u
 	}
-	p := pkgs[0]
-	// Refuse partial type info — see ResolveCrossPkgInterface's
-	// identical comment for the rationale.
-	if len(p.Errors) > 0 || p.Types == nil {
-		return nil
+
+	var appPkg, compPkg *packages.Package
+	for _, p := range pkgs {
+		dir := packageDir(p)
+		switch {
+		case sameDir(dir, appDir):
+			appPkg = p
+		case sameDir(dir, compDir):
+			compPkg = p
+		}
 	}
-	return p
+	// Refuse partial type info on EITHER side: if a package didn't
+	// type-check, AssignableTo over its (incomplete) types would prove
+	// nothing — see ResolveCrossPkgInterface's identical rationale.
+	// Unproven, not mismatched: the consumers wire the name match.
+	if appPkg == nil || len(appPkg.Errors) > 0 || appPkg.Types == nil {
+		return u
+	}
+	if compPkg == nil || len(compPkg.Errors) > 0 || compPkg.Types == nil {
+		return u
+	}
+
+	u.ok = true
+	u.appFields = collectAppFieldTypes(appPkg)
+	u.depsFields = collectDepsFieldTypes(compPkg)
+	return u
+}
+
+// sameDir reports whether a and b name the same on-disk directory,
+// tolerating symlink aliases. macOS is the motivating case: the go
+// toolchain reports /private/var/... for source trees the caller knows
+// as /var/folders/... (t.TempDir), and a plain string compare would
+// fail to recognize the loaded package as ours — silently degrading
+// every Match to Unavailable.
+func sameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ra == rb
+}
+
+// packageDir resolves a loaded package back to its on-disk directory
+// using the first known source file. Empty when the package has no
+// files (typical for a pattern that matched nothing — the caller
+// treats that side as unavailable).
+func packageDir(p *packages.Package) string {
+	for _, list := range [][]string{p.GoFiles, p.CompiledGoFiles, p.OtherFiles} {
+		if len(list) > 0 {
+			return filepath.Dir(list[0])
+		}
+	}
+	return ""
 }
 
 // collectAppFieldTypes walks pkg/app's loaded types and returns a map

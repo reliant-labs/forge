@@ -106,6 +106,16 @@ func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, missing [
 			continue
 		}
 
+		// Deliberately-skipped-but-alive: `forge generate --accept`
+		// populated SkipWrite for this path, so the emitter rendered
+		// but the write was intentionally short-circuited to preserve
+		// the user's on-disk content. The file is alive by user intent
+		// — never a deletion candidate. (Forked entries — the persistent
+		// cousin of this per-run state — are skipped above.)
+		if checksums.SkipWrite[rel] {
+			continue
+		}
+
 		// Upgrade-managed paths: tracked in the manifest, but `forge
 		// generate` is not the emitter. `forge upgrade` writes these on
 		// version bumps; `forge generate` deliberately leaves them

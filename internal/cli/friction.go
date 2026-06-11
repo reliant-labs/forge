@@ -58,11 +58,23 @@ const frictionFileRelPath = ".forge/friction.jsonl"
 // frictionSeverities is the closed severity enum, in render order.
 var frictionSeverities = []string{"p0", "p1", "p2", "note"}
 
+// frictionSchemaVersion is stamped on every record. The record shape is
+// an API: once entries flow upstream (harness sync, a future
+// `forge friction submit`), producers and consumers version-skew freely.
+// Contract: additive-only within a version — never repurpose or remove a
+// tagged field; bump this integer only for a genuinely breaking reshape,
+// and keep readers accepting all prior versions.
+const frictionSchemaVersion = 1
+
 // FrictionEntry is one record in .forge/friction.jsonl. Every entry is
 // self-contained (no cross-line references) so lines can be unioned,
 // reordered, or truncated without corrupting neighbours. Field tags are
-// stable — downstream tooling parses this.
+// stable — downstream tooling parses this; see frictionSchemaVersion for
+// the evolution contract.
 type FrictionEntry struct {
+	// Schema is the record-shape version (frictionSchemaVersion at write
+	// time). Readers treat absent/zero as version 1.
+	Schema int `json:"schema"`
 	// ID is a short content hash ("fr-" + 10 hex chars) over the
 	// recorded-at instant and the entry payload. Content-derived (not a
 	// counter) so concurrent writers and merged branches can't collide
@@ -143,6 +155,7 @@ single append — no existing line is ever read back or rewritten.`,
 			}
 
 			entry := FrictionEntry{
+				Schema:       frictionSchemaVersion,
 				RecordedAt:   time.Now().UTC().Truncate(time.Second),
 				ForgeVersion: buildinfo.Version(),
 				Severity:     severity,

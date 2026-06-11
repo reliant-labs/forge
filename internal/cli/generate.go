@@ -30,6 +30,7 @@ func newGenerateCmd() *cobra.Command {
 		watch           bool
 		force           bool
 		accept          bool
+		acceptReason    string
 		explain         bool
 		explainDrift    bool
 		skipValidate    bool
@@ -72,6 +73,7 @@ Examples:
   forge generate --watch          # Watch mode for development
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
   forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
+  forge generate --accept --reason "needed per-tenant pool sizing"  # Same, recording WHY each fork was needed (.forge/friction.jsonl)
   forge generate --explain        # Print per-file provenance log after generate
   forge generate --explain-drift  # On Tier-1 drift: diff on-disk vs fresh render per drifted file, then fail with the report
   forge generate --skip-validate    # Skip the final 'go build ./...' validate step
@@ -124,6 +126,18 @@ Examples:
 					"pick one — --force to regenerate from templates, or --accept to refresh checksums and keep your edits")
 			}
 
+			// --reason only has meaning as the recorded WHY of an --accept
+			// fork. Rejecting the stray spelling loudly (instead of
+			// silently dropping the text) protects the design-feedback
+			// signal: a reason typed but not recorded is worse than no
+			// reason, because the user believes it was captured.
+			if acceptReason != "" && !accept {
+				return cliutil.UserErr("forge generate",
+					"--reason requires --accept: the reason is recorded against the fork(s) being accepted",
+					"",
+					"re-run as `forge generate --accept --reason \"<why>\"` (or drop --reason)")
+			}
+
 			// Backwards-compat: --scope was renamed to --steps in this
 			// release. Cobra itself emits the deprecation warning (via
 			// MarkDeprecated below). We just forward the value here, and
@@ -143,6 +157,7 @@ Examples:
 			err := runGeneratePipelineFlags(".", pipelineFlags{
 				Force:           force,
 				Accept:          accept,
+				AcceptReason:    acceptReason,
 				ExplainDrift:    explainDrift,
 				SkipValidate:    skipValidate,
 				SkipPreChecks:   skipPreChecks,
@@ -189,7 +204,8 @@ Examples:
 
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for changes and regenerate")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
-	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork)")
+	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork). Pair with --reason to record WHY.")
+	cmd.Flags().StringVar(&acceptReason, "reason", "", "WHY the fork was needed (used with --accept). Recorded per accepted path in .forge/friction.jsonl as design feedback; view with 'forge friction list --area fork'.")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
@@ -269,9 +285,18 @@ func runGeneratePipelineOpts(projectDir string, force, accept, skipValidate bool
 // crossed three — adding a fourth (--skip-pre-checks) without a struct
 // would have meant churning every caller of the positional form.
 type pipelineFlags struct {
-	Force         bool
-	Accept        bool
-	SkipValidate  bool
+	Force  bool
+	Accept bool
+	// AcceptReason is the user-supplied WHY behind an --accept fork
+	// (`--reason`). Recorded per accepted path into .forge/friction.jsonl
+	// at the moment of forking — forks are design feedback, and the
+	// reason is the payload. Empty means unstated: a placeholder entry
+	// is still recorded and a one-line nudge prints (never an
+	// interactive prompt; agents drive this flow). Meaningless without
+	// Accept; the cobra layer rejects that combination up-front.
+	AcceptReason string
+	SkipValidate bool
+
 	SkipPreChecks bool
 	// SkipConfigCheck opts out of the forge.yaml ↔ filesystem cross-
 	// check that stepLoadConfig runs after a successful load. The default

@@ -80,6 +80,6 @@ func formatTier1DriftReport(drift []checksums.Tier1DriftEntry) string {
 	fmt.Fprintf(&b, "  1. Move the customization to the designated extension point named above (user-owned; survives every regenerate) — or any Tier-2 file — then revert the generated file (`git checkout -- <path>`) and re-run.\n")
 	fmt.Fprintf(&b, "  2. Re-run with `--explain-drift` to see a diff of each drifted file against a fresh render of the current templates before deciding.\n")
 	fmt.Fprintf(&b, "  3. Re-run with `--force` to discard your edits and regenerate from the current templates.\n")
-	fmt.Fprintf(&b, "  4. Re-run with `--accept` to fork the file — you adopt PERMANENT ownership and forge will never update this file again (reverse with `forge unfork`, reconcile later with `forge unfork --merge`).\n")
+	fmt.Fprintf(&b, "  4. Re-run with `--accept` to fork the file — you adopt PERMANENT ownership and forge will never update this file again (reverse with `forge unfork`, reconcile later with `forge unfork --merge`). Pair it with `--reason \"<why>\"`: forks are design feedback, and the reason is recorded in .forge/friction.jsonl (`forge friction list --area fork`).\n")
 	return b.String()
 }

@@ -85,6 +85,7 @@ Each category is the same shape:
 |----------|-------------------------------------|
 | `version` | `pinned_version`, `binary_version`, `hint` (when mismatch) |
 | `shape` | `services[]`, `workers[]`, `operators[]`, `frontends[]`, `packs[]`, `packages[]` |
+| `shape.services[]` | `name`, `type`, `rpc_count`, `rpcs[]` — each rpc is `{name, streaming?, mcp_callable}`. `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`. `mcp_callable: true` means the RPC is exposed as an MCP tool by the `forge-mcp` bridge; streaming RPCs are `mcp_callable: false` (they stay in `gen/mcp/manifest.json` with a `streaming` marker but are excluded from MCP `tools/list` because MCP tool calls are unary). Check this BEFORE planning to call an RPC via MCP. |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |
 | `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]` |
 | `packs` | per-pack `{name, installed_version, latest_version, status}` |
@@ -197,6 +198,11 @@ forge audit --json | jq '.categories.shape.details |
   {services: (.services | length // 0),
    workers:  (.workers  | length // 0),
    frontends:(.frontends | length // 0)}'
+
+# Which RPCs can be called through the forge-mcp bridge (MCP tools)?
+forge audit --json | jq -r '.categories.shape.details.services[]?
+  | .name as $svc | .rpcs[]?
+  | "\($svc).\(.name): mcp_callable=\(.mcp_callable)\(if .streaming then " (streaming: \(.streaming))" else "" end)"'
 
 # Pack health: any pack pinned older than what the binary ships?
 forge audit --json | jq -r '.categories.packs.details[]?

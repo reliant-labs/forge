@@ -474,3 +474,117 @@ func TestAuditFeatures_NilConfig(t *testing.T) {
 		t.Errorf("nil cfg status = %q, want error", cat.Status)
 	}
 }
+
+// TestAuditShape_PerRPCStreamingAndMCPCallable pins the additive
+// per-RPC extension to the shape category: each service entry gains an
+// `rpcs` list with name / streaming / mcp_callable so agents learn —
+// before ever talking to forge-mcp — which RPCs the MCP bridge can
+// dispatch (unary) and which it cannot (streaming; excluded from MCP
+// tools/list). Additive-extension contract: pre-existing keys
+// (name/type/rpc_count) are asserted untouched alongside.
+func TestAuditShape_PerRPCStreamingAndMCPCallable(t *testing.T) {
+	dir := t.TempDir()
+
+	yamlBody := `name: test-project
+module_path: github.com/test/test-project
+forge_version: dev
+services:
+  - name: tasks
+    type: go_service
+    path: internal/tasks
+`
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+	// proto/services must exist for auditShape to attempt the parse.
+	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
+		t.Fatalf("mkdir proto/services: %v", err)
+	}
+	// ParseServicesFromProtos reads gen/forge_descriptor.json.
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatalf("mkdir gen: %v", err)
+	}
+	descriptor := `{
+  "services": [
+    {
+      "Name": "TasksService",
+      "Package": "tasks.v1",
+      "Methods": [
+        {"Name": "Create", "InputType": "CreateRequest", "OutputType": "CreateResponse"},
+        {"Name": "Tail", "InputType": "TailRequest", "OutputType": "TailResponse", "ServerStreaming": true},
+        {"Name": "Sync", "InputType": "SyncRequest", "OutputType": "SyncResponse", "ClientStreaming": true, "ServerStreaming": true}
+      ]
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(descriptor), 0o644); err != nil {
+		t.Fatalf("write descriptor: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/test/test-project\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cat := auditShape(cfg, dir)
+
+	// Round-trip through JSON — that's the shape sub-agents consume.
+	data, err := json.Marshal(cat.Details)
+	if err != nil {
+		t.Fatalf("marshal details: %v", err)
+	}
+	var details struct {
+		Services []struct {
+			Name     string `json:"name"`
+			Type     string `json:"type"`
+			RPCCount int    `json:"rpc_count"`
+			RPCs     []struct {
+				Name        string `json:"name"`
+				Streaming   string `json:"streaming"`
+				MCPCallable bool   `json:"mcp_callable"`
+			} `json:"rpcs"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(data, &details); err != nil {
+		t.Fatalf("unmarshal details: %v", err)
+	}
+	if len(details.Services) != 1 {
+		t.Fatalf("services = %#v, want 1 entry", details.Services)
+	}
+	svc := details.Services[0]
+	// Pre-existing keys keep their meaning (additive contract).
+	if svc.Name != "tasks" || svc.RPCCount != 3 {
+		t.Errorf("name/rpc_count = %q/%d, want tasks/3", svc.Name, svc.RPCCount)
+	}
+	if len(svc.RPCs) != 3 {
+		t.Fatalf("rpcs = %#v, want 3 entries", svc.RPCs)
+	}
+	want := []struct {
+		name      string
+		streaming string
+		callable  bool
+	}{
+		{"Create", "", true},
+		{"Tail", "server", false},
+		{"Sync", "bidi", false},
+	}
+	for i, w := range want {
+		got := svc.RPCs[i]
+		if got.Name != w.name || got.Streaming != w.streaming || got.MCPCallable != w.callable {
+			t.Errorf("rpcs[%d] = %+v, want %+v", i, got, w)
+		}
+	}
+
+	// Wire-shape check: unary RPCs must omit the streaming key
+	// entirely (omitempty), mirroring the MCP manifest convention.
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	firstRPC := raw["services"].([]any)[0].(map[string]any)["rpcs"].([]any)[0].(map[string]any)
+	if _, present := firstRPC["streaming"]; present {
+		t.Errorf("unary rpc entry must omit streaming key, got %v", firstRPC["streaming"])
+	}
+}

@@ -21,6 +21,14 @@
 // as a real go.mod requirement, not a vendored copy. The opt-in is
 // implicit (presence of the host-absolute replace in go.mod) and can be
 // disabled with `forge.yaml -> dev.vendor_local_forge_pkg: false`.
+//
+// Release builds of forge skip this flow entirely: they scaffold a
+// clean `require github.com/reliant-labs/forge/pkg vX.Y.Z` pin (no
+// replace), and the sync below is contractually a no-op for such
+// projects (TestSyncDevForgePkgReplace_CleanVersionPinUntouched).
+// `forge doctor` warns when a project is still vendored even though the
+// running forge release publishes a pkg version (doctor_pkgpin.go).
+// Full model: docs/pkg-versioning.md.
 package cli
 
 import (

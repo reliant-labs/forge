@@ -8,7 +8,7 @@ import (
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5" // registers "pgx5" DB driver
-	_ "github.com/golang-migrate/migrate/v4/source/file"    // registers "file://" source driver
+	_ "github.com/golang-migrate/migrate/v4/source/file"     // registers "file://" source driver
 	"github.com/spf13/cobra"
 
 	"{{.Module}}/pkg/config"

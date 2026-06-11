@@ -90,11 +90,11 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 			}
 		}
 
-		// Extract config messages
+		// Extract config messages. Walks nested message declarations too
+		// so a component config block declared inside AppConfig (instead
+		// of the conventional top-level declaration) still generates.
 		for _, msg := range f.Messages {
-			if cm, ok := extractConfigMessage(msg); ok {
-				desc.Configs = append(desc.Configs, cm)
-			}
+			appendConfigMessages(&desc.Configs, msg)
 		}
 	}
 
@@ -507,12 +507,52 @@ func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.Entit
 	return ed, true, nil
 }
 
+// appendConfigMessages extracts msg (and, recursively, its nested
+// message declarations) into out. Nested declarations matter for
+// component config blocks: `message AppConfig { message TraderConfig
+// {...} TraderConfig trader = 21; }` must surface TraderConfig as its
+// own ConfigMessage even though it isn't a top-level declaration.
+func appendConfigMessages(out *[]codegen.ConfigMessage, msg *protogen.Message) {
+	if cm, ok := extractConfigMessage(msg); ok {
+		*out = append(*out, cm)
+	}
+	for _, nested := range msg.Messages {
+		appendConfigMessages(out, nested)
+	}
+}
+
 // extractConfigMessage checks if a message has any fields with config_field options
 // and extracts them into a codegen.ConfigMessage.
+//
+// Two field shapes participate:
+//
+//   - scalar fields carrying the (forge.v1.config) extension — the classic
+//     env_var/flag/default leaves;
+//   - message-typed fields whose target message itself has config-annotated
+//     fields — component config-block references (e.g. `TraderConfig trader
+//     = 21;` on AppConfig). These need NO annotation of their own; the env
+//     binding lives entirely on the referenced block's leaf fields. They are
+//     recorded with ProtoType "message" + MessageType naming the block so
+//     config_gen can emit a nested struct and wire_gen can resolve Deps
+//     fields of the block type to `cfg.<Field>`.
 func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	var configFields []codegen.ConfigField
 
 	for _, f := range msg.Fields {
+		// Component config-block reference: a message-typed field whose
+		// target message has config-annotated fields. Repeated/map fields
+		// are excluded — a config block composes exactly once per field.
+		if f.Desc.Kind() == protoreflect.MessageKind && !f.Desc.IsList() && !f.Desc.IsMap() &&
+			f.Message != nil && f.Message != msg && messageHasConfigFields(f.Message) {
+			configFields = append(configFields, codegen.ConfigField{
+				Name:        string(f.Desc.Name()),
+				GoName:      f.GoName,
+				ProtoType:   "message",
+				MessageType: string(f.Message.Desc.Name()),
+			})
+			continue
+		}
+
 		opts := f.Desc.Options()
 		if opts == nil {
 			continue
@@ -551,6 +591,23 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 		Name:   string(msg.Desc.Name()),
 		Fields: configFields,
 	}, true
+}
+
+// messageHasConfigFields reports whether any DIRECT field of msg
+// carries the (forge.v1.config) extension — the test for "is this
+// message a config block?". Deliberately non-recursive: one level of
+// block nesting is the supported shape (root Config → block leaves).
+func messageHasConfigFields(msg *protogen.Message) bool {
+	for _, f := range msg.Fields {
+		opts := f.Desc.Options()
+		if opts == nil {
+			continue
+		}
+		if proto.HasExtension(opts, forgev1.E_Config) {
+			return true
+		}
+	}
+	return false
 }
 
 // protoKindToString returns the proto type name for a protoreflect.Kind.

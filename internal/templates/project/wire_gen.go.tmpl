@@ -16,7 +16,14 @@
 //   2. If the field's name matches a conventional source (Logger, Config,
 //      Authorizer) or an existing field on *App, wire_gen picks it up
 //      automatically — no further action needed.
-//   3. Otherwise, add a matching field to *App (in a user-owned
+//   3. Configuration values (scalars: string/int/bool/duration) do NOT
+//      belong in Deps directly — declare a component config block
+//      (`message <Component>Config` in proto/config/v1/config.proto,
+//      composed on AppConfig) and take it as ONE typed field
+//      (`Cfg config.<Component>Config`). wire_gen resolves the field
+//      from the loaded Config by TYPE; per-env values flow from
+//      config.<env>.yaml automatically.
+//   4. Otherwise, add a matching field to *App (in a user-owned
 //      pkg/app/app_extras.go file) and assign it in setup.go. wire_gen
 //      will resolve the next regenerate by exact-name match.
 //

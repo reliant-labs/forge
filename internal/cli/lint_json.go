@@ -296,6 +296,12 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 			return nil, err
 		}
 		return buildLintJSONReport(fs, false), nil
+	case flags.configDeps:
+		fs, err := collectConfigDepsJSON(cwd)
+		if err != nil {
+			return nil, err
+		}
+		return buildLintJSONReport(fs, false), nil
 	}
 
 	return collectAllLintersJSON(ctx, paths, cfg, cwd)
@@ -459,6 +465,18 @@ func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.Proj
 		dirExists("workers") || dirExists("operators") {
 		if fs, err := collectOptionalDepsGuardJSON(cwd); err != nil {
 			collectErr("optional-deps-guard lint", err, false)
+		} else {
+			add(fs, false)
+		}
+	}
+
+	// 13d. Config-deps — advisory (warnings only, mirrors text mode's
+	// step 13d): scalar Deps fields are configuration; declare a
+	// component config block instead.
+	if dirExists("internal") || dirExists("handlers") ||
+		dirExists("workers") || dirExists("operators") {
+		if fs, err := collectConfigDepsJSON(cwd); err != nil {
+			collectErr("config-deps lint", err, false)
 		} else {
 			add(fs, false)
 		}
@@ -746,6 +764,30 @@ func collectOptionalDepsGuardJSON(projectDir string) ([]lintJSONFinding, error) 
 			Rule:     "forge-optional-deps-guard",
 			Message:  fmt.Sprintf("%s dereferences optional dep Deps.%s (marked `// forge:optional-dep` — may be nil) without a dominating nil-guard in %s", f.Expr, f.Field, f.Method),
 			FixHint:  optionalDepsGuardFixHint(f),
+		})
+	}
+	return out, nil
+}
+
+// collectConfigDepsJSON maps config-deps findings onto the JSON
+// contract. Severity warning across the board — scalar Deps fields
+// compile (and may be hand-wired today); the finding is the nudge
+// toward the component config-block declaration.
+func collectConfigDepsJSON(projectDir string) ([]lintJSONFinding, error) {
+	findings, err := collectConfigDepsFindings(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("config-deps lint failed: %w", err)
+	}
+	out := make([]lintJSONFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, lintJSONFinding{
+			File:     f.File,
+			Line:     f.Line,
+			Col:      f.Col,
+			Severity: lintSevWarning,
+			Rule:     "forge-config-deps",
+			Message:  fmt.Sprintf("%s/%s Deps.%s is a naked scalar (%s) — scalar Deps fields are configuration, not collaborators", f.Role, f.Package, f.Field, f.Type),
+			FixHint:  configDepsFixHint(f),
 		})
 	}
 	return out, nil

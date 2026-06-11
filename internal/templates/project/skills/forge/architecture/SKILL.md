@@ -127,6 +127,63 @@ All annotations use the `forge.v1` package (imported via `forge/v1/forge.proto`)
 
 See `proto` for the full annotation reference and CRUD naming conventions.
 
+## Component config blocks
+
+Components (services, workers, operators) declare their own typed
+configuration as a **config block**: a message in
+`proto/config/v1/config.proto`, conventionally named `<Component>Config`,
+composed as a field on `AppConfig`. Scalar Deps fields
+(string/int/bool/duration) are the antipattern this replaces — scalars
+are configuration, not collaborators, so wire_gen can never resolve them
+from App/AppExtras (they regenerate as typed zeros + TODOs forever).
+
+```proto
+message TraderConfig {
+  int32 max_per_tick = 1 [(forge.v1.config) = {
+    env_var: "TRADER_MAX_PER_TICK", default_value: "10",
+    description: "Maximum persists per tick"
+  }];
+}
+
+message AppConfig {
+  // ... existing fields ...
+  TraderConfig trader = 21;  // no annotation needed on this field
+}
+```
+
+The component takes the generated block as one typed Deps field:
+
+```go
+type Deps struct {
+    Logger *slog.Logger
+    Cfg    config.TraderConfig  // or *config.TraderConfig
+}
+```
+
+`forge generate` then:
+
+- emits `type TraderConfig struct {...}` + `Trader TraderConfig` on
+  `Config` in `pkg/config/config.go`, with env/flag/default loading for
+  every leaf and the `.env.example` entries;
+- wires `Cfg: cfg.Trader` in `pkg/app/wire_gen.go` **by type** — exactly
+  one `Config` field of the block type matches; two fields of the same
+  block type are a hard generate error listing the candidates;
+- projects per-env values: `max_per_tick: 50` in `config.<env>.yaml`
+  (flat snake_case leaf keys, same namespace as root fields) lands in
+  the env's generated ConfigMap + env var like any root field, and
+  `forge run` injects it locally.
+
+Resolution precedence: an AppExtras field whose NAME matches the Deps
+field still wins (explicit user wiring); the type-based config-block
+match applies only when nothing else resolved. Keep leaf field names
+unique across blocks — the per-env yaml namespace is flat.
+
+`forge lint --config-deps` (also in `forge audit` as the `config_deps`
+category) flags naked-scalar Deps fields with a paste-ready block
+snippet. There is no scaffolding command — the two-step is: add the
+block message + `AppConfig` field to the config proto, switch the Deps
+field to `Cfg config.<Component>Config`, and run `forge generate`.
+
 ## Contracts at every boundary
 
 | Boundary | Defined by | Enforced by |

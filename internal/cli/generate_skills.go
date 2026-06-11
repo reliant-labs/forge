@@ -20,7 +20,7 @@
 // NOT a precious user edit, so it is overwritten with a one-line notice
 // per file. Once an entry is Tier-1, the standard pre-pipeline stomp
 // guard (stepCheckTier1Drift) applies — hand-edits surface as drift and
-// require --force / --accept like any other Tier-1 file.
+// require --force / `forge disown` like any other Tier-1 file.
 package cli
 
 import (
@@ -116,11 +116,13 @@ func stepAgentSkills(ctx *pipelineContext) error {
 		// a one-line notice when the on-disk bytes actually differ.
 		// Steady-state Tier-1 entries regenerate unconditionally too: the
 		// pre-pipeline stomp guard already adjudicated hand-edit drift
-		// (--force / --accept), so force=true here cannot stomp anything
-		// the guard didn't approve.
+		// (--force / `forge disown`), so force=true here cannot stomp
+		// anything the guard didn't approve. Disowned entries are exempt
+		// from the stale notice — the Tier-1 writer chokepoint skips
+		// them anyway (user-owned).
 		if cs != nil {
 			entry, tracked := cs.Files[rel]
-			if !tracked || entry.Tier != 1 {
+			if !tracked || (entry.Tier != 1 && !entry.Disowned) {
 				if old, err := os.ReadFile(filepath.Join(ctx.AbsPath, rel)); err == nil && !bytes.Equal(old, content) {
 					fmt.Printf("   refreshed stale skill: %s\n", rel)
 				}

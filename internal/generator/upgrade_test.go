@@ -475,3 +475,66 @@ func findManagedIdx(t *testing.T, destPath string) int {
 	t.Fatalf("managed file %q not found", destPath)
 	return -1
 }
+// TestUpgradeSkipsDisownedFiles: a disowned (or legacy forked) entry is
+// user-owned — `forge upgrade` must leave the on-disk file untouched
+// while it exists, reporting it as skipped instead.
+func TestUpgradeSkipsDisownedFiles(t *testing.T) {
+	cfg := testProjectConfig()
+	data := buildTemplateData(cfg, "")
+
+	dir := t.TempDir()
+	cs := &FileChecksums{Files: map[string]FileChecksumEntry{}}
+
+	// Materialize every managed file pristine, then disown the first one
+	// with hand-edited content.
+	files := managedFiles()
+	for _, f := range files {
+		content, err := renderManagedFile(f, data)
+		if err != nil {
+			t.Fatalf("render %s: %v", f.templateName, err)
+		}
+		dest := filepath.Join(dir, f.destPath)
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		cs.RecordFile(f.destPath, content)
+	}
+	disownedPath := files[0].destPath
+	userContent := []byte("# user-owned content after disown\n")
+	if err := os.WriteFile(filepath.Join(dir, disownedPath), userContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cs.RecordFile(disownedPath, userContent)
+	entry := cs.Files[disownedPath]
+	entry.Tier = 2
+	entry.Disowned = true
+	cs.Files[disownedPath] = entry
+	if err := SaveChecksums(dir, cs); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Upgrade(dir, cfg, false, false)
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+
+	var sawSkip bool
+	for _, r := range results {
+		if r.Path == disownedPath {
+			sawSkip = r.Status == UpgradeSkipped
+		}
+	}
+	if !sawSkip {
+		t.Errorf("disowned %s not reported as skipped: %+v", disownedPath, results)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, disownedPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(userContent) {
+		t.Errorf("upgrade overwrote a disowned file:\n%s", got)
+	}
+}

@@ -662,17 +662,17 @@ func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 // RegenerateInfraFilesTracked is RegenerateInfraFiles routed through the
 // checksums chokepoint. With a non-nil cs every Tier-1 infra write:
 //
-//   - honors forked entries (the user `--accept`-ed the file: forge
-//     parks the fresh render under .forge/render/ instead of stomping —
-//     the raw os.WriteFile path this replaces violated the "forge never
-//     regenerates forked files" contract for cmd/*.go and friends);
+//   - honors disowned entries (the user ran `forge disown`: the write
+//     is skipped while the file exists — the raw os.WriteFile path this
+//     replaces violated the "forge never regenerates user-owned files"
+//     contract for cmd/*.go and friends);
 //   - records the render hash + WrittenThisRun so the stale sweep and
 //     the next run's drift guard see an accurate manifest;
 //   - tags the entry Tier-1 (these files ARE regenerated every run).
 //
 // force=true preserves the historical always-overwrite semantics for
-// non-forked files: the Tier-1 stomp guard ran earlier in the pipeline,
-// so any surviving drift was already adjudicated (--force / --accept).
+// forge-owned files: the Tier-1 stomp guard ran earlier in the pipeline,
+// so any surviving drift was already adjudicated (--force / disown).
 //
 // A nil cs falls back to untracked writes (legacy callers).
 func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, cs *FileChecksums) error {
@@ -708,6 +708,21 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 	var results []UpgradeResult
 
 	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+		// Disowned entries (and legacy fork-era ones) are user-owned:
+		// upgrade never touches them while the file exists. A missing
+		// file falls through — deletion is the documented re-adoption
+		// path, and upgrade re-emitting it is the same contract as
+		// `forge generate`.
+		if entry, ok := cs.Files[f.destPath]; ok && (entry.Disowned || entry.Forked) {
+			if _, statErr := os.Stat(filepath.Join(projectDir, f.destPath)); statErr == nil {
+				results = append(results, UpgradeResult{
+					Path:   f.destPath,
+					Status: UpgradeSkipped,
+				})
+				continue
+			}
+		}
+
 		// Render the expected content from the current template
 		expected, err := renderManagedFile(f, data)
 		if err != nil {
@@ -837,5 +852,18 @@ func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) e
 		return err
 	}
 	cs.RecordFile(relPath, content)
+	// A write through the upgrade chokepoint means forge owns the result
+	// again — the only way a disowned entry reaches here is the deletion
+	// re-adoption path (Upgrade skips disowned entries whose file
+	// exists), so clear the user-ownership markers.
+	entry := cs.Files[relPath]
+	if entry.Disowned || entry.Forked {
+		entry.Disowned = false
+		entry.DisownedAt = ""
+		entry.Forked = false
+		entry.Accepted = false
+		entry.ForkedAt = ""
+		cs.Files[relPath] = entry
+	}
 	return nil
 }

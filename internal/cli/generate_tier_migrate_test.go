@@ -137,7 +137,7 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 // rewrite) must survive `forge generate --force` — --force means
 // "discard current-run hand-edits on files forge owns", not "undo my
 // recorded ownership transfer".
-func TestEmitTier2OnceIfMissing_ForkedSurvivesForce(t *testing.T) {
+func TestEmitTier2OnceIfMissing_DisownedSurvivesForce(t *testing.T) {
 	dir := t.TempDir()
 	rel := "frontends/web/src/app/page.tsx"
 	full := filepath.Join(dir, rel)
@@ -150,7 +150,7 @@ func TestEmitTier2OnceIfMissing_ForkedSurvivesForce(t *testing.T) {
 	}
 
 	cs := &generator.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		rel: {Hash: "abc", Tier: 2, Forked: true},
+		rel: {Hash: "abc", Tier: 2, Disowned: true},
 	}}
 
 	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
@@ -163,18 +163,59 @@ func TestEmitTier2OnceIfMissing_ForkedSurvivesForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(got) != userContent {
-		t.Errorf("forked Tier-2 file was clobbered by force:\n%s", got)
+		t.Errorf("disowned Tier-2 file was clobbered by force:\n%s", got)
 	}
 
-	// Sanity: a NON-forked existing file IS re-scaffolded under force
+	// Sanity: a NON-disowned existing file IS re-scaffolded under force
 	// (the pre-existing documented semantics).
 	delete(cs.Files, rel)
 	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
 		templates.FrontendTemplateData{FrontendName: "web", ProjectName: "demo"}, cs, true); err != nil {
-		t.Fatalf("emitTier2OnceIfMissing (non-forked): %v", err)
+		t.Fatalf("emitTier2OnceIfMissing (non-disowned): %v", err)
 	}
 	got, _ = os.ReadFile(full)
 	if string(got) == userContent {
-		t.Error("non-forked Tier-2 file should be re-scaffolded under --force")
+		t.Error("non-disowned Tier-2 file should be re-scaffolded under --force")
+	}
+}
+
+// TestMigrateLegacyForks pins the belt-and-braces pipeline migration:
+// every legacy `forked: true` entry converts to disowned (tier=2 +
+// marker), inheriting the fork timestamp as the disowned-since time;
+// everything else is untouched.
+func TestMigrateLegacyForks(t *testing.T) {
+	cs := &generator.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
+		"pkg/app/bootstrap.go": {Hash: "a", Tier: 1, Forked: true, Accepted: true, ForkedAt: "2026-01-01T00:00:00Z"},
+		"pkg/app/wire_gen.go":  {Hash: "b", Tier: 1, Forked: true}, // no timestamp recorded
+		"pkg/app/app_gen.go":   {Hash: "c", Tier: 1},
+		"internal/x/svc.go":    {Hash: "d", Tier: 2},
+	}}
+
+	converted := migrateLegacyForks(cs)
+	want := []string{"pkg/app/bootstrap.go", "pkg/app/wire_gen.go"}
+	if len(converted) != 2 || converted[0] != want[0] || converted[1] != want[1] {
+		t.Fatalf("converted = %v, want %v (sorted)", converted, want)
+	}
+
+	e := cs.Files["pkg/app/bootstrap.go"]
+	if e.Tier != 2 || !e.Disowned || e.Forked || e.Accepted || e.ForkedAt != "" {
+		t.Errorf("bootstrap.go = %+v, want clean disowned shape", e)
+	}
+	if e.DisownedAt != "2026-01-01T00:00:00Z" {
+		t.Errorf("bootstrap.go DisownedAt = %q, want inherited ForkedAt", e.DisownedAt)
+	}
+	if e := cs.Files["pkg/app/wire_gen.go"]; !e.Disowned || e.DisownedAt != "" {
+		t.Errorf("wire_gen.go = %+v, want disowned with empty (unknown) since", e)
+	}
+	if e := cs.Files["pkg/app/app_gen.go"]; e.Disowned || e.Tier != 1 {
+		t.Errorf("app_gen.go touched by legacy-fork migration: %+v", e)
+	}
+	if e := cs.Files["internal/x/svc.go"]; e.Disowned || e.Tier != 2 {
+		t.Errorf("ordinary starter touched by legacy-fork migration: %+v", e)
+	}
+
+	// Idempotent: a second pass converts nothing.
+	if again := migrateLegacyForks(cs); len(again) != 0 {
+		t.Errorf("second migrateLegacyForks pass converted %v, want nothing", again)
 	}
 }

@@ -72,8 +72,7 @@ Examples:
   forge generate                  # Generate all code
   forge generate --watch          # Watch mode for development
   forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
-  forge generate --accept         # Keep hand-edits to Tier-1 files; refresh recorded checksums
-  forge generate --accept --reason "needed per-tenant pool sizing"  # Same, recording WHY each fork was needed (.forge/friction.jsonl)
+  forge generate --accept --reason "<why>"  # DEPRECATED alias for 'forge disown' on the drifted set (--reason required)
   forge generate --explain        # Print per-file provenance log after generate
   forge generate --explain-drift  # On Tier-1 drift: diff on-disk vs fresh render per drifted file, then fail with the report
   forge generate --skip-validate    # Skip the final 'go build ./...' validate step
@@ -121,19 +120,34 @@ Examples:
 
 			if force && accept {
 				return cliutil.UserErr("forge generate",
-					"--force and --accept are mutually exclusive: --force discards your edits, --accept keeps them",
+					"--force and --accept are mutually exclusive: --force discards your edits, --accept disowns the drifted files (keeps them, permanently)",
 					"",
-					"pick one — --force to regenerate from templates, or --accept to refresh checksums and keep your edits")
+					"pick one — --force to regenerate from templates, or `forge disown <path> --reason \"<why>\"` to take ownership")
+			}
+
+			// --accept is a DEPRECATED alias for disowning the drifted
+			// set. Like `forge disown`, it refuses to run without a
+			// recorded reason — disowns are design feedback, and the
+			// reason is the payload.
+			if accept {
+				fmt.Fprintln(os.Stderr, "⚠️  DEPRECATED: `forge generate --accept` is now an alias for `forge disown` and will be removed in the next release.")
+				fmt.Fprintln(os.Stderr, "   Use `forge disown <path>... --reason \"<why>\"` — it disowns exactly the files you name instead of the whole drifted set.")
+				if strings.TrimSpace(acceptReason) == "" {
+					return cliutil.UserErr("forge generate",
+						"--accept requires --reason: disowning generated files is design feedback, and the reason is the payload",
+						"",
+						"re-run as `forge generate --accept --reason \"<why>\"`, or better: `forge disown <path>... --reason \"<why>\"`")
+				}
 			}
 
 			// --reason only has meaning as the recorded WHY of an --accept
-			// fork. Rejecting the stray spelling loudly (instead of
+			// disown. Rejecting the stray spelling loudly (instead of
 			// silently dropping the text) protects the design-feedback
 			// signal: a reason typed but not recorded is worse than no
 			// reason, because the user believes it was captured.
 			if acceptReason != "" && !accept {
 				return cliutil.UserErr("forge generate",
-					"--reason requires --accept: the reason is recorded against the fork(s) being accepted",
+					"--reason requires --accept: the reason is recorded against the file(s) being disowned",
 					"",
 					"re-run as `forge generate --accept --reason \"<why>\"` (or drop --reason)")
 			}
@@ -204,8 +218,8 @@ Examples:
 
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for changes and regenerate")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Discard hand-edits to Tier-1 files and regenerate from current templates")
-	cmd.Flags().BoolVar(&accept, "accept", false, "Keep hand-edits to Tier-1 files; refresh recorded checksums to match (rare; documents an intentional fork). Pair with --reason to record WHY.")
-	cmd.Flags().StringVar(&acceptReason, "reason", "", "WHY the fork was needed (used with --accept). Recorded per accepted path in .forge/friction.jsonl as design feedback; view with 'forge friction list --area fork'.")
+	cmd.Flags().BoolVar(&accept, "accept", false, "DEPRECATED: alias for `forge disown` on every drifted Tier-1 file (one-way transfer to user ownership). Requires --reason. Prefer `forge disown <path>... --reason \"<why>\"`.")
+	cmd.Flags().StringVar(&acceptReason, "reason", "", "WHY the disown was needed (used with --accept). Recorded per disowned path in .forge/friction.jsonl as design feedback; view with 'forge friction list --area disown'.")
 	cmd.Flags().BoolVar(&explain, "explain", false, "Print a per-file provenance log after generate")
 	cmd.Flags().BoolVar(&explainDrift, "explain-drift", false, "On Tier-1 drift, run the pipeline with drifted files redirected to .forge/render/ side renders, print a bounded diff of on-disk vs fresh render per file, then fail with the drift report (explains; never overwrites or approves)")
 	cmd.Flags().BoolVar(&skipValidate, "skip-validate", false, "Skip the final 'go build ./...' validate step (useful during multi-lane migrations when the tree is in a partial-build state)")
@@ -238,17 +252,15 @@ Examples:
 	// passes it. One-release alias — drop after the next minor bump.
 	_ = cmd.Flags().MarkDeprecated("scope", "use --steps instead")
 
-	// `forge generate unfork` is the natural pair of `forge generate
-	// --accept`: --accept marks a Tier-1 file as forked (forge stops
-	// regenerating it), `unfork` reverses the decision. Lives under
-	// generate so the two opposites are discoverable side-by-side.
+	// `forge generate unfork` survives ONE release as legacy-fork
+	// migration tooling (convert `forked: true` entries to disowned, or
+	// re-adopt with --readopt / reconcile with --merge). Registered here
+	// for muscle memory; the top-level `forge unfork` is the canonical
+	// spelling.
 	cmd.AddCommand(newUnforkCmd())
 
-	// `forge generate accept-fork <paths>` pre-flips the `accepted: true`
-	// flag on already-forked entries so the end-of-run forked-skip
-	// report stays quiet for them. Use case: bulk-silence a cohort of
-	// known-long-lived forks (cp-forge has 11) without waiting for the
-	// "loud once" pass to fire 11 times.
+	// `forge generate accept-fork <paths>` is a DEPRECATED alias for
+	// `forge disown` — kept functioning one release.
 	cmd.AddCommand(newAcceptForkCmd())
 
 	return cmd
@@ -425,12 +437,8 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// hand-edits — the historic safe default. With --reset-tier2 --yes,
 	// the hook auto-approves; without --yes it prompts per file.
 	checksums.ResetTier2State()
-	// Per-run fork-skip tracking starts empty, and whatever accumulates
-	// is reported loudly on the way out — even when a later step fails,
-	// the skips that already happened are real and the user needs to see
-	// them. The coherence-group warning piggybacks on the same exit
-	// point: it needs the full run's changed-render set to know whether
-	// a forked file's siblings moved. See generate_fork_report.go.
+	// Per-run side-render redirect tracking (--explain-drift) starts
+	// empty on every invocation.
 	checksums.ResetPerRunState()
 	if flags.ResetTier2 {
 		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
@@ -447,16 +455,6 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
 			log.Printf("Warning: failed to save checksums: %v", saveErr)
 		}
-	}()
-
-	// Fork visibility fires on the way out — even when a later step
-	// fails, the skips that already happened are real and the user needs
-	// to see them. Registered AFTER the save defer so it runs BEFORE it
-	// (LIFO) and the loud-once Accepted flip lands in the same save.
-	// See generate_fork_report.go.
-	defer func() {
-		reportForkedSkips(os.Stderr, ctx.Checksums)
-		warnIncoherentForkGroups(os.Stderr, ctx.Checksums)
 	}()
 
 	// Tier-2 preservation summary fires only when --force is set: that's

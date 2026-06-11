@@ -40,8 +40,8 @@
 // The Go-shaped fixtures assert, in order:
 //
 //  1. `forge generate` succeeds AND is idempotent: a second run
-//     produces zero file changes (full tree hash) and zero fork
-//     warnings.
+//     produces zero file changes (full tree hash) and zero
+//     ownership-machinery warnings.
 //  2. The generated wiring (wire_gen.go + bootstrap.go) contains NO
 //     silent nil / dropped wire for the known name-matched Deps
 //     fields — the deps-matcher pin.
@@ -49,10 +49,11 @@
 //     forge/pkg replace).
 //  4. The built binary boots, /healthz returns 200, and SIGTERM shuts
 //     it down cleanly within a bounded wait.
-//  5. Fork lifecycle round-trip on pkg/app/wire_gen.go:
-//     hand-edit → generate (drift error) → generate --accept (fork +
-//     coherence warning) → generate (side render + loud skip) →
-//     unfork --merge (clean reconcile) → generate (clean again).
+//  5. Disown lifecycle round-trip on pkg/app/wire_gen.go:
+//     hand-edit → generate (drift error with the new option text) →
+//     `forge disown --reason` (one-way transfer) → generate (file left
+//     alone, zero warnings) → delete + generate (re-adopted to the
+//     pristine render, entry back to Tier-1).
 //
 // Run with:
 //
@@ -318,8 +319,8 @@ func setupExtras(app *App, cfg *config.Config) error {
 	// ── 4. boots: /healthz 200, clean SIGTERM shutdown ───────────────
 	bootHealthzAndShutdown(t, projectDir, 18931)
 
-	// ── 5. fork lifecycle round-trip on pkg/app/wire_gen.go ──────────
-	forkRoundTrip(t, forgeBin, projectDir)
+	// ── 5. disown lifecycle round-trip on pkg/app/wire_gen.go ────────
+	disownRoundTrip(t, forgeBin, projectDir)
 
 	t.Logf("cp-forge-shaped fixture total: %s", time.Since(start))
 }
@@ -460,8 +461,8 @@ type AppExtras struct {
 	// ── 4. boots with all workers registered; clean shutdown ─────────
 	bootHealthzAndShutdown(t, projectDir, 18932)
 
-	// ── 5. fork lifecycle round-trip ──────────────────────────────────
-	forkRoundTrip(t, forgeBin, projectDir)
+	// ── 5. disown lifecycle round-trip ────────────────────────────────
+	disownRoundTrip(t, forgeBin, projectDir)
 
 	t.Logf("kalshi-shaped fixture total: %s", time.Since(start))
 }
@@ -1038,9 +1039,10 @@ require google.golang.org/protobuf v1.36.9
 
 // generateTwiceIdempotent runs `forge generate` twice and asserts the
 // second run (a) succeeds, (b) changes ZERO files (full tree hash
-// compare), and (c) emits zero fork warnings. Idempotency is a
-// first-class assertion: the kalshi matcher bug manifested as regen
-// output flip-flopping between app.<Field> and nil across runs.
+// compare), and (c) emits zero ownership-machinery warnings.
+// Idempotency is a first-class assertion: the kalshi matcher bug
+// manifested as regen output flip-flopping between app.<Field> and nil
+// across runs.
 func generateTwiceIdempotent(t *testing.T, forgeBin, projectDir string) {
 	t.Helper()
 
@@ -1146,13 +1148,14 @@ func corpusLineDiff(a, b string, maxLines int) string {
 	return strings.Join(out, "\n")
 }
 
-// assertNoForkNoise fails when a clean (fork-free) generate run prints
-// fork machinery output.
+// assertNoForkNoise fails when a clean generate run prints ownership-
+// machinery output: fork-era warnings (must never appear again) or
+// disown/migration lines (must not appear on a clean tree).
 func assertNoForkNoise(t *testing.T, label, out string) {
 	t.Helper()
-	for _, needle := range []string{"forked file(s)", "fork-coherence", "now forks"} {
+	for _, needle := range []string{"forked file(s)", "fork-coherence", "now forks", "disowned", "legacy forked"} {
 		if strings.Contains(out, needle) {
-			t.Errorf("%s: unexpected fork warning (%q) in output:\n%s", label, needle, out)
+			t.Errorf("%s: unexpected ownership-machinery output (%q) in:\n%s", label, needle, out)
 		}
 	}
 }
@@ -1290,23 +1293,27 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string, port int) {
 	_ = os.Remove(serverBin)
 }
 
-// forkRoundTrip exercises the full fork lifecycle on ONE file
+// disownRoundTrip exercises the full ownership lifecycle on ONE file
 // (pkg/app/wire_gen.go):
 //
-//	hand-edit → generate (drift error) → generate --accept (fork +
-//	coherence warning) → generate (side render + loud skip) →
-//	unfork --merge (clean three-way reconcile) → generate (clean).
-func forkRoundTrip(t *testing.T, forgeBin, projectDir string) {
+//	hand-edit → generate (drift error, new option text) →
+//	`forge disown --reason` (one-way transfer) → generate leaves the
+//	file alone with ZERO warnings → delete + generate re-adopts to the
+//	pristine render (entry back to Tier-1).
+func disownRoundTrip(t *testing.T, forgeBin, projectDir string) {
 	t.Helper()
 	const rel = "pkg/app/wire_gen.go"
 	wireGenPath := filepath.Join(projectDir, rel)
 	pristine := readFileE2E(t, wireGenPath)
 
-	// Hand-edit: append a user marker (an edit a 3-way merge keeps).
-	const marker = "func userForkMarker() {}"
-	appendCorpusFile(t, wireGenPath, "\n// user fork edit — must survive unfork --merge\n"+marker+"\n")
+	// Hand-edit: append a user marker.
+	const marker = "func userDisownMarker() {}"
+	appendCorpusFile(t, wireGenPath, "\n// user edit — must survive every generate after disown\n"+marker+"\n")
 
-	// 1. Plain generate must trip the Tier-1 stomp guard.
+	// 1. Plain generate must trip the Tier-1 stomp guard, and the error
+	// must teach the new option set: extension point first, then
+	// --explain-drift / --force / friction, with `forge disown --reason`
+	// as the explicit last-resort one-way door. No fork-era guidance.
 	out, err := runCorpusCmd(projectDir, forgeBin, "generate")
 	if err == nil {
 		t.Fatalf("generate over a hand-edited Tier-1 file must fail (drift guard); output:\n%s", out)
@@ -1314,57 +1321,89 @@ func forkRoundTrip(t *testing.T, forgeBin, projectDir string) {
 	if !strings.Contains(out, "Tier-1") || !strings.Contains(out, rel) {
 		t.Fatalf("drift error should name the Tier-1 guard and %s; got:\n%s", rel, out)
 	}
+	for _, want := range []string{
+		"extension point",
+		"--explain-drift",
+		"forge friction add",
+		"forge disown <path> --reason",
+		"ONE-WAY",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("drift error missing option text %q; got:\n%s", want, out)
+		}
+	}
+	// The old report taught the fork escape hatch; that guidance must be
+	// gone. (Needles are the old option-text phrases, not bare flag
+	// names — cobra's usage dump legitimately lists the deprecated
+	// --accept flag for one release.)
+	for _, stale := range []string{"Re-run with `--accept`", "unfork --merge", "fork the file"} {
+		if strings.Contains(out, stale) {
+			t.Errorf("drift error still teaches fork-era escape hatch %q; got:\n%s", stale, out)
+		}
+	}
 
-	// 2. --accept: fork the file. The accept run itself completes the
-	// pipeline, so it must print (a) the accept confirmation, (b) the
-	// fork-coherence warning (wire_gen.go is in the app-wiring group),
-	// and (c) the LOUD one-time skip line with the side-render location
-	// and the unfork --merge hint.
-	out = runCorpusCmdOK(t, projectDir, forgeBin, "generate", "--accept")
-	if !strings.Contains(out, rel) || !strings.Contains(out, "--accept") {
-		t.Errorf("--accept run should confirm the accepted path; got:\n%s", out)
+	// 2. Disowning requires a reason — refuse without one.
+	out, err = runCorpusCmd(projectDir, forgeBin, "disown", rel)
+	if err == nil {
+		t.Fatalf("disown without --reason must refuse; output:\n%s", out)
 	}
-	if !strings.Contains(out, "fork-coherence") {
-		t.Errorf("--accept on %s should print the fork-coherence group warning; got:\n%s", rel, out)
-	}
-	if !strings.Contains(out, "forked file(s)") || !strings.Contains(out, ".forge/render/"+rel) {
-		t.Errorf("fork must be skipped loudly with its side-render path; got:\n%s", out)
-	}
-	if !strings.Contains(out, "unfork --merge") {
-		t.Errorf("fork skip report should point at `forge unfork --merge`; got:\n%s", out)
+	if !strings.Contains(out, "--reason is required") {
+		t.Errorf("reason-less disown should explain the requirement; got:\n%s", out)
 	}
 
-	// 3. Next generate: the fork is honored (file untouched, fresh
-	// render parked at .forge/render/), and the skip stays QUIET — the
-	// one-time-notice contract (Accepted flips after the first loud
-	// report so established forks don't re-nag every run).
+	// 3. `forge disown --reason`: the one-way transfer. Confirms the
+	// path and documents the delete + generate re-adoption flow.
+	out = runCorpusCmdOK(t, projectDir, forgeBin, "disown", rel,
+		"--reason", "corpus e2e: custom wiring the generated file can't express")
+	if !strings.Contains(out, "disowned "+rel) {
+		t.Errorf("disown should confirm the path; got:\n%s", out)
+	}
+	if !strings.Contains(out, "delete it and run `forge generate`") {
+		t.Errorf("disown should document the re-adoption path; got:\n%s", out)
+	}
+
+	// 4. Generate now leaves the file alone FOREVER — clean exit, the
+	// user content survives, and there is no warning noise of any kind
+	// (disowned files are a legitimate end state, not a nag target).
+	// No side renders are parked either: there is no reconcile-later
+	// limbo.
+	for run := 1; run <= 2; run++ {
+		out = runCorpusCmdOK(t, projectDir, forgeBin, "generate")
+		assertNoForkNoise(t, fmt.Sprintf("post-disown generate run %d", run), out)
+		if got := readFileE2E(t, wireGenPath); !strings.Contains(got, marker) {
+			t.Fatalf("disowned %s was overwritten by generate run %d — disown not honored", rel, run)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".forge", "render", rel)); !os.IsNotExist(err) {
+		t.Errorf("side render parked for a disowned file — the reconcile-later limbo should be gone (stat err=%v)", err)
+	}
+
+	// 5. Re-adoption: delete the file, run generate. The emitter
+	// re-emits the pristine render and the entry returns to Tier-1.
+	if err := os.Remove(wireGenPath); err != nil {
+		t.Fatalf("delete disowned file: %v", err)
+	}
 	out = runCorpusCmdOK(t, projectDir, forgeBin, "generate")
-	if strings.Contains(out, "forked file(s)") {
-		t.Errorf("established fork must not re-nag on later runs; got:\n%s", out)
-	}
-	assertPathExistsE2E(t, filepath.Join(projectDir, ".forge", "render", rel))
-	assertPathExistsE2E(t, filepath.Join(projectDir, ".forge", "render-base", rel))
-	if got := readFileE2E(t, wireGenPath); !strings.Contains(got, marker) {
-		t.Fatalf("forked %s was overwritten by generate — fork not honored", rel)
-	}
-
-	// 4. unfork --merge: three-way reconcile. Template did not change,
-	// so the merge must resolve cleanly and keep the user marker.
-	out = runCorpusCmdOK(t, projectDir, forgeBin, "unfork", "--merge", rel)
-	merged := readFileE2E(t, wireGenPath)
-	if !strings.Contains(merged, marker) {
-		t.Fatalf("unfork --merge dropped the user edit; output:\n%s\nmerged:\n%s", out, merged)
-	}
-	if strings.Contains(merged, "<<<<<<<") {
-		t.Fatalf("unfork --merge left conflict markers:\n%s", merged)
-	}
-
-	// 5. Final generate: forge owns the file again — clean run, no
-	// drift error, no fork noise, and the render returns to pristine.
-	out = runCorpusCmdOK(t, projectDir, forgeBin, "generate")
-	assertNoForkNoise(t, "post-unfork generate", out)
+	assertNoForkNoise(t, "re-adoption generate", out)
 	if got := readFileE2E(t, wireGenPath); got != pristine {
-		t.Errorf("post-unfork generate did not restore the pristine render of %s", rel)
+		t.Errorf("re-adoption generate did not restore the pristine render of %s", rel)
+	}
+	var cs struct {
+		Files map[string]struct {
+			Tier     int  `json:"tier"`
+			Disowned bool `json:"disowned"`
+		} `json:"files"`
+	}
+	raw := readFileE2E(t, filepath.Join(projectDir, ".forge", "checksums.json"))
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		t.Fatalf("parse .forge/checksums.json: %v", err)
+	}
+	entry, ok := cs.Files[rel]
+	switch {
+	case !ok:
+		t.Errorf("%s not tracked after re-adoption", rel)
+	case entry.Tier != 1 || entry.Disowned:
+		t.Errorf("%s entry = %+v after re-adoption, want tier=1 disowned=false", rel, entry)
 	}
 }
 

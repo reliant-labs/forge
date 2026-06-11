@@ -165,7 +165,8 @@ Two things to know when `forge upgrade` interacts with branches:
   file the JSON merge will conflict on the per-file `history[]` array.
   Accept BOTH `history[]` blocks (union them by hash — the array is
   append-only so duplicates are safe to dedupe later), then run
-  `forge generate --accept` to regenerate the active `Hash` field
-  against the merged tree. Never blindly accept one side — the merge
+  `forge generate --force` to regenerate the drifted files (and the
+  active `Hash` field) against the merged tree. Never blindly accept
+  one side — the merge
   will silently drop the other branch's stamp and the next `forge
   upgrade` will misreport that branch's files as "user-modified".

@@ -44,9 +44,9 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 }
 
 // TestFormatTier1DriftReport pins the message-design contract: the
-// extension point leads, --accept trails and is described as permanent
-// ownership ("never update this file again"), and --explain-drift is
-// advertised.
+// extension point leads, `forge disown` trails as the LAST resort and
+// is described as a one-way permanent transfer, friction recording and
+// --explain-drift are advertised.
 func TestFormatTier1DriftReport(t *testing.T) {
 	drift := []checksums.Tier1DriftEntry{
 		{Path: "pkg/app/wire_gen.go", RecordedHash: "aaaa1111", OnDiskHash: "bbbb2222", HistoryDepth: 3},
@@ -59,9 +59,11 @@ func TestFormatTier1DriftReport(t *testing.T) {
 		"pkg/app/wire_gen.go",
 		"↪ custom wiring belongs in pkg/app/setup.go / post_bootstrap.go / app_extras.go (user-owned)",
 		"--explain-drift",
-		"PERMANENT ownership",
-		"forge will never update this file again",
-		"forge unfork --merge",
+		"forge friction add",
+		"forge disown <path> --reason",
+		"ONE-WAY transfer",
+		"Forge never updates the file again",
+		"deleting the file and running `forge generate`",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report missing %q; got:\n%s", want, got)
@@ -75,8 +77,8 @@ func TestFormatTier1DriftReport(t *testing.T) {
 	}
 
 	// Option ordering: the extension-point option must come before the
-	// --accept option.
-	if strings.Index(got, "extension point") > strings.Index(got, "--accept") {
-		t.Errorf("extension-point guidance must precede --accept:\n%s", got)
+	// disown one-way door.
+	if strings.Index(got, "extension point") > strings.Index(got, "forge disown") {
+		t.Errorf("extension-point guidance must precede the disown option:\n%s", got)
 	}
 }

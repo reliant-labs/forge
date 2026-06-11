@@ -92,10 +92,9 @@ tmp/
 
 # ── Forge internal state ──
 # .forge/ contains debug-session.json, caches, .forge/state/build-<env>.json
-# (handoff from `forge build --push` to `forge deploy`), side renders for
-# forked files (.forge/render/ holds the latest skipped render,
-# .forge/render-base/ the merge base; both consumed by
-# `forge unfork --merge`), and other runtime state. Two exceptions are
+# (handoff from `forge build --push` to `forge deploy`), transient side
+# renders (.forge/render/ holds `--explain-drift` diff inputs and legacy
+# fork-era renders), and other runtime state. Two exceptions are
 # negated back in and MUST be committed:
 #   checksums.json  — tracks what forge generated so other developers'
 #                     `forge generate` can detect user modifications.

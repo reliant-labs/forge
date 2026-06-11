@@ -523,9 +523,8 @@ func writeMock(cf *ContractFile, dir string, opts Options) error {
 
 	// Manifest-aware path: when the caller supplied a project root, the
 	// write MUST go through checksums.WriteGeneratedFile so the path
-	// lands in WrittenThisRun (stale-sweep immunity), honors Forked
-	// entries (`forge generate --accept` forks are parked as side
-	// renders, not stomped), and honors the per-run SkipWrite set.
+	// lands in WrittenThisRun (stale-sweep immunity) and honors
+	// disowned entries (user-owned files are never stomped).
 	// force=true matches the file's Tier-1 contract: mock_gen.go is
 	// regenerated unconditionally from contract.go every run.
 	if opts.ProjectRoot != "" {

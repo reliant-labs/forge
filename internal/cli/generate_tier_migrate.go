@@ -8,11 +8,10 @@
 //
 //   - The Tier-1 stomp guard keeps drift-erroring on a file the user is
 //     now SUPPOSED to own and edit (Dockerfile, Taskfile.yml, …).
-//   - Users silence the guard with `forge generate --accept`, which
-//     marks the entry forked — and a fork on a starter-class file is
-//     noise in `forge audit`'s fork report forever after.
-//   - `forge unfork` can't fix it either: unforking re-asserts Tier-1
-//     ownership, putting the file right back under the guard.
+//   - Users silence the guard by disowning the file — and a disown on
+//     a starter-class file is noise in `forge audit`'s disowned report
+//     forever after (the file was never really forge-owned to begin
+//     with).
 //
 // This step is the inverse of generate_skills.go's Tier-2→Tier-1 skill
 // migration: for every tracked entry whose path the current template
@@ -47,27 +46,75 @@ import (
 var tier2MigratedPaths = generator.Tier2ManagedPaths()
 
 // stepMigrateTemplateTiers flips stale Tier-1/legacy checksum entries to
-// Tier-2 for paths whose template has been reclassified as scaffold-once.
-// Never fails the pipeline: the migration is metadata-only.
+// Tier-2 for paths whose template has been reclassified as scaffold-once,
+// then converts any LEGACY fork-era entries (`forked: true`) to the
+// disowned state. Never fails the pipeline: both migrations are
+// metadata-only.
 func stepMigrateTemplateTiers(ctx *pipelineContext) error {
 	migrated := migrateTemplateTiers(ctx.Checksums, tier2MigratedPaths)
-	if len(migrated) == 0 {
-		return nil
-	}
-	fmt.Printf("📜 Migrated %d checksum entr%s to Tier-2 (template reclassified scaffold-once; file is user-owned now):\n",
-		len(migrated), pluralYIes(len(migrated)))
-	for _, m := range migrated {
-		fmt.Printf("  ✓ %s%s\n", m.path, map[bool]string{true: " (fork flag cleared — starter files aren't forks)", false: ""}[m.wasForked])
-		// A previously-forked entry may have side renders parked under
-		// .forge/render*; they exist to reconcile a Tier-1 fork and are
-		// meaningless for a user-owned Tier-2 file.
-		if m.wasForked {
-			if err := checksums.CleanSideRenders(ctx.AbsPath, m.path); err != nil {
-				fmt.Fprintf(os.Stderr, "  warning: could not clean side renders for %s: %v\n", m.path, err)
+	if len(migrated) > 0 {
+		fmt.Printf("📜 Migrated %d checksum entr%s to Tier-2 (template reclassified scaffold-once; file is user-owned now):\n",
+			len(migrated), pluralYIes(len(migrated)))
+		for _, m := range migrated {
+			fmt.Printf("  ✓ %s%s\n", m.path, map[bool]string{true: " (legacy fork flag cleared — starter files aren't forks)", false: ""}[m.wasForked])
+			// A previously-forked entry may have side renders parked under
+			// .forge/render*; they were fork-reconcile state and are
+			// meaningless for a user-owned Tier-2 file.
+			if m.wasForked {
+				if err := checksums.CleanSideRenders(ctx.AbsPath, m.path); err != nil {
+					fmt.Fprintf(os.Stderr, "  warning: could not clean side renders for %s: %v\n", m.path, err)
+				}
 			}
 		}
 	}
+
+	// Legacy fork → disowned conversion. The fork concept is gone: a
+	// `forked: true` entry recorded by an older forge becomes a disowned
+	// Tier-2 entry (user-owned, marker preserved for audit). Both fleets
+	// audited to zero forks before this shipped, so this is
+	// belt-and-braces for stragglers. Side renders are deliberately NOT
+	// cleaned here — `forge unfork --merge` (the one-release migration
+	// aid) may still need them to reconcile a legacy fork.
+	converted := migrateLegacyForks(ctx.Checksums)
+	if len(converted) > 0 {
+		fmt.Printf("📜 Converted %d legacy forked entr%s to disowned (the fork state was removed; files are user-owned now):\n",
+			len(converted), pluralYIes(len(converted)))
+		for _, p := range converted {
+			fmt.Printf("  ✓ %s\n", p)
+		}
+		fmt.Printf("   Forge never regenerates disowned files. To return one to forge ownership: delete it and run `forge generate`.\n")
+		fmt.Printf("   To reconcile a legacy fork with the current template first: `forge unfork --merge <path>` (available this release only).\n")
+	}
 	return nil
+}
+
+// migrateLegacyForks converts every `forked: true` entry to the
+// disowned shape (tier=2 + disowned marker) in place and returns the
+// sorted list of converted paths. DisownedAt inherits the legacy
+// ForkedAt timestamp when present so "how long has this been outside
+// forge ownership" stays truthful across the migration.
+func migrateLegacyForks(cs *generator.FileChecksums) []string {
+	if cs == nil || len(cs.Files) == 0 {
+		return nil
+	}
+	var converted []string
+	for path, entry := range cs.Files {
+		if !entry.Forked {
+			continue
+		}
+		entry.Tier = 2
+		entry.Disowned = true
+		if entry.DisownedAt == "" {
+			entry.DisownedAt = entry.ForkedAt
+		}
+		entry.Forked = false
+		entry.Accepted = false
+		entry.ForkedAt = ""
+		cs.Files[path] = entry
+		converted = append(converted, path)
+	}
+	sort.Strings(converted)
+	return converted
 }
 
 // tierMigration records one entry flipped by migrateTemplateTiers.

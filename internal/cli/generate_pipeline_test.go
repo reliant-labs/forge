@@ -91,7 +91,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"refresh ORM output mtimes",
 		"post-gen validation",
 		"detect renamed Tier-1 exports",
-		"check forked-sibling dangling refs",
+		"check disowned-sibling dangling refs",
 		"go build (validate generated code)",
 	}
 
@@ -254,7 +254,7 @@ func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
 		"detect renamed Tier-1 exports",
-		"check forked-sibling dangling refs",
+		"check disowned-sibling dangling refs",
 		// Validation.
 		"pre-codegen contract check",
 		"post-gen validation",

@@ -703,18 +703,19 @@ func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategor
 	}
 }
 
-// auditForkedFile is one entry of the codegen category's `forked_files`
-// detail list: a Tier-1 generated file the user has taken permanent
-// ownership of via `forge generate --accept`. Package-level (rather
-// than function-local) so tests can assert the JSON shape directly.
-type auditForkedFile struct {
-	Path     string `json:"path"`
-	ForkedAt string `json:"forked_at,omitempty"`
-	Group    string `json:"group,omitempty"`
-	// Reason is the recorded WHY behind the fork — the newest
-	// .forge/friction.jsonl entry with area=fork whose context names
-	// this path (written at accept time by `forge generate --accept
-	// --reason` / `accept-fork --reason`). Additive field per the
+// auditDisownedFile is one entry of the codegen category's
+// `disowned_files` detail list: a generated file the user has taken
+// permanent ownership of via `forge disown` (or a legacy fork the
+// pipeline migration converted). Package-level (rather than
+// function-local) so tests can assert the JSON shape directly.
+type auditDisownedFile struct {
+	Path string `json:"path"`
+	// Since is when the file was disowned (RFC3339 UTC). Empty for
+	// legacy forks whose original timestamp predates recording.
+	Since string `json:"since,omitempty"`
+	// Reason is the recorded WHY behind the disown — the newest
+	// .forge/friction.jsonl entry with area=disown (or the legacy
+	// area=fork) whose context names this path. Additive field per the
 	// audit-json contract; empty when no entry exists.
 	Reason string `json:"reason,omitempty"`
 }
@@ -745,8 +746,14 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 
 	// User-edited gen files: tracked checksum but file content has drifted.
+	// Disowned entries (and legacy forked ones) are excluded — the user
+	// owns those files outright, so edits are the expected steady state,
+	// not drift worth flagging.
 	var modified []string
-	for rel := range cs.Files {
+	for rel, entry := range cs.Files {
+		if entry.Disowned || entry.Forked {
+			continue
+		}
 		if cs.IsFileModified(projectDir, rel) {
 			modified = append(modified, rel)
 		}
@@ -756,31 +763,42 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		details["user_edited_gen_files"] = modified
 	}
 
-	// Forked files: Tier-1 entries the user `--accept`-ed. Forge skips
-	// regenerating these on every run — a persistent capability loss the
-	// project owner should keep visible (the fork-skip lines in `forge
-	// generate` output are ephemeral; this is the durable, machine-
-	// readable surface). Tier-2 forked entries are excluded: there a
-	// fork records an intentional scaffold ownership transfer, which is
-	// the expected steady state, not lost regeneration ability.
-	var forked []auditForkedFile
+	// Disowned files: entries the user transferred to permanent
+	// ownership via `forge disown` (including legacy forks the pipeline
+	// migration converted). A legitimate end state — reported for
+	// visibility, never as a warning. Legacy `forked: true` entries that
+	// haven't been through a `forge generate` yet are folded in too, so
+	// audit tells one truth regardless of migration timing.
+	var disowned []auditDisownedFile
 	for rel, entry := range cs.Files {
-		if !entry.Forked || entry.Tier == 2 {
+		if !entry.Disowned && !entry.Forked {
 			continue
 		}
-		forked = append(forked, auditForkedFile{Path: rel, ForkedAt: entry.ForkedAt, Group: entry.Group})
-	}
-	sort.Slice(forked, func(i, j int) bool { return forked[i].Path < forked[j].Path })
-	if len(forked) > 0 {
-		// Attach each fork's recorded rationale. The friction log is
-		// loaded exactly once (and only when forks exist at all) —
-		// audit stays cheap on the common fork-free project.
-		reasons := forkFrictionReasons(projectDir)
-		for i := range forked {
-			forked[i].Reason = reasons[forked[i].Path]
+		since := entry.DisownedAt
+		if since == "" {
+			since = entry.ForkedAt
 		}
-		details["forked_files"] = forked
-		details["forked_hint"] = "forge never regenerates forked files; run `forge unfork --merge <path>` to reconcile with the latest render"
+		disowned = append(disowned, auditDisownedFile{Path: rel, Since: since})
+	}
+	sort.Slice(disowned, func(i, j int) bool { return disowned[i].Path < disowned[j].Path })
+
+	// Additive-extension contract: the legacy `forked_files` key is never
+	// repurposed. It now always emits an empty array, with a note field
+	// pointing consumers at its replacement; both will be dropped in a
+	// future release.
+	details["forked_files"] = []auditDisownedFile{}
+	details["forked_files_note"] = "deprecated: the fork state was removed; see disowned_files"
+
+	if len(disowned) > 0 {
+		// Attach each disown's recorded rationale. The friction log is
+		// loaded exactly once (and only when disowned files exist at
+		// all) — audit stays cheap on the common project.
+		reasons := disownFrictionReasons(projectDir)
+		for i := range disowned {
+			disowned[i].Reason = reasons[disowned[i].Path]
+		}
+		details["disowned_files"] = disowned
+		details["disowned_hint"] = "disowned files are user-owned; forge never regenerates them. Re-adopt one by deleting it and running `forge generate`."
 	}
 
 	// Orphan _gen detection: walk the project for files ending in _gen.go
@@ -817,8 +835,11 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 
 	status := AuditStatusOK
-	summary := fmt.Sprintf("%d tracked, %d modified, %d forked, %d orphans, %d missing", len(cs.Files), len(modified), len(forked), len(orphans), len(missing))
-	if len(modified) > 0 || len(orphans) > 0 || len(forked) > 0 || len(missing) > 0 {
+	summary := fmt.Sprintf("%d tracked, %d modified, %d disowned, %d orphans, %d missing", len(cs.Files), len(modified), len(disowned), len(orphans), len(missing))
+	// Disowned files are a legitimate end state (unlike the old fork
+	// limbo) — they appear in the summary for visibility but do NOT
+	// degrade the category status.
+	if len(modified) > 0 || len(orphans) > 0 || len(missing) > 0 {
 		status = AuditStatusWarn
 	}
 	if len(unservedDirs) > 0 {

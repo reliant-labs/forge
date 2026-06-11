@@ -291,7 +291,15 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		Packages: []appkit.PackageDef{
 {{- range .Packages}}
 			{Name: "{{.Name}}", Construct: func() error {
-{{- if .Fallible}}
+{{- if .CanonicalAppField}}
+				// {{.Alias}}.Deps declares collaborators that bootstrap
+				// cannot auto-wire from App/AppExtras, so constructing
+				// here would yield a second, half-built instance.
+				// User-owned setup.go builds the canonical, fully-wired
+				// {{.Alias}}.Service on app.{{.CanonicalAppField}} — and
+				// Setup runs before this table — so alias the slot to it.
+				app.Packages.{{.FieldName}} = app.{{.CanonicalAppField}}
+{{- else if .Fallible}}
 				{{.VarName}}Impl, err := {{.Alias}}.New({{.Alias}}.Deps{
 {{- if .HasLogger}}
 					Logger: logger.With("package", "{{.Name}}"),

@@ -21,11 +21,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+{{- range .BlockTypes}}
+
+// {{.TypeName}} is a component config block declared in
+// proto/config/v1/config.proto and composed onto Config. Components
+// take it as a typed Deps field (e.g. `Cfg config.{{.TypeName}}`) —
+// wire_gen resolves the field from the loaded Config by type.
+type {{.TypeName}} struct {
+{{- range .Fields}}
+	{{.GoName}} {{.GoType}} // {{.Description}}
+{{- end}}
+}
+{{- end}}
+
 // Config holds the application configuration loaded from environment variables,
 // CLI flags, and default values defined in the config proto.
 type Config struct {
-{{- range .Fields}}
+{{- range .RootFields}}
 	{{.GoName}} {{.GoType}} // {{.Description}}
+{{- end}}
+{{- range .BlockFields}}
+	{{.GoName}} {{.TypeName}} // component config block (proto/config)
 {{- end}}
 }
 
@@ -60,13 +76,13 @@ func Load(cmd *cobra.Command) (*Config, error) {
 	cfg := &Config{}
 {{range .Fields}}
 {{- if ne .Flag ""}}
-	// {{.GoName}} (env: {{.EnvVar}}, flag: --{{.Flag}})
+	// {{.GoPath}} (env: {{.EnvVar}}, flag: --{{.Flag}})
 {{- else}}
-	// {{.GoName}} (env: {{.EnvVar}}, env-only — no CLI flag)
+	// {{.GoPath}} (env: {{.EnvVar}}, env-only — no CLI flag)
 {{- end}}
 {{- if eq .GoType "string"}}
 	if v, ok := os.LookupEnv("{{.EnvVar}}"); ok {
-		cfg.{{.GoName}} = v
+		cfg.{{.GoPath}} = v
 {{- else}}
 	if v, ok := os.LookupEnv("{{.EnvVar}}"); ok && v != "" {
 {{- if eq .GoType "int32"}}
@@ -79,77 +95,77 @@ func Load(cmd *cobra.Command) (*Config, error) {
 		if parsed == 0 {
 			return nil, fmt.Errorf("invalid {{.EnvVar}} %q: must be in [1, 65535]", v)
 		}
-		cfg.{{.GoName}} = int32(parsed)
+		cfg.{{.GoPath}} = int32(parsed)
 {{- else}}
 		parsed, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {
 			return nil, fmt.Errorf("invalid {{.EnvVar}} %q: %w", v, err)
 		}
-		cfg.{{.GoName}} = int32(parsed)
+		cfg.{{.GoPath}} = int32(parsed)
 {{- end}}
 {{- else if eq .GoType "int64"}}
 		parsed, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid {{.EnvVar}}: %w", err)
 		}
-		cfg.{{.GoName}} = parsed
+		cfg.{{.GoPath}} = parsed
 {{- else if eq .GoType "bool"}}
 		parsed, err := strconv.ParseBool(v)
 		if err != nil {
 			return nil, fmt.Errorf("invalid {{.EnvVar}}: %w", err)
 		}
-		cfg.{{.GoName}} = parsed
+		cfg.{{.GoPath}} = parsed
 {{- else if eq .GoType "float32"}}
 		parsed, err := strconv.ParseFloat(v, 32)
 		if err != nil {
 			return nil, fmt.Errorf("invalid {{.EnvVar}}: %w", err)
 		}
-		cfg.{{.GoName}} = float32(parsed)
+		cfg.{{.GoPath}} = float32(parsed)
 {{- else if eq .GoType "float64"}}
 		parsed, err := strconv.ParseFloat(v, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid {{.EnvVar}}: %w", err)
 		}
-		cfg.{{.GoName}} = parsed
+		cfg.{{.GoPath}} = parsed
 {{- end}}
 {{- end}}
 {{- if ne .Flag ""}}
 	} else if cmd != nil && cmd.Flags().Changed("{{.Flag}}") {
 {{- if eq .GoType "string"}}
-		cfg.{{.GoName}}, _ = cmd.Flags().GetString("{{.Flag}}")
+		cfg.{{.GoPath}}, _ = cmd.Flags().GetString("{{.Flag}}")
 {{- else if eq .GoType "int32"}}
-		cfg.{{.GoName}}, _ = cmd.Flags().GetInt32("{{.Flag}}")
+		cfg.{{.GoPath}}, _ = cmd.Flags().GetInt32("{{.Flag}}")
 {{- else if eq .GoType "int64"}}
-		cfg.{{.GoName}}, _ = cmd.Flags().GetInt64("{{.Flag}}")
+		cfg.{{.GoPath}}, _ = cmd.Flags().GetInt64("{{.Flag}}")
 {{- else if eq .GoType "bool"}}
-		cfg.{{.GoName}}, _ = cmd.Flags().GetBool("{{.Flag}}")
+		cfg.{{.GoPath}}, _ = cmd.Flags().GetBool("{{.Flag}}")
 {{- else if eq .GoType "float32"}}
-		cfg.{{.GoName}}, _ = cmd.Flags().GetFloat32("{{.Flag}}")
+		cfg.{{.GoPath}}, _ = cmd.Flags().GetFloat32("{{.Flag}}")
 {{- else if eq .GoType "float64"}}
-		cfg.{{.GoName}}, _ = cmd.Flags().GetFloat64("{{.Flag}}")
+		cfg.{{.GoPath}}, _ = cmd.Flags().GetFloat64("{{.Flag}}")
 {{- end}}
 {{- end}}
 {{- if .HasDefault}}
 	} else {
 {{- if eq .GoType "string"}}
-		cfg.{{.GoName}} = "{{.DefaultValue}}"
+		cfg.{{.GoPath}} = "{{.DefaultValue}}"
 {{- else if eq .GoType "int32"}}
-		cfg.{{.GoName}} = {{.DefaultInt32}}
+		cfg.{{.GoPath}} = {{.DefaultInt32}}
 {{- else if eq .GoType "int64"}}
-		cfg.{{.GoName}} = {{.DefaultInt64}}
+		cfg.{{.GoPath}} = {{.DefaultInt64}}
 {{- else if eq .GoType "bool"}}
-		cfg.{{.GoName}} = {{.DefaultBool}}
+		cfg.{{.GoPath}} = {{.DefaultBool}}
 {{- else if eq .GoType "float32"}}
-		cfg.{{.GoName}} = {{.DefaultFloat32}}
+		cfg.{{.GoPath}} = {{.DefaultFloat32}}
 {{- else if eq .GoType "float64"}}
-		cfg.{{.GoName}} = {{.DefaultFloat64}}
+		cfg.{{.GoPath}} = {{.DefaultFloat64}}
 {{- end}}
 {{- else if .Required}}
 	} else {
 {{- if ne .Flag ""}}
-		return nil, fmt.Errorf("required config field {{.GoName}} (env: {{.EnvVar}}, flag: --{{.Flag}}) is not set")
+		return nil, fmt.Errorf("required config field {{.GoPath}} (env: {{.EnvVar}}, flag: --{{.Flag}}) is not set")
 {{- else}}
-		return nil, fmt.Errorf("required config field {{.GoName}} (env: {{.EnvVar}}) is not set")
+		return nil, fmt.Errorf("required config field {{.GoPath}} (env: {{.EnvVar}}) is not set")
 {{- end}}
 {{- end}}
 	}

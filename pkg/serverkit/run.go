@@ -223,6 +223,32 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 	runCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// failComponent dispatches a supervised-component failure (worker
+	// Start/RunContext error, RunOperators error) on Config.FailurePolicy.
+	// FailProcess (the default) records the first failure and cancels
+	// runCtx so the normal graceful-shutdown path executes and Run
+	// returns the error — the pod restarts loudly instead of serving on
+	// with a silently-dead component. Ignore logs and continues.
+	var (
+		componentMu      sync.Mutex
+		componentFailure error
+	)
+	failComponent := func(component string, err error) {
+		if cfg.FailurePolicy == Ignore {
+			logger.Error("component failed — continuing (FailurePolicy=Ignore)",
+				"component", component, "error", err)
+			return
+		}
+		logger.Error("component failed — terminating process (FailurePolicy=FailProcess)",
+			"component", component, "error", err)
+		componentMu.Lock()
+		if componentFailure == nil {
+			componentFailure = fmt.Errorf("%s failed: %w", component, err)
+		}
+		componentMu.Unlock()
+		stop()
+	}
+
 	ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
@@ -310,13 +336,13 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 			if cw, ok := w.(ContextWorker); ok {
 				logger.Info("worker starting", "worker", w.Name(), "lifecycle", "run-context")
 				if workErr := cw.RunContext(wctx); workErr != nil && !errors.Is(workErr, context.Canceled) {
-					logger.Error("worker error", "worker", w.Name(), "error", workErr)
+					failComponent("worker "+w.Name(), workErr)
 				}
 				return
 			}
 			logger.Info("worker starting", "worker", w.Name())
-			if startErr := w.Start(wctx); startErr != nil {
-				logger.Error("worker error", "worker", w.Name(), "error", startErr)
+			if startErr := w.Start(wctx); startErr != nil && !errors.Is(startErr, context.Canceled) {
+				failComponent("worker "+w.Name(), startErr)
 			}
 		}(w)
 	}
@@ -332,8 +358,8 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 	// behaviour — start every operator the project declared.
 	if application.HasOperators() && shouldRunOperators(application, nameSet) {
 		go func() {
-			if runErr := application.RunOperators(runCtx, logger, cfg.OperatorHealthProbeAddr); runErr != nil {
-				logger.Error("controller manager failed", "error", runErr)
+			if opErr := application.RunOperators(runCtx, logger, cfg.OperatorHealthProbeAddr); opErr != nil && !errors.Is(opErr, context.Canceled) {
+				failComponent("controller manager", opErr)
 			}
 		}()
 	}
@@ -394,6 +420,15 @@ func Run(ctx context.Context, cfg Config, hooks Hooks, args []string) error {
 			logger.Error("otel shutdown error", "error", shutErr)
 		}
 	}
+
+	// A component failure (worker/operator under FailProcess) initiated
+	// this shutdown: surface it as Run's return so the process exits
+	// non-zero and the platform supervisor restarts it loudly.
+	componentMu.Lock()
+	if runErr == nil && componentFailure != nil {
+		runErr = componentFailure
+	}
+	componentMu.Unlock()
 	return runErr
 }
 

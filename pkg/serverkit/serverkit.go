@@ -93,8 +93,10 @@ type Worker interface {
 //     shutdown sequence, so a worker that ignores ctx stalls shutdown.
 //   - Returning nil or ctx.Err() after cancellation is a clean exit —
 //     the supervisor does not log context.Canceled as a worker error.
-//     Any other error is logged (never returned from Run, never
-//     restarted), matching the legacy Start error handling.
+//     Any other error is dispatched on Config.FailurePolicy: FailProcess
+//     (the default) terminates the process with the worker's error;
+//     Ignore logs and continues. Workers are never restarted in-process
+//     — restart is the platform supervisor's job.
 //   - Stop is still called afterwards (every WorkerList entry is a
 //     Worker), bounded by Config.ShutdownTimeout. For ContextWorker
 //     implementations Stop is typically a final-drain no-op since
@@ -110,6 +112,28 @@ type ContextWorker interface {
 	// done. See the interface doc for the full shutdown contract.
 	RunContext(ctx context.Context) error
 }
+
+// FailurePolicy governs what Run does when a supervised background
+// component fails: a worker's Start/RunContext returning a
+// non-cancellation error, or Application.RunOperators returning an
+// error. The zero value is [FailProcess] — fail loud. A pod that
+// restarts with a clear error in its termination log is operable; a pod
+// that keeps serving HTTP while its workers are silently dead is a
+// data-loss incident with a delay timer.
+type FailurePolicy int
+
+const (
+	// FailProcess (the zero value / default) cancels the run context on
+	// the first component failure: graceful shutdown executes and Run
+	// returns the component's error, so the supervisor (Kubernetes,
+	// systemd, …) restarts the process loudly.
+	FailProcess FailurePolicy = 0
+
+	// Ignore logs the component error and keeps serving — the pre-2026
+	// behaviour. Explicit opt-in for deployments where a worker is
+	// genuinely best-effort and a dead one must not take down the API.
+	Ignore FailurePolicy = 1
+)
 
 // Operator is the minimal contract serverkit needs to gate the
 // controller-manager goroutine. The actual controller wiring happens
@@ -131,11 +155,11 @@ type DBPoolTuning struct {
 	MaxIdleConns int
 
 	// ConnMaxIdleTime is how long an idle connection survives before
-	// being closed. Empty string disables the limit.
+	// being closed. Zero disables the limit.
 	ConnMaxIdleTime time.Duration
 
 	// ConnMaxLifetime is the absolute lifetime of any connection.
-	// Empty string disables the limit.
+	// Zero disables the limit.
 	ConnMaxLifetime time.Duration
 }
 
@@ -227,6 +251,12 @@ type Config struct {
 	// listener inside the controller manager. Empty string leaves the
 	// project's RunOperators to fall back to its own default.
 	OperatorHealthProbeAddr string
+
+	// FailurePolicy governs worker Start/RunContext errors and
+	// RunOperators errors. Zero value is FailProcess (a component
+	// failure terminates the process loudly); set Ignore to restore
+	// log-and-continue. See the FailurePolicy doc.
+	FailurePolicy FailurePolicy
 }
 
 // Hooks are the project-typed callbacks Run dispatches to. Everything

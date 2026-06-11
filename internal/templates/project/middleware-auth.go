@@ -32,8 +32,14 @@ func isUnauthenticatedProcedure(procedure string) bool {
 	return ok
 }
 
-// AuthInterceptor creates a Connect RPC authentication interceptor that
-// handles both unary and streaming RPCs.
+// NewAuthInterceptor creates a Connect RPC authentication interceptor
+// that handles both unary and streaming RPCs.
+//
+// devMode is INJECTED from the project's typed config
+// (cfg.Mode() == config.ModeDevelopment, computed in config.Load from
+// ENVIRONMENT) — this package never reads the environment per-request,
+// and dev-mode has exactly one source of truth across bootstrap, this
+// interceptor, and any auth pack.
 //
 // Three startup modes (chosen at construction time, not per-request):
 //
@@ -45,27 +51,31 @@ func isUnauthenticatedProcedure(procedure string) bool {
 //     is the source of truth.
 //
 //  2. **Stub validates**: when the project has called [SetTokenValidator]
-//     with a real validator, this interceptor extracts the Bearer token,
-//     calls the validator, and attaches claims to context.
+//     with a real validator, this interceptor REQUIRES a valid Bearer
+//     token on every procedure not in [unauthenticatedProcedures] —
+//     the explicit allow-list is the ONLY unauthenticated gate. A
+//     missing Authorization header is CodeUnauthenticated, not a silent
+//     pass-through.
 //
-//  3. **Dev passthrough**: when ENVIRONMENT=development (or "dev") or
-//     AUTH_MODE=none, this interceptor is a no-op identity even with no
-//     validator and no pack. The frictionless local-dev path.
+//  3. **Explicit no-auth**: when devMode is true, or the operator typed
+//     AUTH_MODE=none into the environment, this interceptor is a no-op
+//     identity even with no validator and no pack.
 //
-// If NONE of (1)-(3) apply, [AuthInterceptor] panics at construction. A
-// production server with no auth provider configured is always a bug;
-// failing loudly at startup is safer than silently accepting every
-// request or silently rejecting every request.
-func AuthInterceptor() connect.Interceptor {
-	mode := resolveAuthMode()
+// If NONE of (1)-(3) apply, NewAuthInterceptor returns an error that
+// must abort startup (cmd/server.go returns it before serverkit binds
+// the listener). A production server with no auth provider configured
+// is always a bug; refusing to start is safer than silently accepting
+// every request or silently rejecting every request.
+func NewAuthInterceptor(devMode bool) (connect.Interceptor, error) {
+	mode := resolveAuthMode(devMode)
 	if mode == authModeUnconfigured {
-		panic("middleware.AuthInterceptor: no auth provider configured — " +
+		return nil, fmt.Errorf("middleware.NewAuthInterceptor: no auth provider configured — " +
 			"install a pack (e.g. `forge pack install jwt-auth`), call " +
 			"middleware.SetTokenValidator with a real validator, or set " +
 			"AUTH_MODE=none (or ENVIRONMENT=development) to explicitly " +
-			"run without authentication. See pkg/middleware/auth.go for details.")
+			"run without authentication; see pkg/middleware/auth.go for details")
 	}
-	return &authInterceptor{passthrough: mode == authModePassthrough}
+	return &authInterceptor{passthrough: mode == authModePassthrough}, nil
 }
 
 type authInterceptor struct {
@@ -116,12 +126,19 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 }
 
 // authenticateFromHeader extracts and validates a Bearer token from the
-// Authorization header. If no token is present, the context is returned
-// unchanged (unauthenticated). If a token is present and valid, claims
-// are added to the context.
+// Authorization header and attaches the resulting claims to the context.
+//
+// A missing Authorization header is CodeUnauthenticated. The ONLY
+// unauthenticated path through this interceptor is the explicit
+// [unauthenticatedProcedures] allow-list, which the callers check
+// BEFORE invoking this function — an anonymous pass-through here would
+// silently downgrade every handler that forgets to check claims.
+// Procedures that should be reachable without auth must be added to
+// the allow-list (or annotated auth_required=false AND allow-listed).
 func authenticateFromHeader(ctx context.Context, authorization string) (context.Context, error) {
 	if authorization == "" {
-		return ctx, nil
+		return ctx, connect.NewError(connect.CodeUnauthenticated,
+			fmt.Errorf("missing Authorization header (procedure is not on the unauthenticated allow-list)"))
 	}
 
 	token := strings.TrimPrefix(authorization, "Bearer ")
@@ -178,9 +195,9 @@ var authMu sync.Mutex
 // a stub without resorting to build tags or linker tricks.
 //
 // The default returns (nil, nil) — a no-op. When this default is in place
-// AND no external auth has been registered AND no dev opt-in is set, the
-// [AuthInterceptor] constructor panics rather than letting the default run.
-// See [resolveAuthMode] for the decision table.
+// AND no external auth has been registered AND no dev opt-in is set,
+// [NewAuthInterceptor] returns an error (aborting startup) rather than
+// letting the default run. See [resolveAuthMode] for the decision table.
 var validateTokenFn func(string) (*Claims, error) = defaultValidateToken
 
 // validatorConfigured reports whether [SetTokenValidator] has been called
@@ -241,14 +258,17 @@ const (
 	authModePassthrough
 )
 
-// resolveAuthMode reads the package-level config and the environment to
-// decide which mode [AuthInterceptor] should run in. Decision order:
+// resolveAuthMode reads the package-level config, the injected dev-mode
+// flag, and the AUTH_MODE opt-out to decide which mode
+// [NewAuthInterceptor] should run in. Decision order:
 //  1. A real validator was registered → validate
 //  2. External auth was registered (pack alongside) → passthrough
-//  3. AUTH_MODE=none → passthrough (explicit opt-out)
-//  4. ENVIRONMENT=development|dev → passthrough (dev ergonomics)
-//  5. Otherwise → unconfigured (constructor panics)
-func resolveAuthMode() authMode {
+//  3. AUTH_MODE=none → passthrough (explicit, must-be-typed opt-out;
+//     read once at construction, never per-request)
+//  4. devMode (injected from config.Mode) → passthrough (dev ergonomics)
+//  5. Otherwise → unconfigured (constructor returns an error and
+//     startup aborts)
+func resolveAuthMode(devMode bool) authMode {
 	authMu.Lock()
 	defer authMu.Unlock()
 	switch {
@@ -258,9 +278,7 @@ func resolveAuthMode() authMode {
 		return authModePassthrough
 	case strings.EqualFold(os.Getenv("AUTH_MODE"), "none"):
 		return authModePassthrough
-	}
-	switch strings.ToLower(os.Getenv("ENVIRONMENT")) {
-	case "development", "dev":
+	case devMode:
 		return authModePassthrough
 	}
 	return authModeUnconfigured

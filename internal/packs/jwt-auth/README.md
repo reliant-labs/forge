@@ -17,7 +17,7 @@ on filenames in `pkg/middleware/`.
 | File | Description |
 |------|-------------|
 | `pkg/middleware/auth/jwtauth/validator.go` | Core JWT validator (`jwtauth.Validator`) supporting JWKS, static RSA, and HMAC signing modes |
-| `pkg/middleware/auth/jwtauth/dev_auth.go` | Dev-mode bypass (`jwtauth.DevAuthEnabled`, `jwtauth.DevClaims`) that injects synthetic claims when `ENVIRONMENT=development` |
+| `pkg/middleware/auth/jwtauth/dev_auth.go` | Dev-mode bypass (`jwtauth.DevAuthEnabled`, `jwtauth.DevClaims`) that injects synthetic claims when the injected `config.Mode` is development |
 | `pkg/middleware/auth/jwtauth/dev_login_handler.go` | Dev-only `/auth/login` HTTP handler (`jwtauth.DevLoginHandler`) that returns the `DevBypassToken` to the auth-ui `LoginForm`; 404s outside dev |
 | `pkg/middleware/auth/jwtauth/auth_gen.go` | Connect RPC interceptor (`jwtauth.Init`, `jwtauth.Close`, `jwtauth.Interceptor`) — regenerated on `forge generate` |
 
@@ -51,12 +51,12 @@ Exactly one of `JWT_JWKS_URL`, `JWT_HMAC_SECRET`, or `JWT_RSA_PUBLIC_KEY` must b
 
 ## Usage
 
-Call `jwtauth.Init` at server startup to initialize the validator, then add `jwtauth.Interceptor()` to your Connect interceptor chain:
+Call `jwtauth.Init` at server startup to initialize the validator (passing the typed runtime mode from the loaded config), then add `jwtauth.Interceptor()` to your Connect interceptor chain:
 
 ```go
 import "<module>/pkg/middleware/auth/jwtauth"
 
-if err := jwtauth.Init(logger); err != nil {
+if err := jwtauth.Init(logger, cfg.Mode()); err != nil {
     log.Fatal(err)
 }
 defer jwtauth.Close()
@@ -73,7 +73,7 @@ import (
     clerkauth "<module>/pkg/middleware/auth/clerk"
 )
 
-jwtauth.Init(logger)
+jwtauth.Init(logger, cfg.Mode())
 clerkauth.Init(logger)
 interceptors := connect.WithInterceptors(
     jwtauth.Interceptor(),
@@ -85,7 +85,7 @@ The interceptor extracts the `Authorization: Bearer <token>` header, validates t
 
 ### Dev Mode
 
-When `ENVIRONMENT=development` (or `dev`), the interceptor accepts three flavors of request:
+When the injected `config.Mode` is development (ENVIRONMENT=development or `dev`, resolved once in `config.Load`), the interceptor accepts three flavors of request:
 
 1. **No `Authorization` header** — synthetic claims; lets curl / Chrome MCP test handlers without a token.
 2. **`Bearer dev-bypass-do-not-use-in-prod`** — the `DevBypassToken` sentinel; lets the frontend stub auth provider and scenarios opt in explicitly.

@@ -16,7 +16,17 @@ import (
 
 // methodRoles is the per-method allow-list derived from required_roles.
 // Empty slice → any authenticated user; missing entry → falls through to
-// authz.RolesDecider.Default (nil here, so unknown methods deny).
+// authz.RolesDecider.Default (nil here, so unknown methods DENY — the
+// decider's zero-value FailMode is authz.FailClosed).
+//
+// Keys come in two spellings, both emitted from the same proto-derived
+// extraction so the key universe matches every generated call site:
+//
+//   - Connect procedure paths ("/pkg.v1.Svc/CreatePatient") — checked by
+//     the auth middleware via CanAccess.
+//   - "<action>:<resource>" pairs ("create:patient") — checked by the
+//     generated CRUD handler bodies via Can. Each alias carries the same
+//     roles/auth flags as its underlying RPC.
 var methodRoles = map[string][]string{
 {{- range .Methods}}
 {{- if .AuthRequired}}
@@ -69,19 +79,17 @@ type GeneratedAuthorizer = authz.Authorizer
 // the sibling authorizer.go and either returning a fully custom
 // *authz.Authorizer (built via authz.New) or composing this one.
 //
-// FailMode is FailOpen by default — an RPC reaching this authorizer with
-// no entry in either table (fresh scaffold pre-annotation, or proto
-// drift) returns nil + a slog.Warn rather than 403. The warn names the
-// missing procedure so it can be added to the proto. Projects that want
-// the legacy 1.x fail-closed semantics override here:
-//
-//	r := authz.RolesDecider{MethodRoles: methodRoles, MethodAuthRequired: methodAuthRequired, FailMode: authz.FailClosed}
-//	return authz.New(r)
+// The decider FAILS CLOSED (the authz.FailMode zero value): an RPC
+// reaching this authorizer with no entry in either table — proto drift,
+// a hand-mounted endpoint, or an attacker probing procedure names — is
+// denied, with a once-per-method slog.Warn naming the missing procedure
+// so it can be added to the proto and regenerated. Local-dev
+// permissiveness comes from the bootstrap dev-mode DevAuthorizer swap,
+// never from this table.
 func NewGeneratedAuthorizer() *GeneratedAuthorizer {
 	return authz.New(authz.RolesDecider{
 		MethodRoles:        methodRoles,
 		MethodAuthRequired: methodAuthRequired,
-		FailMode:           authz.FailOpen,
 	})
 }
 

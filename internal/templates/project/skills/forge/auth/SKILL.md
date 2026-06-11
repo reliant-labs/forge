@@ -101,8 +101,14 @@ tracing → metrics) and appends project-specific interceptors via
 interceptor are still observable (counted, traced, logged):
 
 ```go
+// Constructed up front in runServer; an unconfigured auth provider is a
+// startup error, not a per-request surprise.
+authInterceptor, err := middleware.NewAuthInterceptor(cfg.Mode().IsDev())
+if err != nil {
+    return fmt.Errorf("auth configuration: %w", err)
+}
 projectInterceptors := []connect.Interceptor{
-    middleware.AuthInterceptor(),       // ← here
+    authInterceptor,                    // ← here
     middleware.AuditInterceptor(logger),
 }
 interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{

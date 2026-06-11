@@ -150,7 +150,6 @@ func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
 		"handlers/orders/service.go":               "// user edits to service.go\npackage orders\n",
 		"handlers/orders/authorizer.go":            "// user edits to authorizer.go\npackage orders\n",
 		"handlers/orders/handlers_scaffold_test.go": "// user edits to scaffold tests\npackage orders\n",
-		"handlers/orders/integration_test.go":      "// user edits to integration tests\npackage orders\n",
 		"proto/services/orders/v1/orders.proto":    "syntax = \"proto3\";\n// user-edited proto\n",
 	}
 	for rel, content := range preExisting {
@@ -197,7 +196,6 @@ func TestGenerateServiceFilesForceOverwrites(t *testing.T) {
 		"handlers/orders/service.go",
 		"handlers/orders/authorizer.go",
 		"handlers/orders/handlers_scaffold_test.go",
-		"handlers/orders/integration_test.go",
 		"proto/services/orders/v1/orders.proto",
 	}
 	for _, rel := range preExisting {

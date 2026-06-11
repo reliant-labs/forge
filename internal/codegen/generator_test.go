@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func TestGenerateServiceStub_ZeroMethods_NoUnusedImports(t *testing.T) {
@@ -982,28 +983,56 @@ func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 		t.Error("testing.go should contain TestOption type")
 	}
 
-	// Must contain per-service dep override options
-	if !strings.Contains(content, `func WithAPIDeps(deps api.Deps) TestOption`) {
-		t.Error("testing.go should contain WithAPIDeps option")
+	// Per-service dep override options return SERVICE-SCOPED option types
+	// (review DI#8): WithAPIDeps must not be passable to NewTestOrders —
+	// the old single TestOption type made that compile and silently no-op.
+	if !strings.Contains(content, `func WithAPIDeps(deps api.Deps) APITestOption`) {
+		t.Error("testing.go should contain WithAPIDeps option returning APITestOption")
 	}
-	if !strings.Contains(content, `func WithOrdersDeps(deps orders.Deps) TestOption`) {
-		t.Error("testing.go should contain WithOrdersDeps option")
+	if !strings.Contains(content, `func WithOrdersDeps(deps orders.Deps) OrdersTestOption`) {
+		t.Error("testing.go should contain WithOrdersDeps option returning OrdersTestOption")
+	}
+	// Cross-cutting TestOption must satisfy each per-service interface.
+	if !strings.Contains(content, `func (o TestOption) applyAPI(c *testConfig)`) {
+		t.Error("testing.go should adapt TestOption to APITestOption")
+	}
+	if !strings.Contains(content, `func (o TestOption) applyOrders(c *testConfig)`) {
+		t.Error("testing.go should adapt TestOption to OrdersTestOption")
 	}
 
-	// Must contain NewTestXxx functions
-	if !strings.Contains(content, `func NewTestAPI(t *testing.T, opts ...TestOption) *api.Service`) {
+	// Must contain NewTestXxx functions taking the per-service option type
+	if !strings.Contains(content, `func NewTestAPI(t *testing.T, opts ...APITestOption) *api.Service`) {
 		t.Error("testing.go should contain NewTestAPI function")
 	}
-	if !strings.Contains(content, `func NewTestOrders(t *testing.T, opts ...TestOption) *orders.Service`) {
+	if !strings.Contains(content, `func NewTestOrders(t *testing.T, opts ...OrdersTestOption) *orders.Service`) {
 		t.Error("testing.go should contain NewTestOrders function")
 	}
 
 	// Must contain NewTestXxxServer functions
-	if !strings.Contains(content, `func NewTestAPIServer(t *testing.T, opts ...TestOption)`) {
+	if !strings.Contains(content, `func NewTestAPIServer(t *testing.T, opts ...APITestOption)`) {
 		t.Error("testing.go should contain NewTestAPIServer function")
 	}
-	if !strings.Contains(content, `func NewTestOrdersServer(t *testing.T, opts ...TestOption)`) {
+	if !strings.Contains(content, `func NewTestOrdersServer(t *testing.T, opts ...OrdersTestOption)`) {
 		t.Error("testing.go should contain NewTestOrdersServer function")
+	}
+
+	// The test server must mount the production interceptor chain shape:
+	// AuthzInterceptor wired with the effective (default: permissive)
+	// authorizer — never an empty connect.WithInterceptors().
+	if !strings.Contains(content, `middleware.AuthzInterceptor(deps.Authorizer)`) {
+		t.Error("testing.go should mount middleware.AuthzInterceptor in NewTestXxxServer")
+	}
+	if strings.Contains(content, "connect.WithInterceptors()") {
+		t.Error("testing.go must not register with an EMPTY interceptor chain")
+	}
+
+	// AuthedContext re-export: claims-bearing ctx via the project's own
+	// middleware.ContextWithClaims setter.
+	if !strings.Contains(content, `func AuthedContext(t *testing.T, opts ...testkit.ClaimsOption) context.Context`) {
+		t.Error("testing.go should re-export testkit.AuthedContext bound to middleware.ContextWithClaims")
+	}
+	if !strings.Contains(content, `testkit.AuthedContext(t, middleware.ContextWithClaims, opts...)`) {
+		t.Error("testing.go AuthedContext should delegate to testkit with the project setter")
 	}
 
 	// Must import service packages
@@ -1071,14 +1100,84 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 		t.Error("testing.go should import cache package")
 	}
 
-	// Must contain WithCacheDeps option
-	if !strings.Contains(content, `func WithCacheDeps(deps cache.Deps) TestOption`) {
-		t.Error("testing.go should contain WithCacheDeps option")
+	// Must contain WithCacheDeps option returning the package-scoped type
+	// (review DI#8: a cache option must not silently no-op in NewTestAPI).
+	if !strings.Contains(content, `func WithCacheDeps(deps cache.Deps) CacheTestOption`) {
+		t.Error("testing.go should contain WithCacheDeps option returning CacheTestOption")
 	}
 
 	// Must contain NewTestCache function returning interface type
-	if !strings.Contains(content, `func NewTestCache(t *testing.T, opts ...TestOption) cache.Service`) {
+	if !strings.Contains(content, `func NewTestCache(t *testing.T, opts ...CacheTestOption) cache.Service`) {
 		t.Error("testing.go should contain NewTestCache function")
+	}
+}
+
+// TestGenerateBootstrapTesting_MigratedDBOptIn pins the DB harness
+// contract for projects with embedded migrations: the DEFAULT test DB
+// stays the bare in-memory SQLite (forge migrations are typically
+// PostgreSQL-dialect — auto-applying them to SQLite would fail every
+// scaffold out of the box), and a NewMigratedTestDB helper is emitted so
+// tests opt in to the real schema loudly via WithDB(NewMigratedTestDB(t)).
+func TestGenerateBootstrapTesting_MigratedDBOptIn(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// A service whose Deps carry a DB field (AnyServiceHasDB → true).
+	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	serviceGo := `package api
+
+import (
+	"log/slog"
+
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	DB     orm.Context
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Embedded migrations present (the GenerateMigrate predicate).
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migDir, "00001_init.up.sql"), []byte("CREATE TABLE items (id TEXT);"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
+	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectDir, nil); err != nil {
+		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, `db:     testkit.NewSQLiteMemDB(t)`) {
+		t.Error("default test DB must stay the BARE in-memory SQLite (migrations are opt-in)")
+	}
+	if !strings.Contains(content, `func NewMigratedTestDB(t *testing.T) orm.Context`) {
+		t.Error("testing.go should emit the NewMigratedTestDB opt-in helper when migrations exist")
+	}
+	if !strings.Contains(content, `testkit.NewMigratedSQLiteDB(t, forgedb.MigrationsFS)`) {
+		t.Error("NewMigratedTestDB should delegate to testkit.NewMigratedSQLiteDB over forgedb.MigrationsFS")
+	}
+	if !strings.Contains(content, `forgedb "example.com/proj/db"`) {
+		t.Error("testing.go should import the project db package as forgedb")
 	}
 }
 
@@ -2019,5 +2118,55 @@ package patients_test
 	// Non-CRUD method must still appear — unit_test.go.tmpl owns it.
 	if !strings.Contains(got, "TestEcho_Generated") {
 		t.Errorf("handlers_scaffold_test.go should contain TestEcho_Generated (non-CRUD method); got:\n%s", got)
+	}
+}
+
+// TestUnitTestScaffold_SelfDestructingRows pins the scaffold-test contract:
+// every generated row must be able to FAIL. The scaffold row asserts
+// WantErr: connect.CodeUnimplemented against the stub handler, so it goes
+// red the moment the handler is implemented — forcing the row to be
+// rewritten with a real assertion. The permissive AnyOutcome knob is gone
+// from pkg/tdd entirely; a test that cannot fail teaches green-means-nothing.
+//
+// The scaffold must also:
+//   - emit Ctx: app.AuthedContext(t) so handlers that read claims via
+//     middleware.GetUser see an authenticated context (review F4),
+//   - replace the assertion-free WiresPermissiveAuthorizer shim with a
+//     real authorizer-chain test (deny-all denies, default allows).
+func TestUnitTestScaffold_SelfDestructingRows(t *testing.T) {
+	data := ServiceTemplateData{
+		ServiceName:         "EchoService",
+		ServicePackage:      "echo",
+		Module:              "example.com/test",
+		ProtoPackage:        "services/echo",
+		ProtoImportPath:     "services/echo",
+		ProtoConnectPackage: "echov1connect",
+		HandlerName:         "EchoService",
+		TestHelperName:      "Echo",
+		ServiceImportPath:   "echo",
+		Methods: []MethodTemplateData{
+			{Name: "Echo", InputType: "EchoRequest", OutputType: "EchoResponse"},
+		},
+	}
+	content, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render unit_test.go.tmpl: %v", err)
+	}
+	got := string(content)
+
+	if strings.Contains(got, "AnyOutcome") {
+		t.Errorf("scaffold must not reference AnyOutcome (deleted from pkg/tdd — permissive rows belong in no library); got:\n%s", got)
+	}
+	if !strings.Contains(got, "WantErr: connect.CodeUnimplemented") {
+		t.Errorf("scaffold row must self-destruct via WantErr: connect.CodeUnimplemented; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Ctx:") || !strings.Contains(got, "app.AuthedContext(t)") {
+		t.Errorf("scaffold row must emit Ctx: app.AuthedContext(t); got:\n%s", got)
+	}
+	if strings.Contains(got, "WiresPermissiveAuthorizer") {
+		t.Errorf("assertion-free WiresPermissiveAuthorizer test must be gone; got:\n%s", got)
+	}
+	if !strings.Contains(got, "AuthorizerChain") || !strings.Contains(got, "denyAllAuthorizer") {
+		t.Errorf("scaffold must contain the authorizer-chain test (deny-all denied, default allowed); got:\n%s", got)
 	}
 }

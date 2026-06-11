@@ -684,8 +684,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 // refresh the recorded checksum to the on-disk content so a future run of
 // `forge audit` doesn't flag a tracked-but-modified mismatch (and so any
 // legacy Tier-0/Tier-1 entry from before this fix gets re-stamped to
-// Tier-2 + forked, matching the user's intent without requiring
-// `forge generate --accept`).
+// Tier-2, matching the user's intent without requiring a disown).
 func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums.FileChecksums) error {
 	fullPath := filepath.Join(projectDir, relPath)
 	if existing, err := os.ReadFile(fullPath); err == nil {

@@ -14,7 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
-// seedMergeFixture creates a forked Tier-1 entry at rel with the given
+// seedMergeFixture creates a legacy forked Tier-1 entry at rel with the given
 // on-disk (ours), merge-base, and latest-render (theirs) contents
 // inside a fresh project root, then chdirs into it.
 func seedMergeFixture(t *testing.T, rel string, ours, base, theirs []byte) string {
@@ -59,7 +59,7 @@ func requireGit(t *testing.T) {
 	}
 }
 
-func TestUnforkMerge_CleanMergeUnforks(t *testing.T) {
+func TestUnforkMerge_CleanMergeReAdopts(t *testing.T) {
 	requireGit(t)
 	const rel = "pkg/app/wire_gen.go"
 	base := []byte("package app\n\nfunc wireA() {}\n\nfunc wireB() {}\n")
@@ -91,11 +91,11 @@ func TestUnforkMerge_CleanMergeUnforks(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := cs.Files[rel]
-	if entry.Forked {
-		t.Errorf("clean merge did not unfork the entry")
+	if entry.Forked || entry.Disowned || entry.Tier != 1 {
+		t.Errorf("clean merge did not re-adopt the entry into forge ownership; got %+v", entry)
 	}
-	if entry.ForkedAt != "" {
-		t.Errorf("ForkedAt not cleared: %q", entry.ForkedAt)
+	if entry.ForkedAt != "" || entry.DisownedAt != "" {
+		t.Errorf("timestamps not cleared: %+v", entry)
 	}
 	// Merged content recorded so the next generate's drift guard treats
 	// it as a known render state.
@@ -113,7 +113,7 @@ func TestUnforkMerge_CleanMergeUnforks(t *testing.T) {
 	}
 }
 
-func TestUnforkMerge_ConflictKeepsFork(t *testing.T) {
+func TestUnforkMerge_ConflictSettlesAsDisowned(t *testing.T) {
 	requireGit(t)
 	const rel = "pkg/app/wire_gen.go"
 	base := []byte("package app\n\nfunc wire() { old() }\n")
@@ -140,13 +140,14 @@ func TestUnforkMerge_ConflictKeepsFork(t *testing.T) {
 		}
 	}
 
-	// Entry stays forked; side renders stay parked for a retry.
+	// Entry stays user-owned (a conflicted legacy fork settles as
+	// disowned); side renders stay parked for manual inspection.
 	cs, lerr := checksums.Load(root)
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
-	if !cs.Files[rel].Forked {
-		t.Errorf("conflicted merge must NOT unfork the entry")
+	if e := cs.Files[rel]; !e.Disowned || e.Tier != 2 || e.Forked {
+		t.Errorf("conflicted merge must settle the entry as disowned; got %+v", e)
 	}
 	for _, p := range []string{
 		filepath.Join(root, checksums.RenderDir, rel),
@@ -158,9 +159,10 @@ func TestUnforkMerge_ConflictKeepsFork(t *testing.T) {
 	}
 }
 
-// TestUnforkMerge_MissingSideRenders covers pre-existing forks (created
-// before side renders existed): the user is told to run forge generate
-// once to produce base + theirs.
+// TestUnforkMerge_MissingSideRenders covers legacy forks with no parked
+// renders (or any fork after the parking machinery was removed): the
+// merge inputs are gone for good, so the user is pointed at manual
+// reconcile or --readopt instead of a re-run that can't help.
 func TestUnforkMerge_MissingSideRenders(t *testing.T) {
 	requireGit(t)
 	const rel = "pkg/app/wire_gen.go"
@@ -171,69 +173,26 @@ func TestUnforkMerge_MissingSideRenders(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing side renders; got nil")
 	}
-	if !strings.Contains(err.Error(), "forge generate") {
-		t.Errorf("error should tell the user to run forge generate once; got %q", err.Error())
+	if !strings.Contains(err.Error(), "--readopt") {
+		t.Errorf("error should point at the --readopt escape hatch; got %q", err.Error())
 	}
 }
 
-func TestUnforkMerge_RejectsNonForkedPath(t *testing.T) {
+func TestUnforkMerge_RejectsForgeOwnedPath(t *testing.T) {
 	requireGit(t)
 	cs := &checksums.FileChecksums{
 		Files: map[string]checksums.FileChecksumEntry{
-			"pkg/app/wire_gen.go": {Hash: "abc", Tier: 1, Forked: false},
+			"pkg/app/wire_gen.go": {Hash: "abc", Tier: 1},
 		},
 	}
 	withUnforkProjectRoot(t, cs)
 
 	err := runUnforkMerge([]string{"pkg/app/wire_gen.go"})
 	if err == nil {
-		t.Fatal("expected error for non-forked path; got nil")
+		t.Fatal("expected error for a forge-owned path; got nil")
 	}
-	if !strings.Contains(err.Error(), "not forked") {
-		t.Errorf("error should explain the path is not forked; got %q", err.Error())
-	}
-}
-
-// TestUnfork_FoldsResolvedContentIntoHistory pins the post-conflict
-// flow: after the user resolves `unfork --merge` markers, plain
-// `forge unfork <path>` records the resolved on-disk content so the
-// next generate's drift guard auto-heals over it instead of bouncing
-// the user back to --accept.
-func TestUnfork_FoldsResolvedContentIntoHistory(t *testing.T) {
-	const rel = "pkg/app/wire_gen.go"
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "fork-time-hash", History: []string{"fork-time-hash"}, Tier: 1, Forked: true},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
-
-	resolved := []byte("package app // resolved after merge\n")
-	full := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, resolved, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := runUnfork([]string{rel}, false, false, false); err != nil {
-		t.Fatalf("runUnfork: %v", err)
-	}
-
-	got, err := checksums.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := got.Files[rel]
-	if entry.Forked {
-		t.Errorf("still forked")
-	}
-	if entry.Hash != checksums.Hash(resolved) {
-		t.Errorf("resolved content not folded into history (hash=%s)", entry.Hash)
-	}
-	if got.IsFileModified(root, rel) {
-		t.Errorf("drift guard would still flag the resolved content as modified")
+	if !strings.Contains(err.Error(), "neither legacy-forked nor disowned") {
+		t.Errorf("error should explain there is nothing to reconcile; got %q", err.Error())
 	}
 }
 

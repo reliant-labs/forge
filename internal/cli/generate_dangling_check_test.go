@@ -1,4 +1,4 @@
-// Tests for the forked-sibling dangling-reference check.
+// Tests for the disowned-sibling dangling-reference check.
 //
 // FRICTION 2026-06-04: cp-forge layer-6 workers lane regenerates
 // `pkg/app/app_gen.go` to reference a `Workers` type that lives in the
@@ -15,18 +15,18 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
-// TestCheckForkedDanglingRefs_TableDriven covers the cases laid out in
+// TestCheckDisownedDanglingRefs_TableDriven covers the cases laid out in
 // the task brief, plus the package-local edge cases the implementation
 // has to get right (predeclared types, qualified references, package
 // directory isolation).
-func TestCheckForkedDanglingRefs_TableDriven(t *testing.T) {
+func TestCheckDisownedDanglingRefs_TableDriven(t *testing.T) {
 	tests := []struct {
 		name string
 		// files is the project tree to materialize: relPath -> contents.
 		files map[string]string
-		// forked is the set of relPaths that should be marked
-		// `"forked": true` in the synthetic checksums manifest.
-		forked map[string]bool
+		// disowned is the set of relPaths that should be marked
+		// disowned (Tier-2 + marker) in the synthetic checksums manifest.
+		disowned map[string]bool
 		// tier2 is the set of relPaths to record at Tier-2 (so the
 		// check skips them — they're scaffolds, not regenerated).
 		tier2 map[string]bool
@@ -49,7 +49,7 @@ type App struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: nil,
@@ -69,15 +69,15 @@ type Container struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: []string{
 				"Workers",
 				"pkg/app/app_gen.go",
 				"pkg/app/bootstrap.go",
-				"forked",
-				"Unfork",
+				"disowned",
+				"Re-adopt",
 			},
 		},
 		{
@@ -95,7 +95,7 @@ type Container struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: nil,
@@ -117,14 +117,14 @@ type Container struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: nil,
 		},
 		{
-			name: "no forked files: check is a no-op",
-			// Without any forked entries the check returns immediately
+			name: "no disowned files: check is a no-op",
+			// Without any disowned entries the check returns immediately
 			// regardless of what references what.
 			files: map[string]string{
 				"pkg/app/app_gen.go": `package app
@@ -133,7 +133,7 @@ type Container struct {
 }
 `,
 			},
-			forked:            map[string]bool{},
+			disowned:          map[string]bool{},
 			wantErrSubstrings: nil,
 		},
 		{
@@ -151,7 +151,7 @@ type Container struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: nil,
@@ -176,7 +176,7 @@ type Container struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: nil,
@@ -196,7 +196,7 @@ type Container struct {
 }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			tier2: map[string]bool{
@@ -222,7 +222,7 @@ type Container struct {
 func WireExtras() *Workers { return nil }
 `,
 			},
-			forked: map[string]bool{
+			disowned: map[string]bool{
 				"pkg/app/bootstrap.go": true,
 			},
 			wantErrSubstrings: []string{
@@ -243,11 +243,12 @@ func WireExtras() *Workers { return nil }
 
 			cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
 			// Record every materialized file as Tier-1 by default;
-			// flip forked / Tier-2 from the case definitions.
+			// flip disowned / Tier-2 from the case definitions.
 			for rel := range tc.files {
 				entry := checksums.FileChecksumEntry{Hash: "h", Tier: 1}
-				if tc.forked[rel] {
-					entry.Forked = true
+				if tc.disowned[rel] {
+					entry.Tier = 2
+					entry.Disowned = true
 				}
 				if tc.tier2[rel] {
 					entry.Tier = 2
@@ -255,7 +256,7 @@ func WireExtras() *Workers { return nil }
 				cs.Files[rel] = entry
 			}
 
-			err := checkForkedDanglingRefs(context.Background(), dir, cs)
+			err := checkDisownedDanglingRefs(context.Background(), dir, cs)
 			if len(tc.wantErrSubstrings) == 0 {
 				if err != nil {
 					t.Fatalf("expected no error; got:\n%v", err)
@@ -275,25 +276,25 @@ func WireExtras() *Workers { return nil }
 	}
 }
 
-// TestCheckForkedDanglingRefs_NilChecksums verifies the early-return
+// TestCheckDisownedDanglingRefs_NilChecksums verifies the early-return
 // path: a nil or empty checksum manifest must not panic and must
 // report no error (a fresh project has nothing forked).
-func TestCheckForkedDanglingRefs_NilChecksums(t *testing.T) {
+func TestCheckDisownedDanglingRefs_NilChecksums(t *testing.T) {
 	dir := t.TempDir()
-	if err := checkForkedDanglingRefs(context.Background(), dir, nil); err != nil {
+	if err := checkDisownedDanglingRefs(context.Background(), dir, nil); err != nil {
 		t.Errorf("nil checksums: want nil error, got: %v", err)
 	}
 	empty := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
-	if err := checkForkedDanglingRefs(context.Background(), dir, empty); err != nil {
+	if err := checkDisownedDanglingRefs(context.Background(), dir, empty); err != nil {
 		t.Errorf("empty checksums: want nil error, got: %v", err)
 	}
 }
 
-// TestCheckForkedDanglingRefs_NonGoForkedSkipped verifies the check
+// TestCheckDisownedDanglingRefs_NonGoForkedSkipped verifies the check
 // ignores forked entries that aren't Go files. A forked YAML or .tsx
 // file can't possibly affect the resolution of an unqualified Go type
 // name, so it must not contribute to the per-package scan.
-func TestCheckForkedDanglingRefs_NonGoForkedSkipped(t *testing.T) {
+func TestCheckDisownedDanglingRefs_NonGoForkedSkipped(t *testing.T) {
 	dir := t.TempDir()
 	writeUnderDir(t, dir, ".github/workflows/ci.yml", "name: ci\n")
 	writeUnderDir(t, dir, "pkg/app/app_gen.go", `package app
@@ -305,19 +306,19 @@ type Container struct {
 		".github/workflows/ci.yml": {Hash: "h", Tier: 1, Forked: true},
 		"pkg/app/app_gen.go":       {Hash: "h", Tier: 1},
 	}}
-	if err := checkForkedDanglingRefs(context.Background(), dir, cs); err != nil {
+	if err := checkDisownedDanglingRefs(context.Background(), dir, cs); err != nil {
 		t.Errorf("non-Go forked entry should be skipped; got error:\n%v", err)
 	}
 }
 
-// TestCheckForkedDanglingRefs_PackageScopeIsolated verifies that a
+// TestCheckDisownedDanglingRefs_PackageScopeIsolated verifies that a
 // forked file in one package does NOT cause unrelated references in
 // other packages to be flagged. The package-local resolution rule
 // means an unqualified `Workers` in `internal/foo/foo.go` cannot
 // be satisfied by `pkg/app/bootstrap.go` — but it also cannot be
 // dangling-due-to-the-fork either; that's a different package, the
 // `Workers` there is presumably defined locally.
-func TestCheckForkedDanglingRefs_PackageScopeIsolated(t *testing.T) {
+func TestCheckDisownedDanglingRefs_PackageScopeIsolated(t *testing.T) {
 	dir := t.TempDir()
 	writeUnderDir(t, dir, "pkg/app/bootstrap.go", `package app
 type App struct{}
@@ -331,7 +332,7 @@ type Container struct { W *Workers }
 		"pkg/app/bootstrap.go": {Hash: "h", Tier: 1, Forked: true},
 		"internal/foo/foo.go":  {Hash: "h", Tier: 1},
 	}}
-	if err := checkForkedDanglingRefs(context.Background(), dir, cs); err != nil {
+	if err := checkDisownedDanglingRefs(context.Background(), dir, cs); err != nil {
 		t.Errorf("cross-package reference should not be flagged; got:\n%v", err)
 	}
 }

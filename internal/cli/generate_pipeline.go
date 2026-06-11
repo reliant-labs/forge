@@ -99,13 +99,13 @@ type pipelineContext struct {
 	ProjectDir string
 	AbsPath    string
 	Force      bool
-	// Accept means: "honor my hand-edits to Tier-1 files; refresh the
-	// recorded checksum to match the on-disk content, then proceed with
-	// the rest of the pipeline." Used at most once when forking a
-	// generated file. See stepCheckTier1Drift for the full guard logic.
+	// Accept is the DEPRECATED --accept alias: disown every drifted
+	// Tier-1 file (one-way transfer to user ownership), then proceed
+	// with the rest of the pipeline. See stepCheckTier1Drift for the
+	// full guard logic; prefer `forge disown <path>... --reason`.
 	Accept bool
 	// AcceptReason is the --reason text recorded into
-	// .forge/friction.jsonl for every path Accept forks this run. See
+	// .forge/friction.jsonl for every path Accept disowns this run. See
 	// pipelineFlags.AcceptReason for the design-feedback rationale.
 	AcceptReason string
 
@@ -339,7 +339,7 @@ func generateSteps() []GenStep {
 		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, GateReason: "no proto/db/ directory or features.orm=false", Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
-		{Name: "check forked-sibling dangling refs", Gate: always, Run: stepCheckForkedDanglingRefs, Tag: "validate"},
+		{Name: "check disowned-sibling dangling refs", Gate: always, Run: stepCheckDisownedDanglingRefs, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }
@@ -392,7 +392,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"rehash tracked files":               true,
 		"post-gen validation":                true,
 		"detect renamed Tier-1 exports":      true,
-		"check forked-sibling dangling refs": true,
+		"check disowned-sibling dangling refs": true,
 		"go build (validate generated code)": true,
 	},
 	// The "mocks" step preset covers the fast-path "I just edited
@@ -460,7 +460,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 //
 //   - Drift / Tier-1 guards: "check Tier-1 file-stomp guard",
 //     "snapshot Tier-1 exports", "detect renamed Tier-1 exports",
-//     "check forked-sibling dangling refs".
+//     "check disowned-sibling dangling refs".
 //   - Validation: "pre-codegen contract check", "post-gen validation",
 //     "go build (validate generated code)".
 //   - External generators: "buf generate (Go stubs)",
@@ -755,11 +755,9 @@ func stepLoadConfig(ctx *pipelineContext) error {
 // caller (runGeneratePipeline) is responsible for calling SaveChecksums
 // on exit so partial pipeline runs still persist what they wrote.
 //
-// Also resets the per-run SkipWrite set in the checksums package — that
-// set is populated by `forge generate --accept` so subsequent codegen
-// emitters know to leave the user's hand-edited Tier-1 files alone for
-// this run. It's pipeline-run state, not persistent state, so it must
-// start empty on every invocation.
+// Also resets the per-run written-this-run set in the checksums package
+// — pipeline-run state, not persistent state, so it must start empty on
+// every invocation.
 func stepLoadChecksums(ctx *pipelineContext) error {
 	cs, err := generator.LoadChecksums(ctx.AbsPath)
 	if err != nil {
@@ -779,15 +777,14 @@ func stepLoadChecksums(ctx *pipelineContext) error {
 // report listing every conflict — the user gets one error to react to,
 // not N runs to discover N conflicts.
 //
-// Three escape hatches:
+// Escape hatches:
 //
+//   - move the customization into the designated extension point (or any
+//     Tier-2 file) — the preferred answer, regeneration keeps working.
 //   - --force: skip the check and let codegen overwrite. Documents the
 //     "throw my changes away and regenerate from the templates" intent.
-//   - --accept: keep the user's edits, refresh the recorded checksum to
-//     the on-disk content, then proceed. Documents the rare "I really
-//     did want to fork this Tier-1 file" intent.
-//   - move the customization into a Tier-2 (`forge:scaffold one-shot`)
-//     file instead.
+//   - `forge disown <path> --reason "<why>"`: one-way transfer to user
+//     ownership. (--accept is the deprecated whole-set alias.)
 //
 // Tier-2 files are intentionally not checked: Tier-2 means "scaffold
 // once, never overwrite", so a user edit IS the steady state.
@@ -822,7 +819,7 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		for _, d := range outOfScope {
 			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
 		}
-		fmt.Fprintf(os.Stderr, "   To regenerate them, re-run without `--steps=…` (or pass `--accept` to fold their on-disk content into checksums.json without regenerating).\n")
+		fmt.Fprintf(os.Stderr, "   To regenerate them, re-run without `--steps=…` (or run `forge disown <path> --reason \"<why>\"` to permanently take ownership).\n")
 	}
 	if len(drift) == 0 {
 		return nil
@@ -837,33 +834,29 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	}
 
 	if ctx.Accept {
-		if err := ctx.Checksums.AcceptTier1Drift(ctx.AbsPath, drift); err != nil {
-			return fmt.Errorf("accept Tier-1 drift: %w", err)
-		}
-		// Mark each accepted path as opt-out for the rest of this run so
-		// the codegen emitters skip the write — otherwise the just-
-		// accepted user content would get clobbered by the immediately-
-		// following Tier-1 emit pass.
+		// DEPRECATED alias: --accept disowns the entire drifted set —
+		// each file flips to Tier-2 (user-owned, disowned marker) and
+		// forge never touches it again. The cobra layer already printed
+		// the deprecation line and enforced --reason.
+		disowned := make([]string, 0, len(drift))
 		for _, d := range drift {
-			checksums.AddSkipWrite(d.Path)
+			disowned = append(disowned, d.Path)
 		}
-		fmt.Fprintf(os.Stderr, "📝 --accept: refreshed %d Tier-1 checksum(s) to match on-disk content:\n", len(drift))
-		for _, d := range drift {
-			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
+		if err := ctx.Checksums.DisownPaths(ctx.AbsPath, disowned); err != nil {
+			return fmt.Errorf("disown Tier-1 drift: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "   These files are now forks — forge will NEVER update them again (permanent ownership transfer; reverse with 'forge unfork').\n")
-		// Fork-coherence warning: forking one member of a coupled set
-		// (pkg/app wiring) is the known build-break shape. Body lives in
-		// generate_fork_report.go to keep this hotspot file's diff small.
-		accepted := make([]string, 0, len(drift))
-		for _, d := range drift {
-			accepted = append(accepted, d.Path)
+		fmt.Fprintf(os.Stderr, "📝 --accept (deprecated): disowned %d Tier-1 file(s) — they are user-owned now:\n", len(disowned))
+		for _, p := range disowned {
+			fmt.Fprintf(os.Stderr, "   - %s\n", p)
+			if err := checksums.CleanSideRenders(ctx.AbsPath, p); err != nil {
+				fmt.Fprintf(os.Stderr, "   warning: could not clean side renders for %s: %v\n", p, err)
+			}
 		}
-		warnForkCoherenceOnAccept(os.Stderr, accepted)
-		// Forks are design feedback — record one friction entry per
-		// accepted path NOW, while the why (--reason) is still fresh.
-		// Best-effort and never interactive; see friction_fork.go.
-		recordForkFriction(ctx.AbsPath, "generate --accept", ctx.AcceptReason, accepted, os.Stderr)
+		fmt.Fprintf(os.Stderr, "   Forge will NEVER update them again. To re-adopt one later: delete the file and run `forge generate`.\n")
+		// Disowns are design feedback — record one friction entry per
+		// path NOW, while the why (--reason) is still fresh.
+		// Best-effort and never interactive; see friction_disown.go.
+		recordDisownFriction(ctx.AbsPath, "generate --accept", ctx.AcceptReason, disowned, os.Stderr)
 		return nil
 	}
 
@@ -881,7 +874,7 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	// cherry-pick / rebase, the Tier-1 drift we're seeing is almost
 	// always upstream changes the operation brought in — NOT a real
 	// hand-edit. Surface a friendlier message that points the user at
-	// the right escape hatch (`--accept` to re-stamp the checksums).
+	// the right escape hatches.
 	if state := detectGitMergeState(ctx.AbsPath); state != "" {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Tier-1 stomp guard tripped while git is mid-%s.\n\n", state)
@@ -891,15 +884,15 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		}
 		fmt.Fprintf(&b, "\nDuring a mid-%s state this is almost always upstream changes the merge brought in (not real hand-edits). Two options:\n", state)
 		fmt.Fprintf(&b, "  1. Resolve the %s first (`git status`), then re-run `forge generate`.\n", state)
-		fmt.Fprintf(&b, "  2. Run `forge generate --accept` to re-stamp the recorded checksums to the merged-in content, then proceed (add `--reason \"<why>\"` to record why these files were adopted).\n")
+		fmt.Fprintf(&b, "  2. Run `forge generate --force` to regenerate the drifted files from the current templates after the merge content lands.\n")
 		return errMidMergeTier1Drift{state: state, msg: b.String()}
 	}
 
 	// Default: error with a batched report. The body lives in
 	// generate_drift_hints.go — it leads with each file's designated
-	// extension point and documents --accept as permanent ownership,
-	// so the fork escape hatch stops being the path of least
-	// resistance for agents.
+	// extension point and documents `forge disown` as a permanent,
+	// one-way ownership transfer, so giving up regeneration never
+	// looks like the path of least resistance for agents.
 	return fmt.Errorf("Tier-1 file-stomp guard:\n%s", formatTier1DriftReport(drift))
 }
 

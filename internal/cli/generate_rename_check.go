@@ -37,7 +37,7 @@ import (
 // YAML) are skipped — rename detection is currently scoped to Go.
 //
 // Manifest enumeration goes through checksums.Inspector so the
-// "Tier-1, non-forked, Go-file" classification lives in one place
+// "Tier-1, forge-owned, Go-file" classification lives in one place
 // shared with the dangling-ref check.
 func stepSnapshotTier1Exports(ctx *pipelineContext) error {
 	if ctx.Checksums == nil {

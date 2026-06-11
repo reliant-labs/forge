@@ -148,6 +148,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newToolsCmd())
 	rootCmd.AddCommand(newBacklogCmd())
+	rootCmd.AddCommand(newFrictionCmd())
 	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())

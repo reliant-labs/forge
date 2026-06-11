@@ -602,6 +602,324 @@ type Deps struct {
 	}
 }
 
+// canonicalAliasFixture writes a minimal project shape for the
+// CanonicalAppField tests: pkg/app/app_extras.go with the given source,
+// internal/<pkg>/contract.go with the given source, and a go.mod naming
+// the module so import-path resolution is exact.
+func canonicalAliasFixture(t *testing.T, appExtrasSrc, pkgName, contractSrc string) string {
+	t.Helper()
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"),
+		[]byte("module example.com/proj\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(appExtrasSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkgDir := filepath.Join(projectDir, "internal", pkgName)
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(contractSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return projectDir
+}
+
+// TestInspectComponentDepsShape_CanonicalServiceAlias mirrors the
+// cp-forge svcdaemon shape: the package's Deps declares collaborator
+// fields that have NO name match on App/AppExtras (DaemonRepo,
+// URLBuilder — they are constructed inline in user-owned setup.go), so
+// bootstrap's auto-wire cannot express the construction and the
+// generated `daemon.New(Deps{...})` panics at boot ("Deps.DaemonRepo
+// is required"). AppExtras DOES hold the canonical, fully-wired
+// instance (`DaemonService daemon.Service`, assigned in Setup, which
+// appkit runs before the package table). Expect CanonicalAppField to
+// name it so the template emits an alias instead of a second,
+// half-built instance.
+func TestInspectComponentDepsShape_CanonicalServiceAlias(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import daemon "example.com/proj/internal/daemon"
+
+type AppExtras struct {
+	Conn          string
+	DaemonService daemon.Service
+}
+`, "daemon", `package daemon
+
+import "log/slog"
+
+type Repository interface{ Get() string }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	Logger     *slog.Logger
+	Conn       string
+	DaemonRepo Repository
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "daemon", Package: "daemon", ImportPath: "daemon", FieldName: "Daemon", Alias: "daemon"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "DaemonService" {
+		t.Errorf("CanonicalAppField = %q, want %q (Deps.DaemonRepo is unwireable and AppExtras.DaemonService holds the canonical instance)", got, "DaemonService")
+	}
+	// The name+type matches must still be recorded — testing.go and the
+	// non-alias fallback paths read them.
+	if !components[0].HasLogger {
+		t.Error("HasLogger should still be true")
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_FullyWiredStaysConstructed
+// mirrors cp-forge's enforcement/Checker shape: every Deps field
+// auto-wires by name+type, so even though AppExtras holds a field of
+// the package's Service type, bootstrap keeps constructing its own
+// instance — the alias mechanism is strictly for unexpressible wirings.
+func TestInspectComponentDepsShape_CanonicalAlias_FullyWiredStaysConstructed(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import enforcement "example.com/proj/internal/enforcement"
+
+type AppExtras struct {
+	EnforcementRepo string
+	Checker         enforcement.Service
+}
+`, "enforcement", `package enforcement
+
+import "log/slog"
+
+type Service interface{ Check() }
+
+type Deps struct {
+	Logger          *slog.Logger
+	EnforcementRepo string
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "enforcement", Package: "enforcement", ImportPath: "enforcement", FieldName: "Enforcement", Alias: "enforcement"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (all Deps fields auto-wire; no alias)", got)
+	}
+	if len(components[0].AppFieldRefs) != 1 || components[0].AppFieldRefs[0].DepsField != "EnforcementRepo" {
+		t.Errorf("AppFieldRefs = %+v, want exactly [EnforcementRepo]", components[0].AppFieldRefs)
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_ScalarOnlyGapStaysConstructed
+// mirrors cp-forge's billing/APIKey shape: the only unwired Deps fields
+// are configuration scalars (string / []byte / numeric). Scalars are
+// never auto-wired and their zero value is the package's documented
+// degraded mode — not the panic/no-op collaborator class — so the
+// package keeps constructing even when a canonical instance exists.
+func TestInspectComponentDepsShape_CanonicalAlias_ScalarOnlyGapStaysConstructed(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import billing "example.com/proj/internal/billing"
+
+type AppExtras struct {
+	Stripe billing.Service
+}
+`, "billing", `package billing
+
+type Service interface{ Charge() }
+
+type Deps struct {
+	APIKey    string
+	PlansData []byte
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing", Alias: "billing"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (only config scalars are unwired)", got)
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_AliasedImport mirrors
+// cp-forge's internal/user shape: app_extras.go imports the package
+// under a renamed qualifier (internaluser "…/internal/user") so a
+// package-name string compare would miss the field. The resolver must
+// follow the file's import table.
+func TestInspectComponentDepsShape_CanonicalAlias_AliasedImport(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import internaluser "example.com/proj/internal/user"
+
+type AppExtras struct {
+	UserService internaluser.Service
+}
+`, "user", `package user
+
+type AuditLogger interface{ Log() }
+
+type Service interface{ Get() }
+
+type Deps struct {
+	Audit AuditLogger
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "user", Package: "user", ImportPath: "user", FieldName: "PkgUser", Alias: "pkgUser"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "UserService" {
+		t.Errorf("CanonicalAppField = %q, want %q (aliased import must resolve)", got, "UserService")
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_AmbiguousSkips: two
+// App/AppExtras fields of the package's Service type — there is no
+// deterministic canonical instance, so fall back to construction (the
+// deps-coverage lint surfaces the unwired field).
+func TestInspectComponentDepsShape_CanonicalAlias_AmbiguousSkips(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import daemon "example.com/proj/internal/daemon"
+
+type AppExtras struct {
+	DaemonService daemon.Service
+	DaemonShadow  daemon.Service
+}
+`, "daemon", `package daemon
+
+type Repository interface{ Get() string }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	DaemonRepo Repository
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "daemon", Package: "daemon", ImportPath: "daemon", FieldName: "Daemon", Alias: "daemon"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (two candidate fields is ambiguous)", got)
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_OptionalDepDoesNotTrigger:
+// a collaborator explicitly marked `// forge:optional-dep` is designed
+// to be nil at construction — it must not count toward the
+// "construction is unexpressible" trigger.
+func TestInspectComponentDepsShape_CanonicalAlias_OptionalDepDoesNotTrigger(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import notifier "example.com/proj/internal/notifier"
+
+type AppExtras struct {
+	NotifierService notifier.Service
+}
+`, "notifier", `package notifier
+
+type Sink interface{ Send() }
+
+type Service interface{ Notify() }
+
+type Deps struct {
+	// forge:optional-dep
+	Sink Sink
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "notifier", Package: "notifier", ImportPath: "notifier", FieldName: "Notifier", Alias: "notifier"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (only optional-marked deps are unwired)", got)
+	}
+}
+
+// TestGenerateBootstrap_CanonicalServiceAlias is the render-level
+// regression for the cp-forge svcdaemon hand-edit: when a package's
+// Deps cannot be auto-wired and AppExtras holds the canonical
+// instance, bootstrap.go must emit
+// `app.Packages.<Field> = app.<CanonicalField>` and must NOT construct
+// a second instance.
+func TestGenerateBootstrap_CanonicalServiceAlias(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import daemon "example.com/proj/internal/daemon"
+
+type AppExtras struct {
+	DaemonService daemon.Service
+}
+`, "daemon", `package daemon
+
+type Repository interface{ Get() string }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	DaemonRepo Repository
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	packages, err := PackageDataFromNames([]string{"daemon"}, projectDir)
+	if err != nil {
+		t.Fatalf("PackageDataFromNames() error = %v", err)
+	}
+	if err := GenerateBootstrap(nil, packages, nil, nil, "example.com/proj", false, false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "app.Packages.Daemon = app.DaemonService") {
+		t.Error("bootstrap.go should alias app.Packages.Daemon to the canonical app.DaemonService instance")
+	}
+	if strings.Contains(content, "daemon.New(daemon.Deps{") {
+		t.Error("bootstrap.go must not construct a second daemon instance when the canonical alias applies")
+	}
+	// The Packages struct still declares the slot (typed by import).
+	if !strings.Contains(content, "Daemon daemon.Service") {
+		t.Error("bootstrap.go should keep the Packages.Daemon field declaration")
+	}
+}
+
 func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 	targetDir := t.TempDir()
 

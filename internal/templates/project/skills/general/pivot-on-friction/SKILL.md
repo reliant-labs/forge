@@ -6,7 +6,8 @@ description: >-
   when the user expresses frustration, when you've made changes that you
   can't verify actually work, or when you realize you've been guessing
   instead of investigating. Provides a structured approach to break out of
-  fix-attempt loops.
+  fix-attempt loops. Also covers capturing forge generator friction with
+  `forge friction add` at the moment it occurs.
 ---
 
 # Pivot on Friction
@@ -77,6 +78,28 @@ Don't ask vague questions. Ask for specific observable facts:
 - What exactly do they see? (screenshot, error message, browser console)
 - What exactly did they do? (click sequence, URL, browser state)
 - What changed between when it worked and when it broke?
+
+## Capture generator friction immediately
+
+When the friction is caused by forge itself — a generator bug, a lint
+false-positive, a scaffold quirk, a missing library helper — record it AT
+THE MOMENT you hit it with one durable, local command:
+
+```bash
+forge friction add "wire_gen drops Deps fields added after initial scaffold" \
+  --severity p1 --area codegen --source <agent-or-workflow-id> \
+  --context pkg/app/wire_gen.go:42
+```
+
+Severity is `p0|p1|p2|note` (default `note`); `--context` is repeatable;
+pipe long entries via `forge friction add -` (stdin). Entries append to
+`.forge/friction.jsonl` (committed with the repo) — no LLM, no network,
+nothing rewritten, so the record survives crashes and rate limits.
+
+Do NOT batch friction observations into prose markdown at session end —
+batched appends have lost data in the field. One command per observation,
+when it happens. `forge friction list` shows the log; `forge friction
+export` renders markdown for humans.
 
 ## Anti-patterns
 

@@ -104,8 +104,14 @@ tmp/
 #                     travels with the repo so friction recorded by any
 #                     agent/developer survives worktrees and clones.
 # Everything else under .forge/ is per-developer state and intentionally
-# excluded by the broad `.forge/` rule below.
-.forge/
+# excluded by the broad children rule below.
+#
+# NOTE: this must be `.forge/*` (children), not `.forge/` (the dir):
+# git cannot re-include a file whose parent DIRECTORY is excluded, so a
+# `.forge/` + `!.forge/checksums.json` pair silently ignores
+# checksums.json and it never gets committed. (Found the hard way in
+# cp-forge — see its .gitignore fork note.)
+.forge/*
 !.forge/checksums.json
 !.forge/friction.jsonl
 

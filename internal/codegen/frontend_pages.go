@@ -37,6 +37,46 @@ type PageTemplateData struct {
 	UpdateRequestType  string // "UpdateTaskRequest"
 	GetRequestType     string // "GetTaskRequest"
 	DeleteRequestType  string // "DeleteTaskRequest"
+
+	// ── Entity-derived metadata (AttachEntityMeta) ──────────────────
+	// The generator KNOWS the entity's fields from the proto descriptor,
+	// so page templates emit typed column/field declarations instead of
+	// casting proto messages to Record<string, unknown> and reflecting
+	// over Object.keys at runtime.
+
+	// EntityTypeImportPath is the TS module declaring the entity type
+	// ("@/gen/db/v1/tasks_pb"). May differ from TypesImportPath when the
+	// entity message lives in its own proto file.
+	EntityTypeImportPath string
+	// Columns drives the list page's typed column array and the detail
+	// page's field rows. Only renderable kinds are included (scalars,
+	// enums, timestamps, repeated scalars) — nested messages and maps
+	// don't belong in a table cell.
+	Columns []EntityPageField
+	// SearchFields are the camelCase string-typed fields client-side
+	// search filters over. Empty → the list page omits the search box.
+	SearchFields []string
+	// DisplayField is the camelCase string field used as the human title
+	// ("name", then "title"); empty when the entity has neither.
+	DisplayField string
+	// PkFieldCamel is the camelCase primary-key field ("id").
+	PkFieldCamel string
+	// HasBadgeColumns reports whether any column renders as a Badge —
+	// gates the Badge / enumBadgeVariant imports in page templates.
+	HasBadgeColumns bool
+	// HasDateCreateFields / HasDateUpdateFields gate the timestamp
+	// conversion imports (timestampFromDate / toDatetimeLocal) in the
+	// create and edit form templates.
+	HasDateCreateFields bool
+	HasDateUpdateFields bool
+}
+
+// EntityPageField is one renderable entity field for list columns /
+// detail rows.
+type EntityPageField struct {
+	Name    string // camelCase TS field name: "createdAt"
+	Label   string // display label: "Created At"
+	IsBadge bool   // render as a status Badge (enum kind or enum-like string name)
 }
 
 // PageField represents a form field derived from a proto message field.
@@ -46,6 +86,9 @@ type PageField struct {
 	Type      string // "text", "number", "checkbox", "date", "textarea"
 	Required  bool
 	ProtoType string // original proto type for reference
+	// IsBigInt marks 64-bit integer fields — protobuf-es types them as
+	// bigint, so form submissions convert the zod number before mutate().
+	IsBigInt bool
 }
 
 // isFormFieldRequired determines whether a form field should be marked as required.
@@ -252,13 +295,18 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 					if createFieldSkipList[f.Name] {
 						continue
 					}
-					data.CreateFields = append(data.CreateFields, PageField{
+					pf := PageField{
 						Name:      fieldNameToCamel(f.Name),
 						Label:     fieldNameToLabel(f.Name),
 						Type:      protoTypeToFormField(f.ProtoType),
 						Required:  isFormFieldRequired(f),
 						ProtoType: f.ProtoType,
-					})
+						IsBigInt:  isBigIntProtoType(f.ProtoType),
+					}
+					if pf.Type == "date" {
+						data.HasDateCreateFields = true
+					}
+					data.CreateFields = append(data.CreateFields, pf)
 				}
 			}
 		}
@@ -274,13 +322,18 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 					if f.Name == "id" {
 						continue
 					}
-					data.UpdateFields = append(data.UpdateFields, PageField{
+					pf := PageField{
 						Name:      fieldNameToCamel(f.Name),
 						Label:     fieldNameToLabel(f.Name),
 						Type:      protoTypeToFormField(f.ProtoType),
 						Required:  isFormFieldRequired(f),
 						ProtoType: f.ProtoType,
-					})
+						IsBigInt:  isBigIntProtoType(f.ProtoType),
+					}
+					if pf.Type == "date" {
+						data.HasDateUpdateFields = true
+					}
+					data.UpdateFields = append(data.UpdateFields, pf)
 				}
 			}
 		}
@@ -289,6 +342,77 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 	}
 
 	return pages
+}
+
+// enumLikeNameFragments mirrors the isEnumLike heuristic in the emitted
+// format-utils.ts: string fields whose names suggest a closed value set
+// render as status badges.
+var enumLikeNameFragments = []string{
+	"status", "type", "kind", "role", "state", "category", "priority", "level",
+}
+
+func isEnumLikeFieldName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, frag := range enumLikeNameFragments {
+		if strings.Contains(lower, frag) {
+			return true
+		}
+	}
+	return false
+}
+
+// AttachEntityMeta enriches a PageTemplateData with typed field metadata
+// from the matched proto entity definition. The page generator calls this
+// after pairing a CRUD RPC group with its EntityDef — the same pairing
+// that gates page emission — so templates can emit fully typed columns,
+// search fields, and detail rows.
+func AttachEntityMeta(page *PageTemplateData, entity EntityDef) {
+	importSource := entity.ProtoFile
+	if importSource == "" {
+		// Entity declared in the service's proto file.
+		page.EntityTypeImportPath = page.TypesImportPath
+	} else {
+		page.EntityTypeImportPath = "@/gen/" + ProtoFileToTSImportPath(importSource)
+	}
+
+	page.PkFieldCamel = fieldNameToCamel(entity.PkField)
+	if page.PkFieldCamel == "" {
+		page.PkFieldCamel = "id"
+	}
+
+	for _, f := range entity.Fields {
+		switch f.Kind {
+		case FieldKindMessage, FieldKindMap, FieldKindRepeatedMessage:
+			// Nested structures don't render in a table cell / detail row.
+			continue
+		}
+
+		camel := fieldNameToCamel(f.Name)
+		isBadge := f.Kind == FieldKindEnum || (f.ProtoType == "string" && isEnumLikeFieldName(f.Name))
+		if isBadge {
+			page.HasBadgeColumns = true
+		}
+		page.Columns = append(page.Columns, EntityPageField{
+			Name:    camel,
+			Label:   fieldNameToLabel(f.Name),
+			IsBadge: isBadge,
+		})
+
+		if f.ProtoType == "string" {
+			page.SearchFields = append(page.SearchFields, camel)
+		}
+		if page.DisplayField == "" && f.ProtoType == "string" && (f.Name == "name" || f.Name == "title") {
+			page.DisplayField = camel
+		}
+	}
+
+	// Prefer "name" over "title" when both exist.
+	for _, f := range entity.Fields {
+		if f.Name == "name" && f.ProtoType == "string" {
+			page.DisplayField = fieldNameToCamel(f.Name)
+			break
+		}
+	}
 }
 
 // PascalToKebab converts PascalCase to kebab-case, respecting Go

@@ -1,14 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { useEffect } from "react";
 
+import { AuthContextProvider, useAuth } from "@/lib/auth/context";
+import { setAuthTokenGetter } from "@/lib/connect";
 import { EventBusProvider } from "@/lib/event-context";
 import { initTelemetry } from "@/lib/otel";
 import { queryClient } from "@/lib/query-client";
-import { AuthContextProvider } from "@/lib/auth/context";
-import { useAuth } from "@/lib/auth/context";
-import { setAuthTokenGetter } from "@/lib/connect";
 
 /**
  * Top-level client-only provider wrapper.

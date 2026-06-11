@@ -1371,8 +1371,13 @@ func stepFrontendPages(ctx *pipelineContext) error {
 // (nav_gen.tsx / dashboard_gen.tsx) are owned by forge; sibling Tier-2
 // nav.tsx / dashboard.tsx files are user-owned scaffolds.
 func stepFrontendNav(ctx *pipelineContext) error {
+	// Parse the SAME entity set stepFrontendPages gates page emission on,
+	// so nav_gen/dashboard_gen never advertise a route whose page was
+	// never written. Parse errors degrade to an empty set — identical to
+	// how stepFrontendPages treats them (no pages → no routes).
+	navEntities, _ := codegen.ParseEntityProtos(ctx.ProjectDir)
 	return ctx.warnOrFail("frontend nav generation",
-		generateFrontendNav(ctx.Cfg, ctx.Services, ctx.ProjectDir, ctx.Checksums, ctx.Force))
+		generateFrontendNav(ctx.Cfg, ctx.Services, ctx.ProjectDir, navEntities, ctx.Checksums, ctx.Force))
 }
 
 // stepCleanupStale — was Step 3z.

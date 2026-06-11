@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
+
 import { EventBus, initEventBus, type EventMap } from "./events";
 
 const EventBusContext = createContext<EventBus | null>(null);

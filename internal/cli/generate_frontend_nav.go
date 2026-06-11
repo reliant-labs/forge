@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -38,8 +39,13 @@ import (
 // `force` is plumbed through (forge generate --force) for users who
 // explicitly want to clobber the Tier-2 files and re-scaffold from the
 // templates.
-func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, cs *checksums.FileChecksums, force bool) error {
-	pages := buildNavPages(services)
+func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string, entities []codegen.EntityDef, cs *checksums.FileChecksums, force bool) error {
+	// CRITICAL: nav/dashboard routes derive from the SAME entity set that
+	// gates CRUD page emission (generateFrontendPages skips RPC-name-derived
+	// entities with no proto entity definition behind them). Before this
+	// filter the two generators disagreed and a pristine scaffold's nav
+	// advertised routes that 404'd.
+	pages := buildNavPages(services, entities)
 
 	for _, fe := range cfg.Frontends {
 		if !strings.EqualFold(fe.Type, "nextjs") {
@@ -52,10 +58,12 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		}
 
 		data := templates.FrontendTemplateData{
-			FrontendName: fe.Name,
-			ProjectName:  cfg.Name,
-			Pages:        pages,
-			BasePath:     strings.TrimSpace(fe.BasePath),
+			FrontendName:   fe.Name,
+			ProjectName:    cfg.Name,
+			Pages:          pages,
+			NavHookImports: buildNavHookImports(pages),
+			BasePath:       strings.TrimSpace(fe.BasePath),
+			ApiUrl:         devAPIURL(cfg),
 		}
 
 		if err := os.MkdirAll(filepath.Join(projectDir, feDir, "src", "components"), 0o755); err != nil {
@@ -82,6 +90,23 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		bpGenRel := filepath.Join(feDir, "src", "lib", "basepath_gen.ts")
 		if _, err := checksums.WriteGeneratedFileTier1(projectDir, bpGenRel, bpGenContent, cs, true); err != nil {
 			return fmt.Errorf("write basepath_gen.ts: %w", err)
+		}
+
+		// ── Tier-1: src/lib/apiurl_gen.ts (always regenerated) ──
+		// DEV_API_URL baked from forge.yaml's first service port, refreshed
+		// on every `forge generate`. connect.ts uses it as the non-mock dev
+		// fallback when NEXT_PUBLIC_API_URL is unset — and fails LOUD when
+		// both are empty, instead of silently pointing at a port nobody is
+		// listening on (downstream projects hand-patched a stale
+		// localhost:8080 default twice before this existed).
+		auGenContent, err := templates.FrontendTemplates().Render(
+			filepath.Join("nextjs", "src", "lib", "apiurl_gen.ts.tmpl"), data)
+		if err != nil {
+			return fmt.Errorf("render apiurl_gen.ts for %s: %w", fe.Name, err)
+		}
+		auGenRel := filepath.Join(feDir, "src", "lib", "apiurl_gen.ts")
+		if _, err := checksums.WriteGeneratedFileTier1(projectDir, auGenRel, auGenContent, cs, true); err != nil {
+			return fmt.Errorf("write apiurl_gen.ts: %w", err)
 		}
 
 		// next.config.ts is Tier-2 (user-owned, scaffold-once), so forge
@@ -212,15 +237,26 @@ func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates
 }
 
 // buildNavPages derives navigation page entries from CRUD service methods.
-// For each entity that has at least one CRUD RPC, a nav entry is created.
-func buildNavPages(services []codegen.ServiceDef) []templates.NavPageData {
+// A nav entry is created only for entities that (a) have a List RPC — the
+// nav links the list page — AND (b) exist in the proto entity set, the
+// SAME predicate generateFrontendPages applies before emitting page files.
+// Anything looser advertises 404s on a pristine scaffold.
+func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) []templates.NavPageData {
+	entitySet := make(map[string]struct{}, len(entities))
+	for _, e := range entities {
+		entitySet[strings.ToLower(e.Name)] = struct{}{}
+	}
+
 	seen := make(map[string]bool)
 	var pages []templates.NavPageData
 
 	for _, svc := range services {
-		entities := codegen.ExtractCRUDEntities(svc)
-		for _, e := range entities {
+		crudEntities := codegen.ExtractCRUDEntities(svc)
+		for _, e := range crudEntities {
 			if !e.HasList {
+				continue
+			}
+			if _, ok := entitySet[strings.ToLower(e.EntityName)]; !ok {
 				continue
 			}
 			if seen[e.EntitySlug] {
@@ -229,12 +265,53 @@ func buildNavPages(services []codegen.ServiceDef) []templates.NavPageData {
 			seen[e.EntitySlug] = true
 
 			pages = append(pages, templates.NavPageData{
-				Label:      e.EntityNamePlural,
-				LabelLower: strings.ToLower(e.EntityNamePlural),
-				Slug:       e.EntitySlug,
+				Label:          e.EntityNamePlural,
+				LabelLower:     strings.ToLower(e.EntityNamePlural),
+				LabelSingular:  e.EntityName,
+				Slug:           e.EntitySlug,
+				HasCreate:      e.HasCreate,
+				ListHook:       "use" + e.ListRPC,
+				HooksModule:    e.HooksImportPath,
+				ItemsField:     codegen.ToCamelCaseFromPascalExport(e.EntityNamePlural),
+				ComponentIdent: e.EntityNamePlural,
 			})
 		}
 	}
 
 	return pages
+}
+
+// buildNavHookImports merges the dashboard tiles' list-hook imports by
+// module so the template emits one import statement per generated hooks
+// file (two entities on one service share a module).
+func buildNavHookImports(pages []templates.NavPageData) []templates.NavHookImport {
+	byModule := map[string][]string{}
+	var order []string
+	for _, p := range pages {
+		if p.HooksModule == "" || p.ListHook == "" {
+			continue
+		}
+		if _, ok := byModule[p.HooksModule]; !ok {
+			order = append(order, p.HooksModule)
+		}
+		byModule[p.HooksModule] = append(byModule[p.HooksModule], p.ListHook)
+	}
+	sort.Strings(order)
+	out := make([]templates.NavHookImport, 0, len(order))
+	for _, m := range order {
+		syms := byModule[m]
+		sort.Strings(syms)
+		out = append(out, templates.NavHookImport{Module: m, Symbols: syms})
+	}
+	return out
+}
+
+// devAPIURL derives the dev-mode API base URL from forge.yaml's first
+// service port. Empty when the project has no services yet — connect.ts
+// then refuses to guess and fails loud in non-mock dev.
+func devAPIURL(cfg *config.ProjectConfig) string {
+	if len(cfg.Services) == 0 || cfg.Services[0].Port == 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://localhost:%d", cfg.Services[0].Port)
 }

@@ -2,39 +2,36 @@
 //
 // The embedded forge.proto under internal/assets/proto/forge/v1/ is a
 // hand-maintained copy of the source-of-truth at proto/forge/v1/. They
-// MUST stay byte-equivalent modulo the `go_package` option line (the
-// embedded copy points at the published forge module path; the source
-// points at the local internal/ path). Any other drift means the
-// scaffolded project gets a stale schema — silently. E2E validation of
-// the Tier 2 typed-errors work surfaced exactly this class of bug:
-// the source proto declared `repeated string errors = 6` but the
-// embedded copy didn't, so `forge new` projects couldn't use the new
-// annotation. This test pins the sync as a build-time invariant so
-// future schema bumps can't ship half-applied.
+// MUST stay byte-identical. Any drift means the scaffolded project gets
+// a stale schema — silently. E2E validation of the Tier 2 typed-errors
+// work surfaced exactly this class of bug: the source proto declared
+// `repeated string errors = 6` but the embedded copy didn't, so
+// `forge new` projects couldn't use the new annotation. This test pins
+// the sync as a build-time invariant so future schema bumps can't ship
+// half-applied.
+//
+// HISTORY: the embedded copy previously differed from the source in its
+// go_package line, pointing at `github.com/reliant-labs/forge/gen/...`
+// — a module that has never existed. WriteForgeV1Proto's per-project
+// rewrite literal-matched the SOURCE's go_package line, so against the
+// embedded copy it silently no-oped and scaffolds shipped a forge.proto
+// whose generated code imported the nonexistent module. The fix: the
+// copy is byte-identical (this test), and the rewrite matches the
+// go_package option structurally (TestWriteForgeV1ProtoRewritesGoPackage).
 package assets
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-const (
-	// embeddedGoPackageLine is the canonical go_package option in the
-	// embedded copy — it points at the PUBLISHED forge module path
-	// (no `internal/`) because new scaffolded projects import the
-	// public forge module, not the internal source layout. Diff
-	// strips both files' go_package lines so only that one line is
-	// allowed to differ; every other byte must match.
-	embeddedGoPackageLine = `option go_package = "github.com/reliant-labs/forge/gen/forge/v1;forgev1";`
-	sourceGoPackageLine   = `option go_package = "github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1";`
-)
-
 // TestEmbeddedForgeProtoMatchesSource compares the source-of-truth proto
-// against the embedded copy. The only legal difference is the
-// go_package line — that's a deliberate rewrite the WriteForgeV1Proto
-// helper handles per-project. Every other byte must match.
+// against the embedded copy. They must be byte-identical; sync with
+//
+//	cp proto/forge/v1/forge.proto internal/assets/proto/forge/v1/forge.proto
 //
 // FRICTION (cp-forge, 2026-06-09): the embedded copy missed the
 // `errors = 6` field bump, so `forge new` projects couldn't use the
@@ -67,15 +64,7 @@ func TestEmbeddedForgeProtoMatchesSource(t *testing.T) {
 		t.Fatalf("read embedded proto: %v", err)
 	}
 
-	// Strip both go_package lines so the diff only flags real schema
-	// drift. We strip exact-line matches rather than splice the file
-	// because the embedded copy is hand-maintained and any whitespace
-	// reformatting around the go_package line would otherwise look
-	// like drift.
-	srcStripped := stripLine(string(source), sourceGoPackageLine)
-	embStripped := stripLine(string(embedded), embeddedGoPackageLine)
-
-	if srcStripped == embStripped {
+	if bytes.Equal(source, embedded) {
 		return // in sync
 	}
 
@@ -84,8 +73,8 @@ func TestEmbeddedForgeProtoMatchesSource(t *testing.T) {
 	// hand-rolled per-line scan is plenty for a config-shape mismatch
 	// and surfaces the specific schema gaps that a future drift might
 	// introduce.
-	srcLines := strings.Split(srcStripped, "\n")
-	embLines := strings.Split(embStripped, "\n")
+	srcLines := strings.Split(string(source), "\n")
+	embLines := strings.Split(string(embedded), "\n")
 	srcSet := setOf(srcLines)
 	embSet := setOf(embLines)
 
@@ -103,10 +92,7 @@ func TestEmbeddedForgeProtoMatchesSource(t *testing.T) {
 
 	var b strings.Builder
 	b.WriteString("embedded forge.proto is OUT OF SYNC with the source-of-truth.\n")
-	b.WriteString("Sync by copying proto/forge/v1/forge.proto over internal/assets/proto/forge/v1/forge.proto,\n")
-	b.WriteString("then changing the go_package line to:\n  ")
-	b.WriteString(embeddedGoPackageLine)
-	b.WriteString("\n\n")
+	b.WriteString("Sync with:\n  cp proto/forge/v1/forge.proto internal/assets/proto/forge/v1/forge.proto\n\n")
 	if len(missingFromEmbed) > 0 {
 		b.WriteString("Lines in SOURCE but missing from EMBEDDED:\n")
 		for _, l := range missingFromEmbed {
@@ -126,15 +112,59 @@ func TestEmbeddedForgeProtoMatchesSource(t *testing.T) {
 	t.Fatal(b.String())
 }
 
-func stripLine(s, line string) string {
-	out := make([]string, 0, strings.Count(s, "\n")+1)
-	for _, l := range strings.Split(s, "\n") {
-		if strings.TrimSpace(l) == strings.TrimSpace(line) {
-			continue
-		}
-		out = append(out, l)
+// TestWriteForgeV1ProtoRewritesGoPackage pins the load-bearing rewrite:
+// the forge.proto vendored into a scaffolded project MUST declare a
+// go_package inside the project's own module (`<module>/gen/forge/v1`),
+// because that is where the project's buf run emits forge.pb.go
+// (out: gen, paths=source_relative). Any other value — most notably the
+// historical `github.com/reliant-labs/forge/gen/forge/v1` — makes every
+// generated *.pb.go in the project import a module that doesn't exist.
+func TestWriteForgeV1ProtoRewritesGoPackage(t *testing.T) {
+	dir := t.TempDir()
+	const module = "github.com/example/demo"
+	if err := WriteForgeV1Proto(dir, module); err != nil {
+		t.Fatalf("WriteForgeV1Proto: %v", err)
 	}
-	return strings.Join(out, "\n")
+	out, err := os.ReadFile(filepath.Join(dir, "forge.proto"))
+	if err != nil {
+		t.Fatalf("read written forge.proto: %v", err)
+	}
+	got := string(out)
+
+	want := `option go_package = "github.com/example/demo/gen/forge/v1;forgev1";`
+	if !strings.Contains(got, want) {
+		t.Errorf("written forge.proto missing rewritten go_package %q", want)
+	}
+	if strings.Contains(got, "reliant-labs/forge/gen/") {
+		t.Errorf("written forge.proto still references the nonexistent forge/gen module")
+	}
+	if strings.Contains(got, "reliant-labs/forge/internal/gen/") {
+		t.Errorf("written forge.proto still references forge's internal/gen path (unimportable from a project)")
+	}
+	if n := strings.Count(got, "option go_package"); n != 1 {
+		t.Errorf("expected exactly one go_package option, got %d", n)
+	}
+}
+
+// TestWriteForgeV1ProtoEmptyModuleKeepsSource documents the modulePath==""
+// escape hatch: no rewrite is performed (callers always pass a module in
+// practice; the scaffold pipeline guarantees one).
+func TestWriteForgeV1ProtoEmptyModuleKeepsSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteForgeV1Proto(dir, ""); err != nil {
+		t.Fatalf("WriteForgeV1Proto: %v", err)
+	}
+	out, err := os.ReadFile(filepath.Join(dir, "forge.proto"))
+	if err != nil {
+		t.Fatalf("read written forge.proto: %v", err)
+	}
+	embedded, err := GetForgeV1Proto()
+	if err != nil {
+		t.Fatalf("read embedded proto: %v", err)
+	}
+	if !bytes.Equal(out, embedded) {
+		t.Errorf("empty modulePath should write the embedded proto unmodified")
+	}
 }
 
 func setOf(lines []string) map[string]bool {

@@ -123,13 +123,13 @@ func generateFrontendNav(cfg *config.ProjectConfig, services []codegen.ServiceDe
 		// asked, because the user may have hand-curated it. The Tier-1
 		// guard separately catches stomps on nav_gen.tsx.
 		navRel := filepath.Join(feDir, "src", "components", "nav.tsx")
-		if err := emitTier2OnceIfMissing(projectDir, navRel, "nextjs/src/components/nav.tsx.tmpl", data, force); err != nil {
+		if err := emitTier2OnceIfMissing(projectDir, navRel, "nextjs/src/components/nav.tsx.tmpl", data, cs, force); err != nil {
 			return err
 		}
 
 		// ── Tier-2: page.tsx (user-owned, scaffold-once) ──
 		pageRel := filepath.Join(feDir, "src", "app", "page.tsx")
-		if err := emitTier2OnceIfMissing(projectDir, pageRel, "nextjs/src/app/page.tsx.tmpl", data, force); err != nil {
+		if err := emitTier2OnceIfMissing(projectDir, pageRel, "nextjs/src/app/page.tsx.tmpl", data, cs, force); err != nil {
 			return err
 		}
 
@@ -171,12 +171,26 @@ func warnIfNextConfigIgnoresBasePath(projectDir, feDir, feName, basePath string)
 // and never overwrites (the user may have hand-curated them). `force`
 // re-emits and clobbers existing content — the explicit opt-out for
 // "throw my changes away and re-scaffold from the template".
-func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData, force bool) error {
+//
+// Exception: a FORKED checksum entry survives even --force. Fork is
+// deliberately stickier than --force everywhere else in forge
+// (WriteGeneratedFile's forked branch precedes its force handling) —
+// the user said "stop touching this file", and --force means "discard
+// my CURRENT-run hand-edits", not "undo my recorded ownership". Without
+// this guard, `forge generate --force` silently re-scaffolded a forked
+// page.tsx over a fully rewritten user page.
+func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates.FrontendTemplateData, cs *checksums.FileChecksums, force bool) error {
 	full := filepath.Join(projectDir, relPath)
 	_, statErr := os.Stat(full)
 	exists := statErr == nil
 	if exists && !force {
 		return nil
+	}
+	if exists && cs != nil {
+		if entry, ok := cs.Files[filepath.ToSlash(relPath)]; ok && entry.Forked {
+			checksums.NoteForkedSkip(filepath.ToSlash(relPath))
+			return nil
+		}
 	}
 	content, err := templates.FrontendTemplates().Render(tmplPath, data)
 	if err != nil {

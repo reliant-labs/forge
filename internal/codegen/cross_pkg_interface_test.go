@@ -9,6 +9,8 @@
 package codegen
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -383,6 +385,31 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 			t.Errorf("%s: testing.go missing %q\n--- rendered ---\n%s\n--- end ---",
 				a.name, a.want, content)
 		}
+	}
+
+	// Regression (cp-forge-shaped fixture, 2026-06): stub method
+	// signatures referencing context.Context used to re-emit
+	// `context "context"` in the ExtraImports block, colliding with the
+	// template's unconditional `"context"` import — two declarations of
+	// the same name, so the generated file failed `go build`. Assert the
+	// import block carries no duplicate declared names at all.
+	fset := token.NewFileSet()
+	parsed, perr := parser.ParseFile(fset, "testing.go", body, parser.ImportsOnly)
+	if perr != nil {
+		t.Fatalf("generated testing.go does not parse: %v", perr)
+	}
+	seen := map[string]string{}
+	for _, imp := range parsed.Imports {
+		path, ierr := importPathFromSpec(imp)
+		if ierr != nil {
+			t.Fatalf("malformed import in generated testing.go: %v", ierr)
+		}
+		name := aliasForImport(imp, path)
+		if prior, dup := seen[name]; dup {
+			t.Errorf("duplicate import name %q in generated testing.go: %q and %q\n--- rendered ---\n%s\n--- end ---",
+				name, prior, path, content)
+		}
+		seen[name] = path
 	}
 }
 

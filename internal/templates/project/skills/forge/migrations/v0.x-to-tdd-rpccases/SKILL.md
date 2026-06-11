@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-tdd-rpccases
 description: Migrate handlers_crud_gen_test.go from inline per-RPC test boilerplate to thin shims that delegate to forge/pkg/tdd.RunRPCCases.
+relevance: migration
 ---
 
 # Migrating CRUD test scaffolds to `forge/pkg/tdd.RunRPCCases`

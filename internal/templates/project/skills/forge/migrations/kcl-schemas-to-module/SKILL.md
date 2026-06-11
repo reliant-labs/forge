@@ -1,6 +1,7 @@
 ---
 name: kcl-schemas-to-module
 description: Migrate a forge project's in-tree `deploy/kcl/schema.k` / `base.k` / `render.k` / `lib/*.k` to the upstream `forge` KCL module. ~3000 lines of duplicated schema deletes; projects import typed entities (Service / Operator / Frontend / CronJob with polymorphic deploy) instead of constructing the legacy `Application` struct.
+relevance: migration
 ---
 
 # Migrating in-tree KCL schemas to the upstream forge module

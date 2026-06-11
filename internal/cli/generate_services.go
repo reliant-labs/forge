@@ -83,9 +83,12 @@ func webhookOnlyServiceNames(cfg *config.ProjectConfig, services []codegen.Servi
 		//
 		// "CRUD-shaped" here means either:
 		//   - bare names: Create / Get / Update / Delete / List
-		//     (the user-example.proto.tmpl scaffold default), OR
-		//   - entity-suffixed: CreateUser, GetUser, ... (the typical
-		//     real-handler shape — handled by ParseCRUDOperation).
+		//     (the historical user-example.proto.tmpl scaffold default,
+		//     pre-convention-fix — kept for projects scaffolded by older
+		//     forge versions), OR
+		//   - entity-suffixed: CreateItem, GetUser, ... (the current
+		//     scaffold default and the typical real-handler shape —
+		//     handled by ParseCRUDOperation).
 		// Anything else is project-specific surface; we leave the
 		// stub block alone.
 		bareCRUD := map[string]bool{

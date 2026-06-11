@@ -103,8 +103,11 @@ func TestAuthorizerUnknownMethodFailMode(t *testing.T) {
 	if err := a.CanAccess(context.Background(), "/services.unknown.v1.UnknownService/UnknownMethod"); err != nil {
 		t.Fatalf("FailOpen default: unknown procedure should be allowed (with a warning), got %v", err)
 	}
-	if err := a.CanAccess(context.Background(), ""); err != nil {
-		t.Fatalf("FailOpen default: empty procedure should be allowed (with a warning), got %v", err)
+	// Empty procedure is denied unconditionally regardless of FailMode —
+	// Connect always passes a real procedure name, so an empty value is a
+	// defensive bug check (see pkg/authz Authorizer.CanAccess).
+	if err := a.CanAccess(context.Background(), ""); err == nil {
+		t.Fatal("empty procedure must be denied unconditionally (pkg/authz defensive bug check), got nil error")
 	}
 }
 

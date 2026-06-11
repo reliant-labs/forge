@@ -192,6 +192,15 @@ type ConfigField struct {
 	Description  string // From config_field.description
 	Sensitive    bool   // From config_field.sensitive — projects to a Secret in deploy
 	Category     string // From config_field.category — groups fields in deploy gen
+
+	// MessageType names the referenced config message when this field is
+	// a component config-block reference (ProtoType == "message"), e.g. a
+	// root `AppConfig` field `TraderConfig trader = 21;` records
+	// MessageType "TraderConfig". Empty for scalar fields. Block-reference
+	// fields carry no env_var/flag of their own — env binding lives on the
+	// referenced message's leaf fields. `json:",omitempty"` keeps old
+	// descriptors readable (additive contract, see audit-json skill).
+	MessageType string `json:",omitempty"`
 }
 
 // ConfigMessage represents a parsed config proto message.

@@ -24,13 +24,203 @@ type ConfigTemplateField struct {
 	DefaultBool    bool
 	DefaultFloat32 float32
 	DefaultFloat64 float64
+
+	// GoPath is the assignment path on the generated Config struct.
+	// Root fields: identical to GoName ("Port"). Component config-block
+	// leaves: qualified through the block field ("Trader.MaxPerTick").
+	// The Load/flag plumbing in config.go.tmpl assigns via GoPath so one
+	// flat loop covers both shapes.
+	GoPath string
+}
+
+// ConfigTemplateBlockType is one component config-block struct type the
+// template declares alongside Config (e.g. `type TraderConfig struct`).
+// Deduped by TypeName when the same block message is referenced by more
+// than one root field.
+type ConfigTemplateBlockType struct {
+	TypeName string
+	Fields   []ConfigTemplateField
+}
+
+// ConfigTemplateBlockField is one block-typed field on the root Config
+// struct (e.g. `Trader TraderConfig`).
+type ConfigTemplateBlockField struct {
+	GoName   string // field on Config, e.g. "Trader"
+	TypeName string // block struct type, e.g. "TraderConfig"
 }
 
 // ConfigTemplateData is the top-level data passed to the config.go template.
 type ConfigTemplateData struct {
-	Fields       []ConfigTemplateField
-	FieldNames   map[string]bool // GoName → true for quick existence checks in templates
+	// Fields is every leaf field — root fields plus component config-block
+	// leaves — in declaration order, with GoPath set. Drives RegisterFlags,
+	// Load, and .env.example so block leaves get the exact same env/flag/
+	// default treatment as root fields.
+	Fields []ConfigTemplateField
+	// RootFields are the leaves declared directly on Config (struct decl).
+	RootFields []ConfigTemplateField
+	// BlockTypes / BlockFields carry the component config-block shapes:
+	// the struct type declarations and the Config fields holding them.
+	BlockTypes  []ConfigTemplateBlockType
+	BlockFields []ConfigTemplateBlockField
+	// FieldNames indexes ROOT GoNames only — used by templates to gate
+	// cross-field validation (CorsOrigins/TlsCertPath/...) that references
+	// c.<Name> at the root level.
+	FieldNames   map[string]bool
 	NeedsStrconv bool
+}
+
+// ConfigBlockRef names one component config block as composed on the
+// root Config: the Config field holding it and the generated Go type.
+// wire_gen consumes this (via ConfigBlocksFromMessages) to resolve Deps
+// fields of a block type to `cfg.<FieldName>` by TYPE.
+type ConfigBlockRef struct {
+	FieldName string // root Config field, e.g. "Trader"
+	TypeName  string // generated struct type, e.g. "TraderConfig"
+}
+
+// ConfigBlocksFromMessages derives the component config-block references
+// from parsed config messages: every message-typed field on a root
+// config message whose MessageType names another config message in the
+// set. Order follows root-message declaration order, so consumers get a
+// deterministic candidate list.
+func ConfigBlocksFromMessages(messages []ConfigMessage) []ConfigBlockRef {
+	data := BuildConfigTemplateData(messages)
+	refs := make([]ConfigBlockRef, 0, len(data.BlockFields))
+	for _, bf := range data.BlockFields {
+		refs = append(refs, ConfigBlockRef{FieldName: bf.GoName, TypeName: bf.TypeName})
+	}
+	return refs
+}
+
+// BuildConfigTemplateData partitions parsed config messages into the
+// template shape:
+//
+//   - Block messages — those referenced by a MessageType field of another
+//     config message — become nested struct types (`type TraderConfig
+//     struct`) plus a typed field on Config (`Trader TraderConfig`).
+//   - Every other message's scalar fields flatten onto the root Config
+//     struct exactly as before (most projects have a single AppConfig).
+//
+// Block leaves keep their own env_var/flag/default annotations and join
+// the flat Fields list with a qualified GoPath, so env binding, flag
+// registration, .env.example, and per-env deploy projection all reuse
+// the existing flat plumbing unchanged.
+//
+// One nesting level is supported: message-typed fields ON a block
+// message are ignored. References to messages that aren't in the set
+// (or carry no config fields) are skipped.
+func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
+	byName := make(map[string]*ConfigMessage, len(messages))
+	for i := range messages {
+		byName[messages[i].Name] = &messages[i]
+	}
+
+	// A message is a block iff some OTHER message references it via a
+	// MessageType field. Everything else is a root message.
+	isBlock := map[string]bool{}
+	for _, m := range messages {
+		for _, f := range m.Fields {
+			if f.ProtoType != "message" || f.MessageType == "" || f.MessageType == m.Name {
+				continue
+			}
+			if _, known := byName[f.MessageType]; known {
+				isBlock[f.MessageType] = true
+			}
+		}
+	}
+
+	data := ConfigTemplateData{FieldNames: map[string]bool{}}
+	seenBlockType := map[string]bool{}
+	for _, m := range messages {
+		if isBlock[m.Name] {
+			continue
+		}
+		for _, f := range m.Fields {
+			if f.ProtoType == "message" {
+				if f.MessageType == "" || !isBlock[f.MessageType] {
+					continue // not a config-block reference — nothing to generate
+				}
+				bm := byName[f.MessageType]
+				data.BlockFields = append(data.BlockFields, ConfigTemplateBlockField{
+					GoName:   f.GoName,
+					TypeName: f.MessageType,
+				})
+				if !seenBlockType[f.MessageType] {
+					seenBlockType[f.MessageType] = true
+					bt := ConfigTemplateBlockType{TypeName: f.MessageType}
+					for _, bf := range bm.Fields {
+						if bf.ProtoType == "message" {
+							continue // one nesting level only
+						}
+						bt.Fields = append(bt.Fields, configTemplateField(bf, bf.GoName))
+					}
+					data.BlockTypes = append(data.BlockTypes, bt)
+				}
+				for _, bf := range bm.Fields {
+					if bf.ProtoType == "message" {
+						continue
+					}
+					data.Fields = append(data.Fields, configTemplateField(bf, f.GoName+"."+bf.GoName))
+				}
+				continue
+			}
+
+			tf := configTemplateField(f, f.GoName)
+			data.RootFields = append(data.RootFields, tf)
+			data.Fields = append(data.Fields, tf)
+			data.FieldNames[f.GoName] = true
+		}
+	}
+
+	for _, f := range data.Fields {
+		if f.GoType != "string" {
+			data.NeedsStrconv = true
+			break
+		}
+	}
+	return data
+}
+
+// configTemplateField converts one parsed ConfigField to its template
+// shape, pre-parsing typed defaults and recording the assignment path.
+func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
+	tf := ConfigTemplateField{
+		GoName:       f.GoName,
+		GoType:       f.GoType,
+		EnvVar:       f.EnvVar,
+		Flag:         f.Flag,
+		DefaultValue: f.DefaultValue,
+		Description:  f.Description,
+		Required:     f.Required,
+		HasDefault:   f.DefaultValue != "",
+		GoPath:       goPath,
+	}
+
+	if f.DefaultValue != "" {
+		switch f.GoType {
+		case "int32":
+			if v, err := strconv.ParseInt(f.DefaultValue, 10, 32); err == nil {
+				tf.DefaultInt32 = int32(v)
+			}
+		case "int64":
+			if v, err := strconv.ParseInt(f.DefaultValue, 10, 64); err == nil {
+				tf.DefaultInt64 = v
+			}
+		case "bool":
+			if v, err := strconv.ParseBool(f.DefaultValue); err == nil {
+				tf.DefaultBool = v
+			}
+		case "float32":
+			if v, err := strconv.ParseFloat(f.DefaultValue, 32); err == nil {
+				tf.DefaultFloat32 = float32(v)
+			}
+		case "float64":
+			if v, err := strconv.ParseFloat(f.DefaultValue, 64); err == nil {
+				tf.DefaultFloat64 = v
+			}
+		}
+	}
+	return tf
 }
 
 // CmdServerTemplateData holds the data passed to cmd-server.go.tmpl.
@@ -103,92 +293,13 @@ func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string,
 // doesn't flag them as orphans. A nil cs is tolerated (file is still
 // written).
 func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
-	// Flatten all fields from all messages into a single Config struct.
-	// Most projects will have a single config message, but we support multiple.
-	var fields []ConfigTemplateField
-	needsStrconv := false
+	// Partition messages into root fields + component config blocks.
+	// Most projects have a single flat AppConfig; projects with block
+	// messages additionally get nested struct types on Config.
+	data := BuildConfigTemplateData(messages)
 
-	for _, msg := range messages {
-		for _, f := range msg.Fields {
-			tf := ConfigTemplateField{
-				GoName:       f.GoName,
-				GoType:       f.GoType,
-				EnvVar:       f.EnvVar,
-				Flag:         f.Flag,
-				DefaultValue: f.DefaultValue,
-				Description:  f.Description,
-				Required:     f.Required,
-				HasDefault:   f.DefaultValue != "",
-			}
-
-			// Pre-parse typed defaults for the template
-			if f.DefaultValue != "" {
-				switch f.GoType {
-				case "int32":
-					v, err := strconv.ParseInt(f.DefaultValue, 10, 32)
-					if err == nil {
-						tf.DefaultInt32 = int32(v)
-					}
-				case "int64":
-					v, err := strconv.ParseInt(f.DefaultValue, 10, 64)
-					if err == nil {
-						tf.DefaultInt64 = v
-					}
-				case "bool":
-					v, err := strconv.ParseBool(f.DefaultValue)
-					if err == nil {
-						tf.DefaultBool = v
-					}
-				case "float32":
-					v, err := strconv.ParseFloat(f.DefaultValue, 32)
-					if err == nil {
-						tf.DefaultFloat32 = float32(v)
-					}
-				case "float64":
-					v, err := strconv.ParseFloat(f.DefaultValue, 64)
-					if err == nil {
-						tf.DefaultFloat64 = v
-					}
-				}
-			} else {
-				// Set safe zero defaults for non-string types
-				// (template uses these for flag registration)
-				switch f.GoType {
-				case "int32":
-					tf.DefaultInt32 = 0
-				case "int64":
-					tf.DefaultInt64 = 0
-				case "bool":
-					tf.DefaultBool = false
-				case "float32":
-					tf.DefaultFloat32 = 0
-				case "float64":
-					tf.DefaultFloat64 = 0
-				}
-			}
-
-			// Track whether we need strconv import
-			if f.GoType != "string" {
-				needsStrconv = true
-			}
-
-			fields = append(fields, tf)
-		}
-	}
-
-	if len(fields) == 0 {
+	if len(data.Fields) == 0 {
 		return nil
-	}
-
-	fieldNames := make(map[string]bool, len(fields))
-	for _, f := range fields {
-		fieldNames[f.GoName] = true
-	}
-
-	data := ConfigTemplateData{
-		Fields:       fields,
-		FieldNames:   fieldNames,
-		NeedsStrconv: needsStrconv,
 	}
 
 	content, err := templates.ProjectTemplates().Render("config.go.tmpl", data)

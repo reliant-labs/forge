@@ -176,7 +176,7 @@ func (a *App) HasOperators() bool {
 // bind one).
 func (a *App) RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
 	return operatorkit.Run(ctx, logger, operatorkit.Options{
-		LeaderElectionID:       "{{$.Module}}-leader",
+		LeaderElectionID:       "{{$.LeaderElectionID}}",
 		HealthProbeBindAddress: healthProbeAddr,
 	}, []operatorkit.Controller{
 {{- range .Operators}}

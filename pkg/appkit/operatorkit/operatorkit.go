@@ -46,9 +46,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 )
 
 // Controller is one generated operator row: the CRD scheme installer
@@ -100,13 +102,37 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		return nil
 	}
 
+	// Probe-address precedence: explicit Options value (forwarded from
+	// serverkit.Config.OperatorHealthProbeAddr) > HEALTH_PROBE_BIND_ADDRESS
+	// env var (the conventional controller-runtime deploy knob — k8s
+	// manifests set it next to METRICS_BIND_ADDRESS) > none. No hard
+	// default: vanilla forge projects shouldn't surprise-bind a port.
+	probeAddr := opts.HealthProbeBindAddress
+	if probeAddr == "" {
+		probeAddr = os.Getenv("HEALTH_PROBE_BIND_ADDRESS")
+	}
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		LeaderElection:         true,
 		LeaderElectionID:       opts.LeaderElectionID,
-		HealthProbeBindAddress: opts.HealthProbeBindAddress,
+		HealthProbeBindAddress: probeAddr,
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
+	}
+
+	// Wire the default /healthz + /readyz checks so the listener
+	// configured above actually answers 200. Without these, the manager
+	// binds the port but every probe gets 404, defeating the listener's
+	// purpose. The "ping" check is the conventional always-ok signal —
+	// the manager keeps its own internal state.
+	if probeAddr != "" {
+		if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+			return fmt.Errorf("adding healthz check: %w", err)
+		}
+		if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
+			return fmt.Errorf("adding readyz check: %w", err)
+		}
 	}
 
 	// Register CRD schemes first, then controllers — a controller's

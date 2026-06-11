@@ -97,7 +97,16 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	// cobra subcommands compile against a complete dependency graph. In
 	// binary=per-service mode this is preserved as-is (only ServiceName);
 	// AppendServiceToConfig/GenerateServiceFiles handles the rest later.
-	if g.isBinaryShared() && len(g.AdditionalServices) > 0 {
+	// Every declared service joins the scaffold data REGARDLESS of binary
+	// mode: this slice seeds the scaffold-once pkg/app/services.go
+	// registration universe, and a service missing there at birth stays
+	// UNLISTED forever (services.go is user-owned; generate never adds
+	// rows). Which services a given invocation mounts is the runtime
+	// names-filter's job, not the universe's. (Previously gated on
+	// isBinaryShared(), which silently dropped every non-first service
+	// from per-service-mode scaffolds — caught by the multi-service
+	// corpus fixture when the add-webhook registration guard landed.)
+	if len(g.AdditionalServices) > 0 {
 		for _, svcName := range g.AdditionalServices {
 			pkg := naming.ServicePackage(svcName)
 			fieldName := naming.ToPascalCase(svcName)

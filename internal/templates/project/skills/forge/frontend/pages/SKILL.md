@@ -241,7 +241,7 @@ take_screenshot()    # actual rendered pixels
 4. **Forgetting `"use client"`** on a page that uses hooks. Build error.
 5. **Hand-editing `src/hooks/users-hooks.ts`.** Overwritten on next `forge generate`.
 6. **Skipping screenshots.** Snapshots compile, tests pass, layout is broken in the browser.
-7. **`mutate(...)`** without an error handler. Wrap in try/catch (or `mutateAsync` + try/catch) and surface failures via the event bus or a toast.
+7. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@/lib/format-utils`), never raw `err.message`.
 
 ## Rules
 

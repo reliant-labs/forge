@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/jinzhu/inflection"
 )
 
 // FrontendHookTemplateData holds data for rendering a single service's
@@ -42,6 +44,13 @@ type FrontendHookTemplateData struct {
 	// ApiPackage is the workspace package name for the shared API
 	// (e.g. "@myapp/api"). Empty when Workspaces is false.
 	ApiPackage string
+	// EntityScopes is the sorted, deduplicated set of camelCase CRUD
+	// entity names ("task", "user") derived from the service's RPC
+	// names. The template emits one entity-scope key per entry in the
+	// generated query-key factory so mutations can invalidate ONLY the
+	// queries for the entity they touched (entity-scoped invalidation)
+	// instead of nuking every query on the service.
+	EntityScopes []string
 }
 
 // HookImportGroup is one TS import statement: a list of symbols (sorted,
@@ -60,6 +69,15 @@ type FrontendHookMethod struct {
 	InputType  string // "GetUserRequest"
 	OutputType string // "GetUserResponse"
 	IsQuery    bool   // true for Get/List/Search, false for mutations
+	// EntityScope is the camelCase singular CRUD entity this method
+	// operates on ("task" for ListTasks/GetTask/CreateTask), derived
+	// from the RPC-name CRUD pattern. Empty for non-CRUD methods.
+	// Queries embed it in their query key ([service, entity, method,
+	// req]); mutations invalidate the [service, entity] scope when set,
+	// falling back to the whole-service scope when empty (a bespoke
+	// mutation may touch anything, so over-invalidating is the safe
+	// default there).
+	EntityScope string
 }
 
 // queryPrefixes are RPC name prefixes that indicate a read-only query.
@@ -187,18 +205,56 @@ func ServiceDefToHookData(svc ServiceDef) FrontendHookTemplateData {
 		addSym(typesByPath, ProtoFileToTSImportPath(outPath), m.OutputType)
 
 		data.Methods = append(data.Methods, FrontendHookMethod{
-			Name:       m.Name,
-			NameCamel:  toCamelCaseFromPascal(m.Name),
-			InputType:  m.InputType,
-			OutputType: m.OutputType,
-			IsQuery:    isQuery,
+			Name:        m.Name,
+			NameCamel:   toCamelCaseFromPascal(m.Name),
+			InputType:   m.InputType,
+			OutputType:  m.OutputType,
+			IsQuery:     isQuery,
+			EntityScope: methodEntityScope(m.Name),
 		})
+	}
+
+	// The Service descriptor itself is a value import from the service's
+	// own _pb.ts. Folding it into the schema buckets (instead of a
+	// dedicated template line) guarantees ONE import statement per source
+	// module — a separate statement for the service tripped
+	// import/no-duplicates whenever a request schema lived in the same
+	// file (the common case).
+	if len(data.Methods) > 0 {
+		addSym(schemasByPath, data.ImportPath, svc.Name)
 	}
 
 	data.SchemaImports = flattenImportGroups(schemasByPath)
 	data.TypeImports = flattenImportGroups(typesByPath)
 
+	scopeSet := map[string]struct{}{}
+	for _, m := range data.Methods {
+		if m.EntityScope != "" {
+			scopeSet[m.EntityScope] = struct{}{}
+		}
+	}
+	for s := range scopeSet {
+		data.EntityScopes = append(data.EntityScopes, s)
+	}
+	sort.Strings(data.EntityScopes)
+
 	return data
+}
+
+// methodEntityScope derives the camelCase singular entity name from a
+// CRUD-pattern RPC name: "ListTasks" → "task", "CreateTask" → "task".
+// Returns "" for non-CRUD method names — those key/invalidate at the
+// service scope.
+func methodEntityScope(methodName string) string {
+	op, rawEntity := parseCRUDOperation(methodName)
+	if op == "" || rawEntity == "" {
+		return ""
+	}
+	entity := rawEntity
+	if op == "list" {
+		entity = inflection.Singular(rawEntity)
+	}
+	return toCamelCaseFromPascal(entity)
 }
 
 // flattenImportGroups converts a path -> symbol-set map into a sorted

@@ -1,12 +1,16 @@
-import { createConnectTransport } from "@connectrpc/connect-web";
 import { createClient, type Transport, type Interceptor } from "@connectrpc/connect";
-import type { DescService } from "@bufbuild/protobuf";
+import { createConnectTransport } from "@connectrpc/connect-web";
 import { SpanStatusCode, trace, context, propagation } from "@opentelemetry/api";
 
+import { DEV_API_URL } from "./apiurl_gen";
+
+import type { DescService } from "@bufbuild/protobuf";
+
 // The API URL is read from the NEXT_PUBLIC_API_URL environment variable.
-// In development this defaults to the local backend server.
-const baseUrl =
-  process.env.NEXT_PUBLIC_API_URL ?? "{{.ApiUrl}}";
+// In development it falls back to DEV_API_URL — regenerated from
+// forge.yaml's service port on every `forge generate`, so it can't drift
+// from where the backend actually listens.
+const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? DEV_API_URL;
 
 // Module-level token getter, wired up by AuthTokenBridge in providers.tsx.
 let _getToken: () => Promise<string | null> = async () => null;
@@ -69,6 +73,18 @@ function buildTransport(): Transport {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createMockTransport } = require("@/lib/mock-transport");
     return createMockTransport();
+  }
+
+  // Real-backend modes require a concrete base URL. Failing here (loud,
+  // at startup, with the fix in the message) beats the old behavior of
+  // silently pointing at a hardcoded port nobody is listening on.
+  if (!baseUrl) {
+    throw new Error(
+      "connect.ts: no API base URL configured. Set NEXT_PUBLIC_API_URL in " +
+        ".env.local, or declare a service in forge.yaml and run `forge generate` " +
+        "(which bakes the dev port into src/lib/apiurl_gen.ts). For UI-only " +
+        "development set NEXT_PUBLIC_MOCK_API=true.",
+    );
   }
 
   if (mode === "hybrid") {

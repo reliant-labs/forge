@@ -12,44 +12,35 @@
 
 "use client";
 
+import { ChevronLeft, LayoutDashboard, Table2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useUiStore } from "@/stores/ui-store";
+
 import { ALL_ROUTES, type RouteSpec } from "@/components/nav_gen";
+import { useUiStore } from "@/stores/ui-store";
 
 // Curated nav items. Default: show every generated route preceded by the
-// Dashboard home link. Edit this list to prune/reorder.
+// Dashboard home link. Edit this list to prune/reorder. Icons come from
+// lucide-react — swap any entry for another icon component.
 const navItems: Array<RouteSpec & { icon?: string }> = [
-  { path: "/", label: "Dashboard", labelLower: "dashboard", slug: "", icon: "dashboard" },
+  { path: "/", label: "Dashboard", labelLower: "dashboard", slug: "", labelSingular: "Dashboard", hasCreate: false, icon: "dashboard" },
   ...ALL_ROUTES.map((r) => ({ ...r, icon: "entity" })),
 ];
 
 function NavIcon({ type }: { type?: string }) {
   if (type === "dashboard") {
-    return (
-      <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25a2.25 2.25 0 01-2.25-2.25v-2.25z" />
-      </svg>
-    );
+    return <LayoutDashboard aria-hidden className="h-4 w-4 shrink-0" strokeWidth={1.5} />;
   }
-  return (
-    <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
-    </svg>
-  );
+  return <Table2 aria-hidden className="h-4 w-4 shrink-0" strokeWidth={1.5} />;
 }
 
 function CollapseIcon({ collapsed }: { collapsed: boolean }) {
   return (
-    <svg
+    <ChevronLeft
+      aria-hidden
       className={`h-4 w-4 transition-transform ${collapsed ? "rotate-180" : ""}`}
-      fill="none"
-      viewBox="0 0 24 24"
       strokeWidth={1.5}
-      stroke="currentColor"
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-    </svg>
+    />
   );
 }
 

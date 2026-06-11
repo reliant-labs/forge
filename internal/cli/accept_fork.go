@@ -28,6 +28,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -38,7 +39,10 @@ import (
 )
 
 func newAcceptForkCmd() *cobra.Command {
-	var dryRun bool
+	var (
+		dryRun bool
+		reason string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "accept-fork <path>...",
@@ -50,8 +54,14 @@ You are confirming you'll maintain this fork forever — future template updates
 won't apply to these files. If you want forge to resume regenerating, run
 ` + "`forge generate unfork <path>...`" + ` instead.
 
+Forks are design feedback: a forked file means the generated code couldn't
+express what you needed. Pass --reason to record WHY, per accepted path, into
+.forge/friction.jsonl (view with ` + "`forge friction list --area fork`" + `). Without
+--reason a placeholder entry is still recorded.
+
 Behavior:
   forge generate accept-fork <path>...          Flip accepted on each named path.
+  forge generate accept-fork <path>... --reason "<why>"  Same, recording the fork rationale.
   forge generate accept-fork <path>... --dry-run Print what would change without writing.
 
 Refuses to accept-fork:
@@ -62,21 +72,25 @@ Refuses to accept-fork:
 Example (bulk-silence a cohort of known-accepted forks):
   forge generate accept-fork \
     pkg/app/bootstrap.go pkg/app/wire_gen.go pkg/app/migrate.go \
-    pkg/app/bootstrap_testing.go`,
+    pkg/app/bootstrap_testing.go \
+    --reason "custom multi-tenant bootstrap wiring forge can't express"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAcceptFork(args, dryRun)
+			return runAcceptFork(args, dryRun, reason)
 		},
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/checksums.json")
+	cmd.Flags().StringVar(&reason, "reason", "", "WHY these forks exist. Recorded per accepted path in .forge/friction.jsonl as design feedback; view with 'forge friction list --area fork'.")
 
 	return cmd
 }
 
 // runAcceptFork is the cobra RunE body, split out so tests can drive
-// it directly with a synthetic args slice + flags.
-func runAcceptFork(args []string, dryRun bool) error {
+// it directly with a synthetic args slice + flags. reason is the
+// --reason text recorded per flipped path (empty ⇒ placeholder entry +
+// nudge; see friction_fork.go).
+func runAcceptFork(args []string, dryRun bool, reason string) error {
 	root, err := projectRoot()
 	if err != nil {
 		return err
@@ -167,6 +181,13 @@ func runAcceptFork(args []string, dryRun bool) error {
 			"failed to save .forge/checksums.json", "",
 			"check write permissions on .forge/", err)
 	}
+
+	// Capture the fork rationale only AFTER the save succeeded — the
+	// friction log must describe accepts that actually happened. Only
+	// the just-flipped paths are recorded: already-accepted paths got
+	// their entry on the run that accepted them, and a --dry-run never
+	// reaches here (friction log stays untouched when nothing changes).
+	recordForkFriction(root, "accept-fork", reason, willFlip, os.Stdout)
 
 	fmt.Printf("\n✅ Accept-forked %d entry(s). The forge generate fork-skip report will stay quiet for them.\n", len(willFlip))
 	fmt.Println("   (You are confirming you'll maintain these forks forever; future template updates won't apply.)")

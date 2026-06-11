@@ -83,6 +83,60 @@ func TestMatchExclude(t *testing.T) {
 			pkgPath:  "github.com/example/internal/qux",
 			want:     false,
 		},
+		// Segment-boundary regression suite (cp-forge authutil incident,
+		// 2026-06): the old raw strings.Contains rule made the exclude
+		// entry "internal/auth" swallow "internal/authutil" — and there
+		// was NO fuller spelling the project owner could use to escape
+		// the over-match, because the pattern already WAS the full path
+		// of the package they wanted excluded. forge generate therefore
+		// silently never re-emitted internal/authutil/mock_gen.go, and
+		// the only workaround was forking a byte-identical "generated"
+		// file to keep it alive past the stale-artifact sweep. Matching
+		// is now segment-aware: a pattern only matches whole path
+		// segments (equality, "/"-suffix, "/"-prefix subtree, or
+		// "/pattern/" mid-path), never a partial segment.
+		{
+			name:     "segment boundary — sibling sharing a prefix is NOT excluded",
+			patterns: []string{"internal/auth"},
+			pkgPath:  "internal/authutil",
+			want:     false,
+		},
+		{
+			name:     "segment boundary — leaf shorthand does not match a longer leaf",
+			patterns: []string{"auth"},
+			pkgPath:  "internal/authutil",
+			want:     false,
+		},
+		{
+			name:     "segment boundary — leaf shorthand still matches the exact leaf",
+			patterns: []string{"auth"},
+			pkgPath:  "internal/auth",
+			want:     true,
+		},
+		{
+			name:     "subtree — excluding a directory still excludes its descendants",
+			patterns: []string{"internal/auth"},
+			pkgPath:  "internal/auth/oidc",
+			want:     true,
+		},
+		{
+			name:     "subtree — descendant of a mid-path segment match",
+			patterns: []string{"auth"},
+			pkgPath:  "internal/auth/oidc",
+			want:     true,
+		},
+		{
+			name:     "segment boundary — multi-segment pattern does not match a partial trailing segment",
+			patterns: []string{"billing/provider"},
+			pkgPath:  "internal/billing/provideradapters",
+			want:     false,
+		},
+		{
+			name:     "trailing slash on the pattern is tolerated",
+			patterns: []string{"internal/auth/"},
+			pkgPath:  "internal/auth/oidc",
+			want:     true,
+		},
 		// Slash normalisation is OS-dependent (filepath.ToSlash is a
 		// no-op when the OS separator is already `/`). The matcher
 		// always normalises both sides via filepath.ToSlash, but

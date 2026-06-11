@@ -197,9 +197,9 @@ func TestRolesDecider_DenyOnRoleMismatch(t *testing.T) {
 }
 
 func TestRolesDecider_UnknownMethodFallsThroughToDefault(t *testing.T) {
-	// Default nil + FailMode=FailClosed → deny (legacy 1.x behaviour).
-	// FailMode is explicit here because the zero value is now FailOpen;
-	// the zero-value path is covered by TestRolesDecider_FailOpenAllowsUnknown.
+	// Default nil + FailMode=FailClosed → deny. FailClosed is the zero
+	// value; it's spelled out here for readability. The zero-value path
+	// is pinned by TestRolesDecider_ZeroValueFailsClosed.
 	d := RolesDecider{
 		MethodRoles: map[string][]string{
 			"/svc/Known": {"admin"},
@@ -277,7 +277,7 @@ func TestRolesDecider_MethodAuthRequired_OptOut(t *testing.T) {
 }
 
 func TestRolesDecider_MethodAuthRequired_UnknownDenies(t *testing.T) {
-	// Explicit FailClosed — zero-value FailOpen is covered separately.
+	// Explicit FailClosed (also the zero value).
 	d := RolesDecider{
 		MethodAuthRequired: map[string]bool{
 			"/svc/Known": true,
@@ -293,54 +293,8 @@ func TestRolesDecider_MethodAuthRequired_UnknownDenies(t *testing.T) {
 	}
 }
 
-// TestRolesDecider_FailOpenAllowsUnknown pins the zero-value contract:
-// fresh scaffolds with empty maps must NOT 403 every RPC the moment
-// dev-mode authorizer is swapped out. The old fail-closed default did
-// exactly that in cp-forge — see Bug 6 / 8 services manually bypassing
-// generated.CanAccess to ship to staging. The warn log still fires so
-// the missing annotation surfaces; only the response changes.
-func TestRolesDecider_FailOpenAllowsUnknown(t *testing.T) {
-	getRecords := captureSlog(t)
-
-	// Zero-value FailMode = FailOpen. Empty maps mimic a fresh scaffold.
-	d := RolesDecider{
-		MethodRoles:        map[string][]string{},
-		MethodAuthRequired: map[string]bool{},
-	}
-	a := New(d)
-	wireLookup(t, lookupClaims)
-	ctx := putClaims(context.Background(), &auth.Claims{Role: "admin"})
-	if err := a.CanAccess(ctx, "/svc/AnythingGoes"); err != nil {
-		t.Fatalf("FailOpen should allow unknown methods (got %v)", err)
-	}
-	// Warn still emitted so the gap is visible.
-	if records := getRecords(); len(records) != 1 {
-		t.Fatalf("FailOpen must still warn on unknown methods, got %d records", len(records))
-	}
-}
-
-// TestRolesDecider_FailOpenAllowsUnknown_NoMethodAuthRequiredMap covers the
-// other unknown-method branch (the MethodRoles-miss path with nil
-// MethodAuthRequired). Both branches must share the same FailMode shape
-// or the response would depend on which map a given service populated.
-func TestRolesDecider_FailOpenAllowsUnknown_NoMethodAuthRequiredMap(t *testing.T) {
-	getRecords := captureSlog(t)
-
-	d := RolesDecider{
-		MethodRoles: map[string][]string{},
-		// No MethodAuthRequired → first branch is skipped.
-		// FailMode zero = FailOpen.
-	}
-	a := New(d)
-	wireLookup(t, lookupClaims)
-	ctx := putClaims(context.Background(), &auth.Claims{Role: "admin"})
-	if err := a.CanAccess(ctx, "/svc/AnythingGoes"); err != nil {
-		t.Fatalf("FailOpen should allow unknown methods (second branch) (got %v)", err)
-	}
-	if records := getRecords(); len(records) != 1 {
-		t.Fatalf("FailOpen must still warn on unknown methods (second branch), got %d records", len(records))
-	}
-}
+// The zero-value (FailClosed) and AllowUnknownMethods opt-in contracts
+// are pinned in failmode_test.go.
 
 // captureSlog swaps slog.Default() for a handler that records every
 // emitted record, then restores it on test cleanup. Returned getRecords
@@ -381,6 +335,7 @@ func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
 // (stale proto codegen, hand-mounted endpoint outside the proto)
 // shows up in server logs where on-call greps live.
 func TestRolesDecider_UnknownMethod_DefaultEmitsSlogWarn(t *testing.T) {
+	resetUnknownMethodWarnings()
 	getRecords := captureSlog(t)
 
 	// Explicit FailClosed — exercise the deny path so the slog assertion
@@ -430,6 +385,7 @@ func TestRolesDecider_UnknownMethod_DefaultEmitsSlogWarn(t *testing.T) {
 // When set, the default slog warn is suppressed — otherwise we'd
 // double-log, defeating the override's purpose.
 func TestRolesDecider_UnknownMethod_OnUnknownOverridesDefault(t *testing.T) {
+	resetUnknownMethodWarnings()
 	getRecords := captureSlog(t)
 
 	var seen []string
@@ -463,6 +419,7 @@ func TestRolesDecider_UnknownMethod_OnUnknownOverridesDefault(t *testing.T) {
 // which map happened to be populated.
 func TestRolesDecider_UnknownMethod_BothBranchesWarn(t *testing.T) {
 	t.Run("MethodAuthRequired-miss", func(t *testing.T) {
+		resetUnknownMethodWarnings()
 		var seen []string
 		d := RolesDecider{
 			MethodAuthRequired: map[string]bool{"/svc/Known": true},
@@ -477,6 +434,7 @@ func TestRolesDecider_UnknownMethod_BothBranchesWarn(t *testing.T) {
 		}
 	})
 	t.Run("MethodRoles-miss-nil-default", func(t *testing.T) {
+		resetUnknownMethodWarnings()
 		// No MethodAuthRequired → skip the first branch. MethodRoles is
 		// empty + Default nil → second branch fires the deny.
 		var seen []string

@@ -24,8 +24,8 @@ var validator *Validator
 // Init also calls [middleware.MarkExternalAuth] so the scaffold's stub
 // AuthInterceptor (wired alongside this pack's interceptor in
 // cmd/server.go) flips into passthrough mode. Without that signal the
-// stub panics at startup because it can't tell that a pack is taking
-// over auth.
+// stub's constructor (middleware.NewAuthInterceptor) returns an error
+// at startup because it can't tell that a pack is taking over auth.
 func Init(logger *slog.Logger) error {
 	middleware.MarkExternalAuth()
 

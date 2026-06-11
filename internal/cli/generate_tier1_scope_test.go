@@ -8,8 +8,12 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -90,7 +94,7 @@ func TestFilterTier1DriftInScope_GateOffFiltersDrift(t *testing.T) {
 func TestFilterTier1DriftInScope_GateOnKeepsDriftInScope(t *testing.T) {
 	ctx := &pipelineContext{
 		Cfg: &config.ProjectConfig{
-			Name: "with-driver",
+			Name:     "with-driver",
 			Database: config.DatabaseConfig{Driver: "postgres"},
 			Features: config.FeaturesConfig{
 				Migrations: configBoolPtr(true),
@@ -125,6 +129,64 @@ func TestFilterTier1DriftInScope_UnknownPathStaysInScope(t *testing.T) {
 	}
 	if len(outOfScope) != 0 {
 		t.Errorf("unknown-emitter drift should not be out-of-scope; outOfScope = %d, want 0", len(outOfScope))
+	}
+}
+
+// TestStepCheckTier1Drift_PopulatesPresenceBeforeScoping is the
+// regression pin for the silent-stomp ordering bug the fixture corpus
+// caught: stepCheckTier1Drift runs BEFORE stepDetectProtoDirs, so the
+// presence flags (HasServices/HasWorkers/HasOperators) the scope-filter
+// gates consult were all false at guard time. On a FULL generate run
+// over a project with services, drift on pkg/app/wire_gen.go was
+// classified out-of-scope, the guard waved it through, and
+// stepBootstrap then overwrote the user's hand edit with no error.
+//
+// The fix populates component presence inside stepCheckTier1Drift
+// before filtering. This test drives the real step function on a
+// synthetic project with proto/services/ and a drifted wire_gen.go and
+// requires the loud Tier-1 error.
+func TestStepCheckTier1Drift_PopulatesPresenceBeforeScoping(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
+	const rel = "pkg/app/wire_gen.go"
+	recorded := []byte("package app // as generated\n")
+	edited := []byte("package app // hand-edited\n")
+	mustWriteScopeFile(t, filepath.Join(dir, rel), string(edited))
+
+	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	cs.RecordFile(rel, recorded)
+	entry := cs.Files[rel]
+	entry.Tier = 1
+	cs.Files[rel] = entry
+
+	ctx := &pipelineContext{
+		ProjectDir: dir,
+		AbsPath:    dir,
+		Checksums:  cs,
+		// Deliberately NOT setting HasServices — the step must derive
+		// it from disk itself.
+	}
+	err := stepCheckTier1Drift(ctx)
+	if err == nil {
+		t.Fatalf("stepCheckTier1Drift = nil; want the Tier-1 stomp-guard error (drifted %s on a project with services)", rel)
+	}
+	if !strings.Contains(err.Error(), rel) {
+		t.Errorf("stomp-guard error should name %s; got: %v", rel, err)
+	}
+	if !ctx.HasServices {
+		t.Errorf("stepCheckTier1Drift did not populate ctx.HasServices from disk")
+	}
+}
+
+// mustWriteScopeFile writes content at path, creating parents — local
+// to the scope tests so they stay dependency-free.
+func mustWriteScopeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

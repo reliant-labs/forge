@@ -101,7 +101,7 @@ Notes:
 - An error returned here aborts boot with the message — fail loudly rather than silently degrading.
 - Don't invent a parallel hook system (`wire_*_hooks.go`, post-Setup passes, etc.) for this. PostBootstrap IS that system.
 
-For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, see `forge:placeholder` in the `api-handlers` skill — that's a generate-time mechanism for cross-lane parallel work, distinct from the runtime-late-binding case above.
+For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, see `forge:placeholder` in the `api` skill — that's a generate-time mechanism for cross-lane parallel work, distinct from the runtime-late-binding case above.
 
 ## How to test
 

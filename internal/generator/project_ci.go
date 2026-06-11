@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -216,7 +217,12 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("read CI template %s: %w", f.templateName, err)
 		}
-		if _, err := WriteGeneratedFile(g.Path, f.dest, content, cs, true); err != nil {
+		// Tier-2: the PR template is a one-shot starter the user owns
+		// after creation — `forge generate` never re-emits it, so a
+		// Tier-1/legacy record would put the user's own edits under the
+		// stomp guard (FRICTION 2026-06-05, cp-forge: users hand-flipped
+		// `forked: true` to escape exactly that misclassification).
+		if _, err := checksums.WriteGeneratedFileTier2(g.Path, f.dest, content, cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
 	}
@@ -232,7 +238,10 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("render CODEOWNERS: %w", err)
 		}
-		if _, err := WriteGeneratedFile(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {
+		// Tier-2: CODEOWNERS carries the `forge:scaffold one-shot —
+		// starter` banner — review policy is the user's to evolve, and
+		// edits must not trip the Tier-1 stomp guard.
+		if _, err := checksums.WriteGeneratedFileTier2(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {
 			return fmt.Errorf("write CODEOWNERS: %w", err)
 		}
 	}

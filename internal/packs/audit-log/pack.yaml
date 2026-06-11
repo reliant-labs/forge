@@ -12,7 +12,7 @@ description: |
     store := audit.NewDBAuditStore(db)
     interceptors := connect.WithInterceptors(auditlog.Interceptor(logger, store))
     mux.Handle(auditv1connect.NewAuditLogServiceHandler(auditlog.NewHandler(store)))
-version: 1.1.0
+version: 1.2.0
 subpath: middleware/audit/auditlog
 
 config:

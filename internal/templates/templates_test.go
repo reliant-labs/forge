@@ -56,6 +56,7 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		UnservedServices    []struct{ Name, ServedBy string }
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -128,6 +129,7 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		UnservedServices    []struct{ Name, ServedBy string }
 	}{
 		Module:           "example.com/myproject",
 		LeaderElectionID: "myproject-leader",
@@ -196,6 +198,7 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		UnservedServices    []struct{ Name, ServedBy string }
 	}{
 		Module:           "example.com/myproject",
 		LeaderElectionID: "myproject-leader",
@@ -272,6 +275,7 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 			ConnectImports      []string
 			DiagnosticsEnabled  bool
 			StrictWiringEnabled bool
+			UnservedServices    []struct{ Name, ServedBy string }
 			HasFallible         bool
 		}{
 			Module:       "example.com/myproject",
@@ -358,6 +362,7 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 			ConnectImports      []string
 			DiagnosticsEnabled  bool
 			StrictWiringEnabled bool
+			UnservedServices    []struct{ Name, ServedBy string }
 		}{
 			Module: "example.com/myproject",
 			Services: []svc{

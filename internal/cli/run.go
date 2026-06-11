@@ -158,6 +158,31 @@ func runProjectDev(opts runOptions) error {
 		if len(servicesToRun) == 0 && len(frontendsToRun) == 0 {
 			return fmt.Errorf("none of the specified services %v found in project config", opts.services)
 		}
+		// Explicitly requesting a types-only service is a
+		// misconfiguration — fail here with the full story instead of
+		// letting the generated BootstrapOnly guard error later.
+		for _, s := range servicesToRun {
+			if !s.IsServed() {
+				hint := ""
+				if s.ServedBy != "" {
+					hint = fmt.Sprintf(" (served by %s)", s.ServedBy)
+				}
+				return fmt.Errorf("service %q is types-only in forge.yaml (serve: false)%s — this project's binary does not serve it", s.Name, hint)
+			}
+		}
+	} else {
+		// Default run: types-only services have no row in the bootstrap
+		// table, so passing their names to the server would trip the
+		// generated BootstrapOnly guard. Skip them with a notice.
+		var served []config.ServiceConfig
+		for _, s := range servicesToRun {
+			if s.IsServed() {
+				served = append(served, s)
+				continue
+			}
+			fmt.Printf("[run] skipping %s (serve: false — types-only service)\n", s.Name)
+		}
+		servicesToRun = served
 	}
 
 	// 1. Start infrastructure via docker compose (unless --no-infra).
@@ -694,6 +719,13 @@ func runHostService(ctx context.Context, name, env, secretsFile string, backgrou
 	if svc == nil {
 		return fmt.Errorf("service %q not found in forge.yaml (declared services: %s)",
 			name, strings.Join(declaredServiceNames(cfg), ", "))
+	}
+	if !svc.IsServed() {
+		hint := ""
+		if svc.ServedBy != "" {
+			hint = fmt.Sprintf(" (served by %s)", svc.ServedBy)
+		}
+		return fmt.Errorf("service %q is types-only in forge.yaml (serve: false)%s — this project's binary does not serve it", name, hint)
 	}
 
 	// Look up the KCL HostDeploy block for this service. When the env's

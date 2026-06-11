@@ -41,7 +41,16 @@ type AuthzTemplateData struct {
 // cs is the project's checksum tracker — passing it ensures every emitted
 // authorizer_gen.go is recorded so `forge audit` doesn't flag it as an
 // orphan. A nil cs is tolerated.
-func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
+//
+// skipDirs lists handlers/<dir> leaves the directory sweep below must NOT
+// touch — the dirs of forge.yaml `serve: false` (types-only) services.
+// Their services never appear in the (already served-filtered) services
+// slice, so without the skip the sweep would misread a retired handler
+// dir as an orphaned scaffold and re-emit authorizer_gen.go into it,
+// re-adding the path to WrittenThisRun and hiding it from the stale-
+// cleanup sweep. Keys are the snake package form (naming.ServicePackage);
+// nil means no types-only services.
+func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
 	// generatedDirs records the handlers/<dir> leaves covered by the
 	// ServiceDef pass so the directory sweep below doesn't double-emit.
 	// Keyed by the ON-DISK directory name (not the synthesized package)
@@ -116,6 +125,11 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		}
 		dirName := entry.Name()
 		if generatedDirs[dirName] {
+			continue
+		}
+		// Types-only (serve: false) services: leave their retired handler
+		// dirs alone so the stale-cleanup sweep can flag the tracked files.
+		if skipDirs[dirName] || skipDirs[naming.ServicePackage(dirName)] {
 			continue
 		}
 		// Canonical handler dirs are snake_case Go identifiers (matching

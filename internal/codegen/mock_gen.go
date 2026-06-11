@@ -23,7 +23,7 @@ type MockService struct {
 	RegenerateServiceFileFunc       func(ServiceDef, string) error
 	GenerateMissingHandlerStubsFunc func(ServiceDef, string, string, map[string]bool, *checksums.FileChecksums) (*MissingHandlerResult, error)
 	GenerateMockFunc                func(ServiceDef, string) (bool, error)
-	GenerateAuthorizerFunc          func([]ServiceDef, string, string, *checksums.FileChecksums) error
+	GenerateAuthorizerFunc          func([]ServiceDef, string, string, map[string]bool, *checksums.FileChecksums) error
 	GenerateAuthMiddlewareFunc      func(*config.AuthConfig, string, []string, string, *checksums.FileChecksums) error
 	GenerateTenantMiddlewareFunc    func(*config.MultiTenantConfig, string, *checksums.FileChecksums) error
 	GenerateCRUDHandlersFunc        func(ServiceDef, []CRUDMethod, string, string, *checksums.FileChecksums) error
@@ -69,10 +69,10 @@ func (m *MockService) GenerateMock(svc ServiceDef, mockDir string) (bool, error)
 	return false, contractkit.MockNotSet("MockService", "GenerateMock")
 }
 
-func (m *MockService) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
-	m.Record("GenerateAuthorizer", services, modulePath, targetDir, cs)
+func (m *MockService) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
+	m.Record("GenerateAuthorizer", services, modulePath, targetDir, skipDirs, cs)
 	if m.GenerateAuthorizerFunc != nil {
-		return m.GenerateAuthorizerFunc(services, modulePath, targetDir, cs)
+		return m.GenerateAuthorizerFunc(services, modulePath, targetDir, skipDirs, cs)
 	}
 	return contractkit.MockNotSet("MockService", "GenerateAuthorizer")
 }

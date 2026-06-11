@@ -118,7 +118,17 @@ func runIntrospectHandlers(w io.Writer, protoDir, format string) error {
 		return fmt.Errorf("parse services: %w", err)
 	}
 
-	paths := handlerPathsFromServices(defs)
+	// The command's contract is "paths the BINARY will register" — drop
+	// types-only services (forge.yaml serve: false): their RPCs exist in
+	// the protos but a sibling binary serves them. Best-effort config
+	// load: no forge.yaml means no serve declarations, serve everything.
+	cfg, cfgErr := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile))
+	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
+		return fmt.Errorf("load project config: %w", cfgErr)
+	}
+	served, _ := servedServiceDefs(cfg, defs)
+
+	paths := handlerPathsFromServices(served)
 	return writeHandlerPaths(w, paths, format)
 }
 

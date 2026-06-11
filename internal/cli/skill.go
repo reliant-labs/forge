@@ -60,14 +60,52 @@ const (
 	SkillEmitBoth SkillEmit = "both"
 )
 
+// SkillRelevance classifies WHEN a skill is worth surfacing, read from the
+// YAML frontmatter `relevance:` field. It is orthogonal to [SkillEmit]
+// (which audience) — relevance says "is this skill applicable to the
+// steady-state of a project, or only during a specific transition?".
+//
+// An empty value means "always relevant" — the default for every skill
+// that predates the field.
+//
+// Why relevance-class gating instead of version-range gating: forge
+// binaries very commonly run as dev builds or Go pseudo-versions
+// (see [isForgeVersionSkew], which treats those as non-comparable), so a
+// listing-time version comparison would silently degrade to "include
+// everything" for most real installs. Proper per-project version-range +
+// detection-script gating for migration skills already exists in
+// `forge upgrade list` (applies-from/applies-to frontmatter,
+// upgrade_migrations.go); listings only need the coarse class. The
+// applies-from/applies-to bounds are still parsed and exposed on the
+// metadata so consumers (e.g. reliant) can make their own call.
+type SkillRelevance string
+
+const (
+	// SkillRelevanceMigration — one-time upgrade-transition playbooks
+	// (skills/forge/migrations/*). Noise for any project that is already
+	// past (or before) the transition, so DEFAULT listings and the
+	// project-skill regeneration exclude them. They remain loadable by
+	// exact path (`forge skill load migrations/...`) and are surfaced
+	// with proper version-range gating by `forge upgrade list`.
+	SkillRelevanceMigration SkillRelevance = "migration"
+)
+
 // skillMeta holds parsed YAML frontmatter from a SKILL.md file plus the scope
 // the skill was loaded from.
 type skillMeta struct {
 	Path        string // e.g. "db", "frontend/state", "debug/investigate"
 	Name        string
 	Description string
-	Scope       SkillScope // forge | project | user (inferred from source)
-	Emit        SkillEmit  // forge | general | both (from frontmatter; empty == legacy forge default)
+	Scope       SkillScope     // forge | project | user (inferred from source)
+	Emit        SkillEmit      // forge | general | both (from frontmatter; empty == legacy forge default)
+	Relevance   SkillRelevance // "" (always) | migration (from frontmatter; dir-derived default for migrations/)
+
+	// AppliesFrom / AppliesTo mirror the migration-skill `applies-from:` /
+	// `applies-to:` frontmatter bounds (half-open [from, to) over the
+	// project's pinned forge_version). Informational on listings — the
+	// authoritative range gate lives in `forge upgrade list`.
+	AppliesFrom string
+	AppliesTo   string
 
 	// fsPath is non-empty for project/user-scope skills and points at the
 	// SKILL.md on disk. For forge-shipped skills it is empty (content is
@@ -99,14 +137,27 @@ func newSkillCmd() *cobra.Command {
 }
 
 func newSkillListCmd() *cobra.Command {
-	var jsonOut bool
+	var (
+		jsonOut           bool
+		includeMigrations bool
+	)
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available skills (forge-shipped, project, and user-global)",
+		Long: `List available skills (forge-shipped, project, and user-global).
+
+One-time migration playbooks (relevance: migration — the skills under
+migrations/) are hidden by default; they only matter while crossing a
+specific forge version transition. Pass --include-migrations to list
+them, or use 'forge upgrade list' to see the migrations that actually
+apply to this project's pinned forge_version.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skills, err := listSkills()
 			if err != nil {
 				return err
+			}
+			if !includeMigrations {
+				skills = filterDefaultRelevance(skills)
 			}
 			if jsonOut {
 				return writeSkillsJSON(cmd.OutOrStdout(), skills)
@@ -120,7 +171,22 @@ func newSkillListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
+	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Include one-time migration skills (relevance: migration) in the listing")
 	return cmd
+}
+
+// filterDefaultRelevance drops skills that are not relevant to a project's
+// steady state (currently: relevance=migration). Used by every DEFAULT
+// listing surface; opt-in flags/params bypass it.
+func filterDefaultRelevance(skills []skillMeta) []skillMeta {
+	out := make([]skillMeta, 0, len(skills))
+	for _, s := range skills {
+		if s.Relevance == SkillRelevanceMigration {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 func newSkillLoadCmd() *cobra.Command {
@@ -203,6 +269,10 @@ type skillSearchResult struct {
 // searchSkills runs the reliant-ported word-scoring algorithm across all
 // skills (forge + project + user). Returns results with score > 0, sorted
 // by score desc then path asc.
+//
+// Migration skills (relevance: migration) ARE searchable: a keyword query
+// is an explicit, intent-carrying request — the opposite of the passive
+// listing pollution the default-relevance filter exists to prevent.
 func searchSkills(query string) ([]skillSearchResult, error) {
 	skills, err := listSkills()
 	if err != nil {
@@ -267,6 +337,18 @@ type SkillMetaPublic struct {
 	Scope       SkillScope
 	Emit        SkillEmit
 
+	// Relevance classifies when the skill is worth surfacing: "" (always —
+	// the default) or "migration" (one-time upgrade transition; excluded
+	// from default listings, included via SkillListOptions.IncludeMigrations).
+	Relevance SkillRelevance
+	// AppliesFrom / AppliesTo are the migration skill's frontmatter version
+	// bounds (half-open [from, to) over the project's pinned forge_version),
+	// passed through verbatim for consumers that want to do their own
+	// version gating. Empty for non-migration skills and for migration
+	// skills without declared bounds.
+	AppliesFrom string
+	AppliesTo   string
+
 	// SkillForgeVersion is the forge version the skill content ships with —
 	// i.e. the version of the forge module/binary serving this listing.
 	// Empty for project/user-scope skills (their content is user-owned and
@@ -283,13 +365,36 @@ type SkillMetaPublic struct {
 	VersionSkew bool
 }
 
+// SkillListOptions tunes [ListSkillsAtWithOptions]. The zero value is the
+// default-listing behavior (migration skills excluded).
+type SkillListOptions struct {
+	// IncludeMigrations opts one-time migration skills
+	// (relevance: migration) back into the listing. Default listings
+	// exclude them — they only matter while crossing a specific forge
+	// version transition.
+	IncludeMigrations bool
+}
+
 // ListSkillsAt is the exported wrapper around [listSkillsAt], intended for
 // consumers in sibling packages (e.g. forge/cli's public shim). It hides the
 // unexported skillMeta type behind a stable struct.
+//
+// Migration skills (relevance: migration) are excluded — this is the
+// DEFAULT listing surface. Use [ListSkillsAtWithOptions] with
+// IncludeMigrations to opt them in.
 func ListSkillsAt(projectRoot string) ([]SkillMetaPublic, error) {
+	return ListSkillsAtWithOptions(projectRoot, SkillListOptions{})
+}
+
+// ListSkillsAtWithOptions is [ListSkillsAt] with explicit listing options.
+// Additive surface — ListSkillsAt's signature is frozen for reliant.
+func ListSkillsAtWithOptions(projectRoot string, opts SkillListOptions) ([]SkillMetaPublic, error) {
 	metas, err := listSkillsAt(projectRoot)
 	if err != nil {
 		return nil, err
+	}
+	if !opts.IncludeMigrations {
+		metas = filterDefaultRelevance(metas)
 	}
 	binaryVersion := runningForgeVersion()
 	projectVersion := projectForgeVersionAt(projectRoot)
@@ -302,6 +407,9 @@ func ListSkillsAt(projectRoot string) ([]SkillMetaPublic, error) {
 			Description:         m.Description,
 			Scope:               m.Scope,
 			Emit:                m.Emit,
+			Relevance:           m.Relevance,
+			AppliesFrom:         m.AppliesFrom,
+			AppliesTo:           m.AppliesTo,
 			ProjectForgeVersion: projectVersion,
 		}
 		if m.Scope == SkillScopeForge {
@@ -544,6 +652,14 @@ func listForgeShippedSkills() ([]skillMeta, error) {
 		if meta.Emit == "" {
 			meta.Emit = defaultEmit
 		}
+		// Directory-derived relevance default: everything under
+		// skills/forge/migrations/ is a one-time transition playbook.
+		// Per-skill `relevance:` frontmatter (the stamped norm) wins;
+		// this fallback keeps a future un-stamped migration skill from
+		// silently re-polluting default listings.
+		if meta.Relevance == "" && strings.HasPrefix(rel, forgeDir+"/migrations/") {
+			meta.Relevance = SkillRelevanceMigration
+		}
 		meta.Path = skillPath
 		meta.Scope = SkillScopeForge
 		out = append(out, meta)
@@ -666,6 +782,12 @@ func parseFrontmatter(content []byte) skillMeta {
 				meta.Description = v
 			case "emit":
 				meta.Emit = SkillEmit(v)
+			case "relevance":
+				meta.Relevance = SkillRelevance(v)
+			case "applies-from":
+				meta.AppliesFrom = strings.Trim(v, `"'`)
+			case "applies-to":
+				meta.AppliesTo = strings.Trim(v, `"'`)
 			}
 		}
 	}
@@ -696,15 +818,16 @@ func findProjectRoot() (string, error) {
 // jsonSkill is the JSON shape emitted by `skill list --json` and inside
 // `skill search --json`. Keep field tags stable — sub-agents parse this.
 type jsonSkill struct {
-	Path        string     `json:"path"`
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Scope       SkillScope `json:"scope"`
-	Emit        SkillEmit  `json:"emit,omitempty"`
+	Path        string         `json:"path"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Scope       SkillScope     `json:"scope"`
+	Emit        SkillEmit      `json:"emit,omitempty"`
+	Relevance   SkillRelevance `json:"relevance,omitempty"`
 }
 
 func toJSONSkill(s skillMeta) jsonSkill {
-	return jsonSkill{Path: s.Path, Name: s.Name, Description: s.Description, Scope: s.Scope, Emit: s.Emit}
+	return jsonSkill{Path: s.Path, Name: s.Name, Description: s.Description, Scope: s.Scope, Emit: s.Emit, Relevance: s.Relevance}
 }
 
 func writeSkillsJSON(w interface{ Write([]byte) (int, error) }, skills []skillMeta) error {

@@ -1,6 +1,7 @@
 ---
 name: v0.1-to-v0.2
 description: Migrate a forge project from v0.1's two-phase Bootstrap+Setup+ApplyDeps DI shape to v0.2's codegen-based wire_gen.go single-phase DI. The change unifies dep construction so validateDeps gates the COMPLETE dep set at New(), eliminating per-RPC nil-check boilerplate. Use when bumping forge_version from v0.1 to v0.2.
+relevance: migration
 ---
 
 # Migrating from forge v0.1 to v0.2

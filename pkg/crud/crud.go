@@ -2,11 +2,13 @@ package crud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Authorize is a hook the shim passes in to perform the per-RPC
@@ -61,16 +63,24 @@ func runTenant(ctx context.Context, hook RequireTenant) (string, error) {
 	return tid, nil
 }
 
-// wrapInternal wraps a repository error in the canonical
-// "<op> <entity>: %w" envelope at CodeInternal. This format matches
-// what the previous generated handler emitted, byte for byte.
-func wrapInternal(op, entity string, err error) error {
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s %s: %w", op, entity, err))
-}
-
-// wrapNotFound is the same envelope at CodeNotFound (used by Get).
-func wrapNotFound(op, entity string, err error) error {
-	return connect.NewError(connect.CodeNotFound, fmt.Errorf("%s %s: %w", op, entity, err))
+// mapRepoErr is the single repository-error -> client-error chokepoint,
+// routed through pkg/svcerr (the prescribed handler convention IS the
+// demonstrated one):
+//
+//   - a missing row (orm.ErrNoRows, or an svcerr.ErrNotFound the
+//     repository already classified) maps to CodeNotFound with a clean
+//     "<entity>: not found" message;
+//   - EVERYTHING else maps to CodeInternal with safe text. Repository
+//     errors carry SQL fragments and driver internals ("sql: no rows in
+//     result set", "no such column: ..."), and a connect.Error message
+//     is client-visible — raw SQL must never cross the wire. The full
+//     error is still observable server-side: the generated ORM layer
+//     records it on the active trace span before returning it.
+func mapRepoErr(op, entity string, err error) error {
+	if errors.Is(err, orm.ErrNoRows) || svcerr.IsNotFound(err) {
+		return svcerr.Wrap(svcerr.NotFound(entity))
+	}
+	return svcerr.Wrap(svcerr.Internal(fmt.Sprintf("%s %s failed", op, entity)))
 }
 
 // CreateOp wires the per-RPC concerns of a Create handler.
@@ -108,7 +118,7 @@ func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.
 		}
 		entity := op.Entity(req.Msg)
 		if err := op.Persist(ctx, tid, entity); err != nil {
-			return nil, wrapInternal("create", op.EntityLower, err)
+			return nil, mapRepoErr("create", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
@@ -137,7 +147,7 @@ func HandleGet[Req, Resp, Ent any](op GetOp[Req, Resp, Ent]) func(context.Contex
 		}
 		entity, err := op.Fetch(ctx, tid, op.ID(req.Msg))
 		if err != nil {
-			return nil, wrapNotFound("get", op.EntityLower, err)
+			return nil, mapRepoErr("get", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
@@ -175,7 +185,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 			)
 		}
 		if err := op.Persist(ctx, tid, entity); err != nil {
-			return nil, wrapInternal("update", op.EntityLower, err)
+			return nil, mapRepoErr("update", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
@@ -204,7 +214,7 @@ func HandleDelete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *
 			return nil, err
 		}
 		if err := op.Persist(ctx, tid, op.ID(req.Msg)); err != nil {
-			return nil, wrapInternal("delete", op.EntityLower, err)
+			return nil, mapRepoErr("delete", op.EntityLower, err)
 		}
 		var resp *Resp
 		if op.Pack != nil {
@@ -227,6 +237,13 @@ type ListOp[Req, Resp, Ent any] struct {
 	Auth         Authorize
 	Tenant       RequireTenant
 	PkColumnName string // empty disables PK-cursor pagination
+
+	// Columns is the entity's declared column allowlist (the generated
+	// db.<Entity>Columns var). User-supplied order_by columns are
+	// validated against it — identifier-shape validation alone lets an
+	// undeclared column reach the database, where some engines silently
+	// treat it as a constant (an ordering no-op).
+	Columns []string
 
 	// Pagination knobs. The library applies the same defaults the legacy
 	// template did when these are zero.
@@ -322,7 +339,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		if op.HasOrderBy && op.OrderBy != nil {
 			clause, desc := op.OrderBy(req.Msg)
 			if clause != "" {
-				if err := orm.ValidateOrderBy(clause); err != nil {
+				if err := orm.ValidateOrderBy(clause, op.Columns); err != nil {
 					return nil, connect.NewError(connect.CodeInvalidArgument, err)
 				}
 				ord := orm.Asc
@@ -339,7 +356,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 
 		results, err := op.Query(ctx, tid, opts)
 		if err != nil {
-			return nil, wrapInternal("list", op.EntityLower, err)
+			return nil, mapRepoErr("list", op.EntityLower, err)
 		}
 
 		var nextPageToken string

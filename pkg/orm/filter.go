@@ -50,3 +50,14 @@ func WhereIsNull(column string) QueryOption {
 func WhereIsNotNull(column string) QueryOption {
 	return WithWhere(column, IsNotNull, nil)
 }
+
+// WhereILikeAny matches value case-insensitively against ANY of the
+// given columns: `(LOWER(c1) LIKE LOWER($1) OR LOWER(c2) LIKE LOWER($2))`
+// (native ILIKE on Postgres). This is the canonical mapping for a
+// `search` filter field: it spans the entity's declared string columns
+// instead of inventing a phantom `search` column.
+func WhereILikeAny(columns []string, value any) QueryOption {
+	return func(qb *QueryBuilder) {
+		qb.WhereAnyILike(columns, value)
+	}
+}

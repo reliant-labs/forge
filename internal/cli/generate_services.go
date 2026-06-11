@@ -227,10 +227,13 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 
 		pkg := naming.ServicePackage(svc.Name)
 		if err := codegen.GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD generation for %s failed: %v\n", svc.Name, err)
-			continue
+			// Hard failure by design: the CRUD generator only errors on
+			// real wiring problems (e.g. a list filter field that maps to
+			// no declared entity column). Shipping a phantom-column query
+			// that silently returns nothing is the worse outcome.
+			return fmt.Errorf("CRUD generation for %s: %w", svc.Name, err)
 		}
-		fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_gen.go (%d methods)\n", pkg, len(crudMethods))
+		fmt.Printf("  ✅ Generated handlers/%s CRUD wiring (%d methods; ops in handlers_crud_ops_gen.go, shims in user-owned handlers_crud.go)\n", pkg, len(crudMethods))
 
 		if err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs); err != nil {
 			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD test generation for %s failed: %v\n", svc.Name, err)

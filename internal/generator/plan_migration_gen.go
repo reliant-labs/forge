@@ -68,10 +68,11 @@ func buildUpMigration(entities []config.PlanEntity) string {
 
 		// Auto-add an id primary key column if none is defined.
 		hasPK := false
+		declared := make(map[string]bool, len(ent.Fields))
 		for _, f := range ent.Fields {
+			declared[f.Name] = true
 			if f.PrimaryKey || f.Name == "id" {
 				hasPK = true
-				break
 			}
 		}
 		if !hasPK {
@@ -82,14 +83,24 @@ func buildUpMigration(entities []config.PlanEntity) string {
 			colDefs = append(colDefs, buildColumnDef(f))
 		}
 
-		// Auto-generated timestamp fields.
+		// Auto-generated timestamp fields — but only when the entity does
+		// not already declare them (proto entities routinely declare
+		// created_at/updated_at explicitly alongside timestamps:true; a
+		// duplicate column is a hard migration failure).
+		// DEFAULT CURRENT_TIMESTAMP rather than now(): identical semantics
+		// on Postgres, and it also parses on SQLite (the test-harness
+		// dialect), so the same migration file drives both.
 		if ent.Timestamps {
-			colDefs = append(colDefs, "    created_at TIMESTAMPTZ NOT NULL DEFAULT now()")
-			colDefs = append(colDefs, "    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()")
+			if !declared["created_at"] {
+				colDefs = append(colDefs, "    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP")
+			}
+			if !declared["updated_at"] {
+				colDefs = append(colDefs, "    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP")
+			}
 		}
 
-		// Auto-generated soft delete field.
-		if ent.SoftDelete {
+		// Auto-generated soft delete field (same dedupe rule).
+		if ent.SoftDelete && !declared["deleted_at"] {
 			colDefs = append(colDefs, "    deleted_at TIMESTAMPTZ")
 		}
 
@@ -120,6 +131,13 @@ func buildColumnDef(f config.PlanEntityField) string {
 	}
 	if f.NotNull || f.TenantKey {
 		parts = append(parts, "NOT NULL")
+	}
+	if f.PrimaryKey && sqlType == "TEXT" {
+		// String PKs are app-generated (ulid at the ORM chokepoint). An
+		// empty-string id is always a bug — and historically it was a
+		// SILENT one: every empty-id INSERT upserted onto the same ''
+		// row. Make the database refuse it.
+		parts = append(parts, fmt.Sprintf("CHECK (%s <> '')", colName))
 	}
 	if f.Unique {
 		parts = append(parts, "UNIQUE")

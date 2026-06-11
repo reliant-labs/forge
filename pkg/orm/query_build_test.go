@@ -449,6 +449,81 @@ func TestQueryBuilder_Build_SelectCountStar(t *testing.T) {
 	}
 }
 
+func TestQueryBuilder_Build_WhereAnyILike_Postgres(t *testing.T) {
+	qb := newTestQueryBuilder("postgres", "users", []string{"id"})
+	qb.WhereAnyILike([]string{"name", "email"}, "%ada%")
+	sql, args := qb.Build()
+
+	expected := `SELECT "id" FROM users WHERE ("name" ILIKE $1 OR "email" ILIKE $2)`
+	if sql != expected {
+		t.Errorf("expected %q, got %q", expected, sql)
+	}
+	// One arg per column, all the same value.
+	if len(args) != 2 || args[0] != "%ada%" || args[1] != "%ada%" {
+		t.Errorf("unexpected args: %v", args)
+	}
+}
+
+func TestQueryBuilder_Build_WhereAnyILike_SQLite(t *testing.T) {
+	qb := newTestQueryBuilder("sqlite", "users", []string{"id"})
+	qb.WhereAnyILike([]string{"name", "email"}, "%ada%")
+	sql, args := qb.Build()
+
+	expected := `SELECT "id" FROM users WHERE (LOWER("name") LIKE LOWER(?) OR LOWER("email") LIKE LOWER(?))`
+	if sql != expected {
+		t.Errorf("expected %q, got %q", expected, sql)
+	}
+	if len(args) != 2 || args[0] != "%ada%" || args[1] != "%ada%" {
+		t.Errorf("unexpected args: %v", args)
+	}
+}
+
+func TestQueryBuilder_Build_WhereAnyILike_AndedWithWhere(t *testing.T) {
+	// The OR group is parenthesized and AND-ed with regular WHERE clauses,
+	// with placeholder numbering continuing across both.
+	qb := newTestQueryBuilder("postgres", "users", []string{"id"})
+	qb.Where("active", Eq, true)
+	qb.WhereAnyILike([]string{"name", "email"}, "%ada%")
+	sql, args := qb.Build()
+
+	expected := `SELECT "id" FROM users WHERE "active" = $1 AND ("name" ILIKE $2 OR "email" ILIKE $3)`
+	if sql != expected {
+		t.Errorf("expected %q, got %q", expected, sql)
+	}
+	if len(args) != 3 || args[0] != true || args[1] != "%ada%" || args[2] != "%ada%" {
+		t.Errorf("unexpected args: %v", args)
+	}
+}
+
+func TestQueryBuilder_Build_WhereAnyILike_SingleColumn(t *testing.T) {
+	qb := newTestQueryBuilder("postgres", "users", []string{"id"})
+	qb.WhereAnyILike([]string{"name"}, "%x%")
+	sql, args := qb.Build()
+
+	expected := `SELECT "id" FROM users WHERE ("name" ILIKE $1)`
+	if sql != expected {
+		t.Errorf("expected %q, got %q", expected, sql)
+	}
+	if len(args) != 1 {
+		t.Errorf("unexpected args: %v", args)
+	}
+}
+
+func TestQueryOptions_WhereILikeAny(t *testing.T) {
+	qb := newTestQueryBuilder("postgres", "users", []string{"id"})
+	opt := WhereILikeAny([]string{"name", "email"}, "%bob%")
+	opt(qb)
+
+	sql, args := qb.Build()
+	expected := `SELECT "id" FROM users WHERE ("name" ILIKE $1 OR "email" ILIKE $2)`
+	if sql != expected {
+		t.Errorf("expected %q, got %q", expected, sql)
+	}
+	if len(args) != 2 {
+		t.Errorf("expected 2 args, got %v", args)
+	}
+}
+
 func TestQueryBuilder_Build_InOperator_SingleValue(t *testing.T) {
 	qb := newTestQueryBuilder("postgres", "orders", []string{"id"})
 	qb.Where("status", In, "single")
@@ -460,5 +535,21 @@ func TestQueryBuilder_Build_InOperator_SingleValue(t *testing.T) {
 	}
 	if len(args) != 1 || args[0] != "single" {
 		t.Errorf("expected args [single], got %v", args)
+	}
+}
+
+// TestQueryBuilder_Build_WhereAnyILike_EmptyColumns pins the guard for a
+// degenerate empty-column OR group: no WHERE keyword may be emitted when
+// the group is the only "clause" (a dangling `... FROM t WHERE ` is a
+// syntax error on every engine).
+func TestQueryBuilder_Build_WhereAnyILike_EmptyColumns(t *testing.T) {
+	qb := newTestQueryBuilder("sqlite", "users", []string{"id"})
+	qb.WhereAnyILike(nil, "%x%")
+	query, args := qb.Build()
+	if strings.Contains(query, "WHERE") {
+		t.Errorf("empty-column OR group must not emit a WHERE clause; got %q", query)
+	}
+	if len(args) != 0 {
+		t.Errorf("empty-column OR group must contribute no args; got %v", args)
 	}
 }

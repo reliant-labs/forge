@@ -279,7 +279,7 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 
 	out := map[string]bool{}
 	for _, svc := range cfg.Services {
-		if len(svc.Webhooks) == 0 {
+		if len(svc.Webhooks) == 0 || !svc.IsServed() {
 			continue
 		}
 		out[naming.ServicePackage(svc.Name)] = true

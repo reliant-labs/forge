@@ -746,7 +746,7 @@ type Authorizer interface{ Check() }
 	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {
 		t.Fatalf("GenerateWireGen: %v", err)
 	}
-	if err := GenerateAuthorizer(services, "example.com/proj", projectDir, (*checksums.FileChecksums)(nil)); err != nil {
+	if err := GenerateAuthorizer(services, "example.com/proj", projectDir, nil, (*checksums.FileChecksums)(nil)); err != nil {
 		t.Fatalf("GenerateAuthorizer: %v", err)
 	}
 

@@ -42,6 +42,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // GenStep is one ordered unit of the generate pipeline. Steps are pure
@@ -1434,8 +1435,15 @@ func stepCleanupStale(ctx *pipelineContext) error {
 // generator doesn't double-up on names the CRUD handler step (4b)
 // will emit.
 func stepServiceStubs(ctx *pipelineContext) error {
-	crudMethodNames := collectCRUDMethodNames(ctx.Services, ctx.ProjectDir)
-	if err := generateServiceStubs(ctx.Cfg, ctx.Services, ctx.ProjectDir, crudMethodNames, ctx.Checksums); err != nil {
+	// Types-only services (serve: false) get NO handlers/<svc>/ scaffold —
+	// announce each skip so "why is my handlers dir missing?" has a loud
+	// answer in the generate output.
+	served, unserved := servedServiceDefs(ctx.Cfg, ctx.Services)
+	for _, svc := range unserved {
+		fmt.Printf("  ⏭️  Skipped handlers/%s/ (serve: false — types-only service)\n", naming.ServicePackage(svc.Name))
+	}
+	crudMethodNames := collectCRUDMethodNames(served, ctx.ProjectDir)
+	if err := generateServiceStubs(ctx.Cfg, served, ctx.ProjectDir, crudMethodNames, ctx.Checksums); err != nil {
 		return fmt.Errorf("service stub generation failed: %w", err)
 	}
 	return nil
@@ -1490,22 +1498,26 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 // unsupported entity doesn't brick the rest of generate.
 func stepCRUDHandlers(ctx *pipelineContext) error {
 	return ctx.warnOrFail("CRUD handler generation",
-		generateCRUDHandlers(ctx.Services, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums))
+		generateCRUDHandlers(ctx.servedServices(), ctx.ModulePath, ctx.ProjectDir, ctx.Checksums))
 }
 
 // stepAuthorizer — was Step 4c.
 // Emits the role-mapping authorizer_gen.go from forge proto annotations.
 // Best-effort warning.
 func stepAuthorizer(ctx *pipelineContext) error {
+	// The unserved-dir skip set keeps the orphan-dir sweep inside
+	// GenerateAuthorizer from re-emitting authorizer_gen.go into a
+	// retired (serve: false) handlers dir — re-emitting would hide the
+	// dir's tracked files from the stale-cleanup sweep.
 	return ctx.warnOrFail("authorizer generation",
-		codegen.GenerateAuthorizer(ctx.Services, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums))
+		codegen.GenerateAuthorizer(ctx.servedServices(), ctx.ModulePath, ctx.ProjectDir, unservedHandlerDirSkips(ctx.Cfg), ctx.Checksums))
 }
 
 // stepServiceMocks — was Step 5.
 // Always regenerate. Mocks are Tier-1 files; their content is owned by
 // forge and is the test seam frontends import statically.
 func stepServiceMocks(ctx *pipelineContext) error {
-	if err := generateServiceMocks(ctx.Services, ctx.ProjectDir); err != nil {
+	if err := generateServiceMocks(ctx.servedServices(), ctx.ProjectDir); err != nil {
 		return fmt.Errorf("mock generation failed: %w", err)
 	}
 	return nil
@@ -1527,7 +1539,10 @@ func stepInternalContracts(ctx *pipelineContext) error {
 // provider (clerk, jwt, etc.). Gated on cfg.Auth.Provider being set
 // to a real provider.
 func stepAuthMiddleware(ctx *pipelineContext) error {
-	if err := generateAuthMiddleware(ctx.Cfg, ctx.Services, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
+	// Served-only: the auth interceptor's skip-list enumerates procedures
+	// this binary mounts; a types-only service's RPCs are mounted by the
+	// sibling binary and must not be registered here.
+	if err := generateAuthMiddleware(ctx.Cfg, ctx.servedServices(), ctx.ModulePath, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("auth middleware generation failed: %w", err)
 	}
 	return nil
@@ -1610,11 +1625,14 @@ func stepMCPManifest(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		projectName = ctx.Cfg.Name
 	}
+	// Served-only: advertising a types-only service's RPCs as MCP tools
+	// would be false — this binary doesn't serve them. The audit shape
+	// keeps the unserved RPCs discoverable (served: false, additive).
 	return ctx.warnOrFail("MCP manifest generation",
 		codegen.GenerateMCPManifest(codegen.MCPGenInput{
 			ProjectDir:  ctx.ProjectDir,
 			ProjectName: projectName,
-			Services:    ctx.Services,
+			Services:    ctx.servedServices(),
 			Checksums:   ctx.Checksums,
 		}))
 }
@@ -1678,8 +1696,14 @@ func stepBootstrap(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		bootstrapFeatures.DiagnosticsEnabled = ctx.Cfg.Features.DiagnosticsEnabled()
 		bootstrapFeatures.StrictWiringEnabled = ctx.Cfg.Features.StrictWiringEnabled()
+		// Types-only (serve: false) services: their names render into a
+		// BootstrapOnly guard that errors helpfully when passed to the
+		// `server [services...]` name filter.
+		bootstrapFeatures.UnservedServices = unservedBootstrapGuards(ctx.Cfg)
 	}
-	if err := generateBootstrap(ctx.Services, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
+	// Served-only: the appkit table, wire_gen, and diagnostics rows exist
+	// per service THIS binary constructs and registers.
+	if err := generateBootstrap(ctx.servedServices(), ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap generation failed: %w", err)
 	}
 	return nil
@@ -1692,7 +1716,7 @@ func stepBootstrap(ctx *pipelineContext) error {
 // generated testing.go could disagree with the on-disk forge.yaml.
 func stepBootstrapTesting(ctx *pipelineContext) error {
 	mtEnabled := ctx.Cfg != nil && ctx.Cfg.Auth.MultiTenant != nil && ctx.Cfg.Auth.MultiTenant.Enabled
-	if err := generateBootstrapTesting(ctx.Services, ctx.ModulePath, mtEnabled, ctx.ProjectDir, ctx.Checksums); err != nil {
+	if err := generateBootstrapTesting(ctx.servedServices(), ctx.ModulePath, mtEnabled, ctx.ProjectDir, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap testing generation failed: %w", err)
 	}
 	return nil

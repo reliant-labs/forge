@@ -316,3 +316,45 @@ func TestSyncDevForgePkgReplace_LocalVendorNoSiblingNoVendorDir(t *testing.T) {
 		t.Fatal("expected vendored=false (no vendor dir on disk)")
 	}
 }
+
+// TestSyncDevForgePkgReplace_CleanVersionPinUntouched pins the
+// release-flow safety contract (docs/pkg-versioning.md): a project whose
+// go.mod carries a clean `require github.com/reliant-labs/forge/pkg
+// vX.Y.Z` pin and NO replace must pass through `forge generate`'s
+// vendor-sync byte-identical — even when a sibling forge checkout sits
+// right next to it on disk. Rewriting the pin into a replace (or
+// warning about it) would silently drag released projects back onto the
+// dev path.
+func TestSyncDevForgePkgReplace_CleanVersionPinUntouched(t *testing.T) {
+	root := t.TempDir()
+	// Sibling forge checkout present — the strongest temptation for the
+	// sync to "help".
+	fakeForgePkgDir(t, filepath.Join(root, "forge", "pkg"), "sibling")
+
+	project := filepath.Join(root, "myproj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gomod := "module example.com/myproj\n\ngo 1.22\n\nrequire " + forgePkgModulePath + " v0.3.0\n"
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vendored, err := syncDevForgePkgReplace(project)
+	if err != nil {
+		t.Fatalf("clean pin must not produce an error/warning, got: %v", err)
+	}
+	if vendored {
+		t.Fatal("expected vendored=false (pinned release mode, no vendor dir)")
+	}
+	if _, statErr := os.Stat(filepath.Join(project, localForgePkgVendorDir)); !os.IsNotExist(statErr) {
+		t.Fatalf("sync must not create %s/ for a pinned project", localForgePkgVendorDir)
+	}
+	got, err := os.ReadFile(filepath.Join(project, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != gomod {
+		t.Fatalf("go.mod was modified.\nbefore:\n%s\nafter:\n%s", gomod, string(got))
+	}
+}

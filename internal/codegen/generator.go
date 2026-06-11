@@ -459,20 +459,28 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 
 // matchedAppField is the central decision for "should bootstrap emit
 // `<Field>: app.<Field>` for this Deps field?". It consults the
-// type-aware matcher with a string-compare pre-check, then degrades to
-// a string compare when the matcher reports Unavailable (load failure,
-// missing pkg/app, project mid-edit).
+// type-aware matcher with a string-compare pre-check.
 //
 // Returns true when:
 //   - the matcher confirms assignability (narrow-interface case), or
 //   - the matcher confirms exact-string match (legacy fast path), or
-//   - the matcher is unavailable AND the legacy string compare holds.
+//   - the matcher is unavailable (assignability unprovable: load
+//     failure, project mid-edit). Wiring the name match here is the
+//     deterministic fail-loud policy (deps_assignability.go header):
+//     the compiler arbitrates a wrong wire loudly, while dropping it
+//     silently un-wires a live collaborator with no signal. It also
+//     matches what wire_gen's consumer does for Unavailable, so
+//     bootstrap and wire_gen can't diverge on the same project state.
+//     (The previous Unavailable fallback — wire only on byte-equal
+//     type strings — made bootstrap output depend on whether the
+//     project type-checked mid-pipeline: kalshi FORGE_BACKLOG #13's
+//     nondeterminism class.)
 //
 // Returns false when:
 //   - no AppExtras field of the same name exists (the optional-dep
 //     invariant), or
-//   - name matches but types are NOT assignable (NameMismatch — the
-//     lint will surface the gap).
+//   - name matches but types are PROVEN not assignable (NameMismatch
+//     in a single shared type universe — the lint surfaces the gap).
 func matchedAppField(m *DepsAssignabilityMatcher, roleRoot, pkgDir, depsName, depsType string, appByName map[string]string) bool {
 	appType, hasName := appByName[depsName]
 	if !hasName {
@@ -488,9 +496,9 @@ func matchedAppField(m *DepsAssignabilityMatcher, roleRoot, pkgDir, depsName, de
 		// field doesn't exist (which would have skipped validateDeps).
 		return false
 	case MatchUnavailable:
-		// Type checker couldn't tell us. Fall back to the pre-matcher
-		// behavior so codegen still works on a project mid-edit.
-		return appType == depsType
+		// Unproven ≠ mismatched. Wire the name match; see the policy
+		// note in the function doc.
+		return true
 	default:
 		return false
 	}

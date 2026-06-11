@@ -306,6 +306,7 @@ func generateSteps() []GenStep {
 		{Name: "tenant middleware (auto-enable + emit)", Gate: gateCodegenHasServicesCfg, GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
 		{Name: "webhook routes", Gate: gateCodegenHasCfg, GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
+		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
 		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
 		{Name: "pkg/app/testing.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
@@ -370,6 +371,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"detect proto directories":           true,
 		"ensure gen/go.mod":                  true,
 		"parse services + module path":       true,
+		"go mod tidy (pre-wiring)":           true,
 		"pkg/app/bootstrap.go":               true,
 		"pkg/app/testing.go":                 true,
 		"pkg/app/migrate.go":                 true,
@@ -1718,6 +1720,32 @@ func stepSqlcGenerate(ctx *pipelineContext) error {
 func stepGoModTidyGen(ctx *pipelineContext) error {
 	if err := runGoModTidyGen(ctx.ProjectDir); err != nil {
 		return fmt.Errorf("go mod tidy in gen/ failed: %w (subsequent `go build ./...` will fail with confusing missing-import errors; fix gen/go.mod or gen/go.sum)", err)
+	}
+	return nil
+}
+
+// stepGoModTidyPreWiring runs `go mod tidy` (gen/ first, then root)
+// BEFORE the pkg/app wiring emitters. The bootstrap/testing/wire_gen
+// generators use go/packages type loads (deps-assignability matcher,
+// cross-package auto-stub synthesis); on a cold tree — fresh scaffold,
+// no go.sum, replace-only forge/pkg requirement — those loads fail
+// until the FIRST tidy runs, which historically happened AFTER the
+// wiring emitters. Net effect: generate run 1 rendered the degraded
+// shape (TODO stubs, unproven matches) and run 2 rendered the resolved
+// shape — `forge generate` output was not a pure function of the
+// project's source state (the fixture-corpus idempotency assertion
+// caught pkg/app/testing.go flipping between runs).
+//
+// Best-effort by design: a mid-edit tree whose imports don't resolve
+// yet must degrade exactly as before (warn + emit the degraded shape),
+// not abort. The authoritative tidy steps later in the pipeline stay
+// loud. On a converged tree both tidies are fast no-ops.
+func stepGoModTidyPreWiring(ctx *pipelineContext) error {
+	if err := runGoModTidyGen(ctx.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  pre-wiring go mod tidy (gen/) failed (continuing; wiring codegen may degrade to its unproven/TODO fallbacks): %v\n", err)
+	}
+	if err := runGoModTidyRoot(ctx.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠️  pre-wiring go mod tidy (root) failed (continuing; wiring codegen may degrade to its unproven/TODO fallbacks): %v\n", err)
 	}
 	return nil
 }

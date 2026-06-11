@@ -378,7 +378,6 @@ func buildforgeBinary(t *testing.T) string {
 	return forgeBinaryPath
 }
 
-
 // findRepoRoot walks up from the working directory to find the forge repo root.
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
@@ -436,10 +435,10 @@ func runCmd(t *testing.T, dir string, name string, args ...string) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
-		"GOFLAGS=",                              // Clear any global GOFLAGS
-		"GONOSUMCHECK=*",                        // Don't check sums for test modules
+		"GOFLAGS=",       // Clear any global GOFLAGS
+		"GONOSUMCHECK=*", // Don't check sums for test modules
 		"GOPROXY=https://proxy.golang.org,direct", // Ensure module proxy is set
-		"GONOSUMDB=*",                           // Don't verify sums for test modules
+		"GONOSUMDB=*", // Don't verify sums for test modules
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

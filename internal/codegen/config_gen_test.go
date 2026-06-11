@@ -97,30 +97,26 @@ func TestGenerateConfigLoader_BasicFields(t *testing.T) {
 		t.Error("config.go should contain Load function")
 	}
 
-	// Must contain env var reading via LookupEnv
-	if !strings.Contains(content, `os.LookupEnv("PORT")`) {
-		t.Error("config.go should read PORT env var via LookupEnv")
+	// Fields resolve through the single generic loadField helper
+	// (flag > env > default), one line per field.
+	if !strings.Contains(content, `loadField(cmd, "port", "PORT", "8080", true, false, false, "Port", parsePort)`) {
+		t.Error("config.go should load Port via loadField with parsePort")
 	}
-	if !strings.Contains(content, `os.LookupEnv("LOG_LEVEL")`) {
-		t.Error("config.go should read LOG_LEVEL env var via LookupEnv")
+	if !strings.Contains(content, `loadField(cmd, "log-level", "LOG_LEVEL", "info", true, false, true, "LogLevel", parseString)`) {
+		t.Error("config.go should load LogLevel via loadField with parseString")
 	}
 
-	// Must contain required validation for database_url
-	if !strings.Contains(content, "required config field DatabaseUrl") {
-		t.Error("config.go should validate required field DatabaseUrl")
+	// Must mark database_url required (loadField's required arg = true).
+	if !strings.Contains(content, `loadField(cmd, "database-url", "DATABASE_URL", "", false, true, true, "DatabaseUrl", parseString)`) {
+		t.Error("config.go should load DatabaseUrl via loadField with required=true")
+	}
+	if !strings.Contains(content, "required config field %s is not set") {
+		t.Error("loadField should emit the required-field error")
 	}
 
 	// Must contain strconv import (for int32 parsing)
 	if !strings.Contains(content, `"strconv"`) {
 		t.Error("config.go should import strconv for int32 parsing")
-	}
-
-	// Must contain default value in else branch (not zero-value check)
-	if !strings.Contains(content, "cfg.Port = 8080") {
-		t.Error("config.go should set default value for Port")
-	}
-	if !strings.Contains(content, `cfg.LogLevel = "info"`) {
-		t.Error("config.go should set default value for LogLevel")
 	}
 
 	// Must NOT contain zero-value checks (the old buggy pattern)
@@ -131,12 +127,9 @@ func TestGenerateConfigLoader_BasicFields(t *testing.T) {
 		t.Error("config.go should NOT use zero-value check for LogLevel default")
 	}
 
-	// Must use cmd.Flags().Changed() instead of bare cmd.Flags().GetXxx()
-	if !strings.Contains(content, `cmd.Flags().Changed("port")`) {
-		t.Error("config.go should check cmd.Flags().Changed for port")
-	}
-	if !strings.Contains(content, `cmd.Flags().Changed("log-level")`) {
-		t.Error("config.go should check cmd.Flags().Changed for log-level")
+	// The helper consults Changed() (explicit flags only), never bare GetXxx.
+	if !strings.Contains(content, `cmd.Flags().Changed(flagName)`) {
+		t.Error("config.go's loadField should gate flag reads on cmd.Flags().Changed")
 	}
 }
 
@@ -172,9 +165,12 @@ func TestGenerateConfigLoader_StringOnlyNoStrconv(t *testing.T) {
 
 	content := string(data)
 
-	// String-only config should NOT import strconv
-	if strings.Contains(content, `"strconv"`) {
-		t.Error("string-only config.go should not import strconv")
+	// The fixed parse-helper set (which uses strconv) is emitted even
+	// for string-only configs — unused helpers are harmless and keep
+	// the generator trivial. The string field itself must go through
+	// parseString.
+	if !strings.Contains(content, `"Name", parseString)`) {
+		t.Error("string-only config.go should load via parseString")
 	}
 }
 
@@ -227,11 +223,11 @@ func TestGenerateConfigLoader_BoolField(t *testing.T) {
 	if !strings.Contains(content, `cmd.Flags().Bool("debug"`) {
 		t.Error("config.go should register debug as Bool flag")
 	}
-	if !strings.Contains(content, `strconv.ParseBool(v)`) {
-		t.Error("config.go should parse bool from env var")
+	if !strings.Contains(content, `strconv.ParseBool(s)`) {
+		t.Error("config.go should parse bool values via strconv.ParseBool")
 	}
-	if !strings.Contains(content, `cmd.Flags().GetBool("debug")`) {
-		t.Error("config.go should get bool flag value")
+	if !strings.Contains(content, `"Debug", parseBool)`) {
+		t.Error("config.go should load Debug via parseBool")
 	}
 }
 
@@ -287,12 +283,6 @@ func TestGenerateConfigLoader_NoFlagSkipsRegistration(t *testing.T) {
 	if strings.Contains(content, `cmd.Flags().String(""`) {
 		t.Error("config.go must not register a flag with an empty name")
 	}
-	if strings.Contains(content, `cmd.Flags().Changed("")`) {
-		t.Error("config.go must not query Changed on an empty flag name")
-	}
-	if strings.Contains(content, `cmd.Flags().GetString("")`) {
-		t.Error("config.go must not GetString on an empty flag name")
-	}
 
 	// The flagged field MUST still register normally.
 	if !strings.Contains(content, `cmd.Flags().String("log-level"`) {
@@ -304,9 +294,13 @@ func TestGenerateConfigLoader_NoFlagSkipsRegistration(t *testing.T) {
 		t.Error("config.go should still declare the sensitive field on Config")
 	}
 
-	// Sensitive field MUST still be loadable from its env var.
-	if !strings.Contains(content, `os.LookupEnv("DB_PASSWORD")`) {
-		t.Error("config.go should still read the sensitive field from env")
+	// Sensitive field MUST still load from env: empty flag name makes
+	// loadField skip the flag branch entirely (it guards flagName != "").
+	if !strings.Contains(content, `loadField(cmd, "", "DB_PASSWORD"`) {
+		t.Error("config.go should still read the sensitive field from env via loadField")
+	}
+	if !strings.Contains(content, `flagName != "" && cmd.Flags().Changed(flagName)`) {
+		t.Error("loadField must guard the flag branch on a non-empty flag name")
 	}
 }
 
@@ -343,14 +337,17 @@ func TestGenerateConfigLoader_PortRangeCheck(t *testing.T) {
 	content := string(data)
 
 	// Port must be validated via ParseUint with bitSize=16 (1-65535).
-	if !strings.Contains(content, `strconv.ParseUint(v, 10, 16)`) {
-		t.Error("config.go should validate PORT with ParseUint bitSize=16")
+	if !strings.Contains(content, `strconv.ParseUint(s, 10, 16)`) {
+		t.Error("config.go should validate ports with ParseUint bitSize=16")
 	}
 
-	// Port parsing must NOT use the unchecked int32 path (which would allow
-	// values > 65535 to silently wrap/truncate).
-	if strings.Contains(content, `strconv.ParseInt(v, 10, 32)`) {
-		t.Error("config.go should not use ParseInt 32-bit path for PORT")
+	// The Port field must resolve through parsePort, NOT the unchecked
+	// int32 path (which would allow values > 65535 to silently wrap).
+	if !strings.Contains(content, `"Port", parsePort)`) {
+		t.Error("config.go should load Port via parsePort")
+	}
+	if strings.Contains(content, `"Port", parseInt32)`) {
+		t.Error("config.go must not load Port via the unchecked parseInt32")
 	}
 
 	// Must reject port == 0 explicitly.

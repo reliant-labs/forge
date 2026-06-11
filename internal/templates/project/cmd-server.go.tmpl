@@ -26,9 +26,6 @@ import (
 {{- if index .ConfigFields "CorsOrigins"}}
 	"strings"
 {{- end}}
-{{- if or (index .ConfigFields "PreStopDelay") (index .ConfigFields "ShutdownTimeout") (index .ConfigFields "DbConnMaxIdleTime") (index .ConfigFields "DbConnMaxLifetime")}}
-	"time"
-{{- end}}
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -74,6 +71,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Auth is constructed UP FRONT so a server with no auth provider
+	// REFUSES TO START — middleware.NewAuthInterceptor returns an error
+	// unless a validator is registered (middleware.SetTokenValidator), a
+	// pack took over (middleware.MarkExternalAuth), the operator typed
+	// the explicit opt-out (AUTH_MODE=none), or the typed config mode is
+	// development. Dev mode is injected from cfg.Mode() — the single
+	// dev-mode gate computed from the typed config, not a per-request
+	// os.Getenv.
+	authInterceptor, err := middleware.NewAuthInterceptor(cfg.Mode().IsDev())
+	if err != nil {
+		return fmt.Errorf("auth configuration: %w", err)
+	}
+
 	hooks := serverkit.Hooks{
 		Bootstrap: func(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, names []string, opts ...connect.HandlerOption) (serverkit.Application, error) {
 			if len(names) > 0 {
@@ -93,7 +103,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		},
 {{- end}}
 		SetupOTel:           setupOTel,
-		ProjectInterceptors: buildProjectInterceptors(cfg),
+		ProjectInterceptors: buildProjectInterceptors(cfg, authInterceptor),
 {{- if index .ConfigFields "CorsOrigins"}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
 			return middleware.CORSMiddleware(origins, allowCredentials)
@@ -174,18 +184,13 @@ func projectServerkitConfig(cfg *config.Config) (serverkit.Config, error) {
 
 {{- if index .ConfigFields "PreStopDelay"}}
 
-	if cfg.PreStopDelay != "" {
-		if d, perr := time.ParseDuration(cfg.PreStopDelay); perr == nil {
-			skCfg.PreStopDelay = d
-		}
-	}
+	// Durations are time.Duration on the typed config — parsed (and
+	// validated) exactly once in config.Load. Assign directly; a zero
+	// value falls back to serverkit's documented default.
+	skCfg.PreStopDelay = cfg.PreStopDelay
 {{- end}}
 {{- if index .ConfigFields "ShutdownTimeout"}}
-	if cfg.ShutdownTimeout != "" {
-		if d, perr := time.ParseDuration(cfg.ShutdownTimeout); perr == nil {
-			skCfg.ShutdownTimeout = d
-		}
-	}
+	skCfg.ShutdownTimeout = cfg.ShutdownTimeout
 {{- end}}
 
 {{- if index .ConfigFields "DbMaxOpenConns"}}
@@ -196,18 +201,10 @@ func projectServerkitConfig(cfg *config.Config) (serverkit.Config, error) {
 	skCfg.DBPoolTuning.MaxIdleConns = int(cfg.DbMaxIdleConns)
 {{- end}}
 {{- if index .ConfigFields "DbConnMaxIdleTime"}}
-	if cfg.DbConnMaxIdleTime != "" {
-		if d, perr := time.ParseDuration(cfg.DbConnMaxIdleTime); perr == nil {
-			skCfg.DBPoolTuning.ConnMaxIdleTime = d
-		}
-	}
+	skCfg.DBPoolTuning.ConnMaxIdleTime = cfg.DbConnMaxIdleTime
 {{- end}}
 {{- if index .ConfigFields "DbConnMaxLifetime"}}
-	if cfg.DbConnMaxLifetime != "" {
-		if d, perr := time.ParseDuration(cfg.DbConnMaxLifetime); perr == nil {
-			skCfg.DBPoolTuning.ConnMaxLifetime = d
-		}
-	}
+	skCfg.DBPoolTuning.ConnMaxLifetime = cfg.DbConnMaxLifetime
 {{- end}}
 
 	return skCfg, nil
@@ -219,24 +216,17 @@ func projectServerkitConfig(cfg *config.Config) (serverkit.Config, error) {
 // project chain: otelconnect (outermost — span-wraps everything below) →
 // rate-limit (reject floods before token validation) → auth → audit.
 //
+// authInterceptor is constructed in runServer via
+// middleware.NewAuthInterceptor, which ERRORS (aborting startup) when no
+// auth provider is configured and no explicit opt-out was given. By the
+// time this closure runs, auth is known-good.
+//
 // Captured-cfg closure so the per-RPC interceptor sees the latest config
 // snapshot when the binary boots, even if a future hook starts re-reading.
-func buildProjectInterceptors(cfg *config.Config) func(logger *slog.Logger) []connect.Interceptor {
+func buildProjectInterceptors(cfg *config.Config, authInterceptor connect.Interceptor) func(logger *slog.Logger) []connect.Interceptor {
 	return func(logger *slog.Logger) []connect.Interceptor {
-		// AuthInterceptor is the scaffold in pkg/middleware/auth.go.
-		//
-		// With no auth provider configured it PANICS at startup — a
-		// production server with no auth is always a bug. To opt out:
-		//   - install a pack (e.g. `forge pack install jwt-auth`), whose
-		//     Init calls middleware.MarkExternalAuth and adds its own
-		//     interceptor alongside this one (the chain composes, the
-		//     stub flips to passthrough), OR
-		//   - call middleware.SetTokenValidator(yourFn) before this point
-		//     to use the stub as the real source of truth, OR
-		//   - set ENVIRONMENT=development or AUTH_MODE=none for an
-		//     explicit no-auth opt-in (dev only).
 		projectInterceptors := []connect.Interceptor{
-			middleware.AuthInterceptor(),
+			authInterceptor,
 			middleware.AuditInterceptor(logger),
 		}
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}

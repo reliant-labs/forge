@@ -6,7 +6,7 @@
 //
 // Tenant middleware. The interceptor must run AFTER the auth interceptor
 // (it reads claims from context). Add TenantInterceptor() to the chain in
-// cmd/server.go after AuthInterceptor().
+// cmd/server.go after the auth interceptor (middleware.NewAuthInterceptor).
 //
 // Use middleware.RequireTenantID(ctx) in handlers, and
 // middleware.ContextWithTenantID(ctx, "tenant-x") in tests.

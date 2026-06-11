@@ -246,25 +246,23 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		AppExtras: &AppExtras{},
 	}
 {{- if .Services}}
-{{- if index .ConfigFields "Environment"}}
 	// devMode swaps each service's Authorizer to middleware.DevAuthorizer{}
 	// inside wireXxxDeps; the mount closures re-read the same instance so
-	// interceptor + handler stay in lockstep.
-	devMode := cfg.Environment == "development"
-{{- else}}
-	devMode := false
-{{- end}}
+	// interceptor + handler stay in lockstep. cfg.Mode() is THE dev-mode
+	// gate (typed, zero value Production, derived from ENVIRONMENT in
+	// pkg/config) — the same value the auth middleware and auth packs
+	// receive by injection, so the three gates can never disagree.
+	devMode := cfg.Mode().IsDev()
 	// Loud-by-default dev-mode banner: when devMode is on the per-service
 	// Authorizer is swapped to middleware.DevAuthorizer{} (allow-all).
 	// A prod manifest that accidentally sets ENVIRONMENT=development gets
 	// a screaming Warn at every container start instead of silently
-	// shipping with authz disabled. Kept inline (not in appkit) because
-	// the devMode computation reads a config field whose very existence
-	// is template-conditional; this is the only behavioral `if` the table
-	// retains.
+	// shipping with authz disabled.
 	if devMode {
 		logger.Warn("DEV MODE — authorization checks disabled (DevAuthorizer is allow-all); set ENVIRONMENT to anything other than \"development\" in non-dev environments",
+{{- if index .ConfigFields "Environment"}}
 			"environment", cfg.Environment,
+{{- end}}
 		)
 	}
 {{- end}}

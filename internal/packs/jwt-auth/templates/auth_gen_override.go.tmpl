@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"{{.ModulePath}}/pkg/config"
 	"{{.ModulePath}}/pkg/middleware"
 )
 
@@ -18,15 +19,19 @@ import (
 var validator *Validator
 
 // Init initializes the JWT validator from environment variables.
-// Call this during server startup before handling requests.
+// Call this during server startup before handling requests, passing the
+// typed runtime mode from the loaded config (cfg.Mode()). The mode is
+// INJECTED — this pack never reads os.Getenv("ENVIRONMENT") itself, so
+// its dev bypass always agrees with bootstrap's DevAuthorizer swap and
+// the scaffold auth middleware.
 //
 // Init also calls [middleware.MarkExternalAuth] so the scaffold's stub
-// AuthInterceptor (wired alongside this pack's interceptor in
-// cmd/server.go) flips into passthrough mode. Without that signal the
-// stub panics at startup because it can't tell that a pack is taking
-// over auth.
+// auth interceptor (wired alongside this pack's interceptor in
+// cmd/server.go) flips into passthrough mode. Without that signal,
+// middleware.NewAuthInterceptor returns an error at startup because it
+// can't tell that a pack is taking over auth.
 //
-// Dev mode (ENVIRONMENT=development) is per-request, not all-or-nothing:
+// Dev mode is per-request, not all-or-nothing:
 //   - Requests with no Authorization header get synthetic DevClaims (so
 //     local dev stays frictionless).
 //   - Requests carrying the DevBypassToken sentinel get synthetic DevClaims
@@ -34,7 +39,8 @@ var validator *Validator
 //   - Any other token is validated against the real JWT validator (so the
 //     real login UX can be tested locally). If JWT_* env vars aren't set,
 //     real-token requests return 500 — a clear "misconfigured" signal.
-func Init(logger *slog.Logger) error {
+func Init(logger *slog.Logger, mode config.Mode) error {
+	SetMode(mode)
 	middleware.MarkExternalAuth()
 
 	if DevAuthEnabled() {
@@ -86,8 +92,11 @@ func Interceptor() connect.UnaryInterceptorFunc {
 
 	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			// Skip auth for health checks
-			if strings.Contains(req.Spec().Procedure, "Health") {
+			// Skip auth ONLY for the exact gRPC health procedures —
+			// substring matching would silently bypass auth for any
+			// user-defined RPC whose name happens to contain "Health".
+			switch req.Spec().Procedure {
+			case "/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch":
 				return next(ctx, req)
 			}
 

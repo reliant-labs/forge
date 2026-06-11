@@ -263,3 +263,34 @@ func TestAuthGenOverrideTemplateContent(t *testing.T) {
 		}
 	}
 }
+
+// TestDevAuthTemplate_NoEnvGate pins the dev-mode unification: the
+// jwt-auth pack's dev gate consumes the typed config.Mode injected at
+// Init — it must NOT read os.Getenv("ENVIRONMENT") itself. Three
+// scattered env gates (bootstrap, middleware-auth, jwtauth) is how
+// dev-mode skew between authn and authz happened.
+func TestDevAuthTemplate_NoEnvGate(t *testing.T) {
+	tmplContent, err := packsFS.ReadFile("jwt-auth/templates/dev_auth.go.tmpl")
+	if err != nil {
+		t.Fatalf("read template: %v", err)
+	}
+	content := string(tmplContent)
+
+	if strings.Contains(content, "os.Getenv") {
+		t.Errorf("dev_auth.go.tmpl must not read the environment directly — dev mode is injected as config.Mode:\n%s", content)
+	}
+	for _, want := range []string{"config.Mode", "func SetMode("} {
+		if !strings.Contains(content, want) {
+			t.Errorf("dev_auth.go.tmpl should contain %q (typed-mode injection)", want)
+		}
+	}
+
+	// Init must accept the injected mode.
+	override, err := packsFS.ReadFile("jwt-auth/templates/auth_gen_override.go.tmpl")
+	if err != nil {
+		t.Fatalf("read override template: %v", err)
+	}
+	if !strings.Contains(string(override), "func Init(logger *slog.Logger, mode config.Mode) error") {
+		t.Errorf("auth_gen_override.go.tmpl Init should take the injected config.Mode")
+	}
+}

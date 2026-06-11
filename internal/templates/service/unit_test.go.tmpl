@@ -88,20 +88,20 @@ func Test{{.Name}}_Generated(t *testing.T) {
 {{- end}}
 
 // TestAuthorizerUnknownMethodFailMode pins the authorizer's
-// unknown-procedure contract. The generated RolesDecider defaults to
-// FailMode: FailOpen — unknown methods are ALLOWED with a loud
-// slog.Warn, so a missing proto annotation surfaces in logs instead of
-// 403-ing a freshly-deployed service the moment dev-mode turns off
-// (see pkg/authz FailMode docs). Methods that ARE annotated still
-// enforce their role tables regardless of FailMode. If this service
-// treats "no annotation" as "no access", set FailMode: FailClosed in
-// authorizer.go and flip these assertions.
+// unknown-procedure contract. The generated RolesDecider FAILS CLOSED
+// (the pkg/authz zero value): an unknown method — proto drift, a
+// hand-mounted endpoint, or probe traffic — is DENIED, with a
+// once-per-method slog.Warn naming the procedure so it can be added to
+// the proto. Local-dev permissiveness comes from the bootstrap
+// DevAuthorizer swap, never from the policy table. If this service
+// really must serve procedures the table has never heard of, opt into
+// authz.AllowUnknownMethods in authorizer.go and flip these assertions.
 func TestAuthorizerUnknownMethodFailMode(t *testing.T) {
 	t.Parallel()
 
 	a := {{.ServicePackage}}.NewAuthorizer()
-	if err := a.CanAccess(context.Background(), "/services.unknown.v1.UnknownService/UnknownMethod"); err != nil {
-		t.Fatalf("FailOpen default: unknown procedure should be allowed (with a warning), got %v", err)
+	if err := a.CanAccess(context.Background(), "/services.unknown.v1.UnknownService/UnknownMethod"); err == nil {
+		t.Fatal("fail-closed default: unknown procedure must be denied, got nil error")
 	}
 	// Empty procedure is denied unconditionally regardless of FailMode —
 	// Connect always passes a real procedure name, so an empty value is a

@@ -21,8 +21,13 @@
 // call any procedure without compiling against the project's proto
 // types — the bridge stays one binary for every forge project. Streaming
 // RPCs (server/client/bidi) are NOT supported by this bridge because
-// MCP tool calls are unary; the bridge returns an explicit error for
-// any tool whose manifest entry carries a streaming marker.
+// MCP tool calls are unary; streaming tools are excluded from
+// tools/list (don't advertise what can't be called) and tools/call
+// returns an explicit error for any tool whose manifest entry carries
+// a streaming marker, in case a client calls one by name anyway.
+// `forge audit --json` surfaces the same information per RPC
+// (categories.shape.details.services[].rpcs[].mcp_callable) so agents
+// learn callability before ever talking to the bridge.
 //
 // Why a separate binary: the forge CLI already does a lot; an MCP
 // server has its own lifecycle (started by Claude Desktop, killed on
@@ -186,6 +191,19 @@ type server struct {
 	http *http.Client
 }
 
+// callableToolCount counts the tools the MCP surface actually
+// advertises — manifest tools minus streaming RPCs, which tools/list
+// excludes because the bridge cannot proxy streams.
+func (s *server) callableToolCount() int {
+	n := 0
+	for _, t := range s.manifest.Tools {
+		if t.Streaming == "" {
+			n++
+		}
+	}
+	return n
+}
+
 // run is the JSON-RPC over stdio main loop. Each line is one
 // JSON-RPC 2.0 request; responses are framed the same way. Loop exits
 // on stdin EOF, which is how MCP clients signal disconnect.
@@ -281,7 +299,7 @@ func (s *server) dispatch(req *rpcRequest) *rpcResponse {
 			},
 			"instructions": fmt.Sprintf(
 				"Bridge for forge project %q. %d Connect RPC(s) exposed as tools. Call tools/list to enumerate.",
-				s.manifest.Project, len(s.manifest.Tools)),
+				s.manifest.Project, s.callableToolCount()),
 		})
 
 	case "notifications/initialized":
@@ -294,12 +312,36 @@ func (s *server) dispatch(req *rpcRequest) *rpcResponse {
 		return rpcResult(req.ID, map[string]any{})
 
 	case "tools/list":
-		// Return the manifest's tools verbatim — they're already in MCP
-		// shape. We strip the forge-specific snake_case metadata for
+		// Return the manifest's tools — they're already in MCP shape.
+		// We strip the forge-specific snake_case metadata for
 		// strict-mode clients that reject unknown fields; spec-compliant
 		// clients are forgiving but a few aren't.
+		//
+		// Streaming RPCs are EXCLUDED entirely: MCP tool calls are
+		// unary and the bridge cannot proxy streams, so advertising
+		// them would hand agents tools that fail 100% of the time at
+		// call time. They stay in the manifest file (with their
+		// "streaming" marker) for non-MCP consumers; tools/call keeps
+		// its explicit streaming refusal as defense in depth for
+		// clients that call by name without listing first.
+		//
+		// inputSchema / outputSchema are forwarded verbatim, including
+		// JSON Schema "$defs" + "$ref" (manifest schema_version 1.1+).
+		// This is deliberate pass-through rather than serve-time ref
+		// inlining: the MCP spec's Tool.inputSchema (both 2024-11-05,
+		// which this server targets, and later revisions) is an open
+		// object — its meta-schema pins only type/properties/required
+		// and does not forbid additional JSON Schema keywords — and
+		// the official MCP TypeScript SDK itself emits $ref/definitions
+		// schemas via zod-to-json-schema, so clients in the wild
+		// already handle $ref'd tool schemas. Inlining would also
+		// reintroduce the infinite-expansion problem for recursive
+		// messages that $defs exists to solve.
 		stripped := make([]map[string]any, 0, len(s.manifest.Tools))
 		for _, t := range s.manifest.Tools {
+			if t.Streaming != "" {
+				continue
+			}
 			entry := map[string]any{
 				"name":        t.Name,
 				"description": t.Description,
@@ -365,7 +407,8 @@ func (s *server) callTool(req *rpcRequest) *rpcResponse {
 	}
 	if matched.Streaming != "" {
 		return rpcError(req.ID, -32603, fmt.Sprintf(
-			"tool %q is a %s-streaming RPC; MCP tools are unary and the bridge does not proxy streams. "+
+			"tool %q is a %s-streaming RPC; MCP tools are unary and the bridge does not proxy streams "+
+				"(streaming tools are excluded from tools/list for this reason). "+
 				"Call this procedure directly via a Connect client, or split it into unary helpers.",
 			params.Name, matched.Streaming,
 		))

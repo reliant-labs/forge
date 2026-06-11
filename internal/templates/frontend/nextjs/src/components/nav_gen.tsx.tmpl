@@ -24,15 +24,21 @@ export type RouteSpec = {
   labelLower: string;
   /** Slug — the path segment without the leading slash. */
   slug: string;
+  /** Singular display name ("Task") for "Create X" affordances. */
+  labelSingular: string;
+  /** True when the entity has a generated create page at `<path>/new`. */
+  hasCreate: boolean;
 };
 
 /**
- * ALL_ROUTES enumerates every CRUD entity surfaced by the project's
- * services. The user-owned nav.tsx imports this and decides which subset
- * to render; the dashboard imports it to build entity tiles.
+ * ALL_ROUTES enumerates every CRUD entity that the page generator actually
+ * emitted pages for — the route table and the page set derive from the
+ * same proto entity definitions, so every path listed here resolves. The
+ * user-owned nav.tsx imports this and decides which subset to render; the
+ * dashboard imports it to build entity tiles.
  */
 export const ALL_ROUTES: RouteSpec[] = [
 {{- range .Pages}}
-  { path: "/{{.Slug}}", label: "{{.Label}}", labelLower: "{{.LabelLower}}", slug: "{{.Slug}}" },
+  { path: "/{{.Slug}}", label: "{{.Label}}", labelLower: "{{.LabelLower}}", slug: "{{.Slug}}", labelSingular: "{{.LabelSingular}}", hasCreate: {{.HasCreate}} },
 {{- end}}
 ];

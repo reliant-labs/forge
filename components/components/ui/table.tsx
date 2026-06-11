@@ -90,18 +90,43 @@ export function TableRow({
   clickable,
   className,
   children,
+  onClick,
+  onKeyDown,
   ...rest
 }: TableRowProps) {
   const composed = [
     "transition-colors",
-    clickable ? "cursor-pointer hover:bg-blue-50" : "",
+    clickable ? "cursor-pointer hover:bg-blue-50 focus-visible:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500" : "",
     striped ? "bg-gray-50" : "bg-white",
     className ?? "",
   ]
     .filter(Boolean)
     .join(" ");
+
+  // Row-link pattern: a clickable row is keyboard-reachable (tabIndex) and
+  // activates on Enter/Space like the link it stands in for. Without this,
+  // generated list pages are mouse-only.
+  const interactive = clickable && onClick;
+
   return (
-    <tr className={composed} {...rest}>
+    <tr
+      className={composed}
+      onClick={onClick}
+      {...(interactive
+        ? {
+            tabIndex: 0,
+            onKeyDown: (e: React.KeyboardEvent<HTMLTableRowElement>) => {
+              onKeyDown?.(e);
+              if (e.defaultPrevented) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick?.(e as unknown as React.MouseEvent<HTMLTableRowElement>);
+              }
+            },
+          }
+        : { onKeyDown })}
+      {...rest}
+    >
       {children}
     </tr>
   );

@@ -185,6 +185,11 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 // reach for them.
 var coreComponents = []string{
 	// Primitives — base building blocks for every frontend pack.
+	// "link" first: every navigating component (page_header,
+	// row_actions_menu) imports "./link". The library copy is a plain
+	// anchor; installCoreComponents/EnsureCoreComponents overwrite it
+	// with a framework-aware version (see linkComponentForDir).
+	"link",
 	"button",
 	"input",
 	"label",
@@ -223,9 +228,13 @@ func installCoreComponents(frontendDir string) error {
 	}
 
 	for _, name := range coreComponents {
-		content, err := lib.Get(name)
-		if err != nil {
-			return fmt.Errorf("get component %s: %w", name, err)
+		content := componentContentForDir(frontendDir, name)
+		if content == "" {
+			c, err := lib.Get(name)
+			if err != nil {
+				return fmt.Errorf("get component %s: %w", name, err)
+			}
+			content = c
 		}
 		dest := filepath.Join(componentsDir, name+".tsx")
 		if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
@@ -250,9 +259,13 @@ func EnsureCoreComponents(frontendDir string) error {
 		if _, err := os.Stat(dest); err == nil {
 			continue // already exists
 		}
-		content, err := lib.Get(name)
-		if err != nil {
-			return fmt.Errorf("get component %s: %w", name, err)
+		content := componentContentForDir(frontendDir, name)
+		if content == "" {
+			c, err := lib.Get(name)
+			if err != nil {
+				return fmt.Errorf("get component %s: %w", name, err)
+			}
+			content = c
 		}
 		if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write component %s: %w", name, err)
@@ -260,3 +273,156 @@ func EnsureCoreComponents(frontendDir string) error {
 	}
 	return nil
 }
+
+// componentContentForDir returns framework-specific override content for a
+// component, or "" to use the library copy verbatim. Today only the "link"
+// primitive is framework-specific: internal navigation must go through the
+// host framework's router (next/link handles basePath + client transitions;
+// tanstack-router's history does the SPA equivalent). The library's plain-
+// anchor fallback would force a full page load AND 404 under a Next.js
+// basePath deployment.
+func componentContentForDir(frontendDir, name string) string {
+	if name != "link" {
+		return ""
+	}
+	switch detectFrontendKind(frontendDir) {
+	case "nextjs":
+		return nextLinkComponent
+	case "vite-spa":
+		return viteLinkComponent
+	default:
+		return ""
+	}
+}
+
+// detectFrontendKind sniffs the frontend framework from config files the
+// scaffold always lays down before components are installed. Returns
+// "nextjs", "vite-spa", or "" when neither marker exists.
+func detectFrontendKind(frontendDir string) string {
+	for _, marker := range []string{"next.config.ts", "next.config.js", "next.config.mjs"} {
+		if _, err := os.Stat(filepath.Join(frontendDir, marker)); err == nil {
+			return "nextjs"
+		}
+	}
+	if _, err := os.Stat(filepath.Join(frontendDir, "vite.config.ts")); err == nil {
+		return "vite-spa"
+	}
+	return ""
+}
+
+// nextLinkComponent routes internal hrefs through next/link (client-side
+// navigation + automatic basePath prefixing) and keeps plain anchors for
+// external URLs. Generated pages and library components (page_header,
+// row_actions_menu) import this instead of rendering raw <a href> — raw
+// anchors break client routing and 404 under `--base-path` deployments.
+const nextLinkComponent = `import NextLink from "next/link";
+import React from "react";
+
+/**
+ * Link — the navigation primitive other library components route through
+ * (PageHeader actions/breadcrumbs, RowActionsMenu href items, ...).
+ *
+ * Internal hrefs render next/link: client-side transitions, prefetching,
+ * and automatic basePath prefixing. External URLs (http(s)://, mailto:,
+ * tel:) render a plain <a> — next/link must never handle those.
+ */
+
+const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
+
+/** True for absolute/external URLs that must bypass client routing. */
+export function isExternalHref(href: string): boolean {
+  return (
+    EXTERNAL_HREF.test(href) ||
+    href.startsWith("mailto:") ||
+    href.startsWith("tel:")
+  );
+}
+
+export type LinkProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
+  href: string;
+};
+
+export default function Link({ href, children, ...rest }: LinkProps) {
+  if (isExternalHref(href)) {
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    );
+  }
+  return (
+    <NextLink href={href} {...rest}>
+      {children}
+    </NextLink>
+  );
+}
+`
+
+// viteLinkComponent is the tanstack-router flavor: internal hrefs push
+// through the router's history (SPA navigation, no full reload) while
+// modified-click / new-tab semantics and external URLs keep native anchor
+// behavior.
+const viteLinkComponent = `import { useRouter } from "@tanstack/react-router";
+import React from "react";
+
+/**
+ * Link — the navigation primitive other library components route through
+ * (PageHeader actions/breadcrumbs, RowActionsMenu href items, ...).
+ *
+ * Internal hrefs navigate via tanstack-router's history (client-side, no
+ * full reload). External URLs (http(s)://, mailto:, tel:) and modified
+ * clicks (cmd/ctrl/shift, middle-click, target="_blank") keep native
+ * anchor behavior.
+ */
+
+const EXTERNAL_HREF = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
+
+/** True for absolute/external URLs that must bypass client routing. */
+export function isExternalHref(href: string): boolean {
+  return (
+    EXTERNAL_HREF.test(href) ||
+    href.startsWith("mailto:") ||
+    href.startsWith("tel:")
+  );
+}
+
+export type LinkProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
+  href: string;
+};
+
+export default function Link({ href, children, onClick, target, ...rest }: LinkProps) {
+  const router = useRouter();
+
+  if (isExternalHref(href) || target === "_blank") {
+    return (
+      <a href={href} target={target} {...rest}>
+        {children}
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={href}
+      onClick={(e) => {
+        onClick?.(e);
+        if (
+          e.defaultPrevented ||
+          e.metaKey ||
+          e.ctrlKey ||
+          e.shiftKey ||
+          e.altKey ||
+          e.button !== 0
+        ) {
+          return;
+        }
+        e.preventDefault();
+        router.history.push(href);
+      }}
+      {...rest}
+    >
+      {children}
+    </a>
+  );
+}
+`

@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
+import Link from "./link";
+
 export interface RowAction {
   label: string;
   onClick?: () => void;
@@ -80,7 +82,7 @@ export default function RowActionsMenu({ actions, triggerLabel = "Row actions", 
 
             if (item.href) {
               return (
-                <a
+                <Link
                   key={ii}
                   role="menuitem"
                   href={item.href}
@@ -89,7 +91,7 @@ export default function RowActionsMenu({ actions, triggerLabel = "Row actions", 
                 >
                   {item.icon && <span className="h-4 w-4">{item.icon}</span>}
                   {item.label}
-                </a>
+                </Link>
               );
             }
             return (

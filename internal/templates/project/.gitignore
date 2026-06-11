@@ -95,13 +95,19 @@ tmp/
 # (handoff from `forge build --push` to `forge deploy`), side renders for
 # forked files (.forge/render/ holds the latest skipped render,
 # .forge/render-base/ the merge base; both consumed by
-# `forge unfork --merge`), and other runtime state. checksums.json is the
-# exception — it tracks what forge generated so other developers'
-# `forge generate` can detect user modifications.
+# `forge unfork --merge`), and other runtime state. Two exceptions are
+# negated back in and MUST be committed:
+#   checksums.json  — tracks what forge generated so other developers'
+#                     `forge generate` can detect user modifications.
+#   friction.jsonl  — append-only generator-friction log written by
+#                     `forge friction add`. Shared project state: it
+#                     travels with the repo so friction recorded by any
+#                     agent/developer survives worktrees and clones.
 # Everything else under .forge/ is per-developer state and intentionally
 # excluded by the broad `.forge/` rule below.
 .forge/
 !.forge/checksums.json
+!.forge/friction.jsonl
 
 # ── What NOT to ignore ──
 #

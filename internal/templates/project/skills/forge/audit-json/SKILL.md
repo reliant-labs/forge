@@ -93,6 +93,7 @@ Each category is the same shape:
 | `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
 | `deps` | `go_mod`, `go_sum` presence flags |
+| `friction` | `count`, `by_severity{}`, `newest_recorded_at`, `hint`, `malformed_lines` (when torn writes were skipped) — standing generator-friction reports from `.forge/friction.jsonl`. Entries describe forge, not the project, so the category stays `ok` (it never gates CI); `warn` only on malformed lines. Run `forge friction list` for the entries. |
 
 The full set of keys per category is stable; new categories may be
 added (additive). Consumers should `select` the keys they care about

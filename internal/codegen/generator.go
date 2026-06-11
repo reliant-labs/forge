@@ -1761,8 +1761,29 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		// forgedb.MigrationsFS) so generated CRUD/handler tests start
 		// with the real schema instead of an empty database.
 		HasMigrationsFS:    projectHasSQLMigrations(projectDir),
-		ExtraImports:       extraImports,
+		ExtraImports:       nil, // filled below after duplicate-filtering
 	}
+
+	// Filter ExtraImports against everything the template ALREADY
+	// imports. Stub method signatures routinely reference packages the
+	// static import block carries unconditionally (`context` is the
+	// canonical case: the template emits `"context"` whenever there are
+	// services, and any stub method taking ctx adds `context "context"`
+	// to ExtraImports — two declarations of the same name, which fails
+	// `go build`). Rather than hand-mirroring the template's conditional
+	// import logic here (and drifting the moment the template changes),
+	// render a baseline WITHOUT extras, parse its import block, and drop
+	// every extra whose declared name + path are already present. An
+	// extra whose alias collides with a different path is kept as-is:
+	// that's a genuine user-level package-name collision the compile
+	// error should surface, not something to silently rewrite.
+	if len(extraImports) > 0 {
+		baseline, berr := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
+		if berr == nil {
+			extraImports = filterAlreadyImported(extraImports, baseline)
+		}
+	}
+	data.ExtraImports = extraImports
 
 	content, err := templates.ProjectTemplates().Render("bootstrap_testing.go.tmpl", data)
 	if err != nil {
@@ -1830,6 +1851,43 @@ func mergeExtraImports(services []BootstrapTestServiceData) []ExtraImport {
 	// sorts by Path; we do the same here so the merged slice stays
 	// in lockstep with the per-stub view.
 	sortExtraImports(out)
+	return out
+}
+
+// filterAlreadyImported drops every ExtraImport whose declared name AND
+// path already appear in src's import block (src is a rendered Go file —
+// the bootstrap_testing baseline rendered without extras). Matching on
+// the (name, path) pair rather than path alone is deliberate: Go permits
+// the same path under two different aliases (the cross-role collision
+// case where a package import is aliased `pkgLedger` while a stub
+// references the package's declared name), so a path-only filter would
+// remove an import the stub's method signatures still need. When src
+// doesn't parse, the extras are returned unchanged — the subsequent
+// `go build` validation step owns the failure.
+func filterAlreadyImported(extras []ExtraImport, src interface{}) []ExtraImport {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "testing.go", src, parser.ImportsOnly|parser.SkipObjectResolution)
+	if err != nil {
+		return extras
+	}
+	declared := map[string]string{}
+	for _, imp := range f.Imports {
+		path, perr := importPathFromSpec(imp)
+		if perr != nil {
+			continue
+		}
+		name := aliasForImport(imp, path)
+		if _, ok := declared[name]; !ok {
+			declared[name] = path
+		}
+	}
+	var out []ExtraImport
+	for _, e := range extras {
+		if p, ok := declared[e.Alias]; ok && p == e.Path {
+			continue
+		}
+		out = append(out, e)
+	}
 	return out
 }
 

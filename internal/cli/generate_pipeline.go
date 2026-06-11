@@ -103,6 +103,10 @@ type pipelineContext struct {
 	// the rest of the pipeline." Used at most once when forking a
 	// generated file. See stepCheckTier1Drift for the full guard logic.
 	Accept bool
+	// AcceptReason is the --reason text recorded into
+	// .forge/friction.jsonl for every path Accept forks this run. See
+	// pipelineFlags.AcceptReason for the design-feedback rationale.
+	AcceptReason string
 
 	// SkipValidate suppresses the final `go build ./...` step. The
 	// validate step is all-or-nothing — a single broken file in package
@@ -251,6 +255,7 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 		AbsPath:         abs,
 		Force:           flags.Force,
 		Accept:          flags.Accept,
+		AcceptReason:    flags.AcceptReason,
 		ExplainDrift:    flags.ExplainDrift,
 		SkipValidate:    flags.SkipValidate,
 		SkipPreChecks:   flags.SkipPreChecks,
@@ -848,6 +853,10 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 			accepted = append(accepted, d.Path)
 		}
 		warnForkCoherenceOnAccept(os.Stderr, accepted)
+		// Forks are design feedback — record one friction entry per
+		// accepted path NOW, while the why (--reason) is still fresh.
+		// Best-effort and never interactive; see friction_fork.go.
+		recordForkFriction(ctx.AbsPath, "generate --accept", ctx.AcceptReason, accepted, os.Stderr)
 		return nil
 	}
 
@@ -875,7 +884,7 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		}
 		fmt.Fprintf(&b, "\nDuring a mid-%s state this is almost always upstream changes the merge brought in (not real hand-edits). Two options:\n", state)
 		fmt.Fprintf(&b, "  1. Resolve the %s first (`git status`), then re-run `forge generate`.\n", state)
-		fmt.Fprintf(&b, "  2. Run `forge generate --accept` to re-stamp the recorded checksums to the merged-in content, then proceed.\n")
+		fmt.Fprintf(&b, "  2. Run `forge generate --accept` to re-stamp the recorded checksums to the merged-in content, then proceed (add `--reason \"<why>\"` to record why these files were adopted).\n")
 		return errMidMergeTier1Drift{state: state, msg: b.String()}
 	}
 

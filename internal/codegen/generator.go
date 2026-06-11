@@ -818,6 +818,34 @@ type BootstrapFeatures struct {
 	StrictWiringEnabled bool
 }
 
+// leaderElectionID derives a Kubernetes-valid leader-election lease name
+// from the project's module path. Lease names are k8s resource names and
+// must satisfy DNS-1123 label rules (lowercase alphanumerics and '-');
+// the raw module path ("github.com/acme/control-plane") contains slashes
+// and dots, which the API server rejects with "may not contain '/'". Use
+// the module's final path element, lowercased with every invalid rune
+// squashed to '-', suffixed with "-leader" (e.g. "control-plane-leader").
+func leaderElectionID(modulePath string) string {
+	base := modulePath
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.ToLower(base)
+	var b strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "forge"
+	}
+	return slug + "-leader"
+}
+
 func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
@@ -948,8 +976,10 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		LeaderElectionID    string
 	}{
 		Module:              modulePath,
+		LeaderElectionID:    leaderElectionID(modulePath),
 		Services:            bootstrapSvcs,
 		Packages:            packages,
 		Workers:             workers,

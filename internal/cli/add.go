@@ -1218,6 +1218,12 @@ func runAddWebhook(name, serviceName string) error {
 	if svcIdx == -1 {
 		return fmt.Errorf("service %q not found in forge.yaml", serviceName)
 	}
+	// Webhooks require a serving binary; declaring one on a types-only
+	// service would fail forge.yaml validation on the next load. Reject
+	// at add time with the full story.
+	if !cfg.Services[svcIdx].IsServed() {
+		return fmt.Errorf("service %q is types-only in forge.yaml (serve: false) — webhooks require a serving binary; add the webhook to the binary that serves it or restore serve: true", serviceName)
+	}
 
 	// Check for duplicate webhook.
 	for _, wh := range cfg.Services[svcIdx].Webhooks {

@@ -132,6 +132,17 @@ func runAddRPC(svc, rpcName string, mode rpcStreamMode) error {
 		return err
 	}
 
+	// Types-only services (serve: false) have no handler scaffold by
+	// design — adding an RPC handler here would contradict the
+	// declaration. Best-effort config load; a missing forge.yaml falls
+	// through to the handler-dir check below.
+	if cfg, cfgErr := loadProjectConfigFrom(filepath.Join(root, defaultProjectConfigFile)); cfgErr == nil && !cfg.ServiceServed(svc) {
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("service %q is types-only in forge.yaml (serve: false) — this binary does not serve it, so there is no handler scaffold to add an RPC to", svc),
+			"forge.yaml",
+			"add the RPC to the proto only (the types/client still generate), implement it in the binary named by served_by, or restore serve: true")
+	}
+
 	pkg := naming.ServicePackage(svc)
 	handlerDir := filepath.Join(root, "handlers", pkg)
 	if _, err := os.Stat(handlerDir); os.IsNotExist(err) {

@@ -80,6 +80,13 @@ type graphService struct {
 	EnvVars    []graphEnvVar    `json:"env_vars,omitempty"`
 	Deps       []graphDepsField `json:"deps,omitempty"`
 	RPCs       []graphRPC       `json:"rpcs,omitempty"`
+	// Served is the additive types-only marker: present (and false)
+	// only when forge.yaml declares `serve: false` for the service —
+	// the types/client generate here but a sibling binary serves the
+	// API. Absent means served (the default).
+	Served *bool `json:"served,omitempty"`
+	// ServedBy is the forge.yaml served_by documentation string.
+	ServedBy string `json:"served_by,omitempty"`
 }
 
 // graphEnvVar names one env var read by the service. Source is the
@@ -307,6 +314,11 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 			gs := graphService{
 				Name:    s.Name,
 				Package: servicePackageDir(s),
+			}
+			if !s.IsServed() {
+				notServed := false
+				gs.Served = &notServed
+				gs.ServedBy = s.ServedBy
 			}
 			if k, ok := kclSvcByName[s.Name]; ok {
 				gs.DeployType = k.Deploy.Type

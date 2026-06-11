@@ -1,15 +1,23 @@
 # Real-project fixture corpus (internal/cli/fixture_corpus_e2e_test.go).
 #
-# Scaffolds two downstream-shaped projects from the forge binary built
+# Scaffolds three downstream-shaped projects from the forge binary built
 # at this commit, then drives each through the full lifecycle:
-#   scaffold → generate ×2 (idempotency) → deps-matcher wiring pins →
-#   go build → boot (/healthz=200, clean SIGTERM) → fork round-trip
-#   (drift error → --accept → loud skip + side render → unfork --merge).
+#   - two Go-shaped fixtures: scaffold → generate ×2 (idempotency) →
+#     deps-matcher wiring pins → go build → boot (/healthz=200, clean
+#     SIGTERM) → fork round-trip (drift error → --accept → loud skip +
+#     side render → unfork --merge);
+#   - one frontend-shaped fixture: 1 service + 1 Next.js frontend with
+#     base_path /admin → generate ×2 → render pins (next.config.ts
+#     basePath/assetPrefix, Tier-1 basepath_gen.ts, prefix-clean TSX) →
+#     npm install + `next build` static export (/admin/_next assets,
+#     fail-loud NEXT_PUBLIC_BASE_PATH="" override guard).
 #
 # This exists because the kalshi deps-matcher regression (silent nil for
 # cross-package interface deps) was invisible to unit tests and only
 # surfaced when a real downstream project was regenerated. The corpus
-# moves that detection upstream, onto every PR.
+# moves that detection upstream, onto every PR. The frontend fixture
+# extends the same idea to the Next.js templates: base_path shipped with
+# zero end-to-end renders, which is exactly how frontend regressions ship.
 name: Fixture Corpus
 
 on:
@@ -42,6 +50,26 @@ jobs:
       - name: Install buf
         uses: bufbuild/buf-setup-action@v1
 
+      # Node/npm for the frontend-basepath fixture (npm install +
+      # `next build`). The fixture skips its npm phase with a logged
+      # reason when npm is absent — CI must NOT take that branch, so
+      # provision Node explicitly instead of relying on the runner image.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Cache npm's content-addressable store (~/.npm). setup-node's
+      # built-in `cache: npm` can't be used: it keys on a checked-in
+      # lockfile, and the fixture project's package-lock.json is
+      # generated at test time. Key on the Next.js frontend package.json
+      # template instead — the dependency set the scaffolded project
+      # installs only changes when that template changes.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: corpus-npm-${{ runner.os }}-${{ hashFiles('internal/templates/frontend/nextjs/package.json.tmpl') }}
+          restore-keys: corpus-npm-${{ runner.os }}-
+
       - name: Put $HOME/go/bin on PATH
         run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
@@ -56,7 +84,7 @@ jobs:
           forge tools install
 
       - name: Run fixture corpus
-        run: go test -tags e2e -run 'TestE2EFixtureCorpus' -v -timeout 25m ./internal/cli/
+        run: go test -tags e2e -run 'TestE2EFixtureCorpus' -v -timeout 30m ./internal/cli/
 
       - name: Upload fixture trees on failure
         if: failure()

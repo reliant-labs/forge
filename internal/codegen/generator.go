@@ -349,6 +349,35 @@ type BootstrapComponentData struct {
 	// and-drops) until the next forge generate cycle. wire_gen has had
 	// this logic for services; this brings packages to parity.
 	AppFieldRefs []AppFieldRef
+	// CanonicalAppField names the single App/AppExtras field whose
+	// declared type is this internal package's Service interface (e.g.
+	// AppExtras.DaemonService of type svcdaemon.Service). Populated by
+	// inspectComponentDepsShape ONLY when the package's Deps struct has
+	// at least one non-optional collaborator field that bootstrap cannot
+	// auto-wire from App/AppExtras (no name match, or proven type
+	// mismatch) — i.e. the construction is unexpressible from app
+	// fields. When set, the bootstrap template emits
+	//
+	//	app.Packages.<FieldName> = app.<CanonicalAppField>
+	//
+	// instead of `<pkg>.New(<pkg>.Deps{...})`: user-owned setup.go
+	// constructs the canonical, fully-wired instance (with deps that
+	// have no AppExtras representation — inline URL builders,
+	// env-derived strings, cross-package collaborators), and appkit
+	// runs Setup BEFORE the package table, so the alias always observes
+	// the setup.go assignment. Constructing a second instance here
+	// instead would produce a half-built duplicate that panics in
+	// validateDeps or silently no-ops — the cp-forge svcdaemon
+	// hand-edit class (Deps.DaemonRepo/URLBuilder unwireable, boot
+	// panic "Deps.DaemonRepo is required").
+	//
+	// Empty when: every Deps field auto-wires (keep constructing — the
+	// enforcement/Checker shape), the only gaps are config scalars
+	// (zero value is the documented degraded mode — the billing/APIKey
+	// shape), the gap is `forge:optional-dep`-marked, no App/AppExtras
+	// field has the package's Service type, or more than one does
+	// (ambiguous — no deterministic canonical instance).
+	CanonicalAppField string
 	// ConnectPkg is the import alias of the generated Connect package for
 	// this service (e.g. "echov1connect") — used by the bootstrap template
 	// to reference the `<X>ServiceName` constant when building vanguard
@@ -404,12 +433,22 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 	// no-op bug class).
 	matcher := NewDepsAssignabilityMatcher(projectDir)
 
+	// Module path feeds canonicalAppServiceField's exact import-path
+	// compare; empty (no go.mod — synthetic fixtures) falls back to a
+	// suffix match there.
+	modulePath, _ := GetModulePath(projectDir)
+
 	for i := range components {
 		dir := filepath.Join(projectDir, roleRoot, components[i].ImportPath)
 		fields, err := ParseServiceDeps(dir)
 		if err != nil || len(fields) == 0 {
 			continue
 		}
+		// unwiredCollaborators counts non-optional, non-scalar Deps
+		// fields that bootstrap cannot supply from App/AppExtras. When
+		// non-zero, the generated New(Deps{...}) is a half-built
+		// instance — see CanonicalAppField for the alias escape hatch.
+		unwiredCollaborators := 0
 		for _, f := range fields {
 			switch f.Name {
 			case "Logger":
@@ -418,6 +457,10 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 				// package-local Logger type.
 				if f.Type == "" || f.Type == "*slog.Logger" {
 					components[i].HasLogger = true
+				} else if !f.Optional && !isConfigScalarType(f.Type) {
+					// Domain-local logger type (e.g. logr.Logger) that
+					// bootstrap cannot supply.
+					unwiredCollaborators++
 				}
 			case "Config":
 				// HasConfig gates emission of `Config: cfg` in the
@@ -437,6 +480,8 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 					// matcher (with assignability) like any other field.
 					if matchedAppField(matcher, roleRoot, components[i].ImportPath, f.Name, f.Type, appFieldTypes) {
 						components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
+					} else if !f.Optional && !isConfigScalarType(f.Type) {
+						unwiredCollaborators++
 					}
 				}
 			default:
@@ -451,10 +496,154 @@ func inspectComponentDepsShape(components []BootstrapComponentData, projectDir, 
 				// optional-dep mechanism).
 				if matchedAppField(matcher, roleRoot, components[i].ImportPath, f.Name, f.Type, appFieldTypes) {
 					components[i].AppFieldRefs = append(components[i].AppFieldRefs, AppFieldRef{DepsField: f.Name})
+				} else if !f.Optional && !isConfigScalarType(f.Type) {
+					unwiredCollaborators++
+				}
+			}
+		}
+		// The construction is unexpressible from App/AppExtras fields:
+		// at least one live collaborator stays unwired, so the emitted
+		// New(Deps{...}) would be a half-built duplicate of whatever
+		// the user constructs in setup.go (panicking in validateDeps or
+		// silently no-opping). If the user maintains the canonical
+		// instance on exactly one App/AppExtras field of this package's
+		// Service type, alias the Packages slot to it instead — Setup
+		// runs before the package table, so the assignment is always
+		// observed. Packages-only: workers/operators have no
+		// canonical-instance convention.
+		if unwiredCollaborators > 0 && roleRoot == "internal" {
+			components[i].CanonicalAppField = canonicalAppServiceField(
+				filepath.Join(projectDir, "pkg", "app"),
+				modulePath, roleRoot, components[i].ImportPath, components[i].Package)
+		}
+	}
+}
+
+// isConfigScalarType reports whether a Deps field type is a plain
+// configuration scalar (string, bool, numeric, or a slice of those —
+// e.g. APIKey string, PlansData []byte, AllowedHosts []string).
+// Scalars are never auto-wired from App/AppExtras by name today, and
+// their zero value is the package's documented degraded mode rather
+// than a nil collaborator — so they don't count toward the
+// "construction is unexpressible" trigger for CanonicalAppField.
+func isConfigScalarType(t string) bool {
+	t = strings.TrimPrefix(strings.TrimSpace(t), "[]")
+	switch t {
+	case "string", "bool", "byte", "rune",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+		"float32", "float64", "complex64", "complex128",
+		"time.Duration":
+		return true
+	}
+	return false
+}
+
+// canonicalAppServiceField finds the single exported App/AppExtras
+// field whose declared type is `<pkg>.Service` for the internal
+// package at <module>/<roleRoot>/<importPath>. Returns "" unless
+// exactly one such field exists (zero → nothing to alias; two or more
+// → ambiguous, no deterministic canonical instance).
+//
+// Resolution follows each pkg/app file's own import table so renamed
+// imports work (cp-forge declares `internaluser "…/internal/user"` and
+// types the field `internaluser.Service`). A plain import's qualifier
+// is the package's real package-clause name (pkgName, disk-resolved by
+// the caller), NOT the directory leaf — the two may legally differ.
+// When modulePath is empty (no go.mod — synthetic fixtures), import
+// paths match by "/<roleRoot>/<importPath>" suffix instead.
+func canonicalAppServiceField(appDir, modulePath, roleRoot, importPath, pkgName string) string {
+	entries, err := os.ReadDir(appDir)
+	if err != nil {
+		return ""
+	}
+	want := ""
+	if modulePath != "" {
+		want = modulePath + "/" + roleRoot + "/" + importPath
+	}
+	suffix := "/" + roleRoot + "/" + importPath
+
+	fset := token.NewFileSet()
+	seen := map[string]struct{}{}
+	var fieldNames []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(appDir, entry.Name()), nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		// Qualifiers in THIS file that refer to the target package.
+		quals := map[string]struct{}{}
+		for _, imp := range file.Imports {
+			if imp.Path == nil {
+				continue
+			}
+			p := strings.Trim(imp.Path.Value, `"`)
+			matched := p == want
+			if want == "" {
+				matched = strings.HasSuffix(p, suffix)
+			}
+			if !matched {
+				continue
+			}
+			if imp.Name != nil {
+				if imp.Name.Name == "_" || imp.Name.Name == "." {
+					continue
+				}
+				quals[imp.Name.Name] = struct{}{}
+			} else {
+				quals[pkgName] = struct{}{}
+			}
+		}
+		if len(quals) == 0 {
+			continue
+		}
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || (typeSpec.Name.Name != "App" && typeSpec.Name.Name != "AppExtras") {
+					continue
+				}
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				if !ok || structType.Fields == nil {
+					continue
+				}
+				for _, field := range structType.Fields.List {
+					sel, ok := field.Type.(*ast.SelectorExpr)
+					if !ok || sel.Sel == nil || sel.Sel.Name != "Service" {
+						continue
+					}
+					qual, ok := sel.X.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if _, ok := quals[qual.Name]; !ok {
+						continue
+					}
+					for _, name := range field.Names {
+						if !name.IsExported() {
+							continue
+						}
+						if _, dup := seen[name.Name]; dup {
+							continue
+						}
+						seen[name.Name] = struct{}{}
+						fieldNames = append(fieldNames, name.Name)
+					}
 				}
 			}
 		}
 	}
+	if len(fieldNames) == 1 {
+		return fieldNames[0]
+	}
+	return ""
 }
 
 // matchedAppField is the central decision for "should bootstrap emit

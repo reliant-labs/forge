@@ -383,6 +383,38 @@ type NavPageData struct {
 	Label      string // display name, e.g. "Tasks"
 	LabelLower string // lowercase for descriptions, e.g. "tasks"
 	Slug       string // URL path segment, e.g. "tasks"
+	// LabelSingular is the singular display name ("Task") — used by
+	// "Create X" buttons. Derived from the proto entity name, not a
+	// strip-the-trailing-s guess ("Categories" → "Category", not
+	// "Categorie").
+	LabelSingular string
+	// HasCreate reports whether the page generator emitted a create page
+	// (<slug>/new) for this entity. The dashboard's QuickActions grid
+	// gates its "Create X" buttons on this — advertising a create route
+	// the page generator never wrote is a guaranteed 404.
+	HasCreate bool
+	// ListHook is the generated React Query list hook name
+	// ("useListTasks"); the dashboard tile uses it to render a real
+	// entity count instead of a placeholder.
+	ListHook string
+	// HooksModule is the import path of the generated hooks file, e.g.
+	// "@/hooks/task-service-hooks".
+	HooksModule string
+	// ItemsField is the camelCase repeated field on the list response
+	// holding the entities ("tasks").
+	ItemsField string
+	// ComponentIdent is a valid TS identifier for per-entity generated
+	// components ("Tasks" → TasksTile).
+	ComponentIdent string
+}
+
+// NavHookImport is one merged import statement the dashboard template
+// emits for list hooks: all hook symbols whose generated hooks file is
+// the same module. Pre-grouped in Go so two entities served by one
+// service don't produce duplicate import statements (import/no-duplicates).
+type NavHookImport struct {
+	Module  string   // "@/hooks/task-service-hooks"
+	Symbols []string // ["useListTasks", "useListProjects"] — sorted
 }
 
 // FrontendTemplateData holds data for frontend template rendering.
@@ -400,6 +432,9 @@ type FrontendTemplateData struct {
 	ApiPort string //nolint:revive // template field name; see comment above
 	Module  string
 	Pages   []NavPageData
+	// NavHookImports is the per-module aggregation of the list hooks the
+	// dashboard tiles consume. Derived from Pages by the nav generator.
+	NavHookImports []NavHookImport
 	// Workspaces reports whether the project opted into the pnpm-
 	// workspaces layout. When true, frontend templates emit imports
 	// of ApiPackage / HooksPackage instead of relative @/gen and

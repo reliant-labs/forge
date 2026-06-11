@@ -1,5 +1,7 @@
 import React from "react";
 
+import Link from "./link";
+
 interface Breadcrumb {
   label: string;
   href?: string;
@@ -21,7 +23,7 @@ interface PageHeaderProps {
 }
 
 export default function PageHeader({ title, subtitle, breadcrumbs = [], actions = [] }: PageHeaderProps) {
-  const variantStyles: Record<string, string> = {
+  const variantStyles: Record<NonNullable<Action["variant"]>, string> = {
     primary: "bg-blue-600 text-white hover:bg-blue-700 shadow-sm",
     secondary: "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 shadow-sm",
     danger: "border border-red-200 bg-white text-red-600 hover:bg-red-50 shadow-sm",
@@ -39,9 +41,9 @@ export default function PageHeader({ title, subtitle, breadcrumbs = [], actions 
                 </svg>
               )}
               {crumb.href ? (
-                <a href={crumb.href} className="hover:text-gray-700">
+                <Link href={crumb.href} className="hover:text-gray-700">
                   {crumb.label}
-                </a>
+                </Link>
               ) : (
                 <span className="text-gray-900 font-medium">{crumb.label}</span>
               )}
@@ -60,10 +62,10 @@ export default function PageHeader({ title, subtitle, breadcrumbs = [], actions 
               const cls = `inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${variantStyles[action.variant ?? "secondary"]}`;
               if (action.href) {
                 return (
-                  <a key={i} href={action.href} className={cls}>
+                  <Link key={i} href={action.href} className={cls}>
                     {action.icon}
                     {action.label}
-                  </a>
+                  </Link>
                 );
               }
               return (

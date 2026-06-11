@@ -1,12 +1,17 @@
 // forge:scaffold one-shot — edit page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
-import { use{{.GetRPC}}, use{{.UpdateRPC}} } from "{{.HooksImportPath}}";
+{{- if .HasDateUpdateFields}}
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+{{- end}}
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import PageHeader from "@/components/ui/page_header";
+
 import AlertBanner from "@/components/ui/alert_banner";
+import PageHeader from "@/components/ui/page_header";
 import SkeletonLoader from "@/components/ui/skeleton_loader";
+import { use{{.GetRPC}}, use{{.UpdateRPC}} } from "{{.HooksImportPath}}";
+import { {{if .HasDateUpdateFields}}toDatetimeLocal, {{end}}userMessage } from "@/lib/format-utils";
 
 const schema = z.object({
   {{- range .UpdateFields}}
@@ -30,29 +35,51 @@ export default function Edit{{.EntityName}}Page() {
   const navigate = useNavigate();
 
   const { data, isLoading, error: fetchError } = use{{.GetRPC}}({ id });
-  const item = (data?.{{.EntityName | camelCase}} ?? data) as Record<string, unknown>;
+  // Typed access: the response wraps the entity in `{{.EntityName | camelCase}}` —
+  // no `?? data` hedging, no Record<string, unknown> cast.
+  const item = data?.{{.EntityName | camelCase}};
 
   const mutation = use{{.UpdateRPC}}({
     onSuccess: () => void navigate({ to: `/{{.EntitySlug}}/${id}` }),
+    // The error renders inline below — opt out of the app-wide error
+    // toast so the failure isn't announced twice.
+    meta: { silenceErrorToast: true },
   });
 
   const { register, handleSubmit, formState: { errors, isDirty } } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    values: item ? {
-      {{- range .UpdateFields}}
-      {{- if eq .Type "checkbox"}}
-      {{.Name}}: Boolean(item?.["{{.Name}}"]),
-      {{- else if eq .Type "number"}}
-      {{.Name}}: Number(item?.["{{.Name}}"] ?? 0),
-      {{- else}}
-      {{.Name}}: String(item?.["{{.Name}}"] ?? ""),
-      {{- end}}
-      {{- end}}
-    } : undefined,
+    values: item
+      ? {
+          {{- range .UpdateFields}}
+          {{- if eq .Type "checkbox"}}
+          {{.Name}}: Boolean(item.{{.Name}}),
+          {{- else if eq .Type "number"}}
+          {{.Name}}: Number(item.{{.Name}} ?? 0),
+          {{- else if eq .Type "date"}}
+          {{.Name}}: toDatetimeLocal(item.{{.Name}}),
+          {{- else}}
+          {{.Name}}: String(item.{{.Name}} ?? ""),
+          {{- end}}
+          {{- end}}
+        }
+      : undefined,
   });
 
   function onSubmit(values: FormValues) {
-    mutation.mutate({ id, ...values } as Parameters<typeof mutation.mutate>[0]);
+    // Typed end-to-end: date strings become proto Timestamps and 64-bit
+    // ints become bigints BEFORE mutate(), so the request matches the
+    // schema instead of being cast into shape.
+    mutation.mutate({
+      id,
+      ...values,
+      {{- range .UpdateFields}}
+      {{- if eq .Type "date"}}
+      {{.Name}}: values.{{.Name}} ? timestampFromDate(new Date(values.{{.Name}})) : undefined,
+      {{- else if .IsBigInt}}
+      {{.Name}}: BigInt(Math.trunc(values.{{.Name}})),
+      {{- end}}
+      {{- end}}
+    });
   }
 
   // Loading is its own state — bail explicitly. Do not derive booleans from
@@ -64,7 +91,7 @@ export default function Edit{{.EntityName}}Page() {
   if (fetchError) {
     return (
       <div className="mx-auto max-w-xl px-4 py-8">
-        <AlertBanner variant="error" message={fetchError.message} />
+        <AlertBanner variant="error" message={userMessage(fetchError)} />
         <Link to="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-blue-600 underline hover:text-blue-800">
           Back to {{.EntityNamePlural | lower}}
         </Link>
@@ -78,14 +105,14 @@ export default function Edit{{.EntityName}}Page() {
         title="Edit {{.EntityName}}"
         breadcrumbs={[
           { label: "{{.EntityNamePlural}}", href: "/{{.EntitySlug}}" },
-          { label: String(item?.name ?? item?.title ?? id), href: `/{{.EntitySlug}}/${id}` },
+          { label: {{if .DisplayField}}item?.{{.DisplayField}} || {{end}}String(item?.{{.PkFieldCamel}} ?? id), href: `/{{.EntitySlug}}/${id}` },
           { label: "Edit" },
         ]}
       />
 
       {mutation.error && (
         <div className="mb-6">
-          <AlertBanner variant="error" message={mutation.error.message} dismissible onDismiss={() => mutation.reset()} />
+          <AlertBanner variant="error" message={userMessage(mutation.error)} dismissible onDismiss={() => mutation.reset()} />
         </div>
       )}
 

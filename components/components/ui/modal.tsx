@@ -1,4 +1,7 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useId, useRef } from "react";
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface ModalProps {
   open: boolean;
@@ -11,7 +14,7 @@ interface ModalProps {
   closeOnOverlay?: boolean;
 }
 
-const sizeStyles: Record<string, string> = {
+const sizeStyles: Record<NonNullable<ModalProps["size"]>, string> = {
   sm: "max-w-sm",
   md: "max-w-lg",
   lg: "max-w-2xl",
@@ -29,6 +32,11 @@ export default function Modal({
   closeOnOverlay = true,
 }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // useId-based labelling: multiple modals on one page never collide the
+  // way a hardcoded id="modal-title" did.
+  const titleId = useId();
+  const descriptionId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -43,6 +51,46 @@ export default function Modal({
     };
   }, [open, onClose]);
 
+  // Focus management: move focus into the dialog on open, trap Tab inside
+  // it, and restore focus to the opener on close — without this, keyboard
+  // and screen-reader users keep tabbing through the page underneath.
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const panel = panelRef.current;
+    const initial = panel?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+    (initial ?? panel)?.focus();
+
+    function trapTab(e: KeyboardEvent) {
+      if (e.key !== "Tab" || !panelRef.current) return;
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      );
+      if (focusable.length === 0) {
+        e.preventDefault();
+        panelRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panelRef.current)) {
+        e.preventDefault();
+        last?.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first?.focus();
+      }
+    }
+    document.addEventListener("keydown", trapTab);
+    return () => {
+      document.removeEventListener("keydown", trapTab);
+      previouslyFocused?.focus();
+    };
+  }, [open]);
+
   if (!open) return null;
 
   return (
@@ -54,10 +102,13 @@ export default function Modal({
       }}
     >
       <div
-        className={`w-full ${sizeStyles[size]} rounded-xl bg-white shadow-2xl`}
+        ref={panelRef}
+        tabIndex={-1}
+        className={`w-full ${sizeStyles[size]} rounded-xl bg-white shadow-2xl focus:outline-none`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={title ? "modal-title" : undefined}
+        aria-labelledby={title ? titleId : undefined}
+        aria-describedby={description ? descriptionId : undefined}
       >
         {/* Header */}
         {(title || description) && (
@@ -65,14 +116,15 @@ export default function Modal({
             <div className="flex items-start justify-between">
               <div>
                 {title && (
-                  <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
+                  <h2 id={titleId} className="text-lg font-semibold text-gray-900">
                     {title}
                   </h2>
                 )}
-                {description && <p className="mt-1 text-sm text-gray-500">{description}</p>}
+                {description && <p id={descriptionId} className="mt-1 text-sm text-gray-500">{description}</p>}
               </div>
               <button
                 onClick={onClose}
+                aria-label="Close dialog"
                 className="rounded-md p-1 text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">

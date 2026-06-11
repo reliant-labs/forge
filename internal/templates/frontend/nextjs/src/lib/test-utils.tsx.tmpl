@@ -23,12 +23,6 @@
 //
 // See the `frontend-testing` skill for recipes and anti-patterns.
 
-import type { ReactElement } from "react";
-import type {
-  Transport,
-  UnaryResponse,
-  StreamResponse,
-} from "@connectrpc/connect";
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
   QueryClient,
@@ -37,6 +31,13 @@ import {
 import { render, type RenderOptions, type RenderResult } from "@testing-library/react";
 
 import { setTransport } from "@/lib/connect";
+
+import type {
+  Transport,
+  UnaryResponse,
+  StreamResponse,
+} from "@connectrpc/connect";
+import type { ReactElement } from "react";
 
 // MockHandler is what a caller writes for a single RPC. A `response` entry
 // returns the value; an `error` entry rejects; a function computes the

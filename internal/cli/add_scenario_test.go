@@ -106,7 +106,7 @@ func TestEmitScenarioScaffolding_SeedsDefaultOnce(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if err := emitScenarioScaffolding(mocksDir); err != nil {
+	if err := emitScenarioScaffolding(mocksDir, nil); err != nil {
 		t.Fatalf("first emit: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestEmitScenarioScaffolding_SeedsDefaultOnce(t *testing.T) {
 	// Hand-edit default.ts.
 	mustWriteFile(t, defaultPath, "// HAND-EDITED")
 
-	if err := emitScenarioScaffolding(mocksDir); err != nil {
+	if err := emitScenarioScaffolding(mocksDir, nil); err != nil {
 		t.Fatalf("second emit: %v", err)
 	}
 

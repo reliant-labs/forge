@@ -1,11 +1,16 @@
 // forge:scaffold one-shot — create page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
-import { use{{.CreateRPC}} } from "{{.HooksImportPath}}";
+{{- if .HasDateCreateFields}}
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+{{- end}}
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import PageHeader from "@/components/ui/page_header";
+
 import AlertBanner from "@/components/ui/alert_banner";
+import PageHeader from "@/components/ui/page_header";
+import { use{{.CreateRPC}} } from "{{.HooksImportPath}}";
+import { userMessage } from "@/lib/format-utils";
 
 const schema = z.object({
   {{- range .CreateFields}}
@@ -28,6 +33,9 @@ export default function Create{{.EntityName}}Page() {
 
   const mutation = use{{.CreateRPC}}({
     onSuccess: () => void navigate({ to: "/{{.EntitySlug}}" }),
+    // The error renders inline below — opt out of the app-wide error
+    // toast so the failure isn't announced twice.
+    meta: { silenceErrorToast: true },
   });
 
   const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({
@@ -35,7 +43,19 @@ export default function Create{{.EntityName}}Page() {
   });
 
   function onSubmit(values: FormValues) {
-    mutation.mutate(values as Parameters<typeof mutation.mutate>[0]);
+    // Typed end-to-end: date strings become proto Timestamps and 64-bit
+    // ints become bigints BEFORE mutate(), so the request matches the
+    // schema instead of being cast into shape.
+    mutation.mutate({
+      ...values,
+      {{- range .CreateFields}}
+      {{- if eq .Type "date"}}
+      {{.Name}}: values.{{.Name}} ? timestampFromDate(new Date(values.{{.Name}})) : undefined,
+      {{- else if .IsBigInt}}
+      {{.Name}}: BigInt(Math.trunc(values.{{.Name}})),
+      {{- end}}
+      {{- end}}
+    });
   }
 
   return (
@@ -50,7 +70,7 @@ export default function Create{{.EntityName}}Page() {
 
       {mutation.error && (
         <div className="mb-6">
-          <AlertBanner variant="error" message={mutation.error.message} dismissible onDismiss={() => mutation.reset()} />
+          <AlertBanner variant="error" message={userMessage(mutation.error)} dismissible onDismiss={() => mutation.reset()} />
         </div>
       )}
 

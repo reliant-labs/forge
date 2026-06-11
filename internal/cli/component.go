@@ -97,6 +97,21 @@ auto-detects the nearest frontend directory.`,
 				}
 				fmt.Printf("  Installed %s -> %s\n", name, dest)
 			}
+
+			// Navigating components (page_header, row_actions_menu) import
+			// the "./link" primitive. Make sure it exists so a manual
+			// install into a bare directory still compiles; never
+			// overwrite — scaffolds place a framework-aware version there.
+			linkDest := filepath.Join(dir, "link.tsx")
+			if _, statErr := os.Stat(linkDest); os.IsNotExist(statErr) {
+				linkContent, err := lib.Get("link")
+				if err == nil {
+					if err := os.WriteFile(linkDest, []byte(linkContent), 0o644); err != nil {
+						return fmt.Errorf("write link primitive: %w", err)
+					}
+					fmt.Printf("  Installed link -> %s (navigation primitive dependency)\n", linkDest)
+				}
+			}
 			return nil
 		},
 	}

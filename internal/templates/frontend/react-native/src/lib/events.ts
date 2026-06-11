@@ -97,3 +97,15 @@ export function getEventBus(): EventBus {
   }
   return _bus;
 }
+
+/**
+ * emitToast — fire-and-forget toast emission for infrastructure code
+ * (e.g. the MutationCache error chokepoint in query-client.ts) that may
+ * run before Providers initialized the bus (unit tests, SSR prerender).
+ * A typed no-op in that window beats the old `try { ... } catch {}`
+ * pattern, which also swallowed real listener errors.
+ */
+export function emitToast(toast: ToastEvent): void {
+  if (!_bus) return;
+  _bus.emit("toast:show", toast);
+}

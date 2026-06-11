@@ -1,19 +1,24 @@
 // forge:scaffold one-shot — detail page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
-import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.HooksImportPath}}";
+{{- if or .HasUpdate .HasDelete}}
+import { {{if .HasDelete}}Trash2{{end}}{{if and .HasDelete .HasUpdate}}, {{end}}{{if .HasUpdate}}SquarePen{{end}}{{if .HasDelete}}, TriangleAlert{{end}} } from "lucide-react";
+{{- end}}
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 {{- if .HasDelete}}
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 {{- end}}
-import PageHeader from "@/components/ui/page_header";
-import Badge from "@/components/ui/badge";
-import KeyValueList from "@/components/ui/key_value_list";
-import SkeletonLoader from "@/components/ui/skeleton_loader";
+
 import AlertBanner from "@/components/ui/alert_banner";
+{{- if .HasBadgeColumns}}
+import Badge from "@/components/ui/badge";
+{{- end}}
+import KeyValueList from "@/components/ui/key_value_list";
 {{- if .HasDelete}}
 import Modal from "@/components/ui/modal";
 {{- end}}
-import { formatValue, isEnumLike, enumBadgeVariant } from "@/lib/format-utils";
+import PageHeader from "@/components/ui/page_header";
+import SkeletonLoader from "@/components/ui/skeleton_loader";
+import { use{{.GetRPC}}{{if .HasDelete}}, use{{.DeleteRPC}}{{end}} } from "{{.HooksImportPath}}";
+import { {{if .HasBadgeColumns}}enumBadgeVariant, {{end}}formatValue, userMessage } from "@/lib/format-utils";
 
 // Route params are validated on the ROUTE in src/routes.tsx via
 // `parseParams: z.object({ id: z.string().min(1) }).parse`. We read the
@@ -25,40 +30,49 @@ export default function {{.EntityName}}DetailPage() {
   const id = params.id;
   {{- if .HasDelete}}
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const queryClient = useQueryClient();
   {{- end}}
 
   const { data, isLoading, error } = use{{.GetRPC}}({ id });
   {{- if .HasDelete}}
+  // The generated hook already invalidates the {{.EntityName | lower}} query scope on
+  // success — no manual cache invalidation needed here. Failure surfaces
+  // via the app-wide error-toast chokepoint (query-client.ts).
   const deleteMutation = use{{.DeleteRPC}}({
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["{{.ServiceNameCamel}}"] });
-      void navigate({ to: "/{{.EntitySlug}}" });
-    },
+    onSuccess: () => void navigate({ to: "/{{.EntitySlug}}" }),
   });
   {{- end}}
 
   if (isLoading) return <SkeletonLoader variant="list-item" count={5} />;
   if (error) return (
     <div className="px-4 py-8">
-      <AlertBanner variant="error" message={error.message} />
+      <AlertBanner variant="error" message={userMessage(error)} />
       <Link to="/{{.EntitySlug}}" className="mt-4 inline-flex text-sm text-blue-600 underline hover:text-blue-800">
         Back to {{.EntityNamePlural | lower}}
       </Link>
     </div>
   );
 
-  const item = data?.{{.EntityName | camelCase}} ?? data;
-  const entries = item && typeof item === "object"
-    ? Object.entries(item as Record<string, unknown>).filter(([k]) => k !== "$typeName")
-    : [];
+  // Typed access: the generator knows the response wraps the entity in
+  // `{{.EntityName | camelCase}}` — no `?? data` hedging, no Record<string, unknown> cast.
+  const item = data?.{{.EntityName | camelCase}};
+  const title = {{if .DisplayField}}item?.{{.DisplayField}} || {{end}}String(item?.{{.PkFieldCamel}} ?? "{{.EntityName}}");
 
-  const fields = entries.map(([key, value]) => ({
-    label: key.replace(/([A-Z])/g, " $1").replace(/^./, (s: string) => s.toUpperCase()),
-    value: isEnumLike(key, value)
-      ? <Badge label={String(value)} variant={enumBadgeVariant(String(value))} />
-      : formatValue(value),
-  }));
+  // Typed field rows — one entry per renderable proto field, declared by
+  // the generator instead of reflected out of Object.entries at runtime.
+  const fields = item
+    ? [
+{{- range .Columns}}
+        {
+          label: "{{.Label}}",
+{{- if .IsBadge}}
+          value: <Badge label={String(item.{{.Name}})} variant={enumBadgeVariant(String(item.{{.Name}}))} />,
+{{- else}}
+          value: formatValue(item.{{.Name}}),
+{{- end}}
+        },
+{{- end}}
+      ]
+    : [];
 
   const actions: Array<{ label: string; href?: string; variant?: "primary" | "secondary" | "danger"; icon?: React.ReactNode; onClick?: () => void }> = [
     {{- if .HasUpdate}}
@@ -66,11 +80,7 @@ export default function {{.EntityName}}DetailPage() {
       label: "Edit",
       href: `/{{.EntitySlug}}/${id}/edit`,
       variant: "secondary" as const,
-      icon: (
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
-        </svg>
-      ),
+      icon: <SquarePen aria-hidden className="h-4 w-4" strokeWidth={1.5} />,
     },
     {{- end}}
     {{- if .HasDelete}}
@@ -78,11 +88,7 @@ export default function {{.EntityName}}DetailPage() {
       label: "Delete",
       onClick: () => setShowDeleteConfirm(true),
       variant: "danger" as const,
-      icon: (
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-        </svg>
-      ),
+      icon: <Trash2 aria-hidden className="h-4 w-4" strokeWidth={1.5} />,
     },
     {{- end}}
   ];
@@ -90,10 +96,10 @@ export default function {{.EntityName}}DetailPage() {
   return (
     <div>
       <PageHeader
-        title={String((item as Record<string, unknown>)?.name ?? (item as Record<string, unknown>)?.title ?? "{{.EntityName}}")}
+        title={title}
         breadcrumbs={[
           { label: "{{.EntityNamePlural}}", href: "/{{.EntitySlug}}" },
-          { label: String((item as Record<string, unknown>)?.name ?? (item as Record<string, unknown>)?.title ?? id) },
+          { label: title },
         ]}
         actions={actions}
       />
@@ -125,9 +131,7 @@ export default function {{.EntityName}}DetailPage() {
         }
       >
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
-          <svg className="h-5 w-5 text-red-600" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-          </svg>
+          <TriangleAlert aria-hidden className="h-5 w-5 text-red-600" strokeWidth={1.5} />
         </div>
       </Modal>
       {{- end}}

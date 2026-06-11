@@ -262,6 +262,7 @@ func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 	entities := []codegen.MockTransportEntity{
 		{
 			EntityName:       "Trade",
+			EntityNamePlural: "Trades",
 			EntitySlug:       "trades",
 			ListRPC:          "ListTrades",
 			HasList:          true,
@@ -270,6 +271,7 @@ func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 		},
 		{
 			EntityName:       "Hypothesis",
+			EntityNamePlural: "Hypotheses",
 			EntitySlug:       "hypotheses",
 			ListRPC:          "ListHypotheses",
 			HasList:          true,
@@ -278,6 +280,7 @@ func TestMockTransport_GroupsImportsByModule(t *testing.T) {
 		},
 		{
 			EntityName:       "Settlement",
+			EntityNamePlural: "Settlements",
 			EntitySlug:       "settlements",
 			ListRPC:          "ListSettlements",
 			HasList:          true,
@@ -321,6 +324,7 @@ func TestMockTransport_DistinctModules_KeepsImportsSeparate(t *testing.T) {
 	entities := []codegen.MockTransportEntity{
 		{
 			EntityName:       "Trade",
+			EntityNamePlural: "Trades",
 			EntitySlug:       "trades",
 			ListRPC:          "ListTrades",
 			HasList:          true,
@@ -329,6 +333,7 @@ func TestMockTransport_DistinctModules_KeepsImportsSeparate(t *testing.T) {
 		},
 		{
 			EntityName:       "Daemon",
+			EntityNamePlural: "Daemons",
 			EntitySlug:       "daemons",
 			ListRPC:          "ListDaemons",
 			HasList:          true,

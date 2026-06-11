@@ -6,10 +6,11 @@
 // `name` field declared inside each scenario. Regenerated each time
 // `forge generate` runs.
 
-import type { Scenario } from "../scenario-types";
 {{- range .Scenarios }}
 import {{ .Ident }} from "./{{ .Slug }}";
 {{- end }}
+
+import type { Scenario } from "../scenario-types";
 
 const registry: Record<string, Scenario> = {
 {{- range .Scenarios }}

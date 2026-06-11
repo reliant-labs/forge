@@ -83,9 +83,9 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		return nil
 	}
 
-	entitySet := make(map[string]struct{}, len(entities))
+	entityByName := make(map[string]codegen.EntityDef, len(entities))
 	for _, e := range entities {
-		entitySet[strings.ToLower(e.Name)] = struct{}{}
+		entityByName[strings.ToLower(e.Name)] = e
 	}
 
 	for _, fe := range cfg.Frontends {
@@ -113,9 +113,14 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 				// Skip RPC-name-derived entities that don't have a real
 				// entity definition behind them — the page templates would
 				// emit broken field references.
-				if _, ok := entitySet[strings.ToLower(entity.EntityName)]; !ok {
+				entityDef, ok := entityByName[strings.ToLower(entity.EntityName)]
+				if !ok {
 					continue
 				}
+				// Typed columns / search fields / detail rows: the
+				// templates render explicit field declarations from the
+				// proto entity instead of Object.keys reflection.
+				codegen.AttachEntityMeta(&entity, entityDef)
 				kinds := []struct {
 					emit bool
 					tmpl *template.Template

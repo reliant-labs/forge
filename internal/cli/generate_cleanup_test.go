@@ -591,3 +591,33 @@ func TestCleanupStaleArtifacts_SkipWritePathNotACandidate(t *testing.T) {
 		t.Errorf("SkipWrite path deleted: %v", err)
 	}
 }
+
+// TestCleanupStaleArtifacts_PreservesTier2Entry: Tier-2 entries are
+// scaffold-once user-owned files — not being re-written this run is
+// their PERMANENT steady state, never a stale signal. This is also what
+// keeps the tier-migration step (generate_tier_migrate.go) safe: a
+// reclassified starter whose fork flag was just cleared must not become
+// a deletion candidate on the same run.
+func TestCleanupStaleArtifacts_PreservesTier2Entry(t *testing.T) {
+	resetCleanupRunState(t)
+	dir := t.TempDir()
+
+	mustMkdir(t, filepath.Join(dir, "frontends", "web", "src", "app"))
+	target := filepath.Join(dir, "frontends", "web", "src", "app", "page.tsx")
+	mustWrite(t, target, "export default function RootPage() { return null }\n")
+
+	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
+		// NOT forked, NOT written this run, no owner gate, not an
+		// upgrade-managed path — only the Tier-2 tag protects it.
+		"frontends/web/src/app/page.tsx": {Hash: "abc", History: []string{"abc"}, Tier: 2},
+	}}
+
+	ctx := newCleanupCtx(dir, cs, nil, nil)
+	removed, _, err := cleanupStaleArtifacts(ctx)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want empty (Tier-2 entries are user-owned)", removed)
+	}
+}

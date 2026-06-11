@@ -37,7 +37,8 @@ func GetExcludes() []string {
 
 // IsExcluded reports whether the given package path matches any
 // configured exclude pattern. The matching rule is the canonical
-// [config.MatchExclude] (equality | "/"-suffix | substring, with empty
+// [config.MatchExclude] (segment-boundary matching: equality |
+// "/"-suffix | "/"-prefix subtree | mid-path segment, with empty
 // patterns skipped and forward-slash normalisation). Pre-2026-06 this
 // package hand-rolled the same rule so it could stay zero-dependency
 // on internal/config — but the three copies drifted on empty-pattern

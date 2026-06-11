@@ -785,6 +785,14 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	if len(allDrift) == 0 {
 		return nil
 	}
+	// The scope filter's gates consult ctx.HasServices / HasWorkers /
+	// HasOperators, which stepDetectProtoDirs only populates LATER in
+	// the pipeline. Populate them here first — otherwise every gate
+	// that branches on component presence reads false at guard time
+	// and in-scope drift (pkg/app/wire_gen.go on a full run!) gets
+	// waved through as out-of-scope, letting the emitters silently
+	// stomp the user's hand edits.
+	populateComponentPresence(ctx)
 	// Scope drift to files this run's enabled emitters would actually
 	// touch. Out-of-scope drift is announced as a warning (so a parallel
 	// lane's hand-edit doesn't go fully silent) but does not block the
@@ -1001,6 +1009,48 @@ func stepAnnounceProject(ctx *pipelineContext) error {
 	return nil
 }
 
+// populateComponentPresence fills the proto-tree presence flags
+// (HasServices/HasAPI/HasDB/HasConfig) and the worker/operator presence
+// flags on ctx. Returns the RAW operator presence (before the
+// experimental-feature suppression) so stepDetectProtoDirs can print
+// its one-line skip message exactly once.
+//
+// Idempotent and cheap (a few ReadDirs) — called from BOTH
+// stepDetectProtoDirs (its original home) and stepCheckTier1Drift. The
+// stomp guard's scope filter consults gates that branch on these flags
+// (gateCodegenHasAnyEntrypoint, gateCodegenHasServices, …), and the
+// guard runs BEFORE the detect step. Pre-fix, the flags were all false
+// at guard time, so EVERY registered pkg/app/handlers/middleware path
+// was misclassified as out-of-scope on a full run — the guard waved the
+// drift through and the emitters silently stomped the user's hand
+// edits (caught by the fixture-corpus fork round-trip).
+//
+// discover errors are deferred here: presence only needs the has-any
+// flag, and the bootstrap step re-runs discovery and surfaces the
+// disk-first resolution error with full context.
+func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
+	ctx.HasServices = dirExists(filepath.Join(ctx.ProjectDir, "proto/services"))
+	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
+	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
+	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
+	workers, _ := discoverWorkers(ctx.ProjectDir)
+	ctx.HasWorkers = len(workers) > 0
+	// Operators are experimental — when the feature isn't opted in we
+	// suppress the codegen path entirely. We still detect on-disk
+	// operator dirs so stepDetectProtoDirs can print a one-line skip
+	// message; the pipeline gate functions branch on ctx.HasOperators
+	// so flipping it to false elides every operator step at the same
+	// point.
+	operators, _ := discoverOperators(ctx.ProjectDir)
+	rawHasOperators = len(operators) > 0
+	if rawHasOperators && ctx.Cfg != nil && !ctx.Cfg.Features.OperatorsEnabled() {
+		ctx.HasOperators = false
+	} else {
+		ctx.HasOperators = rawHasOperators
+	}
+	return rawHasOperators
+}
+
 // stepPreCodegenContractCheck — was Step 0c.
 // Asserts internal-package contract.go files use the canonical
 // Service/Deps/New(Deps) Service shape BEFORE any generators emit
@@ -1018,27 +1068,9 @@ func stepPreCodegenContractCheck(ctx *pipelineContext) error {
 // short-circuits with an error when the directory-scan fallback is
 // active and there are no proto files anywhere.
 func stepDetectProtoDirs(ctx *pipelineContext) error {
-	ctx.HasServices = dirExists(filepath.Join(ctx.ProjectDir, "proto/services"))
-	ctx.HasAPI = dirExists(filepath.Join(ctx.ProjectDir, "proto/api"))
-	ctx.HasDB = dirExists(filepath.Join(ctx.ProjectDir, "proto/db"))
-	ctx.HasConfig = dirExists(filepath.Join(ctx.ProjectDir, "proto/config"))
-	// discover errors are deferred here: this step only needs the
-	// has-any flag, and the bootstrap step re-runs discovery and
-	// surfaces the disk-first resolution error with full context.
-	workers, _ := discoverWorkers(ctx.ProjectDir)
-	operators, _ := discoverOperators(ctx.ProjectDir)
-	ctx.HasWorkers = len(workers) > 0
-	// Operators are experimental — when the feature isn't opted in we
-	// suppress the codegen path entirely. We still detect on-disk
-	// operator dirs so a one-line skip message can fire below; the
-	// pipeline gate functions branch on ctx.HasOperators so flipping
-	// it to false elides every operator step at the same point.
-	rawHasOperators := len(operators) > 0
-	if rawHasOperators && ctx.Cfg != nil && !ctx.Cfg.Features.OperatorsEnabled() {
+	rawHasOperators := populateComponentPresence(ctx)
+	if rawHasOperators && !ctx.HasOperators {
 		fmt.Println("[generate] operator scaffolds detected but features.experimental.operators is off — skipping operator codegen")
-		ctx.HasOperators = false
-	} else {
-		ctx.HasOperators = rawHasOperators
 	}
 
 	if ctx.Cfg == nil && !ctx.HasServices && !ctx.HasAPI && !ctx.HasDB && !ctx.HasConfig {

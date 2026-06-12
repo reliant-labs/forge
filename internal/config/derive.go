@@ -105,15 +105,25 @@ func deriveFeatureDefaults(c *ProjectConfig) *derivedFeatureDefaults {
 	isService := c.IsServiceKind()
 	isLibrary := c.IsLibraryKind()
 	hasDB := isService && c.Database.Driver != "" && c.Database.Driver != "none"
+	codegen := isService
+	// Derivation MUST be dependency-consistent (see feature_graph.go): the
+	// default set it produces can never trip the load-time graph
+	// validator. frontend → codegen is the one shape-derived edge at risk
+	// — a non-service project that nonetheless declares a frontend would
+	// otherwise derive frontend=on with codegen=off. Gate the derived
+	// default on codegen so the default set is always coherent; a user who
+	// genuinely wants frontend codegen on a non-service kind still opts in
+	// explicitly (and then the validator makes them turn codegen on too).
+	frontend := len(c.Frontends) > 0 && codegen
 	return &derivedFeatureDefaults{
 		orm:           hasDB,
-		codegen:       isService,
+		codegen:       codegen,
 		migrations:    hasDB,
 		ci:            !isLibrary,
 		build:         !isLibrary,
 		contracts:     true,
 		docs:          true,
-		frontend:      len(c.Frontends) > 0,
+		frontend:      frontend,
 		observability: isService,
 		hotReload:     isService,
 		packs:         isService,

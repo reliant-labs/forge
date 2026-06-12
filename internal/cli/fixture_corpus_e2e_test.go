@@ -353,7 +353,7 @@ func setupExtras(app *App, cfg *config.Config) error {
 	bootHealthzAndShutdown(t, projectDir)
 
 	// ── 5. disown lifecycle round-trip on pkg/app/wire_gen.go ────────
-	disownRoundTrip(t, forgeBin, projectDir)
+	disownRoundTrip(t, forgeBin, projectDir, "pkg/app/wire_gen.go")
 
 	t.Logf("cp-forge-shaped fixture total: %s", time.Since(start))
 }
@@ -496,7 +496,7 @@ type AppExtras struct {
 	bootHealthzAndShutdown(t, projectDir)
 
 	// ── 5. disown lifecycle round-trip ────────────────────────────────
-	disownRoundTrip(t, forgeBin, projectDir)
+	disownRoundTrip(t, forgeBin, projectDir, "pkg/app/wire_gen.go")
 
 	t.Logf("kalshi-shaped fixture total: %s", time.Since(start))
 }
@@ -1354,16 +1354,16 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string, extraEnv ...string)
 	_ = os.Remove(serverBin)
 }
 
-// disownRoundTrip exercises the full ownership lifecycle on ONE file
-// (pkg/app/wire_gen.go):
+// disownRoundTrip exercises the full ownership lifecycle on ONE
+// Tier-1 generated file (rel, e.g. pkg/app/wire_gen.go or
+// internal/db/item_orm.go):
 //
 //	hand-edit → generate (drift error, new option text) →
 //	`forge disown --reason` (one-way transfer) → generate leaves the
 //	file alone with ZERO warnings → delete + generate re-adopts to the
 //	pristine render (entry back to Tier-1).
-func disownRoundTrip(t *testing.T, forgeBin, projectDir string) {
+func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 	t.Helper()
-	const rel = "pkg/app/wire_gen.go"
 	wireGenPath := filepath.Join(projectDir, rel)
 	pristine := readFileE2E(t, wireGenPath)
 
@@ -1909,6 +1909,43 @@ UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
 		t.Logf("executed schema-evolution lifecycle passed:\n%s", out)
 	}
 
+	// ── 7b. legacy TEXT timestamps (M3, kalshi fr-3fba9166ba) ────────
+	// A pre-forge schema stores created_at/updated_at as TEXT. The old
+	// emitter stamped time.Now().UTC()/IsZero() unconditionally, so
+	// `forge generate` emitted a trade_orm.go that could NEVER compile
+	// (`undefined: time`, `msg.CreatedAt.IsZero undefined (type
+	// string)`) — and the only "fix" was hand-patching a do-not-edit
+	// file. Pin the whole path: generate exits 0, the projection keeps
+	// the columns as strings, the project builds, and the executed ORM
+	// stamps real RFC3339Nano text.
+	runCmd(t, projectDir, forgeBin, "add", "entity", "trade", "ticker:string")
+	tradeMigPath := filepath.Join(projectDir, "db", "migrations", "00004_create_trades.up.sql")
+	tradeMig := readFileE2E(t, tradeMigPath)
+	tradeMig = strings.ReplaceAll(tradeMig,
+		"created_at TIMESTAMPTZ NOT NULL DEFAULT (now())", "created_at TEXT NOT NULL DEFAULT ''")
+	tradeMig = strings.ReplaceAll(tradeMig,
+		"updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())", "updated_at TEXT NOT NULL DEFAULT ''")
+	if !strings.Contains(tradeMig, "created_at TEXT") {
+		t.Fatalf("failed to rewrite the trade migration to legacy TEXT timestamps; got:\n%s", tradeMig)
+	}
+	writeCorpusFile(t, tradeMigPath, tradeMig)
+	runCmd(t, projectDir, forgeBin, "generate")
+	tradeORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "trade_orm.go"))
+	if !strings.Contains(tradeORM, "CreatedAt string") {
+		t.Errorf("TEXT created_at should project as a string struct field; got:\n%s", tradeORM)
+	}
+	if strings.Contains(tradeORM, "msg.CreatedAt.IsZero()") {
+		t.Errorf("trade_orm.go calls IsZero on a string created_at — the fr-3fba9166ba shape is back")
+	}
+	runCmd(t, projectDir, "go", "build", "./...")
+	writeCorpusFile(t, filepath.Join(handlerDir, "trade_text_timestamps_corpus_test.go"), tradeTextTimestampsProbeSrc)
+	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusTradeTextTimestamps", "-v", "./handlers/item/")
+	if err != nil {
+		t.Errorf("EXECUTED legacy-TEXT-timestamps lifecycle failed:\n%s", out)
+	} else {
+		t.Logf("executed legacy-TEXT-timestamps lifecycle passed:\n%s", out)
+	}
+
 	// ── 8. boots WITH a database: the Tier-1 bootstrap constructs the
 	// DB + ORM pair from cfg.DatabaseUrl (ensureDatabase). Previously
 	// NOTHING constructed app.ORM for a project that grew its first
@@ -1934,6 +1971,15 @@ UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
 	// `Deps.DB is required` check rejects it, and the process exits
 	// non-zero naming DATABASE_URL — never a typed-nil panic mid-request.
 	bootMustFailWithoutDatabase(t, projectDir)
+
+	// ── 10. disown lifecycle on a generated ORM file (M3, kalshi
+	// fr-4dfef712e9, reproduced verbatim): the escape hatch every
+	// *_orm.go header advertises ("forge disown to take ownership")
+	// must actually work. Before M3 the ORM emitter never registered
+	// its outputs in .forge/checksums.json, so disown refused on
+	// internal/db/*_orm.go. Full round-trip: hand-edit → drift error →
+	// disown → generate leaves it alone → delete + generate re-adopts.
+	disownRoundTrip(t, forgeBin, projectDir, "internal/db/item_orm.go")
 
 	t.Logf("crud-lifecycle fixture total: %s", time.Since(start))
 }
@@ -2119,6 +2165,72 @@ func appendToCorpusFile(t *testing.T, path, content string) {
 // (tags []string — native TEXT[] on postgres, JSON text on the sqlite
 // test DB) and the soft-delete conventions read off the deleted_at
 // column (delete is an UPDATE; reads filter; ListAll sees the corpse).
+// tradeTextTimestampsProbeSrc executes the generated ORM against the
+// legacy-TEXT-timestamps schema (created_at/updated_at TEXT): Create
+// must stamp RFC3339Nano strings (caller-provided created_at wins),
+// the row must round-trip, and Update must re-stamp updated_at while
+// leaving created_at immutable. This is the runtime half of the
+// fr-3fba9166ba pin — the compile half is the `go build` above.
+const tradeTextTimestampsProbeSrc = `package item_test
+
+import (
+	"testing"
+	"time"
+
+	"example.com/crudlife/internal/db"
+)
+
+func TestCorpusTradeTextTimestamps(t *testing.T) {
+	dbc := corpusMigratedDB(t)
+	ctx := authedCtx()
+
+	tr := &db.Trade{Ticker: "KXBTC"}
+	if err := db.CreateTrade(ctx, dbc, tr); err != nil {
+		t.Fatalf("CreateTrade against the TEXT-timestamp schema: %v", err)
+	}
+	if tr.Id == "" {
+		t.Error("CreateTrade should mint a ULID id")
+	}
+	if tr.CreatedAt == "" || tr.UpdatedAt == "" {
+		t.Fatalf("managed TEXT timestamps not stamped: created_at=%q updated_at=%q", tr.CreatedAt, tr.UpdatedAt)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, tr.CreatedAt); err != nil {
+		t.Errorf("created_at is not RFC3339Nano text: %q (%v)", tr.CreatedAt, err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, tr.UpdatedAt); err != nil {
+		t.Errorf("updated_at is not RFC3339Nano text: %q (%v)", tr.UpdatedAt, err)
+	}
+
+	got, err := db.GetTradeByID(ctx, dbc, tr.Id)
+	if err != nil {
+		t.Fatalf("GetTradeByID: %v", err)
+	}
+	if got.Ticker != "KXBTC" || got.CreatedAt != tr.CreatedAt {
+		t.Errorf("round-trip mismatch: ticker=%q created_at=%q (want %q / %q)", got.Ticker, got.CreatedAt, "KXBTC", tr.CreatedAt)
+	}
+
+	prevUpdated := got.UpdatedAt
+	time.Sleep(5 * time.Millisecond) // RFC3339Nano resolution: force a distinct stamp
+	got.Ticker = "KXETH"
+	if err := db.UpdateTrade(ctx, dbc, got); err != nil {
+		t.Fatalf("UpdateTrade: %v", err)
+	}
+	re, err := db.GetTradeByID(ctx, dbc, tr.Id)
+	if err != nil {
+		t.Fatalf("re-read after update: %v", err)
+	}
+	if re.Ticker != "KXETH" {
+		t.Errorf("update did not mutate: ticker=%q", re.Ticker)
+	}
+	if re.UpdatedAt == prevUpdated {
+		t.Errorf("updated_at was not re-stamped on update: %q", re.UpdatedAt)
+	}
+	if re.CreatedAt != tr.CreatedAt {
+		t.Errorf("created_at must be immutable across updates: %q -> %q", tr.CreatedAt, re.CreatedAt)
+	}
+}
+`
+
 const bookmarkLifecycleProbeSrc = `package item_test
 
 import (

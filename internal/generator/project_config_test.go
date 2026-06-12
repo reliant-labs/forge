@@ -166,12 +166,12 @@ func TestApplyKindFeatureDefaults_PreservesExplicit(t *testing.T) {
 	}
 }
 
-// TestWriteProjectConfig_CLIPersistsFeatureBlock verifies the
-// scaffold actually writes the features:` block to disk for CLI
-// projects so a subsequent `loadProjectConfig` resolves the per-kind
-// defaults. Without this, the per-kind toggles wouldn't survive the
-// `forge new` → `forge build` round-trip.
-func TestWriteProjectConfig_CLIPersistsFeatureBlock(t *testing.T) {
+// TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad verifies the
+// scaffolded CLI forge.yaml carries NO features: block — the per-kind
+// matrix is derived from `kind: cli` at load time. The round-trip that
+// matters is `forge new` → loadProjectConfig: the loaded config must
+// resolve build=on / packs=off without any explicit flags on disk.
+func TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad(t *testing.T) {
 	tmp := t.TempDir()
 	g := NewProjectGenerator("cli-feat", tmp, "example.com/cli-feat")
 	g.Kind = config.ProjectKindCLI
@@ -183,18 +183,23 @@ func TestWriteProjectConfig_CLIPersistsFeatureBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read forge.yaml: %v", err)
 	}
-	var cfg config.ProjectConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "features:") {
+			t.Errorf("kind=cli forge.yaml should not materialize a features: block (derived from kind); got:\n%s", data)
+		}
 	}
-	// Build must be present-and-true; packs must be present-and-false.
-	// (Deploy is experimental — default-off and not stamped at scaffold
-	// time, so we don't assert against it here.)
-	if cfg.Features.Build == nil || !*cfg.Features.Build {
-		t.Errorf("kind=cli forge.yaml: features.build = %v, want explicit true", cfg.Features.Build)
+	cfg, err := ReadProjectConfig(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	if cfg.Features.Packs == nil || *cfg.Features.Packs {
-		t.Errorf("kind=cli forge.yaml: features.packs = %v, want explicit false", cfg.Features.Packs)
+	if !cfg.Features.BuildEnabled() {
+		t.Error("kind=cli loaded config: BuildEnabled() = false, want true (derived)")
+	}
+	if cfg.Features.PacksEnabled() {
+		t.Error("kind=cli loaded config: PacksEnabled() = true, want false (derived)")
+	}
+	if cfg.Features.CodegenEnabled() {
+		t.Error("kind=cli loaded config: CodegenEnabled() = true, want false (derived)")
 	}
 }
 

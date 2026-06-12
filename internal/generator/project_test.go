@@ -50,12 +50,18 @@ func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(configContents, "migrations_dir: db/migrations") {
-		t.Fatalf("expected forge.yaml to include db/migrations, got:\n%s", configContents)
+	// The scaffolded forge.yaml is minimal — the database section is
+	// derived at load time. Assert the LOADED config resolves the
+	// canonical database defaults for a service project.
+	cfg, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	if !strings.Contains(configContents, "driver: postgres") {
-		t.Fatalf("expected forge.yaml to include database driver, got:\n%s", configContents)
+	if cfg.Database.MigrationsDir != "db/migrations" {
+		t.Fatalf("loaded config Database.MigrationsDir = %q, want db/migrations (derived)", cfg.Database.MigrationsDir)
+	}
+	if cfg.Database.Driver != "postgres" {
+		t.Fatalf("loaded config Database.Driver = %q, want postgres (derived)", cfg.Database.Driver)
 	}
 
 	composeContents := readFile(t, filepath.Join(root, "docker-compose.yml"))
@@ -448,11 +454,14 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 		}
 	}
 
-	// forge.yaml should record kind: service (or omit it — both
-	// are valid because EffectiveKind() defaults to service).
-	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "kind: service") {
-		t.Errorf("expected forge.yaml to declare kind: service, got:\n%s", cfg)
+	// forge.yaml omits kind: for the default service kind —
+	// EffectiveKind() on the loaded config must resolve it.
+	loaded, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if loaded.EffectiveKind() != config.ProjectKindService {
+		t.Errorf("EffectiveKind() = %q, want service", loaded.EffectiveKind())
 	}
 }
 
@@ -1212,44 +1221,46 @@ func TestFreshScaffoldDefaults(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
+	raw := readFile(t, filepath.Join(root, "forge.yaml"))
 
-	// Contracts: strict floor.
-	wantContractLines := []string{
-		"contracts:",
-		"strict: true",
-		"allow_exported_funcs: false",
-		"allow_exported_vars: false",
-	}
-	for _, want := range wantContractLines {
-		if !strings.Contains(cfg, want) {
-			t.Errorf("forge.yaml missing %q; full contents:\n%s", want, cfg)
+	// The scaffolded file is minimal: no features: block, no contracts:
+	// block — both derive at load time. Presence on disk would mean the
+	// minimal-scaffold contract regressed.
+	for _, line := range strings.Split(raw, "\n") {
+		switch {
+		case strings.HasPrefix(line, "features:"),
+			strings.HasPrefix(line, "contracts:"),
+			strings.HasPrefix(line, "database:"),
+			strings.HasPrefix(line, "ci:"):
+			t.Errorf("forge.yaml should not materialize %q (derived at load); got:\n%s", line, raw)
 		}
 	}
 
-	// Features: every flag should serialize to true for --kind service with
-	// no --frontend (frontend defaults to false when no frontend is named —
-	// see buildFeaturesConfig comments).
-	// `deploy` is experimental — default-off, not stamped at scaffold
-	// time. See the experimental block in forge.yaml.
-	wantFeatureLines := []string{
-		"orm: true",
-		"codegen: true",
-		"migrations: true",
-		"ci: true",
-		"contracts: true",
-		"docs: true",
-		"observability: true",
-		"hot_reload: true",
+	cfg, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	for _, want := range wantFeatureLines {
-		if !strings.Contains(cfg, want) {
-			t.Errorf("forge.yaml missing feature line %q; full contents:\n%s", want, cfg)
+
+	// Contracts: strict floor (derived).
+	if !cfg.Contracts.Strict {
+		t.Error("loaded config Contracts.Strict = false, want true (derived)")
+	}
+	if cfg.Contracts.AllowExportedVars || cfg.Contracts.AllowExportedFuncs {
+		t.Error("loaded config contracts allow_exported_* should derive to false")
+	}
+
+	// Features: everything on for --kind service with a DB, except
+	// frontend (no --frontend passed → frontends list empty → derived
+	// off). `deploy` is experimental — default-off.
+	eff := cfg.Features.EffectiveFeatures()
+	wantOn := []string{"orm", "codegen", "migrations", "ci", "build", "contracts", "docs", "observability", "hot_reload", "packs", "starters"}
+	for _, name := range wantOn {
+		if !eff[name] {
+			t.Errorf("loaded config feature %q = false, want true (derived)", name)
 		}
 	}
-	// frontend explicitly defaults to false when no --frontend was passed.
-	if !strings.Contains(cfg, "frontend: false") {
-		t.Errorf("forge.yaml expected `frontend: false` (no --frontend was passed); got:\n%s", cfg)
+	if eff["frontend"] {
+		t.Error("loaded config feature \"frontend\" = true, want false (no frontends declared)")
 	}
 }
 
@@ -1263,8 +1274,11 @@ func TestFreshScaffoldDefaultsWithFrontend(t *testing.T) {
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "frontend: true") {
-		t.Errorf("forge.yaml expected `frontend: true` when --frontend is set; got:\n%s", cfg)
+	cfg, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if !cfg.Features.FrontendEnabled() {
+		t.Error("loaded config FrontendEnabled() = false, want true (frontends list non-empty)")
 	}
 }

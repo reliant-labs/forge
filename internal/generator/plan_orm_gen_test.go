@@ -937,3 +937,93 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		t.Error("NOT NULL timestamp should assign .Time from the NullTime temp")
 	}
 }
+// TestGeneratePlanORM_MaskedUpdate pins the Update<Entity>Masked sibling:
+// an AIP-134 partial update that writes ONLY the fields named in the
+// update_mask, validates paths against the updatable set, and stamps
+// updated_at when timestamps are managed.
+func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Task",
+			SoftDelete: true,
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "org_id", Type: "string", TenantKey: true, NotNull: true},
+				{Name: "title", Type: "string", NotNull: true},
+				{Name: "url", Type: "string"},
+			},
+		},
+		{
+			Name: "Note",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "body", Type: "string"},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	taskSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "task_orm.go"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	task := string(taskSrc)
+
+	// Tenant-scoped signature mirrors UpdateTask: fields slice, then tenantID.
+	if !strings.Contains(task, "func UpdateTaskMasked(ctx context.Context, db orm.Context, msg *Task, fields []string, tenantID string) error {") {
+		t.Error("missing tenant-scoped UpdateTaskMasked signature")
+	}
+	maskedIdx := strings.Index(task, "func UpdateTaskMasked(")
+	if maskedIdx == -1 {
+		t.Fatal("missing UpdateTaskMasked function")
+	}
+	masked := task[maskedIdx:]
+	if end := strings.Index(masked[1:], "\nfunc "); end >= 0 {
+		masked = masked[:end+1]
+	}
+
+	// Empty mask → do nothing (the crud layer never sends it, but be safe).
+	if !strings.Contains(masked, "if len(fields) == 0 {") {
+		t.Error("UpdateTaskMasked should no-op on an empty fields slice")
+	}
+	// Only requested columns reach SET — built from an updatable-column map.
+	for _, col := range []string{`"title":`, `"url":`} {
+		if !strings.Contains(masked, col) {
+			t.Errorf("UpdateTaskMasked updatable set should include %s", col)
+		}
+	}
+	// PK, tenant key, deleted_at, created_at must NOT be updatable via mask.
+	for _, col := range []string{`"id":`, `"org_id":`, `"deleted_at":`, `"created_at":`} {
+		if strings.Contains(masked, col) {
+			t.Errorf("UpdateTaskMasked updatable set must exclude %s", col)
+		}
+	}
+	// Unknown/immutable paths surface as the typed sentinel, not SQL errors.
+	if !strings.Contains(masked, "orm.UnknownFieldError{Field:") {
+		t.Error("UpdateTaskMasked should return orm.UnknownFieldError for unknown paths")
+	}
+	// updated_at is stamped on masked updates too (timestamps: true).
+	if !strings.Contains(masked, "msg.UpdatedAt = time.Now().UTC()") {
+		t.Error("UpdateTaskMasked should stamp updated_at")
+	}
+	// Tenant isolation + soft-delete filter carry over from UpdateTask.
+	if !strings.Contains(masked, "AND %s IS NULL AND %s = %s") {
+		t.Error("UpdateTaskMasked should keep the soft-delete + tenant WHERE shape")
+	}
+
+	noteSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "note_orm.go"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	note := string(noteSrc)
+	// Un-tenanted signature has no tenantID parameter.
+	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string) error {") {
+		t.Error("missing un-tenanted UpdateNoteMasked signature")
+	}
+}

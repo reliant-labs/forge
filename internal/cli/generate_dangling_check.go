@@ -446,7 +446,7 @@ func formatDanglingFindingsError(findings []danglingFinding) error {
 			}
 		}
 	}
-	fmt.Fprintf(&b, "\nA disowned file is user-owned and frozen from forge's perspective (`\"disowned\": true` in `.forge/checksums.json`); forge never re-emits it, even with `--force`. The regenerated sibling file above expects a type the disowned file doesn't define — a build break is imminent.\n\n")
+	fmt.Fprintf(&b, "\nA disowned file is user-owned and frozen from forge's perspective (recorded in `.forge/disowned.json`); forge never re-emits it, even with `--force`. The regenerated sibling file above expects a type the disowned file doesn't define — a build break is imminent.\n\n")
 	fmt.Fprintf(&b, "Two ways out:\n")
 	fmt.Fprintf(&b, "  1. Add the missing declaration to the disowned file — it is your code; bring its declarations forward to match the regenerated siblings.\n")
 	fmt.Fprintf(&b, "  2. Re-adopt the file: delete it and re-run `forge generate`. Forge re-emits the current template content and owns the file again. WARNING: your disowned content is discarded — copy anything you want to keep into a user-owned extension point first.\n")

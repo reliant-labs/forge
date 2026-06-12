@@ -92,8 +92,10 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	// Verify frontend exists
 	assertPathExistsE2E(t, filepath.Join(projectDir, "frontends", "web", "package.json"))
 
-	// Verify CORS middleware is generated (since frontend exists)
-	assertPathExistsE2E(t, filepath.Join(projectDir, "pkg", "middleware", "cors.go"))
+	// Verify the thin auth-policy middleware file is generated (CORS and
+	// the other mechanisms come from forge/pkg/middleware, wired in
+	// cmd/server.go).
+	assertPathExistsE2E(t, filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 
 	// Generate code
 	runCmd(t, projectDir, forgeBin, "generate")

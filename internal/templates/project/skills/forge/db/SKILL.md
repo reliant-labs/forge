@@ -91,7 +91,7 @@ The columns ARE the declaration. The generators read these conventions off the i
 | columns | behavior |
 |---------|----------|
 | `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant |
-| `created_at` + `updated_at` | managed timestamps (stamped by the ORM) |
+| `created_at` + `updated_at` | managed timestamps (stamped by the ORM) — type-gated: time columns (`TIMESTAMPTZ` et al) or legacy `TEXT` columns count; anything else (epoch integers) stays plain schema |
 | `tenant_id` | tenant-scoped rows (auto-filtered queries) |
 | text columns | spanned by the generated list `search` filter |
 | every column | included in the `order_by` / filter allowlist (`<Entity>Columns`) |
@@ -128,8 +128,9 @@ The service-proto messages are the **API truth** and evolve independently after 
 
 ## Generated ORM semantics
 
-- `Create<Entity>` is a plain `INSERT` — never an upsert. String PKs left unset are generated via `ulid.Make()` at the Create chokepoint.
-- With `created_at` / `updated_at` columns present, both are stamped on create and `updated_at` on update; `created_at` is immutable on update.
+- `Create<Entity>` is a plain `INSERT` — never an upsert. String PKs left unset are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back into the struct (`RETURNING` on postgres, `LastInsertId` on sqlite) — any caller-provided value is ignored.
+- With stampable `created_at` / `updated_at` columns present, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps are emitted **in the column's projected type**: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
+- `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 tracked in `.forge/checksums.json`: hand-edits trip the drift guard, and `forge disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit when the generated CRUD can't express what you need.
 - Each entity exports `<Entity>Columns` — the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
 - Missing rows surface as `errors.Is(err, orm.ErrNoRows)`; `forge/pkg/crud` maps them through `pkg/svcerr` to a clean `NotFound`. All other repo errors map to `Internal` with safe text — no SQL on the wire.
 - With a `deleted_at` column, `Delete<Entity>` issues an UPDATE, reads filter `IS NULL`, and a `ListAll<Entities>` variant returns soft-deleted rows too.

@@ -74,6 +74,11 @@ const nextConfig: NextConfig = {
   // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
   // behind the proxy and React never hydrates.
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
+  // Production builds land in .next-prod so `npm run build` can't clobber
+  // the dev server's .next directory out from under a live `next dev` /
+  // `forge run`. `next start` also runs with NODE_ENV=production, so it
+  // serves the same directory the production build wrote.
+  distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
   // Production: static export (opt-in via `output: static` in forge.yaml).
   // The build emits `out/` (static HTML + JS + CSS) which can be served
   // straight from a CDN or object store — no Node runtime in prod.
@@ -136,6 +141,11 @@ const nextConfig: NextConfig = {
   // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
   // behind the proxy and React never hydrates.
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
+  // Production builds land in .next-prod so `npm run build` can't clobber
+  // the dev server's .next directory out from under a live `next dev` /
+  // `forge run`. `next start` also runs with NODE_ENV=production, so it
+  // serves the same directory the production build wrote.
+  distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').
     // Next.js with moduleResolution: bundler can't resolve .js to .ts files
@@ -179,6 +189,11 @@ const nextConfig: NextConfig = {
   // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
   // behind the proxy and React never hydrates.
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
+  // Production builds land in .next-prod so `npm run build` can't clobber
+  // the dev server's .next directory out from under a live `next dev` /
+  // `forge run`. `next start` also runs with NODE_ENV=production, so it
+  // serves the same directory the production build wrote.
+  distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
   // "standalone" (the scaffold default) emits a self-contained Node
   // server at .next/standalone/server.js plus a pruned node_modules
   // tree. This is the shape the Dockerfile copies into the runner

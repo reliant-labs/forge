@@ -142,7 +142,7 @@ func LintRoot(root string) (Result, error) {
 
 func shouldSkipDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", "gen", "vendor", "bin", "dist", ".forge", ".next":
+	case ".git", "node_modules", "gen", "vendor", "bin", "dist", ".forge", ".next", ".next-prod":
 		return true
 	case "testdata":
 		// `testdata/` is the canonical home for analyzer fixtures and

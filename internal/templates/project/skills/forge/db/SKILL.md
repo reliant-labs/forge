@@ -132,7 +132,7 @@ task dev-psql                                # interactive shell
 
 Generated during initial project scaffolding from entity definitions in the plan:
 
-- **Tenant scoping** — entities with `tenant_key: true` get automatic `WHERE` clause scoping in ORM functions. Field names alone (e.g., `org_id`, `tenant_id`) do NOT trigger scoping — use the explicit annotation. See the `auth` skill for multi-tenant config.
+- **Tenant scoping** — entities with a field marked `tenant: true` (the `(forge.v1.field)` annotation) get automatic `WHERE` clause scoping in ORM functions. Field names alone (e.g., `org_id`, `tenant_id`) do NOT trigger scoping — use the explicit annotation. See the `auth` skill for multi-tenant config.
 - **Soft delete** — entities with a `deleted_at` field use `SET deleted_at = NOW()` instead of `DELETE`; List/Get exclude soft-deleted rows.
 - **Seed data** — deterministic SQL seeds in `db/seeds/0002_*.sql` and JSON fixtures in `db/fixtures/` are generated from entity definitions. Put custom seed data in `db/seeds/0001_*.sql` so regeneration doesn't clobber it.
 

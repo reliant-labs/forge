@@ -381,6 +381,12 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	// empty and every downstream consumer (forge run dispatch,
 	// lookupKCLHostDeploy) degrading to a nil result with no error.
 	cmd := exec.CommandContext(ctx, "kcl", kclRunArgs(kclDir, env)...)
+	// Run from the project root so the deploy-as-data main.k's
+	// `file.read("deploy/kcl/components_gen.json")` resolves
+	// deterministically regardless of forge's invocation cwd. KCL's
+	// `file.read` is process-cwd-relative (not package-root-relative),
+	// so the cwd is part of the contract.
+	cmd.Dir = projectDir
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

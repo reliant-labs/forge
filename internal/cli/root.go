@@ -90,6 +90,11 @@ It enables easy mocking, middleware injection, spec-driven development,
 and component swapping - all while maintaining a single, consistent
 interface pattern throughout the entire stack.`,
 		Version: fmt.Sprintf("%s (built %s, commit %s)", version, buildDate, gitCommit),
+		// SilenceErrors: cobra never prints the error itself — main()
+		// owns the single, final "Error: ..." line. Without this every
+		// failure printed twice (cobra's copy first, buried under the
+		// usage block, then main's copy).
+		SilenceErrors: true,
 		// PersistentPreRun fires once per invocation regardless of
 		// which subcommand the user typed. We use it to emit a single
 		// "experimental features on" warning so users running with
@@ -99,6 +104,14 @@ interface pattern throughout the entire stack.`,
 		// CI). Errors loading config are swallowed — a missing
 		// forge.yaml is the normal "outside-a-project" path.
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Usage-dump suppression for RUNTIME errors only. This
+			// hook runs after flag parsing and arg validation succeed,
+			// so genuine usage mistakes (unknown flag, wrong arg
+			// count) still print the usage block — but a pipeline-step
+			// failure inside RunE (generate, add, build, …) no longer
+			// buries the real error under 40 lines of flag help.
+			cmd.SilenceUsage = true
+
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
 				return
 			}

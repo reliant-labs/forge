@@ -28,7 +28,11 @@ import (
 
 
 // Echo implements the Echo RPC.
-// TODO: Implement business logic for Echo.
+// TODO: implement Echo as a *Service method in a NEW user-owned file
+// in this package (e.g. service_create.go — see the file header). Do NOT
+// write the implementation here: this file is regenerated on every
+// `forge generate` and edits to it are lost. The stub disappears once a
+// real implementation exists.
 // forge:gen unwired-stub symbol=api.Echo
 func (s *Service) Echo(
 	ctx context.Context,
@@ -38,7 +42,11 @@ func (s *Service) Echo(
 }
 
 // Tail implements the Tail server streaming RPC.
-// TODO: Implement business logic for Tail.
+// TODO: implement Tail as a *Service method in a NEW user-owned file
+// in this package (e.g. service_create.go — see the file header). Do NOT
+// write the implementation here: this file is regenerated on every
+// `forge generate` and edits to it are lost. The stub disappears once a
+// real implementation exists.
 // forge:gen unwired-stub symbol=api.Tail
 func (s *Service) Tail(
 	ctx context.Context,

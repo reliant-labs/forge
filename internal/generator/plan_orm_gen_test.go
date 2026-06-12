@@ -9,6 +9,21 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
+// ormFuncBody returns the source of the function whose signature begins
+// with sig (e.g. "func ListProject("), up to the next top-level "\nfunc ".
+// Returns "" when not found.
+func ormFuncBody(code, sig string) string {
+	i := strings.Index(code, sig)
+	if i == -1 {
+		return ""
+	}
+	body := code[i:]
+	if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
+		body = body[:end+1]
+	}
+	return body
+}
+
 func TestGeneratePlanORM_Basic(t *testing.T) {
 	root := t.TempDir()
 
@@ -164,22 +179,39 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing tenant enforcement in Create")
 	}
 
-	// Soft delete in List: Bun adds a deleted_at IS NULL WHERE clause.
-	if !strings.Contains(code, `q.Where("\"deleted_at\" IS NULL")`) {
-		t.Error("missing soft-delete filter in List")
+	// Soft delete is now Bun-native (proper TIMESTAMPTZ deleted_at): the
+	// deleted_at field carries the ,soft_delete,nullzero tag and Bun
+	// auto-excludes deleted rows from NewSelect — NO hand-rolled
+	// "deleted_at IS NULL" string and NO CURRENT_TIMESTAMP stamp survive.
+	if !strings.Contains(collapsedStruct, "`bun:\"deleted_at,soft_delete,nullzero\"`") {
+		t.Error("deleted_at should carry the Bun ,soft_delete,nullzero tag")
+	}
+	// Bun-native read paths (List/Get/Count) carry NO hand-rolled
+	// deleted_at IS NULL — Bun auto-excludes deleted rows. (Update/Delete
+	// are checked separately below.)
+	for _, fn := range []string{"func ListProject(", "func GetProjectByID(", "func CountProject("} {
+		if strings.Contains(ormFuncBody(code, fn), "deleted_at") {
+			t.Errorf("%s must not reference deleted_at (Bun-native soft delete owns the read filter)", fn)
+		}
+	}
+	if strings.Contains(code, "CURRENT_TIMESTAMP") {
+		t.Error("Bun-native soft delete must not stamp deleted_at via CURRENT_TIMESTAMP")
 	}
 
-	// Soft delete in Delete
+	// Soft delete in Delete: a plain Bun NewDelete on the soft-delete model.
 	if !strings.Contains(code, "soft-deletes a Project by setting deleted_at") {
 		t.Error("missing soft-delete comment in Delete")
 	}
-	if !strings.Contains(code, "CURRENT_TIMESTAMP") {
-		t.Error("missing CURRENT_TIMESTAMP in soft delete")
+	if !strings.Contains(code, "db.Bun().NewDelete().Model((*Project)(nil))") {
+		t.Error("Bun-native soft delete should use a plain NewDelete (Bun stamps deleted_at)")
 	}
 
-	// ListAll (soft-delete bypass)
+	// ListAll (soft-delete bypass) opts out via WhereAllWithDeleted.
 	if !strings.Contains(code, "func ListAllProject(") {
 		t.Error("missing ListAllProject")
+	}
+	if !strings.Contains(code, "WhereAllWithDeleted()") {
+		t.Error("ListAll should opt the Bun-native soft-delete model out via WhereAllWithDeleted")
 	}
 
 	// Create is a plain INSERT — never an upsert. Bun builds the INSERT.
@@ -355,32 +387,34 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 	}
 	code := string(content)
 
-	// Soft-delete filter in List: Bun adds a deleted_at IS NULL WHERE clause.
-	if !strings.Contains(code, `q.Where("\"deleted_at\" IS NULL")`) {
-		t.Error("missing soft-delete filter")
+	// Soft delete is Bun-native: the deleted_at column carries the
+	// ,soft_delete,nullzero tag and Bun owns the read exclusion / delete
+	// stamp — no hand-rolled deleted_at IS NULL filter, no CURRENT_TIMESTAMP.
+	collapsed := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsed, "`bun:\"deleted_at,soft_delete,nullzero\"`") {
+		t.Error("deleted_at should carry the Bun ,soft_delete,nullzero tag")
+	}
+	// Read paths carry NO hand-rolled deleted_at filter (Bun owns it).
+	for _, fn := range []string{"func ListItem(", "func GetItemByID(", "func CountItem("} {
+		if strings.Contains(ormFuncBody(code, fn), "deleted_at") {
+			t.Errorf("%s must not reference deleted_at (Bun-native soft delete owns the read filter)", fn)
+		}
+	}
+	if strings.Contains(code, "CURRENT_TIMESTAMP") {
+		t.Error("Bun-native soft delete must not stamp deleted_at via CURRENT_TIMESTAMP")
 	}
 
-	// ListAll should exist
+	// ListAll should exist and opt out of Bun's auto-exclusion.
 	if !strings.Contains(code, "func ListAllItem(ctx context.Context, db orm.Context, opts ...orm.QueryOption)") {
 		t.Error("missing ListAllItem without tenant")
 	}
-
-	// Delete should use CURRENT_TIMESTAMP
-	if !strings.Contains(code, "CURRENT_TIMESTAMP") {
-		t.Error("soft delete should use CURRENT_TIMESTAMP")
+	if !strings.Contains(code, "WhereAllWithDeleted()") {
+		t.Error("ListAll should opt the Bun-native soft-delete model out via WhereAllWithDeleted")
 	}
 
-	// GetByID applies the soft-delete filter so it never returns a tombstone.
-	getIdx := strings.Index(code, "func GetItemByID(")
-	if getIdx == -1 {
-		t.Fatal("missing GetItemByID")
-	}
-	getCode := code[getIdx:]
-	if end := strings.Index(getCode[1:], "\nfunc "); end >= 0 {
-		getCode = getCode[:end+1]
-	}
-	if !strings.Contains(getCode, `Where("\"deleted_at\" IS NULL")`) {
-		t.Error("GetByID should filter out soft-deleted rows")
+	// Delete uses a plain Bun NewDelete (Bun stamps deleted_at).
+	if !strings.Contains(code, "db.Bun().NewDelete().Model((*Item)(nil))") {
+		t.Error("Bun-native soft delete should use a plain NewDelete")
 	}
 
 	// deleted_at field should be in columns
@@ -494,19 +528,20 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		t.Error("Bun scans directly; should not emit a scanRecord function")
 	}
 
-	// "json" maps to Go string on the struct.
-	if !strings.Contains(collapsedStruct, "Meta string `bun:\"meta\"`") {
-		t.Error("json column should be a string struct field")
+	// "json" maps to Go string on the struct; NOT NULL projects ,notnull.
+	if !strings.Contains(collapsedStruct, "Meta string `bun:\"meta,notnull\"`") {
+		t.Error("json NOT NULL column should be a string struct field tagged ,notnull")
 	}
 
 	// Array columns are native slices tagged ,array so Bun maps them to
 	// the underlying SQL array column; no orm.StringArray/Int64Array temps,
-	// no orm.ArrayValue encoder, no pq.StringArray.
-	if !strings.Contains(collapsedStruct, "Tags []string `bun:\"tags,array\"`") || !strings.Contains(collapsedStruct, "Nums []int64 `bun:\"nums,array\"`") {
-		t.Error("array columns should be native slices on the struct")
+	// no orm.ArrayValue encoder, no pq.StringArray. NOT NULL also projects
+	// ,notnull (tags is NOT NULL; nums is nullable).
+	if !strings.Contains(collapsedStruct, "Tags []string `bun:\"tags,array,notnull\"`") || !strings.Contains(collapsedStruct, "Nums []int64 `bun:\"nums,array\"`") {
+		t.Error("array columns should be native slices on the struct with ,array (+ ,notnull when NOT NULL)")
 	}
-	if !strings.Contains(code, "`bun:\"tags,array\"`") {
-		t.Error("[]string column should carry the bun ,array tag")
+	if !strings.Contains(code, "`bun:\"tags,array,notnull\"`") {
+		t.Error("[]string NOT NULL column should carry the bun ,array,notnull tags")
 	}
 	if !strings.Contains(code, "`bun:\"nums,array\"`") {
 		t.Error("[]int64 column should carry the bun ,array tag")

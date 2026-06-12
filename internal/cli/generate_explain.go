@@ -195,19 +195,10 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 
 	case strings.HasPrefix(relSlash, "internal/db/") && strings.HasSuffix(relSlash, "_gen.go"):
 		kind = "entity-orm"
-		// internal/db/<entity>_orm_gen.go from proto entity
-		base := filepath.Base(relSlash)
-		base = strings.TrimSuffix(base, "_orm_gen.go")
-		base = strings.TrimSuffix(base, "_gen.go")
-		if desc != nil {
-			for _, e := range desc.Entities {
-				if strings.EqualFold(e.Name, base) || strings.EqualFold(e.TableName, base) {
-					sources = append(sources, e.ProtoFile)
-					notes = append(notes, fmt.Sprintf("entity %s (table=%s, %d field(s))", e.Name, e.TableName, len(e.Fields)))
-					break
-				}
-			}
-		}
+		// internal/db/<entity>_orm.go is a projection of the APPLIED
+		// schema: db/migrations is the source.
+		sources = append(sources, "db/migrations/")
+		notes = append(notes, "entity ORM projected from the applied schema (shadow-introspected db/migrations)")
 
 	case strings.HasPrefix(relSlash, "internal/") && (strings.HasSuffix(relSlash, "/mock_gen.go") || strings.HasSuffix(relSlash, "/middleware_gen.go") ||
 		strings.HasSuffix(relSlash, "/tracing_gen.go") || strings.HasSuffix(relSlash, "/metrics_gen.go")):

@@ -90,6 +90,16 @@ It enables easy mocking, middleware injection, spec-driven development,
 and component swapping - all while maintaining a single, consistent
 interface pattern throughout the entire stack.`,
 		Version: fmt.Sprintf("%s (built %s, commit %s)", version, buildDate, gitCommit),
+		// Errors are printed exactly once, by cmd/forge/main.go. Without
+		// these, cobra printed "Error: <err>" + a full usage dump, then
+		// main.go printed "Error: <err>" again — multi-line failure
+		// reports (e.g. the Tier-1 stomp-guard report, journey
+		// fr-a04f8c0609) appeared twice with usage spam sandwiched
+		// between the copies. SilenceUsage keeps runtime errors from
+		// being buried; genuinely usage-shaped mistakes still get
+		// cobra's "unknown command/flag" message with a --help pointer.
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		// PersistentPreRun fires once per invocation regardless of
 		// which subcommand the user typed. We use it to emit a single
 		// "experimental features on" warning so users running with

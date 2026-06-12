@@ -81,7 +81,11 @@ func finishExplainDrift(ctx *pipelineContext) error {
 		}
 	}
 	printExplainDriftDiffs(os.Stderr, ctx)
-	return fmt.Errorf("Tier-1 file-stomp guard (--explain-drift report above):\n%s",
+	// Same first-line contract as the guard step's error: the summary
+	// (files + remedies) must precede the first newline so truncating
+	// consumers still see something actionable.
+	return fmt.Errorf("Tier-1 file-stomp guard (--explain-drift report above): %s\n%s",
+		tier1DriftSummaryLine(ctx.ExplainDriftEntries),
 		formatTier1DriftReport(ctx.ExplainDriftEntries))
 }
 

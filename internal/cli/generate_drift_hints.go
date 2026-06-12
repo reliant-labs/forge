@@ -55,6 +55,32 @@ func tier1ExtensionPointHint(relPath string) string {
 	return ""
 }
 
+// tier1DriftSummaryLine renders the single-line drift summary that
+// leads the stomp-guard error. The full report follows on later lines,
+// but agent harnesses, log pipelines, and wrap-and-rethrow callers
+// routinely surface only an error's FIRST line — journey fr-a04f8c0609
+// saw a bare 'Tier-1 file-stomp guard:' with no file and no remedy
+// because everything actionable lived below the first newline. The
+// first line must therefore stand alone: name the files and the escape
+// hatches.
+//
+// The inline path list is capped so the line stays a line; the full
+// set is always in the report body below.
+func tier1DriftSummaryLine(drift []checksums.Tier1DriftEntry) string {
+	const maxInline = 8
+	paths := make([]string, 0, len(drift))
+	for _, d := range drift {
+		paths = append(paths, d.Path)
+	}
+	more := ""
+	if len(paths) > maxInline {
+		more = fmt.Sprintf(", … +%d more", len(paths)-maxInline)
+		paths = paths[:maxInline]
+	}
+	return fmt.Sprintf("%d hand-edited Tier-1 file(s): %s%s — move the edits to a user-owned extension point, re-run with --force to discard them, or `forge disown <path> --reason \"<why>\"` to keep them (one-way); details below",
+		len(drift), strings.Join(paths, ", "), more)
+}
+
 // formatTier1DriftReport renders the batched stomp-guard error body.
 // Extracted from stepCheckTier1Drift so (a) the explain-drift path can
 // reuse the identical report and (b) the message can be pinned by unit

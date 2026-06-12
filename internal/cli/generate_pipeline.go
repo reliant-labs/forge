@@ -891,12 +891,19 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		return errMidMergeTier1Drift{state: state, msg: b.String()}
 	}
 
-	// Default: error with a batched report. The body lives in
+	// Default: error with a batched report. The FIRST line must stand
+	// alone — file names + remedies — because truncating consumers
+	// (agent harnesses, wrap-and-rethrow callers) often surface only
+	// the first line of an error (journey fr-a04f8c0609 saw a bare
+	// header with no file and no remedy). The body lives in
 	// generate_drift_hints.go — it leads with each file's designated
 	// extension point and documents `forge disown` as a permanent,
 	// one-way ownership transfer, so giving up regeneration never
-	// looks like the path of least resistance for agents.
-	return fmt.Errorf("Tier-1 file-stomp guard:\n%s", formatTier1DriftReport(drift))
+	// looks like the path of least resistance for agents. The "Tier-1
+	// file-stomp guard" phrase reaches the user via the step-name wrap
+	// (`step "check Tier-1 file-stomp guard": …`); repeating it here
+	// produced the confusing 'guard: guard:' first line.
+	return fmt.Errorf("%s\n%s", tier1DriftSummaryLine(drift), formatTier1DriftReport(drift))
 }
 
 // errMidMergeTier1Drift is the typed error returned by

@@ -74,11 +74,13 @@ const nextConfig: NextConfig = {
   // assetPrefix lets some chunk URLs skip the prefix — the JS 404s
   // behind the proxy and React never hydrates.
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
-  // Production builds land in .next-prod so `npm run build` can't clobber
-  // the dev server's .next directory out from under a live `next dev` /
-  // `forge run`. `next start` also runs with NODE_ENV=production, so it
-  // serves the same directory the production build wrote.
-  distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
+  // NOTE: no distDir fence here, unlike the standalone/server branches.
+  // In export mode Next.js treats a custom distDir as the EXPORT
+  // destination (the site would land there instead of out/) while build
+  // intermediates still go to .next regardless — a fence would break
+  // the out/ contract and fence nothing. Avoid running a production
+  // build while `next dev` is live in this mode.
+  //
   // Production: static export (opt-in via `output: static` in forge.yaml).
   // The build emits `out/` (static HTML + JS + CSS) which can be served
   // straight from a CDN or object store — no Node runtime in prod.

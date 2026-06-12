@@ -50,6 +50,12 @@ func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
 		if strings.Contains(s, `{ output: "export" }`) {
 			t.Errorf("next.config.ts (output=%q) must NOT contain the static-export conditional — `output: \"export\"` breaks `npm run build` on generated dynamic CRUD routes; got:\n%s", output, s)
 		}
+		// The distDir fence keeps a production build from clobbering the
+		// dev server's .next directory (journey fr-cb84c64912).
+		fence := `distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",`
+		if !strings.Contains(s, fence) {
+			t.Errorf("next.config.ts (output=%q) must carry the distDir fence %q so `npm run build` can't clobber a live dev server's .next; got:\n%s", output, fence, s)
+		}
 	}
 }
 
@@ -87,6 +93,16 @@ func TestNextJSConfig_StaticOptIn(t *testing.T) {
 	// generated `/<slug>/[id]` pages.
 	if !strings.Contains(s, "generateStaticParams") {
 		t.Errorf("next.config.ts (output=static) must mention generateStaticParams so the dynamic-route incompatibility is documented at the point of use; got:\n%s", s)
+	}
+
+	// Static mode must NOT carry the distDir fence: in export mode
+	// Next.js treats a custom distDir as the export destination — the
+	// site would land in .next-prod instead of the documented out/ —
+	// while build intermediates go to .next regardless. Verified
+	// empirically against Next 15 (the basepath corpus fixture asserts
+	// out/ exists after a static build).
+	if strings.Contains(s, "distDir:") {
+		t.Errorf("next.config.ts (output=static) must not set distDir — export mode would emit the site there instead of out/; got:\n%s", s)
 	}
 
 	// Static mode must not ALSO emit standalone output — contradictory.

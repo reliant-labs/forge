@@ -308,6 +308,12 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL=", // No DB needed for health check
+		// The scaffold defaults ENVIRONMENT=production, where a server
+		// with no auth provider REFUSES to start (the H2 refusal
+		// contract, tested in forge/pkg/authn). This test is about the
+		// serve lifecycle (healthz/readyz), so boot in the documented
+		// dev posture instead.
+		"ENVIRONMENT=development",
 	)
 
 	// Capture output for debugging

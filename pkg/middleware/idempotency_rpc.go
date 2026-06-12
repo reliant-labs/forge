@@ -1,38 +1,34 @@
-//go:build ignore
-
 package middleware
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"sync"
 	"time"
 
 	"connectrpc.com/connect"
-	lru "github.com/hashicorp/golang-lru/v2"
 )
 
-// IdempotencyKeyHeader is the canonical header carrying the client-supplied
-// idempotency key. Methods annotated with idempotency_key=true in the proto
-// options SHOULD require this header; if absent the request proceeds without
-// deduplication.
+// IdempotencyKeyHeader is the canonical header carrying the
+// client-supplied idempotency key. Methods annotated with
+// idempotency_key=true in the proto options SHOULD require this header;
+// if absent the request proceeds without deduplication.
 const IdempotencyKeyHeader = "Idempotency-Key"
 
-// IdempotencyOptions configures the idempotency interceptor.
+// IdempotencyOptions configures the RPC idempotency interceptor.
 //
 //   - CacheSize: maximum number of cached responses (default 1000)
 //   - TTL:       how long a cached response is valid (default 1h)
 //
-// CacheSize <= 0 disables the interceptor — IdempotencyInterceptor returns nil
-// and callers should skip appending it to the chain.
+// CacheSize <= 0 disables the interceptor — IdempotencyInterceptor
+// returns nil and callers should skip appending it to the chain.
 type IdempotencyOptions struct {
 	CacheSize int
 	TTL       time.Duration
 }
 
-type cachedResponse struct {
+type cachedRPCResponse struct {
 	resp      connect.AnyResponse
 	err       error
 	expiresAt time.Time
@@ -40,17 +36,18 @@ type cachedResponse struct {
 
 type idempotencyInterceptor struct {
 	mu    sync.Mutex
-	cache *lru.Cache[string, *cachedResponse]
+	cache *lruCache[*cachedRPCResponse]
 	ttl   time.Duration
 }
 
 // IdempotencyInterceptor returns a Connect interceptor that deduplicates
 // requests carrying an Idempotency-Key header. If the same key is seen
-// within the TTL window, the cached response (or error) is returned without
-// calling the handler again.
+// within the TTL window, the cached response (or error) is returned
+// without calling the handler again.
 //
-// Keys are scoped per-procedure so the same key on different RPCs is treated
-// as distinct.
+// Keys are scoped per-procedure so the same key on different RPCs is
+// treated as distinct. For the HTTP-layer equivalent (REST/webhook
+// routes) see [IdempotencyMiddleware].
 //
 // When opts.CacheSize <= 0 the interceptor is disabled and nil is returned.
 func IdempotencyInterceptor(opts IdempotencyOptions) connect.Interceptor {
@@ -60,11 +57,7 @@ func IdempotencyInterceptor(opts IdempotencyOptions) connect.Interceptor {
 	if opts.TTL <= 0 {
 		opts.TTL = time.Hour
 	}
-	cache, err := lru.New[string, *cachedResponse](opts.CacheSize)
-	if err != nil {
-		panic(fmt.Sprintf("idempotency: lru.New(%d): %v", opts.CacheSize, err))
-	}
-	return &idempotencyInterceptor{cache: cache, ttl: opts.TTL}
+	return &idempotencyInterceptor{cache: newLRUCache[*cachedRPCResponse](opts.CacheSize), ttl: opts.TTL}
 }
 
 func (i *idempotencyInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -76,7 +69,7 @@ func (i *idempotencyInterceptor) WrapUnary(next connect.UnaryFunc) connect.Unary
 		cacheKey := idempotencyCacheKey(req.Spec().Procedure, key)
 
 		i.mu.Lock()
-		if cached, ok := i.cache.Get(cacheKey); ok && time.Now().Before(cached.expiresAt) {
+		if cached, ok := i.cache.get(cacheKey); ok && time.Now().Before(cached.expiresAt) {
 			i.mu.Unlock()
 			return cached.resp, cached.err
 		}
@@ -85,7 +78,7 @@ func (i *idempotencyInterceptor) WrapUnary(next connect.UnaryFunc) connect.Unary
 		resp, err := next(ctx, req)
 
 		i.mu.Lock()
-		i.cache.Add(cacheKey, &cachedResponse{
+		i.cache.add(cacheKey, &cachedRPCResponse{
 			resp:      resp,
 			err:       err,
 			expiresAt: time.Now().Add(i.ttl),

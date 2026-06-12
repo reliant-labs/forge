@@ -37,7 +37,7 @@ RPCs are defined in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions ma
 
 **Hand-written handler methods always take priority** — the generator skips any method you've already implemented. After any proto change, run `forge generate`; never hand-edit `gen/` or `*_gen.go` files (fix the proto source instead).
 
-Cross-cutting concerns (auth, logging, recovery, request IDs) live in middleware under `pkg/middleware/`, wired in `cmd/server.go` — not in handlers.
+Cross-cutting concerns (auth, logging, recovery, request IDs) live in the forge middleware libraries (`forge/pkg/{authn,authz,middleware,observe}`) plus the thin policy file `pkg/middleware/middleware.go`, wired in `cmd/server.go` — not in handlers.
 
 ## The canonical handler
 

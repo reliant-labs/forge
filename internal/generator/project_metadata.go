@@ -148,45 +148,34 @@ func (g *ProjectGenerator) generateExamplesReadme() error {
 	return os.WriteFile(filepath.Join(examplesDir, "README.md"), content, 0o644)
 }
 
-// generatePkgMiddleware writes Connect-compatible interceptors into pkg/middleware/.
+// generatePkgMiddleware scaffolds the project's thin auth-policy file
+// (pkg/middleware/middleware.go) plus its policy-wiring test.
+//
+// The middleware MECHANISMS live in the forge libraries
+// (pkg/authn, pkg/authz, pkg/middleware, pkg/observe) — versioned with
+// forge so security fixes flow to every project. Historically ~25
+// static middleware files were photocopied here; field evidence showed
+// they stayed byte-identical and never received fixes, so they were
+// folded into the libraries. The two files below are user-owned from
+// line one (scaffold-once; never overwritten if present).
 func (g *ProjectGenerator) generatePkgMiddleware() error {
 	middlewareFiles := []struct {
 		templateName string
 		destName     string
 	}{
-		{"middleware-recovery.go", "recovery.go"},
-		{"middleware-recovery_test.go", "recovery_test.go"},
-		{"middleware-logging.go", "logging.go"},
-		{"middleware-logging_test.go", "logging_test.go"},
-		{"middleware-auth.go", "auth.go"},
-		{"middleware-auth_test.go", "auth_test.go"},
-		{"middleware-authz.go", "authz.go"},
-		{"middleware-permissive-authz.go", "permissive_authz.go"},
-		{"middleware-claims.go", "claims.go"},
-		{"middleware-audit.go", "audit.go"},
-		{"middleware-http.go", "http.go"},
-		{"middleware-cors.go", "cors.go"},
-		{"middleware-cors_test.go", "cors_test.go"},
-		{"middleware-security-headers.go", "security_headers.go"},
-		{"middleware-security-headers_test.go", "security_headers_test.go"},
-		{"middleware-ratelimit.go", "ratelimit.go"},
-		{"middleware-ratelimit_test.go", "ratelimit_test.go"},
-		{"middleware-requestid.go", "requestid.go"},
-		{"middleware-requestid_test.go", "requestid_test.go"},
-		{"middleware-idempotency.go", "idempotency.go"},
-		{"middleware-idempotency_test.go", "idempotency_test.go"},
-		{"middleware-redact.go", "redact.go"},
-		{"middleware-redact_test.go", "redact_test.go"},
-		{"middleware-logevents.go", "logevents.go"},
-		{"middleware-trace-handler.go", "trace_handler.go"},
+		{"middleware.go", "middleware.go"},
+		{"middleware_test.go", "middleware_test.go"},
 	}
 
 	for _, f := range middlewareFiles {
+		destPath := filepath.Join(g.Path, "pkg", "middleware", f.destName)
+		if _, err := os.Stat(destPath); err == nil {
+			continue // user-owned — never clobber an existing copy
+		}
 		content, err := templates.ProjectTemplates().Get(f.templateName)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.templateName, err)
 		}
-		destPath := filepath.Join(g.Path, "pkg", "middleware", f.destName)
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", f.destName, err)
 		}

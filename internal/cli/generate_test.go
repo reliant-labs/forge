@@ -564,7 +564,7 @@ exit 0
 	}
 	defer func() { _ = os.Setenv("PATH", pathEnv) }()
 
-	// Generated code (pkg/middleware/claims.go etc.) imports
+	// Generated code (pkg/middleware/middleware.go etc.) imports
 	// github.com/reliant-labs/forge/pkg/auth which doesn't exist in the
 	// last published forge/pkg snapshot. Point the project at the in-repo
 	// pkg via a replace directive so `go mod tidy` resolves locally.

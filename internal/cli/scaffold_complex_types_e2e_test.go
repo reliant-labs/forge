@@ -25,6 +25,7 @@ func TestE2EScaffoldComplexTypes(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Scaffold a project with two services.
 	runCmd(t, dir, forgeBin,
@@ -586,6 +587,7 @@ func TestE2EScaffoldEntityInServiceProto(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
 		"new", "svcentity",
@@ -722,6 +724,7 @@ func TestE2EScaffoldConfigNaming(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
 		"new", "cfgtest",
@@ -786,6 +789,7 @@ func TestE2EScaffoldNoConflictingProtos(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
 		"new", "protocheck",

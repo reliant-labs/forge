@@ -137,7 +137,7 @@ func TestServicesGenTemplate_RowConstructors(t *testing.T) {
 			"func serviceRowBilling(app *App",
 			"wireAPIDeps(app, cfg, logger, devMode)",
 			"middleware.AuthzInterceptor(apiDeps.Authorizer)",
-			"app.Services.Billing.RegisterWebhookRoutes(mux, middleware.HTTPStack(logger))",
+			"app.Services.Billing.RegisterWebhookRoutes(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))",
 		} {
 			if !strings.Contains(rendered, want) {
 				t.Errorf("rendered services_gen missing %q", want)

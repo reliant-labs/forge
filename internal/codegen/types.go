@@ -78,7 +78,8 @@ type MessageFieldDef struct {
 	// for masks). ProtoType collapses every message field to the literal
 	// "message" — which is how the CRUD shape matcher could never match an
 	// update request's entity field against the entity name (the false
-	// FORGE_CRUD_SHAPE_MISMATCH on forge's own scaffold). Additive:
+	// custom-read-shape stub — then spelled FORGE_CRUD_SHAPE_MISMATCH —
+	// on forge's own scaffold). Additive:
 	// `json:",omitempty"` keeps old descriptors parseable.
 	MessageType string `json:",omitempty"`
 }

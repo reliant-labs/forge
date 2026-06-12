@@ -30,10 +30,10 @@ auth:
 
 ## The Claims Struct
 
-`Claims` is the canonical auth payload, defined in `forge/pkg/auth` and aliased in `pkg/middleware/claims.go`:
+`Claims` is the canonical auth payload, defined in `forge/pkg/auth` and aliased in `pkg/middleware/middleware.go` (the thin user-owned auth-policy file — it also owns the claims context key):
 
 ```go
-// pkg/middleware/claims.go (generated)
+// pkg/middleware/middleware.go (user-owned, scaffolded once)
 package middleware
 
 import "github.com/reliant-labs/forge/pkg/auth"
@@ -61,7 +61,20 @@ if !ok {
 }
 ```
 
-If you need additional claim fields, **add them to `forge/pkg/auth.Claims`** so library code (auth interceptor, tenant interceptor) and project code share one type. Project-local extensions are not supported by the alias-based wiring; if you must, replace the `type Claims = auth.Claims` line with a struct that embeds `auth.Claims` and update all middleware that expects `*Claims` accordingly.
+If you need additional claim DATA, prefer the `enrichClaims` hook in `pkg/middleware/middleware.go` — it runs after token validation and can hydrate roles/org/flags onto the validated claims before handlers see them. If you need additional claim FIELDS, add them to `forge/pkg/auth.Claims` so library code (auth interceptor, tenant interceptor) and project code share one type. Project-local extensions are not supported by the alias-based wiring; if you must, replace the `type Claims = auth.Claims` line with a struct that embeds `auth.Claims` and update the callbacks the file passes to the forge libraries.
+
+## The thin policy file (pkg/middleware/middleware.go)
+
+The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`; the authorization interceptor in `forge/pkg/authz`; commodity middlewares (CORS, security headers, request-id, rate limit, idempotency, HTTP stack, audit) in `forge/pkg/middleware`. The project keeps ONE scaffolded-once file, `pkg/middleware/middleware.go`, wiring the four things projects actually customize:
+
+1. **Token validator** — `SetTokenValidator(fn)` installs it; `ValidateToken` dispatches per-request, so install timing is flexible (setup.go, a pack `Init`, or later — but before `cmd/server.go` constructs the chain if you want validate mode).
+2. **Identity enricher** — `enrichClaims(ctx, claims)` runs after validation; hydrate roles/org membership/feature flags from your DB here. Errors reject the request.
+3. **Allow-list** — `unauthenticatedProcedures`, exact full-procedure strings only.
+4. **Dev claims** — `devClaims()` returns the synthetic principal attached while auth is off (dev mode / `AUTH_MODE=none`); default nil.
+
+The file also owns `Claims`, the claims context key (`ClaimsFromContext` / `ContextWithClaims`), and the `Authorizer` interface + `DevAuthorizer` that generated code references — so regenerating never churns your handler-facing surface.
+
+Auth mode resolution (in `forge/pkg/authn`, decided ONCE at interceptor construction): validator installed → validate every non-allow-listed request; `MarkExternalAuth()` called (packs do this) → passthrough; `AUTH_MODE=none` → passthrough; dev mode (injected from `cfg.Mode()`) → passthrough; otherwise **the server refuses to start**.
 
 ## How auth wiring works
 
@@ -80,7 +93,7 @@ func GeneratedAuthInterceptor() connect.UnaryInterceptorFunc {
 }
 ```
 
-`auth.NewValidator(cfg)` constructs a JWT/API-key validator. `v.Interceptor(opts, withClaims)` returns a Connect interceptor. The `withClaims` callback (`ContextWithClaims`) lives in `pkg/middleware/claims.go`.
+`auth.NewValidator(cfg)` constructs a JWT/API-key validator. `v.Interceptor(opts, withClaims)` returns a Connect interceptor. The `withClaims` callback (`ContextWithClaims`) lives in `pkg/middleware/middleware.go`.
 
 For API-key or `both` providers, pass a `KeyValidator` implementation:
 
@@ -109,7 +122,7 @@ if err != nil {
 }
 projectInterceptors := []connect.Interceptor{
     authInterceptor,                    // ← here
-    middleware.AuditInterceptor(logger),
+    fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
 }
 interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
     Logger: logger,
@@ -125,7 +138,7 @@ the result of `DefaultMiddlewares` directly. See
 
 ## Unauthenticated Endpoints
 
-The auth interceptor checks an allow-list before requiring auth. To allow additional unauthenticated endpoints, add them to the `unauthenticatedProcedures` map in `pkg/middleware/auth.go`:
+The auth interceptor checks an allow-list before requiring auth (exact procedure match only — the gate lives in `forge/pkg/authn`). To allow additional unauthenticated endpoints, add them to the `unauthenticatedProcedures` map in `pkg/middleware/middleware.go`:
 
 ```go
 var unauthenticatedProcedures = map[string]struct{}{

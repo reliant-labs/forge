@@ -443,7 +443,7 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 	// Auto-wired RegisterWebhookRoutes for the webhook-bearing service.
 	// (2026-05-07 wire-gen migration: services now hang directly off
 	// `app.Services.<Field>` instead of a local `svcs` var.)
-	if !strings.Contains(content, "app.Services.AdminServer.RegisterWebhookRoutes(mux, middleware.HTTPStack(logger))") {
+	if !strings.Contains(content, "app.Services.AdminServer.RegisterWebhookRoutes(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))") {
 		t.Errorf("services_gen.go should auto-wire RegisterWebhookRoutes for admin_server (has webhooks); got:\n%s", content)
 	}
 
@@ -453,10 +453,10 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 	}
 
 	// Both services still get RegisterHTTP — the auto-wire is additive.
-	if !strings.Contains(content, "app.Services.AdminServer.RegisterHTTP(mux, middleware.HTTPStack(logger))") {
+	if !strings.Contains(content, "app.Services.AdminServer.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))") {
 		t.Errorf("services_gen.go should still call RegisterHTTP for admin_server")
 	}
-	if !strings.Contains(content, "app.Services.Orders.RegisterHTTP(mux, middleware.HTTPStack(logger))") {
+	if !strings.Contains(content, "app.Services.Orders.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))") {
 		t.Errorf("services_gen.go should still call RegisterHTTP for orders")
 	}
 }

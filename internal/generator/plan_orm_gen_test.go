@@ -57,6 +57,22 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing package db")
 	}
 
+	// The entity type is a REAL struct emitted here — a projection of the
+	// applied schema. Nullable columns are pointers; timestamps are
+	// time.Time-based, never timestamppb.
+	if !strings.Contains(code, "type Project struct {") {
+		t.Error("missing Project struct emission in _orm.go")
+	}
+	if !strings.Contains(code, "Id string") {
+		t.Error("Project struct should carry Id string")
+	}
+	if !strings.Contains(code, "Description *string") {
+		t.Error("nullable string column should be a *string struct field")
+	}
+	if !strings.Contains(code, "CreatedAt *time.Time") {
+		t.Error("nullable timestamp column should be *time.Time on the struct")
+	}
+
 	// Should NOT have method-based patterns (type alias fix)
 	if strings.Contains(code, "_ orm.Model") {
 		t.Error("should not have orm.Model assertion (type alias incompatible)")
@@ -107,8 +123,16 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if strings.Contains(code, `"database/sql"`) {
 		t.Error("generated file should no longer import database/sql")
 	}
-	if !strings.Contains(code, "timestamppb.New(") {
-		t.Error("missing timestamppb.New in scan function")
+	// No timestamppb anywhere in generated ORM code: time columns scan via
+	// orm.NullTime temps and assign onto time.Time / *time.Time fields.
+	if strings.Contains(code, "timestamppb") {
+		t.Error("generated ORM code must not reference timestamppb")
+	}
+	if !strings.Contains(code, "if dbCreatedAt.Valid {") {
+		t.Error("missing NullTime valid-guard for created_at in scan function")
+	}
+	if !strings.Contains(code, "entity.CreatedAt = &tCreatedAt") {
+		t.Error("missing pointer assignment from NullTime temp for nullable created_at")
 	}
 
 	// CRUD functions (tenant-scoped)
@@ -171,12 +195,13 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing ULID generation chokepoint in Create")
 	}
 
-	// Timestamps chokepoint: created_at/updated_at stamped in Create.
-	if !strings.Contains(code, "now := timestamppb.Now()") {
+	// Timestamps chokepoint: created_at/updated_at stamped in Create with
+	// time.Now().UTC(), guarded by IsZero so caller-provided values win.
+	if !strings.Contains(code, "now := time.Now().UTC()") {
 		t.Error("missing timestamp stamping in Create")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
-		t.Error("missing created_at nil-guard in Create")
+	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
+		t.Error("missing created_at zero-guard in Create")
 	}
 	if !strings.Contains(code, "msg.UpdatedAt = now") {
 		t.Error("missing updated_at stamping in Create")
@@ -393,6 +418,9 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 				{Name: "price", Type: "double"},
 				{Name: "data", Type: "bytes"},
 				{Name: "label", Type: "string"},
+				{Name: "meta", Type: "json", NotNull: true},
+				{Name: "tags", Type: "[]string", NotNull: true},
+				{Name: "nums", Type: "[]int64"},
 			},
 		},
 	}
@@ -415,15 +443,53 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		t.Error("Delete should use int64 for PK type")
 	}
 
-	// Scan function with nullable fields
-	if !strings.Contains(code, "dbScore *float32") {
-		t.Error("nullable float should scan as *float32")
+	// Nullable scalar columns are POINTER struct fields scanned directly —
+	// no temp vars (the legacy *float32 scan temps are gone).
+	if !strings.Contains(code, "type Record struct {") {
+		t.Error("missing Record struct emission")
 	}
-	if !strings.Contains(code, "dbPrice *float64") {
-		t.Error("nullable double should scan as *float64")
+	if !strings.Contains(code, "Score *float32") {
+		t.Error("nullable float should be a *float32 struct field")
 	}
-	if !strings.Contains(code, "dbLabel *string") {
-		t.Error("nullable string should scan as *string")
+	if !strings.Contains(code, "Price *float64") {
+		t.Error("nullable double should be a *float64 struct field")
+	}
+	if !strings.Contains(code, "Label *string") {
+		t.Error("nullable string should be a *string struct field")
+	}
+	for _, temp := range []string{"dbScore", "dbPrice", "dbLabel"} {
+		if strings.Contains(code, temp) {
+			t.Errorf("nullable scalar must scan directly into the struct field; found temp %s", temp)
+		}
+	}
+	if !strings.Contains(code, "&entity.Score,") {
+		t.Error("scanRecord should scan &entity.Score directly")
+	}
+
+	// "json" maps to Go string on the struct.
+	if !strings.Contains(code, "Meta string") {
+		t.Error("json column should be a string struct field")
+	}
+
+	// Array columns are native slices, scanned via the dual-format orm
+	// scanners and written via the dialect-aware orm.ArrayValue encoder.
+	if !strings.Contains(code, "Tags []string") || !strings.Contains(code, "Nums []int64") {
+		t.Error("array columns should be native slices on the struct")
+	}
+	if !strings.Contains(code, "dbTags orm.StringArray") {
+		t.Error("[]string column should scan via an orm.StringArray temp")
+	}
+	if !strings.Contains(code, "dbNums orm.Int64Array") {
+		t.Error("[]int64 column should scan via an orm.Int64Array temp")
+	}
+	if !strings.Contains(code, "entity.Tags = []string(dbTags)") {
+		t.Error("missing slice assignment from the StringArray temp")
+	}
+	if !strings.Contains(code, "orm.ArrayValue(dialect, msg.Tags)") {
+		t.Error("array values must go through orm.ArrayValue in INSERT/UPDATE args")
+	}
+	if strings.Contains(code, "pq.StringArray") {
+		t.Error("array mapping must use orm scanners, not pq.StringArray")
 	}
 
 	// scanRecord function exists
@@ -456,13 +522,20 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 	}
 	code := string(content)
 
-	// Should have timestamppb import; database/sql is gone (orm.NullTime
-	// replaced sql.NullTime in scan temps).
+	// timestamppb is gone from generated ORM code entirely — time columns
+	// are time.Time-based and need the time import; database/sql is gone
+	// too (orm.NullTime replaced sql.NullTime in scan temps).
 	if strings.Contains(code, `"database/sql"`) {
 		t.Error("generated file should not import database/sql anymore")
 	}
-	if !strings.Contains(code, "timestamppb") {
-		t.Error("missing timestamppb import")
+	if strings.Contains(code, "timestamppb") {
+		t.Error("generated ORM code must not reference timestamppb")
+	}
+	if !strings.Contains(code, `"time"`) {
+		t.Error("missing time import for timestamp fields")
+	}
+	if !strings.Contains(code, "CreatedAt *time.Time") {
+		t.Error("nullable created_at should be *time.Time on the struct")
 	}
 
 	// Created/updated_at in fields
@@ -486,19 +559,20 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Error("timestamp scan temps should use orm.NullTime, not sql.NullTime")
 	}
 
-	// Create stamps managed timestamps.
-	if !strings.Contains(code, "now := timestamppb.Now()") {
+	// Create stamps managed timestamps with time.Now().UTC(), guarded by
+	// IsZero so caller-provided values win.
+	if !strings.Contains(code, "now := time.Now().UTC()") {
 		t.Error("missing timestamp stamping in Create")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
-		t.Error("missing created_at nil-guard in Create")
+	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
+		t.Error("missing created_at zero-guard in Create")
 	}
 	if !strings.Contains(code, "msg.UpdatedAt = now") {
 		t.Error("missing updated_at stamping in Create")
 	}
 
 	// Update re-stamps updated_at.
-	if !strings.Contains(code, "msg.UpdatedAt = timestamppb.Now()") {
+	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()") {
 		t.Error("UpdateEvent should stamp updated_at")
 	}
 }

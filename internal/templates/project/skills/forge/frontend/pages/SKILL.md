@@ -21,13 +21,13 @@ import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
 
 message User {
-  option (forge.v1.entity) = { table_name: "users", timestamps: true };
+  option (forge.v1.entity) = { table: "users", timestamps: true };
 
   string id = 1 [(forge.v1.field) = { pk: true }];
   string org_id = 2 [(forge.v1.field) = { tenant: true }];
-  string email = 3 [(forge.v1.field) = { store: true, unique: true }];
-  string name = 4 [(forge.v1.field) = { store: true }];
-  google.protobuf.Timestamp created_at = 100 [(forge.v1.field) = { store: true }];
+  string email = 3 [(forge.v1.field) = { unique: true }];
+  string name = 4;  // plain fields persist by default — no annotation needed
+  google.protobuf.Timestamp created_at = 100;  // managed by timestamps: true
 }
 
 service UserService {

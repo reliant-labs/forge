@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -41,6 +42,173 @@ const colorReset = "\033[0m"
 type managedProcess struct {
 	name string
 	cmd  *exec.Cmd
+	// ports are the child's declared listen ports (fe.Port for
+	// frontends, the per-service ports for the single server binary).
+	// Used by the port-conflict diagnosis when the child dies
+	// unexpectedly. May be empty when no port is known.
+	ports []int
+	// done is closed by superviseChild once cmd.Wait has returned.
+	// exitErr holds Wait's result; it is written before done closes
+	// and is safe to read after done is closed (or after receiving
+	// this process from the exit-notification channel).
+	done    chan struct{}
+	exitErr error
+}
+
+// superviseChild owns the single allowed cmd.Wait call for a managed
+// child. It waits for the output streams to hit EOF first — os/exec
+// documents that Wait closes StdoutPipe/StderrPipe, so calling it with
+// unread data still buffered truncates the child's final output lines,
+// which for a dying child are exactly the lines we need. It then
+// records the exit on the managedProcess, closes done, and notifies
+// exitCh. The notification is non-blocking: the main loop only acts on
+// the first death, and during shutdown nobody is listening.
+func superviseChild(p *managedProcess, streams *sync.WaitGroup, exitCh chan<- *managedProcess) {
+	go func() {
+		if streams != nil {
+			streams.Wait()
+		}
+		p.exitErr = p.cmd.Wait()
+		close(p.done)
+		select {
+		case exitCh <- p:
+		default:
+		}
+	}()
+}
+
+// defaultRunEnvironment decides whether runProjectDev should inject
+// ENVIRONMENT=development into the server child's environment.
+//
+// The scaffolded config.dev.yaml can be effectively empty; without an
+// ENVIRONMENT value the binary defaults to production, where the auth
+// interceptor refuses to start ("no auth provider configured") — so the
+// canonical dev command would boot children in production mode. The
+// default fires only when ENVIRONMENT is declared NOWHERE: not in the
+// per-env config projection (envConfigToEnvVars maps the per-env config
+// key "environment" → "ENVIRONMENT") and not in the shell (lookupEnv is
+// os.LookupEnv in production code; a present-but-empty value still
+// counts as explicit). Explicit env always wins — hostlaunch.MergeEnv
+// already gives os.Environ() precedence over the extras map, so even if
+// both raced, the shell value would land in the child.
+//
+// The default also applies only to `--env dev` (the flag default).
+// Running `forge run --env staging` names a non-dev environment
+// explicitly; silently flipping it to development would be a lie —
+// there the per-env config alone decides.
+func defaultRunEnvironment(envExtraEnv map[string]string, lookupEnv func(string) (string, bool), env string) (string, bool) {
+	if env != "dev" {
+		return "", false
+	}
+	if _, declared := envExtraEnv["ENVIRONMENT"]; declared {
+		return "", false
+	}
+	if _, declared := lookupEnv("ENVIRONMENT"); declared {
+		return "", false
+	}
+	return "development", true
+}
+
+// composeDevCORSOrigins builds the dev default for CORS_ORIGINS: the
+// browser-visible origins `forge run` is about to create. Each
+// frontend's loopback origin (http://localhost:<fe.Port>) plus — unless
+// the proxy is disabled — the dev-proxy hostnames
+// (http://<name>.localhost:<proxyPort> and http://localhost:<proxyPort>).
+//
+// Comma-separated to match the generated config loader, which splits
+// cors_origins/CORS_ORIGINS on "," (config.go.tmpl / pkg/middleware
+// CORS). Returns "" when no frontend declares a port — backend-only
+// projects have no browser origin to allow, and an empty return tells
+// the caller to inject nothing.
+func composeDevCORSOrigins(frontends []config.FrontendConfig, proxyPort int, noProxy bool) string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(origin string) {
+		if _, dup := seen[origin]; dup {
+			return
+		}
+		seen[origin] = struct{}{}
+		out = append(out, origin)
+	}
+	for _, fe := range frontends {
+		if fe.Port <= 0 {
+			continue
+		}
+		add(fmt.Sprintf("http://localhost:%d", fe.Port))
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	if !noProxy && proxyPort > 0 {
+		for _, fe := range frontends {
+			if fe.Port <= 0 {
+				continue
+			}
+			add(fmt.Sprintf("http://%s.localhost:%d", fe.Name, proxyPort))
+		}
+		add(fmt.Sprintf("http://localhost:%d", proxyPort))
+	}
+	return strings.Join(out, ",")
+}
+
+// frontendDevEnv composes the child environment for a frontend dev
+// server. forge.yaml is the source of truth for dev/prod parity, so the
+// declared values are FORCE-injected (withForcedEnv replaces any stale
+// PORT / NEXT_PUBLIC_BASE_PATH that bled in from the parent shell):
+//
+//   - PORT: the forge.yaml frontend port, so the dev proxy can dispatch
+//     to a deterministic loopback port.
+//   - NEXT_PUBLIC_BASE_PATH: the forge.yaml base_path, so a frontend
+//     mounted under a prefix in production serves the same prefix in
+//     dev (next.config reads it; without this the setting is dead in
+//     `forge run`).
+func frontendDevEnv(base []string, fe config.FrontendConfig) []string {
+	env := base
+	if fe.Port > 0 {
+		env = withForcedEnv(env, "PORT", strconv.Itoa(fe.Port))
+	}
+	if fe.BasePath != "" {
+		env = withForcedEnv(env, "NEXT_PUBLIC_BASE_PATH", fe.BasePath)
+	}
+	return env
+}
+
+// diagnosePortConflict checks whether the given port is currently
+// bound by trying a quick loopback listen. Returns a human hint when
+// the port is held (the most common reason a dev child dies instantly
+// — a stale dev server from a previous session) and "" when the port
+// is free or unknown (<= 0). Best-effort: a successful probe listener
+// is closed immediately.
+func diagnosePortConflict(port int) string {
+	if port <= 0 {
+		return ""
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		return fmt.Sprintf("port %d is already in use — another process (a stale dev server?) holds it", port)
+	}
+	_ = ln.Close()
+	return ""
+}
+
+// describeChildExit renders the loud failure line for a child that died
+// before shutdown was requested.
+func describeChildExit(name string, exitErr error) string {
+	if exitErr == nil {
+		return fmt.Sprintf("process %q exited unexpectedly (exit status 0)", name)
+	}
+	return fmt.Sprintf("process %q exited unexpectedly: %v", name, exitErr)
+}
+
+// childExitError is the non-nil error runProjectDev returns when a
+// child dies before shutdown — `forge run` must exit nonzero even for
+// a status-0 child: a dev server that stopped serving is a failure
+// regardless of how politely it left.
+func childExitError(name string, exitErr error) error {
+	if exitErr == nil {
+		return fmt.Errorf("process %q exited unexpectedly (exit status 0)", name)
+	}
+	return fmt.Errorf("process %q exited unexpectedly: %w", name, exitErr)
 }
 
 // runOptions holds flags for the run command.
@@ -97,6 +265,17 @@ func runProjectDev(opts runOptions) error {
 			}
 		}
 	}
+
+	// Default the children to dev mode. See defaultRunEnvironment for
+	// the full rationale: an effectively-empty config.dev.yaml leaves
+	// ENVIRONMENT unset, the binary defaults to production, and the
+	// auth interceptor aborts startup — the canonical dev command must
+	// not boot children in production mode. Fires only for the default
+	// env ("dev") and only when ENVIRONMENT is set nowhere else.
+	if v, ok := defaultRunEnvironment(envExtraEnv, os.LookupEnv, opts.env); ok {
+		envExtraEnv["ENVIRONMENT"] = v
+		fmt.Println("[run] ENVIRONMENT=development (forge run defaults children to dev mode; set ENVIRONMENT to override)")
+	}
 	fmt.Println()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,8 +298,18 @@ func runProjectDev(opts runOptions) error {
 		return c
 	}
 
-	// startProcess starts a command and registers it for cleanup.
-	startProcess := func(name string, cmd *exec.Cmd) error {
+	// childExitCh carries exit notifications from superviseChild's
+	// per-child wait goroutines back to the main loop, so a child that
+	// dies while `forge run` is supposedly healthy is surfaced loudly
+	// instead of discovered (or not) at shutdown. Buffered + non-blocking
+	// sends: only the first death matters, the rest are reported via the
+	// shutdown path.
+	childExitCh := make(chan *managedProcess, 8)
+
+	// startProcess starts a command and registers it for cleanup. ports
+	// are the child's declared listen ports (zero values are dropped),
+	// used for the port-conflict diagnosis if the child dies.
+	startProcess := func(name string, cmd *exec.Cmd, ports ...int) error {
 		color := nextColor()
 		prefix := fmt.Sprintf("%s[%s]%s ", color, name, colorReset)
 
@@ -138,13 +327,24 @@ func runProjectDev(opts runOptions) error {
 			return fmt.Errorf("failed to start %s: %w", name, err)
 		}
 
+		p := &managedProcess{name: name, cmd: cmd, done: make(chan struct{})}
+		for _, port := range ports {
+			if port > 0 {
+				p.ports = append(p.ports, port)
+			}
+		}
 		mu.Lock()
-		processes = append(processes, &managedProcess{name: name, cmd: cmd})
+		processes = append(processes, p)
 		mu.Unlock()
 
-		// Stream output in background goroutines.
-		go streamWithPrefix(prefix, stdout, &outputMu)
-		go streamWithPrefix(prefix, stderr, &outputMu)
+		// Stream output in background goroutines; the supervisor waits
+		// for both streams to drain before reaping the child (see
+		// superviseChild for the Wait-vs-pipes ordering constraint).
+		var streams sync.WaitGroup
+		streams.Add(2)
+		go func() { defer streams.Done(); streamWithPrefix(prefix, stdout, &outputMu) }()
+		go func() { defer streams.Done(); streamWithPrefix(prefix, stderr, &outputMu) }()
+		superviseChild(p, &streams, childExitCh)
 
 		return nil
 	}
@@ -229,6 +429,28 @@ func runProjectDev(opts runOptions) error {
 		}
 	}
 
+	// Resolved once here and reused by both the CORS dev default below
+	// and the proxy startup further down (the proxy banner prints only
+	// in the proxy block, so the hoist can't double-print it).
+	proxyPort := resolveProxyPort(opts.proxyPort)
+
+	// Dev CORS default: the scaffolded frontend transport calls the API
+	// cross-origin while the server's cors_origins config defaults
+	// empty, so browser CRUD fails CORS preflight out of the box. When
+	// the user set CORS_ORIGINS nowhere (shell or per-env config) and
+	// we're launching at least one frontend, allow the origins this
+	// very command is about to create. composeDevCORSOrigins documents
+	// the list shape; comma-separated to match the generated config
+	// loader.
+	if _, declared := envExtraEnv["CORS_ORIGINS"]; !declared {
+		if _, inShell := os.LookupEnv("CORS_ORIGINS"); !inShell {
+			if origins := composeDevCORSOrigins(frontendsToRun, proxyPort, opts.noProxy); origins != "" {
+				envExtraEnv["CORS_ORIGINS"] = origins
+				fmt.Printf("[run] CORS_ORIGINS → %s (dev default so the browser can reach the API; set cors_origins to override)\n", origins)
+			}
+		}
+	}
+
 	// 2. Start Go binary via Air (hot reload) or go run fallback.
 	// Single binary architecture: one process with service names as args.
 	if len(servicesToRun) > 0 || len(opts.services) == 0 {
@@ -291,29 +513,44 @@ func runProjectDev(opts runOptions) error {
 		// already set in os.Environ().
 		baseEnv := hostlaunch.MergeEnv(envExtraEnv, os.Environ())
 		if opts.debug {
+			// --debug always forces development (Delve against a
+			// production-mode binary is never the intent). exec.Cmd
+			// keeps the LAST duplicate, so this appended entry beats
+			// both the per-env config and the shell.
 			baseEnv = append(baseEnv, "ENVIRONMENT=development")
-			cmd.Env = baseEnv
-		} else if len(envExtraEnv) > 0 {
-			cmd.Env = baseEnv
 		}
+		// Always assign. This was previously gated on len(envExtraEnv)>0
+		// (or --debug), so an empty per-env config left cmd.Env nil and
+		// none of the injected defaults (ENVIRONMENT, DATABASE_URL,
+		// CORS_ORIGINS) could ever reach the child. With nothing to
+		// inject, baseEnv == os.Environ(), so this is also a no-op for
+		// the legacy path.
+		cmd.Env = baseEnv
 		cmd.Dir = "."
-		if err := startProcess(cfg.Name, cmd); err != nil {
+		// Declared service ports feed the port-conflict diagnosis when
+		// the server child dies (the single binary binds one listener
+		// per registered service).
+		var serverPorts []int
+		for _, svc := range servicesToRun {
+			serverPorts = append(serverPorts, svc.Port)
+		}
+		if err := startProcess(cfg.Name, cmd, serverPorts...); err != nil {
 			fmt.Printf("[run] Warning: %v\n", err)
 		}
 	}
 
-	// 3. Start Next.js frontends. PORT is force-injected from the
-	// forge.yaml-declared frontend port so the proxy can dispatch to
-	// a deterministic loopback port even if a stale PORT bled in
-	// from the parent shell. Mirrors the `forge up` host-mode shape
-	// (see buildFrontendCmd in up.go).
+	// 3. Start Next.js frontends. PORT and NEXT_PUBLIC_BASE_PATH are
+	// force-injected from the forge.yaml declaration (the source of
+	// truth for dev/prod parity) so the proxy can dispatch to a
+	// deterministic loopback port and a declared base_path is live in
+	// dev — even if stale values bled in from the parent shell. See
+	// frontendDevEnv; mirrors the `forge up` host-mode shape
+	// (buildFrontendCmd in up.go).
 	for _, fe := range frontendsToRun {
 		cmd := exec.CommandContext(ctx, "npm", "run", "dev")
 		cmd.Dir = fe.Path
-		if fe.Port > 0 {
-			cmd.Env = withForcedEnv(os.Environ(), "PORT", strconv.Itoa(fe.Port))
-		}
-		if err := startProcess(fe.Name, cmd); err != nil {
+		cmd.Env = frontendDevEnv(os.Environ(), fe)
+		if err := startProcess(fe.Name, cmd, fe.Port); err != nil {
 			fmt.Printf("[run] Warning: %v\n", err)
 		}
 	}
@@ -344,7 +581,6 @@ func runProjectDev(opts runOptions) error {
 	// sees them too, but only the first triggers the abort.
 	devGoroutineErrCh := make(chan error, 2)
 	if !opts.noProxy {
-		proxyPort := resolveProxyPort(opts.proxyPort)
 		routes := loadDevProxyRoutes(ctx, opts.env)
 		backends := buildDevProxyBackends(frontendsToRun, servicesToRun, routes)
 		if len(backends) == 0 {
@@ -378,34 +614,67 @@ func runProjectDev(opts runOptions) error {
 
 	fmt.Printf("\n[run] %d process(es) started. Press Ctrl+C to stop.\n\n", len(processes))
 
-	// Startup race: a bind failure (EADDRINUSE) hits ListenAndServe
-	// synchronously, so the goroutine sends on devGoroutineErrCh within
-	// a few hundred microseconds of Start. Give it a short window to
-	// surface before we block on sigCh — without this, the user sees
-	// "N process(es) started" first and the "dev proxy listener:" error
-	// line trails behind, making the proxy look like it might recover.
+	// reportChildExit surfaces a child that died before shutdown was
+	// requested: a loud failure naming the process and exit status, a
+	// best-effort port diagnosis (EADDRINUSE from a stale dev server is
+	// the overwhelmingly common cause of an instant frontend death),
+	// and a non-nil error so `forge run` exits nonzero instead of
+	// reporting "N process(es) started" over a corpse.
+	reportChildExit := func(p *managedProcess) error {
+		fmt.Fprintf(os.Stderr, "\n[run] FATAL: %s\n", describeChildExit(p.name, p.exitErr))
+		for _, port := range p.ports {
+			if msg := diagnosePortConflict(port); msg != "" {
+				fmt.Fprintf(os.Stderr, "[run] %s\n", msg)
+			}
+		}
+		return childExitError(p.name, p.exitErr)
+	}
+
+	// runErr, when non-nil, aborts the dev session: children are still
+	// stopped gracefully below, but runProjectDev returns it so the
+	// forge process exits nonzero.
+	var runErr error
+
+	// Startup race: a bind failure (EADDRINUSE) hits ListenAndServe —
+	// and a child that can't bind its port dies — within a few hundred
+	// microseconds of Start. Give both a short window to surface before
+	// we block on sigCh — without this, the user sees "N process(es)
+	// started" first and the failure line trails behind, making the
+	// stack look like it might recover.
 	select {
 	case err := <-devGoroutineErrCh:
 		fmt.Fprintf(os.Stderr, "[run] FATAL: %v\n", err)
-		cancel()
-		return fmt.Errorf("dev startup aborted: %w", err)
+		runErr = fmt.Errorf("dev startup aborted: %w", err)
+	case p := <-childExitCh:
+		runErr = reportChildExit(p)
 	case <-time.After(250 * time.Millisecond):
-		// Proxy bound cleanly (or the goroutine is still in flight; a
-		// later failure during the lifetime of the dev session is rare
-		// — proxy errors after bind are usually per-request, surfaced
-		// to the client, not to stdout).
+		// Proxy bound cleanly and every child survived its first
+		// moments (or a failure is still in flight and the main select
+		// below picks it up).
 	}
 
-	// Wait for signal OR a late-arriving dev-goroutine error. Late
-	// goroutine errors are rare (post-bind ListenAndServe failures only
-	// fire on accept errors that mean the OS revoked the listener
-	// socket — typically EMFILE or similar), but surfacing them is
-	// strictly better than the pre-refactor silent-drop.
-	select {
-	case <-sigCh:
-		fmt.Println("\n[run] Shutting down...")
-	case err := <-devGoroutineErrCh:
-		fmt.Fprintf(os.Stderr, "\n[run] dev proxy died: %v — shutting down\n", err)
+	if runErr == nil {
+		// Wait for a signal, a late-arriving dev-goroutine error (rare:
+		// post-bind ListenAndServe failures mean the OS revoked the
+		// listener socket — EMFILE or similar), or a child dying
+		// mid-session.
+		select {
+		case <-sigCh:
+			fmt.Println("\n[run] Shutting down...")
+		case err := <-devGoroutineErrCh:
+			fmt.Fprintf(os.Stderr, "\n[run] dev proxy died: %v — shutting down\n", err)
+		case p := <-childExitCh:
+			// Ctrl-C delivers SIGINT to the whole foreground process
+			// group, so children can die from the same keypress that is
+			// about to reach sigCh — when both are ready, the signal is
+			// the truth and the child deaths are its consequence.
+			select {
+			case <-sigCh:
+				fmt.Println("\n[run] Shutting down...")
+			default:
+				runErr = reportChildExit(p)
+			}
+		}
 	}
 	cancel()
 
@@ -422,30 +691,16 @@ func runProjectDev(opts runOptions) error {
 		}
 	}
 
-	// Wait for processes to exit with a single global timeout.
-	// Each Wait() runs in its own goroutine so the 10s budget applies to
-	// the whole set, not per-process (O(N*10s) worst case before).
-	type waitResult struct {
-		proc *managedProcess
-		done chan struct{}
-	}
-	waits := make([]waitResult, 0, len(toStop))
-	var shutdownWG sync.WaitGroup
-	for _, p := range toStop {
-		p := p
-		done := make(chan struct{})
-		waits = append(waits, waitResult{proc: p, done: done})
-		shutdownWG.Add(1)
-		go func() {
-			defer shutdownWG.Done()
-			_ = p.cmd.Wait()
-			close(done)
-		}()
-	}
-
+	// Wait for processes to exit with a single global timeout (10s for
+	// the whole set, not per-process). Each child's exit is observed by
+	// its superviseChild goroutine — the one allowed cmd.Wait call —
+	// so shutdown waits on the done channels instead of calling Wait a
+	// second time (a second Wait on the same cmd errors).
 	allDone := make(chan struct{})
 	go func() {
-		shutdownWG.Wait()
+		for _, p := range toStop {
+			<-p.done
+		}
 		close(allDone)
 	}()
 
@@ -455,14 +710,14 @@ func runProjectDev(opts runOptions) error {
 	case <-time.After(10 * time.Second):
 		// Single global timeout reached — SIGKILL anything still running
 		// in one pass, then wait for the forced exits to flush.
-		for _, w := range waits {
+		for _, p := range toStop {
 			select {
-			case <-w.done:
+			case <-p.done:
 				// Already exited.
 			default:
-				if w.proc.cmd.Process != nil {
-					fmt.Printf("[run]   %s (pid %d) did not exit after SIGTERM, killing...\n", w.proc.name, w.proc.cmd.Process.Pid)
-					_ = w.proc.cmd.Process.Kill()
+				if p.cmd.Process != nil {
+					fmt.Printf("[run]   %s (pid %d) did not exit after SIGTERM, killing...\n", p.name, p.cmd.Process.Pid)
+					_ = p.cmd.Process.Kill()
 				}
 			}
 		}
@@ -474,7 +729,7 @@ func runProjectDev(opts runOptions) error {
 	}
 
 	fmt.Println("[run] All processes stopped.")
-	return nil
+	return runErr
 }
 
 // discoverComposeDatabaseURL asks docker compose for the published host

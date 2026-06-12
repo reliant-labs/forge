@@ -1220,3 +1220,100 @@ func readGeneratedORM(t *testing.T, root, name string) string {
 	}
 	return string(content)
 }
+
+// ── M3: server-allocated integer primary keys ──────────────────────────
+//
+// Kalshi fr-fd061aed2b: Create<X> INSERTed the id column from msg.Id —
+// always 0 for BIGSERIAL rows — so every writer routed around the ORM.
+// Integer PKs are server-allocated: Create omits the id column and
+// scans the database-assigned value back into msg (RETURNING where the
+// dialect supports it, LastInsertId otherwise), mirroring the string-PK
+// ULID chokepoint.
+func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Hypothesis",
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
+				{Name: "title", Type: "string", NotNull: true},
+				{Name: "created_at", Type: "time", NotNull: true},
+				{Name: "updated_at", Type: "time", NotNull: true},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	code := readGeneratedORM(t, root, "hypothesis_orm.go")
+
+	createIdx := strings.Index(code, "func CreateHypothesis(")
+	if createIdx == -1 {
+		t.Fatal("missing CreateHypothesis")
+	}
+	create := code[createIdx:]
+	if end := strings.Index(create[1:], "\nfunc "); end >= 0 {
+		create = create[:end+1]
+	}
+
+	// The id column must NOT be in the INSERT column list or values.
+	if strings.Contains(create, `QuoteIdentifier("id")`) && !strings.Contains(create, "RETURNING") {
+		t.Error("CreateHypothesis must not INSERT the server-allocated id column")
+	}
+	if strings.Contains(create, "msg.Id,") {
+		t.Error("CreateHypothesis must not pass msg.Id as an INSERT value")
+	}
+
+	// RETURNING scan-back where supported; LastInsertId fallback otherwise.
+	if !strings.Contains(create, "dialect.SupportsReturning()") {
+		t.Error("CreateHypothesis should branch on dialect.SupportsReturning()")
+	}
+	if !strings.Contains(create, "RETURNING") {
+		t.Error("CreateHypothesis should scan the allocated id back via RETURNING")
+	}
+	if !strings.Contains(create, ".Scan(&msg.Id)") {
+		t.Error("CreateHypothesis should scan the allocated id into msg.Id")
+	}
+	if !strings.Contains(create, "LastInsertId()") {
+		t.Error("CreateHypothesis needs the LastInsertId fallback for dialects without RETURNING")
+	}
+
+	// No ULID machinery for integer PKs.
+	if strings.Contains(code, "ulid.") {
+		t.Error("integer-PK entity must not import/use ulid")
+	}
+
+	// Get/Delete keep the int64 PK signature.
+	if !strings.Contains(code, "func GetHypothesisByID(ctx context.Context, db orm.Context, id int64)") {
+		t.Error("GetHypothesisByID should take an int64 id")
+	}
+}
+
+// TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId pins the
+// non-int64 conversion on the LastInsertId fallback path.
+func TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name: "Tick",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "int32", PrimaryKey: true, NotNull: true},
+				{Name: "label", Type: "string", NotNull: true},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	code := readGeneratedORM(t, root, "tick_orm.go")
+	if !strings.Contains(code, "msg.Id = int32(") {
+		t.Error("int32 PK should convert the LastInsertId int64 before assigning")
+	}
+}

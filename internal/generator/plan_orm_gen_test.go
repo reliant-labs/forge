@@ -28,7 +28,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -196,14 +196,16 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	}
 
 	// Timestamps chokepoint: created_at/updated_at stamped in Create with
-	// time.Now().UTC(), guarded by IsZero so caller-provided values win.
+	// time.Now().UTC(). The auto-added columns are nullable → pointer
+	// struct fields, so the guard is a nil check (IsZero through a nil
+	// pointer would panic) and the stamp assigns through a local.
 	if !strings.Contains(code, "now := time.Now().UTC()") {
 		t.Error("missing timestamp stamping in Create")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
+	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
 		t.Error("missing created_at zero-guard in Create")
 	}
-	if !strings.Contains(code, "msg.UpdatedAt = now") {
+	if !strings.Contains(code, "msg.UpdatedAt = &stampUpdatedAt") {
 		t.Error("missing updated_at stamping in Create")
 	}
 
@@ -243,7 +245,7 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -329,7 +331,7 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -384,7 +386,7 @@ func TestGeneratePlanORM_TableNameOverride(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -425,7 +427,7 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -512,7 +514,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -559,20 +561,21 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Error("timestamp scan temps should use orm.NullTime, not sql.NullTime")
 	}
 
-	// Create stamps managed timestamps with time.Now().UTC(), guarded by
-	// IsZero so caller-provided values win.
+	// Create stamps managed timestamps with time.Now().UTC(). The
+	// auto-added columns are nullable pointers, so the guard is a nil
+	// check and the stamp assigns through an addressable local.
 	if !strings.Contains(code, "now := time.Now().UTC()") {
 		t.Error("missing timestamp stamping in Create")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
+	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
 		t.Error("missing created_at zero-guard in Create")
 	}
-	if !strings.Contains(code, "msg.UpdatedAt = now") {
+	if !strings.Contains(code, "msg.UpdatedAt = &stampUpdatedAt") {
 		t.Error("missing updated_at stamping in Create")
 	}
 
-	// Update re-stamps updated_at.
-	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()") {
+	// Update re-stamps updated_at (pointer-safe).
+	if !strings.Contains(code, "stampUpdatedAt := time.Now().UTC()") {
 		t.Error("UpdateEvent should stamp updated_at")
 	}
 }
@@ -580,7 +583,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 func TestGeneratePlanORM_Empty(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", nil); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", nil, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -604,7 +607,7 @@ func TestGeneratePlanORM_MultipleEntities(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -629,7 +632,7 @@ func TestGeneratePlanORM_References(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -663,7 +666,7 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -707,7 +710,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -774,7 +777,7 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -814,7 +817,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -861,8 +864,9 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	if !strings.Contains(setPartsSection, `"updated_at"`) {
 		t.Error("Update SET should include updated_at")
 	}
-	if !strings.Contains(updateCode, "msg.UpdatedAt = time.Now().UTC()") {
-		t.Error("UpdateTask should stamp updated_at before building args")
+	if !strings.Contains(updateCode, "stampUpdatedAt := time.Now().UTC()") ||
+		!strings.Contains(updateCode, "msg.UpdatedAt = &stampUpdatedAt") {
+		t.Error("UpdateTask should stamp updated_at (pointer-safe) before building args")
 	}
 }
 
@@ -889,7 +893,7 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -965,7 +969,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1008,8 +1012,10 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	if !strings.Contains(masked, "orm.UnknownFieldError{Field:") {
 		t.Error("UpdateTaskMasked should return orm.UnknownFieldError for unknown paths")
 	}
-	// updated_at is stamped on masked updates too (timestamps: true).
-	if !strings.Contains(masked, "msg.UpdatedAt = time.Now().UTC()") {
+	// updated_at is stamped on masked updates too (timestamps: true) —
+	// pointer-safe, since the auto-added column is nullable.
+	if !strings.Contains(masked, "stampUpdatedAt := time.Now().UTC()") ||
+		!strings.Contains(masked, "msg.UpdatedAt = &stampUpdatedAt") {
 		t.Error("UpdateTaskMasked should stamp updated_at")
 	}
 	// Tenant isolation + soft-delete filter carry over from UpdateTask.
@@ -1025,5 +1031,289 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	// Un-tenanted signature has no tenantID parameter.
 	if !strings.Contains(note, "func UpdateNoteMasked(ctx context.Context, db orm.Context, msg *Note, fields []string) error {") {
 		t.Error("missing un-tenanted UpdateNoteMasked signature")
+	}
+}
+
+// ── M3: type-aware managed timestamps ──────────────────────────────────
+//
+// Kalshi fr-3fba9166ba: a legacy schema stores created_at/updated_at as
+// TEXT. DetectConventions still reports timestamps:true (both columns
+// exist), but the emitter stamped time.Now().UTC()/IsZero()
+// unconditionally — `undefined: time` + `msg.CreatedAt.IsZero undefined
+// (type string)`, so `forge generate` could NEVER produce compiling
+// output for that schema. Stamping must branch on the projected Go type.
+
+// TestGeneratePlanORM_TextTimestamps_Stamping pins the string branch:
+// TEXT created_at/updated_at columns get RFC3339Nano string stamps, the
+// time import is present (stamping needs it even with zero time.Time
+// columns), and no time.Time-only constructs (IsZero) leak in.
+func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Trade",
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "ticker", Type: "string", NotNull: true},
+				// Legacy schema: timestamps stored as TEXT.
+				{Name: "created_at", Type: "string", NotNull: true},
+				{Name: "updated_at", Type: "string", NotNull: true},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	code := readGeneratedORM(t, root, "trade_orm.go")
+
+	// The struct projects the applied schema: strings stay strings.
+	if !strings.Contains(code, "CreatedAt string") {
+		t.Error("TEXT created_at should project as a string struct field")
+	}
+
+	// The stamping needs the time package even though no column is
+	// time.Time — `undefined: time` was the literal kalshi error.
+	if !strings.Contains(code, "\t\"time\"\n") {
+		t.Error("missing time import for string-timestamp stamping")
+	}
+
+	// String columns are stamped as RFC3339Nano text, guarded by the
+	// string zero value — never IsZero (undefined on string).
+	if strings.Contains(code, "IsZero()") {
+		t.Error("string timestamp columns must not use time.Time's IsZero")
+	}
+	if !strings.Contains(code, `if msg.CreatedAt == "" {`) {
+		t.Error("missing string zero-guard for created_at in Create")
+	}
+	if !strings.Contains(code, "msg.CreatedAt = now.Format(time.RFC3339Nano)") {
+		t.Error("missing RFC3339Nano created_at stamp in Create")
+	}
+	if !strings.Contains(code, "msg.UpdatedAt = now.Format(time.RFC3339Nano)") {
+		t.Error("missing RFC3339Nano updated_at stamp in Create")
+	}
+
+	// Update + masked update stamp updated_at in the column's type too.
+	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)") {
+		t.Error("Update/UpdateMasked should stamp updated_at as RFC3339Nano text")
+	}
+	if strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()\n") {
+		t.Error("string updated_at must not be assigned a bare time.Time")
+	}
+}
+
+// TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping pins the
+// pointer branches: nullable managed columns project as *time.Time /
+// *string, and the stamping must assign through a pointer — the old
+// emitter assigned a bare value to the pointer field (compile error)
+// and called IsZero on a possibly-nil pointer (runtime panic).
+func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Audit",
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				// Nullable (no NotNull): pointer struct fields.
+				{Name: "created_at", Type: "time"},
+				{Name: "updated_at", Type: "time"},
+			},
+		},
+		{
+			Name:       "Legacy",
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "created_at", Type: "string"},
+				{Name: "updated_at", Type: "string"},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	audit := readGeneratedORM(t, root, "audit_orm.go")
+	if !strings.Contains(audit, "CreatedAt *time.Time") {
+		t.Fatal("nullable created_at should be *time.Time — precondition for this test")
+	}
+	// nil-guard, not IsZero (nil pointer would panic).
+	if !strings.Contains(audit, "if msg.CreatedAt == nil {") {
+		t.Error("nullable created_at should be guarded with a nil check")
+	}
+	if strings.Contains(audit, "msg.CreatedAt.IsZero()") {
+		t.Error("nullable created_at must not call IsZero through a possibly-nil pointer")
+	}
+	// Assignment goes through a local so we can take its address.
+	if !strings.Contains(audit, "msg.CreatedAt = &") {
+		t.Error("nullable created_at stamp should assign a pointer")
+	}
+	if !strings.Contains(audit, "msg.UpdatedAt = &") {
+		t.Error("nullable updated_at stamp should assign a pointer")
+	}
+	// The bare-value assignment to a pointer field was the compile error.
+	if strings.Contains(audit, "msg.UpdatedAt = now\n") {
+		t.Error("nullable updated_at must not be assigned a bare time.Time")
+	}
+
+	legacy := readGeneratedORM(t, root, "legacy_orm.go")
+	if !strings.Contains(legacy, "CreatedAt *string") {
+		t.Fatal("nullable TEXT created_at should be *string — precondition for this test")
+	}
+	if !strings.Contains(legacy, "if msg.CreatedAt == nil {") {
+		t.Error("nullable *string created_at should be guarded with a nil check")
+	}
+	if !strings.Contains(legacy, "msg.CreatedAt = &") {
+		t.Error("nullable *string created_at stamp should assign a pointer")
+	}
+}
+
+// TestGeneratePlanORM_UnstampableTimestampsSkipped pins the safety
+// valve: a managed-timestamp column of a type the emitter can't stamp
+// (e.g. an epoch INTEGER) is left entirely alone — no stamping code, no
+// phantom time import, output still compiles.
+func TestGeneratePlanORM_UnstampableTimestampsSkipped(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Epoch",
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "name", Type: "string", NotNull: true},
+				{Name: "created_at", Type: "int64", NotNull: true},
+				{Name: "updated_at", Type: "int64", NotNull: true},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	code := readGeneratedORM(t, root, "epoch_orm.go")
+	if strings.Contains(code, "time.Now()") {
+		t.Error("unstampable timestamp types must not emit time.Now() stamping")
+	}
+	if strings.Contains(code, "\t\"time\"\n") {
+		t.Error("no time import expected when nothing references the time package")
+	}
+	if strings.Contains(code, "IsZero()") {
+		t.Error("int64 created_at must not call IsZero")
+	}
+}
+
+// readGeneratedORM reads internal/db/<name> under root, failing the test
+// on error.
+func readGeneratedORM(t *testing.T, root, name string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", name))
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", name, err)
+	}
+	return string(content)
+}
+
+// ── M3: server-allocated integer primary keys ──────────────────────────
+//
+// Kalshi fr-fd061aed2b: Create<X> INSERTed the id column from msg.Id —
+// always 0 for BIGSERIAL rows — so every writer routed around the ORM.
+// Integer PKs are server-allocated: Create omits the id column and
+// scans the database-assigned value back into msg (RETURNING where the
+// dialect supports it, LastInsertId otherwise), mirroring the string-PK
+// ULID chokepoint.
+func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name:       "Hypothesis",
+			Timestamps: true,
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "int64", PrimaryKey: true, NotNull: true},
+				{Name: "title", Type: "string", NotNull: true},
+				{Name: "created_at", Type: "time", NotNull: true},
+				{Name: "updated_at", Type: "time", NotNull: true},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	code := readGeneratedORM(t, root, "hypothesis_orm.go")
+
+	createIdx := strings.Index(code, "func CreateHypothesis(")
+	if createIdx == -1 {
+		t.Fatal("missing CreateHypothesis")
+	}
+	create := code[createIdx:]
+	if end := strings.Index(create[1:], "\nfunc "); end >= 0 {
+		create = create[:end+1]
+	}
+
+	// The id column must NOT be in the INSERT column list or values.
+	if strings.Contains(create, `QuoteIdentifier("id")`) && !strings.Contains(create, "RETURNING") {
+		t.Error("CreateHypothesis must not INSERT the server-allocated id column")
+	}
+	if strings.Contains(create, "msg.Id,") {
+		t.Error("CreateHypothesis must not pass msg.Id as an INSERT value")
+	}
+
+	// RETURNING scan-back where supported; LastInsertId fallback otherwise.
+	if !strings.Contains(create, "dialect.SupportsReturning()") {
+		t.Error("CreateHypothesis should branch on dialect.SupportsReturning()")
+	}
+	if !strings.Contains(create, "RETURNING") {
+		t.Error("CreateHypothesis should scan the allocated id back via RETURNING")
+	}
+	if !strings.Contains(create, ".Scan(&msg.Id)") {
+		t.Error("CreateHypothesis should scan the allocated id into msg.Id")
+	}
+	if !strings.Contains(create, "LastInsertId()") {
+		t.Error("CreateHypothesis needs the LastInsertId fallback for dialects without RETURNING")
+	}
+
+	// No ULID machinery for integer PKs.
+	if strings.Contains(code, "ulid.") {
+		t.Error("integer-PK entity must not import/use ulid")
+	}
+
+	// Get/Delete keep the int64 PK signature.
+	if !strings.Contains(code, "func GetHypothesisByID(ctx context.Context, db orm.Context, id int64)") {
+		t.Error("GetHypothesisByID should take an int64 id")
+	}
+}
+
+// TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId pins the
+// non-int64 conversion on the LastInsertId fallback path.
+func TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name: "Tick",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "int32", PrimaryKey: true, NotNull: true},
+				{Name: "label", Type: "string", NotNull: true},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
+		t.Fatalf("error = %v", err)
+	}
+
+	code := readGeneratedORM(t, root, "tick_orm.go")
+	if !strings.Contains(code, "msg.Id = int32(") {
+		t.Error("int32 PK should convert the LastInsertId int64 before assigning")
 	}
 }

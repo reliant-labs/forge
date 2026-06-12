@@ -143,9 +143,18 @@ func DetectConventions(t Table) Conventions {
 	if col, ok := byName[ColDeletedAt]; ok && col.Type == TypeTime {
 		c.SoftDelete = true
 	}
-	_, hasCreated := byName[ColCreatedAt]
-	_, hasUpdated := byName[ColUpdatedAt]
-	c.Timestamps = hasCreated && hasUpdated
+	// Managed timestamps are type-gated like deleted_at: the pair counts
+	// only when the generator can actually STAMP both columns — time
+	// columns (stamped as time.Time) or legacy TEXT columns (stamped as
+	// RFC3339Nano strings; kalshi fr-3fba9166ba). An exotic type (epoch
+	// INTEGER, arrays) opts the table out of managed timestamps; the
+	// columns stay plain schema instead of driving stamping code the
+	// emitter can't express.
+	stampable := func(name string) bool {
+		col, ok := byName[name]
+		return ok && !col.IsArray && (col.Type == TypeTime || col.Type == TypeString)
+	}
+	c.Timestamps = stampable(ColCreatedAt) && stampable(ColUpdatedAt)
 	if col, ok := byName[ColTenantID]; ok && col.Type == TypeString {
 		c.HasTenant = true
 		c.TenantColumn = ColTenantID

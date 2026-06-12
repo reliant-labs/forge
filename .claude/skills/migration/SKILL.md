@@ -104,6 +104,21 @@ Triage every grep hit. README/`go install` references should remain canonical; r
 - **Generated proto descriptors and sed do not mix.** A blanket `sed s|forge|forge-next|` rewrites the `go_package` string inside `*.pb.go` rawDesc bytes but does NOT update the varint length prefix → runtime panic in `protobuf/internal/filedesc.unmarshalSeedOptions`. Regenerate via `buf generate` instead of sed-rewriting compiled descriptors.
 - **Manifest files (`pack.yaml`, etc.) are a third file class** alongside `.go` and templates. Pack manifests have a top-level `dependencies:` list of Go module paths. Include manifests in the rewrite glob.
 
+## Entity strategy: your schema is already the truth
+
+You arrive with `db/migrations/` already authoritative — and in forge,
+that IS the entity model. SQL is the schema language: `forge generate`
+applies the migrations to an in-memory shadow database, introspects the
+tables, and projects entity structs, ORM, and CRUD wiring from them.
+There is no proto-side schema declaration (the legacy
+`(forge.v1.entity)` annotations are retired and ignored). Copy the
+migrations as-is, then per table: declare the five CRUD RPCs in the
+service proto if you want generated CRUD, or declare nothing and keep
+the table as plain schema for hand-written code. Keep table-defining DDL
+in the portable pg/sqlite subset (`DEFAULT (now())`, no `::type` casts)
+— the shadow apply and your tests run the migrations on in-memory
+SQLite. See the `db` skill.
+
 ## Halt-and-report rule on forge bugs
 
 If you hit a forge issue mid-migration, **halt the migration**, file/fix the forge bug, then resume. Don't paper over — friction is exactly what dogfooding is for. Forge improvements take priority over completing the migration on schedule.

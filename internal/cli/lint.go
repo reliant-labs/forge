@@ -16,7 +16,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
-	"github.com/reliant-labs/forge/internal/linter/dblint"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
@@ -26,7 +25,6 @@ import (
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
 	contract          bool
-	db                bool
 	migrationSafety   bool
 	fix               bool
 	exportedVars      bool
@@ -94,7 +92,6 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
 	cmd.Flags().BoolVar(&flags.exportedVars, "exported-vars", false, "Run exported vars linter")
-	cmd.Flags().BoolVar(&flags.db, "db", false, "Run DB entity lint rules on proto/db/ files")
 	cmd.Flags().BoolVar(&flags.migrationSafety, "migration-safety", false, "Run SQL migration safety checks")
 	cmd.Flags().BoolVar(&flags.conventions, "conventions", false, "Run forge convention rules on proto files")
 	cmd.Flags().BoolVar(&flags.frontendPacks, "frontend-packs", false, "Flag third-party UI imports in frontend pack templates (warnings only)")
@@ -163,17 +160,6 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
-	}
-	if flags.db {
-		cfg, err := loadProjectConfig()
-		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
-		if cfg != nil && !cfg.Features.ORMEnabled() {
-			fmt.Println("orm feature is disabled in forge.yaml")
-			return nil
-		}
-		return runDBLint()
 	}
 	if flags.migrationSafety {
 		cfg, err := loadProjectConfig()
@@ -365,31 +351,6 @@ func resolveContractLintBinary(ctx context.Context) (string, error) {
 
 	fmt.Printf("Built %s\n", localBin)
 	return localBin, nil
-}
-
-// runDBLint runs advisory lint rules on proto/db/ entity definitions.
-// Findings are printed as warnings and never cause a non-zero exit.
-func runDBLint() error {
-	fmt.Println("🔍 Running DB entity lint rules...")
-	fmt.Println()
-
-	protoDBDir := filepath.Join("proto", "db")
-	if _, err := os.Stat(protoDBDir); os.IsNotExist(err) {
-		fmt.Println("⚠️  No proto/db/ directory found — skipping DB lint")
-		return nil
-	}
-
-	result, err := dblint.LintProtoDir(protoDBDir)
-	if err != nil {
-		return fmt.Errorf("DB lint failed: %w", err)
-	}
-
-	fmt.Print(result.FormatText())
-
-	if !result.HasWarnings() {
-		fmt.Println("✅ No DB lint warnings!")
-	}
-	return nil
 }
 
 // runConventionLint runs the forge-convention analyzers (forgeconv) over
@@ -869,16 +830,6 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 		hasFailed = true
 	}
 
-	// 6. DB entity lint (advisory — warnings only, does not fail the build)
-	if cfg != nil && !cfg.Features.ORMEnabled() {
-		fmt.Println("⚠️  orm feature disabled — skipping DB lint")
-	} else if dirExists("proto/db") {
-		if err := runDBLint(); err != nil {
-			// DB lint errors are non-fatal; they print warnings but don't block.
-			fmt.Fprintf(os.Stderr, "⚠️  DB lint: %v\n", err)
-		}
-	}
-
 	// 7. SQL migration safety lint
 	if cfg != nil && !cfg.Features.MigrationsEnabled() {
 		fmt.Println("⚠️  migrations feature disabled — skipping migration safety lint")
@@ -934,17 +885,6 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 		dirExists(filepath.Join("internal", "packs")) {
 		if err := runBannersLint(); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Banner lint: %v\n", err)
-		}
-	}
-
-	// 12. Proto-vs-ORM staleness — warns when gen/db/v1/*.pb.go has no
-	// matching .pb.orm.go sibling or when the .pb.go is newer than every
-	// sibling. This catches the "ran buf generate alone" pitfall (see
-	// the proto skill for the full rationale). Warnings only; never
-	// gates the build.
-	if dirExists(filepath.Join("gen", "db", "v1")) {
-		if err := runORMSyncLint("."); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  proto-orm sync lint: %v\n", err)
 		}
 	}
 

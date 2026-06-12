@@ -85,9 +85,8 @@ func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
 			Services: []codegen.ServiceDef{{Name: "AdminServerService"}},
 		},
 		{
-			// "entities" fragment — what the proto/db plugin invocation
-			// would emit.
-			Entities: []codegen.EntityDef{{Name: "Workspace", TableName: "workspaces"}},
+			// A second services fragment from another plugin invocation.
+			Services: []codegen.ServiceDef{{Name: "WorkspaceService"}},
 		},
 		{
 			// "configs" fragment — what the proto/config plugin invocation
@@ -122,11 +121,8 @@ func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
 		t.Fatalf("parse merged descriptor: %v", err)
 	}
 
-	if len(got.Services) != 1 || got.Services[0].Name != "AdminServerService" {
+	if len(got.Services) != 2 || got.Services[0].Name != "AdminServerService" || got.Services[1].Name != "WorkspaceService" {
 		t.Errorf("services not merged correctly: %+v", got.Services)
-	}
-	if len(got.Entities) != 1 || got.Entities[0].Name != "Workspace" {
-		t.Errorf("entities not merged correctly: %+v", got.Entities)
 	}
 	if len(got.Configs) != 1 || got.Configs[0].Name != "Config" {
 		t.Errorf("configs not merged correctly: %+v", got.Configs)

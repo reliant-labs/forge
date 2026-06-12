@@ -162,7 +162,6 @@ func (g *ProjectGenerator) Generate() error {
 			"proto",
 			"proto/api",
 			"proto/services",
-			"proto/db",
 			"proto/config/v1",
 			"proto/forge",
 			"proto/forge/v1",
@@ -220,14 +219,13 @@ func (g *ProjectGenerator) Generate() error {
 	}
 
 	if g.Features.CodegenEnabled() {
-		// proto/api and proto/db are reserved scaffold directories used by
-		// 'forge generate': proto/api holds cross-service message definitions
-		// and proto/db holds entity definitions consumed by protoc-gen-forge-orm.
-		// Populate each with a README so the directory is tracked by git and
-		// users understand what belongs there.
+		// proto/api is a reserved scaffold directory used by 'forge
+		// generate' for cross-service message definitions. Populate it
+		// with a README so the directory is tracked by git and users
+		// understand what belongs there. (Entity protos are retired:
+		// entities are projections of db/migrations.)
 		protoDirReadmes := map[string]string{
 			filepath.Join(g.Path, "proto", "api", "README.md"): "# proto/api\n\nShared API message definitions (e.g. common request/response types)\nreferenced by multiple services. Files placed here are compiled into\n`gen/api/` by `forge generate`.\n",
-			filepath.Join(g.Path, "proto", "db", "README.md"):  "# proto/db\n\nEntity (database model) proto definitions. Files placed here are\nconsumed by `protoc-gen-forge-orm` to generate typed ORM bindings and\nmigrations. See `forge generate`.\n",
 		}
 		for p, body := range protoDirReadmes {
 			if err := os.WriteFile(p, []byte(body), 0644); err != nil {

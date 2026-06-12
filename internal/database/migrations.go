@@ -44,13 +44,6 @@ func CreateMigration(ctx context.Context, name, dir string, opts *MigrationOptio
 		upContents = GenerateContextComment(migCtx)
 	}
 
-	// If --from-proto, append CREATE TABLE SQL for each proto model.
-	if opts.FromProto && migCtx != nil && len(migCtx.ProtoModels) > 0 {
-		for _, m := range migCtx.ProtoModels {
-			upContents += ProtoToCreateTable(m) + "\n"
-		}
-	}
-
 	downContents := fmt.Sprintf("-- Rollback: %s\n-- Write rollback SQL here.\n\n", sanitizedName)
 
 	if err := writeNewFile(upPath, upContents); err != nil {

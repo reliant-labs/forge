@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/database"
 )
 
@@ -50,23 +49,17 @@ func newDBCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "db",
 		Short: "Database and migration commands",
-		Long: `Manage database migrations and contract-sync workflows.
+		Long: `Manage database migrations.
 
 Forge uses a migration-first database model:
 - Checked-in SQL migrations in db/migrations/ are the source of truth
 - golang-migrate is the canonical migration runner
-- Proto DB entities are generated from, or validated against, the migrated schema
-
-The db command includes migration lifecycle commands today plus placeholder
-command surfaces for schema introspection, proto sync, and ORM codegen so teams
-can standardize on the intended workflow shape before those implementations land.`,
+- Entity types are projections of the applied schema (forge generate)`,
 	}
 
 	cmd.AddCommand(newDBMigrationCommand())
 	cmd.AddCommand(newDBMigrateCommand())
 	cmd.AddCommand(newDBIntrospectCommand())
-	cmd.AddCommand(newDBProtoCommand())
-	cmd.AddCommand(newDBCodegenCommand())
 	cmd.AddCommand(newDBSquashCommand())
 
 	return cmd
@@ -386,10 +379,8 @@ func stripPSQLMeta(in string) string {
 // newDBMigrationCommand creates the migration subcommand.
 func newDBMigrationCommand() *cobra.Command {
 	var (
-		migDir    string
-		dsn       string
-		protoDir  string
-		fromProto bool
+		migDir string
+		dsn    string
 	)
 
 	migrationCmd := &cobra.Command{
@@ -403,16 +394,12 @@ immediately write the migration SQL.
 
 Context includes:
   - Current schema (parsed from existing migrations, or from DB with --dsn)
-  - Proto model definitions (scanned from proto/ or --proto-dir)
   - Previous migration content
   - Migration history
-  - Schema diff (proto models vs current schema)
 
 Examples:
   forge db migration new add_users_table
   forge db migration new add_preferences --dsn "$DATABASE_URL"
-  forge db migration new add_preferences --proto-dir proto/db/v1/
-  forge db migration new add_preferences --from-proto
   forge db migration new "backfill account status" --dir db/migrations`,
 	}
 
@@ -422,17 +409,13 @@ Examples:
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := &database.MigrationOptions{
-				DSN:       dsn,
-				ProtoDir:  protoDir,
-				FromProto: fromProto,
+				DSN: dsn,
 			}
 			return database.CreateMigration(cmd.Context(), args[0], migDir, opts)
 		},
 	}
 	newCmd.Flags().StringVar(&migDir, "dir", migrationsDefault(), "Migrations directory")
 	newCmd.Flags().StringVar(&dsn, "dsn", "", "Database connection string for live schema introspection")
-	newCmd.Flags().StringVar(&protoDir, "proto-dir", "", "Directory to scan for proto files (default: proto/)")
-	newCmd.Flags().BoolVar(&fromProto, "from-proto", false, "Auto-generate CREATE TABLE SQL from proto message definitions")
 	migrationCmd.AddCommand(newCmd)
 
 	return migrationCmd
@@ -621,90 +604,6 @@ Examples:
 	return cmd
 }
 
-func newDBProtoCommand() *cobra.Command {
-	protoCmd := &cobra.Command{
-		Use:   "proto",
-		Short: "Sync or validate proto DB contracts",
-		Long: `Sync or validate proto DB entity contracts against the migrated schema.
-
-Examples:
-  forge db proto sync-from-db --dsn "$DATABASE_URL"
-  forge db proto sync-from-db --dsn "$DATABASE_URL" --table users --out proto/db/v1/
-  forge db proto check --dsn "$DATABASE_URL"`,
-	}
-
-	// sync-from-db subcommand
-	var (
-		syncDSN   string
-		syncOut   string
-		syncTable string
-	)
-	syncCmd := &cobra.Command{
-		Use:   "sync-from-db",
-		Short: "Generate or update proto DB entities from the migrated schema",
-		Long: `Connect to the database, introspect the schema, and generate proto message
-definitions with entity_options and field_options annotations.
-
-One .proto file is generated per table in the output directory.
-
-Examples:
-  forge db proto sync-from-db --dsn "postgres://user:pass@localhost/mydb?sslmode=disable"
-  forge db proto sync-from-db --dsn "$DATABASE_URL" --table users
-  forge db proto sync-from-db --dsn "$DATABASE_URL" --out proto/db/v1/`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBProtoSync(cmd.Context(), syncDSN, syncOut, syncTable)
-		},
-	}
-	syncCmd.Flags().StringVar(&syncDSN, "dsn", "", "PostgreSQL connection string (required)")
-	syncCmd.Flags().StringVar(&syncOut, "out", "proto/db/v1/", "Output directory for proto files")
-	syncCmd.Flags().StringVar(&syncTable, "table", "", "Sync a specific table only")
-	_ = syncCmd.MarkFlagRequired("dsn")
-	protoCmd.AddCommand(syncCmd)
-
-	// check subcommand
-	var (
-		checkDSN      string
-		checkProtoDir string
-	)
-	checkCmd := &cobra.Command{
-		Use:   "check",
-		Short: "Validate proto DB entities against the migrated schema",
-		Long: `Compare the live database schema against proto entity definitions and report
-any drift: missing tables, missing columns, type mismatches, or constraint
-differences.
-
-Examples:
-  forge db proto check --dsn "postgres://user:pass@localhost/mydb?sslmode=disable"
-  forge db proto check --dsn "$DATABASE_URL" --proto-dir proto/db/`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDBProtoCheck(cmd.Context(), checkDSN, checkProtoDir)
-		},
-	}
-	checkCmd.Flags().StringVar(&checkDSN, "dsn", "", "PostgreSQL connection string (required)")
-	checkCmd.Flags().StringVar(&checkProtoDir, "proto-dir", "proto/db/", "Directory containing proto DB entity files")
-	_ = checkCmd.MarkFlagRequired("dsn")
-	protoCmd.AddCommand(checkCmd)
-
-	return protoCmd
-}
-
-func newDBCodegenCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "codegen",
-		Short: "Generate ORM code from proto DB entities",
-		Long: `Run buf generate with protoc-gen-forge for proto/db/ entity protos.
-
-This is equivalent to the ORM generation step in 'forge generate' but can be
-run independently when only DB code needs regeneration.
-
-Examples:
-  forge db codegen`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOrmGenerate(".")
-		},
-	}
-}
-
 func runDBIntrospect(ctx context.Context, dsn, tableFilter, format string) error {
 	db, err := database.ConnectDB(ctx, dsn)
 	if err != nil {
@@ -734,70 +633,6 @@ func runDBIntrospect(ctx context.Context, dsn, tableFilter, format string) error
 		fmt.Println(out)
 	default:
 		fmt.Print(database.FormatSchemaText(tables))
-	}
-
-	return nil
-}
-
-func runDBProtoSync(ctx context.Context, dsn, outputDir, tableFilter string) error {
-	db, err := database.ConnectDB(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = db.Close() }()
-
-	tables, err := database.IntrospectSchema(ctx, db, tableFilter)
-	if err != nil {
-		return fmt.Errorf("introspecting schema: %w", err)
-	}
-
-	if len(tables) == 0 {
-		if tableFilter != "" {
-			return fmt.Errorf("table %q not found", tableFilter)
-		}
-		fmt.Println("No tables found in the public schema.")
-		return nil
-	}
-
-	// Determine Go module path for go_package option.
-	goModule, err := codegen.GetModulePath(".")
-	if err != nil {
-		return fmt.Errorf("reading go.mod for module path: %w", err)
-	}
-
-	if err := database.GenerateProtoFiles(tables, outputDir, goModule); err != nil {
-		return fmt.Errorf("generating proto files: %w", err)
-	}
-
-	for _, t := range tables {
-		fmt.Printf("  ✅ %s/%s.proto\n", outputDir, t.Name)
-	}
-	fmt.Printf("\nGenerated %d proto file(s) in %s\n", len(tables), outputDir)
-
-	return nil
-}
-
-func runDBProtoCheck(ctx context.Context, dsn, protoDir string) error {
-	db, err := database.ConnectDB(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = db.Close() }()
-
-	tables, err := database.IntrospectSchema(ctx, db, "")
-	if err != nil {
-		return fmt.Errorf("introspecting schema: %w", err)
-	}
-
-	result, err := database.CompareSchemaToProtos(tables, protoDir)
-	if err != nil {
-		return fmt.Errorf("comparing schema to protos: %w", err)
-	}
-
-	fmt.Print(result.FormatText())
-
-	if !result.IsClean() {
-		return fmt.Errorf("schema drift detected: %d difference(s)", len(result.Diffs))
 	}
 
 	return nil

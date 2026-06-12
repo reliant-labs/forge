@@ -7,65 +7,56 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// EntityDefToPlanEntity converts an EntityDef (from proto parsing) to a
-// PlanEntity (used by ORM generation).
+// EntityDefToPlanEntity converts an EntityDef to the PlanEntity shape
+// the ORM generator consumes.
 //
-// Field semantics (primary key, tenant key, foreign key) are sourced from
-// the EntityDef itself, which was already populated from explicit
-// (forge.v1.entity) / (forge.v1.field) annotations during proto parsing.
-// No name-based heuristics are applied here — `entity.PkField` is the
-// only thing that determines which field is marked PrimaryKey, regardless
-// of whether it happens to be named "id" or something else.
+// The field source is the entity's COLUMNS — the introspected applied
+// schema — never the wire message. A column added by a hand-written
+// migration appears here (and on the generated struct) without any
+// proto involvement; a wire-only field never reaches the database
+// layer. SQL is the schema truth.
 func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 	pe := config.PlanEntity{
 		Name:       entity.Name,
 		TableName:  entity.TableName,
 		SoftDelete: entity.SoftDelete,
 		Timestamps: entity.Timestamps,
-		Fields:     make([]config.PlanEntityField, 0, len(entity.Fields)),
+		Fields:     make([]config.PlanEntityField, 0, len(entity.Columns)),
 	}
 
-	for _, f := range entity.Fields {
-		// Message-typed fields carry their real type name in MessageType
-		// (ProtoType is the unmappable literal "message"). Using it here is
-		// what lets google.protobuf.Timestamp columns map to TIMESTAMPTZ /
-		// *timestamppb.Timestamp instead of degrading to TEXT/string.
-		// The "repeated " prefix (set by the descriptor for list fields)
-		// is preserved around the substitution so the ORM/migration
-		// generators see e.g. "repeated string" (stored as JSON) or
-		// "repeated google.protobuf.Timestamp" (rejected loudly with the
-		// join-table workaround named).
-		base, repeated := strings.CutPrefix(f.ProtoType, "repeated ")
-		if base == "message" && f.MessageType != "" {
-			base = f.MessageType
-		}
-		fieldType := base
-		if repeated {
-			fieldType = "repeated " + base
-		}
+	for _, c := range entity.Columns {
 		pf := config.PlanEntityField{
-			Name: f.Name,
-			Type: fieldType,
+			Name:       c.Name,
+			Type:       planTypeForColumn(c),
+			PrimaryKey: c.IsPK,
+			NotNull:    c.NotNull,
+			Default:    c.Default,
 		}
-
-		if entity.PkField != "" && f.Name == entity.PkField {
-			pf.PrimaryKey = true
-			pf.NotNull = true
-		}
-
-		if entity.HasTenant && f.Name == entity.TenantFieldName {
+		if entity.HasTenant && c.Name == entity.TenantColumnName {
 			pf.TenantKey = true
-			pf.NotNull = true
 		}
-
-		if f.IsFK {
-			pf.References = f.FKTable + ".id"
-		}
-
 		pe.Fields = append(pe.Fields, pf)
 	}
 
 	return pe
+}
+
+// planTypeForColumn maps an introspected column to the plan type
+// vocabulary (canonical schema types; see planFieldGoType in
+// internal/generator).
+func planTypeForColumn(c EntityColumn) string {
+	if c.IsArray {
+		if c.Type == "int64" {
+			return "[]int64"
+		}
+		return "[]string"
+	}
+	switch c.Type {
+	case "int64", "float64", "bool", "time", "json", "bytes":
+		return c.Type
+	default:
+		return "string"
+	}
 }
 
 // EntityDefsToPlanEntities converts a slice of EntityDef to a slice of PlanEntity.

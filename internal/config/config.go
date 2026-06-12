@@ -728,7 +728,7 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 //   - cli:               build/ci/docs enabled; everything else disabled.
 //   - library:           ci/docs enabled; everything else disabled.
 type FeaturesConfig struct {
-	ORM           *bool `yaml:"orm,omitempty"`           // protoc-gen-forge-orm codegen
+	ORM           *bool `yaml:"orm,omitempty"`           // ORM projection of db/migrations (internal/db/*_orm.go)
 	Codegen       *bool `yaml:"codegen,omitempty"`       // service/handler codegen from protos
 	Migrations    *bool `yaml:"migrations,omitempty"`    // auto-generate SQL migrations
 	CI            *bool `yaml:"ci,omitempty"`            // generate CI/CD workflows

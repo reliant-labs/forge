@@ -9,9 +9,9 @@ description: Write Connect RPC handlers — proto service definitions, error han
 
 Define RPCs in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions matter — they trigger auto-generated features:
 
-- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) matching an entity defined in the service proto → thin per-RPC shims are generated in `handlers_crud_gen.go`. Each shim is a single `crud.HandleX(crud.XOp[Req, Resp, Ent]{...})(ctx, req)` call. The lifecycle (auth check, tenant check, error mapping, cursor encode/decode, pagination clamp, order-by validation) lives in `github.com/reliant-labs/forge/pkg/crud`; the shim only wires the per-entity bits (proto→entity field copy, `db.<Name>` repository call, response packing). See `pkg/crud/doc.go` for the full surface.
+- **CRUD methods** (`Create<Entity>`, `Get<Entity>`, `List<Entities>`, `Update<Entity>`, `Delete<Entity>`) whose entity has a matching table in the applied `db/migrations/` schema (the CRUD RPCs are the wire half of entity detection; the pluralized snake_case table is the storage half) → per-RPC op constructors plus generated `<entity>ToProto`/`<entity>FromProto` conversions land in `handlers_crud_ops_gen.go`, and thin delegations are scaffolded once into the user-owned `handlers_crud.go` (`return crud.HandleCreate(s.crudCreateItemOp())(ctx, req)`). The lifecycle (auth check, tenant check, error mapping, cursor encode/decode, pagination clamp, order-by validation) lives in `github.com/reliant-labs/forge/pkg/crud`. CRUD RPCs with no matching table generate honest Unimplemented stubs — create the table first (`forge add entity` or a migration). See `pkg/crud/doc.go` for the full surface.
 - **AIP-158 pagination fields** (`page_size`, `page_token`, `next_page_token`) → cursor-based pagination is auto-generated.
-- **`optional` filter fields** on List requests → query filters are auto-generated (`search` → ILIKE, others → exact match).
+- **`optional` filter fields** on List requests → query filters are auto-generated (`search` → ILIKE across the table's text columns, others → exact match against a real column).
 - **`required_roles` annotation** → per-method RBAC is auto-generated in `authorizer_gen.go`.
 - **`idempotency_key` annotation** → signals callers to pass an `Idempotency-Key` header.
 

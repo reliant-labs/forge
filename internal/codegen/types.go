@@ -40,7 +40,13 @@ type Method struct {
 	ClientStreaming bool
 	ServerStreaming bool
 	AuthRequired    bool     // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
-	RequiredRoles   []string // from forge.options.v1.method_options.required_roles
+	// RequiredRoles is the per-method role allow-list. NO proto annotation
+	// populates it — forge.v1.MethodOptions has no required_roles field;
+	// role policy is code (the user-owned handlers/<svc>/authorizer.go),
+	// not proto. The field exists so the authorizer table shape can carry
+	// roles if a non-proto source ever supplies them; today it is always
+	// empty in parsed descriptors.
+	RequiredRoles []string
 	// Errors records the Connect/gRPC error codes this method may return,
 	// derived from (forge.v1.method).errors. Values match connect.Code
 	// names (e.g. "NotFound", "PermissionDenied"). Surfaced through

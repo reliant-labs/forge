@@ -57,7 +57,7 @@ import type { ReactNode } from "react";
 
 // ---- Typed columns ----
 // One entry per renderable proto field. Adding/removing a field in the
-// proto and re-running `forge generate --force --reset-tier2` regenerates
+// proto and re-running `forge generate --reset-tier2` regenerates
 // this list; hand-edit freely otherwise (the file is yours).
 type Column = {
   key: keyof {{.EntityName}} & string;

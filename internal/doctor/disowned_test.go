@@ -9,8 +9,9 @@ import (
 	"testing"
 )
 
-// writeChecksums writes a structured .forge/checksums.json into dir.
-func writeChecksums(t *testing.T, dir string, files map[string]map[string]any) {
+// writeDisowned writes a .forge/disowned.json into dir. files maps
+// project-relative paths to their disown records.
+func writeDisowned(t *testing.T, dir string, files map[string]map[string]any) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
 		t.Fatal(err)
@@ -19,7 +20,7 @@ func writeChecksums(t *testing.T, dir string, files map[string]map[string]any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".forge", "checksums.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".forge", "disowned.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -27,52 +28,42 @@ func writeChecksums(t *testing.T, dir string, files map[string]map[string]any) {
 func TestCheckDisownedFiles(t *testing.T) {
 	tests := []struct {
 		name       string
-		files      map[string]map[string]any // nil → no checksums.json at all
+		files      map[string]map[string]any // nil → no disowned.json at all
 		wantStatus Status
 		wantInMsg  string
 		wantInEvid []string
 	}{
 		{
-			name:       "no checksums file — pass",
+			// The steady state: a project with no disowns has NO
+			// .forge/disowned.json at all (Save deletes it when empty).
+			name:       "no disowned.json — pass",
 			files:      nil,
-			wantStatus: StatusPass,
-			wantInMsg:  "no disowned generated files",
-		},
-		{
-			name: "no disowned files — pass",
-			files: map[string]map[string]any{
-				"pkg/app/wire_gen.go": {"hash": "abc", "tier": 1},
-			},
 			wantStatus: StatusPass,
 			wantInMsg:  "no disowned generated files",
 		},
 		{
 			name: "disowned files — informational PASS with paths and re-adopt hint",
 			files: map[string]map[string]any{
-				"pkg/app/wire_gen.go":  {"hash": "abc", "tier": 2, "disowned": true},
-				"pkg/app/bootstrap.go": {"hash": "def", "tier": 2, "disowned": true},
-				"pkg/app/app_gen.go":   {"hash": "ghi", "tier": 1},
+				"pkg/app/wire_gen.go":  {"reason": "custom pool wiring", "disowned_at": "2026-06-10T00:00:00Z"},
+				"pkg/app/bootstrap.go": {"reason": "legacy port", "disowned_at": "2026-06-10T00:00:00Z"},
 			},
 			wantStatus: StatusPass,
 			wantInMsg:  "2 disowned generated file(s)",
 			wantInEvid: []string{"pkg/app/bootstrap.go", "pkg/app/wire_gen.go"},
 		},
 		{
-			name: "legacy forked entry counts as disowned (pre-migration truth)",
+			// Legacy `forked: true` manifest entries are converted to
+			// disowned.json records by the legacy-manifest migration on
+			// the next `forge generate` — doctor reads the one converted
+			// source of truth (the pre-migration manifest is invisible
+			// here by design; the migration is automatic and loud).
+			name: "migrated legacy fork shows as disowned",
 			files: map[string]map[string]any{
-				"pkg/app/wire_gen.go": {"hash": "abc", "tier": 1, "forked": true},
+				"pkg/app/wire_gen.go": {"reason": "migrated from legacy .forge/checksums.json (legacy fork-era entry; the fork state was removed)", "disowned_at": "2026-06-01T00:00:00Z"},
 			},
 			wantStatus: StatusPass,
 			wantInMsg:  "1 disowned generated file(s)",
 			wantInEvid: []string{"pkg/app/wire_gen.go"},
-		},
-		{
-			name: "ordinary tier-2 starter is not disowned — pass",
-			files: map[string]map[string]any{
-				"handlers/echo/handlers_crud_gen_test.go": {"hash": "abc", "tier": 2},
-			},
-			wantStatus: StatusPass,
-			wantInMsg:  "no disowned generated files",
 		},
 	}
 
@@ -80,7 +71,7 @@ func TestCheckDisownedFiles(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			if tt.files != nil {
-				writeChecksums(t, dir, tt.files)
+				writeDisowned(t, dir, tt.files)
 			}
 			env := &Environment{ProjectDir: dir}
 			res := CheckDisownedFiles(context.Background(), env)

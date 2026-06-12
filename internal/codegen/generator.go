@@ -1107,7 +1107,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		}
 		// Runtime name is the kebab form of the original svc.Name (proto
 		// PascalCase) — matches what cobra subcommands pass to runServer
-		// (cmd-shared-service.go.tmpl uses {{.ServiceName}} which is the
+		// (cmd-services-gen.go.tmpl uses {{.Name}} which is the
 		// kebab form from forge.yaml). Pre-2026-04-30 this was derived
 		// from the snake-case package name, which silently dropped the cobra
 		// invocation under shared-binary mode (admin-server vs admin_server).

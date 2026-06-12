@@ -44,6 +44,7 @@ func newGenerateCmd() *cobra.Command {
 		strict          bool
 		verbose         bool
 		planOnly        bool
+		noHeal          bool
 		steps           string
 		deprecatedScope string // hidden alias for --steps, kept for one release
 	)
@@ -175,6 +176,7 @@ forensics, parallel-lane and migration escape hatches); run
 				TemplatesOnly:   templatesOnly,
 				Strict:          strict,
 				Verbose:         verbose,
+				NoHeal:          noHeal,
 				Steps:           steps,
 			})
 			generateMu.Unlock()
@@ -233,6 +235,7 @@ forensics, parallel-lane and migration escape hatches); run
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
+	cmd.Flags().BoolVar(&noHeal, "no-heal", false, "Treat on-disk content matching a PRIOR forge render as a hand-edit (trips the Tier-1 stomp guard) instead of auto-healing it to the current template. Use when a deliberate revert hash-collides with checksum history.")
 	// Deprecated alias for --steps. The flag previously called --scope
 	// was renamed in this release to free up the word "scope" for the
 	// file-ownership concept (see internal/checksums/inspector.go).
@@ -265,6 +268,7 @@ forensics, parallel-lane and migration escape hatches); run
 		"strict",            // pipeline-hardening mode for forge CI/dev
 		"plan",              // pipeline introspection (debugging gates)
 		"skip-config-check", // parallel-lane / mid-migration escape hatch
+		"no-heal",           // strict heal opt-out; the heal notice itself teaches it
 	)
 
 	// `forge generate unfork` survives ONE release as legacy-fork
@@ -418,6 +422,19 @@ type pipelineFlags struct {
 	// for "why didn't generate touch X?" questions without requiring
 	// --plan.
 	Verbose bool
+
+	// NoHeal (--no-heal) disables the checksum-history auto-heal for
+	// this run: on-disk content that matches a PRIOR forge render (but
+	// not the latest) is treated as a hand-edit — the Tier-1 stomp
+	// guard reports it (flagged as a historical match) and writers skip
+	// it — instead of being silently classified as stale codegen and
+	// regenerated. Escape hatch for the hash-collision-with-history
+	// case (FRICTION cp-forge fr-2c1c2328c7: a deliberate revert of
+	// pkg/app/bootstrap.go equaled a prior render and was reverted).
+	// Default off: auto-heal is what lets `forge upgrade` move stale
+	// codegen forward without --force — but it is always LOUD
+	// (checksums.HealNoticeFn), and the notice teaches this flag.
+	NoHeal bool
 }
 
 // runGeneratePipelineFlags is the canonical entrypoint. Both the legacy
@@ -452,9 +469,14 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// hand-edits — the historic safe default. With --reset-tier2 --yes,
 	// the hook auto-approves; without --yes it prompts per file.
 	checksums.ResetTier2State()
-	// Per-run side-render redirect tracking (--explain-drift) starts
-	// empty on every invocation.
+	// Per-run side-render redirect tracking (--explain-drift), the
+	// heal-notice dedupe set, and the --no-heal strict mode start
+	// empty/off on every invocation.
 	checksums.ResetPerRunState()
+	if flags.NoHeal {
+		fmt.Println("⚠️  --no-heal: on-disk content matching a PRIOR forge render is treated as a hand-edit (auto-heal off)")
+		checksums.DisableAutoHeal = true
+	}
 	if flags.ResetTier2 {
 		fmt.Println("⚠️  --reset-tier2: hand-edited Tier-2 scaffolds will be overwritten (prompts per file unless --yes is set)")
 		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)

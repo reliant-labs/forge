@@ -98,7 +98,13 @@ func formatTier1DriftReport(drift []checksums.Tier1DriftEntry) string {
 	for _, d := range drift {
 		fmt.Fprintf(&b, "  • %s\n", d.Path)
 		fmt.Fprintf(&b, "      recorded: %s\n", short(d.RecordedHash))
-		fmt.Fprintf(&b, "      current:  %s (no match in %d prior render(s))\n", short(d.OnDiskHash), d.HistoryDepth)
+		if d.HistoricalMatch {
+			// Only reachable under --no-heal: the content matches a PRIOR
+			// render, which the default mode would auto-heal (loudly).
+			fmt.Fprintf(&b, "      current:  %s (matches a prior forge render — reported because --no-heal; a default run would auto-heal it)\n", short(d.OnDiskHash))
+		} else {
+			fmt.Fprintf(&b, "      current:  %s (no match in %d prior render(s))\n", short(d.OnDiskHash), d.HistoryDepth)
+		}
 		if hint := tier1ExtensionPointHint(d.Path); hint != "" {
 			fmt.Fprintf(&b, "      ↪ %s\n", hint)
 		}

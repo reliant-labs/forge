@@ -42,6 +42,7 @@ type derivedFeatureDefaults struct {
 	hotReload     bool
 	packs         bool
 	starters      bool
+	deploy        bool
 }
 
 // DeriveFeatureDefaults computes the default enabled/disabled state of
@@ -59,6 +60,7 @@ type derivedFeatureDefaults struct {
 //	hot_reload    ⇔ kind == service
 //	packs         ⇔ kind == service
 //	starters      ⇔ kind == service
+//	deploy        ⇔ kind == service
 //
 // "database driver configured" means Database.Driver after section
 // defaulting — i.e. postgres for a service project unless the user
@@ -67,7 +69,17 @@ type derivedFeatureDefaults struct {
 // all-enabled default; for cli/library kinds the rules reproduce the
 // per-kind matrix that `forge new --kind` used to write out explicitly.
 //
-// Experimental features (deploy, ingress, external_builds, operators,
+// deploy derives from kind, NOT from a deploy/kcl/ directory probe.
+// This is deliberate: derivation is intentionally pure project-shape —
+// config load must not become order- or cwd-dependent by sniffing the
+// filesystem. The scaffold ships deploy/kcl/ for every service project,
+// so kind==service is the honest proxy; and the per-env deploy-config
+// generate step is already a no-op when no deploy/kcl/<env>/ dirs exist
+// on disk, so a user who deleted the deploy tree loses nothing (the
+// steps simply find no envs to render). "deploy dir exists" was
+// considered and rejected for those reasons.
+//
+// Experimental features (ingress, external_builds, operators,
 // strict_wiring) and diagnostics are NOT derived — they stay default-off
 // opt-ins regardless of shape.
 func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
@@ -85,6 +97,7 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 		FeatureHotReload:     d.hotReload,
 		FeaturePacks:         d.packs,
 		FeatureStarters:      d.starters,
+		FeatureDeploy:        d.deploy,
 	}
 }
 
@@ -105,6 +118,7 @@ func deriveFeatureDefaults(c *ProjectConfig) *derivedFeatureDefaults {
 		hotReload:     isService,
 		packs:         isService,
 		starters:      isService,
+		deploy:        isService,
 	}
 }
 
@@ -308,6 +322,7 @@ func normalizeFeatures(f FeaturesConfig, d *derivedFeatureDefaults) FeaturesConf
 	f.HotReload = drop(f.HotReload, d.hotReload)
 	f.Packs = drop(f.Packs, d.packs)
 	f.Starters = drop(f.Starters, d.starters)
+	f.Deploy = drop(f.Deploy, d.deploy)
 	// Diagnostics derives to off; drop an explicit false.
 	f.Diagnostics = drop(f.Diagnostics, false)
 	f.derived = d

@@ -151,9 +151,10 @@ func (g *ProjectGenerator) Generate() error {
 		dirs = append(dirs, "db", "db/migrations")
 	}
 	// Service-kind scaffolds always get a deploy/kcl directory so the
-	// user has a complete starting point even when the experimental
-	// deploy feature is off. The `forge deploy` command itself stays
-	// gated on `features.experimental.deploy: true` — see deploy.go.
+	// user has a complete starting point. The deploy feature itself
+	// derives from kind (deploy ⇔ service), so the generate pipeline's
+	// deploy steps run against this tree by default; an explicit
+	// `features.deploy: false` turns them (and `forge deploy`) off.
 	if g.isService() {
 		dirs = append(dirs, "deploy/kcl")
 	}
@@ -554,8 +555,8 @@ func (g *ProjectGenerator) Generate() error {
 	if g.isService() {
 		// Generate KCL deploy files. Always emitted for service-kind so
 		// the scaffold ships a complete project shape — the runtime
-		// gate lives on `forge deploy` itself
-		// (features.experimental.deploy).
+		// gate lives on `forge deploy` itself (features.deploy, derived
+		// on for service kind).
 		if err := g.generateKCLDeploy(); err != nil {
 			return fmt.Errorf("failed to generate KCL deploy files: %w", err)
 		}
@@ -780,8 +781,15 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.Features.Starters == nil {
 		g.Features.Starters = off()
 	}
-	// Deploy / Ingress are experimental (default-off for every kind),
-	// so no per-kind override is needed — see ExperimentalConfig.
+	// Deploy derives from kind (deploy ⇔ service) at load time, but
+	// generators consult g.Features before any forge.yaml exists, so
+	// record the explicit false here like the other service-shaped
+	// features. NormalizeForWrite drops it again (matches derivation).
+	if g.Features.Deploy == nil {
+		g.Features.Deploy = off()
+	}
+	// Ingress is experimental (default-off for every kind), so no
+	// per-kind override is needed — see ExperimentalConfig.
 	// Library: every server-shaped feature is off. CI/Build are
 	// off because there's no binary to lint/test/build — the user
 	// can re-enable manually if they want a lint+test workflow

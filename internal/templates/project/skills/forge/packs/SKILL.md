@@ -51,7 +51,7 @@ If a pack's templates have business logic that diverges per project, it should b
 
 ## Pack Config in forge.yaml
 
-Each pack adds a config section to `forge.yaml`. For example, after installing `jwt-auth`:
+Auth packs project their config section onto `forge.yaml`'s typed `auth:` block on install (your existing `auth.provider` is never overwritten). After installing `jwt-auth`:
 
 ```yaml
 packs:
@@ -61,20 +61,22 @@ auth:
   provider: jwt
   jwt:
     signing_method: RS256
-    jwks_url: ""
-    issuer: ""
-    audience: ""
-  dev_mode: true
 ```
 
-Edit these values to match your auth provider (Auth0, Supabase, Firebase, etc.).
+Edit these values to match your auth provider (Auth0, Supabase, Firebase, etc.) — `jwks_url`, `issuer`, `audience` go under `auth.jwt`, and the runtime equivalents are the `JWT_*` env vars.
 
 ## What install does
 
-1. Renders template files into your project (e.g., `pkg/middleware/jwt_validator.go`)
-2. Adds Go dependencies (`go get`)
-3. Records the pack in `forge.yaml` under `packs:`
-4. Runs `go mod tidy`
+1. Renders template files into your project (e.g., `pkg/middleware/auth/jwtauth/validator.go`)
+2. Applies the pack's config section to `forge.yaml` (e.g. `jwt-auth` sets `auth.provider: jwt` unless you already set one)
+3. Adds Go dependencies (`go get`)
+4. Records the pack in `forge.yaml` under `packs:`
+5. Runs `go mod tidy`
+6. Prints the pack's **next steps** — wiring the install can NOT do for you. `jwt-auth`'s `Init()`/`Interceptor()` have zero call sites until you add them to your server's interceptor chain; the install output shows the exact lines.
+
+## Auth packs are for REAL auth — dev mode needs no pack
+
+`forge run` defaults to dev mode, where the scaffold's auth passthrough attaches the synthetic principal from `devClaims()` (`pkg/middleware/middleware.go`) and generated CRUD works with zero auth config. Install `jwt-auth`/`clerk`/`firebase-auth` when you need real token validation (JWKS, issuer/audience checks) — not to make local development work. See `forge skill load auth` for the full split.
 
 ## File ownership
 

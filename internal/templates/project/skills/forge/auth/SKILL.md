@@ -137,7 +137,8 @@ var unauthenticatedProcedures = map[string]struct{}{
 
 ## RBAC via Proto Annotations
 
-Annotate RPC methods with `required_roles` in your proto:
+Annotate RPC methods with `auth_required` in your proto (there is no
+`required_roles` annotation — role logic is code, not proto):
 
 ```proto
 rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
@@ -147,7 +148,7 @@ rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
 }
 ```
 
-`forge generate` produces `handlers/<svc>/authorizer_gen.go` with role mappings. Customize access control in `handlers/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default).
+`forge generate` produces `handlers/<svc>/authorizer_gen.go` with the per-method policy table (auth-required flags and declared error codes). Customize access control — including role checks — in `handlers/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default).
 
 ## Dev Mode
 
@@ -176,7 +177,7 @@ Run `forge generate` after changing this config.
 | `user_id` / `sub` | `claims.UserID` |
 | `email` | `claims.Email` |
 
-When multi-tenant is enabled, entities with a field explicitly marked `tenant_key: true` in the plan are automatically scoped — generated CRUD handlers include `WHERE <tenant_col> = $tenantID` in every query. The `tenant_key` must be set explicitly; field names like `org_id` or `tenant_id` are NOT auto-detected.
+When multi-tenant is enabled, entities with a field explicitly marked `tenant: true` (the `(forge.v1.field)` annotation) are automatically scoped — generated CRUD handlers include `WHERE <tenant_col> = $tenantID` in every query. The `tenant` annotation must be set explicitly; field names like `org_id` or `tenant_id` are NOT auto-detected.
 
 ## Frontend wiring (auth-ui pack)
 

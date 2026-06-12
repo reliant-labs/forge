@@ -226,7 +226,7 @@ artifacts, and posts a summary comment on PRs:
 
 ```yaml
 # .github/workflows/forge-audit.yml (Tier-2 — user-owned)
-# forge:scaffold one-shot — user-owned workflow (not a Tier-1 codegen target).
+# yours: scaffolded once, never touched again — forge will not overwrite this file
 name: Forge Audit
 on:
   pull_request:

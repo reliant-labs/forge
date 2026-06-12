@@ -252,7 +252,7 @@ func runProjectDev(opts runOptions) error {
 				cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
 			}
 			fmt.Println("[run] Delve debugger listening on :2345 \u2014 attach with VS Code or 'dlv connect :2345'")
-		} else if cfg.HotReload {
+		} else if cfg.EffectiveHotReload() {
 			if _, err := os.Stat(airConfig); err == nil {
 				cmd = exec.CommandContext(ctx, "air", "-c", airConfig)
 			} else {

@@ -1,7 +1,8 @@
 "use client";
 {{- $provider := index .PackConfig "provider" }}
 
-// forge:scaffold one-shot — auth-ui SignupForm; canonical pattern in `forge skill load packs`.
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// Auth-ui SignupForm; canonical pattern in `forge skill load packs`.
 /**
  * SignupForm — registration surface for the {{$provider}} backend pack.
  *

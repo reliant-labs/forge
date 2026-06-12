@@ -238,7 +238,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 		if err != nil {
 			return fmt.Errorf("render CODEOWNERS: %w", err)
 		}
-		// Tier-2: CODEOWNERS carries the `forge:scaffold one-shot —
+		// Tier-2: CODEOWNERS carries the `yours: scaffolded once ... —
 		// starter` banner — review policy is the user's to evolve, and
 		// edits must not trip the Tier-1 stomp guard.
 		if _, err := checksums.WriteGeneratedFileTier2(g.Path, ".github/CODEOWNERS", content, cs, true); err != nil {

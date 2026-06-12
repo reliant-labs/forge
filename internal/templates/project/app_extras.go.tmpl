@@ -46,6 +46,10 @@ package app
 // AppExtras is the user-owned extension surface for *App. Add fields
 // here as you grow the application; setup.go assigns them, wire_gen
 // reads them.
+//
+//nolint:revive // The name stutters as app.AppExtras by design: wire_gen's
+// dep matching keys on the literal "AppExtras" field type, and external
+// call sites always see it embedded in *App, never spelled out.
 type AppExtras struct {
 	// Add user-extension fields here. The struct can be empty until
 	// the first dependency outgrows the bare {Logger, Config} pair.

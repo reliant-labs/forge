@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -216,24 +217,42 @@ func upMigrations(migDir string) ([]string, error) {
 // Schema-defining statements that fail are hard errors; statements that
 // cannot affect the table/column model are skipped on failure (postgres-
 // only DML or auxiliary DDL the shadow can't execute).
+//
+// Each schema-defining statement first passes through a small
+// postgres→portable normalization (see normalizeForShadow) so the
+// idiomatic-postgres constructs that recur in migrated projects —
+// unparenthesized function defaults, '<literal>'::type casts, ADD
+// COLUMN IF NOT EXISTS, multi-ADD ALTERs — apply cleanly on the SQLite
+// shadow. The normalization touches ONLY the shadow copy; the
+// migration files on disk are never rewritten.
 func applyMigration(db *sql.DB, sqlText string) error {
 	for _, stmt := range SplitStatements(sqlText) {
-		if _, err := db.Exec(stmt); err != nil {
-			if isSchemaDefining(stmt) {
-				return fmt.Errorf("%w\nstatement:\n%s\n\nhint: the shadow schema runs on SQLite; keep table-defining DDL in the portable subset (parenthesized function defaults like DEFAULT (now()), no '::type' casts)", err, stmt)
-			}
+		if !isSchemaDefining(stmt) {
 			// Non-schema statement (data movement, functions, triggers,
-			// comments, extensions): the table/column model is unaffected.
+			// comments, extensions): failure cannot change the
+			// table/column model — best-effort apply, skip on error.
+			_, _ = db.Exec(stmt)
 			continue
+		}
+		for _, norm := range normalizeForShadow(stmt) {
+			if _, err := db.Exec(norm); err != nil {
+				if isBenignShadowError(norm, err) {
+					continue
+				}
+				return fmt.Errorf("%w\nstatement (shadow-normalized):\n%s\n\nhint: the shadow schema runs on SQLite; keep table-defining DDL in the portable subset (parenthesized function defaults like DEFAULT (now()), no '::type' casts, one ADD COLUMN per ALTER)", err, norm)
+			}
 		}
 	}
 	return nil
 }
 
 // isSchemaDefining reports whether a statement defines the table/column
-// model the ORM is projected from.
+// model the ORM is projected from. Leading SQL comments are stripped
+// first — migration files routinely carry banner comments, and a
+// comment-prefixed CREATE TABLE that silently fell into the skip path
+// would produce a partial schema with no error (an ORM that lies).
 func isSchemaDefining(stmt string) bool {
-	head := strings.ToUpper(strings.Join(strings.Fields(stmt), " "))
+	head := strings.ToUpper(strings.Join(strings.Fields(stripLeadingSQLComments(stmt)), " "))
 	for _, p := range []string{
 		"CREATE TABLE", "ALTER TABLE", "DROP TABLE",
 		"CREATE INDEX", "CREATE UNIQUE INDEX", "DROP INDEX",
@@ -243,6 +262,87 @@ func isSchemaDefining(stmt string) bool {
 		}
 	}
 	return false
+}
+
+// stripLeadingSQLComments removes leading `--` line comments, `/* */`
+// block comments and blank lines from a statement.
+func stripLeadingSQLComments(stmt string) string {
+	s := stmt
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			if i := strings.IndexByte(s, '\n'); i >= 0 {
+				s = s[i+1:]
+			} else {
+				return ""
+			}
+		case strings.HasPrefix(s, "/*"):
+			if i := strings.Index(s, "*/"); i >= 0 {
+				s = s[i+2:]
+			} else {
+				return ""
+			}
+		default:
+			return s
+		}
+	}
+}
+
+// isBenignShadowError reports errors the original postgres statement
+// declared tolerable: a duplicate column from ADD COLUMN IF NOT EXISTS
+// (the IF NOT EXISTS was stripped for SQLite, which doesn't support it
+// on ADD COLUMN).
+func isBenignShadowError(stmt string, err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column") &&
+		strings.Contains(strings.ToUpper(stmt), "ADD COLUMN")
+}
+
+var (
+	// DEFAULT now() / DEFAULT gen_random_uuid() → DEFAULT (now()) —
+	// SQLite only accepts function defaults in parentheses. Matches a
+	// bare function call (no nested parens) not already parenthesized.
+	reBareFuncDefault = regexp.MustCompile(`(?i)(DEFAULT\s+)([A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\))`)
+	// '<literal>'::type → '<literal>' — strips casts attached to quoted
+	// literals ('{}'::jsonb, 'x'::text). Only literal-attached casts;
+	// anything fancier stays out of the portable subset on purpose.
+	reLiteralCast = regexp.MustCompile(`('(?:[^']|'')*')::[A-Za-z_][A-Za-z0-9_]*(\[\])?`)
+	// ADD COLUMN IF NOT EXISTS → ADD COLUMN (SQLite has no IF NOT
+	// EXISTS on ADD COLUMN; the resulting duplicate-column error is
+	// treated as benign, matching the original semantics).
+	reAddColIfNotExists = regexp.MustCompile(`(?i)ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+`)
+	// Multi-ADD ALTER detection: ALTER TABLE t ADD COLUMN a ..., ADD
+	// COLUMN b ... — SQLite takes one ADD per ALTER.
+	reAlterAdd = regexp.MustCompile(`(?is)^(ALTER\s+TABLE\s+\S+\s+)(ADD\s+.+)$`)
+	reAddSplit = regexp.MustCompile(`(?i),\s*ADD\s+`)
+)
+
+// normalizeForShadow rewrites one schema-defining statement into the
+// equivalent statement(s) the SQLite shadow can execute. The rewrites
+// are mechanical and semantics-preserving for introspection purposes;
+// the on-disk migration is untouched.
+func normalizeForShadow(stmt string) []string {
+	s := stripLeadingSQLComments(stmt)
+	s = reLiteralCast.ReplaceAllString(s, "$1")
+	s = reBareFuncDefault.ReplaceAllString(s, "$1($2)")
+	s = reAddColIfNotExists.ReplaceAllString(s, "ADD COLUMN ")
+
+	// Split multi-ADD ALTERs into one ALTER per ADD clause.
+	if m := reAlterAdd.FindStringSubmatch(s); m != nil {
+		adds := reAddSplit.Split(m[2], -1)
+		if len(adds) > 1 {
+			out := make([]string, 0, len(adds))
+			for i, a := range adds {
+				a = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(a), ";"))
+				if i > 0 && !strings.HasPrefix(strings.ToUpper(a), "ADD ") {
+					a = "ADD " + a
+				}
+				out = append(out, m[1]+a+";")
+			}
+			return out
+		}
+	}
+	return []string{s}
 }
 
 // SplitStatements splits SQL text into individual statements, honoring

@@ -156,10 +156,15 @@ INSERT INTO things (id, payload) VALUES ('x', '{"a":1}'::jsonb);
 
 func TestApplyAndIntrospect_FailsLoudOnBrokenTableDDL(t *testing.T) {
 	dir := t.TempDir()
+	// EXCLUDE constraints are pg-only and not in the normalizable
+	// subset — the shadow must refuse loudly rather than skip the
+	// table definition. (A bare literal '::jsonb' cast, by contrast,
+	// is normalized away — see the postgres-idioms test.)
 	writeMig(t, dir, "00001_bad.up.sql", `
 CREATE TABLE broken (
     id TEXT PRIMARY KEY,
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+    span TEXT,
+    CONSTRAINT no_overlap EXCLUDE USING gist (span WITH &&)
 );
 `)
 	if _, err := ApplyAndIntrospect(dir); err == nil {
@@ -211,5 +216,66 @@ func TestMapDeclaredType(t *testing.T) {
 		if got != c.want || arr != c.array {
 			t.Errorf("MapDeclaredType(%q) = (%s,%v), want (%s,%v)", c.decl, got, arr, c.want, c.array)
 		}
+	}
+}
+
+func TestApplyAndIntrospect_CommentPrefixedDDLIsNotSilentlySkipped(t *testing.T) {
+	// The kalshi-parity audit found banner comments attaching to the
+	// following statement, which defeated isSchemaDefining and let a
+	// FAILING CREATE TABLE be skipped silently — a partial schema with
+	// no error. Comment-prefixed broken DDL must hard-error.
+	dir := t.TempDir()
+	writeMig(t, dir, "00001_bad.up.sql", `
+-- ----------------------------------------------------------------
+-- forecasts: banner comment style
+-- ----------------------------------------------------------------
+CREATE TABLE forecasts (
+    id TEXT PRIMARY KEY,
+    payload JSONB NOT NULL DEFAULT 'oops'::jsonb::jsonb -- double cast survives normalization → still fails
+);
+`)
+	if _, err := ApplyAndIntrospect(dir); err == nil {
+		t.Fatal("comment-prefixed failing CREATE TABLE must be a hard error, not a silent skip")
+	}
+}
+
+func TestApplyAndIntrospect_PostgresIdiomsNormalizedForShadow(t *testing.T) {
+	// The recurring idioms from migrated-from-postgres projects must
+	// apply on the shadow: unparenthesized function defaults, literal
+	// ::type casts, ADD COLUMN IF NOT EXISTS, multi-ADD ALTERs.
+	dir := t.TempDir()
+	writeMig(t, dir, "00001_init.up.sql", `
+CREATE TABLE markets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+`)
+	writeMig(t, dir, "00002_evolve.up.sql", `
+-- add weights (idempotent in pg)
+ALTER TABLE markets
+    ADD COLUMN IF NOT EXISTS model_weights JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE markets ADD COLUMN a TEXT NOT NULL DEFAULT '', ADD COLUMN b TEXT NOT NULL DEFAULT '';
+-- re-adding the same column: pg's IF NOT EXISTS makes this a no-op
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS a TEXT NOT NULL DEFAULT '';
+`)
+	tables, err := ApplyAndIntrospect(dir)
+	if err != nil {
+		t.Fatalf("postgres idioms must normalize for the shadow: %v", err)
+	}
+	cols := map[string]Column{}
+	for _, c := range tables[0].Columns {
+		cols[c.Name] = c
+	}
+	for _, want := range []string{"id", "meta", "created_at", "model_weights", "a", "b"} {
+		if _, ok := cols[want]; !ok {
+			t.Errorf("column %q missing after normalization: have %v", want, tables[0].Columns)
+		}
+	}
+	if got := cols["id"].Type; got != TypeString {
+		t.Errorf("UUID id type = %s, want string", got)
+	}
+	if got := cols["created_at"].Type; got != TypeTime {
+		t.Errorf("created_at type = %s, want time", got)
 	}
 }

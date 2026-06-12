@@ -368,6 +368,13 @@ type upgradeTemplateData struct {
 	// buf.yaml template to add the googleapis BSR dep when REST is on
 	// (so vanguard's `google/api/annotations.proto` imports resolve).
 	RESTEnabled bool
+	// AuthProvider / AuthProviderExternal mirror forge.yaml's
+	// auth.provider (normalized: unset/none collapse to ""). cmd-server
+	// gates the generated middleware.InstallGeneratedAuth call site on
+	// them so the Tier-1 regen keeps the auth wiring in sync with the
+	// generate pipeline's render.
+	AuthProvider         string
+	AuthProviderExternal bool
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -441,6 +448,8 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		}
 	}
 
+	authProvider, authExternal := codegen.NormalizeAuthProvider(cfg.Auth.Provider)
+
 	return upgradeTemplateData{
 		Name:                   cfg.Name,
 		ProtoName:              protoName,
@@ -457,6 +466,8 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		ConfigFields:           configFields,
 		LocalForgePkgVendored:  localForgePkgVendored,
 		RESTEnabled:            cfg.API.REST,
+		AuthProvider:           authProvider,
+		AuthProviderExternal:   authExternal,
 	}
 }
 

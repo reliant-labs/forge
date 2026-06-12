@@ -78,27 +78,30 @@ Auth mode resolution (in `forge/pkg/authn`, decided ONCE at interceptor construc
 
 ## How auth wiring works
 
-The generated `pkg/middleware/auth_gen.go` is a ~40-line shim over `forge/pkg/auth`:
+When forge.yaml declares `auth.provider`, the generated
+`pkg/middleware/auth_gen.go` is a thin shim over `forge/pkg/auth` that
+the generated `cmd/server.go` actually CALLS — `runServer` invokes
+`middleware.InstallGeneratedAuth()` before the interceptor chain is
+constructed, except in dev mode (the dev-claims passthrough applies
+instead; set `ENVIRONMENT` to anything non-development to exercise
+real auth locally).
+
+- **`provider: jwt`** — `InstallGeneratedAuth` constructs the
+  `pkg/auth` validator from the forge.yaml config and installs it via
+  `SetTokenValidator(v.Validate)`, and merges the proto-annotated
+  `auth_required = false` procedures into `unauthenticatedProcedures`.
+  The user-owned policy surface (enrichClaims, allow-list, dev claims)
+  stays fully in the loop; there is no parallel interceptor.
+- **`provider: api_key` / `both`** — API keys arrive in a header, not
+  a bearer token, so `InstallGeneratedAuth` marks external auth
+  (`MarkExternalAuth`) and `cmd/server.go` mounts the header-aware
+  `middleware.GeneratedAuthInterceptor()` in the project chain.
+  API-key requests FAIL CLOSED until you implement `KeyValidator`
+  (`pkg/middleware/auth_validator.go`) and install it:
 
 ```go
-var generatedAuthConfig = auth.Config{
-    Provider:    "jwt",
-    JWT:         auth.JWTConfig{SigningMethod: "HS256", ...},
-    SkipMethods: []string{...},
-}
-
-func GeneratedAuthInterceptor() connect.UnaryInterceptorFunc {
-    v, _ := auth.NewValidator(generatedAuthConfig)
-    return v.Interceptor(auth.InterceptorOptions{}, ContextWithClaims)
-}
-```
-
-`auth.NewValidator(cfg)` constructs a JWT/API-key validator. `v.Interceptor(opts, withClaims)` returns a Connect interceptor. The `withClaims` callback (`ContextWithClaims`) lives in `pkg/middleware/middleware.go`.
-
-For API-key or `both` providers, pass a `KeyValidator` implementation:
-
-```go
-GeneratedAuthInterceptor(myKeyValidator)
+// pkg/app/post_bootstrap.go (runs before the listener binds)
+middleware.SetGeneratedKeyValidator(&DBKeyValidator{db: app.DB})
 ```
 
 `KeyValidator` is aliased to `auth.KeyValidator`; implement `ValidateKey(ctx, key) (*Claims, error)` against your storage.

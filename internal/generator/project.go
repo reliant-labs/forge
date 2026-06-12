@@ -285,6 +285,12 @@ func (g *ProjectGenerator) Generate() error {
 		// docs/pkg-versioning.md for the dev-vs-release model.
 		ForgePkgVersion    string
 		ForgePkgDevReplace string
+		// AuthProvider / AuthProviderExternal gate cmd-server.go.tmpl's
+		// generated-auth call site. Always zero at scaffold time (forge
+		// new never configures an auth provider); `forge generate`
+		// re-renders cmd/server.go from the live forge.yaml value.
+		AuthProvider         string
+		AuthProviderExternal bool
 	}{
 		Name:                   g.Name,
 		ProtoName:              protoName,

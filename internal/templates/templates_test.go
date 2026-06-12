@@ -572,11 +572,13 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 // needs to forward the typed *app.App to the hook.
 func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
 	data := struct {
-		Module       string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		ConfigFields map[string]bool
+		Module               string
+		HasDatabase          bool
+		DatabaseDriver       string
+		OrmEnabled           bool
+		ConfigFields         map[string]bool
+		AuthProvider         string
+		AuthProviderExternal bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},

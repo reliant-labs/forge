@@ -44,14 +44,18 @@ func TestStepCheckTier1Drift_FirstLineNamesFilesAndRemedies(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	cs := &checksums.FileChecksums{}
 	drifted := []string{"pkg/app/wire_gen.go", "cmd/server.go"}
 	for _, rel := range drifted {
-		cs.RecordFile(rel, []byte("package x // as generated\n"))
-		entry := cs.Files[rel]
-		entry.Tier = 1
-		cs.Files[rel] = entry
-		mustWriteScopeFile(t, filepath.Join(dir, rel), "package x // hand-edited\n")
+		// Hand-edited Tier-1 file: marker carries the as-generated hash,
+		// body is the edit → Verify == Modified.
+		stamped, ok := checksums.StampWithValue(rel,
+			[]byte("package x // hand-edited\n"),
+			checksums.BodyHash([]byte("package x // as generated\n")))
+		if !ok {
+			t.Fatalf("stamp %s: unstampable", rel)
+		}
+		mustWriteScopeFile(t, filepath.Join(dir, rel), string(stamped))
 	}
 
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}

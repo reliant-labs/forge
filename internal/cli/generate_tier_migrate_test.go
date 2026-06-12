@@ -1,8 +1,24 @@
+// Tests for the Tier-2 drift exemption (generate_tier_migrate.go) and
+// the one-time legacy-manifest pipeline migration
+// (generate_legacy_migrate.go).
+//
+// The manifest-era tier-reclassification step (migrateTemplateTiers /
+// migrateLegacyForks flipping entries inside .forge/checksums.json) is
+// gone with the manifest. Its two jobs survive in new homes, covered
+// here:
+//
+//   - sanctioned edits to Tier-2-managed starters must not trip the
+//     stomp guard → filterTier2Managed / scanProjectDrift;
+//   - legacy forked/disowned manifest entries must convert to
+//     .forge/disowned.json (and pristine Tier-1 entries to embedded
+//     markers) → stepMigrateLegacyManifest + finishLegacyMigration over
+//     checksums.MigrateLegacyManifest.
 package cli
 
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -10,87 +26,87 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// TestMigrateTemplateTiers locks the Tier-1→Tier-2 checksum migration:
-// entries for paths whose template has been reclassified scaffold-once
-// flip to tier=2 with the fork flag cleared, and nothing else moves.
-func TestMigrateTemplateTiers(t *testing.T) {
-	tier2 := map[string]bool{
-		"Dockerfile":                     true,
-		"Taskfile.yml":                   true,
-		".gitignore":                     true,
-		".golangci.yml":                  true,
-		"frontends/web/src/app/page.tsx": true,
-	}
-
-	cs := &generator.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		// Forked Tier-1 entry on a reclassified path: the canonical
-		// cp-forge case (user --accept-ed a starter to escape the guard).
-		"Dockerfile": {Hash: "aa", Tier: 1, Forked: true, Accepted: true},
-		// Non-forked Tier-1 entry on a reclassified path.
-		"Taskfile.yml": {Hash: "bb", Tier: 1},
-		// Legacy unset tier (0) on a reclassified path — pre-tier
-		// checksums are Tier-1-equivalent and must migrate too.
-		".golangci.yml": {Hash: "cc", Forked: true},
-		// Already tier=2 AND forked: a deliberate Tier-2 ownership
-		// transfer. Must be left alone entirely.
-		"frontends/web/src/app/page.tsx": {Hash: "dd", Tier: 2, Forked: true},
-		// Tier-1 path NOT in the reclassified set: untouched.
-		"cmd/server.go": {Hash: "ee", Tier: 1, Forked: true},
-		// Untracked-path noise in the set ('.gitignore' has no entry):
-		// must not invent an entry.
-	}}
-
-	migrated := migrateTemplateTiers(cs, tier2)
-
-	wantMigrated := []string{".golangci.yml", "Dockerfile", "Taskfile.yml"}
-	if len(migrated) != len(wantMigrated) {
-		t.Fatalf("migrated %d entries, want %d: %+v", len(migrated), len(wantMigrated), migrated)
-	}
-	for i, want := range wantMigrated {
-		if migrated[i].path != want {
-			t.Errorf("migrated[%d].path = %q, want %q (sorted order)", i, migrated[i].path, want)
-		}
-	}
-	if !migrated[1].wasForked || migrated[2].wasForked {
-		t.Errorf("wasForked flags wrong: %+v", migrated)
-	}
-
-	for path, want := range map[string]checksums.FileChecksumEntry{
-		"Dockerfile":                     {Hash: "aa", Tier: 2},
-		"Taskfile.yml":                   {Hash: "bb", Tier: 2},
-		".golangci.yml":                  {Hash: "cc", Tier: 2},
-		"frontends/web/src/app/page.tsx": {Hash: "dd", Tier: 2, Forked: true},
-		"cmd/server.go":                  {Hash: "ee", Tier: 1, Forked: true},
-	} {
-		got := cs.Files[path]
-		if got.Tier != want.Tier || got.Forked != want.Forked || got.Accepted != want.Accepted || got.Hash != want.Hash {
-			t.Errorf("%s: got {hash:%s tier:%d forked:%v accepted:%v}, want {hash:%s tier:%d forked:%v accepted:%v}",
-				path, got.Hash, got.Tier, got.Forked, got.Accepted, want.Hash, want.Tier, want.Forked, want.Accepted)
-		}
-	}
-	if _, invented := cs.Files[".gitignore"]; invented {
-		t.Error("migration invented an entry for an untracked path")
-	}
-
-	// Idempotency: a second pass is a no-op.
-	if again := migrateTemplateTiers(cs, tier2); len(again) != 0 {
-		t.Errorf("second migration pass flipped %d entries, want 0: %+v", len(again), again)
-	}
-}
-
-// TestMigrateTemplateTiersNilAndEmpty covers the degenerate inputs the
-// pipeline step can hand over (no checksums yet / fresh project).
-func TestMigrateTemplateTiersNilAndEmpty(t *testing.T) {
-	if got := migrateTemplateTiers(nil, map[string]bool{"Dockerfile": true}); got != nil {
-		t.Errorf("nil cs: got %+v, want nil", got)
-	}
+// TestScanProjectDrift_FiltersTier2ManagedPaths locks the drift
+// exemption: a hand-edit to a Tier-2-managed starter (sanctioned) is
+// dropped from the shared drift probe, while a hand-edit to an honest
+// Tier-1 file stays in.
+func TestScanProjectDrift_FiltersTier2ManagedPaths(t *testing.T) {
+	dir := t.TempDir()
 	cs := &generator.FileChecksums{}
-	if got := migrateTemplateTiers(cs, map[string]bool{"Dockerfile": true}); got != nil {
-		t.Errorf("empty cs: got %+v, want nil", got)
+
+	writeModified := func(rel, edited, original string) {
+		t.Helper()
+		stamped, ok := checksums.StampWithValue(rel, []byte(edited), checksums.BodyHash([]byte(original)))
+		if !ok {
+			t.Fatalf("stamp %s: unstampable", rel)
+		}
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, stamped, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Tier-2-managed starter, hand-edited (marker fails verification):
+	// sanctioned — must be filtered out.
+	if !tier2MigratedPaths["Taskfile.yml"] {
+		t.Fatal("Taskfile.yml is no longer Tier-2-managed; pick another exempt path")
+	}
+	writeModified("Taskfile.yml", "# user-tuned tasks\n", "# scaffolded tasks\n")
+
+	// Honest Tier-1 file, hand-edited: must stay in the drift set.
+	writeModified("pkg/app/wire_gen.go", "package app // edited\n", "package app // generated\n")
+
+	drift := scanProjectDrift(dir, cs)
+	if len(drift) != 1 || drift[0].Path != "pkg/app/wire_gen.go" {
+		t.Fatalf("scanProjectDrift = %+v, want exactly the wire_gen.go entry (Taskfile.yml exempt)", drift)
+	}
+
+	// Unit check on the filter itself.
+	raw := []checksums.Tier1DriftEntry{
+		{Path: "Taskfile.yml"},
+		{Path: "pkg/app/wire_gen.go"},
+	}
+	kept := filterTier2Managed(raw)
+	if len(kept) != 1 || kept[0].Path != "pkg/app/wire_gen.go" {
+		t.Errorf("filterTier2Managed = %+v, want only wire_gen.go", kept)
 	}
 }
 
-// TestTier2ManagedPathsContents locks the registry-derived migration set:
+// TestStepCheckTier1Drift_Tier2ManagedEditDoesNotTrip drives the real
+// guard step over a project whose ONLY drift is a hand-edited
+// Tier-2-managed starter — the guard must wave the run through.
+func TestStepCheckTier1Drift_Tier2ManagedEditDoesNotTrip(t *testing.T) {
+	dir := t.TempDir()
+	stamped, ok := checksums.StampWithValue("Taskfile.yml",
+		[]byte("# user-tuned tasks\n"),
+		checksums.BodyHash([]byte("# scaffolded tasks\n")))
+	if !ok {
+		t.Fatal("Taskfile.yml should be stampable")
+	}
+	mustWriteScopeFile(t, filepath.Join(dir, "Taskfile.yml"), string(stamped))
+
+	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: &generator.FileChecksums{}}
+	if err := stepCheckTier1Drift(ctx); err != nil {
+		t.Errorf("sanctioned Tier-2-managed edit tripped the stomp guard: %v", err)
+	}
+}
+
+// TestScanProjectDrift_NilAndEmpty covers the degenerate inputs the
+// pipeline step can hand over (no ownership state yet / fresh project).
+func TestScanProjectDrift_NilAndEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if got := scanProjectDrift(dir, nil); len(got) != 0 {
+		t.Errorf("nil cs: got %+v, want empty", got)
+	}
+	if got := scanProjectDrift(dir, &generator.FileChecksums{}); len(got) != 0 {
+		t.Errorf("empty cs: got %+v, want empty", got)
+	}
+}
+
+// TestTier2ManagedPathsContents locks the registry-derived exemption set:
 // the starter-class files cp-forge forked must be present; files that
 // `forge generate` re-renders every run (Tier-1) must NOT be.
 func TestTier2ManagedPathsContents(t *testing.T) {
@@ -153,8 +169,8 @@ func TestEmitTier2OnceIfMissing_DisownedSurvivesResetTier2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := &generator.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		rel: {Hash: "abc", Tier: 2, Disowned: true},
+	cs := &generator.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		rel: {Reason: "test", DisownedAt: "2026-06-01T00:00:00Z"},
 	}}
 
 	// Even an unconditionally-approving --reset-tier2 hook must not
@@ -175,7 +191,7 @@ func TestEmitTier2OnceIfMissing_DisownedSurvivesResetTier2(t *testing.T) {
 
 	// Sanity: a NON-disowned existing file IS re-scaffolded once the
 	// --reset-tier2 hook approves.
-	delete(cs.Files, rel)
+	delete(cs.Disowned, rel)
 	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/app/page.tsx.tmpl",
 		templates.FrontendTemplateData{FrontendName: "web", ProjectName: "demo"}, cs); err != nil {
 		t.Fatalf("emitTier2OnceIfMissing (non-disowned): %v", err)
@@ -186,43 +202,178 @@ func TestEmitTier2OnceIfMissing_DisownedSurvivesResetTier2(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyForks pins the belt-and-braces pipeline migration:
-// every legacy `forked: true` entry converts to disowned (tier=2 +
-// marker), inheriting the fork timestamp as the disowned-since time;
-// everything else is untouched.
-func TestMigrateLegacyForks(t *testing.T) {
-	cs := &generator.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"pkg/app/bootstrap.go": {Hash: "a", Tier: 1, Forked: true, Accepted: true, ForkedAt: "2026-01-01T00:00:00Z"},
-		"pkg/app/wire_gen.go":  {Hash: "b", Tier: 1, Forked: true}, // no timestamp recorded
-		"pkg/app/app_gen.go":   {Hash: "c", Tier: 1},
-		"internal/x/svc.go":    {Hash: "d", Tier: 2},
-	}}
+// writeLegacyMigrateFile writes content at root/rel, creating parents.
+func writeLegacyMigrateFile(t *testing.T, root, rel string, content []byte) {
+	t.Helper()
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 
-	converted := migrateLegacyForks(cs)
-	want := []string{"pkg/app/bootstrap.go", "pkg/app/wire_gen.go"}
-	if len(converted) != 2 || converted[0] != want[0] || converted[1] != want[1] {
-		t.Fatalf("converted = %v, want %v (sorted)", converted, want)
+// TestStepMigrateLegacyManifest pins the one-time pipeline conversion
+// off the dead global manifest (the successor of the manifest-era
+// migrateLegacyForks coverage; the per-entry conversion rules
+// themselves live in checksums.MigrateLegacyManifest):
+//
+//   - a legacy `forked: true` entry converts to .forge/disowned.json,
+//     inheriting the fork timestamp as the disowned-since time;
+//   - a Tier-1 entry whose hash matches the on-disk bytes is stamped
+//     with a verifying embedded marker;
+//   - a Tier-1 entry whose bytes match NOTHING recorded is quarantined
+//     on ctx.LegacyUnverified (writes side-render redirected);
+//   - the legacy manifest is deleted;
+//   - finishLegacyMigration rescues a quarantined path whose fresh side
+//     render matches the on-disk bytes (stamps it pristine) and stamps
+//     everything unrescued with the unverified-legacy sentinel,
+//     returning an error that names the file.
+func TestStepMigrateLegacyManifest(t *testing.T) {
+	checksums.ResetSkipWrite()
+	checksums.ResetPerRunState()
+	defer checksums.ResetPerRunState()
+	defer checksums.ResetSkipWrite()
+
+	root := t.TempDir()
+
+	forkedContent := []byte("package app // user fork\n")
+	pristineContent := []byte("package app // as generated\n")
+	rescuedContent := []byte("package app // matches the fresh render\n")
+	orphanContent := []byte("package app // matches nothing\n")
+
+	writeLegacyMigrateFile(t, root, "pkg/app/bootstrap.go", forkedContent)
+	writeLegacyMigrateFile(t, root, "pkg/app/wire_gen.go", pristineContent)
+	writeLegacyMigrateFile(t, root, "pkg/app/app_gen.go", rescuedContent)
+	writeLegacyMigrateFile(t, root, "pkg/app/testing.go", orphanContent)
+
+	legacy := `{
+  "forge_version": "old",
+  "files": {
+    "pkg/app/bootstrap.go": {"hash": "stale", "tier": 1, "forked": true, "forked_at": "2026-01-01T00:00:00Z"},
+    "pkg/app/wire_gen.go": {"hash": "` + checksums.Hash(pristineContent) + `", "tier": 1},
+    "pkg/app/app_gen.go": {"hash": "recorded-from-another-lane", "tier": 1},
+    "pkg/app/testing.go": {"hash": "also-from-another-lane", "tier": 1}
+  }
+}`
+	writeLegacyMigrateFile(t, root, checksums.LegacyChecksumFile, []byte(legacy))
+
+	cs := &generator.FileChecksums{
+		Disowned:    map[string]checksums.DisownedEntry{},
+		Unstampable: map[string]string{},
+	}
+	ctx := &pipelineContext{ProjectDir: root, AbsPath: root, Checksums: cs}
+	if err := stepMigrateLegacyManifest(ctx); err != nil {
+		t.Fatalf("stepMigrateLegacyManifest: %v", err)
 	}
 
-	e := cs.Files["pkg/app/bootstrap.go"]
-	if e.Tier != 2 || !e.Disowned || e.Forked || e.Accepted || e.ForkedAt != "" {
-		t.Errorf("bootstrap.go = %+v, want clean disowned shape", e)
+	// Legacy fork → disowned, with the fork-era timestamp.
+	entry, ok := cs.Disowned["pkg/app/bootstrap.go"]
+	if !ok {
+		t.Fatalf("forked entry not converted to disowned; have %+v", cs.Disowned)
 	}
-	if e.DisownedAt != "2026-01-01T00:00:00Z" {
-		t.Errorf("bootstrap.go DisownedAt = %q, want inherited ForkedAt", e.DisownedAt)
+	if entry.DisownedAt != "2026-01-01T00:00:00Z" {
+		t.Errorf("DisownedAt = %q, want the inherited forked_at", entry.DisownedAt)
 	}
-	if e := cs.Files["pkg/app/wire_gen.go"]; !e.Disowned || e.DisownedAt != "" {
-		t.Errorf("wire_gen.go = %+v, want disowned with empty (unknown) since", e)
+	if !strings.Contains(entry.Reason, "fork") {
+		t.Errorf("Reason = %q, want it to name the legacy fork conversion", entry.Reason)
 	}
-	if e := cs.Files["pkg/app/app_gen.go"]; e.Disowned || e.Tier != 1 {
-		t.Errorf("app_gen.go touched by legacy-fork migration: %+v", e)
+	// The persisted form: disowned.json written on save.
+	if err := checksums.Save(root, cs); err != nil {
+		t.Fatal(err)
 	}
-	if e := cs.Files["internal/x/svc.go"]; e.Disowned || e.Tier != 2 {
-		t.Errorf("ordinary starter touched by legacy-fork migration: %+v", e)
+	if _, err := os.Stat(filepath.Join(root, checksums.DisownedFile)); err != nil {
+		t.Errorf("%s not written: %v", checksums.DisownedFile, err)
 	}
 
-	// Idempotent: a second pass converts nothing.
-	if again := migrateLegacyForks(cs); len(again) != 0 {
-		t.Errorf("second migrateLegacyForks pass converted %v, want nothing", again)
+	// Matching Tier-1 entry: stamped, verifies.
+	wireGen, err := os.ReadFile(filepath.Join(root, "pkg", "app", "wire_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checksums.Verify(wireGen) != checksums.Pristine {
+		t.Errorf("pristine legacy entry not stamped with a verifying marker:\n%s", wireGen)
+	}
+
+	// Mismatching entries: quarantined for the side-render rescue.
+	if len(ctx.LegacyUnverified) != 2 ||
+		ctx.LegacyUnverified[0] != "pkg/app/app_gen.go" ||
+		ctx.LegacyUnverified[1] != "pkg/app/testing.go" {
+		t.Fatalf("LegacyUnverified = %v, want the two mismatching paths (sorted)", ctx.LegacyUnverified)
+	}
+
+	// The legacy manifest is gone — the migration is durable.
+	if _, err := os.Stat(filepath.Join(root, checksums.LegacyChecksumFile)); !os.IsNotExist(err) {
+		t.Errorf("legacy manifest still present after migration (stat err=%v)", err)
+	}
+
+	// Rescue setup: app_gen.go's "fresh render" (parked side render)
+	// matches its on-disk bytes — provably pristine. testing.go gets no
+	// render (its emitter never ran / content genuinely unknown).
+	if err := checksums.WriteSideRenderNoBase(root, "pkg/app/app_gen.go", rescuedContent); err != nil {
+		t.Fatal(err)
+	}
+
+	finishErr := finishLegacyMigration(ctx)
+	if finishErr == nil {
+		t.Fatal("finishLegacyMigration = nil; want the drift error naming the unrescued file")
+	}
+	if !strings.Contains(finishErr.Error(), "pkg/app/testing.go") {
+		t.Errorf("error should name the unrescued file; got:\n%v", finishErr)
+	}
+	if strings.Contains(finishErr.Error(), "pkg/app/app_gen.go") {
+		t.Errorf("rescued file should not appear in the error; got:\n%v", finishErr)
+	}
+
+	// Rescued: stamped pristine.
+	appGen, err := os.ReadFile(filepath.Join(root, "pkg", "app", "app_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checksums.Verify(appGen) != checksums.Pristine {
+		t.Errorf("rescued file not stamped pristine:\n%s", appGen)
+	}
+
+	// Unrescued: stamped with the unverified-legacy sentinel so the
+	// stomp guard keeps naming it on every run.
+	testingGo, err := os.ReadFile(filepath.Join(root, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, found := checksums.ExtractMarker(testingGo)
+	if !found || marker != checksums.UnverifiedMarkerValue {
+		t.Errorf("unrescued file marker = %q (found=%v), want the %q sentinel",
+			marker, found, checksums.UnverifiedMarkerValue)
+	}
+}
+
+// TestStepMigrateLegacyManifest_NoManifestIsNoOp: the steady state —
+// no legacy manifest — does nothing and touches nothing.
+func TestStepMigrateLegacyManifest_NoManifestIsNoOp(t *testing.T) {
+	root := t.TempDir()
+	cs := &generator.FileChecksums{}
+	ctx := &pipelineContext{ProjectDir: root, AbsPath: root, Checksums: cs}
+	if err := stepMigrateLegacyManifest(ctx); err != nil {
+		t.Fatalf("stepMigrateLegacyManifest on a clean project: %v", err)
+	}
+	if len(ctx.LegacyUnverified) != 0 {
+		t.Errorf("LegacyUnverified = %v, want empty", ctx.LegacyUnverified)
+	}
+	if err := finishLegacyMigration(ctx); err != nil {
+		t.Errorf("finishLegacyMigration no-op returned %v", err)
+	}
+}
+
+// TestLegacyMigrationStampable pins the migration's Tier-2 exclusion: a
+// legacy Tier-1 entry whose canonical template tier is Tier-2 (user-
+// owned starter) must NOT be certified — a marker there would
+// misrepresent sanctioned edits as drift.
+func TestLegacyMigrationStampable(t *testing.T) {
+	if legacyMigrationStampable("Taskfile.yml") {
+		t.Error("Taskfile.yml is Tier-2-managed; the migration must not stamp it")
+	}
+	if !legacyMigrationStampable("pkg/app/wire_gen.go") {
+		t.Error("wire_gen.go is honest Tier-1; the migration must stamp it")
 	}
 }

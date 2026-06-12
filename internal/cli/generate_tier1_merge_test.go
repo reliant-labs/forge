@@ -88,20 +88,19 @@ func TestDetectGitMergeState_DetectsEachMarker(t *testing.T) {
 func TestStepCheckTier1Drift_MidMergeReturnsTypedError(t *testing.T) {
 	dir := t.TempDir()
 
-	// Seed a tracked Tier-1 file plus a mismatching on-disk version
+	// Seed a certified Tier-1 file whose body no longer matches its
+	// embedded forge:hash marker (the merge brought in different bytes)
 	// so the stomp guard fires.
 	rel := "handlers_gen.go"
 	original := []byte("// generated v1\npackage handlers\n")
 	modified := []byte("// upstream-merged v2\npackage handlers\n")
-	writeForTest(t, filepath.Join(dir, rel), string(modified))
+	stamped, ok := checksums.StampWithValue(rel, modified, checksums.BodyHash(original))
+	if !ok {
+		t.Fatal("handlers_gen.go should be stampable")
+	}
+	writeForTest(t, filepath.Join(dir, rel), string(stamped))
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		rel: {
-			Hash:    checksums.Hash(original),
-			History: []string{checksums.Hash(original)},
-			Tier:    1,
-		},
-	}}
+	cs := &checksums.FileChecksums{}
 
 	// Plant a MERGE_HEAD so detectGitMergeState reports "merge".
 	gitDir := filepath.Join(dir, ".git")

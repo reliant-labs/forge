@@ -261,8 +261,14 @@ var pathRefRE = regexp.MustCompile(`(?:pkg/app|handlers|\.forge)/[A-Za-z0-9_\-./
 // knownDotForgeEntries are the .forge/ children forge actually writes
 // (harvested from filepath.Join(".forge", ...) call sites).
 var knownDotForgeEntries = map[string]bool{
-	"checksums.json":        true,
-	"friction.jsonl":        true,
+	// checksums.json is the DEAD legacy manifest — still referenced by
+	// migration docs (forge reads + deletes it during the one-time
+	// migration), so it stays a known entry.
+	"checksums.json": true,
+	"disowned.json":  true,
+	"hashes.json":    true,
+	"render":         true,
+	"friction.jsonl": true,
 	"skills":                true,
 	"state":                 true,
 	"debug":                 true,

@@ -241,7 +241,7 @@ func WireExtras() *Workers { return nil }
 				writeUnderDir(t, dir, rel, contents)
 			}
 
-			cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+			cs := &checksums.FileChecksums{}
 			// Record every materialized file as Tier-1 by default;
 			// flip disowned / Tier-2 from the case definitions.
 			for rel := range tc.files {
@@ -284,7 +284,7 @@ func TestCheckDisownedDanglingRefs_NilChecksums(t *testing.T) {
 	if err := checkDisownedDanglingRefs(context.Background(), dir, nil); err != nil {
 		t.Errorf("nil checksums: want nil error, got: %v", err)
 	}
-	empty := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	empty := &checksums.FileChecksums{}
 	if err := checkDisownedDanglingRefs(context.Background(), dir, empty); err != nil {
 		t.Errorf("empty checksums: want nil error, got: %v", err)
 	}

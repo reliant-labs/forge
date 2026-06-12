@@ -166,7 +166,7 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 	// registration-in-code rework — see the services_gen.go assertions
 	// below.
 	for _, row := range []string{
-		`Services: RegisteredServices(app, cfg, logger, devMode, opts...)`,
+		`Services: RegisteredServices(app, cfg, logger, opts...)`,
 		`{Name: "cache", Construct: func() error {`,
 		`{Name: "audit", Construct: func() error {`,
 		`{Name: "emailer", Construct: func() error {`,
@@ -195,8 +195,8 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 	for _, want := range []string{
 		`Name: "admin-server",`,
 		`Name: "orders",`,
-		"wireAdminServerDeps(app, cfg, logger, devMode)",
-		"wireOrdersDeps(app, cfg, logger, devMode)",
+		"wireAdminServerDeps(app, cfg, logger)",
+		"wireOrdersDeps(app, cfg, logger)",
 	} {
 		if !strings.Contains(rows, want) {
 			t.Errorf("services_gen.go missing %q", want)

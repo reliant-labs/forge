@@ -1404,7 +1404,7 @@ func stepServiceStubs(ctx *pipelineContext) error {
 	}
 	for _, svc := range rows {
 		if reg.state(svc.Name) == registrationUnlisted {
-			fmt.Printf("  📝 %s is generated but NOT served: add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices in %s\n",
+			fmt.Printf("  📝 %s is generated but NOT served: add `%s(app, cfg, logger, opts...),` to RegisteredServices in %s\n",
 				svc.Name, codegen.ServiceRowFuncName(svc.Name), serviceRegistryRelPath)
 		}
 	}

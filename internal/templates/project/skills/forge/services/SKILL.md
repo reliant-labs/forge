@@ -46,9 +46,9 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 ```go
 // RegisteredServices lists what THIS binary serves. Serving a service
 // = listing its row.
-func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) []appkit.ServiceDef {
+func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []appkit.ServiceDef {
     return []appkit.ServiceDef{
-        serviceRowAPI(app, cfg, logger, devMode, opts...),
+        serviceRowAPI(app, cfg, logger, opts...),
         // project: types-only -- served by control-plane
     }
 }

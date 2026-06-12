@@ -225,12 +225,12 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		t.Error("services_gen.go should construct orders service with wire_gen-built Deps")
 	}
 	if !strings.Contains(rows, `wireAPIDeps(app, cfg, logger`) {
-		t.Error("services_gen.go should call wireAPIDeps(app, cfg, logger, devMode)")
+		t.Error("services_gen.go should call wireAPIDeps(app, cfg, logger)")
 	}
 	if !strings.Contains(rows, `wireOrdersDeps(app, cfg, logger`) {
-		t.Error("services_gen.go should call wireOrdersDeps(app, cfg, logger, devMode)")
+		t.Error("services_gen.go should call wireOrdersDeps(app, cfg, logger)")
 	}
-	if !strings.Contains(content, `RegisteredServices(app, cfg, logger, devMode, opts...)`) {
+	if !strings.Contains(content, `RegisteredServices(app, cfg, logger, opts...)`) {
 		t.Error("bootstrap.go should consume the user-owned RegisteredServices row list")
 	}
 	// The scaffold-once user-owned registration file lists every row.
@@ -239,8 +239,8 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		t.Fatalf("ReadFile(services.go) error = %v", err)
 	}
 	for _, line := range []string{
-		"serviceRowAPI(app, cfg, logger, devMode, opts...),",
-		"serviceRowOrders(app, cfg, logger, devMode, opts...),",
+		"serviceRowAPI(app, cfg, logger, opts...),",
+		"serviceRowOrders(app, cfg, logger, opts...),",
 	} {
 		if !strings.Contains(string(registryData), line) {
 			t.Errorf("scaffolded services.go missing row %q", line)

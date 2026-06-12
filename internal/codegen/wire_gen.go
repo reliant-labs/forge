@@ -88,13 +88,9 @@ type WireGenServiceData struct {
 	// NeedsAuthzVar is true when the Deps struct has an Authorizer
 	// field. Skips the var-decl block in the template when no
 	// Authorizer is present (rare, but library-style services hit it).
+	// The rendered block reads cfg.Mode().IsDev() itself for the
+	// DevAuthorizer swap — there is no devMode parameter threading.
 	NeedsAuthzVar bool
-
-	// NeedsDevMode is true when wire_gen needs the devMode bool param —
-	// matches NeedsAuthzVar today (the only conditional consumer of
-	// devMode is the authz swap), kept as a separate flag so future
-	// devMode-gated fields don't have to reuse the authz hook.
-	NeedsDevMode bool
 
 	// Assignments are the per-Deps-field key/value pairs the template
 	// emits inside the struct literal. Order matches the order of
@@ -397,12 +393,11 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 		}
 
 		// Track whether we have an Authorizer field — drives the
-		// `var authz` block + the `devMode` parameter in the rendered
-		// function signature.
+		// `var authz` block (with its cfg.Mode().IsDev() DevAuthorizer
+		// swap) in the rendered function body.
 		for _, df := range depsFields {
 			if df.Name == "Authorizer" {
 				data.NeedsAuthzVar = true
-				data.NeedsDevMode = true
 				needsAuthorizerImport = true
 				break
 			}
@@ -591,13 +586,12 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 				}
 			}
 			// Workers/operators are not expected to declare Authorizer
-			// (no inbound RPCs), so they don't get the devMode hook.
+			// (no inbound RPCs), so they rarely hit this hook.
 			// If a Deps struct does declare one, we honor it and set
 			// NeedsAuthzVar — keeps the codegen consistent if a project
 			// invents a worker that exposes an HTTP listener.
 			if df.Name == "Authorizer" {
 				data.NeedsAuthzVar = true
-				data.NeedsDevMode = true
 			}
 			// Optional Deps fields get the silent treatment — see the
 			// service-loop comment above for the full rationale (and

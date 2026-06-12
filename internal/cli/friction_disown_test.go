@@ -79,7 +79,7 @@ func TestGenerateAccept_RecordsDisownFriction(t *testing.T) {
 			// is classified in-scope by the drift scope filter.
 			mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
 
-			cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+			cs := &checksums.FileChecksums{}
 			for _, rel := range []string{relWire, relCmd} {
 				recorded := []byte("package x // as generated: " + rel + "\n")
 				mustWriteScopeFile(t, filepath.Join(dir, rel), "package x // hand-edited: "+rel+"\n")
@@ -161,7 +161,7 @@ func TestGenerateAccept_NoDriftLeavesFrictionUntouched(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	content := []byte("package app // pristine\n")
 	mustWriteScopeFile(t, filepath.Join(dir, rel), string(content))
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	cs := &checksums.FileChecksums{}
 	cs.RecordFile(rel, content)
 	entry := cs.Files[rel]
 	entry.Tier = 1

@@ -153,7 +153,7 @@ func TestStepCheckTier1Drift_PopulatesPresenceBeforeScoping(t *testing.T) {
 	edited := []byte("package app // hand-edited\n")
 	mustWriteScopeFile(t, filepath.Join(dir, rel), string(edited))
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	cs := &checksums.FileChecksums{}
 	cs.RecordFile(rel, recorded)
 	entry := cs.Files[rel]
 	entry.Tier = 1

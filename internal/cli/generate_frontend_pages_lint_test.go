@@ -48,7 +48,7 @@ func TestGenerateFrontendPages_NoUnusedVars(t *testing.T) {
 		},
 	}
 	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
 		t.Fatalf("generateFrontendPages: %v", err)
@@ -102,7 +102,7 @@ func TestGenerateFrontendPages_DeleteFlowKeepsRouter(t *testing.T) {
 		},
 	}
 	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
 		t.Fatalf("generateFrontendPages: %v", err)

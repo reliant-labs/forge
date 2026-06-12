@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/compiler/protogen"
@@ -11,19 +10,22 @@ import (
 )
 
 // forgePluginMode controls what the protoc-gen-forge plugin generates.
+//
+// Only descriptor mode exists: the plugin extracts services/configs
+// metadata into forge_descriptor.json fragments. The historical
+// mode=orm (entity-proto → *.pb.orm.go codegen) is gone — entities are
+// projections of the applied db/migrations schema now, not of proto
+// annotations.
 type forgePluginMode string
 
 const (
-	forgePluginModeORM        forgePluginMode = "orm"
 	forgePluginModeDescriptor forgePluginMode = "descriptor"
-	// forgePluginModeScaffold is reserved for future use.
-	forgePluginModeScaffold forgePluginMode = "scaffold"
 )
 
 func newProtocGenForgeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:    "protoc-gen-forge",
-		Short:  "Protoc plugin for code generation (invoked by buf)",
+		Short:  "Protoc plugin for descriptor extraction (invoked by buf)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// protogen.Options{}.Run() reads os.Args directly and rejects
@@ -32,18 +34,20 @@ func newProtocGenForgeCmd() *cobra.Command {
 			// subcommand name. Strip it so protogen sees only the binary.
 			os.Args = os.Args[:1]
 
-			mode := forgePluginModeORM // default
-			descriptorOut := "gen"      // default output directory for descriptor mode
+			mode := forgePluginModeDescriptor
+			descriptorOut := "gen" // default output directory
 
 			opts := protogen.Options{
 				ParamFunc: func(name, value string) error {
 					switch name {
 					case "mode":
 						switch forgePluginMode(value) {
-						case forgePluginModeORM, forgePluginModeDescriptor, forgePluginModeScaffold:
-							mode = forgePluginMode(value)
+						case forgePluginModeDescriptor:
+							mode = forgePluginModeDescriptor
+						case "orm":
+							return fmt.Errorf("protoc-gen-forge mode=orm was removed: entities are projected from the applied db/migrations schema (run `forge generate`); delete the buf template that requests mode=orm")
 						default:
-							return fmt.Errorf("unknown mode: %s (valid: orm, descriptor, scaffold)", value)
+							return fmt.Errorf("unknown mode: %s (valid: descriptor)", value)
 						}
 					case "descriptor_out":
 						descriptorOut = value
@@ -54,111 +58,10 @@ func newProtocGenForgeCmd() *cobra.Command {
 
 			opts.Run(func(p *protogen.Plugin) error {
 				p.SupportedFeatures = uint64(pluginpb.CodeGeneratorResponse_FEATURE_PROTO3_OPTIONAL)
-
-				switch mode {
-				case forgePluginModeDescriptor:
-					return generateDescriptor(p, descriptorOut)
-				case forgePluginModeScaffold:
-					p.Error(fmt.Errorf("scaffold mode is not yet implemented"))
-					return nil
-				default:
-					return generateOrmPlugin(p)
-				}
+				_ = mode // single-mode plugin; kept for the ParamFunc contract
+				return generateDescriptor(p, descriptorOut)
 			})
 			return nil
 		},
 	}
 }
-
-// generateOrmPlugin runs the ORM code generation mode (original behavior).
-func generateOrmPlugin(p *protogen.Plugin) error {
-	// Track which packages already got a shared header to avoid
-	// redeclaring package-level vars (ormTracer etc.) when
-	// multiple .proto files live in the same Go package.
-	sharedGenerated := make(map[protogen.GoImportPath]bool)
-
-	for _, f := range p.Files {
-		if !f.Generate {
-			continue
-		}
-		if err := generateOrmFile(p, f, sharedGenerated); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func generateOrmFile(p *protogen.Plugin, file *protogen.File, sharedGenerated map[protogen.GoImportPath]bool) error {
-	var entities []entityInfo
-
-	for _, msg := range file.Messages {
-		ent, isEntity, err := parseEntity(msg)
-		if err != nil {
-			// Annotated as an entity but malformed (e.g. missing pk: true).
-			// Surface the error via the protogen plugin so it appears in
-			// `forge generate` output verbatim and stops codegen.
-			p.Error(err)
-			return nil
-		}
-		if !isEntity {
-			continue
-		}
-		entities = append(entities, ent)
-	}
-
-	if len(entities) == 0 {
-		return nil
-	}
-
-	// Check if any entity has timestamps for the shared file.
-	anyHasTimestamp := false
-	for _, ent := range entities {
-		for _, f := range ent.fields {
-			if f.isTimestamp {
-				anyHasTimestamp = true
-				break
-			}
-		}
-		if anyHasTimestamp {
-			break
-		}
-	}
-
-	// Generate a shared file with package-level declarations (ormTracer, etc.)
-	// Only generate once per Go package to avoid redeclaration errors.
-	// orm-shared-redeclared-multi-proto: key the shared file off the
-	// proto directory (Go package dir) rather than the per-file prefix, so
-	// adding bar.proto next to foo.proto does not leave a stale
-	// foo_orm_shared.pb.orm.go on disk alongside a new bar_orm_shared.pb.orm.go
-	// (which would produce duplicate `var ormTracer = ...` declarations and
-	// a `go build` failure).
-	if !sharedGenerated[file.GoImportPath] {
-		sharedFilename := path.Join(path.Dir(file.GeneratedFilenamePrefix), "orm_shared.pb.orm.go")
-		shared := p.NewGeneratedFile(sharedFilename, file.GoImportPath)
-		generateSharedHeader(shared, file, anyHasTimestamp)
-		sharedGenerated[file.GoImportPath] = true
-	}
-
-	// Generate per-entity files.
-	for _, ent := range entities {
-		entHasTimestamp := false
-		entHasWrapper := false
-		for _, f := range ent.fields {
-			if f.isTimestamp {
-				entHasTimestamp = true
-			}
-			if isWrapperField(f.field) {
-				entHasWrapper = true
-			}
-		}
-
-		filename := file.GeneratedFilenamePrefix + "_" + toSnake(string(ent.msg.Desc.Name())) + ".pb.orm.go"
-		g := p.NewGeneratedFile(filename, file.GoImportPath)
-
-		generateEntityHeader(g, file, entHasTimestamp, ent.softDelete, ent.tenantField != nil, entHasWrapper)
-		generateEntityCode(g, ent, entHasTimestamp)
-	}
-
-	return nil
-}
-

@@ -36,8 +36,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
@@ -90,6 +92,11 @@ func startServer() (*server, error) {
 		}
 		return &server{baseURL: base, baseDB: db}, nil
 	}
+
+	// Reap instances orphaned by SIGKILLed test binaries before booting a
+	// fresh one — otherwise they accumulate across runs and exhaust the
+	// kernel's shared-memory/semaphore tables (see reapStaleInstances).
+	reapStaleInstances()
 
 	port, err := freePort()
 	if err != nil {
@@ -179,6 +186,76 @@ func pingWithRetry(db *sql.DB) error {
 // is cleaned by Stop().
 func runtimeDir(port uint32) string {
 	return filepath.Join(os.TempDir(), "forge-pgtest", strconv.FormatUint(uint64(port), 10))
+}
+
+// staleInstanceAge is how old an embedded-postgres instance must be
+// before reapStaleInstances treats it as abandoned. Real gate runs
+// finish in a couple of minutes (the test -timeout is a far-off
+// ceiling, not the runtime), so anything this old belongs to a process
+// that died before it could clean up. Generous enough that a live
+// concurrent run is never reaped.
+const staleInstanceAge = 30 * time.Minute
+
+// reapStaleInstances removes forge-pgtest runtime dirs — and SIGKILLs any
+// postgres still bound to them — left behind by test binaries that were
+// killed before t.Cleanup/Stop could run. When a test process dies hard,
+// its embedded postgres child is reparented to init and keeps running;
+// across many concurrent gate runs these orphans pile up and exhaust the
+// kernel's SysV shared-memory/semaphore tables, after which EVERY new
+// boot fails with "initdb: exit status 1". Reaping is age-based off each
+// instance's postmaster.pid start time, so a live concurrent instance
+// (recently started) is left untouched; a dead postmaster (pid gone) is
+// reaped regardless of age. Best-effort: every error is ignored.
+func reapStaleInstances() {
+	root := filepath.Join(os.TempDir(), "forge-pgtest")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		pidFile := filepath.Join(dir, "data", "postmaster.pid")
+		pid, alive := postmaster(pidFile)
+		if alive {
+			// Only reap a still-running postmaster once it's clearly orphaned
+			// (older than staleInstanceAge). Recently-started ones belong to
+			// live concurrent runs.
+			if info, statErr := os.Stat(pidFile); statErr != nil || time.Since(info.ModTime()) < staleInstanceAge {
+				continue
+			}
+			if proc, ferr := os.FindProcess(pid); ferr == nil {
+				_ = proc.Signal(syscall.SIGKILL)
+			}
+		}
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// postmaster reads a postmaster.pid file and reports the server PID and
+// whether that process is currently alive (signal 0 probe). Returns
+// (0, false) when the file is absent/unreadable — a crashed instance
+// whose dir lingers, which the caller reaps unconditionally.
+func postmaster(pidFile string) (pid int, alive bool) {
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, false
+	}
+	first := string(b)
+	if i := strings.IndexByte(first, '\n'); i >= 0 {
+		first = first[:i]
+	}
+	pid, err = strconv.Atoi(strings.TrimSpace(first))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return pid, false
+	}
+	return pid, proc.Signal(syscall.Signal(0)) == nil
 }
 
 // cacheDir returns a stable directory for the downloaded postgres binary

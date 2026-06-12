@@ -317,3 +317,93 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 		})
 	}
 }
+
+// TestFeaturesDeploy_TopLevelKeyLoads pins the deploy promotion: a
+// forge.yaml that sets `features: deploy: true` must load without an
+// unknown-key error (deploy is a stable, top-level feature flag — not
+// `features.experimental.deploy`).
+func TestFeaturesDeploy_TopLevelKeyLoads(t *testing.T) {
+	src := minimalForgeYAML + `
+features:
+    deploy: true
+`
+	cfg, err := LoadStrict([]byte(src), "deploy.yaml")
+	if err != nil {
+		t.Fatalf("LoadStrict with `features: deploy: true`: %v", err)
+	}
+	if !cfg.Features.DeployEnabled() {
+		t.Error("DeployEnabled() = false, want true (explicit features.deploy: true)")
+	}
+}
+
+// TestDeriveFeatureDefaults_DeployFollowsKind pins the derivation rule
+// deploy ⇔ kind == service: a pristine service scaffold has deploy on
+// (its deploy/kcl tree is shipped by the scaffold and the generate
+// pipeline must emit deploy/kcl/<env>/config_gen.k for the scaffold's
+// own main.k import to resolve); cli/library kinds have no deploy
+// surface. An explicit false always wins over derivation.
+func TestDeriveFeatureDefaults_DeployFollowsKind(t *testing.T) {
+	// Fresh service-kind config (minimal scaffold): deploy derives ON.
+	svc, err := LoadStrict([]byte(minimalForgeYAML), "svc.yaml")
+	if err != nil {
+		t.Fatalf("load minimal service: %v", err)
+	}
+	if !svc.Features.DeployEnabled() {
+		t.Error("service kind: DeployEnabled() = false, want true (derived from kind)")
+	}
+
+	// CLI and library kinds derive OFF.
+	for _, kind := range []string{ProjectKindCLI, ProjectKindLibrary} {
+		src := `
+name: demo
+module_path: example.com/demo
+kind: ` + kind + `
+`
+		cfg, err := LoadStrict([]byte(src), kind+".yaml")
+		if err != nil {
+			t.Fatalf("load %s: %v", kind, err)
+		}
+		if cfg.Features.DeployEnabled() {
+			t.Errorf("%s kind: DeployEnabled() = true, want false (derived from kind)", kind)
+		}
+	}
+
+	// Explicit false wins over the service-kind derivation.
+	off := minimalForgeYAML + `
+features:
+    deploy: false
+`
+	cfg, err := LoadStrict([]byte(off), "off.yaml")
+	if err != nil {
+		t.Fatalf("load explicit-off: %v", err)
+	}
+	if cfg.Features.DeployEnabled() {
+		t.Error("explicit features.deploy: false on service kind: DeployEnabled() = true, want false")
+	}
+
+	// Derivation map carries the deploy key.
+	if got := DeriveFeatureDefaults(&ProjectConfig{Kind: ProjectKindService}); !got[FeatureDeploy] {
+		t.Error("DeriveFeatureDefaults(service)[deploy] = false, want true")
+	}
+	if got := DeriveFeatureDefaults(&ProjectConfig{Kind: ProjectKindCLI}); got[FeatureDeploy] {
+		t.Error("DeriveFeatureDefaults(cli)[deploy] = true, want false")
+	}
+}
+
+// TestNormalizeForWrite_DeployDroppedWhenMatchingDerivation: an explicit
+// deploy value equal to the kind-derived default is boilerplate and must
+// be stripped on write; a differing value survives.
+func TestNormalizeForWrite_DeployDroppedWhenMatchingDerivation(t *testing.T) {
+	on := true
+	off := false
+	// service + deploy:true matches derivation → dropped.
+	cfg := &ProjectConfig{Name: "d", ModulePath: "x/d", Features: FeaturesConfig{Deploy: &on}}
+	if out := NormalizeForWrite(cfg); out.Features.Deploy != nil {
+		t.Error("deploy: true on service kind should be dropped (matches derivation)")
+	}
+	// service + deploy:false differs → survives.
+	cfg = &ProjectConfig{Name: "d", ModulePath: "x/d", Features: FeaturesConfig{Deploy: &off}}
+	if out := NormalizeForWrite(cfg); out.Features.Deploy == nil || *out.Features.Deploy {
+		t.Error("deploy: false on service kind must survive NormalizeForWrite")
+	}
+}

@@ -45,7 +45,7 @@ type featureCheck func(config.FeaturesConfig) bool
 // — keeps the name-to-accessor mapping in one place (mismatch is a
 // compile-time error rather than a runtime mis-spelling). Experimental
 // features share this map; the default-OFF semantics come from the
-// underlying accessor (DeployEnabled() reads Experimental.Deploy).
+// underlying accessor (e.g. IngressEnabled() reads Experimental.Ingress).
 var featureChecks = map[string]featureCheck{
 	config.FeatureORM:             func(f config.FeaturesConfig) bool { return f.ORMEnabled() },
 	config.FeatureCodegen:         func(f config.FeaturesConfig) bool { return f.CodegenEnabled() },

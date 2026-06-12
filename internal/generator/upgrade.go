@@ -68,11 +68,11 @@ func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
 	isService := kind == config.ProjectKindService
 
 	// Kind gates first — service-shape files don't apply to CLI/library.
-	// Deploy is experimental, but the SCAFFOLD always emits these files
-	// for service-kind so the project is shippable when the user flips
-	// `features.experimental.deploy: true`. upgrade therefore also
-	// manages them for every service-kind project — the gate would
-	// strand existing scaffolds with un-upgradable Dockerfiles.
+	// The SCAFFOLD always emits these files for service-kind (deploy
+	// derives on for service projects, and even a `features.deploy:
+	// false` project keeps the tree on disk). upgrade therefore also
+	// manages them for every service-kind project — gating on the flag
+	// would strand opted-out scaffolds with un-upgradable Dockerfiles.
 	switch {
 	case strings.HasPrefix(p, "cmd/"):
 		return isService

@@ -85,10 +85,10 @@ features:
     observability: false
     hot_reload: false
     # Experimental features default off. forge itself is a CLI project
-    # that doesn't ship a deploy/ingress/operator surface, so we leave
-    # this block empty. Service-shape projects opt in per feature:
+    # that doesn't ship an ingress/operator surface, so we leave this
+    # block empty. (deploy is a stable flag now — it derives from kind,
+    # on for service projects.) Service-shape projects opt in per feature:
     #   experimental:
-    #     deploy: true          # generate deploy manifests (KCL → k8s)
     #     ingress: true         # Gateway API + cert-manager wiring
     #     external_builds: true # KCL Service.build_cmd shell escape hatch
     #     operators: true       # controller-runtime operators + CRDs

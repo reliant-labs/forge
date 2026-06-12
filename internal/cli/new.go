@@ -831,14 +831,16 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.Packs = f
 		case "starters":
 			gen.Features.Starters = f
-		case "deploy", "ingress", "external_builds", "operators", "strict_wiring":
+		case "deploy":
+			gen.Features.Deploy = f
+		case "ingress", "external_builds", "operators", "strict_wiring":
 			return cliutil.UserErr("forge new --disable",
 				fmt.Sprintf("feature %q is experimental (opt-in only); cannot be --disable'd because it's already off by default", name),
 				"",
 				"experimental features default off; opt in per project via `features.experimental.<name>: true` in forge.yaml")
 		default:
 			return cliutil.UserErr("forge new --disable",
-				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, contracts, docs, frontend, observability, hot_reload, packs, starters", name),
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters", name),
 				"",
 				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}

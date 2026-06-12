@@ -127,20 +127,31 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 }
 
 // GenerateComponentsJSON writes deploy/kcl/components_gen.json from the
-// project's component list and self-certifies it via the checksums
-// chokepoint (which routes JSON through the .forge/hashes.json
-// unstampable fallback). When cs is nil the file is written directly
-// (fixture/test paths that don't track state).
+// project's component list.
+//
+// components_gen.json is a LOCKFILE-CLASS artifact: a pure, deterministic
+// projection of forge.yaml's `components:` with ZERO user-editable
+// surface. forge owns 100% of it and rewrites it byte-for-byte every
+// run. It is therefore NOT registered in `.forge/hashes.json` and NOT
+// subject to the Tier-1 stomp guard — detecting a "hand-edit" to a
+// derived projection is meaningless (the next run discards it anyway),
+// and TRACKING it would reintroduce the WIP-lane bookkeeping hazard
+// TestE2ESelfCertParallelLaneSubsetCommit guards against: a committed
+// `.forge/hashes.json` recording a render that was never committed makes
+// a clean clone of HEAD refuse to regenerate. An always-regenerated,
+// untracked file sidesteps that entirely (same posture gen/mcp/
+// manifest.json gets when its inputs are absent).
+//
+// A stale entry under the legacy tracked path is cleared so an upgrade
+// from a tracked-components_gen.json build can't leave a poison hash
+// behind.
 func GenerateComponentsJSON(projectDir, projectName string, components []config.ComponentConfig, cs *checksums.FileChecksums) error {
 	content, err := ComponentsToJSON(projectName, components)
 	if err != nil {
 		return err
 	}
-	if cs != nil {
-		if _, err := checksums.WriteGeneratedFile(projectDir, ComponentsJSONRelPath, content, cs, true); err != nil {
-			return fmt.Errorf("write %s: %w", ComponentsJSONRelPath, err)
-		}
-		return nil
+	if cs != nil && cs.Unstampable != nil {
+		delete(cs.Unstampable, ComponentsJSONRelPath)
 	}
 	dest := filepath.Join(projectDir, ComponentsJSONRelPath)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {

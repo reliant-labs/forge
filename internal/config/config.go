@@ -240,27 +240,28 @@ type FrontendConfig struct {
 	// vite-spa (those have their own production shapes).
 	//
 	// Valid values:
-	//   - "static"     (default): production builds emit a static export
+	//   - "standalone" (default): production builds emit a self-contained
+	//     Node server at `.next-prod/standalone/server.js`. This is the shape
+	//     the shipped Dockerfile copies into its runner image, and the
+	//     only default that supports the dynamic `[id]` CRUD detail/edit
+	//     routes forge generates for every entity.
+	//   - "static": production builds emit a static export
 	//     (`output: "export"` gated on NODE_ENV=production) — pure HTML +
 	//     JS + CSS the user can drop on a CDN or object store. The dev
-	//     server stays unchanged (`next dev`). This is the right default
-	//     for the common Forge shape: Next.js shell calling a Go backend
-	//     via Connect RPC, no SSR / server actions / `redirect()` /
-	//     `cookies()` in production.
-	//   - "standalone": production builds emit a self-contained Node
-	//     server at `.next/standalone/server.js`. Needed when the app
-	//     uses server components, server actions, `redirect()`,
-	//     `cookies()`, etc. at request time. The scaffold ships a
-	//     Dockerfile sized for this shape; static deployments can
-	//     ignore or delete it.
+	//     server stays unchanged (`next dev`). EXPLICIT OPT-IN ONLY:
+	//     `output: "export"` requires generateStaticParams() on every
+	//     dynamic route segment, and the generated CRUD detail/edit
+	//     pages (`/<slug>/[id]`) are dynamic client routes whose ids
+	//     only exist at runtime — `npm run build` fails on any project
+	//     with a CRUD entity unless those pages are removed or given
+	//     hand-written static params.
 	//   - "server": full Next.js dev AND prod (no `output:` set). Use
 	//     when you want `next start` semantics in prod for custom edge /
 	//     ISR workflows.
 	//
-	// Defaults to "static" when empty (the new-project default since
-	// the static-default switchover). Pre-existing projects that
-	// scaffolded under the old standalone-default keep their checked-in
-	// `next.config.ts`; the field doesn't retroactively rewrite it.
+	// Defaults to "standalone" when empty. Pre-existing projects keep
+	// their checked-in `next.config.ts`; the field doesn't
+	// retroactively rewrite it.
 	Output string `yaml:"output,omitempty"`
 	// BasePath is the URL path prefix this frontend is mounted under
 	// when it is NOT served from the host root — e.g. "/admin" for an

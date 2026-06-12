@@ -23,8 +23,8 @@ func ArrayValue(d Dialect, v any) any {
 		return v
 	}
 	b, err := json.Marshal(v)
-	if err != nil {
-		// Slices of strings/ints cannot fail to marshal; guard anyway.
+	if err != nil || string(b) == "null" {
+		// nil slices marshal to "null"; store the empty array instead.
 		return "[]"
 	}
 	return string(b)
@@ -39,7 +39,7 @@ func (a *StringArray) Scan(src any) error {
 	if !ok {
 		return fmt.Errorf("orm: cannot scan %T into StringArray", src)
 	}
-	if s == "" {
+	if s == "" || s == "null" {
 		*a = nil
 		return nil
 	}
@@ -66,7 +66,7 @@ func (a *Int64Array) Scan(src any) error {
 	if !ok {
 		return fmt.Errorf("orm: cannot scan %T into Int64Array", src)
 	}
-	if s == "" {
+	if s == "" || s == "null" {
 		*a = nil
 		return nil
 	}

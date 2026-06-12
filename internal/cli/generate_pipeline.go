@@ -795,6 +795,17 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	if ctx.Checksums == nil {
 		return nil
 	}
+	if ctx.Force {
+		// Scope --force before anything else: an installed-but-empty
+		// scope makes force INERT until this guard widens it to the
+		// exact drift set it reports below. --force means "discard the
+		// edits the guard told me about", never "overwrite anything any
+		// emitter touches this run" — journey fr-a04f8c0609 watched a
+		// --force recovery from one Tier-1 trip clobber unrelated
+		// files. (Presets that deliberately exclude this guard keep the
+		// legacy unscoped force: no scope is installed at all.)
+		checksums.SetForceScope(nil)
+	}
 	allDrift := ctx.Checksums.CheckTier1Drift(ctx.AbsPath)
 	if len(allDrift) == 0 {
 		return nil
@@ -829,7 +840,17 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 	}
 
 	if ctx.Force {
-		fmt.Fprintf(os.Stderr, "⚠️  --force: overwriting %d hand-edited Tier-1 file(s):\n", len(drift))
+		// Widen the force scope to EXACTLY the in-scope drift set — the
+		// files this message names are the only ones --force may
+		// clobber. Out-of-scope drift stays outside the scope too: its
+		// emitters won't run this invocation, and the warning above
+		// already routed the user to a scope-complete re-run.
+		paths := make([]string, 0, len(drift))
+		for _, d := range drift {
+			paths = append(paths, d.Path)
+		}
+		checksums.SetForceScope(paths)
+		fmt.Fprintf(os.Stderr, "⚠️  --force: overwriting %d hand-edited Tier-1 file(s) (and nothing else):\n", len(drift))
 		for _, d := range drift {
 			fmt.Fprintf(os.Stderr, "   - %s\n", d.Path)
 		}
@@ -891,12 +912,19 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		return errMidMergeTier1Drift{state: state, msg: b.String()}
 	}
 
-	// Default: error with a batched report. The body lives in
+	// Default: error with a batched report. The FIRST line must stand
+	// alone — file names + remedies — because truncating consumers
+	// (agent harnesses, wrap-and-rethrow callers) often surface only
+	// the first line of an error (journey fr-a04f8c0609 saw a bare
+	// header with no file and no remedy). The body lives in
 	// generate_drift_hints.go — it leads with each file's designated
 	// extension point and documents `forge disown` as a permanent,
 	// one-way ownership transfer, so giving up regeneration never
-	// looks like the path of least resistance for agents.
-	return fmt.Errorf("Tier-1 file-stomp guard:\n%s", formatTier1DriftReport(drift))
+	// looks like the path of least resistance for agents. The "Tier-1
+	// file-stomp guard" phrase reaches the user via the step-name wrap
+	// (`step "check Tier-1 file-stomp guard": …`); repeating it here
+	// produced the confusing 'guard: guard:' first line.
+	return fmt.Errorf("%s\n%s", tier1DriftSummaryLine(drift), formatTier1DriftReport(drift))
 }
 
 // errMidMergeTier1Drift is the typed error returned by
@@ -1308,7 +1336,7 @@ func stepFrontendPages(ctx *pipelineContext) error {
 		return nil
 	}
 	return ctx.warnOrFail("frontend page generation",
-		generateFrontendPages(ctx.Cfg, ctx.Services, ctx.ProjectDir, pageEntities, ctx.Checksums, ctx.Force))
+		generateFrontendPages(ctx.Cfg, ctx.Services, ctx.ProjectDir, pageEntities, ctx.Checksums))
 }
 
 // stepFrontendNav — was Step 3f.
@@ -1322,7 +1350,7 @@ func stepFrontendNav(ctx *pipelineContext) error {
 	// how stepFrontendPages treats them (no pages → no routes).
 	navEntities, _ := codegen.ParseEntityProtos(ctx.ProjectDir)
 	return ctx.warnOrFail("frontend nav generation",
-		generateFrontendNav(ctx.Cfg, ctx.Services, ctx.ProjectDir, navEntities, ctx.Checksums, ctx.Force))
+		generateFrontendNav(ctx.Cfg, ctx.Services, ctx.ProjectDir, navEntities, ctx.Checksums))
 }
 
 // stepCleanupStale — was Step 3z.

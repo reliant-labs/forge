@@ -93,7 +93,12 @@ interface pattern throughout the entire stack.`,
 		// SilenceErrors: cobra never prints the error itself — main()
 		// owns the single, final "Error: ..." line. Without this every
 		// failure printed twice (cobra's copy first, buried under the
-		// usage block, then main's copy).
+		// usage block, then main's copy) — multi-line failure reports
+		// (e.g. the Tier-1 stomp-guard report, journey fr-a04f8c0609)
+		// appeared twice with usage spam sandwiched between the copies.
+		// SilenceUsage is NOT set here: it is set in PersistentPreRun
+		// (after flag/arg parsing succeeds) so runtime errors skip the
+		// usage dump while genuine usage mistakes keep the help block.
 		SilenceErrors: true,
 		// PersistentPreRun fires once per invocation regardless of
 		// which subcommand the user typed. We use it to emit a single

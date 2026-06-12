@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -75,12 +76,127 @@ var sideRenderOnly = map[string]bool{}
 func AddSideRenderOnly(relPath string) { sideRenderOnly[relPath] = true }
 
 // ResetPerRunState clears the per-pipeline-run tracking sets (the
-// --explain-drift side-render redirects). Called at the start of each
-// pipeline run alongside ResetSkipWrite / ResetTier2State so a
-// long-lived process (tests, watch mode) doesn't leak state across
-// invocations.
+// --explain-drift side-render redirects, the heal-notice dedupe set,
+// and the --no-heal strict mode). Called at the start of each pipeline
+// run alongside ResetSkipWrite / ResetTier2State so a long-lived
+// process (tests, watch mode) doesn't leak state across invocations.
 func ResetPerRunState() {
 	sideRenderOnly = map[string]bool{}
+	healNoticed = map[string]bool{}
+	DisableAutoHeal = false
+	forceScope = nil
+}
+
+// forceScope is the per-run set of relative paths `--force` is allowed
+// to clobber. nil (the default) means UNSCOPED — force keeps its
+// historical "overwrite any modified file" meaning, which is right for
+// non-pipeline callers (`forge upgrade`, project creation) and for
+// pipeline presets that deliberately skip the stomp guard.
+//
+// The generate pipeline installs a scope (SetForceScope) from inside
+// the Tier-1 stomp guard: --force means "discard the edits the guard
+// just reported", not "force-overwrite anything any emitter happens to
+// touch this run". Journey fr-a04f8c0609: a user recovering from a
+// Tier-1 trip with --force watched unrelated files get re-scaffolded
+// "(your edits discarded)".
+var forceScope map[string]bool
+
+// SetForceScope installs the per-run --force scope: only the given
+// relative paths may be force-overwritten. Passing an empty (or nil)
+// slice installs an EMPTY scope — force becomes inert — which is
+// distinct from never calling SetForceScope (unscoped legacy force).
+// Cleared by ResetPerRunState.
+func SetForceScope(relPaths []string) {
+	forceScope = make(map[string]bool, len(relPaths))
+	for _, p := range relPaths {
+		forceScope[p] = true
+	}
+}
+
+// forceApplies reports whether a force=true write may clobber relPath
+// under the current scope. force=false is never an overwrite license.
+func forceApplies(relPath string, force bool) bool {
+	if !force {
+		return false
+	}
+	if forceScope == nil {
+		return true // unscoped legacy force
+	}
+	return forceScope[relPath]
+}
+
+// DisableAutoHeal is the `forge generate --no-heal` strict mode: when
+// true, on-disk content that matches a PRIOR render in checksum history
+// (but not the latest) is treated as a hand-edit instead of stale
+// codegen — IsFileModified reports it modified, writes skip it, and
+// CheckTier1Drift reports it as drift (flagged HistoricalMatch).
+//
+// The default (false) keeps the history auto-heal that `forge upgrade`
+// depends on: stale codegen regenerates cleanly without --force. The
+// strict mode exists because a hand-edit can hash-collide with history
+// in the human sense — the user deliberately reverts a file to content
+// forge once rendered (FRICTION cp-forge fr-2c1c2328c7: a hand-edit to
+// pkg/app/bootstrap.go equaled a prior render and was silently
+// reverted). Auto-heal stays the default but is LOUD (HealNoticeFn);
+// --no-heal is the escape hatch the notice teaches.
+var DisableAutoHeal bool
+
+// HealNoticeFn is invoked once per file per run when a WriteGeneratedFile*
+// call is about to overwrite on-disk content that matches a historical
+// (but not the latest) render — the "auto-heal stale codegen" path.
+// Healing must never be silent: the on-disk bytes are about to change
+// and, if the historical match was actually a deliberate user revert,
+// this notice is the only trace of the overwrite.
+//
+// Package var so the CLI can redirect the report; the default prints to
+// stderr. Never nil it out — assign a no-op func in tests instead.
+var HealNoticeFn = func(relPath string) {
+	fmt.Fprintf(os.Stderr,
+		"♻️  healing stale codegen: %s — on-disk content matches a prior forge render (not the latest); overwriting with the current template. If that content was a deliberate edit, restore it and re-run with --no-heal, then move the edit to an extension point or `forge disown` the file.\n",
+		relPath)
+}
+
+// healNoticed is the per-run dedupe set for HealNoticeFn — multiple
+// emitters may write the same path in one pipeline run; the user needs
+// one notice per file, not one per write.
+var healNoticed = map[string]bool{}
+
+// maybeNoticeHeal fires HealNoticeFn when writing newContent to relPath
+// would overwrite on-disk content that matches a historical (non-latest)
+// render. No notice when nothing is destroyed: untracked path, missing
+// file, on-disk == current hash (ordinary regen), on-disk == newContent
+// (no byte change), or a true hand-edit (the caller skips those writes
+// before reaching here).
+func maybeNoticeHeal(cs *FileChecksums, root, relPath string, newContent []byte) {
+	if cs == nil || healNoticed[relPath] {
+		return
+	}
+	entry, ok := cs.Files[relPath]
+	if !ok {
+		return
+	}
+	onDisk, err := os.ReadFile(filepath.Join(root, relPath))
+	if err != nil {
+		return
+	}
+	h := Hash(onDisk)
+	if h == entry.Hash || h == Hash(newContent) {
+		return
+	}
+	historical := false
+	for _, prior := range entry.History {
+		if h == prior {
+			historical = true
+			break
+		}
+	}
+	if !historical {
+		return
+	}
+	healNoticed[relPath] = true
+	if HealNoticeFn != nil {
+		HealNoticeFn(relPath)
+	}
 }
 
 // Tier2OverwriteFn is the per-file hook the Tier-2 writer consults when
@@ -302,7 +418,8 @@ func Hash(content []byte) string {
 // any checksum forge has previously rendered for this path. The "matches
 // any prior render" branch is what lets stale codegen sail through upgrade
 // cleanly — forge knows it generated this content, even if the template
-// has since moved on.
+// has since moved on. Under DisableAutoHeal (--no-heal) that branch is
+// off: a historical match counts as a hand-edit.
 func (cs *FileChecksums) IsFileModified(root, relPath string) bool {
 	entry, ok := cs.Files[relPath]
 	if !ok {
@@ -316,9 +433,11 @@ func (cs *FileChecksums) IsFileModified(root, relPath string) bool {
 	if h == entry.Hash {
 		return false
 	}
-	for _, prior := range entry.History {
-		if h == prior {
-			return false
+	if !DisableAutoHeal {
+		for _, prior := range entry.History {
+			if h == prior {
+				return false
+			}
 		}
 	}
 	return true
@@ -439,10 +558,18 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		}
 		return false, nil
 	}
-	if cs != nil && !force && cs.IsFileModified(root, relPath) {
-		// User has modified this file — skip
+	if cs != nil && !forceApplies(relPath, force) && cs.IsFileModified(root, relPath) {
+		// User has modified this file — skip. force only bypasses this
+		// for paths inside the per-run --force scope (when one is
+		// installed); see forceScope.
 		return false, nil
 	}
+
+	// Auto-heal is never silent: if the bytes about to be replaced match
+	// a historical (non-latest) render, say so — that hash equality is
+	// the one case where a deliberate user revert is indistinguishable
+	// from stale codegen (FRICTION cp-forge fr-2c1c2328c7).
+	maybeNoticeHeal(cs, root, relPath, content)
 
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -538,6 +665,10 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 		}
 	}
 
+	// Same loud-heal contract as the Tier-1 writer: overwriting content
+	// that matches a historical render is announced, never silent.
+	maybeNoticeHeal(cs, root, relPath, content)
+
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
@@ -571,6 +702,12 @@ type Tier1DriftEntry struct {
 	RecordedHash string
 	OnDiskHash   string
 	HistoryDepth int // count of prior renders we compared against
+	// HistoricalMatch marks an entry that matched a PRIOR render in
+	// History — only reported as drift under DisableAutoHeal
+	// (--no-heal); the default mode auto-heals these. The flag lets the
+	// guard message explain that the file would regenerate cleanly
+	// without --no-heal.
+	HistoricalMatch bool
 }
 
 // CheckTier1Drift walks all Tier-1 entries in cs.Files and returns the
@@ -613,14 +750,19 @@ func (cs *FileChecksums) CheckTier1Drift(root string) []Tier1DriftEntry {
 				break
 			}
 		}
-		if matchedHistory {
+		if matchedHistory && !DisableAutoHeal {
+			// Stale codegen — the loud auto-heal in WriteGeneratedFile*
+			// regenerates it (and notices); not a stomp candidate. Under
+			// --no-heal the match IS reported, flagged so the guard
+			// message can explain.
 			continue
 		}
 		drift = append(drift, Tier1DriftEntry{
-			Path:         relPath,
-			RecordedHash: entry.Hash,
-			OnDiskHash:   h,
-			HistoryDepth: len(entry.History),
+			Path:            relPath,
+			RecordedHash:    entry.Hash,
+			OnDiskHash:      h,
+			HistoryDepth:    len(entry.History),
+			HistoricalMatch: matchedHistory,
 		})
 	}
 	// Stable ordering for deterministic error messages.

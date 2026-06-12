@@ -120,6 +120,13 @@ genuinely user-edited ones.
   across a project's lifetime.
 - **`--force` still wins.** `forge upgrade --force` overwrites
   user-modified files unconditionally, same as before.
+- **Healing is loud, and `--no-heal` opts out.** When the on-disk
+  content matches a *prior* render (the auto-heal case), every
+  overwrite prints `♻️  healing stale codegen: <path>` — never silent.
+  If you deliberately reverted a file to content forge once rendered
+  (your edit hash-collides with history), re-run
+  `forge generate --no-heal`: historical matches are then treated as
+  hand-edits — the Tier-1 guard reports them instead of regenerating.
 
 ## 5. Verification
 

@@ -124,11 +124,24 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	}
 
 	hasTenant := tenantField != nil
-	hasTimestamp := false
+	// The time import is needed for time.Time struct fields AND for
+	// stamping managed timestamps — including legacy TEXT columns, whose
+	// stamps are time.Now()-derived RFC3339Nano strings (kalshi
+	// fr-3fba9166ba: the old emitter stamped without importing time,
+	// `undefined: time`).
+	needsTime := false
 	for _, f := range fields {
 		if f.isTimestamp {
-			hasTimestamp = true
+			needsTime = true
 			break
+		}
+	}
+	if ent.Timestamps {
+		for _, f := range fields {
+			if isManagedTimestampColumn(f.columnName) && stampableTimestamp(f) {
+				needsTime = true
+				break
+			}
 		}
 	}
 
@@ -140,7 +153,7 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	b.WriteString("package db\n\n")
 
 	// Imports
-	writeORMImports(&b, hasTimestamp, pkField != nil && pkField.goType == "string")
+	writeORMImports(&b, needsTime, pkField != nil && pkField.goType == "string")
 
 	// The entity struct: a projection of the APPLIED schema.
 	writeEntityStruct(&b, msgName, tableName, fields)
@@ -188,12 +201,12 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	return os.WriteFile(filepath.Join(dbDir, fileName), []byte(b.String()), 0o644)
 }
 
-func writeORMImports(b *strings.Builder, hasTimestamp, stringPK bool) {
+func writeORMImports(b *strings.Builder, needsTime, stringPK bool) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"strings\"\n")
-	if hasTimestamp {
+	if needsTime {
 		b.WriteString("\t\"time\"\n")
 	}
 	b.WriteString("\n")
@@ -383,32 +396,120 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 	b.WriteString("}\n\n")
 }
 
+// ── managed-timestamp stamping (type-aware) ────────────────────────────
+//
+// The entity struct is a projection of the APPLIED schema, so managed
+// created_at/updated_at columns are whatever type the migration
+// declared: TIMESTAMPTZ → time.Time, legacy TEXT → string, plus the
+// nullable pointer variants. Stamping must branch on the projected Go
+// type — the pre-M3 emitter assumed time.Time unconditionally and
+// produced non-compiling output for TEXT columns (kalshi
+// fr-3fba9166ba: `undefined: time`, `msg.CreatedAt.IsZero undefined
+// (type string)`) and for nullable pointer columns.
+
+// isManagedTimestampColumn reports whether the column is one of the
+// timestamps:true managed pair.
+func isManagedTimestampColumn(col string) bool {
+	return col == "created_at" || col == "updated_at"
+}
+
+// stampableTimestamp reports whether the emitter knows how to stamp the
+// column's projected Go type. time.Time gets the instant itself; string
+// gets the RFC3339Nano rendering. Anything else (e.g. an epoch INTEGER)
+// is left alone — emitting a wrong-typed stamp would be a compile
+// error, and guessing an encoding would corrupt data.
+func stampableTimestamp(f ormField) bool {
+	return f.goType == "time.Time" || f.goType == "string"
+}
+
+// stampValueExpr renders the stamp value for f given nowExpr, a Go
+// expression of type time.Time. Callers must have checked
+// stampableTimestamp first.
+func stampValueExpr(f ormField, nowExpr string) string {
+	if f.goType == "string" {
+		return nowExpr + ".Format(time.RFC3339Nano)"
+	}
+	return nowExpr
+}
+
+// isPointerStructField reports whether the field projects to a pointer
+// on the entity struct (nullable column).
+func isPointerStructField(f ormField) bool {
+	return strings.HasPrefix(f.structGoType(), "*")
+}
+
+// stampEmptyCond renders the "caller left it unset" condition used to
+// guard the created_at stamp so caller-provided values win.
+func stampEmptyCond(f ormField) string {
+	if isPointerStructField(f) {
+		return fmt.Sprintf("msg.%s == nil", f.goName)
+	}
+	if f.goType == "string" {
+		return fmt.Sprintf("msg.%s == %q", f.goName, "")
+	}
+	return fmt.Sprintf("msg.%s.IsZero()", f.goName)
+}
+
+// writeStampAssign emits `msg.<field> = <stamp>` in the field's
+// projected type, routing pointer fields through an addressable local.
+func writeStampAssign(b *strings.Builder, f ormField, nowExpr, indent string) {
+	expr := stampValueExpr(f, nowExpr)
+	if isPointerStructField(f) {
+		fmt.Fprintf(b, "%sstamp%s := %s\n", indent, f.goName, expr)
+		fmt.Fprintf(b, "%smsg.%s = &stamp%s\n", indent, f.goName, f.goName)
+		return
+	}
+	fmt.Fprintf(b, "%smsg.%s = %s\n", indent, f.goName, expr)
+}
+
 // writeManagedCreateTimestamps emits the created_at/updated_at stamping
 // for entities with timestamps:true. Only fields that actually exist on
-// the entity are touched (resolveORMFields guarantees they do for
-// timestamps:true, whether declared in the proto or auto-added).
+// the entity AND have a stampable projected type are touched
+// (resolveORMFields guarantees the fields exist for timestamps:true,
+// whether declared or auto-added).
 func writeManagedCreateTimestamps(b *strings.Builder, fields []ormField) {
-	var createdAt, updatedAt string
-	for _, f := range fields {
+	var createdAt, updatedAt *ormField
+	for i := range fields {
+		f := &fields[i]
+		if !stampableTimestamp(*f) {
+			continue
+		}
 		switch f.columnName {
 		case "created_at":
-			createdAt = f.goName
+			createdAt = f
 		case "updated_at":
-			updatedAt = f.goName
+			updatedAt = f
 		}
 	}
-	if createdAt == "" && updatedAt == "" {
+	if createdAt == nil && updatedAt == nil {
 		return
 	}
 	b.WriteString("\tnow := time.Now().UTC()\n")
-	if createdAt != "" {
-		fmt.Fprintf(b, "\tif msg.%s.IsZero() {\n", createdAt)
-		fmt.Fprintf(b, "\t\tmsg.%s = now\n", createdAt)
+	if createdAt != nil {
+		fmt.Fprintf(b, "\tif %s {\n", stampEmptyCond(*createdAt))
+		writeStampAssign(b, *createdAt, "now", "\t\t")
 		b.WriteString("\t}\n")
 	}
-	if updatedAt != "" {
-		fmt.Fprintf(b, "\tmsg.%s = now\n", updatedAt)
+	if updatedAt != nil {
+		writeStampAssign(b, *updatedAt, "now", "\t")
 	}
+}
+
+// writeUpdatedAtStamp emits the standalone updated_at re-stamp used by
+// Update/UpdateMasked. Returns false when the column is missing or not
+// stampable (caller then skips the stamp entirely).
+func writeUpdatedAtStamp(b *strings.Builder, fields []ormField, indent string) bool {
+	for _, f := range fields {
+		if f.columnName != "updated_at" {
+			continue
+		}
+		if !stampableTimestamp(f) {
+			return false
+		}
+		writeStampAssign(b, f, "time.Now().UTC()", indent)
+		return true
+	}
+	return false
 }
 
 func writeORMGetByID(b *strings.Builder, msgName, tableName, colsVar, pkCol, pkGoType string, hasTenant, softDelete bool) {
@@ -649,11 +750,8 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 	b.WriteString("\tdefer span.End()\n\n")
 
 	if timestamps {
-		for _, f := range fields {
-			if f.columnName == "updated_at" {
-				fmt.Fprintf(b, "\tmsg.%s = time.Now().UTC()\n\n", f.goName)
-				break
-			}
+		if writeUpdatedAtStamp(b, fields, "\t") {
+			b.WriteString("\n")
 		}
 	}
 
@@ -826,12 +924,9 @@ func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, 
 
 	stampUpdatedAt := false
 	if timestamps {
-		for _, f := range fields {
-			if f.columnName == "updated_at" {
-				fmt.Fprintf(b, "\tmsg.%s = time.Now().UTC()\n\n", f.goName)
-				stampUpdatedAt = true
-				break
-			}
+		stampUpdatedAt = writeUpdatedAtStamp(b, fields, "\t")
+		if stampUpdatedAt {
+			b.WriteString("\n")
 		}
 	}
 

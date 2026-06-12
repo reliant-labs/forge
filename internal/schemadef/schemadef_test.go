@@ -279,3 +279,57 @@ ALTER TABLE markets ADD COLUMN IF NOT EXISTS a TEXT NOT NULL DEFAULT '';
 		t.Errorf("created_at type = %s, want time", got)
 	}
 }
+
+// TestDetectConventions_TimestampTypesAware pins the type-awareness of
+// the managed-timestamps convention (M3, kalshi fr-3fba9166ba):
+// created_at/updated_at count as managed only when the generator can
+// actually stamp them — time columns (TIMESTAMPTZ et al) or legacy TEXT
+// columns (stamped as RFC3339Nano strings). Exotic types (epoch
+// INTEGER) opt the table out of managed timestamps instead of producing
+// stamping code that cannot compile or would corrupt data. deleted_at
+// was already type-gated the same way.
+func TestDetectConventions_TimestampTypesAware(t *testing.T) {
+	col := func(name string, typ CanonicalType) Column {
+		return Column{Name: name, Type: typ, NotNull: true}
+	}
+	cases := []struct {
+		name    string
+		created CanonicalType
+		updated CanonicalType
+		want    bool
+	}{
+		{"time pair", TypeTime, TypeTime, true},
+		{"legacy TEXT pair", TypeString, TypeString, true},
+		{"mixed time + TEXT", TypeTime, TypeString, true},
+		{"epoch integers", TypeInt, TypeInt, false},
+		{"one unstampable", TypeTime, TypeInt, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tbl := Table{
+				Name: "things",
+				Columns: []Column{
+					{Name: "id", Type: TypeString, IsPK: true, NotNull: true},
+					col("created_at", tc.created),
+					col("updated_at", tc.updated),
+				},
+			}
+			if got := DetectConventions(tbl).Timestamps; got != tc.want {
+				t.Errorf("Timestamps = %v, want %v (created=%s updated=%s)", got, tc.want, tc.created, tc.updated)
+			}
+		})
+	}
+
+	// Array-typed managed columns are never stampable.
+	tbl := Table{
+		Name: "things",
+		Columns: []Column{
+			{Name: "id", Type: TypeString, IsPK: true, NotNull: true},
+			{Name: "created_at", Type: TypeString, IsArray: true, NotNull: true},
+			{Name: "updated_at", Type: TypeTime, NotNull: true},
+		},
+	}
+	if DetectConventions(tbl).Timestamps {
+		t.Error("array-typed created_at must not count as a managed timestamp")
+	}
+}

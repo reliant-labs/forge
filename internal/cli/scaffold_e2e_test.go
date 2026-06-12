@@ -252,13 +252,16 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	// Build
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Verify bootstrap includes both services
-	bootstrapContent := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if !strings.Contains(bootstrapContent, "api.New(") {
-		t.Fatal("expected bootstrap to include api service")
+	// Verify both services are constructible from the generated rows.
+	// Registration-in-code: construction lives in the serviceRow<X>
+	// constructors in pkg/app/services_gen.go (what the binary actually
+	// SERVES is the user-owned pkg/app/services.go list).
+	rowsContent := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
+	if !strings.Contains(rowsContent, "api.New(") {
+		t.Fatal("expected services_gen.go to construct the api service")
 	}
-	if !strings.Contains(bootstrapContent, "billing.New(") {
-		t.Fatal("expected bootstrap to include billing service")
+	if !strings.Contains(rowsContent, "billing.New(") {
+		t.Fatal("expected services_gen.go to construct the billing service")
 	}
 }
 

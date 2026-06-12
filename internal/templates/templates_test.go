@@ -48,6 +48,7 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 			Fallible                 bool
 		}
 		HasDatabase         bool
+		DatabaseDriver      string
 		OrmEnabled          bool
 		HasFallible         bool
 		BinaryShared        bool
@@ -119,6 +120,9 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 	data := struct {
 		Module              string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		LeaderElectionID    string
 		Services            []svc
 		Packages            []struct{}
@@ -192,6 +196,9 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	}
 	data := struct {
 		Module              string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		LeaderElectionID    string
 		Services            []svc
 		Packages            []struct{}
@@ -272,6 +279,9 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 	mkData := func(services []svc) any {
 		return struct {
 			Module              string
+			HasDatabase         bool
+			DatabaseDriver      string
+			OrmEnabled          bool
 			Services            []svc
 			Packages            []struct{}
 			Workers             []struct{}
@@ -359,6 +369,9 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 	mkData := func(diagnostics, strict bool) any {
 		return struct {
 			Module              string
+			HasDatabase         bool
+			DatabaseDriver      string
+			OrmEnabled          bool
 			Services            []svc
 			Packages            []struct{}
 			Workers             []struct{}
@@ -425,6 +438,9 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 	data := struct {
 		Module   string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		Services []struct {
 			Name, Package, FieldName, ProtoServiceName string
 			ProtoConnectImportPath, ProtoConnectPkg    string
@@ -567,6 +583,9 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 				Name                   string
 				ProtoName              string
 				Module                 string
+				HasDatabase         bool
+				DatabaseDriver      string
+				OrmEnabled          bool
 				ServiceName            string
 				ServicePort            int
 				ProjectName            string
@@ -609,6 +628,9 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
 	data := struct {
 		Module       string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		ConfigFields map[string]bool
 	}{
 		Module:       "example.com/myproject",

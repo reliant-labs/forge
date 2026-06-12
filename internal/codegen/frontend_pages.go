@@ -89,13 +89,47 @@ type PageField struct {
 	// IsBigInt marks 64-bit integer fields — protobuf-es types them as
 	// bigint, so form submissions convert the zod number before mutate().
 	IsBigInt bool
+	// IsRepeated marks repeated scalar fields (descriptor ProtoType
+	// "[]string" etc.). The form renders a comma-separated text input and
+	// the submit handler splits it back into the array the RPC expects —
+	// without the split, the generated page assigned a string to a
+	// string[] request field and failed the TypeScript build.
+	IsRepeated bool
+	// RepeatedNumeric marks repeated numeric fields whose elements need
+	// Number() conversion after the comma split.
+	RepeatedNumeric bool
+}
+
+// isRepeatedScalarProtoType reports whether a descriptor message-field
+// proto type is a repeated scalar ("[]string", "[]int32", ...).
+// Repeated message fields carry "[]message" and are not form-mappable.
+func isRepeatedScalarProtoType(protoType string) bool {
+	base, ok := strings.CutPrefix(protoType, "[]")
+	if !ok {
+		return false
+	}
+	return base != "message" && base != "enum"
+}
+
+// isRepeatedNumericProtoType reports whether the repeated element type is
+// numeric (form values need Number() conversion after the comma split).
+func isRepeatedNumericProtoType(protoType string) bool {
+	switch strings.TrimPrefix(protoType, "[]") {
+	case "int32", "int64", "uint32", "uint64", "sint32", "sint64",
+		"fixed32", "fixed64", "sfixed32", "sfixed64", "float", "double":
+		return true
+	}
+	return false
 }
 
 // isFormFieldRequired determines whether a form field should be marked as required.
-// Fields with the proto optional keyword, booleans, timestamps, enums, and message
-// types are never required in forms.
+// Fields with the proto optional keyword, booleans, timestamps, enums, message
+// types, and repeated fields are never required in forms.
 func isFormFieldRequired(f MessageFieldDef) bool {
 	if f.IsOptional {
+		return false
+	}
+	if strings.HasPrefix(f.ProtoType, "[]") {
 		return false
 	}
 	switch f.ProtoType {
@@ -107,6 +141,11 @@ func isFormFieldRequired(f MessageFieldDef) bool {
 
 // protoTypeToFormField maps proto field types to HTML form input types.
 func protoTypeToFormField(protoType string) string {
+	// Repeated scalars render as a comma-separated text input; the page's
+	// submit handler splits the value back into the array.
+	if strings.HasPrefix(protoType, "[]") {
+		return "text"
+	}
 	switch protoType {
 	case "bool":
 		return "checkbox"
@@ -169,10 +208,10 @@ func fieldNameToCamel(name string) string {
 
 // createFieldSkipList contains field names that should not appear in create forms.
 var createFieldSkipList = map[string]bool{
-	"id":         true,
-	"created_at": true,
-	"updated_at": true,
-	"deleted_at": true,
+	"id":          true,
+	"created_at":  true,
+	"updated_at":  true,
+	"deleted_at":  true,
 	"create_time": true,
 	"update_time": true,
 	"delete_time": true,
@@ -296,12 +335,14 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 						continue
 					}
 					pf := PageField{
-						Name:      fieldNameToCamel(f.Name),
-						Label:     fieldNameToLabel(f.Name),
-						Type:      protoTypeToFormField(f.ProtoType),
-						Required:  isFormFieldRequired(f),
-						ProtoType: f.ProtoType,
-						IsBigInt:  isBigIntProtoType(f.ProtoType),
+						Name:            fieldNameToCamel(f.Name),
+						Label:           fieldNameToLabel(f.Name),
+						Type:            protoTypeToFormField(f.ProtoType),
+						Required:        isFormFieldRequired(f),
+						ProtoType:       f.ProtoType,
+						IsBigInt:        isBigIntProtoType(f.ProtoType),
+						IsRepeated:      isRepeatedScalarProtoType(f.ProtoType),
+						RepeatedNumeric: isRepeatedNumericProtoType(f.ProtoType),
 					}
 					if pf.Type == "date" {
 						data.HasDateCreateFields = true
@@ -323,12 +364,14 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 						continue
 					}
 					pf := PageField{
-						Name:      fieldNameToCamel(f.Name),
-						Label:     fieldNameToLabel(f.Name),
-						Type:      protoTypeToFormField(f.ProtoType),
-						Required:  isFormFieldRequired(f),
-						ProtoType: f.ProtoType,
-						IsBigInt:  isBigIntProtoType(f.ProtoType),
+						Name:            fieldNameToCamel(f.Name),
+						Label:           fieldNameToLabel(f.Name),
+						Type:            protoTypeToFormField(f.ProtoType),
+						Required:        isFormFieldRequired(f),
+						ProtoType:       f.ProtoType,
+						IsBigInt:        isBigIntProtoType(f.ProtoType),
+						IsRepeated:      isRepeatedScalarProtoType(f.ProtoType),
+						RepeatedNumeric: isRepeatedNumericProtoType(f.ProtoType),
 					}
 					if pf.Type == "date" {
 						data.HasDateUpdateFields = true
@@ -384,6 +427,12 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef) {
 		switch f.Kind {
 		case FieldKindMessage, FieldKindMap, FieldKindRepeatedMessage:
 			// Nested structures don't render in a table cell / detail row.
+			continue
+		}
+		// The soft-delete column is machinery, not data: generated reads
+		// filter `deleted_at IS NULL`, so the cell is always empty — a
+		// dead column that makes the UI look broken.
+		if f.Name == "deleted_at" || f.Name == "delete_time" {
 			continue
 		}
 

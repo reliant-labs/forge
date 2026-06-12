@@ -848,3 +848,158 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		t.Error("Update should stamp declared updated_at")
 	}
 }
+// ─── J-round fix 1: repeated scalar fields must generate honest,
+// compiling ORM code (JSON round-trip via pkg/orm helpers) ─────────────
+
+func TestGeneratePlanORM_RepeatedScalarJSONRoundTrip(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name: "Bookmark",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "title", Type: "string", NotNull: true},
+				{Name: "tags", Type: "repeated string"},
+				{Name: "scores", Type: "repeated int64"},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+		t.Fatalf("GeneratePlanORM() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "bookmark_orm.go"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	code := string(content)
+
+	// The historical failure mode #1: lib/pq array types referenced
+	// without the import — undefined `pq` in generated code.
+	if strings.Contains(code, "pq.") {
+		t.Errorf("generated code references lib/pq types (postgres-only, unimported):\n%s", code)
+	}
+	// The historical failure mode #2: the repeated field was treated as
+	// a nullable scalar — `var dbTags *string` + `entity.Tags = *dbTags`
+	// assigns string to []string and does not compile.
+	if strings.Contains(code, "dbTags *string") || strings.Contains(code, "entity.Tags = *dbTags") {
+		t.Errorf("repeated field scanned as nullable scalar (string into []string does not compile):\n%s", code)
+	}
+
+	// Honest storage: JSON round-trip through pkg/orm helpers, which work
+	// on both postgres (jsonb column) and sqlite (TEXT column).
+	if !strings.Contains(code, "orm.ScanJSON(&entity.Tags)") {
+		t.Error("scanBookmark should scan tags via orm.ScanJSON(&entity.Tags)")
+	}
+	if !strings.Contains(code, "orm.ScanJSON(&entity.Scores)") {
+		t.Error("scanBookmark should scan scores via orm.ScanJSON(&entity.Scores)")
+	}
+	if !strings.Contains(code, "orm.JSON(msg.Tags)") {
+		t.Error("CreateBookmark values should wrap tags via orm.JSON(msg.Tags)")
+	}
+	if !strings.Contains(code, "orm.JSON(msg.Scores)") {
+		t.Error("CreateBookmark values should wrap scores via orm.JSON(msg.Scores)")
+	}
+	// Update must wrap too (it SETs every non-excluded column).
+	updIdx := strings.Index(code, "func UpdateBookmark")
+	if updIdx == -1 {
+		t.Fatal("missing UpdateBookmark")
+	}
+	if !strings.Contains(code[updIdx:], "orm.JSON(msg.Tags)") {
+		t.Error("UpdateBookmark args should wrap tags via orm.JSON(msg.Tags)")
+	}
+}
+
+func TestGeneratePlanORM_RepeatedUnsupportedBaseIsLoud(t *testing.T) {
+	root := t.TempDir()
+
+	// Repeated message/timestamp fields have no honest scalar storage
+	// mapping — the generator must refuse loudly at generate time and
+	// name the workaround, never emit non-compiling code.
+	entities := []config.PlanEntity{
+		{
+			Name: "Reminder",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "fire_at", Type: "repeated google.protobuf.Timestamp"},
+			},
+		},
+	}
+
+	err := GeneratePlanORM(root, "example.com/app", "api", entities)
+	if err == nil {
+		t.Fatal("GeneratePlanORM() = nil error for repeated timestamp field, want loud generate-time error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"Reminder", "fire_at", "repeated"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should name %q; got: %v", want, err)
+		}
+	}
+	// Must name a workaround, not just refuse.
+	if !strings.Contains(msg, "join table") && !strings.Contains(msg, "separate entity") {
+		t.Errorf("error should name the workaround (separate entity / join table); got: %v", err)
+	}
+}
+
+// ─── J-round fix 2: soft-delete semantics are derived from the schema —
+// a deleted_at column present means soft-delete, annotation or not ─────
+
+func TestGeneratePlanORM_DeclaredDeletedAtImpliesSoftDelete(t *testing.T) {
+	root := t.TempDir()
+
+	// The scaffold's Item proto declares deleted_at explicitly; users who
+	// add the entity annotation WITHOUT soft_delete:true used to get the
+	// column with hard-delete semantics (decorative). The column IS the
+	// contract: deleted_at present ⇒ soft-delete everywhere.
+	entities := []config.PlanEntity{
+		{
+			Name:       "Item",
+			SoftDelete: false, // annotation absent — schema wins
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "name", Type: "string", NotNull: true},
+				{Name: "deleted_at", Type: "google.protobuf.Timestamp"},
+			},
+		},
+	}
+
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+		t.Fatalf("GeneratePlanORM() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "item_orm.go"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	code := string(content)
+
+	// Delete must be an UPDATE ... SET deleted_at, not a hard DELETE.
+	delIdx := strings.Index(code, "func DeleteItem")
+	if delIdx == -1 {
+		t.Fatal("missing DeleteItem")
+	}
+	delBody := code[delIdx:]
+	if strings.Contains(delBody, "DELETE FROM") {
+		t.Errorf("DeleteItem hard-deletes despite a declared deleted_at column:\n%s", delBody)
+	}
+	if !strings.Contains(delBody, "UPDATE %s SET %s = CURRENT_TIMESTAMP") {
+		t.Errorf("DeleteItem should soft-delete via UPDATE ... SET deleted_at:\n%s", delBody)
+	}
+
+	// Reads must filter deleted rows.
+	listIdx := strings.Index(code, "func ListItem")
+	if listIdx == -1 {
+		t.Fatal("missing ListItem")
+	}
+	if !strings.Contains(code[listIdx:], `orm.WhereIsNull("deleted_at")`) {
+		t.Error("ListItem should prepend the deleted_at IS NULL filter")
+	}
+
+	// The unfiltered escape hatch exists.
+	if !strings.Contains(code, "func ListAllItem") {
+		t.Error("ListAllItem (unfiltered read) should be generated when deleted_at exists")
+	}
+}

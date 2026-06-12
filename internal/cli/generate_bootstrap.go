@@ -61,7 +61,7 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return fmt.Errorf("failed to generate app_extras.go: %w", err)
 	}
 
-	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir, configFields, webhookServices, bootstrapFeatures, cs); err != nil {
+	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, configFields, webhookServices, bootstrapFeatures, cs); err != nil {
 		return fmt.Errorf("failed to generate bootstrap: %w", err)
 	}
 

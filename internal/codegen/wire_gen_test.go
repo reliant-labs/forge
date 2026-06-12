@@ -152,9 +152,12 @@ func TestWireExpressionFor_Conventional(t *testing.T) {
 			wantExpr: "authz",
 		},
 		{
+			// Nil-safe accessor — `app.ORM` directly wraps a nil
+			// *orm.Client into a typed-nil that defeats validateDeps
+			// and panics on the first RPC (J-round fix 3).
 			field:      DepsField{Name: "DB", Type: "orm.Context"},
 			ormEnabled: true,
-			wantExpr:   "app.ORM",
+			wantExpr:   "app.ORMContext()",
 		},
 		{
 			field:    DepsField{Name: "DB", Type: "*sql.DB"},

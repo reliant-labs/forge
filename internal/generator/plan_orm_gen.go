@@ -74,6 +74,7 @@ type ormField struct {
 	goType      string // Go type for Values/Scan
 	ormType     string // orm.TypeXxx constant name
 	isTimestamp bool
+	isRepeated  bool // repeated scalar — stored as JSON (orm.JSON / orm.ScanJSON)
 	isPK        bool
 	isTenantKey bool
 	notNull     bool
@@ -90,7 +91,24 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	}
 
 	// Build fields list including auto-generated timestamp/soft-delete fields.
-	fields := resolveORMFields(ent)
+	fields, err := resolveORMFields(ent)
+	if err != nil {
+		return err
+	}
+
+	// Soft delete is a SCHEMA property, not an annotation property: a
+	// deleted_at column present means soft-delete semantics, period. The
+	// soft_delete:true annotation is just the scaffold-time way to GET
+	// the column (resolveORMFields auto-adds it). This makes the
+	// decorative state — column exists, Delete still hard-deletes —
+	// structurally impossible.
+	softDelete := ent.SoftDelete
+	for _, f := range fields {
+		if f.columnName == "deleted_at" {
+			softDelete = true
+			break
+		}
+	}
 
 	// Identify special fields.
 	var pkField *ormField
@@ -158,14 +176,14 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 
 	// CRUD functions
 	writeORMCreate(&b, msgName, tableName, fields, hasTenant, tenantField, pkField, ent.Timestamps)
-	writeORMGetByID(&b, msgName, tableName, colsVar, pkCol, pkGoType, hasTenant, ent.SoftDelete)
-	writeORMList(&b, msgName, tableName, colsVar, hasTenant, ent.SoftDelete, tenantField)
-	writeORMCount(&b, msgName, tableName, hasTenant, ent.SoftDelete, tenantField)
-	if ent.SoftDelete {
+	writeORMGetByID(&b, msgName, tableName, colsVar, pkCol, pkGoType, hasTenant, softDelete)
+	writeORMList(&b, msgName, tableName, colsVar, hasTenant, softDelete, tenantField)
+	writeORMCount(&b, msgName, tableName, hasTenant, softDelete, tenantField)
+	if softDelete {
 		writeORMListAll(&b, msgName, tableName, colsVar, hasTenant, tenantField)
 	}
-	writeORMUpdate(&b, msgName, tableName, colsVar, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
-	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, fields, hasTenant, ent.SoftDelete, tenantField)
+	writeORMUpdate(&b, msgName, tableName, colsVar, pkCol, fields, hasTenant, softDelete, tenantField, pkField, ent.Timestamps)
+	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, fields, hasTenant, softDelete, tenantField)
 
 	fileName := naming.ToSnakeCase(ent.Name) + "_orm.go"
 	return os.WriteFile(filepath.Join(dbDir, fileName), []byte(b.String()), 0o644)
@@ -220,11 +238,17 @@ func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) 
 	// Scan call
 	b.WriteString("\terr := scanner.Scan(\n")
 	for _, f := range fields {
-		if f.isTimestamp {
+		switch {
+		case f.isTimestamp:
 			fmt.Fprintf(b, "\t\t&db%s,\n", f.goName)
-		} else if f.nullable {
+		case f.isRepeated:
+			// Repeated scalars are stored as JSON (jsonb on postgres,
+			// TEXT on sqlite); orm.ScanJSON unmarshals straight into
+			// the entity's slice field and treats NULL as the zero value.
+			fmt.Fprintf(b, "\t\torm.ScanJSON(&entity.%s),\n", f.goName)
+		case f.nullable:
 			fmt.Fprintf(b, "\t\t&db%s,\n", f.goName)
-		} else {
+		default:
 			fmt.Fprintf(b, "\t\t&entity.%s,\n", f.goName)
 		}
 	}
@@ -308,9 +332,13 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 	b.WriteString("\tvalues := []any{\n")
 	for _, f := range fields {
 		accessor := "msg." + f.goName
-		if f.isTimestamp {
+		switch {
+		case f.isTimestamp:
 			fmt.Fprintf(b, "\t\tfunc() any { if %s != nil { return %s.AsTime() }; return nil }(),\n", accessor, accessor)
-		} else {
+		case f.isRepeated:
+			// JSON text on the wire — works for postgres jsonb and sqlite TEXT.
+			fmt.Fprintf(b, "\t\torm.JSON(%s),\n", accessor)
+		default:
 			fmt.Fprintf(b, "\t\t%s,\n", accessor)
 		}
 	}
@@ -631,9 +659,12 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 	b.WriteString("\targs := []any{\n")
 	for _, sc := range setCols {
 		accessor := "msg." + sc.field.goName
-		if sc.field.isTimestamp {
+		switch {
+		case sc.field.isTimestamp:
 			fmt.Fprintf(b, "\t\tfunc() any { if %s != nil { return %s.AsTime() }; return nil }(),\n", accessor, accessor)
-		} else {
+		case sc.field.isRepeated:
+			fmt.Fprintf(b, "\t\torm.JSON(%s),\n", accessor)
+		default:
 			fmt.Fprintf(b, "\t\t%s,\n", accessor)
 		}
 	}
@@ -785,8 +816,16 @@ func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType stri
 
 // resolveORMFields converts PlanEntity fields (including auto-generated
 // timestamp/soft-delete fields) into the ormField representation used
-// by the code generator.
-func resolveORMFields(ent config.PlanEntity) []ormField {
+// by the code generator. It returns a loud error for field types with
+// no honest storage mapping (e.g. repeated message/timestamp fields) —
+// the generator must refuse at generate time, never emit non-compiling
+// or silently-lossy code.
+func resolveORMFields(ent config.PlanEntity) ([]ormField, error) {
+	for _, f := range ent.Fields {
+		if err := validateORMFieldType(ent.Name, f); err != nil {
+			return nil, err
+		}
+	}
 	type entry struct {
 		config.PlanEntityField
 		autoGenerated bool
@@ -846,6 +885,7 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			goType:      planFieldGoType(e.Type),
 			ormType:     planFieldOrmType(e.Type),
 			isTimestamp: e.Type == "google.protobuf.Timestamp" || e.Type == "timestamp",
+			isRepeated:  strings.HasPrefix(e.Type, "repeated "),
 			isPK:        e.PrimaryKey,
 			isTenantKey: e.TenantKey,
 			notNull:     e.NotNull,
@@ -856,25 +896,48 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 		f.nullable = !f.isPK && !f.notNull && !f.isTimestamp && isNullablePlanType(e.Type)
 		fields = append(fields, f)
 	}
-	return fields
+	return fields, nil
+}
+
+// repeatedScalarBases is the set of repeated element types the ORM can
+// store honestly (as a JSON column: jsonb on postgres, TEXT on sqlite).
+// Everything else — repeated messages, repeated timestamps, maps — has
+// no scalar-column representation and must be modelled as its own
+// entity (join table).
+var repeatedScalarBases = map[string]bool{
+	"string": true, "bool": true, "bytes": true,
+	"int32": true, "int64": true, "uint32": true, "uint64": true,
+	"float": true, "float32": true, "double": true, "float64": true,
+}
+
+// validateORMFieldType rejects entity field types the generator cannot
+// store honestly. The error names the field AND the workaround so the
+// user is never left with silently-broken or non-compiling output.
+func validateORMFieldType(entityName string, f config.PlanEntityField) error {
+	base, isRepeated := strings.CutPrefix(f.Type, "repeated ")
+	if !isRepeated {
+		return nil
+	}
+	if repeatedScalarBases[base] {
+		return nil
+	}
+	return fmt.Errorf(
+		"entity %s field %s: repeated %s is not supported as a column — "+
+			"repeated scalars (string/int/bool/...) are stored as JSON, but a repeated %s "+
+			"has no honest column representation. Model it as a separate entity with a "+
+			"foreign key (join table), or flatten it to a scalar field",
+		entityName, f.Name, base, base)
 }
 
 // planFieldGoType maps a PlanEntityField.Type to the Go type used in Values/Scan.
 func planFieldGoType(t string) string {
-	// Handle repeated types → pq arrays (e.g. "repeated string" → "pq.StringArray")
+	// Repeated scalars: the entity type is a proto type alias, so the Go
+	// field is the proto-generated slice ([]string, []int64, ...). The
+	// generated code never scans these directly — orm.JSON / orm.ScanJSON
+	// handle the column round-trip — but the slice type is what the
+	// helpers marshal/unmarshal.
 	if base, ok := strings.CutPrefix(t, "repeated "); ok {
-		switch base {
-		case "string":
-			return "pq.StringArray"
-		case "int32", "int64":
-			return "pq.Int64Array"
-		case "bool":
-			return "pq.BoolArray"
-		case "float", "float32", "double", "float64":
-			return "pq.Float64Array"
-		default:
-			return "pq.StringArray"
-		}
+		return "[]" + planFieldGoType(base)
 	}
 	switch t {
 	case "string":
@@ -905,7 +968,8 @@ func planFieldGoType(t string) string {
 // planFieldOrmType maps a PlanEntityField.Type to the orm.TypeXxx constant string
 // used in generated Schema() code.
 func planFieldOrmType(t string) string {
-	// Repeated types use JSONB for ORM schema (works for both Postgres and SQLite)
+	// Repeated scalars are stored as JSON: jsonb on postgres, TEXT on
+	// sqlite (the sqlite dialect maps TypeJSONB → TEXT).
 	if strings.HasPrefix(t, "repeated ") {
 		return "orm.TypeJSONB"
 	}
@@ -938,7 +1002,8 @@ func planFieldOrmType(t string) string {
 // isNullablePlanType returns true if the plan field type is a Go type that
 // should be scanned as a pointer when the column is nullable.
 func isNullablePlanType(t string) bool {
-	// Repeated types are already reference types (pq.StringArray etc.), not nullable.
+	// Repeated types are slices (reference types) handled by orm.ScanJSON,
+	// which treats NULL as the zero value — no pointer indirection needed.
 	if strings.HasPrefix(t, "repeated ") {
 		return false
 	}

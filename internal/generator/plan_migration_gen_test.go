@@ -461,3 +461,36 @@ func TestGeneratePlanMigrations_TenantKeyAddsNotNull(t *testing.T) {
 		t.Error("missing tenant key index")
 	}
 }
+// J-round fix 1: repeated scalar columns are stored as JSON — JSONB on
+// postgres, plain TEXT-affinity JSON on sqlite (the same migration file
+// drives both). The old TEXT[] mapping was postgres-only AND unreadable
+// by the generated scan path.
+func TestGeneratePlanMigrations_RepeatedScalarIsJSONB(t *testing.T) {
+	root := t.TempDir()
+
+	entities := []config.PlanEntity{
+		{
+			Name: "Bookmark",
+			Fields: []config.PlanEntityField{
+				{Name: "id", Type: "string", PrimaryKey: true},
+				{Name: "tags", Type: "repeated string"},
+			},
+		},
+	}
+
+	if err := GeneratePlanMigrations(root, entities); err != nil {
+		t.Fatalf("GeneratePlanMigrations() error = %v", err)
+	}
+
+	up, err := os.ReadFile(filepath.Join(root, "db", "migrations", "00001_init.up.sql"))
+	if err != nil {
+		t.Fatalf("ReadFile error = %v", err)
+	}
+	sql := string(up)
+	if strings.Contains(sql, "TEXT[]") {
+		t.Errorf("repeated column emitted as postgres-only TEXT[] (breaks sqlite + introspection):\n%s", sql)
+	}
+	if !strings.Contains(sql, "tags JSONB") {
+		t.Errorf("repeated column should be JSONB:\n%s", sql)
+	}
+}

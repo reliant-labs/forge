@@ -137,6 +137,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		Workers             []bootstrapWorker
 		Operators           []bootstrapOperator
 		HasDatabase         bool
+		DatabaseDriver      string
 		OrmEnabled          bool
 		HasFallible         bool
 		BinaryShared        bool

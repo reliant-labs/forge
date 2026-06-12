@@ -95,3 +95,20 @@ type App struct {
 // `api.rest: true` in forge.yaml, or nil when REST is disabled.
 // Implements the serverkit.Application contract.
 func (a *App) RESTHandler() http.Handler { return a.restHandler }
+{{- if .OrmEnabled}}
+
+// ORMContext returns the ORM client as an orm.Context, or a TRUE nil
+// interface when the client was never constructed (no DATABASE_URL).
+// wire_gen.go uses this instead of `app.ORM` directly: assigning a nil
+// *orm.Client into an interface-typed Deps field produces a typed-nil
+// that passes `== nil` checks in validateDeps and then panics on the
+// first RPC. Routing through this accessor means a missing database
+// fails each DB-dependent service's validateDeps gate AT BOOT with an
+// actionable error instead.
+func (a *App) ORMContext() orm.Context {
+	if a.ORM == nil {
+		return nil
+	}
+	return a.ORM
+}
+{{- end}}

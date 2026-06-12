@@ -2,12 +2,13 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: forge.yaml `binary: shared` mode.
 //
-// In binary=shared projects, each service is emitted as its own cobra
-// subcommand under cmd/{{.Name}}/<svc>.go. Calling `./{{.Name}} <svc>`
-// runs that one service; `./{{.Name}} --help` lists them all. The
-// canonical `./{{.Name}} server [services...]` entry point still works
-// (kept for back-compat with existing tooling) and routes through the
-// same `app.BootstrapOnly` codepath.
+// Subcommand surface (same as the per-service binary mode — shared mode
+// only changes the deploy story, one image serving many services):
+//   - cmd/server.go      — `{{.Name}} server [services...]` (generated)
+//   - cmd/services_gen.go — one subcommand per RegisteredServices row
+//     (generated; the cobra projection of pkg/app/services.go)
+//   - cmd/commands.go    — userCommands(), YOUR extension point for
+//     second binaries / custom tooling (user-owned, scaffolded once)
 
 package main
 
@@ -22,8 +23,9 @@ var rootCmd = &cobra.Command{
 	Use:   "{{.Name}}",
 	Short: "{{.Name}} — shared-binary entrypoint (one image, many cobra subcommands)",
 	Long: `{{.Name}} ships as a single Go binary that exposes one cobra
-subcommand per service. This is the binary=shared codegen mode (see
-forge.yaml). To run a specific service:
+subcommand per registered service (see pkg/app/services.go — what this
+binary serves is code, not config). This is the binary=shared mode
+(forge.yaml). To run a specific service:
 
     {{.Name}} <service>
 
@@ -31,8 +33,9 @@ To list all available services:
 
     {{.Name}} --help
 
-Each subcommand is a thin shim over pkg/app.BootstrapService(name) that
-constructs only the named service's dependency graph and serves it.`,
+Each service subcommand runs the canonical server pipeline with the
+service-name filter pre-filled, so only that service's dependency
+graph is mounted.`,
 }
 
 // Execute is the program entry point.
@@ -44,5 +47,11 @@ func Execute() {
 }
 
 func main() {
+	// userCommands (cmd/commands.go, user-owned): second binaries and
+	// custom tooling register as code — same posture as the service
+	// registration rows in pkg/app/services.go.
+	for _, c := range userCommands() {
+		rootCmd.AddCommand(c)
+	}
 	Execute()
 }

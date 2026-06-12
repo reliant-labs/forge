@@ -417,10 +417,12 @@ func (g *ProjectGenerator) Generate() error {
 	switch {
 	case g.isService():
 		// In binary=shared mode the canonical cmd/main.go cobra root is
-		// replaced with cmd-shared-main.go.tmpl, which adds doc text
-		// referencing per-service subcommands. Functionally identical to
-		// cmd-root for top-level routing — the per-service files (emitted
-		// below) call rootCmd.AddCommand themselves in their init().
+		// replaced with cmd-shared-main.go.tmpl, which adds doc text about
+		// the one-image-many-services deploy story. Functionally identical
+		// to cmd-root for top-level routing — both consume the user-owned
+		// userCommands() extension point (cmd/commands.go) and the
+		// generated per-service subcommands (cmd/services_gen.go, emitted
+		// below) register themselves via init().
 		if g.isBinaryShared() {
 			files = append(files,
 				struct{ template, dest string }{"cmd-shared-main.go.tmpl", "cmd/main.go"},
@@ -432,6 +434,11 @@ func (g *ProjectGenerator) Generate() error {
 				struct{ template, dest string }{"cmd-version.go.tmpl", "cmd/version.go"},
 			)
 		}
+		// cmd/commands.go — the user-owned cobra extension point
+		// cmd/main.go consumes (userCommands()). Scaffolded once here;
+		// the generate pipeline re-ensures it for older projects but
+		// never overwrites an existing copy.
+		files = append(files, struct{ template, dest string }{"cmd-commands.go.tmpl", "cmd/commands.go"})
 	case g.isCLI():
 		// CLI binaries get their own root.go + version.go under
 		// cmd/<binary>/ so multi-binary projects extend cleanly later.
@@ -480,16 +487,17 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	// In binary=shared mode, emit one cobra subcommand file per service —
-	// `cmd/<svc>.go` — so callers can run `./<bin> <svc>` directly. Each
-	// per-service file is a thin wrapper that invokes the same `runServer`
-	// pipeline (in cmd/server.go) with a single-name service filter, which
-	// in shared mode triggers the lazy-construction codepath in
-	// app.BootstrapOnly. The canonical `./<bin> server [<svc>...]` form
-	// still works.
-	if g.isBinaryShared() && g.Features.CodegenEnabled() {
-		if err := g.generateSharedSubcommands(); err != nil {
-			return fmt.Errorf("failed to generate shared-binary subcommands: %w", err)
+	// cmd/services_gen.go — one cobra subcommand per registered service,
+	// the cmd-side projection of the pkg/app/services.go registration
+	// rows (every initial service is registered by the scaffold). Each
+	// subcommand delegates to the `runServer` pipeline (cmd/server.go)
+	// with a single-name filter so only that service is mounted; the
+	// canonical `./<bin> server [<svc>...]` form still works. Emitted for
+	// every service-kind codegen project (not just binary=shared — the
+	// subcommand surface is identical; binary mode only changes deploy).
+	if g.isService() && g.Features.CodegenEnabled() {
+		if err := g.generateServiceSubcommands(); err != nil {
+			return fmt.Errorf("failed to generate per-service subcommands: %w", err)
 		}
 	}
 
@@ -849,31 +857,22 @@ func (g *ProjectGenerator) generatePkgAppConventions() error {
 	return os.WriteFile(filepath.Join(appDir, "CONVENTIONS.md"), content, 0o644)
 }
 
-// generateSharedSubcommands writes one cobra subcommand file per service
-// to cmd/<svc>.go for binary=shared projects. Each emitted file is a
-// thin wrapper that delegates to runServer (in cmd/server.go) with a
-// pre-filled single-name service filter; this triggers the lazy
-// dep-graph construction codepath in app.BootstrapOnly so unselected
-// services contribute zero work to the running process.
+// generateServiceSubcommands writes cmd/services_gen.go: one cobra
+// subcommand per service this scaffold registers (every initial
+// service — pkg/app/services.go lists them all at scaffold time). Each
+// subcommand delegates to runServer (cmd/server.go) with a pre-filled
+// single-name service filter so only that service is mounted. Tier-1:
+// the post-scaffold `forge generate` re-emits the file as the
+// projection of the user-owned RegisteredServices rows.
 //
 // File naming follows the existing flat cmd/ layout (no per-binary
 // subdirectory) so the Dockerfile / Taskfile / VSCode launch configs
-// continue to point at `./cmd` without modification. See the migration
-// skill for projects that prefer the cmd/<project>/<svc>.go layout.
-func (g *ProjectGenerator) generateSharedSubcommands() error {
-	for _, svcName := range g.allServices() {
-		pkg := naming.ServicePackage(svcName)
-		data := struct {
-			ServiceName    string
-			ServicePackage string
-		}{
-			ServiceName:    svcName,
-			ServicePackage: pkg,
-		}
-		dest := filepath.Join(g.Path, "cmd", pkg+".go")
-		if err := assets.WriteTemplateWithData("cmd-shared-service.go.tmpl", dest, data); err != nil {
-			return fmt.Errorf("write cmd/%s.go: %w", pkg, err)
-		}
+// continue to point at `./cmd` without modification.
+func (g *ProjectGenerator) generateServiceSubcommands() error {
+	data := codegen.CmdServiceSubcommandsFromNames(g.allServices())
+	dest := filepath.Join(g.Path, "cmd", "services_gen.go")
+	if err := assets.WriteTemplateWithData("cmd-services-gen.go.tmpl", dest, data); err != nil {
+		return fmt.Errorf("write cmd/services_gen.go: %w", err)
 	}
 	return nil
 }

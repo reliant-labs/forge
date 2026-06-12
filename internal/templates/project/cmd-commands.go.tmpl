@@ -1,0 +1,64 @@
+// What extra subcommands this binary ships is code, not config.
+//
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// cmd/commands.go is the user-owned cobra extension point — the cmd/
+// twin of pkg/app/services.go. The generated root command (cmd/main.go)
+// calls userCommands() and registers every returned command before
+// Execute(). Generated per-service subcommands live in
+// cmd/services_gen.go (a projection of the RegisteredServices rows);
+// never list services here.
+//
+// Use this file for SECOND BINARIES: long-running processes that ship
+// in the same image as the main server but are not Connect services —
+// a reverse proxy, a queue drainer, a one-shot admin job. Instead of a
+// parallel main() with hand-rolled config/observability/shutdown,
+// register a subcommand here and opt into exactly the pieces you need:
+//
+//   - Typed config: config.RegisterFlags(cmd) at construction, then
+//     `cfg, err := config.Load(cmd)` in RunE — the same env-var + flag
+//     surface as the server subcommands, including cfg.Mode() (the
+//     single dev-mode gate).
+//   - OTel: `shutdown, metricsHandler, err := setupOTel(ctx)`
+//     (cmd/otel.go) wires trace/metric export; `defer shutdown(ctx)`.
+//   - Lifecycle: an HTTP-serving sidecar can reuse serverkit.Run for
+//     the full listener + graceful-shutdown sequence (cmd/server.go is
+//     the canonical projection to copy from); a non-HTTP loop should
+//     derive a signal context via signal.NotifyContext(context.
+//     Background(), os.Interrupt, syscall.SIGTERM) and block on it.
+//
+// Example:
+//
+//	func proxyCmd() *cobra.Command {
+//		cmd := &cobra.Command{
+//			Use:   "proxy",
+//			Short: "Run the workspace proxy",
+//			RunE: func(cmd *cobra.Command, args []string) error {
+//				cfg, err := config.Load(cmd)
+//				if err != nil {
+//					return err
+//				}
+//				ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+//				defer stop()
+//				return runProxy(ctx, cfg)
+//			},
+//		}
+//		config.RegisterFlags(cmd)
+//		return cmd
+//	}
+//
+//	func userCommands() []*cobra.Command {
+//		return []*cobra.Command{proxyCmd()}
+//	}
+package main
+
+import (
+	"github.com/spf13/cobra"
+)
+
+// userCommands returns additional top-level subcommands for this
+// binary. cmd/main.go consumes it; forge never edits this file.
+// Return nil (the default) for no extra commands.
+func userCommands() []*cobra.Command {
+	return nil
+}

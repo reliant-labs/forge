@@ -110,12 +110,11 @@ func filterManagedFiles(files []managedFile, cfg *config.ProjectConfig) []manage
 // managedFiles returns the list of frozen files that upgrade manages.
 //
 // `binary: shared` projects swap cmd/main.go's source template from
-// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. Per-service cobra
-// subcommand files (cmd/<svc>.go) are intentionally NOT in this list:
-// they are scaffolded once and not re-rendered by `forge generate` /
-// `forge upgrade` since their content is mechanical (a single delegate
-// to runServer) and adding/removing services is handled by the
-// `forge add service` / per-service file generators.
+// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. The per-service cobra
+// subcommand file (cmd/services_gen.go) is intentionally NOT in this
+// list: it is a projection of the pkg/app/services.go registration
+// rows, owned by the generate pipeline (stepCmdSubcommands), which has
+// the registry parse that upgrade lacks.
 func managedFiles() []managedFile {
 	return managedFilesFor(config.ProjectBinaryPerService)
 }
@@ -211,6 +210,13 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
 		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2},
+
+		// cmd/commands.go — the user-owned cobra extension point the
+		// Tier-1 cmd/main.go consumes (userCommands()). Scaffolded once,
+		// then owned by the user; listed here so `forge upgrade` CREATES
+		// it on pre-M6 trees (whose regenerated cmd/main.go now
+		// references userCommands) and never stomps an edited copy.
+		{templateName: "cmd-commands.go.tmpl", destPath: "cmd/commands.go", templated: true, tier: Tier2},
 
 		// Alloy config — Tier 1 since it's fully derived from forge.yaml services.
 		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1},
@@ -659,7 +665,8 @@ func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 // A nil cs falls back to untracked writes (legacy callers).
 func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, cs *FileChecksums) error {
 	data := buildTemplateData(cfg, projectDir)
-	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+	filtered := filterManagedFiles(managedFilesForCfg(cfg), cfg)
+	for _, f := range filtered {
 		if f.tier != Tier1 {
 			continue
 		}
@@ -669,6 +676,20 @@ func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, c
 		}
 		if _, err := checksums.WriteGeneratedFileTier1(projectDir, f.destPath, content, cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.destPath, err)
+		}
+	}
+	// The Tier-1 cmd/main.go just (re)rendered above references the
+	// user-owned userCommands() extension point. Ensure cmd/commands.go
+	// exists (write-once; never overwrites) so a pre-M6 tree whose
+	// main.go gained the reference this run still compiles — the
+	// codegen pipeline's stepCmdSubcommands does the same, but this
+	// path also runs for service projects with features.codegen=false.
+	for _, f := range filtered {
+		if f.destPath == "cmd/main.go" {
+			if err := codegen.GenerateCmdCommands(projectDir); err != nil {
+				return fmt.Errorf("scaffold cmd/commands.go: %w", err)
+			}
+			break
 		}
 	}
 	return nil

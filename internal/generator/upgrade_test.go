@@ -540,3 +540,45 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 		t.Errorf("upgrade overwrote a disowned file:\n%s", got)
 	}
 }
+
+// TestUpgrade_SkipsThinMiddlewareInLegacyLayout: a pre-library-split
+// project (old pkg/middleware mechanism files, no middleware.go) must
+// NOT receive the thin policy pair from `forge upgrade` — the legacy
+// files declare the same symbols and the package would stop compiling.
+// Adoption is the user-driven migrations/v0.x-to-middleware-lib path.
+func TestUpgrade_SkipsThinMiddlewareInLegacyLayout(t *testing.T) {
+	dir := t.TempDir()
+	mwDir := filepath.Join(dir, "pkg", "middleware")
+	if err := os.MkdirAll(mwDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []string{"auth.go", "claims.go", "cors.go"} {
+		if err := os.WriteFile(filepath.Join(mwDir, legacy), []byte("package middleware\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if !hasLegacyMiddlewareLayout(dir) {
+		t.Fatal("legacy mechanism files present without middleware.go must be detected")
+	}
+
+	cfg := testProjectConfig()
+	results, err := Upgrade(dir, cfg, false, true /* checkOnly */)
+	if err != nil {
+		t.Fatalf("Upgrade(checkOnly): %v", err)
+	}
+	for _, r := range results {
+		if strings.HasPrefix(r.Path, "pkg/middleware/") && r.Status != UpgradeSkipped {
+			t.Errorf("%s: want skipped in legacy layout, got %s", r.Path, r.Status)
+		}
+	}
+
+	// Once the thin file exists, the layout is no longer legacy and
+	// upgrade manages the pair normally.
+	if err := os.WriteFile(filepath.Join(mwDir, "middleware.go"), []byte("package middleware\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if hasLegacyMiddlewareLayout(dir) {
+		t.Fatal("a project with middleware.go is on the thin layout even if old files linger")
+	}
+}

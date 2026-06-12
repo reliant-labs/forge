@@ -674,6 +674,24 @@ func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, c
 	return nil
 }
 
+// hasLegacyMiddlewareLayout reports whether the project's
+// pkg/middleware still has the pre-library-split shape: legacy
+// mechanism files present (auth.go / claims.go are the sentinels —
+// every old scaffold had both) and no thin middleware.go yet. Upgrade
+// must not emit the thin policy pair into such a package — the symbol
+// sets collide.
+func hasLegacyMiddlewareLayout(projectDir string) bool {
+	if _, err := os.Stat(filepath.Join(projectDir, "pkg", "middleware", "middleware.go")); err == nil {
+		return false // already on the thin layout
+	}
+	for _, sentinel := range []string{"auth.go", "claims.go"} {
+		if _, err := os.Stat(filepath.Join(projectDir, "pkg", "middleware", sentinel)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // Upgrade checks all managed (frozen) files against the current templates
 // and optionally applies updates.
 //
@@ -689,7 +707,24 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 	var results []UpgradeResult
 
+	// Pre-library-split projects still carry the old pkg/middleware
+	// mechanism files (auth.go, claims.go, …). Those declare the same
+	// symbols as the thin policy pair (Claims, NewAuthInterceptor,
+	// Authorizer, …), so dropping middleware.go next to them would stop
+	// the package compiling. Their copies are user-owned and keep
+	// working; converging on the library is the user-driven
+	// migrations/v0.x-to-middleware-lib path, never an upgrade side
+	// effect.
+	legacyMiddleware := hasLegacyMiddlewareLayout(projectDir)
+
 	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+		if legacyMiddleware && strings.HasPrefix(f.destPath, "pkg/middleware/") {
+			results = append(results, UpgradeResult{
+				Path:   f.destPath,
+				Status: UpgradeSkipped,
+			})
+			continue
+		}
 		// Disowned entries (and legacy fork-era ones) are user-owned:
 		// upgrade never touches them while the file exists. A missing
 		// file falls through — deletion is the documented re-adoption

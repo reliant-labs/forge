@@ -83,7 +83,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, proj
 			continue
 		}
 		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
-			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
+			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
 				svc.Name, serviceRegistryRelPath, codegen.ServiceRowFuncName(svc.Name))
 		}
 
@@ -343,7 +343,9 @@ func packageHasTwoResultNew(dir string) bool {
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
-func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
+// authProvider (forge.yaml auth.provider, any spelling) gates the
+// generated middleware.InstallGeneratedAuth call site in runServer.
+func generateConfigLoader(projectDir string, features config.FeaturesConfig, authProvider string, cs *generator.FileChecksums) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
@@ -377,8 +379,9 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 		delete(configFields, "ConnMaxLifetime")
 	}
 
-	// Re-render cmd/server.go so it stays in sync with the config fields.
-	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir, cs); err != nil {
+	// Re-render cmd/server.go so it stays in sync with the config fields
+	// and the forge.yaml auth provider.
+	if err := codegen.GenerateCmdServerWithFields(configFields, authProvider, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
 	}
 

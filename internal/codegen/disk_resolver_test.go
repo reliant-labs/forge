@@ -364,7 +364,7 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 	}
 	for _, want := range []string{
 		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
-		"wireEngineShadowDeps(app, cfg, logger, devMode)",
+		"wireEngineShadowDeps(app, cfg, logger)",
 	} {
 		if !strings.Contains(string(rows), want) {
 			t.Errorf("services_gen.go missing %q\n--- content ---\n%s", want, rows)

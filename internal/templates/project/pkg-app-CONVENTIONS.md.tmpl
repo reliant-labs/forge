@@ -14,7 +14,7 @@ ordered shape:
 Bootstrap → app := &App{ Services: &Services{}, ... }   // empty App
          → Setup(app, cfg)                              // YOUR code: build DB/NATS/audit, assign onto app fields
          → for each service:
-              deps := wireXxxDeps(app, cfg, logger, devMode)  // codegen, reads app.<Field>
+              deps := wireXxxDeps(app, cfg, logger)  // codegen, reads app.<Field>
               svc, err := xxx.New(deps)                       // validateDeps gates COMPLETE deps
               app.Services.Xxx = svc
               mux.Handle(path, svc)                           // pointer is final from here
@@ -43,12 +43,12 @@ instead:
 `pkg/app/wire_gen.go` is regenerated on every `forge generate`. For
 each service it parses `handlers/<svc>/service.go` to extract the
 `Deps` struct's field names + types, then emits a per-service
-`wireXxxDeps(app, cfg, logger, devMode) Deps` function. Resolution
+`wireXxxDeps(app, cfg, logger) Deps` function. Resolution
 rules (consulted in order):
 
 1. `Logger` → `logger.With("service", "<runtime-name>")`
 2. `Config` → `cfg`
-3. `Authorizer` → `<svc>.NewAuthorizer()` with devMode swap to
+3. `Authorizer` → `<svc>.NewAuthorizer()` with dev-mode (cfg.Mode().IsDev()) swap to
    `middleware.DevAuthorizer{}`
 4. `DB orm.Context` → `app.ORM` (which implements `orm.Context`)
 5. `DB *sql.DB` → `app.DB`

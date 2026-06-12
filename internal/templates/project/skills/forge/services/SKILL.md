@@ -46,15 +46,16 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 ```go
 // RegisteredServices lists what THIS binary serves. Serving a service
 // = listing its row.
-func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) []appkit.ServiceDef {
+func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []appkit.ServiceDef {
     return []appkit.ServiceDef{
-        serviceRowAPI(app, cfg, logger, devMode, opts...),
+        serviceRowAPI(app, cfg, logger, opts...),
         // project: types-only -- served by control-plane
     }
 }
 ```
 
 - **Serving** = the row is listed. The generated bootstrap consumes `RegisteredServices` verbatim, so editing this file changes what mounts without touching forge.yaml.
+- **Subcommands are a projection of the same table**: `forge generate` emits one cobra subcommand per registered row into `cmd/services_gen.go` (`./<bin> <service>` mounts just that service). Register/tombstone a row and regenerate — never hand-edit that file. Custom non-service subcommands go in `cmd/commands.go` (`userCommands()`, user-owned; see the `binaries` skill).
 - **Types-only** (the canonical implementation lives in a sibling binary; this repo only calls it): delete the row and **leave a comment naming the binary that serves it**. The comment is load-bearing -- any mention of the service name in this file means "deliberately not served here" and forge stops regenerating its `handlers/<svc>/` scaffold. Proto types, Connect client stubs, frontend hooks/mocks, and descriptor entries still generate (callers need them); the handlers scaffold, the row constructor, middleware/auth registration, and its tools in `gen/mcp/manifest.json` are gated off. Passing the name to `server [services...]` fails with a pointed error naming this file.
 - **Newly added** (name appears nowhere in the file): `forge add service X` (or a hand-edited forge.yaml + generate) scaffolds handlers and generates the row constructor, but forge **never edits services.go** -- it prints the exact line to add and you (or your agent) write it. Until then the service is generated-but-not-served and `forge audit` warns (`codegen.unregistered_services`, state `unlisted`: "row constructor generated but unreferenced").
 - **Retirement**: deleting the row (leaving the comment) does not silently delete anything. `forge audit` warns (`codegen.unregistered_services`, state `tombstoned`), and `forge generate` reports the tracked generated files under `handlers/<svc>/` as stale candidates -- deleted only with `forge generate --force-cleanup`; your hand-written files in that directory are never touched. Move or delete them yourself, or restore the row.
@@ -65,4 +66,4 @@ func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMo
 
 - **Simple utility packages** — just create a directory under `pkg/` and write plain Go. No scaffold needed.
 - **CLI-only projects** — use `forge new <name> --mod <module>` without `--service` to create a Cobra CLI binary with no server bootstrap.
-- **One-off scripts or CLI tools within existing projects** — add a `cmd/<name>/main.go` file directly. Forge scaffolding is for wired components, not standalone binaries.
+- **One-off scripts or CLI tools within existing projects** — register a subcommand via `userCommands()` in `cmd/commands.go` (user-owned; same image, opt-in config/OTel), or `forge add binary <name>` if it needs its own deploy lifecycle. A parallel `cmd/<name>/main.go` is invisible to forge build/deploy — avoid it.

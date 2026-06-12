@@ -20,7 +20,26 @@ Binaries sit alongside services, workers, and operators as the four long-running
 
 The litmus test for binary vs worker is: **does this need its own Deployment, OR is it a run-once operational tool?** If either — it's a binary. If neither — it's a worker.
 
-Resist the temptation to drop a `cmd/<name>/main.go` straight into the tree. A hand-rolled `package main` outside `forge.yaml` is invisible to `forge generate`, `forge build`, and `forge deploy` — the binary doesn't get the canonical Deps shape, doesn't share `serverCmd.Flags()`, and doesn't get an image tag. `forge add binary` solves all of that with one command.
+Resist the temptation to drop a `cmd/<name>/main.go` straight into the tree. A hand-rolled `package main` outside the shared cobra root is invisible to `forge generate`, `forge build`, and `forge deploy` — the binary doesn't get the canonical Deps shape, doesn't share `serverCmd.Flags()`, and doesn't get an image tag. `forge add binary` solves all of that with one command.
+
+## The cmd/ surface (what registers where)
+
+What a binary's subcommand surface is, is code:
+
+- **`cmd/services_gen.go`** (forge-owned, regenerated) — one subcommand
+  per service listed in `RegisteredServices` (`pkg/app/services.go`).
+  Never hand-edit; register/tombstone rows in services.go instead.
+- **`cmd/<package>.go`** (yours, from `forge add binary`) — one file
+  per declared binary; registers itself on the shared root in `init()`.
+- **`cmd/commands.go`** (yours, scaffolded once) — `userCommands()`,
+  the catch-all extension point `cmd/main.go` consumes. Use it for
+  commands that don't warrant a `binaries:` entry + Deployment story —
+  ad-hoc admin verbs, dev-only tooling, or a command you're porting by
+  hand before deciding its final shape. Opt into the pieces you need:
+  `config.RegisterFlags(cmd)` + `config.Load(cmd)` for the typed
+  config, `setupOTel(ctx)` (cmd/otel.go) for traces/metrics,
+  `signal.NotifyContext` for shutdown. If the command grows a deploy
+  lifecycle, graduate it to `forge add binary`.
 
 ## Adding a binary
 

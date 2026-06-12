@@ -29,11 +29,11 @@ import (
 // RegisteredServices lists what THIS binary serves. Serving a service
 // = listing its row. Types-only (served elsewhere)? Delete the line
 // and leave a comment saying where it lives.
-func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) []appkit.ServiceDef {
+func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []appkit.ServiceDef {
 {{- if .Services}}
 	return []appkit.ServiceDef{
 {{- range .Services}}
-		serviceRow{{.FieldName}}(app, cfg, logger, devMode, opts...),
+		serviceRow{{.FieldName}}(app, cfg, logger, opts...),
 {{- end}}
 	}
 {{- else}}

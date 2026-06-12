@@ -415,8 +415,9 @@ func runAddService(name string, port int, resume, force bool) error {
 		fmt.Println()
 		fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", serviceRegistryRelPath)
 		fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
-		fmt.Printf("       %s(app, cfg, logger, devMode, opts...),\n\n", codegen.ServiceRowFuncName(name))
+		fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
 		fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
+		fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
 	}
 
 	return nil
@@ -1259,7 +1260,7 @@ func runAddWebhook(name, serviceName string) error {
 	// the generate-time check is the hard gate.
 	if reg, regErr := loadServiceRegistry(root); regErr == nil &&
 		isConnectServiceConfig(cfg.Services[svcIdx]) && !reg.registered(serviceName) {
-		return fmt.Errorf("service %q is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it",
+		return fmt.Errorf("service %q is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it",
 			serviceName, serviceRegistryRelPath, codegen.ServiceRowFuncName(serviceName))
 	}
 

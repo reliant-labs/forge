@@ -18,7 +18,7 @@ import (
 // segment — Next.js fails the build with 'Page "/<slug>/[id]" is
 // missing "generateStaticParams()"'. Standalone supports dynamic
 // client routes AND is the shape the shipped Dockerfile copies
-// (.next/standalone/server.js).
+// (.next-prod/standalone/server.js in production).
 //
 // This test fails if anyone:
 //   - drops `output: "standalone"` / outputFileTracingRoot from the
@@ -40,10 +40,10 @@ func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
 		s := string(content)
 
 		if !strings.Contains(s, `output: "standalone"`) {
-			t.Errorf("next.config.ts (output=%q) must contain `output: \"standalone\"` so the build emits .next/standalone/server.js for the Dockerfile; got:\n%s", output, s)
+			t.Errorf("next.config.ts (output=%q) must contain `output: \"standalone\"` so the build emits .next-prod/standalone/server.js for the Dockerfile; got:\n%s", output, s)
 		}
 		if !strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
-			t.Errorf("next.config.ts (output=%q) must contain outputFileTracingRoot so the standalone bundle lands at .next/standalone/server.js (not under a workspace-rooted subpath the Dockerfile can't find); got:\n%s", output, s)
+			t.Errorf("next.config.ts (output=%q) must contain outputFileTracingRoot so the standalone bundle lands at .next-prod/standalone/server.js (not under a workspace-rooted subpath the Dockerfile can't find); got:\n%s", output, s)
 		}
 		// The default must NOT emit the static-export conditional — that
 		// shape fails `next build` on the generated dynamic [id] routes.
@@ -128,7 +128,7 @@ func TestNextJSConfig_StaticOptIn_BasePathGuard(t *testing.T) {
 // TestNextJSConfig_StandaloneExplicit verifies the explicit standalone
 // opt-in renders identically in shape to the default: `output:
 // "standalone"` + `outputFileTracingRoot: path.join(__dirname)` so the
-// scaffold-shipped Dockerfile finds `.next/standalone/server.js`.
+// scaffold-shipped Dockerfile finds `.next-prod/standalone/server.js`.
 func TestNextJSConfig_StandaloneExplicit(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "next.config.ts.tmpl"),

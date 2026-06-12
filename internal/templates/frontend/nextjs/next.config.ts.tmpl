@@ -7,7 +7,7 @@
 
   Branches:
     standalone — (default) self-contained Node server
-                 (`.next/standalone/server.js`). Pair with the generated
+                 (`.next-prod/standalone/server.js` in production). Pair with the generated
                  Dockerfile.
     static     — production export (`output: "export"` gated on
                  NODE_ENV=production); dev stays as `next dev`. No Node
@@ -195,7 +195,8 @@ const nextConfig: NextConfig = {
   // serves the same directory the production build wrote.
   distDir: process.env.NODE_ENV === "production" ? ".next-prod" : ".next",
   // "standalone" (the scaffold default) emits a self-contained Node
-  // server at .next/standalone/server.js plus a pruned node_modules
+  // server at <distDir>/standalone/server.js (.next-prod in production)
+  // plus a pruned node_modules
   // tree. This is the shape the Dockerfile copies into the runner
   // image, and it supports the dynamic `[id]` CRUD detail/edit routes
   // forge generates (a static export does not — `output: "export"`
@@ -208,8 +209,8 @@ const nextConfig: NextConfig = {
   // outputFileTracingRoot pins the tracing base directory to this frontend's
   // own folder. Without this, Next.js walks up looking for a workspace root
   // (e.g. a lockfile in the repo root) and emits the standalone bundle under
-  // `.next/standalone/<relative-path>/server.js`, which the Dockerfile's
-  // `COPY --from=builder /app/.next/standalone ./` cannot locate at runtime.
+  // `<distDir>/standalone/<relative-path>/server.js`, which the Dockerfile's
+  // `COPY --from=builder /app/.next-prod/standalone ./` cannot locate at runtime.
   outputFileTracingRoot: path.join(__dirname),
   webpack: (config) => {
     // protobuf-es generates imports with .js extensions (e.g. './foo_pb.js').

@@ -92,7 +92,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	// `next build` on any dynamic segment without generateStaticParams —
 	// so a static default would break `npm run build` on every project
 	// the moment it has one entity. Standalone also pairs with the
-	// shipped Dockerfile (.next/standalone/server.js). We canonicalise
+	// shipped Dockerfile (.next-prod/standalone/server.js). We canonicalise
 	// here rather than in every template so callers can pass "" for
 	// "use the scaffold default" without having to know what it is.
 	output := strings.ToLower(strings.TrimSpace(opts.Output))

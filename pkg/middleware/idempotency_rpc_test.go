@@ -1,5 +1,3 @@
-//go:build ignore
-
 package middleware
 
 import (
@@ -74,7 +72,7 @@ func TestIdempotencyCache_StoresAndReturns(t *testing.T) {
 
 	// Store an entry.
 	ii.mu.Lock()
-	ii.cache.Add(key, &cachedResponse{
+	ii.cache.add(key, &cachedRPCResponse{
 		resp:      nil,
 		err:       nil,
 		expiresAt: time.Now().Add(time.Minute),
@@ -83,7 +81,7 @@ func TestIdempotencyCache_StoresAndReturns(t *testing.T) {
 
 	// Should find it.
 	ii.mu.Lock()
-	cached, ok := ii.cache.Get(key)
+	cached, ok := ii.cache.get(key)
 	ii.mu.Unlock()
 	if !ok {
 		t.Fatal("expected cache hit")
@@ -102,7 +100,7 @@ func TestIdempotencyCache_ExpiredEntryIgnored(t *testing.T) {
 
 	// Store an already-expired entry.
 	ii.mu.Lock()
-	ii.cache.Add(key, &cachedResponse{
+	ii.cache.add(key, &cachedRPCResponse{
 		resp:      nil,
 		err:       nil,
 		expiresAt: time.Now().Add(-time.Second),
@@ -111,7 +109,7 @@ func TestIdempotencyCache_ExpiredEntryIgnored(t *testing.T) {
 
 	// The entry exists in LRU but is logically expired.
 	ii.mu.Lock()
-	cached, ok := ii.cache.Get(key)
+	cached, ok := ii.cache.get(key)
 	ii.mu.Unlock()
 	if !ok {
 		t.Fatal("expected cache to contain the key")

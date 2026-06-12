@@ -399,10 +399,13 @@ func isKnownTier3(rel, noTmpl string) bool {
 			return true
 		}
 	}
-	// Middleware user-owned skeletons.
+	// Middleware user-owned skeletons. (The thin auth-policy pair —
+	// project/middleware.go + middleware_test.go — is plain .go, not
+	// .tmpl, so the banner walk never reaches it; mechanisms live in
+	// forge/pkg/{authn,authz,middleware}.)
 	if strings.Contains(rel, "internal/templates/middleware/") {
 		switch noTmpl {
-		case "auth.go", "auth_validator.go":
+		case "auth_validator.go":
 			return true
 		}
 	}

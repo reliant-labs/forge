@@ -1,4 +1,3 @@
-// Package middleware provides reusable HTTP middleware for forge-generated services.
 package middleware
 
 import (

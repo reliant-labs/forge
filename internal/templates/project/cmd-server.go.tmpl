@@ -30,6 +30,7 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 
+	fmw "github.com/reliant-labs/forge/pkg/middleware"
 	"github.com/reliant-labs/forge/pkg/serverkit"
 
 	"{{.Module}}/pkg/app"
@@ -106,18 +107,18 @@ func runServer(cmd *cobra.Command, args []string) error {
 		ProjectInterceptors: buildProjectInterceptors(cfg, authInterceptor),
 {{- if index .ConfigFields "CorsOrigins"}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
-			return middleware.CORSMiddleware(origins, allowCredentials)
+			return fmw.CORSMiddleware(origins, allowCredentials)
 		},
 {{- end}}
 {{- if index .ConfigFields "SecurityHeadersEnabled"}}
 		SecurityHeadersMiddleware: func(production bool) func(http.Handler) http.Handler {
-			secCfg := middleware.DefaultSecurityHeadersConfig()
+			secCfg := fmw.DefaultSecurityHeadersConfig()
 			secCfg.Enabled = true
 			secCfg.Production = production
-			return middleware.SecurityHeadersMiddleware(secCfg)
+			return fmw.SecurityHeadersMiddleware(secCfg)
 		},
 {{- end}}
-		RequestIDMiddleware: middleware.RequestIDMiddleware,
+		RequestIDMiddleware: fmw.RequestIDMiddleware,
 	}
 
 	return serverkit.Run(context.Background(), skCfg, hooks, args)
@@ -225,15 +226,18 @@ func projectServerkitConfig(cfg *config.Config) (serverkit.Config, error) {
 // snapshot when the binary boots, even if a future hook starts re-reading.
 func buildProjectInterceptors(cfg *config.Config, authInterceptor connect.Interceptor) func(logger *slog.Logger) []connect.Interceptor {
 	return func(logger *slog.Logger) []connect.Interceptor {
+		// Library interceptors that read the authenticated principal take
+		// middleware.ClaimsFromContext — the project owns the claims
+		// context key (pkg/middleware/middleware.go).
 		projectInterceptors := []connect.Interceptor{
 			authInterceptor,
-			middleware.AuditInterceptor(logger),
+			fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
 		}
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
-		if rl := middleware.RateLimitInterceptor(middleware.RateLimitOptions{
+		if rl := fmw.RateLimitInterceptor(fmw.RateLimitOptions{
 			Rps:   int(cfg.RateLimitRps),
 			Burst: int(cfg.RateLimitBurst),
-		}); rl != nil {
+		}, middleware.ClaimsFromContext); rl != nil {
 			projectInterceptors = append([]connect.Interceptor{rl}, projectInterceptors...)
 		}
 {{- end}}

@@ -1,9 +1,8 @@
-//go:build ignore
-
 package middleware
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,32 +10,48 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/auth"
 )
 
-// HTTPStack returns HTTP middleware that applies recovery, logging, and audit
-// to plain HTTP handlers. This provides the same cross-cutting concerns as the
-// Connect interceptors for routes that cannot use the Connect protocol
-// (e.g., webhooks, OAuth callbacks, REST endpoints).
+// HTTPStack returns HTTP middleware that applies recovery, logging, and
+// audit to plain HTTP handlers. This provides the same cross-cutting
+// concerns as the Connect interceptors for routes that cannot use the
+// Connect protocol (e.g. webhooks, OAuth callbacks, REST endpoints).
 //
-// Auth is NOT included because REST routes often have different auth requirements
-// (e.g., webhook signature verification instead of JWT). Use HTTPAuth separately
-// for routes that need JWT authentication.
-func HTTPStack(logger *slog.Logger) func(http.Handler) http.Handler {
+// claimsFrom is the project's ClaimsFromContext (see [ClaimsLookup]);
+// nil produces anonymous audit entries.
+//
+// Auth is NOT included because REST routes often have different auth
+// requirements (e.g. webhook signature verification instead of JWT).
+// Use [HTTPAuth] separately for routes that need Bearer authentication.
+func HTTPStack(logger *slog.Logger, claimsFrom ClaimsLookup) func(http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(next http.Handler) http.Handler {
-		// Apply in reverse order: recovery is outermost
+		// Apply in reverse order: recovery is outermost.
 		h := next
-		h = httpAudit(logger)(h)
+		h = httpAudit(logger, claimsFrom)(h)
 		h = httpLogging(logger)(h)
 		h = httpRecovery(logger)(h)
 		return h
 	}
 }
 
-// HTTPAuth returns HTTP middleware that validates JWT tokens and populates
-// the context with Claims, mirroring the Connect auth interceptor.
-// The authenticate function should validate the token and return Claims.
-// If authenticate is nil (dev mode), all requests are allowed through.
-func HTTPAuth(authenticate func(token string) (*Claims, error)) func(http.Handler) http.Handler {
+// HTTPAuth returns HTTP middleware that validates Bearer tokens and
+// populates the context with claims, mirroring the Connect auth
+// interceptor for plain HTTP routes.
+//
+// authenticate validates the raw token and returns the claims — pass
+// the project's ValidateToken. withClaims stashes them on the context —
+// pass the project's ContextWithClaims (the project owns the claims
+// context key). If authenticate is nil (dev mode), all requests are
+// allowed through untouched.
+func HTTPAuth(
+	authenticate func(token string) (*auth.Claims, error),
+	withClaims func(ctx context.Context, claims *auth.Claims) context.Context,
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if authenticate == nil {
@@ -44,12 +59,12 @@ func HTTPAuth(authenticate func(token string) (*Claims, error)) func(http.Handle
 				return
 			}
 
-			auth := r.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") {
+			authz := r.Header.Get("Authorization")
+			if !strings.HasPrefix(authz, "Bearer ") {
 				http.Error(w, "missing or invalid Authorization header", http.StatusUnauthorized)
 				return
 			}
-			token := strings.TrimPrefix(auth, "Bearer ")
+			token := strings.TrimPrefix(authz, "Bearer ")
 
 			claims, err := authenticate(token)
 			if err != nil {
@@ -57,7 +72,10 @@ func HTTPAuth(authenticate func(token string) (*Claims, error)) func(http.Handle
 				return
 			}
 
-			ctx := ContextWithClaims(r.Context(), claims)
+			ctx := r.Context()
+			if withClaims != nil {
+				ctx = withClaims(ctx, claims)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -85,7 +103,7 @@ func httpRecovery(logger *slog.Logger) func(http.Handler) http.Handler {
 }
 
 // httpLogging returns HTTP middleware that logs the method, path, duration,
-// status code, and trace ID for every request.
+// and status code for every request.
 func httpLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,9 +129,9 @@ func httpLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 }
 
 // httpAudit returns HTTP middleware that produces audit log entries for HTTP
-// requests. Audit logs capture: who (from Claims), what (method + path),
+// requests. Audit logs capture: who (from claims), what (method + path),
 // when, result (status code), and duration.
-func httpAudit(logger *slog.Logger) func(http.Handler) http.Handler {
+func httpAudit(logger *slog.Logger, claimsFrom ClaimsLookup) func(http.Handler) http.Handler {
 	audit := logger.With("log_type", "audit")
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -131,13 +149,17 @@ func httpAudit(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Time("timestamp", start),
 			}
 
-			claims, ok := ClaimsFromContext(r.Context())
-			if ok && claims != nil {
-				attrs = append(attrs,
-					slog.String("user_id", claims.UserID),
-					slog.String("email", claims.Email),
-				)
-			} else {
+			var identified bool
+			if claimsFrom != nil {
+				if claims, ok := claimsFrom(r.Context()); ok && claims != nil {
+					attrs = append(attrs,
+						slog.String("user_id", claims.UserID),
+						slog.String("email", claims.Email),
+					)
+					identified = true
+				}
+			}
+			if !identified {
 				attrs = append(attrs, slog.String("user_id", "anonymous"))
 			}
 

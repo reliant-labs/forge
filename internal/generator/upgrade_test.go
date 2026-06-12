@@ -74,9 +74,11 @@ func TestManagedFiles(t *testing.T) {
 		"Dockerfile":               true,
 		"docker-compose.yml":       true,
 		".golangci.yml":            true,
-		"pkg/middleware/cors.go":   true,
-		"pkg/middleware/auth.go":   true,
-		"pkg/middleware/claims.go": true,
+		// The thin auth-policy pair is the ONLY middleware the project
+		// keeps; the mechanism files (cors/auth/claims/…) moved to
+		// forge/pkg/{authn,authz,middleware} and must NOT be managed.
+		"pkg/middleware/middleware.go":      true,
+		"pkg/middleware/middleware_test.go": true,
 	}
 
 	found := make(map[string]bool)

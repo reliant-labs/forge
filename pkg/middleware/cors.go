@@ -18,9 +18,9 @@ import (
 //
 //   - When allowOrigins contains "*" AND allowCredentials is true, this
 //     middleware panics. The combination is spec-invalid (browsers
-//     reject it) and must be caught at config validation time (see
-//     (*Config).Validate). The panic is a belt-and-suspenders guard if
-//     validation is bypassed.
+//     reject it) and must be caught at config validation time (the
+//     scaffolded config.Validate does). The panic is a belt-and-
+//     suspenders guard if validation is bypassed.
 //
 //   - When allowOrigins contains "*" and credentials are disabled, the
 //     request Origin is echoed back rather than a literal "*". Echoing
@@ -33,9 +33,10 @@ import (
 //
 // Vary: Origin is always set so intermediate caches key on the Origin.
 func CORSMiddleware(allowOrigins []string, allowCredentials bool) func(http.Handler) http.Handler {
-	// Belt-and-suspenders: Config.Validate rejects this combination at
-	// startup, but if a caller constructs the middleware directly (e.g.
-	// in a test) we must still refuse to produce a spec-invalid policy.
+	// Belt-and-suspenders: the scaffolded config.Validate rejects this
+	// combination at startup, but if a caller constructs the middleware
+	// directly (e.g. in a test) we must still refuse to produce a
+	// spec-invalid policy.
 	if allowCredentials && containsWildcard(allowOrigins) {
 		panic("middleware: CORS wildcard origin ('*') is incompatible with allowCredentials=true")
 	}

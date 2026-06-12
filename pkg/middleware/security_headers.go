@@ -1,4 +1,3 @@
-//go:build ignore
 
 package middleware
 
@@ -72,7 +71,7 @@ func DefaultSecurityHeadersConfig() SecurityHeadersConfig {
 // /metrics, and REST/webhook routes that bypass the Connect interceptor
 // chain.
 //
-// When cfg.SecurityHeadersEnabled is false, this becomes a no-op.
+// When cfg.Enabled is false, this becomes a no-op.
 func SecurityHeadersMiddleware(cfg SecurityHeadersConfig) func(http.Handler) http.Handler {
 	if !cfg.Enabled {
 		return func(next http.Handler) http.Handler { return next }

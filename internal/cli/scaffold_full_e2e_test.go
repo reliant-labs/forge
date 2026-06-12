@@ -96,20 +96,13 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"cmd/otel.go",
 		"cmd/db.go",
 
-		// pkg/middleware — security-critical files. Any one of these
-		// going missing silently degrades the scaffold's security
-		// posture, so check each explicitly.
-		"pkg/middleware/auth.go",
-		"pkg/middleware/authz.go",
-		"pkg/middleware/cors.go",
-		"pkg/middleware/recovery.go",
-		"pkg/middleware/audit.go",
-		"pkg/middleware/http.go",
-		"pkg/middleware/logging.go",
-		"pkg/middleware/ratelimit.go",
-		"pkg/middleware/claims.go",
-		"pkg/middleware/security_headers.go",
-		"pkg/middleware/permissive_authz.go",
+		// pkg/middleware — the ONE thin user-owned auth-policy file (plus
+		// its policy test). The security-critical mechanisms (auth modes,
+		// authz interceptor, CORS, recovery, audit, rate limiting, …) live
+		// in forge/pkg/{authn,authz,middleware,observe} and are NOT
+		// photocopied into the scaffold anymore.
+		"pkg/middleware/middleware.go",
+		"pkg/middleware/middleware_test.go",
 
 		// Service + proto — the scaffold's raison d'être.
 		"handlers/api/service.go",
@@ -188,16 +181,19 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 			excerpt(serverGo, "import", 400))
 	}
 
-	authGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "auth.go"))
+	authGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 	// Past bug: the unauthenticated allow-list was implemented as
 	// `strings.Contains(procedure, "Health")`, which matches any RPC with
 	// "Health" anywhere in its name — e.g. a user-defined `HealthReport`
-	// silently bypassed auth. The scaffold must use an exact-match map,
-	// not substring matching.
+	// silently bypassed auth. The thin policy file must declare an
+	// exact-match map (the gate itself lives in forge/pkg/authn).
 	healthContains := regexp.MustCompile(`strings\.Contains\([^)]*Health`)
 	if healthContains.MatchString(authGo) {
-		t.Errorf("pkg/middleware/auth.go must not use strings.Contains(...Health...) for unauthenticated allow-list; use exact procedure matching instead. Got:\n%s",
+		t.Errorf("pkg/middleware/middleware.go must not use strings.Contains(...Health...) for unauthenticated allow-list; use exact procedure matching instead. Got:\n%s",
 			authGo)
+	}
+	if !strings.Contains(authGo, "unauthenticatedProcedures") {
+		t.Errorf("pkg/middleware/middleware.go must declare the unauthenticatedProcedures allow-list; got:\n%s", authGo)
 	}
 
 	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config.go"))

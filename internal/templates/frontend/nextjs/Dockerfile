@@ -16,8 +16,10 @@ RUN npm run build
 
 # --- Serve with Next.js standalone runtime ---
 # next.config.ts sets `output: "standalone"`, which emits a minimal Node
-# server at .next/standalone/server.js plus pruned node_modules. The
+# server at <distDir>/standalone/server.js plus pruned node_modules. The
 # static assets and public/ directory must be copied alongside it.
+# Production builds use distDir ".next-prod" (next.config.ts fences them
+# off from the dev server's .next), so all paths below are .next-prod.
 FROM node:22-alpine AS runner
 WORKDIR /app
 
@@ -30,8 +32,8 @@ ENV HOSTNAME=0.0.0.0
 # (uid=1000). Running the server as root adds no value and makes a
 # container escape materially more dangerous; we drop privileges before
 # CMD and own the copied assets so the process can still read them.
-COPY --from=builder --chown=node:node /app/.next/standalone ./
-COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/.next-prod/standalone ./
+COPY --from=builder --chown=node:node /app/.next-prod/static ./.next-prod/static
 COPY --from=builder --chown=node:node /app/public ./public
 
 USER node

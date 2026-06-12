@@ -343,7 +343,9 @@ func packageHasTwoResultNew(dir string) bool {
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
-func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
+// authProvider (forge.yaml auth.provider, any spelling) gates the
+// generated middleware.InstallGeneratedAuth call site in runServer.
+func generateConfigLoader(projectDir string, features config.FeaturesConfig, authProvider string, cs *generator.FileChecksums) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
@@ -377,8 +379,9 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 		delete(configFields, "ConnMaxLifetime")
 	}
 
-	// Re-render cmd/server.go so it stays in sync with the config fields.
-	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir, cs); err != nil {
+	// Re-render cmd/server.go so it stays in sync with the config fields
+	// and the forge.yaml auth provider.
+	if err := codegen.GenerateCmdServerWithFields(configFields, authProvider, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
 	}
 

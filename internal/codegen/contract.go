@@ -43,7 +43,7 @@ type Service interface {
 
 	// Config loader / cmd-server wiring.
 	GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error
-	GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error
+	GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error
 	GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error
 
 	// pkg/app bootstrap files.

@@ -58,63 +58,25 @@ This command will:
 - Run standard Go linters (golangci-lint)
 - Run proto linters (buf lint)
 - Run TypeScript linters for Next.js frontends (if frontends/ exists)
-- Optionally run contract interface enforcement linter (--contract)
-- Optionally run DB entity lint rules (--db)
-- Optionally run SQL migration safety checks (--migration-safety)
-- Optionally run forge convention rules (--conventions)
-- Optionally run frontend pack convention rules (--frontend-packs)
-- Optionally run scaffold ownership rules (--scaffolds)
-- Optionally run test-convention rules across backend handlers and frontend hooks (--tests)
-- Optionally run lifecycle-banner rules on forge templates (--banners)
+- Optionally run targeted rule sets (--contract, --db, --migration-safety,
+  --conventions, --tests)
 
 Examples:
-  forge lint                    # Run all standard linters
-  forge lint --contract         # Run contract interface enforcement linter
-  forge lint --db               # Run DB entity lint rules
+  forge lint                     # Run all standard linters
+  forge lint --fix               # Auto-fix issues where possible
+  forge lint --contract          # Run contract interface enforcement linter
+  forge lint --db                # Run DB entity lint rules
   forge lint --migration-safety  # Run SQL migration safety checks
-  forge lint --exported-vars     # Run exported vars linter
   forge lint --conventions       # Run forge convention rules on proto files
-  forge lint --frontend-packs   # Flag third-party UI imports in frontend pack templates
-  forge lint --frontend-stores  # Flag Zustand stores that import generated Connect
-                                # clients (server data belongs in React Query)
-  forge lint --scaffolds        # Flag committed FORGE_SCAFFOLD markers and
-                                # _gen files missing the canonical header
-  forge lint --tests            # Nudge handler tests toward tdd.RunRPCCases AND
-                                # surface generated frontend hooks without sibling tests
-                                # (warnings only — see migrations/v0.x-to-tdd-rpccases
-                                # and the frontend-testing skill)
-  forge lint --banners          # Verify every forge template carries the
-                                # right Tier-1 / Tier-2 lifecycle banner
-                                # (warnings only — runs only inside the forge repo)
-  forge lint --suggest-excludes # Print a YAML snippet of internal packages that look
-                                # like good candidates for contracts.exclude in forge.yaml
-                                # (analyzer-style, embed-only, etc.)
-  forge lint --wire-coverage    # Report unresolved Deps fields in pkg/app/wire_gen.go
-                                # (warnings) AND unresolved forge:placeholder annotations
-                                # in pkg/app/app_extras.go (errors — gate the build)
-  forge lint --check-workarounds # Flag cross-lane workarounds (cast<X>Repo helpers in
-                                # pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go,
-                                # cmd/<name>.go files not declared in forge.yaml binaries:)
-  forge lint --optional-deps-guard # Flag derefs of forge:optional-dep Deps fields
-                                # (s.deps.X.Method(...)) that aren't dominated by a
-                                # nil-guard in the same function (warnings only —
-                                # suppress confirmed-safe sites with a
-                                # "// forge:optional-checked" comment on the deref line)
-  forge lint --config-deps      # Flag scalar Deps fields (string/int/bool/duration —
-                                # the naked-scalar antipattern). Scalars are
-                                # configuration: declare a <Component>Config block in
-                                # proto/config and take it as a typed field instead
-                                # (warnings only)
-  forge lint --fix              # Auto-fix issues where possible
-  forge lint --json             # Machine-readable output (sub-agents / CI):
-                                # {findings: [{file, line, col, severity, rule,
-                                # message, fix_hint}], summary: {errors, warnings,
-                                # infos, total}, ok}. Raw sub-tool lines that can't
-                                # be structured appear with rule "external"; skipped
-                                # linters appear as severity "info" rule "skipped".
-                                # Exit code matches text mode (non-zero iff ok=false).
-                                # Combines with the targeted flags above, but not
-                                # with --fix / --suggest-*.`,
+  forge lint --tests             # Run test-convention rules across backend
+                                 # handlers and frontend hooks (warnings only)
+  forge lint --json              # Machine-readable findings for sub-agents / CI
+                                 # (schema in lint_json.go; exit code matches
+                                 # text mode; combines with the targeted flags
+                                 # above, but not with --fix / --suggest-*)
+
+Additional maintainer/debug flags exist (forge-repo internals, wiring
+audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var paths []string
 			if len(args) > 0 {
@@ -149,6 +111,25 @@ Examples:
 	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
+
+	// User-vs-maintainer surface split: the flags below are fully
+	// functional but hidden from --help (visible via --help-dev). The
+	// visible set is pinned by TestLintHelpSurface — a new flag must
+	// consciously pick a side. See help_dev.go for the rule of thumb.
+	hideDevFlags(cmd,
+		"exported-vars",           // forge-internal style rule
+		"frontend-packs",          // lints forge's own pack templates
+		"frontend-stores",         // convention audit, agent-workflow nudge
+		"scaffolds",               // forge ownership-boundary enforcement
+		"banners",                 // no-op outside the forge repo
+		"suggest-excludes",        // one-shot migration/setup helper
+		"suggest-buf-excepts",     // one-shot migration/setup helper
+		"wire-coverage",           // DI wiring audit (forge codegen internals)
+		"bootstrap-deps-coverage", // DI wiring audit (forge codegen internals)
+		"check-workarounds",       // parallel-lane agent-workflow audit
+		"optional-deps-guard",     // forge:optional-dep annotation audit
+		"config-deps",             // Deps-shape convention audit
+	)
 
 	return cmd
 }
@@ -674,9 +655,12 @@ func runTestsLint() error {
 // runBannersLint verifies forge's own template files carry the
 // lifecycle banner that matches their tier:
 //
-//   - Tier 1 (regenerated every run): "// Code generated by forge ... DO NOT EDIT."
-//   - Tier 2 (one-shot scaffold): "// forge:scaffold one-shot"
-//   - Tier 3 (user-owned skeleton): banner-less by design.
+//   - Tier 1 (forge-owned, regenerated every run): "// Code generated
+//     by forge. DO NOT EDIT." + "// forge-owned: regenerated every run
+//     — do not edit (forge disown to take ownership)"
+//   - Tier 2 (yours): "// yours: scaffolded once, never touched again
+//     — forge will not overwrite this file"
+//   - Fragments / skip-listed files: banner-less by design.
 //
 // Warnings only — the rule is a hint to template authors that LLMs and
 // humans alike rely on the banner to know whether they may edit the

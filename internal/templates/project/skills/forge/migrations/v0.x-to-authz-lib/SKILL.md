@@ -207,7 +207,8 @@ older binary.
 - `auth` skill — the authentication layer that produces the claims
   `authz.Decider` consumes. `auth.Claims` (= `middleware.Claims` via
   alias) flows through unchanged.
-- `api` skill — `required_roles` and `auth_required` proto annotations
-  that drive `methodRoles` / `methodAuthRequired`.
+- `api` skill — the `auth_required` proto annotation that drives
+  `methodAuthRequired` (the `methodRoles` table exists in the generated
+  shape; role logic is customized in `authorizer.go`, not proto).
 - `migrations/v0.x-to-contractkit` — canonical example of a per-version
   migration skill following this same six-section shape.

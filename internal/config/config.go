@@ -241,7 +241,7 @@ type FrontendConfig struct {
 	//
 	// Valid values:
 	//   - "standalone" (default): production builds emit a self-contained
-	//     Node server at `.next/standalone/server.js`. This is the shape
+	//     Node server at `.next-prod/standalone/server.js`. This is the shape
 	//     the shipped Dockerfile copies into its runner image, and the
 	//     only default that supports the dynamic `[id]` CRUD detail/edit
 	//     routes forge generates for every entity.

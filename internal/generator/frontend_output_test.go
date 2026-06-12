@@ -11,7 +11,7 @@ import (
 // new-scaffold default: a Next.js frontend scaffolded WITHOUT
 // FrontendGenOptions.Output set emits a next.config.ts with
 // `output: "standalone"` — the shape the shipped Dockerfile copies
-// (.next/standalone/server.js) and the only default that builds with
+// (.next-prod/standalone/server.js) and the only default that builds with
 // the dynamic `[id]` CRUD routes forge generates. The previous static
 // default broke `npm run build` on every project the moment it had
 // one entity ('Page "/<slug>/[id]" is missing "generateStaticParams()"

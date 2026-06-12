@@ -1,8 +1,10 @@
 # dependencies
 node_modules/
 
-# next.js
+# next.js (.next = dev server, .next-prod = production builds — split so
+# `npm run build` can't clobber a live dev server's cache)
 .next/
+.next-prod/
 out/
 
 # production

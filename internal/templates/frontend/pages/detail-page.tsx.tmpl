@@ -6,7 +6,10 @@
 import { {{if .HasDelete}}Trash2{{end}}{{if and .HasDelete .HasUpdate}}, {{end}}{{if .HasUpdate}}SquarePen{{end}}{{if .HasDelete}}, TriangleAlert{{end}} } from "lucide-react";
 {{- end}}
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+{{- /* useRouter is only consumed by the delete flow's onSuccess redirect —
+       importing it unconditionally ships an eslint no-unused-vars warning
+       on every entity without a Delete RPC. */}}
+import { useParams{{if .HasDelete}}, useRouter{{end}} } from "next/navigation";
 {{- if .HasDelete}}
 import { useState } from "react";
 {{- end}}
@@ -31,7 +34,9 @@ import { {{if .HasBadgeColumns}}enumBadgeVariant, {{end}}formatValue, userMessag
 const paramsSchema = z.object({ id: z.string().min(1) });
 
 export default function {{.EntityName}}DetailPage() {
+  {{- if .HasDelete}}
   const router = useRouter();
+  {{- end}}
   const { id } = paramsSchema.parse(useParams());
   {{- if .HasDelete}}
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);

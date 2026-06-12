@@ -1192,9 +1192,19 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 	// CI
 	assertPathExists(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
 
-	// Hot reload
+	// Hot reload. exclude_dir entries are root-relative, so the bare
+	// "node_modules" entry does NOT cover frontends/<name>/node_modules
+	// — air walked ~4,235 node_modules dirs per boot (journey
+	// fr-12520ad3d2) until "frontends" itself was excluded. No Go code
+	// lives under frontends/; npm owns that dev loop.
 	assertPathExists(t, filepath.Join(root, ".air.toml"))
 	assertPathExists(t, filepath.Join(root, ".air-debug.toml"))
+	for _, airFile := range []string{".air.toml", ".air-debug.toml"} {
+		airContents := readFile(t, filepath.Join(root, airFile))
+		if !strings.Contains(airContents, `"frontends"`) {
+			t.Errorf("%s exclude_dir must contain \"frontends\" (air watches frontends/*/node_modules otherwise), got:\n%s", airFile, airContents)
+		}
+	}
 
 	// Observability
 	assertPathExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))

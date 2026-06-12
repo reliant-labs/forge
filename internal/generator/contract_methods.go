@@ -11,8 +11,8 @@ import "github.com/reliant-labs/forge/internal/config"
 
 // --- Service ---
 
-func (s *svc) GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity) error {
-	return GeneratePlanORM(root, modulePath, serviceName, entities)
+func (s *svc) GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error {
+	return GeneratePlanORM(root, modulePath, serviceName, entities, cs)
 }
 
 func (s *svc) GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.PlanRPC, entities []config.PlanEntity) error {

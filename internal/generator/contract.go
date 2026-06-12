@@ -21,7 +21,7 @@ import "github.com/reliant-labs/forge/internal/config"
 // finer-grained mocking can stub one method at a time.
 type Service interface {
 	// Plan-mode generators.
-	GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity) error
+	GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error
 	GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.PlanRPC, entities []config.PlanEntity) error
 
 	// Component scaffolders.

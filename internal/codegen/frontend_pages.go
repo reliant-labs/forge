@@ -29,6 +29,18 @@ type PageTemplateData struct {
 	HasDelete        bool
 	CreateFields     []PageField // Fields for the create form
 	UpdateFields     []PageField // Fields for the edit form
+	// UpdateEntityFieldCamel is the camelCase request field wrapping the
+	// entity when the update request follows AIP-134 ("task" for
+	// `Task task = 1;`). The edit page then nests the form values under
+	// it (with the PK inside) instead of spreading them at the top level.
+	// Empty for flat update requests (legacy id+fields shape).
+	UpdateEntityFieldCamel string
+	// UpdateMaskFieldCamel is the camelCase google.protobuf.FieldMask
+	// field on the update request ("updateMask"); the edit page sends a
+	// mask naming exactly the form's fields so the server's masked write
+	// can't clobber columns the form never edits. Empty when the request
+	// has no mask.
+	UpdateMaskFieldCamel string
 	// Response type names for imports
 	ListResponseType   string // "ListTasksResponse"
 	GetResponseType    string // "GetTaskResponse"
@@ -81,9 +93,12 @@ type EntityPageField struct {
 
 // PageField represents a form field derived from a proto message field.
 type PageField struct {
-	Name      string // "title" (camelCase)
-	Label     string // "Title" (display name)
-	Type      string // "text", "number", "checkbox", "date", "textarea"
+	Name  string // "title" (camelCase)
+	Label string // "Title" (display name)
+	Type  string // "text", "number", "checkbox", "date", "textarea"
+	// ProtoName is the original snake_case proto field name ("created_at")
+	// — the AIP-134 update_mask path for this field.
+	ProtoName string
 	Required  bool
 	ProtoType string // original proto type for reference
 	// IsBigInt marks 64-bit integer fields — protobuf-es types them as
@@ -334,16 +349,7 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 					if createFieldSkipList[f.Name] {
 						continue
 					}
-					pf := PageField{
-						Name:            fieldNameToCamel(f.Name),
-						Label:           fieldNameToLabel(f.Name),
-						Type:            protoTypeToFormField(f.ProtoType),
-						Required:        isFormFieldRequired(f),
-						ProtoType:       f.ProtoType,
-						IsBigInt:        isBigIntProtoType(f.ProtoType),
-						IsRepeated:      isRepeatedScalarProtoType(f.ProtoType),
-						RepeatedNumeric: isRepeatedNumericProtoType(f.ProtoType),
-					}
+					pf := pageFieldFromMessageField(f)
 					if pf.Type == "date" {
 						data.HasDateCreateFields = true
 					}
@@ -352,10 +358,31 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 			}
 		}
 
-		// Extract form fields from the update request message
+		// Extract form fields for the edit page. The canonical generated
+		// update request follows AIP-134 — it WRAPS the entity
+		// (`Task task = 1;`) and carries a `google.protobuf.FieldMask
+		// update_mask` — so the form fields come from the ENTITY message,
+		// the submit nests them under the wrapper field, and the mask
+		// names exactly the fields the form edits (without it the
+		// server's update clobbers every column the form doesn't carry).
+		// A flat request (id + scalar fields) keeps the legacy top-level
+		// spread with no mask.
 		if em.updateReq != "" && svc.Messages != nil {
 			if fields, ok := svc.Messages[em.updateReq]; ok {
+				formFields := fields
 				for _, f := range fields {
+					if isFieldMaskField(f) {
+						data.UpdateMaskFieldCamel = fieldNameToCamel(f.Name)
+						continue
+					}
+					if fieldMatchesEntity(f, entityName) {
+						data.UpdateEntityFieldCamel = fieldNameToCamel(f.Name)
+						if entityFields, ok := svc.Messages[localMessageName(f.MessageType)]; ok {
+							formFields = entityFields
+						}
+					}
+				}
+				for _, f := range formFields {
 					if createFieldSkipList[f.Name] {
 						continue
 					}
@@ -363,16 +390,21 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 					if f.Name == "id" {
 						continue
 					}
-					pf := PageField{
-						Name:            fieldNameToCamel(f.Name),
-						Label:           fieldNameToLabel(f.Name),
-						Type:            protoTypeToFormField(f.ProtoType),
-						Required:        isFormFieldRequired(f),
-						ProtoType:       f.ProtoType,
-						IsBigInt:        isBigIntProtoType(f.ProtoType),
-						IsRepeated:      isRepeatedScalarProtoType(f.ProtoType),
-						RepeatedNumeric: isRepeatedNumericProtoType(f.ProtoType),
+					// Never render the mask or the entity wrapper itself
+					// as form inputs (pre-AIP-134 pages did, producing a
+					// dead "Update Mask" text box).
+					if isFieldMaskField(f) {
+						continue
 					}
+					if data.UpdateEntityFieldCamel != "" && fieldMatchesEntity(f, entityName) {
+						continue
+					}
+					// Nested messages (other than timestamps) have no form
+					// input representation.
+					if f.MessageType != "" && f.MessageType != "google.protobuf.Timestamp" {
+						continue
+					}
+					pf := pageFieldFromMessageField(f)
 					if pf.Type == "date" {
 						data.HasDateUpdateFields = true
 					}
@@ -385,6 +417,48 @@ func ExtractCRUDEntities(svc ServiceDef) []PageTemplateData {
 	}
 
 	return pages
+}
+
+// pageFieldFromMessageField builds the form-field projection of one proto
+// message field. Timestamp message fields map to a date input via their
+// MessageType (descriptors collapse every message field's ProtoType to the
+// literal "message", which the form-type switch can't match).
+func pageFieldFromMessageField(f MessageFieldDef) PageField {
+	effectiveType := f.ProtoType
+	if f.MessageType == "google.protobuf.Timestamp" {
+		effectiveType = f.MessageType
+	}
+	return PageField{
+		Name:            fieldNameToCamel(f.Name),
+		Label:           fieldNameToLabel(f.Name),
+		Type:            protoTypeToFormField(effectiveType),
+		ProtoName:       f.Name,
+		Required:        isFormFieldRequired(f),
+		ProtoType:       f.ProtoType,
+		IsBigInt:        isBigIntProtoType(f.ProtoType),
+		IsRepeated:      isRepeatedScalarProtoType(f.ProtoType),
+		RepeatedNumeric: isRepeatedNumericProtoType(f.ProtoType),
+	}
+}
+
+// isFieldMaskField reports whether a message field is an AIP-134
+// google.protobuf.FieldMask (by referenced type, with a name fallback for
+// older descriptors that don't carry MessageType).
+func isFieldMaskField(f MessageFieldDef) bool {
+	if f.MessageType == "google.protobuf.FieldMask" || strings.HasSuffix(f.MessageType, ".FieldMask") || f.MessageType == "FieldMask" {
+		return true
+	}
+	return f.MessageType == "" && f.Name == "update_mask"
+}
+
+// localMessageName strips any package qualifier from a referenced message
+// name ("services.tasks.v1.Task" → "Task") so it can key svc.Messages,
+// which indexes by local name.
+func localMessageName(messageType string) string {
+	if idx := strings.LastIndex(messageType, "."); idx >= 0 {
+		return messageType[idx+1:]
+	}
+	return messageType
 }
 
 // enumLikeNameFragments mirrors the isEnumLike heuristic in the emitted

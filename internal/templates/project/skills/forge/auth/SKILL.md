@@ -70,7 +70,7 @@ The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer p
 1. **Token validator** — `SetTokenValidator(fn)` installs it; `ValidateToken` dispatches per-request, so install timing is flexible (setup.go, a pack `Init`, or later — but before `cmd/server.go` constructs the chain if you want validate mode).
 2. **Identity enricher** — `enrichClaims(ctx, claims)` runs after validation; hydrate roles/org membership/feature flags from your DB here. Errors reject the request.
 3. **Allow-list** — `unauthenticatedProcedures`, exact full-procedure strings only.
-4. **Dev claims** — `devClaims()` returns the synthetic principal attached while auth is off (dev mode / `AUTH_MODE=none`); default nil.
+4. **Dev claims** — `devClaims()` returns the synthetic principal attached while auth is off (dev mode / `AUTH_MODE=none`). The scaffolded default is a fixed dev user (`UserID: "dev-user"`, `Email: "dev@localhost"`, `Role: "admin"`) so claim-demanding handlers (generated CRUD calls `GetUser`) work in dev with zero config; return nil to keep dev passthrough claim-free. Ignored entirely in validate/external-auth modes.
 
 The file also owns `Claims`, the claims context key (`ClaimsFromContext` / `ContextWithClaims`), and the `Authorizer` interface + `DevAuthorizer` that generated code references — so regenerating never churns your handler-facing surface.
 
@@ -165,7 +165,13 @@ rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
 
 ## Dev Mode
 
-In development (`cfg.Environment == "development"`), bootstrap wires a `DevAuthorizer` that allows all requests. This is logged with a WARN at startup. Never use `DevAuthorizer` in production.
+`forge run` defaults the children to `ENVIRONMENT=development` when nothing else sets it (per-env config or your shell always wins), so the canonical dev command never boots the server in production mode — where an unconfigured auth provider would refuse to start.
+
+In dev mode (or `AUTH_MODE=none`) the auth interceptor runs in passthrough and attaches the synthetic principal from `devClaims()` in `pkg/middleware/middleware.go` to every request, so handlers and generated CRUD that demand claims via `middleware.GetUser` work with zero auth config. To disable, return `nil` from `devClaims()` — dev requests then carry no claims and claim-demanding RPCs return Unauthenticated. The dev principal is only consulted in passthrough mode; installing a validator or registering external auth makes `pkg/authn` ignore it.
+
+Note the split: the `jwt-auth` pack is for REAL JWT validation (JWKS, issuer/audience checks) — it is not part of the dev path. You do not need any pack to develop locally.
+
+In development (`cfg.Environment == "development"`), bootstrap also wires a `DevAuthorizer` that allows all requests. This is logged with a WARN at startup. Never use `DevAuthorizer` in production.
 
 ## Multi-Tenant Config
 

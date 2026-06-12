@@ -64,7 +64,6 @@ change shape between forge versions without a deprecation cycle.
 
 The list of experimental features today:
 
-  deploy           generate deploy manifests (KCL → k8s)
   ingress          Gateway API codegen + cert-manager / Traefik wiring
   external_builds  KCL Service.build_cmd shell escape hatch
   operators        controller-runtime operators + CRD codegen

@@ -281,22 +281,24 @@ func TestCompareVersions(t *testing.T) {
 }
 
 // TestRequiredWhen — the feature-gate predicate skips when a feature
-// is disabled and requires when it's enabled. Deploy is experimental
-// (default-off), so the unset config returns "not required" — the
-// stable opt-out case is covered by the Build variant below.
+// is disabled and requires when it's enabled. Deploy is a stable flag:
+// explicit true requires the tool, explicit false skips it — the
+// stable nil-default case is covered by the Build variant below.
 func TestRequiredWhen(t *testing.T) {
 	pred := requiredWhen(func(f config.FeaturesConfig) bool { return f.DeployEnabled() })
 
 	cfgOn := &config.ProjectConfig{
-		Features: config.FeaturesConfig{Experimental: config.ExperimentalConfig{Deploy: true}},
+		Features: config.FeaturesConfig{Deploy: boolPtr(true)},
 	}
-	cfgOff := &config.ProjectConfig{} // experimental default off
+	cfgOff := &config.ProjectConfig{
+		Features: config.FeaturesConfig{Deploy: boolPtr(false)},
+	}
 
 	if !pred(cfgOn, "") {
 		t.Errorf("Deploy=true should require tool")
 	}
 	if pred(cfgOff, "") {
-		t.Errorf("Deploy unset (experimental default-off) should not require tool")
+		t.Errorf("Deploy=false should not require tool")
 	}
 	if pred(nil, "") {
 		t.Errorf("nil cfg should never require tool")

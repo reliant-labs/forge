@@ -11,7 +11,7 @@ func boolPtr(v bool) *bool { return &v }
 
 // TestFeaturesConfig_ZeroValue_StableEnabled locks in the
 // "absent features block → stable features ON" backwards-compat
-// promise. Experimental features (Deploy, Ingress, ExternalBuilds,
+// promise. Experimental features (Ingress, ExternalBuilds,
 // Operators, StrictWiring) are explicitly OFF on a zero value and are
 // covered by TestFeaturesConfig_ZeroValue_ExperimentalDisabled below.
 func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
@@ -33,6 +33,7 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"HotReloadEnabled", f.HotReloadEnabled},
 		{"PacksEnabled", f.PacksEnabled},
 		{"StartersEnabled", f.StartersEnabled},
+		{"DeployEnabled", f.DeployEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
@@ -54,7 +55,6 @@ func TestFeaturesConfig_ZeroValue_ExperimentalDisabled(t *testing.T) {
 		name string
 		fn   func() bool
 	}{
-		{"DeployEnabled", f.DeployEnabled},
 		{"IngressEnabled", f.IngressEnabled},
 		{"ExternalBuildsEnabled", f.ExternalBuildsEnabled},
 		{"OperatorsEnabled", f.OperatorsEnabled},
@@ -80,9 +80,7 @@ func TestFeaturesConfig_ExplicitlyTrue(t *testing.T) {
 		Frontend:      boolPtr(true),
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(true),
-		Experimental: ExperimentalConfig{
-			Deploy: true,
-		},
+		Deploy:        boolPtr(true),
 	}
 
 	methods := []struct {
@@ -123,6 +121,7 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		HotReload:     boolPtr(false),
 		Packs:         boolPtr(false),
 		Starters:      boolPtr(false),
+		Deploy:        boolPtr(false),
 		// Experimental fields are plain bool: zero value IS the "off"
 		// case, so we don't need to set them.
 	}
@@ -161,9 +160,7 @@ func TestFeaturesConfig_Mixed(t *testing.T) {
 		Codegen:    boolPtr(false),
 		Migrations: nil, // should default to true
 		CI:         boolPtr(false),
-		Experimental: ExperimentalConfig{
-			Deploy: true, // experimental: opt-in
-		},
+		Deploy:     boolPtr(true), // stable: explicit true
 		// Contracts, Docs, Frontend, Observability, HotReload all nil
 	}
 
@@ -203,8 +200,9 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		Frontend:      boolPtr(false),
 		Observability: boolPtr(true),
 		HotReload:     boolPtr(false),
+		Deploy:        boolPtr(true),
 		Experimental: ExperimentalConfig{
-			Deploy: true,
+			Ingress: true,
 		},
 	}
 
@@ -233,9 +231,10 @@ func TestFeaturesConfig_YAMLRoundTrip(t *testing.T) {
 		{"Frontend", got.Frontend, boolPtr(false)},
 		{"Observability", got.Observability, boolPtr(true)},
 		{"HotReload", got.HotReload, boolPtr(false)},
+		{"Deploy", got.Deploy, boolPtr(true)},
 	}
-	if !got.Experimental.Deploy {
-		t.Errorf("Experimental.Deploy round-trip: got false, want true")
+	if !got.Experimental.Ingress {
+		t.Errorf("Experimental.Ingress round-trip: got false, want true")
 	}
 	for _, c := range checks {
 		t.Run(c.name, func(t *testing.T) {
@@ -309,16 +308,26 @@ func TestDisabledFeatureError_Format(t *testing.T) {
 	if err.Error() != want {
 		t.Errorf("DisabledFeatureError text mismatch\n got: %q\nwant: %q", err.Error(), want)
 	}
-	// Experimental feature carries an experimental-flavoured message.
-	expErr := DisabledFeatureError(FeatureDeploy)
-	if expErr == nil {
+	// Deploy is stable now — its message must use the stable idiom and
+	// the top-level YAML path, NOT the experimental nested one.
+	depErr := DisabledFeatureError(FeatureDeploy)
+	if depErr == nil {
 		t.Fatal("DisabledFeatureError(deploy) returned nil")
 	}
+	depWant := "feature 'deploy' is disabled in forge.yaml. Set features.deploy: true to enable."
+	if depErr.Error() != depWant {
+		t.Errorf("DisabledFeatureError(deploy) text mismatch\n got: %q\nwant: %q", depErr.Error(), depWant)
+	}
+	// Experimental feature carries an experimental-flavoured message.
+	expErr := DisabledFeatureError(FeatureIngress)
+	if expErr == nil {
+		t.Fatal("DisabledFeatureError(ingress) returned nil")
+	}
 	expGot := expErr.Error()
-	if !strings.Contains(expGot, "feature 'deploy' is experimental") {
+	if !strings.Contains(expGot, "feature 'ingress' is experimental") {
 		t.Errorf("experimental DisabledFeatureError missing 'experimental' marker: %q", expGot)
 	}
-	if !strings.Contains(expGot, "features.experimental.deploy: true") {
+	if !strings.Contains(expGot, "features.experimental.ingress: true") {
 		t.Errorf("experimental DisabledFeatureError missing nested opt-in hint: %q", expGot)
 	}
 }
@@ -334,7 +343,7 @@ func TestEffectiveFeatures_MapShape(t *testing.T) {
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
 		FeatureBuild, FeatureContracts, FeatureDocs,
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
-		FeaturePacks, FeatureStarters,
+		FeaturePacks, FeatureStarters, FeatureDeploy,
 	}
 	var f FeaturesConfig
 	resolved := f.EffectiveFeatures()

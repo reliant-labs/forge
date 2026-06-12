@@ -19,6 +19,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/orm"
 	"github.com/reliant-labs/forge/pkg/testkit"
+{{- if .NeedsFieldMask}}
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
+{{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
 	"{{.Module}}/pkg/app"
@@ -165,6 +168,45 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 	if v := reread.Msg.Get{{.EntityName}}().Get{{.MutableStringField}}(); v != "lifecycle-updated" {
 		t.Errorf("update did not mutate: {{.MutableStringField}} = %q, want %q", v, "lifecycle-updated")
 	}
+{{- if .UpdateMethod.UpdateMaskField}}
+
+	// AIP-134 masked update: the mask names ONLY {{.MutableStringFieldPath}},
+	// so that field changes and nothing else does. The unmasked update
+	// above is the documented full-object replace; this is the partial
+	// path. See https://google.aip.dev/134.
+	maskedRow := reread.Msg.Get{{.EntityName}}()
+{{- if ne .SecondStringField ""}}
+	keep{{.SecondStringField}} := maskedRow.Get{{.SecondStringField}}()
+	// Clobber value the mask does NOT name — it must not persist.
+	maskedRow.{{.SecondStringField}} = "MUST-NOT-PERSIST"
+{{- end}}
+	maskedRow.{{.MutableStringField}} = "masked-updated"
+	if _, err := svc.{{.UpdateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.UpdateMethod.InputType}}{
+		{{.UpdateEntityField}}: maskedRow,
+		{{.UpdateMethod.UpdateMaskField}}: &fieldmaskpb.FieldMask{Paths: []string{"{{.MutableStringFieldPath}}"}},
+	})); err != nil {
+		t.Fatalf("masked update: %v", err)
+	}
+	afterMasked, err := svc.{{.GetMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.GetMethod.InputType}}{ {{.PkField}}: id1}))
+	if err != nil {
+		t.Fatalf("get after masked update: %v", err)
+	}
+	if v := afterMasked.Msg.Get{{.EntityName}}().Get{{.MutableStringField}}(); v != "masked-updated" {
+		t.Errorf("masked update did not write the masked field: {{.MutableStringFieldPath}} = %q, want %q", v, "masked-updated")
+	}
+{{- if ne .SecondStringField ""}}
+	if v := afterMasked.Msg.Get{{.EntityName}}().Get{{.SecondStringField}}(); v != keep{{.SecondStringField}} {
+		t.Errorf("masked update CLOBBERED an unmasked field: {{.SecondStringFieldPath}} = %q, want %q — update_mask must restrict the write", v, keep{{.SecondStringField}})
+	}
+{{- end}}
+
+	// An unknown mask path is the caller's mistake: clean InvalidArgument.
+	_, err = svc.{{.UpdateMethod.MethodName}}(ctx, connect.NewRequest(&pb.{{.UpdateMethod.InputType}}{
+		{{.UpdateEntityField}}: maskedRow,
+		{{.UpdateMethod.UpdateMaskField}}: &fieldmaskpb.FieldMask{Paths: []string{"this_field_does_not_exist"}},
+	}))
+	assertCleanError(t, "masked update with unknown path", err, connect.CodeInvalidArgument)
+{{- end}}
 {{- end}}
 {{- if .HasDelete}}
 

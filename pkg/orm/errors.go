@@ -30,6 +30,20 @@ var (
 	ErrSchemaValidationFailed = errors.New("orm: schema validation failed")
 )
 
+// UnknownFieldError is returned by the generated Update<Entity>Masked
+// helpers when an update_mask path names a column that is not in the
+// entity's updatable set — unknown columns, the primary key, the tenant
+// key, and immutable bookkeeping columns (created_at, deleted_at) all
+// qualify. pkg/crud maps it to CodeInvalidArgument with a clean,
+// SQL-free message naming the path.
+type UnknownFieldError struct {
+	Field string
+}
+
+func (e *UnknownFieldError) Error() string {
+	return fmt.Sprintf("orm: unknown or immutable field %q in update_mask", e.Field)
+}
+
 // QueryError represents an error that occurred during a query execution
 type QueryError struct {
 	Query string

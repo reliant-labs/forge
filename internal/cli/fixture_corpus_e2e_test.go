@@ -1750,7 +1750,11 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	// is executed, not just rendered. (postgres would need a container;
 	// the construction code path is identical modulo the driver import,
 	// which TestGenerateBootstrap_ConstructsDatabaseAndORM pins for both.)
-	replaceAllInCorpusFile(t, filepath.Join(projectDir, "forge.yaml"), "driver: postgres", "driver: sqlite")
+	// The scaffolded forge.yaml is MINIMAL (database: is a derived
+	// default), so the swap is an explicit override APPEND, not a
+	// string replace of a line that isn't there.
+	appendToCorpusFile(t, filepath.Join(projectDir, "forge.yaml"),
+		"\ndatabase:\n  driver: sqlite\n")
 
 	// ── 1. generate ×2 — idempotent with an entity in play ───────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
@@ -1949,20 +1953,17 @@ func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 	_ = os.Remove(serverBin)
 }
 
-// replaceAllInCorpusFile replaces EVERY occurrence of old with new in
-// path (mustReplaceInFile is first-occurrence-only), failing when the
-// anchor is absent — scaffold-shape drift, not a soft skip.
-func replaceAllInCorpusFile(t *testing.T, path, old, new string) {
+// appendToCorpusFile appends content to an existing file — used to add
+// explicit override sections (e.g. database.driver) to the minimal
+// scaffolded forge.yaml, whose derived-default sections aren't written
+// to disk and so can't be string-replaced.
+func appendToCorpusFile(t *testing.T, path, content string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	content := string(data)
-	if !strings.Contains(content, old) {
-		t.Fatalf("scaffold drift: %s does not contain anchor:\n%s", path, old)
-	}
-	if err := os.WriteFile(path, []byte(strings.ReplaceAll(content, old, new)), 0o644); err != nil {
+	if err := os.WriteFile(path, append(data, []byte(content)...), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }

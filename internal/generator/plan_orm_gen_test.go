@@ -861,7 +861,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	if !strings.Contains(setPartsSection, `"updated_at"`) {
 		t.Error("Update SET should include updated_at")
 	}
-	if !strings.Contains(updateCode, "msg.UpdatedAt = timestamppb.Now()") {
+	if !strings.Contains(updateCode, "msg.UpdatedAt = time.Now().UTC()") {
 		t.Error("UpdateTask should stamp updated_at before building args")
 	}
 }
@@ -880,9 +880,11 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
 				{Name: "title", Type: "string", NotNull: true},
-				{Name: "created_at", Type: "google.protobuf.Timestamp"},
-				{Name: "updated_at", Type: "google.protobuf.Timestamp"},
-				{Name: "deleted_at", Type: "google.protobuf.Timestamp"},
+				// Legacy proto-type alias stays mapped during the transition;
+				// NOT NULL declared timestamps become bare time.Time fields.
+				{Name: "created_at", Type: "google.protobuf.Timestamp", NotNull: true},
+				{Name: "updated_at", Type: "timestamp", NotNull: true},
+				{Name: "deleted_at", Type: "time"},
 			},
 		},
 	}
@@ -915,10 +917,23 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 	}
 
 	// Declared timestamps still get the managed-timestamp chokepoints.
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
+	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
 		t.Error("Create should stamp declared created_at")
 	}
-	if !strings.Contains(code, "msg.UpdatedAt = timestamppb.Now()") {
+	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()") {
 		t.Error("Update should stamp declared updated_at")
+	}
+
+	// NOT NULL declared timestamps are bare time.Time struct fields and
+	// scan-assign the NullTime temp's .Time directly; the nullable
+	// deleted_at stays a pointer.
+	if !strings.Contains(code, "CreatedAt time.Time") {
+		t.Error("NOT NULL created_at should be time.Time on the struct")
+	}
+	if !strings.Contains(code, "DeletedAt *time.Time") {
+		t.Error("nullable deleted_at should be *time.Time on the struct")
+	}
+	if !strings.Contains(code, "entity.CreatedAt = dbCreatedAt.Time") {
+		t.Error("NOT NULL timestamp should assign .Time from the NullTime temp")
 	}
 }

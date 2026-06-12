@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,7 +9,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/assets"
-	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -183,27 +184,22 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	return nil
 }
 
-// recordFrozenChecksums records checksums for all frozen files managed by
-// `forge upgrade`. This must be called after the frozen files have been
-// written to disk so that new projects have baseline checksums.
+// recordFrozenChecksums re-certifies the frozen files managed by
+// `forge upgrade`. Must run after the frozen files have been written so
+// new projects start with valid embedded hashes.
 func (g *ProjectGenerator) recordFrozenChecksums() error {
 	return RecordFrozenChecksums(g.Path, g.effectiveBinary(), g.effectiveKind())
 }
 
-// RecordFrozenChecksums records checksums for all managed files at
-// projectDir. Exposed publicly so callers outside the scaffold path
-// (e.g. `forge new` after `bootstrapGeneratedCode` runs goimports
-// and reformats Tier-2 files) can re-record the post-formatting bytes
-// — otherwise the checksums baked at scaffold time would not match
-// the on-disk content, and `forge upgrade --dry-run` would flag every
-// formatted file as user-modified.
+// RecordFrozenChecksums re-stamps the embedded forge:hash marker on
+// every marker-bearing managed file at projectDir. Exposed publicly so
+// callers outside the scaffold path (e.g. `forge new` after
+// `bootstrapGeneratedCode` runs goimports and reformats files) can
+// re-certify the post-formatting bytes — otherwise the hashes stamped
+// at scaffold time would not match the on-disk content, and the drift
+// guard / `forge upgrade --dry-run` would flag every formatted file as
+// user-modified.
 func RecordFrozenChecksums(projectDir, binary, kind string) error {
-	cs, err := LoadChecksums(projectDir)
-	if err != nil {
-		return fmt.Errorf("load checksums: %w", err)
-	}
-	cs.ForgeVersion = buildinfo.Version()
-
 	for _, f := range managedFilesForKindBinary(kind, binary) {
 		fullPath := filepath.Join(projectDir, f.destPath)
 		content, err := os.ReadFile(fullPath)
@@ -211,9 +207,20 @@ func RecordFrozenChecksums(projectDir, binary, kind string) error {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return fmt.Errorf("read %s for checksum: %w", f.destPath, err)
+			return fmt.Errorf("read %s for re-stamp: %w", f.destPath, err)
 		}
-		cs.RecordFile(f.destPath, content)
+		// Only re-certify files that already carry a marker — Tier-2
+		// scaffolds are user-owned from birth and stay unmarked.
+		if _, found := checksums.ExtractMarker(content); !found {
+			continue
+		}
+		restamped, ok := checksums.Stamp(f.destPath, content)
+		if !ok || bytes.Equal(restamped, content) {
+			continue
+		}
+		if err := os.WriteFile(fullPath, restamped, 0o644); err != nil {
+			return fmt.Errorf("re-stamp %s: %w", f.destPath, err)
+		}
 	}
-	return SaveChecksums(projectDir, cs)
+	return nil
 }

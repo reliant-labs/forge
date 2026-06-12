@@ -9,8 +9,8 @@ package doctor
 // never a warning) purely so the routine health view keeps the
 // project's ownership map visible. Legacy `forked: true` entries (left
 // by pre-disown forge versions, converted on the next `forge generate`)
-// are counted too so doctor tells one truth regardless of migration
-// timing.
+// are converted to disowned.json by the legacy-manifest migration on
+// the next `forge generate`, so this check reads one source of truth.
 
 import (
 	"context"
@@ -23,23 +23,20 @@ import (
 
 // CheckDisownedFiles reports how many generated files have been
 // disowned (transferred to permanent user ownership) in the project's
-// `.forge/checksums.json`. Informational: disowning is a sanctioned end
+// `.forge/disowned.json`. Informational: disowning is a sanctioned end
 // state, so the result is always a pass — the value is the visibility.
 func CheckDisownedFiles(_ context.Context, env *Environment) CheckResult {
 	cs, err := checksums.Load(env.ProjectDir)
 	if err != nil {
 		return CheckResult{
 			Status:   StatusWarn,
-			Message:  "could not read .forge/checksums.json",
+			Message:  "could not read .forge/disowned.json",
 			Evidence: err.Error(),
 		}
 	}
 
 	var disowned []string
-	for rel, entry := range cs.Files {
-		if !entry.Disowned && !entry.Forked {
-			continue
-		}
+	for rel := range cs.Disowned {
 		disowned = append(disowned, rel)
 	}
 	if len(disowned) == 0 {

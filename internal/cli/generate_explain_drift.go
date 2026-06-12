@@ -34,7 +34,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // explainDriftDiffCapLines bounds the printed diff per file. Generated
@@ -44,20 +43,14 @@ import (
 var explainDriftDiffCapLines = 120
 
 // prepareExplainDrift is called by stepCheckTier1Drift instead of
-// erroring when --explain-drift is set. It records the drift set +
-// a snapshot of the affected checksum entries on the context and
-// redirects each drifted path's writes to .forge/render/.
+// erroring when --explain-drift is set. It records the drift set on
+// the context and redirects each drifted path's writes to
+// .forge/render/. The drifted files (and their embedded markers) are
+// never touched, so no state snapshot/restore dance is needed — the
+// truth lives in the files.
 func prepareExplainDrift(ctx *pipelineContext, drift []checksums.Tier1DriftEntry) {
 	ctx.ExplainDriftEntries = drift
-	ctx.explainDriftSnapshot = make(map[string]generator.FileChecksumEntry, len(drift))
 	for _, d := range drift {
-		if entry, ok := ctx.Checksums.Files[d.Path]; ok {
-			// Deep-copy the slices — later pipeline steps mutate entries
-			// in place and the snapshot must stay pristine for restore.
-			entry.History = append([]string(nil), entry.History...)
-			entry.Exports = append([]string(nil), entry.Exports...)
-			ctx.explainDriftSnapshot[d.Path] = entry
-		}
 		checksums.AddSideRenderOnly(d.Path)
 	}
 	fmt.Fprintf(os.Stderr, "🔎 --explain-drift: %d drifted Tier-1 file(s) — fresh renders will be parked under %s/ and diffed after the run\n",
@@ -65,20 +58,12 @@ func prepareExplainDrift(ctx *pipelineContext, drift []checksums.Tier1DriftEntry
 }
 
 // finishExplainDrift runs after the step loop (success or failure).
-// It restores the snapshot entries, prints the bounded diffs, and
-// returns the standard drift error so the run still exits non-zero.
-// No-op (nil) when --explain-drift didn't trigger.
+// It prints the bounded diffs and returns the standard drift error so
+// the run still exits non-zero. No-op (nil) when --explain-drift
+// didn't trigger.
 func finishExplainDrift(ctx *pipelineContext) error {
 	if len(ctx.ExplainDriftEntries) == 0 {
 		return nil
-	}
-	// Restore the pre-pipeline entries for drifted paths so the deferred
-	// SaveChecksums persists the truth ("last render was X, user content
-	// doesn't match") rather than the rehashed on-disk hash.
-	if ctx.Checksums != nil {
-		for p, entry := range ctx.explainDriftSnapshot {
-			ctx.Checksums.Files[p] = entry
-		}
 	}
 	printExplainDriftDiffs(os.Stderr, ctx)
 	// Same first-line contract as the guard step's error: the summary

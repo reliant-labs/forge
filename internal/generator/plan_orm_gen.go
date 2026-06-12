@@ -185,12 +185,18 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 
 	hasTenant := tenantField != nil
 
-	// The time import is needed for stamping managed timestamps (the
-	// time.Now() instant or its RFC3339Nano string for legacy TEXT
-	// columns — kalshi fr-3fba9166ba). Bun scans time.Time struct fields
-	// itself, so a plain time.Time field alone no longer pulls in time.
+	// The time import is needed for any time.Time / *time.Time struct
+	// field (the projected type of a timestamp column), AND for stamping
+	// managed timestamps (the time.Now() instant or its RFC3339Nano string
+	// for legacy TEXT columns — kalshi fr-3fba9166ba).
 	needsTime := false
-	if ent.Timestamps {
+	for _, f := range fields {
+		if f.goType == "time.Time" {
+			needsTime = true
+			break
+		}
+	}
+	if !needsTime && ent.Timestamps {
 		for _, f := range fields {
 			if isManagedTimestampColumn(f.columnName) && stampableTimestamp(f) {
 				needsTime = true

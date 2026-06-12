@@ -209,6 +209,23 @@ func runProjectDev(opts runOptions) error {
 				return fmt.Errorf("failed to start infrastructure: %w", err)
 			}
 			fmt.Println()
+
+			// Wire the host-side dev loop to the compose postgres with
+			// zero hand-editing: discover the published host port and
+			// inject DATABASE_URL into the child env when the developer
+			// hasn't set it anywhere themselves. The compose template
+			// publishes a fixed loopback port (POSTGRES_PORT, default
+			// 5432), but discovery keeps this correct even when the user
+			// overrides the mapping. Shell env and per-env config always
+			// win — this only fills the empty default.
+			if os.Getenv("DATABASE_URL") == "" {
+				if _, declared := envExtraEnv["DATABASE_URL"]; !declared {
+					if url := discoverComposeDatabaseURL(ctx, composePath, cfg.Name); url != "" {
+						envExtraEnv["DATABASE_URL"] = url
+						fmt.Printf("[run] DATABASE_URL → %s (discovered from docker compose)\n", redactDSNPassword(url))
+					}
+				}
+			}
 		}
 	}
 
@@ -458,6 +475,70 @@ func runProjectDev(opts runOptions) error {
 
 	fmt.Println("[run] All processes stopped.")
 	return nil
+}
+
+// discoverComposeDatabaseURL asks docker compose for the published host
+// port of the postgres service and composes a host-reachable
+// DATABASE_URL from it. Returns "" when there is no postgres service,
+// docker isn't available, or the output doesn't parse — the caller
+// falls back to the binary's own defaults (and the generated bootstrap
+// fails validateDeps loudly if a DB-dependent service can't be served).
+//
+// User/password/db default to the same values the scaffolded
+// docker-compose.yml defaults to, honoring the same POSTGRES_* env
+// overrides so the two can't drift.
+func discoverComposeDatabaseURL(ctx context.Context, composePath, projectName string) string {
+	out, err := exec.CommandContext(ctx, "docker", "compose", "-f", composePath, "port", "postgres", "5432").Output()
+	if err != nil {
+		return ""
+	}
+	return composePortToDatabaseURL(string(out),
+		envOrDefault("POSTGRES_USER", "postgres"),
+		envOrDefault("POSTGRES_PASSWORD", "postgres"),
+		envOrDefault("POSTGRES_DB", projectName))
+}
+
+// composePortToDatabaseURL converts `docker compose port` output
+// ("0.0.0.0:5432\n" / "127.0.0.1:49213") into a postgres DSN pointing
+// at localhost. Returns "" for unparseable input.
+func composePortToDatabaseURL(portOutput, user, password, dbName string) string {
+	hostPort := strings.TrimSpace(portOutput)
+	// Multi-line output (IPv4 + IPv6 mappings) — take the first line.
+	if i := strings.IndexByte(hostPort, '\n'); i >= 0 {
+		hostPort = strings.TrimSpace(hostPort[:i])
+	}
+	idx := strings.LastIndex(hostPort, ":")
+	if idx < 0 {
+		return ""
+	}
+	port := hostPort[idx+1:]
+	if n, err := strconv.Atoi(port); err != nil || n <= 0 || n > 65535 {
+		return ""
+	}
+	return fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable", user, password, port, dbName)
+}
+
+// redactDSNPassword masks the password section of a user:pass@host DSN
+// for log output.
+func redactDSNPassword(dsn string) string {
+	at := strings.Index(dsn, "@")
+	scheme := strings.Index(dsn, "://")
+	if at < 0 || scheme < 0 || at < scheme {
+		return dsn
+	}
+	creds := dsn[scheme+3 : at]
+	if colon := strings.Index(creds, ":"); colon >= 0 {
+		return dsn[:scheme+3] + creds[:colon] + ":***" + dsn[at:]
+	}
+	return dsn
+}
+
+// envOrDefault returns the env var's value or the default when unset/empty.
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // teardownInfrastructure runs `docker compose down` if a project-level

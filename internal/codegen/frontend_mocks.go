@@ -407,6 +407,14 @@ func isBigIntProtoType(protoType string) bool {
 
 // protoTypeToTSType maps proto field types to TypeScript types.
 func protoTypeToTSType(protoType string) string {
+	// Repeated scalars ("repeated string" from entity descriptors,
+	// "[]string" from message descriptors) project to element[] arrays.
+	if base, ok := strings.CutPrefix(protoType, "repeated "); ok {
+		return protoTypeToTSType(base) + "[]"
+	}
+	if base, ok := strings.CutPrefix(protoType, "[]"); ok {
+		return protoTypeToTSType(base) + "[]"
+	}
 	switch protoType {
 	case "bool":
 		return "boolean"
@@ -434,6 +442,17 @@ func protoTypeToTSType(protoType string) string {
 func mockGenerateValue(tableName string, f EntityField, i int) string {
 	col := f.Name
 	protoType := f.ProtoType
+
+	// Repeated scalar fields — emit a small deterministic array of
+	// element-typed mocks so the fixture type-checks against the
+	// protobuf-es `element[]` field.
+	if base, ok := strings.CutPrefix(protoType, "repeated "); ok {
+		elem := f
+		elem.ProtoType = base
+		a := mockGenerateValue(tableName, elem, i)
+		b := mockGenerateValue(tableName, elem, i+1)
+		return fmt.Sprintf("[%s, %s]", a, b)
+	}
 
 	// Primary key. UUIDs are the project default, but if the proto types
 	// the id field as a 64-bit integer (some projects use distributed

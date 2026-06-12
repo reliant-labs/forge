@@ -514,9 +514,11 @@ func (g *ProjectGenerator) Generate() error {
 		}
 		// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
 		// even with zero services.
-		// Initial scaffold: no database driver wired and no ORM — the pipeline
-		// runs `forge generate` immediately after and rewrites this file with
-		// the correct flags once proto/db and forge.yaml are present.
+		// Initial scaffold: no database driver wired and no ORM. Because
+		// setup.go is NEVER rewritten, DB/ORM construction does not live
+		// here — the Tier-1 bootstrap.go's ensureDatabase backfills
+		// app.DB/app.ORM from cfg.DatabaseUrl as the project grows
+		// entities (setup.go-constructed values always win).
 		if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
 		}

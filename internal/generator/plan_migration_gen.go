@@ -195,12 +195,13 @@ func resolveTableName(ent config.PlanEntity) string {
 
 // mapProtoToSQL converts a proto type to a SQL type.
 func mapProtoToSQL(protoType string) string {
-	// Handle repeated types → Postgres arrays (e.g. "repeated string" → "TEXT[]")
-	if base, ok := strings.CutPrefix(protoType, "repeated "); ok {
-		if sqlType, ok := protoTypeToSQL[base]; ok {
-			return sqlType + "[]"
-		}
-		return "TEXT[]"
+	// Repeated scalars are stored as JSON: JSONB is the native postgres
+	// type, and on sqlite (the test-harness dialect, which accepts any
+	// type name) the column stores the same JSON text. This matches the
+	// generated ORM code's orm.JSON / orm.ScanJSON round-trip — the old
+	// TEXT[] mapping was postgres-only and unreadable by the scan path.
+	if strings.HasPrefix(protoType, "repeated ") {
+		return "JSONB"
 	}
 	if sqlType, ok := protoTypeToSQL[protoType]; ok {
 		return sqlType

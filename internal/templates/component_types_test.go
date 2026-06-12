@@ -30,6 +30,9 @@ func TestWorkerTemplatesRenderDefault(t *testing.T) {
 		Name     string
 		Package  string
 		Module   string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		Schedule string
 	}{
 		Name:    "processor",
@@ -84,6 +87,9 @@ func TestWorkerTemplatesRenderTest(t *testing.T) {
 		Name     string
 		Package  string
 		Module   string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		Schedule string
 	}{
 		Name:    "processor",
@@ -125,6 +131,9 @@ func TestWorkerCronTemplatesRender(t *testing.T) {
 		Name     string
 		Package  string
 		Module   string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		Schedule string
 	}{
 		Name:     "cleanup",
@@ -188,6 +197,9 @@ func TestWorkerCronTemplatesRenderTest(t *testing.T) {
 		Name     string
 		Package  string
 		Module   string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		Schedule string
 	}{
 		Name:     "cleanup",
@@ -234,6 +246,9 @@ func TestOperatorTemplatesRender(t *testing.T) {
 		Group         string
 		Version       string
 		Module        string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		APIImportPath string
 		SplitAPI      bool
 	}{
@@ -332,6 +347,7 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 			Fallible                                             bool
 		}
 		HasDatabase         bool
+		DatabaseDriver      string
 		OrmEnabled          bool
 		HasFallible         bool
 		BinaryShared        bool

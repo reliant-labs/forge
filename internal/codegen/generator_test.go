@@ -173,7 +173,7 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -290,7 +290,7 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -338,7 +338,7 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	if err := GenerateAppGen(false, false, len(services) > 0, false, false, false, targetDir, nil); err != nil {
@@ -428,7 +428,7 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		"admin_server": true,
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -473,7 +473,7 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", ImportPath: "notifications", FieldName: "Notifications", VarName: "notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// app_gen.go owns the App struct definition (with Packages field
@@ -932,7 +932,7 @@ func New(deps Deps) Service { return nil }
 	if err != nil {
 		t.Fatalf("PackageDataFromNames() error = %v", err)
 	}
-	if err := GenerateBootstrap(nil, packages, nil, nil, "example.com/proj", false, false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(nil, packages, nil, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -1577,7 +1577,7 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -1712,7 +1712,7 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "postgres", true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// App struct (with DB field + database/sql import) now lives in
@@ -1732,6 +1732,75 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 	}
 	if !strings.Contains(content, `"database/sql"`) {
 		t.Error("app_gen.go should import database/sql when database is configured")
+	}
+}
+
+// TestGenerateBootstrap_ConstructsDatabaseAndORM pins the J-round fix for
+// "nothing constructs app.ORM": construction must live in Tier-1
+// bootstrap.go (regenerated with the project's real shape), NOT only in
+// the scaffold-once setup.go — projects that grow their first entity
+// after scaffold time have a setup.go with no DB wiring, and the
+// resulting typed-nil ORM panicked on the first RPC.
+func TestGenerateBootstrap_ConstructsDatabaseAndORM(t *testing.T) {
+	targetDir := t.TempDir()
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
+	}
+
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "postgres", true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(bootstrap.go) error = %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "func ensureDatabase(") {
+		t.Error("bootstrap.go should emit ensureDatabase — DB/ORM construction must be Tier-1, not scaffold-once setup.go")
+	}
+	if !strings.Contains(content, "ensureDatabase(app, cfg, logger)") {
+		t.Error("bootstrap.go's Setup row should call ensureDatabase after the user-owned Setup")
+	}
+	if !strings.Contains(content, `_ "github.com/jackc/pgx/v5/stdlib"`) {
+		t.Error("bootstrap.go should import the pgx driver for postgres projects")
+	}
+	if !strings.Contains(content, `orm.NewClientWithDB(app.DB, "postgres")`) {
+		t.Error("bootstrap.go should construct the ORM client from app.DB when ORM is enabled")
+	}
+
+	// sqlite flavor: driver import + dialect registration.
+	sqliteDir := t.TempDir()
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "sqlite", true, sqliteDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap(sqlite) error = %v", err)
+	}
+	data, err = os.ReadFile(filepath.Join(sqliteDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(bootstrap.go sqlite) error = %v", err)
+	}
+	content = string(data)
+	if !strings.Contains(content, `_ "github.com/mattn/go-sqlite3"`) {
+		t.Error("sqlite bootstrap.go should import the sqlite3 driver")
+	}
+	if !strings.Contains(content, `_ "github.com/reliant-labs/forge/pkg/dialects/sqlite"`) {
+		t.Error("sqlite bootstrap.go should register the sqlite ORM dialect")
+	}
+	if !strings.Contains(content, `orm.NewClientWithDB(app.DB, "sqlite")`) {
+		t.Error("sqlite bootstrap.go should construct the ORM client with the sqlite dialect")
+	}
+
+	// No database → no construction machinery, Setup row stays bare.
+	noDBDir := t.TempDir()
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, noDBDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap(no db) error = %v", err)
+	}
+	data, err = os.ReadFile(filepath.Join(noDBDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(bootstrap.go no-db) error = %v", err)
+	}
+	if strings.Contains(string(data), "ensureDatabase") {
+		t.Error("no-database bootstrap.go should not emit ensureDatabase")
 	}
 }
 

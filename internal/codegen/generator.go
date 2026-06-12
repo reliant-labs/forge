@@ -1073,7 +1073,8 @@ func leaderElectionID(modulePath string) string {
 	return slug + "-leader"
 }
 
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
+func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
+	hasDatabase := databaseDriver != ""
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err
@@ -1205,6 +1206,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		Workers             []BootstrapWorkerData
 		Operators           []BootstrapOperatorData
 		HasDatabase         bool
+		DatabaseDriver      string
 		OrmEnabled          bool
 		HasFallible         bool
 		BinaryShared        bool
@@ -1223,6 +1225,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		Workers:             workers,
 		Operators:           operators,
 		HasDatabase:         hasDatabase,
+		DatabaseDriver:      databaseDriver,
 		OrmEnabled:          ormEnabled,
 		HasFallible:         hasFallible,
 		BinaryShared:        binaryShared,

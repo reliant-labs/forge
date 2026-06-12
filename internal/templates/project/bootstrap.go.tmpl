@@ -29,7 +29,10 @@ package app
 
 import (
 	"context"
-{{- if or .Services .HasFallible .AllServiceNames}}
+{{- if .HasDatabase}}
+	"database/sql"
+{{- end}}
+{{- if or .Services .HasFallible .AllServiceNames .HasDatabase}}
 	"fmt"
 {{- end}}
 	"log/slog"
@@ -37,8 +40,17 @@ import (
 {{- if .AllServiceNames}}
 	"slices"
 {{- end}}
+{{- if .HasDatabase}}
+	"time"
+{{- end}}
 
 	"connectrpc.com/connect"
+{{- if eq .DatabaseDriver "postgres"}}
+	_ "github.com/jackc/pgx/v5/stdlib"
+{{- end}}
+{{- if eq .DatabaseDriver "sqlite"}}
+	_ "github.com/mattn/go-sqlite3"
+{{- end}}
 {{- if .Operators}}
 	ctrl "sigs.k8s.io/controller-runtime"
 {{- end}}
@@ -46,6 +58,12 @@ import (
 	"github.com/reliant-labs/forge/pkg/appkit"
 {{- if .Operators}}
 	"github.com/reliant-labs/forge/pkg/appkit/operatorkit"
+{{- end}}
+{{- if .OrmEnabled}}
+	"github.com/reliant-labs/forge/pkg/orm"
+{{- end}}
+{{- if and .OrmEnabled (eq .DatabaseDriver "sqlite")}}
+	_ "github.com/reliant-labs/forge/pkg/dialects/sqlite"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
 	"{{.Module}}/pkg/config"
@@ -272,7 +290,22 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 	def := appkit.Def{
 		// Setup is user-owned (pkg/app/setup.go, never overwritten);
 		// Hooks are read AFTER Setup so setup.go assignments are observed.
+{{- if .HasDatabase}}
+		// ensureDatabase runs AFTER the user-owned Setup: it backfills
+		// app.DB{{if .OrmEnabled}}/app.ORM{{end}} from cfg.DatabaseUrl only when Setup didn't
+		// construct them. This file is Tier-1 (regenerated), so a project
+		// that grows entities AFTER its setup.go was scaffolded still gets
+		// a constructed DB{{if .OrmEnabled}}+ORM{{end}} — previously nothing did, and the typed-nil
+		// panicked on the first RPC instead of failing at boot.
+		Setup: func() error {
+			if err := Setup(app, cfg); err != nil {
+				return err
+			}
+			return ensureDatabase(app, cfg, logger)
+		},
+{{- else}}
 		Setup: func() error { return Setup(app, cfg) },
+{{- end}}
 		Hooks: func() *appkit.Hooks { return &app.Hooks },
 {{- if .DiagnosticsEnabled}}
 {{- if .StrictWiringEnabled}}
@@ -418,3 +451,54 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 	}
 	return app, nil
 }
+{{- if .HasDatabase}}
+
+// ensureDatabase backfills app.DB{{if .OrmEnabled}} and app.ORM{{end}} from cfg.DatabaseUrl when the
+// user-owned Setup (pkg/app/setup.go) did not construct them. Setup wins
+// when it does — this function only fills nil fields.
+//
+// Why here and not setup.go: setup.go is scaffolded ONCE and never
+// rewritten, so a project that adds its first DB entity after scaffold
+// time has a setup.go with no database wiring. bootstrap.go is Tier-1
+// (regenerated every `forge generate`), so the construction follows the
+// project's actual shape. With no DATABASE_URL the fields stay nil and
+// each DB-dependent service fails its validateDeps gate AT BOOT with an
+// actionable error — never a typed-nil panic on the first RPC.
+func ensureDatabase(app *App, cfg *config.Config, logger *slog.Logger) error {
+	if app.DB == nil {
+		if cfg.DatabaseUrl == "" {
+			logger.Warn("DATABASE_URL is not set — database-backed services will fail validateDeps at startup; set DATABASE_URL (see docker-compose.yml / .env.example) to serve them")
+			return nil
+		}
+{{- if eq .DatabaseDriver "postgres"}}
+		db, err := sql.Open("pgx", cfg.DatabaseUrl)
+{{- else if eq .DatabaseDriver "sqlite"}}
+		db, err := sql.Open("sqlite3", cfg.DatabaseUrl)
+{{- else}}
+		db, err := sql.Open("{{.DatabaseDriver}}", cfg.DatabaseUrl)
+{{- end}}
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(5 * time.Minute)
+		db.SetConnMaxIdleTime(1 * time.Minute)
+		if err := db.Ping(); err != nil {
+			db.Close()
+			return fmt.Errorf("ping database ({{.DatabaseDriver}} DSN from DATABASE_URL): %w", err)
+		}
+		app.DB = db
+	}
+{{- if .OrmEnabled}}
+	if app.ORM == nil && app.DB != nil {
+		ormClient, err := orm.NewClientWithDB(app.DB, "{{.DatabaseDriver}}")
+		if err != nil {
+			return fmt.Errorf("create ORM client: %w", err)
+		}
+		app.ORM = ormClient
+	}
+{{- end}}
+	return nil
+}
+{{- end}}

@@ -296,7 +296,7 @@ func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkerDataFromNames: %v", err)
 	}
-	if err := GenerateBootstrap(nil, nil, workers, nil, "example.com/proj", false, false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(nil, nil, workers, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap: %v", err)
 	}
 
@@ -333,7 +333,7 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap: %v", err)
 	}
 	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {

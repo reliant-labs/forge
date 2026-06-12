@@ -1268,3 +1268,27 @@ func TestFreshScaffoldDefaultsWithFrontend(t *testing.T) {
 		t.Errorf("forge.yaml expected `frontend: true` when --frontend is set; got:\n%s", cfg)
 	}
 }
+
+// TestDockerComposePostgresFixedPort pins the J-round dev-loop fix: the
+// compose template must publish a FIXED, loopback-bound host port for
+// postgres. The old "0:5432" random mapping meant the scaffolded
+// DATABASE_URL/host dev loop could never find the database without
+// inspecting `docker compose ps`.
+func TestDockerComposePostgresFixedPort(t *testing.T) {
+	dir := t.TempDir()
+	g := &ProjectGenerator{Name: "bookmarks", Path: dir}
+	if err := g.generateDockerCompose(); err != nil {
+		t.Fatalf("generateDockerCompose() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	compose := string(data)
+	if strings.Contains(compose, `"0:5432"`) {
+		t.Error("postgres still maps to a random host port (\"0:5432\") — host dev loop cannot find it")
+	}
+	if !strings.Contains(compose, `"127.0.0.1:${POSTGRES_PORT:-5432}:5432"`) {
+		t.Errorf("postgres should publish a fixed loopback host port; compose:\n%s", compose)
+	}
+}

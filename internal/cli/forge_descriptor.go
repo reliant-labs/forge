@@ -486,6 +486,16 @@ func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.Entit
 			ProtoType: protoKindToString(fi.field.Desc.Kind()),
 			GoType:    goTypeForField(fi.field),
 		}
+		// Preserve repeated-ness. Dropping it here was the root cause of
+		// non-compiling ORM output for `repeated string` entity fields:
+		// downstream codegen saw a plain "string" and scanned the proto's
+		// []string field as a nullable scalar. Repeated SCALARS are
+		// supported (stored as a JSON column); repeated message/timestamp
+		// fields have no honest column mapping and are rejected loudly by
+		// the ORM generator with the join-table workaround named.
+		if fi.field.Desc.IsList() {
+			ef.ProtoType = "repeated " + ef.ProtoType
+		}
 		// Preserve the real type name for message fields ("message" alone
 		// is unmappable downstream — timestamp columns became TEXT).
 		if fi.field.Desc.Kind() == protoreflect.MessageKind && !fi.field.Desc.IsMap() {

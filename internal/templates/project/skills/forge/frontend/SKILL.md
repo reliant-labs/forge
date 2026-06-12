@@ -265,6 +265,25 @@ import { transport } from "@/lib/connect";
 export const myServiceClient = createClient(MyService, transport);
 ```
 
+### Real backend by default; mock mode is opt-in
+
+The scaffold talks to the REAL backend out of the box: `src/lib/connect.ts`
+reads `NEXT_PUBLIC_API_URL` (or the `forge generate`-maintained dev port in
+`src/lib/apiurl_gen.ts`) and builds a real Connect transport. Start the
+backend with `forge run` and the UI is live end-to-end.
+
+Mock mode exists for offline UI-only work and is **opt-in** via
+`.env.local`:
+
+| `NEXT_PUBLIC_MOCK_API` / `VITE_MOCK_API` | Behavior |
+|---|---|
+| unset (default) | Real backend. RPC failures surface as real errors. |
+| `true` | Mock transport only — the backend is NEVER contacted. The layout renders a persistent "MOCK DATA — backend not connected" banner so a working-looking UI can't masquerade as a working stack. |
+| `hybrid` | `?scenario=` overlays on a real transport (see the `scenarios` sub-skill). Banner shows hybrid mode. |
+
+Never remove the mock banner from the layout: silent mock mode is exactly
+the failure mode it exists to prevent.
+
 ## Protobuf-ES v2 Patterns
 
 Forge uses protobuf-es v2. Create message instances with `create()`, not constructors:

@@ -63,6 +63,8 @@ export default function Edit{{.EntityName}}Page() {
           {{.Name}}: Number(item.{{.Name}} ?? 0),
           {{- else if eq .Type "date"}}
           {{.Name}}: toDatetimeLocal(item.{{.Name}}),
+          {{- else if .IsRepeated}}
+          {{.Name}}: (item.{{.Name}} ?? []).join(", "),
           {{- else}}
           {{.Name}}: String(item.{{.Name}} ?? ""),
           {{- end}}
@@ -83,6 +85,9 @@ export default function Edit{{.EntityName}}Page() {
       {{.Name}}: values.{{.Name}} ? timestampFromDate(new Date(values.{{.Name}})) : undefined,
       {{- else if .IsBigInt}}
       {{.Name}}: BigInt(Math.trunc(values.{{.Name}})),
+      {{- else if .IsRepeated}}
+      // Repeated scalar: comma-separated text input → the array the RPC expects.
+      {{.Name}}: values.{{.Name}}.split(",").map((s) => s.trim()).filter(Boolean){{if .RepeatedNumeric}}.map(Number){{end}},
       {{- end}}
       {{- end}}
     });

@@ -18,6 +18,22 @@ export const metadata: Metadata = {
   description: "Frontend for the {{.ProjectName}} project",
 };
 
+// MockModeBanner renders a loud, always-visible reminder when the app is
+// running against mock data instead of the real backend. Mock mode is
+// opt-in (NEXT_PUBLIC_MOCK_API in .env.local); the banner exists so a
+// working-looking UI can never silently masquerade as a working stack.
+function MockModeBanner() {
+  const mode = process.env.NEXT_PUBLIC_MOCK_API;
+  if (mode !== "true" && mode !== "hybrid") return null;
+  return (
+    <div className="bg-amber-400 px-4 py-1.5 text-center text-sm font-semibold text-amber-950">
+      {mode === "true"
+        ? "MOCK DATA — backend not connected (unset NEXT_PUBLIC_MOCK_API in .env.local to use the real backend)"
+        : "HYBRID MOCK MODE — ?scenario= overlays active; unmatched RPCs hit the real backend"}
+    </div>
+  );
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -27,11 +43,14 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} font-sans antialiased`}>
         <Providers>
-          <div className="flex h-screen overflow-hidden bg-gray-50">
-            <Nav />
-            <main className="flex-1 overflow-y-auto p-6">
-              {children}
-            </main>
+          <div className="flex h-screen flex-col overflow-hidden bg-gray-50">
+            <MockModeBanner />
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <Nav />
+              <main className="flex-1 overflow-y-auto p-6">
+                {children}
+              </main>
+            </div>
           </div>
         </Providers>
       </body>

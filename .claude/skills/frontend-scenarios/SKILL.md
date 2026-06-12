@@ -17,9 +17,9 @@ The transport `VITE_MOCK_API` / `NEXT_PUBLIC_MOCK_API` env var picks one:
 
 | Mode | Frontend transport | Backend contacted? | Auth | When to use |
 |---|---|---|---|---|
-| `true` | mock-only | no | stub provider sends `mock-token-dev` | Offline UI dev, CI, component tests |
+| `true` | mock-only | no | stub provider sends `mock-token-dev` | Offline UI dev, CI, component tests (OPT-IN — the scaffold defaults to the real backend, and the layout shows a "MOCK DATA" banner whenever a mock mode is active) |
 | `hybrid` | scenarios overlay a real transport | yes, for RPCs not stubbed | scenario decides (see `auth` field) | LLM / Chrome MCP debugging — stub one endpoint, exercise the rest live |
-| unset / `false` | real Connect transport | yes | real provider | Login-flow testing, e2e, production builds |
+| unset / `false` | real Connect transport | yes | real provider | **The default** — dev against `forge run`, e2e, production builds |
 
 In hybrid mode, the dev-auth middleware on the backend (gated on `ENVIRONMENT=development`) honors a sentinel bearer token (`dev-bypass-do-not-use-in-prod`) and injects synthetic `dev-user-001` claims. That lets a fresh Chrome instance (no cookies, no storage) skip login by navigating straight to `?scenario=<name>`. Real JWTs are still validated normally, so the login flow remains testable in the same build.
 

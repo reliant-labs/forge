@@ -18,6 +18,9 @@ type bootstrapGuardSvc struct {
 func mkBootstrapGuardData(services []bootstrapGuardSvc, allNames []string) any {
 	return struct {
 		Module              string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		LeaderElectionID    string
 		Services            []bootstrapGuardSvc
 		Packages            []struct{}
@@ -108,6 +111,9 @@ func TestServicesGenTemplate_RowConstructors(t *testing.T) {
 	mkData := func(services []svc) any {
 		return struct {
 			Module         string
+			HasDatabase         bool
+			DatabaseDriver      string
+			OrmEnabled          bool
 			Services       []svc
 			RESTEnabled    bool
 			ConnectImports []string
@@ -167,6 +173,9 @@ func TestServicesRegistryTemplate(t *testing.T) {
 	mkData := func(services []svc) any {
 		return struct {
 			Module   string
+			HasDatabase         bool
+			DatabaseDriver      string
+			OrmEnabled          bool
 			Services []svc
 		}{Module: "example.com/myproject", Services: services}
 	}

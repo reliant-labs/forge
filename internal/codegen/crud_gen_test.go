@@ -2162,3 +2162,90 @@ type Service struct {
 		}
 	}
 }
+
+// TestEnsureDepsDBField_InjectsValidateDepsCheck pins the J-round boot
+// gate: when CRUD codegen injects the DB dep, it must ALSO gate it in
+// validateDeps — otherwise a missing DATABASE_URL flows a nil
+// orm.Context into the handlers and the first RPC panics instead of the
+// boot failing with an actionable error.
+func TestEnsureDepsDBField_InjectsValidateDepsCheck(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "patients")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scaffold-shaped service.go: bare-Deps trio + both extension markers.
+	serviceGo := `package patients
+
+import (
+	"fmt"
+	"log/slog"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	// Add your dependencies here.
+}
+
+func (d Deps) validateDeps() error {
+	if d.Logger == nil {
+		return fmt.Errorf("PatientsService: Deps.Logger is required")
+	}
+	// Add checks for your required Deps fields here. Example:
+	//   if d.Repo == nil { return fmt.Errorf("PatientsService: Deps.Repo is required") }
+	return nil
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	servicePath := filepath.Join(handlerDir, "service.go")
+	if err := os.WriteFile(servicePath, []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "PatientsService",
+		GoPackage:  "example.com/test/gen/proto/services/patients/v1",
+		PkgName:    "patientsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
+		},
+	}
+	entities := []EntityDef{
+		{
+			Name: "Patient", TableName: "patients", PkField: "id", PkGoType: "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", GoType: "int64"},
+				{Name: "name", GoName: "Name", GoType: "string"},
+			},
+		},
+	}
+
+	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	content, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "d.DB == nil") {
+		t.Errorf("validateDeps should gate the injected DB dep at boot; got:\n%s", content)
+	}
+
+	// Idempotent: a second pass must not duplicate the check.
+	if err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("second GenerateCRUDHandlers() error = %v", err)
+	}
+	content, err = os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(content), "d.DB == nil"); got != 1 {
+		t.Errorf("d.DB == nil appears %d times after regen, want exactly 1:\n%s", got, content)
+	}
+}

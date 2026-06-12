@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -212,6 +213,23 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 //
 // env (when non-empty) is passed as `-D env=<env>` so main.k can do
 // `option("env")` and conditionally include manifests per-env.
+// projectRootFromMainK recovers the project root from a
+// `<root>/deploy/kcl/<env>/main.k` path by stripping the four trailing
+// components. Returns "" for a path that doesn't match that shape (a
+// relative or unexpected mainK) so the caller leaves cmd.Dir unset and
+// inherits the current cwd (which forge runs from the project root).
+func projectRootFromMainK(mainK string) string {
+	if mainK == "" || !filepath.IsAbs(mainK) {
+		return ""
+	}
+	// main.k -> <env> -> kcl -> deploy -> root
+	dir := filepath.Dir(mainK)              // <root>/deploy/kcl/<env>
+	if filepath.Base(filepath.Dir(dir)) != "kcl" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(filepath.Dir(dir))) // <root>
+}
+
 func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
 	var out bytes.Buffer
 	args := []string{"run", mainK,
@@ -231,6 +249,14 @@ func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string
 		args = append(args, "-D", k+"="+envCfgKV[k])
 	}
 	cmd := exec.CommandContext(ctx, "kcl", args...)
+	// Run from the project root so the deploy-as-data main.k's
+	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
+	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
+	// components to recover the project root. KCL's `file.read` is
+	// process-cwd-relative, so the cwd is part of the contract.
+	if root := projectRootFromMainK(mainK); root != "" {
+		cmd.Dir = root
+	}
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

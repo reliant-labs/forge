@@ -76,6 +76,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"CI workflows",
 		"pack generate hooks",
 		"regenerate infra files",
+		"components_gen.json",
 		"per-env deploy config",
 		"ingress k3d ports fragment",
 		"Grafana dashboards",

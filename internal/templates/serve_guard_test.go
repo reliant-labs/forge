@@ -61,7 +61,7 @@ func TestBootstrapTemplate_RegistrationGuard(t *testing.T) {
 		for _, want := range []string{
 			`[]string{"api", "project"}`,
 			"not registered in pkg/app/services.go",
-			"RegisteredServices(app, cfg, logger, devMode, opts...)",
+			"RegisteredServices(app, cfg, logger, opts...)",
 			"range def.Services",
 		} {
 			if !strings.Contains(rendered, want) {
@@ -133,9 +133,9 @@ func TestServicesGenTemplate_RowConstructors(t *testing.T) {
 		}
 		rendered := string(content)
 		for _, want := range []string{
-			"func serviceRowAPI(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) appkit.ServiceDef",
+			"func serviceRowAPI(app *App, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) appkit.ServiceDef",
 			"func serviceRowBilling(app *App",
-			"wireAPIDeps(app, cfg, logger, devMode)",
+			"wireAPIDeps(app, cfg, logger)",
 			"middleware.AuthzInterceptor(apiDeps.Authorizer)",
 			"app.Services.Billing.RegisterWebhookRoutes(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))",
 		} {
@@ -187,9 +187,9 @@ func TestServicesRegistryTemplate(t *testing.T) {
 		}
 		rendered := string(content)
 		for _, want := range []string{
-			"func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) []appkit.ServiceDef",
-			"serviceRowAPI(app, cfg, logger, devMode, opts...),",
-			"serviceRowBilling(app, cfg, logger, devMode, opts...),",
+			"func RegisteredServices(app *App, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []appkit.ServiceDef",
+			"serviceRowAPI(app, cfg, logger, opts...),",
+			"serviceRowBilling(app, cfg, logger, opts...),",
 			// The comment contract the registry parser depends on must be
 			// spelled out for the user/agent editing the file.
 			"leave a comment",

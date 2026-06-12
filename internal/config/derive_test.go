@@ -32,7 +32,6 @@ frontends:
 database:
     driver: postgres
     migrations_dir: db/migrations
-    sqlc_enabled: false
     migration_safety:
         enabled: true
         unsafe_add_column: error
@@ -216,7 +215,7 @@ func TestNormalizeForWrite_OverridesSurvive(t *testing.T) {
 features:
     ci: false
 database:
-    driver: sqlite
+    driver: none
     migrations_dir: db/migrations
 `
 	cfg, err := LoadStrict([]byte(src), "override.yaml")
@@ -234,8 +233,8 @@ database:
 	if re.Features.CIEnabled() {
 		t.Errorf("explicit features.ci: false lost in round-trip:\n%s", out)
 	}
-	if re.Database.Driver != "sqlite" {
-		t.Errorf("explicit database.driver: sqlite lost in round-trip (got %q):\n%s", re.Database.Driver, out)
+	if re.Database.Driver != "none" {
+		t.Errorf("explicit database.driver: none lost in round-trip (got %q):\n%s", re.Database.Driver, out)
 	}
 }
 

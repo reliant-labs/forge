@@ -1644,7 +1644,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 		// reads filter it out, and the data is still there. A hard
 		// DELETE here means soft_delete was decorative again.
 		var survivors int64
-		row := db.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE id = ? AND deleted_at IS NOT NULL", id1)
+		row := db.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE id = $1 AND deleted_at IS NOT NULL", id1)
 		if scanErr := row.Scan(&survivors); scanErr != nil {
 			t.Fatalf("count soft-deleted row: %v", scanErr)
 		}

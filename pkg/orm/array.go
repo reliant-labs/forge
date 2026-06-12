@@ -5,29 +5,29 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // Array support for generated ORM code.
 //
-// Postgres stores slice columns as native arrays (TEXT[], BIGINT[]);
-// SQLite stores them as JSON text. ArrayValue picks the write encoding
-// from the dialect; StringArray/Int64Array scan BOTH encodings (the
-// postgres text format `{a,b}` and JSON `["a","b"]`), so generated scan
-// code is dialect-agnostic.
+// Postgres stores slice columns as native arrays (TEXT[], BIGINT[]).
+// ArrayValue wraps the slice as a postgres array parameter (pq.Array,
+// which both lib/pq and pgx-stdlib bind correctly); StringArray/Int64Array
+// scan the postgres text format `{a,b}` (and tolerate JSON `["a","b"]`
+// from legacy data), so generated scan code is driver-agnostic.
 
-// ArrayValue converts a slice for use as a SQL parameter. On postgres
-// the slice passes through untouched (the pgx driver binds native
-// arrays); on every other dialect it is JSON-encoded text.
+// ArrayValue converts a slice for use as a SQL parameter. forge is
+// postgres-pinned: the slice is wrapped with pq.Array, which renders the
+// postgres array literal both lib/pq and pgx-stdlib bind to a native
+// array column (TEXT[], BIGINT[]). A bare []string is NOT a valid
+// database/sql driver value — passing it through unwrapped makes the
+// driver reject the INSERT.
+//
+// The Dialect argument is retained for the generated call sites (and the
+// Phase-2 engine swap); postgres is the only dialect.
 func ArrayValue(d Dialect, v any) any {
-	if d != nil && d.Name() == "postgres" {
-		return v
-	}
-	b, err := json.Marshal(v)
-	if err != nil || string(b) == "null" {
-		// nil slices marshal to "null"; store the empty array instead.
-		return "[]"
-	}
-	return string(b)
+	return pq.Array(v)
 }
 
 // StringArray scans a string-array column from either encoding.

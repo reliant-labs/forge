@@ -115,8 +115,11 @@ func startServer() (*server, error) {
 		// device"). mmap avoids the sysv segment table entirely. fsync=off
 		// is safe — these databases are ephemeral and dropped after use.
 		StartParameters(map[string]string{
-			"shared_buffers":             "16MB",
-			"max_connections":            "20",
+			"shared_buffers": "32MB",
+			// One shared server fans out to many per-call databases AND the
+			// generated bootstrap pools ~25 connections; keep the ceiling
+			// generous so the parallel corpus never starves.
+			"max_connections":            "200",
 			"dynamic_shared_memory_type": "mmap",
 			"shared_memory_type":         "mmap",
 			"fsync":                      "off",

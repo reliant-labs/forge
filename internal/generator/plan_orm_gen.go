@@ -145,6 +145,25 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 		}
 	}
 
+	// strings.Join appears in Create's INSERT (unless the only column is
+	// a server-allocated integer PK) and in the UPDATE SET builders
+	// (unless there are no updatable columns).
+	needsStrings := false
+	for _, f := range fields {
+		if !f.isPK || !isIntegerGoType(f.goType) {
+			needsStrings = true // participates in the INSERT column list
+			break
+		}
+	}
+	if !needsStrings {
+		for _, f := range fields {
+			if !excludedFromSet(f, ent.Timestamps) {
+				needsStrings = true
+				break
+			}
+		}
+	}
+
 	var b strings.Builder
 
 	// Header
@@ -153,7 +172,7 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	b.WriteString("package db\n\n")
 
 	// Imports
-	writeORMImports(&b, needsTime, pkField != nil && pkField.goType == "string")
+	writeORMImports(&b, needsTime, needsStrings, pkField != nil && pkField.goType == "string")
 
 	// The entity struct: a projection of the APPLIED schema.
 	writeEntityStruct(&b, msgName, tableName, fields)
@@ -201,11 +220,13 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	return os.WriteFile(filepath.Join(dbDir, fileName), []byte(b.String()), 0o644)
 }
 
-func writeORMImports(b *strings.Builder, needsTime, stringPK bool) {
+func writeORMImports(b *strings.Builder, needsTime, needsStrings, stringPK bool) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
 	b.WriteString("\t\"fmt\"\n")
-	b.WriteString("\t\"strings\"\n")
+	if needsStrings {
+		b.WriteString("\t\"strings\"\n")
+	}
 	if needsTime {
 		b.WriteString("\t\"time\"\n")
 	}
@@ -319,14 +340,59 @@ func valueExpr(f ormField) string {
 	return "msg." + f.goName
 }
 
+// isIntegerGoType reports whether the projected Go type is an integer —
+// the PK kinds that are server-allocated (BIGSERIAL / SERIAL / rowid).
+func isIntegerGoType(goType string) bool {
+	switch goType {
+	case "int32", "int64", "uint32", "uint64":
+		return true
+	}
+	return false
+}
+
+// excludedFromSet reports whether a column is never part of an UPDATE's
+// SET clause: the PK, the tenant key, deleted_at (soft-delete
+// machinery), and — when timestamps are managed — created_at (immutable
+// after create; round-tripping it through the request would let an
+// update NULL or rewrite history).
+func excludedFromSet(f ormField, timestamps bool) bool {
+	if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
+		return true
+	}
+	return timestamps && f.columnName == "created_at"
+}
+
 func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField, timestamps bool) {
 	stringPK := pkField != nil && pkField.goType == "string"
+	intPK := pkField != nil && isIntegerGoType(pkField.goType)
+
+	// Integer PKs are server-allocated (BIGSERIAL / SERIAL / sqlite
+	// rowid): the PK column is omitted from the INSERT and the
+	// database-assigned value is scanned back into msg (kalshi
+	// fr-fd061aed2b: inserting msg.<PK>=0 verbatim made every BIGSERIAL
+	// Create collide on id 0, so every writer routed around the ORM).
+	insertFields := fields
+	if intPK {
+		insertFields = make([]ormField, 0, len(fields)-1)
+		for _, f := range fields {
+			if f.isPK {
+				continue
+			}
+			insertFields = append(insertFields, f)
+		}
+	}
 
 	fmt.Fprintf(b, "// Create%s inserts a new %s row into the database.\n", msgName, msgName)
 	b.WriteString("//\n")
 	b.WriteString("// Create is a plain INSERT — never an upsert. Chokepoint invariants:\n")
 	if stringPK {
 		fmt.Fprintf(b, "//   - msg.%s is generated (ULID) when the caller left it empty;\n", pkField.goName)
+	}
+	if intPK {
+		fmt.Fprintf(b, "//   - msg.%s is SERVER-ALLOCATED: the column is omitted from the\n", pkField.goName)
+		b.WriteString("//     INSERT and the database-assigned value is scanned back into\n")
+		fmt.Fprintf(b, "//     msg.%s (RETURNING where the dialect supports it, LastInsertId\n", pkField.goName)
+		b.WriteString("//     otherwise). Any caller-provided value is ignored;\n")
 	}
 	if timestamps {
 		b.WriteString("//   - created_at/updated_at are stamped here (timestamps: true);\n")
@@ -361,39 +427,87 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 	// Build column list and placeholders for INSERT
 	b.WriteString("\tdialect := db.Dialect()\n")
 
-	// Build columns and values
-	b.WriteString("\tcolumns := []string{\n")
-	for _, f := range fields {
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", f.columnName)
-	}
-	b.WriteString("\t}\n")
+	if len(insertFields) == 0 {
+		// Server-allocated PK and nothing else: every column comes from
+		// the database.
+		b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s DEFAULT VALUES\", dialect.QuoteIdentifier(")
+		fmt.Fprintf(b, "%q))\n", tableName)
+		b.WriteString("\tvar values []any\n\n")
+	} else {
+		// Build columns and values
+		b.WriteString("\tcolumns := []string{\n")
+		for _, f := range insertFields {
+			fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", f.columnName)
+		}
+		b.WriteString("\t}\n")
 
-	b.WriteString("\tplaceholders := make([]string, len(columns))\n")
-	b.WriteString("\tfor i := range columns {\n")
-	b.WriteString("\t\tplaceholders[i] = dialect.Placeholder(i)\n")
+		b.WriteString("\tplaceholders := make([]string, len(columns))\n")
+		b.WriteString("\tfor i := range columns {\n")
+		b.WriteString("\t\tplaceholders[i] = dialect.Placeholder(i)\n")
+		b.WriteString("\t}\n\n")
+
+		// Build values slice
+		b.WriteString("\tvalues := []any{\n")
+		for _, f := range insertFields {
+			fmt.Fprintf(b, "\t\t%s,\n", valueExpr(f))
+		}
+		b.WriteString("\t}\n\n")
+
+		b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s (%s) VALUES (%s)\",\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
+		b.WriteString("\t\tstrings.Join(columns, \", \"),\n")
+		b.WriteString("\t\tstrings.Join(placeholders, \", \"),\n")
+		b.WriteString("\t)\n\n")
+	}
+
+	if intPK {
+		writeORMCreateIntPKExec(b, tableName, pkField)
+	} else {
+		b.WriteString("\t_, err := db.Exec(ctx, query, values...)\n")
+		b.WriteString("\tif err != nil {\n")
+		b.WriteString("\t\tspan.RecordError(err)\n")
+		b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
+		fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
+		b.WriteString("\t}\n")
+		b.WriteString("\treturn nil\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeORMCreateIntPKExec emits the execute-and-scan-back tail of
+// Create<Entity> for server-allocated integer PKs: RETURNING on
+// dialects that support it (postgres), Exec + LastInsertId otherwise
+// (sqlite).
+func writeORMCreateIntPKExec(b *strings.Builder, tableName string, pkField *ormField) {
+	b.WriteString("\t// Scan the server-allocated id back into msg.\n")
+	b.WriteString("\tif dialect.SupportsReturning() {\n")
+	fmt.Fprintf(b, "\t\trow := db.QueryRow(ctx, query+\" RETURNING \"+dialect.QuoteIdentifier(%q), values...)\n", pkField.columnName)
+	fmt.Fprintf(b, "\t\tif err := row.Scan(&msg.%s); err != nil {\n", pkField.goName)
+	b.WriteString("\t\t\tspan.RecordError(err)\n")
+	b.WriteString("\t\t\tspan.SetStatus(codes.Error, err.Error())\n")
+	fmt.Fprintf(b, "\t\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\treturn nil\n")
 	b.WriteString("\t}\n\n")
 
-	// Build values slice
-	b.WriteString("\tvalues := []any{\n")
-	for _, f := range fields {
-		fmt.Fprintf(b, "\t\t%s,\n", valueExpr(f))
-	}
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s (%s) VALUES (%s)\",\n")
-	fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-	b.WriteString("\t\tstrings.Join(columns, \", \"),\n")
-	b.WriteString("\t\tstrings.Join(placeholders, \", \"),\n")
-	b.WriteString("\t)\n\n")
-
-	b.WriteString("\t_, err := db.Exec(ctx, query, values...)\n")
+	b.WriteString("\tres, err := db.Exec(ctx, query, values...)\n")
 	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
 	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
 	b.WriteString("\t}\n")
+	b.WriteString("\tlastID, err := res.LastInsertId()\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\tspan.RecordError(err)\n")
+	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
+	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: read server-allocated id: %%w\", err)\n", tableName)
+	b.WriteString("\t}\n")
+	if pkField.goType == "int64" {
+		fmt.Fprintf(b, "\tmsg.%s = lastID\n", pkField.goName)
+	} else {
+		fmt.Fprintf(b, "\tmsg.%s = %s(lastID)\n", pkField.goName, pkField.goType)
+	}
 	b.WriteString("\treturn nil\n")
-	b.WriteString("}\n\n")
 }
 
 // ── managed-timestamp stamping (type-aware) ────────────────────────────
@@ -697,20 +811,8 @@ func writeORMListAll(b *strings.Builder, msgName, tableName, colsVar string, has
 }
 
 func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
-	// excludeFromSet reports whether a column is never part of the SET
-	// clause: the PK, the tenant key, deleted_at (soft-delete machinery),
-	// and — when timestamps are managed — created_at (immutable after
-	// create; round-tripping it through the request would let an update
-	// NULL or rewrite history).
-	excludeFromSet := func(f ormField) bool {
-		if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
-			return true
-		}
-		if timestamps && f.columnName == "created_at" {
-			return true
-		}
-		return false
-	}
+	// See excludedFromSet for what never reaches the SET clause.
+	excludeFromSet := func(f ormField) bool { return excludedFromSet(f, timestamps) }
 
 	// Count updatable fields.
 	updatableCount := 0
@@ -864,15 +966,7 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 // path outside that set so pkg/crud can map it to InvalidArgument
 // without leaking SQL. updated_at is stamped on masked updates too.
 func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
-	excludeFromSet := func(f ormField) bool {
-		if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
-			return true
-		}
-		if timestamps && f.columnName == "created_at" {
-			return true
-		}
-		return false
-	}
+	excludeFromSet := func(f ormField) bool { return excludedFromSet(f, timestamps) }
 
 	var updatable []ormField
 	for _, f := range fields {

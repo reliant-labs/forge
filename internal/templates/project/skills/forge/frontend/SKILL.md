@@ -427,21 +427,27 @@ bled in from the parent shell — drift between the KCL-declared port,
 the generated docker-compose, and the actual dev server is now
 structurally impossible.
 
-### Multi-frontend dev URLs (`*.localhost:8080`)
+### Multi-frontend dev URLs (`*.localhost:<proxy port>`)
 
-`forge run` spins up a single host-based reverse proxy on
-`localhost:8080` that fronts every frontend + HTTP-routed service
-under a unified URL pattern:
+`forge run` spins up a single host-based reverse proxy that fronts
+every frontend + HTTP-routed service under a unified URL pattern. The
+port defaults to 8080 but auto-shifts past any port a service or
+frontend declares (the first scaffolded service also defaults to
+8080) — trust the `[run] Dev URL:` banner, which prints the port
+actually bound:
 
 ```
-http://admin.localhost:8080   → the admin frontend (KCL port)
-http://web.localhost:8080     → the web frontend (KCL port)
-http://api.localhost:8080     → the api service (HTTPRoute host match)
+http://admin.localhost:<port>   → the admin frontend (KCL port)
+http://web.localhost:<port>     → the web frontend (KCL port)
+http://api.localhost:<port>     → the api service (HTTPRoute host match)
 ```
 
 `*.localhost` resolves to `127.0.0.1` automatically per RFC 6761, so
-no `/etc/hosts` edits are needed. The first declared frontend is the
-fallback for unmatched hosts (a bare `http://localhost:8080/` works).
+no `/etc/hosts` edits are needed. The proxy binds BOTH loopback
+families (127.0.0.1 and ::1), so the URLs work no matter which
+address the browser resolves `localhost` to. The first declared
+frontend is the fallback for unmatched hosts (a bare
+`http://localhost:<port>/` works).
 
 **Why host-based, not path-based?** Path prefixes would require
 setting `basePath` in `next.config.js` — a file forge does not own,
@@ -456,7 +462,9 @@ backend port that drifted out of the KCL declaration rather than the
 proxy itself.
 
 Knobs:
-- `forge run --proxy-port 9090` — override the bind port.
+- `forge run --proxy-port 9090` — override the bind port. An explicit
+  port that collides with a declared service/frontend port is an
+  error (the proxy and the backend would race for it).
 - `FORGE_RUN_PROXY_PORT=9090 forge run` — same via env.
 - `forge run --no-proxy` — disable the proxy and use the raw per-frontend ports.
 

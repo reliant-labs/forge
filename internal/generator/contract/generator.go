@@ -91,7 +91,7 @@ type Options struct {
 	// `forge generate` — and `--force-cleanup` would actually delete
 	// live mocks (kalshi-trader FORGE_BACKLOG #15).
 	//
-	// ProjectRoot is the directory containing .forge/checksums.json;
+	// ProjectRoot is the project root (the directory containing .forge/);
 	// relative manifest paths are computed against it. Both fields nil
 	// /empty preserve the legacy raw-os.WriteFile behavior for callers
 	// without a manifest in scope (e.g. the `forge add package` stub

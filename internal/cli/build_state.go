@@ -10,7 +10,7 @@ import (
 
 // buildStateDir is the per-project on-disk location for forge runtime
 // state that needs to survive across `forge build` / `forge deploy`
-// invocations. Sits under .forge/ alongside checksums.json so a single
+// invocations. Sits under .forge/ alongside the ownership state so a single
 // .gitignore rule (`.forge/`) covers both.
 const buildStateDir = ".forge/state"
 
@@ -62,7 +62,7 @@ func buildStatePath(projectDir, env string) string {
 //
 // The directory is created lazily — projects that never use --push
 // never grow a .forge/state/ tree. File is 0o644 (world-readable) to
-// match checksums.json's mode; nothing in here is secret.
+// match the other .forge state files' mode; nothing in here is secret.
 func WriteBuildState(projectDir, env string, state BuildState) error {
 	path := buildStatePath(projectDir, env)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

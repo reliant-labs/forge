@@ -105,6 +105,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/checksums"
+
 	// Pure-Go sqlite driver (no cgo): the dev-mode boot test applies the
 	// project's own migrations to the server's database file before boot
 	// — the generated server does not auto-migrate.
@@ -513,9 +515,9 @@ type AppExtras struct {
 //	  - next.config.ts sources basePath from NEXT_PUBLIC_BASE_PATH with
 //	    the "/admin" literal default, emits basePath AND assetPrefix
 //	    (same value), and carries the static-branch fail-loud guard;
-//	  - src/lib/basepath_gen.ts exists, is Tier-1-tracked in
-//	    .forge/checksums.json, exports BASE_PATH defaulting to "/admin"
-//	    and an idempotent joinBasePath;
+//	  - src/lib/basepath_gen.ts exists, is Tier-1-certified (verifying
+//	    embedded forge:hash marker), exports BASE_PATH defaulting to
+//	    "/admin" and an idempotent joinBasePath;
 //	  - generated src/ TS/TSX (nav_gen, dashboard_gen, hooks, mocks,
 //	    pages) contains NO hand-prefixed "/admin" string literals —
 //	    Link/router handle basePath; bare literals double-prefix or go
@@ -678,8 +680,8 @@ func assertNextConfigBasePath(t *testing.T, feDir, basePath string) {
 
 // assertBasePathGenHelper pins the generated src/lib/basepath_gen.ts:
 // exists, exports BASE_PATH (env override, declared default) and an
-// idempotent joinBasePath, and is tracked as Tier-1 in
-// .forge/checksums.json (so hand edits trip the stomp guard and
+// idempotent joinBasePath, and is Tier-1-certified via its embedded
+// forge:hash marker (so hand edits trip the stomp guard and
 // `forge generate` keeps regenerating it when base_path changes).
 func assertBasePathGenHelper(t *testing.T, projectDir, feRel, basePath string) {
 	t.Helper()
@@ -703,25 +705,11 @@ func assertBasePathGenHelper(t *testing.T, projectDir, feRel, basePath string) {
 		t.Errorf("joinBasePath must be idempotent (already-prefixed paths returned unchanged); got:\n%s", bp)
 	}
 
-	// Tier-1 tracking in checksums.json.
-	var cs struct {
-		Files map[string]struct {
-			Hash string `json:"hash"`
-			Tier int    `json:"tier"`
-		} `json:"files"`
-	}
-	raw := readFileE2E(t, filepath.Join(projectDir, ".forge", "checksums.json"))
-	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
-		t.Fatalf("parse .forge/checksums.json: %v", err)
-	}
-	entry, ok := cs.Files[rel]
-	switch {
-	case !ok:
-		t.Errorf("%s is not tracked in .forge/checksums.json — hand edits would never trip the Tier-1 stomp guard", rel)
-	case entry.Tier != 1:
-		t.Errorf("%s tracked with tier=%d, want tier=1 (regenerated-every-run)", rel, entry.Tier)
-	case entry.Hash == "":
-		t.Errorf("%s tracked with empty hash in .forge/checksums.json", rel)
+	// Tier-1 certification is embedded in the file itself now (the
+	// global manifest is dead): the forge:hash marker must be present
+	// and verify against the recomputed body hash.
+	if got := checksums.Verify([]byte(bp)); got != checksums.Pristine {
+		t.Errorf("%s Verify = %v, want Pristine — without a verifying embedded forge:hash marker, hand edits would never trip the Tier-1 stomp guard", rel, got)
 	}
 }
 
@@ -1245,7 +1233,7 @@ func corpusSkipDir(name string) bool {
 }
 
 // hashProjectTree walks the project and returns rel-path → sha256 for
-// every regular file. Nothing forge-owned is excluded: checksums.json,
+// every regular file. Nothing forge-owned is excluded: .forge state files,
 // side renders, go.sum — a second generate must leave ALL of it
 // untouched. (Only non-forge trees are skipped; see corpusSkipDir.)
 func hashProjectTree(t *testing.T, root string) map[string]string {
@@ -1454,25 +1442,27 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 	}
 	out = runCorpusCmdOK(t, projectDir, forgeBin, "generate")
 	assertNoForkNoise(t, "re-adoption generate", out)
-	if got := readFileE2E(t, wireGenPath); got != pristine {
+	readopted := readFileE2E(t, wireGenPath)
+	if readopted != pristine {
 		t.Errorf("re-adoption generate did not restore the pristine render of %s", rel)
 	}
-	var cs struct {
-		Files map[string]struct {
-			Tier     int  `json:"tier"`
-			Disowned bool `json:"disowned"`
-		} `json:"files"`
+	// Tier-1 ownership is embedded in the file now: the re-emitted
+	// render must carry a verifying forge:hash marker, and the disowned
+	// record must be gone from .forge/disowned.json (the file itself is
+	// deleted when the last record clears).
+	if got := checksums.Verify([]byte(readopted)); got != checksums.Pristine {
+		t.Errorf("%s Verify = %v after re-adoption, want Pristine (re-certified Tier-1)", rel, got)
 	}
-	raw := readFileE2E(t, filepath.Join(projectDir, ".forge", "checksums.json"))
-	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
-		t.Fatalf("parse .forge/checksums.json: %v", err)
-	}
-	entry, ok := cs.Files[rel]
-	switch {
-	case !ok:
-		t.Errorf("%s not tracked after re-adoption", rel)
-	case entry.Tier != 1 || entry.Disowned:
-		t.Errorf("%s entry = %+v after re-adoption, want tier=1 disowned=false", rel, entry)
+	if raw, err := os.ReadFile(filepath.Join(projectDir, checksums.DisownedFile)); err == nil {
+		var disowned struct {
+			Files map[string]any `json:"files"`
+		}
+		if jerr := json.Unmarshal(raw, &disowned); jerr != nil {
+			t.Fatalf("parse %s: %v", checksums.DisownedFile, jerr)
+		}
+		if _, still := disowned.Files[rel]; still {
+			t.Errorf("%s still recorded in %s after re-adoption", rel, checksums.DisownedFile)
+		}
 	}
 }
 
@@ -1983,8 +1973,9 @@ UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
 	// ── 10. disown lifecycle on a generated ORM file (M3, kalshi
 	// fr-4dfef712e9, reproduced verbatim): the escape hatch every
 	// *_orm.go header advertises ("forge disown to take ownership")
-	// must actually work. Before M3 the ORM emitter never registered
-	// its outputs in .forge/checksums.json, so disown refused on
+	// must actually work. Before M3 the ORM emitter bypassed the
+	// ownership chokepoint (its outputs carried no forge certification),
+	// so disown refused on
 	// internal/db/*_orm.go. Full round-trip: hand-edit → drift error →
 	// disown → generate leaves it alone → delete + generate re-adopts.
 	disownRoundTrip(t, forgeBin, projectDir, "internal/db/item_orm.go")

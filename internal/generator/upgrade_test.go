@@ -6,8 +6,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 )
+
+// writeManagedRender writes content at dir/rel, optionally stamped with
+// the embedded forge:hash marker — the on-disk state "forge previously
+// wrote this file" (every managed-file format is stampable).
+func writeManagedRender(t *testing.T, dir, rel string, content []byte, stamp bool) {
+	t.Helper()
+	if stamp {
+		stamped, ok := checksums.Stamp(rel, content)
+		if !ok {
+			t.Fatalf("Stamp(%q): unstampable", rel)
+		}
+		content = stamped
+	}
+	dest := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testProjectConfig() *config.ProjectConfig {
 	return &config.ProjectConfig{
@@ -179,24 +201,13 @@ func TestUpgradeDetectsModified(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Write files from templates, record checksums
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	// Write files from templates, stamped (forge-certified renders).
 	for _, f := range managedFiles() {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
 		}
-		dest := filepath.Join(dir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dest, content, 0644); err != nil {
-			t.Fatal(err)
-		}
-		cs.RecordFile(f.destPath, content)
-	}
-	if err := SaveChecksums(dir, cs); err != nil {
-		t.Fatal(err)
+		writeManagedRender(t, dir, f.destPath, content, true)
 	}
 
 	// Modify a Tier 2 file (simulate user edit) — Tier 2 files are checksum-protected
@@ -243,29 +254,22 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Write files, record checksums
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	// Write files stamped (forge-certified renders).
 	for _, f := range managedFiles() {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
 		}
-		dest := filepath.Join(dir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dest, content, 0644); err != nil {
-			t.Fatal(err)
-		}
-		cs.RecordFile(f.destPath, content)
-	}
-	if err := SaveChecksums(dir, cs); err != nil {
-		t.Fatal(err)
+		writeManagedRender(t, dir, f.destPath, content, true)
 	}
 
-	// Modify a file
+	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
 	modifiedPath := filepath.Join(dir, "cmd/otel.go")
 	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	modifiedTier2 := filepath.Join(dir, "Dockerfile")
+	if err := os.WriteFile(modifiedTier2, []byte("# user modified\nFROM golang:1.23\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,20 +280,27 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" {
+		if r.Path == "cmd/otel.go" || r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
-				t.Errorf("cmd/otel.go: status = %q, want %q with --force", r.Status, UpgradeUpdated)
+				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
 		}
 	}
 
-	// Verify the file was actually overwritten
+	// Verify the files were actually overwritten.
 	content, err := os.ReadFile(modifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(content) == "// user modified\n" {
 		t.Error("cmd/otel.go was not overwritten by --force")
+	}
+	content, err = os.ReadFile(modifiedTier2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "# user modified") {
+		t.Error("Dockerfile (user-modified Tier-2) was not overwritten by --force")
 	}
 }
 
@@ -299,21 +310,12 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Write an older version of a static file with a recorded checksum
+	// Write an older version of a static file, stamped — a pristine
+	// forge render of an older vintage (the marker is the "checksum
+	// matches disk" state).
 	oldContent := []byte("// old template content\npackage main\n")
+	writeManagedRender(t, dir, "cmd/otel.go", oldContent, true)
 	otelPath := filepath.Join(dir, "cmd", "otel.go")
-	if err := os.MkdirAll(filepath.Dir(otelPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(otelPath, oldContent, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-	cs.RecordFile("cmd/otel.go", oldContent) // checksum matches disk
-	if err := SaveChecksums(dir, cs); err != nil {
-		t.Fatal(err)
-	}
 
 	// Write other files from current templates so they're up-to-date
 	for _, f := range managedFiles() {
@@ -324,13 +326,7 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
 		}
-		dest := filepath.Join(dir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dest, content, 0644); err != nil {
-			t.Fatal(err)
-		}
+		writeManagedRender(t, dir, f.destPath, content, false)
 	}
 
 	// Run upgrade (not check-only, not force)
@@ -360,85 +356,41 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 // TestUpgradeAutoUpdatesStaleCodegen simulates the FORGE_BACKLOG #2 scenario:
 // a Tier-2 file's template was updated, but the on-disk file is a *prior*
 // render (not the current template, not user-edited). Pre-history, forge
-// would flag this as user-modified (skipped) because the stored checksum
-// didn't match the on-disk hash. With prior-render history tracking, forge
-// recognises the on-disk content as a known prior render and auto-updates
-// it cleanly — no --force, no manual reconciliation required.
-//
-// Concretely, we:
-//
-//  1. Render Tier-2 file v1 via the current template, write to disk, record
-//     checksum H1 (Hash=H1, History=[H1]).
-//  2. Simulate a template update by re-rendering with patched content v2
-//     and recording H2 (Hash=H2, History=[H1, H2]). The on-disk file is
-//     left at v1 — that's the "stale codegen" state we're testing.
-//  3. Patch the on-disk file to a v3 the user never wrote — but we will
-//     stub the upgrade-time render to return v3 so the comparison is
-//     between disk=v1 and template=v3, with H1 in history.
-//  4. Call Upgrade and assert the Tier-2 file reports UpgradeUpdated
-//     (auto-update path) rather than UpgradeUserModified.
-//
-// The test uses the real Dockerfile template path because that's a Tier-2
-// template that's part of the canonical managedFiles list; we synthesize
-// the template-update by hand-recording an extra hash into history.
+// would flag this as user-modified (skipped). The legacy fix tracked a
+// per-path render History; the self-certifying replacement is the
+// embedded forge:hash marker — the stale prior render still VERIFIES,
+// proving the user never touched it, so upgrade auto-updates it cleanly
+// — no --force, no manual reconciliation required.
 func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 	cfg := testProjectConfig()
 	data := buildTemplateData(cfg, "")
 
 	dir := t.TempDir()
 
-	// Step 1+2: render every managed file to disk. For the file we'll
-	// exercise (Dockerfile), record an additional fake "prior render"
-	// hash in history so the on-disk content (current render) sits at
-	// the tail and the older fake hash sits in history. We then mutate
-	// the disk content to the older fake content — that's our stale
-	// codegen.
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	// Render every managed file to disk at the current template, except
+	// the Dockerfile, which we materialize as a STAMPED stale prior
+	// render — the "template updated, upgrade never ran" state.
+	staleDockerfile := []byte("# stale prior-render Dockerfile\nFROM golang:1.18\n")
 	for _, f := range managedFiles() {
+		if f.destPath == "Dockerfile" {
+			writeManagedRender(t, dir, f.destPath, staleDockerfile, true)
+			continue
+		}
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
 		}
-		dest := filepath.Join(dir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dest, content, 0644); err != nil {
-			t.Fatal(err)
-		}
-		cs.RecordFile(f.destPath, content)
+		writeManagedRender(t, dir, f.destPath, content, false)
 	}
 
-	// Inject a "prior render" of Dockerfile that no longer matches what
-	// the current template renders. This is what would happen in real
-	// life: the template was updated between v1 and v2, the user never
-	// re-ran upgrade, and the on-disk file is the v1 render.
-	staleDockerfile := []byte("# stale prior-render Dockerfile\nFROM golang:1.18\n")
-	cs.RecordFile("Dockerfile", staleDockerfile) // history now: [<current>, staleHash]
-	// Then overwrite with the current render again, so Hash points to the
-	// current template output but staleHash sits earlier in History.
-	currentDockerfile, err := renderManagedFile(managedFiles()[findManagedIdx(t, "Dockerfile")], data)
+	// Sanity: the on-disk content self-certifies as a forge render but
+	// is not the current template's output.
+	onDisk, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs.RecordFile("Dockerfile", currentDockerfile)
-	if err := SaveChecksums(dir, cs); err != nil {
-		t.Fatal(err)
-	}
-
-	// Now flip the on-disk Dockerfile back to the stale prior-render
-	// content. This is the "stale codegen" state.
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), staleDockerfile, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Sanity: the disk content matches a prior-render in history but not
-	// the current Hash.
-	if !cs.MatchesAnyKnownRender("Dockerfile", staleDockerfile) {
-		t.Fatalf("test setup: stale content should match a prior render in history")
-	}
-	if cs.Files["Dockerfile"].Hash == HashContent(staleDockerfile) {
-		t.Fatalf("test setup: current Hash should not equal stale-render hash")
+	if checksums.Verify(onDisk) != checksums.Pristine {
+		t.Fatalf("test setup: stale render must verify Pristine")
 	}
 
 	// Run upgrade (check-only is fine — we're asserting the classification).
@@ -458,24 +410,11 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 		t.Fatal("Dockerfile not in upgrade results")
 	}
 	if dockerfileResult.Status == UpgradeUserModified {
-		t.Errorf("Dockerfile status = %q (user-modified) — stale codegen should auto-update via history match", dockerfileResult.Status)
+		t.Errorf("Dockerfile status = %q (user-modified) — stale codegen should auto-update via the verifying marker", dockerfileResult.Status)
 	}
 	if dockerfileResult.Status != UpgradeUpdated {
 		t.Errorf("Dockerfile status = %q, want %q (auto-update)", dockerfileResult.Status, UpgradeUpdated)
 	}
-}
-
-// findManagedIdx returns the index of the managed file with the given
-// destPath. Test helper; fails the test if not found.
-func findManagedIdx(t *testing.T, destPath string) int {
-	t.Helper()
-	for i, f := range managedFiles() {
-		if f.destPath == destPath {
-			return i
-		}
-	}
-	t.Fatalf("managed file %q not found", destPath)
-	return -1
 }
 // TestUpgradeSkipsDisownedFiles: a disowned (or legacy forked) entry is
 // user-owned — `forge upgrade` must leave the on-disk file untouched
@@ -485,7 +424,7 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 	data := buildTemplateData(cfg, "")
 
 	dir := t.TempDir()
-	cs := &FileChecksums{Files: map[string]FileChecksumEntry{}}
+	cs := &FileChecksums{Disowned: map[string]DisownedEntry{}, Unstampable: map[string]string{}}
 
 	// Materialize every managed file pristine, then disown the first one
 	// with hand-edited content.
@@ -495,25 +434,16 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
 		}
-		dest := filepath.Join(dir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(dest, content, 0644); err != nil {
-			t.Fatal(err)
-		}
-		cs.RecordFile(f.destPath, content)
+		writeManagedRender(t, dir, f.destPath, content, false)
 	}
 	disownedPath := files[0].destPath
 	userContent := []byte("# user-owned content after disown\n")
 	if err := os.WriteFile(filepath.Join(dir, disownedPath), userContent, 0644); err != nil {
 		t.Fatal(err)
 	}
-	cs.RecordFile(disownedPath, userContent)
-	entry := cs.Files[disownedPath]
-	entry.Tier = 2
-	entry.Disowned = true
-	cs.Files[disownedPath] = entry
+	if err := cs.DisownPaths(dir, []string{disownedPath}, "hand-maintained"); err != nil {
+		t.Fatal(err)
+	}
 	if err := SaveChecksums(dir, cs); err != nil {
 		t.Fatal(err)
 	}

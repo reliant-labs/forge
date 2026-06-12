@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -169,6 +170,31 @@ func runUpgrade(check, force bool, toVersion string) error {
 				len(report.Auto), len(report.Manual))
 			fmt.Println("    Detail in UPGRADE_NOTES.md (written at the end).")
 			fmt.Println()
+		}
+	}
+
+	// One-time legacy .forge/checksums.json migration (same conversion
+	// `forge generate` performs; see generate_legacy_migrate.go). Unlike
+	// the pipeline, upgrade has no emitters to side-render against, so
+	// unverifiable entries get the unverified-legacy sentinel directly —
+	// the next generate's guard names them with the standard remedies.
+	// Skipped under --check/--dry-run (read-only contract).
+	if !check {
+		if mcs, lerr := generator.LoadChecksums(projectDir); lerr == nil {
+			outcome, merr := checksums.MigrateLegacyManifest(projectDir, mcs, legacyMigrationStampable)
+			if merr != nil {
+				return fmt.Errorf("legacy checksums migration: %w", merr)
+			}
+			if outcome != nil {
+				fmt.Printf("\U0001F4DC Migrated off the legacy .forge/checksums.json (%d entries) — generated files are self-certifying now.\n", outcome.Total())
+				for _, p := range outcome.Unverified {
+					checksums.StampUnverified(projectDir, p)
+					fmt.Fprintf(os.Stderr, "   ? %s — matches nothing the legacy manifest recorded; the next `forge generate` will name it (resolve with --force or `forge disown`)\n", p)
+				}
+				if serr := generator.SaveChecksums(projectDir, mcs); serr != nil {
+					return fmt.Errorf("save .forge ownership state: %w", serr)
+				}
+			}
 		}
 	}
 

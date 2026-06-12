@@ -40,7 +40,7 @@ import (
 // proto dirs) before the print loop so HasServices / Cfg / etc. are
 // realistic.
 //
-// Hold generateMu around the whole call because we read .forge/checksums.json
+// Hold generateMu around the whole call because we read the .forge state files
 // and forge.yaml — concurrent `forge add` would otherwise see a window
 // where checksums are loaded but not refreshed.
 func runGeneratePlan(projectDir string, flags pipelineFlags) error {

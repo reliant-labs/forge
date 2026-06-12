@@ -214,10 +214,8 @@ func emitTier2OnceIfMissing(projectDir, relPath, tmplPath string, data templates
 	_, statErr := os.Stat(full)
 	exists := statErr == nil
 	if exists {
-		if cs != nil {
-			if entry, ok := cs.Files[filepath.ToSlash(relPath)]; ok && (entry.Disowned || entry.Forked) {
-				return nil
-			}
+		if cs.IsDisowned(filepath.ToSlash(relPath)) {
+			return nil
 		}
 		if checksums.Tier2OverwriteFn == nil || !checksums.Tier2OverwriteFn(relPath) {
 			return nil

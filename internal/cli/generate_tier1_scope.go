@@ -1,7 +1,7 @@
 // Tier-1 stomp-guard scoping.
 //
 // The pre-pipeline stomp guard (stepCheckTier1Drift) used to fail on
-// ANY drifted Tier-1 file in `.forge/checksums.json`, even when the
+// ANY drifted Tier-1 file the scan found, even when the
 // current `forge generate` invocation would never re-emit that file.
 // In multi-lane migrations that hard-failed the guard for sibling work
 // (e.g. agent A is porting internal/proxy/ and the guard rejected

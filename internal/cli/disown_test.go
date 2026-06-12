@@ -1,10 +1,15 @@
 // Tests for `forge disown <path>... --reason <text>` — see disown.go.
 //
-// The tests build a synthetic project root (forge.yaml + .forge/
-// checksums.json + on-disk files), chdir into it, and drive runDisown
-// directly. We avoid spawning the cobra binary so the assertions can
-// read / re-decode the checksum file post-write without any process
-// boundary.
+// The tests build a synthetic project root (forge.yaml + on-disk files
+// carrying embedded forge:hash markers + saved .forge ownership state),
+// chdir into it, and drive runDisown directly. We avoid spawning the
+// cobra binary so the assertions can read / re-decode the ownership
+// state post-write without any process boundary.
+//
+// Ownership is read from the files themselves now: a disownable path is
+// one carrying forge's certification (an embedded marker or a scoped
+// .forge/hashes.json entry) — the manifest-era Tier/Disowned entry
+// shapes are gone.
 package cli
 
 import (
@@ -15,6 +20,25 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 )
+
+// withDisownProjectRoot builds a synthetic project root (forge.yaml +
+// saved .forge ownership state), chdirs into it for the duration of the
+// test, and returns the root. Successor of the unfork-era helper that
+// seeded a .forge/checksums.json manifest.
+func withDisownProjectRoot(t *testing.T, cs *checksums.FileChecksums) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cs != nil {
+		if err := checksums.Save(root, cs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(root)
+	return root
+}
 
 // seedDisownFile writes content at root/rel (creating parents).
 func seedDisownFile(t *testing.T, root, rel, content string) {
@@ -28,15 +52,23 @@ func seedDisownFile(t *testing.T, root, rel, content string) {
 	}
 }
 
+// seedStampedDisownFile writes content at root/rel with the embedded
+// forge:hash marker stamped in — a forge-certified (Tier-1) file, the
+// only kind `forge disown` accepts.
+func seedStampedDisownFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	stamped, ok := checksums.Stamp(rel, []byte(content))
+	if !ok {
+		t.Fatalf("stamp %s: format is unstampable", rel)
+	}
+	seedDisownFile(t, root, rel, string(stamped))
+}
+
 // TestDisown_RequiresReason: --reason is the design-feedback payload;
 // the command refuses to run without it.
 func TestDisown_RequiresReason(t *testing.T) {
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			"pkg/app/wire_gen.go": {Hash: "abc", Tier: 1},
-		},
-	}
-	withUnforkProjectRoot(t, cs)
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	seedStampedDisownFile(t, root, "pkg/app/wire_gen.go", "package app\n")
 
 	for _, reason := range []string{"", "   "} {
 		err := runDisown([]string{"pkg/app/wire_gen.go"}, reason, false)
@@ -49,19 +81,16 @@ func TestDisown_RequiresReason(t *testing.T) {
 	}
 }
 
-// TestDisown_FlipsEntryAndRecordsFriction is the happy path: the entry
-// flips to Tier-2 + disowned with the on-disk content recorded, and one
-// friction entry (area=disown) lands per path with the reason text.
+// TestDisown_FlipsEntryAndRecordsFriction is the happy path: the path
+// lands in .forge/disowned.json with reason + timestamp, the embedded
+// forge:hash marker is stripped from the file (a user-owned file must
+// not advertise forge certification), and one friction entry
+// (area=disown) lands per path with the reason text.
 func TestDisown_FlipsEntryAndRecordsFriction(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	userContent := "package app // user edit\n"
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "old", History: []string{"old"}, Tier: 1},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
-	seedDisownFile(t, root, rel, userContent)
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	seedStampedDisownFile(t, root, rel, userContent)
 
 	if err := runDisown([]string{rel}, "custom pool wiring forge can't express", false); err != nil {
 		t.Fatalf("runDisown: %v", err)
@@ -69,14 +98,29 @@ func TestDisown_FlipsEntryAndRecordsFriction(t *testing.T) {
 
 	got, err := checksums.Load(root)
 	if err != nil {
-		t.Fatalf("re-load checksums: %v", err)
+		t.Fatalf("re-load ownership state: %v", err)
 	}
-	entry := got.Files[rel]
-	if entry.Tier != 2 || !entry.Disowned || entry.DisownedAt == "" {
-		t.Errorf("entry = %+v, want {tier:2 disowned:true disowned_at:set}", entry)
+	entry, ok := got.Disowned[rel]
+	if !ok {
+		t.Fatalf("path missing from .forge/disowned.json; have: %v", got.Disowned)
 	}
-	if entry.Hash != checksums.Hash([]byte(userContent)) {
-		t.Errorf("hash = %q, want the user's content hash at disown time", entry.Hash)
+	if entry.DisownedAt == "" {
+		t.Errorf("entry = %+v, want disowned_at set", entry)
+	}
+	if entry.Reason != "custom pool wiring forge can't express" {
+		t.Errorf("entry reason = %q, want the --reason text", entry.Reason)
+	}
+
+	// The user's content survives sans marker — the bytes are theirs now.
+	onDisk, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, hasMarker := checksums.ExtractMarker(onDisk); hasMarker {
+		t.Errorf("forge:hash marker survived the disown; got:\n%s", onDisk)
+	}
+	if string(onDisk) != userContent {
+		t.Errorf("disowned content = %q, want the user's content with only the marker removed", onDisk)
 	}
 
 	// Friction entry: area=disown, context names the path, text is the reason.
@@ -86,27 +130,24 @@ func TestDisown_FlipsEntryAndRecordsFriction(t *testing.T) {
 	}
 }
 
-// TestDisown_RejectsUnknownTier2AndMissing pins the validation set:
-// untracked paths, already-user-owned Tier-2 scaffolds, and tracked
-// paths missing from disk are all refused with distinct messages.
-func TestDisown_RejectsUnknownTier2AndMissing(t *testing.T) {
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			"pkg/app/wire_gen.go":      {Hash: "a", Tier: 1}, // tracked but NOT on disk
-			"internal/svc/service.go":  {Hash: "b", Tier: 2}, // ordinary starter
-			"handlers/api/handlers.go": {Hash: "c", Tier: 1},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
+// TestDisown_RejectsUncertifiedAndMissing pins the validation set:
+// paths carrying no forge certification (untracked user files and
+// scaffold-once Tier-2 files alike — both are unmarked, the manifest-era
+// distinction collapsed) and paths missing from disk are refused with
+// distinct messages, and a typo on one path means nothing half-applies.
+func TestDisown_RejectsUncertifiedAndMissing(t *testing.T) {
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	// Ordinary starter / user file: exists, but carries no marker.
 	seedDisownFile(t, root, "internal/svc/service.go", "package svc\n")
-	seedDisownFile(t, root, "handlers/api/handlers.go", "package api\n")
+	// A certified sibling, to prove the refusal is about the named path.
+	seedStampedDisownFile(t, root, "handlers/api/handlers.go", "package api\n")
 
 	cases := []struct {
 		path    string
 		wantErr string
 	}{
-		{"not/tracked.go", "not in .forge/checksums.json"},
-		{"internal/svc/service.go", "already user-owned"},
+		{"not/tracked.go", "missing on disk"},
+		{"internal/svc/service.go", "no forge certification"},
 		{"pkg/app/wire_gen.go", "missing on disk"},
 	}
 	for _, tc := range cases {
@@ -122,23 +163,26 @@ func TestDisown_RejectsUnknownTier2AndMissing(t *testing.T) {
 }
 
 // TestDisown_DryRunPreservesState: targets are listed but nothing is
-// written — neither checksums nor the friction log.
+// written — no disowned.json, the marker stays in the file, and the
+// friction log is untouched.
 func TestDisown_DryRunPreservesState(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "abc", Tier: 1},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
-	seedDisownFile(t, root, rel, "package app\n")
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	seedStampedDisownFile(t, root, rel, "package app\n")
 
 	if err := runDisown([]string{rel}, "why", true); err != nil {
 		t.Fatalf("runDisown --dry-run: %v", err)
 	}
 	got, _ := checksums.Load(root)
-	if got.Files[rel].Disowned {
-		t.Errorf("--dry-run mutated the entry on disk")
+	if got.IsDisowned(rel) {
+		t.Errorf("--dry-run recorded a disown on disk")
+	}
+	onDisk, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, hasMarker := checksums.ExtractMarker(onDisk); !hasMarker {
+		t.Errorf("--dry-run stripped the forge:hash marker")
 	}
 	if reasons := disownFrictionReasons(root); len(reasons) != 0 {
 		t.Errorf("--dry-run wrote friction entries: %v", reasons)
@@ -150,42 +194,50 @@ func TestDisown_DryRunPreservesState(t *testing.T) {
 func TestDisown_IdempotentOnAlreadyDisowned(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "abc", Tier: 2, Disowned: true, DisownedAt: "2026-06-01T00:00:00Z"},
+		Disowned: map[string]checksums.DisownedEntry{
+			rel: {Reason: "original reason", DisownedAt: "2026-06-01T00:00:00Z"},
 		},
 	}
-	root := withUnforkProjectRoot(t, cs)
+	root := withDisownProjectRoot(t, cs)
 	seedDisownFile(t, root, rel, "package app\n")
 
 	if err := runDisown([]string{rel}, "why again", false); err != nil {
 		t.Fatalf("runDisown on already-disowned entry should not error; got %v", err)
 	}
 	got, _ := checksums.Load(root)
-	if got.Files[rel].DisownedAt != "2026-06-01T00:00:00Z" {
-		t.Errorf("no-op disown must not re-stamp DisownedAt; got %+v", got.Files[rel])
+	if got.Disowned[rel].DisownedAt != "2026-06-01T00:00:00Z" {
+		t.Errorf("no-op disown must not re-stamp DisownedAt; got %+v", got.Disowned[rel])
 	}
 }
 
-// TestDisown_LegacyForkedEntryIsDisownable: a legacy `forked: true`
-// entry is Tier-1 by recording; disowning it is exactly the migration
-// conversion and must clear the legacy flags.
-func TestDisown_LegacyForkedEntryIsDisownable(t *testing.T) {
+// TestDisown_PreMigrationFileGetsMigrationHint: a file with no embedded
+// marker on a project that still carries the legacy manifest is refused
+// with the "run forge generate to migrate" hint — the legacy fork/
+// disown entry conversion itself now lives in
+// checksums.MigrateLegacyManifest (covered at the pipeline level by the
+// stepMigrateLegacyManifest tests).
+func TestDisown_PreMigrationFileGetsMigrationHint(t *testing.T) {
 	const rel = "pkg/app/bootstrap.go"
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "abc", Tier: 1, Forked: true, Accepted: true, ForkedAt: "2026-01-01T00:00:00Z"},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
 	seedDisownFile(t, root, rel, "package app // legacy fork\n")
-
-	if err := runDisown([]string{rel}, "settling a legacy fork", false); err != nil {
-		t.Fatalf("runDisown: %v", err)
+	// Legacy manifest present: pre-migration project shape.
+	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	got, _ := checksums.Load(root)
-	e := got.Files[rel]
-	if e.Forked || e.Accepted || e.ForkedAt != "" || !e.Disowned || e.Tier != 2 {
-		t.Errorf("entry = %+v, want clean disowned shape with legacy flags cleared", e)
+	legacy := `{"forge_version":"old","files":{"` + rel + `":{"hash":"abc","tier":1,"forked":true}}}`
+	if err := os.WriteFile(filepath.Join(root, checksums.LegacyChecksumFile), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDisown([]string{rel}, "settling a legacy fork", false)
+	if err == nil {
+		t.Fatal("expected refusal for an uncertified pre-migration file; got nil")
+	}
+	if !strings.Contains(err.Error(), "no forge certification") {
+		t.Errorf("error should explain the missing certification; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Errorf("error should point pre-migration projects at `forge generate`; got %q", err.Error())
 	}
 }
 
@@ -193,13 +245,8 @@ func TestDisown_LegacyForkedEntryIsDisownable(t *testing.T) {
 // or --explain-drift leftovers) are removed at disown time.
 func TestDisown_CleansSideRenders(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "abc", Tier: 1},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
-	seedDisownFile(t, root, rel, "package app\n")
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	seedStampedDisownFile(t, root, rel, "package app\n")
 	if err := checksums.WriteSideRenderNoBase(root, rel, []byte("stale render\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -247,21 +294,15 @@ func TestAcceptForkCmd_IsDeprecatedDisownAlias(t *testing.T) {
 	}
 
 	const rel = "pkg/app/bootstrap.go"
-	cs := &checksums.FileChecksums{
-		Files: map[string]checksums.FileChecksumEntry{
-			rel: {Hash: "abc", Tier: 1, Forked: true},
-		},
-	}
-	root := withUnforkProjectRoot(t, cs)
-	seedDisownFile(t, root, rel, "package app\n")
+	root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+	seedStampedDisownFile(t, root, rel, "package app\n")
 
 	cmd.SetArgs([]string{rel, "--reason", "legacy alias path"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("accept-fork alias execute: %v", err)
 	}
 	got, _ := checksums.Load(root)
-	e := got.Files[rel]
-	if !e.Disowned || e.Tier != 2 || e.Forked {
-		t.Errorf("accept-fork alias did not disown the path; entry = %+v", e)
+	if !got.IsDisowned(rel) {
+		t.Errorf("accept-fork alias did not disown the path; disowned = %+v", got.Disowned)
 	}
 }

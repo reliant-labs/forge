@@ -35,10 +35,12 @@ type FrontendGenOptions struct {
 	// instead of relative @/gen / @/hooks paths.
 	Workspaces bool
 	// Output selects the Next.js build/runtime shape rendered into
-	// `next.config.ts`. Valid values: "static" (default), "standalone",
+	// `next.config.ts`. Valid values: "standalone" (default), "static",
 	// "server". See config.FrontendConfig.Output for the per-mode
-	// semantics. Empty string defaults to "static" — the new
-	// scaffold default since the static-default switchover.
+	// semantics. Empty string defaults to "standalone" — the only mode
+	// that both pairs with the shipped Dockerfile and supports the
+	// dynamic `[id]` CRUD routes forge generates (static export fails
+	// `next build` on any dynamic segment without generateStaticParams).
 	//
 	// Ignored for kind=mobile (react-native) and kind=vite-spa; those
 	// trees have their own production shapes.
@@ -84,14 +86,18 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 	}
 
 	layout := NewFrontendWorkspaceLayout(projectName)
-	// Default the Next.js output shape to "static" when unset. Templates
-	// (`next.config.ts.tmpl`) branch on this value; an empty string
-	// would emit a malformed file. We canonicalise here rather than in
-	// every template so callers can pass "" for "use the scaffold
-	// default" without having to know what that default is.
+	// Default the Next.js output shape to "standalone" when unset. The
+	// generated CRUD detail/edit pages are dynamic client routes
+	// (`/<slug>/[id]`), and `output: "export"` (the "static" mode) fails
+	// `next build` on any dynamic segment without generateStaticParams —
+	// so a static default would break `npm run build` on every project
+	// the moment it has one entity. Standalone also pairs with the
+	// shipped Dockerfile (.next/standalone/server.js). We canonicalise
+	// here rather than in every template so callers can pass "" for
+	// "use the scaffold default" without having to know what it is.
 	output := strings.ToLower(strings.TrimSpace(opts.Output))
 	if output == "" {
-		output = "static"
+		output = "standalone"
 	}
 	data := templates.FrontendTemplateData{
 		FrontendName: frontendName,

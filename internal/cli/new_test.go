@@ -95,13 +95,16 @@ func TestApplyDisableFlags_AllFeatures(t *testing.T) {
 	// All stable features. Experimental features are explicitly
 	// rejected by applyDisableFlags (they're default-OFF already) —
 	// covered by TestApplyDisableFlags_ExperimentalRejected below.
-	all := []string{"orm", "codegen", "migrations", "ci", "contracts", "docs", "frontend", "observability", "hot_reload"}
+	all := []string{"orm", "codegen", "migrations", "ci", "deploy", "contracts", "docs", "frontend", "observability", "hot_reload"}
 	if err := applyDisableFlags(gen, all); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	f := gen.Features
 	if f.ORMEnabled() {
 		t.Error("orm should be disabled")
+	}
+	if f.DeployEnabled() {
+		t.Error("deploy should be disabled")
 	}
 	if f.CodegenEnabled() {
 		t.Error("codegen should be disabled")
@@ -134,7 +137,7 @@ func TestApplyDisableFlags_AllFeatures(t *testing.T) {
 // than silently succeeding. Experimental features are default-off; an
 // "off" --disable would be a no-op that hides the new shape from users.
 func TestApplyDisableFlags_ExperimentalRejected(t *testing.T) {
-	for _, name := range []string{"deploy", "ingress", "external_builds", "operators", "strict_wiring"} {
+	for _, name := range []string{"ingress", "external_builds", "operators", "strict_wiring"} {
 		t.Run(name, func(t *testing.T) {
 			gen := newTestGen()
 			err := applyDisableFlags(gen, []string{name})

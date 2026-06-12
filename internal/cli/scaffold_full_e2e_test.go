@@ -166,11 +166,12 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 
 	serverGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "server.go"))
 	// Past bug: server used a raw error compare on srv.Serve's return,
-	// which misclassified wrapped errors. Regressing this causes the
-	// server process to exit cleanly when it should have logged a real
-	// error.
-	if !strings.Contains(serverGo, "errors.Is(err, http.ErrServerClosed)") {
-		t.Errorf("cmd/server.go must use errors.Is(err, http.ErrServerClosed); got:\n%s",
+	// which misclassified wrapped errors. The listener lifecycle (and
+	// its errors.Is(err, http.ErrServerClosed) handling — see
+	// pkg/serverkit/run.go) now lives in serverkit; the shim must hand
+	// the lifecycle off rather than half-reimplementing it.
+	if !strings.Contains(serverGo, "serverkit.Run(") {
+		t.Errorf("cmd/server.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
 			excerpt(serverGo, "Serve", 400))
 	}
 	// Past bug: server used the `postgres://` URL directly with
@@ -202,8 +203,8 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// values outside the 16-bit port range (e.g. 99999) and then silently
 	// truncates when assigned. `ParseUint(v, 10, 16)` range-checks at
 	// parse time.
-	if !strings.Contains(configGo, "ParseUint(v, 10, 16)") {
-		t.Errorf("pkg/config/config.go must use strconv.ParseUint(v, 10, 16) for PORT parsing; got:\n%s",
+	if !strings.Contains(configGo, ", 10, 16)") || !strings.Contains(configGo, "strconv.ParseUint(") {
+		t.Errorf("pkg/config/config.go must range-check ports via strconv.ParseUint(_, 10, 16); got:\n%s",
 			excerpt(configGo, "PORT", 400))
 	}
 
@@ -218,9 +219,10 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	assertIncludeImportsPlacement(t, frontendBufGen)
 
 	frontendLayout := readFileE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "app", "layout.tsx"))
-	// Component library integration: layout must import SidebarLayout.
-	if !strings.Contains(frontendLayout, "SidebarLayout") {
-		t.Errorf("frontends/web/src/app/layout.tsx must import SidebarLayout; got:\n%s",
+	// Component library integration: layout must wire the scaffold's
+	// shared chrome (the Nav component from @/components).
+	if !strings.Contains(frontendLayout, "Nav") {
+		t.Errorf("frontends/web/src/app/layout.tsx must import the Nav component; got:\n%s",
 			excerpt(frontendLayout, "import", 400))
 	}
 

@@ -134,9 +134,13 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.suggestExcludes {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
 		}
 		return runSuggestExcludes(cfg)
 	}
@@ -144,29 +148,41 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runSuggestBufExcepts(ctx)
 	}
 	if flags.contract {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
-		if cfg != nil && !cfg.Features.ContractsEnabled() {
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
+		}
+		if store != nil && !store.Features().ContractsEnabled() {
 			fmt.Println("contracts feature is disabled in forge.yaml")
 			return nil
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.exportedVars {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.migrationSafety {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
-		if cfg != nil && !cfg.Features.MigrationsEnabled() {
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
+		}
+		if store != nil && !store.Features().MigrationsEnabled() {
 			fmt.Println("migrations feature is disabled in forge.yaml")
 			return nil
 		}
@@ -229,9 +245,13 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// Load project config for lint defaults. A missing config file is fine
 	// (we fall back to defaults), but a parse/read error should fail hard so
 	// users don't silently lint with the wrong configuration.
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 		return fmt.Errorf("failed to load project config: %w", err)
+	}
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
 	}
 
 	// No flags set — run ALL linters, each skipping gracefully if tool not available.
@@ -427,9 +447,13 @@ func collectConventionFindings() (forgeconv.Result, []string, bool, error) {
 	hasInternal := false
 	if _, err := os.Stat("internal"); err == nil {
 		hasInternal = true
-		cfg, cfgErr := loadProjectConfig()
+		store, cfgErr := loadProjectStore()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
 			return combined, notes, false, fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
+		}
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
 		}
 		// The convention lint is not (yet) ctx-aware; the engine's
 		// inter-rule cancellation hook is a forward-looking concern.
@@ -465,13 +489,13 @@ func collectConventionFindings() (forgeconv.Result, []string, bool, error) {
 		// is project-configurable via forge.yaml. Warnings only — the
 		// nudge points at the future `forge add handler-file` split
 		// subcommand rather than blocking on file size.
-		cfg, cfgErr := loadProjectConfig()
+		store, cfgErr := loadProjectStore()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
 			return combined, notes, false, fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
 		}
 		threshold := config.DefaultHandlerFileMaxLOC
-		if cfg != nil {
-			threshold = cfg.Lint.EffectiveHandlerFileMaxLOC()
+		if store != nil {
+			threshold = store.Lint().EffectiveHandlerFileMaxLOC()
 		}
 		sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
 		if err != nil {

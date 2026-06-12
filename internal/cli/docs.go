@@ -46,12 +46,12 @@ contract interfaces, and project configuration.
 Generated docs include a "DO NOT EDIT" header and can be regenerated at any time.
 Customize output by providing your own templates via the custom_templates_dir config.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := requireFeature(config.FeatureDocs)
+			store, err := requireFeature(config.FeatureDocs)
 			if err != nil {
 				return err
 			}
 
-			fmt.Printf("📚 Generating documentation for project: %s\n\n", cfg.Name)
+			fmt.Printf("📚 Generating documentation for project: %s\n\n", store.Meta().Name)
 
 			var overrides *docs.Overrides
 			if outputDir != "" || format != "" || generators != "" {
@@ -64,7 +64,7 @@ Customize output by providing your own templates via the custom_templates_dir co
 				}
 			}
 
-			if err := docs.Run(".", cfg, overrides); err != nil {
+			if err := docs.Run(".", store.Config(), overrides); err != nil {
 				return err
 			}
 

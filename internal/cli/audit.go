@@ -154,9 +154,13 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 		return nil, fmt.Errorf("resolve project dir: %w", err)
 	}
 
-	cfg, cfgErr := loadProjectConfigFrom(filepath.Join(abs, defaultProjectConfigFile))
+	store, cfgErr := loadProjectStoreFrom(filepath.Join(abs, defaultProjectConfigFile))
 	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
 		return nil, fmt.Errorf("load project config: %w", cfgErr)
+	}
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
 	}
 
 	report := &AuditReport{

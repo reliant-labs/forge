@@ -111,9 +111,16 @@ func defaultRunEnvironment(envExtraEnv map[string]string, lookupEnv func(string)
 
 // composeDevCORSOrigins builds the dev default for CORS_ORIGINS: the
 // browser-visible origins `forge run` is about to create. Each
-// frontend's loopback origin (http://localhost:<fe.Port>) plus — unless
-// the proxy is disabled — the dev-proxy hostnames
-// (http://<name>.localhost:<proxyPort> and http://localhost:<proxyPort>).
+// frontend's loopback origins (http://localhost:<fe.Port> AND
+// http://127.0.0.1:<fe.Port>) plus — unless the proxy is disabled —
+// the dev-proxy hostnames (http://<name>.localhost:<proxyPort>,
+// http://localhost:<proxyPort>, http://127.0.0.1:<proxyPort>).
+//
+// Both loopback spellings are mandatory: the browser sends whatever
+// the user typed as the Origin header, and a 127.0.0.1 URL with a
+// localhost-only allowlist renders the UI but CORS-blocks every fetch
+// (journey fr-5b2121e48f). `<name>.localhost` needs no 127.0.0.1 twin
+// — it's a hostname, not a spelling of one.
 //
 // Comma-separated to match the generated config loader, which splits
 // cors_origins/CORS_ORIGINS on "," (config.go.tmpl / pkg/middleware
@@ -135,6 +142,7 @@ func composeDevCORSOrigins(frontends []config.FrontendConfig, proxyPort int, noP
 			continue
 		}
 		add(fmt.Sprintf("http://localhost:%d", fe.Port))
+		add(fmt.Sprintf("http://127.0.0.1:%d", fe.Port))
 	}
 	if len(out) == 0 {
 		return ""
@@ -147,6 +155,7 @@ func composeDevCORSOrigins(frontends []config.FrontendConfig, proxyPort int, noP
 			add(fmt.Sprintf("http://%s.localhost:%d", fe.Name, proxyPort))
 		}
 		add(fmt.Sprintf("http://localhost:%d", proxyPort))
+		add(fmt.Sprintf("http://127.0.0.1:%d", proxyPort))
 	}
 	return strings.Join(out, ",")
 }
@@ -228,9 +237,14 @@ type runOptions struct {
 
 // defaultDevProxyPort is the bind port for the cross-frontend dev
 // proxy when neither --proxy-port nor FORGE_RUN_PROXY_PORT is set.
-// 8080 is the conventional dev-only port — distinct from any
-// Next.js / service default (3000 / 8000 / 50051), so the proxy
-// never collides with a backend's own port.
+//
+// CAUTION: 8080 is ALSO the first scaffolded service's default port
+// (`forge add service` auto-increments from 8080), so this constant is
+// only the starting point — resolveProxyPort skips past every declared
+// component port before settling. Sharing the number was the
+// split-brain of journey fr-5b2121e48f: the proxy got 127.0.0.1:8080,
+// the service wildcard-bound the same port, and the browser's
+// localhost raced between them by address family.
 const defaultDevProxyPort = 8080
 
 // runProjectDev orchestrates the local development environment.
@@ -395,10 +409,38 @@ func runProjectDev(opts runOptions) error {
 		servicesToRun = registered
 	}
 
+	// Resolve the dev proxy port BEFORE anything starts: the proxy must
+	// never share a port with a component it fronts (the first
+	// scaffolded service defaults to 8080 — the same number as
+	// defaultDevProxyPort), and an explicit flag/env collision should
+	// abort before docker compose spins up. Resolved once and reused by
+	// the CORS dev default and the proxy startup below.
+	proxyPort := 0
+	if !opts.noProxy {
+		declared := declaredComponentPorts(servicesToRun, frontendsToRun)
+		pp, perr := resolveProxyPort(opts.proxyPort, declared)
+		if perr != nil {
+			return perr
+		}
+		proxyPort = pp
+		if owner, shifted := declared[defaultDevProxyPort]; shifted && pp != defaultDevProxyPort && opts.proxyPort <= 0 {
+			fmt.Printf("[run] Dev proxy: default port %d is %s's port; using %d instead.\n", defaultDevProxyPort, owner, pp)
+		}
+	}
+
 	// 1. Start infrastructure via docker compose (unless --no-infra).
 	if !opts.noInfra {
 		composePath := "docker-compose.yml"
 		if _, err := os.Stat(composePath); err == nil {
+			// Preflight the postgres publish port: a host postgres on
+			// 5432 otherwise dies inside compose with an unactionable
+			// "exit status 1". The error names the exact
+			// POSTGRES_PORT=<free> rerun.
+			if pgPort, perr := strconv.Atoi(envOrDefault("POSTGRES_PORT", "5432")); perr == nil {
+				if err := preflightPostgresPort(pgPort, func() bool { return composeHasRunningPostgres(ctx, composePath) }); err != nil {
+					return err
+				}
+			}
 			fmt.Println("[run] Starting infrastructure...")
 			composeCmd := exec.CommandContext(ctx, "docker", "compose",
 				"-f", composePath, "up", "-d",
@@ -429,11 +471,6 @@ func runProjectDev(opts runOptions) error {
 		}
 	}
 
-	// Resolved once here and reused by both the CORS dev default below
-	// and the proxy startup further down (the proxy banner prints only
-	// in the proxy block, so the hoist can't double-print it).
-	proxyPort := resolveProxyPort(opts.proxyPort)
-
 	// Dev CORS default: the scaffolded frontend transport calls the API
 	// cross-origin while the server's cors_origins config defaults
 	// empty, so browser CRUD fails CORS preflight out of the box. When
@@ -453,6 +490,15 @@ func runProjectDev(opts runOptions) error {
 
 	// 2. Start Go binary via Air (hot reload) or go run fallback.
 	// Single binary architecture: one process with service names as args.
+	//
+	// The start logic lives in a closure because the wait loop may call
+	// it a second time: runWaitLoop grants the server child ONE
+	// automatic restart. Journey fr-00ff2c98d2: a generate-induced
+	// double rebuild raced air into 'bind: address already in use', air
+	// exited Code 1, and the orchestrator silently kept serving the
+	// proxy + frontend over a dead backend (healthz=000, no message).
+	var startServerProcess func() error
+	serverName := ""
 	if len(servicesToRun) > 0 || len(opts.services) == 0 {
 		var serviceNames []string
 		for _, svc := range servicesToRun {
@@ -467,45 +513,6 @@ func runProjectDev(opts runOptions) error {
 			}
 		}
 
-		var cmd *exec.Cmd
-		if opts.debug {
-			// Try air with debug config first
-			if _, err := os.Stat(airConfig); err == nil {
-				cmd = exec.CommandContext(ctx, "air", "-c", airConfig)
-			} else {
-				// Fallback: build with debug flags and run under Delve
-				fmt.Println("[run] No .air-debug.toml found, building debug binary and starting Delve...")
-				if err := os.MkdirAll(".forge/debug", 0o755); err != nil {
-					return fmt.Errorf("failed to create debug output directory: %w", err)
-				}
-				buildCmd := exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", ".forge/debug/"+cfg.Name, "./cmd")
-				buildCmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-				buildCmd.Stdout = os.Stdout
-				buildCmd.Stderr = os.Stderr
-				if err := buildCmd.Run(); err != nil {
-					return fmt.Errorf("failed to build debug binary: %w", err)
-				}
-				absBin, _ := filepath.Abs(".forge/debug/" + cfg.Name)
-				dlvArgs := []string{"exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", absBin, "--", "server"}
-				dlvArgs = append(dlvArgs, serviceNames...)
-				cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
-			}
-			fmt.Println("[run] Delve debugger listening on :2345 \u2014 attach with VS Code or 'dlv connect :2345'")
-		} else if cfg.EffectiveHotReload() {
-			if _, err := os.Stat(airConfig); err == nil {
-				cmd = exec.CommandContext(ctx, "air", "-c", airConfig)
-			} else {
-				// HotReload enabled but no air config found; fall back to go run
-				args := []string{"run", "./cmd", "server"}
-				args = append(args, serviceNames...)
-				cmd = exec.CommandContext(ctx, "go", args...)
-			}
-		} else {
-			// HotReload disabled: run go directly without air
-			args := []string{"run", "./cmd", "server"}
-			args = append(args, serviceNames...)
-			cmd = exec.CommandContext(ctx, "go", args...)
-		}
 		// Layer per-env config (forge.yaml/sibling) onto the subprocess
 		// environment so the binary's flag/env loader sees the values.
 		// Existing process env wins (a developer can still override
@@ -519,14 +526,6 @@ func runProjectDev(opts runOptions) error {
 			// both the per-env config and the shell.
 			baseEnv = append(baseEnv, "ENVIRONMENT=development")
 		}
-		// Always assign. This was previously gated on len(envExtraEnv)>0
-		// (or --debug), so an empty per-env config left cmd.Env nil and
-		// none of the injected defaults (ENVIRONMENT, DATABASE_URL,
-		// CORS_ORIGINS) could ever reach the child. With nothing to
-		// inject, baseEnv == os.Environ(), so this is also a no-op for
-		// the legacy path.
-		cmd.Env = baseEnv
-		cmd.Dir = "."
 		// Declared service ports feed the port-conflict diagnosis when
 		// the server child dies (the single binary binds one listener
 		// per registered service).
@@ -534,8 +533,63 @@ func runProjectDev(opts runOptions) error {
 		for _, svc := range servicesToRun {
 			serverPorts = append(serverPorts, svc.Port)
 		}
-		if err := startProcess(cfg.Name, cmd, serverPorts...); err != nil {
-			fmt.Printf("[run] Warning: %v\n", err)
+
+		serverName = cfg.Name
+		startServerProcess = func() error {
+			var cmd *exec.Cmd
+			if opts.debug {
+				// Try air with debug config first
+				if _, err := os.Stat(airConfig); err == nil {
+					cmd = exec.CommandContext(ctx, "air", "-c", airConfig)
+				} else {
+					// Fallback: build with debug flags and run under Delve
+					fmt.Println("[run] No .air-debug.toml found, building debug binary and starting Delve...")
+					if err := os.MkdirAll(".forge/debug", 0o755); err != nil {
+						return fmt.Errorf("failed to create debug output directory: %w", err)
+					}
+					buildCmd := exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-o", ".forge/debug/"+cfg.Name, "./cmd")
+					buildCmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+					buildCmd.Stdout = os.Stdout
+					buildCmd.Stderr = os.Stderr
+					if err := buildCmd.Run(); err != nil {
+						return fmt.Errorf("failed to build debug binary: %w", err)
+					}
+					absBin, _ := filepath.Abs(".forge/debug/" + cfg.Name)
+					dlvArgs := []string{"exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", absBin, "--", "server"}
+					dlvArgs = append(dlvArgs, serviceNames...)
+					cmd = exec.CommandContext(ctx, "dlv", dlvArgs...)
+				}
+				fmt.Println("[run] Delve debugger listening on :2345 \u2014 attach with VS Code or 'dlv connect :2345'")
+			} else if cfg.EffectiveHotReload() {
+				if _, err := os.Stat(airConfig); err == nil {
+					cmd = exec.CommandContext(ctx, "air", "-c", airConfig)
+				} else {
+					// HotReload enabled but no air config found; fall back to go run
+					args := []string{"run", "./cmd", "server"}
+					args = append(args, serviceNames...)
+					cmd = exec.CommandContext(ctx, "go", args...)
+				}
+			} else {
+				// HotReload disabled: run go directly without air
+				args := []string{"run", "./cmd", "server"}
+				args = append(args, serviceNames...)
+				cmd = exec.CommandContext(ctx, "go", args...)
+			}
+			// Always assign. This was previously gated on len(envExtraEnv)>0
+			// (or --debug), so an empty per-env config left cmd.Env nil and
+			// none of the injected defaults (ENVIRONMENT, DATABASE_URL,
+			// CORS_ORIGINS) could ever reach the child. With nothing to
+			// inject, baseEnv == os.Environ(), so this is also a no-op for
+			// the legacy path.
+			cmd.Env = baseEnv
+			cmd.Dir = "."
+			return startProcess(cfg.Name, cmd, serverPorts...)
+		}
+		// A server that cannot start at all is a dead dev loop — fail
+		// loudly here instead of warning and serving frontends over
+		// nothing (the same honesty rule as the mid-session death).
+		if err := startServerProcess(); err != nil {
+			return fmt.Errorf("failed to start the server process: %w", err)
 		}
 	}
 
@@ -568,18 +622,20 @@ func runProjectDev(opts runOptions) error {
 	// `<name>.localhost` entry for any frontend not referenced by an
 	// HTTPRoute (the common dev case, where users haven't yet
 	// declared ingress).
-	// devGoroutineErrCh carries failures from background dev-proxy
-	// goroutines back to the main loop. Pre-2026-06-07 these were swallowed
-	// (a plain `fmt.Printf` inside the goroutine), so a bind failure like
-	// EADDRINUSE on the proxy port printed a single line and then the
-	// process happily reported "N process(es) started" while the proxy was
-	// in fact dead — every frontend request returned ECONNREFUSED.
 	//
-	// Buffered to the number of goroutines we might spawn so a fast-failing
-	// send never blocks. We act on the FIRST error (abort dev-up); later
-	// errors from sibling goroutines are drained-and-logged so the user
-	// sees them too, but only the first triggers the abort.
-	devGoroutineErrCh := make(chan error, 2)
+	// The listeners are bound SYNCHRONOUSLY (devproxy.ListenLoopback,
+	// one per loopback family — see that function for why a single
+	// `localhost:` bind was the fr-5b2121e48f split-brain), so a bind
+	// failure aborts here, loudly, before "N process(es) started" is
+	// ever printed. devGoroutineErrCh only carries the rare post-bind
+	// Serve failures (OS revoked the socket — EMFILE or similar);
+	// buffered + non-blocking sends, first error wins.
+	//
+	// runErr, when non-nil, aborts the dev session: children are still
+	// stopped gracefully below, but runProjectDev returns it so the
+	// forge process exits nonzero.
+	var runErr error
+	devGoroutineErrCh := make(chan error, 4)
 	if !opts.noProxy {
 		routes := loadDevProxyRoutes(ctx, opts.env)
 		backends := buildDevProxyBackends(frontendsToRun, servicesToRun, routes)
@@ -587,94 +643,87 @@ func runProjectDev(opts runOptions) error {
 			fmt.Println("[run] Dev proxy: no frontends or HTTP-routed services declared; skipping.")
 		} else {
 			router := devproxy.New(backends)
-			addr := fmt.Sprintf("localhost:%d", proxyPort)
-			srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 10 * time.Second}
-			printDevProxyBanner(proxyPort, backends)
-			go func() {
-				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					// Non-blocking: if the channel is full, the first
-					// error already won — drop ours rather than block the
-					// goroutine on a reader that's no longer waiting.
-					select {
-					case devGoroutineErrCh <- fmt.Errorf("dev proxy listener on %s: %w", addr, err):
-					default:
-					}
+			srv := &http.Server{Handler: router, ReadHeaderTimeout: 10 * time.Second}
+			listeners, lerr := devproxy.ListenLoopback(proxyPort)
+			if lerr != nil {
+				fmt.Fprintf(os.Stderr, "\n[run] FATAL: dev proxy: %v\n", lerr)
+				fmt.Fprintf(os.Stderr, "[run] is a stale dev server holding port %d? use --proxy-port to move the proxy\n", proxyPort)
+				runErr = fmt.Errorf("dev startup aborted: %w", lerr)
+			} else {
+				printDevProxyBanner(proxyPort, backends)
+				for _, ln := range listeners {
+					go func(ln net.Listener) {
+						if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+							// Non-blocking: if the channel is full, the first
+							// error already won — drop ours rather than block
+							// the goroutine on a reader that's no longer
+							// waiting.
+							select {
+							case devGoroutineErrCh <- fmt.Errorf("dev proxy listener on %s: %w", ln.Addr(), err):
+							default:
+							}
+						}
+					}(ln)
 				}
-			}()
-			// Hook proxy shutdown into the global ctx cancel so it
-			// tears down alongside the child processes on Ctrl-C.
-			go func() {
-				<-ctx.Done()
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = srv.Shutdown(shutdownCtx)
-			}()
+				// Hook proxy shutdown into the global ctx cancel so it
+				// tears down alongside the child processes on Ctrl-C.
+				go func() {
+					<-ctx.Done()
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = srv.Shutdown(shutdownCtx)
+				}()
+			}
 		}
 	}
 
-	fmt.Printf("\n[run] %d process(es) started. Press Ctrl+C to stop.\n\n", len(processes))
-
-	// reportChildExit surfaces a child that died before shutdown was
-	// requested: a loud failure naming the process and exit status, a
-	// best-effort port diagnosis (EADDRINUSE from a stale dev server is
-	// the overwhelmingly common cause of an instant frontend death),
-	// and a non-nil error so `forge run` exits nonzero instead of
-	// reporting "N process(es) started" over a corpse.
-	reportChildExit := func(p *managedProcess) error {
-		fmt.Fprintf(os.Stderr, "\n[run] FATAL: %s\n", describeChildExit(p.name, p.exitErr))
+	// announceChildDeath is the unmissable banner for a child that died
+	// before shutdown was requested: it names the process and exit
+	// status, plus a best-effort port diagnosis (EADDRINUSE from a
+	// stale dev server is the overwhelmingly common cause of an
+	// instant death). Printed BEFORE any restart/abort decision so the
+	// death is loud either way.
+	announceChildDeath := func(p *managedProcess) {
+		fmt.Fprintf(os.Stderr, "\n[run] ==================================================================\n")
+		fmt.Fprintf(os.Stderr, "[run] FATAL: %s\n", describeChildExit(p.name, p.exitErr))
 		for _, port := range p.ports {
 			if msg := diagnosePortConflict(port); msg != "" {
 				fmt.Fprintf(os.Stderr, "[run] %s\n", msg)
 			}
 		}
+		fmt.Fprintf(os.Stderr, "[run] ==================================================================\n")
+	}
+	// reportChildExit: the banner plus a non-nil error so `forge run`
+	// exits nonzero instead of reporting "N process(es) started" over a
+	// corpse.
+	reportChildExit := func(p *managedProcess) error {
+		announceChildDeath(p)
 		return childExitError(p.name, p.exitErr)
 	}
 
-	// runErr, when non-nil, aborts the dev session: children are still
-	// stopped gracefully below, but runProjectDev returns it so the
-	// forge process exits nonzero.
-	var runErr error
+	if runErr == nil {
+		fmt.Printf("\n[run] %d process(es) started. Press Ctrl+C to stop.\n\n", len(processes))
 
-	// Startup race: a bind failure (EADDRINUSE) hits ListenAndServe —
-	// and a child that can't bind its port dies — within a few hundred
-	// microseconds of Start. Give both a short window to surface before
-	// we block on sigCh — without this, the user sees "N process(es)
-	// started" first and the failure line trails behind, making the
-	// stack look like it might recover.
-	select {
-	case err := <-devGoroutineErrCh:
-		fmt.Fprintf(os.Stderr, "[run] FATAL: %v\n", err)
-		runErr = fmt.Errorf("dev startup aborted: %w", err)
-	case p := <-childExitCh:
-		runErr = reportChildExit(p)
-	case <-time.After(250 * time.Millisecond):
-		// Proxy bound cleanly and every child survived its first
-		// moments (or a failure is still in flight and the main select
-		// below picks it up).
+		// Startup race: a child that can't bind its port dies within a
+		// few hundred microseconds of Start. Give it a short window to
+		// surface before we hand over to the wait loop — an instant
+		// death is a configuration problem (stale dev server on the
+		// port), not the transient rebuild race the wait loop's restart
+		// exists for, so it aborts without a retry.
+		select {
+		case err := <-devGoroutineErrCh:
+			fmt.Fprintf(os.Stderr, "[run] FATAL: %v\n", err)
+			runErr = fmt.Errorf("dev startup aborted: %w", err)
+		case p := <-childExitCh:
+			runErr = reportChildExit(p)
+		case <-time.After(250 * time.Millisecond):
+			// Every child survived its first moments (or a failure is
+			// still in flight and the wait loop picks it up).
+		}
 	}
 
 	if runErr == nil {
-		// Wait for a signal, a late-arriving dev-goroutine error (rare:
-		// post-bind ListenAndServe failures mean the OS revoked the
-		// listener socket — EMFILE or similar), or a child dying
-		// mid-session.
-		select {
-		case <-sigCh:
-			fmt.Println("\n[run] Shutting down...")
-		case err := <-devGoroutineErrCh:
-			fmt.Fprintf(os.Stderr, "\n[run] dev proxy died: %v — shutting down\n", err)
-		case p := <-childExitCh:
-			// Ctrl-C delivers SIGINT to the whole foreground process
-			// group, so children can die from the same keypress that is
-			// about to reach sigCh — when both are ready, the signal is
-			// the truth and the child deaths are its consequence.
-			select {
-			case <-sigCh:
-				fmt.Println("\n[run] Shutting down...")
-			default:
-				runErr = reportChildExit(p)
-			}
-		}
+		runErr = runWaitLoop(sigCh, devGoroutineErrCh, childExitCh, serverName, startServerProcess, announceChildDeath)
 	}
 	cancel()
 
@@ -730,6 +779,129 @@ func runProjectDev(opts runOptions) error {
 
 	fmt.Println("[run] All processes stopped.")
 	return runErr
+}
+
+// runWaitLoop is the post-startup supervisor for `forge run`: it
+// blocks until a signal (clean shutdown, nil return), a dev-proxy
+// goroutine error, or a child death ends the session.
+//
+// The honesty contract (journey fr-00ff2c98d2: air exited Code 1 after
+// a generate-induced rebuild race and the orchestrator kept serving
+// the proxy + frontend over a dead backend with healthz=000 and no
+// message):
+//
+//   - every child death is announced via announceExit BEFORE any
+//     decision, so the loud banner prints whether or not we restart;
+//   - the SERVER child (serverName, the air/go-run hot-reload process)
+//     gets exactly ONE automatic restart — the rebuild race is
+//     transient (the stale binary's listener needs a moment to die),
+//     so a single retry usually revives the loop. The cap is hard: a
+//     second death aborts, so a genuinely broken server can't flap
+//     forever;
+//   - any other child death (frontends) aborts immediately — npm dev
+//     servers don't die from transient races;
+//   - a child death racing a pending signal is treated as the signal
+//     (Ctrl-C delivers SIGINT to the whole foreground process group,
+//     so children die from the same keypress that lands on sigCh).
+//
+// restartServer may be nil (no server child was started); a death of
+// any child then aborts like any other.
+func runWaitLoop(
+	sigCh <-chan os.Signal,
+	devErrCh <-chan error,
+	childExitCh <-chan *managedProcess,
+	serverName string,
+	restartServer func() error,
+	announceExit func(*managedProcess),
+) error {
+	restartsLeft := 0
+	if restartServer != nil && serverName != "" {
+		restartsLeft = 1
+	}
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println("\n[run] Shutting down...")
+			return nil
+		case err := <-devErrCh:
+			fmt.Fprintf(os.Stderr, "\n[run] dev proxy died: %v — shutting down\n", err)
+			return fmt.Errorf("dev proxy died: %w", err)
+		case p := <-childExitCh:
+			// When both a signal and a child death are pending, the
+			// signal is the truth and the death is its consequence.
+			select {
+			case <-sigCh:
+				fmt.Println("\n[run] Shutting down...")
+				return nil
+			default:
+			}
+			announceExit(p)
+			if p.name == serverName && restartsLeft > 0 {
+				restartsLeft--
+				fmt.Fprintf(os.Stderr, "[run] restarting %q (one automatic retry — hot-reload rebuild races are transient; a second death aborts the dev session)...\n", serverName)
+				if rerr := restartServer(); rerr != nil {
+					return fmt.Errorf("restart %q after unexpected exit: %w", serverName, rerr)
+				}
+				continue
+			}
+			return childExitError(p.name, p.exitErr)
+		}
+	}
+}
+
+// preflightPostgresPort fails fast — BEFORE `docker compose up` — when
+// the postgres publish port is already owned by something that isn't
+// this project's own postgres container. Without it, a host-installed
+// postgres on 5432 surfaced as "failed to start infrastructure: exit
+// status 1" with the POSTGRES_PORT remedy buried in a
+// docker-compose.yml comment (journey fr-8236556f2e). The error spells
+// out the exact rerun command with a verified-free port.
+//
+// composeOwnsPort reports whether the project's compose postgres
+// container is already running (an idempotent `compose up -d` from a
+// previous session) — in that case the busy port is OURS and compose
+// up will succeed. Injected as a func so tests don't need docker.
+func preflightPostgresPort(port int, composeOwnsPort func() bool) error {
+	if port <= 0 || port > 65535 {
+		// Malformed POSTGRES_PORT: let docker compose produce its own
+		// error rather than second-guessing here.
+		return nil
+	}
+	// The compose template publishes on 127.0.0.1 specifically, so the
+	// probe matches that bind exactly. A host postgres on the wildcard
+	// or on 127.0.0.1 both make this listen fail; a (weird) ::1-only
+	// listener doesn't conflict with the v4 publish and passes.
+	ln, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+	if err == nil {
+		_ = ln.Close()
+		return nil
+	}
+	if composeOwnsPort != nil && composeOwnsPort() {
+		return nil
+	}
+	return fmt.Errorf("port %d is already in use on 127.0.0.1 (a postgres already running on this host?), so docker compose cannot publish the dev database there.\n  Rerun with a free port:\n\n    POSTGRES_PORT=%d forge run\n", port, suggestFreeLoopbackPort(15432))
+}
+
+// composeHasRunningPostgres reports whether the compose project's
+// postgres service has a RUNNING container — the one legitimate owner
+// of the published port besides nobody.
+func composeHasRunningPostgres(ctx context.Context, composePath string) bool {
+	out, err := exec.CommandContext(ctx, "docker", "compose", "-f", composePath,
+		"ps", "-q", "--status", "running", "postgres").Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
+}
+
+// suggestFreeLoopbackPort asks the kernel for a currently-free loopback
+// port to put in remedy messages. Falls back to the given default when
+// the OS refuses (resource exhaustion); inherently racy, but the
+// suggestion is re-verified the moment the user reruns with it.
+func suggestFreeLoopbackPort(fallback int) int {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fallback
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // discoverComposeDatabaseURL asks docker compose for the published host
@@ -1328,16 +1500,61 @@ func declaredServiceNames(cfg *config.ProjectConfig) []string {
 // env > [defaultDevProxyPort]. A malformed env value is silently
 // ignored — the proxy is best-effort and we don't want a typo in
 // the user's shell to block `forge run`.
-func resolveProxyPort(flagPort int) int {
+//
+// declared maps every port a service/frontend child will bind to a
+// human-readable component name (see declaredComponentPorts). The
+// proxy must never share a port with a component it fronts: the proxy
+// binds loopback-only while the Go server binds the wildcard, so both
+// binds can SUCCEED on the same number (macOS) and the browser's
+// localhost then races between them by address family — the
+// split-brain of journey fr-5b2121e48f. The default skips past
+// declared ports silently; an explicit flag/env collision is an error,
+// because honoring it would guarantee the split-brain.
+func resolveProxyPort(flagPort int, declared map[int]string) (int, error) {
+	pick, source := 0, ""
 	if flagPort > 0 {
-		return flagPort
-	}
-	if env := os.Getenv("FORGE_RUN_PROXY_PORT"); env != "" {
+		pick, source = flagPort, "--proxy-port"
+	} else if env := os.Getenv("FORGE_RUN_PROXY_PORT"); env != "" {
 		if p, err := strconv.Atoi(env); err == nil && p > 0 {
-			return p
+			pick, source = p, "FORGE_RUN_PROXY_PORT"
 		}
 	}
-	return defaultDevProxyPort
+	if pick > 0 {
+		if owner, clash := declared[pick]; clash {
+			return 0, fmt.Errorf("dev proxy port %d (%s) is also %s's listen port — the proxy and the backend would split the port across address families and the browser's localhost would race between them; pick a port no component declares", pick, source, owner)
+		}
+		return pick, nil
+	}
+	for p := defaultDevProxyPort; p < defaultDevProxyPort+200; p++ {
+		if _, clash := declared[p]; clash {
+			continue
+		}
+		return p, nil
+	}
+	return 0, fmt.Errorf("no free dev proxy port in %d-%d (every candidate is a declared component port); set --proxy-port explicitly", defaultDevProxyPort, defaultDevProxyPort+199)
+}
+
+// declaredComponentPorts maps every port a service or frontend child
+// will bind to a human-readable component name, for the dev proxy's
+// overlap avoidance. First declaration wins on (misconfigured)
+// duplicate ports — any name is enough for the conflict message.
+func declaredComponentPorts(services []config.ServiceConfig, frontends []config.FrontendConfig) map[int]string {
+	out := map[int]string{}
+	for _, s := range services {
+		if s.Port > 0 {
+			if _, dup := out[s.Port]; !dup {
+				out[s.Port] = "service " + s.Name
+			}
+		}
+	}
+	for _, f := range frontends {
+		if f.Port > 0 {
+			if _, dup := out[f.Port]; !dup {
+				out[f.Port] = "frontend " + f.Name
+			}
+		}
+	}
+	return out
 }
 
 // loadDevProxyRoutes is the KCL-render shim for the run command's

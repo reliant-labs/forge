@@ -764,7 +764,8 @@ func stepLoadConfig(ctx *pipelineContext) error {
 }
 
 // stepLoadChecksums — was Step 0b.
-// Loads .forge/checksums.json and stamps the active forge version. The
+// Loads the .forge ownership state (disowned.json + hashes.json) and
+// stamps the active forge version. The
 // caller (runGeneratePipeline) is responsible for calling SaveChecksums
 // on exit so partial pipeline runs still persist what they wrote.
 //
@@ -1034,7 +1035,7 @@ func resolveGitDir(projectDir string) string {
 }
 
 // short truncates a hex digest for human-readable error messages. Full
-// digests live in `.forge/checksums.json` for the user to grep.
+// digests live in the files' own forge:hash markers for the user to grep.
 func short(h string) string {
 	if len(h) <= 12 {
 		return h

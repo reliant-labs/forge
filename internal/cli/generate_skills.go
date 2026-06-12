@@ -14,7 +14,7 @@
 // `.claude/skills/` are never touched (and never deleted).
 //
 // Tier transition: projects that predate this step have skill files
-// that are either untracked in .forge/checksums.json or tracked as
+// that carry no forge:hash certification marker — they froze as
 // Tier-2/legacy scaffold output. Those entries migrate to Tier-1 on the
 // first run: a differing on-disk copy is a stale scaffold-era render,
 // NOT a precious user edit, so it is overwritten with a one-line notice

@@ -9,7 +9,7 @@
 // Implementation choice: rather than instrument every individual generator
 // (mock_gen, middleware_gen, crud_gen, …) with a callback, we read the
 // post-generate state from forge_descriptor.json, the project filesystem,
-// and .forge/checksums.json. The derived provenance is "approximate but
+// and the embedded forge:hash markers. The derived provenance is "approximate but
 // useful" — exactly what the LLM caller wants. We can tighten it later by
 // threading a callback through the codegen package, but we don't need to
 // pay that cost up front to ship the most-useful 80%.

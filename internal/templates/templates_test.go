@@ -87,15 +87,15 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 	}
 
 	// Regression for forge-new-empty-services-unused-locals (originally
-	// the runAll declaration, now devMode after the 2026-06 appkit table
-	// migration): `devMode :=` exists purely to feed the per-service
-	// wireXxxDeps closures. When there are no services, those closures
-	// are never emitted and the declaration becomes a "declared and not
-	// used" compile error. go/parser doesn't flag unused locals so the
+	// the runAll declaration, then devMode after the 2026-06 appkit
+	// table migration, retired entirely with the M6 cmd-as-code rework):
+	// dev mode is read from cfg.Mode().IsDev() at each consumer, so the
+	// bootstrap must not declare ANY local that only service closures
+	// would consume. go/parser doesn't flag unused locals so the
 	// ParseFile check below cannot catch this on its own; guard the
 	// literal declaration string instead.
 	if strings.Contains(rendered, "devMode := ") {
-		t.Fatal("zero-service bootstrap must not declare devMode (no service closure emitted; would fail 'declared and not used')")
+		t.Fatal("bootstrap must not declare devMode — the devMode parameter threading was removed; consumers read cfg.Mode().IsDev() directly")
 	}
 
 	// Verify it parses as valid Go
@@ -149,15 +149,16 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 	rendered := string(content)
 
-	if !strings.Contains(rendered, "devMode := ") {
-		t.Fatal("bootstrap with services must declare devMode for the wireXxxDeps closures")
+	// devMode threading is gone (M6 cmd-as-code): wireXxxDeps reads
+	// cfg.Mode().IsDev() itself, so bootstrap must not declare a local.
+	if strings.Contains(rendered, "devMode := ") {
+		t.Fatal("bootstrap must not declare devMode — wireXxxDeps reads cfg.Mode().IsDev() directly")
 	}
 	// Since the registration-in-code rework, the per-service Construct
-	// closures (which consume devMode via wireXxxDeps) live in
-	// services_gen.go; bootstrap consumes devMode by handing it to the
-	// user-owned RegisteredServices row list.
-	if !strings.Contains(rendered, "RegisteredServices(app, cfg, logger, devMode, opts...)") {
-		t.Fatal("bootstrap with services must consume devMode via the RegisteredServices call")
+	// closures live in services_gen.go; bootstrap consumes the row list
+	// via the user-owned RegisteredServices.
+	if !strings.Contains(rendered, "RegisteredServices(app, cfg, logger, opts...)") {
+		t.Fatal("bootstrap with services must consume the user-owned RegisteredServices row list")
 	}
 	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
 		t.Fatal("bootstrap must delegate name filtering to appkit.Run via Options.Only")
@@ -237,7 +238,7 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	// missing kind cannot be reported as excluded. Service rows come
 	// from the user-owned RegisteredServices (registration-in-code);
 	// worker/operator rows stay inline.
-	for _, name := range []string{`Services: RegisteredServices(app, cfg, logger, devMode, opts...)`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
+	for _, name := range []string{`Services: RegisteredServices(app, cfg, logger, opts...)`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
 		if !strings.Contains(rendered, name) {
 			t.Errorf("bootstrap def table missing row %s — appkit's filter banner cannot report this name as excluded", name)
 		}
@@ -270,7 +271,7 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 // rather than by a security review months later.
 //
 // Zero-service projects don't get the swap (no Authorizer to flip) so
-// the banner is gated on .Services like the devMode local is.
+// the banner is gated on .Services.
 func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 	type svc struct {
 		Name, Package, ImportPath, FieldName, Alias, VarName string
@@ -319,10 +320,12 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 		if got := strings.Count(rendered, "DEV MODE — authorization checks disabled"); got != 1 {
 			t.Errorf("expected exactly one dev-mode Warn site (BootstrapOnly, shared via the Bootstrap delegate), found %d occurrence(s)", got)
 		}
-		// Gate must match the devMode local exactly — emitting unconditionally
-		// would print at every prod boot too, which neuters the signal.
-		if !strings.Contains(rendered, "if devMode {") {
-			t.Error("dev-mode banner must be gated on `if devMode {`")
+		// Gate must match the wireXxxDeps swap condition exactly
+		// (cfg.Mode().IsDev() — the single typed dev-mode gate); emitting
+		// unconditionally would print at every prod boot too, which
+		// neuters the signal.
+		if !strings.Contains(rendered, "if cfg.Mode().IsDev() {") {
+			t.Error("dev-mode banner must be gated on `if cfg.Mode().IsDev() {`")
 		}
 		if !strings.Contains(rendered, `"environment", cfg.Environment`) {
 			t.Error("dev-mode banner should attach the actual environment value so operators can see what triggered the swap")
@@ -619,11 +622,13 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 // needs to forward the typed *app.App to the hook.
 func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
 	data := struct {
-		Module       string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		ConfigFields map[string]bool
+		Module               string
+		HasDatabase          bool
+		DatabaseDriver       string
+		OrmEnabled           bool
+		ConfigFields         map[string]bool
+		AuthProvider         string
+		AuthProviderExternal bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},

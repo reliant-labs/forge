@@ -48,14 +48,14 @@ import (
 // construction via {{.Alias}}.New, and the mux mount closure with the
 // authz interceptor + HTTP stack. List it in RegisteredServices
 // (pkg/app/services.go) to serve it from this binary.
-func serviceRow{{.FieldName}}(app *App, cfg *config.Config, logger *slog.Logger, devMode bool, opts ...connect.HandlerOption) appkit.ServiceDef {
+func serviceRow{{.FieldName}}(app *App, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) appkit.ServiceDef {
 	return appkit.ServiceDef{
 		Name: "{{.Name}}",
 {{- if $.RESTEnabled}}
 		ConnectName: {{.ConnectPkg}}.{{.ProtoServiceName}}Name,
 {{- end}}
 		Construct: func() (appkit.Mounter, error) {
-			{{.Package}}Deps := wire{{.FieldName}}Deps(app, cfg, logger, devMode)
+			{{.Package}}Deps := wire{{.FieldName}}Deps(app, cfg, logger)
 			{{.Package}}Svc, err := {{.Alias}}.New({{.Package}}Deps)
 			if err != nil {
 				return nil, fmt.Errorf("initializing {{.Package}} service: %w", err)

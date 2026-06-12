@@ -294,7 +294,6 @@ type scaffoldWireService struct {
 	ImportPath       string
 	LoggerAttrKey    string
 	NeedsAuthzVar    bool
-	NeedsDevMode     bool
 	Assignments      []scaffoldWireAssignment
 	UnresolvedFields []struct{ Name, Type, Hint string }
 }
@@ -328,11 +327,10 @@ func (g *ProjectGenerator) generateWireGen(services []scaffoldServiceInfo) error
 			ImportPath:    "handlers/" + s.Package,
 			LoggerAttrKey: "service",
 			NeedsAuthzVar: true,
-			NeedsDevMode:  true,
 			Assignments: []scaffoldWireAssignment{
 				{Field: "Logger", Expr: fmt.Sprintf("logger.With(%q, %q)", "service", s.Name)},
 				{Field: "Config", Expr: "cfg"},
-				{Field: "Authorizer", Expr: "authz", Comment: "devMode swap to middleware.DevAuthorizer in development"},
+				{Field: "Authorizer", Expr: "authz", Comment: "dev-mode swap to middleware.DevAuthorizer (cfg.Mode().IsDev())"},
 			},
 		})
 	}

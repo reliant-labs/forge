@@ -88,6 +88,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -103,6 +104,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	// Pure-Go sqlite driver (no cgo): the dev-mode boot test applies the
+	// project's own migrations to the server's database file before boot
+	// — the generated server does not auto-migrate.
+	_ "modernc.org/sqlite"
 )
 
 // ───────────────────────── fixture 1: cp-forge-shaped ─────────────────────────
@@ -1973,6 +1979,43 @@ func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 	_ = os.Remove(serverBin)
 }
 
+// applyProjectMigrationsSQLite applies the project's db/migrations
+// *.up.sql files, in order, to the given sqlite database file — the
+// schema the generated server expects but does not create itself.
+func applyProjectMigrationsSQLite(t *testing.T, projectDir, dbFile string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbFile)
+	if err != nil {
+		t.Fatalf("open sqlite db %s: %v", dbFile, err)
+	}
+	defer db.Close()
+
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	entries, err := os.ReadDir(migDir)
+	if err != nil {
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	var ups []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".up.sql") {
+			ups = append(ups, e.Name())
+		}
+	}
+	if len(ups) == 0 {
+		t.Fatalf("no .up.sql migrations in %s", migDir)
+	}
+	sort.Strings(ups)
+	for _, name := range ups {
+		sqlSrc, rerr := os.ReadFile(filepath.Join(migDir, name))
+		if rerr != nil {
+			t.Fatalf("read migration %s: %v", name, rerr)
+		}
+		if _, xerr := db.Exec(string(sqlSrc)); xerr != nil {
+			t.Fatalf("apply migration %s: %v", name, xerr)
+		}
+	}
+}
+
 // bootDevCRUDNoToken boots the corpus server in dev mode (ENVIRONMENT=
 // development, NO AUTH_MODE, no token, no pack) against a real sqlite
 // file and makes a real Connect JSON call to an auth-required CRUD RPC.
@@ -1987,11 +2030,17 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 	serverBin := filepath.Join(projectDir, "corpus-server")
 	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
 
+	// The generated server does not auto-migrate; give it a database
+	// with the project's own schema applied (same SQL the in-process
+	// lifecycle tests run against).
+	dbFile := filepath.Join(t.TempDir(), "corpus-devclaims.db")
+	applyProjectMigrationsSQLite(t, projectDir, dbFile)
+
 	cmd := exec.Command(serverBin, "server")
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL=file:"+filepath.Join(t.TempDir(), "corpus-devclaims.db"),
+		"DATABASE_URL=file:"+dbFile,
 		"ENVIRONMENT=development",
 	)
 	// Dev mode ALONE must be enough — force AUTH_MODE empty in case the

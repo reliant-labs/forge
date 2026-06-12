@@ -265,19 +265,19 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		AppExtras: &AppExtras{},
 	}
 {{- if .Services}}
-	// devMode swaps each service's Authorizer to middleware.DevAuthorizer{}
-	// inside wireXxxDeps; the mount closures re-read the same instance so
-	// interceptor + handler stay in lockstep. cfg.Mode() is THE dev-mode
-	// gate (typed, zero value Production, derived from ENVIRONMENT in
+	// Dev mode swaps each service's Authorizer to middleware.DevAuthorizer{}
+	// inside wireXxxDeps (which reads cfg.Mode().IsDev() itself — no
+	// devMode parameter threading). cfg.Mode() is THE dev-mode gate
+	// (typed, zero value Production, derived from ENVIRONMENT in
 	// pkg/config) — the same value the auth middleware and auth packs
-	// receive by injection, so the three gates can never disagree.
-	devMode := cfg.Mode().IsDev()
-	// Loud-by-default dev-mode banner: when devMode is on the per-service
+	// receive by injection, so the gates can never disagree.
+	//
+	// Loud-by-default dev-mode banner: when dev mode is on the per-service
 	// Authorizer is swapped to middleware.DevAuthorizer{} (allow-all).
 	// A prod manifest that accidentally sets ENVIRONMENT=development gets
 	// a screaming Warn at every container start instead of silently
 	// shipping with authz disabled.
-	if devMode {
+	if cfg.Mode().IsDev() {
 		logger.Warn("DEV MODE — authorization checks disabled (DevAuthorizer is allow-all); set ENVIRONMENT to anything other than \"development\" in non-dev environments",
 {{- if index .ConfigFields "Environment"}}
 			"environment", cfg.Environment,
@@ -369,7 +369,7 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		// (pkg/app/services.go). Serving a service = listing its
 		// serviceRow there; the row constructors themselves are
 		// generated guardrails in pkg/app/services_gen.go.
-		Services: RegisteredServices(app, cfg, logger, devMode, opts...),
+		Services: RegisteredServices(app, cfg, logger, opts...),
 {{- end}}
 {{- if .Workers}}
 		// Workers — construction passes through app.Hooks.ConstructWorker.

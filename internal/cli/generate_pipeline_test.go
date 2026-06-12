@@ -68,6 +68,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"MCP manifest",
 		"go mod tidy (pre-wiring)",
 		"pkg/app/bootstrap.go",
+		"per-service subcommands (cmd/services_gen.go)",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
 		"sqlc generate",

@@ -75,20 +75,26 @@ their existing shape until they choose this opt-in.
 
 Run `forge generate`. The pipeline rewrites:
 
-- **`pkg/app/bootstrap.go`** — `BootstrapOnly` switches to lazy
-  per-service construction. Calling `BootstrapOnly(mux, logger, cfg,
-  []string{"api"})` now constructs ONLY the `api` service's
-  dependency graph; the worker's, billing's, etc. are skipped. This
-  is the runtime win the shared mode delivers — `./<bin> api` boots
-  faster and uses less memory than `./<bin> server`.
+- **`pkg/app/bootstrap.go`** — unchanged in shape (it is the same in
+  both binary modes): `BootstrapOnly(mux, logger, cfg, []string{"api"})`
+  mounts ONLY the `api` service; sibling services are constructed as
+  cheap structs (cross-service reads stay nil-safe) but their handlers
+  never land on the mux, and cmd/server.go gates which workers and
+  operators START using the same name set.
 - **`cmd/main.go`** — replaced with the shared-binary cobra root
   (cmd-shared-main.go.tmpl). Functionally identical to the canonical
   cmd-root for top-level routing; the difference is the help text and
   documentation comments.
-- **`cmd/<svc>.go`** — one new file per service (`cmd/api.go`,
-  `cmd/worker.go`, etc.). Each is a thin cobra subcommand that
-  delegates to `runServer(cmd, []string{"<svc>"})`. The canonical
-  `./<bin> server [<svc>...]` form continues to work.
+- **`cmd/services_gen.go`** — already present in BOTH binary modes:
+  one cobra subcommand per service listed in `RegisteredServices`
+  (`pkg/app/services.go` — what the binary serves is code, not
+  config). Each delegates to `runServer(cmd, []string{"<svc>"})`; the
+  canonical `./<bin> server [<svc>...]` form continues to work. This
+  file is a Tier-1 projection of the registration rows — shared mode
+  does not change the subcommand surface, only the deploy story.
+  (Pre-M6 shared-mode projects had one scaffold-time `cmd/<svc>.go`
+  per service instead — delete those by hand after regenerating;
+  leaving them produces duplicate help entries.)
 - **`deploy/kcl/<env>/main.k`** — replaced with the
   `MultiServiceApplication` shape (one `image:`, N
   `SubCommandService` entries via `render.multi_service_apps(multi)`).
@@ -146,11 +152,9 @@ To go back to `binary: per-service`:
 
 1. Set `binary: per-service` (or remove the field) in `forge.yaml`.
 2. Run `forge generate`. The bootstrap reverts to all-services
-   construction; cmd/main.go reverts to the canonical cmd-root; the
-   per-service `cmd/<svc>.go` files become orphans — delete them
-   manually (`forge generate` does not currently sweep them — see
-   FORGE_BACKLOG.md "stale cmd/ orphans on binary mode change" if
-   present, otherwise this is the deletion you have to do by hand).
+   construction and cmd/main.go reverts to the canonical cmd-root.
+   `cmd/services_gen.go` is mode-independent (it projects the
+   RegisteredServices rows) and stays as-is.
 3. KCL `deploy/kcl/<env>/main.k` reverts to N `Application` blocks.
 
 ## Related skills
@@ -158,5 +162,10 @@ To go back to `binary: per-service`:
 - `architecture` — binary modes overview.
 - `deploy` — `MultiServiceApplication` for KCL.
 - `services` — adding a new service post-migration (works the same
-  way in either mode; in shared mode `forge add service <name>` also
-  emits the `cmd/<name>.go` cobra subcommand).
+  way in either mode: implement, add its `serviceRow` line to
+  `pkg/app/services.go`, and `forge generate` emits its subcommand
+  into `cmd/services_gen.go`).
+- `binaries` — second binaries (non-Connect long-running processes)
+  ride the same shared root: `forge add binary <name>` scaffolds a
+  user-owned `cmd/<name>.go`, or register a hand-rolled command via
+  `userCommands()` in `cmd/commands.go`.

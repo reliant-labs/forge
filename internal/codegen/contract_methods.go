@@ -53,8 +53,8 @@ func (s *svc) GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *
 	return GenerateCmdServer(messages, targetDir, cs)
 }
 
-func (s *svc) GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateCmdServerWithFields(configFields, targetDir, cs)
+func (s *svc) GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error {
+	return GenerateCmdServerWithFields(configFields, authProvider, targetDir, cs)
 }
 
 func (s *svc) GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {

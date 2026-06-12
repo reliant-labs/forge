@@ -56,7 +56,7 @@ func TestE2ERegistrationTypesOnlyService(t *testing.T) {
 	// initial service — the migration contract for fresh projects.
 	registryPath := filepath.Join(projectDir, "pkg", "app", "services.go")
 	registry := readFileE2E(t, registryPath)
-	if !strings.Contains(registry, "serviceRowAPI(app, cfg, logger, devMode, opts...),") {
+	if !strings.Contains(registry, "serviceRowAPI(app, cfg, logger, opts...),") {
 		t.Fatalf("forge new must scaffold pkg/app/services.go with the api row:\n%s", registry)
 	}
 
@@ -129,7 +129,7 @@ message GetProjectResponse {
 
 	// But the binary does not SERVE it: generate says so, with the exact
 	// line to add.
-	if !strings.Contains(out, "serviceRowProject(app, cfg, logger, devMode, opts...),") {
+	if !strings.Contains(out, "serviceRowProject(app, cfg, logger, opts...),") {
 		t.Errorf("generate must print the registration line for the unlisted service:\n%s", out)
 	}
 
@@ -269,8 +269,8 @@ const (
 // api row, or replacing it with the tombstone comment.
 func editServiceRegistry(t *testing.T, registryPath string, edit registryEdit) {
 	t.Helper()
-	const apiRow = "serviceRowAPI(app, cfg, logger, devMode, opts...),"
-	const projectRow = "serviceRowProject(app, cfg, logger, devMode, opts...),"
+	const apiRow = "serviceRowAPI(app, cfg, logger, opts...),"
+	const projectRow = "serviceRowProject(app, cfg, logger, opts...),"
 	const tombstone = "// project: types-only — served by control-plane"
 
 	data, err := os.ReadFile(registryPath)

@@ -144,7 +144,7 @@ func runAddRPC(svc, rpcName string, mode rpcStreamMode) error {
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("service %q is types-only — %s deliberately does not register it (its row was deleted; see the comment there), so this binary has no handler scaffold to add an RPC to", svc, serviceRegistryRelPath),
 			serviceRegistryRelPath,
-			fmt.Sprintf("add the RPC to the proto only (the types/client still generate), implement it in the binary the %s comment names, or restore the `%s(app, cfg, logger, devMode, opts...),` row to serve it here", serviceRegistryRelPath, codegen.ServiceRowFuncName(svc)))
+			fmt.Sprintf("add the RPC to the proto only (the types/client still generate), implement it in the binary the %s comment names, or restore the `%s(app, cfg, logger, opts...),` row to serve it here", serviceRegistryRelPath, codegen.ServiceRowFuncName(svc)))
 	}
 
 	pkg := naming.ServicePackage(svc)

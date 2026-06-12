@@ -892,11 +892,11 @@ func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) [
 		switch state {
 		case registrationTombstoned:
 			f.State = "tombstoned"
-			f.Message = fmt.Sprintf("%s exists but %s deliberately does not register %s (its row was deleted; the comment there says where it's served) — implement+register it by restoring `%s(app, cfg, logger, devMode, opts...),`, or delete the dir (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones)",
+			f.Message = fmt.Sprintf("%s exists but %s deliberately does not register %s (its row was deleted; the comment there says where it's served) — implement+register it by restoring `%s(app, cfg, logger, opts...),`, or delete the dir (run `%s generate --force-cleanup` to delete the generated files, then move or delete your hand-written ones)",
 				dir, serviceRegistryRelPath, s.Name, codegen.ServiceRowFuncName(s.Name), Name())
 		default:
 			f.State = "unlisted"
-			f.Message = fmt.Sprintf("row constructor %s is generated but unreferenced — to serve %s from this binary add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices in %s; to make it types-only delete %s and leave a comment in %s naming the binary that serves it",
+			f.Message = fmt.Sprintf("row constructor %s is generated but unreferenced — to serve %s from this binary add `%s(app, cfg, logger, opts...),` to RegisteredServices in %s; to make it types-only delete %s and leave a comment in %s naming the binary that serves it",
 				codegen.ServiceRowFuncName(s.Name), s.Name, codegen.ServiceRowFuncName(s.Name), serviceRegistryRelPath, dir, serviceRegistryRelPath)
 		}
 		out = append(out, f)

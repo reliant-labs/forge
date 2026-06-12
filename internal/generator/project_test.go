@@ -113,7 +113,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("bootstrap.go should contain generated header, got:\n%s", bootstrapContents)
 	}
 	// (2026-05-07 wire-gen migration) wire_gen owns the Deps literal;
-	// the row constructor calls wireXxxDeps(app, cfg, logger, devMode)
+	// the row constructor calls wireXxxDeps(app, cfg, logger)
 	// and feeds the result into xxx.New. Since the registration-in-code
 	// rework those row constructors live in services_gen.go, bootstrap
 	// consumes the user-owned RegisteredServices (pkg/app/services.go),
@@ -126,11 +126,11 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if !strings.Contains(rowContents, "wireAPIDeps(app, cfg, logger") {
 		t.Fatalf("services_gen.go should call wireAPIDeps(...), got:\n%s", rowContents)
 	}
-	if !strings.Contains(bootstrapContents, "RegisteredServices(app, cfg, logger, devMode, opts...)") {
+	if !strings.Contains(bootstrapContents, "RegisteredServices(app, cfg, logger, opts...)") {
 		t.Fatalf("bootstrap.go should consume RegisteredServices, got:\n%s", bootstrapContents)
 	}
 	registryContents := readFile(t, filepath.Join(root, "pkg", "app", "services.go"))
-	if !strings.Contains(registryContents, "serviceRowAPI(app, cfg, logger, devMode, opts...),") {
+	if !strings.Contains(registryContents, "serviceRowAPI(app, cfg, logger, opts...),") {
 		t.Fatalf("services.go should list the api row, got:\n%s", registryContents)
 	}
 	if !strings.Contains(bootstrapContents, "func Bootstrap(") {
@@ -166,6 +166,26 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	// shim. Assert the serverkit handoff instead of a literal Shutdown call.
 	if !strings.Contains(serverContents, "serverkit.Run(") {
 		t.Fatalf("cmd/server.go should hand off lifecycle to serverkit.Run(), got:\n%s", serverContents)
+	}
+
+	// M6 cmd-as-code: every service-kind codegen scaffold gets the
+	// per-service subcommand projection (cmd/services_gen.go) and the
+	// user-owned extension point (cmd/commands.go) that cmd/main.go
+	// consumes — all three must agree or the scaffold doesn't compile.
+	subcmdContents := readFile(t, filepath.Join(root, "cmd", "services_gen.go"))
+	if !strings.Contains(subcmdContents, "var serviceCmdAPI = &cobra.Command{") {
+		t.Fatalf("cmd/services_gen.go should declare the api subcommand, got:\n%s", subcmdContents)
+	}
+	if !strings.Contains(subcmdContents, `return runServer(cmd, []string{"api"})`) {
+		t.Fatalf("cmd/services_gen.go subcommand should delegate to runServer with the api filter, got:\n%s", subcmdContents)
+	}
+	commandsContents := readFile(t, filepath.Join(root, "cmd", "commands.go"))
+	if !strings.Contains(commandsContents, "func userCommands() []*cobra.Command {") {
+		t.Fatalf("cmd/commands.go should scaffold the userCommands extension point, got:\n%s", commandsContents)
+	}
+	mainContents := readFile(t, filepath.Join(root, "cmd", "main.go"))
+	if !strings.Contains(mainContents, "for _, c := range userCommands() {") {
+		t.Fatalf("cmd/main.go should consume userCommands(), got:\n%s", mainContents)
 	}
 	// A7: Server should wire the CORS middleware factory when frontend exists.
 	// Serverkit drives the actual wrap based on Config.CORSOrigins.

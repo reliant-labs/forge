@@ -10,9 +10,9 @@ import (
 {{- if or .Services .MultiTenantEnabled}}
 	"context"
 {{- end}}
-{{- if or .Services .Packages}}
+{{- /* log/slog is unconditional: testConfig.logger and WithLogger use
+       *slog.Logger in every component state, including zero-component. */}}
 	"log/slog"
-{{- end}}
 {{- if .Services}}
 	"net/http"
 	"net/http/httptest"

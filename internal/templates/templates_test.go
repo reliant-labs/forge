@@ -488,11 +488,61 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 		t.Fatal("\"testing\" import should be suppressed when no services and no packages exist")
 	}
 
+	// The body uses *slog.Logger unconditionally (testConfig.logger,
+	// WithLogger), so the import must be present even in the
+	// zero-component state. Journey fr-994db53964: zero-service
+	// pkg/app/testing.go failed to compile with `undefined: slog`
+	// because the import was gated on `or .Services .Packages` while
+	// the symbols were not.
+	if strings.Contains(rendered, "slog.") && !strings.Contains(rendered, `"log/slog"`) {
+		t.Fatalf("rendered testing.go references slog without importing log/slog:\n%s", rendered)
+	}
+
 	// Verify it parses as valid Go
 	fset := token.NewFileSet()
 	_, parseErr := parser.ParseFile(fset, "testing.go", rendered, parser.AllErrors)
 	if parseErr != nil {
 		t.Fatalf("rendered testing.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+	}
+
+	// Belt-and-braces for the same class of bug on every qualifier the
+	// template can emit: any package qualifier used in the body must
+	// have a matching import. Parse-level only (no type checking), but
+	// it catches gated-import-vs-unconditional-symbol drift for all
+	// branches of the template, not just slog.
+	assertQualifiersImported(t, rendered)
+}
+
+// assertQualifiersImported parses a rendered Go file and asserts that
+// every known package qualifier referenced in the body has a matching
+// import path. The qualifier→path table covers the packages
+// bootstrap_testing.go.tmpl can emit; extend it when the template grows
+// a new import.
+func assertQualifiersImported(t *testing.T, src string) {
+	t.Helper()
+	qualifierImports := map[string]string{
+		"slog":     "log/slog",
+		"testing":  "testing",
+		"context":  "context",
+		"http":     "net/http",
+		"httptest": "net/http/httptest",
+		"connect":  "connectrpc.com/connect",
+		"orm":      "github.com/reliant-labs/forge/pkg/orm",
+		"testkit":  "github.com/reliant-labs/forge/pkg/testkit",
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "testing.go", src, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	imported := map[string]bool{}
+	for _, imp := range f.Imports {
+		imported[strings.Trim(imp.Path.Value, `"`)] = true
+	}
+	for qual, path := range qualifierImports {
+		if strings.Contains(src, qual+".") && !imported[path] {
+			t.Errorf("rendered file references %s.* without importing %q", qual, path)
+		}
 	}
 }
 

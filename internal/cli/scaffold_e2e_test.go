@@ -23,6 +23,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Create project
 	runCmd(t, dir, forgeBin, "new", "basicapp", "--mod", "example.com/basicapp", "--service", "api")
@@ -75,6 +76,7 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Create project with multiple services and a frontend
 	runCmd(t, dir, forgeBin, "new", "multiapp",
@@ -94,8 +96,10 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 	// Verify frontend exists
 	assertPathExistsE2E(t, filepath.Join(projectDir, "frontends", "web", "package.json"))
 
-	// Verify CORS middleware is generated (since frontend exists)
-	assertPathExistsE2E(t, filepath.Join(projectDir, "pkg", "middleware", "cors.go"))
+	// Verify the thin auth-policy middleware file is generated (CORS and
+	// the other mechanisms come from forge/pkg/middleware, wired in
+	// cmd/server.go).
+	assertPathExistsE2E(t, filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 
 	// Generate code
 	runCmd(t, projectDir, forgeBin, "generate")
@@ -127,6 +131,7 @@ func TestE2EScaffoldWithEntityProto(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Create project
 	runCmd(t, dir, forgeBin, "new", "ormapp", "--mod", "example.com/ormapp", "--service", "api")
@@ -224,6 +229,7 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Create initial project
 	// The intended behavior is project-may-start-with-or-without-services;
@@ -250,13 +256,16 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	// Build
 	runCmd(t, projectDir, "go", "build", "./...")
 
-	// Verify bootstrap includes both services
-	bootstrapContent := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
-	if !strings.Contains(bootstrapContent, "api.New(") {
-		t.Fatal("expected bootstrap to include api service")
+	// Verify both services are constructible from the generated rows.
+	// Registration-in-code: construction lives in the serviceRow<X>
+	// constructors in pkg/app/services_gen.go (what the binary actually
+	// SERVES is the user-owned pkg/app/services.go list).
+	rowsContent := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
+	if !strings.Contains(rowsContent, "api.New(") {
+		t.Fatal("expected services_gen.go to construct the api service")
 	}
-	if !strings.Contains(bootstrapContent, "billing.New(") {
-		t.Fatal("expected bootstrap to include billing service")
+	if !strings.Contains(rowsContent, "billing.New(") {
+		t.Fatal("expected services_gen.go to construct the billing service")
 	}
 }
 
@@ -278,6 +287,7 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Create project
 	runCmd(t, dir, forgeBin, "new", "srvtest", "--mod", "example.com/srvtest", "--service", "api")
@@ -306,6 +316,12 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL=", // No DB needed for health check
+		// The scaffold defaults ENVIRONMENT=production, where a server
+		// with no auth provider REFUSES to start (the H2 refusal
+		// contract, tested in forge/pkg/authn). This test is about the
+		// serve lifecycle (healthz/readyz), so boot in the documented
+		// dev posture instead.
+		"ENVIRONMENT=development",
 	)
 
 	// Capture output for debugging
@@ -579,4 +595,23 @@ func readFileE2E(t *testing.T, path string) string {
 		t.Fatalf("ReadFile(%s) error = %v", path, err)
 	}
 	return string(data)
+}
+
+// linkForgeSibling symlinks the forge repo checkout next to the
+// scaffold parent dir so `forge new` detects the sibling forge/pkg and
+// writes the dev replace — the documented "forge alongside project"
+// dev layout; `forge generate` then vendors it into ./.forge-pkg.
+// Without it, scaffolds in t.TempDir() resolve forge/pkg from the
+// published proxy snapshot, which lags the in-repo packages the
+// current scaffold references (e.g. pkg/authn, pkg/appkit), and
+// generate's root `go mod tidy` step fails.
+func linkForgeSibling(t *testing.T, parentDir string) {
+	t.Helper()
+	link := filepath.Join(parentDir, "forge")
+	if _, err := os.Lstat(link); err == nil {
+		return
+	}
+	if err := os.Symlink(findRepoRoot(t), link); err != nil {
+		t.Fatalf("symlink forge sibling checkout: %v", err)
+	}
 }

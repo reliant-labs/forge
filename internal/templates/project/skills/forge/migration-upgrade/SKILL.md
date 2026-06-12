@@ -114,6 +114,10 @@ helper, a changed file layout — those do.
   lifecycle → `forge/pkg/crud` delegation shims.
 - `migrations/v0.x-to-authz-lib` — `handlers/<svc>/authorizer_gen.go`
   inline matching logic → `forge/pkg/authz` interface-driven shim.
+- `migrations/v0.x-to-middleware-lib` — ~25 scaffolded pkg/middleware
+  mechanism files → forge libraries (`pkg/authn`, `pkg/authz`,
+  `pkg/middleware`, `pkg/observe`) + ONE thin user-owned policy file.
+  Optional; old copies keep working.
 - `migrations/v0.x-to-tdd-rpccases` — `handlers_crud_gen_test.go`
   per-RPC inline test boilerplate → `tdd.RunRPCCases` row-driven shims.
 - `migrations/v0.x-to-pack-starter-split` — stripe / twilio /

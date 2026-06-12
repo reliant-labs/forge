@@ -129,7 +129,7 @@ func TestAuditCRUDStubs_NoStubs(t *testing.T) {
 	if cat.Status != AuditStatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
-	if !strings.Contains(cat.Summary, "0 CRUD") {
+	if !strings.Contains(cat.Summary, "0 custom-read-shape CRUD stubs") {
 		t.Errorf("summary should report 0 stubs, got %q", cat.Summary)
 	}
 	if total, _ := cat.Details["total_stubs"].(int); total != 0 {
@@ -137,14 +137,15 @@ func TestAuditCRUDStubs_NoStubs(t *testing.T) {
 	}
 }
 
-// TestAuditCRUDStubs_DetectsStub fixtures a handlers_crud_gen.go
-// carrying a FORGE_CRUD_SHAPE_MISMATCH marker and confirms audit
-// surfaces (a) warn status, (b) the file path, (c) the method name
-// stitched to the marker, and (d) the reason text. This is the
+// TestAuditCRUDStubs_DetectsLegacyMarker fixtures a handlers_crud_gen.go
+// carrying the PRE-RENAME FORGE_CRUD_SHAPE_MISMATCH marker and confirms
+// audit still surfaces it — the marker was renamed to
+// forge:custom-read-shape, and the old spelling stays recognized for one
+// release so existing files keep producing findings. This is also the
 // kalshi-trader friction's regression case — ListSettlements
 // returning CodeUnimplemented in production must be a structured
 // finding, not a buried comment in a generated file.
-func TestAuditCRUDStubs_DetectsStub(t *testing.T) {
+func TestAuditCRUDStubs_DetectsLegacyMarker(t *testing.T) {
 	dir := t.TempDir()
 	pkgDir := filepath.Join(dir, "handlers", "api")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
@@ -195,6 +196,64 @@ func (s *Service) ListSettlements(
 	}
 	if !strings.HasSuffix(s["file"], "handlers/api/handlers_crud_gen.go") {
 		t.Errorf("file: want handlers/api/handlers_crud_gen.go suffix, got %q", s["file"])
+	}
+}
+
+// TestAuditCRUDStubs_DetectsCurrentMarker covers the renamed marker the
+// shim template emits today (`forge:custom-read-shape`) in the
+// user-owned handlers_crud.go, and the grep-compat details the finding
+// carries for consumers migrating off the old string.
+func TestAuditCRUDStubs_DetectsCurrentMarker(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "handlers", "api")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `package api
+
+import (
+	"context"
+	"connectrpc.com/connect"
+	pb "example.com/p/gen/services/api/v1"
+)
+
+// ListTrades implements the ListTrades RPC.
+//
+// forge:custom-read-shape: request ListTradesRequest shaped by ticker+limit (observed fields: ticker, limit)
+//
+// Custom read shape — yours to implement.
+func (s *Service) ListTrades(
+	ctx context.Context,
+	req *connect.Request[pb.ListTradesRequest],
+) (*connect.Response[pb.ListTradesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "handlers_crud.go"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cat := auditCRUDStubs(dir)
+	if cat.Status != AuditStatusWarn {
+		t.Errorf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
+	}
+	stubs, ok := cat.Details["stubs"].([]map[string]string)
+	if !ok || len(stubs) != 1 {
+		t.Fatalf("stubs: want 1 entry, got %#v", cat.Details["stubs"])
+	}
+	if stubs[0]["method"] != "ListTrades" {
+		t.Errorf("method: want ListTrades, got %q", stubs[0]["method"])
+	}
+	if !strings.Contains(stubs[0]["reason"], "ticker+limit") {
+		t.Errorf("reason should carry the marker text, got %q", stubs[0]["reason"])
+	}
+	// Grep-compat note: consumers must be able to discover the rename
+	// from the finding itself.
+	if got, _ := cat.Details["marker"].(string); got != "forge:custom-read-shape" {
+		t.Errorf("marker detail: want forge:custom-read-shape, got %q", got)
+	}
+	if got, _ := cat.Details["legacy_marker"].(string); got != "FORGE_CRUD_SHAPE_MISMATCH" {
+		t.Errorf("legacy_marker detail: want FORGE_CRUD_SHAPE_MISMATCH, got %q", got)
 	}
 }
 

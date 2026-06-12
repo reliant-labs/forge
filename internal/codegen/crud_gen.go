@@ -69,11 +69,15 @@ type CRUDMethodTemplateData struct {
 	// observed in svc.Messages don't line up with what the CRUD body
 	// templates assume (AIP-158 page_size/page_token for list, an `id`
 	// scalar key for get/update/delete, an entity-typed response field,
-	// etc.). When true the template emits a tagged TODO stub returning
-	// CodeUnimplemented rather than CRUD-body code that wouldn't compile
-	// against the real proto. See validateCRUDShape for the rules. The
-	// stub carries a FORGE_CRUD_SHAPE_MISMATCH marker plus MismatchReason
-	// so the user (and any future `forge audit`) can spot it.
+	// etc.). That's a legitimate domain decision, not an error — the
+	// template emits a tagged stub returning CodeUnimplemented rather
+	// than CRUD-body code that wouldn't compile against the real proto,
+	// and the user implements the custom shape in the owned shim. See
+	// validateCRUDShape for the rules. The stub carries a
+	// `forge:custom-read-shape` marker plus MismatchReason so the user
+	// (and `forge audit`) can spot it. (Markers emitted before this
+	// release spelled it FORGE_CRUD_SHAPE_MISMATCH; audit still
+	// recognizes that string for one release.)
 	ShapeMismatch  bool
 	MismatchReason string
 }
@@ -225,7 +229,12 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 
 	// The pre-split Tier-1 implementation file is dead: forge no longer
 	// emits RPC method bodies as generated code. Sweep it (and its
-	// manifest entry) unless the user took ownership of it.
+	// manifest entry) unless the user took ownership of it. Snapshot the
+	// methods it really implemented FIRST: if one of them is about to be
+	// re-scaffolded as a custom-read-shape stub, that replaces a working
+	// implementation with CodeUnimplemented and must be LOUD — a
+	// downstream agent had a near-miss with live traffic on exactly this.
+	previouslyImplemented := implementedMethodsIn(filepath.Join(projectDir, relDir, "handlers_crud_gen.go"))
 	removeRetiredForgeFile(projectDir, filepath.Join(relDir, "handlers_crud_gen.go"), cs)
 
 	if len(filteredMethods) == 0 {
@@ -269,7 +278,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	// User-owned implementation: scaffold handlers_crud.go once; on later
 	// runs append shims for newly-added CRUD RPCs only (existing content
 	// is never modified).
-	return ensureCRUDShimFile(projectDir, relDir, data, cs)
+	return ensureCRUDShimFile(projectDir, relDir, data, cs, previouslyImplemented)
 }
 
 // removeRetiredForgeFile deletes a generated file forge no longer emits,
@@ -348,7 +357,7 @@ func renderCRUDShimMethods(methods []CRUDMethodTemplateData) (string, error) {
 // Methods the user implemented in sibling files were already filtered
 // out by the caller, so an append never collides with a hand-written
 // handler.
-func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *checksums.FileChecksums) error {
+func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *checksums.FileChecksums, previouslyImplemented map[string]bool) error {
 	shimRel := filepath.Join(relDir, "handlers_crud.go")
 	fullPath := filepath.Join(projectDir, shimRel)
 
@@ -362,6 +371,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 		if err != nil {
 			return err
 		}
+		warnCustomReadShapeStubs(data.CRUDMethods, shimRel, previouslyImplemented)
 		var b strings.Builder
 		b.WriteString("// yours: scaffolded once, never touched again — forge will not overwrite this file\n")
 		b.WriteString("//\n")
@@ -411,6 +421,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 	if err != nil {
 		return err
 	}
+	warnCustomReadShapeStubs(missing, shimRel, previouslyImplemented)
 	content := string(existing)
 	for _, imp := range crudShimImports(CRUDTemplateData{
 		Module:       data.Module,
@@ -426,6 +437,70 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 	recordTier2(cs, shimRel, []byte(content))
 	fmt.Printf("  ✅ Appended %d new CRUD shim(s) to %s (user-owned)\n", len(missing), shimRel)
 	return nil
+}
+
+// warnCustomReadShapeStubs prints one loud line per RPC whose shim is
+// being written as a custom-read-shape stub (CodeUnimplemented body).
+// A stub is the system WORKING — the request/response shape is a
+// legitimate domain decision and the body is the user's to implement —
+// but it must never land silently: until the body exists, production
+// traffic to the RPC 501s. When the RPC previously had a real generated
+// implementation (the retired handlers_crud_gen.go carried a non-stub
+// body for it), say so explicitly — that's a behavior regression on a
+// live procedure, and a downstream agent filed a near-miss with live
+// traffic on exactly this transition.
+func warnCustomReadShapeStubs(methods []CRUDMethodTemplateData, shimRel string, previouslyImplemented map[string]bool) {
+	for _, m := range methods {
+		if !m.ShapeMismatch {
+			continue
+		}
+		if previouslyImplemented[m.MethodName] {
+			fmt.Printf("  ⚠️  %s: REPLACING a previously generated implementation with an Unimplemented stub in %s (custom read shape: %s) — implement the body before serving traffic\n",
+				m.MethodName, shimRel, m.MismatchReason)
+			continue
+		}
+		fmt.Printf("  ⚠️  %s: custom read shape (%s) — scaffolded an Unimplemented stub in %s; the body is yours to implement\n",
+			m.MethodName, m.MismatchReason, shimRel)
+	}
+}
+
+// implementedMethodsIn scans a retired generated handler file for
+// *Service methods that had REAL bodies — i.e. methods NOT tagged with
+// a shape-mismatch marker (`forge:custom-read-shape`, or the legacy
+// `FORGE_CRUD_SHAPE_MISMATCH` spelling) in the comment block above the
+// declaration. Returns nil when the file doesn't exist (the common,
+// post-migration case). Line-based on purpose: the file is forge's own
+// past output with a fixed shape, and this runs once per generate.
+func implementedMethodsIn(path string) map[string]bool {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	implemented := map[string]bool{}
+	pendingMarker := false
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "// forge:custom-read-shape:") ||
+			strings.HasPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:") {
+			pendingMarker = true
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "func (s *Service) ") {
+			// The marker stays pending until the next func declaration —
+			// the template emits it inside the doc comment directly above
+			// the func, so being lenient about intervening comment lines
+			// is safe and being strict would miss reformatted output.
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, "func (s *Service) ")
+		if end := strings.IndexAny(rest, "(\t "); end > 0 {
+			if !pendingMarker {
+				implemented[rest[:end]] = true
+			}
+		}
+		pendingMarker = false
+	}
+	return implemented
 }
 
 // recordTier2 tracks a user-owned scaffold in the manifest at Tier-2 so
@@ -483,10 +558,11 @@ func ensureImportLine(content, imp string) string {
 // Callers should mark the method ShapeMismatch and skip emitting CRUD-body
 // fields that would dereference unavailable proto fields (PageSize,
 // PageToken, the entity-typed PK accessor, the repeated-entity response
-// field). The handlers_crud_gen.go.tmpl template renders a tagged
-// CodeUnimplemented stub in that branch so the generated file still
+// field). The shim template renders a `forge:custom-read-shape`-tagged
+// CodeUnimplemented stub in that branch so the user-owned file still
 // compiles against bespoke proto shapes (Limit/enum filters, string Ticker
-// keys, repeated-message responses).
+// keys, repeated-message responses) — the custom shape is the user's to
+// implement, by design.
 //
 // The rules deliberately stay conservative — they only fail when we can
 // see message fields and prove they don't fit. Anything ambiguous (no
@@ -1454,8 +1530,8 @@ func protoTypeMatchesEntity(protoType, entityName string) bool {
 // entity type. The modern descriptor carries the referenced message name
 // in MessageType ("Item", or fully-qualified "services.api.v1.Item");
 // ProtoType alone is the literal "message" for every message field, which
-// is unmatchable — relying on it produced a false FORGE_CRUD_SHAPE_MISMATCH
-// on forge's own scaffold (the F2 bug).
+// is unmatchable — relying on it produced a false custom-read-shape stub
+// (then spelled FORGE_CRUD_SHAPE_MISMATCH) on forge's own scaffold (the F2 bug).
 func fieldMatchesEntity(f MessageFieldDef, entityName string) bool {
 	if f.MessageType != "" {
 		if f.MessageType == entityName || strings.HasSuffix(f.MessageType, "."+entityName) {

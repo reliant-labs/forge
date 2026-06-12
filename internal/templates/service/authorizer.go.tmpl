@@ -31,8 +31,8 @@ func (a *Authorizer) CanAccess(ctx context.Context, procedure string) error {
 // Override this method to implement custom authorization logic beyond
 // the generated role checks.
 //
-// Actions: middleware.ActionCreate, ActionRead, ActionUpdate, ActionDelete, ActionList
-// Resource: entity name in lowercase, e.g. "patient", "invoice"
+// Actions: middleware.ActionCreate, ActionRead, ActionUpdate, ActionDelete, ActionList.
+// Resource: entity name in lowercase, e.g. "patient" or "invoice".
 func (a *Authorizer) Can(ctx context.Context, claims *middleware.Claims, action, resource string) error {
 	return a.generated.Can(ctx, claims, action, resource)
 }

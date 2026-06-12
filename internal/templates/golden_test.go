@@ -115,17 +115,6 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderProject(t, "Dockerfile.tmpl", projectData())
 			},
 		},
-		{
-			name: "middleware_cors.go",
-			render: func(t *testing.T) []byte {
-				// middleware-cors.go is static (no .tmpl suffix) — it
-				// flows through ProjectTemplates().Render unchanged except
-				// for the //go:build ignore strip. Snapshotting it here
-				// guards against accidental edits to this security-
-				// critical file.
-				return renderProject(t, "middleware-cors.go", nil)
-			},
-		},
 
 		{
 			name: "handlers_gen.go",

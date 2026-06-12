@@ -83,7 +83,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, proj
 			continue
 		}
 		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
-			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, devMode, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
+			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
 				svc.Name, serviceRegistryRelPath, codegen.ServiceRowFuncName(svc.Name))
 		}
 

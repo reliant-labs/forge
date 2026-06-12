@@ -105,22 +105,24 @@ func resolve{{.Name}}(app *App) {{.TargetType}} {
 // running *App + cfg + bootstrap logger. Called from Bootstrap() before
 // {{.Package}}.New(deps) — anything required by validateDeps() must
 // resolve to a non-nil value here or New() will return an error at
-// startup.{{- if .NeedsDevMode}}
+// startup.{{- if .NeedsAuthzVar}}
 //
-// devMode swaps the per-service Authorizer for middleware.DevAuthorizer{}
-// so local iteration doesn't require a full authz policy. Production
-// remains fail-closed; bootstrap.go logs a loud Warn at startup when
-// devMode is active so a prod manifest accidentally setting
-// ENVIRONMENT=development surfaces at every container start.{{- end}}{{- if .UnresolvedFields}}
+// Dev mode (cfg.Mode().IsDev() — the single typed gate derived from
+// ENVIRONMENT in pkg/config) swaps the per-service Authorizer for
+// middleware.DevAuthorizer{} so local iteration doesn't require a full
+// authz policy. Production remains fail-closed; bootstrap.go logs a
+// loud Warn at startup when dev mode is active so a prod manifest
+// accidentally setting ENVIRONMENT=development surfaces at every
+// container start.{{- end}}{{- if .UnresolvedFields}}
 //
 // UNRESOLVED FIELDS (regenerate after extending *App or setup.go):
 {{- range .UnresolvedFields}}
 //   - {{.Name}} ({{.Type}}) — {{.Hint}}
 {{- end}}{{- end}}
-func wire{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger{{if .NeedsDevMode}}, devMode bool{{end}}) {{.Alias}}.Deps {
+func wire{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {{.Alias}}.Deps {
 {{- if .NeedsAuthzVar}}
 	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if devMode {
+	if cfg.Mode().IsDev() {
 		authz = middleware.DevAuthorizer{}
 	}
 {{- end}}
@@ -141,10 +143,10 @@ func wire{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger{{i
 {{- range .UnresolvedFields}}
 //   - {{.Name}} ({{.Type}}) — {{.Hint}}
 {{- end}}{{- end}}
-func wireWorker{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger{{if .NeedsDevMode}}, devMode bool{{end}}) {{.Alias}}.Deps {
+func wireWorker{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {{.Alias}}.Deps {
 {{- if .NeedsAuthzVar}}
 	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if devMode {
+	if cfg.Mode().IsDev() {
 		authz = middleware.DevAuthorizer{}
 	}
 {{- end}}
@@ -165,10 +167,10 @@ func wireWorker{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Log
 {{- range .UnresolvedFields}}
 //   - {{.Name}} ({{.Type}}) — {{.Hint}}
 {{- end}}{{- end}}
-func wireOperator{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger{{if .NeedsDevMode}}, devMode bool{{end}}) {{.Alias}}.Deps {
+func wireOperator{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {{.Alias}}.Deps {
 {{- if .NeedsAuthzVar}}
 	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if devMode {
+	if cfg.Mode().IsDev() {
 		authz = middleware.DevAuthorizer{}
 	}
 {{- end}}

@@ -46,7 +46,6 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/linter/dblint"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/packs"
 )
@@ -97,7 +96,6 @@ var auditCategoryOrder = []string{
 	"codegen",
 	"packs",
 	"pack_graph",
-	"proto_migration_alignment",
 	"migration_safety",
 	"wire_coverage",
 	"optional_deps_guard",
@@ -185,7 +183,6 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["codegen"] = auditCodegen(cfg, abs)
 	report.Categories["packs"] = auditPacks(cfg)
 	report.Categories["pack_graph"] = auditPackGraph(cfg)
-	report.Categories["proto_migration_alignment"] = auditProtoMigration(cfg, abs)
 	report.Categories["migration_safety"] = auditMigrationSafety(cfg, abs)
 	report.Categories["wire_coverage"] = auditWireCoverage(abs)
 	report.Categories["optional_deps_guard"] = auditOptionalDepsGuard(abs)
@@ -643,7 +640,7 @@ func packageNames(pkgs []config.PackageConfig) []string {
 }
 
 // auditConventions runs the lint linters whose results are amenable to
-// programmatic roll-up: forgeconv, dblint. Anything that requires
+// programmatic roll-up: forgeconv. Anything that requires
 // shelling to a Go subprocess (golangci, contractlint) is expensive and
 // noisy in an audit context — we surface a hint to run `forge lint` for
 // the full picture instead.
@@ -661,19 +658,6 @@ func auditConventions(cfg *config.ProjectConfig, projectDir string) AuditCategor
 				if f.Severity == forgeconv.SeverityError {
 					hasErrors = true
 				} else {
-					hasWarnings = true
-				}
-			}
-		}
-	}
-
-	dbDir := filepath.Join(projectDir, "proto", "db")
-	if dirExists(dbDir) {
-		if res, err := dblint.LintProtoDir(dbDir); err == nil {
-			for _, f := range res.Findings {
-				key := "db/" + string(f.Severity)
-				counts[key]++
-				if f.Severity == dblint.SeverityWarning {
 					hasWarnings = true
 				}
 			}
@@ -1000,82 +984,6 @@ func auditPacks(cfg *config.ProjectConfig) AuditCategory {
 		Status:  status,
 		Summary: fmt.Sprintf("%d pack(s) installed", len(entries)),
 		Details: map[string]any{"packs": entries},
-	}
-}
-
-// auditProtoMigration reports drift between proto-defined entities and
-// the current SQL migrations. We give one of three verdicts:
-//
-//   - "proto entities authoritative" — entities exist; migrations exist;
-//     every entity table appears in at least one migration.
-//   - "migrations authoritative" — migrations exist; no proto entities
-//     are defined (the project hand-writes migrations).
-//   - "diverged (X tables in migrations not in proto / Y in proto not in
-//     migrations)" — the two are out of sync.
-func auditProtoMigration(cfg *config.ProjectConfig, projectDir string) AuditCategory {
-	migDir := filepath.Join(projectDir, "db", "migrations")
-	if cfg != nil && cfg.Database.MigrationsDir != "" {
-		migDir = filepath.Join(projectDir, cfg.Database.MigrationsDir)
-	}
-	hasMigrations := dirExists(migDir)
-
-	var entities []codegen.EntityDef
-	if dirExists(filepath.Join(projectDir, "proto")) {
-		entities, _ = codegen.ParseEntityProtos(projectDir)
-	}
-
-	if !hasMigrations && len(entities) == 0 {
-		return AuditCategory{Status: AuditStatusOK, Summary: "no proto entities, no migrations (n/a)"}
-	}
-	if !hasMigrations {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("%d proto entities but no migrations directory", len(entities)),
-			Details: map[string]any{
-				"hint": "run `forge generate` to scaffold an initial migration, or see the `proto` and `db` skills for the greenfield-vs-migrated boundary",
-			},
-		}
-	}
-	if len(entities) == 0 {
-		return AuditCategory{Status: AuditStatusOK, Summary: "migrations authoritative (no proto entities)"}
-	}
-
-	migrationTables := tablesFromMigrations(migDir)
-	entityTables := make(map[string]struct{}, len(entities))
-	for _, e := range entities {
-		entityTables[e.TableName] = struct{}{}
-	}
-
-	var inMigNotProto, inProtoNotMig []string
-	for t := range migrationTables {
-		if _, ok := entityTables[t]; !ok {
-			inMigNotProto = append(inMigNotProto, t)
-		}
-	}
-	for t := range entityTables {
-		if _, ok := migrationTables[t]; !ok {
-			inProtoNotMig = append(inProtoNotMig, t)
-		}
-	}
-	sort.Strings(inMigNotProto)
-	sort.Strings(inProtoNotMig)
-
-	if len(inMigNotProto) == 0 && len(inProtoNotMig) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
-			Summary: "proto entities authoritative — all entity tables present in migrations",
-			Details: map[string]any{"entity_count": len(entities), "migration_table_count": len(migrationTables)},
-		}
-	}
-	return AuditCategory{
-		Status: AuditStatusWarn,
-		Summary: fmt.Sprintf("diverged: %d table(s) in migrations not in proto, %d in proto not in migrations",
-			len(inMigNotProto), len(inProtoNotMig)),
-		Details: map[string]any{
-			"in_migrations_not_in_proto": inMigNotProto,
-			"in_proto_not_in_migrations": inProtoNotMig,
-			"hint":                       "see the `proto` and `migration` skills for the greenfield-vs-migrated boundary; resolve with `forge db proto sync-from-db`, by dropping the proto entities, or by rolling a migration forward",
-		},
 	}
 }
 

@@ -55,7 +55,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/linter/dblint"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
@@ -218,15 +217,6 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 			return nil, err
 		}
 		return buildLintJSONReport(fs, gated), nil
-	case flags.db:
-		if cfg != nil && !cfg.Features.ORMEnabled() {
-			return buildLintJSONReport([]lintJSONFinding{skippedFinding("orm feature is disabled in forge.yaml")}, false), nil
-		}
-		fs, err := collectDBLintJSON()
-		if err != nil {
-			return nil, err
-		}
-		return buildLintJSONReport(fs, false), nil
 	case flags.migrationSafety:
 		if cfg != nil && !cfg.Features.MigrationsEnabled() {
 			return buildLintJSONReport([]lintJSONFinding{skippedFinding("migrations feature is disabled in forge.yaml")}, false), nil
@@ -366,17 +356,6 @@ func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.Proj
 		add(fs, g)
 	}
 
-	// 6. DB entity lint — advisory.
-	if cfg != nil && !cfg.Features.ORMEnabled() {
-		add([]lintJSONFinding{skippedFinding("orm feature disabled — skipping DB lint")}, false)
-	} else if dirExists("proto/db") {
-		if fs, err := collectDBLintJSON(); err != nil {
-			collectErr("DB lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
 	// 7. SQL migration safety lint — errors gate.
 	if cfg != nil && !cfg.Features.MigrationsEnabled() {
 		add([]lintJSONFinding{skippedFinding("migrations feature disabled — skipping migration safety lint")}, false)
@@ -425,15 +404,6 @@ func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.Proj
 		dirExists(filepath.Join("internal", "packs")) {
 		if fs, err := collectBannersJSON(cwd); err != nil {
 			collectErr("banner lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
-	// 12. Proto-vs-ORM staleness — advisory.
-	if dirExists(filepath.Join("gen", "db", "v1")) {
-		if fs, err := collectORMSyncJSON(cwd); err != nil {
-			collectErr("proto-orm sync lint", err, false)
 		} else {
 			add(fs, false)
 		}
@@ -542,32 +512,6 @@ func collectConventionsJSON() ([]lintJSONFinding, bool, error) {
 	return out, combined.HasErrors(), nil
 }
 
-func collectDBLintJSON() ([]lintJSONFinding, error) {
-	protoDBDir := filepath.Join("proto", "db")
-	if _, err := os.Stat(protoDBDir); os.IsNotExist(err) {
-		return []lintJSONFinding{skippedFinding("No proto/db/ directory found — skipping DB lint")}, nil
-	}
-	result, err := dblint.LintProtoDir(protoDBDir)
-	if err != nil {
-		return nil, fmt.Errorf("DB lint failed: %w", err)
-	}
-	out := make([]lintJSONFinding, 0, len(result.Findings))
-	for _, f := range result.Findings {
-		// dblint findings are entity-scoped, not file-scoped; fold the
-		// entity/field identifier into the message so nothing is lost.
-		subject := f.Entity
-		if f.Field != "" {
-			subject += "." + f.Field
-		}
-		out = append(out, lintJSONFinding{
-			Severity: normalizeLintSeverity(string(f.Severity)),
-			Rule:     f.Rule,
-			Message:  fmt.Sprintf("%s: %s", subject, f.Message),
-		})
-	}
-	return out, nil
-}
-
 func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, bool, error) {
 	migrationsDir := filepath.Join("db", "migrations")
 	ruleConfig := migrationlint.DefaultConfig()
@@ -658,23 +602,6 @@ func collectBannersJSON(cwd string) ([]lintJSONFinding, error) {
 		return nil, fmt.Errorf("banner lint failed: %w", err)
 	}
 	return scaffoldsFindingsToJSON(res.Findings), nil
-}
-
-func collectORMSyncJSON(cwd string) ([]lintJSONFinding, error) {
-	msgs, err := collectORMSyncFindings(cwd)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]lintJSONFinding, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, lintJSONFinding{
-			Severity: lintSevWarning,
-			Rule:     "proto-orm-out-of-sync",
-			Message:  m,
-			FixHint:  "run `forge generate` (it invokes buf generate then the ORM, descriptor, mock, and bootstrap passes); see `forge skill load proto`",
-		})
-	}
-	return out, nil
 }
 
 // collectWireCoverageJSON mirrors runWireCoverageLint: TODO markers are

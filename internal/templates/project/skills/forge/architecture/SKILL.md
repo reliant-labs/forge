@@ -5,14 +5,19 @@ description: Forge project conventions and architecture — project structure, g
 
 # Forge Architecture & Conventions
 
-Forge is a **production infrastructure generator**. It gives you middleware, mocks, observability, test harness, CI/CD, and wiring — the stuff that's tedious to write and easy to get wrong. You own all business logic, database schema, and entity types. Forge never touches those.
+Forge is a **production infrastructure generator**. It gives you middleware, mocks, observability, test harness, CI/CD, and wiring — the stuff that's tedious to write and easy to get wrong. You own all business logic and the database schema. Forge never touches those.
 
-**Proto is the canonical input format.** All contracts — API, ORM, config — are defined in proto files annotated with `forge.v1` extensions. The `protoc-gen-forge` plugin extracts these annotations and generates code.
+**Two canonical inputs, two truths:**
+
+- **Proto is the wire truth.** API contracts and config are defined in proto files annotated with `forge.v1` extensions (`method`, `service`, `config`).
+- **SQL is the schema truth.** `db/migrations/*.up.sql` is the single source of truth for tables and columns. `forge generate` applies the migrations to an in-memory shadow database, introspects it, and projects entity structs, the ORM, CRUD wiring, and frontend pages from the real tables. There is no entity annotation — the legacy `(forge.v1.entity)` / `(forge.v1.field)` options are retired and ignored.
+
+An **entity** exists when both halves exist: a service proto declares the CRUD RPCs (`Create<X>`/`Get<X>`/`Update<X>`/`Delete<X>`/`List<Xs>`) AND the applied schema has the matching table (pluralized snake_case). `forge add entity` scaffolds both halves in one step.
 
 Two lifecycles drive everything:
 
-- **Scaffold** (runs once per entity): plan proto → full skeleton → plan proto deleted
-- **Generate** (runs always): service protos → stubs, hooks, mocks (idempotent)
+- **Scaffold** (runs once per entity): `forge add entity` → create-table migration + CRUD messages/RPCs in the service proto (both yours afterwards)
+- **Generate** (runs always): service protos + applied schema → stubs, ORM, hooks, mocks (idempotent)
 
 ## Project Structure
 
@@ -35,9 +40,8 @@ gen/                          # ALL generated code — NEVER hand-edit
   go/                         #   Go stubs (protoc-gen-go, protoc-gen-connect-go)
   ts/                         #   TypeScript clients
 internal/db/                  # Database layer
-  types.go                    #   Entity types (generated aliases while proto entities drive codegen)
-  <entity>_orm.go             #   Generated ORM CRUD functions per entity (regenerated)
-  mappers.go                  #   Proto ↔ DB type mappers (YOURS — when they diverge)
+  <entity>_orm.go             #   Generated entity struct + ORM CRUD functions, projected from the applied schema (regenerated)
+  <entity>_queries.go         #   Custom queries (YOURS — sibling files are never touched)
 internal/<name>/              # Internal Go packages with interface contracts
   contract.go                 #   Interface definition
   <name>.go                   #   Implementation
@@ -63,7 +67,7 @@ forge_descriptor.json         # Proto descriptor data (generated)
 | `pkg/app/bootstrap.go` — service wiring | `pkg/app/setup.go` — custom wiring |
 | `pkg/middleware/auth_gen.go`, `tenant_gen.go` — auth/tenant codegen | `internal/db/` — mappers, custom queries, schema |
 | `handlers/<svc>/*_gen.go` — CRUD ops, authorizer | `handlers/<svc>/authorizer.go` — custom auth |
-| `internal/db/types.go`, `<entity>_orm.go` — entity ORM (from proto entities) | `handlers/<svc>/handlers_crud.go` — thin CRUD delegations (scaffolded once, appended-to for new RPCs) |
+| `internal/db/<entity>_orm.go` — entity struct + ORM (projected from the applied schema) | `handlers/<svc>/handlers_crud.go` — thin CRUD delegations (scaffolded once, appended-to for new RPCs) |
 | Frontend hooks (`*-hooks.ts`) | `db/migrations/` — schema source of truth |
 | `forge_descriptor.json` | `db/queries/` — SQL queries |
 | `frontends/<name>/src/lib/connect.ts` | `internal/<pkg>/` — internal packages |
@@ -96,8 +100,13 @@ or in isolation via `forge lint --scaffolds`.
 ```
 proto/services/<svc>/v1/<svc>.proto
   → protoc-gen-forge --mode=descriptor → forge_descriptor.json
-  → protoc-gen-forge --mode=orm        → *.pb.orm.go (ORM code)
   → protoc-gen-go + protoc-gen-connect-go → gen/ stubs
+
+db/migrations/*.up.sql (applied to an in-memory SQLite shadow DB, introspected)
+  + service-proto CRUD RPC shapes
+  → forge generate → internal/db/<entity>_orm.go (entity struct + ORM)
+                     handlers_crud_ops_gen.go (per-RPC ops + ToProto/FromProto conversions)
+                     frontend pages, nav, mocks
 
 internal/*/contract.go (Go interfaces)
   → forge generate → mock_gen.go
@@ -115,7 +124,7 @@ gen/ts/ (TypeScript clients)
   → forge generate → frontends/<name>/src/hooks/*-hooks.ts
 ```
 
-Running `forge generate` is always safe. It only touches infrastructure — never your handlers, migrations, or business logic. In the DB layer it rewrites only the generated entity ORM files (`internal/db/types.go`, `internal/db/<entity>_orm.go`), and only when proto entities drive codegen.
+Running `forge generate` is always safe. It only touches infrastructure — never your handlers, migrations, or business logic. In the DB layer it rewrites only the generated entity ORM files (`internal/db/<entity>_orm.go`); the migrations that drive them are yours.
 
 ## Proto annotations (forge.v1)
 
@@ -123,13 +132,13 @@ All annotations use the `forge.v1` package (imported via `forge/v1/forge.proto`)
 
 | Annotation | Applies to | Purpose |
 |-----------|-----------|---------|
-| `forge.v1.entity` | messages | Table name, soft_delete, timestamps, indexes, middleware |
-| `forge.v1.field` | fields | pk, tenant, store, ref, unique, index, validate, immutable |
 | `forge.v1.service` | services | Name, version, visibility, auth config |
 | `forge.v1.method` | RPCs | auth_required, idempotent, timeout, idempotency_key |
 | `forge.v1.config` | fields | env_var, flag, default_value, required, description |
 
-See `proto` for the full annotation reference and CRUD naming conventions.
+The legacy `(forge.v1.entity)` / `(forge.v1.field)` annotations are **retired and ignored** — their definitions remain in `forge/v1/forge.proto` only as deprecated tombstones, and `forge generate` prints a notice for any message still carrying them. Schema semantics (soft delete, timestamps, tenant scoping) are read off real columns in the applied schema instead — see `db`.
+
+See `proto` for the annotation reference and CRUD naming conventions.
 
 ## Component config blocks
 
@@ -205,14 +214,9 @@ contracts:
 
 ## Database architecture
 
-Entity types start as **proto aliases** for convenience:
-```go
-type User = apiv1.User  // in internal/db/types.go
-```
+**Migrations are the source of truth for schema.** Not proto, not Go structs — the SQL in `db/migrations/`. `forge generate` shadow-applies the migrations, introspects the result, and projects the entity struct (`time.Time` for timestamps, pointers for nullable columns, native slices for arrays) plus the ORM into `internal/db/<entity>_orm.go`.
 
-When API shape and DB schema diverge (and they will), replace the alias with a concrete Go struct. See the `db` skill for the full pattern.
-
-**Migrations are the source of truth for schema.** Not proto, not Go structs — the SQL in `db/migrations/`.
+Behavior is read off real columns, no annotations: `deleted_at` ⇒ soft delete, `created_at`+`updated_at` ⇒ managed timestamps, `tenant_id` ⇒ tenant scoping, text columns ⇒ the generated list `search` filter. The wire messages in the service proto evolve independently; generated conversions map the intersection of wire fields and columns by name. See the `db` skill for the full model (type vocabulary, portable pg/sqlite subset, evolution recipes).
 
 ## Custom Wiring in setup.go
 
@@ -268,7 +272,7 @@ These are regenerated by `forge generate` — your changes will be overwritten:
 - `pkg/app/bootstrap.go` — Service registration and wiring
 - `pkg/middleware/auth_gen.go` / `tenant_gen.go` — auth/tenant shims (the mechanisms live in forge/pkg/{authn,authz,middleware,observe}; `middleware.go` is yours)
 - `handlers/<svc>/*_gen.go` — Generated CRUD op constructors and authorizers (your CRUD method bodies live in the user-owned `handlers_crud.go`)
-- `internal/db/types.go`, `internal/db/<entity>_orm.go` — Generated entity ORM (when proto entities drive codegen)
+- `internal/db/<entity>_orm.go` — Generated entity struct + ORM (projected from the applied `db/migrations/` schema)
 - `frontends/<name>/src/hooks/*-hooks.ts` — Generated React Query hooks
 - `frontends/<name>/src/lib/connect.ts` — Connect transport setup
 - `forge_descriptor.json` — Proto descriptor data
@@ -278,7 +282,7 @@ These are regenerated by `forge generate` — your changes will be overwritten:
 1. **Define** API contracts in `proto/` — messages, RPCs, field numbers are forever
 2. **Generate** with `forge generate` — fills `gen/` with typed infrastructure and produces `forge_descriptor.json`
 3. **Implement** handlers in `handlers/<svc>/service.go` — your business logic
-4. **Evolve** DB schema via migrations — independently of proto
+4. **Evolve** DB schema via migrations — `forge generate` re-projects the entity structs/ORM from the applied schema
 5. **Consume** from frontends via generated TypeScript Connect clients
 6. **Wire** custom dependencies in `pkg/app/setup.go` (`bootstrap.go` is generated — do not edit)
 7. **Test** at every level: unit (mocked), integration (real DB), e2e (full stack)
@@ -289,9 +293,10 @@ These are regenerated by `forge generate` — your changes will be overwritten:
 |---------|------------|
 | `forge new <name>` | Create a new project |
 | `forge add service <name>` | Add a new Connect RPC service |
+| `forge add entity <name> [field:type ...]` | Add a database entity: create-table migration + CRUD proto scaffold |
 | `forge add worker <name>` | Add a background worker |
 | `forge add frontend <name>` | Add a Next.js frontend |
-| `forge generate` | After any proto or contract change |
+| `forge generate` | After any proto, migration, or contract change |
 | `forge generate --explain` | See per-file provenance: which proto/contract drove each output |
 | `forge db migration new <name>` | When you need to change the DB schema |
 | `forge db migrate up --dsn $DSN` | Apply pending migrations |
@@ -357,9 +362,9 @@ This table is the canonical reference. Skills that touch naming heavily — `ser
 - One service per proto package. One handler directory per service.
 - Field numbers are forever — mark removed fields as `reserved`, never reuse numbers.
 - `forge.yaml` tracks ports and services — use `forge add` to scaffold, not copy-paste.
-- `forge generate` regenerates the entity ORM (`internal/db/types.go`, `<entity>_orm.go`) from proto entities — migrations, queries, and mappers are yours, and schema truth stays in `db/migrations/`.
-- DB schema evolves via migrations, not proto. Proto is for API contracts.
-- Entity types can (and should) diverge from proto when the domain requires it.
+- `forge generate` regenerates the entity ORM (`internal/db/<entity>_orm.go`) from the applied `db/migrations/` schema — the migrations and your query files are yours, and schema truth stays in `db/migrations/`.
+- DB schema evolves via migrations, not proto. Proto is for API contracts; the wire messages evolve independently and the generated conversions map the intersection by name.
+- An entity needs both halves: CRUD RPCs in a service proto AND the matching table in the applied schema. One without the other generates nothing.
 - Contract enforcement is strict by default — configure exceptions in `forge.yaml`.
 - Naming follows the canonical table above — kebab-case for display names, snake_case for directories and proto fields, PascalCase for Go exports and proto types, camelCase for Go locals.
 

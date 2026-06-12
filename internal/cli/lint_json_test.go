@@ -98,7 +98,7 @@ func TestLintJSONReportEmptyFindings(t *testing.T) {
 func TestLintJSONOKIndependentOfWarnings(t *testing.T) {
 	report := buildLintJSONReport([]lintJSONFinding{
 		{Severity: lintSevWarning, Rule: "forge-wire-coverage", Message: "w"},
-		{Severity: lintSevWarning, Rule: "proto-orm-out-of-sync", Message: "w"},
+		{Severity: lintSevWarning, Rule: "forge-test-conventions", Message: "w"},
 	}, false)
 	if !report.OK {
 		t.Error("warnings-only report must keep ok=true (advisory linters never gate)")

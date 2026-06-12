@@ -12,7 +12,6 @@ import (
 // ForgeDescriptor is the JSON structure written by protoc-gen-forge --mode=descriptor.
 type ForgeDescriptor struct {
 	Services []ServiceDef    `json:"services"`
-	Entities []EntityDef     `json:"entities"`
 	Configs  []ConfigMessage `json:"configs"`
 }
 
@@ -57,8 +56,12 @@ func ParseServicesFromProtos(dir string, projectDir string) ([]ServiceDef, error
 	return desc.Services, nil
 }
 
-// ParseEntityProtos reads entity definitions from the forge descriptor.
-// Falls back to empty if the descriptor does not exist yet.
+// ParseEntityProtos returns the project's entities. Despite the
+// historical name, entities are no longer parsed from proto
+// annotations: they are the join of the APPLIED schema (db/migrations
+// shadow-applied + introspected) with the service protos' CRUD method
+// shapes — see BuildSchemaEntities. Falls back to empty when the
+// descriptor or migrations don't exist yet.
 func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 	desc, err := loadDescriptor(projectDir)
 	if err != nil {
@@ -68,7 +71,7 @@ func ParseEntityProtos(projectDir string) ([]EntityDef, error) {
 		log.Println("Info: forge_descriptor.json not found — run 'forge generate' with protoc-gen-forge to produce it")
 		return nil, nil
 	}
-	return desc.Entities, nil
+	return BuildSchemaEntities(projectDir, desc.Services)
 }
 
 // ParseConfigProto reads config messages from the forge descriptor,

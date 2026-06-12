@@ -14,9 +14,7 @@ import (
 
 // MigrationOptions controls what context is included when creating a new migration.
 type MigrationOptions struct {
-	DSN       string // If set, introspect the live DB for schema
-	ProtoDir  string // Directory to scan for proto files (default: "proto/")
-	FromProto bool   // Auto-generate CREATE TABLE SQL from proto messages
+	DSN string // If set, introspect the live DB for schema
 }
 
 // MigrationContext holds all gathered context for generating rich migration comments.
@@ -25,10 +23,8 @@ type MigrationContext struct {
 	CreatedAt         time.Time
 	ParsedTables      []ParsedTable // Schema reconstructed from existing migrations
 	LiveTables        []Table       // Schema from live DB introspection (if --dsn)
-	ProtoModels       []ProtoModel  // Proto message definitions
 	PreviousMigration *PreviousMigrationInfo
-	MigrationHistory  []string          // List of all previous migration filenames
-	SchemaDiffs       []SchemaDiffEntry // Diff between proto models and schema
+	MigrationHistory  []string // List of all previous migration filenames
 }
 
 // ParsedTable represents a table reconstructed from parsing migration SQL files.
@@ -44,30 +40,10 @@ type ParsedColumn struct {
 	Constraint string // e.g. "PRIMARY KEY", "NOT NULL", "UNIQUE", "REFERENCES users(id)"
 }
 
-// ProtoModel represents a proto message found in a .proto file.
-type ProtoModel struct {
-	Name     string
-	FileName string
-	Fields   []ProtoModelField
-}
-
-// ProtoModelField represents a field in a proto message.
-type ProtoModelField struct {
-	Name      string
-	ProtoType string
-	Number    int
-}
-
 // PreviousMigrationInfo holds information about the most recent migration.
 type PreviousMigrationInfo struct {
 	Filename string
 	Content  string
-}
-
-// SchemaDiffEntry describes a difference between proto models and the current schema.
-type SchemaDiffEntry struct {
-	Kind    string // "NEW_TABLE", "NEW_COLUMN"
-	Message string
 }
 
 // --- Schema parsing from migration files ---
@@ -251,238 +227,6 @@ func parseColumnDefs(body string) []ParsedColumn {
 	return columns
 }
 
-// --- Proto model scanning ---
-
-var protoMessageRe = regexp.MustCompile(`^message\s+(\w+)\s*\{`)
-var protoFieldRe = regexp.MustCompile(`^\s*(repeated\s+)?([\w.]+)\s+(\w+)\s*=\s*(\d+)`)
-var protoPackageRe = regexp.MustCompile(`^\s*package\s+([\w.]+)\s*;`)
-
-// isForgeOptionsProtoFile reports whether the given file path or proto package
-// name belongs to the forge option-defining proto tree (e.g. forge/v1/*.proto,
-// forge/options/v1/*.proto, package forge.v1, package forge.options.v1).
-//
-// These files declare extension messages used to annotate user protos
-// (EntityOptions, FieldOptions, IndexDef, ValidationRules, etc.). They are
-// NOT entity definitions and must be excluded from CREATE TABLE emission —
-// many of their field names are reserved Postgres words (e.g. `table`,
-// `unique`, `default`), which produces invalid DDL when ScanProtoModels
-// blindly feeds them to ProtoToCreateTable.
-//
-// The check is conservative: any forward-slash path segment of "forge", or
-// any proto package whose first segment is "forge", matches. Project entity
-// protos always live under proto/db/, proto/services/, etc. — never under
-// proto/forge/.
-func isForgeOptionsProtoFile(path, protoPackage string) bool {
-	if protoPackage != "" {
-		first := protoPackage
-		if i := strings.Index(first, "."); i >= 0 {
-			first = first[:i]
-		}
-		if first == "forge" {
-			return true
-		}
-	}
-	slashed := filepath.ToSlash(path)
-	for _, seg := range strings.Split(slashed, "/") {
-		if seg == "forge" {
-			return true
-		}
-	}
-	return false
-}
-
-// ScanProtoModels scans the given directory recursively for .proto files and
-// extracts all message definitions (not just entity-annotated ones).
-//
-// Files belonging to the forge options proto tree (forge/v1/*.proto and
-// forge/options/v1/*.proto, identified by path segment "forge" or proto
-// package "forge.*") are skipped entirely — those messages define the
-// annotation extensions (EntityOptions, FieldOptions, IndexDef, etc.) and
-// are not user entities. Without this filter, projects importing
-// forge/v1/options.proto would get `CREATE TABLE entity_options (table TEXT,
-// ...)` emitted in their init migration, which is invalid DDL because
-// `table` and `unique` are reserved Postgres keywords.
-func ScanProtoModels(dir string) ([]ProtoModel, error) {
-	var models []ProtoModel
-
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip inaccessible files/dirs silently.
-		}
-		if info.IsDir() || !strings.HasSuffix(path, ".proto") {
-			return nil
-		}
-
-		parsed, err := parseProtoMessages(path)
-		if err != nil {
-			return nil // Skip unparseable files.
-		}
-		models = append(models, parsed...)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return models, nil
-}
-
-// parseProtoMessages parses all messages from a single .proto file.
-//
-// Returns no models for files belonging to the forge options proto tree
-// (see isForgeOptionsProtoFile). The package line is detected during the
-// scan; if the file's package is forge.* the entire file is discarded.
-func parseProtoMessages(path string) ([]ProtoModel, error) {
-	// Fast path: the file path itself reveals it's a forge options proto.
-	if isForgeOptionsProtoFile(path, "") {
-		return nil, nil
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-
-	relPath := filepath.Base(path)
-
-	var models []ProtoModel
-	var current *ProtoModel
-	var depth int
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-
-		// Skip comment-only lines.
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-
-		// Detect `package forge.*;` declarations while we're still at file
-		// scope (depth 0, no current message). If found, this file declares
-		// forge option extensions — skip it.
-		if current == nil && depth == 0 {
-			if pkgMatches := protoPackageRe.FindStringSubmatch(trimmed); pkgMatches != nil {
-				if isForgeOptionsProtoFile(path, pkgMatches[1]) {
-					return nil, nil
-				}
-			}
-		}
-
-		if current == nil {
-			if matches := protoMessageRe.FindStringSubmatch(trimmed); matches != nil {
-				current = &ProtoModel{
-					Name:     matches[1],
-					FileName: relPath,
-				}
-				depth = 1
-			}
-			continue
-		}
-
-		depth += strings.Count(trimmed, "{")
-		depth -= strings.Count(trimmed, "}")
-
-		if depth <= 0 {
-			models = append(models, *current)
-			current = nil
-			depth = 0
-			continue
-		}
-
-		// Only parse fields at top level of the message (depth == 1).
-		if depth == 1 {
-			if matches := protoFieldRe.FindStringSubmatch(trimmed); matches != nil {
-				protoType := matches[2]
-				if matches[1] != "" {
-					protoType = "repeated " + protoType
-				}
-				fieldNum := 0
-				_, _ = fmt.Sscanf(matches[4], "%d", &fieldNum)
-				current.Fields = append(current.Fields, ProtoModelField{
-					Name:      matches[3],
-					ProtoType: protoType,
-					Number:    fieldNum,
-				})
-			}
-		}
-	}
-
-	// If we're still inside a message at EOF, add it anyway.
-	if current != nil {
-		models = append(models, *current)
-	}
-
-	return models, scanner.Err()
-}
-
-// --- Schema diff ---
-
-// ComputeSchemaDiff compares proto models against parsed tables to find
-// new tables and new columns that exist in proto but not in the schema.
-func ComputeSchemaDiff(tables []ParsedTable, models []ProtoModel) []SchemaDiffEntry {
-	tableSet := make(map[string]*ParsedTable)
-	for i := range tables {
-		tableSet[tables[i].Name] = &tables[i]
-	}
-
-	var diffs []SchemaDiffEntry
-	for _, model := range models {
-		tableName := protoMessageToTableName(model.Name)
-		t, exists := tableSet[tableName]
-		if !exists {
-			diffs = append(diffs, SchemaDiffEntry{
-				Kind:    "NEW_TABLE",
-				Message: fmt.Sprintf("%s has no corresponding table %q", model.Name, tableName),
-			})
-			continue
-		}
-
-		// Check for new columns.
-		colSet := make(map[string]bool)
-		for _, c := range t.Columns {
-			colSet[c.Name] = true
-		}
-		for _, f := range model.Fields {
-			colName := protoFieldToColumnName(f.Name)
-			if !colSet[colName] {
-				diffs = append(diffs, SchemaDiffEntry{
-					Kind:    "NEW_COLUMN",
-					Message: fmt.Sprintf("%s.%s exists in proto but not in table %q", model.Name, f.Name, tableName),
-				})
-			}
-		}
-	}
-
-	return diffs
-}
-
-// protoMessageToTableName converts "UserPreference" to "user_preferences" (snake_case, pluralized).
-func protoMessageToTableName(name string) string {
-	// Convert PascalCase to snake_case.
-	var result []rune
-	for i, r := range name {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result = append(result, '_')
-		}
-		result = append(result, r)
-	}
-	snake := strings.ToLower(string(result))
-
-	// Simple pluralization: add 's' if not already ending in 's'.
-	if !strings.HasSuffix(snake, "s") {
-		snake += "s"
-	}
-	return snake
-}
-
-// protoFieldToColumnName converts a proto field name to a column name (already snake_case in proto).
-func protoFieldToColumnName(name string) string {
-	return strings.ToLower(name)
-}
-
 // --- Previous migration ---
 
 // GetPreviousMigration reads the most recent .up.sql file from the migrations dir.
@@ -568,19 +312,6 @@ func GenerateContextComment(ctx *MigrationContext) string {
 		sb.WriteString("--\n")
 	}
 
-	// Proto models section.
-	if len(ctx.ProtoModels) > 0 {
-		sb.WriteString("-- === PROTO MODELS (potential new tables/columns) ===\n")
-		for _, m := range ctx.ProtoModels {
-			fmt.Fprintf(&sb, "-- message %s {\n", m.Name)
-			for _, f := range m.Fields {
-				fmt.Fprintf(&sb, "--   %s %s = %d;\n", f.ProtoType, f.Name, f.Number)
-			}
-			sb.WriteString("-- }\n")
-		}
-		sb.WriteString("--\n")
-	}
-
 	// Previous migration.
 	if ctx.PreviousMigration != nil {
 		fmt.Fprintf(&sb, "-- === PREVIOUS MIGRATION (%s) ===\n", ctx.PreviousMigration.Filename)
@@ -596,15 +327,6 @@ func GenerateContextComment(ctx *MigrationContext) string {
 		sb.WriteString("-- === MIGRATION HISTORY ===\n")
 		for _, name := range ctx.MigrationHistory {
 			fmt.Fprintf(&sb, "-- %s\n", name)
-		}
-		sb.WriteString("--\n")
-	}
-
-	// Schema diff.
-	if len(ctx.SchemaDiffs) > 0 {
-		sb.WriteString("-- === DIFF (proto vs schema) ===\n")
-		for _, d := range ctx.SchemaDiffs {
-			fmt.Fprintf(&sb, "-- %s: %s\n", d.Kind, d.Message)
 		}
 		sb.WriteString("--\n")
 	}
@@ -682,64 +404,6 @@ func writeParsedTableComment(sb *strings.Builder, t ParsedTable) {
 	sb.WriteString("-- );\n")
 }
 
-// --- Proto to CREATE TABLE ---
-
-// ProtoToSQL maps a proto type to a PostgreSQL type.
-func ProtoToSQL(protoType string) string {
-	// Repeated scalars are stored as JSON columns (JSONB on postgres,
-	// TEXT-affinity JSON on sqlite) — see internal/generator's
-	// mapProtoToSQL for the canonical mapping.
-	if strings.HasPrefix(strings.ToLower(protoType), "repeated ") {
-		return "JSONB"
-	}
-	switch strings.ToLower(protoType) {
-	case "string":
-		return "TEXT"
-	case "int32", "sint32", "uint32", "fixed32", "sfixed32":
-		return "INTEGER"
-	case "int64", "sint64", "uint64", "fixed64", "sfixed64":
-		return "BIGINT"
-	case "float":
-		return "REAL"
-	case "double":
-		return "DOUBLE PRECISION"
-	case "bool":
-		return "BOOLEAN"
-	case "bytes":
-		return "BYTEA"
-	case "google.protobuf.timestamp":
-		return "TIMESTAMPTZ"
-	default:
-		return "TEXT"
-	}
-}
-
-// ProtoToCreateTable generates a CREATE TABLE SQL statement from a proto model.
-// It always adds id, created_at, updated_at columns.
-func ProtoToCreateTable(model ProtoModel) string {
-	tableName := protoMessageToTableName(model.Name)
-	var sb strings.Builder
-
-	fmt.Fprintf(&sb, "CREATE TABLE %s (\n", tableName)
-	sb.WriteString("    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n")
-
-	for _, f := range model.Fields {
-		colName := protoFieldToColumnName(f.Name)
-		// Skip id, created_at, updated_at — we add those ourselves.
-		if colName == "id" || colName == "created_at" || colName == "updated_at" {
-			continue
-		}
-		sqlType := ProtoToSQL(f.ProtoType)
-		fmt.Fprintf(&sb, "    %s %s NOT NULL,\n", colName, sqlType)
-	}
-
-	sb.WriteString("    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),\n")
-	sb.WriteString("    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()\n")
-	sb.WriteString(");\n")
-
-	return sb.String()
-}
-
 // GatherMigrationContext collects all available context for a new migration.
 func GatherMigrationContext(ctx context.Context, name, migDir string, opts MigrationOptions) (*MigrationContext, error) {
 	mctx := &MigrationContext{
@@ -767,18 +431,6 @@ func GatherMigrationContext(ctx context.Context, name, migDir string, opts Migra
 		}
 	}
 
-	// Proto model scanning.
-	protoDir := opts.ProtoDir
-	if protoDir == "" {
-		protoDir = "proto/"
-	}
-	models, err := ScanProtoModels(protoDir)
-	if err != nil {
-		// Non-fatal: proto dir may not exist.
-		models = nil
-	}
-	mctx.ProtoModels = models
-
 	// Previous migration.
 	prev, err := GetPreviousMigration(migDir)
 	if err == nil {
@@ -791,31 +443,5 @@ func GatherMigrationContext(ctx context.Context, name, migDir string, opts Migra
 		mctx.MigrationHistory = history
 	}
 
-	// Schema diff (use parsed tables since they don't require a DB connection).
-	schemaTables := mctx.ParsedTables
-	if len(mctx.LiveTables) > 0 {
-		// If we have live tables, convert them to parsed format for diffing.
-		schemaTables = liveToParsed(mctx.LiveTables)
-	}
-	if len(schemaTables) > 0 && len(mctx.ProtoModels) > 0 {
-		mctx.SchemaDiffs = ComputeSchemaDiff(schemaTables, mctx.ProtoModels)
-	}
-
 	return mctx, nil
-}
-
-// liveToParsed converts live Table objects to ParsedTable for schema diffing.
-func liveToParsed(tables []Table) []ParsedTable {
-	var result []ParsedTable
-	for _, t := range tables {
-		pt := ParsedTable{Name: t.Name}
-		for _, c := range t.Columns {
-			pt.Columns = append(pt.Columns, ParsedColumn{
-				Name: c.Name,
-				Type: c.Type,
-			})
-		}
-		result = append(result, pt)
-	}
-	return result
 }

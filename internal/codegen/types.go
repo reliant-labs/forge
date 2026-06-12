@@ -148,24 +148,47 @@ func (m Method) GoOutputType() string {
 	return "pb." + m.OutputType
 }
 
-// EntityDef represents a parsed database entity from proto files.
+// EntityDef is a database entity: the join of an introspected table
+// from the APPLIED schema (db/migrations executed against the shadow
+// DB — the storage truth) with the service-proto CRUD message shape
+// (the wire truth).
+//
+// Columns drive the ORM and entity structs; Fields drive the frontend
+// and the proto<->entity conversion in the CRUD wiring. SoftDelete /
+// Timestamps / HasTenant are conventions read off real columns
+// (deleted_at, created_at+updated_at, tenant_id) — never annotations.
 type EntityDef struct {
-	Name             string        // "Patient"
-	TableName        string        // "patients"
-	PkField          string        // "id"
-	PkGoType         string        // "int64"
-	Fields           []EntityField // all fields including PK
-	ProtoFile        string        // "proto/services/patients/v1/patients.proto"
-	// SoftDelete / Timestamps mirror the (forge.v1.entity) annotation.
-	// Historically the descriptor dropped both, so downstream plan-based
-	// generators (internal/db ORM, db/migrations) silently ignored
-	// soft_delete/timestamps even though the gen/db ORM honored them.
-	SoftDelete bool `json:",omitempty"`
-	Timestamps bool `json:",omitempty"`
-	HasTenant  bool // true when the entity has a tenant key field
-	TenantFieldName  string        // proto field name: "org_id"
-	TenantGoName     string        // Go name: "OrgId"
-	TenantColumnName string        // DB column: "org_id"
+	Name      string        // "Patient"
+	TableName string        // "patients"
+	PkField   string        // "id"
+	PkGoType  string        // "string"
+	Fields    []EntityField // wire-message fields (service proto)
+	ProtoFile string        // proto file declaring the wire message
+	// Columns is the introspected applied schema for the entity's table.
+	Columns []EntityColumn `json:",omitempty"`
+	// SearchColumns are the text columns the generated list search
+	// filter matches against (convention: every text column).
+	SearchColumns []string `json:",omitempty"`
+	SoftDelete    bool     `json:",omitempty"`
+	Timestamps    bool     `json:",omitempty"`
+	HasTenant     bool     // true when the table has a tenant_id column
+	TenantFieldName  string // proto field name: "tenant_id"
+	TenantGoName     string // Go name: "TenantId"
+	TenantColumnName string // DB column: "tenant_id"
+}
+
+// EntityColumn is one introspected column of an entity's table.
+type EntityColumn struct {
+	Name string // column name, snake_case
+	// Type is the canonical type: "string", "int64", "float64",
+	// "bool", "time", "json", "bytes" (matches schemadef.CanonicalType).
+	Type    string
+	IsArray bool
+	NotNull bool
+	IsPK    bool
+	// DeclType is the declared SQL type verbatim ("TIMESTAMPTZ").
+	DeclType string `json:",omitempty"`
+	Default  string `json:",omitempty"`
 }
 
 // FieldKind classifies a proto field for code generation branching.

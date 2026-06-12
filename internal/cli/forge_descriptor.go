@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
@@ -29,7 +30,6 @@ const descriptorStageDir = ".descriptor.d"
 // It aggregates all data the generate.go pipeline needs from proto descriptors.
 type ForgeDescriptor struct {
 	Services []codegen.ServiceDef    `json:"services"`
-	Entities []codegen.EntityDef     `json:"entities"`
 	Configs  []codegen.ConfigMessage `json:"configs"`
 }
 
@@ -73,21 +73,12 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 			desc.Services = append(desc.Services, sd)
 		}
 
-		// Extract entities from messages with explicit entity annotations.
-		// Forge has no auto-detection: a message becomes an entity only when
-		// it carries (forge.v1.entity) AND has a (forge.v1.field) = { pk: true }
-		// marker. extractEntityDef returns an error for malformed entities;
-		// surface it via p.Error so `forge generate` halts with a clear
-		// remediation message instead of silently producing broken code.
+		// Entity protos are dead: SQL is the schema language and entities
+		// are projected from the applied db/migrations schema. A message
+		// still carrying the legacy (forge.v1.entity) annotation gets a
+		// one-line migration notice — the annotation is otherwise IGNORED.
 		for _, msg := range f.Messages {
-			ed, ok, err := extractEntityDef(f, msg)
-			if err != nil {
-				p.Error(err)
-				return nil
-			}
-			if ok {
-				desc.Entities = append(desc.Entities, ed)
-			}
+			noticeLegacyEntityAnnotation(f, msg)
 		}
 
 		// Extract config messages. Walks nested message declarations too
@@ -100,7 +91,7 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 
 	// Skip writing an empty fragment — saves a no-op file per plugin
 	// invocation and keeps the merge step's directory listing clean.
-	if len(desc.Services) == 0 && len(desc.Entities) == 0 && len(desc.Configs) == 0 {
+	if len(desc.Services) == 0 && len(desc.Configs) == 0 {
 		return nil
 	}
 
@@ -185,7 +176,6 @@ func MergeDescriptorFragments(descriptorOut string) error {
 			return fmt.Errorf("parse descriptor fragment %s: %w", name, err)
 		}
 		merged.Services = append(merged.Services, frag.Services...)
-		merged.Entities = append(merged.Entities, frag.Entities...)
 		merged.Configs = append(merged.Configs, frag.Configs...)
 	}
 
@@ -456,79 +446,25 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 	messages[name] = fields
 }
 
-// extractEntityDef converts a proto message with entity annotations to a
-// codegen.EntityDef. Entities are annotation-only — a message becomes an
-// entity solely by carrying `option (forge.v1.entity) = { ... }` plus a
-// field marked `[(forge.v1.field) = { pk: true }]`. parseEntity returns a
-// non-nil error for messages that ARE annotated as entities but lack a PK
-// marker; that error is propagated via p.Error in the descriptor plugin.
-func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.EntityDef, bool, error) {
-	ent, isEntity, err := parseEntity(msg)
-	if err != nil {
-		return codegen.EntityDef{}, false, err
+// noticeLegacyEntityAnnotation prints a one-line migration notice for
+// messages still carrying the retired (forge.v1.entity) annotation.
+// The annotation is ignored: entities are projections of the applied
+// db/migrations schema now, and these projects' migrations were already
+// the de-facto truth. The option DEFINITIONS remain in forge/v1/forge.proto
+// (deprecated) so legacy protos keep compiling for one release.
+func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
+	opts, ok := msg.Desc.Options().(*descriptorpb.MessageOptions)
+	if !ok || opts == nil {
+		return
 	}
-	if !isEntity {
-		return codegen.EntityDef{}, false, nil
+	if !proto.HasExtension(opts, forgev1.E_Entity) {
+		return
 	}
-
-	ed := codegen.EntityDef{
-		Name:       string(msg.Desc.Name()),
-		TableName:  ent.tableName,
-		ProtoFile:  file.Desc.Path(),
-		SoftDelete: ent.softDelete,
-		Timestamps: ent.timestamps,
-	}
-
-	for _, fi := range ent.fields {
-		ef := codegen.EntityField{
-			Name:      string(fi.field.Desc.Name()),
-			GoName:    fi.field.GoName,
-			ProtoType: protoKindToString(fi.field.Desc.Kind()),
-			GoType:    goTypeForField(fi.field),
-		}
-		// Preserve repeated-ness. Dropping it here was the root cause of
-		// non-compiling ORM output for `repeated string` entity fields:
-		// downstream codegen saw a plain "string" and scanned the proto's
-		// []string field as a nullable scalar. Repeated SCALARS are
-		// supported (stored as a JSON column); repeated message/timestamp
-		// fields have no honest column mapping and are rejected loudly by
-		// the ORM generator with the join-table workaround named.
-		if fi.field.Desc.IsList() {
-			ef.ProtoType = "repeated " + ef.ProtoType
-		}
-		// Preserve the real type name for message fields ("message" alone
-		// is unmappable downstream — timestamp columns became TEXT).
-		if fi.field.Desc.Kind() == protoreflect.MessageKind && !fi.field.Desc.IsMap() {
-			ef.MessageType = string(fi.field.Desc.Message().FullName())
-		}
-
-		if fi.isPK {
-			ed.PkField = ef.Name
-			ed.PkGoType = ef.GoType
-		}
-
-		if fi.references != "" {
-			ef.IsFK = true
-			// Extract table name from "table.column" format
-			parts := splitRef(fi.references)
-			if len(parts) == 2 {
-				ef.FKTable = parts[0]
-			}
-		}
-
-		if fi.isTenantKey {
-			ed.HasTenant = true
-			ed.TenantFieldName = ef.Name
-			ed.TenantGoName = ef.GoName
-			ed.TenantColumnName = fi.columnName
-		}
-
-		ed.Fields = append(ed.Fields, ef)
-	}
-
-	// parseEntity already enforces that ed.PkField is non-empty for any
-	// entity that gets here — no fallback needed.
-	return ed, true, nil
+	fmt.Fprintf(os.Stderr,
+		"ℹ️  %s: message %s carries the retired (forge.v1.entity) annotation — it is now ignored.\n"+
+			"   SQL is the schema: db/migrations drive the ORM/entity projections.\n"+
+			"   Your migrations are already the truth; delete the annotation (and any proto/db entity files).\n",
+		file.Desc.Path(), msg.Desc.Name())
 }
 
 // appendConfigMessages extracts msg (and, recursively, its nested

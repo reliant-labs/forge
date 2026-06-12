@@ -107,18 +107,23 @@ func deriveFeatureDefaults(c *ProjectConfig) *derivedFeatureDefaults {
 	hasDB := isService && c.Database.Driver != "" && c.Database.Driver != "none"
 	codegen := isService
 	// Derivation MUST be dependency-consistent (see feature_graph.go): the
-	// default set it produces can never trip the load-time graph
-	// validator. frontend → codegen is the one shape-derived edge at risk
-	// — a non-service project that nonetheless declares a frontend would
-	// otherwise derive frontend=on with codegen=off. Gate the derived
-	// default on codegen so the default set is always coherent; a user who
-	// genuinely wants frontend codegen on a non-service kind still opts in
-	// explicitly (and then the validator makes them turn codegen on too).
-	frontend := len(c.Frontends) > 0 && codegen
+	// default set it produces can never trip the load-time graph validator.
+	// codegen is the foundational dependency — orm, migrations, and frontend
+	// all require it. Gate every derived codegen-dependent default on the
+	// EFFECTIVE codegen value (an explicit `features.codegen: false` wins
+	// over the shape-derived default), so disabling codegen cascades its
+	// dependents off instead of leaving them on to trip the validator. A
+	// user who wants one of them without codegen still has to opt in
+	// explicitly, and then the validator makes them turn codegen on too.
+	codegenEffective := codegen
+	if c.Features.Codegen != nil {
+		codegenEffective = *c.Features.Codegen
+	}
+	frontend := len(c.Frontends) > 0 && codegenEffective
 	return &derivedFeatureDefaults{
-		orm:           hasDB,
+		orm:           hasDB && codegenEffective,
 		codegen:       codegen,
-		migrations:    hasDB,
+		migrations:    hasDB && codegenEffective,
 		ci:            !isLibrary,
 		build:         !isLibrary,
 		contracts:     true,

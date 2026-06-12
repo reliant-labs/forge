@@ -141,7 +141,7 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, cs *generator.F
 func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 	goVersion := cfg.CI.EffectiveGoVersion()
 	hasFrontends := len(cfg.Frontends) > 0
-	hasServices := len(cfg.Services) > 0
+	hasServices := len(cfg.Servers()) > 0
 
 	var frontends []templates.FrontendCIConfig
 	for _, fe := range cfg.Frontends {

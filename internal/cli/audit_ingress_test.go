@@ -24,7 +24,7 @@ func TestAuditIngress_FeatureOffSkipsCategory(t *testing.T) {
 module_path: github.com/test/t
 version: 0.0.1
 forge_version: dev
-services: []
+components: []
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -42,8 +42,8 @@ services: []
 // a non-existent forge.yaml backend produce an error-level finding and
 // flip the category status to error.
 func TestCrossCheckIngress_UnknownService(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "api", Port: 8080},
+	services := []config.ComponentConfig{
+		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
 	}
 	routes := []HTTPRouteEntity{
 		{Name: "api-route", Service: "api", Port: 8080},
@@ -72,9 +72,9 @@ func TestCrossCheckIngress_UnknownService(t *testing.T) {
 // with Port>0 but no matching route produces an info-level finding and
 // keeps status at ok (cluster-internal services are valid).
 func TestCrossCheckIngress_ServiceWithoutRoute(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "api", Port: 8080},
-		{Name: "internal-only", Port: 9000},
+	services := []config.ComponentConfig{
+		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
+		{Name: "internal-only", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9000}}},
 	}
 	routes := []HTTPRouteEntity{
 		{Name: "api-route", Service: "api", Port: 8080},
@@ -102,8 +102,8 @@ func TestCrossCheckIngress_ServiceWithoutRoute(t *testing.T) {
 // declared port (Port==0) don't generate "no route" info lines —
 // workers/operators that just consume the bus shouldn't show up here.
 func TestCrossCheckIngress_PortZeroSkipped(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "worker", Port: 0},
+	services := []config.ComponentConfig{
+		{Name: "worker"},
 	}
 	cat := crossCheckIngress(services, []string{"worker"}, nil, nil, nil)
 	if cat.Status != AuditStatusOK {
@@ -118,7 +118,7 @@ func TestCrossCheckIngress_PortZeroSkipped(t *testing.T) {
 // branch is wired symmetrically with HTTPRoute — unknown svc refs in
 // a GRPCRoute escalate to error too.
 func TestCrossCheckIngress_GRPCRoutesAlsoChecked(t *testing.T) {
-	services := []config.ServiceConfig{{Name: "api", Port: 8080}}
+	services := []config.ComponentConfig{{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}}}
 	grpc := []GRPCRouteEntity{
 		{Name: "grpc-ghost", Service: "ghost", Port: 9000},
 	}
@@ -154,9 +154,9 @@ func TestAuditIngress_KCLRenderFailureWarn(t *testing.T) {
 // human-readable string format. Three slots: gateway count, route
 // count (http+grpc), services-without-route count.
 func TestCrossCheckIngress_SummaryFormat(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "api", Port: 8080},
-		{Name: "internal", Port: 9000},
+	services := []config.ComponentConfig{
+		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
+		{Name: "internal", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9000}}},
 	}
 	gws := []GatewayEntity{{Name: "edge"}}
 	http := []HTTPRouteEntity{{Name: "api-route", Service: "api", Port: 8080}}
@@ -177,10 +177,10 @@ func TestCrossCheckIngress_SummaryFormat(t *testing.T) {
 // TestCrossCheckIngress_FrontendBackend asserts a route pointing at a
 // frontend by name passes the cross-check — frontends are valid K8s
 // Service targets too. The "port declared but no route" info finding
-// stays scoped to cfg.Services, so an SSR-only frontend doesn't get
+// stays scoped to cfg.Components, so an SSR-only frontend doesn't get
 // flagged as a gap.
 func TestCrossCheckIngress_FrontendBackend(t *testing.T) {
-	services := []config.ServiceConfig{}
+	services := []config.ComponentConfig{}
 	backends := []string{"web"}
 	routes := []HTTPRouteEntity{
 		{Name: "web-route", Service: "web", Port: 3000},
@@ -203,7 +203,7 @@ func TestCrossCheckIngress_FrontendBackend(t *testing.T) {
 // passes the cross-check — at the k8s layer a webhook handler is just
 // another Service in the namespace.
 func TestCrossCheckIngress_WebhookBackend(t *testing.T) {
-	services := []config.ServiceConfig{{Name: "api", Port: 8080}}
+	services := []config.ComponentConfig{{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}}}
 	backends := []string{"api", "stripe"}
 	routes := []HTTPRouteEntity{
 		{Name: "stripe-webhook", Service: "stripe", Port: 8080},
@@ -225,7 +225,7 @@ func TestCrossCheckIngress_WebhookBackend(t *testing.T) {
 // a route pointing at a name that's neither service, frontend, nor
 // webhook still flips the category to error.
 func TestCrossCheckIngress_UnknownNonBackend(t *testing.T) {
-	services := []config.ServiceConfig{{Name: "api", Port: 8080}}
+	services := []config.ComponentConfig{{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}}}
 	backends := []string{"api", "web", "stripe"}
 	routes := []HTTPRouteEntity{
 		{Name: "ghost-route", Service: "nobody", Port: 8080},
@@ -241,7 +241,7 @@ func TestCrossCheckIngress_UnknownNonBackend(t *testing.T) {
 // the resulting set. Order doesn't matter, just membership.
 func TestIngressBackendNames(t *testing.T) {
 	cfg := &config.ProjectConfig{
-		Services: []config.ServiceConfig{
+		Components: []config.ComponentConfig{
 			{Name: "api", Webhooks: []config.WebhookConfig{{Name: "stripe"}, {Name: "github"}}},
 			{Name: "worker"},
 		},

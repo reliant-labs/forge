@@ -256,7 +256,7 @@ func runDebugStartService(ctx context.Context, target string, port int, jsonOutp
 			return fmt.Errorf("loading project config: %w", err)
 		}
 		found := false
-		for _, svc := range cfg.Services {
+		for _, svc := range cfg.Components {
 			if svc.Name == target {
 				candidate := filepath.Join(svc.Path, "cmd", "server")
 				if _, err := os.Stat(candidate); err == nil {

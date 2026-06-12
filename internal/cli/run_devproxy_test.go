@@ -101,9 +101,9 @@ func TestResolveProxyPort_AvoidsDeclaredComponentPorts(t *testing.T) {
 func TestDeclaredComponentPorts(t *testing.T) {
 	t.Parallel()
 	got := declaredComponentPorts(
-		[]config.ServiceConfig{
-			{Name: "api", Port: 8080},
-			{Name: "grpc", Port: 0}, // portless: skipped
+		[]config.ComponentConfig{
+			{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
+			{Name: "grpc"}, // portless: skipped
 		},
 		[]config.FrontendConfig{
 			{Name: "web", Port: 3000},
@@ -137,9 +137,9 @@ func TestBuildDevProxyBackends(t *testing.T) {
 		{Name: "web", Port: 3001},
 		{Name: "legacy", Port: 0}, // skipped
 	}
-	services := []config.ServiceConfig{
-		{Name: "api", Port: 8000},
-		{Name: "worker", Port: 0}, // skipped (no HTTP port)
+	services := []config.ComponentConfig{
+		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8000}}},
+		{Name: "worker"}, // skipped (no HTTP port)
 	}
 	routes := []HTTPRouteEntity{
 		{Name: "api-route", Service: "api", Port: 8000, Host: "api.localhost"},
@@ -175,8 +175,8 @@ func TestBuildDevProxyBackends(t *testing.T) {
 // services-only project (no frontends) gets a usable dispatch table
 // from HTTPRoute hosts alone.
 func TestBuildDevProxyBackends_FrontendlessServicesOnly(t *testing.T) {
-	services := []config.ServiceConfig{
-		{Name: "api", Port: 8000},
+	services := []config.ComponentConfig{
+		{Name: "api", Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8000}}},
 	}
 	routes := []HTTPRouteEntity{
 		{Name: "api-route", Service: "api", Port: 8000, Host: "api.localhost"},

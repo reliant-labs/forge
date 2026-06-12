@@ -18,11 +18,12 @@ kind: service
 version: 0.1.0
 forge_version: v0.0.0-test
 hot_reload: true
-services:
+components:
     - name: users
-      type: go_service
+      kind: server
       path: handlers/users
-      port: 8080
+      ports:
+        http: 8080
 frontends:
     - name: web
       type: nextjs
@@ -92,11 +93,12 @@ const minimalForgeYAML = `
 name: demo
 module_path: example.com/demo
 forge_version: v0.0.0-test
-services:
+components:
     - name: users
-      type: go_service
+      kind: server
       path: handlers/users
-      port: 8080
+      ports:
+        http: 8080
 frontends:
     - name: web
       type: nextjs
@@ -164,10 +166,10 @@ func TestDerivedDefaults_MinimalEquivalentToLegacyFull(t *testing.T) {
 // value, so deleting their features: block would be a no-op.
 func TestDerivedDefaults_RealProjectShapesMatchExplicit(t *testing.T) {
 	shape := &ProjectConfig{
-		Kind:      ProjectKindService,
-		Services:  []ServiceConfig{{Name: "api"}},
-		Frontends: []FrontendConfig{{Name: "web"}},
-		Database:  DatabaseConfig{Driver: "postgres"},
+		Kind:       ProjectKindService,
+		Components: []ComponentConfig{{Name: "api", Kind: ComponentKindServer}},
+		Frontends:  []FrontendConfig{{Name: "web"}},
+		Database:   DatabaseConfig{Driver: "postgres"},
 	}
 	derived := DeriveFeatureDefaults(shape)
 	for _, name := range []FeatureName{
@@ -198,7 +200,7 @@ func TestNormalizeForWrite_RoundTripStaysMinimal(t *testing.T) {
 	}
 	allowed := map[string]bool{
 		"name": true, "module_path": true, "forge_version": true,
-		"services": true, "frontends": true,
+		"components": true, "frontends": true,
 	}
 	for key := range reparsed {
 		if !allowed[key] {

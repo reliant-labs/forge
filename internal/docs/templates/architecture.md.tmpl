@@ -12,31 +12,31 @@ weight: 2
 
 ## System Overview
 
-{{ if or .Services .Frontends -}}
+{{ if or .Components .Frontends -}}
 ```mermaid
 graph TD
 {{ range .Frontends }}    {{ .Name }}["{{ .Name }}<br/>({{ .Type }})"]
 {{ end -}}
-{{ range .Services }}    {{ .Name | lower }}["{{ .Name }}<br/>({{ .Type }})"]
+{{ range .Components }}    {{ .Name | lower }}["{{ .Name }}<br/>({{ .EffectiveKind }})"]
 {{ end }}
-{{ range .Frontends }}{{ range $.Services }}    {{ $.FrontendName }}-- "Connect RPC" -->{{ .Name | lower }}
-{{ end }}{{ end -}}
+{{ range .Frontends }}{{ range $.Components }}{{ if .IsServer }}    {{ $.FrontendName }}-- "Connect RPC" -->{{ .Name | lower }}
+{{ end }}{{ end }}{{ end -}}
 {{ if .Database.Driver }}    db[("{{ .Database.Driver | title }}")]
-{{ range .Services }}    {{ .Name | lower }}-->db
-{{ end }}{{ end -}}
+{{ range .Components }}{{ if .IsServer }}    {{ .Name | lower }}-->db
+{{ end }}{{ end }}{{ end -}}
 ```
 {{- end }}
 
-## Services
+## Components
 
-{{ if .Services -}}
-| Service | Type | Port | Proto Packages |
-|---------|------|------|----------------|
-{{ range .Services -}}
-| {{ .Name }} | {{ .Type }} | {{ .Port }} | {{ joinStrings .ProtoPackages ", " }} |
+{{ if .Components -}}
+| Component | Kind | Port | Proto Packages |
+|-----------|------|------|----------------|
+{{ range .Components -}}
+| {{ .Name }} | {{ .EffectiveKind }} | {{ .PrimaryPort }} | {{ joinStrings .ProtoPackages ", " }} |
 {{ end }}
 {{- else -}}
-_No services configured._
+_No components configured._
 {{- end }}
 
 {{ if .Frontends -}}

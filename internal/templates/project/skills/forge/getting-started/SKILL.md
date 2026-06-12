@@ -190,6 +190,12 @@ Ports are auto-assigned and tracked in `forge.yaml`:
 
 Override with `--port` on `forge add service` or `forge add frontend`.
 
+The `forge run` dev proxy also starts at 8080 but auto-shifts past
+every declared service/frontend port — read the `[run] Dev URL:`
+banner for the port actually bound. If a postgres already runs on the
+host's 5432, `forge run` fails fast before `docker compose up` and
+prints the exact `POSTGRES_PORT=<free> forge run` rerun command.
+
 ## Rules
 
 - Always run `forge generate` after any proto or migration change.

@@ -310,54 +310,75 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 // CmdServerTemplateData holds the data passed to cmd-server.go.tmpl.
 // It combines project-level data (Module) with config field awareness
 // so the template can conditionally include code that references
-// specific config fields.
+// specific config fields, plus the forge.yaml auth provider so the
+// generated runServer actually CALLS the generated auth wiring
+// (middleware.InstallGeneratedAuth) instead of leaving it decorative.
 type CmdServerTemplateData struct {
 	Module       string
 	ConfigFields map[string]bool
+
+	// AuthProvider is the normalized forge.yaml auth.provider ("jwt",
+	// "api_key", "both"; empty when unset/none). Non-empty emits the
+	// InstallGeneratedAuth call in runServer.
+	AuthProvider string
+
+	// AuthProviderExternal is true for header-carried providers
+	// (api_key/both): the generated header-aware interceptor joins the
+	// project chain and the authn layer runs in passthrough.
+	AuthProviderExternal bool
+}
+
+// NormalizeAuthProvider canonicalizes a forge.yaml auth.provider value
+// for the cmd-server template: unset/none collapse to "" (no generated
+// auth wiring); api_key/both additionally report external=true (the
+// header-aware generated interceptor owns authentication).
+func NormalizeAuthProvider(provider string) (normalized string, external bool) {
+	switch provider {
+	case "", "none":
+		return "", false
+	case "api_key", "both":
+		return provider, true
+	default:
+		return provider, false
+	}
 }
 
 // GenerateCmdServer re-renders cmd/server.go with config field awareness.
 // Called during `forge generate` so that cmd/server.go stays in sync with
 // the actual config proto fields.
 //
+// This variant has no project-config access, so it renders WITHOUT the
+// generated-auth call site (AuthProvider empty). The generate pipeline
+// uses GenerateCmdServerWithFields, which threads the provider through.
+//
 // cs is the project's checksum tracker — passing it keeps cmd/server.go
 // out of `forge audit`'s orphan/user-edited lists. A nil cs is tolerated.
 func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
-	modulePath, err := GetModulePath(targetDir)
-	if err != nil {
-		return fmt.Errorf("read module path: %w", err)
-	}
-
-	data := CmdServerTemplateData{
-		Module:       modulePath,
+	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: ConfigFieldNamesFromMessages(messages),
-	}
-
-	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
-	}
-
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("cmd", "server.go"), content, cs, true); err != nil {
-		return fmt.Errorf("write cmd/server.go: %w", err)
-	}
-	return nil
+	}, targetDir, cs)
 }
 
 // GenerateCmdServerWithFields renders cmd/server.go using a pre-built
-// config field map. This variant is used when the caller needs to modify
-// the field set (e.g. stripping migration fields when the migrations
-// feature is disabled).
-func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
+// config field map (e.g. with migration fields stripped when the
+// migrations feature is disabled) and the project's forge.yaml
+// auth.provider (any spelling; normalized here).
+func GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error {
+	data := CmdServerTemplateData{
+		ConfigFields: configFields,
+	}
+	data.AuthProvider, data.AuthProviderExternal = NormalizeAuthProvider(authProvider)
+	return generateCmdServerData(data, targetDir, cs)
+}
+
+// generateCmdServerData is the shared render+write tail of the
+// GenerateCmdServer* variants. Fills Module from go.mod.
+func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *checksums.FileChecksums) error {
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
 		return fmt.Errorf("read module path: %w", err)
 	}
-
-	data := CmdServerTemplateData{
-		Module:       modulePath,
-		ConfigFields: configFields,
-	}
+	data.Module = modulePath
 
 	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
 	if err != nil {

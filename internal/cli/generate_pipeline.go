@@ -1220,10 +1220,16 @@ func stepFrontendBufTS(ctx *pipelineContext) error {
 // var loading without re-parsing the descriptor.
 func stepConfigLoader(ctx *pipelineContext) error {
 	var features config.FeaturesConfig
+	var authProvider string
 	if ctx.Cfg != nil {
 		features = ctx.Cfg.Features
+		// Threaded into cmd/server.go so the generated runServer calls
+		// middleware.InstallGeneratedAuth for forge.yaml-declared
+		// providers (the generated-but-unwired GeneratedAuthInterceptor
+		// class of dishonesty).
+		authProvider = ctx.Cfg.Auth.Provider
 	}
-	configFields, cfgErr := generateConfigLoader(ctx.ProjectDir, features, ctx.Checksums)
+	configFields, cfgErr := generateConfigLoader(ctx.ProjectDir, features, authProvider, ctx.Checksums)
 	if cfgErr != nil {
 		return fmt.Errorf("config loader generation failed: %w", cfgErr)
 	}

@@ -30,7 +30,7 @@ type MockService struct {
 	GenerateCRUDHandlersFunc        func(ServiceDef, []CRUDMethod, string, string, *checksums.FileChecksums) error
 	GenerateCRUDTestsFunc           func(ServiceDef, []CRUDMethod, string, string, *checksums.FileChecksums) error
 	GenerateCmdServerFunc           func([]ConfigMessage, string, *checksums.FileChecksums) error
-	GenerateCmdServerWithFieldsFunc func(map[string]bool, string, *checksums.FileChecksums) error
+	GenerateCmdServerWithFieldsFunc func(map[string]bool, string, string, *checksums.FileChecksums) error
 	GenerateConfigLoaderFunc        func([]ConfigMessage, string, *checksums.FileChecksums) error
 	GenerateBootstrapFunc           func([]ServiceDef, []BootstrapPackageData, []BootstrapWorkerData, []BootstrapOperatorData, string, string, bool, string, map[string]bool, map[string]bool, BootstrapFeatures, *checksums.FileChecksums) error
 	GenerateBootstrapTestingFunc    func([]ServiceDef, []BootstrapPackageData, []BootstrapWorkerData, []BootstrapOperatorData, string, bool, string, *checksums.FileChecksums) error
@@ -118,10 +118,10 @@ func (m *MockService) GenerateCmdServer(messages []ConfigMessage, targetDir stri
 	return contractkit.MockNotSet("MockService", "GenerateCmdServer")
 }
 
-func (m *MockService) GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
-	m.Record("GenerateCmdServerWithFields", configFields, targetDir, cs)
+func (m *MockService) GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error {
+	m.Record("GenerateCmdServerWithFields", configFields, authProvider, targetDir, cs)
 	if m.GenerateCmdServerWithFieldsFunc != nil {
-		return m.GenerateCmdServerWithFieldsFunc(configFields, targetDir, cs)
+		return m.GenerateCmdServerWithFieldsFunc(configFields, authProvider, targetDir, cs)
 	}
 	return contractkit.MockNotSet("MockService", "GenerateCmdServerWithFields")
 }

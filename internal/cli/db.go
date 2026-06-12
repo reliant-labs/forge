@@ -21,12 +21,12 @@ const defaultMigrationsDir = "db/migrations"
 // migrationsDefault returns the configured migrations directory from
 // forge.yaml, falling back to defaultMigrationsDir.
 func migrationsDefault() string {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return defaultMigrationsDir
 	}
-	if cfg.Database.MigrationsDir != "" {
-		return cfg.Database.MigrationsDir
+	if store.Database().MigrationsDir != "" {
+		return store.Database().MigrationsDir
 	}
 	return defaultMigrationsDir
 }

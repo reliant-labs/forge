@@ -202,14 +202,18 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 
 	// Project config: same tolerance as text mode — missing is fine,
 	// parse errors are fatal.
-	cfg, cfgErr := loadProjectConfig()
+	store, cfgErr := loadProjectStore()
 	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
 		return nil, fmt.Errorf("failed to load project config: %w", cfgErr)
+	}
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
 	}
 
 	switch {
 	case flags.contract, flags.exportedVars:
-		if cfg != nil && !cfg.Features.ContractsEnabled() {
+		if store != nil && !store.Features().ContractsEnabled() {
 			return buildLintJSONReport([]lintJSONFinding{skippedFinding("contracts feature is disabled in forge.yaml")}, false), nil
 		}
 		fs, gated, err := collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg))
@@ -218,7 +222,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		}
 		return buildLintJSONReport(fs, gated), nil
 	case flags.migrationSafety:
-		if cfg != nil && !cfg.Features.MigrationsEnabled() {
+		if store != nil && !store.Features().MigrationsEnabled() {
 			return buildLintJSONReport([]lintJSONFinding{skippedFinding("migrations feature is disabled in forge.yaml")}, false), nil
 		}
 		fs, gated, err := collectMigrationSafetyJSON(cfg)

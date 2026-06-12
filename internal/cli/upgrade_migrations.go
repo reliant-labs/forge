@@ -187,8 +187,8 @@ func computePendingMigrations() ([]pendingMigration, error) {
 	// migration as pending").
 	projectVersion := ""
 	if cfgPath, ferr := findProjectConfigFile(); ferr == nil {
-		if cfg, lerr := loadProjectConfigFrom(cfgPath); lerr == nil {
-			projectVersion = cfg.EffectiveForgeVersion()
+		if store, lerr := loadProjectStoreFrom(cfgPath); lerr == nil {
+			projectVersion = store.Meta().EffectiveForgeVersion()
 		}
 	}
 

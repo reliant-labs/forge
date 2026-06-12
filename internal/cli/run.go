@@ -249,12 +249,13 @@ const defaultDevProxyPort = 8080
 
 // runProjectDev orchestrates the local development environment.
 func runProjectDev(opts runOptions) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
-	fmt.Printf("[run] Starting project: %s (env: %s)\n", cfg.Name, opts.env)
+	fmt.Printf("[run] Starting project: %s (env: %s)\n", store.Meta().Name, opts.env)
 	if opts.noInfra {
 		fmt.Println("[run] Skipping infrastructure (--no-infra)")
 	}
@@ -1218,10 +1219,11 @@ func stringifyEnvValue(v any) string {
 // No legacy default (".env.<env>") — projects on the new shape must
 // declare SecretsFile in KCL to opt in.
 func runHostService(ctx context.Context, name, env, secretsFile string, background bool) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 	if name == "" {
 		return fmt.Errorf("service name required (usage: forge run <service>)")
 	}

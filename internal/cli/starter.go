@@ -19,14 +19,14 @@ import (
 // <sub>` RunE invokes. Mirrors packsFeatureGate — outside a forge
 // project we let the standard "no forge.yaml" path own the messaging.
 func startersFeatureGate() error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		if err == ErrProjectConfigNotFound {
 			return nil
 		}
 		return err
 	}
-	if !cfg.Features.StartersEnabled() {
+	if !store.Features().StartersEnabled() {
 		return config.DisabledFeatureError(config.FeatureStarters)
 	}
 	return nil

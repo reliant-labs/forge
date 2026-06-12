@@ -65,11 +65,11 @@ enabled with a dependency off is a load error. This command shows the
 resolved, coherent set: codegen, orm, migrations, frontend, deploy,
 ingress, and the rest, with their edges.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
+			store, err := loadProjectStore()
 			if err != nil {
 				return err
 			}
-			return printFeatureGraph(cmd, cfg)
+			return printFeatureGraph(cmd, store.Config())
 		},
 	}
 }

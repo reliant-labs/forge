@@ -97,12 +97,12 @@ Examples:
 }
 
 func runMap(maxDepth int, filter string, jsonOut bool) error {
-	cfg, cfgErr := loadProjectConfig()
+	store, cfgErr := loadProjectStore()
 	if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
 		return fmt.Errorf("load project config: %w", cfgErr)
 	}
 	projectDir := "."
-	if cfg != nil {
+	if store != nil {
 		// Walk up from cwd; we already know forge.yaml exists somewhere.
 		if path, err := findProjectConfigFile(); err == nil {
 			projectDir = filepath.Dir(path)

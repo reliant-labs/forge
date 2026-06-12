@@ -325,6 +325,7 @@ func generateSteps() []GenStep {
 		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
 		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
+		{Name: "per-service subcommands (cmd/services_gen.go)", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCmdSubcommands, Tag: "codegen"},
 		{Name: "pkg/app/testing.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrapTesting, Tag: "codegen"},
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
 		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools"},
@@ -517,6 +518,7 @@ var templatesOnlyStepAllow = map[string]bool{
 	"webhook routes":                         true,
 	"MCP manifest":                           true,
 	"pkg/app/bootstrap.go":                   true,
+	"per-service subcommands (cmd/services_gen.go)": true,
 	"pkg/app/testing.go":                     true,
 	"pkg/app/migrate.go":                     true,
 	"CI workflows":                           true,
@@ -1697,6 +1699,41 @@ func stepBootstrap(ctx *pipelineContext) error {
 	if err := generateBootstrap(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap generation failed: %w", err)
 	}
+	return nil
+}
+
+// stepCmdSubcommands regenerates cmd/services_gen.go — one cobra
+// subcommand per REGISTERED service, the cmd-side projection of the
+// same registration table (pkg/app/services.go rows) bootstrap
+// consumes — and ensures the user-owned cmd/commands.go extension
+// point exists (the generated cmd/main.go calls userCommands(), so a
+// missing file would break the build of any pre-M6 project on its
+// first regenerate).
+//
+// Skipped silently when cmd/server.go doesn't exist: CLI/library kinds
+// and codegen-less trees have no runServer to delegate to.
+func stepCmdSubcommands(ctx *pipelineContext) error {
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", "server.go")); err != nil {
+		return nil
+	}
+	if err := codegen.GenerateCmdCommands(ctx.ProjectDir); err != nil {
+		return fmt.Errorf("scaffold cmd/commands.go: %w", err)
+	}
+	// REGISTERED only — a row constructor without a registration line is
+	// not served by this binary and must not get a subcommand (it would
+	// boot a server that warns "unknown service" and mounts nothing).
+	registered, err := ctx.registeredServiceDefs()
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(registered))
+	for _, svc := range registered {
+		names = append(names, svc.Name)
+	}
+	if err := codegen.GenerateCmdServices(names, ctx.ProjectDir, ctx.Checksums); err != nil {
+		return fmt.Errorf("per-service subcommand generation failed: %w", err)
+	}
+	fmt.Println("  ✅ Generated cmd/services_gen.go (subcommands projected from RegisteredServices rows)")
 	return nil
 }
 

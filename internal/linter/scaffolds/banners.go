@@ -288,7 +288,7 @@ func isKnownTier1(rel, noTmpl string) bool {
 	// Project-level cmd/ scaffolds: regenerated; they carry the canonical header.
 	switch noTmpl {
 	case "cmd-cli-main.go", "cmd-cli-version.go",
-		"cmd-shared-main.go", "cmd-shared-service.go",
+		"cmd-shared-main.go", "cmd-services-gen.go",
 		"cmd-server.go", "cmd-version.go", "cmd-db.go", "cmd-root.go":
 		return true
 	case "bootstrap.go", "bootstrap_testing.go",

@@ -542,95 +542,70 @@ jobs:
 	return os.WriteFile(filepath.Join(dir, "pre-commit.yml"), []byte(content), 0o644)
 }
 
-// generateExampleMigration writes db/migrations/00001_init.{up,down}.sql,
-// a minimal but realistic example (UUID primary key, timestamptz default)
-// that demonstrates the conventions documented in db/README.md.
-// The up migration wraps its DDL in BEGIN/COMMIT so partial failures are
-// rolled back — matches the transaction guidance in db/README.md.
-//
-// Skips emit if any baseline migration already exists in the directory
-// (e.g. user `forge new`'d into a directory carrying a brought-in
-// `00001_baseline.up.sql`). Different number-padding conventions
-// (4-digit vs 5-digit) caused `migrate -path db/migrations` errors in
-// the past — using 5-digit padding here matches `GeneratePlanMigrations`
-// so any collision is now exact-name and obvious.
+// generateExampleMigration writes db/README.md (the migrations-as-truth
+// workflow doc) and ensures db/migrations/ exists. It deliberately does
+// NOT emit a starter migration: tables are born via `forge add entity`
+// (or a hand-written migration), and an empty schema means an empty
+// entity universe — no ORM, no CRUD wiring, no frontend pages. The old
+// example `items` migration made the pristine scaffold lie about
+// having an entity.
 func (g *ProjectGenerator) generateExampleMigration() error {
 	dir := filepath.Join(g.Path, "db", "migrations")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
-	// Detect a brought-in baseline. If any *.sql file exists in
-	// db/migrations/ already, the user owns the schema; the scaffold's
-	// example would either collide or pollute their migration chain.
-	if existing, err := hasExistingMigration(dir); err != nil {
-		return err
-	} else if existing {
-		return nil
-	}
-
-	up := `-- 00001_init.up.sql
--- Example migration: creates an ` + "`items`" + ` table.
--- Multi-statement migrations should be wrapped in an explicit
--- transaction so a failure halfway through leaves the schema untouched.
-BEGIN;
-
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-CREATE TABLE IF NOT EXISTS items (
-    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    name       TEXT        NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS items_created_at_idx ON items (created_at DESC);
-
-COMMIT;
-`
-
-	down := `-- 00001_init.down.sql
--- Revert 00001_init.up.sql.
-BEGIN;
-
-DROP INDEX IF EXISTS items_created_at_idx;
-DROP TABLE IF EXISTS items;
-
-COMMIT;
-`
-	if err := os.WriteFile(filepath.Join(dir, "00001_init.up.sql"), []byte(up), 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "00001_init.down.sql"), []byte(down), 0o644); err != nil {
-		return err
-	}
-
 	// Overwrite db/README.md with a more complete version that covers
-	// the seed workflow, transaction guidance, and links to the example
-	// migration we just wrote. The earlier stub written from project.go
-	// is superseded here intentionally.
+	// the add-entity workflow, transaction guidance and seeds. The
+	// earlier stub written from project.go is superseded here
+	// intentionally.
 	readme := `# db
 
 SQL migrations managed by [golang-migrate](https://github.com/golang-migrate/migrate),
 invoked by the generated ` + "`" + `db migrate` + "`" + ` subcommands.
+
+## Schema is code: migrations are the single source of truth
+
+The applied schema drives code generation: ` + "`forge generate`" + ` applies
+every ` + "`*.up.sql`" + ` to an in-memory shadow database, introspects it, and
+projects entity structs, the ORM (` + "`internal/db/`" + `), CRUD wiring and
+frontend pages from the real tables. There is no schema DSL — the SQL
+here IS the declaration.
+
+Start a new entity with:
+
+` + "```" + `
+forge add entity bookmark url:string title:string tags:[]string done:bool
+` + "```" + `
+
+which emits the create-table migration (and, once, the CRUD RPCs in the
+service proto). Evolve it by writing further migrations — add a column,
+move data with plain ` + "`UPDATE`" + ` statements, drop a column — and re-run
+` + "`forge generate`" + `; the projections follow the schema.
+
+Conventions read off real columns (no annotations):
+
+| columns                  | behavior                                         |
+|--------------------------|--------------------------------------------------|
+| ` + "`deleted_at`" + `             | soft delete: DELETE becomes UPDATE, reads filter ` + "`IS NULL`" + ` |
+| ` + "`created_at`" + ` + ` + "`updated_at`" + ` | managed timestamps (stamped by the ORM)   |
+| ` + "`tenant_id`" + `              | tenant-scoped rows                               |
+| text columns             | spanned by the generated list ` + "`search`" + ` filter   |
 
 ## Layout
 
 ` + "```" + `
 db/
   migrations/
-    00001_init.up.sql         # forward migration
-    00001_init.down.sql       # rollback
-    00002_add_users.up.sql
-    00002_add_users.down.sql
+    00001_create_bookmarks.up.sql    # forward migration
+    00001_create_bookmarks.down.sql  # rollback
   seeds/
-    0001_items.sql            # idempotent dev/test seed data
+    0001_examples.sql                # idempotent dev/test seed data
 ` + "```" + `
 
 Migrations run in lexicographic order. Stick to zero-padded, monotonic
 5-digit numeric prefixes (` + "`00001`" + `, ` + "`00002`" + `, ...) so the order is
-stable regardless of merge order. Forge's pack and ORM generators emit
-5-digit prefixes; matching the convention avoids width-mismatch
-collisions.
+stable regardless of merge order.
 
 ## Writing a new migration
 
@@ -638,6 +613,11 @@ collisions.
 2. Wrap **multi-statement DDL in an explicit transaction**
    (` + "`BEGIN; ... COMMIT;`" + `) so a mid-migration failure rolls back cleanly.
    Single-statement migrations can omit the transaction.
+2b. Keep table-defining DDL in the **portable pg/sqlite subset**: your
+   own tests (and forge's shadow introspection) apply these files to
+   in-memory SQLite. Parenthesize function defaults (` + "`DEFAULT (now())`" + `)
+   and avoid ` + "`::type`" + ` casts (` + "`DEFAULT '{}'`" + ` instead of
+   ` + "`DEFAULT '{}'::jsonb`" + `). Native arrays (` + "`TEXT[]`" + `) are fine.
 3. Keep migrations **forward-compatible with running code**: ship the
    migration first, then the code that depends on it. Avoid destructive
    changes (e.g. dropping columns) in the same release as the code that
@@ -673,26 +653,29 @@ the equivalent) so re-running is safe.
 	return os.WriteFile(filepath.Join(g.Path, "db", "README.md"), []byte(readme), 0o644)
 }
 
-// generateSeeds writes db/seeds/0001_items.sql — a minimal, idempotent
-// example that populates the table created by 00001_init.up.sql.
-// `ON CONFLICT DO NOTHING` lets the seed run repeatedly without blowing
-// up.
+// generateSeeds writes db/seeds/README.md documenting the idempotent
+// seed convention. No example seed rows are emitted — the scaffold has
+// no tables until `forge add entity` (or a hand-written migration)
+// creates one, and a seed INSERT into a nonexistent table would fail.
 func (g *ProjectGenerator) generateSeeds() error {
-	seed := `-- 0001_items.sql
--- Seed data for the ` + "`items`" + ` table (see db/migrations/00001_init.up.sql).
--- Safe to re-run: each row is keyed by a stable UUID and INSERT uses
--- ON CONFLICT DO NOTHING.
-INSERT INTO items (id, name) VALUES
-    ('11111111-1111-1111-1111-111111111111', 'example-item-1'),
-    ('22222222-2222-2222-2222-222222222222', 'example-item-2'),
-    ('33333333-3333-3333-3333-333333333333', 'example-item-3')
-ON CONFLICT (id) DO NOTHING;
+	seed := `# db/seeds
+
+Idempotent SQL files for development and test fixtures, applied in
+lexicographic order by ` + "`task db-seed`" + `.
+
+Write each seed with a stable key and ` + "`ON CONFLICT DO NOTHING`" + ` so
+re-running is safe, e.g.:
+
+    -- 0001_bookmarks.sql
+    INSERT INTO bookmarks (id, url, title) VALUES
+        ('seed-bookmark-1', 'https://example.com', 'Example')
+    ON CONFLICT (id) DO NOTHING;
 `
 	dir := filepath.Join(g.Path, "db", "seeds")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "0001_items.sql"), []byte(seed), 0o644)
+	return os.WriteFile(filepath.Join(dir, "README.md"), []byte(seed), 0o644)
 }
 
 // generateADRs writes docs/adr/README.md and an example ADR capturing

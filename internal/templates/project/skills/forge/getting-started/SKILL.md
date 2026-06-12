@@ -154,7 +154,7 @@ All `forge add` commands update `forge.yaml` and run the generation pipeline aut
 | Command | What it does |
 |---------|-------------|
 | `forge generate` | Regenerates infrastructure from protos + applied migrations (safe to re-run anytime) |
-| `forge run` | Full stack: Docker infra + Go services (hot reload) + frontends |
+| `forge run` | Full stack: Docker infra + Go services (hot reload) + frontends. Defaults `ENVIRONMENT=development` and dev CORS origins when unset, and dev mode attaches a synthetic dev user (`devClaims()` in `pkg/middleware/middleware.go`) — so the API and generated CRUD are callable with zero auth config |
 | `forge up --env=<env>` | Build + deploy + host launch + frontend dev — one command, reads `deploy/kcl/<env>/` |
 | `forge test` | Unit + integration tests |
 | `forge test e2e` | E2E tests (requires stack running via `forge run`) |

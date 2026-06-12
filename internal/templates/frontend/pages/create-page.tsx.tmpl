@@ -42,7 +42,10 @@ export default function Create{{.EntityName}}Page() {
     meta: { silenceErrorToast: true },
   });
 
-  const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({
+  {{- /* register/errors are only consumed by the per-field inputs below —
+         destructuring them for a zero-field form ships eslint
+         no-unused-vars warnings on the pristine scaffold. */}}
+  const { {{if .CreateFields}}register, {{end}}handleSubmit{{if .CreateFields}}, formState: { errors }{{end}} } = useForm<FormValues>({
     resolver: zodResolver(schema),
   });
 

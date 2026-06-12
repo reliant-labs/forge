@@ -59,7 +59,7 @@ const (
 var mapWalkSkip = map[string]struct{}{
 	"vendor": {}, "node_modules": {}, ".git": {}, ".forge": {},
 	".idea": {}, ".vscode": {}, "dist": {}, "build": {},
-	".next": {}, ".turbo": {}, ".task": {}, "tmp": {},
+	".next": {}, ".next-prod": {}, ".turbo": {}, ".task": {}, "tmp": {},
 }
 
 func newMapCmd() *cobra.Command {

@@ -931,11 +931,12 @@ Use --kind mobile to scaffold a React Native app using Expo.
 Use --kind vite-spa to scaffold a Vite + React + tanstack-router SPA.
 
 For Next.js frontends (--kind web, the default), --output selects the
-production build/runtime shape. "static" (the default) emits a static
-export — the right shape when the frontend is a pure UI shell calling a
-Go backend via Connect RPC. Opt into "standalone" when you need a Node
-sidecar (server components, server actions, request-time redirect()).
-Use "server" for full Next.js dev+prod (next start).
+production build/runtime shape. "standalone" (the default) emits a
+self-contained Node server that pairs with the generated Dockerfile and
+supports the dynamic [id] CRUD routes forge generates. Opt into
+"static" only when the frontend has no dynamic routes — static export
+fails the build on the generated /<entity>/[id] pages. Use "server"
+for full Next.js dev+prod (next start).
 
 --base-path mounts the frontend under a URL prefix (e.g. /admin behind a
 reverse proxy that blends several apps on one host). It is persisted as
@@ -958,7 +959,7 @@ Example:
 
 	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
-	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: static (default), standalone, or server. Only applies to --kind web.")
+	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: standalone (default), static, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
 
 	return cmd
@@ -1000,7 +1001,7 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 	switch output {
 	case "", "static", "standalone", "server":
 	default:
-		return fmt.Errorf("invalid --output %q: valid values are static (default), standalone, server", output)
+		return fmt.Errorf("invalid --output %q: valid values are standalone (default), static, server", output)
 	}
 	if output != "" && kind != "" && kind != "web" {
 		return fmt.Errorf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind)
@@ -1105,7 +1106,7 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 
 	// Update forge.yaml. Only persist `output:` when the user passed
 	// the flag — keeping the field empty lets the per-frontend
-	// scaffold default (currently "static") evolve without forcing
+	// scaffold default (currently "standalone") evolve without forcing
 	// every existing forge.yaml to track it explicitly.
 	feEntry := config.FrontendConfig{
 		Name: name,

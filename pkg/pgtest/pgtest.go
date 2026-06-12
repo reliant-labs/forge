@@ -212,6 +212,29 @@ func New() (*sql.DB, func(), error) {
 	return db, cleanup, nil
 }
 
+// NewURL creates a fresh, uniquely-named, empty database on the shared
+// server like New, but returns its connection DSN (a postgres:// URL)
+// instead of an open *sql.DB. Use this when the consumer is a separate
+// process that connects itself via DATABASE_URL — e.g. an e2e test that
+// boots a generated server. The returned cleanup drops the database; the
+// caller must not hold connections past it.
+func NewURL() (dsn string, cleanup func(), err error) {
+	s, err := boot()
+	if err != nil {
+		return "", nil, err
+	}
+	name := fmt.Sprintf("forge_test_%d_%d", os.Getpid(), dbCounter.Add(1))
+	if _, err := s.baseDB.Exec("CREATE DATABASE " + name); err != nil {
+		return "", nil, fmt.Errorf("pgtest: create database %s: %w", name, err)
+	}
+	cleanup = func() {
+		_, _ = s.baseDB.Exec(
+			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", name)
+		_, _ = s.baseDB.Exec("DROP DATABASE IF EXISTS " + name)
+	}
+	return replaceDBName(s.baseURL, name), cleanup, nil
+}
+
 // replaceDBName swaps the database segment of a base DSN
 // (".../postgres?...") for name.
 func replaceDBName(baseURL, name string) string {

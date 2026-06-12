@@ -80,6 +80,15 @@ func mapRepoErr(op, entity string, err error) error {
 	if errors.Is(err, orm.ErrNoRows) || svcerr.IsNotFound(err) {
 		return svcerr.Wrap(svcerr.NotFound(entity))
 	}
+	// An update_mask path that names no updatable column is the CALLER's
+	// mistake, not a server fault: InvalidArgument, with the offending
+	// path named and no SQL in the message (the typed error carries only
+	// the field name).
+	var unknownField *orm.UnknownFieldError
+	if errors.As(err, &unknownField) {
+		return svcerr.Wrap(svcerr.InvalidArgument(fmt.Sprintf(
+			"%s %s: unknown or immutable update_mask path %q", op, entity, unknownField.Field)))
+	}
 	return svcerr.Wrap(svcerr.Internal(fmt.Sprintf("%s %s failed", op, entity)))
 }
 
@@ -165,9 +174,39 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	Entity         func(req *Req) (entity Ent, ok bool)
 	Persist        func(ctx context.Context, tenantID string, entity Ent) error
 	Pack           func(entity Ent) *Resp
+
+	// Mask extracts the AIP-134 update_mask paths from the request
+	// (req.GetUpdateMask().GetPaths()). nil when the proto's update
+	// request has no update_mask field — HandleUpdate then behaves
+	// exactly as before this field existed (full replace via Persist).
+	Mask func(req *Req) []string
+
+	// PersistMasked writes ONLY the named fields (proto field names ==
+	// column names, snake_case). The generator wires it whenever it
+	// wires Mask. If Mask is set but PersistMasked is nil and a request
+	// arrives with concrete paths, HandleUpdate fails CodeInternal —
+	// silently widening a masked write to a full replace is the
+	// data-loss bug this hook exists to prevent.
+	PersistMasked func(ctx context.Context, tenantID string, entity Ent, fields []string) error
 }
 
 // HandleUpdate runs auth -> tenant -> validate-required -> persist -> pack.
+//
+// AIP-134 update_mask semantics (when op.Mask is wired):
+//
+//   - mask absent/empty, or containing "*"  → full-object replace via
+//     op.Persist. AIP-134 permits full replacement when the behavior is
+//     documented — this is that documentation. Callers that want a
+//     partial update MUST send a mask.
+//   - mask with concrete paths → op.PersistMasked writes only those
+//     fields. Paths are proto field names (snake_case, == column names).
+//   - unknown or immutable path → CodeInvalidArgument naming the path
+//     (mapped from orm.UnknownFieldError by mapRepoErr).
+//
+// After a masked write the response echoes the request entity: masked
+// fields hold their new values, unmasked fields hold whatever the caller
+// sent (NOT necessarily the stored values). Re-read with Get for the
+// authoritative row.
 func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		if err := runAuth(ctx, op.Auth); err != nil {
@@ -184,11 +223,44 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 				fmt.Errorf("update %s: %s is required", op.EntityLower, op.EntityFieldLow),
 			)
 		}
+		if op.Mask != nil {
+			if paths, full := maskPaths(op.Mask(req.Msg)); !full {
+				if op.PersistMasked == nil {
+					// Wiring bug, not caller error: the generator emits Mask
+					// and PersistMasked together. Fail loudly rather than
+					// silently rewriting every column.
+					return nil, connect.NewError(
+						connect.CodeInternal,
+						fmt.Errorf("update %s: update_mask received but masked persistence is not wired", op.EntityLower),
+					)
+				}
+				if err := op.PersistMasked(ctx, tid, entity, paths); err != nil {
+					return nil, mapRepoErr("update", op.EntityLower, err)
+				}
+				return connect.NewResponse(op.Pack(entity)), nil
+			}
+		}
 		if err := op.Persist(ctx, tid, entity); err != nil {
 			return nil, mapRepoErr("update", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
+}
+
+// maskPaths normalizes update_mask paths: blank entries are dropped, and
+// full reports whether the mask requests a full replace (no concrete
+// paths, or any "*" entry).
+func maskPaths(raw []string) (paths []string, full bool) {
+	for _, p := range raw {
+		if p == "" {
+			continue
+		}
+		if p == "*" {
+			return nil, true
+		}
+		paths = append(paths, p)
+	}
+	return paths, len(paths) == 0
 }
 
 // DeleteOp wires the per-RPC concerns of a Delete handler.

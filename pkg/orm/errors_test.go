@@ -120,3 +120,28 @@ func TestSentinelErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestUnknownFieldError(t *testing.T) {
+	err := &UnknownFieldError{Field: "nope"}
+
+	// Message names the offending path and stays SQL-free.
+	msg := err.Error()
+	if !strings.Contains(msg, "nope") {
+		t.Errorf("error should name the field, got: %s", msg)
+	}
+	for _, leak := range []string{"SELECT", "UPDATE", "sql:"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("error message leaks SQL-ish text (%q): %s", leak, msg)
+		}
+	}
+
+	// Must survive %w wrapping — pkg/crud classifies it via errors.As.
+	wrapped := fmt.Errorf("update items: %w", err)
+	var uf *UnknownFieldError
+	if !errors.As(wrapped, &uf) {
+		t.Fatal("expected errors.As to find UnknownFieldError through a %w wrap")
+	}
+	if uf.Field != "nope" {
+		t.Errorf("Field = %q, want %q", uf.Field, "nope")
+	}
+}

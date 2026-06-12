@@ -31,7 +31,10 @@ type createResp struct{ User *user }
 type getReq struct{ ID string }
 type getResp struct{ User *user }
 
-type updateReq struct{ User *user }
+type updateReq struct {
+	User *user
+	Mask []string // stands in for the proto's update_mask paths
+}
 type updateResp struct{ User *user }
 
 type deleteReq struct{ ID string }
@@ -274,6 +277,164 @@ func TestHandleUpdate_NilEntity_InvalidArgument(t *testing.T) {
 	want := "update user: user is required"
 	if !strings.Contains(cerr.Message(), want) {
 		t.Fatalf("legacy message format changed.\nwant substring: %q\ngot: %q", want, cerr.Message())
+	}
+}
+
+// --- HandleUpdate: AIP-134 update_mask dispatch -----------------------
+
+// maskedUpdateOp builds an UpdateOp with both persistence hooks
+// instrumented, so each test can assert exactly which path ran.
+func maskedUpdateOp(fullCalled *bool, maskedFields *[]string, maskedErr error) UpdateOp[updateReq, updateResp, *user] {
+	return UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity: func(r *updateReq) (*user, bool) {
+			return r.User, r.User != nil
+		},
+		Mask: func(r *updateReq) []string { return r.Mask },
+		Persist: func(context.Context, string, *user) error {
+			*fullCalled = true
+			return nil
+		},
+		PersistMasked: func(_ context.Context, _ string, _ *user, fields []string) error {
+			*maskedFields = append([]string{}, fields...)
+			return maskedErr
+		},
+		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+	}
+}
+
+func TestHandleUpdate_MaskedPaths_DispatchToPersistMasked(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, nil))
+	resp, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1", Name: "B"},
+		Mask: []string{"name"},
+	}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if fullCalled {
+		t.Error("full-replace Persist ran despite a concrete update_mask — that is the data-loss bug")
+	}
+	if len(maskedFields) != 1 || maskedFields[0] != "name" {
+		t.Errorf("PersistMasked fields = %v, want [name]", maskedFields)
+	}
+	if resp.Msg.User == nil || resp.Msg.User.Name != "B" {
+		t.Error("entity not propagated through Pack")
+	}
+}
+
+func TestHandleUpdate_EmptyMask_FullReplace(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, nil))
+	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error("empty mask must mean documented full-object replace via Persist")
+	}
+	if maskedFields != nil {
+		t.Errorf("PersistMasked must not run on empty mask, got fields %v", maskedFields)
+	}
+}
+
+func TestHandleUpdate_StarMask_FullReplace(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, nil))
+	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"*"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error(`mask ["*"] must mean full-object replace via Persist`)
+	}
+	if maskedFields != nil {
+		t.Errorf("PersistMasked must not run on a * mask, got fields %v", maskedFields)
+	}
+}
+
+func TestHandleUpdate_MaskWithoutPersistMasked_Internal(t *testing.T) {
+	// Mask wired but PersistMasked missing is a generator wiring bug. It
+	// must surface as Internal — silently falling back to full replace is
+	// exactly the data-loss the mask exists to prevent.
+	var fullCalled bool
+	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
+		Mask:           func(r *updateReq) []string { return r.Mask },
+		Persist: func(context.Context, string, *user) error {
+			fullCalled = true
+			return nil
+		},
+		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"name"},
+	}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
+		t.Fatalf("want Internal for missing PersistMasked wiring, got %v", err)
+	}
+	if fullCalled {
+		t.Error("must not silently full-replace when masked persistence is unwired")
+	}
+}
+
+func TestHandleUpdate_UnknownMaskPath_InvalidArgument(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	repoErr := fmt.Errorf("update users: %w", &orm.UnknownFieldError{Field: "no_such_column"})
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, repoErr))
+	_, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"no_such_column"},
+	}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
+		t.Fatalf("want InvalidArgument for unknown mask path, got %v", err)
+	}
+	if !strings.Contains(cerr.Message(), "no_such_column") {
+		t.Errorf("client error should name the offending path, got %q", cerr.Message())
+	}
+	for _, leak := range []string{"SELECT", "UPDATE", "sql:"} {
+		if strings.Contains(cerr.Message(), leak) {
+			t.Errorf("client error leaks SQL-ish text (%q): %q", leak, cerr.Message())
+		}
+	}
+}
+
+func TestHandleUpdate_NilMaskHook_LegacyFullReplace(t *testing.T) {
+	// No Mask hook (proto without update_mask): behavior is unchanged —
+	// Persist runs even when the request struct happens to carry paths.
+	var fullCalled bool
+	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
+		Persist: func(context.Context, string, *user) error {
+			fullCalled = true
+			return nil
+		},
+		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+	})
+	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"name"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error("nil Mask hook must preserve the legacy full-replace path")
 	}
 }
 

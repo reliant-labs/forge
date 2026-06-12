@@ -164,4 +164,41 @@ func userCommands() []*cobra.Command {
 	if findings, ok := report.Categories["codegen"].Details["unregistered_services"]; ok {
 		t.Errorf("audit reports phantom (unregistered) services on a fully code-registered binary: %v", findings)
 	}
+
+	// (4) Generated-auth honesty compiles end to end. Declare a provider
+	// in forge.yaml, regenerate, and the build must link runServer's
+	// InstallGeneratedAuth call against the regenerated auth_gen.go —
+	// pre-M6 the generated interceptor had zero call sites, so this pair
+	// could silently drift.
+	forgeYamlPath := filepath.Join(projectDir, "forge.yaml")
+	baseYaml := readFileE2E(t, forgeYamlPath)
+	writeYaml := func(provider string) {
+		t.Helper()
+		content := baseYaml + "\nauth:\n  provider: " + provider + "\n"
+		if err := os.WriteFile(forgeYamlPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// jwt: wired through the token-validator policy hook.
+	writeYaml("jwt")
+	runCmd(t, projectDir, forgeBin, "generate")
+	serverGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "server.go"))
+	if !strings.Contains(serverGo, "middleware.InstallGeneratedAuth()") {
+		t.Fatalf("cmd/server.go must call middleware.InstallGeneratedAuth() with auth.provider: jwt:\n%s", serverGo)
+	}
+	authGen := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "auth_gen.go"))
+	if !strings.Contains(authGen, "SetTokenValidator(v.Validate)") {
+		t.Fatalf("auth_gen.go (jwt) must install the validator into the policy surface:\n%s", authGen)
+	}
+	runCmd(t, projectDir, "go", "build", "./...")
+
+	// api_key: header-carried — the generated interceptor joins the chain.
+	writeYaml("api_key")
+	runCmd(t, projectDir, forgeBin, "generate")
+	serverGo = readFileE2E(t, filepath.Join(projectDir, "cmd", "server.go"))
+	if !strings.Contains(serverGo, "middleware.GeneratedAuthInterceptor()") {
+		t.Fatalf("cmd/server.go must mount the generated interceptor with auth.provider: api_key:\n%s", serverGo)
+	}
+	runCmd(t, projectDir, "go", "build", "./...")
 }

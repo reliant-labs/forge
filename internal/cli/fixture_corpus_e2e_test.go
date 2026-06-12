@@ -1274,7 +1274,7 @@ func hashProjectTree(t *testing.T, root string) map[string]string {
 // The port is allocated via freePortE2E (scaffold_e2e_test.go): the
 // corpus runs t.Parallel(), so a hard-coded per-fixture port would be a
 // collision against any other test (or stray process) on the machine.
-func bootHealthzAndShutdown(t *testing.T, projectDir string) {
+func bootHealthzAndShutdown(t *testing.T, projectDir string, extraEnv ...string) {
 	t.Helper()
 	port := freePortE2E(t)
 
@@ -1285,10 +1285,20 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string) {
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL=",           // health checks must not need a DB
+		"DATABASE_URL=",           // health checks must not need a DB (no-entity projects)
 		"ENVIRONMENT=development", // dev authorizer; no real authz backend
 		"AUTH_MODE=none",          // explicit no-auth (NewAuthInterceptor errors at startup otherwise)
 	)
+	// Caller overrides REPLACE the defaults (duplicate-env behavior is
+	// platform-dependent, so force-rewrite instead of appending) — the
+	// CRUD-lifecycle fixture boots WITH a real sqlite DATABASE_URL to
+	// prove the generated bootstrap constructs the DB/ORM pair from
+	// config.
+	for _, kv := range extraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			cmd.Env = withForcedEnv(cmd.Env, k, v)
+		}
+	}
 	var serverOut strings.Builder
 	cmd.Stdout = &serverOut
 	cmd.Stderr = &serverOut
@@ -1481,6 +1491,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -1556,7 +1567,8 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 	ctx := authedCtx()
 
 	// ── create ×2: two rows, distinct non-empty IDs, created_at set ──
-	r1, err := svc.CreateItem(ctx, connect.NewRequest(&pb.CreateItemRequest{Name: "first", Description: "alpha"}))
+	wantTags := []string{"go", "bookmarks", "comma,inside"}
+	r1, err := svc.CreateItem(ctx, connect.NewRequest(&pb.CreateItemRequest{Name: "first", Description: "alpha", Tags: wantTags}))
 	if err != nil {
 		t.Fatalf("create#1: %v", err)
 	}
@@ -1598,6 +1610,15 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 			t.Errorf("get: name = %q, want %q", gr.Msg.GetItem().GetName(), "first")
 		}
 
+		// ── repeated scalar round-trip (the bookmarks-journey field) ─
+		// "repeated string tags" used to generate non-compiling ORM
+		// code; honest support stores it as a JSON column. The values —
+		// including the embedded comma — must come back EXACTLY, not
+		// flattened into a comma-joined string.
+		if got := gr.Msg.GetItem().GetTags(); !reflect.DeepEqual(got, []string{"go", "bookmarks", "comma,inside"}) {
+			t.Errorf("repeated tags did not round-trip: got %q, want %q (JSON column storage)", got, []string{"go", "bookmarks", "comma,inside"})
+		}
+
 		// ── update actually mutates ──────────────────────────────────
 		updated := gr.Msg.GetItem()
 		updated.Name = "renamed"
@@ -1615,6 +1636,11 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 		if gr2.Msg.GetItem().GetCreatedAt() == nil {
 			t.Errorf("update nulled created_at — timestamps must be managed, not round-tripped through the request")
 		}
+		// Update must not corrupt the repeated column either (it SETs
+		// every non-managed column, tags included).
+		if got := gr2.Msg.GetItem().GetTags(); !reflect.DeepEqual(got, []string{"go", "bookmarks", "comma,inside"}) {
+			t.Errorf("update corrupted repeated tags: got %q", got)
+		}
 
 		// ── delete, then get-missing = clean NotFound ────────────────
 		if _, derr := svc.DeleteItem(ctx, connect.NewRequest(&pb.DeleteItemRequest{Id: id1})); derr != nil {
@@ -1622,6 +1648,19 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 		}
 		_, gerr3 := svc.GetItem(ctx, connect.NewRequest(&pb.GetItemRequest{Id: id1}))
 		requireCleanClientError(t, "get-after-delete", gerr3, connect.CodeNotFound)
+
+		// ── soft delete is REAL: the row survives in the database ────
+		// deleted_at present means Delete is UPDATE ... SET deleted_at,
+		// reads filter it out, and the data is still there. A hard
+		// DELETE here means soft_delete was decorative again.
+		var survivors int64
+		row := db.QueryRow(ctx, "SELECT COUNT(*) FROM items WHERE id = ? AND deleted_at IS NOT NULL", id1)
+		if scanErr := row.Scan(&survivors); scanErr != nil {
+			t.Fatalf("count soft-deleted row: %v", scanErr)
+		}
+		if survivors != 1 {
+			t.Errorf("soft_delete:true must keep the row with deleted_at set; rows with deleted_at NOT NULL = %d, want 1 (hard DELETE = decorative soft delete)", survivors)
+		}
 
 		lr2, lerr2 := svc.ListItems(ctx, connect.NewRequest(&pb.ListItemsRequest{PageSize: 10}))
 		if lerr2 != nil {
@@ -1705,6 +1744,23 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 
   string id = 1 [(forge.v1.field) = {pk: true}];`)
 
+	// Repeated scalar field — the bookmarks-journey shape (`repeated
+	// string tags`) that used to generate non-compiling ORM code (the
+	// descriptor dropped the repeated-ness and the scan assigned a
+	// string into []string). Added to the entity AND the create request
+	// so the executed lifecycle below pins the full JSON round-trip.
+	mustReplaceInFile(t, protoPath, "  google.protobuf.Timestamp deleted_at = 7;",
+		"  google.protobuf.Timestamp deleted_at = 7;\n\n  // Repeated scalar — stored as a JSON column (jsonb/TEXT).\n  repeated string tags = 8;")
+	mustReplaceInFile(t, protoPath, "message CreateItemRequest {\n  string name = 1;\n  string description = 2;\n}",
+		"message CreateItemRequest {\n  string name = 1;\n  string description = 2;\n  repeated string tags = 3;\n}")
+
+	// sqlite driver: the boot step below starts the REAL server against a
+	// real database file so the generated bootstrap's DB+ORM construction
+	// is executed, not just rendered. (postgres would need a container;
+	// the construction code path is identical modulo the driver import,
+	// which TestGenerateBootstrap_ConstructsDatabaseAndORM pins for both.)
+	replaceAllInCorpusFile(t, filepath.Join(projectDir, "forge.yaml"), "driver: postgres", "driver: sqlite")
+
 	// ── 1. generate ×2 — idempotent with an entity in play ───────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
 
@@ -1762,6 +1818,12 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	if !strings.Contains(migration, "created_at TIMESTAMPTZ") {
 		t.Errorf("migration stores created_at as something other than TIMESTAMPTZ (the descriptor collapsed the Timestamp type); got:\n%s", migration)
 	}
+	if !strings.Contains(migration, "tags JSONB") {
+		t.Errorf("repeated scalar column should be stored as JSONB (postgres) / JSON text (sqlite); got:\n%s", migration)
+	}
+	if strings.Contains(migration, "TEXT[]") {
+		t.Errorf("repeated column emitted as postgres-only TEXT[] — unreadable by the generated scan path; got:\n%s", migration)
+	}
 
 	// ── 4. compiles ───────────────────────────────────────────────────
 	runCmd(t, projectDir, "go", "build", "./...")
@@ -1775,10 +1837,83 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 		t.Logf("executed CRUD lifecycle passed:\n%s", out)
 	}
 
-	// ── 6. boots: /healthz 200, clean SIGTERM (no DB attached) ───────
-	bootHealthzAndShutdown(t, projectDir)
+	// ── 6. boots WITH a database: the Tier-1 bootstrap constructs the
+	// DB + ORM pair from cfg.DatabaseUrl (ensureDatabase). Previously
+	// NOTHING constructed app.ORM for a project that grew its first
+	// entity post-scaffold (setup.go is scaffold-once and was rendered
+	// with HasDatabase=false), so the typed-nil panicked on the first
+	// RPC. /healthz 200 + clean SIGTERM against a real sqlite file pins
+	// the constructed path end-to-end.
+	bootHealthzAndShutdown(t, projectDir,
+		"DATABASE_URL=file:"+filepath.Join(t.TempDir(), "corpus-boot.db"))
+
+	// ── 7. and WITHOUT a database it fails AT BOOT, loudly ───────────
+	// validateDeps (not the first RPC) is the gate: wire_gen passes a
+	// true nil orm.Context via app.ORMContext(), the injected
+	// `Deps.DB is required` check rejects it, and the process exits
+	// non-zero naming DATABASE_URL — never a typed-nil panic mid-request.
+	bootMustFailWithoutDatabase(t, projectDir)
 
 	t.Logf("crud-lifecycle fixture total: %s", time.Since(start))
+}
+
+// bootMustFailWithoutDatabase starts the already-built corpus server
+// with an empty DATABASE_URL and asserts the boot FAILS fast with an
+// actionable message. This is the validateDeps-at-boot pin for projects
+// whose services require the database.
+func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
+	t.Helper()
+	serverBin := filepath.Join(projectDir, "corpus-server")
+	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+
+	cmd := exec.Command(serverBin, "server")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PORT=%d", freePortE2E(t)),
+		"DATABASE_URL=",
+		"ENVIRONMENT=development",
+		"AUTH_MODE=none",
+	)
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Errorf("server BOOTED with no DATABASE_URL while serving DB-backed CRUD — validateDeps must reject at boot\noutput:\n%s", out.String())
+		}
+	case <-time.After(20 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("server still running 20s after boot with no DATABASE_URL — the absence must fail AT BOOT, not on the first RPC\noutput:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Deps.DB is required") {
+		t.Errorf("boot failure should name the missing dep (Deps.DB is required); output:\n%s", out.String())
+	}
+	_ = os.Remove(serverBin)
+}
+
+// replaceAllInCorpusFile replaces EVERY occurrence of old with new in
+// path (mustReplaceInFile is first-occurrence-only), failing when the
+// anchor is absent — scaffold-shape drift, not a soft skip.
+func replaceAllInCorpusFile(t *testing.T, path, old, new string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	content := string(data)
+	if !strings.Contains(content, old) {
+		t.Fatalf("scaffold drift: %s does not contain anchor:\n%s", path, old)
+	}
+	if err := os.WriteFile(path, []byte(strings.ReplaceAll(content, old, new)), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 // ── small file/exec utilities (corpus-local; no t.Fatal-free variants

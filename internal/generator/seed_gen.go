@@ -63,6 +63,18 @@ func isTimestampColumn(name string) bool {
 }
 
 func goTypeToSeedFieldType(goType string) SeedFieldType {
+	// Repeated scalar entity fields are slice-typed and stored as JSON
+	// columns (jsonb on postgres, TEXT on sqlite) — seed them with JSON
+	// array literals whose element kind matches the Go slice, so the
+	// generated orm.ScanJSON round-trip reads them back cleanly.
+	if strings.HasPrefix(goType, "[]") && goType != "[]byte" {
+		switch goType {
+		case "[]string":
+			return SeedFieldJSONStrings
+		default:
+			return SeedFieldJSONNumbers
+		}
+	}
 	switch goType {
 	case "string":
 		return SeedFieldText
@@ -100,6 +112,9 @@ const (
 	SeedFieldTimestamp
 	SeedFieldFloat
 	SeedFieldBytes
+	// JSON array columns (repeated scalar entity fields).
+	SeedFieldJSONStrings
+	SeedFieldJSONNumbers
 )
 
 // SeedField describes a single column for seed-data generation.
@@ -261,6 +276,16 @@ func generateValue(tableName string, f SeedField, i int) string {
 	// Float
 	if f.FieldType == SeedFieldFloat {
 		return fmt.Sprintf("%.2f", float64(i+1)*10.5)
+	}
+
+	// JSON array columns (repeated scalar fields) — deterministic JSON
+	// literals; sqlQuote single-quotes them like text, which postgres
+	// casts to jsonb and sqlite stores as TEXT.
+	if f.FieldType == SeedFieldJSONStrings {
+		return fmt.Sprintf(`["%s-%d","%s-%d"]`, col, i+1, col, i+2)
+	}
+	if f.FieldType == SeedFieldJSONNumbers {
+		return fmt.Sprintf("[%d, %d]", i+1, i+2)
 	}
 
 	// String fields — match by column name pattern.
@@ -460,6 +485,9 @@ func typedJSONValue(fields []SeedField, colName, value string) interface{} {
 				var f64 float64
 				fmt.Sscanf(value, "%f", &f64)
 				return f64
+			case SeedFieldJSONStrings, SeedFieldJSONNumbers:
+				// Keep the JSON array structured in the fixture file.
+				return json.RawMessage(value)
 			}
 		}
 	}

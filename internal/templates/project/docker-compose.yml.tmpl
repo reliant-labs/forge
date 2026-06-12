@@ -9,7 +9,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "0:5432"
+      # Fixed, loopback-bound host port so the host-side dev loop
+      # (`forge run`, psql, DATABASE_URL) reaches postgres without
+      # inspecting `docker compose ps` for a random mapping. Override
+      # with POSTGRES_PORT if 5432 is taken; `forge run` also discovers
+      # the live mapping and injects DATABASE_URL automatically.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

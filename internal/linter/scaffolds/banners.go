@@ -382,7 +382,7 @@ func isKnownTier3(rel, noTmpl string) bool {
 	// Project-level user-owned skeletons.
 	switch noTmpl {
 	case "setup.go", "post_bootstrap.go", "tools.go", "app_extras.go", "config.proto",
-		"example.proto", "user-example.proto", "entity-example.proto",
+		"example.proto", "user-example.proto",
 		"config-dev.yaml", "config-prod.yaml", "config-test.yaml",
 		"docker-compose.yml":
 		return true

@@ -55,7 +55,7 @@ docs: {}
 	wantKeys := []string{
 		"version", "shape", "features", "environments", "external_builds",
 		"conventions", "codegen",
-		"packs", "pack_graph", "proto_migration_alignment",
+		"packs", "pack_graph",
 		"migration_safety", "wire_coverage", "scaffold_markers",
 		"crud_stubs", "diagnostics", "deps", "friction",
 	}

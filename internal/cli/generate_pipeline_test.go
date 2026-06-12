@@ -377,38 +377,46 @@ func stepNames(steps []GenStep) []string {
 }
 
 // TestDeriveOrmEnabledMatrix is the golden test guarding step 6's
-// ORM-enable probe order. The pre-refactor inline block did:
-//
-//  1. if hasDB && proto/db has at least one .proto file → ormEnabled=true
-//  2. else if internal/db/types.go exists → ormEnabled=true
-//  3. else ormEnabled=false
-//
-// Reordering or skipping a probe changes which projects emit ORM
-// wire-up in pkg/app/bootstrap.go, which is hard to spot in a smoke
-// test. This matrix pins the exact behavior across every combination
-// of probe inputs that mattered pre-refactor.
+// ORM-enable probe. Entities are projections of the applied schema:
+// stepInternalDBORM (upstream) writes internal/db/*_orm.go from
+// db/migrations, so the ORM wire-up belongs in pkg/app/bootstrap.go
+// exactly when internal/db contains generated ORM output — any
+// *_orm.go file, or the legacy internal/db/types.go from older
+// projects. proto/db is no longer consulted (the proto-entity path is
+// retired).
 func TestDeriveOrmEnabledMatrix(t *testing.T) {
 	cases := []struct {
 		name          string
-		hasDB         bool
-		makeProtoFile bool // create proto/db/v1/*.proto?
+		makeDBDir     bool // create internal/db/ (possibly empty)?
+		makeOrmFile   bool // create internal/db/users_orm.go?
 		makeTypesFile bool // create internal/db/types.go?
+		makeProtoFile bool // create proto/db/v1/*.proto (must be ignored)?
 		want          bool
 	}{
-		{name: "neither: ORM off", want: false},
-		{name: "proto/db dir only (hasDB=true), no .proto files: ORM off", hasDB: true, want: false},
-		{name: "proto/db dir + .proto file: ORM on (rule 1)", hasDB: true, makeProtoFile: true, want: true},
-		{name: "internal/db/types.go only: ORM on (rule 2 fallback)", makeTypesFile: true, want: true},
-		{name: "hasDB=false but types.go present: ORM on", makeTypesFile: true, want: true},
-		{name: "proto/db with .proto AND types.go: ORM on (rule 1 wins)", hasDB: true, makeProtoFile: true, makeTypesFile: true, want: true},
-		{name: "hasDB=true, no proto files, types.go present: ORM on (falls through to rule 2)", hasDB: true, makeTypesFile: true, want: true},
+		{name: "no internal/db: ORM off", want: false},
+		{name: "empty internal/db: ORM off", makeDBDir: true, want: false},
+		{name: "internal/db/users_orm.go: ORM on", makeOrmFile: true, want: true},
+		{name: "legacy internal/db/types.go: ORM on", makeTypesFile: true, want: true},
+		{name: "both _orm.go and types.go: ORM on", makeOrmFile: true, makeTypesFile: true, want: true},
+		{name: "proto/db .proto alone no longer enables ORM", makeProtoFile: true, want: false},
+		{name: "proto/db .proto plus _orm.go: ORM on (from internal/db, not proto)", makeProtoFile: true, makeOrmFile: true, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if tc.hasDB {
-				if err := os.MkdirAll(filepath.Join(dir, "proto", "db"), 0o755); err != nil {
-					t.Fatalf("mkdir proto/db: %v", err)
+			if tc.makeDBDir || tc.makeOrmFile || tc.makeTypesFile {
+				if err := os.MkdirAll(filepath.Join(dir, "internal", "db"), 0o755); err != nil {
+					t.Fatalf("mkdir internal/db: %v", err)
+				}
+			}
+			if tc.makeOrmFile {
+				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "users_orm.go"), []byte("package db\n"), 0o644); err != nil {
+					t.Fatalf("write users_orm.go: %v", err)
+				}
+			}
+			if tc.makeTypesFile {
+				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "types.go"), []byte("package db\n"), 0o644); err != nil {
+					t.Fatalf("write types.go: %v", err)
 				}
 			}
 			if tc.makeProtoFile {
@@ -420,21 +428,13 @@ func TestDeriveOrmEnabledMatrix(t *testing.T) {
 					t.Fatalf("write proto: %v", err)
 				}
 			}
-			if tc.makeTypesFile {
-				if err := os.MkdirAll(filepath.Join(dir, "internal", "db"), 0o755); err != nil {
-					t.Fatalf("mkdir internal/db: %v", err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "types.go"), []byte("package db\n"), 0o644); err != nil {
-					t.Fatalf("write types.go: %v", err)
-				}
-			}
-			got, err := deriveOrmEnabled(dir, tc.hasDB)
+			got, err := deriveOrmEnabled(dir)
 			if err != nil {
 				t.Fatalf("deriveOrmEnabled: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("deriveOrmEnabled(hasDB=%v, proto=%v, types=%v) = %v, want %v",
-					tc.hasDB, tc.makeProtoFile, tc.makeTypesFile, got, tc.want)
+				t.Errorf("deriveOrmEnabled(orm=%v, types=%v, proto=%v) = %v, want %v",
+					tc.makeOrmFile, tc.makeTypesFile, tc.makeProtoFile, got, tc.want)
 			}
 		})
 	}

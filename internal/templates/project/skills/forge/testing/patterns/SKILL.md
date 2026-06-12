@@ -188,8 +188,8 @@ The `pkg/tdd` library exports:
 | `tdd.AssertConnectError(t, err, code)` | one-line Connect error code assertion |
 | `tdd.WithTimeout(d)` | deadlined `context.Context` for `Case.Ctx` |
 | `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
-| `app.NewMigratedTestDB(t)` / `testkit.NewMigratedSQLiteDB(t, fs)` | in-memory SQLite with embedded `db/migrations` applied — opt in via `app.WithDB(app.NewMigratedTestDB(t))` when a test needs the real schema (fails loudly on non-SQLite-portable SQL) |
-| `tdd.SetupMockDB(t)` | in-memory SQLite `*sql.DB` (driver must be blank-imported) |
+| `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — opt in via `app.WithDB(app.NewMigratedTestDB(t))` when a test needs the real schema (migrations apply verbatim; a migration postgres rejects fails loudly) |
+| `tdd.SetupMockDB(t)` | real-postgres `*sql.DB` (pkg/pgtest; no driver import needed) |
 
 Forge's scaffolders emit Pattern 1 (unit; plus CRUD integration when entities exist) and Pattern 2 (contract) automatically. Hand-write Pattern 3 / Pattern 4 — those don't fit a generic helper.
 

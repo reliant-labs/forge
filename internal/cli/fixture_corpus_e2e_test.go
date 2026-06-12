@@ -562,7 +562,15 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	// `npm install` in the frontend (forge's own behavior), which lets
 	// `forge generate` exercise the local protoc-gen-es TS-stub pass —
 	// the same path a real user hits.
-	runCmd(t, projectDir, forgeBin, "add", "frontend", "console", "--base-path", "/admin")
+	//
+	// `--output static` is the EXPLICIT opt-in this fixture needs: the
+	// scaffold default is standalone (the static export fails `next
+	// build` on generated dynamic [id] CRUD routes), but this project
+	// is the legitimate static case — the unannotated scaffold emits NO
+	// entity pages, and the fixture's build-level pins (fail-loud
+	// base-path guard, /admin-prefixed out/ export) are static-branch
+	// behavior.
+	runCmd(t, projectDir, forgeBin, "add", "frontend", "console", "--base-path", "/admin", "--output", "static")
 	feDir := filepath.Join(projectDir, "frontends", "console")
 	assertPathExistsE2E(t, filepath.Join(feDir, "package.json"))
 
@@ -586,10 +594,10 @@ func TestE2EFixtureCorpusFrontendBasePath(t *testing.T) {
 	// and nav_gen must therefore advertise NO routes. The old behavior
 	// (nav claiming "/items" while no page existed) was the 404-wall
 	// bug this pin now keeps dead. The annotated-entity frontend path
-	// is exercised end-to-end by TestE2EFixtureCorpusCRUDLifecycle's
-	// project shape; its static-export story (entity [id] pages under
-	// output:"export" need a generateStaticParams design) is a known
-	// open decision tracked in friction.
+	// is exercised end-to-end by TestE2EScaffoldFrontendBuilds (one
+	// CRUD entity, standalone default, npm build+test); the
+	// static-export/dynamic-route conflict was resolved by making
+	// standalone the scaffold default and static an explicit opt-in.
 	navGen := readFileE2E(t, filepath.Join(feDir, "src", "components", "nav_gen.tsx"))
 	if strings.Contains(navGen, `path: "/`) {
 		t.Errorf("nav_gen.tsx advertises routes but the unannotated scaffold emits no entity pages — the F2 404-wall regression is back; got:\n%s", navGen)
@@ -660,8 +668,8 @@ func assertNextConfigBasePath(t *testing.T, feDir, basePath string) {
 	if !strings.Contains(cfg, wantSpread) {
 		t.Errorf("next.config.ts must emit basePath AND assetPrefix (same value) — omitting assetPrefix lets chunk URLs skip the prefix and hydration dies; want %q in:\n%s", wantSpread, cfg)
 	}
-	// Static output (the scaffold default) must refuse to bake a
-	// root-mounted export when the override empties the prefix.
+	// Static output (this fixture's explicit opt-in) must refuse to
+	// bake a root-mounted export when the override empties the prefix.
 	if !strings.Contains(cfg, `process.env.NODE_ENV === "production" && basePath === ""`) ||
 		!strings.Contains(cfg, "throw new Error") {
 		t.Errorf("next.config.ts (static output) must carry the fail-loud empty-basePath production guard; got:\n%s", cfg)

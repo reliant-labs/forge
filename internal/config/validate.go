@@ -620,7 +620,7 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		// Only meaningful for type=nextjs; we still validate the value
 		// for other types because changing the type later shouldn't
 		// silently re-validate against a stale value. Defaults to
-		// "static" when empty.
+		// "standalone" when empty.
 		if o := strings.ToLower(strings.TrimSpace(fe.Output)); o != "" {
 			if o != "static" && o != "standalone" && o != "server" {
 				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "output"})
@@ -628,7 +628,7 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 					line:   line,
 					column: col,
 					msg:    fmt.Sprintf("%s.output value %q is invalid", prefix, fe.Output),
-					fix:    "use one of: static (default), standalone, server.",
+					fix:    "use one of: standalone (default), static, server.",
 				})
 			}
 		}

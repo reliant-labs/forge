@@ -6,19 +6,62 @@ import (
 	"testing"
 )
 
-// TestNextJSConfig_DefaultsToStaticExport guards the new-project default:
-// production builds emit a static export, not a Node sidecar.
+// TestNextJSConfig_DefaultsToStandalone guards the new-project default:
+// production builds emit a self-contained Node server, not a static
+// export.
 //
-// The common forge shape — Next.js shell + Connect RPC against a Go
-// backend — has no need for a Node runtime in production. A static
-// export drops to a CDN / object store; standalone runs a Node server
-// that exists only to serve the same static skeleton. The old default
-// (`output: "standalone"`) was paying for runtime users didn't use.
+// The previous default ("static" → `output: "export"` gated on
+// NODE_ENV=production) broke `npm run build` on every project the
+// moment it had one CRUD entity: forge generates dynamic detail/edit
+// routes (`/<slug>/[id]`) whose ids only exist at runtime, and
+// `output: "export"` requires generateStaticParams() on every dynamic
+// segment — Next.js fails the build with 'Page "/<slug>/[id]" is
+// missing "generateStaticParams()"'. Standalone supports dynamic
+// client routes AND is the shape the shipped Dockerfile copies
+// (.next/standalone/server.js).
 //
 // This test fails if anyone:
-//   - drops the conditional `{ output: "export" }` shape, or
-//   - reverts the empty-Output default to "standalone".
-func TestNextJSConfig_DefaultsToStaticExport(t *testing.T) {
+//   - drops `output: "standalone"` / outputFileTracingRoot from the
+//     standalone branch, or
+//   - reverts the empty-Output default to the static-export shape.
+func TestNextJSConfig_DefaultsToStandalone(t *testing.T) {
+	for _, output := range []string{"standalone", ""} {
+		content, err := FrontendTemplates().Render(
+			filepath.Join("nextjs", "next.config.ts.tmpl"),
+			FrontendTemplateData{
+				FrontendName: "dashboard",
+				ProjectName:  "testproject",
+				Output:       output,
+			},
+		)
+		if err != nil {
+			t.Fatalf("render nextjs/next.config.ts.tmpl (output=%q): %v", output, err)
+		}
+		s := string(content)
+
+		if !strings.Contains(s, `output: "standalone"`) {
+			t.Errorf("next.config.ts (output=%q) must contain `output: \"standalone\"` so the build emits .next/standalone/server.js for the Dockerfile; got:\n%s", output, s)
+		}
+		if !strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
+			t.Errorf("next.config.ts (output=%q) must contain outputFileTracingRoot so the standalone bundle lands at .next/standalone/server.js (not under a workspace-rooted subpath the Dockerfile can't find); got:\n%s", output, s)
+		}
+		// The default must NOT emit the static-export conditional — that
+		// shape fails `next build` on the generated dynamic [id] routes.
+		if strings.Contains(s, `{ output: "export" }`) {
+			t.Errorf("next.config.ts (output=%q) must NOT contain the static-export conditional — `output: \"export\"` breaks `npm run build` on generated dynamic CRUD routes; got:\n%s", output, s)
+		}
+	}
+}
+
+// TestNextJSConfig_StaticOptIn guards the opt-in path. When the user
+// sets `output: static` in forge.yaml (or passes `--output static` to
+// `forge add frontend`), the rendered next.config.ts must emit the
+// NODE_ENV-gated static-export spread — production builds emit `out/`
+// for CDN/object-store hosting while `next dev` stays unchanged.
+//
+// This mode is deliberately NOT the default: it is incompatible with
+// the generated dynamic CRUD routes (see the standalone-default test).
+func TestNextJSConfig_StaticOptIn(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "next.config.ts.tmpl"),
 		FrontendTemplateData{
@@ -39,10 +82,14 @@ func TestNextJSConfig_DefaultsToStaticExport(t *testing.T) {
 		t.Errorf("next.config.ts (output=static) must contain %q so production builds emit a static export and dev stays unchanged; got:\n%s", want, s)
 	}
 
-	// Guard against accidental revert to the old standalone default.
-	// `output: "standalone"` shouldn't appear in any active (non-comment)
-	// line under output=static. The scaffold's explanatory comment
-	// mentions the literal as a pointer to the opt-in.
+	// The opt-in must document its dynamic-route incompatibility — the
+	// user who picks static needs to know `npm run build` fails on
+	// generated `/<slug>/[id]` pages.
+	if !strings.Contains(s, "generateStaticParams") {
+		t.Errorf("next.config.ts (output=static) must mention generateStaticParams so the dynamic-route incompatibility is documented at the point of use; got:\n%s", s)
+	}
+
+	// Static mode must not ALSO emit standalone output — contradictory.
 	for _, line := range strings.Split(s, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
@@ -54,37 +101,35 @@ func TestNextJSConfig_DefaultsToStaticExport(t *testing.T) {
 	}
 }
 
-// TestNextJSConfig_EmptyOutputDefaultsToStatic verifies the canonicalisation
-// path: passing Output="" through the template (i.e. a caller who didn't
-// thread the field) renders the same shape as Output="static". The
-// generator layer normalises empty → "static" before the template runs,
-// so this exercises the template's own `else` branch as the safety net.
-func TestNextJSConfig_EmptyOutputDefaultsToStatic(t *testing.T) {
+// TestNextJSConfig_StaticOptIn_BasePathGuard verifies that the static
+// branch keeps its base-path build guard: when forge.yaml declares a
+// base_path but NEXT_PUBLIC_BASE_PATH empties it at build time, the
+// production build must fail loudly instead of baking root-mounted
+// URLs into a static export.
+func TestNextJSConfig_StaticOptIn_BasePathGuard(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "next.config.ts.tmpl"),
 		FrontendTemplateData{
-			FrontendName: "dashboard",
+			FrontendName: "admin",
 			ProjectName:  "testproject",
-			// Output deliberately empty.
+			Output:       "static",
+			BasePath:     "/admin",
 		},
 	)
 	if err != nil {
 		t.Fatalf("render nextjs/next.config.ts.tmpl: %v", err)
 	}
 	s := string(content)
-	if !strings.Contains(s, `{ output: "export" }`) {
-		t.Errorf("next.config.ts (output=\"\") must fall through to the static shape so callers that don't thread Output still get the new default; got:\n%s", s)
+	if !strings.Contains(s, `refusing to bake a `) || !strings.Contains(s, `throw new Error(`) {
+		t.Errorf("next.config.ts (output=static, base_path=/admin) must keep the fail-loud base-path guard; got:\n%s", s)
 	}
 }
 
-// TestNextJSConfig_StandaloneOptIn guards the opt-in path. When the
-// user sets `output: standalone` in forge.yaml (or passes
-// `--output standalone` to `forge add frontend`), the rendered
-// next.config.ts must reinstate the old shape: `output: "standalone"`
-// + `outputFileTracingRoot: path.join(__dirname)` so the
-// scaffold-shipped Dockerfile still finds `.next/standalone/server.js`
-// where it expects.
-func TestNextJSConfig_StandaloneOptIn(t *testing.T) {
+// TestNextJSConfig_StandaloneExplicit verifies the explicit standalone
+// opt-in renders identically in shape to the default: `output:
+// "standalone"` + `outputFileTracingRoot: path.join(__dirname)` so the
+// scaffold-shipped Dockerfile finds `.next/standalone/server.js`.
+func TestNextJSConfig_StandaloneExplicit(t *testing.T) {
 	content, err := FrontendTemplates().Render(
 		filepath.Join("nextjs", "next.config.ts.tmpl"),
 		FrontendTemplateData{
@@ -99,13 +144,8 @@ func TestNextJSConfig_StandaloneOptIn(t *testing.T) {
 	s := string(content)
 
 	if !strings.Contains(s, `output: "standalone"`) {
-		t.Errorf("next.config.ts (output=standalone) must contain `output: \"standalone\"` so the build emits .next/standalone/server.js for the Dockerfile; got:\n%s", s)
+		t.Errorf("next.config.ts (output=standalone) must contain `output: \"standalone\"`; got:\n%s", s)
 	}
-	if !strings.Contains(s, `outputFileTracingRoot: path.join(__dirname)`) {
-		t.Errorf("next.config.ts (output=standalone) must contain outputFileTracingRoot so the standalone bundle lands at .next/standalone/server.js (not under a workspace-rooted subpath the Dockerfile can't find); got:\n%s", s)
-	}
-	// Standalone mode must NOT also emit the static-export conditional —
-	// that would be contradictory and Next.js would error.
 	if strings.Contains(s, `{ output: "export" }`) {
 		t.Errorf("next.config.ts (output=standalone) must NOT contain the static-export conditional; got:\n%s", s)
 	}

@@ -489,7 +489,6 @@ func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Features: config.FeaturesConfig{
 			Experimental: config.ExperimentalConfig{
-				Deploy:  true,
 				Ingress: true,
 			},
 		},
@@ -499,7 +498,7 @@ func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
 	if !ok {
 		t.Fatalf("details.experimental_enabled wrong type: %T", cat.Details["experimental_enabled"])
 	}
-	wantEnabled := map[string]bool{config.FeatureDeploy: true, config.FeatureIngress: true}
+	wantEnabled := map[string]bool{config.FeatureIngress: true}
 	if len(expEnabled) != len(wantEnabled) {
 		t.Errorf("experimental_enabled = %v, want %v", expEnabled, wantEnabled)
 	}

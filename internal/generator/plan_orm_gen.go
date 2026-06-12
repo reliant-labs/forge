@@ -181,6 +181,7 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 		writeORMListAll(&b, msgName, tableName, colsVar, hasTenant, tenantField)
 	}
 	writeORMUpdate(&b, msgName, tableName, colsVar, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
+	writeORMUpdateMasked(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
 	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, fields, hasTenant, ent.SoftDelete, tenantField)
 
 	fileName := naming.ToSnakeCase(ent.Name) + "_orm.go"
@@ -744,6 +745,172 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 		} else {
 			b.WriteString("\targs = append(args, msg.Id)\n")
 		}
+	}
+
+	b.WriteString("\n\t_, err := db.Exec(ctx, query, args...)\n")
+	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\t\tspan.RecordError(err)\n")
+	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
+	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"update %s: %%w\", err)\n", tableName)
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn nil\n")
+	b.WriteString("}\n\n")
+}
+
+// writeORMUpdateMasked emits Update<Entity>Masked — the AIP-134 partial
+// update sibling of Update<Entity>. It writes ONLY the columns named in
+// fields (proto field names == column names, snake_case), validates each
+// path against the updatable set (same excludeFromSet rules as the full
+// update: never the PK, tenant key, deleted_at, or — with managed
+// timestamps — created_at), and returns *orm.UnknownFieldError for any
+// path outside that set so pkg/crud can map it to InvalidArgument
+// without leaking SQL. updated_at is stamped on masked updates too.
+func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
+	excludeFromSet := func(f ormField) bool {
+		if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
+			return true
+		}
+		if timestamps && f.columnName == "created_at" {
+			return true
+		}
+		return false
+	}
+
+	var updatable []ormField
+	for _, f := range fields {
+		if excludeFromSet(f) {
+			continue
+		}
+		updatable = append(updatable, f)
+	}
+
+	sigSuffix := ") error {\n"
+	if hasTenant {
+		sigSuffix = ", tenantID string) error {\n"
+	}
+
+	// No updatable columns: a concrete mask path can only ever be
+	// unknown; an empty mask is a no-op (mirrors Update<Entity>).
+	if len(updatable) == 0 {
+		fmt.Fprintf(b, "// Update%sMasked is a no-op shell because %s has no updatable fields;\n", msgName, msgName)
+		b.WriteString("// any concrete update_mask path is therefore unknown.\n")
+		if hasTenant {
+			fmt.Fprintf(b, "func Update%sMasked(_ context.Context, _ orm.Context, _ *%s, fields []string, _ string) error {\n", msgName, msgName)
+		} else {
+			fmt.Fprintf(b, "func Update%sMasked(_ context.Context, _ orm.Context, _ *%s, fields []string) error {\n", msgName, msgName)
+		}
+		b.WriteString("\tif len(fields) > 0 {\n")
+		b.WriteString("\t\treturn &orm.UnknownFieldError{Field: fields[0]}\n")
+		b.WriteString("\t}\n")
+		b.WriteString("\treturn nil\n")
+		b.WriteString("}\n\n")
+		return
+	}
+
+	fmt.Fprintf(b, "// Update%sMasked updates ONLY the named fields of an existing %s\n", msgName, msgName)
+	b.WriteString("// (AIP-134 update_mask paths; proto field names == column names).\n")
+	b.WriteString("// Paths outside the updatable set return *orm.UnknownFieldError —\n")
+	b.WriteString("// forge/pkg/crud maps it to a clean InvalidArgument.\n")
+	if timestamps {
+		b.WriteString("//\n")
+		b.WriteString("// updated_at is stamped here too (timestamps: true); created_at is\n")
+		b.WriteString("// immutable and never settable through a mask.\n")
+	}
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string%s", msgName, msgName, sigSuffix)
+	b.WriteString("\tif len(fields) == 0 {\n")
+	b.WriteString("\t\treturn nil\n")
+	b.WriteString("\t}\n\n")
+	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Update%sMasked\",\n", msgName)
+	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
+	b.WriteString("\tdefer span.End()\n\n")
+
+	stampUpdatedAt := false
+	if timestamps {
+		for _, f := range fields {
+			if f.columnName == "updated_at" {
+				fmt.Fprintf(b, "\tmsg.%s = time.Now().UTC()\n\n", f.goName)
+				stampUpdatedAt = true
+				break
+			}
+		}
+	}
+
+	b.WriteString("\tdialect := db.Dialect()\n\n")
+
+	b.WriteString("\t// The updatable-column set. Anything else (unknown columns, the PK,\n")
+	b.WriteString("\t// the tenant key, immutable bookkeeping columns) is rejected.\n")
+	b.WriteString("\tcolValue := map[string]any{\n")
+	for _, f := range updatable {
+		fmt.Fprintf(b, "\t\t%q: %s,\n", f.columnName, valueExpr(f))
+	}
+	b.WriteString("\t}\n\n")
+
+	b.WriteString("\tsetParts := make([]string, 0, len(fields)+1)\n")
+	b.WriteString("\targs := make([]any, 0, len(fields)+3)\n")
+	b.WriteString("\tseen := make(map[string]bool, len(fields))\n")
+	b.WriteString("\tfor _, f := range fields {\n")
+	b.WriteString("\t\tv, ok := colValue[f]\n")
+	b.WriteString("\t\tif !ok {\n")
+	b.WriteString("\t\t\treturn &orm.UnknownFieldError{Field: f}\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tif seen[f] {\n")
+	b.WriteString("\t\t\tcontinue\n")
+	b.WriteString("\t\t}\n")
+	b.WriteString("\t\tseen[f] = true\n")
+	b.WriteString("\t\tsetParts = append(setParts, fmt.Sprintf(\"%s = %s\", dialect.QuoteIdentifier(f), dialect.Placeholder(len(args))))\n")
+	b.WriteString("\t\targs = append(args, v)\n")
+	b.WriteString("\t}\n")
+	if stampUpdatedAt {
+		b.WriteString("\tif !seen[\"updated_at\"] {\n")
+		b.WriteString("\t\tsetParts = append(setParts, fmt.Sprintf(\"%s = %s\", dialect.QuoteIdentifier(\"updated_at\"), dialect.Placeholder(len(args))))\n")
+		b.WriteString("\t\targs = append(args, msg.UpdatedAt)\n")
+		b.WriteString("\t}\n")
+	}
+	b.WriteString("\n")
+
+	pkValue := "msg.Id"
+	if pkField != nil {
+		pkValue = "msg." + pkField.goName
+	}
+
+	if softDelete && hasTenant {
+		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s IS NULL AND %s = %s\",\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
+		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
+		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
+		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
+		b.WriteString("\t\tdialect.Placeholder(len(args)+1),\n")
+		b.WriteString("\t)\n")
+		fmt.Fprintf(b, "\targs = append(args, %s, tenantID)\n", pkValue)
+	} else if softDelete {
+		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s IS NULL\",\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
+		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
+		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
+		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
+		b.WriteString("\t)\n")
+		fmt.Fprintf(b, "\targs = append(args, %s)\n", pkValue)
+	} else if hasTenant {
+		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s = %s\",\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
+		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
+		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
+		b.WriteString("\t\tdialect.Placeholder(len(args)+1),\n")
+		b.WriteString("\t)\n")
+		fmt.Fprintf(b, "\targs = append(args, %s, tenantID)\n", pkValue)
+	} else {
+		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s\",\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
+		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
+		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
+		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
+		b.WriteString("\t)\n")
+		fmt.Fprintf(b, "\targs = append(args, %s)\n", pkValue)
 	}
 
 	b.WriteString("\n\t_, err := db.Exec(ctx, query, args...)\n")

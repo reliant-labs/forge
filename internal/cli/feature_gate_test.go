@@ -56,7 +56,6 @@ func TestIsFeatureEnabled_ExperimentalExplicitTrue(t *testing.T) {
 	cfg := &config.ProjectConfig{
 		Features: config.FeaturesConfig{
 			Experimental: config.ExperimentalConfig{
-				Deploy:         true,
 				Ingress:        true,
 				ExternalBuilds: true,
 				Operators:      true,

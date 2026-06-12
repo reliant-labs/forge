@@ -84,6 +84,45 @@ func ResetPerRunState() {
 	sideRenderOnly = map[string]bool{}
 	healNoticed = map[string]bool{}
 	DisableAutoHeal = false
+	forceScope = nil
+}
+
+// forceScope is the per-run set of relative paths `--force` is allowed
+// to clobber. nil (the default) means UNSCOPED — force keeps its
+// historical "overwrite any modified file" meaning, which is right for
+// non-pipeline callers (`forge upgrade`, project creation) and for
+// pipeline presets that deliberately skip the stomp guard.
+//
+// The generate pipeline installs a scope (SetForceScope) from inside
+// the Tier-1 stomp guard: --force means "discard the edits the guard
+// just reported", not "force-overwrite anything any emitter happens to
+// touch this run". Journey fr-a04f8c0609: a user recovering from a
+// Tier-1 trip with --force watched unrelated files get re-scaffolded
+// "(your edits discarded)".
+var forceScope map[string]bool
+
+// SetForceScope installs the per-run --force scope: only the given
+// relative paths may be force-overwritten. Passing an empty (or nil)
+// slice installs an EMPTY scope — force becomes inert — which is
+// distinct from never calling SetForceScope (unscoped legacy force).
+// Cleared by ResetPerRunState.
+func SetForceScope(relPaths []string) {
+	forceScope = make(map[string]bool, len(relPaths))
+	for _, p := range relPaths {
+		forceScope[p] = true
+	}
+}
+
+// forceApplies reports whether a force=true write may clobber relPath
+// under the current scope. force=false is never an overwrite license.
+func forceApplies(relPath string, force bool) bool {
+	if !force {
+		return false
+	}
+	if forceScope == nil {
+		return true // unscoped legacy force
+	}
+	return forceScope[relPath]
 }
 
 // DisableAutoHeal is the `forge generate --no-heal` strict mode: when
@@ -519,8 +558,10 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 		}
 		return false, nil
 	}
-	if cs != nil && !force && cs.IsFileModified(root, relPath) {
-		// User has modified this file — skip
+	if cs != nil && !forceApplies(relPath, force) && cs.IsFileModified(root, relPath) {
+		// User has modified this file — skip. force only bypasses this
+		// for paths inside the per-run --force scope (when one is
+		// installed); see forceScope.
 		return false, nil
 	}
 

@@ -145,7 +145,8 @@ Subcommands:
   forge add adapter <name>                        Add an outbound adapter (HTTP/queue/storage gateway)
   forge add library <name>                        Scaffold a library-shaped package (no contract.go; pre-excluded)
   forge add handler-file <svc> <name>             Scaffold an additional RPC-group file in handlers/<svc>/
-  forge add rpc <svc> <Name> [--stream M]         Scaffold a single hand-written RPC stub + proto snippet`,
+  forge add rpc <svc> <Name> [--stream M]         Scaffold a single hand-written RPC stub + proto snippet
+  forge add entity <name> [field:type ...]        Add a DB entity: SQL migration + CRUD wire contract`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
@@ -161,6 +162,7 @@ Subcommands:
 	cmd.AddCommand(newAddLibraryCmd())
 	cmd.AddCommand(newAddHandlerFileCmd())
 	cmd.AddCommand(newAddRPCCmd())
+	cmd.AddCommand(newAddEntityCmd())
 
 	return cmd
 }

@@ -1438,7 +1438,7 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
 	if err := ctx.warnOrFail("ORM generation",
-		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities)); err != nil {
+		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities, ctx.Checksums)); err != nil {
 		return err
 	}
 	// The alias file from the proto-entity era; remove so stale aliases

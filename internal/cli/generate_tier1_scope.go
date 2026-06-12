@@ -122,6 +122,15 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// lib/CLI kind) shouldn't see stale CRUD-handler drift block its run.
 	{glob: "handlers/*/handlers_crud_ops_gen.go", gate: gateCodegenHasServices},
 
+	// internal/db/orm_shared.go + internal/db/*_orm.go are emitted by
+	// stepInternalDBORM (M3: the ORM emitter records its outputs in the
+	// manifest so `forge disown` works on them and audit doesn't see
+	// orphans). When the ORM step is gated off (features.orm=false or
+	// no services), absence from WrittenThisRun is uninformative and
+	// the stale sweep must leave the tracked entity code alone.
+	{exact: "internal/db/orm_shared.go", gate: gateORMHasServices},
+	{glob: "internal/db/*_orm.go", gate: gateORMHasServices},
+
 	// pkg/middleware/*_gen.go covers the auth/tenant middleware
 	// emitters (stepAuthMiddleware + stepTenantMiddleware). Both are
 	// codegen-gated and require at least a configured project; their

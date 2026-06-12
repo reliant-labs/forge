@@ -28,7 +28,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM() error = %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "github.com/test/myapp", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -386,7 +386,7 @@ func TestGeneratePlanORM_TableNameOverride(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -427,7 +427,7 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -514,7 +514,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -583,7 +583,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 func TestGeneratePlanORM_Empty(t *testing.T) {
 	root := t.TempDir()
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", nil); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", nil, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -607,7 +607,7 @@ func TestGeneratePlanORM_MultipleEntities(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -632,7 +632,7 @@ func TestGeneratePlanORM_References(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -666,7 +666,7 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -710,7 +710,7 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -777,7 +777,7 @@ func TestGeneratePlanORM_ExplicitPKNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -817,7 +817,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -893,7 +893,7 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -969,7 +969,7 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1064,7 +1064,7 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1135,7 +1135,7 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1194,7 +1194,7 @@ func TestGeneratePlanORM_UnstampableTimestampsSkipped(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1245,7 +1245,7 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -1308,7 +1308,7 @@ func TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId(t *testing.T) {
 		},
 	}
 
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
+	if err := GeneratePlanORM(root, "example.com/app", "api", entities, nil); err != nil {
 		t.Fatalf("error = %v", err)
 	}
 

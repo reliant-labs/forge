@@ -13,10 +13,10 @@ import (
 
 // ComponentsJSONRelPath is the project-relative path of the generated
 // denormalized component data. The per-env `deploy/kcl/<env>/main.k`
-// imports it and lets the forge KCL Component schema hierarchy expand
-// each entry into k8s resources. JSON carries no inline forge:hash
-// marker, so the write is self-certified via `.forge/hashes.json`
-// (the Tier-1 unstampable fallback) by checksums.WriteGeneratedFile.
+// loads it (via forge.components.load_components) and lets the forge
+// KCL Component schema hierarchy expand each entry into k8s resources.
+// It is a lockfile-class projection of forge.yaml — regenerated every
+// run, untracked, owned 100% by forge (see GenerateComponentsJSON).
 const ComponentsJSONRelPath = "deploy/kcl/components_gen.json"
 
 // componentPortJSON is the denormalized projection of one named port.

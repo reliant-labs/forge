@@ -16,24 +16,40 @@ import (
 	"testing"
 )
 
+// writeHandEdited materializes the "user hand-edited a tracked file"
+// state at root/rel: a stamped forge render mutated after stamping, so
+// the marker survives but no longer verifies (Verify == Modified).
+func writeHandEdited(t *testing.T, root, rel string) []byte {
+	t.Helper()
+	stamped, ok := Stamp(rel, []byte("// as generated\n"))
+	if !ok {
+		t.Fatalf("Stamp(%q): unstampable", rel)
+	}
+	edited := append(stamped, []byte("// hand edit "+rel+"\n")...)
+	full := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if Verify(edited) != Modified {
+		t.Fatalf("fixture must verify Modified; got %v", Verify(edited))
+	}
+	return edited
+}
+
 func TestForceScope_LimitsForceToFlaggedPaths(t *testing.T) {
 	ResetSkipWrite()
 	ResetPerRunState()
 	t.Cleanup(ResetPerRunState)
 
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 
 	// Two tracked, hand-edited files. The guard flagged only flagged.go.
-	for _, rel := range []string{"flagged.go", "unflagged.go"} {
-		cs.RecordFile(rel, []byte("// as generated\n"))
-		entry := cs.Files[rel]
-		entry.Tier = 1
-		cs.Files[rel] = entry
-		if err := os.WriteFile(filepath.Join(root, rel), []byte("// hand edit "+rel+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeHandEdited(t, root, "flagged.go")
+	unflaggedContent := writeHandEdited(t, root, "unflagged.go")
 
 	SetForceScope([]string{"flagged.go"})
 
@@ -56,7 +72,7 @@ func TestForceScope_LimitsForceToFlaggedPaths(t *testing.T) {
 		t.Error("force=true outside the guard-flagged scope overwrote a hand-edited file")
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "unflagged.go"))
-	if string(got) != "// hand edit unflagged.go\n" {
+	if string(got) != string(unflaggedContent) {
 		t.Errorf("unflagged hand-edit destroyed; got %q", got)
 	}
 }
@@ -67,11 +83,8 @@ func TestForceScope_NilScopeKeepsLegacyUnscopedForce(t *testing.T) {
 	t.Cleanup(ResetPerRunState)
 
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-	cs.RecordFile("a.go", []byte("// as generated\n"))
-	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("// hand edit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	cs := &FileChecksums{}
+	writeHandEdited(t, root, "a.go")
 
 	wrote, err := WriteGeneratedFile(root, "a.go", []byte("// regen\n"), cs, true)
 	if err != nil {
@@ -88,11 +101,8 @@ func TestForceScope_EmptyScopeMakesForceInert(t *testing.T) {
 	t.Cleanup(ResetPerRunState)
 
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-	cs.RecordFile("a.go", []byte("// as generated\n"))
-	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("// hand edit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	cs := &FileChecksums{}
+	writeHandEdited(t, root, "a.go")
 
 	// The guard ran and flagged NOTHING (e.g. --force passed on a clean
 	// tree) — force must not become a license to overwrite paths that

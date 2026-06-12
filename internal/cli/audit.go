@@ -8,7 +8,7 @@
 //   - Project shape (kind, services + RPC counts, workers, operators,
 //     frontends, installed packs).
 //   - Convention compliance (rolled up forge lint counts per category).
-//   - Codegen state (last generate timestamp via .forge/checksums.json,
+//   - Codegen state (certified-file census via the embedded forge:hash markers,
 //     orphan _gen files, uncommitted user edits to forge-space files).
 //   - Pack health (each installed pack's version against the embedded
 //     pack registry).

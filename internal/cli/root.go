@@ -64,7 +64,7 @@ func SetVersion(v, date, commit string) {
 
 // GetVersion returns the forge binary's version string. Callers can use this
 // to stamp the current forge version into generated artifacts (e.g. the
-// .forge/checksums.json header), which enables pinned installs in CI.
+// forge.yaml pin), which enables pinned installs in CI.
 func GetVersion() string {
 	return version
 }

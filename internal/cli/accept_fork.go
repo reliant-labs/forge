@@ -39,7 +39,7 @@ Run ` + "`forge disown <path>... --reason \"<why>\"`" + ` instead.`,
 		},
 	}
 
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/checksums.json")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/disowned.json")
 	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded per path in .forge/friction.jsonl)")
 
 	return cmd

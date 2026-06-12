@@ -52,9 +52,7 @@ package app
 // passes, etc.) for this — PostBootstrap IS that system. If you need
 // late-bound coupling between a service / worker / adapter, do it here.
 //
-// This file is YOUR code — forge generate will never overwrite it.
-//
-//forge:scaffold one-shot
+// yours: scaffolded once, never touched again — forge will not overwrite this file
 //forge:allow
 func PostBootstrap(app *App) error {
 	_ = app

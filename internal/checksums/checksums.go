@@ -154,8 +154,9 @@ type FileChecksums struct {
 //     ... DO NOT EDIT.`). The Tier-1 stomp guard refuses to overwrite a
 //     Tier-1 file that's been hand-edited unless `--force` is set; the
 //     sanctioned exit from Tier-1 is `forge disown` (one-way → Tier-2).
-//   - 2 — user-owned. Either scaffold-once (`// forge:scaffold
-//     one-shot`) or disowned (see Disowned below). Forge never
+//   - 2 — user-owned. Either scaffold-once (`// yours: scaffolded once,
+//     never touched again — forge will not overwrite this file`) or
+//     disowned (see Disowned below). Forge never
 //     overwrites Tier-2 content; the stomp guard ignores it.
 //   - 0 — unset / legacy. Treated as Tier-1-equivalent for the stomp
 //     guard, since pre-tier checksums covered exclusively Tier-1 files.
@@ -497,7 +498,7 @@ func WriteGeneratedFileTier1(root, relPath string, content []byte, cs *FileCheck
 // WriteGeneratedFileTier2 writes a Tier-2 (scaffold-once user-owned)
 // file. The stomp guard ignores Tier-2 entries — forge never auto-
 // regenerates these, so a user edit is the expected steady state, not
-// drift. Use this for "// forge:scaffold one-shot" templates.
+// drift. Use this for "// yours: scaffolded once ..." templates.
 //
 // Tier-2 ignores `force=true`: it is for Tier-1 "clobber my hand-edits"
 // semantics, and applying that to Tier-2 would break the scaffold-once

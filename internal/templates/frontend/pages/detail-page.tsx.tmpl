@@ -1,6 +1,7 @@
 "use client";
 
-// forge:scaffold one-shot — detail page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// Detail page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
 {{- if or .HasUpdate .HasDelete}}
 import { {{if .HasDelete}}Trash2{{end}}{{if and .HasDelete .HasUpdate}}, {{end}}{{if .HasUpdate}}SquarePen{{end}}{{if .HasDelete}}, TriangleAlert{{end}} } from "lucide-react";
 {{- end}}

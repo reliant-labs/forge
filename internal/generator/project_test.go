@@ -1060,10 +1060,10 @@ func TestFeatureFlag_CodegenDisabled(t *testing.T) {
 }
 
 // TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn locks in
-// the new contract: deploy is experimental (opt-in via
-// features.experimental.deploy: true), but the SCAFFOLD always emits
-// the deploy artefacts for a service-kind project so the user can opt
-// in via a single flag flip with no rescaffold. The previous
+// the contract: the SCAFFOLD always emits the deploy artefacts for a
+// service-kind project — deploy derives on for service kind, and even
+// an explicit `features.deploy: false` keeps the tree on disk so the
+// user can flip the flag back with no rescaffold. The previous
 // "deploy=false strips Dockerfile" behaviour is gone — the runtime
 // gate lives on `forge deploy` itself.
 func TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn(t *testing.T) {

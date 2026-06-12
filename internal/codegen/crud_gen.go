@@ -70,7 +70,15 @@ type CRUDMethodTemplateData struct {
 	TenantGoName      string            // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
 	TenantColumnName  string            // e.g., "org_id", "tenant_id"
 	UpdateEntityField string            // e.g., "Project" — Go field name in the update request that holds the entity
-	CreateFields      []CreateFieldData // fields from the create request message
+	// UpdateMaskField is the Go field name of the update request's
+	// google.protobuf.FieldMask field (e.g. "UpdateMask"). Empty when the
+	// request carries no mask — the generated UpdateOp then omits
+	// Mask/PersistMasked and pkg/crud keeps the legacy full-replace path.
+	// When set, the op wires both hooks so HandleUpdate honors AIP-134:
+	// concrete mask paths write only the named columns via
+	// db.Update<Entity>Masked.
+	UpdateMaskField string
+	CreateFields    []CreateFieldData // fields from the create request message
 	// ShapeMismatch is true when the request/response message shapes
 	// observed in svc.Messages don't line up with what the CRUD body
 	// templates assume (AIP-158 page_size/page_token for list, an `id`
@@ -754,6 +762,14 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			}
 		}
 
+		// AIP-134: a FieldMask field on the update request wires the
+		// masked-persistence hooks. Skip on shape mismatch — the stub
+		// branch never dereferences it.
+		updateMaskField := ""
+		if shapeOK && cm.Operation == "update" {
+			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
+		}
+
 		// Precompute the create-request -> entity-struct assignments.
 		// Skip on shape mismatch — the stub doesn't reference these.
 		var createAssigns []string
@@ -790,6 +806,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			TenantGoName:      cm.Entity.TenantGoName,
 			TenantColumnName:  cm.Entity.TenantColumnName,
 			UpdateEntityField: updateEntityField,
+			UpdateMaskField:   updateMaskField,
 			CreateAssigns:     createAssigns,
 			ShapeMismatch:     !shapeOK,
 			MismatchReason:    shapeReason,
@@ -864,6 +881,9 @@ type CRUDTestTemplateData struct {
 	HasTenant    bool                     // true if any entity has tenant isolation
 	Entities     []CRUDTestEntityData     // Grouped per-entity test data
 	CRUDMethods  []CRUDMethodTemplateData // All CRUD methods (for individual error tests)
+	// NeedsFieldMask gates the fieldmaskpb import: true when at least one
+	// entity's lifecycle test emits the AIP-134 masked-update block.
+	NeedsFieldMask bool
 	// TestHelperName mirrors ServiceTemplateData.TestHelperName: the suffix
 	// the bootstrap testing generator emits on `app.NewTest<X>` /
 	// `app.NewTest<X>Server`. CRUD test scaffolds use this rather than
@@ -892,6 +912,17 @@ type CRUDTestEntityData struct {
 	// (e.g. "Name") — the field the lifecycle test mutates to prove
 	// update actually writes. Empty when the entity has none.
 	MutableStringField string
+	// MutableStringFieldPath is MutableStringField's proto field name
+	// (snake_case) — the AIP-134 update_mask path for it.
+	MutableStringFieldPath string
+	// SecondStringField/-Path name a SECOND mutable string field when the
+	// entity has one (skipping the tenant key). The masked-update test
+	// loads it with a clobber value the mask does NOT name, then asserts
+	// it survived — proving the mask restricts the write. Empty when the
+	// entity has only one string field (the non-clobber assertion is then
+	// skipped; the masked write itself is still exercised).
+	SecondStringField     string
+	SecondStringFieldPath string
 	CreateMethod       CRUDMethodTemplateData
 	GetMethod         CRUDMethodTemplateData
 	ListMethod        CRUDMethodTemplateData
@@ -1097,6 +1128,14 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			}
 		}
 
+		// Mirror the handler generator: a FieldMask on the update request
+		// means the generated op honors AIP-134, so the test scaffold can
+		// exercise masked AND unmasked updates.
+		updateMaskField := ""
+		if shapeOK && cm.Operation == "update" {
+			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
+		}
+
 		mtd := CRUDMethodTemplateData{
 			MethodName:        cm.Method.Name,
 			InputType:         cm.Method.InputType,
@@ -1117,6 +1156,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			FilterFields:      filterFields,
 			HasOrderBy:        hasOrderBy,
 			UpdateEntityField: updateEntityField,
+			UpdateMaskField:   updateMaskField,
 			ShapeMismatch:     !shapeOK,
 			MismatchReason:    shapeReason,
 		}
@@ -1136,6 +1176,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 
 			// Build entity fields (for update test): fields in both DB entity AND proto service message, minus PK
 			var fields []CRUDTestFieldData
+			protoNameByGoName := make(map[string]string)
 			for _, f := range cm.Entity.Fields {
 				if f.Name == cm.Entity.PkField {
 					continue
@@ -1150,6 +1191,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 					Kind:      kind,
 					TestValue: testValueForType(f.GoType),
 				})
+				protoNameByGoName[f.GoName] = f.Name
 			}
 
 			// Determine update entity field name from UpdateRequest message
@@ -1166,26 +1208,40 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				}
 			}
 
-			mutable := ""
+			mutable, second := "", ""
 			for _, f := range fields {
-				if f.GoType == "string" {
-					mutable = f.ProtoName
-					break
+				if f.GoType != "string" {
+					continue
 				}
+				// The tenant key is no good as a mutation target: the ORM
+				// excludes it from the updatable set, so neither the
+				// masked write nor the clobber assertion would observe it.
+				if cm.Entity.HasTenant && f.ProtoName == cm.Entity.TenantGoName {
+					continue
+				}
+				if mutable == "" {
+					mutable = f.ProtoName
+					continue
+				}
+				second = f.ProtoName
+				break
 			}
 
 			ent = &CRUDTestEntityData{
-				EntityName:         cm.Entity.Name,
-				EntityLower:        strings.ToLower(cm.Entity.Name),
-				PkField:            naming.ToProtoPascalCase(cm.Entity.PkField),
-				PkGoType:           cm.Entity.PkGoType,
-				HasTenant:          cm.Entity.HasTenant,
-				TenantGoName:       cm.Entity.TenantGoName,
-				TenantColumnName:   cm.Entity.TenantColumnName,
-				HasTimestamps:      cm.Entity.Timestamps,
-				MutableStringField: mutable,
-				Fields:             fields,
-				UpdateEntityField:  updateEntityField,
+				EntityName:             cm.Entity.Name,
+				EntityLower:            strings.ToLower(cm.Entity.Name),
+				PkField:                naming.ToProtoPascalCase(cm.Entity.PkField),
+				PkGoType:               cm.Entity.PkGoType,
+				HasTenant:              cm.Entity.HasTenant,
+				TenantGoName:           cm.Entity.TenantGoName,
+				TenantColumnName:       cm.Entity.TenantColumnName,
+				HasTimestamps:          cm.Entity.Timestamps,
+				MutableStringField:     mutable,
+				MutableStringFieldPath: protoNameByGoName[mutable],
+				SecondStringField:      second,
+				SecondStringFieldPath:  protoNameByGoName[second],
+				Fields:                 fields,
+				UpdateEntityField:      updateEntityField,
 			}
 			entityMap[cm.Entity.Name] = ent
 			entityOrder = append(entityOrder, cm.Entity.Name)
@@ -1251,6 +1307,19 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		}
 	}
 
+	// fieldmaskpb is imported only when some lifecycle test will actually
+	// emit a masked-update block — mirror the template's emission gates
+	// exactly or the generated file has an unused import.
+	needsFieldMask := false
+	for _, e := range entities {
+		if e.HasCreate && e.HasGet && e.PkGoType == "string" &&
+			e.HasUpdate && e.MutableStringField != "" &&
+			e.UpdateMethod.UpdateMaskField != "" {
+			needsFieldMask = true
+			break
+		}
+	}
+
 	return CRUDTestTemplateData{
 		Package:        pkg,
 		Module:         modulePath,
@@ -1258,6 +1327,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		HasTenant:      testHasTenant,
 		Entities:       entities,
 		CRUDMethods:    allMethods,
+		NeedsFieldMask: needsFieldMask,
 		TestHelperName: ComputeTestHelperName(pkg, projectDir),
 	}
 }
@@ -1538,6 +1608,23 @@ func fieldMatchesEntity(f MessageFieldDef, entityName string) bool {
 		}
 	}
 	return protoTypeMatchesEntity(f.ProtoType, entityName)
+}
+
+// updateMaskGoField returns the Go field name of the AIP-134
+// google.protobuf.FieldMask field on the given request message ("" when
+// the message declares none, or when no field data is available). The
+// modern descriptor carries the referenced message name in MessageType;
+// the suffix match also accepts a bare "FieldMask" from older descriptors.
+func updateMaskGoField(svc ServiceDef, inputType string) string {
+	if svc.Messages == nil {
+		return ""
+	}
+	for _, f := range svc.Messages[inputType] {
+		if f.MessageType == "google.protobuf.FieldMask" || strings.HasSuffix(f.MessageType, ".FieldMask") || f.MessageType == "FieldMask" {
+			return naming.ToProtoPascalCase(f.Name)
+		}
+	}
+	return ""
 }
 
 // describeFields renders an observed-field list ("name type, ...") for

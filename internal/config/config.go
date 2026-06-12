@@ -740,6 +740,7 @@ type FeaturesConfig struct {
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
 	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
 	Starters      *bool `yaml:"starters,omitempty"`      // forge starters (one-time business-integration copies)
+	Deploy        *bool `yaml:"deploy,omitempty"`        // deploy pipeline: KCL render → kubectl apply, per-env deploy config codegen
 
 	// Diagnostics enables runtime emission of pkg/diagnostics records at
 	// Bootstrap time — slog warn lines for every unwired scaffold the
@@ -776,6 +777,7 @@ func (f FeaturesConfig) IsZero() bool {
 		f.CI == nil && f.Build == nil && f.Contracts == nil &&
 		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
 		f.HotReload == nil && f.Packs == nil && f.Starters == nil &&
+		f.Deploy == nil &&
 		f.Diagnostics == nil && f.Experimental == (ExperimentalConfig{})
 }
 
@@ -785,12 +787,6 @@ func (f FeaturesConfig) IsZero() bool {
 //
 // What lives here today:
 //
-//   - Deploy:         the whole `forge deploy` pipeline (KCL render →
-//     kubectl apply → wait-rollouts). KCL is currently
-//     the only deploy IR but we treat it as an
-//     implementation detail; the public contract is
-//     "forge produces correct k8s manifests" and we
-//     want the freedom to swap render backends.
 //   - Ingress:        Gateway API codegen + cert-manager + Traefik
 //     wiring. Provider matrix is fragile and not yet
 //     proven across real cloud providers.
@@ -806,7 +802,6 @@ func (f FeaturesConfig) IsZero() bool {
 //     Diagnostics: true. Stays experimental because the
 //     diagnostics catalogue itself is still settling.
 type ExperimentalConfig struct {
-	Deploy         bool `yaml:"deploy,omitempty"`
 	Ingress        bool `yaml:"ingress,omitempty"`
 	ExternalBuilds bool `yaml:"external_builds,omitempty"`
 	Operators      bool `yaml:"operators,omitempty"`
@@ -886,11 +881,14 @@ func (f FeaturesConfig) CIEnabled() bool {
 	return f.featureEnabled(f.CI, func(d *derivedFeatureDefaults) bool { return d.ci })
 }
 
-// DeployEnabled reports whether the deploy feature is on (default: OFF
-// — opt-in under `features.experimental.deploy: true`). Lives under
-// experimental until KCL→k8s render has shipped through enough real
-// deployments to earn a backwards-compatibility promise.
-func (f FeaturesConfig) DeployEnabled() bool { return f.Experimental.Deploy }
+// DeployEnabled reports whether the deploy feature is on. Stable flag:
+// absent derives from project shape (deploy ⇔ kind == service — see
+// DeriveFeatureDefaults), explicit `features.deploy: true|false` wins.
+// Service scaffolds ship a deploy/kcl tree, so deploy is ON for the
+// canonical service shape; cli/library kinds derive OFF.
+func (f FeaturesConfig) DeployEnabled() bool {
+	return f.featureEnabled(f.Deploy, func(d *derivedFeatureDefaults) bool { return d.deploy })
+}
 
 // ContractsEnabled reports whether contract enforcement is on (default: on).
 func (f FeaturesConfig) ContractsEnabled() bool {
@@ -1010,10 +1008,10 @@ const (
 	FeatureHotReload     FeatureName = "hot_reload"
 	FeaturePacks         FeatureName = "packs"
 	FeatureStarters      FeatureName = "starters"
+	FeatureDeploy        FeatureName = "deploy"
 
 	// Experimental feature names — opt-in under
 	// `features.experimental.<name>: true`. Default OFF.
-	FeatureDeploy         FeatureName = "deploy"
 	FeatureIngress        FeatureName = "ingress"
 	FeatureExternalBuilds FeatureName = "external_builds"
 	FeatureOperators      FeatureName = "operators"
@@ -1025,7 +1023,6 @@ const (
 // order used by `forge audit`, the startup warning, and
 // `forge experimental list`.
 var ExperimentalFeatureNames = []FeatureName{
-	FeatureDeploy,
 	FeatureIngress,
 	FeatureExternalBuilds,
 	FeatureOperators,
@@ -1050,7 +1047,6 @@ func IsExperimentalFeature(name FeatureName) bool {
 // Used by the startup warning and `forge experimental list`.
 func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 	checks := map[FeatureName]bool{
-		FeatureDeploy:         f.Experimental.Deploy,
 		FeatureIngress:        f.Experimental.Ingress,
 		FeatureExternalBuilds: f.Experimental.ExternalBuilds,
 		FeatureOperators:      f.Experimental.Operators,

@@ -1,12 +1,23 @@
 # JWT Auth Pack
 
-Production-ready JWT authentication with JWKS auto-rotation, multi-provider support, and a dev-mode bypass for local development.
+Production-ready JWT validation with JWKS auto-rotation and multi-provider support.
+
+**You do not need this pack for local development.** `forge run` defaults
+to dev mode, where the scaffold's auth passthrough attaches the synthetic
+principal from `devClaims()` (`pkg/middleware/middleware.go`) and generated
+CRUD works with zero auth config. Install this pack when you need REAL
+token validation (JWKS, issuer/audience checks).
 
 ## Installation
 
 ```bash
 forge pack install jwt-auth
 ```
+
+Install sets `auth.provider: jwt` in `forge.yaml` (unless you already set
+a provider) and prints the wiring steps — the installed `Init()` /
+`Interceptor()` have no call sites until you add them to your server's
+interceptor chain.
 
 ## What Gets Generated
 
@@ -23,17 +34,18 @@ on filenames in `pkg/middleware/`.
 
 ## Configuration
 
-The pack adds an `auth` section to `forge.yaml`:
+Install projects the pack's config section onto `forge.yaml`'s typed
+`auth:` block (empty fields are omitted; an existing `auth.provider` is
+never overwritten):
 
 ```yaml
 auth:
   provider: jwt
   jwt:
     signing_method: RS256   # RS256, ES256, or HS256
-    jwks_url: ""            # JWKS endpoint for key rotation
-    issuer: ""              # Expected token issuer
-    audience: ""            # Expected token audience
-  dev_mode: true            # Bypass validation in development
+    # jwks_url: ""          # JWKS endpoint for key rotation
+    # issuer: ""            # Expected token issuer
+    # audience: ""          # Expected token audience
 ```
 
 At runtime, the validator reads these environment variables:

@@ -41,11 +41,13 @@ func TestE2EZeroServiceScaffoldCompiles(t *testing.T) {
 	projectDir := filepath.Join(dir, "zerosvc")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// Zero services were really scaffolded (the default --service is none).
-	if entries, err := os.ReadDir(filepath.Join(projectDir, "handlers")); err == nil {
+	// Zero services were really scaffolded (the default --service is
+	// none). proto/services is the service census; handlers/ also holds
+	// non-service dirs (e.g. handlers/mocks), so it can't be the probe.
+	if entries, err := os.ReadDir(filepath.Join(projectDir, "proto", "services")); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
-				t.Fatalf("zero-service scaffold grew a handler dir %s — this test no longer covers the zero-component state", e.Name())
+				t.Fatalf("zero-service scaffold grew a service proto dir %s — this test no longer covers the zero-component state", e.Name())
 			}
 		}
 	}

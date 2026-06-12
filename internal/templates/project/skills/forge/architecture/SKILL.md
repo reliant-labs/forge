@@ -330,9 +330,9 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | Where | Form | Example |
 |---|---|---|
 | `forge.yaml` service / worker / operator display name | kebab-case | `admin-server`, `git-credential` |
-| `forge.yaml` `path:` field (and on-disk directory) | lowercase, `-` and `_` stripped | `handlers/adminserver`, `handlers/gitcredential` |
-| Go package directory under `handlers/` / `internal/` | lowercase, `-` and `_` stripped | `handlers/adminserver/`, `internal/billingflow/` |
-| Go package declaration | matches the directory — single lowercase identifier, no separators | `package adminserver` |
+| `forge.yaml` `path:` field (and on-disk directory) | lowercase snake_case (`-` → `_`, case boundaries split) | `handlers/admin_server`, `handlers/git_credential` |
+| Go package directory under `handlers/` / `internal/` | lowercase snake_case | `handlers/admin_server/`, `internal/billing_flow/` |
+| Go package declaration | matches the directory — lowercase snake_case identifier | `package admin_server` |
 | Go exported type / interface / method | PascalCase | `type Service interface`, `func (s *svc) DoThing(...)` |
 | Go exported field on `*App` | PascalCase | `app.AdminServer`, `app.BillingFlow` |
 | Go variable / parameter | camelCase (initialisms stay capitalized) | `orgID`, `createdAt`, `userID` |

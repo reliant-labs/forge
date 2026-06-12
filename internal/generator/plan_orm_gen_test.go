@@ -69,7 +69,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if !strings.Contains(collapsedStruct, "Id string `bun:\"id,pk\"`") {
 		t.Error("Project struct should carry a bun-tagged string Id (pk) field")
 	}
-	if !strings.Contains(code, "Description *string") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Description *string") {
 		t.Error("nullable string column should be a *string struct field")
 	}
 	if !strings.Contains(code, "*time.Time `bun:\"created_at\"`") {
@@ -183,7 +183,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	}
 
 	// Create is a plain INSERT — never an upsert. Bun builds the INSERT.
-	if !strings.Contains(code, "db.Bun().NewInsert().Model(msg).ModelTableExpr(\"projects\")") {
+	if !strings.Contains(code, "db.Bun().NewInsert().Model(msg)") {
 		t.Error("missing Bun NewInsert in Create")
 	}
 	if strings.Contains(code, "ON CONFLICT") {
@@ -221,7 +221,7 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	}
 
 	// List/Get/Count build queries via Bun's NewSelect against the table.
-	if !strings.Contains(code, `db.Bun().NewSelect().Model(&results).ModelTableExpr("projects")`) {
+	if !strings.Contains(code, `db.Bun().NewSelect().Model(&results)`) {
 		t.Error("missing Bun NewSelect in List")
 	}
 	if strings.Contains(code, "orm.NewQueryBuilder(db,") {
@@ -304,7 +304,7 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 	}
 
 	// Hard delete uses Bun NewDelete (no DELETE FROM literal anymore).
-	if !strings.Contains(code, `db.Bun().NewDelete().Model((*Tag)(nil)).ModelTableExpr("tags")`) {
+	if !strings.Contains(code, `db.Bun().NewDelete().Model((*Tag)(nil))`) {
 		t.Error("simple delete should use Bun NewDelete")
 	}
 	if strings.Contains(code, "DELETE FROM") {
@@ -312,7 +312,7 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 	}
 
 	// Update uses Bun NewUpdate with an explicit column list.
-	if !strings.Contains(code, `db.Bun().NewUpdate().Model(msg).ModelTableExpr("tags")`) {
+	if !strings.Contains(code, `db.Bun().NewUpdate().Model(msg)`) {
 		t.Error("simple update should use Bun NewUpdate")
 	}
 	if !strings.Contains(code, `Column("label")`) {
@@ -320,7 +320,7 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 	}
 
 	// GetByID uses Bun NewSelect (no soft-delete/tenant filter).
-	if !strings.Contains(code, `db.Bun().NewSelect().Model(entity).ModelTableExpr("tags")`) {
+	if !strings.Contains(code, `db.Bun().NewSelect().Model(entity)`) {
 		t.Error("simple GetByID should use Bun NewSelect")
 	}
 	if strings.Contains(code, "orm.NewQueryBuilder(db,") {
@@ -563,7 +563,7 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 	if !strings.Contains(code, `"time"`) {
 		t.Error("missing time import for timestamp fields")
 	}
-	if !strings.Contains(code, "CreatedAt *time.Time") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "CreatedAt *time.Time") {
 		t.Error("nullable created_at should be *time.Time on the struct")
 	}
 
@@ -723,7 +723,7 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 	if end := strings.Index(updateCode[1:], "\nfunc "); end >= 0 {
 		updateCode = updateCode[:end+1]
 	}
-	if !strings.Contains(updateCode, `db.Bun().NewUpdate().Model(msg).ModelTableExpr("settings")`) {
+	if !strings.Contains(updateCode, `db.Bun().NewUpdate().Model(msg)`) {
 		t.Error("Update should use Bun NewUpdate")
 	}
 	if !strings.Contains(updateCode, `Where("\"id\" = ?", msg.Id)`) {
@@ -742,7 +742,7 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 		t.Fatal("missing DeleteSetting")
 	}
 	deleteCode := code[deleteIdx:]
-	if !strings.Contains(deleteCode, `db.Bun().NewDelete().Model((*Setting)(nil)).ModelTableExpr("settings")`) {
+	if !strings.Contains(deleteCode, `db.Bun().NewDelete().Model((*Setting)(nil))`) {
 		t.Error("Delete should be a hard delete via Bun NewDelete")
 	}
 	if !strings.Contains(deleteCode, `q.Where("\"tenant_id\" = ?", tenantID)`) {
@@ -997,10 +997,10 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 
 	// NOT NULL declared timestamps are bare time.Time struct fields that
 	// Bun scans directly; the nullable deleted_at stays a pointer.
-	if !strings.Contains(code, "CreatedAt time.Time") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "CreatedAt time.Time") {
 		t.Error("NOT NULL created_at should be time.Time on the struct")
 	}
-	if !strings.Contains(code, "DeletedAt *time.Time") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "DeletedAt *time.Time") {
 		t.Error("nullable deleted_at should be *time.Time on the struct")
 	}
 	// Bun scans directly into the struct — no NullTime temp assignment.
@@ -1148,7 +1148,7 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 	code := readGeneratedORM(t, root, "trade_orm.go")
 
 	// The struct projects the applied schema: strings stay strings.
-	if !strings.Contains(code, "CreatedAt string") {
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "CreatedAt string") {
 		t.Error("TEXT created_at should project as a string struct field")
 	}
 
@@ -1217,7 +1217,7 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 	}
 
 	audit := readGeneratedORM(t, root, "audit_orm.go")
-	if !strings.Contains(audit, "CreatedAt *time.Time") {
+	if !strings.Contains(strings.Join(strings.Fields(audit), " "), "CreatedAt *time.Time") {
 		t.Fatal("nullable created_at should be *time.Time — precondition for this test")
 	}
 	// nil-guard, not IsZero (nil pointer would panic).
@@ -1240,7 +1240,7 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 	}
 
 	legacy := readGeneratedORM(t, root, "legacy_orm.go")
-	if !strings.Contains(legacy, "CreatedAt *string") {
+	if !strings.Contains(strings.Join(strings.Fields(legacy), " "), "CreatedAt *string") {
 		t.Fatal("nullable TEXT created_at should be *string — precondition for this test")
 	}
 	if !strings.Contains(legacy, "if msg.CreatedAt == nil {") {

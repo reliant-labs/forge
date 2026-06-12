@@ -65,7 +65,7 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 //
 // Tier-2 (scaffold-once) lifecycle: every page template carries a
 //
-//	`// forge:scaffold one-shot — list page emitted by 'forge add page'`
+//	`// yours: scaffolded once, never touched again — forge will not overwrite this file`
 //
 // banner promising the user that hand-edits will survive subsequent
 // `forge generate` runs. Honor that promise by skipping the write when
@@ -255,7 +255,7 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 }
 
 // renderPageToFileTier2 renders a page template to disk under
-// "forge:scaffold one-shot" semantics: the file is written once at
+// scaffold-once ("yours:" banner) semantics: the file is written once at
 // scaffold time and never overwritten on subsequent `forge generate`
 // runs, matching the leading banner comment every page template
 // carries. `force` re-emits and clobbers existing content for the

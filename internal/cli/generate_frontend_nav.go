@@ -190,7 +190,7 @@ func warnIfNextConfigIgnoresBasePath(projectDir, feDir, feName, basePath string)
 		feName, basePath, basePath, basePath)
 }
 
-// emitTier2OnceIfMissing writes a Tier-2 ("forge:scaffold one-shot")
+// emitTier2OnceIfMissing writes a Tier-2 (scaffold-once, "yours:" banner)
 // template only when the destination file does not yet exist on disk.
 // Tier-2 files are user-owned: forge writes them once at scaffold time
 // and never overwrites (the user may have hand-curated them). `force`

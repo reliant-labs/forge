@@ -37,16 +37,13 @@ gen/
 # Handler-level generated code — CRUD handlers, authorizers (Tier-1; forge
 # regenerates these on every run).
 handlers/**/*_gen.go
-# NOTE: `handlers/**/*_gen_test.go` is intentionally NOT ignored. These
-# `handlers_crud_gen_test.go` files start life as scaffolds with
-# `FORGE_SCAFFOLD:` markers, but transfer ownership to the user the moment
-# every marker is cleared (see `writeScaffoldFile`). Once user-owned they
-# carry real assertions and MUST be committed — otherwise CI runs `forge
-# generate` against the file's absence, re-emits the broken stub, and
-# `go test ./...` fails on a fresh clone. Track the scaffold (forge will
-# refresh it if the user hasn't customized it) and rely on the
-# scaffold-vs-customized check inside the file to decide whether the user
-# owns it.
+# NOTE: `handlers/**/*_gen_test.go` is intentionally NOT ignored. The
+# current CRUD test scaffold (`handlers_crud_test.go`) is yours from line
+# one — scaffolded once, never touched again — and MUST be committed.
+# Legacy projects may still carry a retired `handlers_crud_gen_test.go`
+# with `FORGE_SCAFFOLD:` markers; forge refreshes that file only while
+# markers remain, and it becomes yours the moment the markers are cleared.
+# Either way, committing it keeps `go test ./...` green on a fresh clone.
 
 # Middleware generated code — auth, tenant scoping
 pkg/middleware/*_gen.go

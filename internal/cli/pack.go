@@ -481,6 +481,16 @@ func runPackInstall(ctx context.Context, name string, configPairs []string) erro
 		if len(pack.Generate) > 0 {
 			fmt.Printf("\nThis pack has generate hooks. Run '%s generate' to generate pack code.\n", Name())
 		}
+		// Wiring the user must do by hand — printed at the moment of
+		// install, not buried in a README. A pack whose code has zero
+		// call sites until the user edits setup/server wiring MUST say
+		// so here (see Pack.PostInstall).
+		if pi := strings.TrimSpace(pack.PostInstall); pi != "" {
+			fmt.Printf("\nNext steps for '%s':\n", pack.Name)
+			for _, line := range strings.Split(pi, "\n") {
+				fmt.Printf("  %s\n", line)
+			}
+		}
 	}
 
 	// Pending-proto hint: at least one pack in the install cluster emitted

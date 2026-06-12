@@ -13,10 +13,12 @@ option go_package = "{{.Module}}/gen/services/{{.ServicePackage}}/v1;{{.ServiceP
 // RPC names follow the forge CRUD convention: <Verb><Entity> with
 // <Verb><Entity>Request / <Verb><Entity>Response messages (List uses the
 // plural: List<Entities>). The convention is load-bearing — forge's
-// codegen keys on it to extract entities and emit frontend hooks, mocks,
-// nav routes, and entity pages (and, for DB-backed entities annotated
-// with forge.v1.entity, CRUD handler implementations). When you rename
-// "Item" to your real entity, keep the <Verb><Entity> shape.
+// codegen keys on it to detect entities. An entity becomes REAL when its
+// table exists in the applied schema (db/migrations): run
+// `forge add entity item ...` to create the table, then `forge generate`
+// projects the ORM, CRUD handlers, frontend hooks, mocks, nav routes and
+// entity pages from the real columns. When you rename "Item" to your
+// real entity, keep the <Verb><Entity> shape.
 // Reference: forge skill load proto (CRUD RPC Naming Convention).
 service {{.ServiceName | pascalCase}}Service {
   option (forge.v1.service) = {

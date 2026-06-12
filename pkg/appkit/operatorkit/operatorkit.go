@@ -102,6 +102,23 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		return nil
 	}
 
+	// Out-of-cluster leader election needs an explicit lease namespace —
+	// controller-runtime infers it from the ServiceAccount mount in-cluster
+	// and hard-errors otherwise ("unable to find leader election
+	// namespace"). A host-mode process with a working kubeconfig (the
+	// dev-loop shape: admin binary on the laptop, operators deployed
+	// in-cluster) would otherwise get PAST the no-cluster degrade above
+	// and then die in NewManager. Treat "reachable cluster, but not
+	// in-cluster and no LEADER_ELECTION_NAMESPACE" the same way as
+	// no-cluster: warn and continue without operators. Setting
+	// LEADER_ELECTION_NAMESPACE opts a host process back in (e.g. running
+	// an operator from source against a dev cluster).
+	leaderNS := os.Getenv("LEADER_ELECTION_NAMESPACE")
+	if leaderNS == "" && !runningInCluster() {
+		logger.Warn("operators disabled: not running in-cluster and LEADER_ELECTION_NAMESPACE is unset; set it to run operators from a host process")
+		return nil
+	}
+
 	// Probe-address precedence: explicit Options value (forwarded from
 	// serverkit.Config.OperatorHealthProbeAddr) > HEALTH_PROBE_BIND_ADDRESS
 	// env var (the conventional controller-runtime deploy knob — k8s
@@ -113,9 +130,12 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 	}
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		LeaderElection:         true,
-		LeaderElectionID:       opts.LeaderElectionID,
-		HealthProbeBindAddress: probeAddr,
+		LeaderElection:   true,
+		LeaderElectionID: opts.LeaderElectionID,
+		// Empty in-cluster — controller-runtime infers the namespace from
+		// the ServiceAccount mount. Non-empty only via the env opt-in above.
+		LeaderElectionNamespace: leaderNS,
+		HealthProbeBindAddress:  probeAddr,
 	})
 	if err != nil {
 		return fmt.Errorf("creating controller manager: %w", err)
@@ -155,4 +175,14 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 
 	logger.Info("starting controller manager")
 	return mgr.Start(ctx)
+}
+
+// runningInCluster reports whether the process is running inside a
+// Kubernetes pod, using the same signal controller-runtime's leader
+// election uses to infer the lease namespace: the ServiceAccount
+// namespace mount. Checking the mount (rather than KUBERNETES_SERVICE_HOST)
+// matches what NewManager will actually succeed or fail on.
+func runningInCluster() bool {
+	_, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	return err == nil
 }

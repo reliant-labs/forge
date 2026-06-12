@@ -57,6 +57,22 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing package db")
 	}
 
+	// The entity type is a REAL struct emitted here — a projection of the
+	// applied schema. Nullable columns are pointers; timestamps are
+	// time.Time-based, never timestamppb.
+	if !strings.Contains(code, "type Project struct {") {
+		t.Error("missing Project struct emission in _orm.go")
+	}
+	if !strings.Contains(code, "Id string") {
+		t.Error("Project struct should carry Id string")
+	}
+	if !strings.Contains(code, "Description *string") {
+		t.Error("nullable string column should be a *string struct field")
+	}
+	if !strings.Contains(code, "CreatedAt *time.Time") {
+		t.Error("nullable timestamp column should be *time.Time on the struct")
+	}
+
 	// Should NOT have method-based patterns (type alias fix)
 	if strings.Contains(code, "_ orm.Model") {
 		t.Error("should not have orm.Model assertion (type alias incompatible)")
@@ -107,8 +123,16 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if strings.Contains(code, `"database/sql"`) {
 		t.Error("generated file should no longer import database/sql")
 	}
-	if !strings.Contains(code, "timestamppb.New(") {
-		t.Error("missing timestamppb.New in scan function")
+	// No timestamppb anywhere in generated ORM code: time columns scan via
+	// orm.NullTime temps and assign onto time.Time / *time.Time fields.
+	if strings.Contains(code, "timestamppb") {
+		t.Error("generated ORM code must not reference timestamppb")
+	}
+	if !strings.Contains(code, "if dbCreatedAt.Valid {") {
+		t.Error("missing NullTime valid-guard for created_at in scan function")
+	}
+	if !strings.Contains(code, "entity.CreatedAt = &tCreatedAt") {
+		t.Error("missing pointer assignment from NullTime temp for nullable created_at")
 	}
 
 	// CRUD functions (tenant-scoped)
@@ -171,12 +195,13 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing ULID generation chokepoint in Create")
 	}
 
-	// Timestamps chokepoint: created_at/updated_at stamped in Create.
-	if !strings.Contains(code, "now := timestamppb.Now()") {
+	// Timestamps chokepoint: created_at/updated_at stamped in Create with
+	// time.Now().UTC(), guarded by IsZero so caller-provided values win.
+	if !strings.Contains(code, "now := time.Now().UTC()") {
 		t.Error("missing timestamp stamping in Create")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
-		t.Error("missing created_at nil-guard in Create")
+	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
+		t.Error("missing created_at zero-guard in Create")
 	}
 	if !strings.Contains(code, "msg.UpdatedAt = now") {
 		t.Error("missing updated_at stamping in Create")
@@ -393,6 +418,9 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 				{Name: "price", Type: "double"},
 				{Name: "data", Type: "bytes"},
 				{Name: "label", Type: "string"},
+				{Name: "meta", Type: "json", NotNull: true},
+				{Name: "tags", Type: "[]string", NotNull: true},
+				{Name: "nums", Type: "[]int64"},
 			},
 		},
 	}
@@ -415,15 +443,53 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 		t.Error("Delete should use int64 for PK type")
 	}
 
-	// Scan function with nullable fields
-	if !strings.Contains(code, "dbScore *float32") {
-		t.Error("nullable float should scan as *float32")
+	// Nullable scalar columns are POINTER struct fields scanned directly —
+	// no temp vars (the legacy *float32 scan temps are gone).
+	if !strings.Contains(code, "type Record struct {") {
+		t.Error("missing Record struct emission")
 	}
-	if !strings.Contains(code, "dbPrice *float64") {
-		t.Error("nullable double should scan as *float64")
+	if !strings.Contains(code, "Score *float32") {
+		t.Error("nullable float should be a *float32 struct field")
 	}
-	if !strings.Contains(code, "dbLabel *string") {
-		t.Error("nullable string should scan as *string")
+	if !strings.Contains(code, "Price *float64") {
+		t.Error("nullable double should be a *float64 struct field")
+	}
+	if !strings.Contains(code, "Label *string") {
+		t.Error("nullable string should be a *string struct field")
+	}
+	for _, temp := range []string{"dbScore", "dbPrice", "dbLabel"} {
+		if strings.Contains(code, temp) {
+			t.Errorf("nullable scalar must scan directly into the struct field; found temp %s", temp)
+		}
+	}
+	if !strings.Contains(code, "&entity.Score,") {
+		t.Error("scanRecord should scan &entity.Score directly")
+	}
+
+	// "json" maps to Go string on the struct.
+	if !strings.Contains(code, "Meta string") {
+		t.Error("json column should be a string struct field")
+	}
+
+	// Array columns are native slices, scanned via the dual-format orm
+	// scanners and written via the dialect-aware orm.ArrayValue encoder.
+	if !strings.Contains(code, "Tags []string") || !strings.Contains(code, "Nums []int64") {
+		t.Error("array columns should be native slices on the struct")
+	}
+	if !strings.Contains(code, "dbTags orm.StringArray") {
+		t.Error("[]string column should scan via an orm.StringArray temp")
+	}
+	if !strings.Contains(code, "dbNums orm.Int64Array") {
+		t.Error("[]int64 column should scan via an orm.Int64Array temp")
+	}
+	if !strings.Contains(code, "entity.Tags = []string(dbTags)") {
+		t.Error("missing slice assignment from the StringArray temp")
+	}
+	if !strings.Contains(code, "orm.ArrayValue(dialect, msg.Tags)") {
+		t.Error("array values must go through orm.ArrayValue in INSERT/UPDATE args")
+	}
+	if strings.Contains(code, "pq.StringArray") {
+		t.Error("array mapping must use orm scanners, not pq.StringArray")
 	}
 
 	// scanRecord function exists
@@ -456,13 +522,20 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 	}
 	code := string(content)
 
-	// Should have timestamppb import; database/sql is gone (orm.NullTime
-	// replaced sql.NullTime in scan temps).
+	// timestamppb is gone from generated ORM code entirely — time columns
+	// are time.Time-based and need the time import; database/sql is gone
+	// too (orm.NullTime replaced sql.NullTime in scan temps).
 	if strings.Contains(code, `"database/sql"`) {
 		t.Error("generated file should not import database/sql anymore")
 	}
-	if !strings.Contains(code, "timestamppb") {
-		t.Error("missing timestamppb import")
+	if strings.Contains(code, "timestamppb") {
+		t.Error("generated ORM code must not reference timestamppb")
+	}
+	if !strings.Contains(code, `"time"`) {
+		t.Error("missing time import for timestamp fields")
+	}
+	if !strings.Contains(code, "CreatedAt *time.Time") {
+		t.Error("nullable created_at should be *time.Time on the struct")
 	}
 
 	// Created/updated_at in fields
@@ -486,19 +559,20 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Error("timestamp scan temps should use orm.NullTime, not sql.NullTime")
 	}
 
-	// Create stamps managed timestamps.
-	if !strings.Contains(code, "now := timestamppb.Now()") {
+	// Create stamps managed timestamps with time.Now().UTC(), guarded by
+	// IsZero so caller-provided values win.
+	if !strings.Contains(code, "now := time.Now().UTC()") {
 		t.Error("missing timestamp stamping in Create")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
-		t.Error("missing created_at nil-guard in Create")
+	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
+		t.Error("missing created_at zero-guard in Create")
 	}
 	if !strings.Contains(code, "msg.UpdatedAt = now") {
 		t.Error("missing updated_at stamping in Create")
 	}
 
 	// Update re-stamps updated_at.
-	if !strings.Contains(code, "msg.UpdatedAt = timestamppb.Now()") {
+	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()") {
 		t.Error("UpdateEvent should stamp updated_at")
 	}
 }
@@ -787,7 +861,7 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	if !strings.Contains(setPartsSection, `"updated_at"`) {
 		t.Error("Update SET should include updated_at")
 	}
-	if !strings.Contains(updateCode, "msg.UpdatedAt = timestamppb.Now()") {
+	if !strings.Contains(updateCode, "msg.UpdatedAt = time.Now().UTC()") {
 		t.Error("UpdateTask should stamp updated_at before building args")
 	}
 }
@@ -806,9 +880,11 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 			Fields: []config.PlanEntityField{
 				{Name: "id", Type: "string", PrimaryKey: true},
 				{Name: "title", Type: "string", NotNull: true},
-				{Name: "created_at", Type: "google.protobuf.Timestamp"},
-				{Name: "updated_at", Type: "google.protobuf.Timestamp"},
-				{Name: "deleted_at", Type: "google.protobuf.Timestamp"},
+				// Legacy proto-type alias stays mapped during the transition;
+				// NOT NULL declared timestamps become bare time.Time fields.
+				{Name: "created_at", Type: "google.protobuf.Timestamp", NotNull: true},
+				{Name: "updated_at", Type: "timestamp", NotNull: true},
+				{Name: "deleted_at", Type: "time"},
 			},
 		},
 	}
@@ -841,165 +917,23 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 	}
 
 	// Declared timestamps still get the managed-timestamp chokepoints.
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
+	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
 		t.Error("Create should stamp declared created_at")
 	}
-	if !strings.Contains(code, "msg.UpdatedAt = timestamppb.Now()") {
+	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()") {
 		t.Error("Update should stamp declared updated_at")
 	}
-}
-// ─── J-round fix 1: repeated scalar fields must generate honest,
-// compiling ORM code (JSON round-trip via pkg/orm helpers) ─────────────
 
-func TestGeneratePlanORM_RepeatedScalarJSONRoundTrip(t *testing.T) {
-	root := t.TempDir()
-
-	entities := []config.PlanEntity{
-		{
-			Name: "Bookmark",
-			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "title", Type: "string", NotNull: true},
-				{Name: "tags", Type: "repeated string"},
-				{Name: "scores", Type: "repeated int64"},
-			},
-		},
+	// NOT NULL declared timestamps are bare time.Time struct fields and
+	// scan-assign the NullTime temp's .Time directly; the nullable
+	// deleted_at stays a pointer.
+	if !strings.Contains(code, "CreatedAt time.Time") {
+		t.Error("NOT NULL created_at should be time.Time on the struct")
 	}
-
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
-		t.Fatalf("GeneratePlanORM() error = %v", err)
+	if !strings.Contains(code, "DeletedAt *time.Time") {
+		t.Error("nullable deleted_at should be *time.Time on the struct")
 	}
-
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "bookmark_orm.go"))
-	if err != nil {
-		t.Fatalf("ReadFile error = %v", err)
-	}
-	code := string(content)
-
-	// The historical failure mode #1: lib/pq array types referenced
-	// without the import — undefined `pq` in generated code.
-	if strings.Contains(code, "pq.") {
-		t.Errorf("generated code references lib/pq types (postgres-only, unimported):\n%s", code)
-	}
-	// The historical failure mode #2: the repeated field was treated as
-	// a nullable scalar — `var dbTags *string` + `entity.Tags = *dbTags`
-	// assigns string to []string and does not compile.
-	if strings.Contains(code, "dbTags *string") || strings.Contains(code, "entity.Tags = *dbTags") {
-		t.Errorf("repeated field scanned as nullable scalar (string into []string does not compile):\n%s", code)
-	}
-
-	// Honest storage: JSON round-trip through pkg/orm helpers, which work
-	// on both postgres (jsonb column) and sqlite (TEXT column).
-	if !strings.Contains(code, "orm.ScanJSON(&entity.Tags)") {
-		t.Error("scanBookmark should scan tags via orm.ScanJSON(&entity.Tags)")
-	}
-	if !strings.Contains(code, "orm.ScanJSON(&entity.Scores)") {
-		t.Error("scanBookmark should scan scores via orm.ScanJSON(&entity.Scores)")
-	}
-	if !strings.Contains(code, "orm.JSON(msg.Tags)") {
-		t.Error("CreateBookmark values should wrap tags via orm.JSON(msg.Tags)")
-	}
-	if !strings.Contains(code, "orm.JSON(msg.Scores)") {
-		t.Error("CreateBookmark values should wrap scores via orm.JSON(msg.Scores)")
-	}
-	// Update must wrap too (it SETs every non-excluded column).
-	updIdx := strings.Index(code, "func UpdateBookmark")
-	if updIdx == -1 {
-		t.Fatal("missing UpdateBookmark")
-	}
-	if !strings.Contains(code[updIdx:], "orm.JSON(msg.Tags)") {
-		t.Error("UpdateBookmark args should wrap tags via orm.JSON(msg.Tags)")
-	}
-}
-
-func TestGeneratePlanORM_RepeatedUnsupportedBaseIsLoud(t *testing.T) {
-	root := t.TempDir()
-
-	// Repeated message/timestamp fields have no honest scalar storage
-	// mapping — the generator must refuse loudly at generate time and
-	// name the workaround, never emit non-compiling code.
-	entities := []config.PlanEntity{
-		{
-			Name: "Reminder",
-			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "fire_at", Type: "repeated google.protobuf.Timestamp"},
-			},
-		},
-	}
-
-	err := GeneratePlanORM(root, "example.com/app", "api", entities)
-	if err == nil {
-		t.Fatal("GeneratePlanORM() = nil error for repeated timestamp field, want loud generate-time error")
-	}
-	msg := err.Error()
-	for _, want := range []string{"Reminder", "fire_at", "repeated"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error should name %q; got: %v", want, err)
-		}
-	}
-	// Must name a workaround, not just refuse.
-	if !strings.Contains(msg, "join table") && !strings.Contains(msg, "separate entity") {
-		t.Errorf("error should name the workaround (separate entity / join table); got: %v", err)
-	}
-}
-
-// ─── J-round fix 2: soft-delete semantics are derived from the schema —
-// a deleted_at column present means soft-delete, annotation or not ─────
-
-func TestGeneratePlanORM_DeclaredDeletedAtImpliesSoftDelete(t *testing.T) {
-	root := t.TempDir()
-
-	// The scaffold's Item proto declares deleted_at explicitly; users who
-	// add the entity annotation WITHOUT soft_delete:true used to get the
-	// column with hard-delete semantics (decorative). The column IS the
-	// contract: deleted_at present ⇒ soft-delete everywhere.
-	entities := []config.PlanEntity{
-		{
-			Name:       "Item",
-			SoftDelete: false, // annotation absent — schema wins
-			Fields: []config.PlanEntityField{
-				{Name: "id", Type: "string", PrimaryKey: true},
-				{Name: "name", Type: "string", NotNull: true},
-				{Name: "deleted_at", Type: "google.protobuf.Timestamp"},
-			},
-		},
-	}
-
-	if err := GeneratePlanORM(root, "example.com/app", "api", entities); err != nil {
-		t.Fatalf("GeneratePlanORM() error = %v", err)
-	}
-
-	content, err := os.ReadFile(filepath.Join(root, "internal", "db", "item_orm.go"))
-	if err != nil {
-		t.Fatalf("ReadFile error = %v", err)
-	}
-	code := string(content)
-
-	// Delete must be an UPDATE ... SET deleted_at, not a hard DELETE.
-	delIdx := strings.Index(code, "func DeleteItem")
-	if delIdx == -1 {
-		t.Fatal("missing DeleteItem")
-	}
-	delBody := code[delIdx:]
-	if strings.Contains(delBody, "DELETE FROM") {
-		t.Errorf("DeleteItem hard-deletes despite a declared deleted_at column:\n%s", delBody)
-	}
-	if !strings.Contains(delBody, "UPDATE %s SET %s = CURRENT_TIMESTAMP") {
-		t.Errorf("DeleteItem should soft-delete via UPDATE ... SET deleted_at:\n%s", delBody)
-	}
-
-	// Reads must filter deleted rows.
-	listIdx := strings.Index(code, "func ListItem")
-	if listIdx == -1 {
-		t.Fatal("missing ListItem")
-	}
-	if !strings.Contains(code[listIdx:], `orm.WhereIsNull("deleted_at")`) {
-		t.Error("ListItem should prepend the deleted_at IS NULL filter")
-	}
-
-	// The unfiltered escape hatch exists.
-	if !strings.Contains(code, "func ListAllItem") {
-		t.Error("ListAllItem (unfiltered read) should be generated when deleted_at exists")
+	if !strings.Contains(code, "entity.CreatedAt = dbCreatedAt.Time") {
+		t.Error("NOT NULL timestamp should assign .Time from the NullTime temp")
 	}
 }

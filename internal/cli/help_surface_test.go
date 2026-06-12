@@ -54,7 +54,6 @@ func TestLintHelpSurface(t *testing.T) {
 	assertStringSlicesEqual(t, "lint visible flags", visibleFlagNames(cmd), []string{
 		"contract",
 		"conventions",
-		"db",
 		"fix",
 		"help-dev",
 		"json",

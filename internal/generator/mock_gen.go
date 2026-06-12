@@ -19,8 +19,6 @@ import (
 // "MockService.<Method>Func not set" error.
 type MockService struct {
 	contractkit.Recorder
-	GeneratePlanDBTypesFunc       func(string, string, string, []string) error
-	GeneratePlanMigrationsFunc    func(string, []config.PlanEntity) error
 	GeneratePlanORMFunc           func(string, string, string, []config.PlanEntity) error
 	GeneratePlanProtoFileFunc     func(string, string, string, []config.PlanRPC, []config.PlanEntity) error
 	GenerateServiceFilesFunc      func(string, string, string, string, int) error
@@ -38,22 +36,6 @@ type MockService struct {
 	HashContentFunc               func([]byte) string
 	LoadChecksumsFunc             func(string) (*FileChecksums, error)
 	SaveChecksumsFunc             func(string, *FileChecksums) error
-}
-
-func (m *MockService) GeneratePlanDBTypes(root string, modulePath string, serviceName string, entityNames []string) error {
-	m.Record("GeneratePlanDBTypes", root, modulePath, serviceName, entityNames)
-	if m.GeneratePlanDBTypesFunc != nil {
-		return m.GeneratePlanDBTypesFunc(root, modulePath, serviceName, entityNames)
-	}
-	return contractkit.MockNotSet("MockService", "GeneratePlanDBTypes")
-}
-
-func (m *MockService) GeneratePlanMigrations(root string, entities []config.PlanEntity) error {
-	m.Record("GeneratePlanMigrations", root, entities)
-	if m.GeneratePlanMigrationsFunc != nil {
-		return m.GeneratePlanMigrationsFunc(root, entities)
-	}
-	return contractkit.MockNotSet("MockService", "GeneratePlanMigrations")
 }
 
 func (m *MockService) GeneratePlanORM(root string, modulePath string, serviceName string, entities []config.PlanEntity) error {

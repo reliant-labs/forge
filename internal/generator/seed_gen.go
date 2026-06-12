@@ -11,26 +11,25 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// EntityDefsToSeedEntities converts codegen.EntityDef slices (parsed from
-// proto/db/) into SeedEntity slices suitable for seed-data generation.
+// EntityDefsToSeedEntities converts codegen.EntityDef slices into
+// SeedEntity slices suitable for seed-data generation. Seeds INSERT
+// into real columns, so the source is the entity's introspected
+// COLUMNS (the applied schema) — never the wire message.
 func EntityDefsToSeedEntities(defs []codegen.EntityDef) []SeedEntity {
 	entities := make([]SeedEntity, 0, len(defs))
 	for _, d := range defs {
 		ent := SeedEntity{
 			TableName:  d.TableName,
-			Timestamps: hasTimestampFields(d),
-			SoftDelete: hasSoftDelete(d),
+			Timestamps: d.Timestamps,
+			SoftDelete: d.SoftDelete,
 		}
-		for _, f := range d.Fields {
+		for _, c := range d.Columns {
 			sf := SeedField{
-				ColumnName: f.Name,
-				FieldType:  goTypeToSeedFieldType(f.GoType),
-				IsPK:       f.Name == d.PkField,
-				NotNull:    true,
-				IsTimestamp: isTimestampColumn(f.Name),
-			}
-			if f.IsFK {
-				sf.References = f.FKTable + ".id"
+				ColumnName:  c.Name,
+				FieldType:   goTypeToSeedFieldType(seedGoTypeForColumn(c)),
+				IsPK:        c.IsPK,
+				NotNull:     c.NotNull,
+				IsTimestamp: isTimestampColumn(c.Name),
 			}
 			ent.Fields = append(ent.Fields, sf)
 		}
@@ -39,22 +38,19 @@ func EntityDefsToSeedEntities(defs []codegen.EntityDef) []SeedEntity {
 	return entities
 }
 
-func hasTimestampFields(d codegen.EntityDef) bool {
-	for _, f := range d.Fields {
-		if f.Name == "created_at" || f.Name == "updated_at" {
-			return true
-		}
+// seedGoTypeForColumn maps a canonical column type onto the Go-type
+// vocabulary goTypeToSeedFieldType understands.
+func seedGoTypeForColumn(c codegen.EntityColumn) string {
+	if c.IsArray {
+		return "[]" + c.Type
 	}
-	return false
-}
-
-func hasSoftDelete(d codegen.EntityDef) bool {
-	for _, f := range d.Fields {
-		if f.Name == "deleted_at" {
-			return true
-		}
+	switch c.Type {
+	case "time":
+		return "time.Time"
+	case "json", "bytes":
+		return "string"
 	}
-	return false
+	return c.Type
 }
 
 func isTimestampColumn(name string) bool {
@@ -90,7 +86,7 @@ func goTypeToSeedFieldType(goType string) SeedFieldType {
 		return SeedFieldBoolean
 	case "[]byte":
 		return SeedFieldBytes
-	case "timestamppb.Timestamp":
+	case "timestamppb.Timestamp", "*timestamppb.Timestamp", "time.Time":
 		return SeedFieldTimestamp
 	default:
 		return SeedFieldText

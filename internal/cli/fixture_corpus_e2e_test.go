@@ -1491,7 +1491,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -1567,8 +1566,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 	ctx := authedCtx()
 
 	// ── create ×2: two rows, distinct non-empty IDs, created_at set ──
-	wantTags := []string{"go", "bookmarks", "comma,inside"}
-	r1, err := svc.CreateItem(ctx, connect.NewRequest(&pb.CreateItemRequest{Name: "first", Description: "alpha", Tags: wantTags}))
+	r1, err := svc.CreateItem(ctx, connect.NewRequest(&pb.CreateItemRequest{Name: "first", Description: "alpha"}))
 	if err != nil {
 		t.Fatalf("create#1: %v", err)
 	}
@@ -1610,15 +1608,6 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 			t.Errorf("get: name = %q, want %q", gr.Msg.GetItem().GetName(), "first")
 		}
 
-		// ── repeated scalar round-trip (the bookmarks-journey field) ─
-		// "repeated string tags" used to generate non-compiling ORM
-		// code; honest support stores it as a JSON column. The values —
-		// including the embedded comma — must come back EXACTLY, not
-		// flattened into a comma-joined string.
-		if got := gr.Msg.GetItem().GetTags(); !reflect.DeepEqual(got, []string{"go", "bookmarks", "comma,inside"}) {
-			t.Errorf("repeated tags did not round-trip: got %q, want %q (JSON column storage)", got, []string{"go", "bookmarks", "comma,inside"})
-		}
-
 		// ── update actually mutates ──────────────────────────────────
 		updated := gr.Msg.GetItem()
 		updated.Name = "renamed"
@@ -1635,11 +1624,6 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 		}
 		if gr2.Msg.GetItem().GetCreatedAt() == nil {
 			t.Errorf("update nulled created_at — timestamps must be managed, not round-tripped through the request")
-		}
-		// Update must not corrupt the repeated column either (it SETs
-		// every non-managed column, tags included).
-		if got := gr2.Msg.GetItem().GetTags(); !reflect.DeepEqual(got, []string{"go", "bookmarks", "comma,inside"}) {
-			t.Errorf("update corrupted repeated tags: got %q", got)
 		}
 
 		// ── delete, then get-missing = clean NotFound ────────────────
@@ -1698,11 +1682,25 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 
 // TestE2EFixtureCorpusCRUDLifecycle is the executed-lifecycle gate: the
 // first corpus fixture that asserts what generated CRUD code DOES, not
-// what it renders as. Shape: the default scaffold's Item service with
-// the (forge.v1.entity) annotation added (timestamps + soft_delete) —
-// byte-for-byte what the 2026-06 review probe did at
-// /tmp/review-scratch-svc (see crudLifecycleProbeSrc for the semantics
-// it pins).
+// what it renders as.
+//
+// Shape (the schema-is-truth flow — NO entity protos anywhere):
+//
+//  1. `forge new` scaffolds the Item service: CRUD RPCs + wire message,
+//     no migration, no entity, no ORM. The schema starts empty.
+//  2. `forge add entity item ...` emits the create-table migration —
+//     SQL is the schema declaration. The scaffold proto already carries
+//     the Item wire contract, so add-entity leaves it alone.
+//  3. `forge generate` shadow-applies db/migrations, introspects, and
+//     projects entity struct + ORM + CRUD wiring from the REAL columns.
+//     Conventions come off the columns: deleted_at ⇒ soft delete,
+//     created_at+updated_at ⇒ managed timestamps, text ⇒ searchable.
+//  4. A second entity (bookmark, with a repeated []string field) is
+//     born through the FULL `forge add entity` surface, including the
+//     one-time schema→wire CRUD scaffold into the service proto.
+//  5. A HAND-WRITTEN migration ladder evolves bookmarks (add column +
+//     data movement splitting a column) and `forge generate` again —
+//     the ORM must follow the applied schema with no proto change.
 //
 // Also pins the projection-vs-implementation split for CRUD:
 //
@@ -1710,14 +1708,14 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 //     line one (scaffold-once, no DO-NOT-EDIT banner) and THIN: it
 //     never names an entity field, so schema changes never rot it.
 //   - handlers_crud_ops_gen.go — the per-entity wiring (field mapping,
-//     filters, packers) — stays Tier-1 generated.
+//     filters, proto<->struct conversion, packers) — stays Tier-1.
 //   - handlers_crud_gen.go (the old Tier-1 implementation file) is DEAD
 //     and must not be emitted.
 //   - the scaffold's own proto must never trip the custom-read-shape stub
 //     (the F2 root cause: the descriptor collapsed message-typed fields
 //     to the literal string "message").
-//   - the generated migration guards the id invariant (CHECK (id <> ”))
-//     and stores timestamps as timestamps, not TEXT.
+//   - the emitted migration guards the id invariant (CHECK (id <> ”))
+//     and stores timestamps as TIMESTAMPTZ, not TEXT.
 func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -1731,28 +1729,21 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	projectDir := filepath.Join(dir, "crudlife")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// Annotate the scaffold's Item as a DB entity — exactly what the
-	// review probe did, and what the proto skill tells users to do.
-	protoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
-	mustReplaceInFile(t, protoPath, "message Item {\n  string id = 1;",
-		`message Item {
-  option (forge.v1.entity) = {
-    table: "items"
-    soft_delete: true
-    timestamps: true
-  };
+	// ── 0. the schema starts EMPTY: no boilerplate migration, and a
+	// pristine generate emits no entities (honest scaffold). ──────────
+	if entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations")); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".sql") {
+				t.Errorf("pristine scaffold ships migration %s — tables must be born via `forge add entity`", e.Name())
+			}
+		}
+	}
 
-  string id = 1 [(forge.v1.field) = {pk: true}];`)
-
-	// Repeated scalar field — the bookmarks-journey shape (`repeated
-	// string tags`) that used to generate non-compiling ORM code (the
-	// descriptor dropped the repeated-ness and the scan assigned a
-	// string into []string). Added to the entity AND the create request
-	// so the executed lifecycle below pins the full JSON round-trip.
-	mustReplaceInFile(t, protoPath, "  google.protobuf.Timestamp deleted_at = 7;",
-		"  google.protobuf.Timestamp deleted_at = 7;\n\n  // Repeated scalar — stored as a JSON column (jsonb/TEXT).\n  repeated string tags = 8;")
-	mustReplaceInFile(t, protoPath, "message CreateItemRequest {\n  string name = 1;\n  string description = 2;\n}",
-		"message CreateItemRequest {\n  string name = 1;\n  string description = 2;\n  repeated string tags = 3;\n}")
+	// Declare the entity: ONE command, SQL out. The wire contract (Item
+	// message + CRUD RPCs) is already in the scaffold proto, which
+	// add-entity detects and leaves alone.
+	runCmd(t, projectDir, forgeBin, "add", "entity", "item",
+		"name:string", "description:string", "active:bool", "--soft-delete")
 
 	// sqlite driver: the boot step below starts the REAL server against a
 	// real database file so the generated bootstrap's DB+ORM construction
@@ -1813,18 +1804,22 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	}
 
 	// ── 3. migration semantics ───────────────────────────────────────
-	migration := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00001_init.up.sql"))
+	migration := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00001_create_items.up.sql"))
 	if !strings.Contains(migration, "CHECK (id <> '')") {
 		t.Errorf("migration lacks CHECK (id <> '') on the string PK — empty-id rows were the silent-upsert data-loss vector; got:\n%s", migration)
 	}
 	if !strings.Contains(migration, "created_at TIMESTAMPTZ") {
-		t.Errorf("migration stores created_at as something other than TIMESTAMPTZ (the descriptor collapsed the Timestamp type); got:\n%s", migration)
+		t.Errorf("migration stores created_at as something other than TIMESTAMPTZ; got:\n%s", migration)
 	}
-	if !strings.Contains(migration, "tags JSONB") {
-		t.Errorf("repeated scalar column should be stored as JSONB (postgres) / JSON text (sqlite); got:\n%s", migration)
-	}
-	if strings.Contains(migration, "TEXT[]") {
-		t.Errorf("repeated column emitted as postgres-only TEXT[] — unreadable by the generated scan path; got:\n%s", migration)
+
+	// The ORM is a projection of the schema, not of any proto: the
+	// entity struct lives in internal/db and uses time.Time (the
+	// timestamppb impedance is confined to the wire seam).
+	ormPath := filepath.Join(projectDir, "internal", "db", "item_orm.go")
+	if orm := readFileE2E(t, ormPath); !strings.Contains(orm, "type Item struct") {
+		t.Errorf("internal/db/item_orm.go does not declare the Item entity struct")
+	} else if strings.Contains(orm, "timestamppb") {
+		t.Errorf("entity ORM still references timestamppb — db structs must be schema projections (time.Time)")
 	}
 
 	// ── 4. compiles ───────────────────────────────────────────────────
@@ -1839,7 +1834,61 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 		t.Logf("executed CRUD lifecycle passed:\n%s", out)
 	}
 
-	// ── 6. boots WITH a database: the Tier-1 bootstrap constructs the
+	// ── 6. second entity through the FULL add-entity surface ─────────
+	// bookmark exercises: proto injection (CRUD messages + RPCs into the
+	// service proto), a repeated []string column (native TEXT[] in the
+	// migration, JSON text on the sqlite test DB), soft delete.
+	runCmd(t, projectDir, forgeBin, "add", "entity", "bookmark",
+		"url:string", "title:string", "tags:[]string", "done:bool", "--soft-delete")
+	itemProto := readFileE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"))
+	if !strings.Contains(itemProto, "rpc CreateBookmark(CreateBookmarkRequest)") {
+		t.Fatalf("add entity did not scaffold the Bookmark CRUD RPCs into the service proto")
+	}
+	if strings.Contains(itemProto, "forge.v1.entity") {
+		t.Errorf("add entity emitted a forge.v1.entity annotation — entity protos are dead, SQL is the schema")
+	}
+	bookmarkMig := readFileE2E(t, filepath.Join(projectDir, "db", "migrations", "00002_create_bookmarks.up.sql"))
+	if !strings.Contains(bookmarkMig, "tags TEXT[] NOT NULL DEFAULT '{}'") {
+		t.Errorf("bookmark migration lacks the native array column; got:\n%s", bookmarkMig)
+	}
+	runCmd(t, projectDir, forgeBin, "generate")
+	runCmd(t, projectDir, "go", "build", "./...")
+
+	writeCorpusFile(t, filepath.Join(handlerDir, "bookmark_lifecycle_corpus_test.go"), bookmarkLifecycleProbeSrc)
+	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusBookmarkLifecycle", "-v", "./handlers/item/")
+	if err != nil {
+		t.Errorf("EXECUTED bookmark (repeated-field + soft-delete) lifecycle failed:\n%s", out)
+	} else {
+		t.Logf("executed bookmark lifecycle passed:\n%s", out)
+	}
+
+	// ── 7. the schema EVOLVES by hand and the ORM follows ────────────
+	// Add a column + move data (split url into a derived column) in a
+	// hand-written migration — no proto change anywhere — and re-run
+	// generate. The projection must pick up the new column end to end:
+	// struct field, column allowlist (order_by=domain accepted via the
+	// real RPC), scan/insert.
+	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.up.sql"), `
+ALTER TABLE bookmarks ADD COLUMN domain TEXT NOT NULL DEFAULT '';
+UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
+`)
+	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.down.sql"),
+		"ALTER TABLE bookmarks DROP COLUMN domain;\n")
+	runCmd(t, projectDir, forgeBin, "generate")
+	bookmarkORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "bookmark_orm.go"))
+	if !strings.Contains(bookmarkORM, "Domain string") {
+		t.Errorf("hand-written migration added `domain` but the regenerated entity struct doesn't carry it — the ORM is not following the applied schema")
+	}
+	runCmd(t, projectDir, "go", "build", "./...")
+	writeCorpusFile(t, filepath.Join(handlerDir, "bookmark_evolve_corpus_test.go"), bookmarkEvolveProbeSrc)
+	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusBookmarkEvolved", "-v", "./handlers/item/")
+	if err != nil {
+		t.Errorf("EXECUTED schema-evolution lifecycle failed:\n%s", out)
+	} else {
+		t.Logf("executed schema-evolution lifecycle passed:\n%s", out)
+	}
+
+	// ── 8. boots WITH a database: the Tier-1 bootstrap constructs the
 	// DB + ORM pair from cfg.DatabaseUrl (ensureDatabase). Previously
 	// NOTHING constructed app.ORM for a project that grew its first
 	// entity post-scaffold (setup.go is scaffold-once and was rendered
@@ -1849,7 +1898,7 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	bootHealthzAndShutdown(t, projectDir,
 		"DATABASE_URL=file:"+filepath.Join(t.TempDir(), "corpus-boot.db"))
 
-	// ── 7. and WITHOUT a database it fails AT BOOT, loudly ───────────
+	// ── 9. and WITHOUT a database it fails AT BOOT, loudly ───────────
 	// validateDeps (not the first RPC) is the gate: wire_gen passes a
 	// true nil orm.Context via app.ORMContext(), the injected
 	// `Deps.DB is required` check rejects it, and the process exits
@@ -1917,6 +1966,156 @@ func replaceAllInCorpusFile(t *testing.T, path, old, new string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+// bookmarkLifecycleProbeSrc exercises the second entity born through
+// the FULL `forge add entity` surface: repeated-field round trip
+// (tags []string — native TEXT[] on postgres, JSON text on the sqlite
+// test DB) and the soft-delete conventions read off the deleted_at
+// column (delete is an UPDATE; reads filter; ListAll sees the corpse).
+const bookmarkLifecycleProbeSrc = `package item_test
+
+import (
+	"testing"
+
+	"connectrpc.com/connect"
+
+	pb "example.com/crudlife/gen/services/item/v1"
+	"example.com/crudlife/internal/db"
+	"example.com/crudlife/pkg/app"
+)
+
+func TestCorpusBookmarkLifecycle(t *testing.T) {
+	dbc := corpusMigratedDB(t)
+	svc := app.NewTestItem(t, app.WithDB(dbc))
+	ctx := authedCtx()
+
+	// ── repeated-field round trip through the real RPC stack ─────────
+	// The embedded comma is load-bearing: values must come back EXACTLY,
+	// not flattened into a comma-joined string (the old non-compiling-ORM
+	// bug's sibling failure mode).
+	tags := []string{"go", "sql", "comma,inside"}
+	cr, err := svc.CreateBookmark(ctx, connect.NewRequest(&pb.CreateBookmarkRequest{
+		Url: "https://example.com/a", Title: "alpha", Tags: tags,
+	}))
+	if err != nil {
+		t.Fatalf("create bookmark: %v", err)
+	}
+	id := cr.Msg.GetBookmark().GetId()
+	if id == "" {
+		t.Fatal("create returned empty id")
+	}
+	if got := cr.Msg.GetBookmark().GetTags(); len(got) != 3 {
+		t.Errorf("create response tags = %v, want %v", got, tags)
+	}
+	gr, err := svc.GetBookmark(ctx, connect.NewRequest(&pb.GetBookmarkRequest{Id: id}))
+	if err != nil {
+		t.Fatalf("get bookmark: %v", err)
+	}
+	got := gr.Msg.GetBookmark().GetTags()
+	if len(got) != len(tags) {
+		t.Fatalf("repeated field did not round-trip: got %v want %v", got, tags)
+	}
+	for i := range tags {
+		if got[i] != tags[i] {
+			t.Errorf("tags[%d] = %q, want %q", i, got[i], tags[i])
+		}
+	}
+	if gr.Msg.GetBookmark().GetCreatedAt() == nil {
+		t.Error("created_at nil — managed-timestamp convention (created_at+updated_at columns) not honored")
+	}
+
+	// ── update mutates the repeated field ─────────────────────────────
+	upd := gr.Msg.GetBookmark()
+	upd.Tags = []string{"only-one"}
+	if _, err := svc.UpdateBookmark(ctx, connect.NewRequest(&pb.UpdateBookmarkRequest{Bookmark: upd})); err != nil {
+		t.Fatalf("update bookmark: %v", err)
+	}
+	gr2, err := svc.GetBookmark(ctx, connect.NewRequest(&pb.GetBookmarkRequest{Id: id}))
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if g := gr2.Msg.GetBookmark().GetTags(); len(g) != 1 || g[0] != "only-one" {
+		t.Errorf("update did not mutate tags: %v", g)
+	}
+
+	// ── soft delete: UPDATE-not-DELETE, reads filter, ListAll sees ────
+	if _, err := svc.DeleteBookmark(ctx, connect.NewRequest(&pb.DeleteBookmarkRequest{Id: id})); err != nil {
+		t.Fatalf("delete bookmark: %v", err)
+	}
+	if _, err := svc.GetBookmark(ctx, connect.NewRequest(&pb.GetBookmarkRequest{Id: id})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Errorf("get after soft delete: err = %v, want NotFound", err)
+	}
+	lr, err := svc.ListBookmarks(ctx, connect.NewRequest(&pb.ListBookmarksRequest{PageSize: 10}))
+	if err != nil {
+		t.Fatalf("list after delete: %v", err)
+	}
+	if n := len(lr.Msg.GetBookmarks()); n != 0 {
+		t.Errorf("list after soft delete: %d rows, want 0", n)
+	}
+	// ListAll bypasses ONLY the soft-delete filter: the corpse is
+	// visible with deleted_at set — delete was an UPDATE, not a DELETE.
+	all, err := db.ListAllBookmark(ctx, dbc)
+	if err != nil {
+		t.Fatalf("ListAllBookmark: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("ListAll after soft delete: %d rows, want 1 (the soft-deleted row)", len(all))
+	}
+	if all[0].DeletedAt == nil {
+		t.Error("soft-deleted row has nil deleted_at — delete did not stamp the column")
+	}
+}
+`
+
+// bookmarkEvolveProbeSrc runs AFTER the hand-written migration ladder
+// (add column + data movement) and `forge generate`: the ORM followed
+// the applied schema, so the new `domain` column is a declared column —
+// order_by=domain is accepted by the real RPC, and the struct carries
+// the field (compile-time proof via direct ORM use).
+const bookmarkEvolveProbeSrc = `package item_test
+
+import (
+	"testing"
+
+	"connectrpc.com/connect"
+
+	pb "example.com/crudlife/gen/services/item/v1"
+	"example.com/crudlife/internal/db"
+	"example.com/crudlife/pkg/app"
+)
+
+func TestCorpusBookmarkEvolved(t *testing.T) {
+	dbc := corpusMigratedDB(t)
+	svc := app.NewTestItem(t, app.WithDB(dbc))
+	ctx := authedCtx()
+
+	cr, err := svc.CreateBookmark(ctx, connect.NewRequest(&pb.CreateBookmarkRequest{
+		Url: "https://example.com/b", Title: "beta",
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The new column is a first-class struct field (schema projection).
+	row, err := db.GetBookmarkByID(ctx, dbc, cr.Msg.GetBookmark().GetId())
+	if err != nil {
+		t.Fatalf("orm get: %v", err)
+	}
+	if row.Domain != "" {
+		t.Logf("domain = %q (DEFAULT '' for new rows is fine)", row.Domain)
+	}
+
+	// order_by on the migration-added column must be ACCEPTED — the
+	// column allowlist is regenerated from the applied schema.
+	if _, err := svc.ListBookmarks(ctx, connect.NewRequest(&pb.ListBookmarksRequest{PageSize: 10, OrderBy: "domain"})); err != nil {
+		t.Errorf("order_by=domain (a column added by hand-written migration) rejected: %v — the ORM did not follow the applied schema", err)
+	}
+	// ...and a phantom column must still be REJECTED.
+	if _, err := svc.ListBookmarks(ctx, connect.NewRequest(&pb.ListBookmarksRequest{PageSize: 10, OrderBy: "phantom"})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("order_by=phantom: err = %v, want InvalidArgument", err)
+	}
+}
+`
 
 // ── small file/exec utilities (corpus-local; no t.Fatal-free variants
 // exist in the sibling e2e files) ──────────────────────────────────────

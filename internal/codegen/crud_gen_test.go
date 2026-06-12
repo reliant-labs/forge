@@ -1301,12 +1301,23 @@ func TestBuildCRUDTemplateData_WithFilters(t *testing.T) {
 	crudMethods := []CRUDMethod{
 		{
 			Method: MethodTemplateData{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
-			Entity: EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Fields: []EntityField{
-				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-				{Name: "status", GoName: "Status", ProtoType: "string", GoType: "string"},
-				{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
-			}},
+			Entity: EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
+				Fields: []EntityField{
+					{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
+					{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+					{Name: "status", GoName: "Status", ProtoType: "string", GoType: "string"},
+					{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
+				},
+				// Filter validation runs against the introspected applied
+				// schema (Columns), and search filters span SearchColumns.
+				Columns: []EntityColumn{
+					{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+					{Name: "name", Type: "string", NotNull: true},
+					{Name: "status", Type: "string", NotNull: true},
+					{Name: "active", Type: "bool", NotNull: true},
+				},
+				SearchColumns: []string{"name", "status"},
+			},
 			Operation: "list",
 		},
 	}
@@ -1363,7 +1374,7 @@ func TestBuildCRUDTemplateData_WithFilters(t *testing.T) {
 		}
 	}
 
-	// The search filter spans the entity's non-PK string columns; it never
+	// The search filter spans the entity's declared SearchColumns; it never
 	// maps to a column of its own.
 	search := m.FilterFields[1]
 	if len(search.SearchColumns) != 2 || search.SearchColumns[0] != "name" || search.SearchColumns[1] != "status" {
@@ -1396,10 +1407,19 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 				},
 			},
 		}
-		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Fields: []EntityField{
-			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
-		}}
+		// The applied schema HAS columns — just not favorite_color. The
+		// error must be about that specific filter field.
+		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
+			},
+			Columns: []EntityColumn{
+				{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+				{Name: "name", Type: "string", NotNull: true},
+			},
+			SearchColumns: []string{"name"},
+		}
 		_, err := buildCRUDTemplateData(svc, listMethod(entity), "example.com/test")
 		if err == nil {
 			t.Fatal("expected error for exact filter naming no declared column")
@@ -1420,10 +1440,18 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 				},
 			},
 		}
-		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64", Fields: []EntityField{
-			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
-			{Name: "age", GoName: "Age", ProtoType: "int32", GoType: "int32"},
-		}}
+		// No text columns in the applied schema → empty SearchColumns → a
+		// search filter has nothing to span and must fail the generate.
+		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
+				{Name: "age", GoName: "Age", ProtoType: "int32", GoType: "int32"},
+			},
+			Columns: []EntityColumn{
+				{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+				{Name: "age", Type: "int64", NotNull: true},
+			},
+		}
 		_, err := buildCRUDTemplateData(svc, listMethod(entity), "example.com/test")
 		if err == nil {
 			t.Fatal("expected error for search filter on an entity with no string columns")
@@ -1485,6 +1513,13 @@ type Service struct {
 			{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string"},
 			{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
 		},
+		// Filter validation runs against the introspected applied schema.
+		Columns: []EntityColumn{
+			{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+			{Name: "name", Type: "string", NotNull: true},
+			{Name: "active", Type: "bool", NotNull: true},
+		},
+		SearchColumns: []string{"name"},
 	}}
 
 	crudMethods := MatchCRUDMethods(svc, entities)
@@ -1514,6 +1549,23 @@ type Service struct {
 	}
 	if !contains(content, "Columns:       db.PatientColumns") {
 		t.Error("expected Columns: db.PatientColumns allowlist in ListOp literal")
+	}
+
+	// Per-entity conversion pair: the ops file carries patientToProto /
+	// patientFromProto built from the wire-field x column intersection, and
+	// the Pack seam calls it — no type-alias passthrough.
+	if !contains(content, "func patientToProto(e *db.Patient) *pb.Patient {") {
+		t.Error("expected patientToProto conversion function in ops file")
+	}
+	if !contains(content, "func patientFromProto(m *pb.Patient) *db.Patient {") {
+		t.Error("expected patientFromProto conversion function in ops file")
+	}
+	if !contains(content, "out = append(out, patientToProto(it))") {
+		t.Error("expected list Pack to convert rows via patientToProto")
+	}
+	// No timestamp columns on this entity → no timestamppb import.
+	if contains(content, "timestamppb") {
+		t.Error("ops file must not import timestamppb when no conversion needs it")
 	}
 
 	// Should contain orm import
@@ -2341,5 +2393,171 @@ func TestWarnCustomReadShapeStubs_IsLoud(t *testing.T) {
 	}
 	if strings.Contains(s, "CreateTrade") {
 		t.Errorf("wired RPCs must not be warned about, got:\n%s", s)
+	}
+}
+
+// TestBuildEntityConv pins the per-entity proto<->struct conversion pair:
+// entity structs are projections of the APPLIED schema (time.Time,
+// pointers for nullable columns, native slices), wire messages are the
+// proto truth (timestamppb, repeated fields), and BuildEntityConv maps
+// the intersection of wire fields and columns by name. Wire-only fields
+// never reach the database; column-only fields never leak onto the wire.
+func TestBuildEntityConv(t *testing.T) {
+	entity := EntityDef{
+		Name: "Patient",
+		Fields: []EntityField{
+			{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "nickname", GoName: "Nickname", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			{Name: "created_at", GoName: "CreatedAt", ProtoType: "message", MessageType: "google.protobuf.Timestamp", GoType: "*timestamppb.Timestamp", Kind: FieldKindTimestamp},
+			{Name: "tags", GoName: "Tags", ProtoType: "string", GoType: "[]string", Kind: FieldKindRepeatedScalar},
+			{Name: "display", GoName: "Display", ProtoType: "string", GoType: "string", Kind: FieldKindScalar}, // wire-only
+		},
+		Columns: []EntityColumn{
+			{Name: "id", Type: "string", NotNull: true, IsPK: true},
+			{Name: "nickname", Type: "string"}, // nullable → *string struct field
+			{Name: "created_at", Type: "time", NotNull: true},
+			{Name: "tags", Type: "string", IsArray: true, NotNull: true},
+			{Name: "internal_notes", Type: "string"}, // column-only: never on the wire
+		},
+	}
+
+	conv := BuildEntityConv(ServiceDef{}, entity)
+	if conv.EntityName != "Patient" || conv.EntityLower != "patient" {
+		t.Errorf("conv names = %q/%q, want Patient/patient", conv.EntityName, conv.EntityLower)
+	}
+
+	toProto := strings.Join(conv.ToProtoAssigns, "\n")
+	fromProto := strings.Join(conv.FromProtoAssigns, "\n")
+
+	// Plain NOT NULL scalar: direct assignment both ways.
+	if !strings.Contains(toProto, "m.Id = e.Id") {
+		t.Error("missing direct toProto assignment for id")
+	}
+	if !strings.Contains(fromProto, "e.Id = m.Id") {
+		t.Error("missing direct fromProto assignment for id")
+	}
+
+	// Nullable column is a pointer struct field: deref on the way out,
+	// pointer-wrap on the way in.
+	if !strings.Contains(toProto, "if e.Nickname != nil {") || !strings.Contains(toProto, "m.Nickname = *e.Nickname") {
+		t.Errorf("nullable column should deref the pointer field toProto; got:\n%s", toProto)
+	}
+	if !strings.Contains(fromProto, "v := m.Nickname") || !strings.Contains(fromProto, "e.Nickname = &v") {
+		t.Errorf("nullable column should pointer-wrap fromProto; got:\n%s", fromProto)
+	}
+
+	// time column <-> timestamppb wire field: the conversion is the ONLY
+	// place timestamppb appears (the struct field is time.Time).
+	if !strings.Contains(toProto, "if !e.CreatedAt.IsZero() {") || !strings.Contains(toProto, "m.CreatedAt = timestamppb.New(e.CreatedAt)") {
+		t.Errorf("NOT NULL time column should convert via timestamppb.New under an IsZero guard; got:\n%s", toProto)
+	}
+	if !strings.Contains(fromProto, "if m.CreatedAt != nil {") || !strings.Contains(fromProto, "e.CreatedAt = m.CreatedAt.AsTime()") {
+		t.Errorf("timestamp wire field should convert via AsTime under a nil guard; got:\n%s", fromProto)
+	}
+
+	// Array column: copied as a native slice both ways.
+	if !strings.Contains(toProto, "m.Tags = append([]string(nil), e.Tags...)") {
+		t.Errorf("array column should copy as a native slice toProto; got:\n%s", toProto)
+	}
+	if !strings.Contains(fromProto, "e.Tags = append([]string(nil), m.Tags...)") {
+		t.Errorf("array column should copy as a native slice fromProto; got:\n%s", fromProto)
+	}
+
+	// Wire-only field: documented and dropped, never assigned.
+	if !strings.Contains(toProto, `// Display: wire-only field (no "display" column in the applied schema)`) {
+		t.Errorf("wire-only field should be dropped with an explanatory comment; got:\n%s", toProto)
+	}
+	if strings.Contains(fromProto, "e.Display") {
+		t.Error("wire-only field must never be assigned onto the entity struct")
+	}
+
+	// Column-only field: never appears on the wire.
+	if strings.Contains(toProto, "InternalNotes") || strings.Contains(fromProto, "InternalNotes") {
+		t.Error("column-only field must never appear in conversions")
+	}
+
+	// Timestamp conversions gate the timestamppb import.
+	if !ConvNeedsTimestamppb([]EntityConvTemplateData{conv}) {
+		t.Error("ConvNeedsTimestamppb should be true when a conversion uses timestamppb")
+	}
+	plain := BuildEntityConv(ServiceDef{}, EntityDef{
+		Name:    "Tag",
+		Fields:  []EntityField{{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar}},
+		Columns: []EntityColumn{{Name: "id", Type: "string", NotNull: true, IsPK: true}},
+	})
+	if ConvNeedsTimestamppb([]EntityConvTemplateData{plain}) {
+		t.Error("ConvNeedsTimestamppb should be false without timestamp conversions")
+	}
+}
+
+// TestBuildCRUDTemplateData_CreateAssigns pins the replacement for the
+// retired CreateFieldData/CreateFields shape: create-request fields are
+// precomputed into CreateAssigns statements that map request fields onto
+// the entity struct by column name, with request-only fields dropped
+// loudly (a comment in the generated code) rather than silently.
+func TestBuildCRUDTemplateData_CreateAssigns(t *testing.T) {
+	svc := ServiceDef{
+		Name: "PatientsService",
+		Messages: map[string][]MessageFieldDef{
+			"CreatePatientRequest": {
+				{Name: "name", ProtoType: "string"},
+				{Name: "nickname", ProtoType: "string", IsOptional: true},
+				{Name: "favorite_color", ProtoType: "string"}, // request-only
+			},
+			"CreatePatientResponse": {
+				{Name: "patient", ProtoType: "message", MessageType: "Patient"},
+			},
+		},
+	}
+	crudMethods := []CRUDMethod{{
+		Method: MethodTemplateData{Name: "CreatePatient", InputType: "CreatePatientRequest", OutputType: "CreatePatientResponse"},
+		Entity: EntityDef{Name: "Patient", PkField: "id", PkGoType: "string",
+			Fields: []EntityField{
+				{Name: "id", GoName: "Id", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "nickname", GoName: "Nickname", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+			},
+			Columns: []EntityColumn{
+				{Name: "id", Type: "string", NotNull: true, IsPK: true},
+				{Name: "name", Type: "string", NotNull: true},
+				{Name: "nickname", Type: "string"}, // nullable
+			},
+		},
+		Operation: "create",
+	}}
+
+	data, err := buildCRUDTemplateData(svc, crudMethods, "example.com/test")
+	if err != nil {
+		t.Fatalf("buildCRUDTemplateData() error = %v", err)
+	}
+	if len(data.CRUDMethods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(data.CRUDMethods))
+	}
+	assigns := strings.Join(data.CRUDMethods[0].CreateAssigns, "\n")
+
+	// NOT NULL string column ← plain request field.
+	if !strings.Contains(assigns, "e.Name = req.Name") {
+		t.Errorf("missing direct create assign for name; got:\n%s", assigns)
+	}
+	// proto3 optional scalar surfaces as a pointer on the request and the
+	// nullable column is a pointer struct field: nil-guarded copy.
+	if !strings.Contains(assigns, "if req.Nickname != nil {") {
+		t.Errorf("optional request field should be nil-guarded; got:\n%s", assigns)
+	}
+	// Request-only field: dropped with an explanatory comment.
+	if !strings.Contains(assigns, `// FavoriteColor: request-only field (no "favorite_color" column in the applied schema)`) {
+		t.Errorf("request-only field should be dropped with a comment; got:\n%s", assigns)
+	}
+	if strings.Contains(assigns, "e.FavoriteColor =") {
+		t.Error("request-only field must never be assigned onto the entity struct")
+	}
+
+	// The conversion pair rides along for the entity, and nothing here
+	// needs timestamppb.
+	if len(data.Entities) != 1 || data.Entities[0].EntityName != "Patient" {
+		t.Fatalf("expected the Patient conversion pair in Entities, got %+v", data.Entities)
+	}
+	if data.NeedsTimestamppb {
+		t.Error("NeedsTimestamppb should be false without timestamp conversions")
 	}
 }

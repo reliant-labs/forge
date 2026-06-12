@@ -71,15 +71,26 @@ type ormField struct {
 	planField   config.PlanEntityField
 	goName      string // PascalCase Go field name (proto-style)
 	columnName  string // snake_case column name
-	goType      string // Go type for Values/Scan
+	goType      string // base Go type (notnull variant), e.g. "time.Time"
 	ormType     string // orm.TypeXxx constant name
 	isTimestamp bool
+	isArray     bool
 	isPK        bool
 	isTenantKey bool
 	notNull     bool
 	unique      bool
 	references  string
-	nullable    bool // should scan as pointer
+	nullable    bool // nullable column → pointer struct field
+}
+
+// structGoType is the Go type of the field on the generated entity
+// struct: the base type, pointered when the column is nullable
+// (arrays/bytes are reference types already and stay bare).
+func (f ormField) structGoType() string {
+	if f.nullable && !f.isArray && f.goType != "[]byte" {
+		return "*" + f.goType
+	}
+	return f.goType
 }
 
 func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
@@ -129,6 +140,9 @@ func writeORMEntity(dbDir, _, _ string, ent config.PlanEntity) error {
 	// Imports
 	writeORMImports(&b, hasTimestamp, pkField != nil && pkField.goType == "string")
 
+	// The entity struct: a projection of the APPLIED schema.
+	writeEntityStruct(&b, msgName, tableName, fields)
+
 	// Field name constants
 	fmt.Fprintf(&b, "// Field name constants for %s.\n", msgName)
 	fmt.Fprintf(&b, "const %sTableName = %q\n\n", msgName, tableName)
@@ -176,6 +190,9 @@ func writeORMImports(b *strings.Builder, hasTimestamp, stringPK bool) {
 	b.WriteString("\t\"context\"\n")
 	b.WriteString("\t\"fmt\"\n")
 	b.WriteString("\t\"strings\"\n")
+	if hasTimestamp {
+		b.WriteString("\t\"time\"\n")
+	}
 	b.WriteString("\n")
 	if stringPK {
 		// String PKs are generated at the Create chokepoint.
@@ -185,22 +202,40 @@ func writeORMImports(b *strings.Builder, hasTimestamp, stringPK bool) {
 	b.WriteString("\t\"go.opentelemetry.io/otel/attribute\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/codes\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/trace\"\n")
-	if hasTimestamp {
-		b.WriteString("\t\"google.golang.org/protobuf/types/known/timestamppb\"\n")
-	}
 	b.WriteString(")\n\n")
 }
 
+// writeEntityStruct emits the entity row type. Field types come from
+// the APPLIED schema's columns: time.Time for timestamps (never
+// timestamppb — the wire seam converts), pointers for nullable
+// columns, native slices for array columns.
+func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []ormField) {
+	fmt.Fprintf(b, "// %s is the %s row type — a projection of the APPLIED schema\n", msgName, tableName)
+	b.WriteString("// (db/migrations). Evolve it by writing migrations; `forge generate`\n")
+	b.WriteString("// regenerates this struct from the introspected schema.\n")
+	fmt.Fprintf(b, "type %s struct {\n", msgName)
+	for _, f := range fields {
+		fmt.Fprintf(b, "\t%s %s\n", f.goName, f.structGoType())
+	}
+	b.WriteString("}\n\n")
+}
+
 // writeORMScanFunc writes a standalone scan<Entity> function.
+//
+// Time columns scan through orm.NullTime (drivers without parsetime
+// return TEXT timestamps); array columns scan through the dual-format
+// orm.StringArray/Int64Array scanners. Everything else — including
+// nullable pointer fields — scans directly into the struct field.
 func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) {
 	fmt.Fprintf(b, "// scan%s scans a database row into a %s.\n", msgName, msgName)
 	fmt.Fprintf(b, "func scan%s(scanner interface{ Scan(...interface{}) error }) (*%s, error) {\n", msgName, msgName)
 	fmt.Fprintf(b, "\tentity := &%s{}\n", msgName)
 
-	// Declare temp variables for timestamps and nullable fields.
+	needsTemp := func(f ormField) bool { return f.isTimestamp || f.isArray }
+
 	hasTemps := false
 	for _, f := range fields {
-		if f.isTimestamp || f.nullable {
+		if needsTemp(f) {
 			hasTemps = true
 			break
 		}
@@ -208,10 +243,11 @@ func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) 
 	if hasTemps {
 		b.WriteString("\tvar (\n")
 		for _, f := range fields {
-			if f.isTimestamp {
+			switch {
+			case f.isTimestamp:
 				fmt.Fprintf(b, "\t\tdb%s orm.NullTime\n", f.goName)
-			} else if f.nullable {
-				fmt.Fprintf(b, "\t\tdb%s *%s\n", f.goName, f.goType)
+			case f.isArray:
+				fmt.Fprintf(b, "\t\tdb%s %s\n", f.goName, arrayScannerType(f))
 			}
 		}
 		b.WriteString("\t)\n\n")
@@ -220,9 +256,7 @@ func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) 
 	// Scan call
 	b.WriteString("\terr := scanner.Scan(\n")
 	for _, f := range fields {
-		if f.isTimestamp {
-			fmt.Fprintf(b, "\t\t&db%s,\n", f.goName)
-		} else if f.nullable {
+		if needsTemp(f) {
 			fmt.Fprintf(b, "\t\t&db%s,\n", f.goName)
 		} else {
 			fmt.Fprintf(b, "\t\t&entity.%s,\n", f.goName)
@@ -233,21 +267,40 @@ func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) 
 	b.WriteString("\t\treturn nil, err\n")
 	b.WriteString("\t}\n\n")
 
-	// Assignment for timestamps and nullable fields
+	// Assignments from temps.
 	for _, f := range fields {
-		if f.isTimestamp {
+		switch {
+		case f.isTimestamp && f.nullable:
 			fmt.Fprintf(b, "\tif db%s.Valid {\n", f.goName)
-			fmt.Fprintf(b, "\t\tentity.%s = timestamppb.New(db%s.Time)\n", f.goName, f.goName)
+			fmt.Fprintf(b, "\t\tt%s := db%s.Time\n", f.goName, f.goName)
+			fmt.Fprintf(b, "\t\tentity.%s = &t%s\n", f.goName, f.goName)
 			b.WriteString("\t}\n")
-		} else if f.nullable {
-			fmt.Fprintf(b, "\tif db%s != nil {\n", f.goName)
-			fmt.Fprintf(b, "\t\tentity.%s = *db%s\n", f.goName, f.goName)
-			b.WriteString("\t}\n")
+		case f.isTimestamp:
+			fmt.Fprintf(b, "\tentity.%s = db%s.Time\n", f.goName, f.goName)
+		case f.isArray:
+			fmt.Fprintf(b, "\tentity.%s = %s(db%s)\n", f.goName, f.goType, f.goName)
 		}
 	}
 
 	b.WriteString("\n\treturn entity, nil\n")
 	b.WriteString("}\n\n")
+}
+
+// arrayScannerType returns the orm scanner type for an array field.
+func arrayScannerType(f ormField) string {
+	if f.goType == "[]int64" {
+		return "orm.Int64Array"
+	}
+	return "orm.StringArray"
+}
+
+// valueExpr returns the expression used for a field in INSERT/UPDATE
+// parameter lists. Arrays go through the dialect-aware encoder.
+func valueExpr(f ormField) string {
+	if f.isArray {
+		return fmt.Sprintf("orm.ArrayValue(dialect, msg.%s)", f.goName)
+	}
+	return "msg." + f.goName
 }
 
 func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField, timestamps bool) {
@@ -307,12 +360,7 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 	// Build values slice
 	b.WriteString("\tvalues := []any{\n")
 	for _, f := range fields {
-		accessor := "msg." + f.goName
-		if f.isTimestamp {
-			fmt.Fprintf(b, "\t\tfunc() any { if %s != nil { return %s.AsTime() }; return nil }(),\n", accessor, accessor)
-		} else {
-			fmt.Fprintf(b, "\t\t%s,\n", accessor)
-		}
+		fmt.Fprintf(b, "\t\t%s,\n", valueExpr(f))
 	}
 	b.WriteString("\t}\n\n")
 
@@ -349,9 +397,9 @@ func writeManagedCreateTimestamps(b *strings.Builder, fields []ormField) {
 	if createdAt == "" && updatedAt == "" {
 		return
 	}
-	b.WriteString("\tnow := timestamppb.Now()\n")
+	b.WriteString("\tnow := time.Now().UTC()\n")
 	if createdAt != "" {
-		fmt.Fprintf(b, "\tif msg.%s == nil {\n", createdAt)
+		fmt.Fprintf(b, "\tif msg.%s.IsZero() {\n", createdAt)
 		fmt.Fprintf(b, "\t\tmsg.%s = now\n", createdAt)
 		b.WriteString("\t}\n")
 	}
@@ -600,7 +648,7 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 	if timestamps {
 		for _, f := range fields {
 			if f.columnName == "updated_at" {
-				fmt.Fprintf(b, "\tmsg.%s = timestamppb.Now()\n\n", f.goName)
+				fmt.Fprintf(b, "\tmsg.%s = time.Now().UTC()\n\n", f.goName)
 				break
 			}
 		}
@@ -630,12 +678,7 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 	// Build values for SET clause
 	b.WriteString("\targs := []any{\n")
 	for _, sc := range setCols {
-		accessor := "msg." + sc.field.goName
-		if sc.field.isTimestamp {
-			fmt.Fprintf(b, "\t\tfunc() any { if %s != nil { return %s.AsTime() }; return nil }(),\n", accessor, accessor)
-		} else {
-			fmt.Fprintf(b, "\t\t%s,\n", accessor)
-		}
+		fmt.Fprintf(b, "\t\t%s,\n", valueExpr(sc.field))
 	}
 	b.WriteString("\t}\n\n")
 
@@ -845,43 +888,49 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			columnName:  e.Name,
 			goType:      planFieldGoType(e.Type),
 			ormType:     planFieldOrmType(e.Type),
-			isTimestamp: e.Type == "google.protobuf.Timestamp" || e.Type == "timestamp",
+			isTimestamp: isTimePlanType(e.Type),
+			isArray:     strings.HasPrefix(e.Type, "[]"),
 			isPK:        e.PrimaryKey,
 			isTenantKey: e.TenantKey,
 			notNull:     e.NotNull,
 			unique:      e.Unique,
 			references:  e.References,
 		}
-		// Nullable when: not PK, not notNull, not a timestamp, and is a nullable-capable type.
-		f.nullable = !f.isPK && !f.notNull && !f.isTimestamp && isNullablePlanType(e.Type)
+		// Nullable column → pointer struct field. Arrays and bytes are
+		// reference types already (NULL scans to nil).
+		f.nullable = !f.isPK && !f.notNull && isNullablePlanType(e.Type)
 		fields = append(fields, f)
 	}
 	return fields
 }
 
-// planFieldGoType maps a PlanEntityField.Type to the Go type used in Values/Scan.
-func planFieldGoType(t string) string {
-	// Handle repeated types → pq arrays (e.g. "repeated string" → "pq.StringArray")
-	if base, ok := strings.CutPrefix(t, "repeated "); ok {
-		switch base {
-		case "string":
-			return "pq.StringArray"
-		case "int32", "int64":
-			return "pq.Int64Array"
-		case "bool":
-			return "pq.BoolArray"
-		case "float", "float32", "double", "float64":
-			return "pq.Float64Array"
-		default:
-			return "pq.StringArray"
-		}
-	}
+// isTimePlanType reports whether the plan type is a timestamp column.
+func isTimePlanType(t string) bool {
 	switch t {
-	case "string":
+	case "time", "google.protobuf.Timestamp", "timestamp":
+		return true
+	}
+	return false
+}
+
+// planFieldGoType maps a PlanEntityField.Type to the base Go type used
+// on the entity struct (and in Values/Scan).
+//
+// The vocabulary is the canonical schema vocabulary (see
+// internal/schemadef.MapDeclaredType): string, int64, float64, bool,
+// time, json, bytes, []string, []int64. Legacy proto-type aliases stay
+// mapped during the transition.
+func planFieldGoType(t string) string {
+	switch t {
+	case "[]string":
+		return "[]string"
+	case "[]int64", "[]int", "[]int32":
+		return "[]int64"
+	case "string", "json":
 		return "string"
 	case "int32":
 		return "int32"
-	case "int64":
+	case "int64", "int":
 		return "int64"
 	case "uint32":
 		return "uint32"
@@ -895,8 +944,8 @@ func planFieldGoType(t string) string {
 		return "float64"
 	case "bytes":
 		return "[]byte"
-	case "google.protobuf.Timestamp", "timestamp":
-		return "*timestamppb.Timestamp"
+	case "time", "google.protobuf.Timestamp", "timestamp":
+		return "time.Time"
 	default:
 		return "string"
 	}
@@ -905,22 +954,19 @@ func planFieldGoType(t string) string {
 // planFieldOrmType maps a PlanEntityField.Type to the orm.TypeXxx constant string
 // used in generated Schema() code.
 func planFieldOrmType(t string) string {
-	// Repeated types use JSONB for ORM schema (works for both Postgres and SQLite)
-	if strings.HasPrefix(t, "repeated ") {
+	if strings.HasPrefix(t, "[]") {
 		return "orm.TypeJSONB"
 	}
 	switch t {
 	case "string":
 		return "orm.TypeText"
+	case "json":
+		return "orm.TypeJSONB"
 	case "bool":
 		return "orm.TypeBoolean"
-	case "int32":
+	case "int32", "uint32":
 		return "orm.TypeInteger"
-	case "int64":
-		return "orm.TypeBigInt"
-	case "uint32":
-		return "orm.TypeInteger"
-	case "uint64":
+	case "int64", "int", "uint64":
 		return "orm.TypeBigInt"
 	case "float", "float32":
 		return "orm.TypeReal"
@@ -928,22 +974,24 @@ func planFieldOrmType(t string) string {
 		return "orm.TypeDoublePrecision"
 	case "bytes":
 		return "orm.TypeBytea"
-	case "google.protobuf.Timestamp", "timestamp":
+	case "time", "google.protobuf.Timestamp", "timestamp":
 		return "orm.TypeTimestampTZ"
 	default:
 		return "orm.TypeText"
 	}
 }
 
-// isNullablePlanType returns true if the plan field type is a Go type that
-// should be scanned as a pointer when the column is nullable.
+// isNullablePlanType returns true when a nullable column of this type
+// becomes a pointer field on the entity struct.
 func isNullablePlanType(t string) bool {
-	// Repeated types are already reference types (pq.StringArray etc.), not nullable.
-	if strings.HasPrefix(t, "repeated ") {
+	if strings.HasPrefix(t, "[]") || t == "bytes" {
+		// Reference types: NULL scans to nil without a pointer.
 		return false
 	}
 	switch t {
-	case "string", "int32", "int64", "uint32", "uint64", "bool", "float", "float32", "double", "float64":
+	case "string", "json", "int32", "int64", "int", "uint32", "uint64", "bool",
+		"float", "float32", "double", "float64",
+		"time", "google.protobuf.Timestamp", "timestamp":
 		return true
 	default:
 		return false

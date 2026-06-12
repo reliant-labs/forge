@@ -21,49 +21,48 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		binaryYAML = config.ProjectBinaryShared
 	}
 
-	// `kind:` is only written for the non-default kinds — absent means
-	// "service" via EffectiveProjectKind, same as before.
-	kindYAML := ""
-	if g.effectiveKind() != config.ProjectKindService {
-		kindYAML = g.effectiveKind()
-	}
+	// kind is no longer written to forge.yaml — it DERIVES from the
+	// components.json (and its presence). The scaffold writes the components
+	// (or, for a library, omits the file) so the derived kind matches the
+	// requested --kind. See writeComponentsFile below.
 
-	// The scaffolded forge.yaml is MINIMAL: identity (name/module/kind),
-	// the forge version pin, and the component lists (services/frontends).
-	// Everything else — the features: block and the database/ci/lint/
-	// contracts/auth/deploy/docker/k8s sections — is derived from this
-	// shape at load time (config.ApplyDerivedDefaults) with exactly the
-	// values the scaffold used to write out explicitly. Any of those keys
-	// remain valid in forge.yaml as overrides; they're just not required
-	// boilerplate. Explicit user choices (e.g. `forge new --disable ci`)
-	// are recorded in Features below and survive the write-time
+	// The scaffolded forge.yaml is MINIMAL and GLOBAL-only: identity
+	// (name/module), the forge version pin, frontends, and explicit feature
+	// overrides. The per-service component entities live in components.json
+	// (written below); everything else — the features: block and the
+	// database/ci/lint/contracts/auth/deploy/docker/k8s sections — is derived
+	// from the project shape at load time (config.ApplyDerivedDefaults). Any
+	// of those keys remain valid in forge.yaml as overrides; they're just not
+	// required boilerplate. Explicit user choices (e.g. `forge new --disable
+	// ci`) are recorded in Features below and survive the write-time
 	// normalization because they differ from the derived default.
 	cfg := config.ProjectConfig{
 		Name:         g.Name,
 		ModulePath:   g.ModulePath,
-		Kind:         kindYAML,
 		Binary:       binaryYAML,
 		ForgeVersion: buildinfo.Version(),
 		Features:     g.Features,
 	}
 
+	// Build the components, then write them to components.json. Kind sync:
+	// cfg.Kind is set from the requested kind so NormalizeForWrite's feature
+	// derivation (which reads kind) drops the right kind-default falses.
+	cfg.Kind = g.effectiveKind()
+	var components []config.ComponentConfig
 	if g.ServiceName != "" && g.isService() {
-		cfg.Components = []config.ComponentConfig{
-			{
-				Name:  g.ServiceName,
-				Kind:  config.ComponentKindServer,
-				Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
-				Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
-			},
-		}
-		// In binary=shared, write ALL server components to forge.yaml at
-		// scaffold time so the generated bootstrap.go and per-service cobra
-		// subcommands see them immediately. In per-service mode this is
-		// done post-scaffold via AppendServiceToConfig (preserves the
-		// existing additive flow + log output).
+		components = append(components, config.ComponentConfig{
+			Name:  g.ServiceName,
+			Kind:  config.ComponentKindServer,
+			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
+			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
+		})
+		// In binary=shared, write ALL server components at scaffold time so
+		// the generated bootstrap.go and per-service cobra subcommands see
+		// them immediately. In per-service mode this is done post-scaffold
+		// via AppendServiceToConfig (preserves the additive flow + log output).
 		if g.isBinaryShared() {
 			for i, svcName := range g.AdditionalServices {
-				cfg.Components = append(cfg.Components, config.ComponentConfig{
+				components = append(components, config.ComponentConfig{
 					Name:  svcName,
 					Kind:  config.ComponentKindServer,
 					Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
@@ -72,6 +71,19 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 			}
 		}
 	}
+	// A cli project's cobra main IS a binary-kind component: it's what makes
+	// the project derive to "cli" (binary-only) rather than "library" (no
+	// components) on reload. Named after the project, pointing at its cmd
+	// main. Library projects deliberately get NO components — the absence of
+	// components.json is the library signal.
+	if g.isCLI() {
+		components = append(components, config.ComponentConfig{
+			Name: naming.ServicePackage(g.Name),
+			Kind: config.ComponentKindBinary,
+			Path: fmt.Sprintf("cmd/%s.go", naming.ServicePackage(g.Name)),
+		})
+	}
+	cfg.Components = components
 
 	if g.FrontendName != "" {
 		cfg.Frontends = []config.FrontendConfig{
@@ -115,19 +127,81 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	data = append(header, data...)
 
 	destPath := filepath.Join(g.Path, "forge.yaml")
-	return os.WriteFile(destPath, data, 0644)
+	if err := os.WriteFile(destPath, data, 0644); err != nil {
+		return err
+	}
+
+	// Write the per-component source of truth, components.json. Library
+	// projects (no components) deliberately get NO file: its absence is the
+	// "library" kind signal on reload. Service shells write an empty
+	// `{"components": []}` (file present, zero entries) so the project still
+	// derives to "service"; cli/service-with-components write their entries.
+	if !g.isLibrary() {
+		if err := WriteComponentsFile(g.Path, cfg.Components); err != nil {
+			return fmt.Errorf("write %s: %w", config.ComponentsFileName, err)
+		}
+	}
+	return nil
 }
 
 // ReadProjectConfig reads a forge.yaml from the given path with strict
 // validation: unknown keys, missing required fields, and type mismatches
 // are surfaced together via config.ValidationError rather than failing
-// fast on the first issue. See config.LoadStrict for the full semantics.
+// fast on the first issue. The per-component entities are read from the
+// project-root components.json sibling of forge.yaml and the project kind
+// is derived from them (see config.LoadProject). See config.LoadStrict for
+// the full validation semantics.
 func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read project config: %w", err)
 	}
-	return config.LoadStrict(data, path)
+	componentsJSON, err := readComponentsJSON(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	return config.LoadProject(data, componentsJSON, path)
+}
+
+// readComponentsJSON reads the project-root components.json from dir (the
+// directory holding forge.yaml). A missing file is not an error: it returns
+// nil bytes, treated by config.LoadProject as "no components".
+func readComponentsJSON(dir string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(dir, config.ComponentsFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", config.ComponentsFileName, err)
+	}
+	return data, nil
+}
+
+// WriteComponentsFile writes the project's components to the project-root
+// components.json (the authored per-service source of truth). Components are
+// sorted by name for a stable, diff-friendly file. This is the write path
+// for `forge add service|worker|cron|operator|binary` and `forge new`.
+func WriteComponentsFile(projectRoot string, components []config.ComponentConfig) error {
+	data, err := config.MarshalComponentsJSON(config.SortComponentsForWrite(components))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(projectRoot, config.ComponentsFileName), data, 0o644)
+}
+
+// AppendComponentToFile reads components.json at projectRoot, appends the
+// entry, and writes it back. Used by the `forge add` write paths so a new
+// component lands in components.json (NOT forge.yaml, which is global-only).
+func AppendComponentToFile(projectRoot string, entry config.ComponentConfig) error {
+	data, err := readComponentsJSON(projectRoot)
+	if err != nil {
+		return err
+	}
+	existing, err := config.ParseComponentsJSON(data)
+	if err != nil {
+		return err
+	}
+	return WriteComponentsFile(projectRoot, append(existing, entry))
 }
 
 // WriteProjectConfig writes a config.ProjectConfig to the given path.
@@ -144,19 +218,17 @@ func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// AppendServiceToConfig reads the project config at the given project root,
-// appends a new server component entry, and writes it back. It uses
-// yaml.Node round-tripping so that unknown keys, comments, and field
-// ordering added by the user are preserved.
+// AppendServiceToConfig appends a new server component to the project-root
+// components.json (the authored per-service source of truth). Components
+// moved out of forge.yaml in the ProjectStore per-service data move, so this
+// no longer touches forge.yaml.
 func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
-	configPath := filepath.Join(projectRoot, "forge.yaml")
-	entry := config.ComponentConfig{
+	return AppendComponentToFile(projectRoot, config.ComponentConfig{
 		Name:  serviceName,
 		Kind:  config.ComponentKindServer,
 		Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
 		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
-	}
-	return appendToProjectConfigSequence(configPath, "components", entry)
+	})
 }
 
 // AppendFrontendToConfig reads the project config at the given project root,

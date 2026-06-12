@@ -96,6 +96,12 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 	if len(issues) > 0 {
 		return nil, &ValidationError{Path: label, Issues: issues}
 	}
+
+	// Resolve shape-derived defaults: fill absent section blocks with the
+	// canonical scaffold defaults for the project kind, and attach the
+	// feature-derivation context so absent feature flags resolve from
+	// shape (see derive.go). Explicit values are never overridden.
+	ApplyDerivedDefaults(&cfg)
 	return &cfg, nil
 }
 

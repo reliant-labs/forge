@@ -69,23 +69,16 @@ Without forge.yaml, falls back to directory convention scanning:
   proto/db/        - Database models (protoc-gen-forge)
 
 Examples:
-  forge generate                  # Generate all code
-  forge generate --watch          # Watch mode for development
-  forge generate --force          # Discard hand-edits to Tier-1 files and regenerate
-  forge generate --accept --reason "<why>"  # DEPRECATED alias for 'forge disown' on the drifted set (--reason required)
-  forge generate --explain        # Print per-file provenance log after generate
-  forge generate --explain-drift  # On Tier-1 drift: diff on-disk vs fresh render per drifted file, then fail with the report
-  forge generate --skip-validate    # Skip the final 'go build ./...' validate step
-  forge generate --skip-pre-checks  # Bypass pre-codegen contract-shape check (parallel-lane workflows)
-  forge generate --reset-tier2      # Explicitly opt-in to overwriting hand-edited Tier-2 scaffolds (prompts per file)
-  forge generate --check            # Run generate into a tmpdir; exit 1 if it would change the tree
-  forge generate --force-cleanup    # Actually delete stale generated files (default is report-only)
-  forge generate --templates-only   # Re-render template-driven files only (skips cleanup/drift/validate; for propagating a template change into a WIP tree)
-  forge generate --steps=mocks      # Fast path: regen only mock_gen.go after a contract.go change (skips Tier-1 drift guard)
-  forge generate --plan             # Print the pipeline plan ([RUN]/[SKIP] per step + gate reason) and exit
-  forge generate --strict           # Promote pipeline warnings to fatal errors (every "Warning: ..." aborts)
-  forge generate --verbose          # Print one line per gate-off step ("⏩ skipped: <step name> (<reason>)")
-  forge generate --skip-config-check # Bypass the forge.yaml ↔ filesystem cross-check (parallel-lane / mid-migration only)`,
+  forge generate            # Generate all code
+  forge generate --watch    # Watch mode for development
+  forge generate --force    # Discard hand-edits to Tier-1 files and regenerate
+  forge generate --check    # Run generate into a tmpdir; exit 1 if it would change the tree (CI guard)
+  forge generate --explain  # Print per-file provenance log after generate
+  forge generate --verbose  # Print one line per gate-off skipped step
+
+Additional maintainer/debug flags exist (pipeline narrowing, drift
+forensics, parallel-lane and migration escape hatches); run
+'forge generate --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if checkOnly {
 				return runGenerateCheck()
@@ -251,6 +244,28 @@ Examples:
 	// a one-line deprecation message to stderr the first time the user
 	// passes it. One-release alias — drop after the next minor bump.
 	_ = cmd.Flags().MarkDeprecated("scope", "use --steps instead")
+
+	// User-vs-maintainer surface split: the flags below are fully
+	// functional but hidden from --help (visible via --help-dev). The
+	// visible set is pinned by TestGenerateHelpSurface — a new flag must
+	// consciously pick a side. See help_dev.go for the rule of thumb.
+	// (--scope is already hidden above via MarkDeprecated and shows up
+	// in --help-dev automatically.)
+	hideDevFlags(cmd,
+		"accept",            // deprecated alias for `forge disown`
+		"reason",            // only meaningful with --accept
+		"explain-drift",     // drift forensics (debugging the drift guard)
+		"skip-validate",     // multi-lane migration escape hatch
+		"skip-pre-checks",   // parallel-lane escape hatch
+		"reset-tier2",       // destructive scaffold reset (rare, guided)
+		"yes",               // prompt auto-confirm for --reset-tier2
+		"force-cleanup",     // destructive cleanup of stale generated files
+		"templates-only",    // forge-template-development fast path
+		"steps",             // pipeline narrowing (internal/agent fast paths)
+		"strict",            // pipeline-hardening mode for forge CI/dev
+		"plan",              // pipeline introspection (debugging gates)
+		"skip-config-check", // parallel-lane / mid-migration escape hatch
+	)
 
 	// `forge generate unfork` survives ONE release as legacy-fork
 	// migration tooling (convert `forked: true` entries to disowned, or

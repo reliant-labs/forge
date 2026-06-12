@@ -363,8 +363,9 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 			return err
 		}
 		var b strings.Builder
-		b.WriteString("// handlers_crud.go is YOUR file — forge scaffolded it once and will not\n")
-		b.WriteString("// rewrite it. Each method is a thin delegation: the CRUD lifecycle\n")
+		b.WriteString("// yours: scaffolded once, never touched again — forge will not overwrite this file\n")
+		b.WriteString("//\n")
+		b.WriteString("// Each method is a thin delegation: the CRUD lifecycle\n")
 		b.WriteString("// (auth, tenant scoping, pagination, error mapping) lives in\n")
 		b.WriteString("// github.com/reliant-labs/forge/pkg/crud, and the per-entity wiring is\n")
 		b.WriteString("// generated in handlers_crud_ops_gen.go (Tier-1, regenerated every run).\n")

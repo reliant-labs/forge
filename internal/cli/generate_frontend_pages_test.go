@@ -15,7 +15,7 @@ import (
 // regression test for the kalshi-trader friction round's blocker:
 // `forge generate` unconditionally re-rendered
 // `frontends/<fe>/src/app/<slug>/page.tsx` despite every page template
-// carrying a `// forge:scaffold one-shot — list page emitted by 'forge
+// carrying a canonical Tier-2 "yours:" banner (list page emitted by 'forge
 // add page'` banner promising the user that hand-edits would survive.
 // Pre-fix, the renderer used a bare `os.WriteFile` with no
 // stat-check guard, so the second `forge generate` invocation

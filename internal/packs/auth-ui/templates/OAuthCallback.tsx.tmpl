@@ -1,7 +1,8 @@
 "use client";
 {{- $provider := index .PackConfig "provider" }}
 
-// forge:scaffold one-shot — auth-ui OAuthCallback; canonical pattern in `forge skill load packs`.
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// Auth-ui OAuthCallback; canonical pattern in `forge skill load packs`.
 /**
  * OAuthCallback — typed search-param landing page for the {{$provider}}
  * backend pack's redirect-style OAuth flow.

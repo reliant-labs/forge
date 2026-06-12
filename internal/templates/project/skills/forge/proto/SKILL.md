@@ -80,25 +80,29 @@ There is no auto-detection by field name (`id`, `created_at`, `tenant_id`,
 ```proto
 message Task {
   option (forge.v1.entity) = {
-    table_name:  "tasks"
-    tenant_key:  "org_id"   // multi-tenant isolation; auto-filters queries
+    table:       "tasks"    // optional; inferred (snake_case, pluralized) when empty
     soft_delete: true       // adds deleted_at lifecycle
     timestamps:  true       // manages created_at / updated_at
+    indexes:     [{ fields: ["org_id", "status"] }]
   };
 
   string id     = 1 [(forge.v1.field) = { pk: true }];                       // PK MUST be annotated
   string org_id = 2 [(forge.v1.field) = { tenant: true, ref: "orgs.id" }];   // tenant MUST be annotated
-  string title  = 3 [(forge.v1.field) = { store: true }];
-  string status = 4 [(forge.v1.field) = { store: true }];
+  string title  = 3 [(forge.v1.field) = { validate: { required: true, max_length: 200 } }];
+  string status = 4;        // plain fields persist by default — no annotation needed
 }
 ```
 
 | Option | Type | Purpose |
 |--------|------|---------|
-| `table_name` | string | Database table name |
-| `tenant_key` | string | Tenant column for row-level isolation |
+| `table` | string | Database table name (inferred from message name when empty) |
 | `soft_delete` | bool | Use `deleted_at` instead of hard delete |
 | `timestamps` | bool | Auto-manage `created_at` / `updated_at` |
+| `indexes` | IndexDef list | `{ name, fields, unique }` — composite/single-column indexes |
+| `middleware` | string list | Repository middleware: `"tracing"`, `"metrics"`, `"logging"` |
+
+Tenant isolation is declared on the FIELD (`tenant: true` below) — there
+is no entity-level tenant option.
 
 **Enforced by:** `forgeconv-pk-annotation` (entity must declare `pk: true`),
 `forgeconv-timestamps` (`*_at` Timestamp fields need `timestamps: true` or
@@ -112,11 +116,13 @@ field names need `tenant: true` when entity is tenant-scoped). Run
 |--------|------|---------|
 | `pk` | bool | Primary key |
 | `tenant` | bool | Tenant scoping column (auto-filters queries) |
-| `store` | bool | Persist to database |
+| `store` | StoreAs enum | Storage for complex/non-scalar types: `STORE_AS_JSONB`, `STORE_AS_TEXT`, `STORE_AS_BLOB`, `STORE_AS_TABLE`. Unset = inferred from the proto type — plain scalar fields need no `store` at all |
 | `ref` | string | Foreign key reference (`"table.column"`) |
 | `unique` | bool | Unique constraint |
 | `index` | bool | Database index |
-| `validate` | string | Validation rule |
+| `default_value` | string | SQL default expression (`"0"`, `"'active'"`, `"NOW()"`) |
+| `skip` | bool | Exclude this field from code generation |
+| `validate` | ValidationRules | Message, not a string: `validate: { required: true, format: "url", min_length: 3 }`. Fields: `required`, `min_length`, `max_length`, `pattern`, `format`, `min`, `max`, `allowed_values`, `custom` |
 | `immutable` | bool | Cannot be updated after creation |
 
 ### Service / Method Annotations
@@ -135,8 +141,9 @@ service TaskService {
 |---------------|------|---------|
 | `auth_required` | bool | Require authentication |
 | `idempotent` | bool | Mark as idempotent (safe to retry) |
-| `timeout` | string | Request timeout |
+| `timeout` | Duration | Server-side timeout: `timeout: { seconds: 30 }` |
 | `idempotency_key` | bool | Expect `Idempotency-Key` header |
+| `errors` | string list | Declared Connect error codes (`"NotFound"`, `"InvalidArgument"`) |
 
 ## CRUD RPC Naming Convention
 

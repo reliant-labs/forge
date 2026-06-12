@@ -13,35 +13,6 @@ import (
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
-	frontendFramework := "none"
-	if g.FrontendName != "" {
-		frontendFramework = "nextjs"
-	}
-
-	// If frontend was explicitly disabled, override the framework to "none".
-	if g.Features.Frontend != nil && !*g.Features.Frontend {
-		frontendFramework = "none"
-	}
-
-	// Stack/database/deploy fields are service-shaped. CLI/library kinds
-	// emit a leaner forge.yaml without the k8s deploy + database blocks
-	// so it accurately reflects the project they're describing.
-	stack := config.StackConfig{
-		Backend:  config.StackBackend{Language: "go"},
-		Frontend: config.StackFrontend{Framework: frontendFramework},
-		Database: config.StackDatabase{Driver: "postgres"},
-		Proto:    config.StackProto{Provider: "buf"},
-		Deploy:   config.StackDeploy{Target: "k8s", Provider: "k3d", Registry: "ghcr.io"},
-		CI:       config.StackCI{Provider: "github"},
-	}
-	if !g.isService() {
-		// CLI/library: drop deploy + database from the stack — the project
-		// has no server to deploy and no DB layer.
-		stack.Database = config.StackDatabase{Driver: "none"}
-		stack.Deploy = config.StackDeploy{Target: "none"}
-		stack.Frontend = config.StackFrontend{Framework: "none"}
-	}
-
 	// Persist `binary:` only when explicitly opted-in (shared) so existing
 	// forge.yaml files keep their cleaner shape and the field is omitted by
 	// default. EffectiveBinary on the read-side defaults this to per-service.
@@ -50,79 +21,30 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		binaryYAML = config.ProjectBinaryShared
 	}
 
+	// `kind:` is only written for the non-default kinds — absent means
+	// "service" via EffectiveProjectKind, same as before.
+	kindYAML := ""
+	if g.effectiveKind() != config.ProjectKindService {
+		kindYAML = g.effectiveKind()
+	}
+
+	// The scaffolded forge.yaml is MINIMAL: identity (name/module/kind),
+	// the forge version pin, and the component lists (services/frontends).
+	// Everything else — the features: block and the database/ci/lint/
+	// contracts/auth/deploy/docker/k8s sections — is derived from this
+	// shape at load time (config.ApplyDerivedDefaults) with exactly the
+	// values the scaffold used to write out explicitly. Any of those keys
+	// remain valid in forge.yaml as overrides; they're just not required
+	// boilerplate. Explicit user choices (e.g. `forge new --disable ci`)
+	// are recorded in Features below and survive the write-time
+	// normalization because they differ from the derived default.
 	cfg := config.ProjectConfig{
 		Name:         g.Name,
 		ModulePath:   g.ModulePath,
-		Kind:         g.effectiveKind(),
+		Kind:         kindYAML,
 		Binary:       binaryYAML,
-		Version:      "0.1.0",
 		ForgeVersion: buildinfo.Version(),
-		HotReload:    g.isService(), // hot-reload only meaningful for long-running servers
-		Features:     g.buildFeaturesConfig(),
-		Stack:        stack,
-		Database: config.DatabaseConfig{
-			Driver:        "postgres",
-			MigrationsDir: "db/migrations",
-			SQLCEnabled:   false,
-			MigrationSafety: config.MigrationSafetyConfig{
-				Enabled:           boolPtr(true),
-				UnsafeAddColumn:   "error",
-				DestructiveChange: "error",
-				VolatileDefault:   "warn",
-			},
-		},
-		CI: config.CIConfig{
-			Provider: "github",
-			Lint: config.CILintConfig{
-				Golangci:        true,
-				Buf:             true,
-				BufBreaking:     true,
-				Frontend:        g.FrontendName != "",
-				MigrationSafety: true,
-			},
-			Test: config.CITestConfig{
-				Race:     true,
-				Coverage: false,
-			},
-			VulnScan: config.CIVulnConfig{
-				Go:     true,
-				Docker: true,
-				NPM:    g.FrontendName != "",
-			},
-		},
-		Deploy: config.DeployConfig{
-			Provider: "github",
-			// Zero-value DeployConcurrency means enabled
-		},
-		Docker: config.DockerConfig{
-			Registry: "ghcr.io",
-		},
-		K8s: config.K8sConfig{
-			KCLDir: "deploy/kcl",
-		},
-		Lint: config.LintConfig{
-			Contract: true,
-			Frontend: config.FrontendLintConfig{
-				CSSHealth:      g.FrontendName != "",
-				NoImportant:    "warn",
-				NoInlineStyles: "warn",
-			},
-		},
-		// Contracts: strict-by-default — every internal/<pkg>/ that exposes
-		// behavior must declare an interface in contract.go. Exported package
-		// vars and free funcs are both rejected so all surface goes through
-		// the test-seam interface. See MIGRATION_TIPS.md "Contracts-first
-		// migration" for why we lock this in at scaffold time rather than
-		// asking users to flip it after the fact.
-		Contracts: config.ContractsConfig{
-			Strict:             true,
-			AllowExportedVars:  false,
-			AllowExportedFuncs: false,
-			Exclude:            []string{},
-		},
-		Auth: config.AuthConfig{
-			Provider: "none",
-		},
+		Features:     g.Features,
 	}
 
 	if g.ServiceName != "" && g.isService() {
@@ -151,19 +73,6 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		}
 	}
 
-	// Strip server-shaped sections from non-service forge.yaml so the
-	// emitted file describes the actual project layout.
-	if !g.isService() {
-		cfg.Database = config.DatabaseConfig{}
-		cfg.Deploy = config.DeployConfig{}
-		cfg.Docker = config.DockerConfig{}
-		cfg.K8s = config.K8sConfig{}
-		cfg.CI.Lint.Buf = false
-		cfg.CI.Lint.BufBreaking = false
-		cfg.CI.Lint.MigrationSafety = false
-		cfg.CI.VulnScan.Docker = false
-	}
-
 	if g.FrontendName != "" {
 		cfg.Frontends = []config.FrontendConfig{
 			{
@@ -184,90 +93,29 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		cfg.Frontend = config.FrontendProjectConfig{Workspaces: true}
 	}
 
-	data, err := yaml.Marshal(&cfg)
+	// Normalize before marshalling: feature flags and section values that
+	// match the shape-derived defaults are dropped, so what hits disk is
+	// only identity + components + explicit user choices. Kind-default
+	// feature falses set by ApplyKindFeatureDefaults (cli/library) match
+	// derivation and disappear; `--disable` choices differ and survive.
+	data, err := yaml.Marshal(config.NormalizeForWrite(&cfg))
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
 
-	// Prepend a header explaining the shape of this file. In particular the
-	// `database:` block is declared unconditionally even when no entity
-	// protos exist yet — downstream codegen (`protoc-gen-forge-orm`) reads
-	// it when proto/db/*.proto are added later. Until then it's a no-op.
-	//
-	// The `frontend:` block is commented in-line — opt-in pnpm-workspaces
-	// is off by default. See `forge skill load frontend-workspaces` for
-	// when (and why) to flip it on.
-	//
-	// The `api:` example below is the documented opt-in path for vanguard
-	// REST transcoding (and the OpenAPI-spec sibling toggle). Both default
-	// to off; uncomment + flip to true to install the relevant skin. See
-	// .reliant/SKILL.md → forge/api-rest for the runtime story.
+	// Prepend a short header. The file is intentionally minimal — the
+	// database/ci/lint/contracts/auth sections and the features: block
+	// are derived from the project shape at load time and only need to
+	// appear here when overriding a default.
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
-		"# `database:` is declared here even if you haven't added any\n" +
-		"# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it\n" +
-		"# once you do. Leave the defaults in place if you're unsure.\n" +
-		"#\n" +
-		"# Opt into the pnpm-workspaces layout (shared packages/api +\n" +
-		"# packages/hooks across all frontends) by uncommenting:\n" +
-		"#   frontend:\n" +
-		"#     workspaces: true\n" +
-		"# Recommended once you have 2+ frontends (web + mobile).\n" +
-		"#\n" +
-		"# To expose REST URLs on your Connect handlers (vanguard transcoding):\n" +
-		"# api:\n" +
-		"#   rest: true     # vanguard REST↔Connect transcoder; CRUD RPCs get default google.api.http URLs\n" +
-		"#   # openapi: true  # emit an OpenAPI spec alongside the proto compile (sibling toggle)\n\n")
+		"# This file is minimal on purpose: database, ci, lint, contracts,\n" +
+		"# auth and the features: block are derived from the project shape.\n" +
+		"# Add any of those keys only to override a derived default\n" +
+		"# (`forge skill load forge` documents the full schema).\n\n")
 	data = append(header, data...)
-
-	// Append a commented-out example of the api: block. It's omitempty
-	// in the struct so an unset map skips it on marshal — surfacing it
-	// here as documentation makes the flags discoverable without
-	// changing default behavior. See SKILL.md (skills/forge/api-openapi)
-	// for the OpenAPI consumer playbook.
-	if g.isService() {
-		footer := []byte("\n# api:\n" +
-			"#   # Emit OpenAPI 3 specs (one yaml per service under openapi/) via\n" +
-			"#   # protoc-gen-connect-openapi. Install once:\n" +
-			"#   #   go install github.com/sudorandom/protoc-gen-connect-openapi@latest\n" +
-			"#   openapi: false\n")
-		data = append(data, footer...)
-	}
 
 	destPath := filepath.Join(g.Path, "forge.yaml")
 	return os.WriteFile(destPath, data, 0644)
-}
-
-func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
-	t := boolPtr(true)
-	orDefault := func(v *bool) *bool {
-		if v != nil {
-			return v
-		}
-		return t
-	}
-	return config.FeaturesConfig{
-		ORM:        orDefault(g.Features.ORM),
-		Codegen:    orDefault(g.Features.Codegen),
-		Migrations: orDefault(g.Features.Migrations),
-		CI:         orDefault(g.Features.CI),
-		Build:      orDefault(g.Features.Build),
-		Contracts:  orDefault(g.Features.Contracts),
-		Docs:       orDefault(g.Features.Docs),
-		Frontend: func() *bool {
-			if g.Features.Frontend != nil {
-				return g.Features.Frontend
-			}
-			return boolPtr(g.FrontendName != "")
-		}(),
-		Observability: orDefault(g.Features.Observability),
-		HotReload:     orDefault(g.Features.HotReload),
-		Packs:         orDefault(g.Features.Packs),
-		Starters:      orDefault(g.Features.Starters),
-		// Experimental features stay default-off at scaffold time.
-		// `forge new --enable-experimental deploy,ingress,...` is the
-		// opt-in entry point (see new.go).
-		Experimental: g.Features.Experimental,
-	}
 }
 
 // ReadProjectConfig reads a forge.yaml from the given path with strict
@@ -283,8 +131,13 @@ func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 }
 
 // WriteProjectConfig writes a config.ProjectConfig to the given path.
+// The config is normalized first (config.NormalizeForWrite): values that
+// match their shape-derived defaults are dropped so load → mutate →
+// write round-trips keep forge.yaml minimal instead of materializing
+// every derived default back into the file. Explicit overrides (values
+// differing from derivation) always survive.
 func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
-	data, err := yaml.Marshal(cfg)
+	data, err := yaml.Marshal(config.NormalizeForWrite(cfg))
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}

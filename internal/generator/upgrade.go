@@ -312,7 +312,7 @@ func UpgradeManagedPaths() map[string]bool {
 //     posture as UpgradeManagedPaths).
 //   - The one-shot .github scaffolds written once at `forge new` time
 //     (project_ci.go) and never re-emitted by `forge generate`.
-//     CODEOWNERS even carries the `forge:scaffold one-shot — starter`
+//     CODEOWNERS even carries the `yours: scaffolded once ... (starter)`
 //     banner; recording them as Tier-1 was a historical accident that
 //     made hand-editing your own CODEOWNERS trip the Tier-1 stomp
 //     guard. (FRICTION 2026-06-05, cp-forge: users worked around the

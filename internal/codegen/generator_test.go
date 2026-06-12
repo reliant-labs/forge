@@ -1539,8 +1539,8 @@ func TestGenerateSetup_CreatesFile(t *testing.T) {
 	if !strings.Contains(content, "example.com/proj/pkg/config") {
 		t.Error("setup.go should import the project config package")
 	}
-	if !strings.Contains(content, "never overwrite") {
-		t.Error("setup.go should document that it's never overwritten")
+	if !strings.Contains(content, "yours: scaffolded once, never touched again — forge will not overwrite this file") {
+		t.Error("setup.go should carry the canonical Tier-2 'yours:' banner")
 	}
 }
 
@@ -1652,8 +1652,8 @@ func TestGeneratePostBootstrap_CreatesFile(t *testing.T) {
 	if !strings.Contains(content, "return nil") {
 		t.Error("post_bootstrap.go default body must be a no-op (return nil)")
 	}
-	if !strings.Contains(content, "never overwrite") {
-		t.Error("post_bootstrap.go should document that it's never overwritten")
+	if !strings.Contains(content, "yours: scaffolded once, never touched again — forge will not overwrite this file") {
+		t.Error("post_bootstrap.go should carry the canonical Tier-2 'yours:' banner")
 	}
 }
 

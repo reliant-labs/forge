@@ -111,6 +111,44 @@ func TestNewAuthInterceptor_DevModeIsPassthrough(t *testing.T) {
 	}
 }
 
+// The scaffolded devClaims default is a synthetic dev principal so the
+// generated CRUD handlers (which demand claims via GetUser) are
+// callable in dev with zero auth config. Projects that want claim-free
+// passthrough change devClaims to return nil — and then this test.
+func TestDevClaims_DefaultSyntheticPrincipal(t *testing.T) {
+	t.Parallel()
+	c := devClaims()
+	if c == nil {
+		t.Fatal("scaffolded devClaims must return a synthetic dev principal (return nil only if you deliberately want claim-free dev passthrough)")
+	}
+	if c.UserID == "" || c.Role == "" {
+		t.Fatalf("dev principal must carry a UserID and Role, got %+v", c)
+	}
+}
+
+// In dev passthrough the interceptor attaches the devClaims principal,
+// so GetUser-based handlers (generated CRUD) work without a validator.
+func TestNewAuthInterceptor_DevModeAttachesDevClaims(t *testing.T) {
+	// NOT parallel: reads package-level state other subtests mutate.
+	t.Setenv("AUTH_MODE", "")
+	ic, err := NewAuthInterceptor(true)
+	if err != nil {
+		t.Fatalf("NewAuthInterceptor in dev mode must not error: %v", err)
+	}
+	var got *Claims
+	wrapped := ic.WrapUnary(func(ctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+		got, _ = ClaimsFromContext(ctx)
+		return nil, nil
+	})
+	_, _ = wrapped(context.Background(), nil)
+	if got == nil {
+		t.Fatal("dev passthrough must attach the devClaims principal so GetUser succeeds")
+	}
+	if want := devClaims(); got.UserID != want.UserID {
+		t.Fatalf("attached claims = %+v, want the devClaims principal %+v", got, want)
+	}
+}
+
 // AUTH_MODE=none is the explicit production opt-out.
 func TestNewAuthInterceptor_AuthModeNoneIsPassthrough(t *testing.T) {
 	t.Setenv("AUTH_MODE", "none")

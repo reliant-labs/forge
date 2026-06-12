@@ -149,12 +149,25 @@ func enrichClaims(_ context.Context, claims *Claims) (*Claims, error) {
 // ─── Policy hook 4: dev claims ───────────────────────────────────────
 //
 // devClaims supplies the synthetic principal attached to every request
-// while the server runs with auth off (dev mode or AUTH_MODE=none).
-// Return a non-nil *Claims to let claim-reading handlers and
-// authorizers behave as if a fixed user were signed in. The default
-// (nil) keeps dev passthrough claim-free.
+// while the server runs with auth off — and ONLY then: pkg/authn
+// consults DevClaims solely in passthrough mode (dev mode or
+// AUTH_MODE=none) and ignores it in Validate mode and when an external
+// auth provider is registered, so this principal can never leak into a
+// real-auth deployment.
+//
+// The default below makes the generated CRUD handlers — which demand
+// claims via GetUser — callable in dev with zero auth config. It
+// carries no OrgID: multi-tenant projects whose tenant interceptor
+// scopes rows by an org claim should set OrgID to a fixture tenant
+// here, or tenant-scoped queries will see no rows. Return nil to keep
+// dev passthrough claim-free (every CRUD call then 401s until a real
+// validator is installed).
 func devClaims() *Claims {
-	return nil
+	return &Claims{
+		UserID: "dev-user",
+		Email:  "dev@localhost",
+		Role:   "admin",
+	}
 }
 
 // ─── Interceptor construction ────────────────────────────────────────

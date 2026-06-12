@@ -315,32 +315,31 @@ func defaultTestConfig(t *testing.T) *testConfig {
 		authz:  testkit.PermissiveAuthorizer{},
 {{- end}}
 {{- if .AnyServiceHasDB}}
-		// Bare in-memory SQLite — no schema. Tests that exercise real SQL
-		// should opt in to the migrated database{{if .HasMigrationsFS}} via
-		// WithDB(NewMigratedTestDB(t)){{end}}; production migrations are
-		// typically PostgreSQL-dialect, so applying them to SQLite is an
-		// explicit, loud choice rather than a silent default.
-		db:     testkit.NewSQLiteMemDB(t),
+		// Bare real postgres — no schema (a fresh isolated database on the
+		// shared ephemeral postgres). Tests that exercise real SQL should
+		// opt in to the migrated database{{if .HasMigrationsFS}} via
+		// WithDB(NewMigratedTestDB(t)){{end}}; the migrations run on the
+		// same engine production does, so there is no portability subset.
+		db:     testkit.NewPostgresDB(t),
 {{- end}}
 	}
 }
 {{- end}}
 {{- if and .AnyServiceHasDB .HasMigrationsFS}}
 
-// NewMigratedTestDB returns an in-memory SQLite ORM context with the
+// NewMigratedTestDB returns a real-postgres ORM context with the
 // project's embedded db/migrations applied — the same FS AutoMigrate
 // uses in production — so handler preconditions (tables, indexes) hold
 // in tests. Inject it where the schema matters:
 //
 //	svc := NewTest<Service>(t, WithDB(NewMigratedTestDB(t)))
 //
-// It fails the test LOUDLY (naming the offending file) if a migration
-// is not SQLite-portable (e.g. CREATE EXTENSION, gen_random_uuid()).
-// Keep migrations portable to use this helper, or seed a custom schema
-// on testkit.NewSQLiteMemDB(t) for the non-portable subset.
+// The migrations run on real postgres (the production engine), so they
+// apply verbatim; a migration postgres rejects fails the test LOUDLY,
+// naming the offending file.
 func NewMigratedTestDB(t *testing.T) orm.Context {
 	t.Helper()
-	return testkit.NewMigratedSQLiteDB(t, forgedb.MigrationsFS)
+	return testkit.NewMigratedPostgresDB(t, forgedb.MigrationsFS)
 }
 {{- end}}
 {{- if .Services}}

@@ -1,6 +1,6 @@
 // Package schemadef projects a project's APPLIED database schema —
-// db/migrations/*.up.sql executed in order against an in-memory shadow
-// database — into a typed model that code generation consumes.
+// db/migrations/*.up.sql executed in order against a REAL ephemeral
+// postgres — into a typed model that code generation consumes.
 //
 // SQL is the schema language in forge: migrations are the single source
 // of truth for what tables and columns exist. Everything else (entity
@@ -9,43 +9,43 @@
 //
 // # Shadow strategy
 //
-// Migrations are applied to an in-memory SQLite database (modernc.org/
-// sqlite — pure Go, no cgo, no network, no container). This works for
-// the postgres dialect too because SQLite's parser accepts arbitrary
-// declared column types verbatim (TEXT[], TIMESTAMPTZ, JSONB, DOUBLE
-// PRECISION, BIGSERIAL, UUID all parse) and PRAGMA table_info reports
-// the declared type exactly as written — so the postgres types written
-// in the migration survive introspection untouched. This is the same
-// contract every generated project's own tests already rely on:
-// pkg/testkit applies the project's migrations verbatim to in-memory
-// SQLite.
+// forge is postgres-pinned. Migrations are applied verbatim — byte for
+// byte, no rewriting — to a real ephemeral postgres (pkg/pgtest:
+// embedded-postgres by default, an already-running server when
+// FORGE_TEST_POSTGRES_URL is set), then the resulting schema is read back
+// through postgres's own catalog (information_schema / pg_catalog).
 //
-// The portable-subset rules this imposes on migrations (all of which
-// `forge add entity` emits by construction):
+// This is a hard improvement over the previous in-memory SQLite shadow,
+// which approximated postgres by exploiting SQLite's permissive type
+// affinity and required a normalization pass (DEFAULT (now()) wrapping,
+// '::type' cast stripping, multi-ADD splitting) to coax idiomatic
+// postgres DDL through SQLite's parser. That approximation broke the
+// moment a project used a construct SQLite couldn't parse — most
+// notably schema-qualified DDL (CREATE TABLE controlplane.foo), which
+// froze cp-forge's ORM. Real postgres needs none of that: it IS the
+// target, so the schema the generator sees is exactly the schema
+// production runs.
 //
-//   - function defaults must be parenthesized: DEFAULT (now()), not
-//     DEFAULT now()
-//   - no '::type' cast syntax — write DEFAULT '{}' rather than
-//     DEFAULT '{}'::jsonb (postgres implicitly casts the literal)
-//
-// Statements that fail on the shadow are skipped when they cannot
+// Statements that fail to apply are still skipped when they cannot
 // affect the table/column model (DML data movement, CREATE FUNCTION /
-// TRIGGER / EXTENSION / VIEW, COMMENT, SET ...). A failing CREATE
-// TABLE / ALTER TABLE / DROP TABLE / CREATE INDEX is a hard error —
-// those define the schema being projected, so silently skipping one
-// would generate an ORM that lies.
+// TRIGGER / EXTENSION / VIEW, COMMENT, SET ...) — postgres rejects some
+// of these in the bare ephemeral DB (e.g. an extension that isn't
+// installed) and that must not abort introspection. A failing CREATE
+// TABLE / ALTER TABLE / DROP TABLE / CREATE INDEX is a hard error: those
+// define the schema being projected, so silently skipping one would
+// generate an ORM that lies.
 package schemadef
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
-	_ "modernc.org/sqlite" // pure-Go SQLite driver for the shadow DB
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // Table is one introspected table of the applied schema.
@@ -173,23 +173,26 @@ func DetectConventions(t Table) Conventions {
 }
 
 // ApplyAndIntrospect applies every *.up.sql under migDir (in lexical
-// order) to a fresh in-memory shadow database and returns the resulting
-// schema. A missing or empty migrations directory returns (nil, nil):
-// no schema, no entities, nothing to project.
+// order) to a fresh real-postgres shadow database and returns the
+// resulting schema. A missing or empty migrations directory returns
+// (nil, nil): no schema, no entities, nothing to project.
+//
+// The shadow is a freshly-created database on the process-shared
+// ephemeral postgres (pkg/pgtest). It is dropped before returning, so
+// every call sees a clean schema. Booting the shared server the first
+// time downloads/caches the postgres binary (embedded-postgres) unless
+// FORGE_TEST_POSTGRES_URL points at a running server.
 func ApplyAndIntrospect(migDir string) ([]Table, error) {
 	ups, err := upMigrations(migDir)
 	if err != nil || len(ups) == 0 {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, cleanup, err := pgtest.New()
 	if err != nil {
-		return nil, fmt.Errorf("open shadow db: %w", err)
+		return nil, fmt.Errorf("open postgres shadow db: %w", err)
 	}
-	defer func() { _ = db.Close() }()
-	// The :memory: DSN gives every pooled connection its OWN database;
-	// pin to a single connection so all migrations land in one schema.
-	db.SetMaxOpenConns(1)
+	defer cleanup()
 
 	for _, name := range ups {
 		raw, rerr := os.ReadFile(filepath.Join(migDir, name))
@@ -222,18 +225,17 @@ func upMigrations(migDir string) ([]string, error) {
 	return ups, nil
 }
 
-// applyMigration executes one migration file statement by statement.
-// Schema-defining statements that fail are hard errors; statements that
-// cannot affect the table/column model are skipped on failure (postgres-
-// only DML or auxiliary DDL the shadow can't execute).
+// applyMigration executes one migration file statement by statement
+// against the real-postgres shadow. Schema-defining statements that fail
+// are hard errors; statements that cannot affect the table/column model
+// are skipped on failure (postgres DML data movement, or auxiliary DDL
+// the bare ephemeral DB can't satisfy — an extension that isn't
+// installed, a role that doesn't exist).
 //
-// Each schema-defining statement first passes through a small
-// postgres→portable normalization (see normalizeForShadow) so the
-// idiomatic-postgres constructs that recur in migrated projects —
-// unparenthesized function defaults, '<literal>'::type casts, ADD
-// COLUMN IF NOT EXISTS, multi-ADD ALTERs — apply cleanly on the SQLite
-// shadow. The normalization touches ONLY the shadow copy; the
-// migration files on disk are never rewritten.
+// Migrations apply VERBATIM: postgres is the target, so there is no
+// normalization pass. Every construct in the migration — schema-qualified
+// names, postgres-only types, '::type' casts, multi-ADD ALTERs,
+// generated/identity columns — runs exactly as written.
 func applyMigration(db *sql.DB, sqlText string) error {
 	for _, stmt := range SplitStatements(sqlText) {
 		if !isSchemaDefining(stmt) {
@@ -243,13 +245,8 @@ func applyMigration(db *sql.DB, sqlText string) error {
 			_, _ = db.Exec(stmt)
 			continue
 		}
-		for _, norm := range normalizeForShadow(stmt) {
-			if _, err := db.Exec(norm); err != nil {
-				if isBenignShadowError(norm, err) {
-					continue
-				}
-				return fmt.Errorf("%w\nstatement (shadow-normalized):\n%s\n\nhint: the shadow schema runs on SQLite; keep table-defining DDL in the portable subset (parenthesized function defaults like DEFAULT (now()), no '::type' casts, one ADD COLUMN per ALTER)", err, norm)
-			}
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("%w\nstatement:\n%s", err, strings.TrimSpace(stmt))
 		}
 	}
 	return nil
@@ -296,62 +293,6 @@ func stripLeadingSQLComments(stmt string) string {
 			return s
 		}
 	}
-}
-
-// isBenignShadowError reports errors the original postgres statement
-// declared tolerable: a duplicate column from ADD COLUMN IF NOT EXISTS
-// (the IF NOT EXISTS was stripped for SQLite, which doesn't support it
-// on ADD COLUMN).
-func isBenignShadowError(stmt string, err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "duplicate column") &&
-		strings.Contains(strings.ToUpper(stmt), "ADD COLUMN")
-}
-
-var (
-	// DEFAULT now() / DEFAULT gen_random_uuid() → DEFAULT (now()) —
-	// SQLite only accepts function defaults in parentheses. Matches a
-	// bare function call (no nested parens) not already parenthesized.
-	reBareFuncDefault = regexp.MustCompile(`(?i)(DEFAULT\s+)([A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\))`)
-	// '<literal>'::type → '<literal>' — strips casts attached to quoted
-	// literals ('{}'::jsonb, 'x'::text). Only literal-attached casts;
-	// anything fancier stays out of the portable subset on purpose.
-	reLiteralCast = regexp.MustCompile(`('(?:[^']|'')*')::[A-Za-z_][A-Za-z0-9_]*(\[\])?`)
-	// ADD COLUMN IF NOT EXISTS → ADD COLUMN (SQLite has no IF NOT
-	// EXISTS on ADD COLUMN; the resulting duplicate-column error is
-	// treated as benign, matching the original semantics).
-	reAddColIfNotExists = regexp.MustCompile(`(?i)ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+`)
-	// Multi-ADD ALTER detection: ALTER TABLE t ADD COLUMN a ..., ADD
-	// COLUMN b ... — SQLite takes one ADD per ALTER.
-	reAlterAdd = regexp.MustCompile(`(?is)^(ALTER\s+TABLE\s+\S+\s+)(ADD\s+.+)$`)
-	reAddSplit = regexp.MustCompile(`(?i),\s*ADD\s+`)
-)
-
-// normalizeForShadow rewrites one schema-defining statement into the
-// equivalent statement(s) the SQLite shadow can execute. The rewrites
-// are mechanical and semantics-preserving for introspection purposes;
-// the on-disk migration is untouched.
-func normalizeForShadow(stmt string) []string {
-	s := stripLeadingSQLComments(stmt)
-	s = reLiteralCast.ReplaceAllString(s, "$1")
-	s = reBareFuncDefault.ReplaceAllString(s, "$1($2)")
-	s = reAddColIfNotExists.ReplaceAllString(s, "ADD COLUMN ")
-
-	// Split multi-ADD ALTERs into one ALTER per ADD clause.
-	if m := reAlterAdd.FindStringSubmatch(s); m != nil {
-		adds := reAddSplit.Split(m[2], -1)
-		if len(adds) > 1 {
-			out := make([]string, 0, len(adds))
-			for i, a := range adds {
-				a = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(a), ";"))
-				if i > 0 && !strings.HasPrefix(strings.ToUpper(a), "ADD ") {
-					a = "ADD " + a
-				}
-				out = append(out, m[1]+a+";")
-			}
-			return out
-		}
-	}
-	return []string{s}
 }
 
 // SplitStatements splits SQL text into individual statements, honoring
@@ -418,10 +359,10 @@ func SplitStatements(sqlText string) []string {
 				flush()
 			}
 		default:
-			// BEGIN ... END; bodies only exist inside CREATE TRIGGER
-			// statements (SQLite trigger syntax). A bare transaction
-			// BEGIN; never lands here because the buffer wouldn't
-			// contain CREATE TRIGGER.
+			// BEGIN ... END; bodies inside a CREATE TRIGGER statement must
+			// not be split on the inner `;`. A bare transaction BEGIN;
+			// never lands here because the buffer wouldn't contain
+			// CREATE TRIGGER.
 			if isWordBoundary(s, i) {
 				inTrigger := beginDepth > 0 ||
 					strings.Contains(strings.ToUpper(b.String()), "CREATE TRIGGER")
@@ -494,90 +435,123 @@ func dollarQuoteEnd(s string, i int) int {
 	return j + 1 + end + len(tag)
 }
 
-// introspect reads the full table model out of the shadow database.
+// introspect reads the full table model out of the real-postgres shadow
+// through the postgres catalog (information_schema / pg_catalog). It
+// enumerates BASE TABLEs across every user schema — not just `public` —
+// so schema-qualified migrations (CREATE TABLE controlplane.foo) are
+// introspected like any other. Tables are keyed by their bare name in
+// the returned model (the projection layer matches entities by table
+// name); pg's own catalog rejects same-named tables in different schemas
+// only at query time, which forge projects do not do.
 func introspect(db *sql.DB) ([]Table, error) {
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	ctx := context.Background()
+
+	// schema, table for every user BASE TABLE. Exclude the system and
+	// migration-bookkeeping schemas; keep everything a project defined,
+	// including non-public schemas.
+	rows, err := db.QueryContext(ctx, `
+		SELECT table_schema, table_name
+		FROM information_schema.tables
+		WHERE table_type = 'BASE TABLE'
+		  AND table_schema NOT IN ('pg_catalog', 'information_schema')
+		  AND table_name <> 'schema_migrations'
+		ORDER BY table_schema, table_name`)
 	if err != nil {
 		return nil, fmt.Errorf("list shadow tables: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-	var names []string
+	type ref struct{ schema, name string }
+	var refs []ref
 	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
+		var r ref
+		if err := rows.Scan(&r.schema, &r.name); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
-		names = append(names, n)
+		refs = append(refs, r)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	cerr := rows.Err()
+	_ = rows.Close()
+	if cerr != nil {
+		return nil, cerr
 	}
 
 	var tables []Table
-	for _, name := range names {
-		t, err := introspectTable(db, name)
+	for _, r := range refs {
+		t, err := introspectTable(ctx, db, r.schema, r.name)
 		if err != nil {
-			return nil, fmt.Errorf("introspect table %s: %w", name, err)
+			return nil, fmt.Errorf("introspect table %s.%s: %w", r.schema, r.name, err)
 		}
 		tables = append(tables, t)
 	}
 	return tables, nil
 }
 
-func introspectTable(db *sql.DB, name string) (Table, error) {
+func introspectTable(ctx context.Context, db *sql.DB, schema, name string) (Table, error) {
 	t := Table{Name: name}
 
-	rows, err := db.Query(`SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(` + quoteSQLString(name) + `) ORDER BY cid`)
+	// Columns in ordinal order. udt_name carries the precise postgres
+	// type (int8, timestamptz, jsonb, _text for a text[] …) which
+	// MapDeclaredType already understands; data_type = 'ARRAY' marks
+	// array columns (udt_name then has the `_elem` form).
+	rows, err := db.QueryContext(ctx, `
+		SELECT column_name, data_type, udt_name, is_nullable, column_default
+		FROM information_schema.columns
+		WHERE table_schema = $1 AND table_name = $2
+		ORDER BY ordinal_position`, schema, name)
 	if err != nil {
 		return t, err
 	}
-	defer func() { _ = rows.Close() }()
-	type pkPos struct {
-		name string
-		pos  int
-	}
-	var pks []pkPos
 	for rows.Next() {
 		var (
-			col      Column
-			notNull  int
-			deflt    sql.NullString
-			pk       int
-			declType string
+			col        Column
+			dataType   string
+			udtName    string
+			isNullable string
+			deflt      sql.NullString
 		)
-		if err := rows.Scan(&col.Name, &declType, &notNull, &deflt, &pk); err != nil {
+		if err := rows.Scan(&col.Name, &dataType, &udtName, &isNullable, &deflt); err != nil {
+			_ = rows.Close()
 			return t, err
 		}
-		col.DeclType = declType
-		col.Type, col.IsArray = MapDeclaredType(declType)
-		col.NotNull = notNull != 0
+		col.DeclType = pgDeclType(dataType, udtName)
+		col.Type, col.IsArray = MapDeclaredType(col.DeclType)
+		col.NotNull = isNullable == "NO"
 		if deflt.Valid {
 			col.Default = deflt.String
 		}
-		if pk > 0 {
-			col.IsPK = true
-			// PK columns are NOT NULL by definition even when the DDL
-			// didn't say so explicitly.
-			col.NotNull = true
-			pks = append(pks, pkPos{col.Name, pk})
-		}
 		t.Columns = append(t.Columns, col)
 	}
-	if err := rows.Err(); err != nil {
-		return t, err
-	}
-	sort.Slice(pks, func(i, j int) bool { return pks[i].pos < pks[j].pos })
-	for _, p := range pks {
-		t.PKCols = append(t.PKCols, p.name)
+	cerr := rows.Err()
+	_ = rows.Close()
+	if cerr != nil {
+		return t, cerr
 	}
 
-	idx, err := introspectIndexes(db, name)
+	pks, err := introspectPrimaryKey(ctx, db, schema, name)
+	if err != nil {
+		return t, err
+	}
+	t.PKCols = pks
+	pkSet := make(map[string]bool, len(pks))
+	for _, p := range pks {
+		pkSet[p] = true
+	}
+	for i := range t.Columns {
+		if pkSet[t.Columns[i].Name] {
+			t.Columns[i].IsPK = true
+			// PK columns are NOT NULL by definition even when the
+			// catalog reports nullable (it never does, but be explicit).
+			t.Columns[i].NotNull = true
+		}
+	}
+
+	idx, err := introspectIndexes(ctx, db, schema, name)
 	if err != nil {
 		return t, err
 	}
 	t.Indexes = idx
 
-	fks, err := introspectForeignKeys(db, name)
+	fks, err := introspectForeignKeys(ctx, db, schema, name)
 	if err != nil {
 		return t, err
 	}
@@ -586,84 +560,132 @@ func introspectTable(db *sql.DB, name string) (Table, error) {
 	return t, nil
 }
 
-func introspectIndexes(db *sql.DB, table string) ([]Index, error) {
-	rows, err := db.Query(`SELECT name, "unique", origin FROM pragma_index_list(` + quoteSQLString(table) + `)`)
+// pgDeclType reconstructs a declared-type string MapDeclaredType
+// understands from postgres's data_type / udt_name pair. For arrays
+// (data_type == "ARRAY") udt_name is the internal "_elem" form
+// (e.g. "_text"); strip the leading underscore and append "[]".
+func pgDeclType(dataType, udtName string) string {
+	if strings.EqualFold(dataType, "ARRAY") {
+		elem := strings.TrimPrefix(udtName, "_")
+		return strings.ToUpper(elem) + "[]"
+	}
+	return strings.ToUpper(udtName)
+}
+
+// introspectPrimaryKey returns the primary-key column names in key order.
+func introspectPrimaryKey(ctx context.Context, db *sql.DB, schema, table string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT kcu.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		  AND tc.table_schema = kcu.table_schema
+		WHERE tc.constraint_type = 'PRIMARY KEY'
+		  AND tc.table_schema = $1
+		  AND tc.table_name = $2
+		ORDER BY kcu.ordinal_position`, schema, table)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var idxs []Index
+	var pks []string
 	for rows.Next() {
-		var (
-			ix     Index
-			unique int
-			origin string
-		)
-		if err := rows.Scan(&ix.Name, &unique, &origin); err != nil {
+		var c string
+		if err := rows.Scan(&c); err != nil {
 			return nil, err
 		}
-		if origin == "pk" {
-			continue
+		pks = append(pks, c)
+	}
+	return pks, rows.Err()
+}
+
+// introspectIndexes returns the non-PK indexes (unique and plain) of a
+// table via pg_catalog, with columns in index order.
+func introspectIndexes(ctx context.Context, db *sql.DB, schema, table string) ([]Index, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT ic.relname AS index_name,
+		       idx.indisunique AS is_unique,
+		       a.attname AS column_name,
+		       array_position(idx.indkey, a.attnum) AS ord
+		FROM pg_class t
+		JOIN pg_namespace n ON n.oid = t.relnamespace
+		JOIN pg_index idx ON idx.indrelid = t.oid
+		JOIN pg_class ic ON ic.oid = idx.indexrelid
+		JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(idx.indkey)
+		WHERE n.nspname = $1
+		  AND t.relname = $2
+		  AND NOT idx.indisprimary
+		ORDER BY ic.relname, ord`, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		order []string
+		byName = map[string]*Index{}
+	)
+	for rows.Next() {
+		var (
+			idxName string
+			unique  bool
+			colName string
+			ord     sql.NullInt64
+		)
+		if err := rows.Scan(&idxName, &unique, &colName, &ord); err != nil {
+			return nil, err
 		}
-		ix.Unique = unique != 0
-		idxs = append(idxs, ix)
+		ix, ok := byName[idxName]
+		if !ok {
+			ix = &Index{Name: idxName, Unique: unique}
+			byName[idxName] = ix
+			order = append(order, idxName)
+		}
+		ix.Columns = append(ix.Columns, colName)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for i := range idxs {
-		crows, err := db.Query(`SELECT name FROM pragma_index_info(` + quoteSQLString(idxs[i].Name) + `) ORDER BY seqno`)
-		if err != nil {
-			return nil, err
-		}
-		for crows.Next() {
-			var cn sql.NullString
-			if err := crows.Scan(&cn); err != nil {
-				_ = crows.Close()
-				return nil, err
-			}
-			if cn.Valid {
-				idxs[i].Columns = append(idxs[i].Columns, cn.String)
-			}
-		}
-		cerr := crows.Err()
-		_ = crows.Close()
-		if cerr != nil {
-			return nil, cerr
-		}
+	idxs := make([]Index, 0, len(order))
+	for _, n := range order {
+		idxs = append(idxs, *byName[n])
 	}
 	return idxs, nil
 }
 
-func introspectForeignKeys(db *sql.DB, table string) ([]ForeignKey, error) {
-	rows, err := db.Query(`SELECT "table", "from", "to" FROM pragma_foreign_key_list(` + quoteSQLString(table) + `)`)
+// introspectForeignKeys returns the declared REFERENCES constraints of a
+// table via information_schema.
+func introspectForeignKeys(ctx context.Context, db *sql.DB, schema, table string) ([]ForeignKey, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT kcu.column_name,
+		       ccu.table_name AS ref_table,
+		       ccu.column_name AS ref_column
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		  AND tc.table_schema = kcu.table_schema
+		JOIN information_schema.constraint_column_usage ccu
+		  ON tc.constraint_name = ccu.constraint_name
+		  AND tc.table_schema = ccu.table_schema
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = $1
+		  AND tc.table_name = $2
+		ORDER BY kcu.ordinal_position`, schema, table)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	var fks []ForeignKey
 	for rows.Next() {
-		var (
-			fk ForeignKey
-			to sql.NullString
-		)
-		if err := rows.Scan(&fk.RefTable, &fk.Column, &to); err != nil {
+		var fk ForeignKey
+		if err := rows.Scan(&fk.Column, &fk.RefTable, &fk.RefColumn); err != nil {
 			return nil, err
 		}
-		fk.RefColumn = "id"
-		if to.Valid && to.String != "" {
-			fk.RefColumn = to.String
+		if fk.RefColumn == "" {
+			fk.RefColumn = "id"
 		}
 		fks = append(fks, fk)
 	}
 	return fks, rows.Err()
-}
-
-// quoteSQLString single-quotes a value for inline use in the pragma
-// table-valued functions (the modernc driver does not bind parameters
-// inside pragma_* calls).
-func quoteSQLString(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // MapDeclaredType maps a declared SQL column type to the canonical
@@ -679,7 +701,7 @@ func quoteSQLString(s string) string {
 //	TIMESTAMPTZ, TIMESTAMP[ WITH(OUT) TIME ZONE], DATE, DATETIME → time
 //	JSONB, JSON                                  → json
 //	BYTEA, BLOB                                  → bytes
-//	anything else (incl. SQLite's untyped "")    → string
+//	anything else (incl. an empty/unknown udt)   → string
 func MapDeclaredType(decl string) (CanonicalType, bool) {
 	d := strings.ToUpper(strings.TrimSpace(decl))
 	isArray := false

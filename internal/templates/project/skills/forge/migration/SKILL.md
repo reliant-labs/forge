@@ -125,8 +125,8 @@ Copy the migrations over as-is, then decide per table:
   plain schema, invisible to the CRUD/frontend projections.
 
 One gotcha: the shadow apply (and your project's tests via
-`pkg/testkit`) run the migrations on in-memory SQLite, so table-defining
-DDL must stay in the portable pg/sqlite subset — `DEFAULT (now())`
+`pkg/testkit`) run the migrations on a real ephemeral postgres, so just
+write plain postgres DDL — `DEFAULT (now())`
 parenthesized, no `::type` casts. Postgres-only auxiliary DDL
 (extensions, functions, triggers, comments) is skipped harmlessly; a
 failing `CREATE/ALTER/DROP TABLE` is a hard generate error you fix in a

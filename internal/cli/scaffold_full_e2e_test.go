@@ -32,6 +32,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Exact invocation from the spec. Any deviation here reduces the value
 	// of this test as a user-facing regression guard.

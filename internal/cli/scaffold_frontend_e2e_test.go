@@ -39,6 +39,7 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
 		"new", "feapp",

@@ -44,7 +44,7 @@ import (
 )
 
 // ─── Claims ownership ───────────────────────────────────────────────
-//
+
 // Claims is the canonical claims type used throughout the application.
 // It is a type alias for auth.Claims so library code (the generated
 // auth interceptor in auth_gen.go, pkg/authn, pkg/authz, the tenant

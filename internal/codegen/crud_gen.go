@@ -1350,49 +1350,79 @@ func ensureDepsDBField(serviceDir string) error {
 	}
 
 	content := string(data)
+	original := content
 
-	// If the Deps struct already has a DB field, nothing to do.
-	if strings.Contains(content, "DB ") && (strings.Contains(content, "orm.Context") || strings.Contains(content, "orm.Client")) {
-		return nil
-	}
-
-	// Find the Deps struct and inject the DB field after the opening line.
-	marker := "// Add your dependencies here."
-	if !strings.Contains(content, marker) {
-		// Try to find the Deps struct opening brace
-		marker = "type Deps struct {"
-		idx := strings.Index(content, marker)
-		if idx < 0 {
-			return nil // Can't find Deps struct, skip
+	// If the Deps struct doesn't have a DB field yet, inject it.
+	if !(strings.Contains(content, "DB ") && (strings.Contains(content, "orm.Context") || strings.Contains(content, "orm.Client"))) {
+		// Find the Deps struct and inject the DB field after the opening line.
+		marker := "// Add your dependencies here."
+		if !strings.Contains(content, marker) {
+			// Try to find the Deps struct opening brace
+			marker = "type Deps struct {"
+			idx := strings.Index(content, marker)
+			if idx < 0 {
+				return nil // Can't find Deps struct, skip
+			}
+			// Insert after the opening brace line
+			newlineIdx := strings.Index(content[idx:], "\n")
+			if newlineIdx < 0 {
+				return nil
+			}
+			insertPos := idx + newlineIdx + 1
+			dbField := "\tDB         orm.Context\n"
+			content = content[:insertPos] + dbField + content[insertPos:]
+		} else {
+			// Insert the DB field before the marker comment
+			content = strings.Replace(content, marker, "DB         orm.Context\n\t"+marker, 1)
 		}
-		// Insert after the opening brace line
-		newlineIdx := strings.Index(content[idx:], "\n")
-		if newlineIdx < 0 {
-			return nil
-		}
-		insertPos := idx + newlineIdx + 1
-		dbField := "\tDB         orm.Context\n"
-		content = content[:insertPos] + dbField + content[insertPos:]
-	} else {
-		// Insert the DB field before the marker comment
-		content = strings.Replace(content, marker, "DB         orm.Context\n\t"+marker, 1)
-	}
 
-	// Ensure the orm import is present
-	if !strings.Contains(content, "\"github.com/reliant-labs/forge/pkg/orm\"") {
-		// Find the import block and add the orm import
-		importIdx := strings.Index(content, "import (")
-		if importIdx >= 0 {
-			// Find the closing paren of the import block
-			closingIdx := strings.Index(content[importIdx:], ")")
-			if closingIdx >= 0 {
-				insertPos := importIdx + closingIdx
-				content = content[:insertPos] + "\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n" + content[insertPos:]
+		// Ensure the orm import is present
+		if !strings.Contains(content, "\"github.com/reliant-labs/forge/pkg/orm\"") {
+			// Find the import block and add the orm import
+			importIdx := strings.Index(content, "import (")
+			if importIdx >= 0 {
+				// Find the closing paren of the import block
+				closingIdx := strings.Index(content[importIdx:], ")")
+				if closingIdx >= 0 {
+					insertPos := importIdx + closingIdx
+					content = content[:insertPos] + "\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n" + content[insertPos:]
+				}
 			}
 		}
 	}
 
+	// The DB field is REQUIRED for the generated CRUD handlers — gate it
+	// in validateDeps so a missing database fails at boot with an
+	// actionable error, not as a nil-interface panic on the first RPC.
+	// (wire_gen passes a true nil interface via app.ORMContext(), so this
+	// check actually fires.) Inject at the scaffold's extension marker;
+	// services whose validateDeps was rewritten by hand are left alone —
+	// the marker is the opt-in surface.
+	content = injectValidateDepsDBCheck(content)
+
+	if content == original {
+		return nil
+	}
 	return os.WriteFile(servicePath, []byte(content), 0644)
+}
+
+// injectValidateDepsDBCheck inserts `if d.DB == nil { ... }` into the
+// scaffolded validateDeps() ahead of the "Add checks" marker comment.
+// No-ops when the check (any `d.DB == nil` mention) already exists or
+// the marker is gone (user-rewritten validateDeps).
+func injectValidateDepsDBCheck(content string) string {
+	if strings.Contains(content, "d.DB == nil") {
+		return content
+	}
+	const marker = "// Add checks for your required Deps fields here."
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return content
+	}
+	check := "if d.DB == nil {\n" +
+		"\t\treturn fmt.Errorf(\"Deps.DB is required by the generated CRUD handlers — set DATABASE_URL (the generated bootstrap constructs the ORM client from it)\")\n" +
+		"\t}\n\t"
+	return content[:idx] + check + content[idx:]
 }
 
 // operationToAuthAction maps a CRUD operation to the middleware action constant.

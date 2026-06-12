@@ -686,6 +686,12 @@ func writeParsedTableComment(sb *strings.Builder, t ParsedTable) {
 
 // ProtoToSQL maps a proto type to a PostgreSQL type.
 func ProtoToSQL(protoType string) string {
+	// Repeated scalars are stored as JSON columns (JSONB on postgres,
+	// TEXT-affinity JSON on sqlite) — see internal/generator's
+	// mapProtoToSQL for the canonical mapping.
+	if strings.HasPrefix(strings.ToLower(protoType), "repeated ") {
+		return "JSONB"
+	}
 	switch strings.ToLower(protoType) {
 	case "string":
 		return "TEXT"

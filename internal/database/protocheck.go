@@ -125,9 +125,13 @@ func CompareSchemaToEntities(tables []Table, entities []ProtoEntity) CheckResult
 				continue
 			}
 
-			// Check type compatibility.
+			// Check type compatibility. Repeated scalar fields are stored
+			// as JSON columns (jsonb on postgres, TEXT on sqlite-shaped
+			// schemas) — a json/jsonb column is the CORRECT storage for
+			// `repeated string` etc., not a mismatch.
 			expectedProto, _ := SQLToProtoType(col.Type, col.UDTName)
-			if !protoTypesCompatible(expectedProto, pf.ProtoType) {
+			repeatedAsJSON := strings.HasPrefix(pf.ProtoType, "repeated ") && isJSONColumnType(col.Type, col.UDTName)
+			if !protoTypesCompatible(expectedProto, pf.ProtoType) && !repeatedAsJSON {
 				result.Diffs = append(result.Diffs, Diff{
 					Table:  table.Name,
 					Kind:   "type_mismatch",
@@ -162,6 +166,20 @@ func CompareSchemaToEntities(tables []Table, entities []ProtoEntity) CheckResult
 	}
 
 	return result
+}
+
+// isJSONColumnType reports whether a DB column type is a JSON store —
+// the storage representation of repeated scalar entity fields.
+func isJSONColumnType(sqlType, udtName string) bool {
+	switch strings.ToLower(sqlType) {
+	case "json", "jsonb":
+		return true
+	}
+	switch strings.ToLower(udtName) {
+	case "json", "jsonb":
+		return true
+	}
+	return false
 }
 
 // protoTypesCompatible checks if two proto type strings are compatible.

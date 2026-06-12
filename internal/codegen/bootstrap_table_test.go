@@ -50,7 +50,7 @@ func renderRepresentativeBootstrap(t *testing.T) string {
 	webhookServices := map[string]bool{"adminserver": true}
 
 	features := BootstrapFeatures{DiagnosticsEnabled: true, StrictWiringEnabled: true}
-	if err := GenerateBootstrap(services, packages, workers, operators, "example.com/proj", false, false, targetDir, nil, webhookServices, features, nil); err != nil {
+	if err := GenerateBootstrap(services, packages, workers, operators, "example.com/proj", "", false, targetDir, nil, webhookServices, features, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -78,7 +78,7 @@ func renderRepresentativeServiceRows(t *testing.T) string {
 	}
 	webhookServices := map[string]bool{"adminserver": true}
 	features := BootstrapFeatures{DiagnosticsEnabled: true, StrictWiringEnabled: true}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, features, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, webhookServices, features, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
@@ -272,7 +272,7 @@ func TestBootstrapTable_ShrinksRenderedOutput(t *testing.T) {
 func TestBootstrapTable_MinimalConfig_Parses(t *testing.T) {
 	targetDir := t.TempDir()
 	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
@@ -307,7 +307,7 @@ func TestBootstrapTable_MinimalConfig_Parses(t *testing.T) {
 // just Setup + Hooks and everything still parses.
 func TestBootstrapTable_NoComponents_Parses(t *testing.T) {
 	targetDir := t.TempDir()
-	if err := GenerateBootstrap(nil, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(nil, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))

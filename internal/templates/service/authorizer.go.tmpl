@@ -8,9 +8,12 @@ import (
 
 // Authorizer handles access control for the {{.ServiceName}} service.
 //
-// By default it delegates to the GeneratedAuthorizer which uses role
-// annotations from proto method options. Override the methods below to
-// add custom authorization logic beyond the generated role checks.
+// By default it delegates to the GeneratedAuthorizer, whose tables carry
+// the (forge.v1.method).auth_required flags from the proto. Role policy
+// is NOT proto-driven (there is no required_roles annotation) — this
+// file is where it lives: override the methods below to add role checks
+// or any other custom authorization logic. forge generate never touches
+// this file.
 type Authorizer struct {
 	generated *GeneratedAuthorizer
 }

@@ -9,12 +9,14 @@ Workers are long-running background processes that don't serve HTTP but particip
 
 ## Naming
 
-Worker names canonicalize to lowercase with `-` and `_` stripped. The canonical form is what appears on disk, in the Go package decl, in `wire_gen.go` imports, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
+Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, in `wire_gen.go` imports, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
 
-- `forge add worker calibrator_refit` → directory `workers/calibratorrefit/`, `package calibratorrefit`, `path: workers/calibratorrefit` in `forge.yaml`.
-- `forge add worker email-sender` → directory `workers/emailsender/`, `package emailsender`, `path: workers/emailsender`.
+- `forge add worker calibrator_refit` → directory `workers/calibrator_refit/`, `package calibrator_refit`, `path: workers/calibrator_refit` in `forge.yaml`.
+- `forge add worker email-sender` → directory `workers/email_sender/`, `package email_sender`, `path: workers/email_sender`.
 
-**Migrating from a non-forge codebase:** if you have existing worker directories named `snake_case` or `kebab-case`, rename them to the canonical form *before* running `forge generate`. Otherwise `forge generate` will write `bootstrap.go` / `wire_gen.go` imports pointing at the canonical name (e.g. `workers/calibratorrefit`) while the code lives under the original (`workers/calibrator_refit/`), and the build will fail with missing-package errors. The canonical form in `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+(Compact form with separators stripped — `workers/calibratorrefit/` — is a dead pre-2026-06-08 convention; do not create new directories in that shape.)
+
+**Migrating from a non-forge codebase:** if you have existing worker directories named `kebab-case` or compact, rename them to the canonical snake_case form *before* running `forge generate`. Otherwise `forge generate` will write `bootstrap.go` / `wire_gen.go` imports pointing at the canonical name (e.g. `workers/calibrator_refit`) while the code lives under the original (`workers/calibrator-refit/`), and the build will fail with missing-package errors. The canonical form in `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
 
 ## Adding a Worker
 
@@ -142,16 +144,26 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ## Adding Dependencies
 
-Extend the `Deps` struct in the worker file, then wire them in `pkg/app/setup.go`:
+Extend the `Deps` struct in the worker file, then rerun `forge generate` —
+the generated `pkg/app/wire_gen.go` resolves each Deps field automatically.
+You do **not** hand-wire Deps anywhere:
 
 ```go
 type Deps struct {
-    Logger *slog.Logger
-    Config *config.Config
-    DB     *sql.DB
-    Queue  *queue.Client
+    Logger *slog.Logger    // auto: logger.With("service", ...)
+    Config *config.Config  // auto: the loaded config
+    DB     orm.Context     // auto: app.ORMContext() when the ORM is enabled
+    Queue  *queue.Client   // auto: matched to an exported App field named Queue
 }
 ```
+
+For a custom collaborator like `Queue`, construct the infrastructure in
+user-owned `pkg/app/setup.go` and assign it to an exported `*App` field
+with the **same name** as the Deps field (`app.Queue = ...`); wire_gen
+matches by exact field name on the next `forge generate`. A Deps field
+with no matching App field gets a typed zero value plus a TODO warning
+at generate time. See `pkg/app/CONVENTIONS.md` for the full resolution
+rules. Never edit `wire_gen.go` itself — it is regenerated every run.
 
 ## Late-bound dependencies between workers
 
@@ -193,7 +205,7 @@ func TestWorkerProcessesMessage(t *testing.T) {
 
 - `Start()` must respect context cancellation — always select on `ctx.Done()`.
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
-- Worker names canonicalize to lowercase with `-` and `_` stripped — see the Naming section. On-disk directories must match the canonical form.
+- Worker names canonicalize to lowercase snake_case (`email-sender` → `email_sender`) — see the Naming section. On-disk directories must match the canonical form.
 - Use `forge add worker`, not manual directory creation.
-- `bootstrap.go` is regenerated — wire custom dependencies in `setup.go`.
+- `bootstrap.go` and `wire_gen.go` are regenerated — never edit them. Custom Deps fields are auto-resolved by wire_gen against exported `*App` fields; `setup.go` (user-owned) is where you construct the infrastructure and assign those App fields.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

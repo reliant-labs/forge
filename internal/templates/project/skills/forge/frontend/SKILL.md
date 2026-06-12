@@ -23,7 +23,7 @@ Generated TypeScript clients live in `gen/` at the project root, shared across a
 
 ### Production build shape (`output:`)
 
-`forge add frontend` emits a `next.config.ts` configured for the common forge shape: a Next.js shell that calls a Go backend via Connect RPC. The default is **static export** — production builds emit `out/` (HTML + JS + CSS) that drops straight onto a CDN or object store. No Node runtime in prod → smaller attack surface, free edge caching, no Node image to patch.
+`forge add frontend` emits a `next.config.ts` configured for the common forge shape: a Next.js shell that calls a Go backend via Connect RPC. The default is **standalone** — production builds emit a self-contained Node server at `.next/standalone/server.js`, which is the shape the shipped Dockerfile copies into its runner image, and the only default that builds with the dynamic `[id]` detail/edit routes forge generates for every CRUD entity.
 
 The choice is captured in `forge.yaml`:
 
@@ -33,26 +33,28 @@ frontends:
     type: nextjs
     path: frontends/admin
     port: 3000
-    output: static       # default — production = static export, dev = next dev
+    output: standalone   # default — production = Node server, dev = next dev
 ```
 
 Three values are accepted:
 
 | `output:`    | Production shape                            | Use when                                                                          |
 | ------------ | ------------------------------------------- | --------------------------------------------------------------------------------- |
-| `static`     | Static export (`output: "export"`)          | Pure UI shell — all data/auth/logic in a backend (the default for forge projects). |
-| `standalone` | Node sidecar (`output: "standalone"`)       | Server components, server actions, request-time `redirect()` / `cookies()`.        |
+| `standalone` | Node sidecar (`output: "standalone"`)       | The default. Pairs with the shipped Dockerfile; supports the generated dynamic CRUD routes, server components, server actions, request-time `redirect()` / `cookies()`. |
+| `static`     | Static export (`output: "export"`)          | Pure UI shell with NO dynamic routes — drop `out/` on a CDN or object store.       |
 | `server`     | Full Next.js (no `output:` field)           | Custom server, ISR, managed host (Vercel) where you want `next start` semantics.   |
 
 Opt into a non-default at scaffold time:
 
 ```bash
-forge add frontend dashboard --output standalone
+forge add frontend dashboard --output static
 ```
 
-The Dockerfile the scaffold ships is sized for `standalone`. Static deployments can ignore (or delete) it — the production artifact is the contents of `out/`. The `output:` field only takes effect at scaffold time; `next.config.ts` is Tier-2 (yours to edit after scaffold) so changing the YAML later does not retroactively rewrite the file.
+**`static` is incompatible with generated CRUD pages.** `output: "export"` requires `generateStaticParams()` on every dynamic route segment, and the generated detail/edit pages (`/<entity>/[id]`) are dynamic client routes whose ids only exist at runtime — `npm run build` fails on any project with a CRUD entity. Choose `static` only when the frontend has no dynamic routes (or you hand-write static params). The production artifact is then the contents of `out/`; the shipped Dockerfile (sized for `standalone`) can be ignored or deleted.
 
-If a frontend uses server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) it MUST use `output: standalone` or `output: server` — those calls don't work in a static export. The scaffolded `app/page.tsx` (entity tile grid) and `app/layout.tsx` do not use server-only APIs and work under the static default unchanged.
+The `output:` field only takes effect at scaffold time; `next.config.ts` is Tier-2 (yours to edit after scaffold) so changing the YAML later does not retroactively rewrite the file — re-scaffold with `forge generate --force` or hand-edit.
+
+If a frontend uses server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) it MUST use `output: standalone` (the default) or `output: server` — those calls don't work in a static export.
 
 For a root-route redirect (e.g. `/` → `/dashboard`) under static export, do NOT use `redirect()` from `next/navigation` — it requires the Next.js server runtime. Use a client component with `useRouter().replace()`:
 

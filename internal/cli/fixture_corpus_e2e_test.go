@@ -91,6 +91,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -1759,6 +1760,16 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	// ── 1. generate ×2 — idempotent with an entity in play ───────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
 
+	// features.deploy is shape-derived for service projects: the scaffold
+	// ships deploy/kcl/dev/main.k importing deploy.kcl.dev.config_gen, so
+	// a pristine generate MUST emit that file or the scaffold's own KCL
+	// import is unresolvable and `forge run` can't compose per-env config
+	// (the J1 features.deploy catch-22: gate said deploy=false, schema
+	// rejected features.deploy, main.k imported the never-generated file).
+	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", "dev", "config_gen.k")); err != nil {
+		t.Errorf("pristine generate did not emit deploy/kcl/dev/config_gen.k — the scaffold's own deploy/kcl/dev/main.k import is unresolvable (features.deploy catch-22): %v", err)
+	}
+
 	handlerDir := filepath.Join(projectDir, "handlers", "item")
 
 	// ── 2. projection vs implementation split ────────────────────────
@@ -1902,6 +1913,15 @@ UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
 	bootHealthzAndShutdown(t, projectDir,
 		"DATABASE_URL=file:"+filepath.Join(t.TempDir(), "corpus-boot.db"))
 
+	// ── 8b. dev mode is usable with ZERO auth config: a real Connect
+	// CRUD call over HTTP, with NO token, NO auth pack, NO AUTH_MODE —
+	// just ENVIRONMENT=development. The authn passthrough must attach
+	// the project's synthetic dev principal (devClaims hook), so the
+	// auth-required generated CRUD path (middleware.GetUser) succeeds.
+	// This was the J1 day-one rage-quit: forge run + browser = 401 on
+	// every RPC until the user reverse-engineered the jwt-auth pack.
+	bootDevCRUDNoToken(t, projectDir)
+
 	// ── 9. and WITHOUT a database it fails AT BOOT, loudly ───────────
 	// validateDeps (not the first RPC) is the gate: wire_gen passes a
 	// true nil orm.Context via app.ORMContext(), the injected
@@ -1953,6 +1973,83 @@ func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 	_ = os.Remove(serverBin)
 }
 
+// bootDevCRUDNoToken boots the corpus server in dev mode (ENVIRONMENT=
+// development, NO AUTH_MODE, no token, no pack) against a real sqlite
+// file and makes a real Connect JSON call to an auth-required CRUD RPC.
+// Pins the zero-config dev path end-to-end: authn passthrough attaches
+// the scaffold's synthetic dev principal (the devClaims hook in
+// pkg/middleware), middleware.GetUser finds claims, the dev authorizer
+// allows, and the row round-trips.
+func bootDevCRUDNoToken(t *testing.T, projectDir string) {
+	t.Helper()
+	port := freePortE2E(t)
+
+	serverBin := filepath.Join(projectDir, "corpus-server")
+	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+
+	cmd := exec.Command(serverBin, "server")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PORT=%d", port),
+		"DATABASE_URL=file:"+filepath.Join(t.TempDir(), "corpus-devclaims.db"),
+		"ENVIRONMENT=development",
+	)
+	// Dev mode ALONE must be enough — force AUTH_MODE empty in case the
+	// host shell leaked one.
+	cmd.Env = withForcedEnv(cmd.Env, "AUTH_MODE", "")
+	var serverOut strings.Builder
+	cmd.Stdout = &serverOut
+	cmd.Stderr = &serverOut
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start dev-mode server: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		_ = os.Remove(serverBin)
+	}()
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if !waitForServer(t, base+"/healthz", 15*time.Second) {
+		t.Fatalf("dev-mode server did not become ready\noutput:\n%s", serverOut.String())
+	}
+
+	resp, err := http.Post(
+		base+"/services.item.v1.ItemService/CreateItem",
+		"application/json",
+		strings.NewReader(`{"name":"dev-claims-proof","description":"no token attached"}`),
+	)
+	if err != nil {
+		t.Fatalf("POST CreateItem (no token, dev mode): %v", err)
+	}
+	defer resp.Body.Close()
+	var body strings.Builder
+	_, _ = io.Copy(&body, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dev-mode CreateItem without a token = HTTP %d, want 200 — the zero-config dev path is broken (devClaims not attached?)\nresponse: %s\nserver output:\n%s",
+			resp.StatusCode, body.String(), serverOut.String())
+	}
+	var created struct {
+		Item struct {
+			Id   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(body.String()), &created); err != nil {
+		t.Fatalf("parse CreateItem response %q: %v", body.String(), err)
+	}
+	if created.Item.Id == "" || created.Item.Name != "dev-claims-proof" {
+		t.Errorf("dev-mode CreateItem response missing the created row: %s", body.String())
+	}
+}
+
 // appendToCorpusFile appends content to an existing file — used to add
 // explicit override sections (e.g. database.driver) to the minimal
 // scaffolded forge.yaml, whose derived-default sections aren't written
@@ -1979,6 +2076,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	pb "example.com/crudlife/gen/services/item/v1"
 	"example.com/crudlife/internal/db"
@@ -2025,8 +2123,47 @@ func TestCorpusBookmarkLifecycle(t *testing.T) {
 		t.Error("created_at nil — managed-timestamp convention (created_at+updated_at columns) not honored")
 	}
 
-	// ── update mutates the repeated field ─────────────────────────────
-	upd := gr.Msg.GetBookmark()
+	// ── AIP-134 masked update: ONLY fields named in update_mask are
+	// written. The submitted entity deliberately carries clobber values
+	// for url and tags; the mask names only title — a masked
+	// title-update must leave url/tags intact. This is the silent-data-
+	// loss vector the J1 journey hit (updating title NULLED url+tags).
+	if _, err := svc.UpdateBookmark(ctx, connect.NewRequest(&pb.UpdateBookmarkRequest{
+		Bookmark: &pb.Bookmark{
+			Id:    id,
+			Title: "masked-title",
+			Url:   "https://evil.example/clobber",
+			Tags:  []string{"clobbered"},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"title"}},
+	})); err != nil {
+		t.Fatalf("masked update (paths=[title]): %v", err)
+	}
+	grm, err := svc.GetBookmark(ctx, connect.NewRequest(&pb.GetBookmarkRequest{Id: id}))
+	if err != nil {
+		t.Fatalf("get after masked update: %v", err)
+	}
+	if got := grm.Msg.GetBookmark().GetTitle(); got != "masked-title" {
+		t.Errorf("masked update did not write the masked field: title = %q, want %q", got, "masked-title")
+	}
+	if got := grm.Msg.GetBookmark().GetUrl(); got != "https://example.com/a" {
+		t.Errorf("masked title-update CLOBBERED url: %q, want %q — update_mask is being ignored (whole-row write)", got, "https://example.com/a")
+	}
+	if got := grm.Msg.GetBookmark().GetTags(); len(got) != 3 {
+		t.Errorf("masked title-update CLOBBERED tags: %v, want the original 3 — update_mask is being ignored (whole-row write)", got)
+	}
+
+	// A mask naming an unknown/immutable path is INVALID_ARGUMENT, not a
+	// silent partial write.
+	if _, err := svc.UpdateBookmark(ctx, connect.NewRequest(&pb.UpdateBookmarkRequest{
+		Bookmark:   &pb.Bookmark{Id: id, Title: "x"},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"no_such_field"}},
+	})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("masked update with unknown path: err = %v, want InvalidArgument", err)
+	}
+
+	// ── unmasked update = documented full-object replace ─────────────
+	upd := grm.Msg.GetBookmark()
 	upd.Tags = []string{"only-one"}
 	if _, err := svc.UpdateBookmark(ctx, connect.NewRequest(&pb.UpdateBookmarkRequest{Bookmark: upd})); err != nil {
 		t.Fatalf("update bookmark: %v", err)

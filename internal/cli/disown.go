@@ -78,8 +78,8 @@ Example:
 		},
 	}
 
-	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded per path in .forge/friction.jsonl)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/checksums.json")
+	cmd.Flags().StringVar(&reason, "reason", "", "WHY forge's generated code couldn't express what you needed (required; recorded in .forge/disowned.json and .forge/friction.jsonl)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would change without writing .forge/disowned.json")
 
 	return cmd
 }
@@ -102,53 +102,47 @@ func runDisown(args []string, reason string, dryRun bool) error {
 	cs, err := checksums.Load(root)
 	if err != nil {
 		return cliutil.WrapUserErr("forge disown",
-			"failed to load .forge/checksums.json", "",
-			"verify the file is valid JSON; if it was hand-edited, restore it from git", err)
+			"failed to load the .forge ownership state", "",
+			"verify .forge/disowned.json and .forge/hashes.json are valid JSON; if hand-edited, restore them from git", err)
 	}
 
 	// Validate the full target set up-front so a typo on path 3 doesn't
-	// half-apply paths 1-2.
-	var unknown, notTier1, missing, targets, alreadyDisowned []string
+	// half-apply paths 1-2. Ownership is read from the files themselves:
+	// any path carrying forge's certification (an embedded forge:hash
+	// marker or a scoped .forge/hashes.json entry) is disownable — by
+	// construction this covers EVERY generated path, with no registry to
+	// fall out of date (the fr-4dfef712e9 class).
+	var unknown, missing, targets, alreadyDisowned []string
 	for _, raw := range args {
-		path := normalizeUnforkPath(raw)
-		entry, ok := cs.Files[path]
-		if !ok {
-			unknown = append(unknown, path)
-			continue
-		}
-		if entry.Disowned {
+		path := normalizeProjectRelPath(raw)
+		if cs.IsDisowned(path) {
 			alreadyDisowned = append(alreadyDisowned, path)
 			continue
 		}
-		// Legacy forked entries are Tier-1 by recording; disowning one is
-		// exactly the conversion the migration performs, so allow it.
-		if !isTier1Entry(entry) {
-			notTier1 = append(notTier1, path)
+		content, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if readErr != nil {
+			missing = append(missing, path)
 			continue
 		}
-		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(path))); statErr != nil {
-			missing = append(missing, path)
+		_, hasMarker := checksums.ExtractMarker(content)
+		_, hasFallback := cs.Unstampable[path]
+		if !hasMarker && !hasFallback {
+			unknown = append(unknown, path)
 			continue
 		}
 		targets = append(targets, path)
 	}
-	if len(unknown) > 0 {
-		return cliutil.UserErr("forge disown",
-			fmt.Sprintf("%d path(s) not in .forge/checksums.json: %s", len(unknown), strings.Join(unknown, ", ")),
-			"",
-			"disown only operates on tracked forge-generated files; check the path spelling, or run `forge audit` to list tracked entries")
-	}
-	if len(notTier1) > 0 {
-		return cliutil.UserErr("forge disown",
-			fmt.Sprintf("%d path(s) are already user-owned (Tier-2 scaffolds): %s", len(notTier1), strings.Join(notTier1, ", ")),
-			"",
-			"Tier-2 files are yours from the moment forge scaffolds them — there is nothing to disown")
-	}
 	if len(missing) > 0 {
 		return cliutil.UserErr("forge disown",
-			fmt.Sprintf("%d path(s) are tracked but missing on disk: %s", len(missing), strings.Join(missing, ", ")),
+			fmt.Sprintf("%d path(s) missing on disk: %s", len(missing), strings.Join(missing, ", ")),
 			"",
 			"disown records the on-disk content as yours — restore the file first (`git checkout -- <path>`), or run `forge generate` to re-emit it")
+	}
+	if len(unknown) > 0 {
+		return cliutil.UserErr("forge disown",
+			fmt.Sprintf("%d path(s) carry no forge certification (no embedded forge:hash marker): %s", len(unknown), strings.Join(unknown, ", ")),
+			"",
+			"only forge-certified (Tier-1) files can be disowned; scaffold-once Tier-2 files are yours from birth — there is nothing to disown. If this is a pre-migration project, run `forge generate` once to migrate off .forge/checksums.json first")
 	}
 
 	sort.Strings(targets)
@@ -169,11 +163,11 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		for _, path := range targets {
 			fmt.Printf("  - %s\n", path)
 		}
-		fmt.Println("\n.forge/checksums.json not modified.")
+		fmt.Println("\nNothing modified.")
 		return nil
 	}
 
-	if err := cs.DisownPaths(root, targets); err != nil {
+	if err := cs.DisownPaths(root, targets, reason); err != nil {
 		return cliutil.WrapUserErr("forge disown",
 			"failed to record disowned content", "",
 			"check read permissions on the named files", err)
@@ -189,7 +183,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 
 	if err := checksums.Save(root, cs); err != nil {
 		return cliutil.WrapUserErr("forge disown",
-			"failed to save .forge/checksums.json", "",
+			"failed to save .forge/disowned.json", "",
 			"check write permissions on .forge/", err)
 	}
 
@@ -200,5 +194,31 @@ func runDisown(args []string, reason string, dryRun bool) error {
 	fmt.Printf("\n✅ Disowned %d file(s). They are yours now — forge will never regenerate or overwrite them.\n", len(targets))
 	fmt.Println("   To return a file to forge ownership later: delete it and run `forge generate` (your content is discarded).")
 	return nil
+}
+
+// normalizeProjectRelPath cleans a user-supplied path so it matches the
+// project-relative POSIX-style keys forge records. Strips a leading
+// "./" and normalizes separators, but leaves the path otherwise
+// unchanged.
+func normalizeProjectRelPath(raw string) string {
+	p := filepath.ToSlash(raw)
+	p = strings.TrimPrefix(p, "./")
+	return p
+}
+
+// uniqueStrings returns the input slice with contiguous duplicates
+// removed. Caller has already sorted the slice so adjacent duplicates
+// catch every repeat.
+func uniqueStrings(s []string) []string {
+	if len(s) < 2 {
+		return s
+	}
+	out := s[:1]
+	for i := 1; i < len(s); i++ {
+		if s[i] != s[i-1] {
+			out = append(out, s[i])
+		}
+	}
+	return out
 }
 

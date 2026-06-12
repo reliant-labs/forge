@@ -1,7 +1,6 @@
 package generator
 
 import (
-	"bytes"
 	"fmt"
 	"go/format"
 	"os"
@@ -757,12 +756,11 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 			})
 			continue
 		}
-		// Disowned entries (and legacy fork-era ones) are user-owned:
-		// upgrade never touches them while the file exists. A missing
-		// file falls through — deletion is the documented re-adoption
-		// path, and upgrade re-emitting it is the same contract as
-		// `forge generate`.
-		if entry, ok := cs.Files[f.destPath]; ok && (entry.Disowned || entry.Forked) {
+		// Disowned entries are user-owned: upgrade never touches them
+		// while the file exists. A missing file falls through — deletion
+		// is the documented re-adoption path, and upgrade re-emitting it
+		// is the same contract as `forge generate`.
+		if cs.IsDisowned(f.destPath) {
 			if _, statErr := os.Stat(filepath.Join(projectDir, f.destPath)); statErr == nil {
 				results = append(results, UpgradeResult{
 					Path:   f.destPath,
@@ -802,8 +800,10 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 			return nil, fmt.Errorf("read %s: %w", f.destPath, err)
 		}
 
-		// Compare rendered template with what's on disk
-		if bytes.Equal(existing, expected) {
+		// Compare rendered template with what's on disk. The on-disk
+		// copy carries an embedded forge:hash marker the raw render
+		// doesn't — compare marker-excluded body hashes.
+		if checksums.BodyHash(existing) == checksums.BodyHash(expected) {
 			results = append(results, UpgradeResult{
 				Path:   f.destPath,
 				Status: UpgradeUpToDate,
@@ -829,18 +829,19 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 		// Tier 2: File differs — check if user has modified it.
 		//
-		// "Modified" means the on-disk content matches neither the
-		// current checksum nor any prior render forge has produced for
-		// this path. The history check is what closes the stale-codegen
-		// gap: when a template is updated and the on-disk file is a
-		// prior render (matches a checksum in history but not the
-		// current one), forge treats it as auto-updateable rather than
-		// flagging it as user-modified. See FileChecksums docs in
-		// checksums.go.
+		// The file is self-certifying: a VERIFYING embedded forge:hash
+		// marker proves the on-disk bytes are an unedited forge render
+		// of some vintage, so the template delta is stale codegen —
+		// auto-updateable without --force. A marker that fails
+		// verification (or no marker at all, for pre-marker projects)
+		// means user-modified. Comment-incapable formats consult the
+		// scoped .forge/hashes.json record instead.
 		diff := simpleDiff(f.destPath, existing, expected)
-		entry, hasChecksum := cs.Files[f.destPath]
-		matchesKnownRender := hasChecksum && cs.MatchesAnyKnownRender(f.destPath, existing)
-		_ = entry // entry retained for future per-entry diagnostics
+		matchesKnownRender := checksums.Verify(existing) == checksums.Pristine
+		if !checksums.Stampable(f.destPath) && cs != nil {
+			recorded, tracked := cs.Unstampable[f.destPath]
+			matchesKnownRender = tracked && checksums.BodyHash(existing) == recorded
+		}
 
 		if matchesKnownRender {
 			// File matches stored checksum or a prior render → user
@@ -891,8 +892,18 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 	return results, nil
 }
 
-// writeManagedFile writes content to a file and records its checksum.
+// writeManagedFile writes a managed file through the certification
+// chokepoint: stampable formats get the embedded forge:hash marker;
+// comment-incapable ones get a scoped .forge/hashes.json record.
 func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) error {
+	if stamped, ok := checksums.Stamp(relPath, content); ok {
+		content = stamped
+	} else if cs != nil {
+		if cs.Unstampable == nil {
+			cs.Unstampable = map[string]string{}
+		}
+		cs.Unstampable[relPath] = checksums.BodyHash(content)
+	}
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
@@ -900,19 +911,13 @@ func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) e
 	if err := os.WriteFile(fullPath, content, 0644); err != nil {
 		return err
 	}
-	cs.RecordFile(relPath, content)
+	checksums.MarkWrittenThisRun(relPath)
 	// A write through the upgrade chokepoint means forge owns the result
 	// again — the only way a disowned entry reaches here is the deletion
 	// re-adoption path (Upgrade skips disowned entries whose file
-	// exists), so clear the user-ownership markers.
-	entry := cs.Files[relPath]
-	if entry.Disowned || entry.Forked {
-		entry.Disowned = false
-		entry.DisownedAt = ""
-		entry.Forked = false
-		entry.Accepted = false
-		entry.ForkedAt = ""
-		cs.Files[relPath] = entry
+	// exists), so clear the ownership-transfer record.
+	if cs != nil {
+		delete(cs.Disowned, relPath)
 	}
 	return nil
 }

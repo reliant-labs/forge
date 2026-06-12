@@ -138,10 +138,10 @@ interface pattern throughout the entire stack.`,
 	// user-owned (Tier-2). Top-level because the drift-guard error
 	// message prints it.
 	rootCmd.AddCommand(newDisownCmd())
-	// `forge unfork` survives ONE release as legacy-fork migration
-	// tooling (also registered under `forge generate unfork` for muscle
-	// memory; see generate.go). Two cobra instances, same implementation.
-	rootCmd.AddCommand(newUnforkCmd())
+	// (`forge unfork`, the legacy-fork migration tool, was removed after
+	// its one-release deprecation window — the legacy-manifest migration
+	// in `forge generate` converts forked entries to disowned
+	// automatically.)
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newMigrateCmd())
 	rootCmd.AddCommand(newNewCmd())

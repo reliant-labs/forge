@@ -70,16 +70,20 @@ type ProjectConfig struct {
 	ModulePath string `yaml:"module_path"`
 	Kind       string `yaml:"kind,omitempty"`   // "service" (default), "cli", "library"
 	Binary     string `yaml:"binary,omitempty"` // "per-service" (default), "shared" — one Go binary, cobra subcommand per service
-	Version    string `yaml:"version"`
+	Version    string `yaml:"version,omitempty"`
 	// ForgeVersion records the forge binary version that this project's
 	// generated artifacts were last produced against. It is set at
 	// `forge new` time, bumped after a successful `forge upgrade`, and
 	// consulted by `forge generate` to warn when the forge binary on
 	// PATH has drifted from the version pinned by the project. Empty
 	// (legacy) projects are treated as "0.0.0".
-	ForgeVersion string           `yaml:"forge_version,omitempty"`
-	HotReload    bool             `yaml:"hot_reload"`
-	Services     []ServiceConfig  `yaml:"services"`
+	ForgeVersion string `yaml:"forge_version,omitempty"`
+	// HotReload toggles the air-based hot-reload dev loop for `forge run`.
+	// *bool so "absent" (nil → derived: on for service kind, off otherwise)
+	// is distinguishable from an explicit `hot_reload: false` opt-out. Use
+	// EffectiveHotReload; don't read the pointer directly.
+	HotReload *bool            `yaml:"hot_reload,omitempty"`
+	Services  []ServiceConfig  `yaml:"services"`
 	Packages     []PackageConfig  `yaml:"packages,omitempty"`
 	Frontends    []FrontendConfig `yaml:"frontends,omitempty"`
 	// Frontend holds project-level frontend settings — distinct from
@@ -89,16 +93,20 @@ type ProjectConfig struct {
 	// frontends (web + mobile) can share generated Connect clients and
 	// React Query hook wrappers. When the flag is false (the default)
 	// forge keeps the historic per-frontend layout exactly as before.
-	Frontend  FrontendProjectConfig `yaml:"frontend,omitempty"`
-	Database  DatabaseConfig        `yaml:"database"`
-	CI        CIConfig              `yaml:"ci"`
-	Deploy    DeployConfig          `yaml:"deploy,omitempty"`
-	Docker    DockerConfig          `yaml:"docker"`
-	K8s       K8sConfig             `yaml:"k8s"`
-	Lint      LintConfig            `yaml:"lint"`
-	Contracts ContractsConfig       `yaml:"contracts"`
-	Auth      AuthConfig            `yaml:"auth"`
-	Docs      DocsConfig            `yaml:"docs"`
+	Frontend FrontendProjectConfig `yaml:"frontend,omitempty"`
+	// The section blocks below are all omitempty: a freshly scaffolded
+	// forge.yaml leaves them absent and the loader fills shape-derived
+	// defaults (see ApplyDerivedDefaults in derive.go). A present block
+	// is taken literally — write the block (or a single key) to override.
+	Database  DatabaseConfig  `yaml:"database,omitempty"`
+	CI        CIConfig        `yaml:"ci,omitempty"`
+	Deploy    DeployConfig    `yaml:"deploy,omitempty"`
+	Docker    DockerConfig    `yaml:"docker,omitempty"`
+	K8s       K8sConfig       `yaml:"k8s,omitempty"`
+	Lint      LintConfig      `yaml:"lint,omitempty"`
+	Contracts ContractsConfig `yaml:"contracts,omitempty"`
+	Auth      AuthConfig      `yaml:"auth,omitempty"`
+	Docs      DocsConfig      `yaml:"docs,omitempty"`
 	Features  FeaturesConfig        `yaml:"features,omitempty"`
 	Stack     StackConfig           `yaml:"stack,omitempty"`
 	// API toggles project-level API protocol skins layered on top of the
@@ -682,13 +690,25 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 
 // FeaturesConfig controls which forge features are active. The `features:`
 // block in forge.yaml gates major subsystems (deploy, build, frontend, packs,
-// starters, ci, docs, observability, ...). All fields are *bool so the
-// loader can distinguish "absent" (nil → default ENABLED, preserving
-// backward compatibility for existing projects without a features: block)
-// from "explicitly false" (the user opted out). Explicit true and nil both
-// resolve to enabled — kept as a permitted shape so a project can write
-// `features: { deploy: true, ... }` for documentation / clarity without
-// changing behavior.
+// starters, ci, docs, observability, ...).
+//
+// THE BLOCK IS AN OVERRIDE SURFACE, NOT REQUIRED CONFIGURATION. Scaffolded
+// forge.yaml files do not contain it. All fields are *bool so the loader can
+// distinguish three states:
+//
+//   - absent (nil): the value is DERIVED from the project shape at load
+//     time — kind (service/cli/library), whether a database driver is
+//     configured, whether the frontends list is non-empty. See
+//     DeriveFeatureDefaults in derive.go for the exact rule per feature.
+//     For the canonical shape (kind=service, postgres, frontends present)
+//     every derived value is "enabled", matching the historical
+//     all-enabled default for projects without a features: block.
+//   - explicitly true / explicitly false: taken literally; derivation
+//     never overrides an explicit value.
+//
+// A FeaturesConfig that was not produced by the config loader (zero value
+// in tests, hand-constructed) has no derivation context and resolves
+// nil → enabled, preserving the historical zero-value semantics.
 //
 // Effect on the CLI surface and codegen pipeline:
 //
@@ -737,6 +757,26 @@ type FeaturesConfig struct {
 	// semantics) when the feature has shipped through enough real
 	// deployments to earn a backwards-compatibility promise.
 	Experimental ExperimentalConfig `yaml:"experimental,omitempty"`
+
+	// derived carries the shape-derived default per stable feature,
+	// resolved by the loader (ApplyDerivedDefaults) from kind / database /
+	// frontends. nil (zero-value FeaturesConfig, hand-constructed in
+	// tests) falls back to the historical "absent = enabled" semantics.
+	// Unexported + yaml-invisible: never serialized, never user-set.
+	derived *derivedFeatureDefaults `yaml:"-"`
+}
+
+// IsZero reports whether the features block carries no explicit user
+// choices — every stable flag nil and no experimental opt-ins. Implements
+// yaml.IsZeroer so `features,omitempty` omits the block entirely from a
+// marshalled forge.yaml when there is nothing explicit to record (the
+// derived field is resolution context, not content).
+func (f FeaturesConfig) IsZero() bool {
+	return f.ORM == nil && f.Codegen == nil && f.Migrations == nil &&
+		f.CI == nil && f.Build == nil && f.Contracts == nil &&
+		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
+		f.HotReload == nil && f.Packs == nil && f.Starters == nil &&
+		f.Diagnostics == nil && f.Experimental == (ExperimentalConfig{})
 }
 
 // ExperimentalConfig gates features that are not yet promised. Fields
@@ -773,9 +813,18 @@ type ExperimentalConfig struct {
 	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
 }
 
-// featureEnabled returns true if the *bool is nil (default) or explicitly true.
-func featureEnabled(b *bool) bool {
-	return b == nil || *b
+// featureEnabled resolves a stable feature flag: an explicit value wins;
+// absent (nil) resolves to the shape-derived default when the loader
+// attached one, else to the historical "absent = enabled" default (zero
+// value FeaturesConfig, hand-constructed in tests, no forge.yaml context).
+func (f FeaturesConfig) featureEnabled(b *bool, pick func(*derivedFeatureDefaults) bool) bool {
+	if b != nil {
+		return *b
+	}
+	if f.derived == nil {
+		return true
+	}
+	return pick(f.derived)
 }
 
 // EffectiveKind returns the project kind, defaulting to "service".
@@ -818,16 +867,24 @@ func (c ProjectConfig) IsLibraryKind() bool { return c.EffectiveKind() == Projec
 func (c ProjectConfig) IsServiceKind() bool { return c.EffectiveKind() == ProjectKindService }
 
 // ORMEnabled reports whether the ORM feature is on (default: on).
-func (f FeaturesConfig) ORMEnabled() bool { return featureEnabled(f.ORM) }
+func (f FeaturesConfig) ORMEnabled() bool {
+	return f.featureEnabled(f.ORM, func(d *derivedFeatureDefaults) bool { return d.orm })
+}
 
 // CodegenEnabled reports whether codegen is on (default: on).
-func (f FeaturesConfig) CodegenEnabled() bool { return featureEnabled(f.Codegen) }
+func (f FeaturesConfig) CodegenEnabled() bool {
+	return f.featureEnabled(f.Codegen, func(d *derivedFeatureDefaults) bool { return d.codegen })
+}
 
 // MigrationsEnabled reports whether the migrations feature is on (default: on).
-func (f FeaturesConfig) MigrationsEnabled() bool { return featureEnabled(f.Migrations) }
+func (f FeaturesConfig) MigrationsEnabled() bool {
+	return f.featureEnabled(f.Migrations, func(d *derivedFeatureDefaults) bool { return d.migrations })
+}
 
 // CIEnabled reports whether the CI feature is on (default: on).
-func (f FeaturesConfig) CIEnabled() bool { return featureEnabled(f.CI) }
+func (f FeaturesConfig) CIEnabled() bool {
+	return f.featureEnabled(f.CI, func(d *derivedFeatureDefaults) bool { return d.ci })
+}
 
 // DeployEnabled reports whether the deploy feature is on (default: OFF
 // — opt-in under `features.experimental.deploy: true`). Lives under
@@ -836,33 +893,49 @@ func (f FeaturesConfig) CIEnabled() bool { return featureEnabled(f.CI) }
 func (f FeaturesConfig) DeployEnabled() bool { return f.Experimental.Deploy }
 
 // ContractsEnabled reports whether contract enforcement is on (default: on).
-func (f FeaturesConfig) ContractsEnabled() bool { return featureEnabled(f.Contracts) }
+func (f FeaturesConfig) ContractsEnabled() bool {
+	return f.featureEnabled(f.Contracts, func(d *derivedFeatureDefaults) bool { return d.contracts })
+}
 
 // DocsEnabled reports whether the docs feature is on (default: on).
-func (f FeaturesConfig) DocsEnabled() bool { return featureEnabled(f.Docs) }
+func (f FeaturesConfig) DocsEnabled() bool {
+	return f.featureEnabled(f.Docs, func(d *derivedFeatureDefaults) bool { return d.docs })
+}
 
 // FrontendEnabled reports whether the frontend feature is on (default: on).
-func (f FeaturesConfig) FrontendEnabled() bool { return featureEnabled(f.Frontend) }
+func (f FeaturesConfig) FrontendEnabled() bool {
+	return f.featureEnabled(f.Frontend, func(d *derivedFeatureDefaults) bool { return d.frontend })
+}
 
 // ObservabilityEnabled reports whether the observability feature is on (default: on).
-func (f FeaturesConfig) ObservabilityEnabled() bool { return featureEnabled(f.Observability) }
+func (f FeaturesConfig) ObservabilityEnabled() bool {
+	return f.featureEnabled(f.Observability, func(d *derivedFeatureDefaults) bool { return d.observability })
+}
 
 // HotReloadEnabled reports whether the hot-reload feature is on (default: on).
-func (f FeaturesConfig) HotReloadEnabled() bool { return featureEnabled(f.HotReload) }
+func (f FeaturesConfig) HotReloadEnabled() bool {
+	return f.featureEnabled(f.HotReload, func(d *derivedFeatureDefaults) bool { return d.hotReload })
+}
 
 // BuildEnabled reports whether `forge build` is enabled (default: on).
 // Direct `forge build` invocations error when off; orchestrators like
 // `forge up` log a skip line and continue.
-func (f FeaturesConfig) BuildEnabled() bool { return featureEnabled(f.Build) }
+func (f FeaturesConfig) BuildEnabled() bool {
+	return f.featureEnabled(f.Build, func(d *derivedFeatureDefaults) bool { return d.build })
+}
 
 // PacksEnabled reports whether the pack subsystem is enabled (default: on).
 // Disables `forge pack list/info/install/remove` and skips the pack
 // generate-hooks step in the codegen pipeline.
-func (f FeaturesConfig) PacksEnabled() bool { return featureEnabled(f.Packs) }
+func (f FeaturesConfig) PacksEnabled() bool {
+	return f.featureEnabled(f.Packs, func(d *derivedFeatureDefaults) bool { return d.packs })
+}
 
 // StartersEnabled reports whether the starter subsystem is enabled
 // (default: on). Disables `forge starter list/add`.
-func (f FeaturesConfig) StartersEnabled() bool { return featureEnabled(f.Starters) }
+func (f FeaturesConfig) StartersEnabled() bool {
+	return f.featureEnabled(f.Starters, func(d *derivedFeatureDefaults) bool { return d.starters })
+}
 
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).
@@ -1119,7 +1192,7 @@ func (s StackConfig) EffectiveDatabaseDriver() string {
 
 // IsProtoEnabled returns whether the proto toolchain is enabled (default: true).
 func (s StackConfig) IsProtoEnabled() bool {
-	return featureEnabled(s.Proto.Enabled)
+	return s.Proto.Enabled == nil || *s.Proto.Enabled
 }
 
 // EffectiveProtoProvider returns the proto provider, defaulting to "buf".

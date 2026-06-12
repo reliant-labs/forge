@@ -129,8 +129,10 @@ func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 
 	// Belt-and-braces: also re-assert the existing invariants so a
 	// future refactor of runAddFrontend can't silently regress them.
-	if cfg.Features.Frontend == nil || !*cfg.Features.Frontend {
-		t.Errorf("features.frontend = %v, want true", cfg.Features.Frontend)
+	// The flag is no longer materialized on disk (it derives from the
+	// non-empty frontends list); the loaded config must resolve it on.
+	if !cfg.Features.FrontendEnabled() {
+		t.Errorf("FrontendEnabled() = false after add frontend, want true (derived from frontends list)")
 	}
 	if len(cfg.Frontends) != 1 || cfg.Frontends[0].Name != "dashboard" {
 		t.Errorf("frontends = %+v, want one entry named 'dashboard'", cfg.Frontends)

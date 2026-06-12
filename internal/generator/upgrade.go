@@ -199,36 +199,18 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
 		{templateName: ".gitignore", destPath: ".gitignore", templated: false, tier: Tier2},
 
-		// Middleware — scaffolded once, then owned by the user.
-		// All eight files are committed to git and protected by checksum so
-		// `forge upgrade` leaves user edits alone. Treating them uniformly
-		// avoids the split-brain footgun where some middleware files were
-		// gitignored and overwritten while others were tracked.
-		{templateName: "middleware-recovery.go", destPath: "pkg/middleware/recovery.go", templated: false, tier: Tier2},
-		{templateName: "middleware-recovery_test.go", destPath: "pkg/middleware/recovery_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-logging.go", destPath: "pkg/middleware/logging.go", templated: false, tier: Tier2},
-		{templateName: "middleware-logging_test.go", destPath: "pkg/middleware/logging_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-http.go", destPath: "pkg/middleware/http.go", templated: false, tier: Tier2},
-		{templateName: "middleware-audit.go", destPath: "pkg/middleware/audit.go", templated: false, tier: Tier2},
-		{templateName: "middleware-authz.go", destPath: "pkg/middleware/authz.go", templated: false, tier: Tier2},
-		{templateName: "middleware-permissive-authz.go", destPath: "pkg/middleware/permissive_authz.go", templated: false, tier: Tier2},
-		{templateName: "middleware-cors.go", destPath: "pkg/middleware/cors.go", templated: false, tier: Tier2},
-		{templateName: "middleware-cors_test.go", destPath: "pkg/middleware/cors_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-auth.go", destPath: "pkg/middleware/auth.go", templated: false, tier: Tier2},
-		{templateName: "middleware-auth_test.go", destPath: "pkg/middleware/auth_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-claims.go", destPath: "pkg/middleware/claims.go", templated: false, tier: Tier2},
-		{templateName: "middleware-security-headers.go", destPath: "pkg/middleware/security_headers.go", templated: false, tier: Tier2},
-		{templateName: "middleware-security-headers_test.go", destPath: "pkg/middleware/security_headers_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-ratelimit.go", destPath: "pkg/middleware/ratelimit.go", templated: false, tier: Tier2},
-		{templateName: "middleware-ratelimit_test.go", destPath: "pkg/middleware/ratelimit_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-requestid.go", destPath: "pkg/middleware/requestid.go", templated: false, tier: Tier2},
-		{templateName: "middleware-requestid_test.go", destPath: "pkg/middleware/requestid_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-idempotency.go", destPath: "pkg/middleware/idempotency.go", templated: false, tier: Tier2},
-		{templateName: "middleware-idempotency_test.go", destPath: "pkg/middleware/idempotency_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-redact.go", destPath: "pkg/middleware/redact.go", templated: false, tier: Tier2},
-		{templateName: "middleware-redact_test.go", destPath: "pkg/middleware/redact_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-logevents.go", destPath: "pkg/middleware/logevents.go", templated: false, tier: Tier2},
-		{templateName: "middleware-trace-handler.go", destPath: "pkg/middleware/trace_handler.go", templated: false, tier: Tier2},
+		// Middleware — the thin auth-policy file + its policy-wiring
+		// test. Scaffolded once, then owned by the user; committed to
+		// git and protected by checksum so `forge upgrade` leaves user
+		// edits alone. The middleware MECHANISMS (auth modes, CORS,
+		// security headers, rate limiting, etc.) live in the forge
+		// libraries (pkg/authn, pkg/authz, pkg/middleware, pkg/observe)
+		// — projects scaffolded before the library split keep their old
+		// pkg/middleware/*.go copies; those files are user-owned and
+		// simply stop being managed here (see the
+		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
+		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2},
+		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2},
 
 		// Alloy config — Tier 1 since it's fully derived from forge.yaml services.
 		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1},

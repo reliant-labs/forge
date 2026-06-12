@@ -102,7 +102,7 @@ func TestTier2ManagedPathsContents(t *testing.T) {
 		"docker-compose.yml",
 		".golangci.yml",
 		".gitignore",
-		"pkg/middleware/auth.go",
+		"pkg/middleware/middleware.go",
 		// One-shot .github scaffolds written only at `forge new` time.
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",

@@ -546,7 +546,6 @@ func (e *TemplateEngine) loadTemplates() error {
 		"service/handlers.go.tmpl",
 		"service/authorizer.go.tmpl",
 		"service/unit_test.go.tmpl",
-		"middleware/auth.go.tmpl",
 		"worker/worker.go.tmpl",
 		"worker/worker_test.go.tmpl",
 		"worker-cron/worker.go.tmpl",

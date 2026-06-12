@@ -135,10 +135,11 @@ func newUpStopCmd() *cobra.Command {
 // cluster). Phases 3-4 are collected into the running-process set and
 // torn down by the Ctrl-C cleanup cascade on exit.
 func runUp(ctx context.Context, opts upOptions) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 	projectDir := projectDirForKCL()
 
 	fmt.Printf("[up] env=%s\n", opts.env)
@@ -160,7 +161,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// RunE for those commands.
 	if !opts.hostOnly {
 		if !opts.noBuild {
-			if !skipFeature(cfg, config.FeatureBuild, "up:build") {
+			if !skipFeature(store, config.FeatureBuild, "up:build") {
 				fmt.Println("\n[up] build phase")
 				if err := upBuildCluster(ctx, cfg, opts.env); err != nil {
 					return fmt.Errorf("build: %w", err)
@@ -168,7 +169,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 			}
 		}
 		if !opts.noDeploy {
-			if !skipFeature(cfg, config.FeatureDeploy, "up:deploy") {
+			if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
 				fmt.Println("\n[up] deploy phase")
 				if err := upDeployCluster(ctx, opts.env); err != nil {
 					return fmt.Errorf("deploy: %w", err)
@@ -199,7 +200,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// Phase 4: frontends. Skipped (with a log line) when
 	// features.frontend: false — the orchestrator otherwise tries to
 	// npm-run-dev a tree that the project never scaffolded.
-	if !skipFeature(cfg, config.FeatureFrontend, "up:frontend") {
+	if !skipFeature(store, config.FeatureFrontend, "up:frontend") {
 		feFailures := upFrontends(ctx, entities, opts.env, opts.background, procs)
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)

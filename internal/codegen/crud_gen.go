@@ -38,6 +38,12 @@ type CRUDTemplateData struct {
 	// file compiling.
 	NeedsCRUDLib bool
 	CRUDMethods  []CRUDMethodTemplateData
+	// Entities carries the per-entity proto<->struct conversion pairs
+	// (<entity>ToProto / <entity>FromProto) emitted alongside the ops.
+	Entities []EntityConvTemplateData
+	// NeedsTimestamppb gates the timestamppb import (set when any
+	// conversion touches a timestamp column).
+	NeedsTimestamppb bool
 }
 
 // CRUDMethodTemplateData holds per-method template data.
@@ -76,6 +82,10 @@ type CRUDMethodTemplateData struct {
 	// so the user (and any future `forge audit`) can spot it.
 	ShapeMismatch  bool
 	MismatchReason string
+	// CreateAssigns are the precomputed `e.X = req.X` statements that
+	// map create-request fields onto the entity struct (with timestamp/
+	// wrapper/array/width conversions baked in).
+	CreateAssigns []string
 }
 
 // CreateFieldData holds a field mapping from a create request to the ORM entity.
@@ -667,34 +677,17 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			}
 		}
 
-		// Collect fields from the create request message for entity construction.
+		// Precompute the create-request -> entity-struct assignments.
 		// Skip on shape mismatch — the stub doesn't reference these.
-		var createFields []CreateFieldData
-		if shapeOK && cm.Operation == "create" && svc.Messages != nil {
-			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
-				for _, f := range fields {
-					goType := ProtoTypeToGoType(f.ProtoType)
-					// Try to get richer GoType from the entity definition
-					for _, ef := range cm.Entity.Fields {
-						if ef.Name == f.Name {
-							goType = ef.GoType
-							break
-						}
-					}
-					kind := DetermineFieldKind(f.ProtoType, goType)
-					var enumGoType string
-					if kind == FieldKindEnum {
-						enumGoType = goType
-					}
-					createFields = append(createFields, CreateFieldData{
-						ProtoGoName:  naming.ToProtoPascalCase(f.Name),
-						EntityGoName: naming.ToProtoPascalCase(f.Name),
-						Kind:         kind,
-						GoType:       goType,
-						EnumGoType:   enumGoType,
-					})
-				}
+		var createAssigns []string
+		if shapeOK && cm.Operation == "create" {
+			m := Method{
+				Name:        cm.Method.Name,
+				InputType:   cm.Method.InputType,
+				OutputType:  cm.Method.OutputType,
+				InputTypeFQ: svc.Package + "." + cm.Method.InputType,
 			}
+			createAssigns = buildCreateAssigns(svc, m, cm.Entity)
 		}
 
 		methods = append(methods, CRUDMethodTemplateData{
@@ -720,7 +713,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			TenantGoName:      cm.Entity.TenantGoName,
 			TenantColumnName:  cm.Entity.TenantColumnName,
 			UpdateEntityField: updateEntityField,
-			CreateFields:      createFields,
+			CreateAssigns:     createAssigns,
 			ShapeMismatch:     !shapeOK,
 			MismatchReason:    shapeReason,
 		})
@@ -757,18 +750,32 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	}
 	needsORM := hasPagination || hasFilters || hasOrderBy || hasTenant
 
+	// One conversion pair per entity referenced by a real (non-stub)
+	// CRUD body.
+	var convs []EntityConvTemplateData
+	seenConv := map[string]bool{}
+	for i, m := range methods {
+		if m.ShapeMismatch || seenConv[m.EntityName] {
+			continue
+		}
+		seenConv[m.EntityName] = true
+		convs = append(convs, BuildEntityConv(svc, crudMethods[i].Entity))
+	}
+
 	return CRUDTemplateData{
-		Package:       pkg,
-		Module:        modulePath,
-		ProtoPackage:  protoPackage,
-		DBPackagePath: modulePath + "/internal/db",
-		HasPagination: hasPagination,
-		HasFilters:    hasFilters,
-		HasOrderBy:    hasOrderBy,
-		NeedsORM:      needsORM,
-		HasTenant:     hasTenant,
-		NeedsCRUDLib:  needsCRUDLib,
-		CRUDMethods:   methods,
+		Package:          pkg,
+		Module:           modulePath,
+		ProtoPackage:     protoPackage,
+		DBPackagePath:    modulePath + "/internal/db",
+		HasPagination:    hasPagination,
+		HasFilters:       hasFilters,
+		HasOrderBy:       hasOrderBy,
+		NeedsORM:         needsORM,
+		HasTenant:        hasTenant,
+		NeedsCRUDLib:     needsCRUDLib,
+		CRUDMethods:      methods,
+		Entities:         convs,
+		NeedsTimestamppb: ConvNeedsTimestamppb(convs),
 	}, nil
 }
 
@@ -1261,36 +1268,28 @@ func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFiel
 		ff.SearchColumns = cols
 		return ff, nil
 	}
-	for _, ef := range entity.Fields {
-		if ef.Name == mf.Name {
+	for _, c := range entity.Columns {
+		if c.Name == mf.Name {
 			return ff, nil
 		}
 	}
 	return ff, fmt.Errorf(
-		"list filter field %q has no matching column on entity %s (declared columns: %s); rename the request field to a declared column, or implement the RPC by hand in a sibling file",
+		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand in a sibling file",
 		mf.Name, entity.Name, entityColumnList(entity))
 }
 
-// entityStringColumns returns the entity's non-PK string column names —
-// the span of a "search" filter.
+// entityStringColumns returns the columns a "search" filter spans: the
+// entity's text columns by convention (SearchColumns is populated from
+// the introspected schema — see schemadef.DetectConventions).
 func entityStringColumns(entity EntityDef) []string {
-	var cols []string
-	for _, ef := range entity.Fields {
-		if ef.Name == entity.PkField {
-			continue
-		}
-		if ef.ProtoType == "string" {
-			cols = append(cols, ef.Name)
-		}
-	}
-	return cols
+	return entity.SearchColumns
 }
 
-// entityColumnList renders the declared column names for diagnostics.
+// entityColumnList renders the applied schema's column names for diagnostics.
 func entityColumnList(entity EntityDef) string {
-	names := make([]string, 0, len(entity.Fields))
-	for _, ef := range entity.Fields {
-		names = append(names, ef.Name)
+	names := make([]string, 0, len(entity.Columns))
+	for _, c := range entity.Columns {
+		names = append(names, c.Name)
 	}
 	return strings.Join(names, ", ")
 }

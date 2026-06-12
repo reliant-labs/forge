@@ -305,9 +305,6 @@ func generateSteps() []GenStep {
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto"},
-		{Name: "ORM generate (proto/db)", Gate: gateORMHasDB, GateReason: "no proto/db/ directory or features.orm=false", Run: stepOrmGenerate, Tag: "codegen"},
-		{Name: "initial migration scaffold", Gate: gateMigrationsHasDB, GateReason: "no proto/db/ directory or features.migrations=false", Run: stepInitialMigration, Tag: "migrations"},
-		{Name: "entity-aware migration", Gate: gateMigrationsHasServices, GateReason: "no proto/services/ directory or features.migrations=false", Run: stepEntityMigration, Tag: "migrations"},
 		{Name: "frontend workspaces scaffold", Gate: gateFrontendEnabled, GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: gateFrontendEnabled, GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
 		{Name: "config loader (proto/config)", Gate: gateCodegenHasConfig, GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
@@ -345,7 +342,6 @@ func generateSteps() []GenStep {
 		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
 		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},
-		{Name: "refresh ORM output mtimes", Gate: gateORMHasDB, GateReason: "no proto/db/ directory or features.orm=false", Run: stepTouchORMOutputs, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
 		{Name: "check disowned-sibling dangling refs", Gate: always, Run: stepCheckDisownedDanglingRefs, Tag: "validate"},
@@ -635,14 +631,6 @@ func gateObservabilityHasCfg(ctx *pipelineContext) bool {
 
 func gateMigrationsHasDBOrServices(ctx *pipelineContext) bool {
 	return (ctx.Cfg == nil || ctx.Cfg.Features.MigrationsEnabled()) && (ctx.HasDB || ctx.HasServices)
-}
-
-func gateMigrationsHasDB(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.MigrationsEnabled()) && ctx.HasDB
-}
-
-func gateMigrationsHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.MigrationsEnabled()) && ctx.HasServices
 }
 
 func gateFrontendEnabled(ctx *pipelineContext) bool {
@@ -1162,55 +1150,6 @@ func stepOpenAPIGenerate(ctx *pipelineContext) error {
 	return nil
 }
 
-// stepOrmGenerate — was Step 2.
-// Runs `protoc-gen-forge` over proto/db/ to emit ORM type aliases. The
-// gate already verified ctx.HasDB, so the inner runner only needs to
-// pre-flight that proto/db has actual .proto files (some scaffolds
-// create the directory with no contents yet).
-func stepOrmGenerate(ctx *pipelineContext) error {
-	if err := runOrmGenerate(ctx.ProjectDir); err != nil {
-		return fmt.Errorf("ORM generation failed: %w", err)
-	}
-	return nil
-}
-
-// stepInitialMigration — was Step 2b.
-// Auto-generate the very first migration when proto/db entities exist
-// but db/migrations is empty. No-op once any migration file exists.
-// Best-effort: failure logs a warning and the pipeline keeps going.
-func stepInitialMigration(ctx *pipelineContext) error {
-	if hasSQLMigrations(ctx.ProjectDir) {
-		return nil
-	}
-	return ctx.warnOrFail("initial migration generation",
-		maybeGenerateInitialMigration(context.Background(), ctx.ProjectDir))
-}
-
-// stepEntityMigration — was Step 2c.
-// Replace the boilerplate "users + posts" placeholder migration with
-// an entity-aware migration generated from proto/services/ entities.
-// The replacement only happens when the on-disk migration is the
-// untouched scaffold; once a user has hand-edited it, we leave it
-// alone.
-func stepEntityMigration(ctx *pipelineContext) error {
-	entityDefs, parseErr := codegen.ParseEntityProtos(ctx.ProjectDir)
-	if parseErr != nil {
-		return ctx.warnOrFail("entity proto parsing for migrations", parseErr)
-	}
-	if len(entityDefs) == 0 || !isBoilerplateMigration(ctx.ProjectDir) {
-		return nil
-	}
-	migDir := filepath.Join(ctx.ProjectDir, "db", "migrations")
-	removeBoilerplateMigrations(migDir)
-	planEntities := codegen.EntityDefsToPlanEntities(entityDefs)
-	if err := ctx.warnOrFail("entity migration generation",
-		generator.GeneratePlanMigrations(ctx.ProjectDir, planEntities)); err != nil {
-		return err
-	}
-	fmt.Printf("  ✅ Generated entity-aware migration (%d tables)\n", len(entityDefs))
-	return nil
-}
-
 // stepFrontendWorkspaces emits the project-level pnpm-workspace
 // scaffolding (pnpm-workspace.yaml + packages/api + packages/hooks)
 // when the project opted into `frontend.workspaces: true`. The
@@ -1471,10 +1410,11 @@ func stepServiceStubs(ctx *pipelineContext) error {
 }
 
 // stepInternalDBORM — was Step 4a.
-// Emit internal/db/types.go + per-entity ORM helpers from entity
-// descriptors. The "service-name fallback" picks any one service to
-// derive the import-path hint; pack-only entities (e.g. stripe in
-// proto/db/v1) resolve via gen/db/v1 and don't need a service hint.
+// Emit internal/db/<entity>_orm.go — entity struct + CRUD helpers —
+// projected from the APPLIED schema (the entity's introspected
+// Columns). The entity struct lives in the same file as its ORM; the
+// old internal/db/types.go proto-alias file is gone (entities are no
+// longer proto messages).
 func stepInternalDBORM(ctx *pipelineContext) error {
 	entities, entErr := codegen.ParseEntityProtos(ctx.ProjectDir)
 	if entErr != nil {
@@ -1483,9 +1423,6 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	// Pick a service-name fallback for entities whose ProtoFile path
-	// doesn't carry one (e.g. legacy callers). Modern descriptors
-	// always populate ProtoFile, so this is a hint-only value.
 	svcName := ""
 	for _, e := range entities {
 		if n := codegen.ServiceNameFromProtoFile(e.ProtoFile); n != "" {
@@ -1494,21 +1431,13 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		}
 	}
 	planEntities := codegen.EntityDefsToPlanEntities(entities)
-	entries := make([]generator.EntityImport, len(entities))
-	for i, e := range entities {
-		entries[i] = generator.EntityImport{
-			Name:      e.Name,
-			ProtoFile: e.ProtoFile,
-		}
-	}
-	if err := ctx.warnOrFail("db types generation",
-		generator.GeneratePlanDBTypesFromEntities(ctx.ProjectDir, ctx.ModulePath, svcName, entries)); err != nil {
-		return err
-	}
 	if err := ctx.warnOrFail("ORM generation",
 		generator.GeneratePlanORM(ctx.ProjectDir, ctx.ModulePath, svcName, planEntities)); err != nil {
 		return err
 	}
+	// The alias file from the proto-entity era; remove so stale aliases
+	// to deleted pb types can't shadow the generated structs.
+	_ = os.Remove(filepath.Join(ctx.ProjectDir, "internal", "db", "types.go"))
 	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
 	return nil
 }
@@ -2024,15 +1953,6 @@ func stepGoimports(ctx *pipelineContext) error {
 		return nil
 	}
 	return ctx.warnOrFail("goimports", runGoimportsOnGenerated(ctx.ProjectDir, ctx.ModulePath))
-}
-
-// stepTouchORMOutputs runs after goimports/rehash to bump the *.pb.orm.go
-// mtimes so they sit at-or-after their *.pb.go siblings. See touchORMOutputs
-// for the rationale (protogen skips no-op writes; protoc-gen-go does not, so
-// stale mtimes spuriously trigger proto-orm-out-of-sync lint).
-func stepTouchORMOutputs(ctx *pipelineContext) error {
-	return ctx.warnOrFail("refresh ORM mtimes",
-		touchORMOutputs(filepath.Join(ctx.ProjectDir, "gen", "db")))
 }
 
 // stepRehashTracked — was Step 8f.1.

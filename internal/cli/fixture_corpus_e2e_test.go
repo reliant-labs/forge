@@ -1603,7 +1603,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 		updated.Name = "renamed"
 		_, uerr := svc.UpdateItem(ctx, connect.NewRequest(&pb.UpdateItemRequest{Item: updated}))
 		if uerr != nil {
-			t.Fatalf("update: %v (the scaffold's own Update RPC must be wired, not a FORGE_CRUD_SHAPE_MISMATCH stub)", uerr)
+			t.Fatalf("update: %v (the scaffold's own Update RPC must be wired, not a custom-read-shape stub)", uerr)
 		}
 		gr2, gerr2 := svc.GetItem(ctx, connect.NewRequest(&pb.GetItemRequest{Id: id1}))
 		if gerr2 != nil {
@@ -1674,7 +1674,7 @@ func TestCorpusCRUDLifecycle(t *testing.T) {
 //     filters, packers) — stays Tier-1 generated.
 //   - handlers_crud_gen.go (the old Tier-1 implementation file) is DEAD
 //     and must not be emitted.
-//   - the scaffold's own proto must never trip FORGE_CRUD_SHAPE_MISMATCH
+//   - the scaffold's own proto must never trip the custom-read-shape stub
 //     (the F2 root cause: the descriptor collapsed message-typed fields
 //     to the literal string "message").
 //   - the generated migration guards the id invariant (CHECK (id <> ”))
@@ -1748,8 +1748,10 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 				continue
 			}
 			body := readFileE2E(t, filepath.Join(handlerDir, e.Name()))
-			if strings.Contains(body, "FORGE_CRUD_SHAPE_MISMATCH") {
-				t.Errorf("%s contains FORGE_CRUD_SHAPE_MISMATCH — the scaffold's own proto failed the shape matcher (F2)", e.Name())
+			// Check both spellings: the current marker and the legacy
+			// one (which fresh output must never re-grow either).
+			if strings.Contains(body, "forge:custom-read-shape") || strings.Contains(body, "FORGE_CRUD_SHAPE_MISMATCH") {
+				t.Errorf("%s contains a custom-read-shape marker — the scaffold's own proto failed the shape matcher (F2)", e.Name())
 			}
 		}
 	}

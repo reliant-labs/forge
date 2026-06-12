@@ -29,6 +29,7 @@ import (
 // not installed. Maintainers running this locally don't need the kcl
 // binary but CI should provide it.
 func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
+	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	if !toolAvailable("kcl") {
 		t.Skip("kcl not available — skipping KCL render check")

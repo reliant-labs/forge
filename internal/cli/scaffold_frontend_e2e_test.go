@@ -32,6 +32,7 @@ import (
 // The test skips cleanly if Node isn't installed. In CI, the workflow
 // must provision Node before running -tags=e2e.
 func TestE2EScaffoldFrontendBuilds(t *testing.T) {
+	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	if !toolAvailable("node") || !toolAvailable("npm") {
 		t.Skip("node/npm not available — skipping frontend build check")

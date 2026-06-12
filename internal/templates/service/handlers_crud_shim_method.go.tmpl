@@ -1,12 +1,17 @@
 {{- if .ShapeMismatch}}
 // {{.MethodName}} implements the {{.MethodName}} RPC.
 //
-// FORGE_CRUD_SHAPE_MISMATCH: {{.MismatchReason}}
+// forge:custom-read-shape: {{.MismatchReason}}
 //
-// forge could not auto-wire this RPC — the request/response shape
-// diverges from the CRUD conventions (see `forge skill load proto`).
-// Replace this body with a real implementation (this file is yours);
-// `forge audit` reports it as an unimplemented stub until then.
+// Custom read shape — this RPC's request/response deliberately diverges
+// from the AIP-158 CRUD conventions (see `forge skill load proto`), so
+// the body is yours to implement: that's the design working, not an
+// error. Compose the pkg/crud + pkg/orm helpers as building blocks:
+// orm.EncodeCursor / orm.DecodeCursor (cursor pagination),
+// orm.WhereEq / orm.WhereILikeAny / orm.WithWhere (filters),
+// validate any order_by against db.<Entity>Columns before querying.
+// `forge audit` lists it under crud_stubs until the body lands —
+// it returns CodeUnimplemented in production until then.
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],

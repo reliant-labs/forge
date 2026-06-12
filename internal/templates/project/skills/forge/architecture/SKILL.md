@@ -22,8 +22,11 @@ Two lifecycles drive everything:
 ## Project Structure
 
 ```
-cmd/                          # Application entrypoints
-  server/main.go              #   Main server binary
+cmd/                          # Application entrypoints (one cobra root)
+  main.go                     #   Root command (regenerated)
+  server.go                   #   `server [services...]` — serverkit shim (regenerated)
+  services_gen.go             #   One subcommand per RegisteredServices row (regenerated)
+  commands.go                 #   userCommands() — YOUR extra subcommands (scaffolded once)
 proto/services/<svc>/v1/      # Protobuf service definitions (API contracts)
 handlers/<svc>/               # Go handler implementations (YOUR business logic)
   service.go                  #   Handler methods

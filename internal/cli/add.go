@@ -417,6 +417,7 @@ func runAddService(name string, port int, resume, force bool) error {
 		fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
 		fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
 		fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
+		fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
 	}
 
 	return nil

@@ -58,7 +58,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.CreateOp[pb.{{.InputType}}, pb.{{
 		Entity: func(req *pb.{{.InputType}}) *db.{{.EntityName}} {
 			return &db.{{.EntityName}}{
 {{- range .CreateFields}}
-{{- if eq .Kind "scalar" "timestamp"}}
+{{- if eq .Kind "scalar" "timestamp" "repeated_scalar"}}
 				{{.EntityGoName}}: req.{{.ProtoGoName}},
 {{- else if eq .Kind "enum"}}
 				{{.EntityGoName}}: req.{{.ProtoGoName}},

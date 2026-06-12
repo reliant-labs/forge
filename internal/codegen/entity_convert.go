@@ -30,9 +30,18 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 		// (ProtoType is the unmappable literal "message"). Using it here is
 		// what lets google.protobuf.Timestamp columns map to TIMESTAMPTZ /
 		// *timestamppb.Timestamp instead of degrading to TEXT/string.
-		fieldType := f.ProtoType
-		if f.ProtoType == "message" && f.MessageType != "" {
-			fieldType = f.MessageType
+		// The "repeated " prefix (set by the descriptor for list fields)
+		// is preserved around the substitution so the ORM/migration
+		// generators see e.g. "repeated string" (stored as JSON) or
+		// "repeated google.protobuf.Timestamp" (rejected loudly with the
+		// join-table workaround named).
+		base, repeated := strings.CutPrefix(f.ProtoType, "repeated ")
+		if base == "message" && f.MessageType != "" {
+			base = f.MessageType
+		}
+		fieldType := base
+		if repeated {
+			fieldType = "repeated " + base
 		}
 		pf := config.PlanEntityField{
 			Name: f.Name,

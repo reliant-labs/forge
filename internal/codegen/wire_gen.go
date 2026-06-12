@@ -45,7 +45,7 @@ import (
 //   2. Config     → cfg                                (bootstrap arg)
 //   3. Authorizer → middleware.Authorizer constructed in wire_gen,
 //                   with devMode swap to middleware.DevAuthorizer{}
-//   4. DB orm.Context  → app.ORM    (when ORM is enabled)
+//   4. DB orm.Context  → app.ORMContext() (when ORM is enabled; nil-safe)
 //   5. Otherwise: look up app.<DepFieldName> by exact-name match.
 //      If a matching exported App field exists, wire it.
 //   6. Config blocks by TYPE: a field typed `config.<Block>` /
@@ -656,7 +656,11 @@ func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnable
 	case "DB":
 		switch {
 		case strings.Contains(df.Type, "orm.Context") && ormEnabled:
-			return "app.ORM", "*orm.Client implements orm.Context", "", false
+			// ORMContext() (app_gen.go) returns a TRUE nil interface when
+			// the client was never constructed — `app.ORM` directly would
+			// wrap a nil *orm.Client into a typed-nil that defeats
+			// validateDeps' `== nil` gate and panics on the first RPC.
+			return "app.ORMContext()", "nil-safe orm.Context accessor (validateDeps catches absence at boot)", "", false
 		case strings.Contains(df.Type, "sql.DB"):
 			return "app.DB", "", "", false
 		}
@@ -769,14 +773,14 @@ func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled boo
 		return "authz", "devMode swap to middleware.DevAuthorizer in development", ""
 	case "DB":
 		// Two cases:
-		//   - Type "orm.Context" with ORM enabled → app.ORM (which
-		//     implements orm.Context). When ORM is *not* enabled but
-		//     the type is still orm.Context, the project is
-		//     mid-migration — emit a TODO.
+		//   - Type "orm.Context" with ORM enabled → app.ORMContext()
+		//     (nil-safe accessor; see wireExpressionForApp). When ORM is
+		//     *not* enabled but the type is still orm.Context, the
+		//     project is mid-migration — emit a TODO.
 		//   - Type "*sql.DB" → app.DB.
 		switch {
 		case strings.Contains(df.Type, "orm.Context") && ormEnabled:
-			return "app.ORM", "*orm.Client implements orm.Context", ""
+			return "app.ORMContext()", "nil-safe orm.Context accessor (validateDeps catches absence at boot)", ""
 		case strings.Contains(df.Type, "sql.DB"):
 			return "app.DB", "", ""
 		}

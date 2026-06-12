@@ -7,15 +7,16 @@ import (
 	"testing"
 )
 
-// TestGenerateFrontendFiles_DefaultsToStaticExport verifies the
+// TestGenerateFrontendFiles_DefaultsToStandalone verifies the
 // new-scaffold default: a Next.js frontend scaffolded WITHOUT
-// FrontendGenOptions.Output set emits a next.config.ts that produces a
-// static export in production (and unchanged dev). The whole point of
-// the static-default switchover is that this is the common case for
-// "Next.js shell + Connect RPC against a Go backend", so the path
-// taken by every existing caller (which doesn't know about the new
-// Output field) must land on the new default.
-func TestGenerateFrontendFiles_DefaultsToStaticExport(t *testing.T) {
+// FrontendGenOptions.Output set emits a next.config.ts with
+// `output: "standalone"` — the shape the shipped Dockerfile copies
+// (.next/standalone/server.js) and the only default that builds with
+// the dynamic `[id]` CRUD routes forge generates. The previous static
+// default broke `npm run build` on every project the moment it had
+// one entity ('Page "/<slug>/[id]" is missing "generateStaticParams()"
+// so it cannot be used with "output: export"').
+func TestGenerateFrontendFiles_DefaultsToStandalone(t *testing.T) {
 	dir := t.TempDir()
 	if err := GenerateFrontendFiles(dir, "example.com/myapp", "myapp", "web", 8080, ""); err != nil {
 		t.Fatalf("GenerateFrontendFiles: %v", err)
@@ -27,37 +28,28 @@ func TestGenerateFrontendFiles_DefaultsToStaticExport(t *testing.T) {
 	}
 	s := string(body)
 
-	// Static-export shape is gated on NODE_ENV=production. Dev stays
-	// as `next dev`.
-	want := `...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),`
-	if !strings.Contains(s, want) {
-		t.Errorf("next.config.ts must default to the static-export shape; expected to find %q, got:\n%s", want, s)
+	if !strings.Contains(s, `output: "standalone"`) {
+		t.Errorf("next.config.ts must default to `output: \"standalone\"` (Dockerfile + dynamic CRUD routes); got:\n%s", s)
 	}
-	// The literal `output: "standalone"` substring shows up in the
-	// scaffold's explanatory comment in the static branch — skip
-	// comment / whitespace-only lines and check the remaining code
-	// has no actual standalone wiring.
-	for _, line := range strings.Split(s, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
-			continue
-		}
-		if strings.Contains(trimmed, `output: "standalone"`) {
-			t.Errorf("next.config.ts default emitted active `output: \"standalone\"` line outside comments; got:\n%s\nfull file:\n%s", trimmed, s)
-		}
+	if !strings.Contains(s, `outputFileTracingRoot`) {
+		t.Errorf("next.config.ts default must contain outputFileTracingRoot so the standalone bundle lands at the path the Dockerfile expects; got:\n%s", s)
+	}
+	// The static-export conditional must NOT appear in the default —
+	// it fails `next build` on the generated dynamic [id] routes.
+	if strings.Contains(s, `{ output: "export" }`) {
+		t.Errorf("next.config.ts default emitted the static-export conditional — that breaks `npm run build` on generated dynamic CRUD routes; got:\n%s", s)
 	}
 }
 
-// TestGenerateFrontendFiles_StandaloneOptIn verifies that passing
-// Output="standalone" through FrontendGenOptions reinstates the old
-// Node-sidecar shape — needed for users who actually run server
-// components / server actions in production and use the scaffolded
-// Dockerfile.
-func TestGenerateFrontendFiles_StandaloneOptIn(t *testing.T) {
+// TestGenerateFrontendFiles_StaticOptIn verifies that passing
+// Output="static" through FrontendGenOptions yields the CDN/static
+// export shape — for projects with no dynamic routes that want to drop
+// the build artifacts on a CDN or object store.
+func TestGenerateFrontendFiles_StaticOptIn(t *testing.T) {
 	dir := t.TempDir()
 	if err := GenerateFrontendFilesWithOptions(
 		dir, "example.com/myapp", "myapp", "web", 8080, "",
-		FrontendGenOptions{Output: "standalone"},
+		FrontendGenOptions{Output: "static"},
 	); err != nil {
 		t.Fatalf("GenerateFrontendFilesWithOptions: %v", err)
 	}
@@ -68,11 +60,20 @@ func TestGenerateFrontendFiles_StandaloneOptIn(t *testing.T) {
 	}
 	s := string(body)
 
-	if !strings.Contains(s, `output: "standalone"`) {
-		t.Errorf("next.config.ts (Output=standalone) must contain `output: \"standalone\"`; got:\n%s", s)
+	want := `...(process.env.NODE_ENV === "production" ? { output: "export" } : {}),`
+	if !strings.Contains(s, want) {
+		t.Errorf("next.config.ts (Output=static) must contain the NODE_ENV-gated static-export shape %q; got:\n%s", want, s)
 	}
-	if !strings.Contains(s, `outputFileTracingRoot`) {
-		t.Errorf("next.config.ts (Output=standalone) must contain outputFileTracingRoot so the standalone bundle lands at the path the Dockerfile expects; got:\n%s", s)
+	// No active standalone wiring in static mode (the literal may
+	// appear in explanatory comments).
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		if strings.Contains(trimmed, `output: "standalone"`) {
+			t.Errorf("next.config.ts (Output=static) emitted active `output: \"standalone\"` line outside comments; got:\n%s\nfull file:\n%s", trimmed, s)
+		}
 	}
 }
 

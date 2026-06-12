@@ -52,8 +52,15 @@ import (
 //
 // The test skips cleanly if Node isn't installed. In CI, the workflow
 // must provision Node before running -tags=e2e.
+//
+// Module wiring uses the corpus-style local replaces
+// (addCorpusForgePkgReplace) rather than requirePublishedForgePkg: the
+// published-module probe currently skips on every machine until the
+// pkg release tag is pushed, and THIS test is the only gate on the
+// generated frontend's npm build/test surface — a gate that never runs
+// guards nothing. The published-module path stays covered by the other
+// scaffold e2e tests.
 func TestE2EScaffoldFrontendBuilds(t *testing.T) {
-	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	if !toolAvailable("node") || !toolAvailable("npm") {
 		t.Skip("node/npm not available — skipping frontend build check")
@@ -61,7 +68,6 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
-	linkForgeSibling(t, dir)
 
 	runCmd(t, dir, forgeBin,
 		"new", "feapp",
@@ -70,6 +76,7 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	)
 
 	projectDir := filepath.Join(dir, "feapp")
+	addCorpusForgePkgReplace(t, projectDir)
 
 	// One CRUD entity so the generated frontend surface (dynamic [id]
 	// detail page, list/create pages, hooks, dashboard tiles) exists.

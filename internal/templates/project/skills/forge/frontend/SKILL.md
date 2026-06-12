@@ -23,7 +23,7 @@ Generated TypeScript clients live in `gen/` at the project root, shared across a
 
 ### Production build shape (`output:`)
 
-`forge add frontend` emits a `next.config.ts` configured for the common forge shape: a Next.js shell that calls a Go backend via Connect RPC. The default is **standalone** — production builds emit a self-contained Node server at `.next/standalone/server.js`, which is the shape the shipped Dockerfile copies into its runner image, and the only default that builds with the dynamic `[id]` detail/edit routes forge generates for every CRUD entity.
+`forge add frontend` emits a `next.config.ts` configured for the common forge shape: a Next.js shell that calls a Go backend via Connect RPC. The default is **standalone** — production builds emit a self-contained Node server at `.next-prod/standalone/server.js`, which is the shape the shipped Dockerfile copies into its runner image, and the only default that builds with the dynamic `[id]` detail/edit routes forge generates for every CRUD entity.
 
 The choice is captured in `forge.yaml`:
 

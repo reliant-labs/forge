@@ -24,7 +24,7 @@ func (g *ArchitectureGenerator) Generate(ctx *Context) ([]GeneratedDoc, error) {
 	data := map[string]any{
 		"Format":       ctx.Format,
 		"ProjectName":  cfg.Name,
-		"Services":     cfg.Services,
+		"Components":   cfg.Components,
 		"Frontends":    cfg.Frontends,
 		"Packages":     cfg.Packages,
 		"Database":     cfg.Database,

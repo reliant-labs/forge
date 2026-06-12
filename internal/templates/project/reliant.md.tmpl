@@ -57,19 +57,18 @@ Forge does NOT infer schema by field name. Always be explicit:
 ```proto
 message Thing {
   option (forge.v1.entity) = {
-    table_name:  "things"
-    tenant_key:  "org_id"
+    table:       "things"
     timestamps:  true
     soft_delete: true
   };
   string id     = 1 [(forge.v1.field) = { pk: true }];
   string org_id = 2 [(forge.v1.field) = { tenant: true, ref: "orgs.id" }];
-  string name   = 3 [(forge.v1.field) = { store: true }];
+  string name   = 3;  // plain fields persist by default — no annotation needed
 }
 ```
 
 - Always annotate PK (`pk: true`).
-- Always annotate tenant column (`tenant: true`) AND the message (`tenant_key: "..."`). Forgetting either is a data-isolation bug.
+- Always annotate the tenant column (`tenant: true`) — tenant scoping is field-level; there is no entity-level tenant option. Forgetting it is a data-isolation bug.
 - Always declare `timestamps: true` for `created_at` / `updated_at`.
 - Always declare `soft_delete: true` to get `deleted_at`.
 - List request filter fields **must** be `optional` — without it, generated filters silently no-op.

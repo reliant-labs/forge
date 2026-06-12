@@ -98,6 +98,13 @@ func TestDefaultRunEnvironment(t *testing.T) {
 // composeDevCORSOrigins builds the comma-separated dev default for
 // CORS_ORIGINS (the format the generated config loader splits on ",").
 // Per-frontend loopback origins first, then the dev-proxy hostnames.
+//
+// Every origin must carry BOTH the localhost and the 127.0.0.1
+// spelling: Chrome resolves localhost per-request (and may pick ::1),
+// and a user who types 127.0.0.1 gets an Origin header the server must
+// still allow. Journey fr-5b2121e48f: with only localhost spellings,
+// http://127.0.0.1:8080 rendered the UI but every fetch was
+// CORS-blocked.
 func TestComposeDevCORSOrigins(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -117,7 +124,7 @@ func TestComposeDevCORSOrigins(t *testing.T) {
 			name:      "single frontend with proxy",
 			frontends: []config.FrontendConfig{{Name: "web", Port: 3000}},
 			proxyPort: 8080,
-			want:      "http://localhost:3000,http://web.localhost:8080,http://localhost:8080",
+			want:      "http://localhost:3000,http://127.0.0.1:3000,http://web.localhost:8080,http://localhost:8080,http://127.0.0.1:8080",
 		},
 		{
 			name: "two frontends with proxy",
@@ -126,14 +133,14 @@ func TestComposeDevCORSOrigins(t *testing.T) {
 				{Name: "admin", Port: 3001},
 			},
 			proxyPort: 8080,
-			want:      "http://localhost:3000,http://localhost:3001,http://web.localhost:8080,http://admin.localhost:8080,http://localhost:8080",
+			want:      "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://web.localhost:8080,http://admin.localhost:8080,http://localhost:8080,http://127.0.0.1:8080",
 		},
 		{
 			name:      "--no-proxy skips proxy origins",
 			frontends: []config.FrontendConfig{{Name: "web", Port: 3000}},
 			proxyPort: 8080,
 			noProxy:   true,
-			want:      "http://localhost:3000",
+			want:      "http://localhost:3000,http://127.0.0.1:3000",
 		},
 		{
 			name:      "portless frontend contributes nothing",
@@ -147,7 +154,7 @@ func TestComposeDevCORSOrigins(t *testing.T) {
 				{Name: "web", Port: 8080},
 			},
 			proxyPort: 8080,
-			want:      "http://localhost:8080,http://web.localhost:8080",
+			want:      "http://localhost:8080,http://127.0.0.1:8080,http://web.localhost:8080",
 		},
 	}
 	for _, tt := range tests {
@@ -316,5 +323,71 @@ func TestSuperviseChild_ReportsExit(t *testing.T) {
 	ee, ok := p.exitErr.(*exec.ExitError)
 	if !ok || ee.ExitCode() != 3 {
 		t.Fatalf("p.exitErr = %v, want *exec.ExitError with code 3", p.exitErr)
+	}
+}
+
+// preflightPostgresPort guards `docker compose up` against the single
+// most common infra failure: a host postgres already owning the
+// published port (journey fr-8236556f2e — the raw failure was
+// "failed to start infrastructure: exit status 1" plus a usage dump,
+// with the POSTGRES_PORT remedy buried in a docker-compose.yml
+// comment). The error must spell out the exact rerun command.
+func TestPreflightPostgresPort(t *testing.T) {
+	t.Parallel()
+
+	// A free port passes preflight.
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	if err := preflightPostgresPort(port, func() bool { t.Fatal("compose probe must not run for a free port"); return false }); err != nil {
+		t.Fatalf("preflightPostgresPort(free %d) = %v, want nil", port, err)
+	}
+
+	// Hold the port to simulate a host postgres.
+	held, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("re-listen: %v", err)
+	}
+	defer held.Close()
+
+	// Busy, but owned by our own compose postgres (idempotent
+	// `compose up -d` from a previous session): pass.
+	if err := preflightPostgresPort(port, func() bool { return true }); err != nil {
+		t.Fatalf("preflightPostgresPort(compose-owned %d) = %v, want nil", port, err)
+	}
+
+	// Busy and NOT ours: fail with the exact remedy in the message.
+	err = preflightPostgresPort(port, func() bool { return false })
+	if err == nil {
+		t.Fatalf("preflightPostgresPort(busy %d) = nil, want a conflict error", port)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, fmt.Sprintf("port %d", port)) {
+		t.Errorf("error must name the busy port %d: %q", port, msg)
+	}
+	if !strings.Contains(msg, "POSTGRES_PORT=") || !strings.Contains(msg, "forge run") {
+		t.Errorf("error must spell out the POSTGRES_PORT=<free> forge run remedy: %q", msg)
+	}
+
+	// Unknown port (malformed POSTGRES_PORT) skips the preflight —
+	// let docker compose produce its own error.
+	if err := preflightPostgresPort(0, func() bool { return false }); err != nil {
+		t.Fatalf("preflightPostgresPort(0) = %v, want nil", err)
+	}
+	if err := preflightPostgresPort(70000, func() bool { return false }); err != nil {
+		t.Fatalf("preflightPostgresPort(70000) = %v, want nil", err)
+	}
+}
+
+// suggestFreeLoopbackPort must return a usable port (>0) and fall back
+// to the given default if the OS refuses to allocate one.
+func TestSuggestFreeLoopbackPort(t *testing.T) {
+	t.Parallel()
+	p := suggestFreeLoopbackPort(15432)
+	if p <= 0 || p > 65535 {
+		t.Fatalf("suggestFreeLoopbackPort = %d, want a valid port", p)
 	}
 }

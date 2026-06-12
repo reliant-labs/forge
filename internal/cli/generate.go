@@ -100,15 +100,15 @@ forensics, parallel-lane and migration escape hatches); run
 					Steps:           steps,
 				})
 			}
-			// Capture pre-pipeline checksums so --explain can diff
-			// against post-pipeline state to label rewritten vs idempotent.
+			// Capture pre-pipeline body hashes (from the embedded
+			// markers) so --explain can diff against post-pipeline
+			// state to label rewritten vs idempotent.
 			var preChecksums map[string]string
 			if explain {
-				if cs, err := generator.LoadChecksums("."); err == nil {
-					preChecksums = make(map[string]string, len(cs.Files))
-					for k, v := range cs.Files {
-						preChecksums[k] = v.Hash
-					}
+				pre := checksums.ScanMarkers(".")
+				preChecksums = make(map[string]string, len(pre))
+				for k, v := range pre {
+					preChecksums[k] = v.Body
 				}
 			}
 
@@ -271,12 +271,10 @@ forensics, parallel-lane and migration escape hatches); run
 		"no-heal",           // strict heal opt-out; the heal notice itself teaches it
 	)
 
-	// `forge generate unfork` survives ONE release as legacy-fork
-	// migration tooling (convert `forked: true` entries to disowned, or
-	// re-adopt with --readopt / reconcile with --merge). Registered here
-	// for muscle memory; the top-level `forge unfork` is the canonical
-	// spelling.
-	cmd.AddCommand(newUnforkCmd())
+	// (`forge generate unfork`, the legacy-fork migration tool, was
+	// removed after its one-release deprecation window — the
+	// legacy-manifest migration converts forked entries to disowned
+	// automatically.)
 
 	// `forge generate accept-fork <paths>` is a DEPRECATED alias for
 	// `forge disown` — kept functioning one release.
@@ -562,6 +560,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			if expErr := finishExplainDrift(ctx); expErr != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", expErr)
 			}
+			// Same for the legacy-migration quarantine: stamp the
+			// unverified sentinels now so the next run's guard still
+			// names the unresolved files.
+			if migErr := finishLegacyMigration(ctx); migErr != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", migErr)
+			}
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
@@ -570,6 +574,13 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// report — the flag explains the drift, it never approves it. No-op
 	// nil when the guard found no drift (or the flag wasn't set).
 	if err := finishExplainDrift(ctx); err != nil {
+		return err
+	}
+
+	// Legacy-manifest quarantine adjudication: rescue fresh-render
+	// matches, stamp unverified sentinels on the rest, and fail with the
+	// standard drift report when any file stays unresolved.
+	if err := finishLegacyMigration(ctx); err != nil {
 		return err
 	}
 
@@ -602,19 +613,13 @@ func makeTier2OverwriteHook(root string, cs *generator.FileChecksums, assumeYes 
 			fmt.Fprintf(os.Stderr, "  ↻ --reset-tier2 --yes: overwriting %s\n", relPath)
 			return true
 		}
-		recorded := ""
+		_ = cs
 		current := ""
-		if cs != nil {
-			if entry, ok := cs.Files[relPath]; ok {
-				recorded = short(entry.Hash)
-			}
-		}
 		if data, err := os.ReadFile(filepath.Join(root, relPath)); err == nil {
 			current = short(generator.HashContent(data))
 		}
-		fmt.Fprintf(os.Stderr, "\nTier-2 file modified: %s\n", relPath)
-		fmt.Fprintf(os.Stderr, "  recorded hash: %s\n", recorded)
-		fmt.Fprintf(os.Stderr, "  on-disk hash:  %s\n", current)
+		fmt.Fprintf(os.Stderr, "\nTier-2 file differs from the fresh scaffold: %s\n", relPath)
+		fmt.Fprintf(os.Stderr, "  on-disk hash: %s\n", current)
 		fmt.Fprintf(os.Stderr, "Overwrite with newly rendered template? [y/N]: ")
 		line, err := reader.ReadString('\n')
 		if err != nil {

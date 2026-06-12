@@ -94,7 +94,7 @@ type danglingFinding struct {
 // log-correlation plumbing; the function signature matches the GenStep
 // shape so it can be plugged in directly.
 func checkDisownedDanglingRefs(_ context.Context, projectDir string, cs *checksums.FileChecksums) error {
-	if cs == nil || len(cs.Files) == 0 {
+	if cs == nil || len(cs.Disowned) == 0 {
 		return nil
 	}
 	insp := checksums.NewInspector(projectDir, cs)
@@ -150,13 +150,10 @@ func checkDisownedDanglingRefs(_ context.Context, projectDir string, cs *checksu
 			if disownedSet[relPath] {
 				continue
 			}
-			if !insp.IsTracked(relPath) {
-				// Untracked sibling (rare — hand-written file in the
-				// same package). Not a Tier-1 regen target; skip.
-				continue
-			}
-			if insp.IsTier2(relPath) {
-				// Tier-2 files are user-owned scaffolds — out of scope.
+			if !insp.IsTier1(relPath) {
+				// Not forge-certified (hand-written file or user-owned
+				// Tier-2 scaffold in the same package). Not a Tier-1
+				// regen target; skip.
 				continue
 			}
 			refs := extractUnqualifiedTypeRefs(projectDir, relPath)

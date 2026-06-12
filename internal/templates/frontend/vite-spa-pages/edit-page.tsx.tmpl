@@ -72,6 +72,31 @@ export default function Edit{{.EntityName}}Page() {
     // Typed end-to-end: date strings become proto Timestamps and 64-bit
     // ints become bigints BEFORE mutate(), so the request matches the
     // schema instead of being cast into shape.
+{{- if .UpdateEntityFieldCamel}}
+    // AIP-134: the entity rides under `{{.UpdateEntityFieldCamel}}` and the
+    // mask names exactly the fields this form edits — the server writes
+    // those columns and nothing else. Without the mask, columns the form
+    // doesn't carry would be replaced by the request's zero values.
+    mutation.mutate({
+      {{.UpdateEntityFieldCamel}}: {
+        {{.PkFieldCamel}}: id,
+        ...values,
+        {{- range .UpdateFields}}
+        {{- if eq .Type "date"}}
+        {{.Name}}: values.{{.Name}} ? timestampFromDate(new Date(values.{{.Name}})) : undefined,
+        {{- else if .IsBigInt}}
+        {{.Name}}: BigInt(Math.trunc(values.{{.Name}})),
+        {{- else if .IsRepeated}}
+        // Repeated scalar: comma-separated text input → the array the RPC expects.
+        {{.Name}}: values.{{.Name}}.split(",").map((s) => s.trim()).filter(Boolean){{if .RepeatedNumeric}}.map(Number){{end}},
+        {{- end}}
+        {{- end}}
+      },
+      {{- if .UpdateMaskFieldCamel}}
+      {{.UpdateMaskFieldCamel}}: { paths: [{{range $i, $f := .UpdateFields}}{{if $i}}, {{end}}"{{$f.ProtoName}}"{{end}}] },
+      {{- end}}
+    });
+{{- else}}
     mutation.mutate({
       id,
       ...values,
@@ -86,6 +111,7 @@ export default function Edit{{.EntityName}}Page() {
       {{- end}}
       {{- end}}
     });
+{{- end}}
   }
 
   // Loading is its own state — bail explicitly. Do not derive booleans from

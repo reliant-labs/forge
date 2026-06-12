@@ -268,6 +268,22 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 			return db.Update{{.EntityName}}(ctx, s.deps.DB, entity)
 {{- end}}
 		},
+{{- if .UpdateMaskField}}
+		// AIP-134: concrete update_mask paths write ONLY those columns
+		// (proto field names == column names); an absent/empty/"*" mask is
+		// a documented full replace via Persist above. pkg/crud owns the
+		// dispatch; db.Update{{.EntityName}}Masked rejects unknown or
+		// immutable paths with a clean InvalidArgument.
+		Mask: func(req *pb.{{.InputType}}) []string { return req.Get{{.UpdateMaskField}}().GetPaths() },
+		PersistMasked: func(ctx context.Context, tenantID string, entity *db.{{.EntityName}}, fields []string) error {
+{{- if .HasTenant}}
+			return db.Update{{.EntityName}}Masked(ctx, s.deps.DB, entity, fields, tenantID)
+{{- else}}
+			_ = tenantID
+			return db.Update{{.EntityName}}Masked(ctx, s.deps.DB, entity, fields)
+{{- end}}
+		},
+{{- end}}
 		Pack: func(entity *db.{{.EntityName}}) *pb.{{.OutputType}} {
 			return &pb.{{.OutputType}}{ {{.ResponseField}}: {{.EntityLower}}ToProto(entity) }
 		},

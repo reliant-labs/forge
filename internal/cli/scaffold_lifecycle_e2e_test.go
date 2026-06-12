@@ -40,6 +40,14 @@ func TestE2EScaffoldLifecycle(t *testing.T) {
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "go.mod"))
 
+	// Pre-vendor forge/pkg BEFORE the first generate: the pipeline's
+	// `go mod tidy (root)` step would otherwise resolve the PUBLISHED
+	// forge/pkg snapshot, which predates appkit/serverkit until the
+	// release tag is pushed. This test pins current-tree behavior (like
+	// the corpus fixtures), so it must build against the local pkg —
+	// same mechanism as addCorpusForgePkgReplace.
+	addCorpusForgePkgReplace(t, projectDir)
+
 	// ── Step 2: copy test fixture protos ─────────────────────────────────
 	// Replace the scaffold-generated api.proto with our fixture that has entities + CRUD RPCs.
 	fixtureDir := filepath.Join(findRepoRoot(t), "internal", "cli", "testdata", "lifecycle")

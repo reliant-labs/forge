@@ -29,6 +29,7 @@ import (
 // Each guard traces back to a bug we've already shipped to users once.
 // Don't soften them without replacing with an equivalent check.
 func TestE2EScaffoldFullSpecProject(t *testing.T) {
+	requirePublishedForgePkg(t)
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()

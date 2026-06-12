@@ -31,25 +31,25 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// skipNpmInstallInShortMode makes the trailing, non-fatal `npm install`
-// inside runAddFrontend a no-op under `go test -short`.
+// skipNpmInstall makes the trailing, non-fatal `npm install` inside
+// runAddFrontend a no-op — in BOTH test modes.
 //
-// runAddFrontend ends by running a real `npm install` in the scaffolded
-// frontend (~10-15s each, network-bound) purely as a UX nicety — nothing
-// in these tests asserts on node_modules. Under -short we flip the
-// FORGE_SKIP_NPM_INSTALL seam (see runFrontendNpmInstall in add.go) so
-// the install short-circuits. Every assertion in these tests still
-// executes in BOTH modes; the real install still runs in full mode
-// (CI: `go test ./...` without -short), and the npm-driven frontend
-// build is additionally covered by the e2e frontend fixture.
+// These tests assert on forge.yaml stack-framework bookkeeping
+// (detection, preservation, reconciliation). The real `npm install`
+// runAddFrontend ends with (~10-15s each, network-bound) is incidental
+// tail-work that no assertion here ever inspects — running it in a unit
+// test verifies nothing these tests claim to verify. The real-install
+// path has a real owner: the e2e frontend fixture runs `npm install` +
+// `next build` against actual output and asserts on the result.
+// One concern, one test tier.
 //
-// This is what makes `go test -short ./internal/cli/` drop from ~80s to
-// a few seconds — see the "Testing tiers" note in CLAUDE.md.
-func skipNpmInstallInShortMode(t *testing.T) {
+// (History: this started as a -short-only skip out of "don't weaken
+// assertions" caution; reading the assertions showed none touch the
+// install, so the skip became unconditional and full-mode unit tests
+// dropped from ~80s to seconds.)
+func skipNpmInstall(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
-	}
+	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 }
 
 // freshServiceForgeYAML mirrors what `forge new <name>` emits for a
@@ -107,7 +107,7 @@ auth:
 // that actually got scaffolded) so downstream tooling agrees with
 // features.frontend=true and frontends:[...].
 func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
-	skipNpmInstallInShortMode(t)
+	skipNpmInstall(t)
 	dir := withTempProject(t, freshServiceForgeYAML)
 
 	if err := runAddFrontend(context.Background(), "dashboard", 0, "", "", ""); err != nil {
@@ -150,7 +150,7 @@ func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 // "nextjs". Without this, a mobile or vite-spa frontend would still
 // register itself as "nextjs" in the stack — equally wrong.
 func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
-	skipNpmInstallInShortMode(t)
+	skipNpmInstall(t)
 	cases := []struct {
 		name string
 		kind string
@@ -187,7 +187,7 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 // "svelte" while they wire up their own scaffolding), we must not
 // stomp it. Only "" and "none" are treated as "needs to be filled in".
 func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
-	skipNpmInstallInShortMode(t)
+	skipNpmInstall(t)
 	customYAML := strings.Replace(freshServiceForgeYAML,
 		"framework: none", "framework: svelte", 1)
 	dir := withTempProject(t, customYAML)

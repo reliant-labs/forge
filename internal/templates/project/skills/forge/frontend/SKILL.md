@@ -54,6 +54,8 @@ forge add frontend dashboard --output static
 
 The `output:` field only takes effect at scaffold time; `next.config.ts` is Tier-2 (yours to edit after scaffold) so changing the YAML later does not retroactively rewrite the file — re-scaffold with `forge generate --force` or hand-edit.
 
+**Build dirs are fenced.** In `standalone`/`server` modes, production builds write to `.next-prod` (via a `distDir` conditional in `next.config.ts`) while `next dev` keeps `.next` — so running `npm run build` while `forge run`'s dev server is live cannot clobber the dev cache. `next start` and the Dockerfile both read `.next-prod`. The `static` mode keeps Next.js defaults (`out/` export, `.next` intermediates) because export mode repurposes a custom `distDir` as the export destination; avoid production builds during a live dev session in that mode.
+
 If a frontend uses server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) it MUST use `output: standalone` (the default) or `output: server` — those calls don't work in a static export.
 
 For a root-route redirect (e.g. `/` → `/dashboard`) under static export, do NOT use `redirect()` from `next/navigation` — it requires the Next.js server runtime. Use a client component with `useRouter().replace()`:

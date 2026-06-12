@@ -88,6 +88,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"post-gen validation",
 		"detect renamed Tier-1 exports",
 		"check disowned-sibling dangling refs",
+		"check stale scaffold tests",
 		"go build (validate generated code)",
 	}
 

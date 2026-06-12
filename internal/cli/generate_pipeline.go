@@ -345,6 +345,12 @@ func generateSteps() []GenStep {
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},
 		{Name: "check disowned-sibling dangling refs", Gate: always, Run: stepCheckDisownedDanglingRefs, Tag: "validate"},
+		// Runs after the codegen steps so gen/ reflects the current protos.
+		// One-shot scaffold tests are user-owned and never regenerated;
+		// `go build` (the validate step) skips _test.go files, so a stale
+		// pb reference there would otherwise surface only at the user's
+		// next `go test`. See generate_stale_scaffold.go.
+		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
 		{Name: "go build (validate generated code)", Gate: gateValidateNotSkipped, GateReason: "--skip-validate was passed", Run: stepGoBuildValidate, Tag: "validate"},
 	}
 }

@@ -336,8 +336,16 @@ func injectEntityCRUDProto(protoPath, entity string, fields []entityField, opts 
 		return nil
 	}
 
-	// Ensure required imports.
-	for _, imp := range []string{"google/protobuf/timestamp.proto", "google/protobuf/field_mask.proto"} {
+	// Ensure required imports. forge/v1/forge.proto is load-bearing: the
+	// injected RPCs carry (forge.v1.method) options, and a service proto
+	// fresh from `forge add service` has no imports at all — without this
+	// line every subsequent `forge generate` fails in buf with
+	// "unknown extension forge.v1.method".
+	for _, imp := range []string{
+		"forge/v1/forge.proto",
+		"google/protobuf/timestamp.proto",
+		"google/protobuf/field_mask.proto",
+	} {
 		content = ensureProtoImport(content, imp)
 	}
 

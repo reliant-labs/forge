@@ -160,6 +160,107 @@ func TestInjectEntityCRUDProto(t *testing.T) {
 	}
 }
 
+// addEntityBareServiceProto is the shape `forge add service` scaffolds:
+// no RPCs yet, and therefore NO forge/v1/forge.proto import. The entity
+// injection adds RPCs carrying (forge.v1.method) options, so it MUST
+// also add the import or `buf` fails every subsequent generate with
+// "unknown extension forge.v1.method" (journey fr-af7355dd63).
+const addEntityBareServiceProto = `syntax = "proto3";
+
+package services.item.v1;
+
+option go_package = "example.com/x/gen/services/item/v1;itemv1";
+
+// ItemService defines the item service RPCs.
+service ItemService {
+  // TODO: Add your RPC methods here.
+}
+`
+
+func TestInjectEntityCRUDProto_AddsForgeImportToBareServiceProto(t *testing.T) {
+	root := scaffoldAddEntityProject(t)
+	protoPath := filepath.Join(root, "proto", "services", "item", "v1", "item.proto")
+	if err := os.WriteFile(protoPath, []byte(addEntityBareServiceProto), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fields, err := parseEntityFieldArgs([]string{"url:string"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectEntityCRUDProto(protoPath, "Bookmark", fields, addEntityOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileT(t, protoPath)
+
+	if !strings.Contains(got, `import "forge/v1/forge.proto";`) {
+		t.Fatalf("injected (forge.v1.method) options without importing forge/v1/forge.proto — buf fails with 'unknown extension forge.v1.method':\n%s", got)
+	}
+	// The import must land between the package line and the service block
+	// (i.e. in the file header, not appended after messages).
+	impIdx := strings.Index(got, `import "forge/v1/forge.proto";`)
+	pkgIdx := strings.Index(got, "package services.item.v1;")
+	svcIdx := strings.Index(got, "service ItemService {")
+	if impIdx < pkgIdx || impIdx > svcIdx {
+		t.Errorf("forge import landed outside the file header (pkg=%d import=%d service=%d):\n%s", pkgIdx, impIdx, svcIdx, got)
+	}
+
+	// Second injection of another entity must not duplicate the import.
+	if err := injectEntityCRUDProto(protoPath, "Widget", nil, addEntityOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if again := readFileT(t, protoPath); strings.Count(again, `import "forge/v1/forge.proto";`) != 1 {
+		t.Errorf("repeat injection duplicated the forge import:\n%s", again)
+	}
+}
+
+// TestInjectEntityCRUDProto_UserReorderedImports pins that the ensure-
+// import logic appends after the LAST import regardless of how the user
+// ordered the block, and never duplicates an import that is already
+// present anywhere in it.
+func TestInjectEntityCRUDProto_UserReorderedImports(t *testing.T) {
+	root := scaffoldAddEntityProject(t)
+	protoPath := filepath.Join(root, "proto", "services", "item", "v1", "item.proto")
+	reordered := `syntax = "proto3";
+
+package services.item.v1;
+
+import "google/protobuf/timestamp.proto";
+import "forge/v1/forge.proto";
+
+option go_package = "example.com/x/gen/services/item/v1;itemv1";
+
+service ItemService {
+}
+`
+	if err := os.WriteFile(protoPath, []byte(reordered), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fields, err := parseEntityFieldArgs([]string{"url:string"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := injectEntityCRUDProto(protoPath, "Bookmark", fields, addEntityOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	got := readFileT(t, protoPath)
+	for _, imp := range []string{
+		`import "forge/v1/forge.proto";`,
+		`import "google/protobuf/timestamp.proto";`,
+		`import "google/protobuf/field_mask.proto";`,
+	} {
+		if n := strings.Count(got, imp); n != 1 {
+			t.Errorf("%s appears %d times, want exactly 1:\n%s", imp, n, got)
+		}
+	}
+	// New imports must still land in the header (after the existing
+	// import block, before the service).
+	fmIdx := strings.Index(got, `import "google/protobuf/field_mask.proto";`)
+	svcIdx := strings.Index(got, "service ItemService {")
+	if fmIdx > svcIdx {
+		t.Errorf("field_mask import landed after the service block:\n%s", got)
+	}
+}
+
 func readFileT(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)

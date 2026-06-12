@@ -1180,19 +1180,26 @@ func auditScaffoldMarkers(projectDir string) AuditCategory {
 	}
 }
 
-// auditCRUDStubs counts FORGE_CRUD_SHAPE_MISMATCH-tagged CodeUnimplemented
-// stubs in the project's CRUD shim files (user-owned handlers_crud.go,
-// plus legacy handlers_crud_gen.go from pre-split projects). These stubs
-// are scaffolded when a request/response message shape diverges from the
-// CRUD conventions the generator expects. The stub keeps the file
-// compiling but returns CodeUnimplemented at runtime — production
-// traffic to that RPC will always 501 until the body is hand-implemented.
+// auditCRUDStubs counts custom-read-shape CodeUnimplemented stubs in
+// the project's CRUD shim files (user-owned handlers_crud.go, plus
+// legacy handlers_crud_gen.go from pre-split projects). These stubs are
+// scaffolded when a request/response message shape deliberately
+// diverges from the AIP-158 CRUD conventions — a legitimate domain
+// decision, not an error; the body is the user's to implement in the
+// owned shim. The stub keeps the file compiling but returns
+// CodeUnimplemented at runtime — production traffic to that RPC will
+// 501 until the body lands, which is why the category warns.
 //
-// Without this audit, the stub is silent: nothing in `forge generate`
-// output, `forge doctor`, or CI tells the operator that an RPC is
-// shipping as Unimplemented. This category surfaces the count + per-
-// method list as a structured audit finding so CI can branch on
-// `.crud_stubs.status == "warn"`.
+// Markers recognized: `// forge:custom-read-shape: <reason>` (current)
+// and `// FORGE_CRUD_SHAPE_MISMATCH: <reason>` (the pre-rename
+// spelling, kept for one release so existing files and greps keep
+// matching — see the legacy_marker detail).
+//
+// Without this audit, the stub is silent: nothing in `forge doctor`
+// or CI tells the operator that an RPC is shipping as Unimplemented
+// (forge generate prints one warning line per stub at scaffold time).
+// This category surfaces the count + per-method list as a structured
+// audit finding so CI can branch on `.crud_stubs.status == "warn"`.
 //
 // We scan files matching the CRUD shim names rather than every Go file —
 // both to keep the walk cheap and because the marker is forge-emitted
@@ -1231,7 +1238,7 @@ func auditCRUDStubs(projectDir string) AuditCategory {
 		// Walk lines so each marker carries the nearest preceding
 		// `func (s *Service) <Method>(` name — callers want the RPC
 		// identifier, not just a file path. The CRUD template emits
-		// the FORGE_CRUD_SHAPE_MISMATCH comment between the doc
+		// the forge:custom-read-shape comment between the doc
 		// comment and the function declaration, so we record the
 		// method name when we *next* see the func line. Simpler:
 		// stash the previous func name and apply it to the next
@@ -1244,9 +1251,13 @@ func auditCRUDStubs(projectDir string) AuditCategory {
 		var pending []pendingMarker
 		for i, line := range lines {
 			trimmed := strings.TrimLeft(line, " \t")
-			if strings.HasPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:") {
-				reason := strings.TrimSpace(strings.TrimPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:"))
-				pending = append(pending, pendingMarker{reason: reason, idx: i})
+			if marker, ok := strings.CutPrefix(trimmed, "// forge:custom-read-shape:"); ok {
+				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
+				continue
+			}
+			// Pre-rename spelling — recognized for one release.
+			if marker, ok := strings.CutPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:"); ok {
+				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
 				continue
 			}
 			if !strings.HasPrefix(trimmed, "func (s *Service) ") {
@@ -1292,15 +1303,25 @@ func auditCRUDStubs(projectDir string) AuditCategory {
 		return stubs[i]["method"] < stubs[j]["method"]
 	})
 	status := AuditStatusOK
-	summary := "0 CRUD shape-mismatch stubs"
+	summary := "0 custom-read-shape CRUD stubs"
 	if total > 0 {
 		status = AuditStatusWarn
-		summary = fmt.Sprintf("%d CRUD shape-mismatch stub(s) across %d file(s) — RPCs return CodeUnimplemented in production", total, len(fileNames))
+		summary = fmt.Sprintf("%d custom-read-shape CRUD stub(s) across %d file(s) — bodies are yours to implement; the RPCs return CodeUnimplemented until then", total, len(fileNames))
 	}
 	return AuditCategory{
 		Status:  status,
 		Summary: summary,
-		Details: map[string]any{"files": fileNames, "total_stubs": total, "stubs": stubs},
+		Details: map[string]any{
+			"files":       fileNames,
+			"total_stubs": total,
+			"stubs":       stubs,
+			// Grep compatibility: the marker was renamed from
+			// FORGE_CRUD_SHAPE_MISMATCH to forge:custom-read-shape;
+			// both spellings are scanned this release. Consumers
+			// grepping source for the old string should switch.
+			"marker":        "forge:custom-read-shape",
+			"legacy_marker": "FORGE_CRUD_SHAPE_MISMATCH",
+		},
 	}
 }
 

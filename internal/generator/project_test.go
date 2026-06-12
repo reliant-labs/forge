@@ -32,8 +32,9 @@ func TestProjectGeneratorGenerateCreatesMigrationFirstLayout(t *testing.T) {
 		t.Fatalf("expected legacy proto/forge/options.proto to be absent, err = %v", err)
 	}
 
-	// CORS middleware should always be generated
-	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
+	// The thin auth-policy middleware file should always be generated
+	// (mechanisms live in forge/pkg/{authn,authz,middleware}).
+	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
 
 	// CORS should be wired in server.go even without a frontend
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
@@ -228,22 +229,18 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("expected frontend package.json build script to force production NODE_ENV, got:\n%s", fePackageContents)
 	}
 
-	// A6: Middleware should use slog, not log.Printf
-	loggingMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "logging.go"))
-	if strings.Contains(loggingMiddleware, "log.Printf") {
-		t.Fatalf("middleware/logging.go should use slog, not log.Printf, got:\n%s", loggingMiddleware)
+	// A6/A7: the project keeps ONE thin middleware file wiring auth
+	// policy; logging/recovery/CORS mechanisms come from the forge
+	// libraries (pkg/observe, pkg/middleware) and are not photocopied
+	// into the scaffold anymore.
+	thinMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
+	if !strings.Contains(thinMiddleware, "forge/pkg/authn") {
+		t.Fatalf("middleware/middleware.go should delegate to forge/pkg/authn, got:\n%s", thinMiddleware)
 	}
-	if !strings.Contains(loggingMiddleware, "LogRequestCompleted") {
-		t.Fatalf("middleware/logging.go should use typed log event helpers, got:\n%s", loggingMiddleware)
-	}
-	recoveryMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "recovery.go"))
-	if strings.Contains(recoveryMiddleware, "log.Printf") {
-		t.Fatalf("middleware/recovery.go should use slog, not log.Printf, got:\n%s", recoveryMiddleware)
-	}
-	// A7: CORS middleware should exist
-	corsMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
-	if !strings.Contains(corsMiddleware, "CORSMiddleware") {
-		t.Fatalf("middleware/cors.go should contain CORSMiddleware, got:\n%s", corsMiddleware)
+	for _, retired := range []string{"logging.go", "recovery.go", "cors.go"} {
+		if _, err := os.Stat(filepath.Join(root, "pkg", "middleware", retired)); !os.IsNotExist(err) {
+			t.Fatalf("pkg/middleware/%s should no longer be scaffolded (library-fied), err=%v", retired, err)
+		}
 	}
 
 	// M1: db/migrations/.gitkeep should exist
@@ -275,7 +272,7 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "setup.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "post_bootstrap.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
-	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
 	assertPathExists(t, filepath.Join(root, "forge.yaml"))
 
 	// Service-specific directories should NOT exist
@@ -443,7 +440,7 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 		filepath.Join(root, "cmd", "main.go"),
 		filepath.Join(root, "cmd", "server.go"),
 		filepath.Join(root, "cmd", "version.go"),
-		filepath.Join(root, "pkg", "middleware", "cors.go"),
+		filepath.Join(root, "pkg", "middleware", "middleware.go"),
 		filepath.Join(root, "pkg", "app", "bootstrap.go"),
 		filepath.Join(root, "Dockerfile"),
 		filepath.Join(root, "docker-compose.yml"),

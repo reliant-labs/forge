@@ -1,5 +1,3 @@
-//go:build ignore
-
 package middleware
 
 import (
@@ -29,10 +27,9 @@ func TestRequestIDMiddleware_GeneratesWhenAbsent(t *testing.T) {
 	if resp := rec.Header().Get(RequestIDHeader); resp != got {
 		t.Fatalf("response header must echo context id: want %q got %q", got, resp)
 	}
-	// ULID strings are 26 Crockford-base32 characters. We don't hardcode
-	// that value because the length is an implementation detail of
-	// oklog/ulid; we do assert the result is non-trivially long so a
-	// regression to, say, "req-000" fails loudly.
+	// Generated IDs are 16 random bytes hex-encoded (32 chars). We don't
+	// hardcode the exact value; we do assert the result is non-trivially
+	// long so a regression to, say, "req-000" fails loudly.
 	if len(got) < 20 {
 		t.Fatalf("generated id looks truncated: %q", got)
 	}

@@ -48,7 +48,7 @@ In Grafana → Explore → Loki, use LogQL:
 {container=~".*app.*"} | json | trace_id="abc123"
 ```
 
-Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`). Use typed log helpers in `pkg/middleware/logevents.go` for consistent attributes.
+Logs are structured JSON with consistent attribute keys (`procedure`, `request_id`, `trace_id`, `duration_ms`, `user_id`, `status`, `code`). Emit the same attribute keys from your own log sites so dashboards stay queryable.
 
 ## Querying Traces (Tempo)
 

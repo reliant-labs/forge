@@ -66,6 +66,13 @@ func TestE2EScaffoldLifecycle(t *testing.T) {
 	)
 
 	// ── Step 3: run forge generate ───────────────────────────────────────
+	// Point forge/pkg at the in-repo checkout BEFORE generate runs its
+	// internal `go mod tidy`: the scaffold references forge/pkg
+	// subpackages (e.g. pkg/authn from pkg/middleware/middleware.go)
+	// that may not exist in the latest published forge/pkg snapshot.
+	// generate's dev vendor-sync converges this absolute replace to the
+	// canonical ./.forge-pkg form on its own.
+	addforgeReplaceMain(t, projectDir)
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	// ── Step 4: assertions ───────────────────────────────────────────────

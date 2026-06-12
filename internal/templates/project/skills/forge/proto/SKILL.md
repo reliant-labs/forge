@@ -166,11 +166,19 @@ you've already implemented. To customize a generated CRUD RPC, replace
 the delegation body in `handlers_crud.go` directly (the file is yours;
 new CRUD RPCs are appended, existing content is never modified).
 
-When a request/response shape deviates from these conventions, forge
-scaffolds an Unimplemented stub into `handlers_crud.go` carrying a
-`FORGE_CRUD_SHAPE_MISMATCH: <reason>` comment (including the observed
-field list); `forge audit` reports it under `crud_stubs` until you
-implement the body.
+When a request/response shape deliberately deviates from these
+conventions (a list keyed by `ticker`+`limit` instead of AIP-158, say),
+forge scaffolds an Unimplemented stub into `handlers_crud.go` carrying a
+`forge:custom-read-shape: <reason>` comment (including the observed
+field list). That is the system working, not an error — the custom
+shape is a domain decision and the body is yours to implement, composing
+the `pkg/crud`/`pkg/orm` helpers (cursor encode/decode, `WhereEq`/
+`WhereILikeAny` filters, column-allowlisted order-by). `forge generate`
+prints one warning line per stub it scaffolds, and `forge audit` reports
+each under `crud_stubs` until the body lands (the RPC returns
+`CodeUnimplemented` until then). Markers written by older forge versions
+spell it `FORGE_CRUD_SHAPE_MISMATCH`; audit recognizes both for one
+release.
 
 ### List Request Conventions (AIP-158)
 

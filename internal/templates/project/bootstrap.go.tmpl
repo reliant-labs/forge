@@ -259,20 +259,19 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 		AppExtras: &AppExtras{},
 	}
 {{- if .Services}}
-	// Dev mode swaps each service's Authorizer to middleware.DevAuthorizer{}
-	// inside wireXxxDeps (which reads cfg.Mode().IsDev() itself — no
-	// devMode parameter threading). cfg.Mode() is THE dev-mode gate
-	// (typed, zero value Production, derived from ENVIRONMENT in
-	// pkg/config) — the same value the auth middleware and auth packs
-	// receive by injection, so the gates can never disagree.
+	// An EXPLICIT auth bypass swaps each service's Authorizer to
+	// middleware.DevAuthorizer{} inside wireXxxDeps (which reads
+	// cfg.DevAuthBypass() itself — no devMode parameter threading).
+	// cfg.DevAuthBypass() is THE bypass gate: dev mode AND AUTH_DEV_MODE=true,
+	// never ENVIRONMENT alone — the same value the auth middleware and auth
+	// packs receive by injection, so the gates can never disagree. Booting
+	// in development WITHOUT AUTH_DEV_MODE keeps the real Authorizer.
 	//
-	// Loud-by-default dev-mode banner: when dev mode is on the per-service
-	// Authorizer is swapped to middleware.DevAuthorizer{} (allow-all).
-	// A prod manifest that accidentally sets ENVIRONMENT=development gets
-	// a screaming Warn at every container start instead of silently
-	// shipping with authz disabled.
-	if cfg.Mode().IsDev() {
-		logger.Warn("DEV MODE — authorization checks disabled (DevAuthorizer is allow-all); set ENVIRONMENT to anything other than \"development\" in non-dev environments",
+	// This banner must match the swap exactly: it fires only when authz is
+	// ACTUALLY allow-all, so it never lies. A boot that explicitly bypassed
+	// auth gets a screaming Warn at every container start.
+	if cfg.DevAuthBypass() {
+		logger.Warn("AUTH BYPASS — authorization checks disabled (DevAuthorizer is allow-all); gated on AUTH_DEV_MODE=true, never set it in non-dev environments",
 {{- if index .ConfigFields "Environment"}}
 			"environment", cfg.Environment,
 {{- end}}

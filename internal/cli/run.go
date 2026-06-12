@@ -289,6 +289,22 @@ func runProjectDev(opts runOptions) error {
 	if v, ok := defaultRunEnvironment(envExtraEnv, os.LookupEnv, opts.env); ok {
 		envExtraEnv["ENVIRONMENT"] = v
 		fmt.Println("[run] ENVIRONMENT=development (forge run defaults children to dev mode; set ENVIRONMENT to override)")
+
+		// Auth bypass is NEVER implied by ENVIRONMENT — a project with a
+		// real auth provider keeps auth enforced under `forge run`. The
+		// ONLY auto-bypass is for a project with no auth provider at all,
+		// which would otherwise refuse to boot (the interceptor needs a
+		// validator). There's nothing to bypass, so enable dev claims so
+		// the dev loop works — explicitly (AUTH_DEV_MODE) and loudly.
+		_, authModeInCfg := envExtraEnv["AUTH_DEV_MODE"]
+		_, authModeInShell := os.LookupEnv("AUTH_DEV_MODE")
+		if !authModeInCfg && !authModeInShell {
+			provider := strings.ToLower(strings.TrimSpace(cfg.Auth.Provider))
+			if provider == "" || provider == "none" {
+				envExtraEnv["AUTH_DEV_MODE"] = "true"
+				fmt.Println("[run] AUTH_DEV_MODE=true (no auth provider configured → auth bypassed for dev, dev claims injected). Configure an auth provider, or set AUTH_DEV_MODE=false, to enforce auth.")
+			}
+		}
 	}
 	fmt.Println()
 

@@ -241,6 +241,10 @@ Examples:
   forge run admin-server --background    # Detach, track PID for later stop
   forge run admin-server stop            # Kill the tracked background PID
   forge run admin-server --env-file .env.local  # Override KCL secrets_file path`,
+		// Runtime failures (a host postgres squatting on 5432, a child
+		// dying) are not usage errors — dumping the flag table after
+		// them buries the actionable message (journey fr-8236556f2e).
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// `forge run <service> stop` short-circuits to the PID kill.
 			if len(args) == 2 && args[1] == "stop" {
@@ -264,7 +268,7 @@ Examples:
 	runCmd.Flags().BoolVar(&opts.debug, "debug", false, "Start with Delve debugger (hot-reload + debug on :2345) — orchestrator only")
 	runCmd.Flags().BoolVar(&background, "background", false, "Detach the host-mode runner and return immediately (stop with `forge run <service> stop`)")
 	runCmd.Flags().StringVar(&secretsFile, "env-file", "", "Override the KCL HostDeploy.secrets_file path (gitignored dotenv with secrets only — config lives in KCL env_vars)")
-	runCmd.Flags().IntVar(&opts.proxyPort, "proxy-port", 0, "Cross-frontend dev proxy port (default 8080; env var FORGE_RUN_PROXY_PORT also honoured). Maps <name>.localhost:<port> → each frontend / HTTP-routed service.")
+	runCmd.Flags().IntVar(&opts.proxyPort, "proxy-port", 0, "Cross-frontend dev proxy port (default 8080, auto-shifted past any declared service/frontend port; env var FORGE_RUN_PROXY_PORT also honoured). Maps <name>.localhost:<port> → each frontend / HTTP-routed service.")
 	runCmd.Flags().BoolVar(&opts.noProxy, "no-proxy", false, "Disable the cross-frontend dev proxy (orchestrator only) — use the raw per-frontend ports instead of the unified <name>.localhost URL.")
 
 	return runCmd

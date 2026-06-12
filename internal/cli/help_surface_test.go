@@ -105,6 +105,7 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"accept",
 		"explain-drift",
 		"force-cleanup",
+		"no-heal",
 		"plan",
 		"reason",
 		"reset-tier2",

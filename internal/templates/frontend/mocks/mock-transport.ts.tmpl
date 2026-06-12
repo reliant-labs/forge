@@ -220,15 +220,18 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- if .HasUpdate }}
         case "{{ .ServiceTypeName }}/{{ .UpdateRPC }}": {
           const req = input as Record<string, unknown>;
-          const id = String(req.id ?? "");
+          // AIP-134 requests wrap the entity ({ {{ .EntityName | camelCase }}: {...}, updateMask })
+          // — the id lives inside the wrapper; flat requests carry it at
+          // the top level.
+          const patch = { ...((req.{{ .EntityName | camelCase }} ?? req) as Record<string, unknown>) };
+          delete patch.$typeName;
+          const id = String(patch.id ?? req.id ?? "");
           const existing = {{ .EntityNamePlural | camelCase }}Store.get(id);
           if (!existing) {
             return Promise.reject(
               new ConnectError(`{{ .EntityName | lower }} ${id} not found`, Code.NotFound),
             );
           }
-          const patch = { ...((req.{{ .EntityName | camelCase }} ?? req) as Record<string, unknown>) };
-          delete patch.$typeName;
           const updated = create({{ .SchemaImport }}, { ...existing, ...patch, id } as MessageInitShape<typeof {{ .SchemaImport }}>);
           {{ .EntityNamePlural | camelCase }}Store.set(id, updated);
           const result = create({{ .CreateResponseType }}Schema, {

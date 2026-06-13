@@ -92,10 +92,9 @@ func TestE2EAddServiceThenEntityGenerates(t *testing.T) {
 		t.Logf("note: add-service proto already imports forge/v1/forge.proto; the entity-injection import path is not exercised from the bare state")
 	}
 
-	// sqlite keeps the generated DB layer self-contained (no pg socket
-	// needed if a later step boots anything).
-	appendToCorpusFile(t, filepath.Join(projectDir, "forge.yaml"),
-		"\ndatabase:\n  driver: sqlite\n")
+	// postgres is the pinned, derived-default driver; this test only
+	// generates and builds (no DB boot), so no database override is
+	// needed.
 
 	runCmd(t, projectDir, forgeBin, "add", "entity", "bookmark",
 		"url:string", "title:string", "done:bool")

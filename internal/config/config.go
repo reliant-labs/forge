@@ -481,10 +481,14 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 }
 
 // DatabaseConfig holds database-related settings.
+//
+// The driver is pinned to postgres: forge generates postgres-only data
+// layers (the runtime ORM, the generate-time schema introspection, and
+// the test harness all target real postgres). The only meaningful choice
+// is postgres vs "none" (no database).
 type DatabaseConfig struct {
-	Driver          string                `yaml:"driver"` // "postgres", "sqlite"
+	Driver          string                `yaml:"driver"` // "postgres" or "none"
 	MigrationsDir   string                `yaml:"migrations_dir"`
-	SQLCEnabled     bool                  `yaml:"sqlc_enabled"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 }
 
@@ -1276,7 +1280,7 @@ type StackFrontend struct {
 
 // StackDatabase declares the database technology.
 type StackDatabase struct {
-	Driver string `yaml:"driver,omitempty"` // "postgres" (default), "sqlite", "mysql", "none"
+	Driver string `yaml:"driver,omitempty"` // "postgres" (default) or "none"
 }
 
 // StackProto declares the proto toolchain.
@@ -1313,10 +1317,12 @@ func (s StackConfig) EffectiveFrontendFramework() string {
 	return "nextjs"
 }
 
-// EffectiveDatabaseDriver returns the database driver, defaulting to "postgres".
+// EffectiveDatabaseDriver returns the database driver. The driver is
+// pinned to postgres: the only off-ramp is "none" (no database). Any
+// other value (including the empty default) resolves to "postgres".
 func (s StackConfig) EffectiveDatabaseDriver() string {
-	if s.Database.Driver != "" {
-		return s.Database.Driver
+	if s.Database.Driver == "none" {
+		return "none"
 	}
 	return "postgres"
 }

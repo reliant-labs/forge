@@ -3,31 +3,49 @@ package orm
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // Array support for generated ORM code.
 //
-// Postgres stores slice columns as native arrays (TEXT[], BIGINT[]);
-// SQLite stores them as JSON text. ArrayValue picks the write encoding
-// from the dialect; StringArray/Int64Array scan BOTH encodings (the
-// postgres text format `{a,b}` and JSON `["a","b"]`), so generated scan
-// code is dialect-agnostic.
+// Postgres stores slice columns as native arrays (TEXT[], BIGINT[]).
+// ArrayValue wraps the slice as a postgres array parameter (pq.Array,
+// which both lib/pq and pgx-stdlib bind correctly); StringArray/Int64Array
+// scan the postgres text format `{a,b}` (and tolerate JSON `["a","b"]`
+// from legacy data), so generated scan code is driver-agnostic.
 
-// ArrayValue converts a slice for use as a SQL parameter. On postgres
-// the slice passes through untouched (the pgx driver binds native
-// arrays); on every other dialect it is JSON-encoded text.
+// ArrayValue converts a slice for use as a SQL parameter. forge is
+// postgres-pinned: the slice is wrapped with pq.Array, which renders the
+// postgres array literal both lib/pq and pgx-stdlib bind to a native
+// array column (TEXT[], BIGINT[]). A bare []string is NOT a valid
+// database/sql driver value — passing it through unwrapped makes the
+// driver reject the INSERT.
+//
+// The Dialect argument is retained for the generated call sites (and the
+// Phase-2 engine swap); postgres is the only dialect.
+//
+// A nil slice is normalized to an EMPTY array (`{}`), not NULL: array
+// columns are conventionally `NOT NULL DEFAULT '{}'`, and pq.Array on a
+// nil slice would otherwise bind NULL and violate the constraint.
 func ArrayValue(d Dialect, v any) any {
-	if d != nil && d.Name() == "postgres" {
-		return v
+	if isNilSlice(v) {
+		return pq.Array([]string{})
 	}
-	b, err := json.Marshal(v)
-	if err != nil || string(b) == "null" {
-		// nil slices marshal to "null"; store the empty array instead.
-		return "[]"
+	return pq.Array(v)
+}
+
+// isNilSlice reports whether v is a nil slice of any element type
+// (including named slice types like orm.StringArray).
+func isNilSlice(v any) bool {
+	if v == nil {
+		return true
 	}
-	return string(b)
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Slice && rv.IsNil()
 }
 
 // StringArray scans a string-array column from either encoding.

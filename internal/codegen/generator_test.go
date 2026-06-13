@@ -1113,11 +1113,10 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 }
 
 // TestGenerateBootstrapTesting_MigratedDBOptIn pins the DB harness
-// contract for projects with embedded migrations: the DEFAULT test DB
-// stays the bare in-memory SQLite (forge migrations are typically
-// PostgreSQL-dialect — auto-applying them to SQLite would fail every
-// scaffold out of the box), and a NewMigratedTestDB helper is emitted so
-// tests opt in to the real schema loudly via WithDB(NewMigratedTestDB(t)).
+// contract for projects with embedded migrations: the DEFAULT test DB is
+// a bare (schema-less) real-postgres database, and a NewMigratedTestDB
+// helper is emitted so tests opt in to the real schema via
+// WithDB(NewMigratedTestDB(t)).
 func TestGenerateBootstrapTesting_MigratedDBOptIn(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -1167,14 +1166,14 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 	}
 	content := string(data)
 
-	if !strings.Contains(content, `db:     testkit.NewSQLiteMemDB(t)`) {
-		t.Error("default test DB must stay the BARE in-memory SQLite (migrations are opt-in)")
+	if !strings.Contains(content, `db:     testkit.NewPostgresDB(t)`) {
+		t.Error("default test DB must be the BARE real-postgres DB (migrations are opt-in)")
 	}
 	if !strings.Contains(content, `func NewMigratedTestDB(t *testing.T) orm.Context`) {
 		t.Error("testing.go should emit the NewMigratedTestDB opt-in helper when migrations exist")
 	}
-	if !strings.Contains(content, `testkit.NewMigratedSQLiteDB(t, forgedb.MigrationsFS)`) {
-		t.Error("NewMigratedTestDB should delegate to testkit.NewMigratedSQLiteDB over forgedb.MigrationsFS")
+	if !strings.Contains(content, `testkit.NewMigratedPostgresDB(t, forgedb.MigrationsFS)`) {
+		t.Error("NewMigratedTestDB should delegate to testkit.NewMigratedPostgresDB over forgedb.MigrationsFS")
 	}
 	if !strings.Contains(content, `forgedb "example.com/proj/db"`) {
 		t.Error("testing.go should import the project db package as forgedb")
@@ -1770,25 +1769,9 @@ func TestGenerateBootstrap_ConstructsDatabaseAndORM(t *testing.T) {
 		t.Error("bootstrap.go should construct the ORM client from app.DB when ORM is enabled")
 	}
 
-	// sqlite flavor: driver import + dialect registration.
-	sqliteDir := t.TempDir()
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "sqlite", true, sqliteDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
-		t.Fatalf("GenerateBootstrap(sqlite) error = %v", err)
-	}
-	data, err = os.ReadFile(filepath.Join(sqliteDir, "pkg", "app", "bootstrap.go"))
-	if err != nil {
-		t.Fatalf("ReadFile(bootstrap.go sqlite) error = %v", err)
-	}
-	content = string(data)
-	if !strings.Contains(content, `_ "github.com/mattn/go-sqlite3"`) {
-		t.Error("sqlite bootstrap.go should import the sqlite3 driver")
-	}
-	if !strings.Contains(content, `_ "github.com/reliant-labs/forge/pkg/dialects/sqlite"`) {
-		t.Error("sqlite bootstrap.go should register the sqlite ORM dialect")
-	}
-	if !strings.Contains(content, `orm.NewClientWithDB(app.DB, "sqlite")`) {
-		t.Error("sqlite bootstrap.go should construct the ORM client with the sqlite dialect")
-	}
+	// Postgres is the only driver: any non-"none" value emits the pgx
+	// import and the postgres ORM client (asserted above). There is no
+	// sqlite bootstrap variant anymore.
 
 	// No database → no construction machinery, Setup row stays bare.
 	noDBDir := t.TempDir()

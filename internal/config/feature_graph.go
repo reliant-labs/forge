@@ -84,11 +84,11 @@ var featureDeps = map[FeatureName][]featureRequirement{
 	},
 	FeatureORM: {
 		{Feature: FeatureCodegen, fix: "enable codegen, or disable orm"},
-		{Shape: hasDatabaseDriver, label: "a database driver", fix: "set database.driver (postgres or sqlite), or disable orm"},
+		{Shape: hasDatabaseDriver, label: "a database driver", fix: "set database.driver: postgres, or disable orm"},
 	},
 	FeatureMigrations: {
 		{Feature: FeatureCodegen, fix: "enable codegen, or disable migrations"},
-		{Shape: hasDatabaseDriver, label: "a database driver", fix: "set database.driver (postgres or sqlite), or disable migrations"},
+		{Shape: hasDatabaseDriver, label: "a database driver", fix: "set database.driver: postgres, or disable migrations"},
 	},
 	FeatureDeploy: {
 		{Feature: FeatureBuild, fix: "enable build, or disable deploy"},
@@ -103,7 +103,7 @@ var featureDeps = map[FeatureName][]featureRequirement{
 
 // hasDatabaseDriver reports whether a concrete database driver is
 // configured (after section defaulting). Mirrors the derive.go hasDB
-// predicate's driver clause (postgres/sqlite, not "" or "none").
+// predicate's driver clause (postgres, not "" or "none").
 func hasDatabaseDriver(c *ProjectConfig) bool {
 	d := c.Database.Driver
 	return d != "" && d != "none"

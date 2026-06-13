@@ -46,11 +46,8 @@ import (
 {{- end}}
 
 	"connectrpc.com/connect"
-{{- if eq .DatabaseDriver "postgres"}}
+{{- if .HasDatabase}}
 	_ "github.com/jackc/pgx/v5/stdlib"
-{{- end}}
-{{- if eq .DatabaseDriver "sqlite"}}
-	_ "github.com/mattn/go-sqlite3"
 {{- end}}
 {{- if .Operators}}
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -62,9 +59,6 @@ import (
 {{- end}}
 {{- if .OrmEnabled}}
 	"github.com/reliant-labs/forge/pkg/orm"
-{{- end}}
-{{- if and .OrmEnabled (eq .DatabaseDriver "sqlite")}}
-	_ "github.com/reliant-labs/forge/pkg/dialects/sqlite"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
 	"{{.Module}}/pkg/config"
@@ -471,13 +465,7 @@ func ensureDatabase(app *App, cfg *config.Config, logger *slog.Logger) error {
 			logger.Warn("DATABASE_URL is not set — database-backed services will fail validateDeps at startup; set DATABASE_URL (see docker-compose.yml / .env.example) to serve them")
 			return nil
 		}
-{{- if eq .DatabaseDriver "postgres"}}
 		db, err := sql.Open("pgx", cfg.DatabaseUrl)
-{{- else if eq .DatabaseDriver "sqlite"}}
-		db, err := sql.Open("sqlite3", cfg.DatabaseUrl)
-{{- else}}
-		db, err := sql.Open("{{.DatabaseDriver}}", cfg.DatabaseUrl)
-{{- end}}
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}
@@ -487,13 +475,13 @@ func ensureDatabase(app *App, cfg *config.Config, logger *slog.Logger) error {
 		db.SetConnMaxIdleTime(1 * time.Minute)
 		if err := db.Ping(); err != nil {
 			db.Close()
-			return fmt.Errorf("ping database ({{.DatabaseDriver}} DSN from DATABASE_URL): %w", err)
+			return fmt.Errorf("ping database (postgres DSN from DATABASE_URL): %w", err)
 		}
 		app.DB = db
 	}
 {{- if .OrmEnabled}}
 	if app.ORM == nil && app.DB != nil {
-		ormClient, err := orm.NewClientWithDB(app.DB, "{{.DatabaseDriver}}")
+		ormClient, err := orm.NewClientWithDB(app.DB, "postgres")
 		if err != nil {
 			return fmt.Errorf("create ORM client: %w", err)
 		}

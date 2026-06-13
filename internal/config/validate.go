@@ -102,6 +102,16 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 	// feature-derivation context so absent feature flags resolve from
 	// shape (see derive.go). Explicit values are never overridden.
 	ApplyDerivedDefaults(&cfg)
+
+	// Phase 5: feature dependency graph. Now that the feature set is
+	// fully resolved (derived defaults + explicit overrides folded in),
+	// reject any enabled feature whose dependency is off — a config that
+	// would otherwise load clean and then silently no-op or blow up
+	// mid-generate. Batched into the same ValidationError so the caller
+	// sees every contradiction at once (see feature_graph.go).
+	if graphIssues := validateFeatureGraph(&cfg); len(graphIssues) > 0 {
+		return nil, &ValidationError{Path: label, Issues: graphIssues}
+	}
 	return &cfg, nil
 }
 

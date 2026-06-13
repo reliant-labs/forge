@@ -142,7 +142,24 @@ type ormField struct {
 	notNull     bool
 	unique      bool
 	references  string
-	nullable    bool // nullable column → pointer struct field
+	nullable    bool   // nullable column → pointer struct field
+	hasDefault  bool   // column has a DB DEFAULT (server-supplied value)
+	columnDef   string // the DEFAULT expression verbatim, when hasDefault
+	// softDeleteNative is true on the deleted_at field when soft delete is
+	// active AND the column projects to a proper time type (TIMESTAMPTZ →
+	// time.Time). Bun's built-in ,soft_delete owns it; the generated CRUD
+	// relies on Bun. False for a legacy TEXT deleted_at, which stays
+	// hand-rolled (Bun's ,soft_delete stamps a time.Time that a TEXT column
+	// can't round-trip — kalshi fr-3fba9166ba style).
+	softDeleteNative bool
+}
+
+// isBunSoftDeleteTimeType reports whether a deleted_at field's projected
+// Go type is one Bun's ,soft_delete can stamp/scan: a time. Legacy TEXT
+// deleted_at columns project to "string" and fail this — they keep the
+// hand-rolled stamp/filter path.
+func isBunSoftDeleteTimeType(f ormField) bool {
+	return f.goType == "time.Time"
 }
 
 // structGoType is the Go type of the field on the generated entity
@@ -247,19 +264,33 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	}
 	b.WriteString("}\n\n")
 
+	// Soft-delete mode. With a proper time deleted_at, Bun's built-in
+	// ,soft_delete owns it: NewSelect auto-excludes deleted rows, a plain
+	// NewDelete stamps deleted_at, WhereAllWithDeleted includes them — the
+	// generator emits NO deleted_at IS NULL filter and NO CURRENT_TIMESTAMP
+	// stamp. A legacy TEXT deleted_at can't round-trip Bun's time.Time
+	// stamp, so it keeps the hand-rolled filter/stamp path.
+	nativeSoftDelete := ent.SoftDelete && entityUsesNativeSoftDelete(fields)
+	handRolledSoftDelete := ent.SoftDelete && !nativeSoftDelete
+
 	// CRUD functions — all built on Bun's typed query builder, reached via
 	// db.Bun(). No raw SQL, no dialect string-building, no scan helper:
 	// Bun scans rows straight into the Bun-tagged struct.
 	writeORMCreate(&b, msgName, tableName, fields, hasTenant, tenantField, pkField, ent.Timestamps)
-	writeORMGetByID(&b, msgName, tableName, pkCol, pkGoType, hasTenant, ent.SoftDelete, tenantField)
-	writeORMList(&b, msgName, tableName, hasTenant, ent.SoftDelete, tenantField)
-	writeORMCount(&b, msgName, tableName, hasTenant, ent.SoftDelete, tenantField)
+	writeORMGetByID(&b, msgName, tableName, pkCol, pkGoType, hasTenant, handRolledSoftDelete, tenantField)
+	writeORMList(&b, msgName, tableName, hasTenant, handRolledSoftDelete, tenantField)
+	writeORMCount(&b, msgName, tableName, hasTenant, handRolledSoftDelete, tenantField)
 	if ent.SoftDelete {
-		writeORMListAll(&b, msgName, tableName, hasTenant, tenantField)
+		writeORMListAll(&b, msgName, tableName, hasTenant, handRolledSoftDelete, nativeSoftDelete, tenantField)
 	}
+	// Update/UpdateMasked keep a deleted_at IS NULL guard for ANY soft
+	// delete (native or legacy TEXT): Bun auto-scopes NewSelect/NewDelete to
+	// live rows but NOT NewUpdate, so without the guard an UPDATE could
+	// mutate a tombstoned row. The guard is a read-side filter, not the
+	// hand-rolled stamp — it's correct in both modes.
 	writeORMUpdate(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
 	writeORMUpdateMasked(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
-	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, hasTenant, ent.SoftDelete, tenantField)
+	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, hasTenant, handRolledSoftDelete, nativeSoftDelete, tenantField)
 
 	// gofmt the render so struct-tag/const alignment matches what the
 	// project's gofmt/CI check (and the drift guard) expect. The writers
@@ -296,18 +327,52 @@ func writeORMImports(b *strings.Builder, needsTime, needsStrings, stringPK bool)
 	b.WriteString(")\n\n")
 }
 
-// bunTag returns the `bun:"..."` struct tag for a field. The column name
-// is always present; the primary key gets ,pk; array columns get ,array
-// (so Bun binds/scans them as native postgres arrays).
+// bunTag returns the `bun:"..."` struct tag for a field, projecting the
+// introspected schema into Bun's native tag vocabulary so Bun owns the
+// behaviour forge used to hand-roll. The column name is always present.
+//
+//   - PRIMARY KEY                → ,pk; a server-allocated integer PK
+//     (SERIAL/IDENTITY/BIGSERIAL) also gets ,autoincrement so Bun reads
+//     the DB-assigned value back via RETURNING.
+//   - deleted_at soft-delete     → ,soft_delete,nullzero — Bun's BUILT-IN
+//     soft delete. NewSelect auto-excludes deleted rows, a plain
+//     NewDelete stamps deleted_at, WhereAllWithDeleted/ForceDelete opt
+//     out. nullzero maps a zero/NULL deleted_at to "live". (Only emitted
+//     for a proper time deleted_at; a legacy TEXT column is NOT marked
+//     softDeleteNative and falls through to the plain notnull/default
+//     projection below, keeping the hand-rolled path.)
+//   - array column               → ,array (native postgres array bind/scan).
+//   - NOT NULL column            → ,notnull (skipped for the PK, which
+//     ,pk already implies, and for soft_delete, which is nullable).
+//   - column DEFAULT             → ,default:<expr> so Bun knows the DB
+//     supplies the value (skipped for the PK/autoincrement and
+//     soft_delete, whose lifecycle Bun manages).
 func bunTag(f ormField) string {
-	tag := f.columnName
-	if f.isPK {
-		tag += ",pk"
+	parts := []string{f.columnName}
+
+	switch {
+	case f.softDeleteNative:
+		// Bun's built-in soft delete owns the column entirely.
+		parts = append(parts, "soft_delete", "nullzero")
+	case f.isPK:
+		parts = append(parts, "pk")
+		if isIntegerGoType(f.goType) {
+			// SERIAL/IDENTITY: server-allocated, read back via RETURNING.
+			parts = append(parts, "autoincrement")
+		}
+	default:
+		if f.isArray {
+			parts = append(parts, "array")
+		}
+		if f.notNull {
+			parts = append(parts, "notnull")
+		}
+		if f.hasDefault {
+			parts = append(parts, "default:"+f.columnDef)
+		}
 	}
-	if f.isArray {
-		tag += ",array"
-	}
-	return fmt.Sprintf("`bun:%q`", tag)
+
+	return fmt.Sprintf("`bun:%q`", strings.Join(parts, ","))
 }
 
 // writeEntityStruct emits the entity row type with Bun struct tags. Field
@@ -606,11 +671,18 @@ func writeORMGetByID(b *strings.Builder, msgName, tableName, pkCol, pkGoType str
 }
 
 // writeListBody emits the shared Bun SELECT body for List/ListAll: build
-// the query, apply tenant scope (+ soft-delete unless includeSoftDelete
-// is false), apply the caller's QueryOption filters, scan.
-func writeListBody(b *strings.Builder, msgName, tableName, opName string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
+// the query, apply tenant scope (+ hand-rolled soft-delete filter unless
+// includeSoftDelete is false), apply the caller's QueryOption filters,
+// scan. whereAllWithDeleted opts a Bun-native ,soft_delete model out of
+// the automatic deleted-row exclusion (used by ListAll).
+func writeListBody(b *strings.Builder, msgName, tableName, opName string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete, whereAllWithDeleted bool) {
 	fmt.Fprintf(b, "\tvar results []*%s\n", msgName)
 	b.WriteString("\tq := db.Bun().NewSelect().Model(&results)\n")
+	if whereAllWithDeleted {
+		// Bun's ,soft_delete auto-excludes deleted rows from NewSelect;
+		// ListAll deliberately includes them.
+		b.WriteString("\tq = q.WhereAllWithDeleted()\n")
+	}
 	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, includeSoftDelete)
 	b.WriteString("\tfor _, opt := range opts {\n")
 	b.WriteString("\t\topt(q)\n")
@@ -633,7 +705,7 @@ func writeORMList(b *strings.Builder, msgName, tableName string, hasTenant, soft
 	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.List%s\",\n", msgName)
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
-	writeListBody(b, msgName, tableName, "list", softDelete, hasTenant, tenantField, true)
+	writeListBody(b, msgName, tableName, "list", softDelete, hasTenant, tenantField, true, false)
 	b.WriteString("}\n\n")
 }
 
@@ -663,7 +735,7 @@ func writeORMCount(b *strings.Builder, msgName, tableName string, hasTenant, sof
 	b.WriteString("}\n\n")
 }
 
-func writeORMListAll(b *strings.Builder, msgName, tableName string, hasTenant bool, tenantField *ormField) {
+func writeORMListAll(b *strings.Builder, msgName, tableName string, hasTenant, handRolledSoftDelete, nativeSoftDelete bool, tenantField *ormField) {
 	fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
 	if hasTenant {
 		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
@@ -674,8 +746,11 @@ func writeORMListAll(b *strings.Builder, msgName, tableName string, hasTenant bo
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
 	// Tenant isolation still applies even for ListAll (it bypasses the
-	// soft-delete filter only).
-	writeListBody(b, msgName, tableName, "list all", true /*softDelete*/, hasTenant, tenantField, false /*includeSoftDelete*/)
+	// soft-delete filter only). Native ,soft_delete needs an explicit
+	// WhereAllWithDeleted() to see the tombstones; the legacy TEXT path
+	// simply omits the deleted_at IS NULL filter (handRolledSoftDelete,
+	// includeSoftDelete=false).
+	writeListBody(b, msgName, tableName, "list all", handRolledSoftDelete, hasTenant, tenantField, false /*includeSoftDelete*/, nativeSoftDelete /*whereAllWithDeleted*/)
 	b.WriteString("}\n\n")
 }
 
@@ -890,11 +965,18 @@ func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, 
 	b.WriteString("}\n\n")
 }
 
-func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, hasTenant, softDelete bool, tenantField *ormField) {
-	if softDelete {
+func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, hasTenant, handRolledSoftDelete, nativeSoftDelete bool, tenantField *ormField) {
+	if handRolledSoftDelete || nativeSoftDelete {
 		fmt.Fprintf(b, "// Delete%s soft-deletes a %s by setting deleted_at.\n", msgName, msgName)
 	} else {
 		fmt.Fprintf(b, "// Delete%s permanently deletes a %s by its primary key.\n", msgName, msgName)
+	}
+	if nativeSoftDelete {
+		b.WriteString("//\n")
+		b.WriteString("// Soft delete is Bun-native (,soft_delete tag): a plain NewDelete on a\n")
+		b.WriteString("// soft-delete model stamps deleted_at instead of removing the row.\n")
+		b.WriteString("// Use ForceDelete to hard-delete; ListAll/WhereAllWithDeleted to read\n")
+		b.WriteString("// tombstones.\n")
 	}
 	if hasTenant {
 		fmt.Fprintf(b, "func Delete%s(ctx context.Context, db orm.Context, id %s, tenantID string) error {\n", msgName, pkGoType)
@@ -908,14 +990,23 @@ func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType stri
 	b.WriteString("\t\t))\n")
 	b.WriteString("\tdefer span.End()\n\n")
 
-	if softDelete {
-		// Soft delete: stamp deleted_at instead of removing the row. Bun
-		// UPDATE with a raw Set expression for CURRENT_TIMESTAMP.
+	switch {
+	case nativeSoftDelete:
+		// Bun-native soft delete: NewDelete on a ,soft_delete model stamps
+		// deleted_at (Bun rewrites it to UPDATE ... SET deleted_at). No
+		// manual Set, no deleted_at IS NULL guard — Bun's NewDelete already
+		// scopes to live rows.
+		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).\n", msgName)
+		fmt.Fprintf(b, "\t\tWhere(%q, id)\n", sqlIdent(pkCol)+" = ?")
+	case handRolledSoftDelete:
+		// Legacy TEXT deleted_at: stamp deleted_at instead of removing the
+		// row. Bun's time.Time stamp can't round-trip a TEXT column, so this
+		// stays a hand-rolled UPDATE with CURRENT_TIMESTAMP.
 		fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
 		fmt.Fprintf(b, "\t\tSet(%q).\n", sqlIdent("deleted_at")+" = CURRENT_TIMESTAMP")
 		fmt.Fprintf(b, "\t\tWhere(%q, id).\n", sqlIdent(pkCol)+" = ?")
 		fmt.Fprintf(b, "\t\tWhere(%q)\n", sqlIdent("deleted_at")+" IS NULL")
-	} else {
+	default:
 		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).\n", msgName)
 		fmt.Fprintf(b, "\t\tWhere(%q, id)\n", sqlIdent(pkCol)+" = ?")
 	}
@@ -1000,13 +1091,42 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			notNull:     e.NotNull,
 			unique:      e.Unique,
 			references:  e.References,
+			hasDefault:  strings.TrimSpace(e.Default) != "",
+			columnDef:   strings.TrimSpace(e.Default),
 		}
 		// Nullable column → pointer struct field. Arrays and bytes are
 		// reference types already (NULL scans to nil).
 		f.nullable = !f.isPK && !f.notNull && isNullablePlanType(e.Type)
 		fields = append(fields, f)
 	}
+
+	// Mark the soft-delete column when soft delete is active and the
+	// deleted_at column projects to a proper time type — Bun's built-in
+	// ,soft_delete then owns it. A legacy TEXT deleted_at (Go type string)
+	// is left unmarked and keeps the hand-rolled stamp/filter path.
+	if ent.SoftDelete {
+		for i := range fields {
+			if fields[i].columnName == "deleted_at" && isBunSoftDeleteTimeType(fields[i]) {
+				fields[i].softDeleteNative = true
+			}
+		}
+	}
 	return fields
+}
+
+// entityUsesNativeSoftDelete reports whether the entity's soft delete is
+// handled by Bun's built-in ,soft_delete (proper time deleted_at) rather
+// than the hand-rolled TEXT fallback. Drives the read/delete codegen: when
+// true, Bun auto-excludes deleted rows from NewSelect, a plain NewDelete
+// soft-deletes, and WhereAllWithDeleted includes them — the generator emits
+// no deleted_at IS NULL filters and no CURRENT_TIMESTAMP stamp.
+func entityUsesNativeSoftDelete(fields []ormField) bool {
+	for _, f := range fields {
+		if f.softDeleteNative {
+			return true
+		}
+	}
+	return false
 }
 
 // isTimePlanType reports whether the plan type is a timestamp column.

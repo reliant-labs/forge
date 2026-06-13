@@ -31,6 +31,7 @@ import (
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // featureCheck is the per-feature predicate signature. Each Feature*
@@ -47,23 +48,23 @@ type featureCheck func(config.FeaturesConfig) bool
 // features share this map; the default-OFF semantics come from the
 // underlying accessor (e.g. IngressEnabled() reads Experimental.Ingress).
 var featureChecks = map[string]featureCheck{
-	config.FeatureORM:             func(f config.FeaturesConfig) bool { return f.ORMEnabled() },
-	config.FeatureCodegen:         func(f config.FeaturesConfig) bool { return f.CodegenEnabled() },
-	config.FeatureMigrations:      func(f config.FeaturesConfig) bool { return f.MigrationsEnabled() },
-	config.FeatureCI:              func(f config.FeaturesConfig) bool { return f.CIEnabled() },
-	config.FeatureBuild:           func(f config.FeaturesConfig) bool { return f.BuildEnabled() },
-	config.FeatureContracts:       func(f config.FeaturesConfig) bool { return f.ContractsEnabled() },
-	config.FeatureDocs:            func(f config.FeaturesConfig) bool { return f.DocsEnabled() },
-	config.FeatureFrontend:        func(f config.FeaturesConfig) bool { return f.FrontendEnabled() },
-	config.FeatureObservability:   func(f config.FeaturesConfig) bool { return f.ObservabilityEnabled() },
-	config.FeatureHotReload:       func(f config.FeaturesConfig) bool { return f.HotReloadEnabled() },
-	config.FeaturePacks:           func(f config.FeaturesConfig) bool { return f.PacksEnabled() },
-	config.FeatureStarters:        func(f config.FeaturesConfig) bool { return f.StartersEnabled() },
-	config.FeatureDeploy:          func(f config.FeaturesConfig) bool { return f.DeployEnabled() },
-	config.FeatureIngress:         func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
-	config.FeatureExternalBuilds:  func(f config.FeaturesConfig) bool { return f.ExternalBuildsEnabled() },
-	config.FeatureOperators:       func(f config.FeaturesConfig) bool { return f.OperatorsEnabled() },
-	config.FeatureStrictWiring:    func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
+	config.FeatureORM:            func(f config.FeaturesConfig) bool { return f.ORMEnabled() },
+	config.FeatureCodegen:        func(f config.FeaturesConfig) bool { return f.CodegenEnabled() },
+	config.FeatureMigrations:     func(f config.FeaturesConfig) bool { return f.MigrationsEnabled() },
+	config.FeatureCI:             func(f config.FeaturesConfig) bool { return f.CIEnabled() },
+	config.FeatureBuild:          func(f config.FeaturesConfig) bool { return f.BuildEnabled() },
+	config.FeatureContracts:      func(f config.FeaturesConfig) bool { return f.ContractsEnabled() },
+	config.FeatureDocs:           func(f config.FeaturesConfig) bool { return f.DocsEnabled() },
+	config.FeatureFrontend:       func(f config.FeaturesConfig) bool { return f.FrontendEnabled() },
+	config.FeatureObservability:  func(f config.FeaturesConfig) bool { return f.ObservabilityEnabled() },
+	config.FeatureHotReload:      func(f config.FeaturesConfig) bool { return f.HotReloadEnabled() },
+	config.FeaturePacks:          func(f config.FeaturesConfig) bool { return f.PacksEnabled() },
+	config.FeatureStarters:       func(f config.FeaturesConfig) bool { return f.StartersEnabled() },
+	config.FeatureDeploy:         func(f config.FeaturesConfig) bool { return f.DeployEnabled() },
+	config.FeatureIngress:        func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
+	config.FeatureExternalBuilds: func(f config.FeaturesConfig) bool { return f.ExternalBuildsEnabled() },
+	config.FeatureOperators:      func(f config.FeaturesConfig) bool { return f.OperatorsEnabled() },
+	config.FeatureStrictWiring:   func(f config.FeaturesConfig) bool { return f.StrictWiringEnabled() },
 }
 
 // isFeatureEnabled reports whether a named feature is enabled in cfg.
@@ -72,15 +73,15 @@ var featureChecks = map[string]featureCheck{
 // An unknown feature name returns true with no error — keeps adding a
 // new gate site backwards-compatible across forge versions that
 // haven't yet registered the constant in featureChecks.
-func isFeatureEnabled(cfg *config.ProjectConfig, name string) bool {
-	if cfg == nil {
+func isFeatureEnabled(store projectstore.ProjectStore, name string) bool {
+	if store == nil {
 		return true
 	}
 	check, ok := featureChecks[name]
 	if !ok {
 		return true
 	}
-	return check(cfg.Features)
+	return check(store.Features())
 }
 
 // requireFeature is the strict gate for direct cobra subcommands. It
@@ -92,15 +93,15 @@ func isFeatureEnabled(cfg *config.ProjectConfig, name string) bool {
 // fallback (e.g. `forge deploy` against a project with
 // features.deploy: false). Don't use from orchestrators — see
 // skipFeature for the orchestrator shape.
-func requireFeature(name string) (*config.ProjectConfig, error) {
-	cfg, err := loadProjectConfig()
+func requireFeature(name string) (projectstore.ProjectStore, error) {
+	store, err := loadProjectStore()
 	if err != nil {
 		return nil, err
 	}
-	if !isFeatureEnabled(cfg, name) {
+	if !isFeatureEnabled(store, name) {
 		return nil, config.DisabledFeatureError(name)
 	}
-	return cfg, nil
+	return store, nil
 }
 
 // skipFeature is the orchestrator gate. Returns true when the
@@ -117,8 +118,8 @@ func requireFeature(name string) (*config.ProjectConfig, error) {
 // "disabled in forge.yaml" wording implies the user opted out, which
 // is misleading for default-off opt-in features the user never
 // touched.
-func skipFeature(cfg *config.ProjectConfig, name, phase string) bool {
-	if isFeatureEnabled(cfg, name) {
+func skipFeature(store projectstore.ProjectStore, name, phase string) bool {
+	if isFeatureEnabled(store, name) {
 		return false
 	}
 	if config.IsExperimentalFeature(name) {

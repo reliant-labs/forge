@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/spf13/pflag"
 )
 
@@ -151,16 +152,16 @@ func TestBuildHostServiceCmd_LayersProjectConfig(t *testing.T) {
 module_path: github.com/example/testproj
 version: "0.1.0"
 binary: shared
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-    ports:
-      http: 8080
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:  "api",
+		Kind:  "server",
+		Path:  "handlers/api",
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+	})
 	siblingContent := `environment: development
 log_level: debug
 `

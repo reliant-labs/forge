@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -36,16 +37,16 @@ func TestRunPackageNew(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 version: "0.1.0"
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-    ports:
-      http: 8080
 `
 	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:  "api",
+		Kind:  "server",
+		Path:  "handlers/api",
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+	})
 
 	// Run the command
 	cmd := newTestPackageNewCmd("")

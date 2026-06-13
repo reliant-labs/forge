@@ -138,6 +138,7 @@ func TestBuildRPCProtoSnippet_StreamKeywordPlacement(t *testing.T) {
 
 func TestRunAddRPC_HappyPath(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	handlerDir := filepath.Join(dir, "handlers", "tasks")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/tasks: %v", err)
@@ -165,6 +166,7 @@ func TestRunAddRPC_HappyPath(t *testing.T) {
 
 func TestRunAddRPC_RejectsLowercaseStart(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, "handlers", "tasks"), 0o755); err != nil {
 		t.Fatalf("mkdir handlers/tasks: %v", err)
 	}
@@ -182,7 +184,8 @@ func TestRunAddRPC_RejectsLowercaseStart(t *testing.T) {
 }
 
 func TestRunAddRPC_MissingHandlerDir(t *testing.T) {
-	withTempProject(t, minimalServiceForgeYAML)
+	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	// No handlers/tasks dir on disk.
 
 	err := runAddRPC("tasks", "ListByOwner", rpcUnary)
@@ -196,6 +199,7 @@ func TestRunAddRPC_MissingHandlerDir(t *testing.T) {
 
 func TestRunAddRPC_FileAlreadyExists(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	handlerDir := filepath.Join(dir, "handlers", "tasks")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/tasks: %v", err)

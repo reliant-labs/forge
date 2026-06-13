@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // graph_test.go — exercises buildGraphDoc end-to-end against a fixture
@@ -31,10 +33,6 @@ func writeGraphProjectYAML(t *testing.T, dir string) {
 module_path: github.com/demo/demo
 version: 0.0.1
 forge_version: dev
-components:
-    - name: tasks
-      kind: server
-      path: handlers/tasks
 packages:
     - name: repo
       type: adapter
@@ -55,6 +53,7 @@ docs: {}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "handlers/tasks"})
 }
 
 // writeTasksContract writes a contract.go for the tasks service whose

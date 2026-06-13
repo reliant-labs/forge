@@ -1928,8 +1928,8 @@ func stepRegenerateInfra(ctx *pipelineContext) error {
 // is the deploy-as-data source of truth: adding/removing a component
 // in forge.yaml (e.g. `forge add binary`) flows into the rendered
 // manifests on the next `forge generate` with no main.k hand-edit.
-// Tier-1, self-certified via .forge/hashes.json (JSON carries no
-// inline forge:hash marker).
+// Lockfile-class: regenerated every run, untracked (see
+// codegen.GenerateComponentsJSON for why it is not stomp-guarded).
 func stepComponentsGenJSON(ctx *pipelineContext) error {
 	return ctx.warnOrFail("components_gen.json generation",
 		codegen.GenerateComponentsJSON(ctx.AbsPath, ctx.Cfg.Name, ctx.Cfg.Components, ctx.Checksums))

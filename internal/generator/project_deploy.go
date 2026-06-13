@@ -132,10 +132,9 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// main.k files load. writeProjectConfig (called just before this in
 	// the scaffold sequence) already wrote forge.yaml, so read the
 	// components back from it — single source of truth, no drift. The
-	// scaffold path passes a nil checksums tracker (state files are set
-	// up later by the generate pipeline), so the JSON is written
-	// directly; `forge generate` re-emits it through the tracked
-	// chokepoint.
+	// file is a lockfile-class projection (regenerated every run,
+	// untracked), so the scaffold and the generate pipeline both write
+	// it the same way.
 	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
 	if err != nil {
 		return fmt.Errorf("read forge.yaml for components_gen.json: %w", err)

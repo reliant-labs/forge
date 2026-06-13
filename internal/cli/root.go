@@ -175,6 +175,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
 	rootCmd.AddCommand(newExperimentalCmd())
+	rootCmd.AddCommand(newFeaturesCmd())
 
 	return rootCmd
 }

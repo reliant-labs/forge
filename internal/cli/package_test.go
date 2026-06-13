@@ -36,11 +36,12 @@ func TestRunPackageNew(t *testing.T) {
 	configContent := `name: testproject
 module_path: example.com/testproject
 version: "0.1.0"
-services:
+components:
   - name: api
-    type: GO_SERVICE
+    kind: server
     path: handlers/api
-    port: 8080
+    ports:
+      http: 8080
 `
 	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)

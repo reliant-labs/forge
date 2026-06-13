@@ -57,7 +57,6 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 	findings = append(findings, checkUndeclaredProtoServices(projectDir, cfg)...)
 	findings = append(findings, checkDeclaredFrontends(projectDir, cfg)...)
 	findings = append(findings, checkDeclaredPackages(projectDir, cfg)...)
-	findings = append(findings, checkDeclaredBinaries(projectDir, cfg)...)
 
 	if len(findings) == 0 {
 		return nil
@@ -75,70 +74,81 @@ func validateConfigVsFilesystem(projectDir string, cfg *config.ProjectConfig) er
 		"fix the mismatches above, or pass --skip-config-check to bypass for parallel-lane / mid-migration scenarios")
 }
 
-// checkDeclaredServices walks cfg.Services and verifies each entry has
-// either an on-disk path (handlers/<svc>, workers/<svc>, operators/<svc>)
-// OR a matching proto/services/<svc>/ directory. We accept either side
-// being present because a freshly-scaffolded service may have only the
-// proto declared (handlers dir generated on this run) and an internal-only
-// service may have no proto dir.
+// checkDeclaredServices walks cfg.Components and verifies each entry has
+// either an on-disk path (handlers/<svc>, workers/<svc>, operators/<svc>,
+// cmd/<bin>.go) OR a matching proto/services/<svc>/ directory. We accept
+// either side being present because a freshly-scaffolded server may have
+// only the proto declared (handlers dir generated on this run) and an
+// internal-only component may have no proto dir.
 //
-// For service-type "worker" / "operator" we don't require a proto dir at
-// all — workers and operators don't have Connect RPCs, so the proto tree
-// is irrelevant. The Path must exist (or be the default for the type).
+// For non-server kinds (worker / cron / operator / binary) we don't
+// require a proto dir at all — they have no Connect RPCs, so the proto
+// tree is irrelevant. The Path must exist (or be the kind-default).
 func checkDeclaredServices(projectDir string, cfg *config.ProjectConfig) []string {
 	var out []string
-	for _, s := range cfg.Services {
-		path := s.Path
+	for _, c := range cfg.Components {
+		path := c.Path
 		if path == "" {
-			path = defaultServicePath(s)
+			path = defaultServicePath(c)
 		}
 		fullPath := filepath.Join(projectDir, path)
-		pathExists := dirExists(fullPath)
 
-		// For non-Connect services (workers, operators), the only on-disk
-		// requirement is the path. No proto dir is expected.
-		switch s.Type {
-		case "worker", "operator":
-			if !pathExists {
+		// Binary cobra sources are a single file, not a dir.
+		if c.IsBinary() {
+			if _, err := os.Stat(fullPath); err != nil {
 				out = append(out, fmt.Sprintf(
-					"services[name=%s] (type=%s) declared in forge.yaml but path %q does not exist (expected at %s)",
-					s.Name, s.Type, path, fullPath))
+					"components[name=%s] (kind=binary) declared in forge.yaml but cobra source missing (expected at %s) — run 'forge add binary %s' to scaffold it",
+					c.Name, fullPath, c.Name))
 			}
 			continue
 		}
 
-		// For Connect services (go_service or unset), accept either the
-		// handlers dir OR a matching proto dir as evidence the declaration
-		// is real. Both missing → batched error.
-		protoDir := filepath.Join(projectDir, "proto", "services", naming.ServicePackage(s.Name))
+		pathExists := dirExists(fullPath)
+
+		// For non-Connect kinds (workers, crons, operators), the only
+		// on-disk requirement is the path. No proto dir is expected.
+		if !c.IsServer() {
+			if !pathExists {
+				out = append(out, fmt.Sprintf(
+					"components[name=%s] (kind=%s) declared in forge.yaml but path %q does not exist (expected at %s)",
+					c.Name, c.EffectiveKind(), path, fullPath))
+			}
+			continue
+		}
+
+		// For server components, accept either the handlers dir OR a
+		// matching proto dir as evidence the declaration is real. Both
+		// missing → batched error.
+		protoDir := filepath.Join(projectDir, "proto", "services", naming.ServicePackage(c.Name))
 		if !pathExists && !dirExists(protoDir) {
 			// Some projects name proto dirs with the literal Name rather than
 			// the ServicePackage normalization (e.g. dash vs underscore).
 			// Try the raw-name fallback before declaring this missing.
-			rawProto := filepath.Join(projectDir, "proto", "services", s.Name)
+			rawProto := filepath.Join(projectDir, "proto", "services", c.Name)
 			if !dirExists(rawProto) {
 				out = append(out, fmt.Sprintf(
-					"services[name=%s] declared in forge.yaml but neither handlers dir %q nor proto dir %q exists",
-					s.Name, path, protoDir))
+					"components[name=%s] declared in forge.yaml but neither handlers dir %q nor proto dir %q exists",
+					c.Name, path, protoDir))
 			}
 		}
 	}
 	return out
 }
 
-// defaultServicePath returns the conventional on-disk path for a service
-// entry whose `path:` field was omitted. Mirrors the defaulting in
-// loadProjectConfigFrom (which only fills handlers/<name>) but expands
-// the rule to cover worker / operator types so the cross-check uses the
-// same conventions as the rest of the pipeline.
-func defaultServicePath(s config.ServiceConfig) string {
-	switch s.Type {
-	case "worker":
-		return "workers/" + s.Name
-	case "operator":
-		return "operators/" + s.Name
+// defaultServicePath returns the conventional on-disk path for a
+// component entry whose `path:` field was omitted. Mirrors the defaulting
+// in loadProjectConfigFrom but expands the rule to cover every kind so
+// the cross-check uses the same conventions as the rest of the pipeline.
+func defaultServicePath(c config.ComponentConfig) string {
+	switch c.EffectiveKind() {
+	case config.ComponentKindWorker, config.ComponentKindCron:
+		return "workers/" + c.Name
+	case config.ComponentKindOperator:
+		return "operators/" + c.Name
+	case config.ComponentKindBinary:
+		return "cmd/" + naming.ServicePackage(c.Name) + ".go"
 	default:
-		return "handlers/" + s.Name
+		return "handlers/" + c.Name
 	}
 }
 
@@ -155,10 +165,10 @@ func checkUndeclaredProtoServices(projectDir string, cfg *config.ProjectConfig) 
 		// proto/services/ missing entirely → no proto-side declarations.
 		return nil
 	}
-	declared := make(map[string]bool, len(cfg.Services))
-	for _, s := range cfg.Services {
-		declared[naming.ServicePackage(s.Name)] = true
-		declared[s.Name] = true
+	declared := make(map[string]bool, len(cfg.Components))
+	for _, c := range cfg.Components {
+		declared[naming.ServicePackage(c.Name)] = true
+		declared[c.Name] = true
 	}
 	var out []string
 	for _, e := range entries {
@@ -176,7 +186,7 @@ func checkUndeclaredProtoServices(projectDir string, cfg *config.ProjectConfig) 
 			continue
 		}
 		out = append(out, fmt.Sprintf(
-			"proto/services/%s/ exists on disk but no services[] entry in forge.yaml — did you mean to declare it? (add services[].name=%s to forge.yaml)",
+			"proto/services/%s/ exists on disk but no components[] entry in forge.yaml — did you mean to declare it? (add a components[] entry with name=%s, kind=server to forge.yaml)",
 			name, name))
 	}
 	return out
@@ -238,25 +248,6 @@ func checkDeclaredPackages(projectDir string, cfg *config.ProjectConfig) []strin
 	return out
 }
 
-// checkDeclaredBinaries walks cfg.Binaries and verifies each entry has
-// its cobra subcommand source file at the configured Path. Binaries are
-// scaffolded via `forge add binary <name>` which writes cmd/<pkg>.go and
-// adds the entry to forge.yaml; a declaration without the file means the
-// scaffold step never completed (or someone removed the file by hand and
-// forgot to update forge.yaml).
-func checkDeclaredBinaries(projectDir string, cfg *config.ProjectConfig) []string {
-	var out []string
-	for _, b := range cfg.Binaries {
-		path := b.Path
-		if path == "" {
-			path = "cmd/" + naming.ServicePackage(b.Name) + ".go"
-		}
-		fullPath := filepath.Join(projectDir, path)
-		if _, err := os.Stat(fullPath); err != nil {
-			out = append(out, fmt.Sprintf(
-				"binaries[name=%s] declared in forge.yaml but cobra source missing (expected at %s) — run 'forge add binary %s' to scaffold it",
-				b.Name, fullPath, b.Name))
-		}
-	}
-	return out
-}
+// Binary cobra-source existence is checked inline in
+// checkDeclaredServices now that binaries are components with
+// kind=binary; there is no separate binaries: block to walk.

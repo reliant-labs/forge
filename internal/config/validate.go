@@ -213,6 +213,24 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
 			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
 	},
+	// services: and binaries: were unified into one components: list
+	// keyed on `kind:` (server|worker|cron|operator|binary). type:
+	// go_service → kind: server; the binaries: block → components with
+	// kind: binary.
+	"services": {
+		removedIn: "the component-model unification (services + binaries → components)",
+		replacement: "rename the `services:` block to `components:` and replace each entry's " +
+			"`type:` with `kind:` (go_service → server, worker/operator unchanged, " +
+			"cron is now first-class); scalar `port:` becomes a `ports:` map (`ports:\n  http: 8080`).",
+	},
+	"binaries": {
+		removedIn:   "the component-model unification (services + binaries → components)",
+		replacement: "fold each `binaries:` entry into the `components:` list with `kind: binary`.",
+	},
+	"components[].type": {
+		removedIn:   "the component-model unification (kind replaces type)",
+		replacement: "delete `type:` and set `kind:` instead (go_service → server).",
+	},
 	"binaries[].kind": {
 		removedIn: "the deploy-target-architecture rework",
 		replacement: "remove the key — binary kinds (cron/oneshot) were never implemented; " +
@@ -227,13 +245,13 @@ var removedSchemaKeys = map[string]removedKeyHint{
 	// downstream) before being replaced by registration-in-code: what a
 	// binary serves is the row list in pkg/app/services.go, not a yaml
 	// knob.
-	"services[].serve": {
+	"components[].serve": {
 		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
 		replacement: "delete the key — to stop serving a service from this binary, delete its " +
 			"serviceRow line in pkg/app/services.go and leave a comment naming the binary that " +
 			"serves it; see the `services` skill (Types-Only Services).",
 	},
-	"services[].served_by": {
+	"components[].served_by": {
 		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
 		replacement: "delete the key — document the serving binary as a comment next to the " +
 			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
@@ -577,25 +595,49 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		}
 	}
 
-	for i, svc := range cfg.Services {
-		prefix := fmt.Sprintf("services[%d]", i)
-		if strings.TrimSpace(svc.Name) == "" {
-			// Position at the parent services[i] mapping so the model
+	for i, comp := range cfg.Components {
+		prefix := fmt.Sprintf("components[%d]", i)
+		if strings.TrimSpace(comp.Name) == "" {
+			// Position at the parent components[i] mapping so the model
 			// can open the right block and add the missing field.
-			line, col := findNodePos(root, []string{"services", fmt.Sprintf("[%d]", i)})
+			line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i)})
 			out = append(out, validationIssue{
 				line:   line,
 				column: col,
 				msg:    fmt.Sprintf("%s.name is required", prefix),
-				fix:    "add a 'name:' for this service entry.",
+				fix:    "add a 'name:' for this component entry.",
 			})
 		}
-		// services[].path is intentionally not required: the cli loader
-		// applies a 'handlers/<name>' default when the user omits it.
-		// Host/cluster placement was previously gated here via
-		// services[].dev_target. It moved to the KCL layer (per-env
-		// `deploy:` field on the [Service] schema) — see the
-		// migration/dev-target-to-kcl-deploy skill.
+		// components[].kind selects the scaffold/deploy treatment. Empty
+		// defaults to "server" via EffectiveKind, so only validate a set
+		// value.
+		if k := strings.ToLower(strings.TrimSpace(comp.Kind)); k != "" {
+			switch k {
+			case ComponentKindServer, ComponentKindWorker, ComponentKindCron,
+				ComponentKindOperator, ComponentKindBinary:
+			default:
+				line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i), "kind"})
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.kind value %q is invalid", prefix, comp.Kind),
+					fix:    "use one of: server, worker, cron, operator, binary.",
+				})
+			}
+		}
+		// components[].schedule is required for kind=cron and meaningless
+		// otherwise.
+		if strings.EqualFold(strings.TrimSpace(comp.Kind), ComponentKindCron) && strings.TrimSpace(comp.Schedule) == "" {
+			line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i)})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.schedule is required for kind=cron", prefix),
+				fix:    "add a 5-field cron expression, e.g. schedule: \"*/5 * * * *\".",
+			})
+		}
+		// components[].path is intentionally not required: the cli loader
+		// applies a kind-derived default when the user omits it.
 	}
 
 	for i, fe := range cfg.Frontends {
@@ -871,11 +913,8 @@ func validateServices(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		seen[canonical] = source
 	}
 
-	for i, svc := range cfg.Services {
-		check(svc.Name, fmt.Sprintf("services[%d]", i), []string{"services", fmt.Sprintf("[%d]", i), "name"})
-	}
-	for i, b := range cfg.Binaries {
-		check(b.Name, fmt.Sprintf("binaries[%d]", i), []string{"binaries", fmt.Sprintf("[%d]", i), "name"})
+	for i, comp := range cfg.Components {
+		check(comp.Name, fmt.Sprintf("components[%d]", i), []string{"components", fmt.Sprintf("[%d]", i), "name"})
 	}
 	for i, fe := range cfg.Frontends {
 		check(fe.Name, fmt.Sprintf("frontends[%d]", i), []string{"frontends", fmt.Sprintf("[%d]", i), "name"})

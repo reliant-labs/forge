@@ -292,7 +292,7 @@ func TestDoctorParity_UnknownService(t *testing.T) {
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
 kind: service
-services:
+components:
   - name: alpha
   - name: bravo
   - name: charlie
@@ -328,7 +328,7 @@ func TestDoctorParity_JSONShape(t *testing.T) {
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
 kind: service
-services:
+components:
   - name: tasks
 `)
 	prev, _ := os.Getwd()
@@ -395,7 +395,7 @@ func TestDoctorParity_AgreementExitsZero(t *testing.T) {
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
 kind: service
-services:
+components:
   - name: tasks
 `)
 	prev, _ := os.Getwd()

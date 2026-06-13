@@ -310,11 +310,12 @@ func buildNavHookImports(pages []templates.NavPageData) []templates.NavHookImpor
 }
 
 // devAPIURL derives the dev-mode API base URL from forge.yaml's first
-// service port. Empty when the project has no services yet — connect.ts
-// then refuses to guess and fails loud in non-mock dev.
+// server component's http port. Empty when the project has no servers
+// yet — connect.ts then refuses to guess and fails loud in non-mock dev.
 func devAPIURL(cfg *config.ProjectConfig) string {
-	if len(cfg.Services) == 0 || cfg.Services[0].Port == 0 {
+	servers := cfg.Servers()
+	if len(servers) == 0 || servers[0].PrimaryPort() == 0 {
 		return ""
 	}
-	return fmt.Sprintf("http://localhost:%d", cfg.Services[0].Port)
+	return fmt.Sprintf("http://localhost:%d", servers[0].PrimaryPort())
 }

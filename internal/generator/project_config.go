@@ -48,26 +48,26 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	}
 
 	if g.ServiceName != "" && g.isService() {
-		cfg.Services = []config.ServiceConfig{
+		cfg.Components = []config.ComponentConfig{
 			{
-				Name: g.ServiceName,
-				Type: "go_service",
-				Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
-				Port: g.ServicePort,
+				Name:  g.ServiceName,
+				Kind:  config.ComponentKindServer,
+				Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
+				Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
 			},
 		}
-		// In binary=shared, write ALL services to forge.yaml at scaffold
-		// time so the generated bootstrap.go and per-service cobra
+		// In binary=shared, write ALL server components to forge.yaml at
+		// scaffold time so the generated bootstrap.go and per-service cobra
 		// subcommands see them immediately. In per-service mode this is
 		// done post-scaffold via AppendServiceToConfig (preserves the
 		// existing additive flow + log output).
 		if g.isBinaryShared() {
 			for i, svcName := range g.AdditionalServices {
-				cfg.Services = append(cfg.Services, config.ServiceConfig{
-					Name: svcName,
-					Type: "go_service",
-					Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
-					Port: g.ServicePort + i + 1,
+				cfg.Components = append(cfg.Components, config.ComponentConfig{
+					Name:  svcName,
+					Kind:  config.ComponentKindServer,
+					Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
+					Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort + i + 1}},
 				})
 			}
 		}
@@ -145,18 +145,18 @@ func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
 }
 
 // AppendServiceToConfig reads the project config at the given project root,
-// appends a new service entry, and writes it back. It uses yaml.Node
-// round-tripping so that unknown keys, comments, and field ordering added
-// by the user are preserved.
+// appends a new server component entry, and writes it back. It uses
+// yaml.Node round-tripping so that unknown keys, comments, and field
+// ordering added by the user are preserved.
 func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
 	configPath := filepath.Join(projectRoot, "forge.yaml")
-	entry := config.ServiceConfig{
-		Name: serviceName,
-		Type: "go_service",
-		Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
-		Port: port,
+	entry := config.ComponentConfig{
+		Name:  serviceName,
+		Kind:  config.ComponentKindServer,
+		Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 	}
-	return appendToProjectConfigSequence(configPath, "services", entry)
+	return appendToProjectConfigSequence(configPath, "components", entry)
 }
 
 // AppendFrontendToConfig reads the project config at the given project root,

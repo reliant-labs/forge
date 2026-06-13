@@ -290,7 +290,7 @@ func runAddService(name string, port int, resume, force bool) error {
 	// the forge.yaml append step in that case so we don't duplicate the
 	// services: entry.
 	existingIdx := -1
-	for i, svc := range cfg.Services {
+	for i, svc := range cfg.Components {
 		if svc.Name == name {
 			existingIdx = i
 			break
@@ -308,12 +308,12 @@ func runAddService(name string, port int, resume, force bool) error {
 	// port so the regenerated scaffold matches the recorded config.
 	if port == 0 {
 		if existingIdx >= 0 {
-			port = cfg.Services[existingIdx].Port
+			port = cfg.Components[existingIdx].PrimaryPort()
 		} else {
 			port = 8080
-			for _, svc := range cfg.Services {
-				if svc.Port >= port {
-					port = svc.Port + 1
+			for _, svc := range cfg.Components {
+				if p := svc.PrimaryPort(); p >= port {
+					port = p + 1
 				}
 			}
 		}
@@ -358,11 +358,11 @@ func runAddService(name string, port int, resume, force bool) error {
 	// Under --resume / --force the service entry may already exist in
 	// forge.yaml; only append when this is a fresh add.
 	if existingIdx < 0 {
-		cfg.Services = append(cfg.Services, config.ServiceConfig{
-			Name: name,
-			Type: "go_service",
-			Path: fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
-			Port: port,
+		cfg.Components = append(cfg.Components, config.ComponentConfig{
+			Name:  name,
+			Kind:  config.ComponentKindServer,
+			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
+			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 		})
 		if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
 			return fmt.Errorf("update project config: %w", err)
@@ -548,8 +548,8 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 		return fmt.Errorf("read project config: %w", err)
 	}
 
-	// Check for name conflict (workers are stored in Services with type "worker")
-	for _, svc := range cfg.Services {
+	// Check for name conflict (workers/crons are components).
+	for _, svc := range cfg.Components {
 		if svc.Name == name {
 			return fmt.Errorf("%q already exists in the project", name)
 		}
@@ -568,10 +568,16 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 
 	// Update forge.yaml. Path uses the Go-package form so it matches the
 	// directory the scaffolder creates ("email-sender" -> workers/email_sender).
-	cfg.Services = append(cfg.Services, config.ServiceConfig{
+	// kind=cron is first-class now; a plain worker has kind=worker. The
+	// scaffolded worker.go body (worker vs worker-cron template) still
+	// encodes the schedule loop; the component just records the kind.
+	componentKind := config.ComponentKindWorker
+	if kind == "cron" {
+		componentKind = config.ComponentKindCron
+	}
+	cfg.Components = append(cfg.Components, config.ComponentConfig{
 		Name:     name,
-		Type:     "worker",
-		Kind:     kind,
+		Kind:     componentKind,
 		Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
 		Schedule: schedule,
 	})
@@ -700,8 +706,8 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 		return config.DisabledFeatureError(config.FeatureOperators)
 	}
 
-	// Check for name conflict (operators are stored in Services with type "operator")
-	for _, svc := range cfg.Services {
+	// Check for name conflict (operators are kind=operator components).
+	for _, svc := range cfg.Components {
 		if svc.Name == name {
 			return fmt.Errorf("%q already exists in the project", name)
 		}
@@ -733,9 +739,9 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	// Update forge.yaml. Path uses the Go-package form so it matches the
 	// directory the scaffolder creates. Group/Version are persisted so
 	// `forge add crd` can default from them.
-	cfg.Services = append(cfg.Services, config.ServiceConfig{
+	cfg.Components = append(cfg.Components, config.ComponentConfig{
 		Name:    name,
-		Type:    "operator",
+		Kind:    config.ComponentKindOperator,
 		Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
 		Group:   group,
 		Version: version,
@@ -833,8 +839,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 	// Resolve target operator: explicit flag > only-operator > error.
 	operatorIdx := -1
 	if operator != "" {
-		for i, svc := range cfg.Services {
-			if svc.Type == "operator" && svc.Name == operator {
+		for i, svc := range cfg.Components {
+			if svc.IsOperator() && svc.Name == operator {
 				operatorIdx = i
 				break
 			}
@@ -844,8 +850,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		}
 	} else {
 		operatorCount := 0
-		for i, svc := range cfg.Services {
-			if svc.Type == "operator" {
+		for i, svc := range cfg.Components {
+			if svc.IsOperator() {
 				operatorCount++
 				operatorIdx = i
 			}
@@ -854,13 +860,13 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		case 0:
 			return fmt.Errorf("no operators in this project; run `forge add operator <name>` first")
 		case 1:
-			operator = cfg.Services[operatorIdx].Name
+			operator = cfg.Components[operatorIdx].Name
 		default:
 			return fmt.Errorf("multiple operators in this project; pass --operator <name> to disambiguate")
 		}
 	}
 
-	op := &cfg.Services[operatorIdx]
+	op := &cfg.Components[operatorIdx]
 	if group == "" {
 		group = op.Group
 	}
@@ -1069,10 +1075,10 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 
 	fmt.Printf("Adding %s '%s' (port %d)...\n", frontendDescription, name, port)
 
-	// Determine the API port from the first service
+	// Determine the API port from the first server component
 	apiPort := 8080
-	if len(cfg.Services) > 0 {
-		apiPort = cfg.Services[0].Port
+	if servers := cfg.Servers(); len(servers) > 0 {
+		apiPort = servers[0].PrimaryPort()
 	}
 
 	// Generate frontend files. When the project has opted into the
@@ -1244,7 +1250,7 @@ func runAddWebhook(name, serviceName string) error {
 
 	// Find the target service.
 	svcIdx := -1
-	for i, svc := range cfg.Services {
+	for i, svc := range cfg.Components {
 		if svc.Name == serviceName {
 			svcIdx = i
 			break
@@ -1259,13 +1265,13 @@ func runAddWebhook(name, serviceName string) error {
 	// full story. Best-effort parse: a broken registry falls open here —
 	// the generate-time check is the hard gate.
 	if reg, regErr := loadServiceRegistry(root); regErr == nil &&
-		isConnectServiceConfig(cfg.Services[svcIdx]) && !reg.registered(serviceName) {
+		isConnectServiceConfig(cfg.Components[svcIdx]) && !reg.registered(serviceName) {
 		return fmt.Errorf("service %q is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it",
 			serviceName, serviceRegistryRelPath, codegen.ServiceRowFuncName(serviceName))
 	}
 
 	// Check for duplicate webhook.
-	for _, wh := range cfg.Services[svcIdx].Webhooks {
+	for _, wh := range cfg.Components[svcIdx].Webhooks {
 		if wh.Name == name {
 			return fmt.Errorf("webhook %q already exists in service %q", name, serviceName)
 		}
@@ -1279,7 +1285,7 @@ func runAddWebhook(name, serviceName string) error {
 	}
 
 	// Update forge.yaml.
-	cfg.Services[svcIdx].Webhooks = append(cfg.Services[svcIdx].Webhooks, config.WebhookConfig{
+	cfg.Components[svcIdx].Webhooks = append(cfg.Components[svcIdx].Webhooks, config.WebhookConfig{
 		Name: name,
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
@@ -1363,15 +1369,10 @@ func runAddBinary(name string) error {
 
 	// Conflict checks. Binaries share the cmd/ directory with the
 	// canonical `cmd/server.go` and any per-service shared subcommands,
-	// so we check both binaries: AND services:.
-	for _, b := range cfg.Binaries {
-		if b.Name == name {
-			return fmt.Errorf("binary %q already exists in the project", name)
-		}
-	}
-	for _, svc := range cfg.Services {
-		if svc.Name == name {
-			return fmt.Errorf("%q already exists in the project as a %s", name, svc.Type)
+	// so we check every component (server/worker/cron/operator/binary).
+	for _, comp := range cfg.Components {
+		if comp.Name == name {
+			return fmt.Errorf("%q already exists in the project as a %s", name, comp.EffectiveKind())
 		}
 	}
 	// Reserved cobra subcommand names that would shadow the binary.
@@ -1392,8 +1393,9 @@ func runAddBinary(name string) error {
 	// the directory the scaffolder creates ("workspace-proxy" ->
 	// cmd/workspace_proxy.go).
 	pkg := naming.ServicePackage(name)
-	cfg.Binaries = append(cfg.Binaries, config.BinaryConfig{
+	cfg.Components = append(cfg.Components, config.ComponentConfig{
 		Name: name,
+		Kind: config.ComponentKindBinary,
 		Path: fmt.Sprintf("cmd/%s.go", pkg),
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {

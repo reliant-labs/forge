@@ -14,9 +14,9 @@ const validBaseYAML = `name: demo
 module_path: github.com/example/demo
 version: 0.1.0
 hot_reload: false
-services:
+components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
 database:
   driver: postgres
@@ -68,13 +68,13 @@ func TestLoadStrict_UnknownKey_NoCloseMatch(t *testing.T) {
 }
 
 func TestLoadStrict_MultipleUnknownKeys(t *testing.T) {
-	in := validBaseYAML + "auht: x\nservces: y\n" //nolint:misspell // intentional typo for suggestion test
+	in := validBaseYAML + "auht: x\ncomponnts: y\n" //nolint:misspell // intentional typo for suggestion test
 	// Replace the real auth: block first so we don't have a duplicate
 	// issue from a still-valid `auth: none` while testing the typo.
 	in = strings.Replace(in, "auth:\n  provider: none\n", "", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "auht", "auth", "servces", "services") { //nolint:misspell // checks suggestion output
+	if !containsAll(ve.Error(), "auht", "auth", "componnts", "components") { //nolint:misspell // checks suggestion output
 		t.Errorf("expected both typos with suggestions, got:\n%s", ve.Error())
 	}
 }
@@ -91,8 +91,8 @@ func TestLoadStrict_MissingRequired_ModulePath(t *testing.T) {
 func TestLoadStrict_MissingRequired_Multiple(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "name: demo\n", "", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
-	in = strings.Replace(in, "  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - type: go_service\n    path: handlers/api\n", 1)
+	in = strings.Replace(in, "  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - kind: server\n    path: handlers/api\n", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
@@ -102,7 +102,7 @@ func TestLoadStrict_MissingRequired_Multiple(t *testing.T) {
 	if !strings.Contains(got, "'module_path' is required") {
 		t.Errorf("expected 'module_path' required, got:\n%s", got)
 	}
-	if !strings.Contains(got, "services[0].name is required") {
+	if !strings.Contains(got, "components[0].name is required") {
 		t.Errorf("expected services[0].name required, got:\n%s", got)
 	}
 }
@@ -120,11 +120,11 @@ func TestLoadStrict_TypeMismatch(t *testing.T) {
 func TestLoadStrict_NestedUnknownKey(t *testing.T) {
 	// services[0] has bogus subkey "naem" — should be detected at the
 	// nested level with a path-prefixed message.
-	in := strings.Replace(validBaseYAML, "  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: api\n    type: go_service\n    path: handlers/api\n    naem: typo\n", 1)
+	in := strings.Replace(validBaseYAML, "  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n    naem: typo\n", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "services[0].naem", "did you mean", "name") {
+	if !containsAll(ve.Error(), "components[0].naem", "did you mean", "name") {
 		t.Errorf("expected nested-path unknown-key + suggestion, got:\n%s", ve.Error())
 	}
 }
@@ -209,11 +209,11 @@ func TestLoadStrict_FrontendBasePath_InvalidValues_Rejected(t *testing.T) {
 
 func TestLoadStrict_ServiceMissingName(t *testing.T) {
 	// services[].path is loader-defaulted, but services[].name is not.
-	in := strings.Replace(validBaseYAML, "  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - type: go_service\n    path: handlers/api\n", 1)
+	in := strings.Replace(validBaseYAML, "  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - kind: server\n    path: handlers/api\n", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
-	if !strings.Contains(ve.Error(), "services[0].name is required") {
+	if !strings.Contains(ve.Error(), "components[0].name is required") {
 		t.Errorf("expected services[0].name required, got:\n%s", ve.Error())
 	}
 }
@@ -231,19 +231,19 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 	// Smoke test mirroring the CLI smoke: 3 typos + 1 missing required
 	// field should all surface in a single error.
 	in := strings.Replace(validBaseYAML, "auth:\n  provider: none\n", "auht:\n  provider: none\n", 1)
-	in = strings.Replace(in, "services:", "servces:", 1) //nolint:misspell // intentional typo for suggestion test
+	in = strings.Replace(in, "components:", "componnts:", 1) //nolint:misspell // intentional typo for suggestion test
 	in = strings.Replace(in, "database:", "databse:", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
 
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	for _, want := range []string{"auht", "servces", "databse", "module_path"} {
+	for _, want := range []string{"auht", "componnts", "databse", "module_path"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in error, got:\n%s", want, got)
 		}
 	}
-	for _, suggestion := range []string{"auth", "services", "database"} {
+	for _, suggestion := range []string{"auth", "components", "database"} {
 		if !strings.Contains(got, suggestion) {
 			t.Errorf("expected suggestion %q, got:\n%s", suggestion, got)
 		}
@@ -257,9 +257,9 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 // downstream codegen error.
 func TestLoadStrict_ServiceNameCollision_AfterNormalisation(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: admin-server\n    type: go_service\n    path: handlers/admin-server\n"+
-			"  - name: admin_server\n    type: go_service\n    path: handlers/admin_server\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: admin-server\n    kind: server\n    path: handlers/admin-server\n"+
+			"  - name: admin_server\n    kind: server\n    path: handlers/admin_server\n",
 		1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
@@ -279,8 +279,8 @@ func TestLoadStrict_ServiceNameCollision_AfterNormalisation(t *testing.T) {
 // lint catches it at forge.yaml-parse time.
 func TestLoadStrict_ServiceName_ReservedWord_Rejected(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: select\n    type: go_service\n    path: handlers/select\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: select\n    kind: server\n    path: handlers/select\n",
 		1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
@@ -295,8 +295,8 @@ func TestLoadStrict_ServiceName_ReservedWord_Rejected(t *testing.T) {
 // surprising downstream parse error.
 func TestLoadStrict_ServiceName_LeadingDigit_Rejected(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: 2fast\n    type: go_service\n    path: handlers/2fast\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: 2fast\n    kind: server\n    path: handlers/2fast\n",
 		1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
@@ -311,8 +311,8 @@ func TestLoadStrict_ServiceName_LeadingDigit_Rejected(t *testing.T) {
 // characters can never produce a legal package directory.
 func TestLoadStrict_ServiceName_PunctuationSurvivingNormalisation_Rejected(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: \"foo.bar\"\n    type: go_service\n    path: handlers/foo\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: \"foo.bar\"\n    kind: server\n    path: handlers/foo\n",
 		1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
@@ -326,14 +326,14 @@ func TestLoadStrict_ServiceName_PunctuationSurvivingNormalisation_Rejected(t *te
 // the same Go package would write to the same scaffold directory.
 func TestLoadStrict_ServiceVsBinaryCollision(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: gateway\n    type: go_service\n    path: handlers/gateway\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: gateway\n    kind: server\n    path: handlers/gateway\n"+
+			"  - name: Gateway\n    kind: binary\n    path: cmd/gateway.go\n",
 		1)
-	in += "binaries:\n  - name: Gateway\n    path: cmd/gateway.go\n"
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "collides", "gateway") {
-		t.Errorf("expected cross-slice collision, got:\n%s", ve.Error())
+		t.Errorf("expected cross-kind collision, got:\n%s", ve.Error())
 	}
 }
 
@@ -342,10 +342,10 @@ func TestLoadStrict_ServiceVsBinaryCollision(t *testing.T) {
 // peacefully as long as their canonical forms differ.
 func TestLoadStrict_ValidServiceVariants_Accepted(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: api\n    type: go_service\n    path: handlers/api\n"+
-			"  - name: admin-server\n    type: go_service\n    path: handlers/admin-server\n"+
-			"  - name: billing_v2\n    type: go_service\n    path: handlers/billing_v2\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n",
+		"  - name: api\n    kind: server\n    path: handlers/api\n"+
+			"  - name: admin-server\n    kind: server\n    path: handlers/admin-server\n"+
+			"  - name: billing_v2\n    kind: server\n    path: handlers/billing_v2\n",
 		1)
 	if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
 		t.Fatalf("expected clean load, got: %v", err)
@@ -434,20 +434,20 @@ func TestLoadStrict_StackDeployProvider_NotFalsePositive(t *testing.T) {
 	}
 }
 
-// TestLoadStrict_RemovedSchemaKey_ServiceDevTarget covers the slice-
-// wildcard arm of the removed-keys table: services[N].dev_target
-// should resolve to the services[*].dev_target migration hint for any
-// index N.
-func TestLoadStrict_RemovedSchemaKey_ServiceDevTarget(t *testing.T) {
+// TestLoadStrict_RemovedSchemaKey_ServicesBlock covers the
+// component-model migration hint: a top-level `services:` block (the
+// pre-unification shape) resolves to the components migration message
+// rather than a bare unknown-key error.
+func TestLoadStrict_RemovedSchemaKey_ServicesBlock(t *testing.T) {
 	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    type: go_service\n    path: handlers/api\n",
-		"  - name: api\n    type: go_service\n    path: handlers/api\n    dev_target: host\n",
+		"components:\n  - name: api\n    kind: server\n    path: handlers/api\n",
+		"services:\n  - name: api\n    type: go_service\n    path: handlers/api\n",
 		1)
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	if !containsAll(got, "services[0].dev_target", "removed", "forge.Service") {
-		t.Errorf("expected dev_target migration hint, got:\n%s", got)
+	if !containsAll(got, `"services" was removed in`, "components") {
+		t.Errorf("expected services→components migration hint, got:\n%s", got)
 	}
 }
 
@@ -482,29 +482,28 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed nested key services[].dev_target gets migration hint",
+			name: "removed top-level key services gets components migration hint",
 			mutate: func(in string) string {
-				// Prepend a service carrying the removed key; the indexed
-				// path (services[0].dev_target) must normalize to the
-				// services[].dev_target map entry.
-				return strings.Replace(in, "services:\n",
-					"services:\n  - name: web\n    type: go_service\n    path: handlers/web\n    dev_target: host\n", 1)
+				// Swap the components: block back to the pre-unification
+				// services: shape; the loader must point at components.
+				return strings.Replace(in,
+					"components:\n  - name: api\n    kind: server\n    path: handlers/api\n",
+					"services:\n  - name: api\n    type: go_service\n    path: handlers/api\n", 1)
 			},
 			wantSubstr: []string{
-				`"services[0].dev_target" was removed in`,
-				"deploy:",
-				"migrations/dev-target-to-kcl-deploy",
+				`"services" was removed in`,
+				"components",
 			},
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed key binaries[].kind gets migration hint",
+			name: "removed top-level key binaries gets components migration hint",
 			mutate: func(in string) string {
-				return in + "binaries:\n  - name: proxy\n    path: cmd/proxy.go\n    kind: cron\n"
+				return in + "binaries:\n  - name: proxy\n    path: cmd/proxy.go\n"
 			},
 			wantSubstr: []string{
-				`"binaries[0].kind" was removed in`,
-				"long-running",
+				`"binaries" was removed in`,
+				"kind: binary",
 			},
 			notSubstr: []string{"did you mean"},
 		},

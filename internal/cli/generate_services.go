@@ -58,8 +58,8 @@ func webhookOnlyServiceNames(cfg *config.ProjectConfig, services []codegen.Servi
 	// equivalence. forge.yaml uses kebab ("admin-server"); svc.Name is
 	// PascalCase ("AdminServerService"). We pascalCase the yaml name
 	// and append "Service" to match.
-	webhookByGoName := make(map[string]bool, len(cfg.Services))
-	for _, ysvc := range cfg.Services {
+	webhookByGoName := make(map[string]bool, len(cfg.Components))
+	for _, ysvc := range cfg.Components {
 		if len(ysvc.Webhooks) == 0 {
 			continue
 		}

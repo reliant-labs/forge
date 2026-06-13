@@ -3,49 +3,31 @@ package orm
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strconv"
 	"strings"
-
-	"github.com/lib/pq"
 )
 
 // Array support for generated ORM code.
 //
 // Postgres stores slice columns as native arrays (TEXT[], BIGINT[]).
-// ArrayValue wraps the slice as a postgres array parameter (pq.Array,
-// which both lib/pq and pgx-stdlib bind correctly); StringArray/Int64Array
-// scan the postgres text format `{a,b}` (and tolerate JSON `["a","b"]`
-// from legacy data), so generated scan code is driver-agnostic.
-
-// ArrayValue converts a slice for use as a SQL parameter. forge is
-// postgres-pinned: the slice is wrapped with pq.Array, which renders the
-// postgres array literal both lib/pq and pgx-stdlib bind to a native
-// array column (TEXT[], BIGINT[]). A bare []string is NOT a valid
-// database/sql driver value — passing it through unwrapped makes the
-// driver reject the INSERT.
+// Under Bun (Phase 2) the engine binds slice parameters as native arrays
+// itself (the model field carries a `bun:"...,array"` tag), so the
+// hand-rolled ArrayValue/Dialect encoder is gone — generated INSERT /
+// UPDATE pass the slice straight to Bun.
 //
-// The Dialect argument is retained for the generated call sites (and the
-// Phase-2 engine swap); postgres is the only dialect.
-//
-// A nil slice is normalized to an EMPTY array (`{}`), not NULL: array
-// columns are conventionally `NOT NULL DEFAULT '{}'`, and pq.Array on a
-// nil slice would otherwise bind NULL and violate the constraint.
-func ArrayValue(d Dialect, v any) any {
-	if isNilSlice(v) {
-		return pq.Array([]string{})
-	}
-	return pq.Array(v)
-}
+// EmptyIfNil normalizes a nil slice to a non-nil empty slice so it binds
+// as `{}` (the conventional NOT NULL DEFAULT '{}') rather than NULL.
+// StringArray/Int64Array remain as Scanners that tolerate both the
+// postgres text format `{a,b}` and legacy JSON `["a","b"]`.
 
-// isNilSlice reports whether v is a nil slice of any element type
-// (including named slice types like orm.StringArray).
-func isNilSlice(v any) bool {
-	if v == nil {
-		return true
+// EmptyIfNil returns an empty (non-nil) slice when s is nil, else s. Used
+// at generated write sites so a nil repeated field binds as an empty
+// array literal, not NULL, against `NOT NULL DEFAULT '{}'` columns.
+func EmptyIfNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
 	}
-	rv := reflect.ValueOf(v)
-	return rv.Kind() == reflect.Slice && rv.IsNil()
+	return s
 }
 
 // StringArray scans a string-array column from either encoding.

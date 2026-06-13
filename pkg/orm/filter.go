@@ -1,5 +1,7 @@
 package orm
 
+import "github.com/uptrace/bun"
+
 // Filter convenience functions that return QueryOption.
 // Each wraps WithWhere using the appropriate Operator.
 
@@ -52,12 +54,23 @@ func WhereIsNotNull(column string) QueryOption {
 }
 
 // WhereILikeAny matches value case-insensitively against ANY of the
-// given columns: `(LOWER(c1) LIKE LOWER($1) OR LOWER(c2) LIKE LOWER($2))`
-// (native ILIKE on Postgres). This is the canonical mapping for a
-// `search` filter field: it spans the entity's declared string columns
-// instead of inventing a phantom `search` column.
+// given columns: (c1 ILIKE ? OR c2 ILIKE ? ...), AND-ed with the other
+// WHERE clauses. This is the canonical mapping for a `search` filter
+// field: it spans the entity's declared string columns instead of
+// inventing a phantom `search` column.
+//
+// The OR group is grouped with WhereGroup so it composes correctly with
+// surrounding AND clauses (tenant scope, soft-delete, pagination cursor).
 func WhereILikeAny(columns []string, value any) QueryOption {
-	return func(qb *QueryBuilder) {
-		qb.WhereAnyILike(columns, value)
+	return func(q *bun.SelectQuery) {
+		if len(columns) == 0 {
+			return
+		}
+		q.WhereGroup(" AND ", func(sq *bun.SelectQuery) *bun.SelectQuery {
+			for _, col := range columns {
+				sq = sq.WhereOr("? ILIKE ?", bun.Ident(col), value)
+			}
+			return sq
+		})
 	}
 }

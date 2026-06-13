@@ -43,7 +43,8 @@ deploy/kcl/<env>/             # KCL deployment manifests per environment
   config_gen.k                #   GENERATED per-env env-var groups
 config.<env>.yaml             # Optional sibling per-env config (prod typical)
 e2e/                          # End-to-end tests
-forge.yaml                    # Project config: services, ports, frontends, packs
+forge.yaml                    # Global project config: name, module, frontends, packs, overrides
+components.json               # Per-component source of truth: servers/workers/crons/operators/binaries + ports
 forge_descriptor.json         # Proto descriptor data (generated)
 ```
 

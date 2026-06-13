@@ -17,7 +17,7 @@ forge add worker <name> --kind cron --schedule "*/5 * * * *"
 This creates:
 - `workers/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
 - `workers/<name>/worker_test.go` — Basic lifecycle test
-- An entry in `forge.yaml` under `services:` with type `worker`
+- An entry in `components.json` with `kind: worker`
 
 Run `forge generate` after adding a worker to wire it into `pkg/app/bootstrap.go`.
 
@@ -83,14 +83,19 @@ func (w *Worker) Run() {
 }
 ```
 
-Cron workers are tracked with `kind: cron` and `schedule` in `forge.yaml`:
-```yaml
-services:
-  - name: cleanup
-    type: worker
-    kind: cron
-    schedule: "0 */6 * * *"
-    path: workers/cleanup
+Cron components are tracked with `kind: cron` and `schedule` in
+`components.json`:
+```json
+{
+  "components": [
+    {
+      "name": "cleanup",
+      "kind": "cron",
+      "schedule": "0 */6 * * *",
+      "path": "workers/cleanup"
+    }
+  ]
+}
 ```
 
 ### Simple Periodic (no cron)

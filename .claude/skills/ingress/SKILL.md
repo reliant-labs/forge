@@ -108,12 +108,12 @@ gateway that declares `tls` — pointed at `cert_issuer`, filling
 ### Routing to frontends and webhooks
 
 A route's `service:` field names any Kubernetes `Service` in the env
-namespace — it doesn't have to map to a forge.yaml `services:` entry.
-Anything that scaffolds a `Service` works: entries under `services:`,
-`frontends:`, and `webhooks:` (declared on a parent service) are all
-valid backends. K8s resolves the name; the forge.yaml block that owns
-the workload is invisible at route-resolution time. `forge audit`
-treats all three as known.
+namespace — it doesn't have to map to a server component entry.
+Anything that scaffolds a `Service` works: server components (in
+`components.json`), `frontends:` (in `forge.yaml`), and `webhooks:`
+(declared on a parent server component) are all valid backends. K8s
+resolves the name; the config block that owns the workload is invisible
+at route-resolution time. `forge audit` treats all three as known.
 
 Common prod shape — frontend on the public gateway, API on the same
 gateway under a path, webhooks on a separate gateway with its own TLS:

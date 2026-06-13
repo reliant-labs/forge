@@ -3,6 +3,7 @@ package generator
 import (
 	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +14,11 @@ import (
 )
 
 // GeneratePlanORM writes internal/db/<snake_name>_orm.go for each entity
-// defined in the plan. The generated files provide standalone CRUD functions
-// and a private scan helper. Because entity types are type aliases (defined
-// in internal/db/types.go), we cannot attach methods to them — everything
-// is a package-level function.
+// defined in the plan. The generated files provide a Bun-tagged entity
+// struct (a projection of the applied schema) and standalone CRUD
+// functions built on Bun's query builder (reached via orm.Context.Bun()).
+// CRUD is emitted as package-level functions that take an orm.Context, so
+// the same functions run inside or outside a transaction.
 //
 // cs is the project's checksum tracker: every output is recorded as a
 // Tier-1 manifest entry so `forge disown` can transfer ownership of an
@@ -183,19 +185,19 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	}
 
 	hasTenant := tenantField != nil
-	// The time import is needed for time.Time struct fields AND for
-	// stamping managed timestamps — including legacy TEXT columns, whose
-	// stamps are time.Now()-derived RFC3339Nano strings (kalshi
-	// fr-3fba9166ba: the old emitter stamped without importing time,
-	// `undefined: time`).
+
+	// The time import is needed for any time.Time / *time.Time struct
+	// field (the projected type of a timestamp column), AND for stamping
+	// managed timestamps (the time.Now() instant or its RFC3339Nano string
+	// for legacy TEXT columns — kalshi fr-3fba9166ba).
 	needsTime := false
 	for _, f := range fields {
-		if f.isTimestamp {
+		if f.goType == "time.Time" {
 			needsTime = true
 			break
 		}
 	}
-	if ent.Timestamps {
+	if !needsTime && ent.Timestamps {
 		for _, f := range fields {
 			if isManagedTimestampColumn(f.columnName) && stampableTimestamp(f) {
 				needsTime = true
@@ -204,24 +206,9 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 		}
 	}
 
-	// strings.Join appears in Create's INSERT (unless the only column is
-	// a server-allocated integer PK) and in the UPDATE SET builders
-	// (unless there are no updatable columns).
+	// Bun builds all SQL — generated code no longer joins column strings —
+	// so the strings import is never needed.
 	needsStrings := false
-	for _, f := range fields {
-		if !f.isPK || !isIntegerGoType(f.goType) {
-			needsStrings = true // participates in the INSERT column list
-			break
-		}
-	}
-	if !needsStrings {
-		for _, f := range fields {
-			if !excludedFromSet(f, ent.Timestamps) {
-				needsStrings = true
-				break
-			}
-		}
-	}
 
 	var b strings.Builder
 
@@ -233,7 +220,7 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	// Imports
 	writeORMImports(&b, needsTime, needsStrings, pkField != nil && pkField.goType == "string")
 
-	// The entity struct: a projection of the APPLIED schema.
+	// The entity struct: a projection of the APPLIED schema, with Bun tags.
 	writeEntityStruct(&b, msgName, tableName, fields)
 
 	// Field name constants
@@ -260,22 +247,30 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	}
 	b.WriteString("}\n\n")
 
-	// scan function
-	writeORMScanFunc(&b, msgName, colsVar, fields)
-
-	// CRUD functions
+	// CRUD functions — all built on Bun's typed query builder, reached via
+	// db.Bun(). No raw SQL, no dialect string-building, no scan helper:
+	// Bun scans rows straight into the Bun-tagged struct.
 	writeORMCreate(&b, msgName, tableName, fields, hasTenant, tenantField, pkField, ent.Timestamps)
-	writeORMGetByID(&b, msgName, tableName, colsVar, pkCol, pkGoType, hasTenant, ent.SoftDelete)
-	writeORMList(&b, msgName, tableName, colsVar, hasTenant, ent.SoftDelete, tenantField)
+	writeORMGetByID(&b, msgName, tableName, pkCol, pkGoType, hasTenant, ent.SoftDelete, tenantField)
+	writeORMList(&b, msgName, tableName, hasTenant, ent.SoftDelete, tenantField)
 	writeORMCount(&b, msgName, tableName, hasTenant, ent.SoftDelete, tenantField)
 	if ent.SoftDelete {
-		writeORMListAll(&b, msgName, tableName, colsVar, hasTenant, tenantField)
+		writeORMListAll(&b, msgName, tableName, hasTenant, tenantField)
 	}
-	writeORMUpdate(&b, msgName, tableName, colsVar, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
+	writeORMUpdate(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
 	writeORMUpdateMasked(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
-	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, fields, hasTenant, ent.SoftDelete, tenantField)
+	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, hasTenant, ent.SoftDelete, tenantField)
 
-	return []byte(b.String())
+	// gofmt the render so struct-tag/const alignment matches what the
+	// project's gofmt/CI check (and the drift guard) expect. The writers
+	// emit unaligned tabs; format.Source canonicalizes them. On the
+	// off chance the render is not valid Go, fall back to the raw bytes so
+	// the compile error surfaces at `go build` rather than here.
+	src := []byte(b.String())
+	if formatted, err := format.Source(src); err == nil {
+		return formatted
+	}
+	return src
 }
 
 func writeORMImports(b *strings.Builder, needsTime, needsStrings, stringPK bool) {
@@ -294,108 +289,59 @@ func writeORMImports(b *strings.Builder, needsTime, needsStrings, stringPK bool)
 		b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
 	}
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
+	b.WriteString("\t\"github.com/uptrace/bun\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/attribute\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/codes\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/trace\"\n")
 	b.WriteString(")\n\n")
 }
 
-// writeEntityStruct emits the entity row type. Field types come from
-// the APPLIED schema's columns: time.Time for timestamps (never
-// timestamppb — the wire seam converts), pointers for nullable
-// columns, native slices for array columns.
+// bunTag returns the `bun:"..."` struct tag for a field. The column name
+// is always present; the primary key gets ,pk; array columns get ,array
+// (so Bun binds/scans them as native postgres arrays).
+func bunTag(f ormField) string {
+	tag := f.columnName
+	if f.isPK {
+		tag += ",pk"
+	}
+	if f.isArray {
+		tag += ",array"
+	}
+	return fmt.Sprintf("`bun:%q`", tag)
+}
+
+// writeEntityStruct emits the entity row type with Bun struct tags. Field
+// types come from the APPLIED schema's columns: time.Time for timestamps
+// (never timestamppb — the wire seam converts), pointers for nullable
+// columns, native slices for array columns. Bun scans rows straight into
+// this struct via the tags.
 func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []ormField) {
 	fmt.Fprintf(b, "// %s is the %s row type — a projection of the APPLIED schema\n", msgName, tableName)
 	b.WriteString("// (db/migrations). Evolve it by writing migrations; `forge generate`\n")
-	b.WriteString("// regenerates this struct from the introspected schema.\n")
+	b.WriteString("// regenerates this struct from the introspected schema. The bun tags\n")
+	b.WriteString("// map fields to columns for the Bun query engine; the embedded\n")
+	b.WriteString("// bun.BaseModel pins the table name and its alias (alias == table so\n")
+	b.WriteString("// Bun's column qualification matches the FROM clause).\n")
 	fmt.Fprintf(b, "type %s struct {\n", msgName)
+	fmt.Fprintf(b, "\tbun.BaseModel `bun:%q`\n", fmt.Sprintf("table:%s,alias:%s", tableName, tableName))
 	for _, f := range fields {
-		fmt.Fprintf(b, "\t%s %s\n", f.goName, f.structGoType())
+		fmt.Fprintf(b, "\t%s %s %s\n", f.goName, f.structGoType(), bunTag(f))
 	}
 	b.WriteString("}\n\n")
 }
 
-// writeORMScanFunc writes a standalone scan<Entity> function.
-//
-// Time columns scan through orm.NullTime (drivers without parsetime
-// return TEXT timestamps); array columns scan through the dual-format
-// orm.StringArray/Int64Array scanners. Everything else — including
-// nullable pointer fields — scans directly into the struct field.
-func writeORMScanFunc(b *strings.Builder, msgName, _ string, fields []ormField) {
-	fmt.Fprintf(b, "// scan%s scans a database row into a %s.\n", msgName, msgName)
-	fmt.Fprintf(b, "func scan%s(scanner interface{ Scan(...interface{}) error }) (*%s, error) {\n", msgName, msgName)
-	fmt.Fprintf(b, "\tentity := &%s{}\n", msgName)
-
-	needsTemp := func(f ormField) bool { return f.isTimestamp || f.isArray }
-
-	hasTemps := false
-	for _, f := range fields {
-		if needsTemp(f) {
-			hasTemps = true
-			break
-		}
-	}
-	if hasTemps {
-		b.WriteString("\tvar (\n")
-		for _, f := range fields {
-			switch {
-			case f.isTimestamp:
-				fmt.Fprintf(b, "\t\tdb%s orm.NullTime\n", f.goName)
-			case f.isArray:
-				fmt.Fprintf(b, "\t\tdb%s %s\n", f.goName, arrayScannerType(f))
-			}
-		}
-		b.WriteString("\t)\n\n")
-	}
-
-	// Scan call
-	b.WriteString("\terr := scanner.Scan(\n")
-	for _, f := range fields {
-		if needsTemp(f) {
-			fmt.Fprintf(b, "\t\t&db%s,\n", f.goName)
-		} else {
-			fmt.Fprintf(b, "\t\t&entity.%s,\n", f.goName)
-		}
-	}
-	b.WriteString("\t)\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\treturn nil, err\n")
-	b.WriteString("\t}\n\n")
-
-	// Assignments from temps.
-	for _, f := range fields {
-		switch {
-		case f.isTimestamp && f.nullable:
-			fmt.Fprintf(b, "\tif db%s.Valid {\n", f.goName)
-			fmt.Fprintf(b, "\t\tt%s := db%s.Time\n", f.goName, f.goName)
-			fmt.Fprintf(b, "\t\tentity.%s = &t%s\n", f.goName, f.goName)
-			b.WriteString("\t}\n")
-		case f.isTimestamp:
-			fmt.Fprintf(b, "\tentity.%s = db%s.Time\n", f.goName, f.goName)
-		case f.isArray:
-			fmt.Fprintf(b, "\tentity.%s = %s(db%s)\n", f.goName, f.goType, f.goName)
-		}
-	}
-
-	b.WriteString("\n\treturn entity, nil\n")
-	b.WriteString("}\n\n")
+// sqlIdent returns a double-quoted SQL identifier literal, baked into the
+// generated code as a Go string. Column names come from the introspected
+// schema (validated identifiers), so this is injection-safe.
+func sqlIdent(col string) string {
+	return `"` + strings.ReplaceAll(col, `"`, `""`) + `"`
 }
 
-// arrayScannerType returns the orm scanner type for an array field.
-func arrayScannerType(f ormField) string {
-	if f.goType == "[]int64" {
-		return "orm.Int64Array"
-	}
-	return "orm.StringArray"
-}
-
-// valueExpr returns the expression used for a field in INSERT/UPDATE
-// parameter lists. Arrays go through the dialect-aware encoder.
-func valueExpr(f ormField) string {
-	if f.isArray {
-		return fmt.Sprintf("orm.ArrayValue(dialect, msg.%s)", f.goName)
-	}
-	return "msg." + f.goName
+// arrayNormalizeExpr returns the statement that normalizes a nil array
+// field to an empty (non-nil) slice before a write, so it binds as the
+// `{}` literal against NOT NULL DEFAULT '{}' columns rather than NULL.
+func arrayNormalizeExpr(f ormField) string {
+	return fmt.Sprintf("\tmsg.%s = orm.EmptyIfNil(msg.%s)\n", f.goName, f.goName)
 }
 
 // isIntegerGoType reports whether the projected Go type is an integer —
@@ -424,22 +370,6 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 	stringPK := pkField != nil && pkField.goType == "string"
 	intPK := pkField != nil && isIntegerGoType(pkField.goType)
 
-	// Integer PKs are server-allocated (BIGSERIAL / SERIAL / sqlite
-	// rowid): the PK column is omitted from the INSERT and the
-	// database-assigned value is scanned back into msg (kalshi
-	// fr-fd061aed2b: inserting msg.<PK>=0 verbatim made every BIGSERIAL
-	// Create collide on id 0, so every writer routed around the ORM).
-	insertFields := fields
-	if intPK {
-		insertFields = make([]ormField, 0, len(fields)-1)
-		for _, f := range fields {
-			if f.isPK {
-				continue
-			}
-			insertFields = append(insertFields, f)
-		}
-	}
-
 	fmt.Fprintf(b, "// Create%s inserts a new %s row into the database.\n", msgName, msgName)
 	b.WriteString("//\n")
 	b.WriteString("// Create is a plain INSERT — never an upsert. Chokepoint invariants:\n")
@@ -447,10 +377,9 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 		fmt.Fprintf(b, "//   - msg.%s is generated (ULID) when the caller left it empty;\n", pkField.goName)
 	}
 	if intPK {
-		fmt.Fprintf(b, "//   - msg.%s is SERVER-ALLOCATED: the column is omitted from the\n", pkField.goName)
-		b.WriteString("//     INSERT and the database-assigned value is scanned back into\n")
-		fmt.Fprintf(b, "//     msg.%s (RETURNING where the dialect supports it, LastInsertId\n", pkField.goName)
-		b.WriteString("//     otherwise). Any caller-provided value is ignored;\n")
+		fmt.Fprintf(b, "//   - msg.%s is SERVER-ALLOCATED: the column is excluded from the\n", pkField.goName)
+		b.WriteString("//     INSERT and the database-assigned value is read back via RETURNING\n")
+		b.WriteString("//     into msg. Any caller-provided value is ignored;\n")
 	}
 	if timestamps {
 		b.WriteString("//   - created_at/updated_at are stamped here (timestamps: true);\n")
@@ -478,94 +407,44 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 	if timestamps {
 		writeManagedCreateTimestamps(b, fields)
 	}
-	if stringPK || timestamps {
+	// Normalize nil array fields to empty slices so they bind as `{}` (the
+	// NOT NULL DEFAULT '{}' convention), not NULL.
+	for _, f := range fields {
+		if f.isArray {
+			b.WriteString(arrayNormalizeExpr(f))
+		}
+	}
+	if stringPK || timestamps || hasArray(fields) {
 		b.WriteString("\n")
 	}
 
-	// Build column list and placeholders for INSERT
-	b.WriteString("\tdialect := db.Dialect()\n")
-
-	if len(insertFields) == 0 {
-		// Server-allocated PK and nothing else: every column comes from
-		// the database.
-		b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s DEFAULT VALUES\", dialect.QuoteIdentifier(")
-		fmt.Fprintf(b, "%q))\n", tableName)
-		b.WriteString("\tvar values []any\n\n")
-	} else {
-		// Build columns and values
-		b.WriteString("\tcolumns := []string{\n")
-		for _, f := range insertFields {
-			fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", f.columnName)
-		}
-		b.WriteString("\t}\n")
-
-		b.WriteString("\tplaceholders := make([]string, len(columns))\n")
-		b.WriteString("\tfor i := range columns {\n")
-		b.WriteString("\t\tplaceholders[i] = dialect.Placeholder(i)\n")
-		b.WriteString("\t}\n\n")
-
-		// Build values slice
-		b.WriteString("\tvalues := []any{\n")
-		for _, f := range insertFields {
-			fmt.Fprintf(b, "\t\t%s,\n", valueExpr(f))
-		}
-		b.WriteString("\t}\n\n")
-
-		b.WriteString("\tquery := fmt.Sprintf(\"INSERT INTO %s (%s) VALUES (%s)\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(columns, \", \"),\n")
-		b.WriteString("\t\tstrings.Join(placeholders, \", \"),\n")
-		b.WriteString("\t)\n\n")
-	}
-
+	// Bun INSERT off the tagged model. The struct tags map fields to
+	// columns and bind native postgres arrays.
+	b.WriteString("\tq := db.Bun().NewInsert().Model(msg)\n")
 	if intPK {
-		writeORMCreateIntPKExec(b, tableName, pkField)
+		// Server-allocated PK: exclude it from the column list and read
+		// the database-assigned value back via RETURNING.
+		fmt.Fprintf(b, "\tq = q.ExcludeColumn(%q).Returning(%q)\n", pkField.columnName, sqlIdent(pkField.columnName))
+		fmt.Fprintf(b, "\tif _, err := q.Exec(ctx, &msg.%s); err != nil {\n", pkField.goName)
 	} else {
-		b.WriteString("\t_, err := db.Exec(ctx, query, values...)\n")
-		b.WriteString("\tif err != nil {\n")
-		b.WriteString("\t\tspan.RecordError(err)\n")
-		b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-		fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
-		b.WriteString("\t}\n")
-		b.WriteString("\treturn nil\n")
+		b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
 	}
-	b.WriteString("}\n\n")
-}
-
-// writeORMCreateIntPKExec emits the execute-and-scan-back tail of
-// Create<Entity> for server-allocated integer PKs: RETURNING on
-// dialects that support it (postgres), Exec + LastInsertId otherwise
-// (sqlite).
-func writeORMCreateIntPKExec(b *strings.Builder, tableName string, pkField *ormField) {
-	b.WriteString("\t// Scan the server-allocated id back into msg.\n")
-	b.WriteString("\tif dialect.SupportsReturning() {\n")
-	fmt.Fprintf(b, "\t\trow := db.QueryRow(ctx, query+\" RETURNING \"+dialect.QuoteIdentifier(%q), values...)\n", pkField.columnName)
-	fmt.Fprintf(b, "\t\tif err := row.Scan(&msg.%s); err != nil {\n", pkField.goName)
-	b.WriteString("\t\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\treturn nil\n")
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\tres, err := db.Exec(ctx, query, values...)\n")
-	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
 	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
 	b.WriteString("\t}\n")
-	b.WriteString("\tlastID, err := res.LastInsertId()\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: read server-allocated id: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	if pkField.goType == "int64" {
-		fmt.Fprintf(b, "\tmsg.%s = lastID\n", pkField.goName)
-	} else {
-		fmt.Fprintf(b, "\tmsg.%s = %s(lastID)\n", pkField.goName, pkField.goType)
-	}
 	b.WriteString("\treturn nil\n")
+	b.WriteString("}\n\n")
+}
+
+// hasArray reports whether any field is an array column.
+func hasArray(fields []ormField) bool {
+	for _, f := range fields {
+		if f.isArray {
+			return true
+		}
+	}
+	return false
 }
 
 // ── managed-timestamp stamping (type-aware) ────────────────────────────
@@ -684,7 +563,19 @@ func writeUpdatedAtStamp(b *strings.Builder, fields []ormField, indent string) b
 	return false
 }
 
-func writeORMGetByID(b *strings.Builder, msgName, tableName, colsVar, pkCol, pkGoType string, hasTenant, softDelete bool) {
+// writeWhereScope emits the tenant/soft-delete WHERE filters common to
+// the read paths, applied to the Bun query var named qVar. Column
+// identifiers are baked as quoted-literal Go strings.
+func writeScopeWhere(b *strings.Builder, qVar string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
+	if hasTenant && tenantField != nil {
+		fmt.Fprintf(b, "\t%s = %s.Where(%q, tenantID)\n", qVar, qVar, sqlIdent(tenantField.columnName)+" = ?")
+	}
+	if softDelete && includeSoftDelete {
+		fmt.Fprintf(b, "\t%s = %s.Where(%q)\n", qVar, qVar, sqlIdent("deleted_at")+" IS NULL")
+	}
+}
+
+func writeORMGetByID(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, hasTenant, softDelete bool, tenantField *ormField) {
 	fmt.Fprintf(b, "// Get%sByID retrieves a %s by its primary key.\n", msgName, msgName)
 	b.WriteString("//\n")
 	b.WriteString("// A missing row satisfies errors.Is(err, orm.ErrNoRows) so callers (and\n")
@@ -701,41 +592,38 @@ func writeORMGetByID(b *strings.Builder, msgName, tableName, colsVar, pkCol, pkG
 	b.WriteString("\t\t))\n")
 	b.WriteString("\tdefer span.End()\n\n")
 
-	if softDelete || hasTenant {
-		// Use List with filters for soft-delete and/or tenant scoping.
-		if hasTenant {
-			fmt.Fprintf(b, "\tresults, err := List%s(ctx, db, tenantID, orm.WhereEq(%q, id), orm.WithLimit(1))\n", msgName, pkCol)
-		} else {
-			fmt.Fprintf(b, "\tresults, err := List%s(ctx, db, orm.WhereEq(%q, id), orm.WithLimit(1))\n", msgName, pkCol)
-		}
-		b.WriteString("\tif err != nil {\n")
-		b.WriteString("\t\tspan.RecordError(err)\n")
-		b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-		b.WriteString("\t\treturn nil, err\n")
-		b.WriteString("\t}\n")
-		b.WriteString("\tif len(results) == 0 {\n")
-		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"get %s by id: %%w\", orm.ErrNoRows)\n", tableName)
-		b.WriteString("\t}\n")
-		b.WriteString("\treturn results[0], nil\n")
-	} else {
-		// Simple case: direct query by PK.
-		fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %s)\n", tableName, colsVar)
-		fmt.Fprintf(b, "\tqb.Where(%q, orm.Eq, id)\n", pkCol)
-		b.WriteString("\tqb.Limit(1)\n")
-		b.WriteString("\tquery, args := qb.Build()\n")
-		b.WriteString("\trow := db.QueryRow(ctx, query, args...)\n")
-		fmt.Fprintf(b, "\tentity, err := scan%s(row)\n", msgName)
-		b.WriteString("\tif err != nil {\n")
-		b.WriteString("\t\tspan.RecordError(err)\n")
-		b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"get %s by id: %%w\", err)\n", tableName)
-		b.WriteString("\t}\n")
-		b.WriteString("\treturn entity, nil\n")
-	}
+	fmt.Fprintf(b, "\tentity := new(%s)\n", msgName)
+	b.WriteString("\tq := db.Bun().NewSelect().Model(entity).\n")
+	fmt.Fprintf(b, "\t\tWhere(%q, id).Limit(1)\n", sqlIdent(pkCol)+" = ?")
+	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, true)
+	b.WriteString("\tif err := q.Scan(ctx); err != nil {\n")
+	b.WriteString("\t\tspan.RecordError(err)\n")
+	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
+	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"get %s by id: %%w\", err)\n", tableName)
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn entity, nil\n")
 	b.WriteString("}\n\n")
 }
 
-func writeORMList(b *strings.Builder, msgName, tableName, colsVar string, hasTenant, softDelete bool, tenantField *ormField) {
+// writeListBody emits the shared Bun SELECT body for List/ListAll: build
+// the query, apply tenant scope (+ soft-delete unless includeSoftDelete
+// is false), apply the caller's QueryOption filters, scan.
+func writeListBody(b *strings.Builder, msgName, tableName, opName string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
+	fmt.Fprintf(b, "\tvar results []*%s\n", msgName)
+	b.WriteString("\tq := db.Bun().NewSelect().Model(&results)\n")
+	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, includeSoftDelete)
+	b.WriteString("\tfor _, opt := range opts {\n")
+	b.WriteString("\t\topt(q)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tif err := q.Scan(ctx); err != nil {\n")
+	b.WriteString("\t\tspan.RecordError(err)\n")
+	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
+	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"%s %s: %%w\", err)\n", opName, tableName)
+	b.WriteString("\t}\n")
+	b.WriteString("\treturn results, nil\n")
+}
+
+func writeORMList(b *strings.Builder, msgName, tableName string, hasTenant, softDelete bool, tenantField *ormField) {
 	fmt.Fprintf(b, "// List%s retrieves %s rows with optional filtering.\n", msgName, msgName)
 	if hasTenant {
 		fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
@@ -745,46 +633,7 @@ func writeORMList(b *strings.Builder, msgName, tableName, colsVar string, hasTen
 	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.List%s\",\n", msgName)
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
-
-	if hasTenant && tenantField != nil {
-		b.WriteString("\t// Prepend tenant isolation filter.\n")
-		fmt.Fprintf(b, "\topts = append([]orm.QueryOption{orm.WhereEq(%q, tenantID)}, opts...)\n\n", tenantField.columnName)
-	}
-
-	if softDelete {
-		b.WriteString("\t// Prepend soft-delete filter.\n")
-		b.WriteString("\topts = append([]orm.QueryOption{orm.WhereIsNull(\"deleted_at\")}, opts...)\n\n")
-	}
-
-	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %s)\n", tableName, colsVar)
-	b.WriteString("\tfor _, opt := range opts {\n")
-	b.WriteString("\t\topt(qb)\n")
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\trows, err := qb.Execute(ctx)\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"list %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\tdefer rows.Close()\n\n")
-
-	b.WriteString("\tvar results []*" + msgName + "\n")
-	b.WriteString("\tfor rows.Next() {\n")
-	fmt.Fprintf(b, "\t\tentity, err := scan%s(rows)\n", msgName)
-	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\tresults = append(results, entity)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tif err := rows.Err(); err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"list %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn results, nil\n")
+	writeListBody(b, msgName, tableName, "list", softDelete, hasTenant, tenantField, true)
 	b.WriteString("}\n\n")
 }
 
@@ -799,32 +648,22 @@ func writeORMCount(b *strings.Builder, msgName, tableName string, hasTenant, sof
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
 
-	if hasTenant && tenantField != nil {
-		fmt.Fprintf(b, "\topts = append([]orm.QueryOption{orm.WhereEq(%q, tenantID)}, opts...)\n\n", tenantField.columnName)
-	}
-
-	if softDelete {
-		b.WriteString("\topts = append([]orm.QueryOption{orm.WhereIsNull(\"deleted_at\")}, opts...)\n\n")
-	}
-
-	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, []string{\"COUNT(*)\"})\n", tableName)
+	fmt.Fprintf(b, "\tq := db.Bun().NewSelect().Model((*%s)(nil))\n", msgName)
+	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, true)
 	b.WriteString("\tfor _, opt := range opts {\n")
-	b.WriteString("\t\topt(qb)\n")
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\tquery, args := qb.Build()\n")
-	b.WriteString("\trow := db.QueryRow(ctx, query, args...)\n\n")
-	b.WriteString("\tvar count int64\n")
-	b.WriteString("\tif err := row.Scan(&count); err != nil {\n")
+	b.WriteString("\t\topt(q)\n")
+	b.WriteString("\t}\n")
+	b.WriteString("\tn, err := q.Count(ctx)\n")
+	b.WriteString("\tif err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
 	fmt.Fprintf(b, "\t\treturn 0, fmt.Errorf(\"count %s: %%w\", err)\n", tableName)
 	b.WriteString("\t}\n")
-	b.WriteString("\treturn count, nil\n")
+	b.WriteString("\treturn int64(n), nil\n")
 	b.WriteString("}\n\n")
 }
 
-func writeORMListAll(b *strings.Builder, msgName, tableName, colsVar string, hasTenant bool, tenantField *ormField) {
+func writeORMListAll(b *strings.Builder, msgName, tableName string, hasTenant bool, tenantField *ormField) {
 	fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
 	if hasTenant {
 		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
@@ -834,55 +673,36 @@ func writeORMListAll(b *strings.Builder, msgName, tableName, colsVar string, has
 	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.ListAll%s\",\n", msgName)
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
-
-	if hasTenant && tenantField != nil {
-		b.WriteString("\t// Tenant isolation still applies even for ListAll (bypasses soft-delete only).\n")
-		fmt.Fprintf(b, "\topts = append([]orm.QueryOption{orm.WhereEq(%q, tenantID)}, opts...)\n\n", tenantField.columnName)
-	}
-
-	fmt.Fprintf(b, "\tqb := orm.NewQueryBuilder(db, %q, %s)\n", tableName, colsVar)
-	b.WriteString("\tfor _, opt := range opts {\n")
-	b.WriteString("\t\topt(qb)\n")
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\trows, err := qb.Execute(ctx)\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"list all %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\tdefer rows.Close()\n\n")
-
-	b.WriteString("\tvar results []*" + msgName + "\n")
-	b.WriteString("\tfor rows.Next() {\n")
-	fmt.Fprintf(b, "\t\tentity, err := scan%s(rows)\n", msgName)
-	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\treturn nil, err\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\tresults = append(results, entity)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tif err := rows.Err(); err != nil {\n")
-	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"list all %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn results, nil\n")
+	// Tenant isolation still applies even for ListAll (it bypasses the
+	// soft-delete filter only).
+	writeListBody(b, msgName, tableName, "list all", true /*softDelete*/, hasTenant, tenantField, false /*includeSoftDelete*/)
 	b.WriteString("}\n\n")
 }
 
-func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
-	// See excludedFromSet for what never reaches the SET clause.
+// writeWhereScopeUpdate emits the soft-delete/tenant WHERE filters for an
+// UPDATE/DELETE on the Bun query var named qVar.
+func writeScopeWhereWrite(b *strings.Builder, qVar string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
+	if softDelete && includeSoftDelete {
+		fmt.Fprintf(b, "\t%s = %s.Where(%q)\n", qVar, qVar, sqlIdent("deleted_at")+" IS NULL")
+	}
+	if hasTenant && tenantField != nil {
+		fmt.Fprintf(b, "\t%s = %s.Where(%q, tenantID)\n", qVar, qVar, sqlIdent(tenantField.columnName)+" = ?")
+	}
+}
+
+func writeORMUpdate(b *strings.Builder, msgName, tableName, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
 	excludeFromSet := func(f ormField) bool { return excludedFromSet(f, timestamps) }
 
-	// Count updatable fields.
-	updatableCount := 0
+	var setCols []ormField
 	for _, f := range fields {
 		if excludeFromSet(f) {
 			continue
 		}
-		updatableCount++
+		setCols = append(setCols, f)
 	}
 
-	// If there are no updatable fields, generate a no-op function.
-	if updatableCount == 0 {
+	// No updatable fields: a no-op (mirrors the legacy emitter).
+	if len(setCols) == 0 {
 		fmt.Fprintf(b, "// Update%s is a no-op because %s has no updatable fields.\n", msgName, msgName)
 		if hasTenant {
 			fmt.Fprintf(b, "func Update%s(_ context.Context, _ orm.Context, _ *%s, _ string) error {\n", msgName, msgName)
@@ -892,6 +712,11 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 		b.WriteString("\treturn nil // no updatable fields\n")
 		b.WriteString("}\n\n")
 		return
+	}
+
+	pkGoName := "Id"
+	if pkField != nil {
+		pkGoName = pkField.goName
 	}
 
 	fmt.Fprintf(b, "// Update%s updates an existing %s by its primary key.\n", msgName, msgName)
@@ -914,99 +739,27 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 			b.WriteString("\n")
 		}
 	}
-
-	b.WriteString("\tdialect := db.Dialect()\n\n")
-
-	// Build SET clause (see excludeFromSet for what stays out).
-	type setCol struct {
-		field ormField
-		idx   int
-	}
-	var setCols []setCol
-	for i, f := range fields {
-		if excludeFromSet(f) {
-			continue
-		}
-		setCols = append(setCols, setCol{field: f, idx: i})
-	}
-
-	b.WriteString("\tsetParts := []string{\n")
-	for phIdx, sc := range setCols {
-		fmt.Fprintf(b, "\t\tfmt.Sprintf(\"%%s = %%s\", dialect.QuoteIdentifier(%q), dialect.Placeholder(%d)),\n", sc.field.columnName, phIdx)
-	}
-	b.WriteString("\t}\n\n")
-
-	// Build values for SET clause
-	b.WriteString("\targs := []any{\n")
-	for _, sc := range setCols {
-		fmt.Fprintf(b, "\t\t%s,\n", valueExpr(sc.field))
-	}
-	b.WriteString("\t}\n\n")
-
-	pkPlaceholderIdx := len(setCols)
-
-	if softDelete && hasTenant {
-		tenantPlaceholderIdx := pkPlaceholderIdx + 1
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s IS NULL AND %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		fmt.Fprintf(b, "\t\tdialect.Placeholder(%d),\n", pkPlaceholderIdx)
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
-		fmt.Fprintf(b, "\t\tdialect.Placeholder(%d),\n", tenantPlaceholderIdx)
-		b.WriteString("\t)\n\n")
-		// Append PK and tenant values
-		if pkField != nil {
-			fmt.Fprintf(b, "\targs = append(args, msg.%s, tenantID)\n", pkField.goName)
-		} else {
-			b.WriteString("\targs = append(args, msg.Id, tenantID)\n")
-		}
-	} else if softDelete {
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s IS NULL\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		fmt.Fprintf(b, "\t\tdialect.Placeholder(%d),\n", pkPlaceholderIdx)
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		b.WriteString("\t)\n\n")
-		if pkField != nil {
-			fmt.Fprintf(b, "\targs = append(args, msg.%s)\n", pkField.goName)
-		} else {
-			b.WriteString("\targs = append(args, msg.Id)\n")
-		}
-	} else if hasTenant {
-		tenantPlaceholderIdx := pkPlaceholderIdx + 1
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		fmt.Fprintf(b, "\t\tdialect.Placeholder(%d),\n", pkPlaceholderIdx)
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
-		fmt.Fprintf(b, "\t\tdialect.Placeholder(%d),\n", tenantPlaceholderIdx)
-		b.WriteString("\t)\n\n")
-		if pkField != nil {
-			fmt.Fprintf(b, "\targs = append(args, msg.%s, tenantID)\n", pkField.goName)
-		} else {
-			b.WriteString("\targs = append(args, msg.Id, tenantID)\n")
-		}
-	} else {
-		// Simple case: no soft-delete, no tenant.
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		fmt.Fprintf(b, "\t\tdialect.Placeholder(%d),\n", pkPlaceholderIdx)
-		b.WriteString("\t)\n\n")
-		if pkField != nil {
-			fmt.Fprintf(b, "\targs = append(args, msg.%s)\n", pkField.goName)
-		} else {
-			b.WriteString("\targs = append(args, msg.Id)\n")
+	for _, f := range setCols {
+		if f.isArray {
+			b.WriteString(arrayNormalizeExpr(f))
 		}
 	}
 
-	b.WriteString("\n\t_, err := db.Exec(ctx, query, args...)\n")
-	b.WriteString("\tif err != nil {\n")
+	// Bun UPDATE off the tagged model, restricting the SET to the
+	// updatable columns. The PK / tenant / deleted_at columns are filtered
+	// out of setCols by excludeFromSet.
+	b.WriteString("\tq := db.Bun().NewUpdate().Model(msg).\n")
+	b.WriteString("\t\tColumn(")
+	for i, f := range setCols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%q", f.columnName)
+	}
+	b.WriteString(").\n")
+	fmt.Fprintf(b, "\t\tWhere(%q, msg.%s)\n", sqlIdent(pkCol)+" = ?", pkGoName)
+	writeScopeWhereWrite(b, "q", softDelete, hasTenant, tenantField, true)
+	b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
 	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"update %s: %%w\", err)\n", tableName)
@@ -1023,6 +776,10 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, _, pkCol string, fie
 // timestamps — created_at), and returns *orm.UnknownFieldError for any
 // path outside that set so pkg/crud can map it to InvalidArgument
 // without leaking SQL. updated_at is stamped on masked updates too.
+//
+// The masked write is a single Bun UPDATE whose SET column list is the
+// validated mask (plus updated_at). Bun pulls the values straight off the
+// tagged model, so non-masked columns are never touched.
 func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
 	excludeFromSet := func(f ormField) bool { return excludedFromSet(f, timestamps) }
 
@@ -1057,6 +814,11 @@ func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, 
 		return
 	}
 
+	pkGoName := "Id"
+	if pkField != nil {
+		pkGoName = pkField.goName
+	}
+
 	fmt.Fprintf(b, "// Update%sMasked updates ONLY the named fields of an existing %s\n", msgName, msgName)
 	b.WriteString("// (AIP-134 update_mask paths; proto field names == column names).\n")
 	b.WriteString("// Paths outside the updatable set return *orm.UnknownFieldError —\n")
@@ -1081,87 +843,45 @@ func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, 
 			b.WriteString("\n")
 		}
 	}
-
-	b.WriteString("\tdialect := db.Dialect()\n\n")
-
-	b.WriteString("\t// The updatable-column set. Anything else (unknown columns, the PK,\n")
-	b.WriteString("\t// the tenant key, immutable bookkeeping columns) is rejected.\n")
-	b.WriteString("\tcolValue := map[string]any{\n")
+	// Normalize any maskable array field so a masked write of it binds {}.
 	for _, f := range updatable {
-		fmt.Fprintf(b, "\t\t%q: %s,\n", f.columnName, valueExpr(f))
+		if f.isArray {
+			b.WriteString(arrayNormalizeExpr(f))
+		}
+	}
+
+	b.WriteString("\t// The updatable-column allowlist. Anything else (unknown columns, the\n")
+	b.WriteString("\t// PK, the tenant key, immutable bookkeeping columns) is rejected.\n")
+	b.WriteString("\tupdatable := map[string]bool{\n")
+	for _, f := range updatable {
+		fmt.Fprintf(b, "\t\t%q: true,\n", f.columnName)
 	}
 	b.WriteString("\t}\n\n")
 
-	b.WriteString("\tsetParts := make([]string, 0, len(fields)+1)\n")
-	b.WriteString("\targs := make([]any, 0, len(fields)+3)\n")
+	b.WriteString("\tcols := make([]string, 0, len(fields)+1)\n")
 	b.WriteString("\tseen := make(map[string]bool, len(fields))\n")
 	b.WriteString("\tfor _, f := range fields {\n")
-	b.WriteString("\t\tv, ok := colValue[f]\n")
-	b.WriteString("\t\tif !ok {\n")
+	b.WriteString("\t\tif !updatable[f] {\n")
 	b.WriteString("\t\t\treturn &orm.UnknownFieldError{Field: f}\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\tif seen[f] {\n")
 	b.WriteString("\t\t\tcontinue\n")
 	b.WriteString("\t\t}\n")
 	b.WriteString("\t\tseen[f] = true\n")
-	b.WriteString("\t\tsetParts = append(setParts, fmt.Sprintf(\"%s = %s\", dialect.QuoteIdentifier(f), dialect.Placeholder(len(args))))\n")
-	b.WriteString("\t\targs = append(args, v)\n")
+	b.WriteString("\t\tcols = append(cols, f)\n")
 	b.WriteString("\t}\n")
 	if stampUpdatedAt {
 		b.WriteString("\tif !seen[\"updated_at\"] {\n")
-		b.WriteString("\t\tsetParts = append(setParts, fmt.Sprintf(\"%s = %s\", dialect.QuoteIdentifier(\"updated_at\"), dialect.Placeholder(len(args))))\n")
-		b.WriteString("\t\targs = append(args, msg.UpdatedAt)\n")
+		b.WriteString("\t\tcols = append(cols, \"updated_at\")\n")
 		b.WriteString("\t}\n")
 	}
 	b.WriteString("\n")
 
-	pkValue := "msg.Id"
-	if pkField != nil {
-		pkValue = "msg." + pkField.goName
-	}
-
-	if softDelete && hasTenant {
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s IS NULL AND %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
-		b.WriteString("\t\tdialect.Placeholder(len(args)+1),\n")
-		b.WriteString("\t)\n")
-		fmt.Fprintf(b, "\targs = append(args, %s, tenantID)\n", pkValue)
-	} else if softDelete {
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s IS NULL\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		b.WriteString("\t)\n")
-		fmt.Fprintf(b, "\targs = append(args, %s)\n", pkValue)
-	} else if hasTenant {
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s AND %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
-		b.WriteString("\t\tdialect.Placeholder(len(args)+1),\n")
-		b.WriteString("\t)\n")
-		fmt.Fprintf(b, "\targs = append(args, %s, tenantID)\n", pkValue)
-	} else {
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s WHERE %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tstrings.Join(setParts, \", \"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(len(args)),\n")
-		b.WriteString("\t)\n")
-		fmt.Fprintf(b, "\targs = append(args, %s)\n", pkValue)
-	}
-
-	b.WriteString("\n\t_, err := db.Exec(ctx, query, args...)\n")
-	b.WriteString("\tif err != nil {\n")
+	b.WriteString("\tq := db.Bun().NewUpdate().Model(msg).\n")
+	b.WriteString("\t\tColumn(cols...).\n")
+	fmt.Fprintf(b, "\t\tWhere(%q, msg.%s)\n", sqlIdent(pkCol)+" = ?", pkGoName)
+	writeScopeWhereWrite(b, "q", softDelete, hasTenant, tenantField, true)
+	b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
 	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"update %s: %%w\", err)\n", tableName)
@@ -1170,7 +890,7 @@ func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, 
 	b.WriteString("}\n\n")
 }
 
-func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField) {
+func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, hasTenant, softDelete bool, tenantField *ormField) {
 	if softDelete {
 		fmt.Fprintf(b, "// Delete%s soft-deletes a %s by setting deleted_at.\n", msgName, msgName)
 	} else {
@@ -1188,52 +908,21 @@ func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType stri
 	b.WriteString("\t\t))\n")
 	b.WriteString("\tdefer span.End()\n\n")
 
-	if softDelete && hasTenant {
-		b.WriteString("\t// Soft delete with tenant isolation.\n")
-		b.WriteString("\tdialect := db.Dialect()\n")
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s = %s AND %s IS NULL AND %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(0),\n")
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
-		b.WriteString("\t\tdialect.Placeholder(1),\n")
-		b.WriteString("\t)\n")
-		b.WriteString("\t_, err := db.Exec(ctx, query, id, tenantID)\n")
-	} else if softDelete {
-		b.WriteString("\t// Soft delete: set deleted_at instead of removing the row.\n")
-		b.WriteString("\tdialect := db.Dialect()\n")
-		b.WriteString("\tquery := fmt.Sprintf(\"UPDATE %s SET %s = CURRENT_TIMESTAMP WHERE %s = %s AND %s IS NULL\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(0),\n")
-		b.WriteString("\t\tdialect.QuoteIdentifier(\"deleted_at\"),\n")
-		b.WriteString("\t)\n")
-		b.WriteString("\t_, err := db.Exec(ctx, query, id)\n")
-	} else if hasTenant {
-		b.WriteString("\t// Hard delete with tenant isolation.\n")
-		b.WriteString("\tdialect := db.Dialect()\n")
-		b.WriteString("\tquery := fmt.Sprintf(\"DELETE FROM %s WHERE %s = %s AND %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(0),\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tenantField.columnName)
-		b.WriteString("\t\tdialect.Placeholder(1),\n")
-		b.WriteString("\t)\n")
-		b.WriteString("\t_, err := db.Exec(ctx, query, id, tenantID)\n")
+	if softDelete {
+		// Soft delete: stamp deleted_at instead of removing the row. Bun
+		// UPDATE with a raw Set expression for CURRENT_TIMESTAMP.
+		fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
+		fmt.Fprintf(b, "\t\tSet(%q).\n", sqlIdent("deleted_at")+" = CURRENT_TIMESTAMP")
+		fmt.Fprintf(b, "\t\tWhere(%q, id).\n", sqlIdent(pkCol)+" = ?")
+		fmt.Fprintf(b, "\t\tWhere(%q)\n", sqlIdent("deleted_at")+" IS NULL")
 	} else {
-		b.WriteString("\tdialect := db.Dialect()\n")
-		b.WriteString("\tquery := fmt.Sprintf(\"DELETE FROM %s WHERE %s = %s\",\n")
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", tableName)
-		fmt.Fprintf(b, "\t\tdialect.QuoteIdentifier(%q),\n", pkCol)
-		b.WriteString("\t\tdialect.Placeholder(0),\n")
-		b.WriteString("\t)\n")
-		b.WriteString("\t_, err := db.Exec(ctx, query, id)\n")
+		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).\n", msgName)
+		fmt.Fprintf(b, "\t\tWhere(%q, id)\n", sqlIdent(pkCol)+" = ?")
 	}
-
-	b.WriteString("\tif err != nil {\n")
+	if hasTenant && tenantField != nil {
+		fmt.Fprintf(b, "\tq = q.Where(%q, tenantID)\n", sqlIdent(tenantField.columnName)+" = ?")
+	}
+	b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
 	b.WriteString("\t\tspan.RecordError(err)\n")
 	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
 	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"delete %s: %%w\", err)\n", tableName)

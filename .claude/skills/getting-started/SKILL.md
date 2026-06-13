@@ -12,11 +12,19 @@ forge new <project-name> --mod <go-module-path>
 ```
 
 A bare `forge new` scaffolds **zero services**: binary shell (`cmd/`),
-`pkg/app` wiring, buf/proto scaffolding, Taskfile/CI/deploy — and
-`services: []` in forge.yaml. The binary is a deployment unit that
-mounts services; it is **not** a domain entity, so forge never invents
-a `<project>Service` from the binary name. The first step after a bare
-scaffold is:
+`pkg/app` wiring, buf/proto scaffolding, Taskfile/CI/deploy — and an
+empty `components.json` (`{"components": []}`) at the project root. The
+binary is a deployment unit that mounts services; it is **not** a domain
+entity, so forge never invents a `<project>Service` from the binary name.
+
+Per-component entities (servers, workers, crons, operators, binaries)
+live in `components.json` — the authored single source of truth.
+`forge.yaml` carries only GLOBAL project state (name, module_path,
+forge_version, frontends, and section overrides). The project **kind**
+derives from the components: a server-shaped component → service, a
+binary-only project → cli, no components.json → library.
+
+The first step after a bare scaffold is:
 
 ```bash
 forge add service <entity>   # name it after a domain entity (item, order, user), not the binary
@@ -76,7 +84,8 @@ my-app/
 ├── db/queries/                # SQL query directory
 ├── deploy/                    # Docker, KCL, observability configs
 ├── e2e/                       # E2E test directory
-├── forge.yaml                 # Project config
+├── forge.yaml                 # Global project config (name, module, frontends, overrides)
+├── components.json            # Per-component source of truth (servers/workers/crons/...)
 ├── docker-compose.yml         # Dev infra (Postgres, LGTM, etc.)
 ├── Taskfile.yml               # Task runner aliases
 └── .reliant/skills/forge/     # These skills
@@ -164,7 +173,9 @@ forge add webhook <name> --service S  # Webhook endpoint on an existing service
 forge add package <name>              # Internal Go package with interface contract
 ```
 
-All `forge add` commands update `forge.yaml` and run the generation pipeline automatically.
+`forge add service|worker|cron|operator|binary` (and `webhook`) write the
+component entity to `components.json`; `forge add frontend` writes to
+`forge.yaml`. All run the generation pipeline automatically.
 
 ## Key Commands
 
@@ -182,9 +193,9 @@ All `forge add` commands update `forge.yaml` and run the generation pipeline aut
 
 ## Port Assignment
 
-Ports are auto-assigned and tracked in `forge.yaml`:
-- **Services** auto-increment from `8080` (8080, 8081, 8082, ...)
-- **Frontends** auto-increment from `3000` (3000, 3001, 3002, ...)
+Ports are auto-assigned and tracked per component:
+- **Services** auto-increment from `8080` (8080, 8081, 8082, ...) — in `components.json`
+- **Frontends** auto-increment from `3000` (3000, 3001, 3002, ...) — in `forge.yaml`
 
 Override with `--port` on `forge add service` or `forge add frontend`.
 

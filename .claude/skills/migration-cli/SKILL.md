@@ -41,7 +41,7 @@ forge add binary <second-binary> --kind cron          # cron-shaped (schedule vi
 forge add binary <second-binary> --kind oneshot       # one-shot (Run returns when work is done)
 ```
 
-This scaffolds `cmd/<name>.go` (a Cobra subcommand registered on the shared root) plus `internal/<name>/{contract.go,<name>.go,<name>_test.go}` and appends a `binaries:` entry to `forge.yaml`.
+This scaffolds `cmd/<name>.go` (a Cobra subcommand registered on the shared root) plus `internal/<name>/{contract.go,<name>.go,<name>_test.go}` and appends a `kind: binary` entry to `components.json`.
 
 For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary> dump-state`, `<binary> reset-foo`), `forge add binary` is still the right starting point: the scaffolded `<name>Cmd` Cobra command happily hosts both its own `RunE` body and child commands registered via `<name>Cmd.AddCommand(...)`. Add child subcommands as sibling files under `cmd/<name>_<subcmd>.go`. The `workaround-cmd-not-in-binaries` lint can fire on those sibling files in current forge — it's a known false-positive on subcommand-glue files; treat the warning as advisory until the heuristic is tightened.
 

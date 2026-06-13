@@ -14,10 +14,11 @@ import (
 )
 
 // GeneratePlanORM writes internal/db/<snake_name>_orm.go for each entity
-// defined in the plan. The generated files provide standalone CRUD functions
-// and a private scan helper. Because entity types are type aliases (defined
-// in internal/db/types.go), we cannot attach methods to them — everything
-// is a package-level function.
+// defined in the plan. The generated files provide a Bun-tagged entity
+// struct (a projection of the applied schema) and standalone CRUD
+// functions built on Bun's query builder (reached via orm.Context.Bun()).
+// CRUD is emitted as package-level functions that take an orm.Context, so
+// the same functions run inside or outside a transaction.
 //
 // cs is the project's checksum tracker: every output is recorded as a
 // Tier-1 manifest entry so `forge disown` can transfer ownership of an

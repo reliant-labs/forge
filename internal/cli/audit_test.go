@@ -38,14 +38,10 @@ docs: {}
 		t.Fatalf("write forge.yaml: %v", err)
 	}
 
-	// Empty .forge/checksums.json so the codegen audit has data to read.
-	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
-		t.Fatalf("mkdir .forge: %v", err)
-	}
-	cs := `{"forge_version":"dev","files":{}}`
-	if err := os.WriteFile(filepath.Join(dir, ".forge", "checksums.json"), []byte(cs), 0o644); err != nil {
-		t.Fatalf("write checksums: %v", err)
-	}
+	// No .forge state files at all — the steady state in the
+	// self-certifying era (the manifest-era empty checksums.json would
+	// now read as a pending legacy migration). The codegen audit reads
+	// ownership from the files themselves.
 
 	report, err := buildAuditReport(dir)
 	if err != nil {

@@ -63,13 +63,16 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 	if !strings.Contains(code, "type Project struct {") {
 		t.Error("missing Project struct emission in _orm.go")
 	}
-	if !strings.Contains(code, "Id string") {
-		t.Error("Project struct should carry Id string")
+	// Struct fields are gofmt-aligned; collapse whitespace before matching
+	// the field declaration (name + Go type + bun tag).
+	collapsedStruct := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsedStruct, "Id string `bun:\"id,pk\"`") {
+		t.Error("Project struct should carry a bun-tagged string Id (pk) field")
 	}
 	if !strings.Contains(code, "Description *string") {
 		t.Error("nullable string column should be a *string struct field")
 	}
-	if !strings.Contains(code, "CreatedAt *time.Time") {
+	if !strings.Contains(code, "*time.Time `bun:\"created_at\"`") {
 		t.Error("nullable timestamp column should be *time.Time on the struct")
 	}
 
@@ -110,29 +113,30 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("column list should be exported, found lowerCamel projectColumns")
 	}
 
-	// Scan function (standalone)
-	if !strings.Contains(code, "func scanProject(scanner interface{ Scan(...interface{}) error }) (*Project, error) {") {
-		t.Error("missing scanProject function")
+	// Bun scans rows directly into the struct via Model(&x).Scan(ctx) — no
+	// standalone scan function, no NullTime temps, no database/sql import.
+	if strings.Contains(code, "func scanProject(") {
+		t.Error("Bun scans into the struct directly; should not emit scanProject")
 	}
-	if !strings.Contains(code, "orm.NullTime") {
-		t.Error("missing orm.NullTime in scan function for timestamps")
+	if strings.Contains(code, "orm.NullTime") {
+		t.Error("Bun scans timestamps directly; should not use orm.NullTime temps")
 	}
 	if strings.Contains(code, "sql.NullTime") {
-		t.Error("scan temps should use orm.NullTime, not sql.NullTime")
+		t.Error("Bun scans timestamps directly; should not use sql.NullTime")
 	}
 	if strings.Contains(code, `"database/sql"`) {
 		t.Error("generated file should no longer import database/sql")
 	}
-	// No timestamppb anywhere in generated ORM code: time columns scan via
-	// orm.NullTime temps and assign onto time.Time / *time.Time fields.
+	// No timestamppb anywhere in generated ORM code: time columns are
+	// time.Time-based struct fields scanned directly by Bun.
 	if strings.Contains(code, "timestamppb") {
 		t.Error("generated ORM code must not reference timestamppb")
 	}
-	if !strings.Contains(code, "if dbCreatedAt.Valid {") {
-		t.Error("missing NullTime valid-guard for created_at in scan function")
+	if strings.Contains(code, "dbCreatedAt.Valid") {
+		t.Error("no NullTime valid-guard — Bun scans directly into the struct")
 	}
-	if !strings.Contains(code, "entity.CreatedAt = &tCreatedAt") {
-		t.Error("missing pointer assignment from NullTime temp for nullable created_at")
+	if strings.Contains(code, "entity.CreatedAt = &tCreatedAt") {
+		t.Error("no NullTime temp assignment — Bun scans directly into the struct")
 	}
 
 	// CRUD functions (tenant-scoped)
@@ -160,8 +164,8 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing tenant enforcement in Create")
 	}
 
-	// Soft delete in List
-	if !strings.Contains(code, `orm.WhereIsNull("deleted_at")`) {
+	// Soft delete in List: Bun adds a deleted_at IS NULL WHERE clause.
+	if !strings.Contains(code, `q.Where("\"deleted_at\" IS NULL")`) {
 		t.Error("missing soft-delete filter in List")
 	}
 
@@ -178,9 +182,9 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing ListAllProject")
 	}
 
-	// Create is a plain INSERT — never an upsert.
-	if !strings.Contains(code, "INSERT INTO") {
-		t.Error("missing INSERT INTO in Create")
+	// Create is a plain INSERT — never an upsert. Bun builds the INSERT.
+	if !strings.Contains(code, "db.Bun().NewInsert().Model(msg).ModelTableExpr(\"projects\")") {
+		t.Error("missing Bun NewInsert in Create")
 	}
 	if strings.Contains(code, "ON CONFLICT") {
 		t.Error("Create must be a plain INSERT, found ON CONFLICT upsert")
@@ -209,25 +213,31 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing updated_at stamping in Create")
 	}
 
-	// Soft-delete/tenant GetByID maps a miss to orm.ErrNoRows (no string
-	// matching for callers).
-	if !strings.Contains(code, `fmt.Errorf("get projects by id: %w", orm.ErrNoRows)`) {
-		t.Error("GetProjectByID should return wrapped orm.ErrNoRows on a miss")
+	// GetByID wraps the underlying error so callers (and forge/pkg/crud)
+	// can map a miss to NotFound; the orm layer makes Bun's no-rows error
+	// satisfy errors.Is(err, orm.ErrNoRows).
+	if !strings.Contains(code, `fmt.Errorf("get projects by id: %w", err)`) {
+		t.Error("GetProjectByID should wrap the query error")
 	}
 
-	// List uses QueryBuilder
-	if !strings.Contains(code, "orm.NewQueryBuilder(db,") {
-		t.Error("missing orm.NewQueryBuilder in List/Get")
+	// List/Get/Count build queries via Bun's NewSelect against the table.
+	if !strings.Contains(code, `db.Bun().NewSelect().Model(&results).ModelTableExpr("projects")`) {
+		t.Error("missing Bun NewSelect in List")
 	}
-	if !strings.Contains(code, "scanProject(rows)") {
-		t.Error("missing scanProject(rows) in List")
+	if strings.Contains(code, "orm.NewQueryBuilder(db,") {
+		t.Error("List/Get should use Bun NewSelect, not orm.NewQueryBuilder")
+	}
+	if strings.Contains(code, "scanProject(rows)") {
+		t.Error("Bun scans directly; should not call scanProject(rows)")
 	}
 
-	// Field constants
-	if !strings.Contains(code, `ProjectFieldId = "id"`) {
+	// Field constants (gofmt aligns the `=`, so collapse whitespace before
+	// matching the const declaration).
+	collapsed := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsed, `ProjectFieldId = "id"`) {
 		t.Error("missing field constant for Id")
 	}
-	if !strings.Contains(code, `ProjectFieldOrgId = "org_id"`) {
+	if !strings.Contains(collapsed, `ProjectFieldOrgId = "org_id"`) {
 		t.Error("missing field constant for OrgId")
 	}
 }
@@ -293,27 +303,31 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 		t.Error("should not import timestamppb without timestamp fields")
 	}
 
-	// Simple delete uses inline SQL DELETE
-	if !strings.Contains(code, "DELETE FROM") {
-		t.Error("simple delete should use DELETE FROM")
+	// Hard delete uses Bun NewDelete (no DELETE FROM literal anymore).
+	if !strings.Contains(code, `db.Bun().NewDelete().Model((*Tag)(nil)).ModelTableExpr("tags")`) {
+		t.Error("simple delete should use Bun NewDelete")
+	}
+	if strings.Contains(code, "DELETE FROM") {
+		t.Error("Bun builds the DELETE; should not emit a DELETE FROM literal")
 	}
 
-	// Simple update uses inline SQL UPDATE
-	if !strings.Contains(code, "UPDATE %s SET %s WHERE") {
-		t.Error("simple update should use inline UPDATE")
+	// Update uses Bun NewUpdate with an explicit column list.
+	if !strings.Contains(code, `db.Bun().NewUpdate().Model(msg).ModelTableExpr("tags")`) {
+		t.Error("simple update should use Bun NewUpdate")
+	}
+	if !strings.Contains(code, `Column("label")`) {
+		t.Error("Update should set the updatable column via .Column(...)")
 	}
 
-	// GetByID uses QueryBuilder (no soft-delete/tenant)
-	if !strings.Contains(code, "orm.NewQueryBuilder(db,") {
-		t.Error("simple GetByID should use orm.NewQueryBuilder")
+	// GetByID uses Bun NewSelect (no soft-delete/tenant filter).
+	if !strings.Contains(code, `db.Bun().NewSelect().Model(entity).ModelTableExpr("tags")`) {
+		t.Error("simple GetByID should use Bun NewSelect")
 	}
-	if !strings.Contains(code, "scanTag(row)") {
-		t.Error("simple GetByID should use scanTag(row)")
+	if strings.Contains(code, "orm.NewQueryBuilder(db,") {
+		t.Error("GetByID should use Bun NewSelect, not orm.NewQueryBuilder")
 	}
-
-	// Standalone scan function
-	if !strings.Contains(code, "func scanTag(scanner interface{ Scan(...interface{}) error }) (*Tag, error) {") {
-		t.Error("missing scanTag function")
+	if strings.Contains(code, "func scanTag(") {
+		t.Error("Bun scans directly; should not emit a scanTag function")
 	}
 }
 
@@ -341,8 +355,8 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 	}
 	code := string(content)
 
-	// Soft-delete filter in List
-	if !strings.Contains(code, `orm.WhereIsNull("deleted_at")`) {
+	// Soft-delete filter in List: Bun adds a deleted_at IS NULL WHERE clause.
+	if !strings.Contains(code, `q.Where("\"deleted_at\" IS NULL")`) {
 		t.Error("missing soft-delete filter")
 	}
 
@@ -356,9 +370,17 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 		t.Error("soft delete should use CURRENT_TIMESTAMP")
 	}
 
-	// GetByID should use List (because soft-delete)
-	if !strings.Contains(code, "ListItem(ctx, db,") {
-		t.Error("GetByID should delegate to List for soft-delete")
+	// GetByID applies the soft-delete filter so it never returns a tombstone.
+	getIdx := strings.Index(code, "func GetItemByID(")
+	if getIdx == -1 {
+		t.Fatal("missing GetItemByID")
+	}
+	getCode := code[getIdx:]
+	if end := strings.Index(getCode[1:], "\nfunc "); end >= 0 {
+		getCode = getCode[:end+1]
+	}
+	if !strings.Contains(getCode, `Where("\"deleted_at\" IS NULL")`) {
+		t.Error("GetByID should filter out soft-deleted rows")
 	}
 
 	// deleted_at field should be in columns
@@ -450,53 +472,58 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 	if !strings.Contains(code, "type Record struct {") {
 		t.Error("missing Record struct emission")
 	}
-	if !strings.Contains(code, "Score *float32") {
+	// Struct fields are gofmt-aligned; collapse whitespace before matching.
+	collapsedStruct := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsedStruct, "Score *float32 `bun:\"score\"`") {
 		t.Error("nullable float should be a *float32 struct field")
 	}
-	if !strings.Contains(code, "Price *float64") {
+	if !strings.Contains(collapsedStruct, "Price *float64 `bun:\"price\"`") {
 		t.Error("nullable double should be a *float64 struct field")
 	}
-	if !strings.Contains(code, "Label *string") {
+	if !strings.Contains(collapsedStruct, "Label *string `bun:\"label\"`") {
 		t.Error("nullable string should be a *string struct field")
 	}
 	for _, temp := range []string{"dbScore", "dbPrice", "dbLabel"} {
 		if strings.Contains(code, temp) {
-			t.Errorf("nullable scalar must scan directly into the struct field; found temp %s", temp)
+			t.Errorf("Bun scans directly into the struct field; found temp %s", temp)
 		}
 	}
-	if !strings.Contains(code, "&entity.Score,") {
-		t.Error("scanRecord should scan &entity.Score directly")
+	// Bun scans nullable scalars directly into the pointer struct field; no
+	// standalone scan function and no scan-temp aliases.
+	if strings.Contains(code, "func scanRecord(") {
+		t.Error("Bun scans directly; should not emit a scanRecord function")
 	}
 
 	// "json" maps to Go string on the struct.
-	if !strings.Contains(code, "Meta string") {
+	if !strings.Contains(collapsedStruct, "Meta string `bun:\"meta\"`") {
 		t.Error("json column should be a string struct field")
 	}
 
-	// Array columns are native slices, scanned via the dual-format orm
-	// scanners and written via the dialect-aware orm.ArrayValue encoder.
-	if !strings.Contains(code, "Tags []string") || !strings.Contains(code, "Nums []int64") {
+	// Array columns are native slices tagged ,array so Bun maps them to
+	// the underlying SQL array column; no orm.StringArray/Int64Array temps,
+	// no orm.ArrayValue encoder, no pq.StringArray.
+	if !strings.Contains(collapsedStruct, "Tags []string `bun:\"tags,array\"`") || !strings.Contains(collapsedStruct, "Nums []int64 `bun:\"nums,array\"`") {
 		t.Error("array columns should be native slices on the struct")
 	}
-	if !strings.Contains(code, "dbTags orm.StringArray") {
-		t.Error("[]string column should scan via an orm.StringArray temp")
+	if !strings.Contains(code, "`bun:\"tags,array\"`") {
+		t.Error("[]string column should carry the bun ,array tag")
 	}
-	if !strings.Contains(code, "dbNums orm.Int64Array") {
-		t.Error("[]int64 column should scan via an orm.Int64Array temp")
+	if !strings.Contains(code, "`bun:\"nums,array\"`") {
+		t.Error("[]int64 column should carry the bun ,array tag")
 	}
-	if !strings.Contains(code, "entity.Tags = []string(dbTags)") {
-		t.Error("missing slice assignment from the StringArray temp")
+	if strings.Contains(code, "orm.StringArray") || strings.Contains(code, "orm.Int64Array") {
+		t.Error("Bun handles array columns; should not use orm.StringArray/Int64Array temps")
 	}
-	if !strings.Contains(code, "orm.ArrayValue(dialect, msg.Tags)") {
-		t.Error("array values must go through orm.ArrayValue in INSERT/UPDATE args")
+	if strings.Contains(code, "orm.ArrayValue(") {
+		t.Error("Bun encodes array columns; should not call orm.ArrayValue")
 	}
 	if strings.Contains(code, "pq.StringArray") {
-		t.Error("array mapping must use orm scanners, not pq.StringArray")
+		t.Error("array mapping must use bun ,array tags, not pq.StringArray")
 	}
-
-	// scanRecord function exists
-	if !strings.Contains(code, "func scanRecord(scanner") {
-		t.Error("missing scanRecord function")
+	// Create/Update normalize nil array slices to empty so they never
+	// write a SQL NULL into a NOT NULL array column.
+	if !strings.Contains(code, "msg.Tags = orm.EmptyIfNil(msg.Tags)") {
+		t.Error("array Create/Update should normalize nil slices via orm.EmptyIfNil")
 	}
 }
 
@@ -553,12 +580,13 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Error("should not have deleted_at without soft-delete")
 	}
 
-	// orm.NullTime used for timestamps in scan
-	if !strings.Contains(code, "orm.NullTime") {
-		t.Error("missing orm.NullTime for timestamp scanning")
+	// Bun scans timestamps directly into the *time.Time struct field — no
+	// NullTime temps of any flavor.
+	if strings.Contains(code, "orm.NullTime") {
+		t.Error("Bun scans timestamps directly; should not use orm.NullTime")
 	}
 	if strings.Contains(code, "sql.NullTime") {
-		t.Error("timestamp scan temps should use orm.NullTime, not sql.NullTime")
+		t.Error("Bun scans timestamps directly; should not use sql.NullTime")
 	}
 
 	// Create stamps managed timestamps with time.Now().UTC(). The
@@ -642,9 +670,13 @@ func TestGeneratePlanORM_References(t *testing.T) {
 	}
 	code := string(content)
 
-	// Should have scan function, CRUD functions, etc.
-	if !strings.Contains(code, "func scanComment(") {
-		t.Error("missing scanComment function")
+	// Should have the projected struct and CRUD functions (Bun scans into
+	// the struct directly — no standalone scan function).
+	if !strings.Contains(code, "type Comment struct {") {
+		t.Error("missing Comment struct emission")
+	}
+	if strings.Contains(code, "func scanComment(") {
+		t.Error("Bun scans directly; should not emit a scanComment function")
 	}
 	if !strings.Contains(code, "func CreateComment(") {
 		t.Error("missing CreateComment function")
@@ -681,14 +713,40 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 		t.Error("missing tenant-scoped Create")
 	}
 
-	// Update with tenant but no soft-delete
-	if !strings.Contains(code, `"UPDATE %s SET %s WHERE %s = %s AND %s = %s"`) {
-		t.Error("Update should have tenant WHERE but no soft-delete clause")
+	// Update with tenant but no soft-delete: NewUpdate + id WHERE + tenant
+	// WHERE, and NO deleted_at clause.
+	updateIdx := strings.Index(code, "func UpdateSetting(")
+	if updateIdx == -1 {
+		t.Fatal("missing UpdateSetting")
+	}
+	updateCode := code[updateIdx:]
+	if end := strings.Index(updateCode[1:], "\nfunc "); end >= 0 {
+		updateCode = updateCode[:end+1]
+	}
+	if !strings.Contains(updateCode, `db.Bun().NewUpdate().Model(msg).ModelTableExpr("settings")`) {
+		t.Error("Update should use Bun NewUpdate")
+	}
+	if !strings.Contains(updateCode, `Where("\"id\" = ?", msg.Id)`) {
+		t.Error("Update should filter by PK")
+	}
+	if !strings.Contains(updateCode, `q.Where("\"tenant_id\" = ?", tenantID)`) {
+		t.Error("Update should have tenant WHERE")
+	}
+	if strings.Contains(updateCode, "deleted_at") {
+		t.Error("Update should not have a soft-delete clause")
 	}
 
-	// Delete with tenant but no soft-delete (hard delete)
-	if !strings.Contains(code, `"DELETE FROM %s WHERE %s = %s AND %s = %s"`) {
-		t.Error("Delete should be hard delete with tenant isolation")
+	// Delete with tenant but no soft-delete (hard delete via NewDelete).
+	deleteIdx := strings.Index(code, "func DeleteSetting(")
+	if deleteIdx == -1 {
+		t.Fatal("missing DeleteSetting")
+	}
+	deleteCode := code[deleteIdx:]
+	if !strings.Contains(deleteCode, `db.Bun().NewDelete().Model((*Setting)(nil)).ModelTableExpr("settings")`) {
+		t.Error("Delete should be a hard delete via Bun NewDelete")
+	}
+	if !strings.Contains(deleteCode, `q.Where("\"tenant_id\" = ?", tenantID)`) {
+		t.Error("Delete should isolate by tenant")
 	}
 
 	// No ListAll (no soft-delete)
@@ -720,8 +778,9 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 	}
 	code := string(content)
 
-	// id should be in field constants
-	if !strings.Contains(code, `WidgetFieldId = "id"`) {
+	// id should be in field constants (gofmt aligns the `=`).
+	collapsed := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsed, `WidgetFieldId = "id"`) {
 		t.Error("missing auto-generated id field constant")
 	}
 
@@ -740,9 +799,9 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 		t.Error("id should appear before name in WidgetColumns")
 	}
 
-	// scan function should include id
-	if !strings.Contains(code, "&entity.Id,") {
-		t.Error("scanWidget should scan entity.Id")
+	// The struct carries the id field with a bun pk tag so Bun scans it.
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id string `bun:\"id,pk\"`") {
+		t.Error("Widget struct should carry a bun-tagged Id field")
 	}
 
 	// CRUD functions should use string PK type
@@ -827,46 +886,54 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	}
 	code := string(content)
 
-	// The SET clause should include title, created_at, updated_at but NOT id, org_id, deleted_at
+	// The .Column(...) list should include title and updated_at but NOT
+	// id, org_id, deleted_at, or the immutable created_at.
 	updateIdx := strings.Index(code, "func UpdateTask(")
 	if updateIdx == -1 {
 		t.Fatal("missing UpdateTask function")
 	}
 	updateCode := code[updateIdx:]
-
-	// Should set title
-	if !strings.Contains(updateCode, `QuoteIdentifier("title")`) {
-		t.Error("Update SET should include title")
+	if end := strings.Index(updateCode[1:], "\nfunc "); end >= 0 {
+		updateCode = updateCode[:end+1]
 	}
 
-	// Should NOT set id in SET (it's the PK)
-	setPartsIdx := strings.Index(updateCode, "setParts := []string{")
-	if setPartsIdx == -1 {
-		t.Fatal("missing setParts in Update")
+	// Extract the Bun Column(...) argument list that builds the SET clause.
+	// gofmt puts the chained method on its own line, so match "Column(".
+	colCallIdx := strings.Index(updateCode, "Column(")
+	if colCallIdx == -1 {
+		t.Fatal("missing Column(...) in UpdateTask")
 	}
-	setPartsEnd := strings.Index(updateCode[setPartsIdx:], "}")
-	setPartsSection := updateCode[setPartsIdx : setPartsIdx+setPartsEnd]
+	colCall := updateCode[colCallIdx:]
+	colEnd := strings.Index(colCall, ")")
+	if colEnd == -1 {
+		t.Fatal("malformed Column(...) in UpdateTask")
+	}
+	colSection := colCall[:colEnd]
 
-	if strings.Contains(setPartsSection, `"id"`) {
-		t.Error("Update SET should not include PK (id)")
+	// Should set title and updated_at.
+	if !strings.Contains(colSection, `"title"`) {
+		t.Error("Update column list should include title")
 	}
-	if strings.Contains(setPartsSection, `"deleted_at"`) {
-		t.Error("Update SET should not include deleted_at")
+	if !strings.Contains(colSection, `"updated_at"`) {
+		t.Error("Update column list should include updated_at")
 	}
-	if strings.Contains(setPartsSection, `"org_id"`) {
-		t.Error("Update SET should not include tenant key (org_id)")
+	// Should NOT set the PK, the tenant key, deleted_at, or the immutable
+	// created_at.
+	if strings.Contains(colSection, `"id"`) {
+		t.Error("Update column list should not include PK (id)")
 	}
-	// With timestamps:true, created_at is immutable and excluded from SET;
-	// updated_at stays (re-stamped by Update before building args).
-	if strings.Contains(setPartsSection, `"created_at"`) {
-		t.Error("Update SET should not include created_at (immutable)")
+	if strings.Contains(colSection, `"deleted_at"`) {
+		t.Error("Update column list should not include deleted_at")
 	}
-	if !strings.Contains(setPartsSection, `"updated_at"`) {
-		t.Error("Update SET should include updated_at")
+	if strings.Contains(colSection, `"org_id"`) {
+		t.Error("Update column list should not include tenant key (org_id)")
+	}
+	if strings.Contains(colSection, `"created_at"`) {
+		t.Error("Update column list should not include created_at (immutable)")
 	}
 	if !strings.Contains(updateCode, "stampUpdatedAt := time.Now().UTC()") ||
 		!strings.Contains(updateCode, "msg.UpdatedAt = &stampUpdatedAt") {
-		t.Error("UpdateTask should stamp updated_at (pointer-safe) before building args")
+		t.Error("UpdateTask should stamp updated_at (pointer-safe) before the query")
 	}
 }
 
@@ -928,19 +995,20 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		t.Error("Update should stamp declared updated_at")
 	}
 
-	// NOT NULL declared timestamps are bare time.Time struct fields and
-	// scan-assign the NullTime temp's .Time directly; the nullable
-	// deleted_at stays a pointer.
+	// NOT NULL declared timestamps are bare time.Time struct fields that
+	// Bun scans directly; the nullable deleted_at stays a pointer.
 	if !strings.Contains(code, "CreatedAt time.Time") {
 		t.Error("NOT NULL created_at should be time.Time on the struct")
 	}
 	if !strings.Contains(code, "DeletedAt *time.Time") {
 		t.Error("nullable deleted_at should be *time.Time on the struct")
 	}
-	if !strings.Contains(code, "entity.CreatedAt = dbCreatedAt.Time") {
-		t.Error("NOT NULL timestamp should assign .Time from the NullTime temp")
+	// Bun scans directly into the struct — no NullTime temp assignment.
+	if strings.Contains(code, "dbCreatedAt") {
+		t.Error("Bun scans directly; should not use a NullTime temp for created_at")
 	}
 }
+
 // TestGeneratePlanORM_MaskedUpdate pins the Update<Entity>Masked sibling:
 // an AIP-134 partial update that writes ONLY the fields named in the
 // update_mask, validates paths against the updatable set, and stamps
@@ -1012,15 +1080,24 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 	if !strings.Contains(masked, "orm.UnknownFieldError{Field:") {
 		t.Error("UpdateTaskMasked should return orm.UnknownFieldError for unknown paths")
 	}
+	// Only the masked (and stamped) columns reach the SET clause, via Bun's
+	// .Column(cols...).
+	if !strings.Contains(masked, "Column(cols...)") {
+		t.Error("UpdateTaskMasked should write only the masked columns via .Column(cols...)")
+	}
 	// updated_at is stamped on masked updates too (timestamps: true) —
 	// pointer-safe, since the auto-added column is nullable.
 	if !strings.Contains(masked, "stampUpdatedAt := time.Now().UTC()") ||
 		!strings.Contains(masked, "msg.UpdatedAt = &stampUpdatedAt") {
 		t.Error("UpdateTaskMasked should stamp updated_at")
 	}
-	// Tenant isolation + soft-delete filter carry over from UpdateTask.
-	if !strings.Contains(masked, "AND %s IS NULL AND %s = %s") {
-		t.Error("UpdateTaskMasked should keep the soft-delete + tenant WHERE shape")
+	// Tenant isolation + soft-delete filter carry over from UpdateTask as
+	// chained Bun Where clauses.
+	if !strings.Contains(masked, `q.Where("\"deleted_at\" IS NULL")`) {
+		t.Error("UpdateTaskMasked should keep the soft-delete WHERE clause")
+	}
+	if !strings.Contains(masked, `q.Where("\"org_id\" = ?", tenantID)`) {
+		t.Error("UpdateTaskMasked should keep the tenant WHERE clause")
 	}
 
 	noteSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "note_orm.go"))
@@ -1260,26 +1337,29 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 		create = create[:end+1]
 	}
 
-	// The id column must NOT be in the INSERT column list or values.
-	if strings.Contains(create, `QuoteIdentifier("id")`) && !strings.Contains(create, "RETURNING") {
-		t.Error("CreateHypothesis must not INSERT the server-allocated id column")
+	// The id column is excluded from the INSERT (server-allocated), and the
+	// caller's msg.Id is never passed as an insert value.
+	if !strings.Contains(create, `q.ExcludeColumn("id")`) {
+		t.Error("CreateHypothesis must exclude the server-allocated id column from the INSERT")
 	}
 	if strings.Contains(create, "msg.Id,") {
 		t.Error("CreateHypothesis must not pass msg.Id as an INSERT value")
 	}
 
-	// RETURNING scan-back where supported; LastInsertId fallback otherwise.
-	if !strings.Contains(create, "dialect.SupportsReturning()") {
-		t.Error("CreateHypothesis should branch on dialect.SupportsReturning()")
-	}
-	if !strings.Contains(create, "RETURNING") {
+	// The database-assigned id is read back via RETURNING into msg.Id.
+	// (postgres-only: always RETURNING, Bun handles the scan into Exec's
+	// dest — there is no SupportsReturning/LastInsertId branch anymore.)
+	if !strings.Contains(create, `Returning("\"id\"")`) {
 		t.Error("CreateHypothesis should scan the allocated id back via RETURNING")
 	}
-	if !strings.Contains(create, ".Scan(&msg.Id)") {
+	if !strings.Contains(create, "q.Exec(ctx, &msg.Id)") {
 		t.Error("CreateHypothesis should scan the allocated id into msg.Id")
 	}
-	if !strings.Contains(create, "LastInsertId()") {
-		t.Error("CreateHypothesis needs the LastInsertId fallback for dialects without RETURNING")
+	if strings.Contains(create, "dialect.SupportsReturning()") {
+		t.Error("server-allocated Create is postgres-only RETURNING; no SupportsReturning branch")
+	}
+	if strings.Contains(create, "LastInsertId()") {
+		t.Error("server-allocated Create is postgres-only RETURNING; no LastInsertId fallback")
 	}
 
 	// No ULID machinery for integer PKs.
@@ -1293,9 +1373,13 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 	}
 }
 
-// TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId pins the
-// non-int64 conversion on the LastInsertId fallback path.
-func TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId(t *testing.T) {
+// TestGeneratePlanORM_Int32PKCreate_ServerAllocated pins the non-int64
+// integer PK: like int64, an int32 BIGSERIAL/SERIAL PK is server-allocated
+// — the column is excluded from the INSERT and the database-assigned value
+// is read back via RETURNING into msg.Id. Bun handles the int64→int32
+// conversion at the scan boundary, so no explicit int32(...) conversion is
+// emitted (and there is no LastInsertId fallback — postgres-only RETURNING).
+func TestGeneratePlanORM_Int32PKCreate_ServerAllocated(t *testing.T) {
 	root := t.TempDir()
 
 	entities := []config.PlanEntity{
@@ -1313,7 +1397,37 @@ func TestGeneratePlanORM_Int32PKCreate_ConvertsLastInsertId(t *testing.T) {
 	}
 
 	code := readGeneratedORM(t, root, "tick_orm.go")
-	if !strings.Contains(code, "msg.Id = int32(") {
-		t.Error("int32 PK should convert the LastInsertId int64 before assigning")
+
+	createIdx := strings.Index(code, "func CreateTick(")
+	if createIdx == -1 {
+		t.Fatal("missing CreateTick")
+	}
+	create := code[createIdx:]
+	if end := strings.Index(create[1:], "\nfunc "); end >= 0 {
+		create = create[:end+1]
+	}
+
+	// Server-allocated: exclude the id column, scan it back via RETURNING.
+	if !strings.Contains(create, `q.ExcludeColumn("id")`) {
+		t.Error("int32 PK Create must exclude the server-allocated id column")
+	}
+	if !strings.Contains(create, `Returning("\"id\"")`) {
+		t.Error("int32 PK Create should scan the allocated id back via RETURNING")
+	}
+	if !strings.Contains(create, "q.Exec(ctx, &msg.Id)") {
+		t.Error("int32 PK Create should scan the allocated id into msg.Id")
+	}
+	// Bun converts at the scan boundary — no explicit int32(...) conversion,
+	// no LastInsertId fallback.
+	if strings.Contains(create, "msg.Id = int32(") {
+		t.Error("int32 PK Create should let Bun convert at the scan boundary, not int32(...)")
+	}
+	if strings.Contains(create, "LastInsertId()") {
+		t.Error("int32 PK Create is postgres-only RETURNING; no LastInsertId fallback")
+	}
+
+	// Get/Delete keep the int32 PK signature.
+	if !strings.Contains(code, "func GetTickByID(ctx context.Context, db orm.Context, id int32)") {
+		t.Error("GetTickByID should take an int32 id")
 	}
 }

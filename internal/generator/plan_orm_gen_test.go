@@ -9,21 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 )
 
-// ormFuncBody returns the source of the function whose signature begins
-// with sig (e.g. "func ListProject("), up to the next top-level "\nfunc ".
-// Returns "" when not found.
-func ormFuncBody(code, sig string) string {
-	i := strings.Index(code, sig)
-	if i == -1 {
-		return ""
-	}
-	body := code[i:]
-	if end := strings.Index(body[1:], "\nfunc "); end >= 0 {
-		body = body[:end+1]
-	}
-	return body
-}
-
 func TestGeneratePlanORM_Basic(t *testing.T) {
 	root := t.TempDir()
 
@@ -174,90 +159,82 @@ func TestGeneratePlanORM_Basic(t *testing.T) {
 		t.Error("missing DeleteProject with tenantID")
 	}
 
-	// Tenant enforcement in Create
-	if !strings.Contains(code, "msg.OrgId = tenantID") {
-		t.Error("missing tenant enforcement in Create")
+	// The lifecycle now lives in the generic forge/pkg/crud.Repo. The
+	// generated file constructs a per-entity repo whose Spec carries only
+	// the conventions Bun can't read off the struct tags. Tenant
+	// enforcement is the repo's job — driven by Spec.TenantColumn, NOT a
+	// hand-rolled `msg.OrgId = tenantID` in Create.
+	if strings.Contains(code, "msg.OrgId = tenantID") {
+		t.Error("tenant enforcement now lives in pkg/crud; Create should not stamp the tenant inline")
+	}
+	if !strings.Contains(code, `var projectRepo = crud.NewRepo[Project](crud.Spec{`) {
+		t.Error("missing per-entity crud.Repo var for Project")
+	}
+	// gofmt aligns the struct literal; collapse whitespace before matching
+	// the Spec fields.
+	collapsedAll := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsedAll, `TenantColumn: "org_id"`) {
+		t.Error("Project repo Spec should set TenantColumn to the tenant column")
+	}
+	if !strings.Contains(collapsedAll, "Timestamps: true") {
+		t.Error("Project repo Spec should set Timestamps: true (managed timestamps)")
+	}
+	// The generated file imports the generic crud library.
+	if !strings.Contains(code, `"github.com/reliant-labs/forge/pkg/crud"`) {
+		t.Error("generated file should import forge/pkg/crud")
+	}
+	// The delegates forward to the repo with the tenant arg.
+	if !strings.Contains(code, "return projectRepo.Create(ctx, db, msg, tenantID)") {
+		t.Error("CreateProject should delegate to projectRepo.Create with tenantID")
 	}
 
-	// Soft delete is now Bun-native (proper TIMESTAMPTZ deleted_at): the
-	// deleted_at field carries the ,soft_delete,nullzero tag and Bun
-	// auto-excludes deleted rows from NewSelect — NO hand-rolled
-	// "deleted_at IS NULL" string and NO CURRENT_TIMESTAMP stamp survive.
+	// Soft delete is Bun-native (proper TIMESTAMPTZ deleted_at): the
+	// deleted_at field carries the ,soft_delete,nullzero tag (the library
+	// reads it off the schema). The inline read-filter / CURRENT_TIMESTAMP
+	// stamp / NewDelete body all moved into pkg/crud — only the struct tag
+	// is asserted here.
 	if !strings.Contains(collapsedStruct, "`bun:\"deleted_at,soft_delete,nullzero\"`") {
 		t.Error("deleted_at should carry the Bun ,soft_delete,nullzero tag")
 	}
-	// Bun-native read paths (List/Get/Count) carry NO hand-rolled
-	// deleted_at IS NULL — Bun auto-excludes deleted rows. (Update/Delete
-	// are checked separately below.)
-	for _, fn := range []string{"func ListProject(", "func GetProjectByID(", "func CountProject("} {
-		if strings.Contains(ormFuncBody(code, fn), "deleted_at") {
-			t.Errorf("%s must not reference deleted_at (Bun-native soft delete owns the read filter)", fn)
-		}
-	}
 	if strings.Contains(code, "CURRENT_TIMESTAMP") {
-		t.Error("Bun-native soft delete must not stamp deleted_at via CURRENT_TIMESTAMP")
+		t.Error("soft-delete stamping lives in pkg/crud; no CURRENT_TIMESTAMP in generated output")
 	}
 
-	// Soft delete in Delete: a plain Bun NewDelete on the soft-delete model.
-	if !strings.Contains(code, "soft-deletes a Project by setting deleted_at") {
-		t.Error("missing soft-delete comment in Delete")
-	}
-	if !strings.Contains(code, "db.Bun().NewDelete().Model((*Project)(nil))") {
-		t.Error("Bun-native soft delete should use a plain NewDelete (Bun stamps deleted_at)")
-	}
-
-	// ListAll (soft-delete bypass) opts out via WhereAllWithDeleted.
+	// ListAll (soft-delete bypass) is emitted iff SoftDelete and forwards
+	// to the repo.
 	if !strings.Contains(code, "func ListAllProject(") {
 		t.Error("missing ListAllProject")
 	}
-	if !strings.Contains(code, "WhereAllWithDeleted()") {
-		t.Error("ListAll should opt the Bun-native soft-delete model out via WhereAllWithDeleted")
+	if !strings.Contains(code, "return projectRepo.ListAll(ctx, db, tenantID, opts...)") {
+		t.Error("ListAllProject should delegate to projectRepo.ListAll")
 	}
 
-	// Create is a plain INSERT — never an upsert. Bun builds the INSERT.
-	if !strings.Contains(code, "db.Bun().NewInsert().Model(msg)") {
-		t.Error("missing Bun NewInsert in Create")
+	// The inline Bun query bodies (NewInsert/NewSelect/NewDelete), the ULID
+	// chokepoint, and the timestamp stamping all moved into pkg/crud. The
+	// generated file must NOT carry any of them anymore.
+	if strings.Contains(code, "db.Bun().NewInsert()") {
+		t.Error("Create body moved to pkg/crud; no inline NewInsert")
 	}
 	if strings.Contains(code, "ON CONFLICT") {
 		t.Error("Create must be a plain INSERT, found ON CONFLICT upsert")
 	}
-
-	// String-PK chokepoint: Create generates the ULID when the caller left
-	// the id empty.
-	if !strings.Contains(code, `"github.com/oklog/ulid/v2"`) {
-		t.Error("missing ulid import for string PK generation")
+	if strings.Contains(code, `"github.com/oklog/ulid/v2"`) {
+		t.Error("ULID generation lives in pkg/crud; generated file should not import ulid")
 	}
-	if !strings.Contains(code, `if msg.Id == "" {`) || !strings.Contains(code, "msg.Id = ulid.Make().String()") {
-		t.Error("missing ULID generation chokepoint in Create")
+	if strings.Contains(code, "ulid.Make()") {
+		t.Error("ULID generation lives in pkg/crud; no inline ulid.Make()")
 	}
-
-	// Timestamps chokepoint: created_at/updated_at stamped in Create with
-	// time.Now().UTC(). The auto-added columns are nullable → pointer
-	// struct fields, so the guard is a nil check (IsZero through a nil
-	// pointer would panic) and the stamp assigns through a local.
-	if !strings.Contains(code, "now := time.Now().UTC()") {
-		t.Error("missing timestamp stamping in Create")
+	if strings.Contains(code, "now := time.Now().UTC()") {
+		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now().UTC()")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
-		t.Error("missing created_at zero-guard in Create")
+	if strings.Contains(code, "fmt.Errorf(") {
+		t.Error("error wrapping lives in pkg/crud; generated file no longer imports fmt")
 	}
-	if !strings.Contains(code, "msg.UpdatedAt = &stampUpdatedAt") {
-		t.Error("missing updated_at stamping in Create")
-	}
-
-	// GetByID wraps the underlying error so callers (and forge/pkg/crud)
-	// can map a miss to NotFound; the orm layer makes Bun's no-rows error
-	// satisfy errors.Is(err, orm.ErrNoRows).
-	if !strings.Contains(code, `fmt.Errorf("get projects by id: %w", err)`) {
-		t.Error("GetProjectByID should wrap the query error")
-	}
-
-	// List/Get/Count build queries via Bun's NewSelect against the table.
-	if !strings.Contains(code, `db.Bun().NewSelect().Model(&results)`) {
-		t.Error("missing Bun NewSelect in List")
+	if strings.Contains(code, "db.Bun().NewSelect()") {
+		t.Error("read bodies moved to pkg/crud; no inline NewSelect")
 	}
 	if strings.Contains(code, "orm.NewQueryBuilder(db,") {
-		t.Error("List/Get should use Bun NewSelect, not orm.NewQueryBuilder")
+		t.Error("reads go through pkg/crud's Bun NewSelect, not orm.NewQueryBuilder")
 	}
 	if strings.Contains(code, "scanProject(rows)") {
 		t.Error("Bun scans directly; should not call scanProject(rows)")
@@ -335,28 +312,40 @@ func TestGeneratePlanORM_NoTenant(t *testing.T) {
 		t.Error("should not import timestamppb without timestamp fields")
 	}
 
-	// Hard delete uses Bun NewDelete (no DELETE FROM literal anymore).
-	if !strings.Contains(code, `db.Bun().NewDelete().Model((*Tag)(nil))`) {
-		t.Error("simple delete should use Bun NewDelete")
+	// The lifecycle lives in the generic crud.Repo. A no-tenant entity
+	// emits a repo with an EMPTY Spec (no TenantColumn, no Timestamps) and
+	// every delegate forwards the empty-string tenant arg.
+	if !strings.Contains(code, `"github.com/reliant-labs/forge/pkg/crud"`) {
+		t.Error("generated file should import forge/pkg/crud")
 	}
+	if !strings.Contains(code, "var tagRepo = crud.NewRepo[Tag](crud.Spec{") {
+		t.Error("missing per-entity crud.Repo var for Tag")
+	}
+	if strings.Contains(code, "TenantColumn:") {
+		t.Error("no-tenant entity's repo Spec must not set TenantColumn")
+	}
+	if !strings.Contains(code, `return tagRepo.Create(ctx, db, msg, "")`) {
+		t.Error("CreateTag should delegate to tagRepo.Create with an empty tenant arg")
+	}
+	if !strings.Contains(code, `return tagRepo.Delete(ctx, db, id, "")`) {
+		t.Error("DeleteTag should delegate to tagRepo.Delete with an empty tenant arg")
+	}
+	if !strings.Contains(code, `return tagRepo.Update(ctx, db, msg, "")`) {
+		t.Error("UpdateTag should delegate to tagRepo.Update with an empty tenant arg")
+	}
+
+	// The inline Bun query bodies all moved into pkg/crud.
 	if strings.Contains(code, "DELETE FROM") {
-		t.Error("Bun builds the DELETE; should not emit a DELETE FROM literal")
+		t.Error("Bun builds the DELETE in pkg/crud; should not emit a DELETE FROM literal")
 	}
-
-	// Update uses Bun NewUpdate with an explicit column list.
-	if !strings.Contains(code, `db.Bun().NewUpdate().Model(msg)`) {
-		t.Error("simple update should use Bun NewUpdate")
+	if strings.Contains(code, "db.Bun().NewUpdate()") {
+		t.Error("Update body moved to pkg/crud; no inline NewUpdate")
 	}
-	if !strings.Contains(code, `Column("label")`) {
-		t.Error("Update should set the updatable column via .Column(...)")
-	}
-
-	// GetByID uses Bun NewSelect (no soft-delete/tenant filter).
-	if !strings.Contains(code, `db.Bun().NewSelect().Model(entity)`) {
-		t.Error("simple GetByID should use Bun NewSelect")
+	if strings.Contains(code, "db.Bun().NewSelect()") {
+		t.Error("GetByID body moved to pkg/crud; no inline NewSelect")
 	}
 	if strings.Contains(code, "orm.NewQueryBuilder(db,") {
-		t.Error("GetByID should use Bun NewSelect, not orm.NewQueryBuilder")
+		t.Error("reads go through pkg/crud, not orm.NewQueryBuilder")
 	}
 	if strings.Contains(code, "func scanTag(") {
 		t.Error("Bun scans directly; should not emit a scanTag function")
@@ -388,33 +377,32 @@ func TestGeneratePlanORM_SoftDeleteOnly(t *testing.T) {
 	code := string(content)
 
 	// Soft delete is Bun-native: the deleted_at column carries the
-	// ,soft_delete,nullzero tag and Bun owns the read exclusion / delete
-	// stamp — no hand-rolled deleted_at IS NULL filter, no CURRENT_TIMESTAMP.
+	// ,soft_delete,nullzero tag (the library reads it off the schema). The
+	// read exclusion / delete stamp / WhereAllWithDeleted bodies moved into
+	// pkg/crud — only the struct tag is asserted here.
 	collapsed := strings.Join(strings.Fields(code), " ")
 	if !strings.Contains(collapsed, "`bun:\"deleted_at,soft_delete,nullzero\"`") {
 		t.Error("deleted_at should carry the Bun ,soft_delete,nullzero tag")
 	}
-	// Read paths carry NO hand-rolled deleted_at filter (Bun owns it).
-	for _, fn := range []string{"func ListItem(", "func GetItemByID(", "func CountItem("} {
-		if strings.Contains(ormFuncBody(code, fn), "deleted_at") {
-			t.Errorf("%s must not reference deleted_at (Bun-native soft delete owns the read filter)", fn)
-		}
-	}
 	if strings.Contains(code, "CURRENT_TIMESTAMP") {
-		t.Error("Bun-native soft delete must not stamp deleted_at via CURRENT_TIMESTAMP")
+		t.Error("soft-delete stamping lives in pkg/crud; no CURRENT_TIMESTAMP")
 	}
 
-	// ListAll should exist and opt out of Bun's auto-exclusion.
+	// ListAll is emitted iff SoftDelete and forwards to the repo (the
+	// WhereAllWithDeleted opt-out now lives in pkg/crud.ListAll).
 	if !strings.Contains(code, "func ListAllItem(ctx context.Context, db orm.Context, opts ...orm.QueryOption)") {
 		t.Error("missing ListAllItem without tenant")
 	}
-	if !strings.Contains(code, "WhereAllWithDeleted()") {
-		t.Error("ListAll should opt the Bun-native soft-delete model out via WhereAllWithDeleted")
+	if !strings.Contains(code, `return itemRepo.ListAll(ctx, db, "", opts...)`) {
+		t.Error("ListAllItem should delegate to itemRepo.ListAll")
 	}
 
-	// Delete uses a plain Bun NewDelete (Bun stamps deleted_at).
-	if !strings.Contains(code, "db.Bun().NewDelete().Model((*Item)(nil))") {
-		t.Error("Bun-native soft delete should use a plain NewDelete")
+	// The inline Bun NewDelete body moved into pkg/crud.
+	if strings.Contains(code, "db.Bun().NewDelete()") {
+		t.Error("Delete body moved to pkg/crud; no inline NewDelete")
+	}
+	if !strings.Contains(code, `return itemRepo.Delete(ctx, db, id, "")`) {
+		t.Error("DeleteItem should delegate to itemRepo.Delete")
 	}
 
 	// deleted_at field should be in columns
@@ -555,10 +543,10 @@ func TestGeneratePlanORM_FieldTypes(t *testing.T) {
 	if strings.Contains(code, "pq.StringArray") {
 		t.Error("array mapping must use bun ,array tags, not pq.StringArray")
 	}
-	// Create/Update normalize nil array slices to empty so they never
-	// write a SQL NULL into a NOT NULL array column.
-	if !strings.Contains(code, "msg.Tags = orm.EmptyIfNil(msg.Tags)") {
-		t.Error("array Create/Update should normalize nil slices via orm.EmptyIfNil")
+	// The nil-array-to-empty normalization moved into pkg/crud (it runs off
+	// the ,array tag there); the generated file no longer inlines it.
+	if strings.Contains(code, "orm.EmptyIfNil(") {
+		t.Error("array nil-normalization lives in pkg/crud; no inline orm.EmptyIfNil")
 	}
 }
 
@@ -624,22 +612,16 @@ func TestGeneratePlanORM_TimestampsOnly(t *testing.T) {
 		t.Error("Bun scans timestamps directly; should not use sql.NullTime")
 	}
 
-	// Create stamps managed timestamps with time.Now().UTC(). The
-	// auto-added columns are nullable pointers, so the guard is a nil
-	// check and the stamp assigns through an addressable local.
-	if !strings.Contains(code, "now := time.Now().UTC()") {
-		t.Error("missing timestamp stamping in Create")
+	// Managed-timestamp stamping (created_at on insert, updated_at re-stamp
+	// on update) moved into pkg/crud. The generated file no longer inlines
+	// time.Now().UTC(); instead the repo Spec sets Timestamps: true, which
+	// drives the library. The time import survives because the *time.Time
+	// struct field needs it.
+	if strings.Contains(code, "time.Now().UTC()") {
+		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now().UTC()")
 	}
-	if !strings.Contains(code, "if msg.CreatedAt == nil {") {
-		t.Error("missing created_at zero-guard in Create")
-	}
-	if !strings.Contains(code, "msg.UpdatedAt = &stampUpdatedAt") {
-		t.Error("missing updated_at stamping in Create")
-	}
-
-	// Update re-stamps updated_at (pointer-safe).
-	if !strings.Contains(code, "stampUpdatedAt := time.Now().UTC()") {
-		t.Error("UpdateEvent should stamp updated_at")
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Timestamps: true") {
+		t.Error("Event repo Spec should set Timestamps: true (managed timestamps)")
 	}
 }
 
@@ -748,40 +730,29 @@ func TestGeneratePlanORM_TenantOnlyNoSoftDelete(t *testing.T) {
 		t.Error("missing tenant-scoped Create")
 	}
 
-	// Update with tenant but no soft-delete: NewUpdate + id WHERE + tenant
-	// WHERE, and NO deleted_at clause.
-	updateIdx := strings.Index(code, "func UpdateSetting(")
-	if updateIdx == -1 {
-		t.Fatal("missing UpdateSetting")
+	// Tenant isolation is driven by the repo Spec's TenantColumn (the
+	// inline id/tenant WHERE clauses moved into pkg/crud). With no soft
+	// delete, the Spec carries no LegacyTextDeletedAt flag and the struct
+	// has no soft_delete tag.
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), `TenantColumn: "tenant_id"`) {
+		t.Error("Setting repo Spec should set TenantColumn to tenant_id")
 	}
-	updateCode := code[updateIdx:]
-	if end := strings.Index(updateCode[1:], "\nfunc "); end >= 0 {
-		updateCode = updateCode[:end+1]
+	if strings.Contains(code, "db.Bun().NewUpdate()") {
+		t.Error("Update body moved to pkg/crud; no inline NewUpdate")
 	}
-	if !strings.Contains(updateCode, `db.Bun().NewUpdate().Model(msg)`) {
-		t.Error("Update should use Bun NewUpdate")
+	if strings.Contains(code, "db.Bun().NewDelete()") {
+		t.Error("Delete body moved to pkg/crud; no inline NewDelete")
 	}
-	if !strings.Contains(updateCode, `Where("\"id\" = ?", msg.Id)`) {
-		t.Error("Update should filter by PK")
-	}
-	if !strings.Contains(updateCode, `q.Where("\"tenant_id\" = ?", tenantID)`) {
-		t.Error("Update should have tenant WHERE")
-	}
-	if strings.Contains(updateCode, "deleted_at") {
-		t.Error("Update should not have a soft-delete clause")
+	if strings.Contains(code, "soft_delete") {
+		t.Error("no soft-delete tag expected without SoftDelete")
 	}
 
-	// Delete with tenant but no soft-delete (hard delete via NewDelete).
-	deleteIdx := strings.Index(code, "func DeleteSetting(")
-	if deleteIdx == -1 {
-		t.Fatal("missing DeleteSetting")
+	// Delegates forward to the repo with the tenant arg.
+	if !strings.Contains(code, "return settingRepo.Update(ctx, db, msg, tenantID)") {
+		t.Error("UpdateSetting should delegate to settingRepo.Update with tenantID")
 	}
-	deleteCode := code[deleteIdx:]
-	if !strings.Contains(deleteCode, `db.Bun().NewDelete().Model((*Setting)(nil))`) {
-		t.Error("Delete should be a hard delete via Bun NewDelete")
-	}
-	if !strings.Contains(deleteCode, `q.Where("\"tenant_id\" = ?", tenantID)`) {
-		t.Error("Delete should isolate by tenant")
+	if !strings.Contains(code, "return settingRepo.Delete(ctx, db, id, tenantID)") {
+		t.Error("DeleteSetting should delegate to settingRepo.Delete with tenantID")
 	}
 
 	// No ListAll (no soft-delete)
@@ -848,12 +819,17 @@ func TestGeneratePlanORM_AutoIDWhenNoPK(t *testing.T) {
 	}
 
 	// Create is a plain INSERT; the auto-generated string id is filled in
-	// at the Create chokepoint via ULID.
+	// at the Create chokepoint via ULID — but that chokepoint now lives in
+	// pkg/crud (string-PK detection off Bun's schema), so the generated
+	// file no longer inlines ulid.Make() and forwards to the repo instead.
 	if strings.Contains(code, "ON CONFLICT") {
 		t.Error("Create must be a plain INSERT, found ON CONFLICT upsert")
 	}
-	if !strings.Contains(code, "msg.Id = ulid.Make().String()") {
-		t.Error("Create should generate a ULID for the auto-added string id")
+	if strings.Contains(code, "ulid.Make()") {
+		t.Error("ULID generation lives in pkg/crud; no inline ulid.Make()")
+	}
+	if !strings.Contains(code, `return widgetRepo.Create(ctx, db, msg, "")`) {
+		t.Error("CreateWidget should delegate to widgetRepo.Create")
 	}
 }
 
@@ -921,54 +897,39 @@ func TestGeneratePlanORM_UpdateSetColumnsExcludeSpecial(t *testing.T) {
 	}
 	code := string(content)
 
-	// The .Column(...) list should include title and updated_at but NOT
-	// id, org_id, deleted_at, or the immutable created_at.
-	updateIdx := strings.Index(code, "func UpdateTask(")
-	if updateIdx == -1 {
-		t.Fatal("missing UpdateTask function")
+	// The SET-clause column selection (exclude PK/tenant/created_at/
+	// deleted_at, re-stamp updated_at) now lives in pkg/crud, tested there
+	// against real postgres. The generator's contract is to emit the repo
+	// Spec that drives it and a thin Update delegate that forwards.
+	collapsed := strings.Join(strings.Fields(code), " ")
+	if !strings.Contains(collapsed, `TenantColumn: "org_id"`) {
+		t.Error("Task repo Spec should set TenantColumn to org_id")
 	}
-	updateCode := code[updateIdx:]
-	if end := strings.Index(updateCode[1:], "\nfunc "); end >= 0 {
-		updateCode = updateCode[:end+1]
+	if !strings.Contains(collapsed, "Timestamps: true") {
+		t.Error("Task repo Spec should set Timestamps: true")
 	}
-
-	// Extract the Bun Column(...) argument list that builds the SET clause.
-	// gofmt puts the chained method on its own line, so match "Column(".
-	colCallIdx := strings.Index(updateCode, "Column(")
-	if colCallIdx == -1 {
-		t.Fatal("missing Column(...) in UpdateTask")
+	if !strings.Contains(code, "return taskRepo.Update(ctx, db, msg, tenantID)") {
+		t.Error("UpdateTask should delegate to taskRepo.Update")
 	}
-	colCall := updateCode[colCallIdx:]
-	colEnd := strings.Index(colCall, ")")
-	if colEnd == -1 {
-		t.Fatal("malformed Column(...) in UpdateTask")
+	// The Columns var still lists every declared column (it doubles as the
+	// order_by/filter allowlist handed to pkg/crud).
+	for _, col := range []string{`"id"`, `"org_id"`, `"title"`, `"created_at"`, `"updated_at"`, `"deleted_at"`} {
+		colIdx := strings.Index(code, "var TaskColumns = []string{")
+		if colIdx == -1 {
+			t.Fatal("missing TaskColumns")
+		}
+		end := strings.Index(code[colIdx:], "}")
+		if !strings.Contains(code[colIdx:colIdx+end], col) {
+			t.Errorf("TaskColumns should list %s", col)
+		}
 	}
-	colSection := colCall[:colEnd]
-
-	// Should set title and updated_at.
-	if !strings.Contains(colSection, `"title"`) {
-		t.Error("Update column list should include title")
+	// The inline SET-column selection and pointer-safe stamp moved to the
+	// library — the generated file no longer inlines them.
+	if strings.Contains(code, "stampUpdatedAt") {
+		t.Error("updated_at stamping lives in pkg/crud; no inline stampUpdatedAt")
 	}
-	if !strings.Contains(colSection, `"updated_at"`) {
-		t.Error("Update column list should include updated_at")
-	}
-	// Should NOT set the PK, the tenant key, deleted_at, or the immutable
-	// created_at.
-	if strings.Contains(colSection, `"id"`) {
-		t.Error("Update column list should not include PK (id)")
-	}
-	if strings.Contains(colSection, `"deleted_at"`) {
-		t.Error("Update column list should not include deleted_at")
-	}
-	if strings.Contains(colSection, `"org_id"`) {
-		t.Error("Update column list should not include tenant key (org_id)")
-	}
-	if strings.Contains(colSection, `"created_at"`) {
-		t.Error("Update column list should not include created_at (immutable)")
-	}
-	if !strings.Contains(updateCode, "stampUpdatedAt := time.Now().UTC()") ||
-		!strings.Contains(updateCode, "msg.UpdatedAt = &stampUpdatedAt") {
-		t.Error("UpdateTask should stamp updated_at (pointer-safe) before the query")
+	if strings.Contains(code, "db.Bun().NewUpdate()") {
+		t.Error("Update body moved to pkg/crud; no inline NewUpdate")
 	}
 }
 
@@ -1022,12 +983,17 @@ func TestGeneratePlanORM_DeclaredTimestampsNotDuplicated(t *testing.T) {
 		}
 	}
 
-	// Declared timestamps still get the managed-timestamp chokepoints.
-	if !strings.Contains(code, "if msg.CreatedAt.IsZero() {") {
-		t.Error("Create should stamp declared created_at")
+	// Declared timestamps still get the managed-timestamp chokepoints, but
+	// those now live in pkg/crud — driven by the repo Spec's Timestamps
+	// flag. The generated file no longer inlines IsZero/time.Now() stamps.
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Timestamps: true") {
+		t.Error("Doc repo Spec should set Timestamps: true (declared managed timestamps)")
 	}
-	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()") {
-		t.Error("Update should stamp declared updated_at")
+	if strings.Contains(code, "IsZero()") {
+		t.Error("timestamp stamping lives in pkg/crud; no inline IsZero")
+	}
+	if strings.Contains(code, "time.Now().UTC()") {
+		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now().UTC()")
 	}
 
 	// NOT NULL declared timestamps are bare time.Time struct fields that
@@ -1095,44 +1061,19 @@ func TestGeneratePlanORM_MaskedUpdate(t *testing.T) {
 		masked = masked[:end+1]
 	}
 
-	// Empty mask → do nothing (the crud layer never sends it, but be safe).
-	if !strings.Contains(masked, "if len(fields) == 0 {") {
-		t.Error("UpdateTaskMasked should no-op on an empty fields slice")
+	// The masked-update mechanics (empty-mask no-op, updatable-column
+	// allowlist, UnknownFieldError sentinel, .Column(cols...) SET clause,
+	// updated_at stamp, tenant + soft-delete WHERE) all moved into
+	// pkg/crud.UpdateMasked, tested there against real postgres. The
+	// generator's contract is the delegate that forwards to it.
+	if !strings.Contains(masked, "return taskRepo.UpdateMasked(ctx, db, msg, fields, tenantID)") {
+		t.Error("UpdateTaskMasked should delegate to taskRepo.UpdateMasked with the fields slice and tenantID")
 	}
-	// Only requested columns reach SET — built from an updatable-column map.
-	for _, col := range []string{`"title":`, `"url":`} {
-		if !strings.Contains(masked, col) {
-			t.Errorf("UpdateTaskMasked updatable set should include %s", col)
+	// None of the old inline machinery should survive in the generated file.
+	for _, gone := range []string{"orm.UnknownFieldError", "Column(cols...)", "stampUpdatedAt", `deleted_at\" IS NULL`} {
+		if strings.Contains(masked, gone) {
+			t.Errorf("UpdateTaskMasked inline %q moved to pkg/crud; should not appear in generated output", gone)
 		}
-	}
-	// PK, tenant key, deleted_at, created_at must NOT be updatable via mask.
-	for _, col := range []string{`"id":`, `"org_id":`, `"deleted_at":`, `"created_at":`} {
-		if strings.Contains(masked, col) {
-			t.Errorf("UpdateTaskMasked updatable set must exclude %s", col)
-		}
-	}
-	// Unknown/immutable paths surface as the typed sentinel, not SQL errors.
-	if !strings.Contains(masked, "orm.UnknownFieldError{Field:") {
-		t.Error("UpdateTaskMasked should return orm.UnknownFieldError for unknown paths")
-	}
-	// Only the masked (and stamped) columns reach the SET clause, via Bun's
-	// .Column(cols...).
-	if !strings.Contains(masked, "Column(cols...)") {
-		t.Error("UpdateTaskMasked should write only the masked columns via .Column(cols...)")
-	}
-	// updated_at is stamped on masked updates too (timestamps: true) —
-	// pointer-safe, since the auto-added column is nullable.
-	if !strings.Contains(masked, "stampUpdatedAt := time.Now().UTC()") ||
-		!strings.Contains(masked, "msg.UpdatedAt = &stampUpdatedAt") {
-		t.Error("UpdateTaskMasked should stamp updated_at")
-	}
-	// Tenant isolation + soft-delete filter carry over from UpdateTask as
-	// chained Bun Where clauses.
-	if !strings.Contains(masked, `q.Where("\"deleted_at\" IS NULL")`) {
-		t.Error("UpdateTaskMasked should keep the soft-delete WHERE clause")
-	}
-	if !strings.Contains(masked, `q.Where("\"org_id\" = ?", tenantID)`) {
-		t.Error("UpdateTaskMasked should keep the tenant WHERE clause")
 	}
 
 	noteSrc, err := os.ReadFile(filepath.Join(root, "internal", "db", "note_orm.go"))
@@ -1182,38 +1123,33 @@ func TestGeneratePlanORM_TextTimestamps_Stamping(t *testing.T) {
 
 	code := readGeneratedORM(t, root, "trade_orm.go")
 
-	// The struct projects the applied schema: strings stay strings.
+	// The struct projects the applied schema: TEXT timestamps stay strings.
 	if !strings.Contains(strings.Join(strings.Fields(code), " "), "CreatedAt string") {
 		t.Error("TEXT created_at should project as a string struct field")
 	}
 
-	// The stamping needs the time package even though no column is
-	// time.Time — `undefined: time` was the literal kalshi error.
-	if !strings.Contains(code, "\t\"time\"\n") {
-		t.Error("missing time import for string-timestamp stamping")
+	// The type-aware stamping (RFC3339Nano text for TEXT columns, branching
+	// on the projected Go type — kalshi fr-3fba9166ba) moved into
+	// pkg/crud, driven by the repo Spec's Timestamps flag.
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Timestamps: true") {
+		t.Error("Trade repo Spec should set Timestamps: true (managed TEXT timestamps)")
 	}
 
-	// String columns are stamped as RFC3339Nano text, guarded by the
-	// string zero value — never IsZero (undefined on string).
+	// With stamping in the library and no time.Time columns, the generated
+	// file references nothing from the time package — and must therefore
+	// NOT import it (an unused "time" import would not compile).
+	if strings.Contains(code, "\t\"time\"\n") {
+		t.Error("no time.Time column and stamping in pkg/crud — generated file must not import time")
+	}
+	// None of the old inline string-stamping machinery should survive.
 	if strings.Contains(code, "IsZero()") {
 		t.Error("string timestamp columns must not use time.Time's IsZero")
 	}
-	if !strings.Contains(code, `if msg.CreatedAt == "" {`) {
-		t.Error("missing string zero-guard for created_at in Create")
+	if strings.Contains(code, "RFC3339Nano") {
+		t.Error("RFC3339Nano stamping lives in pkg/crud; no inline stamp in generated output")
 	}
-	if !strings.Contains(code, "msg.CreatedAt = now.Format(time.RFC3339Nano)") {
-		t.Error("missing RFC3339Nano created_at stamp in Create")
-	}
-	if !strings.Contains(code, "msg.UpdatedAt = now.Format(time.RFC3339Nano)") {
-		t.Error("missing RFC3339Nano updated_at stamp in Create")
-	}
-
-	// Update + masked update stamp updated_at in the column's type too.
-	if !strings.Contains(code, "msg.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)") {
-		t.Error("Update/UpdateMasked should stamp updated_at as RFC3339Nano text")
-	}
-	if strings.Contains(code, "msg.UpdatedAt = time.Now().UTC()\n") {
-		t.Error("string updated_at must not be assigned a bare time.Time")
+	if strings.Contains(code, "time.Now()") {
+		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now()")
 	}
 }
 
@@ -1251,38 +1187,37 @@ func TestGeneratePlanORM_NullableTimestamps_PointerSafeStamping(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 
+	// The pointer-safe stamping (nil-guard, address-of-local assignment for
+	// nullable *time.Time / *string managed columns) moved into pkg/crud.
+	// The generator's contract is the projected pointer struct field types
+	// plus the repo Spec's Timestamps flag that drives the library.
 	audit := readGeneratedORM(t, root, "audit_orm.go")
 	if !strings.Contains(strings.Join(strings.Fields(audit), " "), "CreatedAt *time.Time") {
 		t.Fatal("nullable created_at should be *time.Time — precondition for this test")
 	}
-	// nil-guard, not IsZero (nil pointer would panic).
-	if !strings.Contains(audit, "if msg.CreatedAt == nil {") {
-		t.Error("nullable created_at should be guarded with a nil check")
+	if !strings.Contains(strings.Join(strings.Fields(audit), " "), "Timestamps: true") {
+		t.Error("Audit repo Spec should set Timestamps: true")
 	}
-	if strings.Contains(audit, "msg.CreatedAt.IsZero()") {
-		t.Error("nullable created_at must not call IsZero through a possibly-nil pointer")
+	// No inline stamping survives — neither IsZero (panic on nil) nor a
+	// bare-value assignment to a pointer field (the old compile error).
+	if strings.Contains(audit, "IsZero()") {
+		t.Error("pointer-safe stamping lives in pkg/crud; no inline IsZero")
 	}
-	// Assignment goes through a local so we can take its address.
-	if !strings.Contains(audit, "msg.CreatedAt = &") {
-		t.Error("nullable created_at stamp should assign a pointer")
-	}
-	if !strings.Contains(audit, "msg.UpdatedAt = &") {
-		t.Error("nullable updated_at stamp should assign a pointer")
-	}
-	// The bare-value assignment to a pointer field was the compile error.
-	if strings.Contains(audit, "msg.UpdatedAt = now\n") {
-		t.Error("nullable updated_at must not be assigned a bare time.Time")
+	if strings.Contains(audit, "time.Now()") {
+		t.Error("timestamp stamping lives in pkg/crud; no inline time.Now()")
 	}
 
 	legacy := readGeneratedORM(t, root, "legacy_orm.go")
 	if !strings.Contains(strings.Join(strings.Fields(legacy), " "), "CreatedAt *string") {
 		t.Fatal("nullable TEXT created_at should be *string — precondition for this test")
 	}
-	if !strings.Contains(legacy, "if msg.CreatedAt == nil {") {
-		t.Error("nullable *string created_at should be guarded with a nil check")
+	if !strings.Contains(strings.Join(strings.Fields(legacy), " "), "Timestamps: true") {
+		t.Error("Legacy repo Spec should set Timestamps: true")
 	}
-	if !strings.Contains(legacy, "msg.CreatedAt = &") {
-		t.Error("nullable *string created_at stamp should assign a pointer")
+	// A *string TEXT-timestamp entity has no time.Time column and no inline
+	// stamping, so the generated file must not import time.
+	if strings.Contains(legacy, "\t\"time\"\n") {
+		t.Error("nullable *string timestamps need no time import (stamping in pkg/crud)")
 	}
 }
 
@@ -1363,43 +1298,28 @@ func TestGeneratePlanORM_IntegerPKCreate_ServerAllocated(t *testing.T) {
 
 	code := readGeneratedORM(t, root, "hypothesis_orm.go")
 
-	createIdx := strings.Index(code, "func CreateHypothesis(")
-	if createIdx == -1 {
-		t.Fatal("missing CreateHypothesis")
-	}
-	create := code[createIdx:]
-	if end := strings.Index(create[1:], "\nfunc "); end >= 0 {
-		create = create[:end+1]
-	}
-
-	// The id column is excluded from the INSERT (server-allocated), and the
-	// caller's msg.Id is never passed as an insert value.
-	if !strings.Contains(create, `q.ExcludeColumn("id")`) {
-		t.Error("CreateHypothesis must exclude the server-allocated id column from the INSERT")
-	}
-	if strings.Contains(create, "msg.Id,") {
-		t.Error("CreateHypothesis must not pass msg.Id as an INSERT value")
+	// The server-allocated-PK behaviour (exclude id from the INSERT, read
+	// the DB-assigned value back via RETURNING) moved into pkg/crud, which
+	// detects it off Bun's schema. The generator's contract is the struct
+	// tag that tells Bun the PK is autoincrement: ,pk,autoincrement.
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id int64 `bun:\"id,pk,autoincrement\"`") {
+		t.Error("server-allocated int64 PK should carry the bun ,pk,autoincrement tag")
 	}
 
-	// The database-assigned id is read back via RETURNING into msg.Id.
-	// (postgres-only: always RETURNING, Bun handles the scan into Exec's
-	// dest — there is no SupportsReturning/LastInsertId branch anymore.)
-	if !strings.Contains(create, `Returning("\"id\"")`) {
-		t.Error("CreateHypothesis should scan the allocated id back via RETURNING")
+	// None of the old inline server-allocation machinery survives.
+	for _, gone := range []string{`q.ExcludeColumn("id")`, `Returning(`, "q.Exec(ctx, &msg.Id)", "SupportsReturning()", "LastInsertId()"} {
+		if strings.Contains(code, gone) {
+			t.Errorf("server-allocation inline %q moved to pkg/crud; should not appear in generated output", gone)
+		}
 	}
-	if !strings.Contains(create, "q.Exec(ctx, &msg.Id)") {
-		t.Error("CreateHypothesis should scan the allocated id into msg.Id")
-	}
-	if strings.Contains(create, "dialect.SupportsReturning()") {
-		t.Error("server-allocated Create is postgres-only RETURNING; no SupportsReturning branch")
-	}
-	if strings.Contains(create, "LastInsertId()") {
-		t.Error("server-allocated Create is postgres-only RETURNING; no LastInsertId fallback")
-	}
-
 	// No ULID machinery for integer PKs.
 	if strings.Contains(code, "ulid.") {
 		t.Error("integer-PK entity must not import/use ulid")
+	}
+
+	// Create delegates to the repo.
+	if !strings.Contains(code, `return hypothesisRepo.Create(ctx, db, msg, "")`) {
+		t.Error("CreateHypothesis should delegate to hypothesisRepo.Create")
 	}
 
 	// Get/Delete keep the int64 PK signature.
@@ -1433,32 +1353,17 @@ func TestGeneratePlanORM_Int32PKCreate_ServerAllocated(t *testing.T) {
 
 	code := readGeneratedORM(t, root, "tick_orm.go")
 
-	createIdx := strings.Index(code, "func CreateTick(")
-	if createIdx == -1 {
-		t.Fatal("missing CreateTick")
+	// Like int64, an int32 SERIAL PK is server-allocated. The exclude/
+	// RETURNING/scan behaviour moved into pkg/crud (detected off Bun's
+	// schema); the generator's contract is the ,pk,autoincrement struct tag.
+	if !strings.Contains(strings.Join(strings.Fields(code), " "), "Id int32 `bun:\"id,pk,autoincrement\"`") {
+		t.Error("server-allocated int32 PK should carry the bun ,pk,autoincrement tag")
 	}
-	create := code[createIdx:]
-	if end := strings.Index(create[1:], "\nfunc "); end >= 0 {
-		create = create[:end+1]
-	}
-
-	// Server-allocated: exclude the id column, scan it back via RETURNING.
-	if !strings.Contains(create, `q.ExcludeColumn("id")`) {
-		t.Error("int32 PK Create must exclude the server-allocated id column")
-	}
-	if !strings.Contains(create, `Returning("\"id\"")`) {
-		t.Error("int32 PK Create should scan the allocated id back via RETURNING")
-	}
-	if !strings.Contains(create, "q.Exec(ctx, &msg.Id)") {
-		t.Error("int32 PK Create should scan the allocated id into msg.Id")
-	}
-	// Bun converts at the scan boundary — no explicit int32(...) conversion,
-	// no LastInsertId fallback.
-	if strings.Contains(create, "msg.Id = int32(") {
-		t.Error("int32 PK Create should let Bun convert at the scan boundary, not int32(...)")
-	}
-	if strings.Contains(create, "LastInsertId()") {
-		t.Error("int32 PK Create is postgres-only RETURNING; no LastInsertId fallback")
+	// None of the old inline server-allocation machinery survives.
+	for _, gone := range []string{`q.ExcludeColumn("id")`, `Returning(`, "q.Exec(ctx, &msg.Id)", "msg.Id = int32(", "LastInsertId()"} {
+		if strings.Contains(code, gone) {
+			t.Errorf("server-allocation inline %q moved to pkg/crud; should not appear in generated output", gone)
+		}
 	}
 
 	// Get/Delete keep the int32 PK signature.

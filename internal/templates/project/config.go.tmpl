@@ -36,7 +36,9 @@ const (
 	ModeDevelopment
 )
 
-// IsDev reports whether the mode is ModeDevelopment.
+// IsDev reports whether the mode is ModeDevelopment. This gates
+// NON-SECURITY dev ergonomics only (permissive CORS, verbose errors,
+// dev DB defaults). It MUST NOT gate auth — see DevAuthBypass.
 func (m Mode) IsDev() bool { return m == ModeDevelopment }
 
 {{- if index .FieldNames "Environment"}}
@@ -53,12 +55,36 @@ func (c *Config) Mode() Mode {
 	}
 	return ModeProduction
 }
+
+// DevAuthBypass reports whether this server runs with NO real auth:
+// authn passthrough + authz allow-all + synthetic dev claims.
+//
+// This is an EXPLICIT, two-factor opt-in. It is NEVER implied by
+// ENVIRONMENT alone: ENVIRONMENT=development (e.g. from `forge run`)
+// gives you dev ergonomics but KEEPS authentication and authorization
+// enforced. To actually bypass auth you must ALSO set AUTH_DEV_MODE=true.
+// In production the bypass is impossible — Mode() is never dev there.
+//
+// Rationale: a server with real auth configured must not have it silently
+// disabled just because it booted in development. Disabling auth is a
+// deliberate act, so it takes a deliberate flag. AUTH_DEV_MODE is read
+// once here (at construction), never per request.
+func (c *Config) DevAuthBypass() bool {
+	if !c.Mode().IsDev() {
+		return false
+	}
+	return strings.EqualFold(os.Getenv("AUTH_DEV_MODE"), "true")
+}
 {{- else}}
 
 // Mode returns the typed runtime mode. This project's config proto has
 // no `environment` field, so the mode is always ModeProduction; add the
 // field to opt into dev-mode ergonomics.
 func (c *Config) Mode() Mode { return ModeProduction }
+
+// DevAuthBypass is always false without an `environment` field — auth is
+// never bypassed. See the development-mode variant for the contract.
+func (c *Config) DevAuthBypass() bool { return false }
 {{- end}}
 
 {{- range .BlockTypes}}

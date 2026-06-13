@@ -77,11 +77,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// forge.yaml declares `auth.provider: {{.AuthProvider}}` — wire the
 	// generated validator (pkg/middleware/auth_gen.go) into the policy
 	// surface BEFORE the interceptor chain is constructed; authn mode
-	// resolution is construction-time. Dev mode skips the install so the
-	// dev-claims passthrough story stays intact (see the auth skill);
-	// set ENVIRONMENT to anything other than "development" to exercise
-	// real auth locally.
-	if !cfg.Mode().IsDev() {
+	// resolution is construction-time. The install is skipped ONLY when
+	// auth is explicitly bypassed (cfg.DevAuthBypass() — dev mode AND
+	// AUTH_DEV_MODE=true), so the dev-claims passthrough story is opt-in.
+	// Booting in development WITHOUT AUTH_DEV_MODE keeps real auth on.
+	if !cfg.DevAuthBypass() {
 		if ierr := middleware.InstallGeneratedAuth(); ierr != nil {
 			return fmt.Errorf("auth provider configuration: %w", ierr)
 		}
@@ -94,11 +94,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// which InstallGeneratedAuth above does for forge.yaml-declared
 	// providers{{end}}), a
 	// pack took over (middleware.MarkExternalAuth), the operator typed
-	// the explicit opt-out (AUTH_MODE=none), or the typed config mode is
-	// development. Dev mode is injected from cfg.Mode() — the single
-	// dev-mode gate computed from the typed config, not a per-request
-	// os.Getenv.
-	authInterceptor, err := middleware.NewAuthInterceptor(cfg.Mode().IsDev())
+	// the explicit opt-out (AUTH_MODE=none), or auth is explicitly
+	// bypassed for dev. The passthrough is gated on cfg.DevAuthBypass()
+	// (dev mode AND AUTH_DEV_MODE=true) — NOT on ENVIRONMENT alone, so a
+	// dev boot never silently disables authentication.
+	if cfg.DevAuthBypass() {
+		slog.Warn("AUTH BYPASS ACTIVE — authentication and authorization are DISABLED (dev claims injected). This is gated on AUTH_DEV_MODE=true; never set it in production.")
+	}
+	authInterceptor, err := middleware.NewAuthInterceptor(cfg.DevAuthBypass())
 	if err != nil {
 		return fmt.Errorf("auth configuration: %w", err)
 	}
@@ -256,9 +259,10 @@ func buildProjectInterceptors(cfg *config.Config, authInterceptor connect.Interc
 		// not a bearer token, so the generated header-aware interceptor
 		// (pkg/middleware/auth_gen.go) owns authentication; the authn
 		// interceptor above it runs in passthrough (InstallGeneratedAuth
-		// marked external auth). Dev mode skipped the install, so the
-		// generated interceptor is skipped too — dev claims apply.
-		if !cfg.Mode().IsDev() {
+		// marked external auth). The generated interceptor is skipped only
+		// under an explicit auth bypass (cfg.DevAuthBypass()), where dev
+		// claims apply — a dev boot without AUTH_DEV_MODE keeps it on.
+		if !cfg.DevAuthBypass() {
 			projectInterceptors = append([]connect.Interceptor{middleware.GeneratedAuthInterceptor()}, projectInterceptors...)
 		}
 {{- end}}

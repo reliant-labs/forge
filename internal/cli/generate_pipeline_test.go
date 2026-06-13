@@ -86,6 +86,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"go mod tidy (root)",
 		"goimports on generated Go",
 		"cleanup stale codegen",
+		"retire obsolete disowns",
 		"rehash tracked files",
 		"post-gen validation",
 		"detect renamed Tier-1 exports",

@@ -37,6 +37,13 @@ type CRUDTemplateData struct {
 	// only TODO stubs, the template skips those imports to keep the
 	// file compiling.
 	NeedsCRUDLib bool
+	// NeedsOpsFile is true when the Tier-1 ops file must be written:
+	// either NeedsCRUDLib (a real op constructor) OR there is at least
+	// one entity conversion pair a wired custom-read-shape body depends
+	// on. An all-custom service still needs the conversion helpers, so
+	// it gets an ops file carrying only the <entity>ToProto/FromProto
+	// pairs (no crud/middleware imports — see the template gating).
+	NeedsOpsFile bool
 	CRUDMethods  []CRUDMethodTemplateData
 	// Entities carries the per-entity proto<->struct conversion pairs
 	// (<entity>ToProto / <entity>FromProto) emitted alongside the ops.
@@ -94,6 +101,14 @@ type CRUDMethodTemplateData struct {
 	// recognizes that string for one release.)
 	ShapeMismatch  bool
 	MismatchReason string
+	// CustomFilters are the request fields that DID map to a declared
+	// column on the entity (best-effort), used to seed the wired
+	// custom-read-shape body's []orm.QueryOption skeleton. Unlike the
+	// strict FilterFields (which fail the generate on an unmappable
+	// field), these are advisory: fields that don't map to a column are
+	// silently skipped so the scaffold always compiles. Only populated
+	// when ShapeMismatch is true.
+	CustomFilters []FilterFieldData
 	// CreateAssigns are the precomputed `e.X = req.X` statements that
 	// map create-request fields onto the entity struct (with timestamp/
 	// wrapper/array/width conversions baked in).
@@ -278,10 +293,11 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	}
 	data.Package = pkg
 
-	// Tier-1 projection: the per-entity wiring ops. Only emitted when at
-	// least one method passed shape validation (mismatched methods get an
-	// explanatory stub in the user-owned shim instead).
-	if data.NeedsCRUDLib {
+	// Tier-1 projection: the per-entity wiring ops + conversion helpers.
+	// Emitted when at least one method passed shape validation OR a wired
+	// custom-read-shape body needs the entity conversion helpers (an
+	// all-custom service still gets the <entity>ToProto/FromProto pairs).
+	if data.NeedsOpsFile {
 		content, rerr := templates.ServiceTemplates().Render("handlers_crud_ops_gen.go.tmpl", data)
 		if rerr != nil {
 			return fmt.Errorf("render handlers_crud_ops_gen.go.tmpl: %w", rerr)
@@ -334,18 +350,30 @@ func crudShimImports(data CRUDTemplateData) []string {
 	imports := []string{"context", "connectrpc.com/connect"}
 	hasMismatch := false
 	hasReal := false
+	hasTenantMismatch := false
 	for _, m := range data.CRUDMethods {
 		if m.ShapeMismatch {
 			hasMismatch = true
+			if m.HasTenant {
+				hasTenantMismatch = true
+			}
 		} else {
 			hasReal = true
 		}
 	}
-	if hasMismatch {
-		imports = append(imports, "fmt")
-	}
 	if hasReal {
 		imports = append(imports, "github.com/reliant-labs/forge/pkg/crud")
+	}
+	if hasMismatch {
+		// The WIRED custom-read-shape body runs a real query: it builds
+		// orm.QueryOption filters and calls db.List<Entity>, projecting
+		// rows via the generated <entity>ToProto helper.
+		imports = append(imports,
+			"github.com/reliant-labs/forge/pkg/orm",
+			data.Module+"/internal/db")
+		if hasTenantMismatch {
+			imports = append(imports, data.Module+"/pkg/middleware")
+		}
 	}
 	imports = append(imports, "pb "+data.Module+"/gen/"+data.ProtoPackage+"/v1")
 	return imports
@@ -461,27 +489,29 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 }
 
 // warnCustomReadShapeStubs prints one loud line per RPC whose shim is
-// being written as a custom-read-shape stub (CodeUnimplemented body).
-// A stub is the system WORKING — the request/response shape is a
-// legitimate domain decision and the body is the user's to implement —
-// but it must never land silently: until the body exists, production
-// traffic to the RPC 501s. When the RPC previously had a real generated
-// implementation (the retired handlers_crud_gen.go carried a non-stub
-// body for it), say so explicitly — that's a behavior regression on a
-// live procedure, and a downstream agent filed a near-miss with live
-// traffic on exactly this transition.
+// being written as a WIRED custom-read-shape scaffold. The scaffold is the
+// system WORKING — the request/response shape is a legitimate domain
+// decision and the body is the user's to refine — but it must never land
+// silently: the wired body runs a naive query and returns an EMPTY
+// response (a `// TODO: refine` marker on the response packing) until the
+// user finishes it, so a deploy ships a procedure that 200s with no data.
+// When the RPC previously had a real generated implementation (the retired
+// handlers_crud_gen.go carried a non-stub body for it), say so
+// explicitly — that's a behavior change on a live procedure, and a
+// downstream agent filed a near-miss with live traffic on exactly this
+// transition.
 func warnCustomReadShapeStubs(methods []CRUDMethodTemplateData, shimRel string, previouslyImplemented map[string]bool) {
 	for _, m := range methods {
 		if !m.ShapeMismatch {
 			continue
 		}
 		if previouslyImplemented[m.MethodName] {
-			fmt.Printf("  ⚠️  %s: REPLACING a previously generated implementation with an Unimplemented stub in %s (custom read shape: %s) — implement the body before serving traffic\n",
+			fmt.Printf("  ⚠️  %s: REPLACING a previously generated implementation with a WIRED custom-read-shape scaffold in %s (custom read shape: %s) — finish wiring the response before serving traffic\n",
 				m.MethodName, shimRel, m.MismatchReason)
 			continue
 		}
-		fmt.Printf("  ⚠️  %s: custom read shape (%s) — scaffolded an Unimplemented stub in %s; the body is yours to implement\n",
-			m.MethodName, m.MismatchReason, shimRel)
+		fmt.Printf("  ⚠️  %s: custom read shape (%s) — scaffolded a WIRED starting point in %s (runs a real query; finish wiring the response onto pb.%s)\n",
+			m.MethodName, m.MismatchReason, shimRel, m.OutputType)
 	}
 }
 
@@ -771,6 +801,15 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
 		}
 
+		// Best-effort filter mapping for the WIRED custom-read-shape body.
+		// Only when the shape didn't match (the stub branch): seed the
+		// scaffold's []orm.QueryOption skeleton from request fields that
+		// happen to name a declared column. Advisory, never fatal.
+		var customFilters []FilterFieldData
+		if !shapeOK {
+			customFilters = buildCustomFilters(svc, cm)
+		}
+
 		// Precompute the create-request -> entity-struct assignments.
 		// Skip on shape mismatch — the stub doesn't reference these.
 		var createAssigns []string
@@ -811,6 +850,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			CreateAssigns:     createAssigns,
 			ShapeMismatch:     !shapeOK,
 			MismatchReason:    shapeReason,
+			CustomFilters:     customFilters,
 		})
 	}
 
@@ -845,17 +885,24 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	}
 	needsORM := hasPagination || hasFilters || hasOrderBy || hasTenant
 
-	// One conversion pair per entity referenced by a real (non-stub)
-	// CRUD body.
+	// One conversion pair per entity referenced by ANY CRUD body —
+	// real (non-stub) OR a wired custom-read-shape stub. The wired
+	// custom body calls <entity>ToProto to project the rows it fetches
+	// onto the wire, so the projection pair must exist even when every
+	// method on the service is custom (no real op constructor at all).
 	var convs []EntityConvTemplateData
 	seenConv := map[string]bool{}
 	for i, m := range methods {
-		if m.ShapeMismatch || seenConv[m.EntityName] {
+		if seenConv[m.EntityName] {
 			continue
 		}
 		seenConv[m.EntityName] = true
 		convs = append(convs, BuildEntityConv(svc, crudMethods[i].Entity))
 	}
+
+	// The ops file is emitted when there's at least one real op to wire
+	// OR at least one conversion pair a wired custom body depends on.
+	needsOpsFile := needsCRUDLib || len(convs) > 0
 
 	return CRUDTemplateData{
 		Package:          pkg,
@@ -868,6 +915,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		NeedsORM:         needsORM,
 		HasTenant:        hasTenant,
 		NeedsCRUDLib:     needsCRUDLib,
+		NeedsOpsFile:     needsOpsFile,
 		CRUDMethods:      methods,
 		Entities:         convs,
 		NeedsTimestamppb: ConvNeedsTimestamppb(convs),
@@ -1422,6 +1470,55 @@ func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFiel
 	return ff, fmt.Errorf(
 		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand in a sibling file",
 		mf.Name, entity.Name, entityColumnList(entity))
+}
+
+// buildCustomFilters maps a custom-read-shape RPC's request fields onto
+// entity columns BEST-EFFORT, for seeding the wired scaffold body's
+// []orm.QueryOption skeleton. Unlike classifyEntityFilterField (which
+// fails the generate on an unmappable field — the strict Tier-1 list
+// path), this is advisory: a field that doesn't name a declared column
+// (or isn't a search field) is silently skipped, so the scaffold always
+// compiles regardless of how bespoke the request is. Pagination/cursor/
+// ordering control fields are skipped via classifySkipField. The result
+// is a starting point the user refines, not a contract.
+func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
+	if svc.Messages == nil {
+		return nil
+	}
+	msgFields, ok := svc.Messages[cm.Method.InputType]
+	if !ok {
+		return nil
+	}
+	var out []FilterFieldData
+	for _, mf := range msgFields {
+		if classifySkipField(mf.Name) || mf.Name == "order_by" {
+			continue
+		}
+		// Only scalar fields make sense as WhereEq/ILike predicates;
+		// message/enum/repeated fields are the user's to interpret.
+		switch mf.ProtoType {
+		case "message", "enum", "":
+			continue
+		}
+		ff := classifyFilterField(mf)
+		if ff.FilterType == "search" {
+			cols := entityStringColumns(cm.Entity)
+			if len(cols) == 0 {
+				continue // nothing to search; let the user wire it
+			}
+			ff.SearchColumns = cols
+			out = append(out, ff)
+			continue
+		}
+		// exact: keep only when the field names a real column.
+		for _, c := range cm.Entity.Columns {
+			if c.Name == mf.Name {
+				out = append(out, ff)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // entityStringColumns returns the columns a "search" filter spans: the

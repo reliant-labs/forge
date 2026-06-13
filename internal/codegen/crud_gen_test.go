@@ -2014,13 +2014,28 @@ type Service struct {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
-	// 1. Every method failed shape validation, so the Tier-1 ops file has
-	//    nothing to wire and must not exist.
-	if _, err := os.Stat(filepath.Join(handlerDir, "handlers_crud_ops_gen.go")); !os.IsNotExist(err) {
-		t.Error("handlers_crud_ops_gen.go should not be written when every method is shape-mismatched")
+	// 1. Even when every method is custom-shaped, the Tier-1 ops file is
+	//    still written — it carries the <entity>ToProto/FromProto
+	//    conversion pair the WIRED custom bodies project rows through. It
+	//    must NOT carry any op constructor (no crud.*Op) or pull in the
+	//    crud/middleware imports (which would be unused → won't compile).
+	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")
+	opsBytes, err := os.ReadFile(opsPath)
+	if err != nil {
+		t.Fatalf("ops file must exist to carry the conversion helpers the wired custom bodies use: %v", err)
+	}
+	ops := string(opsBytes)
+	if !strings.Contains(ops, "func marketToProto(") {
+		t.Errorf("ops file must carry marketToProto for the wired custom body; got:\n%s", ops)
+	}
+	if strings.Contains(ops, "crud.ListOp[") || strings.Contains(ops, "/pkg/middleware") || strings.Contains(ops, "/pkg/crud") {
+		t.Errorf("all-custom ops file must carry only conversions (no op constructors / crud / middleware imports); got:\n%s", ops)
+	}
+	if _, perr := parser.ParseFile(token.NewFileSet(), "handlers_crud_ops_gen.go", ops, parser.SkipObjectResolution); perr != nil {
+		t.Errorf("ops file is not valid Go: %v\n----\n%s", perr, ops)
 	}
 
-	// 2. The explanatory stubs land in the user-owned shim instead.
+	// 2. The wired custom bodies land in the user-owned shim.
 	data, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud.go"))
 	if err != nil {
 		t.Fatalf("read handlers_crud.go: %v", err)
@@ -2053,30 +2068,43 @@ type Service struct {
 	//    fail to compile against this proto should appear in the output.
 	for _, bad := range []string{"req.PageSize", "req.PageToken", "crud.HandleList(", "crud.HandleGet(", "crud.HandleCreate("} {
 		if strings.Contains(content, bad) {
-			t.Errorf("unexpected %q in mismatch-only output:\n%s", bad, content)
+			t.Errorf("unexpected %q in custom-shape output:\n%s", bad, content)
 		}
 	}
 
-	// 6. Each stub must return CodeUnimplemented so callers get a clear
-	//    error instead of a silent nil response.
-	if c := strings.Count(content, "connect.CodeUnimplemented"); c != 3 {
-		t.Errorf("expected 3 CodeUnimplemented returns, got %d", c)
+	// 6. The custom body is WIRED, not a blank stub: it must run a real
+	//    query (db.ListMarket), project rows via the conversion helper,
+	//    and carry the refine TODO — and must NOT 501 with CodeUnimplemented.
+	if c := strings.Count(content, "db.ListMarket("); c != 3 {
+		t.Errorf("expected 3 wired db.ListMarket calls (one per custom RPC), got %d in:\n%s", c, content)
+	}
+	if !strings.Contains(content, "marketToProto(row)") {
+		t.Errorf("wired body must project rows via marketToProto; got:\n%s", content)
+	}
+	if !strings.Contains(content, "// TODO: refine this query") {
+		t.Errorf("wired body must carry the refine TODO; got:\n%s", content)
+	}
+	if strings.Contains(content, "connect.CodeUnimplemented") {
+		t.Errorf("wired custom body must not return CodeUnimplemented; got:\n%s", content)
 	}
 
 	// 7. The scaffolded file must parse as valid Go — the whole point of
-	//    the stub fallback is that the package keeps compiling against
+	//    the wired fallback is that the package keeps compiling against
 	//    the real proto shape.
 	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud.go", content, parser.SkipObjectResolution); err != nil {
 		t.Errorf("generated file is not valid Go: %v\n----\n%s", err, content)
 	}
 
-	// 8. Because every method is a stub, the import block must not pull
-	//    in pkg/crud or internal/db (they would be unused and trip the
-	//    compiler).
-	for _, bad := range []string{`"github.com/reliant-labs/forge/pkg/crud"`, `"example.com/test/internal/db"`, `"example.com/test/pkg/middleware"`} {
-		if strings.Contains(content, bad) {
-			t.Errorf("expected no import of %s when every method is a stub; got:\n%s", bad, content)
+	// 8. The wired body needs pkg/orm and internal/db imported (it builds
+	//    orm.QueryOption filters and calls db.ListMarket). These entities
+	//    are NOT tenant-scoped, so middleware must NOT be imported (unused).
+	for _, want := range []string{`"github.com/reliant-labs/forge/pkg/orm"`, `"example.com/test/internal/db"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("expected import of %s for the wired custom body; got:\n%s", want, content)
 		}
+	}
+	if strings.Contains(content, `"example.com/test/pkg/middleware"`) {
+		t.Errorf("non-tenant custom body must not import middleware (unused); got:\n%s", content)
 	}
 }
 

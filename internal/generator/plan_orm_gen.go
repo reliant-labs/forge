@@ -85,8 +85,130 @@ func GeneratePlanORM(root, modulePath, serviceName string, entities []config.Pla
 		if err := writeORMFile(root, name, renderORMEntity(ent), cs); err != nil {
 			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
 		}
+		// The custom-query seam: a scaffold-once, user-owned sibling file
+		// documenting where hand-written / raw-SQL queries for this entity
+		// go. It reuses the generated <entity>Repo, the package-level
+		// delegates, and db handle. Routed through the Tier-2 writer so
+		// it's NEVER overwritten after first scaffold (sibling files in
+		// package db survive the *_orm.go regen sweep above).
+		if err := writeRepoExtSeam(root, ent, cs); err != nil {
+			return fmt.Errorf("scaffold repo-ext seam for entity %s: %w", ent.Name, err)
+		}
 	}
 	return nil
+}
+
+// writeRepoExtSeam scaffolds internal/db/<entity>_repo_ext.go ONCE: a
+// discoverable, empty-but-documented home for hand-written queries that
+// reuse the generated CRUD machinery. Tier-2 (scaffold-once) — once on
+// disk forge never touches it, so the user's custom methods are safe
+// across every future `forge generate`.
+func writeRepoExtSeam(root string, ent config.PlanEntity, cs *FileChecksums) error {
+	name := naming.ToSnakeCase(ent.Name) + "_repo_ext.go"
+	rel := filepath.Join("internal", "db", name)
+	_, err := WriteGeneratedFileTier2(root, rel, renderRepoExtSeam(ent), cs, false)
+	return err
+}
+
+// renderRepoExtSeam renders the per-entity custom-query seam. It compiles
+// as-is (no unused imports, no undefined references) and shows — in a
+// commented example — how to add a method that reuses the generated
+// repo/delegates and drops to raw SQL via the Bun handle.
+func renderRepoExtSeam(ent config.PlanEntity) []byte {
+	msgName := ent.Name
+	pkGoType := "string"
+	for _, f := range resolveORMFields(ent) {
+		if f.isPK {
+			pkGoType = f.structGoType()
+			break
+		}
+	}
+	repoVar := lowerFirst(msgName) + "Repo"
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "// yours: scaffolded once, never touched again — forge will not overwrite this file.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// This is the custom-query seam for %s. The generated %s_orm.go is\n", msgName, naming.ToSnakeCase(msgName))
+	b.WriteString("// Tier-1 (a live projection of the migrations, regenerated every run);\n")
+	b.WriteString("// hand-written queries that outgrow the generated CRUD belong HERE, in a\n")
+	b.WriteString("// sibling file forge never rewrites. You have three building blocks:\n")
+	b.WriteString("//\n")
+	fmt.Fprintf(&b, "//   1. The generated repo + delegates: %s (a *crud.Repo[%s]) and the\n", repoVar, msgName)
+	fmt.Fprintf(&b, "//      package-level Get%sByID / List%s / Create%s / Update%s / Delete%s\n", msgName, msgName, msgName, msgName, msgName)
+	b.WriteString("//      functions — compose orm.QueryOption filters (orm.WhereEq,\n")
+	b.WriteString("//      orm.WhereILikeAny, orm.WithOrderBy, orm.WithLimit) onto List/Count.\n")
+	b.WriteString("//   2. Raw SQL via the Bun handle: db.Bun() (bun.IDB) gives you\n")
+	b.WriteString("//      NewSelect()/NewRaw()/bun.Raw — for joins, aggregates, CTEs, or\n")
+	b.WriteString("//      anything the builder can't express. Scan into the generated\n")
+	fmt.Fprintf(&b, "//      %s struct (or your own row type).\n", msgName)
+	b.WriteString("//   3. orm.Context: every query takes one, so the same method runs\n")
+	b.WriteString("//      inside or outside a transaction (pass the tx handle to run in one).\n")
+	b.WriteString("//\n")
+	b.WriteString("// Example (uncomment and adapt):\n")
+	b.WriteString("//\n")
+	fmt.Fprintf(&b, "//\tfunc Find%sBy(ctx context.Context, db orm.Context, /* args */) ([]*%s, error) {\n", msgName, msgName)
+	fmt.Fprintf(&b, "//\t\tvar rows []*%s\n", msgName)
+	fmt.Fprintf(&b, "//\t\terr := db.Bun().NewSelect().Model(&rows).\n")
+	fmt.Fprintf(&b, "//\t\t\tWhere(\"%s = ?\", /* value */).\n", firstNonPKColumn(ent, pkGoType))
+	b.WriteString("//\t\t\tScan(ctx)\n")
+	b.WriteString("//\t\treturn rows, err\n")
+	b.WriteString("//\t}\n")
+	b.WriteString("//\n")
+	fmt.Fprintf(&b, "// Or reuse the generated repo for a filtered list:\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "//\tfunc Active%s(ctx context.Context, db orm.Context%s) ([]*%s, error) {\n", naming.Pluralize(msgName), tenantParam(ent), msgName)
+	fmt.Fprintf(&b, "//\t\treturn List%s(ctx, db%s, orm.WhereEq(\"%s\", true))\n", msgName, tenantArg(ent), firstNonPKColumn(ent, pkGoType))
+	b.WriteString("//\t}\n")
+	b.WriteString("package db\n")
+
+	if formatted, err := format.Source([]byte(b.String())); err == nil {
+		return formatted
+	}
+	return []byte(b.String())
+}
+
+// firstNonPKColumn returns a representative non-PK column name for the
+// doc example's WHERE clause, falling back to the PK column when the
+// entity has only a primary key.
+func firstNonPKColumn(ent config.PlanEntity, _ string) string {
+	pk := ""
+	for _, f := range resolveORMFields(ent) {
+		if f.isPK {
+			pk = f.columnName
+			continue
+		}
+		return f.columnName
+	}
+	if pk != "" {
+		return pk
+	}
+	return "id"
+}
+
+// tenantParam/tenantArg render the optional tenant scoping argument the
+// generated List<Entity> delegate takes for a tenant-scoped entity (so
+// the doc example matches the real signature).
+func tenantParam(ent config.PlanEntity) string {
+	if entityHasTenant(ent) {
+		return ", tenantID string"
+	}
+	return ""
+}
+
+func tenantArg(ent config.PlanEntity) string {
+	if entityHasTenant(ent) {
+		return ", tenantID"
+	}
+	return ""
+}
+
+func entityHasTenant(ent config.PlanEntity) bool {
+	for _, f := range resolveORMFields(ent) {
+		if f.isTenantKey {
+			return true
+		}
+	}
+	return false
 }
 
 // writeORMFile writes one internal/db output through the Tier-1

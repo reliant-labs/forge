@@ -50,7 +50,7 @@ import (
 )
 
 // frictionFileRelPath is where the log lives, relative to the project
-// root. It sits next to checksums.json and — like checksums.json — is
+// root. It sits under .forge/ and — like disowned.json — is
 // negated back INTO version control by the project .gitignore template:
 // friction is shared project state that travels with the repo.
 const frictionFileRelPath = ".forge/friction.jsonl"

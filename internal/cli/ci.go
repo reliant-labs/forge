@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
@@ -28,13 +29,39 @@ func newCICmd() *cobra.Command {
 func newCIVerifyGeneratedCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify-generated",
-		Short: "Verify generated code is up to date",
-		Long:  "Runs forge generate and verifies no files changed. Used in CI to catch stale generated code.",
+		Short: "Verify generated code is pristine and up to date",
+		Long: "Two checks, both local to the checkout:\n" +
+			"  1. Self-certification: every generated file's embedded forge:hash marker\n" +
+			"     must verify (recompute vs embedded) — catches hand-edits that were\n" +
+			"     committed without --force / forge disown.\n" +
+			"  2. Freshness: runs forge generate and verifies no files changed —\n" +
+			"     catches stale generated code after an input (proto/forge.yaml) change.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := requireFeature(config.FeatureCI); err != nil {
 				return err
 			}
-			// Run forge generate.
+
+			// Pass 1: recompute embedded hashes. A hand-edited generated
+			// file fails HERE, by name, before the regenerate pass would
+			// abort on the same files with a less CI-shaped message.
+			root, err := projectRoot()
+			if err != nil {
+				return err
+			}
+			cs, err := generator.LoadChecksums(root)
+			if err != nil {
+				return fmt.Errorf("load .forge ownership state: %w", err)
+			}
+			if drift := scanProjectDrift(root, cs); len(drift) > 0 {
+				fmt.Fprintf(os.Stderr, "Error: %d generated file(s) were hand-edited after forge wrote them:\n", len(drift))
+				for _, d := range drift {
+					fmt.Fprintf(os.Stderr, "  - %s\n", d.Path)
+				}
+				fmt.Fprintln(os.Stderr, "Move the edits to a user-owned extension point (then regenerate), or `forge disown <path> --reason \"<why>\"` to take ownership.")
+				return fmt.Errorf("generated files failed self-certification")
+			}
+
+			// Pass 2: regenerate and diff.
 			parts, err := forgeExecCommand()
 			if err != nil {
 				return fmt.Errorf("resolve forge binary: %w", err)

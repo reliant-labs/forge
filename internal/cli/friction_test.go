@@ -12,7 +12,7 @@
 //     never brick the log
 //   - `forge audit` carries an additive `friction` category summary
 //   - the project .gitignore template negates friction.jsonl back into
-//     version control (it travels with the repo like checksums.json)
+//     version control (it travels with the repo like .forge/disowned.json)
 package cli
 
 import (

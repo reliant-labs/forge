@@ -28,7 +28,7 @@ func TestGenerateFrontendNav_EmitsBasePathGen(t *testing.T) {
 			{Name: "admin", Type: "nextjs", BasePath: "/admin"},
 		},
 	}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs); err != nil {
 		t.Fatalf("generateFrontendNav: %v", err)
@@ -52,16 +52,14 @@ func TestGenerateFrontendNav_EmitsBasePathGen(t *testing.T) {
 		}
 	}
 
-	// Tier-1 tracked: the checksums manifest must carry the entry with
-	// Tier == 1 so (a) hand-edits trip the stomp guard and (b) the
-	// stale-cleanup sweep sees the file as live codegen.
-	entry, ok := cs.Files[rel]
-	if !ok {
-		t.Fatalf("basepath_gen.ts not recorded in checksums manifest; have: %v", cs.Files)
+	// Tier-1 certified: the file is self-certifying — it carries an
+	// embedded forge:hash marker that verifies, so (a) hand-edits trip
+	// the stomp guard and (b) the stale-cleanup sweep sees the file as
+	// live codegen. (The dead manifest's Tier=1 entry is gone.)
+	if got := checksums.Verify(body); got != checksums.Pristine {
+		t.Errorf("basepath_gen.ts Verify = %v, want Pristine (embedded forge:hash marker)", got)
 	}
-	if entry.Tier != 1 {
-		t.Errorf("basepath_gen.ts recorded with Tier=%d, want Tier=1", entry.Tier)
-	}
+	_ = cs
 }
 
 // TestGenerateFrontendNav_BasePathGen_RegenIdempotent pins regen
@@ -77,7 +75,7 @@ func TestGenerateFrontendNav_BasePathGen_RegenIdempotent(t *testing.T) {
 			{Name: "admin", Type: "nextjs", BasePath: "/admin"},
 		},
 	}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs); err != nil {
 		t.Fatalf("first generateFrontendNav: %v", err)
@@ -125,7 +123,7 @@ func TestGenerateFrontendNav_BasePathGen_EmptyBasePath(t *testing.T) {
 			{Name: "web", Type: "nextjs"},
 		},
 	}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	if err := generateFrontendNav(cfg, nil, projectDir, nil, cs); err != nil {
 		t.Fatalf("generateFrontendNav: %v", err)

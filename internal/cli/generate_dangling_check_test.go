@@ -241,19 +241,25 @@ func WireExtras() *Workers { return nil }
 				writeUnderDir(t, dir, rel, contents)
 			}
 
-			cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
-			// Record every materialized file as Tier-1 by default;
-			// flip disowned / Tier-2 from the case definitions.
+			cs := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{}}
+			// Tier-1 status is read from the files themselves now:
+			// stamp every materialized file with its forge:hash marker
+			// by default. Disowned files are recorded in cs.Disowned
+			// and stay unmarked (disown strips the marker); Tier-2
+			// files stay unmarked too (user-owned from birth).
 			for rel := range tc.files {
-				entry := checksums.FileChecksumEntry{Hash: "h", Tier: 1}
 				if tc.disowned[rel] {
-					entry.Tier = 2
-					entry.Disowned = true
+					cs.Disowned[rel] = checksums.DisownedEntry{Reason: "test", DisownedAt: "2026-06-01T00:00:00Z"}
+					continue
 				}
 				if tc.tier2[rel] {
-					entry.Tier = 2
+					continue
 				}
-				cs.Files[rel] = entry
+				stamped, ok := checksums.Stamp(rel, []byte(tc.files[rel]))
+				if !ok {
+					t.Fatalf("stamp %s: unstampable", rel)
+				}
+				writeUnderDir(t, dir, rel, string(stamped))
 			}
 
 			err := checkDisownedDanglingRefs(context.Background(), dir, cs)
@@ -284,39 +290,43 @@ func TestCheckDisownedDanglingRefs_NilChecksums(t *testing.T) {
 	if err := checkDisownedDanglingRefs(context.Background(), dir, nil); err != nil {
 		t.Errorf("nil checksums: want nil error, got: %v", err)
 	}
-	empty := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	empty := &checksums.FileChecksums{}
 	if err := checkDisownedDanglingRefs(context.Background(), dir, empty); err != nil {
 		t.Errorf("empty checksums: want nil error, got: %v", err)
 	}
 }
 
-// TestCheckDisownedDanglingRefs_NonGoForkedSkipped verifies the check
-// ignores forked entries that aren't Go files. A forked YAML or .tsx
-// file can't possibly affect the resolution of an unqualified Go type
-// name, so it must not contribute to the per-package scan.
-func TestCheckDisownedDanglingRefs_NonGoForkedSkipped(t *testing.T) {
+// TestCheckDisownedDanglingRefs_NonGoDisownedSkipped verifies the check
+// ignores disowned entries that aren't Go files. A disowned YAML or
+// .tsx file can't possibly affect the resolution of an unqualified Go
+// type name, so it must not contribute to the per-package scan.
+// (Legacy `forked: true` entries convert to disowned at migration time.)
+func TestCheckDisownedDanglingRefs_NonGoDisownedSkipped(t *testing.T) {
 	dir := t.TempDir()
 	writeUnderDir(t, dir, ".github/workflows/ci.yml", "name: ci\n")
-	writeUnderDir(t, dir, "pkg/app/app_gen.go", `package app
+	appGen, ok := checksums.Stamp("pkg/app/app_gen.go", []byte(`package app
 type Container struct {
 	W *Workers
 }
-`)
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		".github/workflows/ci.yml": {Hash: "h", Tier: 1, Forked: true},
-		"pkg/app/app_gen.go":       {Hash: "h", Tier: 1},
+`))
+	if !ok {
+		t.Fatal("app_gen.go should be stampable")
+	}
+	writeUnderDir(t, dir, "pkg/app/app_gen.go", string(appGen))
+	cs := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		".github/workflows/ci.yml": {Reason: "test", DisownedAt: "2026-06-01T00:00:00Z"},
 	}}
 	if err := checkDisownedDanglingRefs(context.Background(), dir, cs); err != nil {
-		t.Errorf("non-Go forked entry should be skipped; got error:\n%v", err)
+		t.Errorf("non-Go disowned entry should be skipped; got error:\n%v", err)
 	}
 }
 
 // TestCheckDisownedDanglingRefs_PackageScopeIsolated verifies that a
-// forked file in one package does NOT cause unrelated references in
+// disowned file in one package does NOT cause unrelated references in
 // other packages to be flagged. The package-local resolution rule
 // means an unqualified `Workers` in `internal/foo/foo.go` cannot
 // be satisfied by `pkg/app/bootstrap.go` — but it also cannot be
-// dangling-due-to-the-fork either; that's a different package, the
+// dangling-due-to-the-disown either; that's a different package, the
 // `Workers` there is presumably defined locally.
 func TestCheckDisownedDanglingRefs_PackageScopeIsolated(t *testing.T) {
 	dir := t.TempDir()
@@ -324,13 +334,16 @@ func TestCheckDisownedDanglingRefs_PackageScopeIsolated(t *testing.T) {
 type App struct{}
 `)
 	// internal/foo defines its own Workers locally; nothing dangling.
-	writeUnderDir(t, dir, "internal/foo/foo.go", `package foo
+	fooGen, ok := checksums.Stamp("internal/foo/foo.go", []byte(`package foo
 type Workers struct{}
 type Container struct { W *Workers }
-`)
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"pkg/app/bootstrap.go": {Hash: "h", Tier: 1, Forked: true},
-		"internal/foo/foo.go":  {Hash: "h", Tier: 1},
+`))
+	if !ok {
+		t.Fatal("foo.go should be stampable")
+	}
+	writeUnderDir(t, dir, "internal/foo/foo.go", string(fooGen))
+	cs := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		"pkg/app/bootstrap.go": {Reason: "test", DisownedAt: "2026-06-01T00:00:00Z"},
 	}}
 	if err := checkDisownedDanglingRefs(context.Background(), dir, cs); err != nil {
 		t.Errorf("cross-package reference should not be flagged; got:\n%v", err)

@@ -49,14 +49,18 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 // --explain-drift are advertised.
 func TestFormatTier1DriftReport(t *testing.T) {
 	drift := []checksums.Tier1DriftEntry{
-		{Path: "pkg/app/wire_gen.go", RecordedHash: "aaaa1111", OnDiskHash: "bbbb2222", HistoryDepth: 3},
-		{Path: "pkg/config/config.go", RecordedHash: "cccc3333", OnDiskHash: "dddd4444", HistoryDepth: 1},
+		{Path: "pkg/app/wire_gen.go", RecordedHash: "aaaa1111", OnDiskHash: "bbbb2222"},
+		{Path: "pkg/config/config.go", RecordedHash: "cccc3333", OnDiskHash: "dddd4444"},
 	}
 	got := formatTier1DriftReport(drift)
 
 	for _, want := range []string{
 		"2 Tier-1 file(s) modified",
 		"pkg/app/wire_gen.go",
+		// The hash lines speak the self-certification vocabulary: the
+		// EMBEDDED marker hash vs the recomputed CURRENT body hash.
+		"embedded: aaaa1111",
+		"current:  bbbb2222",
 		"↪ custom wiring belongs in pkg/app/setup.go / post_bootstrap.go / app_extras.go (user-owned)",
 		"--explain-drift",
 		"forge friction add",
@@ -80,5 +84,29 @@ func TestFormatTier1DriftReport(t *testing.T) {
 	// disown one-way door.
 	if strings.Index(got, "extension point") > strings.Index(got, "forge disown") {
 		t.Errorf("extension-point guidance must precede the disown option:\n%s", got)
+	}
+}
+
+// TestFormatTier1DriftReport_UnverifiedSentinel pins the wording for
+// the legacy-migration sentinel: a file whose provenance could not be
+// established when the project migrated off .forge/checksums.json is
+// reported with the unverified-legacy marker value and an explanation,
+// not the ordinary "hash stamped at the last forge write" line.
+func TestFormatTier1DriftReport_UnverifiedSentinel(t *testing.T) {
+	drift := []checksums.Tier1DriftEntry{
+		{Path: "pkg/app/wire_gen.go", OnDiskHash: "bbbb2222", Unverified: true},
+	}
+	got := formatTier1DriftReport(drift)
+	for _, want := range []string{
+		"embedded: " + checksums.UnverifiedMarkerValue,
+		"provenance unknown since the legacy checksums.json migration",
+		"current:  bbbb2222",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unverified report missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "hash stamped at the last forge write") {
+		t.Errorf("unverified entry must not claim a recorded write hash:\n%s", got)
 	}
 }

@@ -29,7 +29,7 @@ import (
 )
 
 // stepSnapshotTier1Exports captures the pre-codegen public-export set
-// of every Tier-1 Go file tracked in `.forge/checksums.json`. The
+// of every Tier-1 Go file carrying a forge:hash marker on disk. The
 // snapshot lives on ctx.PriorExports and is consumed by
 // stepDetectRenamedExports after the codegen passes run.
 //

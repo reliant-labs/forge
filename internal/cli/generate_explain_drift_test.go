@@ -12,21 +12,24 @@ import (
 )
 
 // newExplainDriftCtx builds a minimal pipelineContext over a tmpdir
-// with one drifted Tier-1 file: recorded render v1, on-disk hand-edit.
-func newExplainDriftCtx(t *testing.T, rel string, rendered, onDisk []byte) (*pipelineContext, []checksums.Tier1DriftEntry) {
+// with one drifted Tier-1 file: the embedded forge:hash marker carries
+// the hash of render v1, the on-disk body is the user's hand-edit —
+// Verify answers Modified, exactly the stomp guard's drift signal.
+// Returns the ctx, the drift set, and the exact on-disk bytes.
+func newExplainDriftCtx(t *testing.T, rel string, rendered, onDisk []byte) (*pipelineContext, []checksums.Tier1DriftEntry, []byte) {
 	t.Helper()
 	root := t.TempDir()
-	cs := &generator.FileChecksums{Files: map[string]generator.FileChecksumEntry{}}
-	cs.RecordFile(rel, rendered)
-	entry := cs.Files[rel]
-	entry.Tier = 1
-	cs.Files[rel] = entry
+	cs := &generator.FileChecksums{}
 
+	stamped, ok := checksums.StampWithValue(rel, onDisk, checksums.BodyHash(rendered))
+	if !ok {
+		t.Fatalf("stamp %s: unstampable", rel)
+	}
 	full := filepath.Join(root, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(full, onDisk, 0o644); err != nil {
+	if err := os.WriteFile(full, stamped, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -36,17 +39,18 @@ func newExplainDriftCtx(t *testing.T, rel string, rendered, onDisk []byte) (*pip
 		ExplainDrift: true,
 		Checksums:    cs,
 	}
-	drift := cs.CheckTier1Drift(root)
+	drift := scanProjectDrift(root, cs)
 	if len(drift) != 1 {
 		t.Fatalf("expected 1 drift entry, got %d", len(drift))
 	}
-	return ctx, drift
+	return ctx, drift, stamped
 }
 
 // TestExplainDrift_EndToEnd walks the full mechanism at unit level:
-// prepare redirects the emitter write to a side render (file + entry
-// untouched), a rehash-style mutation gets rolled back by the snapshot
-// restore, and finish prints a diff and returns the drift error.
+// prepare redirects the emitter write to a side render (the drifted
+// file — including its embedded marker — is never touched, so there is
+// no manifest snapshot/restore dance anymore: the truth lives in the
+// file), and finish prints a diff and returns the drift error.
 func TestExplainDrift_EndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -58,13 +62,12 @@ func TestExplainDrift_EndToEnd(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	rendered := []byte("package app\n\nfunc wireA() {}\n")
 	onDisk := []byte("package app\n\nfunc wireA() {}\n\nfunc userEdit() {}\n")
-	ctx, drift := newExplainDriftCtx(t, rel, rendered, onDisk)
-	originalEntry := ctx.Checksums.Files[rel]
+	ctx, drift, stampedOnDisk := newExplainDriftCtx(t, rel, rendered, onDisk)
 
 	prepareExplainDrift(ctx, drift)
 
 	// Emitter pass: the fresh render must land in .forge/render/, not
-	// over the user's file, and must not touch the checksum entry.
+	// over the user's file.
 	fresh := []byte("package app\n\nfunc wireA() {}\n\nfunc wireB() {}\n")
 	wrote, err := checksums.WriteGeneratedFile(ctx.AbsPath, rel, fresh, ctx.Checksums, false)
 	if err != nil {
@@ -74,24 +77,20 @@ func TestExplainDrift_EndToEnd(t *testing.T) {
 		t.Fatal("explain-drift run overwrote the drifted file")
 	}
 	gotOnDisk, _ := os.ReadFile(filepath.Join(ctx.AbsPath, rel))
-	if string(gotOnDisk) != string(onDisk) {
+	if string(gotOnDisk) != string(stampedOnDisk) {
 		t.Errorf("user content modified: %q", gotOnDisk)
 	}
+	// The parked render is the stamped fresh render (writes go through
+	// the certification chokepoint before the side-render redirect).
 	gotRender, err := os.ReadFile(filepath.Join(ctx.AbsPath, checksums.RenderDir, rel))
-	if err != nil || string(gotRender) != string(fresh) {
+	if err != nil || checksums.BodyHash(gotRender) != checksums.BodyHash(fresh) {
 		t.Errorf("fresh render not parked (err=%v content=%q)", err, gotRender)
 	}
-	// No merge base for a non-forked path — a stale base would poison a
-	// future fork's merge.
+	// No merge base for a drifted path — a stale base would poison a
+	// future merge view (fork-era invariant kept for the render dir).
 	if _, err := os.Stat(filepath.Join(ctx.AbsPath, checksums.RenderBaseDir, rel)); !os.IsNotExist(err) {
 		t.Errorf("explain-drift seeded render-base for a non-forked path")
 	}
-
-	// Simulate stepRehashTracked blessing the on-disk content; the
-	// snapshot restore in finishExplainDrift must undo it.
-	mutated := ctx.Checksums.Files[rel]
-	mutated.Hash = checksums.Hash(onDisk)
-	ctx.Checksums.Files[rel] = mutated
 
 	var diffOut strings.Builder
 	printExplainDriftDiffs(&diffOut, ctx)
@@ -109,8 +108,12 @@ func TestExplainDrift_EndToEnd(t *testing.T) {
 	if !strings.Contains(finishErr.Error(), "Tier-1 file-stomp guard") {
 		t.Errorf("error should carry the standard drift report; got %q", finishErr.Error())
 	}
-	if got := ctx.Checksums.Files[rel]; got.Hash != originalEntry.Hash {
-		t.Errorf("snapshot restore failed: hash=%s want %s (drift would be blessed on save)", got.Hash, originalEntry.Hash)
+	// The drift must NOT have been blessed: the on-disk file still fails
+	// its own certification (the manifest-era snapshot-restore assertion,
+	// re-pointed at the file itself).
+	finalOnDisk, _ := os.ReadFile(filepath.Join(ctx.AbsPath, rel))
+	if checksums.Verify(finalOnDisk) != checksums.Modified {
+		t.Errorf("drifted file no longer verifies as Modified — the run blessed the drift")
 	}
 }
 
@@ -130,7 +133,7 @@ func TestExplainDrift_DiffTruncation(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	rendered := []byte("package app\n// r1\n// r2\n// r3\n// r4\n// r5\n// r6\n// r7\n// r8\n")
 	onDisk := []byte("package app\n// e1\n// e2\n// e3\n// e4\n// e5\n// e6\n// e7\n// e8\n")
-	ctx, drift := newExplainDriftCtx(t, rel, rendered, onDisk)
+	ctx, drift, _ := newExplainDriftCtx(t, rel, rendered, onDisk)
 
 	prepareExplainDrift(ctx, drift)
 	if _, err := checksums.WriteGeneratedFile(ctx.AbsPath, rel, rendered, ctx.Checksums, false); err != nil {
@@ -156,7 +159,7 @@ func TestExplainDrift_NoRenderProduced(t *testing.T) {
 	defer checksums.ResetPerRunState()
 
 	const rel = "pkg/app/wire_gen.go"
-	ctx, drift := newExplainDriftCtx(t, rel, []byte("package app\n"), []byte("package app // edit\n"))
+	ctx, drift, _ := newExplainDriftCtx(t, rel, []byte("package app\n"), []byte("package app // edit\n"))
 	prepareExplainDrift(ctx, drift)
 	// No emitter write happens.
 

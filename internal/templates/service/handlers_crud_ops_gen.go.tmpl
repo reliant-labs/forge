@@ -16,9 +16,11 @@
 package {{.Package}}
 
 import (
+{{- if .NeedsCRUDLib}}
 	"context"
 
 	"github.com/reliant-labs/forge/pkg/crud"
+{{- end}}
 {{- if .NeedsORM}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
@@ -28,8 +30,11 @@ import (
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
 	"{{.Module}}/internal/db"
+{{- if .NeedsCRUDLib}}
 	"{{.Module}}/pkg/middleware"
+{{- end}}
 )
+{{- if .NeedsCRUDLib}}
 
 // Ensure imports are used even when no op carries auth or tenant hooks
 // (the closures still close over middleware identifiers).
@@ -37,6 +42,7 @@ var (
 	_ = middleware.ActionCreate
 	_ = context.Background
 )
+{{- end}}
 {{- range .Entities}}
 
 // {{.EntityLower}}ToProto projects the db row onto the wire message.

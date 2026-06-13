@@ -151,13 +151,16 @@ func TestStepCheckTier1Drift_PopulatesPresenceBeforeScoping(t *testing.T) {
 	const rel = "pkg/app/wire_gen.go"
 	recorded := []byte("package app // as generated\n")
 	edited := []byte("package app // hand-edited\n")
-	mustWriteScopeFile(t, filepath.Join(dir, rel), string(edited))
+	// Hand-edited Tier-1 file: the embedded forge:hash marker still
+	// carries the hash of the content forge stamped; the body has since
+	// changed, so Verify answers Modified and the stomp guard fires.
+	stamped, ok := checksums.StampWithValue(rel, edited, checksums.BodyHash(recorded))
+	if !ok {
+		t.Fatal("wire_gen.go should be stampable")
+	}
+	mustWriteScopeFile(t, filepath.Join(dir, rel), string(stamped))
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
-	cs.RecordFile(rel, recorded)
-	entry := cs.Files[rel]
-	entry.Tier = 1
-	cs.Files[rel] = entry
+	cs := &checksums.FileChecksums{}
 
 	ctx := &pipelineContext{
 		ProjectDir: dir,

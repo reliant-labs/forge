@@ -80,7 +80,7 @@ type MCPGenInput struct {
 	ProjectDir  string                   // project root; output path is gen/mcp/manifest.json relative to here
 	ProjectName string                   // emitted as the manifest's "project" field; "" tolerated
 	Services    []ServiceDef             // every parsed Connect service; empty → no-op
-	Checksums   *checksums.FileChecksums // when set, the rendered manifest is recorded under .forge/checksums.json
+	Checksums   *checksums.FileChecksums // when set, the rendered manifest is recorded in .forge/hashes.json (JSON cannot carry an embedded marker)
 }
 
 // mcpManifest is the top-level JSON shape. Field order in the JSON

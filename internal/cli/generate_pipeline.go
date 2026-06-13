@@ -165,13 +165,21 @@ type pipelineContext struct {
 	// Mechanics live in generate_explain_drift.go.
 	ExplainDrift bool
 
-	// ExplainDriftEntries + explainDriftSnapshot are populated by
-	// prepareExplainDrift when ExplainDrift triggers: the drift set the
-	// guard detected, and the pre-pipeline checksum entries for those
-	// paths (restored before save so stepRehashTracked can't bless the
-	// drifted on-disk content as the recorded render).
-	ExplainDriftEntries  []checksums.Tier1DriftEntry
-	explainDriftSnapshot map[string]generator.FileChecksumEntry
+	// ExplainDriftEntries is populated by prepareExplainDrift when
+	// ExplainDrift triggers: the drift set the guard detected. The
+	// drifted files themselves are never touched (their writes are
+	// side-render redirected), so no state snapshot is needed — the
+	// truth lives in the files.
+	ExplainDriftEntries []checksums.Tier1DriftEntry
+
+	// LegacyUnverified is populated by the one-time legacy-manifest
+	// migration (generate_legacy_migrate.go): paths whose on-disk bytes
+	// matched nothing the legacy manifest recorded (the fr-9a54388f0b
+	// different-lane corruption). Their writes are side-render
+	// redirected this run; finishLegacyMigration adjudicates each at
+	// the end (fresh-render body match → pristine, stamp; otherwise →
+	// unverified-legacy sentinel + drift report).
+	LegacyUnverified []string
 
 	// Cfg may be nil — that's the directory-scan fallback path.
 	Cfg *config.ProjectConfig
@@ -290,11 +298,11 @@ func generateSteps() []GenStep {
 	return []GenStep{
 		{Name: "load project config", Gate: always, Run: stepLoadConfig, Tag: "config"},
 		{Name: "load checksums", Gate: always, Run: stepLoadChecksums, Tag: "config"},
-		// Must run between checksum load and the Tier-1 stomp guard:
-		// entries whose template was reclassified Tier-1→Tier-2 flip to
-		// tier=2 here so the guard stops drift-erroring on files the
-		// user now owns. See generate_tier_migrate.go.
-		{Name: "migrate reclassified template tiers", Gate: always, Run: stepMigrateTemplateTiers, Tag: "config"},
+		// One-time conversion off the dead global manifest. Must run
+		// between state load and the Tier-1 stomp guard: pristine files
+		// get their forge:hash marker stamped here so the guard reads
+		// the right ownership story. See generate_legacy_migrate.go.
+		{Name: "migrate legacy checksums manifest", Gate: always, Run: stepMigrateLegacyManifest, Tag: "config"},
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
@@ -495,7 +503,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 var templatesOnlyStepAllow = map[string]bool{
 	"load project config":                    true,
 	"load checksums":                         true,
-	"migrate reclassified template tiers":    true,
+	"migrate legacy checksums manifest":      true,
 	"sync forge/pkg dev replace":             true,
 	"announce project":                       true,
 	"detect proto directories":               true,
@@ -756,7 +764,8 @@ func stepLoadConfig(ctx *pipelineContext) error {
 }
 
 // stepLoadChecksums — was Step 0b.
-// Loads .forge/checksums.json and stamps the active forge version. The
+// Loads the .forge ownership state (disowned.json + hashes.json) and
+// stamps the active forge version. The
 // caller (runGeneratePipeline) is responsible for calling SaveChecksums
 // on exit so partial pipeline runs still persist what they wrote.
 //
@@ -775,12 +784,14 @@ func stepLoadChecksums(ctx *pipelineContext) error {
 }
 
 // stepCheckTier1Drift is the pre-pipeline file-stomp guard. Before any
-// codegen step runs, walk every Tier-1 entry in `.forge/checksums.json`
-// and compare the on-disk content's hash against the recorded hash (and
-// every prior render in History). If any Tier-1 file has been hand-
-// edited (LLM or human), abort the pipeline with a single batched
-// report listing every conflict — the user gets one error to react to,
-// not N runs to discover N conflicts.
+// codegen step runs, scan the project for self-certifying Tier-1 files
+// (embedded forge:hash markers) and report every one whose marker fails
+// verification — positive evidence of a hand-edit (LLM or human). The
+// check is purely local to each file, so it gives the same answer in a
+// fresh clone, a parallel work lane, or a partially-committed tree. On
+// any hit, abort the pipeline with a single batched report listing
+// every conflict — the user gets one error to react to, not N runs to
+// discover N conflicts.
 //
 // Escape hatches:
 //
@@ -808,7 +819,24 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		// legacy unscoped force: no scope is installed at all.)
 		checksums.SetForceScope(nil)
 	}
-	allDrift := ctx.Checksums.CheckTier1Drift(ctx.AbsPath)
+	allDrift := scanProjectDrift(ctx.AbsPath, ctx.Checksums)
+	// Paths quarantined by the legacy-manifest migration are this run's
+	// side-render rescue candidates — finishLegacyMigration adjudicates
+	// them after the emitters have produced fresh renders to compare
+	// against. Reporting them here would abort before the rescue runs.
+	if len(ctx.LegacyUnverified) > 0 {
+		quarantined := make(map[string]bool, len(ctx.LegacyUnverified))
+		for _, p := range ctx.LegacyUnverified {
+			quarantined[p] = true
+		}
+		kept := allDrift[:0]
+		for _, d := range allDrift {
+			if !quarantined[d.Path] {
+				kept = append(kept, d)
+			}
+		}
+		allDrift = kept
+	}
 	if len(allDrift) == 0 {
 		return nil
 	}
@@ -868,7 +896,7 @@ func stepCheckTier1Drift(ctx *pipelineContext) error {
 		for _, d := range drift {
 			disowned = append(disowned, d.Path)
 		}
-		if err := ctx.Checksums.DisownPaths(ctx.AbsPath, disowned); err != nil {
+		if err := ctx.Checksums.DisownPaths(ctx.AbsPath, disowned, ctx.AcceptReason); err != nil {
 			return fmt.Errorf("disown Tier-1 drift: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "📝 --accept (deprecated): disowned %d Tier-1 file(s) — they are user-owned now:\n", len(disowned))
@@ -1007,7 +1035,7 @@ func resolveGitDir(projectDir string) string {
 }
 
 // short truncates a hex digest for human-readable error messages. Full
-// digests live in `.forge/checksums.json` for the user to grep.
+// digests live in the files' own forge:hash markers for the user to grep.
 func short(h string) string {
 	if len(h) <= 12 {
 		return h
@@ -1363,26 +1391,25 @@ func stepFrontendNav(ctx *pipelineContext) error {
 
 // stepCleanupStale — was Step 3z.
 // Sweep of stale codegen artifacts after a service is removed or
-// renamed. Manifest-driven: only paths recorded in `.forge/checksums.json`
-// are candidates; paths NOT in the manifest (user-owned files in the
-// same directories) are inherently safe.
+// renamed. Marker-driven: only files carrying a forge:hash
+// certification marker (or a scoped .forge/hashes.json record) are
+// candidates; unmarked paths are user-owned and inherently safe.
 //
 // Positioned LATE in the plan (after every emit step) so the
 // per-run `WrittenThisRun` set captures every path the current run
-// touched. A manifest entry NOT in that set is what we delete.
+// touched. A certified file NOT in that set is what we delete.
 // Pre-2026-06-05 the step ran early and re-derived the "expected"
 // set from forge.yaml — that re-derivation disagreed with on-disk
 // snake_case proto layouts and deleted user code.
 //
 // Only runs when len(services) > 0 — on a freshly-scaffolded project
 // the descriptor may be empty (or buf hasn't run successfully yet);
-// running cleanup with no services is harmless under the manifest
-// model but the empty-services short-circuit keeps the legacy contract.
+// the empty-services short-circuit keeps the legacy contract.
 func stepCleanupStale(ctx *pipelineContext) error {
 	if len(ctx.Services) == 0 {
 		return nil
 	}
-	candidates, missing, cerr := cleanupStaleArtifacts(ctx)
+	candidates, handEdited, cerr := cleanupStaleArtifacts(ctx)
 	if cerr != nil {
 		return ctx.warnOrFail("stale-artifact cleanup", cerr)
 	}
@@ -1407,9 +1434,9 @@ func stepCleanupStale(ctx *pipelineContext) error {
 			}
 		}
 	}
-	if len(missing) > 0 {
-		fmt.Fprintf(os.Stderr, "\n⚠️  Tracked paths missing on disk (run `%s audit` for details):\n", Name())
-		for _, rel := range missing {
+	if len(handEdited) > 0 {
+		fmt.Fprintf(os.Stderr, "\n⚠️  Stale generated file(s) with hand-edits — no emitter writes them anymore, but the bytes are yours so forge won't delete them (remove by hand, or `forge disown` to keep them deliberately):\n")
+		for _, rel := range handEdited {
 			fmt.Fprintf(os.Stderr, "  - %s\n", rel)
 		}
 	}
@@ -2029,15 +2056,16 @@ func stepGoimports(ctx *pipelineContext) error {
 }
 
 // stepRehashTracked — was Step 8f.1.
-// Re-hashes every tracked file after goimports. goimports rewrites
-// imports in-place after WriteGeneratedFile recorded the
-// pre-formatted content; without this re-hash, audit would flag every
-// .go file we just emitted as "user-edited (drift detected)". We only
-// refresh the current Hash; History already contains the pre-goimports
-// rendering so a future template update can still distinguish stale
-// codegen from a real user edit.
+// Re-stamps every file written this run after goimports. goimports
+// rewrites imports in-place after the chokepoint stamped the
+// pre-formatted content; without the re-stamp, the embedded hash would
+// be stale and the next run's guard would flag every formatted file as
+// "hand-edited". Also flushes the deferred heal notices: a "heal" whose
+// post-format bytes converged back to the replaced content was
+// formatting noise, not a content change, and stays silent.
 func stepRehashTracked(ctx *pipelineContext) error {
-	rehashTrackedFiles(ctx.AbsPath, ctx.Checksums)
+	checksums.RestampWritten(ctx.AbsPath, ctx.Checksums)
+	checksums.FlushHealNotices(ctx.AbsPath)
 	return nil
 }
 

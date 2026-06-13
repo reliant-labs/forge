@@ -272,7 +272,7 @@ func loadPageTemplate(dir, name string) (*template.Template, error) {
 // scaffolded pages from preserved ones in the summary log.
 //
 // The checksums hand-off (`checksums.WriteGeneratedFileTier2`) tags the
-// emit as Tier-2 in `.forge/checksums.json`, which the stomp-guard
+// emit as Tier-2 (no certification marker), which the stomp-guard
 // reader uses to *skip* the file in CheckTier1Drift — Tier-2 files are
 // expected to drift from forge's recorded render, that's the whole
 // point.

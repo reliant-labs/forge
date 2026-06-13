@@ -79,14 +79,18 @@ func TestGenerateAccept_RecordsDisownFriction(t *testing.T) {
 			// is classified in-scope by the drift scope filter.
 			mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
 
-			cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+			cs := &checksums.FileChecksums{}
 			for _, rel := range []string{relWire, relCmd} {
+				// Hand-edited Tier-1 file: the embedded marker carries
+				// the hash of the content forge wrote; the body has
+				// since changed → Verify == Modified → drift.
 				recorded := []byte("package x // as generated: " + rel + "\n")
-				mustWriteScopeFile(t, filepath.Join(dir, rel), "package x // hand-edited: "+rel+"\n")
-				cs.RecordFile(rel, recorded)
-				entry := cs.Files[rel]
-				entry.Tier = 1
-				cs.Files[rel] = entry
+				edited := []byte("package x // hand-edited: " + rel + "\n")
+				stamped, ok := checksums.StampWithValue(rel, edited, checksums.BodyHash(recorded))
+				if !ok {
+					t.Fatalf("stamp %s: unstampable", rel)
+				}
+				mustWriteScopeFile(t, filepath.Join(dir, rel), string(stamped))
 			}
 
 			ctx := &pipelineContext{
@@ -100,11 +104,18 @@ func TestGenerateAccept_RecordsDisownFriction(t *testing.T) {
 				t.Fatalf("stepCheckTier1Drift with --accept: %v", err)
 			}
 
-			// The accept alias must have DISOWNED both paths.
+			// The accept alias must have DISOWNED both paths: recorded
+			// in cs.Disowned and the certification marker stripped.
 			for _, rel := range []string{relWire, relCmd} {
-				e := cs.Files[rel]
-				if e.Tier != 2 || !e.Disowned {
-					t.Errorf("%s: entry = %+v, want disowned Tier-2", rel, e)
+				if !cs.IsDisowned(rel) {
+					t.Errorf("%s: not in cs.Disowned, want disowned", rel)
+				}
+				onDisk, err := os.ReadFile(filepath.Join(dir, rel))
+				if err != nil {
+					t.Fatalf("read %s: %v", rel, err)
+				}
+				if _, hasMarker := checksums.ExtractMarker(onDisk); hasMarker {
+					t.Errorf("%s: forge:hash marker survived the disown; user-owned files must not advertise certification", rel)
 				}
 			}
 
@@ -159,13 +170,13 @@ func TestGenerateAccept_NoDriftLeavesFrictionUntouched(t *testing.T) {
 	defer checksums.ResetSkipWrite()
 	dir := t.TempDir()
 	const rel = "pkg/app/wire_gen.go"
-	content := []byte("package app // pristine\n")
-	mustWriteScopeFile(t, filepath.Join(dir, rel), string(content))
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
-	cs.RecordFile(rel, content)
-	entry := cs.Files[rel]
-	entry.Tier = 1
-	cs.Files[rel] = entry
+	// Pristine forge render: stamped, marker verifies → no drift.
+	stamped, ok := checksums.Stamp(rel, []byte("package app // pristine\n"))
+	if !ok {
+		t.Fatal("wire_gen.go should be stampable")
+	}
+	mustWriteScopeFile(t, filepath.Join(dir, rel), string(stamped))
+	cs := &checksums.FileChecksums{}
 
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs, Accept: true, AcceptReason: "should never be written"}
 	if err := stepCheckTier1Drift(ctx); err != nil {
@@ -182,11 +193,11 @@ func TestDisown_NoFlipLeavesFrictionUntouched(t *testing.T) {
 	t.Run("already disowned", func(t *testing.T) {
 		const rel = "pkg/app/bootstrap.go"
 		cs := &checksums.FileChecksums{
-			Files: map[string]checksums.FileChecksumEntry{
-				rel: {Hash: "h", Tier: 2, Disowned: true},
+			Disowned: map[string]checksums.DisownedEntry{
+				rel: {Reason: "earlier reason", DisownedAt: "2026-06-01T00:00:00Z"},
 			},
 		}
-		root := withUnforkProjectRoot(t, cs)
+		root := withDisownProjectRoot(t, cs)
 		seedDisownFile(t, root, rel, "package app\n")
 		if err := runDisown([]string{rel}, "stale reason", false); err != nil {
 			t.Fatalf("runDisown: %v", err)
@@ -195,13 +206,8 @@ func TestDisown_NoFlipLeavesFrictionUntouched(t *testing.T) {
 	})
 	t.Run("dry-run", func(t *testing.T) {
 		const rel = "pkg/app/bootstrap.go"
-		cs := &checksums.FileChecksums{
-			Files: map[string]checksums.FileChecksumEntry{
-				rel: {Hash: "h", Tier: 1},
-			},
-		}
-		root := withUnforkProjectRoot(t, cs)
-		seedDisownFile(t, root, rel, "package app\n")
+		root := withDisownProjectRoot(t, &checksums.FileChecksums{})
+		seedStampedDisownFile(t, root, rel, "package app\n")
 		if err := runDisown([]string{rel}, "dry reason", true); err != nil {
 			t.Fatalf("runDisown --dry-run: %v", err)
 		}
@@ -260,15 +266,15 @@ func TestAuditCodegen_DisownedFilesCarriesReason(t *testing.T) {
 	for _, rel := range []string{"pkg/app/wire_gen.go", "pkg/app/bootstrap.go", "pkg/app/migrate.go"} {
 		mustWriteScopeFile(t, filepath.Join(dir, rel), string(content))
 	}
-	csBody := `{
-  "forge_version": "test",
-  "files": {
-    "pkg/app/wire_gen.go": {"hash": "` + checksums.Hash(content) + `", "tier": 2, "disowned": true},
-    "pkg/app/bootstrap.go": {"hash": "` + checksums.Hash(content) + `", "tier": 2, "disowned": true},
-    "pkg/app/migrate.go": {"hash": "` + checksums.Hash(content) + `", "tier": 2, "disowned": true}
-  }
-}`
-	if err := os.WriteFile(filepath.Join(dir, ".forge", "checksums.json"), []byte(csBody), 0o644); err != nil {
+	// Disowned state lives in .forge/disowned.json now. Entries carry NO
+	// reason of their own here so the audit falls back to the friction-
+	// log join (records that predate reason capture in disowned.json).
+	csState := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		"pkg/app/wire_gen.go":  {DisownedAt: "2026-06-01T00:00:00Z"},
+		"pkg/app/bootstrap.go": {DisownedAt: "2026-06-01T00:00:00Z"},
+		"pkg/app/migrate.go":   {DisownedAt: "2026-06-01T00:00:00Z"},
+	}}
+	if err := checksums.Save(dir, csState); err != nil {
 		t.Fatal(err)
 	}
 	// Friction log: an older disown entry, a NEWER one for the same path

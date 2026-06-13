@@ -8,7 +8,7 @@
 //   - Project shape (kind, services + RPC counts, workers, operators,
 //     frontends, installed packs).
 //   - Convention compliance (rolled up forge lint counts per category).
-//   - Codegen state (last generate timestamp via .forge/checksums.json,
+//   - Codegen state (certified-file census via the embedded forge:hash markers,
 //     orphan _gen files, uncommitted user edits to forge-space files).
 //   - Pack health (each installed pack's version against the embedded
 //     pack registry).
@@ -44,6 +44,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
@@ -714,65 +715,71 @@ type auditDisownedFile struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// auditCodegen reports on .forge/checksums.json freshness, hand-edits to
-// forge-space files, and obvious orphan _gen files (those whose source
-// proto / contract.go has been removed).
+// auditCodegen reports on the project's self-certification state:
+// hand-edits to forge-certified files (embedded forge:hash markers that
+// fail verification), disowned files, orphan _gen files, and a pending
+// legacy-manifest migration if one exists. Ownership is read from the
+// files themselves — there is no global manifest to consult.
 func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	cs, err := generator.LoadChecksums(projectDir)
 	if err != nil {
 		return AuditCategory{
 			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("could not load .forge/checksums.json: %v", err),
+			Summary: fmt.Sprintf("could not load .forge ownership state: %v", err),
 		}
 	}
 
+	markers := checksums.ScanMarkers(projectDir)
+	certified := len(markers) + len(cs.Unstampable)
 	details := map[string]any{
-		"tracked_files": len(cs.Files),
-		"forge_version": cs.ForgeVersion,
+		// `tracked_files` survives for audit-json consumers; its meaning
+		// is now "files carrying forge's certification" (embedded marker
+		// or scoped .forge/hashes.json record).
+		"tracked_files":   certified,
+		"certified_files": certified,
 	}
 
-	// .forge/checksums.json mtime as a rough "last generate" timestamp.
-	checksumPath := filepath.Join(projectDir, ".forge", "checksums.json")
-	if stat, statErr := os.Stat(checksumPath); statErr == nil {
-		details["last_generate"] = stat.ModTime().UTC().Format(time.RFC3339)
-	} else {
+	// Rough "last generate" timestamp: the newest mtime among certified
+	// files (the old proxy — checksums.json's mtime — is gone with the
+	// manifest).
+	lastGen := time.Time{}
+	for rel := range markers {
+		if stat, statErr := os.Stat(filepath.Join(projectDir, rel)); statErr == nil && stat.ModTime().After(lastGen) {
+			lastGen = stat.ModTime()
+		}
+	}
+	if lastGen.IsZero() {
 		details["last_generate"] = "never"
+	} else {
+		details["last_generate"] = lastGen.UTC().Format(time.RFC3339)
 	}
 
-	// User-edited gen files: tracked checksum but file content has drifted.
-	// Disowned entries (and legacy forked ones) are excluded — the user
-	// owns those files outright, so edits are the expected steady state,
-	// not drift worth flagging.
+	// Pending one-time migration: a legacy .forge/checksums.json still
+	// present means the next `forge generate` (or `forge upgrade`) will
+	// convert it to embedded markers and delete it.
+	if _, statErr := os.Stat(filepath.Join(projectDir, checksums.LegacyChecksumFile)); statErr == nil {
+		details["legacy_manifest"] = "present — the next `forge generate` migrates it to embedded forge:hash markers and deletes it"
+	}
+
+	// User-edited gen files: certification fails (embedded hash doesn't
+	// match the recomputed body hash). Disowned files carry no marker
+	// and are excluded by construction; Tier-2-managed starters are
+	// exempt (edits there are sanctioned).
 	var modified []string
-	for rel, entry := range cs.Files {
-		if entry.Disowned || entry.Forked {
-			continue
-		}
-		if cs.IsFileModified(projectDir, rel) {
-			modified = append(modified, rel)
-		}
+	for _, d := range scanProjectDrift(projectDir, cs) {
+		modified = append(modified, d.Path)
 	}
 	sort.Strings(modified)
 	if len(modified) > 0 {
 		details["user_edited_gen_files"] = modified
 	}
 
-	// Disowned files: entries the user transferred to permanent
-	// ownership via `forge disown` (including legacy forks the pipeline
-	// migration converted). A legitimate end state — reported for
-	// visibility, never as a warning. Legacy `forked: true` entries that
-	// haven't been through a `forge generate` yet are folded in too, so
-	// audit tells one truth regardless of migration timing.
+	// Disowned files: one-way ownership transfers recorded in
+	// .forge/disowned.json. A legitimate end state — reported for
+	// visibility, never as a warning.
 	var disowned []auditDisownedFile
-	for rel, entry := range cs.Files {
-		if !entry.Disowned && !entry.Forked {
-			continue
-		}
-		since := entry.DisownedAt
-		if since == "" {
-			since = entry.ForkedAt
-		}
-		disowned = append(disowned, auditDisownedFile{Path: rel, Since: since})
+	for rel, entry := range cs.Disowned {
+		disowned = append(disowned, auditDisownedFile{Path: rel, Since: entry.DisownedAt, Reason: entry.Reason})
 	}
 	sort.Slice(disowned, func(i, j int) bool { return disowned[i].Path < disowned[j].Path })
 
@@ -784,37 +791,34 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	details["forked_files_note"] = "deprecated: the fork state was removed; see disowned_files"
 
 	if len(disowned) > 0 {
-		// Attach each disown's recorded rationale. The friction log is
-		// loaded exactly once (and only when disowned files exist at
-		// all) — audit stays cheap on the common project.
+		// Backfill rationales from the friction log for entries whose
+		// disowned.json record predates reason capture (legacy
+		// migrations). The log is loaded exactly once and only when
+		// disowned files exist at all.
 		reasons := disownFrictionReasons(projectDir)
 		for i := range disowned {
-			disowned[i].Reason = reasons[disowned[i].Path]
+			if disowned[i].Reason == "" {
+				disowned[i].Reason = reasons[disowned[i].Path]
+			}
 		}
 		details["disowned_files"] = disowned
 		details["disowned_hint"] = "disowned files are user-owned; forge never regenerates them. Re-adopt one by deleting it and running `forge generate`."
 	}
 
 	// Orphan _gen detection: walk the project for files ending in _gen.go
-	// that aren't tracked by the checksum file at all. These are usually
-	// safe to delete (cleanupStaleArtifacts would do it on next generate),
-	// but flagging them at audit time tells the user without forcing a
-	// regenerate.
-	orphans := findOrphanGenFiles(projectDir, cs.Files)
+	// that carry NO certification at all. These are usually safe to
+	// delete, but flagging them at audit time tells the user without
+	// forcing a regenerate.
+	orphans := findOrphanGenFiles(projectDir, markers, cs)
 	if len(orphans) > 0 {
 		details["orphan_gen_files"] = orphans
 	}
 
-	// Tracked-but-missing detection: inverse of orphan. Forge recorded
-	// the path in `.forge/checksums.json` but the on-disk file is gone
-	// — the user (or a sibling agent / merge conflict) likely removed
-	// it. We don't auto-recreate; just report so audit can prompt the
-	// user to run `forge generate` (which will re-emit) or remove the
-	// manifest entry if the deletion was deliberate.
-	missing := trackedMissingFiles(projectDir, cs)
-	if len(missing) > 0 {
-		details["tracked_missing_files"] = missing
-	}
+	// Manifest-era `tracked_missing_files` is gone with the manifest:
+	// there is no record of paths that don't exist — a deleted generated
+	// file is simply re-emitted on the next generate (and deletion IS
+	// the documented re-adoption signal for disowned files).
+	var missing []string
 
 	// Registration findings: services whose on-disk presence disagrees
 	// with the user-owned pkg/app/services.go row list. Two states:
@@ -832,7 +836,7 @@ func auditCodegen(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	}
 
 	status := AuditStatusOK
-	summary := fmt.Sprintf("%d tracked, %d modified, %d disowned, %d orphans, %d missing", len(cs.Files), len(modified), len(disowned), len(orphans), len(missing))
+	summary := fmt.Sprintf("%d certified, %d modified, %d disowned, %d orphans, %d missing", certified, len(modified), len(disowned), len(orphans), len(missing))
 	// Disowned files are a legitimate end state (unlike the old fork
 	// limbo) — they appear in the summary for visibility but do NOT
 	// degrade the category status.
@@ -905,10 +909,12 @@ func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) [
 	return out
 }
 
-// findOrphanGenFiles walks projectDir for *_gen.go files that aren't in
-// the tracked-files map. The walk skips noisy roots (vendor/, gen/,
-// node_modules/, .git/) so audit stays cheap on large projects.
-func findOrphanGenFiles(projectDir string, tracked map[string]generator.FileChecksumEntry) []string {
+// findOrphanGenFiles walks projectDir for *_gen.go files that carry no
+// forge certification (no embedded marker, no scoped-fallback entry,
+// not disowned) yet self-identify as forge output via the legacy
+// banner. The walk skips noisy roots (vendor/, gen/, node_modules/,
+// .git/) so audit stays cheap on large projects.
+func findOrphanGenFiles(projectDir string, markers map[string]checksums.MarkerInfo, cs *generator.FileChecksums) []string {
 	var orphans []string
 	skip := map[string]struct{}{
 		"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {},
@@ -931,18 +937,45 @@ func findOrphanGenFiles(projectDir string, tracked map[string]generator.FileChec
 		if err != nil {
 			return nil
 		}
-		if _, ok := tracked[filepath.ToSlash(rel)]; ok {
-			return nil
+		relSlash := filepath.ToSlash(rel)
+		if _, ok := markers[relSlash]; ok {
+			return nil // certified — owned and accounted for
 		}
-		// Banner check: forge-banner files we generated but never tracked
-		// (older versions of forge didn't checksum everything).
+		if cs != nil {
+			if cs.IsDisowned(relSlash) {
+				return nil
+			}
+			if _, ok := cs.Unstampable[relSlash]; ok {
+				return nil
+			}
+		}
+		// Banner check: forge-banner files generated by pre-marker forge
+		// versions that never got certified.
 		if isForgeGeneratedBanner(path) {
-			orphans = append(orphans, filepath.ToSlash(rel))
+			orphans = append(orphans, relSlash)
 		}
 		return nil
 	})
 	sort.Strings(orphans)
 	return orphans
+}
+
+// isForgeGeneratedBanner returns true when the file's first line
+// declares it as "Code generated by forge" — the legacy authorship
+// marker from before embedded forge:hash certification.
+func isForgeGeneratedBanner(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 256)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	if i := strings.IndexByte(head, '\n'); i >= 0 {
+		head = head[:i]
+	}
+	return strings.Contains(head, "Code generated by forge")
 }
 
 // auditPacks compares each installed pack's version against the version

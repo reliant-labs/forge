@@ -568,8 +568,8 @@ func TestGenerateCRUDHandlers_KeepsUserOwnedLegacyGen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		legacyRel: {Tier: 2, Disowned: true},
+	cs := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		legacyRel: {Reason: "user took ownership"},
 	}}
 
 	svc := ServiceDef{
@@ -597,8 +597,8 @@ func TestGenerateCRUDHandlers_KeepsUserOwnedLegacyGen(t *testing.T) {
 	if string(after) != legacyBody {
 		t.Error("user-owned legacy handlers_crud_gen.go was modified")
 	}
-	if _, ok := cs.Files[legacyRel]; !ok {
-		t.Error("manifest entry for user-owned legacy file was dropped")
+	if !cs.IsDisowned(legacyRel) {
+		t.Error("ownership record for user-owned legacy file was dropped")
 	}
 }
 
@@ -2126,7 +2126,8 @@ type Service struct {
 		},
 	}
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	checksums.ResetSkipWrite()
+	cs := &checksums.FileChecksums{}
 	if err := GenerateCRUDHandlers(svcV1, MatchCRUDMethods(svcV1, entities), "example.com/test", projectDir, cs); err != nil {
 		t.Fatalf("GenerateCRUDHandlers() first run error = %v", err)
 	}
@@ -2140,12 +2141,15 @@ type Service struct {
 	if !contains(string(first), "func (s *Service) CreatePatient(") {
 		t.Fatalf("expected CreatePatient shim in scaffold; got:\n%s", first)
 	}
-	// Tracked Tier-2 (user-owned) in the manifest, so cleanup sweeps and
-	// the Tier-1 stomp guard leave it alone.
-	if entry, ok := cs.Files[shimRel]; !ok {
-		t.Error("handlers_crud.go missing from checksum manifest")
-	} else if entry.Tier != 2 {
-		t.Errorf("handlers_crud.go manifest Tier = %d, want 2 (user-owned)", entry.Tier)
+	// User-owned Tier-2 from birth: NO certification marker — that is
+	// what keeps the cleanup sweeps and the Tier-1 stomp guard away —
+	// and the path is marked written-this-run so the stale sweep never
+	// targets it.
+	if checksums.Verify(first) != checksums.NoMarker {
+		t.Error("handlers_crud.go must not carry a forge:hash marker (user-owned Tier-2)")
+	}
+	if !checksums.WrittenThisRun[shimRel] {
+		t.Error("handlers_crud.go not marked written-this-run")
 	}
 
 	// The user customizes the file: replaces the delegation body.

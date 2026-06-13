@@ -44,7 +44,7 @@ func TestGenerateFrontendPages_PreservesHandEditsOnRegenerate(t *testing.T) {
 		},
 	}
 	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	// First run: scaffolds the file.
 	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
@@ -109,7 +109,7 @@ func TestGenerateFrontendPages_ResetTier2OverwritesHandEdits(t *testing.T) {
 		},
 	}
 	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
 		t.Fatalf("first generateFrontendPages: %v", err)

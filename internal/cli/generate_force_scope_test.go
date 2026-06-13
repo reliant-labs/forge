@@ -26,9 +26,9 @@ func navTemplateData() templates.FrontendTemplateData {
 // TestStepCheckTier1Drift_ForceIsScopedToFlaggedFiles drives the real
 // guard step with ctx.Force and verifies the installed force scope:
 // the drifted Tier-1 file the guard reported is force-overwritable,
-// while a hand-edited file the guard did NOT flag (here a Tier-2
-// entry, which the guard ignores by design) survives a force=true
-// write through the same chokepoint.
+// while a hand-edited certified file the guard did NOT flag (here a
+// Tier-2-managed starter, which scanProjectDrift exempts by design)
+// survives a force=true write through the same chokepoint.
 func TestStepCheckTier1Drift_ForceIsScopedToFlaggedFiles(t *testing.T) {
 	checksums.ResetPerRunState()
 	t.Cleanup(checksums.ResetPerRunState)
@@ -37,27 +37,36 @@ func TestStepCheckTier1Drift_ForceIsScopedToFlaggedFiles(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteScopeFile(t, filepath.Join(dir, "proto", "services", "api", "v1", "api.proto"), "syntax = \"proto3\";\n")
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	cs := &checksums.FileChecksums{}
 
-	// Drifted Tier-1 file — the guard flags this one.
+	// Drifted Tier-1 file — the guard flags this one. Marker carries
+	// the as-generated hash; body is the hand-edit → Modified.
 	const flagged = "pkg/app/wire_gen.go"
-	cs.RecordFile(flagged, []byte("package app // as generated\n"))
-	entry := cs.Files[flagged]
-	entry.Tier = 1
-	cs.Files[flagged] = entry
-	mustWriteScopeFile(t, filepath.Join(dir, flagged), "package app // hand-edited\n")
+	flaggedBytes, ok := checksums.StampWithValue(flagged,
+		[]byte("package app // hand-edited\n"),
+		checksums.BodyHash([]byte("package app // as generated\n")))
+	if !ok {
+		t.Fatal("wire_gen.go should be stampable")
+	}
+	mustWriteScopeFile(t, filepath.Join(dir, flagged), string(flaggedBytes))
 
-	// Hand-edited Tier-2 file — the guard ignores Tier-2, so this is
-	// never flagged. A Tier-1 emitter can still target such a path (the
-	// tier-reclassification upgrade flow goes through the plain
-	// WriteGeneratedFile chokepoint), and --force must not clobber it.
-	const unflagged = "handlers/echo/service.go"
-	cs.RecordFile(unflagged, []byte("package echo // scaffolded\n"))
-	entry = cs.Files[unflagged]
-	entry.Tier = 2
-	cs.Files[unflagged] = entry
-	const tier2Edit = "package echo // precious user logic\n"
-	mustWriteScopeFile(t, filepath.Join(dir, unflagged), tier2Edit)
+	// Hand-edited certified file the guard does NOT flag: Taskfile.yml
+	// is in generator.Tier2ManagedPaths, so scanProjectDrift exempts it
+	// (edits there are sanctioned). An emitter can still target such a
+	// path through the plain WriteGeneratedFile chokepoint, and --force
+	// must not clobber it.
+	const unflagged = "Taskfile.yml"
+	if !tier2MigratedPaths[unflagged] {
+		t.Fatalf("%s is no longer Tier-2-managed; pick another exempt path for this test", unflagged)
+	}
+	const tier2Edit = "# precious user task definitions\n"
+	unflaggedBytes, ok := checksums.StampWithValue(unflagged,
+		[]byte(tier2Edit),
+		checksums.BodyHash([]byte("# as scaffolded\n")))
+	if !ok {
+		t.Fatal("Taskfile.yml should be stampable")
+	}
+	mustWriteScopeFile(t, filepath.Join(dir, unflagged), string(unflaggedBytes))
 
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs, Force: true}
 	if err := stepCheckTier1Drift(ctx); err != nil {
@@ -74,7 +83,7 @@ func TestStepCheckTier1Drift_ForceIsScopedToFlaggedFiles(t *testing.T) {
 	}
 
 	// The unflagged hand-edit survives a force=true write.
-	wrote, err = checksums.WriteGeneratedFile(dir, unflagged, []byte("package echo // re-scaffold\n"), cs, true)
+	wrote, err = checksums.WriteGeneratedFile(dir, unflagged, []byte("# re-scaffold\n"), cs, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +91,8 @@ func TestStepCheckTier1Drift_ForceIsScopedToFlaggedFiles(t *testing.T) {
 		t.Errorf("--force overwrote %s, which the guard never flagged", unflagged)
 	}
 	got, _ := os.ReadFile(filepath.Join(dir, unflagged))
-	if string(got) != tier2Edit {
-		t.Errorf("unflagged Tier-2 hand-edit destroyed under --force; got %q", got)
+	if string(got) != string(unflaggedBytes) {
+		t.Errorf("unflagged hand-edit destroyed under --force; got %q", got)
 	}
 }
 
@@ -96,20 +105,28 @@ func TestStepCheckTier1Drift_ForceWithNoDriftInstallsEmptyScope(t *testing.T) {
 	checksums.ResetSkipWrite()
 
 	dir := t.TempDir()
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
-	const rel = "handlers/echo/service.go"
-	cs.RecordFile(rel, []byte("package echo // scaffolded\n"))
-	entry := cs.Files[rel]
-	entry.Tier = 2
-	cs.Files[rel] = entry
-	mustWriteScopeFile(t, filepath.Join(dir, rel), "package echo // user edit\n")
+	cs := &checksums.FileChecksums{}
+	// A hand-edited certified file scanProjectDrift exempts (Tier-2
+	// managed) — so the guard flags NOTHING, and the empty force scope
+	// must keep a force=true write away from it.
+	const rel = "Taskfile.yml"
+	if !tier2MigratedPaths[rel] {
+		t.Fatalf("%s is no longer Tier-2-managed; pick another exempt path for this test", rel)
+	}
+	stamped, ok := checksums.StampWithValue(rel,
+		[]byte("# user edit\n"),
+		checksums.BodyHash([]byte("# as scaffolded\n")))
+	if !ok {
+		t.Fatal("Taskfile.yml should be stampable")
+	}
+	mustWriteScopeFile(t, filepath.Join(dir, rel), string(stamped))
 
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs, Force: true}
 	if err := stepCheckTier1Drift(ctx); err != nil {
 		t.Fatalf("clean-tree guard with --force: %v", err)
 	}
 
-	wrote, err := checksums.WriteGeneratedFile(dir, rel, []byte("package echo // regen\n"), cs, true)
+	wrote, err := checksums.WriteGeneratedFile(dir, rel, []byte("# regen\n"), cs, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +148,7 @@ func TestEmitTier2OnceIfMissing_NeverClobbersWithoutResetTier2(t *testing.T) {
 	const userNav = "// fully user-curated nav\n"
 	mustWriteScopeFile(t, filepath.Join(dir, rel), userNav)
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{}}
+	cs := &checksums.FileChecksums{}
 
 	// No hook installed (plain run, or plain --force run): preserved.
 	if err := emitTier2OnceIfMissing(dir, rel, "nextjs/src/components/nav.tsx.tmpl", navTemplateData(), cs); err != nil {

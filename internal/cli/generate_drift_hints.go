@@ -9,10 +9,6 @@
 // file shape, so the error message teaches the extension point first
 // and the disown one-way door last.
 //
-// The same mapping feeds `forge unfork --merge`'s post-merge guidance
-// (legacy-fork migration aid): a cleanly merged file is about to be
-// re-rendered by the next generate, so surviving customizations need
-// to move to the same destinations.
 package cli
 
 import (
@@ -97,13 +93,15 @@ func formatTier1DriftReport(drift []checksums.Tier1DriftEntry) string {
 	fmt.Fprintf(&b, "%d Tier-1 file(s) modified after last `forge generate`:\n\n", len(drift))
 	for _, d := range drift {
 		fmt.Fprintf(&b, "  • %s\n", d.Path)
-		fmt.Fprintf(&b, "      recorded: %s\n", short(d.RecordedHash))
-		if d.HistoricalMatch {
-			// Only reachable under --no-heal: the content matches a PRIOR
-			// render, which the default mode would auto-heal (loudly).
-			fmt.Fprintf(&b, "      current:  %s (matches a prior forge render — reported because --no-heal; a default run would auto-heal it)\n", short(d.OnDiskHash))
+		if d.Unverified {
+			// Legacy-manifest migration sentinel: the bytes matched
+			// nothing the dead manifest recorded AND no fresh render —
+			// forge cannot prove these bytes are its own output.
+			fmt.Fprintf(&b, "      embedded: %s (provenance unknown since the legacy checksums.json migration)\n", checksums.UnverifiedMarkerValue)
+			fmt.Fprintf(&b, "      current:  %s\n", short(d.OnDiskHash))
 		} else {
-			fmt.Fprintf(&b, "      current:  %s (no match in %d prior render(s))\n", short(d.OnDiskHash), d.HistoryDepth)
+			fmt.Fprintf(&b, "      embedded: %s (the hash stamped at the last forge write)\n", short(d.RecordedHash))
+			fmt.Fprintf(&b, "      current:  %s (recomputed from the file's bytes — the file changed after forge wrote it)\n", short(d.OnDiskHash))
 		}
 		if hint := tier1ExtensionPointHint(d.Path); hint != "" {
 			fmt.Fprintf(&b, "      ↪ %s\n", hint)

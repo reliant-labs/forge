@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // ErrProjectConfigNotFound is returned when forge.yaml does not exist.
@@ -52,6 +53,29 @@ func loadProjectConfig() (*config.ProjectConfig, error) {
 		return nil, err
 	}
 	return loadProjectConfigFrom(path)
+}
+
+// loadProjectStore reads forge.yaml (walking up from cwd) and returns a
+// projectstore.ProjectStore — the single read+mutate surface consumers
+// route through. It is the store-returning sibling of loadProjectConfig;
+// new code should prefer it so nothing outside the store impl holds a
+// *config.ProjectConfig.
+func loadProjectStore() (projectstore.ProjectStore, error) {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		return nil, err
+	}
+	return projectstore.New(cfg), nil
+}
+
+// loadProjectStoreFrom reads and wraps a project config at the given path
+// in a ProjectStore. Sibling of loadProjectConfigFrom.
+func loadProjectStoreFrom(path string) (projectstore.ProjectStore, error) {
+	cfg, err := loadProjectConfigFrom(path)
+	if err != nil {
+		return nil, err
+	}
+	return projectstore.New(cfg), nil
 }
 
 // loadProjectConfigFrom reads and parses a project config from the given path.

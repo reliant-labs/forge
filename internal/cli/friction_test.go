@@ -28,7 +28,6 @@ import (
 const minimalFrictionForgeYAML = `name: testproj
 module_path: example.com/testproj
 version: 0.1.0
-kind: service
 `
 
 // runFriction executes `forge friction <args...>` against a fresh
@@ -341,6 +340,7 @@ func TestAuditFriction(t *testing.T) {
 
 	t.Run("additive: full report carries the category and round-trips", func(t *testing.T) {
 		dir := withTempProject(t, minimalFrictionForgeYAML)
+		writeComponentsJSON(t, dir) // empty → service kind; lets buildAuditReport load config
 		if _, _, err := runFriction(t, "", "add", "report-level entry", "--severity", "p2"); err != nil {
 			t.Fatalf("add: %v", err)
 		}

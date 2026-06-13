@@ -5,18 +5,24 @@ import (
 	"testing"
 )
 
+// serviceComponent is a single server component, injected via the
+// LoadStrict variadic to derive the project kind to "service" now that
+// components (and kind) live outside forge.yaml.
+func serviceComponent() []ComponentConfig {
+	return []ComponentConfig{{Name: "api", Kind: "server", Path: "handlers/api"}}
+}
+
 // TestFeatureGraph_FrontendRequiresCodegen pins the canonical error
 // shape from the spec: a feature enabled with a dependency off is a load
 // error naming both sides and the fix.
 func TestFeatureGraph_FrontendRequiresCodegen(t *testing.T) {
 	in := `name: demo
 module_path: github.com/example/demo
-kind: service
 features:
   codegen: false
   frontend: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
 	if err == nil {
 		t.Fatal("expected load error for frontend-on/codegen-off, got nil")
 	}
@@ -33,14 +39,13 @@ features:
 func TestFeatureGraph_ORMRequiresDriver(t *testing.T) {
 	in := `name: demo
 module_path: github.com/example/demo
-kind: service
 database:
   driver: none
 features:
   orm: true
   migrations: false
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
 	if err == nil {
 		t.Fatal("expected load error for orm-on/driver-none, got nil")
 	}
@@ -53,12 +58,11 @@ features:
 func TestFeatureGraph_DeployRequiresBuild(t *testing.T) {
 	in := `name: demo
 module_path: github.com/example/demo
-kind: service
 features:
   build: false
   deploy: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
 	if err == nil {
 		t.Fatal("expected load error for deploy-on/build-off, got nil")
 	}
@@ -72,13 +76,12 @@ features:
 func TestFeatureGraph_IngressRequiresDeploy(t *testing.T) {
 	in := `name: demo
 module_path: github.com/example/demo
-kind: service
 features:
   deploy: false
   experimental:
     ingress: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
 	if err == nil {
 		t.Fatal("expected load error for ingress-on/deploy-off, got nil")
 	}
@@ -91,16 +94,13 @@ features:
 // operator-kind component without the experimental operators feature is
 // a load error.
 func TestFeatureGraph_OperatorComponentRequiresOperatorsFeature(t *testing.T) {
-	in := `name: demo
+	// The operator component is injected via the variadic; an operator kind
+	// derives the project to "service".
+	operator := ComponentConfig{Name: "widget", Kind: "operator", Group: "example.com", Version: "v1"}
+	base := `name: demo
 module_path: github.com/example/demo
-kind: service
-components:
-  - name: widget
-    kind: operator
-    group: example.com
-    version: v1
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(base), "forge.yaml", operator)
 	if err == nil {
 		t.Fatal("expected load error for operator component without operators feature, got nil")
 	}
@@ -109,11 +109,11 @@ components:
 	}
 
 	// With the feature on, it loads clean.
-	ok := in + `features:
+	ok := base + `features:
   experimental:
     operators: true
 `
-	if _, err := LoadStrict([]byte(ok), "forge.yaml"); err != nil {
+	if _, err := LoadStrict([]byte(ok), "forge.yaml", operator); err != nil {
 		t.Fatalf("operator component WITH operators feature should load: %v", err)
 	}
 }
@@ -123,14 +123,13 @@ components:
 func TestFeatureGraph_BatchesMultipleViolations(t *testing.T) {
 	in := `name: demo
 module_path: github.com/example/demo
-kind: service
 features:
   codegen: false
   frontend: true
   build: false
   deploy: true
 `
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
 	if err == nil {
 		t.Fatal("expected batched load error, got nil")
 	}
@@ -148,7 +147,6 @@ features:
 func TestFeatureGraph_ALaCarteLitmus(t *testing.T) {
 	in := `name: pure-orm
 module_path: github.com/example/pure-orm
-kind: service
 database:
   driver: postgres
 features:
@@ -166,7 +164,7 @@ features:
   contracts: false
   docs: false
 `
-	cfg, err := LoadStrict([]byte(in), "forge.yaml")
+	cfg, err := LoadStrict([]byte(in), "forge.yaml", serviceComponent()...)
 	if err != nil {
 		t.Fatalf("à la carte ORM+codegen+migrations config must load clean: %v", err)
 	}

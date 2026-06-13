@@ -17,17 +17,19 @@ import (
 	"testing"
 )
 
-// minimalServiceForgeYAML is a forge.yaml with kind=service so
-// requireServiceKind passes. The handler-file path is irrelevant to
-// forge.yaml so we don't have to declare a services: entry.
+// minimalServiceForgeYAML is a global-only forge.yaml. Project kind now
+// derives from components.json (no `kind:` field), so service-kind callers
+// pair this with an empty components.json (writeComponentsJSON with no
+// components → `{"components":[]}` → service shell) so requireServiceKind
+// passes. The handler-file path is irrelevant to the component list.
 const minimalServiceForgeYAML = `name: testproj
 module_path: example.com/testproj
 version: 0.1.0
-kind: service
 `
 
 func TestRunAddHandlerFile_HappyPath(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	handlerDir := filepath.Join(dir, "handlers", "billing")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/billing: %v", err)
@@ -56,7 +58,8 @@ func TestRunAddHandlerFile_HappyPath(t *testing.T) {
 }
 
 func TestRunAddHandlerFile_MissingHandlerDir(t *testing.T) {
-	withTempProject(t, minimalServiceForgeYAML)
+	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	// No handlers/billing dir on disk.
 
 	err := runAddHandlerFile("billing", "extras")
@@ -70,6 +73,7 @@ func TestRunAddHandlerFile_MissingHandlerDir(t *testing.T) {
 
 func TestRunAddHandlerFile_FileAlreadyExists(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	handlerDir := filepath.Join(dir, "handlers", "billing")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/billing: %v", err)
@@ -96,6 +100,7 @@ func TestRunAddHandlerFile_FileAlreadyExists(t *testing.T) {
 
 func TestRunAddHandlerFile_TolerateGoSuffix(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
+	writeComponentsJSON(t, dir)
 	handlerDir := filepath.Join(dir, "handlers", "billing")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/billing: %v", err)

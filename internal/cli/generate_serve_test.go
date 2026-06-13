@@ -16,6 +16,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -242,17 +243,14 @@ func TestAuditShape_ServedFalseAdditive(t *testing.T) {
 	dir := t.TempDir()
 	yamlBody := `name: demo
 module_path: github.com/example/demo
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-  - name: project
-    kind: server
-    path: handlers/project
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir,
+		config.ComponentConfig{Name: "api", Kind: "server", Path: "handlers/api"},
+		config.ComponentConfig{Name: "project", Kind: "server", Path: "handlers/project"},
+	)
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
 		t.Fatalf("mkdir proto/services: %v", err)
 	}
@@ -338,17 +336,14 @@ func TestAuditCodegen_UnregisteredServiceFindings(t *testing.T) {
 	dir := t.TempDir()
 	yamlBody := `name: demo
 module_path: github.com/example/demo
-components:
-  - name: project
-    kind: server
-    path: handlers/project
-  - name: ledger
-    kind: server
-    path: handlers/ledger
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir,
+		config.ComponentConfig{Name: "project", Kind: "server", Path: "handlers/project"},
+		config.ComponentConfig{Name: "ledger", Kind: "server", Path: "handlers/ledger"},
+	)
 	// Pre-existing scaffolds: the dirs need a parsable package clause
 	// for the disk-first resolver to report FromDisk.
 	for _, svc := range []string{"project", "ledger"} {
@@ -504,16 +499,16 @@ func TestGenerateWebhookRoutes_UnregisteredServiceIsHardError(t *testing.T) {
 	writeServiceRegistry(t, dir, registryFixture) // project tombstoned
 	yamlBody := `name: demo
 module_path: github.com/example/demo
-components:
-  - name: project
-    kind: server
-    path: handlers/project
-    webhooks:
-      - name: stripe
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:     "project",
+		Kind:     "server",
+		Path:     "handlers/project",
+		Webhooks: []config.WebhookConfig{{Name: "stripe"}},
+	})
 	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatalf("load config: %v", err)

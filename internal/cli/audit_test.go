@@ -24,7 +24,6 @@ func TestAuditReport_BasicShape(t *testing.T) {
 module_path: github.com/test/test-project
 version: 0.0.1
 forge_version: dev
-components: []
 database: {}
 ci: {}
 docker: {}
@@ -37,6 +36,8 @@ docs: {}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	// Empty components.json → service kind (the empty-service shell).
+	writeComponentsJSON(t, dir)
 
 	// No .forge state files at all — the steady state in the
 	// self-certifying era (the manifest-era empty checksums.json would
@@ -542,14 +543,11 @@ func TestAuditShape_PerRPCStreamingAndMCPCallable(t *testing.T) {
 	yamlBody := `name: test-project
 module_path: github.com/test/test-project
 forge_version: dev
-components:
-  - name: tasks
-    kind: server
-    path: internal/tasks
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "internal/tasks"})
 	// proto/services must exist for auditShape to attempt the parse.
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
 		t.Fatalf("mkdir proto/services: %v", err)

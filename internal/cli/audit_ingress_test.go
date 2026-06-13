@@ -24,11 +24,11 @@ func TestAuditIngress_FeatureOffSkipsCategory(t *testing.T) {
 module_path: github.com/test/t
 version: 0.0.1
 forge_version: dev
-components: []
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeComponentsJSON(t, dir)
 	report, err := buildAuditReport(dir)
 	if err != nil {
 		t.Fatalf("buildAuditReport: %v", err)

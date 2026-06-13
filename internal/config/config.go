@@ -239,6 +239,19 @@ func (p *PortSpec) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// MarshalYAML emits the terse scalar form (`http: 8080`) when protocol
+// and expose are at their defaults, and the full mapping otherwise. This
+// keeps a freshly-scaffolded forge.yaml's ports: block as terse as the
+// single-port common case allows, while round-tripping the struct form
+// for ports that set protocol/expose.
+func (p PortSpec) MarshalYAML() (any, error) {
+	if p.Protocol == "" && !p.Expose {
+		return p.Port, nil
+	}
+	type rawPortSpec PortSpec
+	return rawPortSpec(p), nil
+}
+
 // PrimaryPort returns the component's primary HTTP port number (the
 // ports.http entry), or 0 when no http port is declared. This is the
 // port a server serves its Connect mux on and the one most consumers

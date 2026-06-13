@@ -1,6 +1,6 @@
 // Package testkit provides a small set of test helpers that every
-// forge-generated bootstrap_testing.go reinvents: a discard logger, an
-// in-memory SQLite ORM context (bare, or with the project's embedded
+// forge-generated bootstrap_testing.go reinvents: a discard logger, a
+// real-postgres ORM context (bare, or with the project's embedded
 // migrations applied), an httptest harness that wraps a Connect-mounted
 // service, a permissive Authorizer for non-authz tests, a claims-bearing
 // AuthedContext for handlers that read the current user, and a
@@ -23,12 +23,22 @@
 //	    logger: testkit.DiscardLogger(),
 //	    cfg:    &config.Config{},
 //	    authz:  testkit.PermissiveAuthorizer{},
-//	    db:     testkit.NewSQLiteMemDB(t), // when AnyServiceHasDB
+//	    db:     testkit.NewPostgresDB(t), // when AnyServiceHasDB
 //	}
 //
-// Projects with embedded migrations also get an opt-in migrated variant
-// (app.NewMigratedTestDB → NewMigratedSQLiteDB) for tests that need the
+// Projects with embedded migrations also get a migrated variant
+// (app.NewMigratedTestDB → NewMigratedPostgresDB) for tests that need the
 // real schema.
+//
+// # Real postgres, not SQLite
+//
+// forge is postgres-pinned. The DB helpers boot a real ephemeral
+// postgres (pkg/pgtest: embedded-postgres by default, or the
+// FORGE_TEST_POSTGRES_URL server) and hand each test its own isolated
+// database. This is the same engine production runs, so migrations apply
+// verbatim and there is no SQLite-portability subset to honor. The first
+// call in a process boots the shared server (downloading the pg binary on
+// a fresh machine); subsequent calls are cheap per-test databases.
 //
 // And NewTest<Svc>Server delegates to testkit.NewTestServer(t, register),
 // mounting the SAME interceptor chain shape production uses — only the
@@ -56,11 +66,8 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/tenant"
-
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
-
-	_ "github.com/reliant-labs/forge/pkg/dialects/sqlite" // register SQLite dialect for tests
 )
 
 // DiscardLogger returns a slog.Logger that drops every record. Use it as
@@ -74,43 +81,44 @@ func DiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// NewSQLiteMemDB returns a fresh in-memory SQLite ORM client suitable
-// for hermetic unit tests. The database is empty — callers that need a
-// schema should run migrations or create tables explicitly. The
-// underlying connection is closed via t.Cleanup, so the caller does not
-// need to defer a close.
+// NewPostgresDB returns a fresh, isolated real-postgres ORM client
+// suitable for hermetic unit tests. The database is empty — callers that
+// need a schema should run migrations (NewMigratedPostgresDB) or create
+// tables explicitly. The connection and the underlying database are
+// cleaned up via t.Cleanup, so the caller does not need to defer a close.
 //
-// Each call yields an isolated database. Two NewSQLiteMemDB calls in the
-// same test return ORM contexts backed by independent connections, which
-// is the right default for table-driven tests that mutate rows.
-//
-// The SQLite driver and dialect are registered transitively by
-// blank-imports in this package, so projects do not need to import
-// either themselves to use testkit.
-func NewSQLiteMemDB(t *testing.T) orm.Context {
+// Each call yields its OWN database on the process-shared ephemeral
+// postgres (pkg/pgtest), so two NewPostgresDB calls in the same test are
+// fully isolated — the right default for table-driven tests that mutate
+// rows. The first call in a process boots the shared server (downloading
+// the postgres binary on a fresh machine, or connecting to
+// FORGE_TEST_POSTGRES_URL); subsequent calls only CREATE DATABASE.
+func NewPostgresDB(t *testing.T) orm.Context {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, cleanup, err := pgtest.New()
 	if err != nil {
-		t.Fatalf("open test database: %v", err)
+		t.Fatalf("open test postgres: %v", err)
 	}
-	client, err := orm.NewClientWithDB(db, "sqlite")
+	client, err := orm.NewClientWithDB(db, "postgres")
 	if err != nil {
-		_ = db.Close()
+		cleanup()
 		t.Fatalf("create ORM client: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() {
+		_ = client.Close()
+		cleanup()
+	})
 	return client
 }
 
-// NewMigratedSQLiteDB returns an in-memory SQLite ORM client with the
+// NewMigratedPostgresDB returns a real-postgres ORM client with the
 // project's embedded migrations applied, so handler preconditions (tables,
 // indexes) hold in unit tests exactly as they do after AutoMigrate in
 // production. migrations is typically the project's embedded
 // `forgedb.MigrationsFS` (db/embed.go) — the same FS pkg/app/migrate.go
 // feeds to golang-migrate. Generated bootstrap testing code exposes this
-// as the opt-in app.NewMigratedTestDB(t) helper whenever the project has
-// migrations (opt-in, not the default: forge migrations usually target
-// PostgreSQL, and applying them to SQLite must be a loud explicit choice).
+// as the app.NewMigratedTestDB(t) helper whenever the project has
+// migrations.
 //
 // Files are discovered under a "migrations/" directory inside the FS when
 // present (matching the embed layout `//go:embed migrations/*.sql`),
@@ -118,31 +126,34 @@ func NewSQLiteMemDB(t *testing.T) orm.Context {
 // numeric version prefix (the `NNNN_name.up.sql` golang-migrate
 // convention), falling back to lexicographic order for non-numeric names.
 //
-// The SQL executes against SQLite as written. Migrations using
-// PostgreSQL-only syntax will fail loudly here (t.Fatalf names the file) —
-// keep migrations portable, or construct a custom DB via NewSQLiteMemDB
-// and seed schema by hand for the non-portable subset.
-func NewMigratedSQLiteDB(t *testing.T, migrations fs.FS) orm.Context {
+// The SQL executes against real postgres verbatim — the same engine
+// production runs — so there is no portability subset to honor. A
+// migration that postgres rejects fails loudly here (t.Fatalf names the
+// file).
+func NewMigratedPostgresDB(t *testing.T, migrations fs.FS) orm.Context {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, cleanup, err := pgtest.New()
 	if err != nil {
-		t.Fatalf("open test database: %v", err)
+		t.Fatalf("open test postgres: %v", err)
 	}
 	if err := applyUpMigrations(db, migrations); err != nil {
-		_ = db.Close()
+		cleanup()
 		t.Fatalf("apply embedded migrations: %v", err)
 	}
-	client, err := orm.NewClientWithDB(db, "sqlite")
+	client, err := orm.NewClientWithDB(db, "postgres")
 	if err != nil {
-		_ = db.Close()
+		cleanup()
 		t.Fatalf("create ORM client: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() {
+		_ = client.Close()
+		cleanup()
+	})
 	return client
 }
 
 // applyUpMigrations runs every *.up.sql file in migrations against db in
-// version order. Split out of NewMigratedSQLiteDB for direct testing.
+// version order. Split out of NewMigratedPostgresDB for direct testing.
 func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
 	root := migrations
 	if sub, err := fs.Sub(migrations, "migrations"); err == nil {
@@ -175,7 +186,7 @@ func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
 }
 
 // migrationError names the failing migration file so the t.Fatalf in
-// NewMigratedSQLiteDB points straight at the offending SQL.
+// NewMigratedPostgresDB points straight at the offending SQL.
 type migrationError struct {
 	file string
 	err  error

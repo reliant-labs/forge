@@ -38,8 +38,8 @@ type entityFieldType struct {
 //	[]int     BIGINT[]             repeated int64
 //	json      JSONB                string (JSON text on the wire)
 //
-// SQL stays in the portable pg/sqlite subset the shadow schema and
-// pkg/testkit both execute (see internal/schemadef).
+// SQL is plain postgres — the shadow schema (internal/schemadef) and
+// pkg/testkit both apply it verbatim to real postgres.
 var entityTypeVocab = map[string]entityFieldType{
 	"string":   {SQL: "TEXT", Proto: "string", ZeroSQL: "''"},
 	"int":      {SQL: "BIGINT", Proto: "int64", ZeroSQL: "0"},
@@ -267,8 +267,8 @@ func writeEntityMigration(migDir, table string, fields []entityField, opts addEn
 		}
 	}
 	if !opts.NoTimestamps {
-		// Parenthesized (now()) keeps the default in the portable
-		// pg/sqlite subset (bare now() is a parse error on SQLite).
+		// Parenthesized (now()) and bare now() are both valid postgres;
+		// the parens are kept for continuity with existing migrations.
 		b.WriteString(",\n    created_at TIMESTAMPTZ NOT NULL DEFAULT (now())")
 		b.WriteString(",\n    updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())")
 	}

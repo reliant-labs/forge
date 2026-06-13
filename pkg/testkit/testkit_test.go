@@ -25,17 +25,27 @@ func TestDiscardLogger_DropsRecords(t *testing.T) {
 	logger.With("scope", "test").Warn("with-attrs path")
 }
 
-func TestNewSQLiteMemDB_ReturnsUsableContext(t *testing.T) {
+// requirePG skips DB-backed testkit tests under -short: they boot the
+// shared ephemeral postgres (pkg/pgtest), well over the 2s short budget.
+func requirePG(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("boots real postgres; skipped under -short")
+	}
+}
+
+func TestNewPostgresDB_ReturnsUsableContext(t *testing.T) {
+	requirePG(t)
 	t.Parallel()
-	db := testkit.NewSQLiteMemDB(t)
+	db := testkit.NewPostgresDB(t)
 	if db == nil {
-		t.Fatal("NewSQLiteMemDB returned nil")
+		t.Fatal("NewPostgresDB returned nil")
 	}
 	// Round-trip a row.
-	if _, err := db.Exec(context.Background(), `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
+	if _, err := db.Exec(context.Background(), `CREATE TABLE t (id BIGSERIAL PRIMARY KEY, v TEXT)`); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
-	if _, err := db.Exec(context.Background(), `INSERT INTO t (v) VALUES (?)`, "hello"); err != nil {
+	if _, err := db.Exec(context.Background(), `INSERT INTO t (v) VALUES ($1)`, "hello"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	row := db.QueryRow(context.Background(), `SELECT v FROM t WHERE id = 1`)
@@ -48,27 +58,29 @@ func TestNewSQLiteMemDB_ReturnsUsableContext(t *testing.T) {
 	}
 }
 
-func TestNewSQLiteMemDB_IsolatedPerCall(t *testing.T) {
+func TestNewPostgresDB_IsolatedPerCall(t *testing.T) {
+	requirePG(t)
 	t.Parallel()
-	a := testkit.NewSQLiteMemDB(t)
-	b := testkit.NewSQLiteMemDB(t)
-	if _, err := a.Exec(context.Background(), `CREATE TABLE only_in_a (id INTEGER PRIMARY KEY)`); err != nil {
+	a := testkit.NewPostgresDB(t)
+	b := testkit.NewPostgresDB(t)
+	if _, err := a.Exec(context.Background(), `CREATE TABLE only_in_a (id BIGSERIAL PRIMARY KEY)`); err != nil {
 		t.Fatalf("create in a: %v", err)
 	}
-	// b must not see a's table.
+	// b is a separate database — it must not see a's table.
 	_, err := b.Exec(context.Background(), `SELECT * FROM only_in_a`)
 	if err == nil {
 		t.Fatal("expected error querying a's table from b's database, got nil")
 	}
 }
 
-func TestNewSQLiteMemDB_ClosedAfterTest(t *testing.T) {
+func TestNewPostgresDB_ClosedAfterTest(t *testing.T) {
+	requirePG(t)
 	t.Parallel()
 	var captured = make(chan struct{}, 1)
 	t.Run("inner", func(inner *testing.T) {
-		db := testkit.NewSQLiteMemDB(inner)
+		db := testkit.NewPostgresDB(inner)
 		// Use it once to make sure it's live.
-		if _, err := db.Exec(context.Background(), `CREATE TABLE x (id INTEGER PRIMARY KEY)`); err != nil {
+		if _, err := db.Exec(context.Background(), `CREATE TABLE x (id BIGSERIAL PRIMARY KEY)`); err != nil {
 			inner.Fatalf("exec: %v", err)
 		}
 		inner.Cleanup(func() { captured <- struct{}{} })
@@ -80,7 +92,7 @@ func TestNewSQLiteMemDB_ClosedAfterTest(t *testing.T) {
 	}
 	// We can't directly observe testkit's t.Cleanup-registered close (it
 	// runs against the inner t, not ours), but the inner test would have
-	// failed if NewSQLiteMemDB panicked or leaked a connection that
+	// failed if NewPostgresDB panicked or leaked a connection that
 	// couldn't be closed.
 }
 
@@ -187,19 +199,20 @@ func TestWithTestTenant_EmptyDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestNewMigratedSQLiteDB_AppliesUpMigrationsInVersionOrder(t *testing.T) {
+func TestNewMigratedPostgresDB_AppliesUpMigrationsInVersionOrder(t *testing.T) {
+	requirePG(t)
 	t.Parallel()
 	// Embed-shaped FS: files under migrations/, golang-migrate naming.
 	// 10_ sorts before 2_ lexically — numeric version order is required
 	// for the INSERT (10) to find the column added in (2).
 	mfs := fstest.MapFS{
-		"migrations/1_init.up.sql":       {Data: []byte(`CREATE TABLE users (id INTEGER PRIMARY KEY);`)},
+		"migrations/1_init.up.sql":       {Data: []byte(`CREATE TABLE users (id BIGINT PRIMARY KEY);`)},
 		"migrations/1_init.down.sql":     {Data: []byte(`DROP TABLE users;`)},
 		"migrations/2_add_name.up.sql":   {Data: []byte(`ALTER TABLE users ADD COLUMN name TEXT;`)},
 		"migrations/2_add_name.down.sql": {Data: []byte(`ALTER TABLE users DROP COLUMN name;`)},
 		"migrations/10_seed.up.sql":      {Data: []byte(`INSERT INTO users (id, name) VALUES (1, 'ada');`)},
 	}
-	db := testkit.NewMigratedSQLiteDB(t, mfs)
+	db := testkit.NewMigratedPostgresDB(t, mfs)
 	row := db.QueryRow(context.Background(), `SELECT name FROM users WHERE id = 1`)
 	var name string
 	if err := row.Scan(&name); err != nil {
@@ -215,23 +228,25 @@ func TestNewMigratedSQLiteDB_AppliesUpMigrationsInVersionOrder(t *testing.T) {
 	}
 }
 
-func TestNewMigratedSQLiteDB_RootLevelFS(t *testing.T) {
+func TestNewMigratedPostgresDB_RootLevelFS(t *testing.T) {
+	requirePG(t)
 	t.Parallel()
 	// No migrations/ wrapper dir — files at the FS root still apply.
 	mfs := fstest.MapFS{
-		"0001_init.up.sql": {Data: []byte(`CREATE TABLE things (id INTEGER PRIMARY KEY, v TEXT);`)},
+		"0001_init.up.sql": {Data: []byte(`CREATE TABLE things (id BIGSERIAL PRIMARY KEY, v TEXT);`)},
 	}
-	db := testkit.NewMigratedSQLiteDB(t, mfs)
+	db := testkit.NewMigratedPostgresDB(t, mfs)
 	if _, err := db.Exec(context.Background(), `INSERT INTO things (v) VALUES ('x')`); err != nil {
 		t.Fatalf("schema not applied from root-level FS: %v", err)
 	}
 }
 
-func TestNewMigratedSQLiteDB_EmptyFSYieldsEmptySchema(t *testing.T) {
+func TestNewMigratedPostgresDB_EmptyFSYieldsEmptySchema(t *testing.T) {
+	requirePG(t)
 	t.Parallel()
-	db := testkit.NewMigratedSQLiteDB(t, fstest.MapFS{})
-	// Behaves like NewSQLiteMemDB: usable, no tables.
-	if _, err := db.Exec(context.Background(), `CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+	db := testkit.NewMigratedPostgresDB(t, fstest.MapFS{})
+	// Behaves like NewPostgresDB: usable, no tables.
+	if _, err := db.Exec(context.Background(), `CREATE TABLE t (id BIGSERIAL PRIMARY KEY)`); err != nil {
 		t.Fatalf("exec on empty-migrations DB: %v", err)
 	}
 }

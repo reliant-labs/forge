@@ -78,7 +78,7 @@ ls proto/db 2>/dev/null            # old dedicated entity-proto directory
 3. **Delete `proto/db/` entity files** (if present) and any imports of
    them. Entity wire messages belong in the service proto.
 4. **Check the portable subset.** The shadow apply runs your migrations
-   on in-memory SQLite (exactly as your project's tests via
+   on a real ephemeral postgres (exactly as your project's tests via
    `pkg/testkit` already do): parenthesize function defaults
    (`DEFAULT (now())`), drop `::type` casts (`DEFAULT '{}'`, not
    `DEFAULT '{}'::jsonb`). Pg-only auxiliary DDL (extensions, functions,

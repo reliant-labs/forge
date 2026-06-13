@@ -244,7 +244,7 @@ When reviewing code or planning tests, provide a structured test plan:
 ### What to Mock vs Keep Real
 | Component | Decision | Rationale |
 |-----------|----------|-----------|
-| Database | Real (SQLite) | Need to test actual queries |
+| Database | Real (postgres) | Need to test actual queries |
 | Redis | Mock | Not testing caching logic |
 | Stripe API | Mock | External, non-deterministic |
 

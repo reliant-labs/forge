@@ -28,12 +28,12 @@ import (
 	"{{.Module}}/pkg/middleware"
 )
 
-// crudTestDB builds an in-memory database with the project's own
+// crudTestDB builds a real-postgres database with the project's own
 // migrations applied (db/migrations/*.up.sql, in order) — the schema the
 // generated CRUD code runs against in production.
 func crudTestDB(t *testing.T) orm.Context {
 	t.Helper()
-	db := testkit.NewSQLiteMemDB(t)
+	db := testkit.NewPostgresDB(t)
 	migDir := filepath.Join("..", "..", "db", "migrations")
 	entries, err := os.ReadDir(migDir)
 	if err != nil {

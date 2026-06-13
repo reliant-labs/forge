@@ -729,7 +729,7 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 			line:   line,
 			column: col,
 			msg:    "'database.driver' is required when features.orm is explicitly enabled",
-			fix:    "add 'database:\\n  driver: postgres' (or 'sqlite').",
+			fix:    "add 'database:\\n  driver: postgres'.",
 		})
 	}
 

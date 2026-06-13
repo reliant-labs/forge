@@ -30,7 +30,7 @@ Not every table needs an API exposure. Internal bookkeeping tables, junction tab
 <!-- @forge-only:start -->
 ## SQL is the schema language
 
-In forge, `db/migrations/*.up.sql` is the **single source of truth** — there is no schema DSL and no proto annotation. `forge generate` applies every up-migration (in lexical order) to an in-memory SQLite shadow database, introspects the resulting tables (columns, types, nullability, PKs, indexes), and projects:
+In forge, `db/migrations/*.up.sql` is the **single source of truth** — there is no schema DSL and no proto annotation. `forge generate` applies every up-migration (in lexical order) to a real ephemeral postgres shadow database, introspects the resulting tables (columns, types, nullability, PKs, indexes), and projects:
 
 - **Entity structs + ORM** — `internal/db/<entity>_orm.go`. The struct is a projection of the applied schema: `time.Time` for timestamp columns (never `timestamppb`), pointer fields for nullable columns, native slices for array columns.
 - **CRUD wiring** — `handlers/<svc>/handlers_crud_ops_gen.go`, including generated `<entity>ToProto` / `<entity>FromProto` conversions between the entity struct and the service-proto wire message.
@@ -96,15 +96,11 @@ The columns ARE the declaration. The generators read these conventions off the i
 | text columns | spanned by the generated list `search` filter |
 | every column | included in the `order_by` / filter allowlist (`<Entity>Columns`) |
 
-## The portable pg/sqlite subset
+## Just write postgres
 
-Your project's tests **and** forge's shadow introspection apply `db/migrations/*.up.sql` to in-memory SQLite, so table-defining DDL must stay in the portable subset (everything `forge add entity` emits is already in it):
+forge is postgres-pinned. Your project's tests **and** forge's shadow introspection apply `db/migrations/*.up.sql` **verbatim** to a real ephemeral postgres (no Docker — a cached embedded-postgres binary, or a running server via `FORGE_TEST_POSTGRES_URL`). There is no portability subset to honor: anything postgres accepts works — `::type` casts, schema-qualified names (`CREATE TABLE app.foo`), `JSONB`, native arrays (`TEXT[]`, `BIGINT[]`), generated/identity columns.
 
-- Parenthesize function defaults: `DEFAULT (now())`, not `DEFAULT now()`.
-- No `::type` casts: write `DEFAULT '{}'`, not `DEFAULT '{}'::jsonb` (postgres casts the literal implicitly).
-- Native arrays (`TEXT[]`, `BIGINT[]`) are fine.
-
-Postgres-only auxiliary statements (`CREATE EXTENSION` / `FUNCTION` / `TRIGGER` / `VIEW`, `COMMENT`, pg-specific DML) are skipped by the shadow — they can't affect the table/column model. A failing `CREATE TABLE` / `ALTER TABLE` / `DROP TABLE` / `CREATE INDEX` is a **hard `forge generate` error**: silently skipping one would generate an ORM that lies.
+Auxiliary statements the bare ephemeral DB can't satisfy (`CREATE EXTENSION` for an uninstalled extension, a role that doesn't exist) are skipped by the shadow — they can't affect the table/column model. A failing `CREATE TABLE` / `ALTER TABLE` / `DROP TABLE` / `CREATE INDEX` is a **hard `forge generate` error**: silently skipping one would generate an ORM that lies.
 
 ## Evolving an entity
 
@@ -128,7 +124,7 @@ The service-proto messages are the **API truth** and evolve independently after 
 
 ## Generated ORM semantics
 
-- `Create<Entity>` is a plain `INSERT` — never an upsert. String PKs left unset are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back into the struct (`RETURNING` on postgres, `LastInsertId` on sqlite) — any caller-provided value is ignored.
+- `Create<Entity>` is a plain `INSERT` — never an upsert. String PKs left unset are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back into the struct via `RETURNING` — any caller-provided value is ignored.
 - With stampable `created_at` / `updated_at` columns present, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps are emitted **in the column's projected type**: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
 - `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying files: each carries an embedded `forge:hash` marker in its header, so hand-edits trip the drift guard in any clone or worktree. `forge disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit when the generated CRUD can't express what you need.
 - Each entity exports `<Entity>Columns` — the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.

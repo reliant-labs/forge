@@ -1759,10 +1759,10 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		MultiTenantEnabled: multiTenantEnabled,
 		AnyServiceHasDB:    anyServiceHasDB,
 		// Same predicate GenerateMigrate uses for db/embed.go: when the
-		// project carries SQL migrations, the test default DB is the
-		// MIGRATED in-memory SQLite (testkit.NewMigratedSQLiteDB over
-		// forgedb.MigrationsFS) so generated CRUD/handler tests start
-		// with the real schema instead of an empty database.
+		// project carries SQL migrations, emit the opt-in NewMigratedTestDB
+		// helper (testkit.NewMigratedPostgresDB over forgedb.MigrationsFS)
+		// so generated CRUD/handler tests can start with the real schema
+		// instead of the bare default database.
 		HasMigrationsFS:    projectHasSQLMigrations(projectDir),
 		ExtraImports:       nil, // filled below after duplicate-filtering
 	}

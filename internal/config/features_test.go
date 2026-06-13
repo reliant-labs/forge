@@ -447,7 +447,7 @@ func TestStackConfig_WithValues(t *testing.T) {
 	s := StackConfig{
 		Backend:  StackBackend{Language: "rust", Framework: "axum"},
 		Frontend: StackFrontend{Framework: "svelte"},
-		Database: StackDatabase{Driver: "sqlite"},
+		Database: StackDatabase{Driver: "none"},
 		Proto:    StackProto{Enabled: boolPtr(false), Provider: "protoc"},
 		Deploy:   StackDeploy{Target: "cloudrun", Provider: "gke", Registry: "gcr.io"},
 		CI:       StackCI{Provider: "gitlab"},
@@ -460,7 +460,7 @@ func TestStackConfig_WithValues(t *testing.T) {
 	}{
 		{"EffectiveBackendLanguage", s.EffectiveBackendLanguage, "rust"},
 		{"EffectiveFrontendFramework", s.EffectiveFrontendFramework, "svelte"},
-		{"EffectiveDatabaseDriver", s.EffectiveDatabaseDriver, "sqlite"},
+		{"EffectiveDatabaseDriver", s.EffectiveDatabaseDriver, "none"},
 		{"EffectiveProtoProvider", s.EffectiveProtoProvider, "protoc"},
 		{"EffectiveDeployTarget", s.EffectiveDeployTarget, "cloudrun"},
 		{"EffectiveCIProvider", s.EffectiveCIProvider, "gitlab"},
@@ -483,7 +483,7 @@ func TestStackConfig_YAMLRoundTrip(t *testing.T) {
 	orig := StackConfig{
 		Backend:  StackBackend{Language: "python", Framework: "fastapi"},
 		Frontend: StackFrontend{Framework: "react-native"},
-		Database: StackDatabase{Driver: "mysql"},
+		Database: StackDatabase{Driver: "postgres"},
 		Proto:    StackProto{Enabled: boolPtr(true), Provider: "buf"},
 		Deploy:   StackDeploy{Target: "fly", Provider: "fly", Registry: "registry.fly.io"},
 		CI:       StackCI{Provider: "circleci"},
@@ -505,8 +505,8 @@ func TestStackConfig_YAMLRoundTrip(t *testing.T) {
 	if got.EffectiveFrontendFramework() != "react-native" {
 		t.Errorf("round-trip FrontendFramework = %q, want %q", got.EffectiveFrontendFramework(), "react-native")
 	}
-	if got.EffectiveDatabaseDriver() != "mysql" {
-		t.Errorf("round-trip DatabaseDriver = %q, want %q", got.EffectiveDatabaseDriver(), "mysql")
+	if got.EffectiveDatabaseDriver() != "postgres" {
+		t.Errorf("round-trip DatabaseDriver = %q, want %q", got.EffectiveDatabaseDriver(), "postgres")
 	}
 	if !got.IsProtoEnabled() {
 		t.Errorf("round-trip IsProtoEnabled = false, want true")

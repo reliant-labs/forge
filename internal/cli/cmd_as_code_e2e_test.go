@@ -123,8 +123,11 @@ func userCommands() []*cobra.Command {
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL=",
 		// Dev posture: production refuses to start without an auth
-		// provider (the refusal contract has its own tests).
+		// provider (the refusal contract has its own tests). Auth bypass
+		// is now EXPLICIT — ENVIRONMENT=development alone keeps auth on, so
+		// a providerless scaffold needs AUTH_DEV_MODE=true to boot in dev.
 		"ENVIRONMENT=development",
+		"AUTH_DEV_MODE=true",
 	)
 	var srvOut strings.Builder
 	srv.Stdout = &srvOut

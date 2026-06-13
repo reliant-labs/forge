@@ -317,15 +317,14 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 		// emitted its own). Per-service subcommands and `./<bin> server`
 		// both flow through BootstrapOnly, so neither path can silently
 		// swap to DevAuthorizer without the warn.
-		if got := strings.Count(rendered, "DEV MODE — authorization checks disabled"); got != 1 {
-			t.Errorf("expected exactly one dev-mode Warn site (BootstrapOnly, shared via the Bootstrap delegate), found %d occurrence(s)", got)
+		if got := strings.Count(rendered, "AUTH BYPASS — authorization checks disabled"); got != 1 {
+			t.Errorf("expected exactly one auth-bypass Warn site (BootstrapOnly, shared via the Bootstrap delegate), found %d occurrence(s)", got)
 		}
 		// Gate must match the wireXxxDeps swap condition exactly
-		// (cfg.Mode().IsDev() — the single typed dev-mode gate); emitting
-		// unconditionally would print at every prod boot too, which
-		// neuters the signal.
-		if !strings.Contains(rendered, "if cfg.Mode().IsDev() {") {
-			t.Error("dev-mode banner must be gated on `if cfg.Mode().IsDev() {`")
+		// (cfg.DevAuthBypass() — dev mode AND AUTH_DEV_MODE, NOT IsDev); the
+		// banner must never fire when authz is actually still enforced.
+		if !strings.Contains(rendered, "if cfg.DevAuthBypass() {") {
+			t.Error("auth-bypass banner must be gated on `if cfg.DevAuthBypass() {`")
 		}
 		if !strings.Contains(rendered, `"environment", cfg.Environment`) {
 			t.Error("dev-mode banner should attach the actual environment value so operators can see what triggered the swap")
@@ -347,8 +346,8 @@ func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
 		// No services → no DevAuthorizer swap → no banner. Emitting it
 		// here would force an unused `logger` reference and surface a
 		// misleading warning in CLI-only projects.
-		if strings.Contains(rendered, "DEV MODE — authorization checks disabled") {
-			t.Error("zero-service project must not emit the dev-mode banner (no Authorizer to swap)")
+		if strings.Contains(rendered, "AUTH BYPASS — authorization checks disabled") {
+			t.Error("zero-service project must not emit the auth-bypass banner (no Authorizer to swap)")
 		}
 	})
 }

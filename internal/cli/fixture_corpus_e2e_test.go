@@ -2091,9 +2091,14 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 		fmt.Sprintf("PORT=%d", port),
 		"DATABASE_URL="+devDSN,
 		"ENVIRONMENT=development",
+		// Auth bypass is EXPLICIT: ENVIRONMENT=development alone keeps auth
+		// ENFORCED. The dev-claims passthrough is opted into here with
+		// AUTH_DEV_MODE=true — proving that, once bypassed, a tokenless
+		// CreateItem succeeds via the synthetic dev principal.
+		"AUTH_DEV_MODE=true",
 	)
-	// Dev mode ALONE must be enough — force AUTH_MODE empty in case the
-	// host shell leaked one.
+	// Force AUTH_MODE empty in case the host shell leaked one — the bypass
+	// is driven by AUTH_DEV_MODE, not AUTH_MODE.
 	cmd.Env = withForcedEnv(cmd.Env, "AUTH_MODE", "")
 	var serverOut strings.Builder
 	cmd.Stdout = &serverOut

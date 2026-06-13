@@ -226,9 +226,11 @@ func TestE2EScaffoldServerStartup(t *testing.T) {
 		// The scaffold defaults ENVIRONMENT=production, where a server
 		// with no auth provider REFUSES to start (the H2 refusal
 		// contract, tested in forge/pkg/authn). This test is about the
-		// serve lifecycle (healthz/readyz), so boot in the documented
-		// dev posture instead.
+		// serve lifecycle (healthz/readyz). Auth bypass is now EXPLICIT —
+		// dev mode alone keeps auth on — so opt in with AUTH_DEV_MODE=true
+		// to boot the providerless scaffold.
 		"ENVIRONMENT=development",
+		"AUTH_DEV_MODE=true",
 	)
 
 	// Capture output for debugging

@@ -107,13 +107,13 @@ func resolve{{.Name}}(app *App) {{.TargetType}} {
 // resolve to a non-nil value here or New() will return an error at
 // startup.{{- if .NeedsAuthzVar}}
 //
-// Dev mode (cfg.Mode().IsDev() — the single typed gate derived from
-// ENVIRONMENT in pkg/config) swaps the per-service Authorizer for
-// middleware.DevAuthorizer{} so local iteration doesn't require a full
-// authz policy. Production remains fail-closed; bootstrap.go logs a
-// loud Warn at startup when dev mode is active so a prod manifest
-// accidentally setting ENVIRONMENT=development surfaces at every
-// container start.{{- end}}{{- if .UnresolvedFields}}
+// An EXPLICIT auth bypass (cfg.DevAuthBypass() — dev mode AND
+// AUTH_DEV_MODE=true, never ENVIRONMENT alone) swaps the per-service
+// Authorizer for middleware.DevAuthorizer{} so local iteration can skip
+// a full authz policy. Booting in development WITHOUT AUTH_DEV_MODE keeps
+// the real fail-closed Authorizer. Production can never bypass (Mode() is
+// never dev); cmd/server.go logs a loud Warn whenever the bypass is
+// active.{{- end}}{{- if .UnresolvedFields}}
 //
 // UNRESOLVED FIELDS (regenerate after extending *App or setup.go):
 {{- range .UnresolvedFields}}
@@ -122,7 +122,7 @@ func resolve{{.Name}}(app *App) {{.TargetType}} {
 func wire{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {{.Alias}}.Deps {
 {{- if .NeedsAuthzVar}}
 	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if cfg.Mode().IsDev() {
+	if cfg.DevAuthBypass() {
 		authz = middleware.DevAuthorizer{}
 	}
 {{- end}}
@@ -146,7 +146,7 @@ func wire{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {
 func wireWorker{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {{.Alias}}.Deps {
 {{- if .NeedsAuthzVar}}
 	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if cfg.Mode().IsDev() {
+	if cfg.DevAuthBypass() {
 		authz = middleware.DevAuthorizer{}
 	}
 {{- end}}
@@ -170,7 +170,7 @@ func wireWorker{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Log
 func wireOperator{{.FieldName}}Deps(app *App, cfg *config.Config, logger *slog.Logger) {{.Alias}}.Deps {
 {{- if .NeedsAuthzVar}}
 	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if cfg.Mode().IsDev() {
+	if cfg.DevAuthBypass() {
 		authz = middleware.DevAuthorizer{}
 	}
 {{- end}}

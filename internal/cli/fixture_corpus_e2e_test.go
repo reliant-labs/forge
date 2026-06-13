@@ -877,8 +877,8 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 
 	// ── 1. zero-service shape: nothing named after the binary ────────
 	assertZeroServiceShape(t, projectDir, "zerosvc")
-	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "services: []") {
-		t.Fatalf("bare scaffold forge.yaml must declare `services: []`")
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "components: []") {
+		t.Fatalf("bare scaffold forge.yaml must declare `components: []`")
 	}
 
 	// ── 2. generate ×2 — clean and idempotent at zero services ───────

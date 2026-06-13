@@ -240,14 +240,17 @@ func isExemptCmdFile(base string) bool {
 	return strings.HasSuffix(base, "_shared")
 }
 
-// readDeclaredBinaries returns the set of binary names declared in
-// forge.yaml's `binaries:` block. Until R5-2 ships `forge add binary`,
-// the block is empty in every project — i.e. the rule fires on every
-// non-`server.go` cmd file. That's fine: the warning surfaces the gap.
+// readDeclaredBinaries returns the set of binary-kind component names
+// declared in forge.yaml's `components:` block (entries with
+// `kind: binary`). Binaries used to live in a dedicated `binaries:`
+// block; the component-model unification folded them into `components:`
+// keyed on `kind:`.
 //
 // We parse forge.yaml manually to avoid pulling the full config package
-// into the linter's dependency graph; the binaries block is shallow
-// enough that a line-oriented reader works.
+// into the linter's dependency graph. The components block is shallow
+// enough that a line-oriented reader works: we walk each `- name:`
+// entry, remember its name, and emit it only once we see a sibling
+// `kind: binary` line within the same entry.
 func readDeclaredBinaries(path string) map[string]bool {
 	out := make(map[string]bool)
 	f, err := os.Open(path)
@@ -257,30 +260,55 @@ func readDeclaredBinaries(path string) map[string]bool {
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
-	inBinaries := false
+	inComponents := false
+	curName := ""
+	curKind := ""
+	flush := func() {
+		if curName != "" && curKind == "binary" {
+			out[curName] = true
+		}
+		curName = ""
+		curKind = ""
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		// New top-level key resets the in-block flag.
+		// New top-level key resets the in-block flag (and flushes any
+		// pending entry from the components block we're leaving).
 		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, "-") && trimmed != "" {
-			inBinaries = strings.HasPrefix(trimmed, "binaries:")
+			flush()
+			inComponents = strings.HasPrefix(trimmed, "components:")
 			continue
 		}
-		if !inBinaries {
+		if !inComponents {
 			continue
 		}
-		// Look for `- name: <name>` in the binaries: block.
-		if strings.HasPrefix(trimmed, "- name:") {
-			parts := strings.SplitN(trimmed, ":", 2)
-			if len(parts) == 2 {
-				name := strings.TrimSpace(parts[1])
-				name = strings.Trim(name, `"'`)
-				if name != "" {
-					out[name] = true
-				}
-			}
+		// A new list element starts a new entry — flush the previous one.
+		if strings.HasPrefix(trimmed, "- ") || trimmed == "-" {
+			flush()
+		}
+		if name, ok := scalarYAMLValue(trimmed, "name"); ok {
+			curName = name
+			continue
+		}
+		if kind, ok := scalarYAMLValue(trimmed, "kind"); ok {
+			curKind = kind
 			continue
 		}
 	}
+	flush()
 	return out
+}
+
+// scalarYAMLValue extracts the value of `key` from a line shaped like
+// `key: value` or `- key: value` (the first key of a list element),
+// stripping quotes. Returns ok=false when the line isn't that key.
+func scalarYAMLValue(trimmed, key string) (string, bool) {
+	body := strings.TrimPrefix(trimmed, "- ")
+	prefix := key + ":"
+	if !strings.HasPrefix(body, prefix) {
+		return "", false
+	}
+	v := strings.TrimSpace(strings.TrimPrefix(body, prefix))
+	return strings.Trim(v, `"'`), true
 }

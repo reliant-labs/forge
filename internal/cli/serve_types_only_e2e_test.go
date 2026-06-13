@@ -247,9 +247,9 @@ func addProjectServiceEntry(t *testing.T, projectDir string) {
 	if err != nil {
 		t.Fatalf("load forge.yaml: %v", err)
 	}
-	cfg.Services = append(cfg.Services, config.ServiceConfig{
+	cfg.Components = append(cfg.Components, config.ComponentConfig{
 		Name: "project",
-		Type: "go_service",
+		Kind: config.ComponentKindServer,
 		Path: "handlers/project",
 	})
 	if err := generator.WriteProjectConfigFile(cfg, path); err != nil {

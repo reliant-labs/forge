@@ -666,17 +666,27 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 			return false, fmt.Sprintf("request %s carries no %s message field (observed fields: %s)", cm.Method.InputType, cm.Entity.Name, describeFields(inputFields))
 		}
 	case "list":
-		// AIP-158-style template emits req.PageSize / req.PageToken
-		// when the input type follows List*Request naming. If we
-		// have field data and either is missing, the generated body
-		// fails to compile against the real proto (kalshi-trader's
-		// ListMarketsRequest carries `Limit` instead, for instance).
+		// Two valid AIP-132 list shapes are Tier-1:
+		//
+		//   - cursor-paginated: BOTH page_size and page_token present
+		//     (the template emits req.PageSize / req.PageToken and packs
+		//     NextPageToken);
+		//   - non-paginated: NEITHER present — a plain filtered/ordered
+		//     list that returns all matches (no cursor dereferences).
+		//
+		// Only an INCONSISTENT pair (exactly one of the two) falls to the
+		// custom path: the cursor template needs both, and a lone
+		// page_size (kalshi-trader's `Limit`/offset style, say) is a
+		// bespoke pagination contract the user must wire by hand.
 		if inputKnown && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
-			if _, hasSize := inputByName["page_size"]; !hasSize {
-				return false, fmt.Sprintf("request %s lacks page_size (AIP-158 pagination assumed by template; observed fields: %s)", cm.Method.InputType, describeFields(inputFields))
-			}
-			if _, hasTok := inputByName["page_token"]; !hasTok {
-				return false, fmt.Sprintf("request %s lacks page_token (AIP-158 pagination assumed by template; observed fields: %s)", cm.Method.InputType, describeFields(inputFields))
+			_, hasSize := inputByName["page_size"]
+			_, hasTok := inputByName["page_token"]
+			if hasSize != hasTok {
+				missing := "page_token"
+				if hasTok {
+					missing = "page_size"
+				}
+				return false, fmt.Sprintf("request %s has one half of AIP-158 cursor pagination but not the other (missing %s); add both for a cursor-paginated list, or neither for a plain filtered list (observed fields: %s)", cm.Method.InputType, missing, describeFields(inputFields))
 			}
 		}
 		// List response template emits `<EntityPlural>: items` and
@@ -700,6 +710,42 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 		}
 	}
 	return true, ""
+}
+
+// detectListPagination reports whether a list RPC gets cursor pagination
+// wired in. Cursor pagination is opt-in: the request must follow
+// List*Request naming AND actually carry both page_size and page_token.
+// A List*Request without them is a valid non-paginated AIP-132 list
+// (filter/order only) that validateCRUDShape admits to Tier-1 — its body
+// must NOT dereference req.PageSize/req.PageToken (they don't exist on
+// that proto). When there is no field descriptor at all (legacy path),
+// the historical assume-paginated behavior is preserved. Returns
+// ("", false-equivalents) for non-list / shape-mismatched methods.
+func detectListPagination(svc ServiceDef, cm CRUDMethod, shapeOK bool) (bool, string) {
+	if !shapeOK || cm.Operation != "list" {
+		return false, ""
+	}
+	if !strings.HasPrefix(cm.Method.InputType, "List") || !strings.HasSuffix(cm.Method.InputType, "Request") {
+		return false, ""
+	}
+	fields, ok := svc.Messages[cm.Method.InputType]
+	if !ok {
+		// No descriptor — preserve the historical assume-cursor default.
+		return true, "cursor"
+	}
+	hasSize, hasTok := false, false
+	for _, f := range fields {
+		switch f.Name {
+		case "page_size":
+			hasSize = true
+		case "page_token":
+			hasTok = true
+		}
+	}
+	if hasSize && hasTok {
+		return true, "cursor"
+	}
+	return false, ""
 }
 
 func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) (CRUDTemplateData, error) {
@@ -734,17 +780,10 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		// responses).
 		shapeOK, shapeReason := validateCRUDShape(svc, cm)
 
-		// Detect pagination for list operations: check if the input type
-		// follows AIP-158 naming (List<Entity>Request implies page_size).
-		// Skip when the shape didn't match — the stub branch doesn't
-		// dereference PageSize/PageToken so suppressing keeps the
-		// generated file from importing the crud lib unnecessarily.
-		hasPagination := false
-		paginationStyle := ""
-		if shapeOK && cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
-			hasPagination = true
-			paginationStyle = "cursor"
-		}
+		// Cursor pagination is opt-in (both page_size + page_token
+		// present); a List*Request without them is a plain non-paginated
+		// AIP-132 filtered/ordered list, still Tier-1.
+		hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
 
 		// Detect filters and ordering from request message fields.
 		// Skip when the shape didn't match: classifyFilterField would
@@ -1132,12 +1171,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		// `Id: 1` on a GetMarketRequest keyed on `string ticker`).
 		shapeOK, shapeReason := validateCRUDShape(svc, cm)
 
-		hasPagination := false
-		paginationStyle := ""
-		if shapeOK && cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
-			hasPagination = true
-			paginationStyle = "cursor"
-		}
+		hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
 
 		// Detect filters and ordering from request message fields.
 		// Skip when the shape didn't match — the stub branch doesn't

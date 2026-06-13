@@ -151,11 +151,12 @@ func TestBuildHostServiceCmd_LayersProjectConfig(t *testing.T) {
 module_path: github.com/example/testproj
 version: "0.1.0"
 binary: shared
-services:
+components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
-    port: 8080
+    ports:
+      http: 8080
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

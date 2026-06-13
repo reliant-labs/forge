@@ -242,12 +242,12 @@ func TestAuditShape_ServedFalseAdditive(t *testing.T) {
 	dir := t.TempDir()
 	yamlBody := `name: demo
 module_path: github.com/example/demo
-services:
+components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
   - name: project
-    type: go_service
+    kind: server
     path: handlers/project
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
@@ -338,12 +338,12 @@ func TestAuditCodegen_UnregisteredServiceFindings(t *testing.T) {
 	dir := t.TempDir()
 	yamlBody := `name: demo
 module_path: github.com/example/demo
-services:
+components:
   - name: project
-    type: go_service
+    kind: server
     path: handlers/project
   - name: ledger
-    type: go_service
+    kind: server
     path: handlers/ledger
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
@@ -504,9 +504,9 @@ func TestGenerateWebhookRoutes_UnregisteredServiceIsHardError(t *testing.T) {
 	writeServiceRegistry(t, dir, registryFixture) // project tombstoned
 	yamlBody := `name: demo
 module_path: github.com/example/demo
-services:
+components:
   - name: project
-    type: go_service
+    kind: server
     path: handlers/project
     webhooks:
       - name: stripe

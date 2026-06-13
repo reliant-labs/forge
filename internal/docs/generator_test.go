@@ -199,9 +199,9 @@ func TestArchitectureGeneratorProducesMermaid(t *testing.T) {
 	ctx := &Context{
 		ProjectConfig: &config.ProjectConfig{
 			Name: "test-project",
-			Services: []config.ServiceConfig{
-				{Name: "api-gateway", Type: "go_service", Port: 8080},
-				{Name: "user-service", Type: "go_service", Port: 8081},
+			Components: []config.ComponentConfig{
+				{Name: "api-gateway", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
+				{Name: "user-service", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8081}}},
 			},
 			Frontends: []config.FrontendConfig{
 				{Name: "web", Type: "nextjs", Port: 3000},

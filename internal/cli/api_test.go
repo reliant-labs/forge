@@ -23,22 +23,23 @@ import (
 //
 // Both pieces are required for buildCurlCommand to succeed end-to-end, and
 // constructing them inline in every test would dominate the file.
-func writeProjectWithDescriptor(t *testing.T, services []config.ServiceConfig, desc ForgeDescriptor) string {
+func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig, desc ForgeDescriptor) string {
 	t.Helper()
 	dir := t.TempDir()
 
 	yaml := strings.Builder{}
 	yaml.WriteString("name: test\n")
 	yaml.WriteString("module_path: github.com/example/test\n")
-	yaml.WriteString("services:\n")
+	yaml.WriteString("components:\n")
 	for _, s := range services {
 		yaml.WriteString("  - name: " + s.Name + "\n")
-		if s.Type != "" {
-			yaml.WriteString("    type: " + s.Type + "\n")
+		if s.Kind != "" {
+			yaml.WriteString("    kind: " + s.Kind + "\n")
 		}
-		if s.Port != 0 {
-			yaml.WriteString("    port: ")
-			yaml.WriteString(itoa(s.Port))
+		if p := s.PrimaryPort(); p != 0 {
+			yaml.WriteString("    ports:\n")
+			yaml.WriteString("      http: ")
+			yaml.WriteString(itoa(p))
 			yaml.WriteString("\n")
 		}
 	}
@@ -294,45 +295,45 @@ func TestMatchServicePort(t *testing.T) {
 	}{
 		{
 			name: "matches by package leaf",
-			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
-				{Name: "users", Type: "go_service", Port: 8123},
-				{Name: "other", Type: "go_service", Port: 9000},
+			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
+				{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
+				{Name: "other", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9000}}},
 			}},
 			want: 8123,
 		},
 		{
 			name: "matches by short service name",
-			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
-				{Name: "user", Type: "go_service", Port: 8200},
+			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
+				{Name: "user", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8200}}},
 			}},
 			want: 8200,
 		},
 		{
 			name: "matches by go pkg name",
-			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
-				{Name: "usersv1", Type: "go_service", Port: 8300},
+			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
+				{Name: "usersv1", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8300}}},
 			}},
 			want: 8300,
 		},
 		{
 			name: "falls back to first go_service entry",
-			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
-				{Name: "unrelated", Type: "go_service", Port: 8400},
+			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
+				{Name: "unrelated", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8400}}},
 			}},
 			want: 8400,
 		},
 		{
 			name: "ignores worker / operator entries",
-			cfg: &config.ProjectConfig{Services: []config.ServiceConfig{
-				{Name: "users", Type: "worker", Port: 9999},
-				{Name: "users-op", Type: "operator", Port: 9998},
-				{Name: "other", Type: "go_service", Port: 8500},
+			cfg: &config.ProjectConfig{Components: []config.ComponentConfig{
+				{Name: "users", Kind: config.ComponentKindWorker, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9999}}},
+				{Name: "users-op", Kind: config.ComponentKindOperator, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 9998}}},
+				{Name: "other", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8500}}},
 			}},
 			want: 8500,
 		},
 		{
 			name: "no matching service returns zero",
-			cfg:  &config.ProjectConfig{Services: nil},
+			cfg:  &config.ProjectConfig{Components: nil},
 			want: 0,
 		},
 		{
@@ -367,8 +368,8 @@ func TestBuildCurlCommand_HappyPath(t *testing.T) {
 			},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ServiceConfig{
-		{Name: "users", Type: "go_service", Port: 8123},
+	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
+		{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
 	}, desc)
 
 	out, err := buildCurlCommand(dir, "users.v1.UserService.GetUser", curlOptions{})
@@ -398,8 +399,8 @@ func TestBuildCurlCommand_PortOverride(t *testing.T) {
 			{Name: "Ping", InputType: "google.protobuf.Empty"},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ServiceConfig{
-		{Name: "users", Type: "go_service", Port: 8123},
+	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
+		{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
 	}, desc)
 
 	out, err := buildCurlCommand(dir, "users.v1.UserService.Ping", curlOptions{port: 9090})
@@ -430,8 +431,8 @@ func TestBuildCurlCommand_BodyOverride(t *testing.T) {
 			},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ServiceConfig{
-		{Name: "users", Type: "go_service", Port: 8123},
+	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
+		{Name: "users", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
 	}, desc)
 
 	custom := `{"name":"alice","age":30}`
@@ -462,8 +463,8 @@ func TestBuildCurlCommand_StreamingContentType(t *testing.T) {
 			"StreamRequest": {{Name: "id", ProtoType: "string"}},
 		},
 	}}}
-	dir := writeProjectWithDescriptor(t, []config.ServiceConfig{
-		{Name: "echo", Type: "go_service", Port: 8123},
+	dir := writeProjectWithDescriptor(t, []config.ComponentConfig{
+		{Name: "echo", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8123}}},
 	}, desc)
 
 	out, err := buildCurlCommand(dir, "echo.v1.EchoService.Stream", curlOptions{})

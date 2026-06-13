@@ -320,10 +320,10 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 		t.Fatal("cmd/main.go missing rootCmd")
 	}
 
-	// forge.yaml should have an empty services list
+	// forge.yaml should have an empty components list
 	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(configContents, "services: []") {
-		t.Fatalf("expected forge.yaml to have empty services list, got:\n%s", configContents)
+	if !strings.Contains(configContents, "components: []") {
+		t.Fatalf("expected forge.yaml to have empty components list, got:\n%s", configContents)
 	}
 }
 
@@ -590,11 +590,12 @@ func TestAppendServiceToConfigPreservesUnknownFields(t *testing.T) {
 	original := `name: sample
 module_path: example.com/sample
 version: 0.1.0
-services:
+components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
-    port: 8080
+    ports:
+      http: 8080
     custom_annotation: keep-me
 my_custom_section:
   something: true
@@ -626,11 +627,12 @@ func TestAppendFrontendToConfigPreservesUnknownFields(t *testing.T) {
 	original := `name: sample
 module_path: example.com/sample
 version: 0.1.0
-services:
+components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
-    port: 8080
+    ports:
+      http: 8080
 frontends:
   - name: web
     type: nextjs

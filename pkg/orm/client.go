@@ -87,19 +87,24 @@ func (c *Client) Dialect() Dialect { return c.dialect }
 // Close closes the database connection.
 func (c *Client) Close() error { return c.bun.Close() }
 
-// Exec runs a raw SQL statement (escape hatch).
+// Exec runs a raw SQL statement (escape hatch). It goes straight to the
+// underlying *sql.DB, NOT through bun's query formatter: callers write
+// native postgres SQL with $1/$2 placeholders, and bun's `?`-rewriting
+// must not touch it. (Generated code uses db.Bun()'s typed builders,
+// which handle their own placeholders.)
 func (c *Client) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return c.bun.ExecContext(ctx, query, args...)
+	return c.bun.DB.ExecContext(ctx, query, args...)
 }
 
-// Query runs a raw SQL query (escape hatch).
+// Query runs a raw SQL query (escape hatch). See Exec for the
+// raw-passthrough rationale.
 func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return c.bun.QueryContext(ctx, query, args...)
+	return c.bun.DB.QueryContext(ctx, query, args...)
 }
 
 // QueryRow runs a raw SQL query returning at most one row (escape hatch).
 func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return c.bun.QueryRowContext(ctx, query, args...)
+	return c.bun.DB.QueryRowContext(ctx, query, args...)
 }
 
 // Tx wraps a bun transaction as an orm.Context, so the same generated
@@ -117,19 +122,21 @@ func (t *Tx) Commit() error { return t.tx.Commit() }
 // Rollback rolls back the transaction.
 func (t *Tx) Rollback() error { return t.tx.Rollback() }
 
-// Exec runs a raw SQL statement within the transaction.
+// Exec runs a raw SQL statement within the transaction. Like Client.Exec
+// it bypasses bun's query formatter (native $1/$2 placeholders) by going
+// to the embedded *sql.Tx.
 func (t *Tx) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return t.tx.ExecContext(ctx, query, args...)
+	return t.tx.Tx.ExecContext(ctx, query, args...)
 }
 
-// Query runs a raw SQL query within the transaction.
+// Query runs a raw SQL query within the transaction (raw passthrough).
 func (t *Tx) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return t.tx.QueryContext(ctx, query, args...)
+	return t.tx.Tx.QueryContext(ctx, query, args...)
 }
 
-// QueryRow runs a raw SQL query within the transaction.
+// QueryRow runs a raw SQL query within the transaction (raw passthrough).
 func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return t.tx.QueryRowContext(ctx, query, args...)
+	return t.tx.Tx.QueryRowContext(ctx, query, args...)
 }
 
 // BeginTx starts a transaction.

@@ -208,7 +208,6 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 		d.Database = DatabaseConfig{
 			Driver:        "postgres",
 			MigrationsDir: "db/migrations",
-			SQLCEnabled:   false,
 			MigrationSafety: MigrationSafetyConfig{
 				Enabled:           &t,
 				UnsafeAddColumn:   "error",

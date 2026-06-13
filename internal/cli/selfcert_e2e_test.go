@@ -194,8 +194,8 @@ func TestE2ESelfCertParallelLaneSubsetCommit(t *testing.T) {
 	// itself the fix; commit whatever IS there to keep the scenario
 	// honest.
 	gitE2E(t, projectDir, "add", "-f", ".forge")
-	status := gitE2E(t, projectDir, "status", "--porcelain", "--cached")
-	if strings.TrimSpace(status) != "" {
+	staged := gitE2E(t, projectDir, "diff", "--cached", "--name-only")
+	if strings.TrimSpace(staged) != "" {
 		gitE2E(t, projectDir, "commit", "-q", "-m", "bookkeeping from WIP lane")
 	}
 

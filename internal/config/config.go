@@ -10,7 +10,11 @@
 //nolint:revive // max-public-structs: see package doc above.
 package config
 
-import "strings"
+import (
+	"strings"
+
+	"go.yaml.in/yaml/v3"
+)
 
 // ProjectKind identifies the shape of a forge project. The default,
 // "service", produces a Connect-RPC service scaffold (handlers,
@@ -82,10 +86,16 @@ type ProjectConfig struct {
 	// *bool so "absent" (nil → derived: on for service kind, off otherwise)
 	// is distinguishable from an explicit `hot_reload: false` opt-out. Use
 	// EffectiveHotReload; don't read the pointer directly.
-	HotReload *bool            `yaml:"hot_reload,omitempty"`
-	Services  []ServiceConfig  `yaml:"services"`
-	Packages     []PackageConfig  `yaml:"packages,omitempty"`
-	Frontends    []FrontendConfig `yaml:"frontends,omitempty"`
+	HotReload *bool `yaml:"hot_reload,omitempty"`
+	// Components is the unified list of everything this project builds and
+	// runs: Connect-RPC servers, in-process workers, scheduled crons,
+	// controller-runtime operators, and standalone binaries. The Kind field
+	// on each entry is THE discriminator (server|worker|cron|operator|binary)
+	// — it replaces the old split between `services:` (with a `type:` field)
+	// and `binaries:`. See [ComponentConfig].
+	Components []ComponentConfig `yaml:"components"`
+	Packages   []PackageConfig   `yaml:"packages,omitempty"`
+	Frontends  []FrontendConfig  `yaml:"frontends,omitempty"`
 	// Frontend holds project-level frontend settings — distinct from
 	// the per-frontend `Frontends []FrontendConfig` slice above. Today
 	// it only carries the opt-in `workspaces:` flag that turns on the
@@ -107,8 +117,8 @@ type ProjectConfig struct {
 	Contracts ContractsConfig `yaml:"contracts,omitempty"`
 	Auth      AuthConfig      `yaml:"auth,omitempty"`
 	Docs      DocsConfig      `yaml:"docs,omitempty"`
-	Features  FeaturesConfig        `yaml:"features,omitempty"`
-	Stack     StackConfig           `yaml:"stack,omitempty"`
+	Features  FeaturesConfig  `yaml:"features,omitempty"`
+	Stack     StackConfig     `yaml:"stack,omitempty"`
 	// API toggles project-level API protocol skins layered on top of the
 	// Connect mux. Default zero-value leaves both REST and OpenAPI off so
 	// existing projects regenerate identically. See [APIConfig] for the
@@ -116,33 +126,6 @@ type ProjectConfig struct {
 	API           APIConfig               `yaml:"api,omitempty"`
 	Packs         []string                `yaml:"packs,omitempty"`
 	PackOverrides map[string]PackOverride `yaml:"pack_overrides,omitempty"`
-	// Binaries declares non-server long-running processes scaffolded
-	// via `forge add binary <name>`. Each entry produces a `cmd/<name>.go`
-	// cobra subcommand and an `internal/<name>/` package owning lifecycle
-	// + business logic. Binaries are distinct from:
-	//   - services (Connect-RPC servers wired through pkg/app/bootstrap.go)
-	//   - workers   (in-process goroutines under the canonical server)
-	//   - operators (controller-runtime managers with CRDs)
-	// A binary is the right shape for: reverse proxies, sidecars, off-
-	// service NATS consumers, gateways — anything that needs its own
-	// Deployment but doesn't fit the server/worker/operator templates.
-	Binaries []BinaryConfig `yaml:"binaries,omitempty"`
-}
-
-// BinaryConfig represents a non-server long-running binary scaffolded
-// via `forge add binary <name>`. The shape mirrors ServiceConfig's
-// declarative bits — name, path on disk — without the Connect-RPC
-// fields (Type/Webhooks/CRDs/Group).
-type BinaryConfig struct {
-	// Name is the binary identifier in CLI / display form. May contain
-	// hyphens; the Go-package form is derived via naming.ServicePackage.
-	// Example: "workspace-proxy".
-	Name string `yaml:"name"`
-	// Path is the cobra subcommand source file relative to the project
-	// root. By convention "cmd/<package>.go" where <package> is the
-	// Go-package form of Name. Stored explicitly so future renames can
-	// avoid breaking forge.yaml-driven tooling.
-	Path string `yaml:"path"`
 }
 
 // PackOverride is a project-level override block for an installed pack,
@@ -158,30 +141,57 @@ type PackOverride struct {
 	SkipMigrations bool `yaml:"skip_migrations,omitempty"`
 }
 
-// ServiceConfig represents a Go service definition.
+// Component kind constants. Kind is the single discriminator on a
+// [ComponentConfig] — it replaces the old `services[].type` +
+// `services[].kind` pair and the separate `binaries:` block.
+//
+//   - server   — Connect-RPC handlers + authorizer + client + frontend
+//     hooks + bootstrap row + cobra subcommand (was type=go_service).
+//   - worker   — in-process ContextWorker goroutine; bootstrap Workers row.
+//   - cron     — scheduled job; Schedule drives it. In-process scheduled
+//     goroutine for dev, CronJob in deploy. First-class (was
+//     worker + kind:cron).
+//   - operator — controller-runtime manager + CRDs.
+//   - binary   — standalone cobra subcommand cmd/<name>.go (one image,
+//     run `./app <name>`); no bootstrap wiring (was the binaries: block).
+const (
+	ComponentKindServer   = "server"
+	ComponentKindWorker   = "worker"
+	ComponentKindCron     = "cron"
+	ComponentKindOperator = "operator"
+	ComponentKindBinary   = "binary"
+)
+
+// ComponentConfig represents one buildable/runnable unit of a forge
+// project. Its Kind field selects which scaffold + deploy treatment the
+// component receives; see the ComponentKind* constants.
 //
 // Host vs cluster placement (was services[].dev_target):
 //
-// An earlier revision (commit cd25640) put per-service host/cluster
+// An earlier revision (commit cd25640) put per-component host/cluster
 // placement on this struct. The decision moved to the KCL layer in the
 // feat/kcl-orchestration batch: deployment target is an environment
 // concern (which env runs this on the host, which arch, which runner),
-// not a service-shape concern. Per-env placement is now declared in
-// `deploy/kcl/<env>/main.k` via the [Service] schema's `deploy` field.
-// See the `migration/dev-target-to-kcl-deploy` skill for the move.
-type ServiceConfig struct {
-	Name          string          `yaml:"name"`
-	Type          string          `yaml:"type"`           // "go_service", "worker", "operator"
-	Kind          string          `yaml:"kind,omitempty"` // sub-type: worker kind ("cron"), empty = default
-	Path          string          `yaml:"path"`
-	Port          int             `yaml:"port,omitempty"`
-	Schedule      string          `yaml:"schedule,omitempty"` // cron expression for kind=cron workers
-	ProtoPackages []string        `yaml:"proto_packages,omitempty"`
-	Webhooks      []WebhookConfig `yaml:"webhooks,omitempty"`
-	// Group is the API group for type=operator services. e.g.
+// not a component-shape concern. Per-env placement is now declared in
+// `deploy/kcl/<env>/main.k`.
+type ComponentConfig struct {
+	Name string `yaml:"name"`
+	// Kind is THE discriminator: server|worker|cron|operator|binary.
+	// See the ComponentKind* constants.
+	Kind string `yaml:"kind"`
+	Path string `yaml:"path"`
+	// Ports is a named port map (http/grpc/metrics/proxy/…). Each entry
+	// unmarshals from EITHER a scalar int (`http: 8080`) or a struct
+	// (`http: {port: 8080, protocol: tcp, expose: true}`). Consumers
+	// reference ports BY NAME; a server's primary HTTP port is ports.http.
+	Ports         map[string]PortSpec `yaml:"ports,omitempty"`
+	Schedule      string              `yaml:"schedule,omitempty"` // cron expression for kind=cron
+	ProtoPackages []string            `yaml:"proto_packages,omitempty"`
+	Webhooks      []WebhookConfig     `yaml:"webhooks,omitempty"`
+	// Group is the API group for kind=operator components. e.g.
 	// "reliant.dev". Set when scaffolded via `forge add operator`.
 	Group string `yaml:"group,omitempty"`
-	// Version is the API version for type=operator services. e.g.
+	// Version is the API version for kind=operator components. e.g.
 	// "v1alpha1". Set when scaffolded via `forge add operator`.
 	Version string `yaml:"version,omitempty"`
 	// CRDs lists the CRDs reconciled by this operator. Each entry is
@@ -189,6 +199,117 @@ type ServiceConfig struct {
 	// operators/<operator>/<crd-name>_controller.go plus
 	// api/<version>/<crd-name>_types.go.
 	CRDs []CRDConfig `yaml:"crds,omitempty"`
+}
+
+// HTTPPortName is the conventional name for a component's primary HTTP
+// port in the Ports map. Server components serve their Connect mux here.
+const HTTPPortName = "http"
+
+// PortSpec describes one named port. It unmarshals from EITHER a YAML
+// scalar int — `http: 8080` (the common case, Protocol/Expose default) —
+// OR a struct — `http: {port: 8080, protocol: tcp, expose: true}`. See
+// UnmarshalYAML.
+type PortSpec struct {
+	Port     int    `yaml:"port"`
+	Protocol string `yaml:"protocol,omitempty"` // tcp (default), udp
+	Expose   bool   `yaml:"expose,omitempty"`   // surface on the k8s Service / Dockerfile EXPOSE
+}
+
+// UnmarshalYAML accepts a bare scalar int (`http: 8080`) or a full
+// mapping (`http: {port: 8080, protocol: tcp, expose: true}`). The
+// scalar form is sugar for `{port: N}` with default protocol/expose so
+// the common single-port case stays terse.
+func (p *PortSpec) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var n int
+		if err := value.Decode(&n); err != nil {
+			return err
+		}
+		p.Port = n
+		return nil
+	}
+	// Avoid infinite recursion: decode into a struct alias without the
+	// custom UnmarshalYAML method.
+	type rawPortSpec PortSpec
+	var raw rawPortSpec
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*p = PortSpec(raw)
+	return nil
+}
+
+// PrimaryPort returns the component's primary HTTP port number (the
+// ports.http entry), or 0 when no http port is declared. This is the
+// port a server serves its Connect mux on and the one most consumers
+// (dev loop, frontend nav, readiness) want.
+func (c ComponentConfig) PrimaryPort() int {
+	if c.Ports == nil {
+		return 0
+	}
+	return c.Ports[HTTPPortName].Port
+}
+
+// EffectiveKind returns the lowercased, trimmed kind, defaulting to
+// "server" for empty input (a component with no kind is a Connect
+// server — the historical `type: go_service` default).
+func (c ComponentConfig) EffectiveKind() string {
+	k := strings.ToLower(strings.TrimSpace(c.Kind))
+	if k == "" {
+		return ComponentKindServer
+	}
+	return k
+}
+
+// IsServer reports whether the component is a Connect-RPC server.
+func (c ComponentConfig) IsServer() bool { return c.EffectiveKind() == ComponentKindServer }
+
+// IsWorker reports whether the component is an in-process worker.
+func (c ComponentConfig) IsWorker() bool { return c.EffectiveKind() == ComponentKindWorker }
+
+// IsCron reports whether the component is a scheduled cron job.
+func (c ComponentConfig) IsCron() bool { return c.EffectiveKind() == ComponentKindCron }
+
+// IsOperator reports whether the component is a controller-runtime operator.
+func (c ComponentConfig) IsOperator() bool { return c.EffectiveKind() == ComponentKindOperator }
+
+// IsBinary reports whether the component is a standalone binary subcommand.
+func (c ComponentConfig) IsBinary() bool { return c.EffectiveKind() == ComponentKindBinary }
+
+// Servers returns the server-kind components — the Connect-RPC surfaces
+// that get handlers, the served-set registration, and frontend hooks.
+func (c ProjectConfig) Servers() []ComponentConfig {
+	return c.componentsOfKind(ComponentKindServer)
+}
+
+// Workers returns the worker-kind components.
+func (c ProjectConfig) Workers() []ComponentConfig {
+	return c.componentsOfKind(ComponentKindWorker)
+}
+
+// Crons returns the cron-kind components.
+func (c ProjectConfig) Crons() []ComponentConfig {
+	return c.componentsOfKind(ComponentKindCron)
+}
+
+// Operators returns the operator-kind components.
+func (c ProjectConfig) Operators() []ComponentConfig {
+	return c.componentsOfKind(ComponentKindOperator)
+}
+
+// BinaryComponents returns the binary-kind components.
+func (c ProjectConfig) BinaryComponents() []ComponentConfig {
+	return c.componentsOfKind(ComponentKindBinary)
+}
+
+func (c ProjectConfig) componentsOfKind(kind string) []ComponentConfig {
+	var out []ComponentConfig
+	for _, comp := range c.Components {
+		if comp.EffectiveKind() == kind {
+			out = append(out, comp)
+		}
+	}
+	return out
 }
 
 // CRDConfig represents a single Custom Resource Definition reconciled

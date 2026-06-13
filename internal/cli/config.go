@@ -71,17 +71,17 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 	}
 	cfg := *parsed
 
-	// Apply defaults for service paths and normalize enum casing. Older
-	// generators wrote "GO_SERVICE"; new ones write "go_service". Accept
-	// both by canonicalizing to lowercase snake_case on load.
-	for i := range cfg.Services {
-		if cfg.Services[i].Path == "" {
-			cfg.Services[i].Path = "handlers/" + cfg.Services[i].Name
-		}
-		if cfg.Services[i].Type == "" {
-			cfg.Services[i].Type = "go_service"
+	// Apply kind-derived path defaults and normalize the kind enum
+	// casing. An empty kind defaults to "server" (the historical
+	// type: go_service default).
+	for i := range cfg.Components {
+		if cfg.Components[i].Kind == "" {
+			cfg.Components[i].Kind = config.ComponentKindServer
 		} else {
-			cfg.Services[i].Type = normalizeEnum(cfg.Services[i].Type)
+			cfg.Components[i].Kind = normalizeEnum(cfg.Components[i].Kind)
+		}
+		if cfg.Components[i].Path == "" {
+			cfg.Components[i].Path = defaultServicePath(cfg.Components[i])
 		}
 	}
 

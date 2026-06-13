@@ -16,19 +16,19 @@ module_path: github.com/example/demo
 `
 
 func TestLoadStrict_RemovedServeKey_MigrationHint(t *testing.T) {
-	in := serveRemovedBaseYAML + `services:
+	in := serveRemovedBaseYAML + `components:
   - name: project
-    type: go_service
+    kind: server
     path: handlers/project
     serve: false
 `
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	if err == nil {
-		t.Fatalf("expected removed-key error for services[].serve")
+		t.Fatalf("expected removed-key error for components[].serve")
 	}
 	got := err.Error()
 	for _, want := range []string{
-		`"services[0].serve" was removed`,
+		`"components[0].serve" was removed`,
 		"registration-in-code",
 		"pkg/app/services.go",
 	} {
@@ -42,22 +42,22 @@ func TestLoadStrict_RemovedServeKey_MigrationHint(t *testing.T) {
 }
 
 func TestLoadStrict_RemovedServedByKey_MigrationHint(t *testing.T) {
-	in := serveRemovedBaseYAML + `services:
+	in := serveRemovedBaseYAML + `components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
   - name: project
-    type: go_service
+    kind: server
     path: handlers/project
     served_by: control-plane
 `
 	_, err := LoadStrict([]byte(in), "forge.yaml")
 	if err == nil {
-		t.Fatalf("expected removed-key error for services[].served_by")
+		t.Fatalf("expected removed-key error for components[].served_by")
 	}
 	got := err.Error()
 	for _, want := range []string{
-		`"services[1].served_by" was removed`,
+		`"components[1].served_by" was removed`,
 		"pkg/app/services.go",
 		"comment",
 	} {
@@ -71,16 +71,16 @@ func TestLoadStrict_RemovedServedByKey_MigrationHint(t *testing.T) {
 // services entry (the only shape that ever shipped in a release) still
 // loads cleanly after the serve/served_by removal.
 func TestLoadStrict_PlainServiceEntry_NoServeSurface(t *testing.T) {
-	in := serveRemovedBaseYAML + `services:
+	in := serveRemovedBaseYAML + `components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
 `
 	cfg, err := LoadStrict([]byte(in), "forge.yaml")
 	if err != nil {
 		t.Fatalf("clean load expected: %v", err)
 	}
-	if len(cfg.Services) != 1 || cfg.Services[0].Name != "api" {
-		t.Errorf("services = %+v, want the single api entry", cfg.Services)
+	if len(cfg.Components) != 1 || cfg.Components[0].Name != "api" {
+		t.Errorf("components = %+v, want the single api entry", cfg.Components)
 	}
 }

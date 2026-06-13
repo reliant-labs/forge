@@ -61,8 +61,8 @@ func runDevInfo(configPath string) error {
 	fmt.Printf("kubectl context (expected): %s\n", expectedCtx)
 	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()
-	fmt.Println("Declared service ports:")
-	printServicePorts(cfg.Services)
+	fmt.Println("Declared component ports:")
+	printServicePorts(cfg.Components)
 	if len(cfg.Frontends) > 0 {
 		fmt.Println()
 		fmt.Println("Declared frontend ports:")
@@ -73,20 +73,20 @@ func runDevInfo(configPath string) error {
 	return nil
 }
 
-func printServicePorts(svcs []config.ServiceConfig) {
-	if len(svcs) == 0 {
+func printServicePorts(comps []config.ComponentConfig) {
+	if len(comps) == 0 {
 		fmt.Println("  (none)")
 		return
 	}
-	sorted := append([]config.ServiceConfig{}, svcs...)
+	sorted := append([]config.ComponentConfig{}, comps...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	for _, s := range sorted {
-		port := s.Port
+	for _, c := range sorted {
+		port := c.PrimaryPort()
 		if port == 0 {
-			fmt.Printf("  %-30s (no port declared)\n", s.Name)
+			fmt.Printf("  %-30s (no port declared)\n", c.Name)
 			continue
 		}
-		fmt.Printf("  %-30s %d\n", s.Name, port)
+		fmt.Printf("  %-30s %d\n", c.Name, port)
 	}
 }
 

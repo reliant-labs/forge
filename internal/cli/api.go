@@ -311,20 +311,20 @@ func matchServicePort(cfg *config.ProjectConfig, svc codegen.ServiceDef) int {
 
 	candidates := serviceNameCandidates(svc)
 	for _, name := range candidates {
-		for _, s := range cfg.Services {
-			if s.Type == "worker" || s.Type == "operator" {
+		for _, s := range cfg.Components {
+			if !s.IsServer() {
 				continue
 			}
 			if strings.EqualFold(s.Name, name) {
-				return s.Port
+				return s.PrimaryPort()
 			}
 		}
 	}
 
-	// Fallback: first go_service entry.
-	for _, s := range cfg.Services {
-		if s.Type == "" || s.Type == "go_service" {
-			return s.Port
+	// Fallback: first server component.
+	for _, s := range cfg.Components {
+		if s.IsServer() {
+			return s.PrimaryPort()
 		}
 	}
 	return 0

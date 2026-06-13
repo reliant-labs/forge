@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"kcl-lang.io/kpm/pkg/client"
 )
 
 // KCLEntities is the typed, dispatched view of the JSON the sibling
@@ -374,36 +375,41 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	if _, err := os.Stat(kclDir); err != nil {
 		return nil, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
-	var out bytes.Buffer
-	// `kcl run -o <path>` writes to a file in kcl >= 0.11; for stdout
-	// JSON, use `--format json`. The previous `-o json` form was
-	// silently misread as "write to file named json", leaving stdout
-	// empty and every downstream consumer (forge run dispatch,
-	// lookupKCLHostDeploy) degrading to a nil result with no error.
-	cmd := exec.CommandContext(ctx, "kcl", kclRunArgs(kclDir, env)...)
-	// Run from the project root so the deploy-as-data main.k's
-	// `file.read("deploy/kcl/components_gen.json")` resolves
-	// deterministically regardless of forge's invocation cwd. KCL's
-	// `file.read` is process-cwd-relative (not package-root-relative),
-	// so the cwd is part of the contract.
-	cmd.Dir = projectDir
-	cmd.Stdout = &out
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("kcl run %s: %w", kclDir, err)
-	}
-	return out.Bytes(), nil
+	// Render the JSON contract through the embedded kpm + kcl-go runtime
+	// (no external `kcl` binary). `-D env=<env>` drives the per-env
+	// conditionals in the deploy module.
+	return renderKCLViaKpm(ctx, projectDir, kclDir, []string{"env=" + env})
 }
 
-// kclRunArgs returns the `kcl run` argv used by [renderKCLRaw]. Split
-// out so the env-name plumbing can be asserted from a unit test without
-// shelling a real kcl binary.
-func kclRunArgs(kclDir, env string) []string {
-	return []string{
-		"run", kclDir,
-		"--format", "json",
-		"-D", "env=" + env,
+// renderKCLViaKpm renders the KCL package rooted at kclDir through the
+// embedded kpm package manager + kcl-go runtime, returning the raw JSON
+// result. kpm reads the package's kcl.mod and resolves dependencies —
+// git, local path, and OCI/registry — exactly like the `kcl` CLI, so
+// projects declare the forge module (and any extra packages) in kcl.mod
+// in whatever style they like; forge neither parses nor special-cases
+// deps. This is the single seam every forge KCL render flows through.
+//
+// workDir is the process cwd KCL's `file.read` resolves against — the
+// project root, since the deploy-as-data main.k reads
+// `deploy/kcl/components_gen.json` cwd-relative, so the cwd is part of
+// the contract. args are `-D key=value` top-level option assignments
+// (e.g. "env=dev"). kpm progress/diagnostics go to stderr, matching the
+// previous `exec("kcl")`'s stderr passthrough.
+func renderKCLViaKpm(_ context.Context, workDir, kclDir string, args []string) ([]byte, error) {
+	cli, err := client.NewKpmClient()
+	if err != nil {
+		return nil, fmt.Errorf("kpm client: %w", err)
 	}
+	res, err := cli.Run(
+		client.WithRunSourceUrl(kclDir),
+		client.WithWorkDir(workDir),
+		client.WithArguments(args),
+		client.WithLogger(os.Stderr),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kpm run %s: %w", kclDir, err)
+	}
+	return []byte(res.GetRawJsonResult()), nil
 }
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,

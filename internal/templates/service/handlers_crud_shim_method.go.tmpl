@@ -5,20 +5,71 @@
 //
 // Custom read shape — this RPC's request/response deliberately diverges
 // from the AIP-158 CRUD conventions (see `forge skill load proto`), so
-// the body is yours to implement: that's the design working, not an
-// error. Compose the pkg/crud + pkg/orm helpers as building blocks:
-// orm.EncodeCursor / orm.DecodeCursor (cursor pagination),
-// orm.WhereEq / orm.WhereILikeAny / orm.WithWhere (filters),
-// validate any order_by against db.<Entity>Columns before querying.
-// `forge audit` lists it under crud_stubs until the body lands —
-// it returns CodeUnimplemented in production until then.
+// the body is YOURS to refine. forge scaffolded a WIRED starting point
+// rather than a blank stub: it runs a real (if naive) {{.EntityName}}
+// query against the database and projects the rows onto the wire via the
+// generated {{.EntityLower}}ToProto helper. Compose the pkg/crud + pkg/orm
+// helpers as building blocks — orm.WhereEq / orm.WhereILikeAny / orm.WithWhere
+// (filters), orm.WithOrderBy / orm.WithLimit (shaping; validate any order_by
+// against db.{{.EntityName}}Columns first), orm.EncodeCursor / orm.DecodeCursor
+// (cursor pagination) — or drop to raw SQL via s.deps.DB.Bun() (bun.Raw /
+// NewRaw / NewSelect). See internal/db/{{.EntityLower}}_repo_ext.go for the
+// hand-written-query seam. `forge audit` lists this RPC under crud_stubs
+// until you finish wiring the response (remove the TODO below).
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
 	req *connect.Request[pb.{{.InputType}}],
 ) (*connect.Response[pb.{{.OutputType}}], error) {
-	_ = ctx
 	_ = req
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("{{.MethodName}} is not implemented"))
+{{- if .HasTenant}}
+	tenantID, err := middleware.RequireTenantID(ctx)
+	if err != nil {
+		return nil, err
+	}
+{{- end}}
+	// Best-effort filters mapped from the request's scalar fields onto
+	// declared columns. Refine or replace these for your real query.
+	var opts []orm.QueryOption
+{{- range .CustomFilters}}
+{{- if .IsOptional}}
+	if req.Msg.{{.GoName}} != nil {
+{{- if eq .FilterType "search"}}
+		opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+*req.Msg.{{.GoName}}+"%"))
+{{- else}}
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", *req.Msg.{{.GoName}}))
+{{- end}}
+	}
+{{- else}}
+{{- if eq .FilterType "search"}}
+	if req.Msg.{{.GoName}} != "" {
+		opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+req.Msg.{{.GoName}}+"%"))
+	}
+{{- else if eq .FieldType "string"}}
+	if req.Msg.{{.GoName}} != "" {
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	}
+{{- else if eq .FieldType "bool"}}
+	opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+{{- else}}
+	if req.Msg.{{.GoName}} != 0 {
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	}
+{{- end}}
+{{- end}}
+{{- end}}
+
+	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB{{if .HasTenant}}, tenantID{{end}}, opts...)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	items := make([]*pb.{{.EntityName}}, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, {{.EntityLower}}ToProto(row))
+	}
+	_ = items // TODO: refine this query and place items onto pb.{{.OutputType}}.
+
+	return connect.NewResponse(&pb.{{.OutputType}}{}), nil
 }
 {{- else}}
 // {{.MethodName}} handles the {{.MethodName}} RPC (CRUD {{.Operation}}).

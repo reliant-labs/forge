@@ -283,11 +283,11 @@ func availableServicesHint(services []codegen.ServiceDef) string {
 // project may not have forge.yaml yet, in which case the default port +
 // --port override are sufficient.
 func lookupServicePort(projectDir string, svc codegen.ServiceDef) int {
-	cfg, err := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile))
+	store, err := loadProjectStoreFrom(filepath.Join(projectDir, defaultProjectConfigFile))
 	if err != nil {
 		return 0
 	}
-	return matchServicePort(cfg, svc)
+	return matchServicePort(store.Config(), svc)
 }
 
 // matchServicePort picks the most likely services[] entry for svc. We try

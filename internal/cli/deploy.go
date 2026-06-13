@@ -118,10 +118,11 @@ Examples:
 // debugging why `forge deploy staging` refuses to apply or what context
 // staging is expected to live in.
 func runDeployExplain(ctx context.Context, envName, override string) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 	expected := expectedClusterForEnv(ctx, cfg, envName)
 	current := strings.TrimSpace(currentKubectlContext(ctx))
 
@@ -206,17 +207,18 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	targetArchFlag := opts.targetArch
 	prune := opts.prune
 	rollback := opts.rollback
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
-	if !cfg.Features.DeployEnabled() {
+	if !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
 	// Resolve KCL directory.
-	kclDir := cfg.K8s.KCLDir
+	kclDir := store.K8s().KCLDir
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
@@ -249,7 +251,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		if ns := k8sClusterNamespaceForEnv(ctx, envName); ns != "" {
 			namespace = ns
 		} else {
-			namespace = cfg.Name + "-" + envName
+			namespace = store.Meta().Name + "-" + envName
 		}
 	}
 
@@ -282,12 +284,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// the heuristic that distinguishes legitimate cross-namespace refs
 	// from typos.
 	if hasK8sServices {
-		if err := checkNamespaceReferences(entities, cfg.Name, namespace); err != nil {
+		if err := checkNamespaceReferences(entities, store.Meta().Name, namespace); err != nil {
 			return err
 		}
 	}
 
-	fmt.Printf("Deploying project: %s\n", cfg.Name)
+	fmt.Printf("Deploying project: %s\n", store.Meta().Name)
 	fmt.Printf("  Environment: %s\n", envName)
 	if rollback {
 		fmt.Printf("  Mode:        rollback\n")

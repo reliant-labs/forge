@@ -72,7 +72,7 @@ type IngressURL struct {
 func runDevUrls(ctx context.Context, jsonOut bool) error {
 	const env = "dev"
 
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func runDevUrls(ctx context.Context, jsonOut bool) error {
 		return nil
 	}
 
-	if !cfg.Features.IngressEnabled() {
+	if !store.Features().IngressEnabled() {
 		return emitEmpty("Ingress feature is disabled (set features.ingress: true in forge.yaml)")
 	}
 

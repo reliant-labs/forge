@@ -218,10 +218,11 @@ type buildResult struct {
 }
 
 func runBuild(ctx context.Context, opts buildOptions) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
 	// Resolve the docker image tag once, up front. Both the docker
 	// build/push path below and the post-push build-state write consume
@@ -1162,4 +1163,3 @@ func buildVariant(ctx context.Context, svcName string, v BuildVariant, outputDir
 		err:      err,
 	}
 }
-

@@ -465,10 +465,11 @@ Examples:
 func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bool, stdout, stderr io.Writer) error {
 	const ctxLabel = "forge doctor parity"
 
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "load forge.yaml", "", "run from inside a forge project (forge.yaml must be present)", err)
 	}
+	cfg := store.Config()
 	if !serviceDeclared(cfg, serviceName) {
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("service %q not found in forge.yaml; available: %s", serviceName, strings.Join(declaredServiceNames(cfg), ", ")),
@@ -797,4 +798,3 @@ func displayValue(v parityValue) string {
 		return v.Value
 	}
 }
-

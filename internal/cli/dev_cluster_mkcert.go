@@ -228,8 +228,8 @@ func provisionMkcertSecrets(ctx context.Context, projectDir string) error {
 // `projectDir` is currently informational — loadProjectConfig walks
 // up from cwd which is the established convention.
 func mkcertDevNamespace(_ string) string {
-	if cfg, err := loadProjectConfig(); err == nil && cfg.Name != "" {
-		return cfg.Name + "-dev"
+	if store, err := loadProjectStore(); err == nil && store.Meta().Name != "" {
+		return store.Meta().Name + "-dev"
 	}
 	return "dev"
 }

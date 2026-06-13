@@ -1891,7 +1891,9 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 		"ALTER TABLE bookmarks DROP COLUMN domain;\n")
 	runCmd(t, projectDir, forgeBin, "generate")
 	bookmarkORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "bookmark_orm.go"))
-	if !strings.Contains(bookmarkORM, "Domain string") {
+	// Collapse whitespace: the entity struct is gofmt-aligned, so the
+	// field/type pair is separated by run-of-spaces, not a single space.
+	if !strings.Contains(strings.Join(strings.Fields(bookmarkORM), " "), "Domain string") {
 		t.Errorf("hand-written migration added `domain` but the regenerated entity struct doesn't carry it — the ORM is not following the applied schema")
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
@@ -1925,7 +1927,8 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	writeCorpusFile(t, tradeMigPath, tradeMig)
 	runCmd(t, projectDir, forgeBin, "generate")
 	tradeORM := readFileE2E(t, filepath.Join(projectDir, "internal", "db", "trade_orm.go"))
-	if !strings.Contains(tradeORM, "CreatedAt string") {
+	// Whitespace-collapsed: the struct field is gofmt-aligned.
+	if !strings.Contains(strings.Join(strings.Fields(tradeORM), " "), "CreatedAt string") {
 		t.Errorf("TEXT created_at should project as a string struct field; got:\n%s", tradeORM)
 	}
 	if strings.Contains(tradeORM, "msg.CreatedAt.IsZero()") {

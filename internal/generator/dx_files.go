@@ -613,11 +613,11 @@ stable regardless of merge order.
 2. Wrap **multi-statement DDL in an explicit transaction**
    (` + "`BEGIN; ... COMMIT;`" + `) so a mid-migration failure rolls back cleanly.
    Single-statement migrations can omit the transaction.
-2b. Keep table-defining DDL in the **portable pg/sqlite subset**: your
-   own tests (and forge's shadow introspection) apply these files to
-   in-memory SQLite. Parenthesize function defaults (` + "`DEFAULT (now())`" + `)
-   and avoid ` + "`::type`" + ` casts (` + "`DEFAULT '{}'`" + ` instead of
-   ` + "`DEFAULT '{}'::jsonb`" + `). Native arrays (` + "`TEXT[]`" + `) are fine.
+2b. Write **plain postgres** — forge is postgres-pinned. Your own tests
+   and forge's shadow introspection apply these files VERBATIM to a real
+   ephemeral postgres, so anything postgres accepts works: ` + "`::type`" + `
+   casts, schema-qualified names (` + "`CREATE TABLE app.foo`" + `), native
+   arrays (` + "`TEXT[]`" + `), ` + "`JSONB`" + `, generated/identity columns.
 3. Keep migrations **forward-compatible with running code**: ship the
    migration first, then the code that depends on it. Avoid destructive
    changes (e.g. dropping columns) in the same release as the code that

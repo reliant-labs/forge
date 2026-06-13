@@ -130,14 +130,15 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 
 	// DEPLOY-AS-DATA: emit the denormalized component shape the per-env
 	// main.k files load. writeProjectConfig (called just before this in
-	// the scaffold sequence) already wrote forge.yaml, so read the
-	// components back from it — single source of truth, no drift. The
-	// file is a lockfile-class projection (regenerated every run,
-	// untracked), so the scaffold and the generate pipeline both write
-	// it the same way.
+	// the scaffold sequence) already wrote forge.yaml + components.json, so
+	// read the components back through ReadProjectConfig (which now sources
+	// them from components.json — the authored per-service SOT). deploy/kcl/
+	// components_gen.json stays a lockfile-class PROJECTION of that source
+	// (regenerated every run, untracked), distinct from the authored
+	// components.json at the project root.
 	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
 	if err != nil {
-		return fmt.Errorf("read forge.yaml for components_gen.json: %w", err)
+		return fmt.Errorf("read project config for components_gen.json: %w", err)
 	}
 	if err := codegen.GenerateComponentsJSON(g.Path, g.Name, cfg.Components, nil); err != nil {
 		return fmt.Errorf("write components_gen.json: %w", err)

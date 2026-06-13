@@ -184,6 +184,32 @@ func projectRoot() (string, error) {
 	return cwd, nil
 }
 
+// snapshotComponentsFile reads the components.json at path for rollback.
+// It returns the bytes, whether the file existed (a fresh service shell may
+// have no components.json yet), and any non-not-exist read error.
+func snapshotComponentsFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+// restoreComponentsFile rolls components.json back to its pre-add state:
+// rewrites the original bytes, or removes the file if it didn't exist before.
+func restoreComponentsFile(path string, original []byte, existed bool) error {
+	if !existed {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(path, original, 0o644)
+}
+
 // requireServiceKind reads forge.yaml at root and returns an error if the
 // project's kind is not "service". `forge add service/operator/worker/webhook`
 // only makes sense for server-shaped projects — CLI and library kinds have
@@ -343,21 +369,24 @@ func runAddService(name string, port int, resume, force bool) error {
 		return fmt.Errorf("generate service files: %w", err)
 	}
 
-	// Snapshot the existing project config so we can roll back to it if the
-	// generation pipeline fails — otherwise the on-disk config would claim a
-	// service that has no generated stubs, proto, or wiring.
-	originalConfigBytes, err := os.ReadFile(configPath)
+	// Snapshot the existing components.json so we can roll back to it if the
+	// generation pipeline fails — otherwise the on-disk source would claim a
+	// service that has no generated stubs, proto, or wiring. Components live
+	// in components.json now (forge.yaml is global-only); restoreComponents
+	// captures its bytes (or absence).
+	componentsPath := filepath.Join(root, config.ComponentsFileName)
+	originalComponentsBytes, hadComponentsFile, err := snapshotComponentsFile(componentsPath)
 	if err != nil {
-		return fmt.Errorf("read project config for rollback snapshot: %w", err)
+		return fmt.Errorf("read components.json for rollback snapshot: %w", err)
 	}
 
-	// Update forge.yaml (must happen before the generation pipeline
-	// so the pipeline sees the new service in the config). The Path uses
-	// the snake_case Go-package form so it matches the directory the
-	// scaffolder actually creates ("admin-server" -> handlers/admin_server).
+	// Update components.json (must happen before the generation pipeline so
+	// the pipeline sees the new service). The Path uses the snake_case
+	// Go-package form so it matches the directory the scaffolder actually
+	// creates ("admin-server" -> handlers/admin_server).
 	//
-	// Under --resume / --force the service entry may already exist in
-	// forge.yaml; only append when this is a fresh add.
+	// Under --resume / --force the service entry may already exist; only
+	// append when this is a fresh add.
 	if existingIdx < 0 {
 		projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 			Name:  name,
@@ -365,8 +394,8 @@ func runAddService(name string, port int, resume, force bool) error {
 			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
 			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 		})
-		if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-			return fmt.Errorf("update project config: %w", err)
+		if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+			return fmt.Errorf("update components.json: %w", err)
 		}
 	}
 
@@ -377,14 +406,14 @@ func runAddService(name string, port int, resume, force bool) error {
 	err = runGeneratePipeline(root, false, false)
 	generateMu.Unlock()
 	if err != nil {
-		// Only restore the config when we actually appended to it this
+		// Only restore the source when we actually appended to it this
 		// invocation; otherwise --resume would clobber a valid config
 		// after a transient pipeline failure.
 		if existingIdx < 0 {
-			if restoreErr := os.WriteFile(configPath, originalConfigBytes, 0o644); restoreErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to restore original project config after pipeline failure: %v\n", restoreErr)
+			if restoreErr := restoreComponentsFile(componentsPath, originalComponentsBytes, hadComponentsFile); restoreErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to restore original components.json after pipeline failure: %v\n", restoreErr)
 			}
-			return fmt.Errorf("generation pipeline failed for service %q (project config restored): %w", name, err)
+			return fmt.Errorf("generation pipeline failed for service %q (components.json restored): %w", name, err)
 		}
 		return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
 	}
@@ -582,8 +611,8 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 		Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
 		Schedule: schedule,
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	// --no-generate: scaffold-only mode. Skip the post-scaffold generate
@@ -747,8 +776,8 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 		Group:   group,
 		Version: version,
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	// Run the generation pipeline to update bootstrap.go and cmd-server.go
@@ -913,8 +942,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		Version: version,
 		Shape:   string(crdShape),
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ CRD '%s' added to operator '%s'!\n", name, operator)
@@ -1289,8 +1318,8 @@ func runAddWebhook(name, serviceName string) error {
 	projectstore.New(cfg).AppendWebhook(serviceName, config.WebhookConfig{
 		Name: name,
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ Webhook '%s' added to service '%s'!\n", name, serviceName)
@@ -1399,8 +1428,8 @@ func runAddBinary(name string) error {
 		Kind: config.ComponentKindBinary,
 		Path: fmt.Sprintf("cmd/%s.go", pkg),
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ Binary '%s' added successfully!\n", name)

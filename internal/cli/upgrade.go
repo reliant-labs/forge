@@ -69,10 +69,11 @@ func runUpgrade(check, force bool, toVersion string) error {
 		return err
 	}
 
-	cfg, err := loadProjectConfigFrom(configPath)
+	store, err := loadProjectStoreFrom(configPath)
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
 	projectDir := filepath.Dir(configPath)
 
@@ -84,7 +85,7 @@ func runUpgrade(check, force bool, toVersion string) error {
 		target = buildinfo.Version()
 	}
 
-	from := cfg.EffectiveForgeVersion()
+	from := store.Meta().EffectiveForgeVersion()
 
 	// Pre-v0.1 baselines (the "0.0.0" sentinel from EffectiveForgeVersion
 	// when forge_version is unset, or pseudoversion strings like

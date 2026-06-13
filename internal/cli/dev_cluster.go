@@ -210,8 +210,8 @@ func resolveClusterName(configPath string) (string, error) {
 	if name, err := readK3dClusterName(configPath); err == nil && name != "" {
 		return name, nil
 	}
-	if cfg, err := loadProjectConfig(); err == nil {
-		return cfg.Name, nil
+	if store, err := loadProjectStore(); err == nil {
+		return store.Meta().Name, nil
 	}
 	return "dev", nil
 }
@@ -280,7 +280,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// whose only purpose is hosting the project's deploy. A library /
 	// CLI project that's opted out of deploy has no reason to spin
 	// one up. Mirrors the deploy gate in runDeploy / runDevClusterReload.
-	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 	clusterName, err := resolveClusterName(configPath)
@@ -307,8 +307,8 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// k3d a tempfile holding the merged YAML. See dev_cluster_ingress.go
 	// for the merge policy.
 	ingressOn := false
-	if cfg, err := loadProjectConfig(); err == nil {
-		ingressOn = cfg.Features.IngressEnabled()
+	if store, err := loadProjectStore(); err == nil {
+		ingressOn = store.Features().IngressEnabled()
 	}
 	effective, cleanupCfg, err := mergeK3dConfig(configPath, ingressOn)
 	if err != nil {
@@ -380,7 +380,7 @@ func runDevClusterDown(ctx context.Context, configPath string) error {
 	// `cluster up` won't create is at worst a no-op, but we keep the
 	// error symmetric so a `forge dev cluster up && forge dev cluster
 	// down` cycle fails uniformly when deploy is off.
-	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 	clusterName, err := resolveClusterName(configPath)
@@ -495,15 +495,15 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		}
 	}
 
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
-	if !cfg.Features.DeployEnabled() {
+	if !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
-	kclDir := cfg.K8s.KCLDir
+	kclDir := store.K8s().KCLDir
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
@@ -527,7 +527,7 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		if ns := k8sClusterNamespaceForEnv(ctx, "dev"); ns != "" {
 			namespace = ns
 		} else {
-			namespace = cfg.Name + "-dev"
+			namespace = store.Meta().Name + "-dev"
 		}
 	}
 

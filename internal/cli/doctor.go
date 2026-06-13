@@ -53,10 +53,11 @@ Examples:
 }
 
 func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
 	// The project directory is where forge.yaml (and docker-compose.yml) live.
 	configPath, err := findProjectConfigFile()
@@ -71,10 +72,10 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	d := doctor.New(doctor.Deps{})
 
 	if !jsonOutput {
-		fmt.Printf("\n  Checking %s development stack...\n\n", cfg.Name)
+		fmt.Printf("\n  Checking %s development stack...\n\n", store.Meta().Name)
 	}
 
-	report, err := d.RunFiltered(ctx, cfg.Name, projectDir, signal)
+	report, err := d.RunFiltered(ctx, store.Meta().Name, projectDir, signal)
 	if err != nil {
 		return err
 	}

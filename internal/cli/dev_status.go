@@ -110,8 +110,8 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 	// stance. ingressKnown distinguishes "feature gated off" from
 	// "feature on but no routes" / "feature on but KCL unreadable".
 	ingressEnabled := false
-	if cfg, cfgErr := loadProjectConfig(); cfgErr == nil {
-		ingressEnabled = cfg.Features.IngressEnabled()
+	if store, cfgErr := loadProjectStore(); cfgErr == nil {
+		ingressEnabled = store.Features().IngressEnabled()
 	}
 
 	if exists {
@@ -292,14 +292,14 @@ func collapseSlashes(s string) string {
 // when present; falls back to <project>-dev (which matches forge deploy
 // dev's behavior).
 func devNamespace(clusterName string) string {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return clusterName + "-dev"
 	}
 	if ns := k8sClusterNamespaceForEnv(context.Background(), "dev"); ns != "" {
 		return ns
 	}
-	return cfg.Name + "-dev"
+	return store.Meta().Name + "-dev"
 }
 
 // listPodsInNamespace returns a compact pod table for the given

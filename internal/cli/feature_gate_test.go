@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // TestIsFeatureEnabled_NilConfig locks in the permissive default
@@ -31,7 +32,7 @@ func TestIsFeatureEnabled_DefaultsTrue(t *testing.T) {
 		config.FeaturePacks, config.FeatureStarters, config.FeatureCI,
 		config.FeatureDocs, config.FeatureObservability,
 	} {
-		if !isFeatureEnabled(cfg, name) {
+		if !isFeatureEnabled(projectstore.New(cfg), name) {
 			t.Errorf("isFeatureEnabled(<no-features>, %q) = false, want true", name)
 		}
 	}
@@ -44,7 +45,7 @@ func TestIsFeatureEnabled_DefaultsTrue(t *testing.T) {
 func TestIsFeatureEnabled_ExperimentalDefaultsFalse(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "t", ModulePath: "x/t"}
 	for _, name := range config.ExperimentalFeatureNames {
-		if isFeatureEnabled(cfg, name) {
+		if isFeatureEnabled(projectstore.New(cfg), name) {
 			t.Errorf("isFeatureEnabled(<no-features>, %q) = true, want false (experimental defaults OFF)", name)
 		}
 	}
@@ -64,7 +65,7 @@ func TestIsFeatureEnabled_ExperimentalExplicitTrue(t *testing.T) {
 		},
 	}
 	for _, name := range config.ExperimentalFeatureNames {
-		if !isFeatureEnabled(cfg, name) {
+		if !isFeatureEnabled(projectstore.New(cfg), name) {
 			t.Errorf("isFeatureEnabled(<all experimental on>, %q) = false, want true", name)
 		}
 	}
@@ -85,12 +86,12 @@ func TestIsFeatureEnabled_ExplicitFalse(t *testing.T) {
 		config.FeatureBuild,
 		config.FeaturePacks, config.FeatureStarters,
 	} {
-		if isFeatureEnabled(cfg, name) {
+		if isFeatureEnabled(projectstore.New(cfg), name) {
 			t.Errorf("isFeatureEnabled(<%s=false>, %q) = true, want false", name, name)
 		}
 	}
 	// Features the test didn't touch must remain enabled (nil-default).
-	if !isFeatureEnabled(cfg, config.FeatureCI) {
+	if !isFeatureEnabled(projectstore.New(cfg), config.FeatureCI) {
 		t.Error("isFeatureEnabled(<build=false>, ci) flipped — only Build was set")
 	}
 }
@@ -102,8 +103,8 @@ func TestIsFeatureEnabled_ExplicitFalse(t *testing.T) {
 // the constant.
 func TestIsFeatureEnabled_UnknownNamePermissive(t *testing.T) {
 	cfg := &config.ProjectConfig{}
-	if !isFeatureEnabled(cfg, "made-up-feature") {
-		t.Error("isFeatureEnabled(cfg, unknown) = false, want true (additive-extension)")
+	if !isFeatureEnabled(projectstore.New(cfg), "made-up-feature") {
+		t.Error("isFeatureEnabled(projectstore.New(cfg), unknown) = false, want true (additive-extension)")
 	}
 }
 

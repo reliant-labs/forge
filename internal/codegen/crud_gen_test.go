@@ -1628,6 +1628,119 @@ type Service struct {
 	}
 }
 
+// TestGenerateCRUDHandlers_NonPaginatedList pins Phase-4 #3: an AIP-132
+// list RPC that carries filter + order_by fields but NO cursor pagination
+// (no page_size/page_token) is still a Tier-1 generated list handler — it
+// must NOT fall to the custom path. The generated ListOp wires the filter
+// and order-by closures, HasPagination is false (no req.PageSize/PageToken
+// dereferences, no NextPageToken in the response Pack), and the shim still
+// delegates to crud.HandleList.
+func TestGenerateCRUDHandlers_NonPaginatedList(t *testing.T) {
+	projectDir := t.TempDir()
+	handlerDir := filepath.Join(projectDir, "handlers", "widgets")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceGo := `package widgets
+
+import "github.com/reliant-labs/forge/pkg/orm"
+
+type Deps struct {
+	DB orm.Context
+}
+
+type Service struct {
+	deps Deps
+}
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "WidgetsService",
+		GoPackage:  "example.com/test/gen/proto/services/widgets/v1",
+		PkgName:    "widgetsv1",
+		ModulePath: "example.com/test",
+		Methods: []Method{
+			{Name: "ListWidgets", InputType: "ListWidgetsRequest", OutputType: "ListWidgetsResponse"},
+		},
+		Messages: map[string][]MessageFieldDef{
+			// No page_size/page_token — a plain filtered/ordered list.
+			"ListWidgetsRequest": {
+				{Name: "active", ProtoType: "bool"},
+				{Name: "order_by", ProtoType: "string"},
+				{Name: "descending", ProtoType: "bool"},
+			},
+			"ListWidgetsResponse": {
+				{Name: "widgets", ProtoType: "message"},
+			},
+		},
+	}
+
+	entities := []EntityDef{{
+		Name: "Widget", TableName: "widgets", PkField: "id", PkGoType: "int64",
+		Fields: []EntityField{
+			{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64"},
+			{Name: "active", GoName: "Active", ProtoType: "bool", GoType: "bool"},
+		},
+		Columns: []EntityColumn{
+			{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+			{Name: "active", Type: "bool", NotNull: true},
+		},
+	}}
+
+	crudMethods := MatchCRUDMethods(svc, entities)
+	if err := GenerateCRUDHandlers(svc, crudMethods, "example.com/test", projectDir, nil); err != nil {
+		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
+	}
+
+	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")
+	opsBytes, err := os.ReadFile(opsPath)
+	if err != nil {
+		t.Fatalf("non-paginated list must still produce a Tier-1 ops file: %v", err)
+	}
+	ops := string(opsBytes)
+
+	// It's a real ListOp, not a custom stub.
+	if !contains(ops, "func (s *Service) crudListWidgetsOp() crud.ListOp[") {
+		t.Errorf("expected a generated ListOp for the non-paginated list; got:\n%s", ops)
+	}
+	if !contains(ops, "HasPagination: false") {
+		t.Errorf("non-paginated list must set HasPagination: false; got:\n%s", ops)
+	}
+	if !contains(ops, "HasOrderBy:    true") {
+		t.Errorf("expected HasOrderBy: true (order_by + descending present); got:\n%s", ops)
+	}
+	// No cursor dereferences and no NextPageToken packing.
+	for _, bad := range []string{"req.PageSize", "req.PageToken", "NextPageToken:"} {
+		if contains(ops, bad) {
+			t.Errorf("non-paginated list ops must not reference %q; got:\n%s", bad, ops)
+		}
+	}
+	// The exact filter still wires.
+	if !contains(ops, `orm.WhereEq("active"`) {
+		t.Errorf("expected the active filter wired via WhereEq; got:\n%s", ops)
+	}
+	if _, perr := parser.ParseFile(token.NewFileSet(), opsPath, ops, parser.SkipObjectResolution); perr != nil {
+		t.Errorf("ops file is not valid Go: %v\n----\n%s", perr, ops)
+	}
+
+	// The shim still delegates to the crud library (not a custom body).
+	shimBytes, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud.go"))
+	if err != nil {
+		t.Fatalf("read shim: %v", err)
+	}
+	shim := string(shimBytes)
+	if !contains(shim, "crud.HandleList(s.crudListWidgetsOp())(ctx, req)") {
+		t.Errorf("non-paginated list shim must delegate to crud.HandleList; got:\n%s", shim)
+	}
+	if contains(shim, "forge:custom-read-shape") {
+		t.Errorf("non-paginated list must NOT be a custom-read-shape stub; got:\n%s", shim)
+	}
+}
+
 func TestBuildCRUDTemplateData_NoFilters(t *testing.T) {
 	svc := ServiceDef{
 		Name:       "PatientsService",
@@ -1710,11 +1823,37 @@ func TestValidateCRUDShape_BespokeShape(t *testing.T) {
 
 	cases := []tc{
 		{
-			name: "list_missing_page_size_in_request",
+			// A list with NEITHER page_size nor page_token but a valid
+			// repeated-entity response is a plain AIP-132 filtered list —
+			// Tier-1 (non-paginated), NOT custom. (`limit`/`cursor` are
+			// just extra scalar fields the body ignores.)
+			name: "list_no_pagination_fields_is_tier1",
 			svc: ServiceDef{
 				Messages: map[string][]MessageFieldDef{
 					"ListMarketsRequest": {
-						{Name: "limit", ProtoType: "int32"},
+						{Name: "active", ProtoType: "bool"},
+						{Name: "order_by", ProtoType: "string"},
+					},
+					"ListMarketsResponse": {
+						{Name: "markets", ProtoType: "message"},
+					},
+				},
+			},
+			cm: CRUDMethod{
+				Method:    MethodTemplateData{Name: "ListMarkets", InputType: "ListMarketsRequest", OutputType: "ListMarketsResponse"},
+				Entity:    market,
+				Operation: "list",
+			},
+			wantOK: true,
+		},
+		{
+			// Exactly one half of cursor pagination is a bespoke
+			// contract the cursor template can't honor → custom path.
+			name: "list_half_pagination_is_custom",
+			svc: ServiceDef{
+				Messages: map[string][]MessageFieldDef{
+					"ListMarketsRequest": {
+						{Name: "page_size", ProtoType: "int32"},
 						{Name: "cursor", ProtoType: "string"},
 					},
 					"ListMarketsResponse": {
@@ -1728,7 +1867,7 @@ func TestValidateCRUDShape_BespokeShape(t *testing.T) {
 				Operation: "list",
 			},
 			wantOK:    false,
-			reasonHas: "page_size",
+			reasonHas: "page_token",
 		},
 		{
 			name: "list_missing_response_plural_field",
@@ -1975,11 +2114,12 @@ type Service struct {
 			{Name: "CreateMarket", InputType: "CreateMarketRequest", OutputType: "CreateMarketResponse"},
 		},
 		Messages: map[string][]MessageFieldDef{
-			// bespoke kalshi-style pagination
+			// bespoke kalshi-style pagination: page_size WITHOUT
+			// page_token (a custom offset/cursor contract the cursor
+			// template can't honor) → custom path, not a plain list.
 			"ListMarketsRequest": {
-				{Name: "limit", ProtoType: "int32"},
+				{Name: "page_size", ProtoType: "int32"},
 				{Name: "cursor", ProtoType: "string"},
-				{Name: "kalshi_status", ProtoType: "enum"},
 			},
 			"ListMarketsResponse": {
 				{Name: "markets", ProtoType: "message"},
@@ -2014,13 +2154,28 @@ type Service struct {
 		t.Fatalf("GenerateCRUDHandlers() error = %v", err)
 	}
 
-	// 1. Every method failed shape validation, so the Tier-1 ops file has
-	//    nothing to wire and must not exist.
-	if _, err := os.Stat(filepath.Join(handlerDir, "handlers_crud_ops_gen.go")); !os.IsNotExist(err) {
-		t.Error("handlers_crud_ops_gen.go should not be written when every method is shape-mismatched")
+	// 1. Even when every method is custom-shaped, the Tier-1 ops file is
+	//    still written — it carries the <entity>ToProto/FromProto
+	//    conversion pair the WIRED custom bodies project rows through. It
+	//    must NOT carry any op constructor (no crud.*Op) or pull in the
+	//    crud/middleware imports (which would be unused → won't compile).
+	opsPath := filepath.Join(handlerDir, "handlers_crud_ops_gen.go")
+	opsBytes, err := os.ReadFile(opsPath)
+	if err != nil {
+		t.Fatalf("ops file must exist to carry the conversion helpers the wired custom bodies use: %v", err)
+	}
+	ops := string(opsBytes)
+	if !strings.Contains(ops, "func marketToProto(") {
+		t.Errorf("ops file must carry marketToProto for the wired custom body; got:\n%s", ops)
+	}
+	if strings.Contains(ops, "crud.ListOp[") || strings.Contains(ops, "/pkg/middleware") || strings.Contains(ops, "/pkg/crud") {
+		t.Errorf("all-custom ops file must carry only conversions (no op constructors / crud / middleware imports); got:\n%s", ops)
+	}
+	if _, perr := parser.ParseFile(token.NewFileSet(), "handlers_crud_ops_gen.go", ops, parser.SkipObjectResolution); perr != nil {
+		t.Errorf("ops file is not valid Go: %v\n----\n%s", perr, ops)
 	}
 
-	// 2. The explanatory stubs land in the user-owned shim instead.
+	// 2. The wired custom bodies land in the user-owned shim.
 	data, err := os.ReadFile(filepath.Join(handlerDir, "handlers_crud.go"))
 	if err != nil {
 		t.Fatalf("read handlers_crud.go: %v", err)
@@ -2053,30 +2208,43 @@ type Service struct {
 	//    fail to compile against this proto should appear in the output.
 	for _, bad := range []string{"req.PageSize", "req.PageToken", "crud.HandleList(", "crud.HandleGet(", "crud.HandleCreate("} {
 		if strings.Contains(content, bad) {
-			t.Errorf("unexpected %q in mismatch-only output:\n%s", bad, content)
+			t.Errorf("unexpected %q in custom-shape output:\n%s", bad, content)
 		}
 	}
 
-	// 6. Each stub must return CodeUnimplemented so callers get a clear
-	//    error instead of a silent nil response.
-	if c := strings.Count(content, "connect.CodeUnimplemented"); c != 3 {
-		t.Errorf("expected 3 CodeUnimplemented returns, got %d", c)
+	// 6. The custom body is WIRED, not a blank stub: it must run a real
+	//    query (db.ListMarket), project rows via the conversion helper,
+	//    and carry the refine TODO — and must NOT 501 with CodeUnimplemented.
+	if c := strings.Count(content, "db.ListMarket("); c != 3 {
+		t.Errorf("expected 3 wired db.ListMarket calls (one per custom RPC), got %d in:\n%s", c, content)
+	}
+	if !strings.Contains(content, "marketToProto(row)") {
+		t.Errorf("wired body must project rows via marketToProto; got:\n%s", content)
+	}
+	if !strings.Contains(content, "// TODO: refine this query") {
+		t.Errorf("wired body must carry the refine TODO; got:\n%s", content)
+	}
+	if strings.Contains(content, "connect.CodeUnimplemented") {
+		t.Errorf("wired custom body must not return CodeUnimplemented; got:\n%s", content)
 	}
 
 	// 7. The scaffolded file must parse as valid Go — the whole point of
-	//    the stub fallback is that the package keeps compiling against
+	//    the wired fallback is that the package keeps compiling against
 	//    the real proto shape.
 	if _, err := parser.ParseFile(token.NewFileSet(), "handlers_crud.go", content, parser.SkipObjectResolution); err != nil {
 		t.Errorf("generated file is not valid Go: %v\n----\n%s", err, content)
 	}
 
-	// 8. Because every method is a stub, the import block must not pull
-	//    in pkg/crud or internal/db (they would be unused and trip the
-	//    compiler).
-	for _, bad := range []string{`"github.com/reliant-labs/forge/pkg/crud"`, `"example.com/test/internal/db"`, `"example.com/test/pkg/middleware"`} {
-		if strings.Contains(content, bad) {
-			t.Errorf("expected no import of %s when every method is a stub; got:\n%s", bad, content)
+	// 8. The wired body needs pkg/orm and internal/db imported (it builds
+	//    orm.QueryOption filters and calls db.ListMarket). These entities
+	//    are NOT tenant-scoped, so middleware must NOT be imported (unused).
+	for _, want := range []string{`"github.com/reliant-labs/forge/pkg/orm"`, `"example.com/test/internal/db"`} {
+		if !strings.Contains(content, want) {
+			t.Errorf("expected import of %s for the wired custom body; got:\n%s", want, content)
 		}
+	}
+	if strings.Contains(content, `"example.com/test/pkg/middleware"`) {
+		t.Errorf("non-tenant custom body must not import middleware (unused); got:\n%s", content)
 	}
 }
 

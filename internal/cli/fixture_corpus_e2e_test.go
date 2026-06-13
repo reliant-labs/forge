@@ -1767,6 +1767,32 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	// ── 1. generate ×2 — idempotent with an entity in play ───────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
 
+	// ── 1b. the custom-query seam (Phase 4 #2) is scaffolded ONCE and
+	// survives regeneration untouched. internal/db/item_repo_ext.go is a
+	// Tier-2 (scaffold-once, user-owned) sibling of the regenerated
+	// item_orm.go — it documents where hand-written / raw-SQL queries go.
+	// Prove the affordance exists AND is regen-stable: capture it now,
+	// confirm later generates never rewrite it (a second generate already
+	// ran inside generateTwiceIdempotent above; step 6/7's generates run
+	// after, and the post-edit survival is re-checked there).
+	repoExtPath := filepath.Join(projectDir, "internal", "db", "item_repo_ext.go")
+	repoExtAfterGen := readFileE2E(t, repoExtPath)
+	if !strings.Contains(repoExtAfterGen, "package db") {
+		t.Errorf("item_repo_ext.go is not a valid package db file:\n%s", repoExtAfterGen)
+	}
+	if strings.Contains(repoExtAfterGen, "DO NOT EDIT") {
+		t.Errorf("item_repo_ext.go carries a DO-NOT-EDIT banner — the custom-query seam must be user-owned from line one")
+	}
+	if !strings.Contains(repoExtAfterGen, "db.Bun()") || !strings.Contains(repoExtAfterGen, "itemRepo") {
+		t.Errorf("item_repo_ext.go must document the db.Bun() raw-SQL handle and the generated itemRepo; got:\n%s", repoExtAfterGen)
+	}
+	// Simulate the user taking ownership: append a real hand-written
+	// method. A later generate must leave THIS content intact.
+	repoExtUserOwned := repoExtAfterGen + `
+func itemSeamProbe() string { return "user-owned" }
+`
+	writeCorpusFile(t, repoExtPath, repoExtUserOwned)
+
 	// features.deploy is shape-derived for service projects: the scaffold
 	// ships deploy/kcl/dev/main.k importing deploy.kcl.dev.config_gen, so
 	// a pristine generate MUST emit that file or the scaffold's own KCL
@@ -1874,6 +1900,20 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 		t.Errorf("bookmark migration lacks the native array column; got:\n%s", bookmarkMig)
 	}
 	runCmd(t, projectDir, forgeBin, "generate")
+
+	// The Phase-4 #2 seam must survive regeneration UNTOUCHED: a second
+	// entity + another full `forge generate` ran above, and the
+	// user-owned item_repo_ext.go (with the hand-added itemSeamProbe) must
+	// be byte-identical to what we wrote. Scaffold-once means scaffold
+	// once — forge never overwrites it. A new entity also gets its OWN
+	// seam.
+	if got := readFileE2E(t, repoExtPath); got != repoExtUserOwned {
+		t.Errorf("item_repo_ext.go was rewritten by a later generate — the scaffold-once seam must survive untouched.\nwant:\n%s\n---got:\n%s", repoExtUserOwned, got)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "db", "bookmark_repo_ext.go")); err != nil {
+		t.Errorf("the second entity (bookmark) did not get its own custom-query seam: %v", err)
+	}
+
 	runCmd(t, projectDir, "go", "build", "./...")
 
 	writeCorpusFile(t, filepath.Join(handlerDir, "bookmark_lifecycle_corpus_test.go"), bookmarkLifecycleProbeSrc)
@@ -1949,6 +1989,58 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	} else {
 		t.Logf("executed legacy-TEXT-timestamps lifecycle passed:\n%s", out)
 	}
+
+	// ── 7c. WIRED custom-read-shape RPC (Phase 4 #1) ─────────────────
+	// Flip the scaffold's own ListItems into a custom (non-AIP-158) read:
+	// rename its response's repeated field `items` → `results` so the
+	// shape matcher routes it to the custom path. Re-scaffold the shim
+	// fresh (delete handlers_crud.go so forge re-emits every CRUD method)
+	// and ListItems lands as a WIRED starting point: before Phase 4 that
+	// was a blank CodeUnimplemented stub; now it builds a best-effort
+	// filter, runs a real db.ListItem query, and projects rows via the
+	// generated itemToProto. Prove it compiles out of the box (go build),
+	// is NOT Unimplemented, and a real HTTP call returns 200 (the query
+	// executed against postgres).
+	itemProtoPath := filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto")
+	itemProtoSrc := readFileE2E(t, itemProtoPath)
+	if !strings.Contains(itemProtoSrc, "repeated Item items = 1;") {
+		t.Fatalf("ListItemsResponse does not carry the expected `repeated Item items` field; got:\n%s", itemProtoSrc)
+	}
+	itemProtoSrc = strings.Replace(itemProtoSrc, "repeated Item items = 1;", "repeated Item results = 1;", 1)
+	writeCorpusFile(t, itemProtoPath, itemProtoSrc)
+	// Re-scaffold the owned shim from scratch so ListItems re-emits as the
+	// wired custom body (the append path never rewrites an existing
+	// method; deleting the file is the clean "re-scaffold all" lever).
+	if err := os.Remove(filepath.Join(handlerDir, "handlers_crud.go")); err != nil {
+		t.Fatalf("remove handlers_crud.go to force re-scaffold: %v", err)
+	}
+	runCmd(t, projectDir, forgeBin, "generate")
+
+	customShim := readFileE2E(t, filepath.Join(handlerDir, "handlers_crud.go"))
+	if !strings.Contains(customShim, "func (s *Service) ListItems(") {
+		t.Fatalf("ListItems shim not re-scaffolded; got:\n%s", customShim)
+	}
+	// Locate the ListItems body and assert it is the WIRED custom shape.
+	if idx := strings.Index(customShim, "func (s *Service) ListItems("); idx >= 0 {
+		body := customShim[idx:]
+		if !strings.Contains(body[:min(len(body), 1200)], "db.ListItem(") {
+			t.Errorf("ListItems body must be WIRED (a real db.ListItem query), not an Unimplemented stub; got:\n%s", customShim)
+		}
+	}
+	if !strings.Contains(customShim, "forge:custom-read-shape") {
+		t.Errorf("ListItems must carry the custom-read-shape marker after the response rename; got:\n%s", customShim)
+	}
+	if strings.Contains(customShim, "ListItems is not implemented") {
+		t.Errorf("wired ListItems must not be an Unimplemented stub; got:\n%s", customShim)
+	}
+	if !strings.Contains(customShim, "// TODO: refine this query") {
+		t.Errorf("wired custom body must carry the refine TODO; got:\n%s", customShim)
+	}
+	// Compiles out of the box.
+	runCmd(t, projectDir, "go", "build", "./...")
+	// And RUNS a real query: a tokenless dev-mode HTTP call returns 200
+	// (the wired db.ListItem executed against real postgres without error).
+	bootCustomReadRPC(t, projectDir)
 
 	// ── 8. boots WITH a database: the Tier-1 bootstrap constructs the
 	// DB + ORM pair from cfg.DatabaseUrl (ensureDatabase). Previously
@@ -2160,6 +2252,74 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 	}
 	if created.Item.Id == "" || created.Item.Name != "dev-claims-proof" {
 		t.Errorf("dev-mode CreateItem response missing the created row: %s", body.String())
+	}
+}
+
+// bootCustomReadRPC boots the corpus server against real postgres and
+// calls the WIRED custom-read-shape RPC (the flipped ListItems) over
+// HTTP. A 200 proves the scaffolded custom body runs its real db.ListItem
+// query out of the box — not a CodeUnimplemented stub.
+func bootCustomReadRPC(t *testing.T, projectDir string) {
+	t.Helper()
+	port := freePortE2E(t)
+
+	serverBin := filepath.Join(projectDir, "corpus-custom-server")
+	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
+
+	dsn, cleanup, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("provision custom-read postgres: %v", err)
+	}
+	defer cleanup()
+	applyProjectMigrationsPostgres(t, projectDir, dsn)
+
+	cmd := exec.Command(serverBin, "server")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PORT=%d", port),
+		"DATABASE_URL="+dsn,
+		"ENVIRONMENT=development",
+		"AUTH_DEV_MODE=true",
+	)
+	cmd.Env = withForcedEnv(cmd.Env, "AUTH_MODE", "")
+	var serverOut strings.Builder
+	cmd.Stdout = &serverOut
+	cmd.Stderr = &serverOut
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start custom-read server: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		_ = os.Remove(serverBin)
+	}()
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if !waitForServer(t, base+"/healthz", 15*time.Second) {
+		t.Fatalf("custom-read server did not become ready\noutput:\n%s", serverOut.String())
+	}
+
+	resp, err := http.Post(
+		base+"/services.item.v1.ItemService/ListItems",
+		"application/json",
+		strings.NewReader(`{}`),
+	)
+	if err != nil {
+		t.Fatalf("POST ListItems (wired custom read): %v", err)
+	}
+	defer resp.Body.Close()
+	var body strings.Builder
+	_, _ = io.Copy(&body, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("wired custom-read ListItems = HTTP %d, want 200 — the scaffolded custom body did not run its real query out of the box\nresponse: %s\nserver output:\n%s",
+			resp.StatusCode, body.String(), serverOut.String())
 	}
 }
 

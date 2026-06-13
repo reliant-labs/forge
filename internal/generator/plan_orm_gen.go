@@ -194,19 +194,23 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 		}
 	}
 
-	pkCol := "id"
+	// pkGoType is the Go type of the primary key, used in the delegate
+	// signatures (Get/Delete take an id of this type). The column name and
+	// other PK details the repo derives from Bun's schema at runtime.
 	pkGoType := "string"
 	if pkField != nil {
-		pkCol = pkField.columnName
 		pkGoType = pkField.goType
 	}
 
 	hasTenant := tenantField != nil
 
-	// The time import is needed for any time.Time / *time.Time struct
-	// field (the projected type of a timestamp column), AND for stamping
-	// managed timestamps (the time.Now() instant or its RFC3339Nano string
-	// for legacy TEXT columns — kalshi fr-3fba9166ba).
+	// The time import is needed only for a time.Time / *time.Time struct
+	// field (the projected type of a TIMESTAMPTZ column). The managed-
+	// timestamp stamping (the time.Now() instant or its RFC3339Nano string
+	// for legacy TEXT columns) now lives in forge/pkg/crud, so the
+	// generated file no longer references time for stamping — a TEXT
+	// timestamp column projects to string and needs no time import (an
+	// otherwise-unused "time" import would not compile).
 	needsTime := false
 	for _, f := range fields {
 		if f.goType == "time.Time" {
@@ -214,18 +218,6 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 			break
 		}
 	}
-	if !needsTime && ent.Timestamps {
-		for _, f := range fields {
-			if isManagedTimestampColumn(f.columnName) && stampableTimestamp(f) {
-				needsTime = true
-				break
-			}
-		}
-	}
-
-	// Bun builds all SQL — generated code no longer joins column strings —
-	// so the strings import is never needed.
-	needsStrings := false
 
 	var b strings.Builder
 
@@ -235,7 +227,7 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	b.WriteString("package db\n\n")
 
 	// Imports
-	writeORMImports(&b, needsTime, needsStrings, pkField != nil && pkField.goType == "string")
+	writeORMImports(&b, needsTime)
 
 	// The entity struct: a projection of the APPLIED schema, with Bun tags.
 	writeEntityStruct(&b, msgName, tableName, fields)
@@ -265,32 +257,26 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	b.WriteString("}\n\n")
 
 	// Soft-delete mode. With a proper time deleted_at, Bun's built-in
-	// ,soft_delete owns it: NewSelect auto-excludes deleted rows, a plain
-	// NewDelete stamps deleted_at, WhereAllWithDeleted includes them — the
-	// generator emits NO deleted_at IS NULL filter and NO CURRENT_TIMESTAMP
-	// stamp. A legacy TEXT deleted_at can't round-trip Bun's time.Time
-	// stamp, so it keeps the hand-rolled filter/stamp path.
+	// ,soft_delete owns it (detected from the schema by the generic repo). A
+	// legacy TEXT deleted_at can't round-trip Bun's time.Time stamp, so the
+	// repo's Spec.LegacyTextDeletedAt flag opts it into the hand-rolled
+	// filter/stamp path. That flag is the only soft-delete signal the repo
+	// can't infer from the Bun tags.
 	nativeSoftDelete := ent.SoftDelete && entityUsesNativeSoftDelete(fields)
-	handRolledSoftDelete := ent.SoftDelete && !nativeSoftDelete
+	legacyTextSoftDelete := ent.SoftDelete && !nativeSoftDelete
 
-	// CRUD functions — all built on Bun's typed query builder, reached via
-	// db.Bun(). No raw SQL, no dialect string-building, no scan helper:
-	// Bun scans rows straight into the Bun-tagged struct.
-	writeORMCreate(&b, msgName, tableName, fields, hasTenant, tenantField, pkField, ent.Timestamps)
-	writeORMGetByID(&b, msgName, tableName, pkCol, pkGoType, hasTenant, handRolledSoftDelete, tenantField)
-	writeORMList(&b, msgName, tableName, hasTenant, handRolledSoftDelete, tenantField)
-	writeORMCount(&b, msgName, tableName, hasTenant, handRolledSoftDelete, tenantField)
-	if ent.SoftDelete {
-		writeORMListAll(&b, msgName, tableName, hasTenant, handRolledSoftDelete, nativeSoftDelete, tenantField)
+	// CRUD: a single generic crud.Repo[<Entity>] owns the lifecycle
+	// (built on Bun, metadata derived from the schema/tags at first use),
+	// and thin package-level delegates preserve the standalone-function API
+	// the handler ops and any user code call. The repo's Spec carries ONLY
+	// the forge conventions Bun can't read off the struct tags: the tenant
+	// column, managed timestamps, and the legacy-TEXT deleted_at fallback.
+	tenantCol := ""
+	if hasTenant && tenantField != nil {
+		tenantCol = tenantField.columnName
 	}
-	// Update/UpdateMasked keep a deleted_at IS NULL guard for ANY soft
-	// delete (native or legacy TEXT): Bun auto-scopes NewSelect/NewDelete to
-	// live rows but NOT NewUpdate, so without the guard an UPDATE could
-	// mutate a tombstoned row. The guard is a read-side filter, not the
-	// hand-rolled stamp — it's correct in both modes.
-	writeORMUpdate(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
-	writeORMUpdateMasked(&b, msgName, tableName, pkCol, fields, hasTenant, ent.SoftDelete, tenantField, pkField, ent.Timestamps)
-	writeORMDelete(&b, msgName, tableName, pkCol, pkGoType, hasTenant, handRolledSoftDelete, nativeSoftDelete, tenantField)
+	writeORMRepoAndDelegates(&b, msgName, pkGoType, hasTenant, ent.SoftDelete,
+		tenantCol, ent.Timestamps, legacyTextSoftDelete)
 
 	// gofmt the render so struct-tag/const alignment matches what the
 	// project's gofmt/CI check (and the drift guard) expect. The writers
@@ -304,27 +290,128 @@ func renderORMEntity(ent config.PlanEntity) []byte {
 	return src
 }
 
-func writeORMImports(b *strings.Builder, needsTime, needsStrings, stringPK bool) {
+// writeORMImports emits the import block for a generated ORM file. The
+// per-entity CRUD bodies now live in the generic forge/pkg/crud.Repo, so
+// the generated file imports only what the thin delegates and the struct
+// reference: context (delegate signatures), forge/pkg/crud (the Repo),
+// forge/pkg/orm (the Context + QueryOption types), and bun (the embedded
+// BaseModel). time is added when any column projects to time.Time. The old
+// per-file fmt/strings/ulid/otel imports are gone — the library owns the
+// tracing, ULID generation, and error wrapping.
+func writeORMImports(b *strings.Builder, needsTime bool) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"context\"\n")
-	b.WriteString("\t\"fmt\"\n")
-	if needsStrings {
-		b.WriteString("\t\"strings\"\n")
-	}
 	if needsTime {
 		b.WriteString("\t\"time\"\n")
 	}
 	b.WriteString("\n")
-	if stringPK {
-		// String PKs are generated at the Create chokepoint.
-		b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
-	}
+	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/crud\"\n")
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
 	b.WriteString("\t\"github.com/uptrace/bun\"\n")
-	b.WriteString("\t\"go.opentelemetry.io/otel/attribute\"\n")
-	b.WriteString("\t\"go.opentelemetry.io/otel/codes\"\n")
-	b.WriteString("\t\"go.opentelemetry.io/otel/trace\"\n")
 	b.WriteString(")\n\n")
+}
+
+// writeORMRepoAndDelegates emits the per-entity repo var plus the thin
+// standalone delegates that preserve the pre-generic function API. The
+// generic crud.Repo[<Entity>] owns every lifecycle concern; these delegates
+// are pure forwarding so the handler ops shim (and any hand-written caller)
+// keeps compiling unchanged. Spec carries only the conventions Bun's schema
+// can't infer: tenant column, managed timestamps, legacy-TEXT deleted_at.
+func writeORMRepoAndDelegates(b *strings.Builder, msgName, pkGoType string, hasTenant, softDelete bool, tenantCol string, timestamps, legacyText bool) {
+	repoVar := lowerFirst(msgName) + "Repo"
+
+	// The per-entity repo, constructed once at package init. Metadata is
+	// derived from Bun's schema lazily on the first call, so this is a
+	// cheap struct literal here.
+	fmt.Fprintf(b, "// %s is the generic CRUD repository for %s. It owns the\n", repoVar, msgName)
+	b.WriteString("// lifecycle (tenant scope, soft delete, masked updates, managed\n")
+	b.WriteString("// timestamps, pagination via QueryOption) over Bun; the standalone\n")
+	b.WriteString("// functions below are thin delegates onto it.\n")
+	fmt.Fprintf(b, "var %s = crud.NewRepo[%s](crud.Spec{\n", repoVar, msgName)
+	if tenantCol != "" {
+		fmt.Fprintf(b, "\tTenantColumn: %q,\n", tenantCol)
+	}
+	if timestamps {
+		b.WriteString("\tTimestamps: true,\n")
+	}
+	if legacyText {
+		b.WriteString("\tLegacyTextDeletedAt: true,\n")
+	}
+	b.WriteString("})\n\n")
+
+	// tenantArg renders the trailing tenantID argument (the repo always
+	// takes one; a non-tenant entity forwards "").
+	tArg := `""`
+	if hasTenant {
+		tArg = "tenantID"
+	}
+	tParam := ""
+	if hasTenant {
+		tParam = ", tenantID string"
+	}
+
+	// Create
+	fmt.Fprintf(b, "// Create%s inserts a new %s row (plain INSERT, never an upsert).\n", msgName, msgName)
+	fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s%s) error {\n", msgName, msgName, tParam)
+	fmt.Fprintf(b, "\treturn %s.Create(ctx, db, msg, %s)\n", repoVar, tArg)
+	b.WriteString("}\n\n")
+
+	// Get
+	fmt.Fprintf(b, "// Get%sByID retrieves a %s by primary key; a missing row\n", msgName, msgName)
+	b.WriteString("// satisfies errors.Is(err, orm.ErrNoRows).\n")
+	fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s%s) (*%s, error) {\n", msgName, pkGoType, tParam, msgName)
+	fmt.Fprintf(b, "\treturn %s.Get(ctx, db, id, %s)\n", repoVar, tArg)
+	b.WriteString("}\n\n")
+
+	// List
+	fmt.Fprintf(b, "// List%s retrieves %s rows with optional QueryOption filtering.\n", msgName, msgName)
+	fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context%s, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, tParam, msgName)
+	fmt.Fprintf(b, "\treturn %s.List(ctx, db, %s, opts...)\n", repoVar, tArg)
+	b.WriteString("}\n\n")
+
+	// Count
+	fmt.Fprintf(b, "// Count%s returns the number of matching %s rows.\n", msgName, msgName)
+	fmt.Fprintf(b, "func Count%s(ctx context.Context, db orm.Context%s, opts ...orm.QueryOption) (int64, error) {\n", msgName, tParam)
+	fmt.Fprintf(b, "\treturn %s.Count(ctx, db, %s, opts...)\n", repoVar, tArg)
+	b.WriteString("}\n\n")
+
+	// ListAll (only for soft-delete entities, matching the legacy surface)
+	if softDelete {
+		fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
+		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context%s, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, tParam, msgName)
+		fmt.Fprintf(b, "\treturn %s.ListAll(ctx, db, %s, opts...)\n", repoVar, tArg)
+		b.WriteString("}\n\n")
+	}
+
+	// Update
+	fmt.Fprintf(b, "// Update%s writes the updatable columns of an existing %s by PK\n", msgName, msgName)
+	b.WriteString("// (created_at/PK/tenant/deleted_at excluded; updated_at re-stamped).\n")
+	fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s%s) error {\n", msgName, msgName, tParam)
+	fmt.Fprintf(b, "\treturn %s.Update(ctx, db, msg, %s)\n", repoVar, tArg)
+	b.WriteString("}\n\n")
+
+	// UpdateMasked
+	fmt.Fprintf(b, "// Update%sMasked writes ONLY the named columns (AIP-134 update_mask;\n", msgName)
+	b.WriteString("// unknown/immutable paths return *orm.UnknownFieldError).\n")
+	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string%s) error {\n", msgName, msgName, tParam)
+	fmt.Fprintf(b, "\treturn %s.UpdateMasked(ctx, db, msg, fields, %s)\n", repoVar, tArg)
+	b.WriteString("}\n\n")
+
+	// Delete
+	fmt.Fprintf(b, "// Delete%s removes a %s by PK (soft delete stamps deleted_at when the\n", msgName, msgName)
+	b.WriteString("// entity opts in; otherwise a hard DELETE).\n")
+	fmt.Fprintf(b, "func Delete%s(ctx context.Context, db orm.Context, id %s%s) error {\n", msgName, pkGoType, tParam)
+	fmt.Fprintf(b, "\treturn %s.Delete(ctx, db, id, %s)\n", repoVar, tArg)
+	b.WriteString("}\n")
+}
+
+// lowerFirst returns s with its first rune lower-cased (msgName ->
+// repo-var prefix).
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
 }
 
 // bunTag returns the `bun:"..."` struct tag for a field, projecting the
@@ -395,20 +482,6 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 	b.WriteString("}\n\n")
 }
 
-// sqlIdent returns a double-quoted SQL identifier literal, baked into the
-// generated code as a Go string. Column names come from the introspected
-// schema (validated identifiers), so this is injection-safe.
-func sqlIdent(col string) string {
-	return `"` + strings.ReplaceAll(col, `"`, `""`) + `"`
-}
-
-// arrayNormalizeExpr returns the statement that normalizes a nil array
-// field to an empty (non-nil) slice before a write, so it binds as the
-// `{}` literal against NOT NULL DEFAULT '{}' columns rather than NULL.
-func arrayNormalizeExpr(f ormField) string {
-	return fmt.Sprintf("\tmsg.%s = orm.EmptyIfNil(msg.%s)\n", f.goName, f.goName)
-}
-
 // isIntegerGoType reports whether the projected Go type is an integer —
 // the PK kinds that are server-allocated (BIGSERIAL / SERIAL / rowid).
 func isIntegerGoType(goType string) bool {
@@ -419,611 +492,17 @@ func isIntegerGoType(goType string) bool {
 	return false
 }
 
-// excludedFromSet reports whether a column is never part of an UPDATE's
-// SET clause: the PK, the tenant key, deleted_at (soft-delete
-// machinery), and — when timestamps are managed — created_at (immutable
-// after create; round-tripping it through the request would let an
-// update NULL or rewrite history).
-func excludedFromSet(f ormField, timestamps bool) bool {
-	if f.isPK || f.columnName == "deleted_at" || f.isTenantKey {
-		return true
-	}
-	return timestamps && f.columnName == "created_at"
-}
-
-func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormField, hasTenant bool, tenantField *ormField, pkField *ormField, timestamps bool) {
-	stringPK := pkField != nil && pkField.goType == "string"
-	intPK := pkField != nil && isIntegerGoType(pkField.goType)
-
-	fmt.Fprintf(b, "// Create%s inserts a new %s row into the database.\n", msgName, msgName)
-	b.WriteString("//\n")
-	b.WriteString("// Create is a plain INSERT — never an upsert. Chokepoint invariants:\n")
-	if stringPK {
-		fmt.Fprintf(b, "//   - msg.%s is generated (ULID) when the caller left it empty;\n", pkField.goName)
-	}
-	if intPK {
-		fmt.Fprintf(b, "//   - msg.%s is SERVER-ALLOCATED: the column is excluded from the\n", pkField.goName)
-		b.WriteString("//     INSERT and the database-assigned value is read back via RETURNING\n")
-		b.WriteString("//     into msg. Any caller-provided value is ignored;\n")
-	}
-	if timestamps {
-		b.WriteString("//   - created_at/updated_at are stamped here (timestamps: true);\n")
-	}
-	b.WriteString("// a duplicate primary key is therefore a real error, not a silent overwrite.\n")
-	if hasTenant {
-		fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s, tenantID string) error {\n", msgName, msgName)
-	} else {
-		fmt.Fprintf(b, "func Create%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Create%s\",\n", msgName)
-	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
-	b.WriteString("\tdefer span.End()\n\n")
-
-	if hasTenant && tenantField != nil {
-		b.WriteString("\t// Enforce tenant isolation: set tenant field from caller.\n")
-		fmt.Fprintf(b, "\tmsg.%s = tenantID\n\n", tenantField.goName)
-	}
-
-	if stringPK {
-		fmt.Fprintf(b, "\tif msg.%s == \"\" {\n", pkField.goName)
-		fmt.Fprintf(b, "\t\tmsg.%s = ulid.Make().String()\n", pkField.goName)
-		b.WriteString("\t}\n")
-	}
-	if timestamps {
-		writeManagedCreateTimestamps(b, fields)
-	}
-	// Normalize nil array fields to empty slices so they bind as `{}` (the
-	// NOT NULL DEFAULT '{}' convention), not NULL.
-	for _, f := range fields {
-		if f.isArray {
-			b.WriteString(arrayNormalizeExpr(f))
-		}
-	}
-	if stringPK || timestamps || hasArray(fields) {
-		b.WriteString("\n")
-	}
-
-	// Bun INSERT off the tagged model. The struct tags map fields to
-	// columns and bind native postgres arrays.
-	b.WriteString("\tq := db.Bun().NewInsert().Model(msg)\n")
-	if intPK {
-		// Server-allocated PK: exclude it from the column list and read
-		// the database-assigned value back via RETURNING.
-		fmt.Fprintf(b, "\tq = q.ExcludeColumn(%q).Returning(%q)\n", pkField.columnName, sqlIdent(pkField.columnName))
-		fmt.Fprintf(b, "\tif _, err := q.Exec(ctx, &msg.%s); err != nil {\n", pkField.goName)
-	} else {
-		b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
-	}
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"create %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn nil\n")
-	b.WriteString("}\n\n")
-}
-
-// hasArray reports whether any field is an array column.
-func hasArray(fields []ormField) bool {
-	for _, f := range fields {
-		if f.isArray {
-			return true
-		}
-	}
-	return false
-}
-
 // ── managed-timestamp stamping (type-aware) ────────────────────────────
 //
-// The entity struct is a projection of the APPLIED schema, so managed
-// created_at/updated_at columns are whatever type the migration
-// declared: TIMESTAMPTZ → time.Time, legacy TEXT → string, plus the
-// nullable pointer variants. Stamping must branch on the projected Go
-// type — the pre-M3 emitter assumed time.Time unconditionally and
-// produced non-compiling output for TEXT columns (kalshi
-// fr-3fba9166ba: `undefined: time`, `msg.CreatedAt.IsZero undefined
-// (type string)`) and for nullable pointer columns.
+// The managed created_at/updated_at stamping (TIMESTAMPTZ → time.Now(),
+// legacy TEXT → RFC3339Nano string, plus the nullable pointer variants)
+// now lives in forge/pkg/crud, driven by the per-entity repo Spec's
+// Timestamps flag. The generator only projects the struct field types and
+// records the Spec flag; it no longer emits stamping code, so the former
+// isManagedTimestampColumn/stampableTimestamp helpers are gone.
 
-// isManagedTimestampColumn reports whether the column is one of the
-// timestamps:true managed pair.
-func isManagedTimestampColumn(col string) bool {
-	return col == "created_at" || col == "updated_at"
-}
-
-// stampableTimestamp reports whether the emitter knows how to stamp the
-// column's projected Go type. time.Time gets the instant itself; string
-// gets the RFC3339Nano rendering. Anything else (e.g. an epoch INTEGER)
-// is left alone — emitting a wrong-typed stamp would be a compile
-// error, and guessing an encoding would corrupt data.
-func stampableTimestamp(f ormField) bool {
-	return f.goType == "time.Time" || f.goType == "string"
-}
-
-// stampValueExpr renders the stamp value for f given nowExpr, a Go
-// expression of type time.Time. Callers must have checked
-// stampableTimestamp first.
-func stampValueExpr(f ormField, nowExpr string) string {
-	if f.goType == "string" {
-		return nowExpr + ".Format(time.RFC3339Nano)"
-	}
-	return nowExpr
-}
-
-// isPointerStructField reports whether the field projects to a pointer
-// on the entity struct (nullable column).
-func isPointerStructField(f ormField) bool {
-	return strings.HasPrefix(f.structGoType(), "*")
-}
-
-// stampEmptyCond renders the "caller left it unset" condition used to
-// guard the created_at stamp so caller-provided values win.
-func stampEmptyCond(f ormField) string {
-	if isPointerStructField(f) {
-		return fmt.Sprintf("msg.%s == nil", f.goName)
-	}
-	if f.goType == "string" {
-		return fmt.Sprintf("msg.%s == %q", f.goName, "")
-	}
-	return fmt.Sprintf("msg.%s.IsZero()", f.goName)
-}
-
-// writeStampAssign emits `msg.<field> = <stamp>` in the field's
-// projected type, routing pointer fields through an addressable local.
-func writeStampAssign(b *strings.Builder, f ormField, nowExpr, indent string) {
-	expr := stampValueExpr(f, nowExpr)
-	if isPointerStructField(f) {
-		fmt.Fprintf(b, "%sstamp%s := %s\n", indent, f.goName, expr)
-		fmt.Fprintf(b, "%smsg.%s = &stamp%s\n", indent, f.goName, f.goName)
-		return
-	}
-	fmt.Fprintf(b, "%smsg.%s = %s\n", indent, f.goName, expr)
-}
-
-// writeManagedCreateTimestamps emits the created_at/updated_at stamping
-// for entities with timestamps:true. Only fields that actually exist on
-// the entity AND have a stampable projected type are touched
-// (resolveORMFields guarantees the fields exist for timestamps:true,
-// whether declared or auto-added).
-func writeManagedCreateTimestamps(b *strings.Builder, fields []ormField) {
-	var createdAt, updatedAt *ormField
-	for i := range fields {
-		f := &fields[i]
-		if !stampableTimestamp(*f) {
-			continue
-		}
-		switch f.columnName {
-		case "created_at":
-			createdAt = f
-		case "updated_at":
-			updatedAt = f
-		}
-	}
-	if createdAt == nil && updatedAt == nil {
-		return
-	}
-	b.WriteString("\tnow := time.Now().UTC()\n")
-	if createdAt != nil {
-		fmt.Fprintf(b, "\tif %s {\n", stampEmptyCond(*createdAt))
-		writeStampAssign(b, *createdAt, "now", "\t\t")
-		b.WriteString("\t}\n")
-	}
-	if updatedAt != nil {
-		writeStampAssign(b, *updatedAt, "now", "\t")
-	}
-}
-
-// writeUpdatedAtStamp emits the standalone updated_at re-stamp used by
-// Update/UpdateMasked. Returns false when the column is missing or not
-// stampable (caller then skips the stamp entirely).
-func writeUpdatedAtStamp(b *strings.Builder, fields []ormField, indent string) bool {
-	for _, f := range fields {
-		if f.columnName != "updated_at" {
-			continue
-		}
-		if !stampableTimestamp(f) {
-			return false
-		}
-		writeStampAssign(b, f, "time.Now().UTC()", indent)
-		return true
-	}
-	return false
-}
-
-// writeWhereScope emits the tenant/soft-delete WHERE filters common to
-// the read paths, applied to the Bun query var named qVar. Column
-// identifiers are baked as quoted-literal Go strings.
-func writeScopeWhere(b *strings.Builder, qVar string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
-	if hasTenant && tenantField != nil {
-		fmt.Fprintf(b, "\t%s = %s.Where(%q, tenantID)\n", qVar, qVar, sqlIdent(tenantField.columnName)+" = ?")
-	}
-	if softDelete && includeSoftDelete {
-		fmt.Fprintf(b, "\t%s = %s.Where(%q)\n", qVar, qVar, sqlIdent("deleted_at")+" IS NULL")
-	}
-}
-
-func writeORMGetByID(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, hasTenant, softDelete bool, tenantField *ormField) {
-	fmt.Fprintf(b, "// Get%sByID retrieves a %s by its primary key.\n", msgName, msgName)
-	b.WriteString("//\n")
-	b.WriteString("// A missing row satisfies errors.Is(err, orm.ErrNoRows) so callers (and\n")
-	b.WriteString("// forge/pkg/crud) can map it to NotFound without string matching.\n")
-	if hasTenant {
-		fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s, tenantID string) (*%s, error) {\n", msgName, pkGoType, msgName)
-	} else {
-		fmt.Fprintf(b, "func Get%sByID(ctx context.Context, db orm.Context, id %s) (*%s, error) {\n", msgName, pkGoType, msgName)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Get%sByID\",\n", msgName)
-	b.WriteString("\t\ttrace.WithAttributes(\n")
-	fmt.Fprintf(b, "\t\t\tattribute.String(\"table\", %q),\n", tableName)
-	b.WriteString("\t\t\tattribute.String(\"id\", fmt.Sprint(id)),\n")
-	b.WriteString("\t\t))\n")
-	b.WriteString("\tdefer span.End()\n\n")
-
-	fmt.Fprintf(b, "\tentity := new(%s)\n", msgName)
-	b.WriteString("\tq := db.Bun().NewSelect().Model(entity).\n")
-	fmt.Fprintf(b, "\t\tWhere(%q, id).Limit(1)\n", sqlIdent(pkCol)+" = ?")
-	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, true)
-	b.WriteString("\tif err := q.Scan(ctx); err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"get %s by id: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn entity, nil\n")
-	b.WriteString("}\n\n")
-}
-
-// writeListBody emits the shared Bun SELECT body for List/ListAll: build
-// the query, apply tenant scope (+ hand-rolled soft-delete filter unless
-// includeSoftDelete is false), apply the caller's QueryOption filters,
-// scan. whereAllWithDeleted opts a Bun-native ,soft_delete model out of
-// the automatic deleted-row exclusion (used by ListAll).
-func writeListBody(b *strings.Builder, msgName, tableName, opName string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete, whereAllWithDeleted bool) {
-	fmt.Fprintf(b, "\tvar results []*%s\n", msgName)
-	b.WriteString("\tq := db.Bun().NewSelect().Model(&results)\n")
-	if whereAllWithDeleted {
-		// Bun's ,soft_delete auto-excludes deleted rows from NewSelect;
-		// ListAll deliberately includes them.
-		b.WriteString("\tq = q.WhereAllWithDeleted()\n")
-	}
-	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, includeSoftDelete)
-	b.WriteString("\tfor _, opt := range opts {\n")
-	b.WriteString("\t\topt(q)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tif err := q.Scan(ctx); err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"%s %s: %%w\", err)\n", opName, tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn results, nil\n")
-}
-
-func writeORMList(b *strings.Builder, msgName, tableName string, hasTenant, softDelete bool, tenantField *ormField) {
-	fmt.Fprintf(b, "// List%s retrieves %s rows with optional filtering.\n", msgName, msgName)
-	if hasTenant {
-		fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
-	} else {
-		fmt.Fprintf(b, "func List%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.List%s\",\n", msgName)
-	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
-	b.WriteString("\tdefer span.End()\n\n")
-	writeListBody(b, msgName, tableName, "list", softDelete, hasTenant, tenantField, true, false)
-	b.WriteString("}\n\n")
-}
-
-func writeORMCount(b *strings.Builder, msgName, tableName string, hasTenant, softDelete bool, tenantField *ormField) {
-	fmt.Fprintf(b, "// Count%s returns the number of matching %s rows.\n", msgName, msgName)
-	if hasTenant {
-		fmt.Fprintf(b, "func Count%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) (int64, error) {\n", msgName)
-	} else {
-		fmt.Fprintf(b, "func Count%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) (int64, error) {\n", msgName)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Count%s\",\n", msgName)
-	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
-	b.WriteString("\tdefer span.End()\n\n")
-
-	fmt.Fprintf(b, "\tq := db.Bun().NewSelect().Model((*%s)(nil))\n", msgName)
-	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, true)
-	b.WriteString("\tfor _, opt := range opts {\n")
-	b.WriteString("\t\topt(q)\n")
-	b.WriteString("\t}\n")
-	b.WriteString("\tn, err := q.Count(ctx)\n")
-	b.WriteString("\tif err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn 0, fmt.Errorf(\"count %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn int64(n), nil\n")
-	b.WriteString("}\n\n")
-}
-
-func writeORMListAll(b *strings.Builder, msgName, tableName string, hasTenant, handRolledSoftDelete, nativeSoftDelete bool, tenantField *ormField) {
-	fmt.Fprintf(b, "// ListAll%s retrieves all %s rows including soft-deleted ones.\n", msgName, msgName)
-	if hasTenant {
-		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, tenantID string, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
-	} else {
-		fmt.Fprintf(b, "func ListAll%s(ctx context.Context, db orm.Context, opts ...orm.QueryOption) ([]*%s, error) {\n", msgName, msgName)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.ListAll%s\",\n", msgName)
-	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
-	b.WriteString("\tdefer span.End()\n\n")
-	// Tenant isolation still applies even for ListAll (it bypasses the
-	// soft-delete filter only). Native ,soft_delete needs an explicit
-	// WhereAllWithDeleted() to see the tombstones; the legacy TEXT path
-	// simply omits the deleted_at IS NULL filter (handRolledSoftDelete,
-	// includeSoftDelete=false).
-	writeListBody(b, msgName, tableName, "list all", handRolledSoftDelete, hasTenant, tenantField, false /*includeSoftDelete*/, nativeSoftDelete /*whereAllWithDeleted*/)
-	b.WriteString("}\n\n")
-}
-
-// writeWhereScopeUpdate emits the soft-delete/tenant WHERE filters for an
-// UPDATE/DELETE on the Bun query var named qVar.
-func writeScopeWhereWrite(b *strings.Builder, qVar string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
-	if softDelete && includeSoftDelete {
-		fmt.Fprintf(b, "\t%s = %s.Where(%q)\n", qVar, qVar, sqlIdent("deleted_at")+" IS NULL")
-	}
-	if hasTenant && tenantField != nil {
-		fmt.Fprintf(b, "\t%s = %s.Where(%q, tenantID)\n", qVar, qVar, sqlIdent(tenantField.columnName)+" = ?")
-	}
-}
-
-func writeORMUpdate(b *strings.Builder, msgName, tableName, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
-	excludeFromSet := func(f ormField) bool { return excludedFromSet(f, timestamps) }
-
-	var setCols []ormField
-	for _, f := range fields {
-		if excludeFromSet(f) {
-			continue
-		}
-		setCols = append(setCols, f)
-	}
-
-	// No updatable fields: a no-op (mirrors the legacy emitter).
-	if len(setCols) == 0 {
-		fmt.Fprintf(b, "// Update%s is a no-op because %s has no updatable fields.\n", msgName, msgName)
-		if hasTenant {
-			fmt.Fprintf(b, "func Update%s(_ context.Context, _ orm.Context, _ *%s, _ string) error {\n", msgName, msgName)
-		} else {
-			fmt.Fprintf(b, "func Update%s(_ context.Context, _ orm.Context, _ *%s) error {\n", msgName, msgName)
-		}
-		b.WriteString("\treturn nil // no updatable fields\n")
-		b.WriteString("}\n\n")
-		return
-	}
-
-	pkGoName := "Id"
-	if pkField != nil {
-		pkGoName = pkField.goName
-	}
-
-	fmt.Fprintf(b, "// Update%s updates an existing %s by its primary key.\n", msgName, msgName)
-	if timestamps {
-		b.WriteString("//\n")
-		b.WriteString("// updated_at is stamped here (timestamps: true); created_at is immutable\n")
-		b.WriteString("// and excluded from the SET clause.\n")
-	}
-	if hasTenant {
-		fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s, tenantID string) error {\n", msgName, msgName)
-	} else {
-		fmt.Fprintf(b, "func Update%s(ctx context.Context, db orm.Context, msg *%s) error {\n", msgName, msgName)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Update%s\",\n", msgName)
-	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
-	b.WriteString("\tdefer span.End()\n\n")
-
-	if timestamps {
-		if writeUpdatedAtStamp(b, fields, "\t") {
-			b.WriteString("\n")
-		}
-	}
-	for _, f := range setCols {
-		if f.isArray {
-			b.WriteString(arrayNormalizeExpr(f))
-		}
-	}
-
-	// Bun UPDATE off the tagged model, restricting the SET to the
-	// updatable columns. The PK / tenant / deleted_at columns are filtered
-	// out of setCols by excludeFromSet.
-	b.WriteString("\tq := db.Bun().NewUpdate().Model(msg).\n")
-	b.WriteString("\t\tColumn(")
-	for i, f := range setCols {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(b, "%q", f.columnName)
-	}
-	b.WriteString(").\n")
-	fmt.Fprintf(b, "\t\tWhere(%q, msg.%s)\n", sqlIdent(pkCol)+" = ?", pkGoName)
-	writeScopeWhereWrite(b, "q", softDelete, hasTenant, tenantField, true)
-	b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"update %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn nil\n")
-	b.WriteString("}\n\n")
-}
-
-// writeORMUpdateMasked emits Update<Entity>Masked — the AIP-134 partial
-// update sibling of Update<Entity>. It writes ONLY the columns named in
-// fields (proto field names == column names, snake_case), validates each
-// path against the updatable set (same excludeFromSet rules as the full
-// update: never the PK, tenant key, deleted_at, or — with managed
-// timestamps — created_at), and returns *orm.UnknownFieldError for any
-// path outside that set so pkg/crud can map it to InvalidArgument
-// without leaking SQL. updated_at is stamped on masked updates too.
-//
-// The masked write is a single Bun UPDATE whose SET column list is the
-// validated mask (plus updated_at). Bun pulls the values straight off the
-// tagged model, so non-masked columns are never touched.
-func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, fields []ormField, hasTenant, softDelete bool, tenantField *ormField, pkField *ormField, timestamps bool) {
-	excludeFromSet := func(f ormField) bool { return excludedFromSet(f, timestamps) }
-
-	var updatable []ormField
-	for _, f := range fields {
-		if excludeFromSet(f) {
-			continue
-		}
-		updatable = append(updatable, f)
-	}
-
-	sigSuffix := ") error {\n"
-	if hasTenant {
-		sigSuffix = ", tenantID string) error {\n"
-	}
-
-	// No updatable columns: a concrete mask path can only ever be
-	// unknown; an empty mask is a no-op (mirrors Update<Entity>).
-	if len(updatable) == 0 {
-		fmt.Fprintf(b, "// Update%sMasked is a no-op shell because %s has no updatable fields;\n", msgName, msgName)
-		b.WriteString("// any concrete update_mask path is therefore unknown.\n")
-		if hasTenant {
-			fmt.Fprintf(b, "func Update%sMasked(_ context.Context, _ orm.Context, _ *%s, fields []string, _ string) error {\n", msgName, msgName)
-		} else {
-			fmt.Fprintf(b, "func Update%sMasked(_ context.Context, _ orm.Context, _ *%s, fields []string) error {\n", msgName, msgName)
-		}
-		b.WriteString("\tif len(fields) > 0 {\n")
-		b.WriteString("\t\treturn &orm.UnknownFieldError{Field: fields[0]}\n")
-		b.WriteString("\t}\n")
-		b.WriteString("\treturn nil\n")
-		b.WriteString("}\n\n")
-		return
-	}
-
-	pkGoName := "Id"
-	if pkField != nil {
-		pkGoName = pkField.goName
-	}
-
-	fmt.Fprintf(b, "// Update%sMasked updates ONLY the named fields of an existing %s\n", msgName, msgName)
-	b.WriteString("// (AIP-134 update_mask paths; proto field names == column names).\n")
-	b.WriteString("// Paths outside the updatable set return *orm.UnknownFieldError —\n")
-	b.WriteString("// forge/pkg/crud maps it to a clean InvalidArgument.\n")
-	if timestamps {
-		b.WriteString("//\n")
-		b.WriteString("// updated_at is stamped here too (timestamps: true); created_at is\n")
-		b.WriteString("// immutable and never settable through a mask.\n")
-	}
-	fmt.Fprintf(b, "func Update%sMasked(ctx context.Context, db orm.Context, msg *%s, fields []string%s", msgName, msgName, sigSuffix)
-	b.WriteString("\tif len(fields) == 0 {\n")
-	b.WriteString("\t\treturn nil\n")
-	b.WriteString("\t}\n\n")
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Update%sMasked\",\n", msgName)
-	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
-	b.WriteString("\tdefer span.End()\n\n")
-
-	stampUpdatedAt := false
-	if timestamps {
-		stampUpdatedAt = writeUpdatedAtStamp(b, fields, "\t")
-		if stampUpdatedAt {
-			b.WriteString("\n")
-		}
-	}
-	// Normalize any maskable array field so a masked write of it binds {}.
-	for _, f := range updatable {
-		if f.isArray {
-			b.WriteString(arrayNormalizeExpr(f))
-		}
-	}
-
-	b.WriteString("\t// The updatable-column allowlist. Anything else (unknown columns, the\n")
-	b.WriteString("\t// PK, the tenant key, immutable bookkeeping columns) is rejected.\n")
-	b.WriteString("\tupdatable := map[string]bool{\n")
-	for _, f := range updatable {
-		fmt.Fprintf(b, "\t\t%q: true,\n", f.columnName)
-	}
-	b.WriteString("\t}\n\n")
-
-	b.WriteString("\tcols := make([]string, 0, len(fields)+1)\n")
-	b.WriteString("\tseen := make(map[string]bool, len(fields))\n")
-	b.WriteString("\tfor _, f := range fields {\n")
-	b.WriteString("\t\tif !updatable[f] {\n")
-	b.WriteString("\t\t\treturn &orm.UnknownFieldError{Field: f}\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\tif seen[f] {\n")
-	b.WriteString("\t\t\tcontinue\n")
-	b.WriteString("\t\t}\n")
-	b.WriteString("\t\tseen[f] = true\n")
-	b.WriteString("\t\tcols = append(cols, f)\n")
-	b.WriteString("\t}\n")
-	if stampUpdatedAt {
-		b.WriteString("\tif !seen[\"updated_at\"] {\n")
-		b.WriteString("\t\tcols = append(cols, \"updated_at\")\n")
-		b.WriteString("\t}\n")
-	}
-	b.WriteString("\n")
-
-	b.WriteString("\tq := db.Bun().NewUpdate().Model(msg).\n")
-	b.WriteString("\t\tColumn(cols...).\n")
-	fmt.Fprintf(b, "\t\tWhere(%q, msg.%s)\n", sqlIdent(pkCol)+" = ?", pkGoName)
-	writeScopeWhereWrite(b, "q", softDelete, hasTenant, tenantField, true)
-	b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"update %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn nil\n")
-	b.WriteString("}\n\n")
-}
-
-func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType string, hasTenant, handRolledSoftDelete, nativeSoftDelete bool, tenantField *ormField) {
-	if handRolledSoftDelete || nativeSoftDelete {
-		fmt.Fprintf(b, "// Delete%s soft-deletes a %s by setting deleted_at.\n", msgName, msgName)
-	} else {
-		fmt.Fprintf(b, "// Delete%s permanently deletes a %s by its primary key.\n", msgName, msgName)
-	}
-	if nativeSoftDelete {
-		b.WriteString("//\n")
-		b.WriteString("// Soft delete is Bun-native (,soft_delete tag): a plain NewDelete on a\n")
-		b.WriteString("// soft-delete model stamps deleted_at instead of removing the row.\n")
-		b.WriteString("// Use ForceDelete to hard-delete; ListAll/WhereAllWithDeleted to read\n")
-		b.WriteString("// tombstones.\n")
-	}
-	if hasTenant {
-		fmt.Fprintf(b, "func Delete%s(ctx context.Context, db orm.Context, id %s, tenantID string) error {\n", msgName, pkGoType)
-	} else {
-		fmt.Fprintf(b, "func Delete%s(ctx context.Context, db orm.Context, id %s) error {\n", msgName, pkGoType)
-	}
-	fmt.Fprintf(b, "\tctx, span := ormTracer.Start(ctx, \"orm.Delete%s\",\n", msgName)
-	b.WriteString("\t\ttrace.WithAttributes(\n")
-	fmt.Fprintf(b, "\t\t\tattribute.String(\"table\", %q),\n", tableName)
-	b.WriteString("\t\t\tattribute.String(\"id\", fmt.Sprint(id)),\n")
-	b.WriteString("\t\t))\n")
-	b.WriteString("\tdefer span.End()\n\n")
-
-	switch {
-	case nativeSoftDelete:
-		// Bun-native soft delete: NewDelete on a ,soft_delete model stamps
-		// deleted_at (Bun rewrites it to UPDATE ... SET deleted_at). No
-		// manual Set, no deleted_at IS NULL guard — Bun's NewDelete already
-		// scopes to live rows.
-		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).\n", msgName)
-		fmt.Fprintf(b, "\t\tWhere(%q, id)\n", sqlIdent(pkCol)+" = ?")
-	case handRolledSoftDelete:
-		// Legacy TEXT deleted_at: stamp deleted_at instead of removing the
-		// row. Bun's time.Time stamp can't round-trip a TEXT column, so this
-		// stays a hand-rolled UPDATE with CURRENT_TIMESTAMP.
-		fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
-		fmt.Fprintf(b, "\t\tSet(%q).\n", sqlIdent("deleted_at")+" = CURRENT_TIMESTAMP")
-		fmt.Fprintf(b, "\t\tWhere(%q, id).\n", sqlIdent(pkCol)+" = ?")
-		fmt.Fprintf(b, "\t\tWhere(%q)\n", sqlIdent("deleted_at")+" IS NULL")
-	default:
-		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).\n", msgName)
-		fmt.Fprintf(b, "\t\tWhere(%q, id)\n", sqlIdent(pkCol)+" = ?")
-	}
-	if hasTenant && tenantField != nil {
-		fmt.Fprintf(b, "\tq = q.Where(%q, tenantID)\n", sqlIdent(tenantField.columnName)+" = ?")
-	}
-	b.WriteString("\tif _, err := q.Exec(ctx); err != nil {\n")
-	b.WriteString("\t\tspan.RecordError(err)\n")
-	b.WriteString("\t\tspan.SetStatus(codes.Error, err.Error())\n")
-	fmt.Fprintf(b, "\t\treturn fmt.Errorf(\"delete %s: %%w\", err)\n", tableName)
-	b.WriteString("\t}\n")
-	b.WriteString("\treturn nil\n")
-	b.WriteString("}\n")
-}
-
-// resolveORMFields converts PlanEntity fields (including auto-generated
-// timestamp/soft-delete fields) into the ormField representation used
+// resolveORMFields resolves an entity's declared fields plus the
+// auto-added id/timestamp/soft-delete columns into the ormField list used
 // by the code generator.
 func resolveORMFields(ent config.PlanEntity) []ormField {
 	type entry struct {

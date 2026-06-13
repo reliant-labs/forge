@@ -38,7 +38,20 @@ import (
 // All issues across the three phases are batched into a single
 // ValidationError; the caller sees the full list rather than just the
 // first failure.
-func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
+// The variadic components argument carries the per-component entities the
+// caller has already parsed from the project-root components.json (see
+// LoadProject). They are no longer part of forge.yaml: the loader injects
+// them into the returned config and DERIVES the project kind from them
+// (DeriveProjectKind) before running shape-derived defaults + the feature
+// graph. Callers with no components (the common test path, or a pure
+// library) pass none — and the project kind derives to library (no
+// components.json signal). Callers that need the empty-service-shell
+// (components.json present but empty → service) must go through LoadProject.
+func LoadStrict(data []byte, path string, components ...ComponentConfig) (*ProjectConfig, error) {
+	return loadStrict(data, path, components, len(components) > 0)
+}
+
+func loadStrict(data []byte, path string, components []ComponentConfig, hasComponentsFile bool) (*ProjectConfig, error) {
 	label := path
 	if label == "" {
 		label = "forge.yaml"
@@ -79,6 +92,15 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 		}
 	}
 
+	// Inject the components.json entities and derive the project kind from
+	// them BEFORE shape-derived defaults run (feature derivation reads
+	// kind). Components carry no YAML position, so their validation issues
+	// fall back to the file root.
+	if len(components) > 0 {
+		cfg.Components = components
+	}
+	cfg.Kind = DeriveProjectKind(cfg.Components, hasComponentsFile)
+
 	// Phase 3: required-field validation. The yaml root is threaded
 	// through so issues can carry the line:col of the *parent* mapping
 	// (or the existing-field's own line, when it's present but invalid).
@@ -113,6 +135,27 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 		return nil, &ValidationError{Path: label, Issues: graphIssues}
 	}
 	return &cfg, nil
+}
+
+// LoadProject is the canonical project loader: it parses the global
+// forge.yaml bytes and the per-component components.json bytes, then runs
+// the full LoadStrict validation + kind derivation + shape-derived defaults
+// over the combined config. componentsJSON may be empty (no components.json
+// on disk → a pure library, or a service whose components are added later).
+//
+// This is the entry point both the CLI loader and the generator's
+// ReadProjectConfig route through, so forge.yaml-is-global / components-are-
+// json lives in exactly one place.
+func LoadProject(forgeYAML, componentsJSON []byte, path string) (*ProjectConfig, error) {
+	components, err := ParseComponentsJSON(componentsJSON)
+	if err != nil {
+		return nil, err
+	}
+	// A nil componentsJSON means "no components.json on disk" → the project
+	// is a library. A present-but-empty file (`{"components": []}`) is the
+	// canonical empty service shell → service. DeriveProjectKind needs this
+	// presence bit, which the slice alone can't carry.
+	return loadStrict(forgeYAML, path, components, componentsJSON != nil)
 }
 
 // ValidationError aggregates all forge.yaml validation issues into a
@@ -223,19 +266,34 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
 			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
 	},
-	// services: and binaries: were unified into one components: list
-	// keyed on `kind:` (server|worker|cron|operator|binary). type:
-	// go_service → kind: server; the binaries: block → components with
-	// kind: binary.
+	// kind: moved off forge.yaml in the ProjectStore per-service data move.
+	// Project kind now DERIVES from the components in components.json (a
+	// server-shaped component → service, binary-only → cli, none → library).
+	"kind": {
+		removedIn: "the ProjectStore per-service data move (kind derives from components)",
+		replacement: "delete the key — project kind is now derived from the components in " +
+			"components.json (server-shaped → service, binary-only → cli, no components → library).",
+	},
+	// components: moved OUT of forge.yaml entirely (ProjectStore Phase-2
+	// per-service data move). forge.yaml is now GLOBAL-only; the per-service
+	// component entities are authored in the project-root components.json
+	// file. services:/binaries: (the pre-unification blocks) point at the
+	// same migration.
+	"components": {
+		removedIn: "the ProjectStore per-service data move (forge.yaml is global-only)",
+		replacement: "move the `components:` entries to a project-root `components.json` file " +
+			"(`{\"components\": [{\"name\": ..., \"kind\": ..., \"ports\": {\"http\": 8080}}]}`); " +
+			"forge.yaml keeps only global project state. Project kind now derives from the " +
+			"components, so delete any `kind:` field too.",
+	},
 	"services": {
-		removedIn: "the component-model unification (services + binaries → components)",
-		replacement: "rename the `services:` block to `components:` and replace each entry's " +
-			"`type:` with `kind:` (go_service → server, worker/operator unchanged, " +
-			"cron is now first-class); scalar `port:` becomes a `ports:` map (`ports:\n  http: 8080`).",
+		removedIn: "the ProjectStore per-service data move (forge.yaml is global-only)",
+		replacement: "move per-service entities to a project-root `components.json` file with " +
+			"`kind: server` and a `ports: {http: 8080}` map (go_service → server); forge.yaml is global-only.",
 	},
 	"binaries": {
-		removedIn:   "the component-model unification (services + binaries → components)",
-		replacement: "fold each `binaries:` entry into the `components:` list with `kind: binary`.",
+		removedIn:   "the ProjectStore per-service data move (forge.yaml is global-only)",
+		replacement: "move each `binaries:` entry into the project-root `components.json` with `kind: binary`.",
 	},
 	"components[].type": {
 		removedIn:   "the component-model unification (kind replaces type)",
@@ -589,21 +647,9 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 			fix:    "use a path like 'github.com/<org>/<project>' (must contain a slash, no spaces).",
 		})
 	}
-	// Kind defaults to "service" via EffectiveProjectKind, so an empty
-	// kind is fine. Only validate when set.
-	if k := strings.ToLower(strings.TrimSpace(cfg.Kind)); k != "" {
-		switch k {
-		case ProjectKindService, ProjectKindCLI, ProjectKindLibrary:
-		default:
-			line, col := findNodePos(root, []string{"kind"})
-			out = append(out, validationIssue{
-				line:   line,
-				column: col,
-				msg:    fmt.Sprintf("'kind' value %q is invalid", cfg.Kind),
-				fix:    "use one of: service, cli, library.",
-			})
-		}
-	}
+	// kind is no longer a forge.yaml field — it is DERIVED from the
+	// components (DeriveProjectKind) before validateRequired runs, so it is
+	// always one of the valid values and needs no validation here.
 
 	for i, comp := range cfg.Components {
 		prefix := fmt.Sprintf("components[%d]", i)

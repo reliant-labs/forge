@@ -89,7 +89,15 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		return nil, fmt.Errorf("failed to read project config: %w", err)
 	}
 
-	parsed, err := config.LoadStrict(data, path)
+	// Per-component entities live in the project-root components.json
+	// sibling of forge.yaml (forge.yaml is global-only). Read it if
+	// present; absent is valid (a project with no components is a library).
+	componentsJSON, err := readComponentsJSONFile(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := config.LoadProject(data, componentsJSON, path)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +140,21 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// readComponentsJSONFile reads the project-root components.json from dir
+// (the directory holding forge.yaml). A missing file is not an error — it
+// returns nil bytes, which config.LoadProject treats as "no components"
+// (a pure library, or a fresh service before its first `forge add`).
+func readComponentsJSONFile(dir string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(dir, config.ComponentsFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read %s: %w", config.ComponentsFileName, err)
+	}
+	return data, nil
 }
 
 // normalizeEnum canonicalizes an enum-like YAML string value to lowercase

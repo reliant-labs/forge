@@ -72,9 +72,17 @@ func EffectiveProjectBinary(binary string) string {
 type ProjectConfig struct {
 	Name       string `yaml:"name"`
 	ModulePath string `yaml:"module_path"`
-	Kind       string `yaml:"kind,omitempty"`   // "service" (default), "cli", "library"
-	Binary     string `yaml:"binary,omitempty"` // "per-service" (default), "shared" — one Go binary, cobra subcommand per service
-	Version    string `yaml:"version,omitempty"`
+	// Kind is the project shape (service|cli|library). It is NO LONGER a
+	// forge.yaml field: as of the ProjectStore Phase-2 data move it DERIVES
+	// from the components (see DeriveProjectKind) — a project with a
+	// server-shaped component is a service, a binary-only project is a cli,
+	// an empty one is a library. The loader sets this field after reading
+	// components.json; the yaml tag is "-" so a stale `kind:` in forge.yaml
+	// is rejected with a migration hint. Every consumer that reads cfg.Kind
+	// is unchanged.
+	Kind    string `yaml:"-"`
+	Binary  string `yaml:"binary,omitempty"` // "per-service" (default), "shared" — one Go binary, cobra subcommand per service
+	Version string `yaml:"version,omitempty"`
 	// ForgeVersion records the forge binary version that this project's
 	// generated artifacts were last produced against. It is set at
 	// `forge new` time, bumped after a successful `forge upgrade`, and
@@ -90,10 +98,16 @@ type ProjectConfig struct {
 	// Components is the unified list of everything this project builds and
 	// runs: Connect-RPC servers, in-process workers, scheduled crons,
 	// controller-runtime operators, and standalone binaries. The Kind field
-	// on each entry is THE discriminator (server|worker|cron|operator|binary)
-	// — it replaces the old split between `services:` (with a `type:` field)
-	// and `binaries:`. See [ComponentConfig].
-	Components []ComponentConfig `yaml:"components"`
+	// on each entry is THE discriminator (server|worker|cron|operator|binary).
+	//
+	// As of the ProjectStore Phase-2 per-service data move, components are
+	// AUTHORED in the project-root components.json file (see
+	// [ComponentsFileName]) — NOT in forge.yaml. The yaml tag is therefore
+	// "-": forge.yaml can no longer carry a `components:` block (a stale one
+	// is rejected with a migration hint — see removedSchemaKeys). The loader
+	// reads components.json and populates this field, so every consumer that
+	// reads cfg.Components (and the ProjectStore wrapping it) is unchanged.
+	Components []ComponentConfig `yaml:"-"`
 	Packages   []PackageConfig   `yaml:"packages,omitempty"`
 	Frontends  []FrontendConfig  `yaml:"frontends,omitempty"`
 	// Frontend holds project-level frontend settings — distinct from

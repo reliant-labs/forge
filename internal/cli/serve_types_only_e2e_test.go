@@ -18,7 +18,7 @@ import (
 // pipeline through the registration-in-code lifecycle (what a binary
 // serves is the row list in the user-owned pkg/app/services.go):
 //
-//	A. newly added (UNLISTED): a "project" service appears in forge.yaml
+//	A. newly added (UNLISTED): a "project" service appears in components.json
 //	   + proto but nowhere in services.go → handlers scaffold + row
 //	   constructor generate (the user might be about to implement it),
 //	   but the binary does NOT serve it: no MCP tools, audit warns "row
@@ -60,7 +60,7 @@ func TestE2ERegistrationTypesOnlyService(t *testing.T) {
 		t.Fatalf("forge new must scaffold pkg/app/services.go with the api row:\n%s", registry)
 	}
 
-	// Declare the second "project" service: proto + forge.yaml entry.
+	// Declare the second "project" service: proto + components.json entry.
 	// Its canonical implementation will live in a sibling binary
 	// (control-plane); this repo ends up consuming only types/client.
 	protoDir := filepath.Join(projectDir, "proto", "services", "project", "v1")
@@ -238,22 +238,17 @@ message GetProjectResponse {
 	})
 }
 
-// addProjectServiceEntry appends the "project" service to forge.yaml —
-// a plain entry; serving is decided in pkg/app/services.go, not yaml.
+// addProjectServiceEntry appends the "project" service to components.json —
+// a plain entry; serving is decided in pkg/app/services.go, not config.
+// (Components live in components.json now; forge.yaml is global-only.)
 func addProjectServiceEntry(t *testing.T, projectDir string) {
 	t.Helper()
-	path := filepath.Join(projectDir, "forge.yaml")
-	cfg, err := loadProjectConfigFrom(path)
-	if err != nil {
-		t.Fatalf("load forge.yaml: %v", err)
-	}
-	cfg.Components = append(cfg.Components, config.ComponentConfig{
+	if err := generator.AppendComponentToFile(projectDir, config.ComponentConfig{
 		Name: "project",
 		Kind: config.ComponentKindServer,
 		Path: "handlers/project",
-	})
-	if err := generator.WriteProjectConfigFile(cfg, path); err != nil {
-		t.Fatalf("write forge.yaml: %v", err)
+	}); err != nil {
+		t.Fatalf("append project component to components.json: %v", err)
 	}
 }
 

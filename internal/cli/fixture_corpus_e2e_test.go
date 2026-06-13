@@ -1885,7 +1885,7 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	// real RPC), scan/insert.
 	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.up.sql"), `
 ALTER TABLE bookmarks ADD COLUMN domain TEXT NOT NULL DEFAULT '';
-UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
+UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 `)
 	writeCorpusFile(t, filepath.Join(projectDir, "db", "migrations", "00003_bookmark_domain.down.sql"),
 		"ALTER TABLE bookmarks DROP COLUMN domain;\n")

@@ -14,15 +14,20 @@ import (
 func TestWriteGeneratedFileTier2_ForcePreservesHandEdits(t *testing.T) {
 	ResetTier2State()
 	defer ResetTier2State()
+	ResetSkipWrite()
 
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 
-	// Initial Tier-2 write records the scaffold.
+	// Initial Tier-2 write scaffolds the file (no marker: user-owned
+	// from birth).
 	scaffold := []byte("// scaffold\npackage svc\n")
 	wrote, err := WriteGeneratedFileTier2(root, "svc.go", scaffold, cs, false)
 	if err != nil || !wrote {
 		t.Fatalf("initial Tier-2 write: wrote=%v err=%v", wrote, err)
+	}
+	if onDisk, _ := os.ReadFile(filepath.Join(root, "svc.go")); Verify(onDisk) != NoMarker {
+		t.Fatalf("Tier-2 scaffold must carry no marker; got %q", onDisk)
 	}
 
 	// User hand-edits the file.
@@ -57,9 +62,10 @@ func TestWriteGeneratedFileTier2_ForcePreservesHandEdits(t *testing.T) {
 func TestWriteGeneratedFileTier2_ResetTier2YesOverwrites(t *testing.T) {
 	ResetTier2State()
 	defer ResetTier2State()
+	ResetSkipWrite()
 
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 
 	scaffold := []byte("// v1\npackage svc\n")
 	_, _ = WriteGeneratedFileTier2(root, "svc.go", scaffold, cs, false)
@@ -69,7 +75,9 @@ func TestWriteGeneratedFileTier2_ResetTier2YesOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// --reset-tier2 --yes installs an unconditional "true" hook.
+	// --reset-tier2 --yes installs an unconditional "true" hook. The
+	// hook is consulted whenever existing content differs from the
+	// fresh render.
 	Tier2OverwriteFn = func(string) bool { return true }
 
 	newTemplate := []byte("// v2\npackage svc\n")
@@ -87,6 +95,37 @@ func TestWriteGeneratedFileTier2_ResetTier2YesOverwrites(t *testing.T) {
 	}
 }
 
+// TestWriteGeneratedFileTier2_IdenticalContentIsNoOp: an existing file
+// byte-equal to the fresh render is left alone without consulting the
+// overwrite hook or bumping the preserved counter.
+func TestWriteGeneratedFileTier2_IdenticalContentIsNoOp(t *testing.T) {
+	ResetTier2State()
+	defer ResetTier2State()
+	ResetSkipWrite()
+
+	root := t.TempDir()
+	cs := &FileChecksums{}
+	scaffold := []byte("// v1\npackage svc\n")
+	_, _ = WriteGeneratedFileTier2(root, "svc.go", scaffold, cs, false)
+
+	hookCalled := false
+	Tier2OverwriteFn = func(string) bool { hookCalled = true; return true }
+
+	wrote, err := WriteGeneratedFileTier2(root, "svc.go", scaffold, cs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote {
+		t.Error("identical Tier-2 content should be a no-op")
+	}
+	if hookCalled {
+		t.Error("overwrite hook consulted for identical content")
+	}
+	if Tier2PreservedCount != 0 {
+		t.Errorf("Tier2PreservedCount = %d, want 0 for identical content", Tier2PreservedCount)
+	}
+}
+
 // TestWriteGeneratedFileTier1_ForceStillOverwrites verifies the
 // unchanged-behavior leg of item 15: Tier-1 + --force continues to
 // clobber hand-edits. Tier-1 IS "regenerated every run, DO NOT EDIT"
@@ -94,21 +133,35 @@ func TestWriteGeneratedFileTier2_ResetTier2YesOverwrites(t *testing.T) {
 func TestWriteGeneratedFileTier1_ForceStillOverwrites(t *testing.T) {
 	ResetTier2State()
 	defer ResetTier2State()
+	ResetSkipWrite()
+	ResetPerRunState() // unscoped force
+	defer ResetPerRunState()
 
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 
 	initial := []byte("// generated\npackage handlers\n")
 	_, _ = WriteGeneratedFileTier1(root, "handlers_gen.go", initial, cs, false)
 
-	// User hand-edit.
-	if err := os.WriteFile(filepath.Join(root, "handlers_gen.go"), []byte("// user\n"), 0o644); err != nil {
+	// User hand-edit that keeps the marker (a wholesale replace would
+	// drop the marker and become the untracked-overwrite path instead).
+	stamped, _ := os.ReadFile(filepath.Join(root, "handlers_gen.go"))
+	if err := os.WriteFile(filepath.Join(root, "handlers_gen.go"), append(stamped, []byte("// user\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// --force on a Tier-1 file overwrites — unchanged behavior.
+	// Without force the stomp guard skips it…
 	newTemplate := []byte("// regen\npackage handlers\n")
-	wrote, err := WriteGeneratedFileTier1(root, "handlers_gen.go", newTemplate, cs, true)
+	wrote, err := WriteGeneratedFileTier1(root, "handlers_gen.go", newTemplate, cs, false)
+	if err != nil {
+		t.Fatalf("Tier-1 unforced write: %v", err)
+	}
+	if wrote {
+		t.Error("hand-edited Tier-1 file overwritten without --force")
+	}
+
+	// …--force on a Tier-1 file overwrites — unchanged behavior.
+	wrote, err = WriteGeneratedFileTier1(root, "handlers_gen.go", newTemplate, cs, true)
 	if err != nil {
 		t.Fatalf("Tier-1 force write: %v", err)
 	}
@@ -116,7 +169,8 @@ func TestWriteGeneratedFileTier1_ForceStillOverwrites(t *testing.T) {
 		t.Error("force=true on a hand-edited Tier-1 file did NOT overwrite (regression)")
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "handlers_gen.go"))
-	if string(got) != string(newTemplate) {
-		t.Errorf("Tier-1 not overwritten under --force; got:\n%s", got)
+	wantStamped, _ := Stamp("handlers_gen.go", newTemplate)
+	if string(got) != string(wantStamped) {
+		t.Errorf("Tier-1 not overwritten+stamped under --force; got:\n%s", got)
 	}
 }

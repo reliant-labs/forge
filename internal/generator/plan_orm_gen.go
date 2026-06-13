@@ -282,6 +282,7 @@ func writeORMImports(b *strings.Builder, needsTime, needsStrings, stringPK bool)
 		b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
 	}
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
+	b.WriteString("\t\"github.com/uptrace/bun\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/attribute\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/codes\"\n")
 	b.WriteString("\t\"go.opentelemetry.io/otel/trace\"\n")
@@ -311,8 +312,11 @@ func writeEntityStruct(b *strings.Builder, msgName, tableName string, fields []o
 	fmt.Fprintf(b, "// %s is the %s row type — a projection of the APPLIED schema\n", msgName, tableName)
 	b.WriteString("// (db/migrations). Evolve it by writing migrations; `forge generate`\n")
 	b.WriteString("// regenerates this struct from the introspected schema. The bun tags\n")
-	b.WriteString("// map fields to columns for the Bun query engine.\n")
+	b.WriteString("// map fields to columns for the Bun query engine; the embedded\n")
+	b.WriteString("// bun.BaseModel pins the table name and its alias (alias == table so\n")
+	b.WriteString("// Bun's column qualification matches the FROM clause).\n")
 	fmt.Fprintf(b, "type %s struct {\n", msgName)
+	fmt.Fprintf(b, "\tbun.BaseModel `bun:%q`\n", fmt.Sprintf("table:%s,alias:%s", tableName, tableName))
 	for _, f := range fields {
 		fmt.Fprintf(b, "\t%s %s %s\n", f.goName, f.structGoType(), bunTag(f))
 	}
@@ -409,7 +413,7 @@ func writeORMCreate(b *strings.Builder, msgName, tableName string, fields []ormF
 
 	// Bun INSERT off the tagged model. The struct tags map fields to
 	// columns and bind native postgres arrays.
-	fmt.Fprintf(b, "\tq := db.Bun().NewInsert().Model(msg).ModelTableExpr(%q)\n", tableName)
+	b.WriteString("\tq := db.Bun().NewInsert().Model(msg)\n")
 	if intPK {
 		// Server-allocated PK: exclude it from the column list and read
 		// the database-assigned value back via RETURNING.
@@ -582,7 +586,7 @@ func writeORMGetByID(b *strings.Builder, msgName, tableName, pkCol, pkGoType str
 	b.WriteString("\tdefer span.End()\n\n")
 
 	fmt.Fprintf(b, "\tentity := new(%s)\n", msgName)
-	fmt.Fprintf(b, "\tq := db.Bun().NewSelect().Model(entity).ModelTableExpr(%q).\n", tableName)
+	b.WriteString("\tq := db.Bun().NewSelect().Model(entity).\n")
 	fmt.Fprintf(b, "\t\tWhere(%q, id).Limit(1)\n", sqlIdent(pkCol)+" = ?")
 	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, true)
 	b.WriteString("\tif err := q.Scan(ctx); err != nil {\n")
@@ -599,7 +603,7 @@ func writeORMGetByID(b *strings.Builder, msgName, tableName, pkCol, pkGoType str
 // is false), apply the caller's QueryOption filters, scan.
 func writeListBody(b *strings.Builder, msgName, tableName, opName string, softDelete, hasTenant bool, tenantField *ormField, includeSoftDelete bool) {
 	fmt.Fprintf(b, "\tvar results []*%s\n", msgName)
-	fmt.Fprintf(b, "\tq := db.Bun().NewSelect().Model(&results).ModelTableExpr(%q)\n", tableName)
+	b.WriteString("\tq := db.Bun().NewSelect().Model(&results)\n")
 	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, includeSoftDelete)
 	b.WriteString("\tfor _, opt := range opts {\n")
 	b.WriteString("\t\topt(q)\n")
@@ -637,7 +641,7 @@ func writeORMCount(b *strings.Builder, msgName, tableName string, hasTenant, sof
 	fmt.Fprintf(b, "\t\ttrace.WithAttributes(attribute.String(\"table\", %q)))\n", tableName)
 	b.WriteString("\tdefer span.End()\n\n")
 
-	fmt.Fprintf(b, "\tq := db.Bun().NewSelect().Model((*%s)(nil)).ModelTableExpr(%q)\n", msgName, tableName)
+	fmt.Fprintf(b, "\tq := db.Bun().NewSelect().Model((*%s)(nil))\n", msgName)
 	writeScopeWhere(b, "q", softDelete, hasTenant, tenantField, true)
 	b.WriteString("\tfor _, opt := range opts {\n")
 	b.WriteString("\t\topt(q)\n")
@@ -737,7 +741,7 @@ func writeORMUpdate(b *strings.Builder, msgName, tableName, pkCol string, fields
 	// Bun UPDATE off the tagged model, restricting the SET to the
 	// updatable columns. The PK / tenant / deleted_at columns are filtered
 	// out of setCols by excludeFromSet.
-	fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model(msg).ModelTableExpr(%q).\n", tableName)
+	b.WriteString("\tq := db.Bun().NewUpdate().Model(msg).\n")
 	b.WriteString("\t\tColumn(")
 	for i, f := range setCols {
 		if i > 0 {
@@ -866,7 +870,7 @@ func writeORMUpdateMasked(b *strings.Builder, msgName, tableName, pkCol string, 
 	}
 	b.WriteString("\n")
 
-	fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model(msg).ModelTableExpr(%q).\n", tableName)
+	b.WriteString("\tq := db.Bun().NewUpdate().Model(msg).\n")
 	b.WriteString("\t\tColumn(cols...).\n")
 	fmt.Fprintf(b, "\t\tWhere(%q, msg.%s)\n", sqlIdent(pkCol)+" = ?", pkGoName)
 	writeScopeWhereWrite(b, "q", softDelete, hasTenant, tenantField, true)
@@ -900,12 +904,12 @@ func writeORMDelete(b *strings.Builder, msgName, tableName, pkCol, pkGoType stri
 	if softDelete {
 		// Soft delete: stamp deleted_at instead of removing the row. Bun
 		// UPDATE with a raw Set expression for CURRENT_TIMESTAMP.
-		fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model((*%s)(nil)).ModelTableExpr(%q).\n", msgName, tableName)
+		fmt.Fprintf(b, "\tq := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
 		fmt.Fprintf(b, "\t\tSet(%q).\n", sqlIdent("deleted_at")+" = CURRENT_TIMESTAMP")
 		fmt.Fprintf(b, "\t\tWhere(%q, id).\n", sqlIdent(pkCol)+" = ?")
 		fmt.Fprintf(b, "\t\tWhere(%q)\n", sqlIdent("deleted_at")+" IS NULL")
 	} else {
-		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).ModelTableExpr(%q).\n", msgName, tableName)
+		fmt.Fprintf(b, "\tq := db.Bun().NewDelete().Model((*%s)(nil)).\n", msgName)
 		fmt.Fprintf(b, "\t\tWhere(%q, id)\n", sqlIdent(pkCol)+" = ?")
 	}
 	if hasTenant && tenantField != nil {

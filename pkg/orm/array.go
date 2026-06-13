@@ -3,6 +3,7 @@ package orm
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -26,8 +27,25 @@ import (
 //
 // The Dialect argument is retained for the generated call sites (and the
 // Phase-2 engine swap); postgres is the only dialect.
+//
+// A nil slice is normalized to an EMPTY array (`{}`), not NULL: array
+// columns are conventionally `NOT NULL DEFAULT '{}'`, and pq.Array on a
+// nil slice would otherwise bind NULL and violate the constraint.
 func ArrayValue(d Dialect, v any) any {
+	if isNilSlice(v) {
+		return pq.Array([]string{})
+	}
 	return pq.Array(v)
+}
+
+// isNilSlice reports whether v is a nil slice of any element type
+// (including named slice types like orm.StringArray).
+func isNilSlice(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Slice && rv.IsNil()
 }
 
 // StringArray scans a string-array column from either encoding.

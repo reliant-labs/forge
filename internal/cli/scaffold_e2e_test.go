@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
 // TestE2EScaffoldBasicProject creates a project with a single service,
@@ -338,6 +340,56 @@ var (
 	forgeBinaryErr  error
 )
 
+// sharedTestPostgres boots ONE embedded postgres for the whole `go test`
+// process and publishes its DSN via FORGE_TEST_POSTGRES_URL, so every
+// forge subprocess (schema introspection) and every in-process testkit DB
+// connect to the SAME server and only create cheap per-call databases.
+//
+// Without this, each `forge generate` subprocess would boot its OWN
+// embedded postgres; the parallel corpus then spins up dozens at once and
+// exhausts the kernel's shared-memory limits. One shared server is both
+// far faster and the only way the parallel corpus stays within those
+// limits.
+//
+// os.Setenv (process-global, NOT t.Setenv) is used deliberately: the
+// value must reach exec'd subprocesses through os.Environ(), and it is a
+// shared read-only resource URL, so it is safe to set once across the
+// parallel corpus (unlike the t.Setenv/t.Chdir combo the suite forbids).
+// pgtest itself honors FORGE_TEST_POSTGRES_URL, so the first call boots
+// the server and later calls (including the subprocesses) reuse it.
+func sharedTestPostgres(t *testing.T) {
+	t.Helper()
+	sharedPGOnce.Do(func() {
+		if os.Getenv(pgtest.EnvBaseURL) != "" {
+			return // an external server was provided; honor it.
+		}
+		dsn, _, err := pgtest.NewURL()
+		if err != nil {
+			sharedPGErr = err
+			return
+		}
+		// Point at the maintenance database so subprocesses can CREATE
+		// DATABASE off it; pgtest.New/NewURL derive per-call databases.
+		base := dsn
+		if i := strings.LastIndexByte(base, '/'); i >= 0 {
+			if q := strings.IndexByte(base[i:], '?'); q >= 0 {
+				base = base[:i+1] + "postgres" + base[i+q:]
+			} else {
+				base = base[:i+1] + "postgres"
+			}
+		}
+		sharedPGErr = os.Setenv(pgtest.EnvBaseURL, base)
+	})
+	if sharedPGErr != nil {
+		t.Fatalf("provision shared test postgres: %v", sharedPGErr)
+	}
+}
+
+var (
+	sharedPGOnce sync.Once
+	sharedPGErr  error
+)
+
 func buildforgeBinary(t *testing.T) string {
 	t.Helper()
 	forgeBinaryOnce.Do(func() {
@@ -360,6 +412,12 @@ func buildforgeBinary(t *testing.T) string {
 	if forgeBinaryErr != nil {
 		t.Fatalf("%v", forgeBinaryErr)
 	}
+	// Every fixture goes through buildforgeBinary; provisioning the shared
+	// postgres here means every forge subprocess inherits
+	// FORGE_TEST_POSTGRES_URL and connects to the one shared server
+	// instead of booting its own. (No-DB fixtures pay one process-wide pg
+	// boot; that is cheaper than the parallel corpus booting dozens.)
+	sharedTestPostgres(t)
 	return forgeBinaryPath
 }
 

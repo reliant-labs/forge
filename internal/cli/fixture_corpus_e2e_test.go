@@ -878,8 +878,15 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 
 	// ── 1. zero-service shape: nothing named after the binary ────────
 	assertZeroServiceShape(t, projectDir, "zerosvc")
-	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "components: []") {
-		t.Fatalf("bare scaffold forge.yaml must declare `components: []`")
+	// Components live in components.json now (forge.yaml is global-only). A
+	// bare service shell writes an EMPTY components.json — its presence (not
+	// absence) is what makes the project derive to "service" rather than
+	// "library". forge.yaml must NOT carry a components block.
+	if !strings.Contains(readFileE2E(t, filepath.Join(projectDir, "components.json")), "\"components\": []") {
+		t.Fatalf("bare scaffold components.json must declare an empty components list")
+	}
+	if strings.Contains(readFileE2E(t, filepath.Join(projectDir, "forge.yaml")), "components:") {
+		t.Fatalf("forge.yaml must be global-only (no components: block)")
 	}
 
 	// ── 2. generate ×2 — clean and idempotent at zero services ───────

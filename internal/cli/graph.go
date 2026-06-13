@@ -235,13 +235,18 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 		Edges: []graphEdge{}, // always present even when empty
 	}
 
-	cfg, cfgErr := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile))
+	store, cfgErr := loadProjectStoreFrom(filepath.Join(projectDir, defaultProjectConfigFile))
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
+	}
 	switch {
-	case cfgErr == nil && cfg != nil:
+	case cfgErr == nil && store != nil:
+		meta := store.Meta()
 		doc.Project = graphProject{
-			Name:       cfg.Name,
-			ModulePath: cfg.ModulePath,
-			Kind:       cfg.EffectiveKind(),
+			Name:       meta.Name,
+			ModulePath: meta.ModulePath,
+			Kind:       meta.EffectiveKind(),
 		}
 	case errors.Is(cfgErr, ErrProjectConfigNotFound):
 		doc.Warnings = append(doc.Warnings, "forge.yaml not found")

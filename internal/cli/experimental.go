@@ -84,12 +84,12 @@ func newExperimentalListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "Print enabled and available experimental features",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
+			store, err := loadProjectStore()
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			enabled := cfg.Features.EnabledExperimentalFeatures()
+			enabled := store.Features().EnabledExperimentalFeatures()
 			enabledSet := make(map[string]bool, len(enabled))
 			for _, n := range enabled {
 				enabledSet[n] = true
@@ -109,4 +109,3 @@ func newExperimentalListCmd() *cobra.Command {
 		},
 	}
 }
-

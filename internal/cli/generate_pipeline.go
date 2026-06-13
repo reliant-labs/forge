@@ -43,6 +43,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // GenStep is one ordered unit of the generate pipeline. Steps are pure
@@ -181,8 +182,16 @@ type pipelineContext struct {
 	// unverified-legacy sentinel + drift report).
 	LegacyUnverified []string
 
-	// Cfg may be nil — that's the directory-scan fallback path.
+	// Cfg may be nil — that's the directory-scan fallback path. It is the
+	// underlying config of Store (Store.Config()), kept as a field so the
+	// many generator-facing pipeline steps that take *config.ProjectConfig
+	// don't each have to reach through the store; nil whenever Store is nil.
 	Cfg *config.ProjectConfig
+
+	// Store is the ProjectStore wrapping the loaded project, or nil on the
+	// directory-scan fallback path. Steps reading project/component/feature
+	// state should prefer it; Cfg remains for the config-typed step helpers.
+	Store projectstore.ProjectStore
 
 	// Checksums is loaded once at step 0b and saved on pipeline exit
 	// by the caller. Steps mutate this in-place via WriteGeneratedFile
@@ -394,27 +403,27 @@ func generateSteps() []GenStep {
 // unrelated files per call.
 var stepPresetAllowlist = map[string]map[string]bool{
 	"bootstrap-only": {
-		"load project config":                true,
-		"load checksums":                     true,
-		"check Tier-1 file-stomp guard":      true,
-		"snapshot Tier-1 exports":            true,
-		"sync forge/pkg dev replace":         true,
-		"announce project":                   true,
-		"detect proto directories":           true,
-		"ensure gen/go.mod":                  true,
-		"parse services + module path":       true,
-		"go mod tidy (pre-wiring)":           true,
-		"pkg/app/bootstrap.go":               true,
-		"pkg/app/testing.go":                 true,
-		"pkg/app/migrate.go":                 true,
-		"go mod tidy (gen/)":                 true,
-		"go mod tidy (root)":                 true,
-		"goimports on generated Go":          true,
-		"rehash tracked files":               true,
-		"post-gen validation":                true,
-		"detect renamed Tier-1 exports":      true,
+		"load project config":                  true,
+		"load checksums":                       true,
+		"check Tier-1 file-stomp guard":        true,
+		"snapshot Tier-1 exports":              true,
+		"sync forge/pkg dev replace":           true,
+		"announce project":                     true,
+		"detect proto directories":             true,
+		"ensure gen/go.mod":                    true,
+		"parse services + module path":         true,
+		"go mod tidy (pre-wiring)":             true,
+		"pkg/app/bootstrap.go":                 true,
+		"pkg/app/testing.go":                   true,
+		"pkg/app/migrate.go":                   true,
+		"go mod tidy (gen/)":                   true,
+		"go mod tidy (root)":                   true,
+		"goimports on generated Go":            true,
+		"rehash tracked files":                 true,
+		"post-gen validation":                  true,
+		"detect renamed Tier-1 exports":        true,
 		"check disowned-sibling dangling refs": true,
-		"go build (validate generated code)": true,
+		"go build (validate generated code)":   true,
 	},
 	// The "mocks" step preset covers the fast-path "I just edited
 	// contract.go, regenerate mock_gen.go" workflow. Mocks live behind a
@@ -502,40 +511,40 @@ var stepPresetAllowlist = map[string]map[string]bool{
 // `--steps=bootstrap-only --templates-only` a well-defined narrower
 // run rather than a precedence riddle.
 var templatesOnlyStepAllow = map[string]bool{
-	"load project config":                    true,
-	"load checksums":                         true,
-	"migrate legacy checksums manifest":      true,
-	"sync forge/pkg dev replace":             true,
-	"announce project":                       true,
-	"detect proto directories":               true,
-	"ensure gen/go.mod":                      true,
-	"frontend workspaces scaffold":           true,
-	"config loader (proto/config)":           true,
-	"parse services + module path":           true,
-	"frontend hooks":                         true,
-	"ensure frontend components":             true,
-	"frontend CRUD pages":                    true,
-	"frontend nav + dashboard":               true,
-	"service stubs":                          true,
-	"internal/db/ ORM (entity-driven)":       true,
-	"CRUD handlers":                          true,
-	"authorizer":                             true,
-	"service mocks":                          true,
-	"internal package contracts":             true,
-	"auth middleware":                        true,
-	"tenant middleware (auto-enable + emit)": true,
-	"webhook routes":                         true,
-	"MCP manifest":                           true,
-	"pkg/app/bootstrap.go":                   true,
+	"load project config":                           true,
+	"load checksums":                                true,
+	"migrate legacy checksums manifest":             true,
+	"sync forge/pkg dev replace":                    true,
+	"announce project":                              true,
+	"detect proto directories":                      true,
+	"ensure gen/go.mod":                             true,
+	"frontend workspaces scaffold":                  true,
+	"config loader (proto/config)":                  true,
+	"parse services + module path":                  true,
+	"frontend hooks":                                true,
+	"ensure frontend components":                    true,
+	"frontend CRUD pages":                           true,
+	"frontend nav + dashboard":                      true,
+	"service stubs":                                 true,
+	"internal/db/ ORM (entity-driven)":              true,
+	"CRUD handlers":                                 true,
+	"authorizer":                                    true,
+	"service mocks":                                 true,
+	"internal package contracts":                    true,
+	"auth middleware":                               true,
+	"tenant middleware (auto-enable + emit)":        true,
+	"webhook routes":                                true,
+	"MCP manifest":                                  true,
+	"pkg/app/bootstrap.go":                          true,
 	"per-service subcommands (cmd/services_gen.go)": true,
-	"pkg/app/testing.go":                     true,
-	"pkg/app/migrate.go":                     true,
-	"CI workflows":                           true,
-	"pack generate hooks":                    true,
-	"regenerate infra files":                 true,
-	"per-env deploy config":                  true,
-	"Grafana dashboards":                     true,
-	"frontend mocks + transport":             true,
+	"pkg/app/testing.go":                            true,
+	"pkg/app/migrate.go":                            true,
+	"CI workflows":                                  true,
+	"pack generate hooks":                           true,
+	"regenerate infra files":                        true,
+	"per-env deploy config":                         true,
+	"Grafana dashboards":                            true,
+	"frontend mocks + transport":                    true,
 }
 
 // knownStepPresetNames returns a comma-joined string of every
@@ -733,7 +742,7 @@ func gateNeedsServices(ctx *pipelineContext) bool {
 // check declarations against on-disk reality (loud-by-default
 // architecture). Pass --skip-config-check to bypass.
 func stepLoadConfig(ctx *pipelineContext) error {
-	cfg, err := loadProjectConfigFrom(filepath.Join(ctx.ProjectDir, defaultProjectConfigFile))
+	store, err := loadProjectStoreFrom(filepath.Join(ctx.ProjectDir, defaultProjectConfigFile))
 	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 		return fmt.Errorf("failed to load project config: %w", err)
 	}
@@ -748,14 +757,15 @@ func stepLoadConfig(ctx *pipelineContext) error {
 		ctx.Cfg = nil
 		return nil
 	}
-	ctx.Cfg = cfg
+	ctx.Store = store
+	ctx.Cfg = store.Config()
 
 	// Loud-by-default config ↔ filesystem cross-check. Failures here are
 	// hard errors so the user fixes the asymmetry at load time, not at a
 	// confusing downstream "missing import" failure. See
 	// generate_config_check.go for the rule set.
 	if !ctx.SkipConfigCheck {
-		if err := validateConfigVsFilesystem(ctx.ProjectDir, cfg); err != nil {
+		if err := validateConfigVsFilesystem(ctx.ProjectDir, ctx.Cfg); err != nil {
 			return err
 		}
 	} else {

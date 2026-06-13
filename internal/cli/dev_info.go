@@ -42,7 +42,7 @@ func runDevInfo(configPath string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func runDevInfo(configPath string) error {
 		registry = reg
 	}
 
-	fmt.Printf("Project:                    %s\n", cfg.Name)
+	fmt.Printf("Project:                    %s\n", store.Meta().Name)
 	fmt.Printf("Cluster (declared):         %s\n", clusterName)
 	fmt.Printf("Namespace (declared):       %s\n", ns)
 	fmt.Printf("Registry (declared):        %s\n", registry)
@@ -62,11 +62,11 @@ func runDevInfo(configPath string) error {
 	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()
 	fmt.Println("Declared component ports:")
-	printServicePorts(cfg.Components)
-	if len(cfg.Frontends) > 0 {
+	printServicePorts(store.Config().Components)
+	if len(store.Frontends()) > 0 {
 		fmt.Println()
 		fmt.Println("Declared frontend ports:")
-		printFrontendPorts(cfg.Frontends)
+		printFrontendPorts(store.Frontends())
 	}
 	fmt.Println()
 	fmt.Println("For dynamic state (cluster up/down, pods, ingress URLs), run `forge dev status`.")

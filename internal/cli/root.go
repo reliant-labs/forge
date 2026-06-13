@@ -120,11 +120,11 @@ interface pattern throughout the entire stack.`,
 			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
 				return
 			}
-			cfg, err := loadProjectConfig()
-			if err != nil || cfg == nil {
+			store, err := loadProjectStore()
+			if err != nil || store == nil {
 				return
 			}
-			emitExperimentalWarning(cmd.ErrOrStderr(), cfg.Features.EnabledExperimentalFeatures())
+			emitExperimentalWarning(cmd.ErrOrStderr(), store.Features().EnabledExperimentalFeatures())
 		},
 	}
 

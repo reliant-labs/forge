@@ -106,11 +106,12 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/pgtest"
 
-	// Pure-Go sqlite driver (no cgo): the dev-mode boot test applies the
-	// project's own migrations to the server's database file before boot
-	// — the generated server does not auto-migrate.
-	_ "modernc.org/sqlite"
+	// postgres driver (database/sql "pgx"): the boot tests apply the
+	// project's own migrations to a real ephemeral postgres (pkg/pgtest)
+	// before boot — the generated server does not auto-migrate.
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // ───────────────────────── fixture 1: cp-forge-shaped ─────────────────────────
@@ -1294,7 +1295,7 @@ func bootHealthzAndShutdown(t *testing.T, projectDir string, extraEnv ...string)
 	)
 	// Caller overrides REPLACE the defaults (duplicate-env behavior is
 	// platform-dependent, so force-rewrite instead of appending) — the
-	// CRUD-lifecycle fixture boots WITH a real sqlite DATABASE_URL to
+	// CRUD-lifecycle fixture boots WITH a real postgres DATABASE_URL to
 	// prove the generated bootstrap constructs the DB/ORM pair from
 	// config.
 	for _, kv := range extraEnv {
@@ -1471,7 +1472,7 @@ func disownRoundTrip(t *testing.T, forgeBin, projectDir, rel string) {
 // crudLifecycleProbeSrc is the in-project probe test the CRUD-lifecycle
 // fixture writes into handlers/item/ and executes with the project's own
 // `go test`. It drives the REAL generated stack — generated CRUD wiring →
-// pkg/crud lifecycle → internal/db ORM → real SQLite — against the
+// pkg/crud lifecycle → internal/db ORM → real postgres — against the
 // project's OWN migration SQL (db/migrations/*.up.sql applied verbatim),
 // with claims attached the same way the generated middleware would.
 //
@@ -1509,12 +1510,12 @@ import (
 	"example.com/crudlife/pkg/middleware"
 )
 
-// corpusMigratedDB builds an in-memory DB and applies the project's own
-// migration SQL (db/migrations/*.up.sql, in order) — the schema the
+// corpusMigratedDB builds a real-postgres DB and applies the project's
+// own migration SQL (db/migrations/*.up.sql, in order) — the schema the
 // generated CRUD code is supposed to run against.
 func corpusMigratedDB(t *testing.T) orm.Context {
 	t.Helper()
-	db := testkit.NewSQLiteMemDB(t)
+	db := testkit.NewPostgresDB(t)
 	migDir := filepath.Join("..", "..", "db", "migrations")
 	entries, err := os.ReadDir(migDir)
 	if err != nil {
@@ -1750,16 +1751,11 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "add", "entity", "item",
 		"name:string", "description:string", "active:bool", "--soft-delete")
 
-	// sqlite driver: the boot step below starts the REAL server against a
-	// real database file so the generated bootstrap's DB+ORM construction
-	// is executed, not just rendered. (postgres would need a container;
-	// the construction code path is identical modulo the driver import,
-	// which TestGenerateBootstrap_ConstructsDatabaseAndORM pins for both.)
-	// The scaffolded forge.yaml is MINIMAL (database: is a derived
-	// default), so the swap is an explicit override APPEND, not a
-	// string replace of a line that isn't there.
-	appendToCorpusFile(t, filepath.Join(projectDir, "forge.yaml"),
-		"\ndatabase:\n  driver: sqlite\n")
+	// The boot steps below start the REAL server against a real ephemeral
+	// postgres (pkg/pgtest) so the generated bootstrap's DB+ORM
+	// construction — and the executed CRUD lifecycle — run on the same
+	// engine production does, not just rendered. postgres is the pinned
+	// (and derived-default) driver, so no forge.yaml override is needed.
 
 	// ── 1. generate ×2 — idempotent with an entity in play ───────────
 	generateTwiceIdempotent(t, forgeBin, projectDir)
@@ -1856,7 +1852,7 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	// ── 6. second entity through the FULL add-entity surface ─────────
 	// bookmark exercises: proto injection (CRUD messages + RPCs into the
 	// service proto), a repeated []string column (native TEXT[] in the
-	// migration, JSON text on the sqlite test DB), soft delete.
+	// migration, native TEXT[] on postgres), soft delete.
 	runCmd(t, projectDir, forgeBin, "add", "entity", "bookmark",
 		"url:string", "title:string", "tags:[]string", "done:bool", "--soft-delete")
 	itemProto := readFileE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"))
@@ -1949,10 +1945,14 @@ UPDATE bookmarks SET domain = substr(url, instr(url, '//') + 2);
 	// NOTHING constructed app.ORM for a project that grew its first
 	// entity post-scaffold (setup.go is scaffold-once and was rendered
 	// with HasDatabase=false), so the typed-nil panicked on the first
-	// RPC. /healthz 200 + clean SIGTERM against a real sqlite file pins
+	// RPC. /healthz 200 + clean SIGTERM against a real postgres DSN pins
 	// the constructed path end-to-end.
-	bootHealthzAndShutdown(t, projectDir,
-		"DATABASE_URL=file:"+filepath.Join(t.TempDir(), "corpus-boot.db"))
+	bootDSN, bootCleanup, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("provision boot postgres: %v", err)
+	}
+	defer bootCleanup()
+	bootHealthzAndShutdown(t, projectDir, "DATABASE_URL="+bootDSN)
 
 	// ── 8b. dev mode is usable with ZERO auth config: a real Connect
 	// CRUD call over HTTP, with NO token, NO auth pack, NO AUTH_MODE —
@@ -2024,14 +2024,14 @@ func bootMustFailWithoutDatabase(t *testing.T, projectDir string) {
 	_ = os.Remove(serverBin)
 }
 
-// applyProjectMigrationsSQLite applies the project's db/migrations
-// *.up.sql files, in order, to the given sqlite database file — the
-// schema the generated server expects but does not create itself.
-func applyProjectMigrationsSQLite(t *testing.T, projectDir, dbFile string) {
+// applyProjectMigrationsPostgres applies the project's db/migrations
+// *.up.sql files, in order, to the postgres database at dsn — the schema
+// the generated server expects but does not create itself.
+func applyProjectMigrationsPostgres(t *testing.T, projectDir, dsn string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", dbFile)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("open sqlite db %s: %v", dbFile, err)
+		t.Fatalf("open postgres db: %v", err)
 	}
 	defer db.Close()
 
@@ -2062,8 +2062,8 @@ func applyProjectMigrationsSQLite(t *testing.T, projectDir, dbFile string) {
 }
 
 // bootDevCRUDNoToken boots the corpus server in dev mode (ENVIRONMENT=
-// development, NO AUTH_MODE, no token, no pack) against a real sqlite
-// file and makes a real Connect JSON call to an auth-required CRUD RPC.
+// development, NO AUTH_MODE, no token, no pack) against a real postgres
+// database and makes a real Connect JSON call to an auth-required CRUD RPC.
 // Pins the zero-config dev path end-to-end: authn passthrough attaches
 // the scaffold's synthetic dev principal (the devClaims hook in
 // pkg/middleware), middleware.GetUser finds claims, the dev authorizer
@@ -2075,17 +2075,21 @@ func bootDevCRUDNoToken(t *testing.T, projectDir string) {
 	serverBin := filepath.Join(projectDir, "corpus-server")
 	runCmd(t, projectDir, "go", "build", "-o", serverBin, "./cmd/...")
 
-	// The generated server does not auto-migrate; give it a database
-	// with the project's own schema applied (same SQL the in-process
-	// lifecycle tests run against).
-	dbFile := filepath.Join(t.TempDir(), "corpus-devclaims.db")
-	applyProjectMigrationsSQLite(t, projectDir, dbFile)
+	// The generated server does not auto-migrate; give it a postgres
+	// database with the project's own schema applied (same SQL the
+	// in-process lifecycle tests run against).
+	devDSN, devCleanup, err := pgtest.NewURL()
+	if err != nil {
+		t.Fatalf("provision dev postgres: %v", err)
+	}
+	defer devCleanup()
+	applyProjectMigrationsPostgres(t, projectDir, devDSN)
 
 	cmd := exec.Command(serverBin, "server")
 	cmd.Dir = projectDir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL=file:"+dbFile,
+		"DATABASE_URL="+devDSN,
 		"ENVIRONMENT=development",
 	)
 	// Dev mode ALONE must be enough — force AUTH_MODE empty in case the
@@ -2161,8 +2165,8 @@ func appendToCorpusFile(t *testing.T, path, content string) {
 
 // bookmarkLifecycleProbeSrc exercises the second entity born through
 // the FULL `forge add entity` surface: repeated-field round trip
-// (tags []string — native TEXT[] on postgres, JSON text on the sqlite
-// test DB) and the soft-delete conventions read off the deleted_at
+// (tags []string — native TEXT[] on postgres) and the soft-delete
+// conventions read off the deleted_at
 // column (delete is an UPDATE; reads filter; ListAll sees the corpse).
 // tradeTextTimestampsProbeSrc executes the generated ORM against the
 // legacy-TEXT-timestamps schema (created_at/updated_at TEXT): Create

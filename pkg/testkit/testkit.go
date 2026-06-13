@@ -153,7 +153,7 @@ func NewMigratedPostgresDB(t *testing.T, migrations fs.FS) orm.Context {
 }
 
 // applyUpMigrations runs every *.up.sql file in migrations against db in
-// version order. Split out of NewMigratedSQLiteDB for direct testing.
+// version order. Split out of NewMigratedPostgresDB for direct testing.
 func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
 	root := migrations
 	if sub, err := fs.Sub(migrations, "migrations"); err == nil {
@@ -186,7 +186,7 @@ func applyUpMigrations(db *sql.DB, migrations fs.FS) error {
 }
 
 // migrationError names the failing migration file so the t.Fatalf in
-// NewMigratedSQLiteDB points straight at the offending SQL.
+// NewMigratedPostgresDB points straight at the offending SQL.
 type migrationError struct {
 	file string
 	err  error

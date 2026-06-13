@@ -19,6 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // goKeywords is the set of Go reserved keywords.
@@ -358,7 +359,7 @@ func runAddService(name string, port int, resume, force bool) error {
 	// Under --resume / --force the service entry may already exist in
 	// forge.yaml; only append when this is a fresh add.
 	if existingIdx < 0 {
-		cfg.Components = append(cfg.Components, config.ComponentConfig{
+		projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 			Name:  name,
 			Kind:  config.ComponentKindServer,
 			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
@@ -575,7 +576,7 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 	if kind == "cron" {
 		componentKind = config.ComponentKindCron
 	}
-	cfg.Components = append(cfg.Components, config.ComponentConfig{
+	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 		Name:     name,
 		Kind:     componentKind,
 		Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
@@ -739,7 +740,7 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	// Update forge.yaml. Path uses the Go-package form so it matches the
 	// directory the scaffolder creates. Group/Version are persisted so
 	// `forge add crd` can default from them.
-	cfg.Components = append(cfg.Components, config.ComponentConfig{
+	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 		Name:    name,
 		Kind:    config.ComponentKindOperator,
 		Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
@@ -1285,7 +1286,7 @@ func runAddWebhook(name, serviceName string) error {
 	}
 
 	// Update forge.yaml.
-	cfg.Components[svcIdx].Webhooks = append(cfg.Components[svcIdx].Webhooks, config.WebhookConfig{
+	projectstore.New(cfg).AppendWebhook(serviceName, config.WebhookConfig{
 		Name: name,
 	})
 	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
@@ -1393,7 +1394,7 @@ func runAddBinary(name string) error {
 	// the directory the scaffolder creates ("workspace-proxy" ->
 	// cmd/workspace_proxy.go).
 	pkg := naming.ServicePackage(name)
-	cfg.Components = append(cfg.Components, config.ComponentConfig{
+	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 		Name: name,
 		Kind: config.ComponentKindBinary,
 		Path: fmt.Sprintf("cmd/%s.go", pkg),

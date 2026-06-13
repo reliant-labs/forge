@@ -80,7 +80,8 @@ db/migrations/             # SQL migrations — schema source of truth (YOU own 
 db/queries/                # SQL query definitions
 deploy/kcl/<env>/          # KCL deployment manifests per environment
 e2e/                       # End-to-end tests (run against live stack)
-forge.yaml                 # Project config: services, ports, frontends, contracts
+forge.yaml                 # Global project config: name, module, frontends, contracts, overrides
+components.json             # Per-component source of truth: servers/workers/crons/operators/binaries + ports
 ```
 
 ## Contracts at every boundary
@@ -146,7 +147,7 @@ forge deploy dev           # Deploy to local k3d cluster
 - Never hand-edit anything under `gen/`. Fix the proto, then regenerate.
 - One service per proto package. One handler directory per service.
 - Field numbers are forever — mark removed fields as `reserved`, never reuse numbers.
-- `forge.yaml` tracks ports and services — use `forge add` to scaffold, not copy-paste.
+- `components.json` tracks components and ports; `forge.yaml` holds global config — use `forge add` to scaffold, not copy-paste.
 - `forge generate` rewrites only the generated entity ORM in the DB layer (`internal/db/<entity>_orm.go`) — `db/migrations/` and `db/queries/` are yours.
 - DB schema evolves via migrations, not proto. Proto is for API contracts; the generated conversions map the intersection of wire fields and columns by name.
 - An entity needs both halves: CRUD RPCs in a service proto AND the matching table in the applied schema. One without the other generates nothing.

@@ -80,7 +80,9 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		components = append(components, config.ComponentConfig{
 			Name: naming.ServicePackage(g.Name),
 			Kind: config.ComponentKindBinary,
-			Path: fmt.Sprintf("cmd/%s.go", naming.ServicePackage(g.Name)),
+			// The cli main is a standalone cobra binary at cmd/<name>/main.go
+			// (distinct from a `forge add binary` subcommand at cmd/<name>.go).
+			Path: fmt.Sprintf("cmd/%s", naming.ServicePackage(g.Name)),
 		})
 	}
 	cfg.Components = components

@@ -27,7 +27,7 @@ import (
 // be in a forge project" UX is preserved when the user is outside any
 // project.
 func packsFeatureGate() error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		// Outside a forge project: let `forge pack list` and friends
 		// fall through so the existing "no forge.yaml" messaging
@@ -38,7 +38,7 @@ func packsFeatureGate() error {
 		}
 		return err
 	}
-	if !cfg.Features.PacksEnabled() {
+	if !store.Features().PacksEnabled() {
 		return config.DisabledFeatureError(config.FeaturePacks)
 	}
 	return nil
@@ -219,10 +219,10 @@ func runPackList() error {
 
 	// Check which are installed (if we're in a project)
 	var installed map[string]bool
-	cfg, cfgErr := loadProjectConfig()
+	store, cfgErr := loadProjectStore()
 	if cfgErr == nil {
 		installed = make(map[string]bool)
-		for _, name := range cfg.Packs {
+		for _, name := range store.Packs() {
 			installed[name] = true
 		}
 	}
@@ -608,7 +608,7 @@ func runPackInfo(name string, asJSON bool) error {
 	// CWD chain, surface conflicts using a read-only stat against each
 	// declared output path. Mirrors `pack install`'s fresh-install
 	// collision check shape but never mutates anything.
-	if _, err := loadProjectConfig(); err == nil {
+	if _, err := loadProjectStore(); err == nil {
 		if root, rerr := projectRoot(); rerr == nil {
 			summary.Conflicts = collectPackConflicts(pack, root)
 		}

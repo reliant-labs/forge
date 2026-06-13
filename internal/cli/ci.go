@@ -142,22 +142,22 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 		Short: "Run SQL migration safety checks based on forge.yaml config",
 		Long:  "Checks SQL migrations for patterns that pass on empty databases but fail or lock populated databases.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
+			store, err := loadProjectStore()
 			if err != nil {
 				return fmt.Errorf("load project config: %w", err)
 			}
-			if !cfg.Features.CIEnabled() {
+			if !store.Features().CIEnabled() {
 				return config.DisabledFeatureError(config.FeatureCI)
 			}
-			if !cfg.Features.MigrationsEnabled() {
+			if !store.Features().MigrationsEnabled() {
 				return config.DisabledFeatureError(config.FeatureMigrations)
 			}
 
-			migrationsDir := cfg.Database.MigrationsDir
+			migrationsDir := store.Database().MigrationsDir
 			if migrationsDir == "" {
 				migrationsDir = filepath.Join("db", "migrations")
 			}
-			result, err := migrationlint.LintMigrationsDir(migrationsDir, migrationlint.ConfigFromProject(cfg.Database.MigrationSafety))
+			result, err := migrationlint.LintMigrationsDir(migrationsDir, migrationlint.ConfigFromProject(store.Database().MigrationSafety))
 			if err != nil {
 				return fmt.Errorf("migration safety lint failed: %w", err)
 			}
@@ -182,10 +182,11 @@ func newCIVulnScanCmd() *cobra.Command {
 		Short: "Run vulnerability scanners based on forge.yaml config",
 		Long:  "Runs govulncheck for Go and npm audit for frontends. Defaults to scanning everything enabled in forge.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := requireFeature(config.FeatureCI)
+			store, err := requireFeature(config.FeatureCI)
 			if err != nil {
 				return err
 			}
+			ci := store.CI()
 
 			// If no specific flag set, default to --all behavior.
 			if !flagGo && !flagNPM {
@@ -193,9 +194,9 @@ func newCIVulnScanCmd() *cobra.Command {
 			}
 
 			// Zero-value VulnScan config means "all enabled" (project convention).
-			allEnabled := cfg.CI.VulnScan == (config.CIVulnConfig{})
-			runGo := flagGo || (flagAll && (allEnabled || cfg.CI.VulnScan.Go))
-			runNPM := flagNPM || (flagAll && (allEnabled || cfg.CI.VulnScan.NPM))
+			allEnabled := ci.VulnScan == (config.CIVulnConfig{})
+			runGo := flagGo || (flagAll && (allEnabled || ci.VulnScan.Go))
+			runNPM := flagNPM || (flagAll && (allEnabled || ci.VulnScan.NPM))
 
 			hasFailed := false
 
@@ -207,7 +208,7 @@ func newCIVulnScanCmd() *cobra.Command {
 			}
 
 			if runNPM {
-				if err := ciRunNPMAudit(cmd.Context(), cfg); err != nil {
+				if err := ciRunNPMAudit(cmd.Context(), store.Config()); err != nil {
 					fmt.Fprintf(os.Stderr, "❌ npm audit failed: %v\n", err)
 					hasFailed = true
 				}

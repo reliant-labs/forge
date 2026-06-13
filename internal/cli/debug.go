@@ -251,12 +251,12 @@ func runDebugStartService(ctx context.Context, target string, port int, jsonOutp
 
 	// If the target doesn't look like a path, resolve it from project config.
 	if !strings.Contains(target, "/") && !strings.Contains(target, ".") {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil {
 			return fmt.Errorf("loading project config: %w", err)
 		}
 		found := false
-		for _, svc := range cfg.Components {
+		for _, svc := range store.Components() {
 			if svc.Name == target {
 				candidate := filepath.Join(svc.Path, "cmd", "server")
 				if _, err := os.Stat(candidate); err == nil {

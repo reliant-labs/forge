@@ -191,7 +191,7 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 	}
 
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, _ := loadProjectConfigFrom(cfgPath) // best-effort; nil cfg means no excludes
+	store, _ := loadProjectStoreFrom(cfgPath) // best-effort; nil store means no excludes
 
 	var names []string
 	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
@@ -213,7 +213,7 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
-		if cfg != nil && cfg.Contracts.IsExcluded(rel) {
+		if store != nil && store.Contracts().IsExcluded(rel) {
 			return filepath.SkipDir
 		}
 		contractPath := filepath.Join(path, "contract.go")
@@ -244,13 +244,13 @@ func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error)
 // codegen.ResolveComponentDir.
 func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, err := loadProjectConfigFrom(cfgPath)
-	if err != nil || cfg == nil {
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil || store == nil {
 		return nil, nil
 	}
 
 	var specs []codegen.WorkerSpec
-	for _, comp := range cfg.Components {
+	for _, comp := range store.Components() {
 		// Both long-running workers and scheduled crons register a
 		// Worker bootstrap row (cron-ness lives in the scaffolded
 		// worker.go body, not the bootstrap wiring).
@@ -275,10 +275,11 @@ func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
 // also the directory leaf under handlers/.
 func discoverWebhookServices(projectDir string) map[string]bool {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, err := loadProjectConfigFrom(cfgPath)
-	if err != nil || cfg == nil {
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil || store == nil {
 		return nil
 	}
+	cfg := store.Config()
 	// Best-effort registration view: webhooks on an unregistered service
 	// are a hard error earlier in the pipeline (generateWebhookRoutes),
 	// but this map is also built on standalone paths, so filter here too
@@ -311,13 +312,13 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 // reason as discoverWorkers; error semantics match discoverWorkers.
 func discoverOperators(projectDir string) ([]codegen.BootstrapOperatorData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, err := loadProjectConfigFrom(cfgPath)
-	if err != nil || cfg == nil {
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil || store == nil {
 		return nil, nil
 	}
 
 	var specs []codegen.OperatorSpec
-	for _, comp := range cfg.Components {
+	for _, comp := range store.Components() {
 		if comp.IsOperator() {
 			specs = append(specs, codegen.OperatorSpec{Name: comp.Name, Path: comp.Path})
 		}

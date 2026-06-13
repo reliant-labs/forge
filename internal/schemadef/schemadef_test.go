@@ -13,7 +13,19 @@ func writeMig(t *testing.T, dir, name, sql string) {
 	}
 }
 
+// requireRealPG skips a test under -short: ApplyAndIntrospect boots a
+// real ephemeral postgres (pkg/pgtest), which is well over the 2s short
+// budget (and downloads the binary on a fresh machine). The full mode /
+// CI gate still exercises these.
+func requireRealPG(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("ApplyAndIntrospect boots real postgres; skipped under -short")
+	}
+}
+
 func TestApplyAndIntrospect_PostgresFlavoredDDL(t *testing.T) {
+	requireRealPG(t)
 	dir := t.TempDir()
 	writeMig(t, dir, "00001_create_bookmarks.up.sql", `
 CREATE TABLE bookmarks (
@@ -91,6 +103,7 @@ CREATE INDEX idx_bookmarks_url ON bookmarks (url);
 }
 
 func TestApplyAndIntrospect_MigrationLadderWithDataMovement(t *testing.T) {
+	requireRealPG(t)
 	dir := t.TempDir()
 	writeMig(t, dir, "00001_create_people.up.sql", `
 CREATE TABLE people (
@@ -101,13 +114,13 @@ CREATE TABLE people (
 );
 `)
 	// Second migration: add columns + data movement splitting a column,
-	// then drop the old column. The UPDATE is plain portable SQL and
-	// must execute on the shadow.
+	// then drop the old column. The UPDATE is native postgres SQL and
+	// executes verbatim on the real-pg shadow.
 	writeMig(t, dir, "00002_split_name.up.sql", `
 ALTER TABLE people ADD COLUMN first_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE people ADD COLUMN last_name TEXT NOT NULL DEFAULT '';
-UPDATE people SET first_name = substr(name, 1, instr(name, ' ') - 1),
-                  last_name  = substr(name, instr(name, ' ') + 1);
+UPDATE people SET first_name = split_part(name, ' ', 1),
+                  last_name  = split_part(name, ' ', 2);
 ALTER TABLE people DROP COLUMN name;
 `)
 	tables, err := ApplyAndIntrospect(dir)
@@ -127,6 +140,7 @@ ALTER TABLE people DROP COLUMN name;
 }
 
 func TestApplyAndIntrospect_SkipsNonSchemaPostgresisms(t *testing.T) {
+	requireRealPG(t)
 	dir := t.TempDir()
 	writeMig(t, dir, "00001_init.up.sql", `
 CREATE TABLE things (
@@ -155,11 +169,12 @@ INSERT INTO things (id, payload) VALUES ('x', '{"a":1}'::jsonb);
 }
 
 func TestApplyAndIntrospect_FailsLoudOnBrokenTableDDL(t *testing.T) {
+	requireRealPG(t)
 	dir := t.TempDir()
-	// EXCLUDE constraints are pg-only and not in the normalizable
-	// subset — the shadow must refuse loudly rather than skip the
-	// table definition. (A bare literal '::jsonb' cast, by contrast,
-	// is normalized away — see the postgres-idioms test.)
+	// A CREATE TABLE that real postgres rejects (here: an EXCLUDE gist
+	// constraint with no gist opclass for text `&&`) is a hard error —
+	// the table that defines part of the schema must not be silently
+	// skipped, or the generated ORM would lie about what columns exist.
 	writeMig(t, dir, "00001_bad.up.sql", `
 CREATE TABLE broken (
     id TEXT PRIMARY KEY,
@@ -168,7 +183,7 @@ CREATE TABLE broken (
 );
 `)
 	if _, err := ApplyAndIntrospect(dir); err == nil {
-		t.Fatal("a CREATE TABLE the shadow can't parse must be a hard error, not a silent skip")
+		t.Fatal("a CREATE TABLE postgres rejects must be a hard error, not a silent skip")
 	}
 }
 
@@ -209,7 +224,7 @@ func TestMapDeclaredType(t *testing.T) {
 		{"TEXT[]", TypeString, true},
 		{"BIGINT[]", TypeInt, true},
 		{"mood_enum", TypeString, false}, // unknown → string
-		{"", TypeString, false},          // sqlite untyped → string
+		{"", TypeString, false},          // empty/untyped → string
 	}
 	for _, c := range cases {
 		got, arr := MapDeclaredType(c.decl)
@@ -224,6 +239,7 @@ func TestApplyAndIntrospect_CommentPrefixedDDLIsNotSilentlySkipped(t *testing.T)
 	// following statement, which defeated isSchemaDefining and let a
 	// FAILING CREATE TABLE be skipped silently — a partial schema with
 	// no error. Comment-prefixed broken DDL must hard-error.
+	requireRealPG(t)
 	dir := t.TempDir()
 	writeMig(t, dir, "00001_bad.up.sql", `
 -- ----------------------------------------------------------------
@@ -231,7 +247,7 @@ func TestApplyAndIntrospect_CommentPrefixedDDLIsNotSilentlySkipped(t *testing.T)
 -- ----------------------------------------------------------------
 CREATE TABLE forecasts (
     id TEXT PRIMARY KEY,
-    payload JSONB NOT NULL DEFAULT 'oops'::jsonb::jsonb -- double cast survives normalization → still fails
+    payload JSONB NOT NULL DEFAULT 'oops'::jsonb -- 'oops' is invalid json → postgres rejects the table
 );
 `)
 	if _, err := ApplyAndIntrospect(dir); err == nil {
@@ -239,10 +255,12 @@ CREATE TABLE forecasts (
 	}
 }
 
-func TestApplyAndIntrospect_PostgresIdiomsNormalizedForShadow(t *testing.T) {
-	// The recurring idioms from migrated-from-postgres projects must
-	// apply on the shadow: unparenthesized function defaults, literal
-	// ::type casts, ADD COLUMN IF NOT EXISTS, multi-ADD ALTERs.
+func TestApplyAndIntrospect_PostgresIdiomsApplyVerbatim(t *testing.T) {
+	// The recurring idioms from real postgres projects apply VERBATIM on
+	// the real-pg shadow — no normalization: unparenthesized function
+	// defaults, literal ::type casts, ADD COLUMN IF NOT EXISTS, multi-ADD
+	// ALTERs all run as written.
+	requireRealPG(t)
 	dir := t.TempDir()
 	writeMig(t, dir, "00001_init.up.sql", `
 CREATE TABLE markets (
@@ -261,7 +279,7 @@ ALTER TABLE markets ADD COLUMN IF NOT EXISTS a TEXT NOT NULL DEFAULT '';
 `)
 	tables, err := ApplyAndIntrospect(dir)
 	if err != nil {
-		t.Fatalf("postgres idioms must normalize for the shadow: %v", err)
+		t.Fatalf("postgres idioms must apply verbatim on the real-pg shadow: %v", err)
 	}
 	cols := map[string]Column{}
 	for _, c := range tables[0].Columns {
@@ -331,5 +349,74 @@ func TestDetectConventions_TimestampTypesAware(t *testing.T) {
 	}
 	if DetectConventions(tbl).Timestamps {
 		t.Error("array-typed created_at must not count as a managed timestamp")
+	}
+}
+
+// TestApplyAndIntrospect_SchemaQualifiedDDL is the regression for the bug
+// class that froze cp-forge's ORM: a migration that creates its tables in
+// a NON-public schema (CREATE TABLE controlplane.foo ...). The old
+// in-memory SQLite shadow could not parse the schema-qualified name and
+// silently produced an empty schema (or errored), so the generated ORM
+// went stale. Real postgres handles it natively; introspection enumerates
+// user tables across every schema and keys them by bare table name.
+func TestApplyAndIntrospect_SchemaQualifiedDDL(t *testing.T) {
+	requireRealPG(t)
+	dir := t.TempDir()
+	writeMig(t, dir, "00001_controlplane.up.sql", `
+CREATE SCHEMA IF NOT EXISTS controlplane;
+
+CREATE TABLE controlplane.deployments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    labels TEXT[] NOT NULL DEFAULT '{}'::text[],
+    spec JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ
+);
+CREATE INDEX idx_deployments_tenant ON controlplane.deployments (tenant_id);
+`)
+
+	tables, err := ApplyAndIntrospect(dir)
+	if err != nil {
+		t.Fatalf("schema-qualified DDL must introspect cleanly on real pg: %v", err)
+	}
+	if len(tables) != 1 || tables[0].Name != "deployments" {
+		t.Fatalf("tables = %+v, want exactly [deployments] (keyed by bare name)", tables)
+	}
+	dt := tables[0]
+
+	want := map[string]struct {
+		typ     CanonicalType
+		isArray bool
+	}{
+		"id": {TypeString, false}, "tenant_id": {TypeString, false},
+		"name": {TypeString, false}, "labels": {TypeString, true},
+		"spec": {TypeJSON, false}, "created_at": {TypeTime, false},
+		"updated_at": {TypeTime, false}, "deleted_at": {TypeTime, false},
+	}
+	if len(dt.Columns) != len(want) {
+		t.Fatalf("got %d columns, want %d: %+v", len(dt.Columns), len(want), dt.Columns)
+	}
+	for _, c := range dt.Columns {
+		w, ok := want[c.Name]
+		if !ok {
+			t.Errorf("unexpected column %q", c.Name)
+			continue
+		}
+		if c.Type != w.typ || c.IsArray != w.isArray {
+			t.Errorf("column %s = {%s array:%v}, want {%s array:%v}", c.Name, c.Type, c.IsArray, w.typ, w.isArray)
+		}
+	}
+	if len(dt.PKCols) != 1 || dt.PKCols[0] != "id" {
+		t.Errorf("PKCols = %v, want [id]", dt.PKCols)
+	}
+	if len(dt.Indexes) != 1 || dt.Indexes[0].Name != "idx_deployments_tenant" {
+		t.Errorf("Indexes = %+v, want idx_deployments_tenant", dt.Indexes)
+	}
+	conv := DetectConventions(dt)
+	if !conv.SoftDelete || !conv.Timestamps || !conv.HasTenant {
+		t.Errorf("conventions = %+v, want SoftDelete+Timestamps+HasTenant", conv)
 	}
 }

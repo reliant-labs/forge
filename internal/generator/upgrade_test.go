@@ -35,8 +35,8 @@ func testProjectConfig() *config.ProjectConfig {
 	return &config.ProjectConfig{
 		Name:       "test-project",
 		ModulePath: "github.com/example/test-project",
-		Services: []config.ServiceConfig{
-			{Name: "api", Port: 8080},
+		Components: []config.ComponentConfig{
+			{Name: "api", Kind: config.ComponentKindServer, Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}}},
 		},
 	}
 }

@@ -43,8 +43,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
@@ -289,7 +289,7 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		// proto_integrity) — additive field, may be absent.
 		RPCs []rpcInfo `json:"rpcs,omitempty"`
 	}
-	var services, workers, operators []svcInfo
+	var services, workers, crons, operators, binaries []svcInfo
 	var frontends []map[string]string
 
 	// Parse RPC counts when proto/services exists. We still emit the
@@ -341,9 +341,9 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		reg = &serviceRegistry{Exists: false}
 	}
 
-	for _, s := range cfg.Services {
+	for _, s := range cfg.Components {
 		served := !isConnectServiceConfig(s) || reg.registered(s.Name)
-		info := svcInfo{Name: s.Name, Type: s.Type, Served: served}
+		info := svcInfo{Name: s.Name, Type: s.EffectiveKind(), Served: served}
 		// match by ProtoService name suffix (Echo → EchoService)
 		for protoName, rpcs := range rpcByService {
 			short := strings.TrimSuffix(protoName, "Service")
@@ -371,11 +371,15 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 			}
 			info.RPCs = rpcs
 		}
-		switch s.Type {
-		case "worker":
+		switch s.EffectiveKind() {
+		case config.ComponentKindWorker:
 			workers = append(workers, info)
-		case "operator":
+		case config.ComponentKindCron:
+			crons = append(crons, info)
+		case config.ComponentKindOperator:
 			operators = append(operators, info)
+		case config.ComponentKindBinary:
+			binaries = append(binaries, info)
 		default:
 			services = append(services, info)
 		}
@@ -387,7 +391,9 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	details := map[string]any{
 		"services":  services,
 		"workers":   workers,
+		"crons":     crons,
 		"operators": operators,
+		"binaries":  binaries,
 		"frontends": frontends,
 		"packs":     cfg.Packs,
 		"packages":  packageNames(cfg.Packages),
@@ -398,8 +404,8 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	// error to report — under the additive-extension contract, the
 	// field being absent IS the "all good" signal.
 	status := AuditStatusOK
-	summary := fmt.Sprintf("kind=%s, %d service(s), %d worker(s), %d operator(s), %d frontend(s), %d pack(s)",
-		cfg.EffectiveKind(), len(services), len(workers), len(operators), len(frontends), len(cfg.Packs))
+	summary := fmt.Sprintf("kind=%s, %d server(s), %d worker(s), %d cron(s), %d operator(s), %d binary(ies), %d frontend(s), %d pack(s)",
+		cfg.EffectiveKind(), len(services), len(workers), len(crons), len(operators), len(binaries), len(frontends), len(cfg.Packs))
 	if protoParseErr != "" {
 		details["proto_integrity"] = map[string]any{
 			"status": "warn",
@@ -508,7 +514,7 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 		}
 	}
 	backends := ingressBackendNames(cfg)
-	return crossCheckIngress(cfg.Services, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
+	return crossCheckIngress(cfg.Components, backends, entities.Gateways, entities.HTTPRoutes, entities.GRPCRoutes)
 }
 
 // ingressBackendNames returns the union of every forge.yaml-declared
@@ -517,8 +523,8 @@ func auditIngress(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 // in the env namespace by that name — the forge.yaml block that
 // scaffolded it is irrelevant at route-resolution time.
 func ingressBackendNames(cfg *config.ProjectConfig) []string {
-	names := make([]string, 0, len(cfg.Services)+len(cfg.Frontends))
-	for _, s := range cfg.Services {
+	names := make([]string, 0, len(cfg.Components)+len(cfg.Frontends))
+	for _, s := range cfg.Components {
 		names = append(names, s.Name)
 		for _, w := range s.Webhooks {
 			names = append(names, w.Name)
@@ -537,7 +543,7 @@ func ingressBackendNames(cfg *config.ProjectConfig) []string {
 // (services + frontends + webhook handlers) any route may legally
 // point at; `services` is kept separate because only it drives the
 // "port declared but no route" info finding.
-func crossCheckIngress(services []config.ServiceConfig, backends []string, gateways []GatewayEntity, httpRoutes []HTTPRouteEntity, grpcRoutes []GRPCRouteEntity) AuditCategory {
+func crossCheckIngress(services []config.ComponentConfig, backends []string, gateways []GatewayEntity, httpRoutes []HTTPRouteEntity, grpcRoutes []GRPCRouteEntity) AuditCategory {
 	knownBackend := make(map[string]struct{}, len(backends))
 	for _, b := range backends {
 		knownBackend[b] = struct{}{}
@@ -566,13 +572,14 @@ func crossCheckIngress(services []config.ServiceConfig, backends []string, gatew
 
 	servicesWithoutRoute := 0
 	for _, s := range services {
-		if s.Port <= 0 {
+		p := s.PrimaryPort()
+		if p <= 0 {
 			continue
 		}
 		if _, ok := routedService[s.Name]; ok {
 			continue
 		}
-		findings = append(findings, fmt.Sprintf("info: service %s has port :%d declared but no ingress route — cluster-internal only", s.Name, s.Port))
+		findings = append(findings, fmt.Sprintf("info: service %s has port :%d declared but no ingress route — cluster-internal only", s.Name, p))
 		servicesWithoutRoute++
 	}
 
@@ -879,7 +886,7 @@ func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) [
 		return nil
 	}
 	var out []auditUnregisteredService
-	for _, s := range cfg.Services {
+	for _, s := range cfg.Components {
 		if !isConnectServiceConfig(s) {
 			continue
 		}

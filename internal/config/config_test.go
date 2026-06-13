@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestCIConfig_EffectiveGoVersion(t *testing.T) {
@@ -165,7 +165,7 @@ func TestCIExtraJob_EffectiveRunsOn(t *testing.T) {
 	}
 }
 
-func TestServiceConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
+func TestComponentConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
 	tests := []struct {
 		name     string
 		yamlStr  string
@@ -173,33 +173,33 @@ func TestServiceConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
 		wantSch  string
 	}{
 		{
-			"worker with cron kind and schedule",
-			"name: cleanup\ntype: worker\nkind: cron\npath: workers/cleanup\nschedule: \"*/5 * * * *\"\n",
+			"cron with schedule",
+			"name: cleanup\nkind: cron\npath: workers/cleanup\nschedule: \"*/5 * * * *\"\n",
 			"cron",
 			"*/5 * * * *",
 		},
 		{
-			"worker with no kind",
-			"name: processor\ntype: worker\npath: workers/processor\n",
-			"",
+			"worker",
+			"name: processor\nkind: worker\npath: workers/processor\n",
+			"worker",
 			"",
 		},
 		{
-			"go_service with no kind",
-			"name: api\ntype: go_service\npath: handlers/api\nport: 8080\n",
-			"",
+			"server with no kind defaults to server",
+			"name: api\npath: handlers/api\nports:\n  http: 8080\n",
+			"server",
 			"",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var cfg ServiceConfig
+			var cfg ComponentConfig
 			if err := yaml.Unmarshal([]byte(tt.yamlStr), &cfg); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			if cfg.Kind != tt.wantKind {
-				t.Errorf("Kind = %q, want %q", cfg.Kind, tt.wantKind)
+			if cfg.EffectiveKind() != tt.wantKind {
+				t.Errorf("EffectiveKind = %q, want %q", cfg.EffectiveKind(), tt.wantKind)
 			}
 			if cfg.Schedule != tt.wantSch {
 				t.Errorf("Schedule = %q, want %q", cfg.Schedule, tt.wantSch)
@@ -210,12 +210,12 @@ func TestServiceConfig_KindAndScheduleYAMLRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
-			var cfg2 ServiceConfig
+			var cfg2 ComponentConfig
 			if err := yaml.Unmarshal(out, &cfg2); err != nil {
 				t.Fatalf("unmarshal round-trip: %v", err)
 			}
-			if cfg2.Kind != tt.wantKind {
-				t.Errorf("round-trip Kind = %q, want %q", cfg2.Kind, tt.wantKind)
+			if cfg2.EffectiveKind() != tt.wantKind {
+				t.Errorf("round-trip EffectiveKind = %q, want %q", cfg2.EffectiveKind(), tt.wantKind)
 			}
 			if cfg2.Schedule != tt.wantSch {
 				t.Errorf("round-trip Schedule = %q, want %q", cfg2.Schedule, tt.wantSch)

@@ -78,7 +78,7 @@ func generateTenantMiddleware(cfg *config.ProjectConfig, projectDir string, cs *
 // naming the registration file — the declaration could never take
 // effect, and skipping it silently would hide a real misconfiguration.
 func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, projectDir string, cs *generator.FileChecksums) error {
-	for _, svc := range cfg.Services {
+	for _, svc := range cfg.Components {
 		if len(svc.Webhooks) == 0 {
 			continue
 		}

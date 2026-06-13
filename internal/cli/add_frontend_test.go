@@ -79,11 +79,12 @@ stack:
     registry: ghcr.io
   ci:
     provider: github
-services:
+components:
   - name: api
-    type: go_service
+    kind: server
     path: handlers/api
-    port: 8080
+    ports:
+      http: 8080
 database:
   driver: postgres
   migrations_dir: db/migrations

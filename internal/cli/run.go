@@ -373,15 +373,18 @@ func runProjectDev(opts runOptions) error {
 			reg = r
 		}
 	}
-	notRegistered := func(s config.ServiceConfig) bool {
+	notRegistered := func(s config.ComponentConfig) bool {
 		return isConnectServiceConfig(s) && !reg.registered(s.Name)
 	}
 
-	// Filter services/frontends based on --service flag
-	servicesToRun := cfg.Services
+	// Filter servers/frontends based on --service flag. Only server
+	// components have a listen port and a Connect surface to run in the
+	// dev loop; workers/crons/operators run in-process under the server
+	// binary, and binaries are separate subcommands.
+	servicesToRun := cfg.Servers()
 	frontendsToRun := cfg.Frontends
 	if len(opts.services) > 0 {
-		servicesToRun = filterServicesByNames(cfg.Services, opts.services)
+		servicesToRun = filterServicesByNames(cfg.Servers(), opts.services)
 		frontendsToRun = filterFrontendsByNames(cfg.Frontends, opts.services)
 		if len(servicesToRun) == 0 && len(frontendsToRun) == 0 {
 			return fmt.Errorf("none of the specified services %v found in project config", opts.services)
@@ -398,7 +401,7 @@ func runProjectDev(opts runOptions) error {
 		// Default run: unregistered services have no row in the appkit
 		// table, so passing their names to the server would trip the
 		// generated BootstrapOnly guard. Skip them with a notice.
-		var registered []config.ServiceConfig
+		var registered []config.ComponentConfig
 		for _, s := range servicesToRun {
 			if !notRegistered(s) {
 				registered = append(registered, s)
@@ -531,7 +534,7 @@ func runProjectDev(opts runOptions) error {
 		// per registered service).
 		var serverPorts []int
 		for _, svc := range servicesToRun {
-			serverPorts = append(serverPorts, svc.Port)
+			serverPorts = append(serverPorts, svc.PrimaryPort())
 		}
 
 		serverName = cfg.Name
@@ -991,13 +994,13 @@ func teardownInfrastructure() {
 	_ = downCmd.Run()
 }
 
-// filterServicesByNames returns only services whose name matches one of the given names.
-func filterServicesByNames(services []config.ServiceConfig, names []string) []config.ServiceConfig {
+// filterServicesByNames returns only components whose name matches one of the given names.
+func filterServicesByNames(services []config.ComponentConfig, names []string) []config.ComponentConfig {
 	nameSet := make(map[string]struct{}, len(names))
 	for _, n := range names {
 		nameSet[n] = struct{}{}
 	}
-	var filtered []config.ServiceConfig
+	var filtered []config.ComponentConfig
 	for _, s := range services {
 		if _, ok := nameSet[s.Name]; ok {
 			filtered = append(filtered, s)
@@ -1227,15 +1230,15 @@ func runHostService(ctx context.Context, name, env, secretsFile string, backgrou
 	// (when declared) is the source of truth for host vs cluster
 	// placement, but `forge run <svc>` doesn't gate on it — running a
 	// cluster-mode service locally is fine for ad-hoc debugging.
-	var svc *config.ServiceConfig
-	for i := range cfg.Services {
-		if cfg.Services[i].Name == name {
-			svc = &cfg.Services[i]
+	var svc *config.ComponentConfig
+	for i := range cfg.Components {
+		if cfg.Components[i].Name == name {
+			svc = &cfg.Components[i]
 			break
 		}
 	}
 	if svc == nil {
-		return fmt.Errorf("service %q not found in forge.yaml (declared services: %s)",
+		return fmt.Errorf("service %q not found in forge.yaml (declared components: %s)",
 			name, strings.Join(declaredServiceNames(cfg), ", "))
 	}
 	// Registration check (pkg/app/services.go): the binary serves only
@@ -1488,8 +1491,8 @@ func hostEnvVarsToMap(host *HostDeploy) map[string]string {
 // used by the error path of runHostService to point users at the right
 // spelling when they typo a service name.
 func declaredServiceNames(cfg *config.ProjectConfig) []string {
-	out := make([]string, 0, len(cfg.Services))
-	for _, s := range cfg.Services {
+	out := make([]string, 0, len(cfg.Components))
+	for _, s := range cfg.Components {
 		out = append(out, s.Name)
 	}
 	return out
@@ -1538,12 +1541,12 @@ func resolveProxyPort(flagPort int, declared map[int]string) (int, error) {
 // will bind to a human-readable component name, for the dev proxy's
 // overlap avoidance. First declaration wins on (misconfigured)
 // duplicate ports — any name is enough for the conflict message.
-func declaredComponentPorts(services []config.ServiceConfig, frontends []config.FrontendConfig) map[int]string {
+func declaredComponentPorts(services []config.ComponentConfig, frontends []config.FrontendConfig) map[int]string {
 	out := map[int]string{}
 	for _, s := range services {
-		if s.Port > 0 {
-			if _, dup := out[s.Port]; !dup {
-				out[s.Port] = "service " + s.Name
+		if p := s.PrimaryPort(); p > 0 {
+			if _, dup := out[p]; !dup {
+				out[p] = "service " + s.Name
 			}
 		}
 	}
@@ -1588,7 +1591,7 @@ func loadDevProxyRoutes(ctx context.Context, env string) []HTTPRouteEntity {
 // for the host-based proxy (basePath gotcha; see SKILL.md).
 func buildDevProxyBackends(
 	frontends []config.FrontendConfig,
-	services []config.ServiceConfig,
+	services []config.ComponentConfig,
 	routes []HTTPRouteEntity,
 ) []devproxy.Backend {
 	// Index frontends by name for HTTPRoute lookups + a default
@@ -1606,11 +1609,11 @@ func buildDevProxyBackends(
 		}
 	}
 	for _, svc := range services {
-		if svc.Port > 0 {
+		if p := svc.PrimaryPort(); p > 0 {
 			byName[svc.Name] = struct {
 				port int
 				kind string
-			}{port: svc.Port, kind: "service"}
+			}{port: p, kind: "service"}
 		}
 	}
 

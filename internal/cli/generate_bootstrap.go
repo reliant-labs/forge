@@ -250,9 +250,12 @@ func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
 	}
 
 	var specs []codegen.WorkerSpec
-	for _, svc := range cfg.Services {
-		if strings.EqualFold(svc.Type, "worker") {
-			specs = append(specs, codegen.WorkerSpec{Name: svc.Name, Path: svc.Path})
+	for _, comp := range cfg.Components {
+		// Both long-running workers and scheduled crons register a
+		// Worker bootstrap row (cron-ness lives in the scaffolded
+		// worker.go body, not the bootstrap wiring).
+		if comp.IsWorker() || comp.IsCron() {
+			specs = append(specs, codegen.WorkerSpec{Name: comp.Name, Path: comp.Path})
 		}
 	}
 	return codegen.WorkerDataFromSpecs(specs, projectDir)
@@ -288,14 +291,14 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 	}
 
 	out := map[string]bool{}
-	for _, svc := range cfg.Services {
-		if len(svc.Webhooks) == 0 {
+	for _, comp := range cfg.Components {
+		if len(comp.Webhooks) == 0 {
 			continue
 		}
-		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
+		if isConnectServiceConfig(comp) && !reg.registered(comp.Name) {
 			continue
 		}
-		out[naming.ServicePackage(svc.Name)] = true
+		out[naming.ServicePackage(comp.Name)] = true
 	}
 	if len(out) == 0 {
 		return nil
@@ -314,9 +317,9 @@ func discoverOperators(projectDir string) ([]codegen.BootstrapOperatorData, erro
 	}
 
 	var specs []codegen.OperatorSpec
-	for _, svc := range cfg.Services {
-		if strings.EqualFold(svc.Type, "operator") {
-			specs = append(specs, codegen.OperatorSpec{Name: svc.Name, Path: svc.Path})
+	for _, comp := range cfg.Components {
+		if comp.IsOperator() {
+			specs = append(specs, codegen.OperatorSpec{Name: comp.Name, Path: comp.Path})
 		}
 	}
 	return codegen.OperatorDataFromSpecs(specs, projectDir)

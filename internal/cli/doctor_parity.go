@@ -548,11 +548,11 @@ func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bo
 // AND the process exits 1.
 var errParityDivergent = fmt.Errorf("doctor parity reported divergences; see report above")
 
-// serviceDeclared reports whether a service with the given name is
-// declared in forge.yaml services[].
+// serviceDeclared reports whether a component with the given name is
+// declared in forge.yaml components[].
 func serviceDeclared(cfg *config.ProjectConfig, name string) bool {
-	for _, s := range cfg.Services {
-		if s.Name == name {
+	for _, c := range cfg.Components {
+		if c.Name == name {
 			return true
 		}
 	}

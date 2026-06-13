@@ -168,7 +168,7 @@ func TestRunIntrospectHandlers_FromDescriptor(t *testing.T) {
 module_path: github.com/test/introspect-test
 version: 0.0.1
 forge_version: dev
-services: []
+components: []
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

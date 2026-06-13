@@ -24,7 +24,7 @@ func TestAuditReport_BasicShape(t *testing.T) {
 module_path: github.com/test/test-project
 version: 0.0.1
 forge_version: dev
-services: []
+components: []
 database: {}
 ci: {}
 docker: {}
@@ -542,9 +542,9 @@ func TestAuditShape_PerRPCStreamingAndMCPCallable(t *testing.T) {
 	yamlBody := `name: test-project
 module_path: github.com/test/test-project
 forge_version: dev
-services:
+components:
   - name: tasks
-    type: go_service
+    kind: server
     path: internal/tasks
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {

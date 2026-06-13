@@ -31,9 +31,9 @@ func writeGraphProjectYAML(t *testing.T, dir string) {
 module_path: github.com/demo/demo
 version: 0.0.1
 forge_version: dev
-services:
+components:
     - name: tasks
-      type: go_service
+      kind: server
       path: handlers/tasks
 packages:
     - name: repo

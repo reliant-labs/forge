@@ -105,7 +105,7 @@ proto/services/<svc>/v1/<svc>.proto
   → protoc-gen-forge --mode=descriptor → forge_descriptor.json
   → protoc-gen-go + protoc-gen-connect-go → gen/ stubs
 
-db/migrations/*.up.sql (applied to an in-memory SQLite shadow DB, introspected)
+db/migrations/*.up.sql (applied to a real ephemeral postgres shadow DB, introspected)
   + service-proto CRUD RPC shapes
   → forge generate → internal/db/<entity>_orm.go (entity struct + ORM)
                      handlers_crud_ops_gen.go (per-RPC ops + ToProto/FromProto conversions)
@@ -219,7 +219,7 @@ contracts:
 
 **Migrations are the source of truth for schema.** Not proto, not Go structs — the SQL in `db/migrations/`. `forge generate` shadow-applies the migrations, introspects the result, and projects the entity struct (`time.Time` for timestamps, pointers for nullable columns, native slices for arrays) plus the ORM into `internal/db/<entity>_orm.go`.
 
-Behavior is read off real columns, no annotations: `deleted_at` ⇒ soft delete, `created_at`+`updated_at` ⇒ managed timestamps, `tenant_id` ⇒ tenant scoping, text columns ⇒ the generated list `search` filter. The wire messages in the service proto evolve independently; generated conversions map the intersection of wire fields and columns by name. See the `db` skill for the full model (type vocabulary, portable pg/sqlite subset, evolution recipes).
+Behavior is read off real columns, no annotations: `deleted_at` ⇒ soft delete, `created_at`+`updated_at` ⇒ managed timestamps, `tenant_id` ⇒ tenant scoping, text columns ⇒ the generated list `search` filter. The wire messages in the service proto evolve independently; generated conversions map the intersection of wire fields and columns by name. See the `db` skill for the full model (type vocabulary, postgres DDL, evolution recipes).
 
 ## Custom Wiring in setup.go
 

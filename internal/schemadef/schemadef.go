@@ -359,10 +359,10 @@ func SplitStatements(sqlText string) []string {
 				flush()
 			}
 		default:
-			// BEGIN ... END; bodies only exist inside CREATE TRIGGER
-			// statements (SQLite trigger syntax). A bare transaction
-			// BEGIN; never lands here because the buffer wouldn't
-			// contain CREATE TRIGGER.
+			// BEGIN ... END; bodies inside a CREATE TRIGGER statement must
+			// not be split on the inner `;`. A bare transaction BEGIN;
+			// never lands here because the buffer wouldn't contain
+			// CREATE TRIGGER.
 			if isWordBoundary(s, i) {
 				inTrigger := beginDepth > 0 ||
 					strings.Contains(strings.ToUpper(b.String()), "CREATE TRIGGER")
@@ -701,7 +701,7 @@ func introspectForeignKeys(ctx context.Context, db *sql.DB, schema, table string
 //	TIMESTAMPTZ, TIMESTAMP[ WITH(OUT) TIME ZONE], DATE, DATETIME → time
 //	JSONB, JSON                                  → json
 //	BYTEA, BLOB                                  → bytes
-//	anything else (incl. SQLite's untyped "")    → string
+//	anything else (incl. an empty/unknown udt)   → string
 func MapDeclaredType(decl string) (CanonicalType, bool) {
 	d := strings.ToUpper(strings.TrimSpace(decl))
 	isArray := false

@@ -127,7 +127,7 @@ forge generate
 forge db migrate up --dsn "$DATABASE_URL"
 ```
 
-Keep table-defining DDL in the portable pg/sqlite subset (`DEFAULT (now())`, no `::type` casts) — see the `db` sub-skill.
+Write plain postgres DDL — forge is postgres-pinned, so anything postgres accepts works (`::type` casts, schema-qualified names, `JSONB`, `TEXT[]`). See the `db` sub-skill.
 
 ### Phase 5: Wire and schema evolve independently
 

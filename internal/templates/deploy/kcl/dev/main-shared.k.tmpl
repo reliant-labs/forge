@@ -1,50 +1,105 @@
 """
 Development environment configuration for {{.ProjectName}} (binary=shared).
 
-This project ships ONE Docker image; each typed Service is a separate
-Deployment that runs the same binary with a different cobra
-subcommand. The shared image lives at `/app/{{.ProjectName}}` and
-each Service's `command` selects its subcommand.
-
-See `deploy/kcl/dev/main.k` (binary=per-service shape) for the
-two-output `output` / `manifests` contract documentation.
+This project ships ONE Docker image; each component is a separate
+Deployment that runs the same binary with a different cobra subcommand
+(`/app/{{.ProjectName}} <name>`). Workloads are expanded from
+`deploy/kcl/components_gen.json` by the forge.components KCL schema
+hierarchy — the only difference from the per-service shape is that
+servers/workers here run their cobra subcommand. See `dev/main.k` for
+the `manifests` / `output` two-output contract.
 """
 
 import forge
+import forge.components as fc
 
 import deploy.kcl.dev.config_gen as cfg
 {{- if .IngressEnabled}}
 import deploy.kcl.dev.ingress as ing
 {{- end}}
 
-# Shared env vars layered into every service.
-_shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
-    forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-]
-
-_dev_k8s = forge.K8sCluster {
+_registry = option("registry") or "localhost:5050"
+_namespace = "{{.ProjectName}}-dev"
+_cluster = forge.K8sCluster {
     cluster = "k3d-{{.ProjectName}}"
-    namespace = "{{.ProjectName}}-dev"
-    # Overridable via `kcl run -D registry=...`.
-    registry = option("registry") or "localhost:5050"
-    replicas = 1
+    namespace = _namespace
+    registry = _registry
     ports = [8080]
 }
 
-_bundle = forge.Bundle {
-    services = [
-{{- range .Services}}
-        forge.Service {
-            name = "{{$.ProjectName}}-{{.Name}}"
-            image = "{{$.ProjectName}}"
-            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
-            env_vars = _shared_env + [
-                forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
-            ]
-            deploy = _dev_k8s
-        }
+_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+    forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
+]
+
+# binary=shared: EVERY component runs the shared image with its cobra
+# subcommand. Binaries already carry that command from forge; for
+# server/worker/cron components we overlay it here so one image serves
+# all of them.
+_components = [c | {
+    image = "{{.ProjectName}}"
+    registry = _registry
+    namespace = _namespace
+    replicas = 1
+    command = c.command if c.command else ["/app/{{.ProjectName}}", c.name]
+    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+} for c in fc.load_components(fc.COMPONENTS_GEN)]
+
+_component_env = fc.ComponentEnv {
+    namespace = _namespace
+    registry = _registry
+    image_tag = forge.image_tag("dev")
+    network_policies = False
+}
+
+_support = forge.Bundle {
+    config_maps = cfg.CONFIG_MAPS
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
 {{- end}}
-    ]
+}
+_render_env = forge.RenderEnv {
+    cluster = _cluster
+    image_tag = forge.image_tag("dev")
+    network_policies = False
+}
+
+manifests = fc.render_components(_components, _component_env) \
+    + forge.render_support(_support, _render_env)
+
+_svc_components = [c for c in _components if c.kind in ["server", "worker"]]
+_bin_components = [c for c in _components if c.kind == "binary"]
+_cron_components = [c for c in _components if c.kind == "cron"]
+_op_components = [c for c in _components if c.kind == "operator"]
+
+_bundle = forge.Bundle {
+    services = [forge.Service {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        env_vars = c.env_vars
+        deploy = _cluster | {ports = [p.port for p in c.ports]}
+    } for c in _svc_components] + [forge.Service {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        env_vars = c.env_vars
+        deploy = forge.BuildOnly {}
+    } for c in _bin_components]
+    cronjobs = [forge.CronJob {
+        name = c.name
+        image = "{{.ProjectName}}"
+        schedule = c.schedule
+        command = c.command
+        env_vars = c.env_vars
+    } for c in _cron_components]
+    operators = [forge.Operator {
+        name = c.name
+        image = "{{.ProjectName}}"
+        crds = c.crds
+        env_vars = c.env_vars
+    } for c in _op_components]
     config_maps = cfg.CONFIG_MAPS
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -54,10 +109,3 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-
-_env = forge.RenderEnv {
-    cluster = _dev_k8s
-    image_tag = forge.image_tag("dev")
-    network_policies = False
-}
-manifests = forge.render_manifests(_bundle, _env)

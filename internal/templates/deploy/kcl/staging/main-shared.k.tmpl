@@ -1,52 +1,108 @@
 """
 Staging environment configuration for {{.ProjectName}} (binary=shared).
 
-One image, N Deployments — each runs the shared binary with a different
-cobra subcommand. See dev/main.k for the `output` / `manifests`
-contract.
+One image, N Deployments — each runs the shared binary with a
+different cobra subcommand. Workloads are expanded from
+`deploy/kcl/components_gen.json` by the forge.components KCL schema
+hierarchy. See `dev/main.k` for the `manifests` / `output` contract.
 """
 
 import forge
+import forge.components as fc
 
 import deploy.kcl.staging.config_gen as cfg
 {{- if .IngressEnabled}}
 import deploy.kcl.staging.ingress as ing
 {{- end}}
 
-_shared_env = forge.COMMON_ENV + cfg.APP_ENV + [
+_registry = option("registry") or "ghcr.io/OWNER"
+_namespace = "{{.ProjectName}}-staging"
+_replicas = 2
+_resources = forge.Resources {
+    cpu_request = "250m"
+    memory_request = "256Mi"
+    cpu_limit = "1000m"
+    memory_limit = "512Mi"
+}
+_cluster = forge.K8sCluster {
+    cluster = "{{.ProjectName}}-staging"
+    namespace = _namespace
+    registry = _registry
+    replicas = _replicas
+    ports = [8080]
+    resources = _resources
+}
+
+_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
     forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
 ]
 
-_staging_k8s = forge.K8sCluster {
-    # Set to the kubectl context name for the staging cluster.
-    cluster = "{{.ProjectName}}-staging"
-    namespace = "{{.ProjectName}}-staging"
-    # Overridable via `kcl run -D registry=...`.
-    registry = option("registry") or "ghcr.io/OWNER"
-    replicas = 2
-    ports = [8080]
-    resources = forge.Resources {
-        cpu_request = "250m"
-        memory_request = "256Mi"
-        cpu_limit = "1000m"
-        memory_limit = "512Mi"
-    }
+_components = [c | {
+    image = "{{.ProjectName}}"
+    registry = _registry
+    namespace = _namespace
+    replicas = _replicas
+    resources = _resources
+    command = c.command if c.command else ["/app/{{.ProjectName}}", c.name]
+    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+} for c in fc.load_components(fc.COMPONENTS_GEN)]
+
+_component_env = fc.ComponentEnv {
+    namespace = _namespace
+    registry = _registry
+    image_tag = forge.image_tag("staging")
+    network_policies = True
 }
 
-_bundle = forge.Bundle {
-    services = [
-{{- range .Services}}
-        forge.Service {
-            name = "{{$.ProjectName}}-{{.Name}}"
-            image = "{{$.ProjectName}}"
-            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
-            env_vars = _shared_env + [
-                forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
-            ]
-            deploy = _staging_k8s
-        }
+_support = forge.Bundle {
+    config_maps = cfg.CONFIG_MAPS
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
 {{- end}}
-    ]
+}
+_render_env = forge.RenderEnv {
+    cluster = _cluster
+    image_tag = forge.image_tag("staging")
+    network_policies = True
+}
+
+manifests = fc.render_components(_components, _component_env) \
+    + forge.render_support(_support, _render_env)
+
+_svc_components = [c for c in _components if c.kind in ["server", "worker"]]
+_bin_components = [c for c in _components if c.kind == "binary"]
+_cron_components = [c for c in _components if c.kind == "cron"]
+_op_components = [c for c in _components if c.kind == "operator"]
+
+_bundle = forge.Bundle {
+    services = [forge.Service {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        env_vars = c.env_vars
+        deploy = _cluster | {ports = [p.port for p in c.ports]}
+    } for c in _svc_components] + [forge.Service {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        env_vars = c.env_vars
+        deploy = forge.BuildOnly {}
+    } for c in _bin_components]
+    cronjobs = [forge.CronJob {
+        name = c.name
+        image = "{{.ProjectName}}"
+        schedule = c.schedule
+        command = c.command
+        env_vars = c.env_vars
+    } for c in _cron_components]
+    operators = [forge.Operator {
+        name = c.name
+        image = "{{.ProjectName}}"
+        crds = c.crds
+        env_vars = c.env_vars
+    } for c in _op_components]
     config_maps = cfg.CONFIG_MAPS
 {{- if .IngressEnabled}}
     gateways = ing.GATEWAYS
@@ -56,10 +112,3 @@ _bundle = forge.Bundle {
 }
 
 output = forge.render(_bundle)
-
-_env = forge.RenderEnv {
-    cluster = _staging_k8s
-    image_tag = forge.image_tag("staging")
-    network_policies = True
-}
-manifests = forge.render_manifests(_bundle, _env)

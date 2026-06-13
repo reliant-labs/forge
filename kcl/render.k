@@ -441,3 +441,25 @@ render_manifests = lambda bundle: Bundle, env: RenderEnv -> [any] {
         + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, env.cluster.namespace)] \
         + (netpol_lib.render_network_policies(env.cluster.namespace) if env.network_policies else [])
 }
+
+# Emit ONLY the non-workload manifests of a Bundle: ConfigMaps,
+# additional_manifests, RuntimeClasses, and the Gateway API ingress
+# (Gateways + Certificates + HTTP/GRPC routes). The workload entities
+# (services / operators / cronjobs) are NOT rendered here.
+#
+# This is the companion to forge.components.render_components: the
+# deploy-as-data env main.k expands its workloads from
+# components_gen.json (via render_components) and concatenates this
+# helper for the env-owned support resources (the config the
+# config_gen.k file projects, plus the project's ingress topology).
+# Namespace + network policies are owned by render_components, so they
+# are deliberately omitted here to avoid duplication.
+render_support = lambda bundle: Bundle, env: RenderEnv -> [any] {
+    [_render_runtime_class_manifest(rc, env) for rc in bundle.runtime_classes] \
+        + [_render_config_map_manifest(cm, env) for cm in bundle.config_maps] \
+        + bundle.additional_manifests \
+        + [item for g in bundle.gateways for item in gw_lib.render_gateway(g, env.cluster.namespace)] \
+        + [item for g in bundle.gateways for item in gw_lib.render_certificate(g, env.cluster.namespace)] \
+        + [item for r in bundle.http_routes for item in gw_lib.render_http_route(r, bundle.gateways, env.cluster.namespace)] \
+        + [item for r in bundle.grpc_routes for item in gw_lib.render_grpc_route(r, bundle.gateways, env.cluster.namespace)]
+}

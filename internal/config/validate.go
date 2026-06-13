@@ -239,6 +239,14 @@ var removedSchemaKeys = map[string]removedKeyHint{
 			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
 			"(Types-Only Services).",
 	},
+	// deploy graduated from experimental to a stable kind-derived flag in
+	// the front-door rework; projects scaffolded in the experimental
+	// window still carry the old nesting.
+	"features.experimental.deploy": {
+		removedIn: "the deploy-feature graduation (experimental → stable, derived from kind)",
+		replacement: "move the value to `features.deploy` — or delete it entirely if it matches " +
+			"the derived default (true for kind: service).",
+	},
 }
 
 // sliceIndexRe matches "[<digits>]" path segments so removed-key lookup

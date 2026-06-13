@@ -30,21 +30,19 @@ func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig,
 	yaml := strings.Builder{}
 	yaml.WriteString("name: test\n")
 	yaml.WriteString("module_path: github.com/example/test\n")
-	yaml.WriteString("components:\n")
-	for _, s := range services {
-		yaml.WriteString("  - name: " + s.Name + "\n")
-		if s.Kind != "" {
-			yaml.WriteString("    kind: " + s.Kind + "\n")
-		}
-		if p := s.PrimaryPort(); p != 0 {
-			yaml.WriteString("    ports:\n")
-			yaml.WriteString("      http: ")
-			yaml.WriteString(itoa(p))
-			yaml.WriteString("\n")
-		}
-	}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yaml.String()), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
+	}
+
+	// Per-component entities now live in a sibling components.json (forge.yaml
+	// is global-only). An empty slice still writes `{"components":[]}` so the
+	// project derives to service kind rather than library.
+	compData, err := config.MarshalComponentsJSON(services)
+	if err != nil {
+		t.Fatalf("marshal components.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, config.ComponentsFileName), compData, 0o644); err != nil {
+		t.Fatalf("write components.json: %v", err)
 	}
 
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
@@ -60,28 +58,20 @@ func writeProjectWithDescriptor(t *testing.T, services []config.ComponentConfig,
 	return dir
 }
 
-// itoa is strconv.Itoa inlined to avoid the import for one call site —
-// keeps the test imports minimal.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+// writeComponentsJSON drops a components.json at dir holding the given
+// components. forge.yaml is global-only now, so the per-component entities
+// (and the project kind they derive) live in this sibling file. Passing zero
+// components still writes `{"components":[]}` so the project derives to
+// service kind (the empty-service shell) rather than library.
+func writeComponentsJSON(t *testing.T, dir string, comps ...config.ComponentConfig) {
+	t.Helper()
+	data, err := config.MarshalComponentsJSON(comps)
+	if err != nil {
+		t.Fatalf("marshal components.json: %v", err)
 	}
-	neg := n < 0
-	if neg {
-		n = -n
+	if err := os.WriteFile(filepath.Join(dir, config.ComponentsFileName), data, 0o644); err != nil {
+		t.Fatalf("write components.json: %v", err)
 	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }
 
 // TestZeroValueFor pins the proto-zero mapping per scalar kind. nil for

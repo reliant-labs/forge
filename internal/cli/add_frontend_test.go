@@ -28,8 +28,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
+
+// freshServiceComponent is the single server component that pairs with
+// freshServiceForgeYAML. Per-component entities live in components.json now
+// (forge.yaml is global-only); its presence is what derives the project to
+// service kind.
+var freshServiceComponent = config.ComponentConfig{
+	Name:  "api",
+	Kind:  "server",
+	Path:  "handlers/api",
+	Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+}
 
 // skipNpmInstall makes the trailing, non-fatal `npm install` inside
 // runAddFrontend a no-op — in BOTH test modes.
@@ -60,7 +72,6 @@ func skipNpmInstall(t *testing.T) {
 const freshServiceForgeYAML = `name: demo
 module_path: github.com/example/demo
 version: 0.1.0
-kind: service
 hot_reload: true
 features:
   frontend: false
@@ -79,12 +90,6 @@ stack:
     registry: ghcr.io
   ci:
     provider: github
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-    ports:
-      http: 8080
 database:
   driver: postgres
   migrations_dir: db/migrations
@@ -110,6 +115,7 @@ auth:
 func TestRunAddFrontend_ReconcilesStackFramework(t *testing.T) {
 	skipNpmInstall(t)
 	dir := withTempProject(t, freshServiceForgeYAML)
+	writeComponentsJSON(t, dir, freshServiceComponent)
 
 	if err := runAddFrontend(context.Background(), "dashboard", 0, "", "", ""); err != nil {
 		t.Fatalf("runAddFrontend: %v", err)
@@ -167,6 +173,7 @@ func TestRunAddFrontend_StackFrameworkByKind(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := withTempProject(t, freshServiceForgeYAML)
+			writeComponentsJSON(t, dir, freshServiceComponent)
 
 			if err := runAddFrontend(context.Background(), "app", 0, tc.kind, "", ""); err != nil {
 				t.Fatalf("runAddFrontend(kind=%q): %v", tc.kind, err)
@@ -194,6 +201,7 @@ func TestRunAddFrontend_PreservesCustomStackFramework(t *testing.T) {
 	customYAML := strings.Replace(freshServiceForgeYAML,
 		"framework: none", "framework: svelte", 1)
 	dir := withTempProject(t, customYAML)
+	writeComponentsJSON(t, dir, freshServiceComponent)
 
 	if err := runAddFrontend(context.Background(), "app", 0, "", "", ""); err != nil {
 		t.Fatalf("runAddFrontend: %v", err)

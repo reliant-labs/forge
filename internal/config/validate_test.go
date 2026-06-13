@@ -14,10 +14,6 @@ const validBaseYAML = `name: demo
 module_path: github.com/example/demo
 version: 0.1.0
 hot_reload: false
-components:
-  - name: api
-    kind: server
-    path: handlers/api
 database:
   driver: postgres
   migrations_dir: db/migrations
@@ -36,8 +32,15 @@ auth:
 docs: {}
 `
 
+// baseComponents is the single api server component the validBaseYAML
+// fixtures imply; injected via LoadStrict's variadic components arg now
+// that components live outside forge.yaml.
+func baseComponents() []ComponentConfig {
+	return []ComponentConfig{{Name: "api", Kind: "server", Path: "handlers/api"}}
+}
+
 func TestLoadStrict_ValidConfig(t *testing.T) {
-	cfg, err := LoadStrict([]byte(validBaseYAML), "forge.yaml")
+	cfg, err := LoadStrict([]byte(validBaseYAML), "forge.yaml", baseComponents()...)
 	if err != nil {
 		t.Fatalf("expected clean load, got: %v", err)
 	}
@@ -48,7 +51,7 @@ func TestLoadStrict_ValidConfig(t *testing.T) {
 
 func TestLoadStrict_UnknownKey_WithCloseMatch(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "auth:", "auht:", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "unknown key", "auht", "did you mean", "auth") {
 		t.Errorf("expected typo suggestion in error, got:\n%s", ve.Error())
@@ -57,7 +60,7 @@ func TestLoadStrict_UnknownKey_WithCloseMatch(t *testing.T) {
 
 func TestLoadStrict_UnknownKey_NoCloseMatch(t *testing.T) {
 	in := validBaseYAML + "completely_unrelated_key: 42\n"
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "unknown key", "completely_unrelated_key") {
 		t.Errorf("expected unknown-key error, got:\n%s", ve.Error())
@@ -68,20 +71,25 @@ func TestLoadStrict_UnknownKey_NoCloseMatch(t *testing.T) {
 }
 
 func TestLoadStrict_MultipleUnknownKeys(t *testing.T) {
-	in := validBaseYAML + "auht: x\ncomponnts: y\n" //nolint:misspell // intentional typo for suggestion test
-	// Replace the real auth: block first so we don't have a duplicate
-	// issue from a still-valid `auth: none` while testing the typo.
+	// Two typo'd top-level keys, each near a still-present forge.yaml key:
+	// `auht`→`auth` and `databse`→`database`. (`components` is no longer a
+	// forge.yaml key, so the prior `componnts`→`components` pairing moved to
+	// `databse`→`database`, which still exercises the multi-typo path.)
+	in := validBaseYAML + "auht: x\ndatabse: y\n" //nolint:misspell // intentional typo for suggestion test
+	// Drop the real auth:/database: blocks first so we don't get a duplicate
+	// issue from the still-valid originals while testing the typos.
 	in = strings.Replace(in, "auth:\n  provider: none\n", "", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	in = strings.Replace(in, "database:\n  driver: postgres\n  migrations_dir: db/migrations\n", "", 1)
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "auht", "auth", "componnts", "components") { //nolint:misspell // checks suggestion output
+	if !containsAll(ve.Error(), "auht", "auth", "databse", "database") { //nolint:misspell // checks suggestion output
 		t.Errorf("expected both typos with suggestions, got:\n%s", ve.Error())
 	}
 }
 
 func TestLoadStrict_MissingRequired_ModulePath(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "module_path: github.com/example/demo\n", "", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "module_path", "required") {
 		t.Errorf("expected module_path required error, got:\n%s", ve.Error())
@@ -91,9 +99,8 @@ func TestLoadStrict_MissingRequired_ModulePath(t *testing.T) {
 func TestLoadStrict_MissingRequired_Multiple(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "name: demo\n", "", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
-	in = strings.Replace(in, "  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - kind: server\n    path: handlers/api\n", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	// The faulty (nameless) component is now injected via the variadic arg.
+	_, err := LoadStrict([]byte(in), "forge.yaml", ComponentConfig{Kind: "server", Path: "handlers/api"})
 	ve := requireValidationError(t, err)
 	got := ve.Error()
 	if !strings.Contains(got, "'name' is required") {
@@ -110,7 +117,7 @@ func TestLoadStrict_MissingRequired_Multiple(t *testing.T) {
 func TestLoadStrict_TypeMismatch(t *testing.T) {
 	// hot_reload is a bool; pass a string to surface a yaml type error.
 	in := strings.Replace(validBaseYAML, "hot_reload: false", `hot_reload: "not-a-bool"`, 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	if !strings.Contains(ve.Error(), "cannot unmarshal") {
 		t.Errorf("expected type-mismatch error mentioning unmarshal, got:\n%s", ve.Error())
@@ -118,13 +125,15 @@ func TestLoadStrict_TypeMismatch(t *testing.T) {
 }
 
 func TestLoadStrict_NestedUnknownKey(t *testing.T) {
-	// services[0] has bogus subkey "naem" — should be detected at the
-	// nested level with a path-prefixed message.
-	in := strings.Replace(validBaseYAML, "  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: api\n    kind: server\n    path: handlers/api\n    naem: typo\n", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	// database: has bogus subkey "migrations_dur" — should be detected at
+	// the nested level with a path-prefixed message and a suggestion.
+	// (Components moved out of forge.yaml, so the nested-walk path is now
+	// exercised against a still-YAML-parsed block.)
+	in := strings.Replace(validBaseYAML, "  migrations_dir: db/migrations\n",
+		"  migrations_dir: db/migrations\n  migrations_dur: typo\n", 1)
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
-	if !containsAll(ve.Error(), "components[0].naem", "did you mean", "name") {
+	if !containsAll(ve.Error(), "database.migrations_dur", "did you mean", "migrations_dir") {
 		t.Errorf("expected nested-path unknown-key + suggestion, got:\n%s", ve.Error())
 	}
 }
@@ -139,7 +148,7 @@ func TestLoadStrict_FrontendOutput_ValidValues_Accepted(t *testing.T) {
 	for _, value := range cases {
 		t.Run(value, func(t *testing.T) {
 			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    output: " + value + "\n"
-			if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+			if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
 				t.Errorf("expected output=%q to validate, got: %v", value, err)
 			}
 		})
@@ -153,7 +162,7 @@ func TestLoadStrict_FrontendOutput_ValidValues_Accepted(t *testing.T) {
 // into a clear actionable error.
 func TestLoadStrict_FrontendOutput_InvalidValue_Rejected(t *testing.T) {
 	in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    output: edge\n"
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "frontends[0].output", "invalid", "static", "standalone", "server") {
 		t.Errorf("expected output validation error mentioning the supported values, got:\n%s", ve.Error())
@@ -169,7 +178,7 @@ func TestLoadStrict_FrontendBasePath_ValidValues_Accepted(t *testing.T) {
 	for _, value := range cases {
 		t.Run(value, func(t *testing.T) {
 			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    base_path: " + value + "\n"
-			if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+			if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
 				t.Errorf("expected base_path=%q to validate, got: %v", value, err)
 			}
 		})
@@ -198,7 +207,7 @@ func TestLoadStrict_FrontendBasePath_InvalidValues_Rejected(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in := validBaseYAML + "frontends:\n  - name: web\n    type: nextjs\n    path: frontends/web\n    port: 3000\n    base_path: " + tc.value + "\n"
-			_, err := LoadStrict([]byte(in), "forge.yaml")
+			_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 			ve := requireValidationError(t, err)
 			if !containsAll(ve.Error(), "frontends[0].base_path", "invalid") {
 				t.Errorf("expected base_path validation error for %s, got:\n%s", tc.value, ve.Error())
@@ -208,10 +217,9 @@ func TestLoadStrict_FrontendBasePath_InvalidValues_Rejected(t *testing.T) {
 }
 
 func TestLoadStrict_ServiceMissingName(t *testing.T) {
-	// services[].path is loader-defaulted, but services[].name is not.
-	in := strings.Replace(validBaseYAML, "  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - kind: server\n    path: handlers/api\n", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	// components[].path is loader-defaulted, but components[].name is not.
+	// The nameless component is now injected via the variadic arg.
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml", ComponentConfig{Kind: "server", Path: "handlers/api"})
 	ve := requireValidationError(t, err)
 	if !strings.Contains(ve.Error(), "components[0].name is required") {
 		t.Errorf("expected services[0].name required, got:\n%s", ve.Error())
@@ -220,7 +228,7 @@ func TestLoadStrict_ServiceMissingName(t *testing.T) {
 
 func TestLoadStrict_InvalidModulePath(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "module_path: github.com/example/demo", "module_path: notamodule", 1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	if !strings.Contains(ve.Error(), "does not look like a Go module path") {
 		t.Errorf("expected module-path shape warning, got:\n%s", ve.Error())
@@ -231,19 +239,21 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 	// Smoke test mirroring the CLI smoke: 3 typos + 1 missing required
 	// field should all surface in a single error.
 	in := strings.Replace(validBaseYAML, "auth:\n  provider: none\n", "auht:\n  provider: none\n", 1)
-	in = strings.Replace(in, "components:", "componnts:", 1) //nolint:misspell // intentional typo for suggestion test
+	// `components` is no longer a forge.yaml key, so the third typo targets
+	// another still-present top-level key: `docker`→`dockr`.
+	in = strings.Replace(in, "docker:", "dockr:", 1)
 	in = strings.Replace(in, "database:", "databse:", 1)
 	in = strings.Replace(in, "module_path: github.com/example/demo\n", "", 1)
 
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	for _, want := range []string{"auht", "componnts", "databse", "module_path"} {
+	for _, want := range []string{"auht", "dockr", "databse", "module_path"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected %q in error, got:\n%s", want, got)
 		}
 	}
-	for _, suggestion := range []string{"auth", "components", "database"} {
+	for _, suggestion := range []string{"auth", "docker", "database"} {
 		if !strings.Contains(got, suggestion) {
 			t.Errorf("expected suggestion %q, got:\n%s", suggestion, got)
 		}
@@ -256,12 +266,10 @@ func TestLoadStrict_FourIssuesAtOnce(t *testing.T) {
 // lint must surface that BEFORE the user discovers it via a confusing
 // downstream codegen error.
 func TestLoadStrict_ServiceNameCollision_AfterNormalisation(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: admin-server\n    kind: server\n    path: handlers/admin-server\n"+
-			"  - name: admin_server\n    kind: server\n    path: handlers/admin_server\n",
-		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml",
+		ComponentConfig{Name: "admin-server", Kind: "server", Path: "handlers/admin-server"},
+		ComponentConfig{Name: "admin_server", Kind: "server", Path: "handlers/admin_server"},
+	)
 	ve := requireValidationError(t, err)
 	got := ve.Error()
 	// Post-2026-06-08 snake-canonicalisation: "admin-server" and
@@ -278,11 +286,9 @@ func TestLoadStrict_ServiceNameCollision_AfterNormalisation(t *testing.T) {
 // declaration that fails compilation deep in the codegen output; the
 // lint catches it at forge.yaml-parse time.
 func TestLoadStrict_ServiceName_ReservedWord_Rejected(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: select\n    kind: server\n    path: handlers/select\n",
-		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml",
+		ComponentConfig{Name: "select", Kind: "server", Path: "handlers/select"},
+	)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "reserved word", "select") {
 		t.Errorf("expected reserved-word rejection, got:\n%s", ve.Error())
@@ -294,11 +300,9 @@ func TestLoadStrict_ServiceName_ReservedWord_Rejected(t *testing.T) {
 // begin with a letter or underscore; the lint guards against the
 // surprising downstream parse error.
 func TestLoadStrict_ServiceName_LeadingDigit_Rejected(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: 2fast\n    kind: server\n    path: handlers/2fast\n",
-		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml",
+		ComponentConfig{Name: "2fast", Kind: "server", Path: "handlers/2fast"},
+	)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "invalid Go package", "2fast") {
 		t.Errorf("expected leading-digit rejection, got:\n%s", ve.Error())
@@ -310,11 +314,9 @@ func TestLoadStrict_ServiceName_LeadingDigit_Rejected(t *testing.T) {
 // ServicePackage transform leaves intact (dots, slashes). Those
 // characters can never produce a legal package directory.
 func TestLoadStrict_ServiceName_PunctuationSurvivingNormalisation_Rejected(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: \"foo.bar\"\n    kind: server\n    path: handlers/foo\n",
-		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml",
+		ComponentConfig{Name: "foo.bar", Kind: "server", Path: "handlers/foo"},
+	)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "invalid Go package", "foo.bar") {
 		t.Errorf("expected punctuation rejection, got:\n%s", ve.Error())
@@ -325,12 +327,10 @@ func TestLoadStrict_ServiceName_PunctuationSurvivingNormalisation_Rejected(t *te
 // collision check: a service and a binary with names that normalise to
 // the same Go package would write to the same scaffold directory.
 func TestLoadStrict_ServiceVsBinaryCollision(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: gateway\n    kind: server\n    path: handlers/gateway\n"+
-			"  - name: Gateway\n    kind: binary\n    path: cmd/gateway.go\n",
-		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml",
+		ComponentConfig{Name: "gateway", Kind: "server", Path: "handlers/gateway"},
+		ComponentConfig{Name: "Gateway", Kind: "binary", Path: "cmd/gateway.go"},
+	)
 	ve := requireValidationError(t, err)
 	if !containsAll(ve.Error(), "collides", "gateway") {
 		t.Errorf("expected cross-kind collision, got:\n%s", ve.Error())
@@ -341,13 +341,12 @@ func TestLoadStrict_ServiceVsBinaryCollision(t *testing.T) {
 // the lint: hyphenated, snake_case, and plain-lowercase names all coexist
 // peacefully as long as their canonical forms differ.
 func TestLoadStrict_ValidServiceVariants_Accepted(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"  - name: api\n    kind: server\n    path: handlers/api\n",
-		"  - name: api\n    kind: server\n    path: handlers/api\n"+
-			"  - name: admin-server\n    kind: server\n    path: handlers/admin-server\n"+
-			"  - name: billing_v2\n    kind: server\n    path: handlers/billing_v2\n",
-		1)
-	if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+	_, err := LoadStrict([]byte(validBaseYAML), "forge.yaml",
+		ComponentConfig{Name: "api", Kind: "server", Path: "handlers/api"},
+		ComponentConfig{Name: "admin-server", Kind: "server", Path: "handlers/admin-server"},
+		ComponentConfig{Name: "billing_v2", Kind: "server", Path: "handlers/billing_v2"},
+	)
+	if err != nil {
 		t.Fatalf("expected clean load, got: %v", err)
 	}
 }
@@ -367,7 +366,7 @@ func TestLoadStrict_NestedUnknownKey_LineAndPath(t *testing.T) {
 		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
 		1)
 	wantLine := lineOf(t, in, "  provider: k3d")
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	got := ve.Error()
 	if !strings.Contains(got, `"k8s.provider"`) {
@@ -392,7 +391,7 @@ func TestLoadStrict_RemovedSchemaKey_K8sProvider(t *testing.T) {
 		"k8s:\n  kcl_dir: deploy/kcl\n",
 		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
 		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	got := ve.Error()
 	if !containsAll(got, `"k8s.provider"`, "removed", "K8sCluster") {
@@ -425,7 +424,7 @@ func TestLoadStrict_StackDeployProvider_NotFalsePositive(t *testing.T) {
     provider: k3d
     registry: ghcr.io
 `
-	cfg, err := LoadStrict([]byte(in), "forge.yaml")
+	cfg, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	if err != nil {
 		t.Fatalf("clean load expected — `stack.deploy.provider` must not be confused with removed `k8s.provider` key. err=%v", err)
 	}
@@ -439,11 +438,10 @@ func TestLoadStrict_StackDeployProvider_NotFalsePositive(t *testing.T) {
 // pre-unification shape) resolves to the components migration message
 // rather than a bare unknown-key error.
 func TestLoadStrict_RemovedSchemaKey_ServicesBlock(t *testing.T) {
-	in := strings.Replace(validBaseYAML,
-		"components:\n  - name: api\n    kind: server\n    path: handlers/api\n",
-		"services:\n  - name: api\n    type: go_service\n    path: handlers/api\n",
-		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml")
+	// A stale top-level `services:` block (the pre-unification shape) must
+	// resolve to the components migration hint, not a bare unknown-key error.
+	in := validBaseYAML + "services:\n  - name: api\n    type: go_service\n    path: handlers/api\n"
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	got := ve.Error()
 	if !containsAll(got, `"services" was removed in`, "components") {
@@ -484,11 +482,9 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 		{
 			name: "removed top-level key services gets components migration hint",
 			mutate: func(in string) string {
-				// Swap the components: block back to the pre-unification
-				// services: shape; the loader must point at components.
-				return strings.Replace(in,
-					"components:\n  - name: api\n    kind: server\n    path: handlers/api\n",
-					"services:\n  - name: api\n    type: go_service\n    path: handlers/api\n", 1)
+				// A stale top-level services: block (the pre-unification
+				// shape) must point at the components migration.
+				return in + "services:\n  - name: api\n    type: go_service\n    path: handlers/api\n"
 			},
 			wantSubstr: []string{
 				`"services" was removed in`,
@@ -527,7 +523,7 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LoadStrict([]byte(tc.mutate(validBaseYAML)), "forge.yaml")
+			_, err := LoadStrict([]byte(tc.mutate(validBaseYAML)), "forge.yaml", baseComponents()...)
 			ve := requireValidationError(t, err)
 			got := ve.Error()
 			for _, want := range tc.wantSubstr {
@@ -550,7 +546,7 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 // an unknown or removed key.
 func TestLoadStrict_DeprecatedEnvironmentsStillLoads(t *testing.T) {
 	in := validBaseYAML + "environments:\n  - name: dev\n    type: local\n"
-	if _, err := LoadStrict([]byte(in), "forge.yaml"); err != nil {
+	if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
 		t.Fatalf("expected deprecated 'environments' block to load cleanly, got: %v", err)
 	}
 }

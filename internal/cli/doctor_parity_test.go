@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // fyVal is a tiny helper to construct a forge.yaml-sourced
@@ -291,12 +293,12 @@ func TestDoctorParity_UnknownService(t *testing.T) {
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
-kind: service
-components:
-  - name: alpha
-  - name: bravo
-  - name: charlie
 `)
+	writeComponentsJSON(t, dir,
+		config.ComponentConfig{Name: "alpha"},
+		config.ComponentConfig{Name: "bravo"},
+		config.ComponentConfig{Name: "charlie"},
+	)
 	prev, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	if err := os.Chdir(dir); err != nil {
@@ -327,10 +329,8 @@ func TestDoctorParity_JSONShape(t *testing.T) {
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
-kind: service
-components:
-  - name: tasks
 `)
+	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks"})
 	prev, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	if err := os.Chdir(dir); err != nil {
@@ -394,10 +394,8 @@ func TestDoctorParity_AgreementExitsZero(t *testing.T) {
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
-kind: service
-components:
-  - name: tasks
 `)
+	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks"})
 	prev, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(prev) })
 	if err := os.Chdir(dir); err != nil {

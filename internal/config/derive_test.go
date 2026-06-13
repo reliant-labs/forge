@@ -11,19 +11,25 @@ import (
 // derived default materialized explicitly. The derivation contract is
 // that loading the minimal file must be semantically identical to
 // loading this one.
+// usersComponent is the single `users` server component both
+// legacyFullForgeYAML and minimalForgeYAML imply. Components now live
+// outside forge.yaml and are injected via the LoadStrict variadic; a
+// server component derives the project kind to "service".
+func usersComponent() []ComponentConfig {
+	return []ComponentConfig{{
+		Name:  "users",
+		Kind:  "server",
+		Path:  "handlers/users",
+		Ports: map[string]PortSpec{"http": {Port: 8080}},
+	}}
+}
+
 const legacyFullForgeYAML = `
 name: demo
 module_path: example.com/demo
-kind: service
 version: 0.1.0
 forge_version: v0.0.0-test
 hot_reload: true
-components:
-    - name: users
-      kind: server
-      path: handlers/users
-      ports:
-        http: 8080
 frontends:
     - name: web
       type: nextjs
@@ -92,12 +98,6 @@ const minimalForgeYAML = `
 name: demo
 module_path: example.com/demo
 forge_version: v0.0.0-test
-components:
-    - name: users
-      kind: server
-      path: handlers/users
-      ports:
-        http: 8080
 frontends:
     - name: web
       type: nextjs
@@ -110,11 +110,11 @@ frontends:
 // to the same effective configuration as the legacy fully-materialized
 // one — same feature states, same section blocks, same hot-reload.
 func TestDerivedDefaults_MinimalEquivalentToLegacyFull(t *testing.T) {
-	legacy, err := LoadStrict([]byte(legacyFullForgeYAML), "legacy.yaml")
+	legacy, err := LoadStrict([]byte(legacyFullForgeYAML), "legacy.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("load legacy: %v", err)
 	}
-	minimal, err := LoadStrict([]byte(minimalForgeYAML), "minimal.yaml")
+	minimal, err := LoadStrict([]byte(minimalForgeYAML), "minimal.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("load minimal: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestDerivedDefaults_RealProjectShapesMatchExplicit(t *testing.T) {
 // TestNormalizeForWrite_RoundTripStaysMinimal: load(minimal) → write
 // must not materialize derived defaults back into the file.
 func TestNormalizeForWrite_RoundTripStaysMinimal(t *testing.T) {
-	cfg, err := LoadStrict([]byte(minimalForgeYAML), "minimal.yaml")
+	cfg, err := LoadStrict([]byte(minimalForgeYAML), "minimal.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("load minimal: %v", err)
 	}
@@ -218,7 +218,7 @@ database:
     driver: none
     migrations_dir: db/migrations
 `
-	cfg, err := LoadStrict([]byte(src), "override.yaml")
+	cfg, err := LoadStrict([]byte(src), "override.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -226,7 +226,7 @@ database:
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	re, err := LoadStrict(out, "roundtrip.yaml")
+	re, err := LoadStrict(out, "roundtrip.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestFeaturesDeploy_TopLevelKeyLoads(t *testing.T) {
 features:
     deploy: true
 `
-	cfg, err := LoadStrict([]byte(src), "deploy.yaml")
+	cfg, err := LoadStrict([]byte(src), "deploy.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("LoadStrict with `features: deploy: true`: %v", err)
 	}
@@ -345,7 +345,7 @@ features:
 // surface. An explicit false always wins over derivation.
 func TestDeriveFeatureDefaults_DeployFollowsKind(t *testing.T) {
 	// Fresh service-kind config (minimal scaffold): deploy derives ON.
-	svc, err := LoadStrict([]byte(minimalForgeYAML), "svc.yaml")
+	svc, err := LoadStrict([]byte(minimalForgeYAML), "svc.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("load minimal service: %v", err)
 	}
@@ -353,16 +353,23 @@ func TestDeriveFeatureDefaults_DeployFollowsKind(t *testing.T) {
 		t.Error("service kind: DeployEnabled() = false, want true (derived from kind)")
 	}
 
-	// CLI and library kinds derive OFF.
-	for _, kind := range []string{ProjectKindCLI, ProjectKindLibrary} {
+	// CLI and library kinds derive OFF. Kind now derives from components:
+	// a single binary component → cli; no components → library.
+	kindComponents := map[string][]ComponentConfig{
+		ProjectKindCLI:     {{Name: "tool", Kind: "binary", Path: "cmd/tool.go"}},
+		ProjectKindLibrary: nil,
+	}
+	for kind, comps := range kindComponents {
 		src := `
 name: demo
 module_path: example.com/demo
-kind: ` + kind + `
 `
-		cfg, err := LoadStrict([]byte(src), kind+".yaml")
+		cfg, err := LoadStrict([]byte(src), kind+".yaml", comps...)
 		if err != nil {
 			t.Fatalf("load %s: %v", kind, err)
+		}
+		if cfg.EffectiveKind() != kind {
+			t.Fatalf("%s: derived kind = %q, want %q", kind, cfg.EffectiveKind(), kind)
 		}
 		if cfg.Features.DeployEnabled() {
 			t.Errorf("%s kind: DeployEnabled() = true, want false (derived from kind)", kind)
@@ -374,7 +381,7 @@ kind: ` + kind + `
 features:
     deploy: false
 `
-	cfg, err := LoadStrict([]byte(off), "off.yaml")
+	cfg, err := LoadStrict([]byte(off), "off.yaml", usersComponent()...)
 	if err != nil {
 		t.Fatalf("load explicit-off: %v", err)
 	}

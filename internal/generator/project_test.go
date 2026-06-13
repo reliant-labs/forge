@@ -320,10 +320,17 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 		t.Fatal("cmd/main.go missing rootCmd")
 	}
 
-	// forge.yaml should have an empty components list
+	// Components live in components.json now (forge.yaml is global-only).
+	// A zero-service service shell writes an empty components.json — its
+	// presence (not absence) is what makes the project derive to "service".
+	componentsContents := readFile(t, filepath.Join(root, "components.json"))
+	if !strings.Contains(componentsContents, "\"components\": []") {
+		t.Fatalf("expected components.json to have empty components list, got:\n%s", componentsContents)
+	}
+	// forge.yaml must NOT carry a components block anymore.
 	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(configContents, "components: []") {
-		t.Fatalf("expected forge.yaml to have empty components list, got:\n%s", configContents)
+	if strings.Contains(configContents, "components:") {
+		t.Fatalf("forge.yaml must be global-only (no components:), got:\n%s", configContents)
 	}
 }
 
@@ -375,10 +382,16 @@ func TestProjectGeneratorKindCLIScaffold(t *testing.T) {
 		}
 	}
 
-	// forge.yaml records the kind.
+	// kind is no longer a forge.yaml field — it derives from components.
+	// A cli project carries a single binary-kind component (the cobra main)
+	// in components.json, which makes the project derive to "cli".
 	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "kind: cli") {
-		t.Errorf("expected forge.yaml to declare kind: cli, got:\n%s", cfg)
+	if strings.Contains(cfg, "kind:") {
+		t.Errorf("forge.yaml must not carry kind: (derives from components), got:\n%s", cfg)
+	}
+	comps := readFile(t, filepath.Join(root, "components.json"))
+	if !strings.Contains(comps, "\"kind\": \"binary\"") {
+		t.Errorf("expected components.json to carry a binary-kind component (cli main), got:\n%s", comps)
 	}
 
 	// go.mod is the lean CLI variant: only cobra in `require` block.
@@ -438,9 +451,14 @@ func TestProjectGeneratorKindLibraryScaffold(t *testing.T) {
 		}
 	}
 
+	// kind is no longer a forge.yaml field. A library has NO components, and
+	// the ABSENCE of components.json is the "library" signal on reload.
 	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "kind: library") {
-		t.Errorf("expected forge.yaml to declare kind: library, got:\n%s", cfg)
+	if strings.Contains(cfg, "kind:") {
+		t.Errorf("forge.yaml must not carry kind: (derives from components), got:\n%s", cfg)
+	}
+	if _, err := os.Stat(filepath.Join(root, "components.json")); !os.IsNotExist(err) {
+		t.Errorf("library project must NOT write components.json (its absence is the library signal), err=%v", err)
 	}
 }
 
@@ -580,27 +598,23 @@ func TestCompareGoVersion(t *testing.T) {
 	}
 }
 
-func TestAppendServiceToConfigPreservesUnknownFields(t *testing.T) {
+// TestAppendServiceToConfigWritesComponentsJSON verifies that
+// AppendServiceToConfig appends a server component to the project-root
+// components.json (the authored per-service source of truth). Components
+// moved out of forge.yaml in the ProjectStore per-service data move, so this
+// no longer touches forge.yaml — it preserves the existing components and
+// appends the new one.
+func TestAppendServiceToConfigWritesComponentsJSON(t *testing.T) {
 	root := t.TempDir()
-	configPath := filepath.Join(root, "forge.yaml")
 
-	// Hand-written config with a user-added top-level key and a user-added
-	// key inside an existing service entry. The Go struct does not know
-	// about either, so a naive unmarshal+remarshal round-trip would drop them.
-	original := `name: sample
-module_path: example.com/sample
-version: 0.1.0
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-    ports:
-      http: 8080
-    custom_annotation: keep-me
-my_custom_section:
-  something: true
+	// A pre-existing components.json with one server component.
+	existing := `{
+  "components": [
+    {"name": "api", "kind": "server", "path": "handlers/api", "ports": {"http": 8080}}
+  ]
+}
 `
-	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "components.json"), []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -608,15 +622,16 @@ my_custom_section:
 		t.Fatalf("AppendServiceToConfig() error = %v", err)
 	}
 
-	after := readFile(t, configPath)
-	if !strings.Contains(after, "custom_annotation: keep-me") {
-		t.Errorf("expected unknown per-service key to be preserved, got:\n%s", after)
+	after := readFile(t, filepath.Join(root, "components.json"))
+	if !strings.Contains(after, "\"name\": \"users\"") {
+		t.Errorf("expected new service appended to components.json, got:\n%s", after)
 	}
-	if !strings.Contains(after, "my_custom_section:") {
-		t.Errorf("expected unknown top-level key to be preserved, got:\n%s", after)
+	if !strings.Contains(after, "\"name\": \"api\"") {
+		t.Errorf("expected existing service preserved in components.json, got:\n%s", after)
 	}
-	if !strings.Contains(after, "name: users") {
-		t.Errorf("expected new service to be appended, got:\n%s", after)
+	// forge.yaml is untouched (and need not even exist for this path).
+	if _, err := os.Stat(filepath.Join(root, "forge.yaml")); !os.IsNotExist(err) {
+		t.Errorf("AppendServiceToConfig must not create forge.yaml, err=%v", err)
 	}
 }
 
@@ -624,15 +639,12 @@ func TestAppendFrontendToConfigPreservesUnknownFields(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "forge.yaml")
 
+	// forge.yaml is global-only now (components live in components.json);
+	// this fixture exercises the frontend append path, which stays in
+	// forge.yaml and must preserve user-added unknown keys.
 	original := `name: sample
 module_path: example.com/sample
 version: 0.1.0
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-    ports:
-      http: 8080
 frontends:
   - name: web
     type: nextjs

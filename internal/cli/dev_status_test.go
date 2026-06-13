@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestRunDevStatusJSON_IngressDisabledEmitsEmptyArray: when
@@ -23,16 +25,16 @@ version: "0.1.0"
 binary: shared
 features:
   ingress: false
-components:
-  - name: api
-    kind: server
-    path: handlers/api
-    ports:
-      http: 8080
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:  "api",
+		Kind:  "server",
+		Path:  "handlers/api",
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+	})
 	t.Chdir(dir)
 
 	out := captureStdout(t, func() {

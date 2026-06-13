@@ -427,12 +427,12 @@ func newTestProjectWithVersion(t *testing.T, forgeVersion string) string {
 	cfg := []byte(pin + `name: test-project
 module_path: github.com/example/test
 version: 0.1.0
-components: []
 frontends: []
 `)
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), cfg, 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir)
 	return dir
 }
 

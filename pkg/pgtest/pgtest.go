@@ -106,6 +106,23 @@ func startServer() (*server, error) {
 		Database("postgres").
 		Port(port).
 		RuntimePath(runtimeDir(port)).
+		// Shrink the per-instance footprint and — critically — use
+		// mmap-backed shared memory instead of System V (shmget). The e2e
+		// corpus boots many instances concurrently (every `forge generate`
+		// subprocess spins one up for schema introspection); the default
+		// sysv shared memory exhausts the kernel's SHMMNI limit on macOS
+		// ("could not create shared memory segment: No space left on
+		// device"). mmap avoids the sysv segment table entirely. fsync=off
+		// is safe — these databases are ephemeral and dropped after use.
+		StartParameters(map[string]string{
+			"shared_buffers":             "16MB",
+			"max_connections":            "20",
+			"dynamic_shared_memory_type": "mmap",
+			"shared_memory_type":         "mmap",
+			"fsync":                      "off",
+			"synchronous_commit":         "off",
+			"full_page_writes":           "off",
+		}).
 		// CachePath defaults under the user cache dir; the downloaded
 		// binary is reused across runs. StartTimeout is generous for the
 		// first run that has to extract the binary.

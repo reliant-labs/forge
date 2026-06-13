@@ -66,6 +66,11 @@ CONFIG_MAPS: [forge.ConfigMap] = []
 		"-S", "output",
 		"--format", "json",
 		filepath.Join(tmp, "deploy/kcl/dev"))
+	// Run from the project root so the deploy-as-data main.k's
+	// `file.read("deploy/kcl/components_gen.json")` resolves — KCL's
+	// file.read is process-cwd-relative, the same contract forge's
+	// RenderKCL / RenderManifests honor.
+	cmd.Dir = tmp
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("kcl run dev: %v\n%s", err, out)

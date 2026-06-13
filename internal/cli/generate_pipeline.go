@@ -360,6 +360,12 @@ func generateSteps() []GenStep {
 		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools"},
 		{Name: "goimports on generated Go", Gate: always, Run: stepGoimports, Tag: "tools"},
 		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
+		// Runs after every Tier-1 emitter so checksums.Tier1TargetSet is
+		// complete: drop disowns whose path forge no longer Tier-1-owns
+		// (now scaffold-once, or no longer emitted). Always — the
+		// retirement reads the target set, which is populated regardless
+		// of project shape.
+		{Name: "retire obsolete disowns", Gate: always, Run: stepRetireObsoleteDisowns, Tag: "validate"},
 		{Name: "rehash tracked files", Gate: always, Run: stepRehashTracked, Tag: "tools"},
 		{Name: "post-gen validation", Gate: always, Run: stepPostGenValidate, Tag: "validate"},
 		{Name: "detect renamed Tier-1 exports", Gate: always, Run: stepDetectRenamedExports, Tag: "validate"},

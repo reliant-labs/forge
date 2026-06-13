@@ -1,6 +1,6 @@
 // Package config defines the canonical forge.yaml types shared across forge.
 //
-// The data types (ProjectConfig, ServiceConfig, etc.) are proto-like data
+// The data types (ProjectConfig, ComponentConfig, etc.) are proto-like data
 // carriers — they ship with accessor methods (Effective*, Is*) directly on
 // the struct values. Those methods are part of the data, not behavior to
 // mock. The Service interface below is the package's narrow behavior surface

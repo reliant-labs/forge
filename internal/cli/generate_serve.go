@@ -274,11 +274,11 @@ func allServiceRuntimeNames(services []codegen.ServiceDef) []string {
 	return out
 }
 
-// isConnectServiceConfig reports whether a forge.yaml services[] entry
-// is a Connect service (the only kind the registration file governs).
-// Workers and operators have no Connect surface and never appear in
-// services.go, so registry lookups must not be applied to them.
-func isConnectServiceConfig(s config.ServiceConfig) bool {
-	t := strings.ToLower(strings.TrimSpace(s.Type))
-	return t != "worker" && t != "operator"
+// isConnectServiceConfig reports whether a forge.yaml components[] entry
+// is a Connect server (the only kind the registration file governs).
+// Workers, crons, operators and binaries have no Connect surface and
+// never appear in components.go, so registry lookups must not be applied
+// to them.
+func isConnectServiceConfig(c config.ComponentConfig) bool {
+	return c.IsServer()
 }

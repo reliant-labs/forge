@@ -390,12 +390,13 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 	}
 	protoName := strings.ReplaceAll(cfg.Name, "-", "_")
 
+	servers := cfg.Servers()
 	serviceName := "api"
 	servicePort := 8080
-	if len(cfg.Services) > 0 {
-		serviceName = cfg.Services[0].Name
-		if cfg.Services[0].Port != 0 {
-			servicePort = cfg.Services[0].Port
+	if len(servers) > 0 {
+		serviceName = servers[0].Name
+		if p := servers[0].PrimaryPort(); p != 0 {
+			servicePort = p
 		}
 	}
 
@@ -409,14 +410,14 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 	}
 
 	// Build the services list for templates like alloy-config.
-	// The first service maps to docker-compose name "app".
+	// The first server maps to docker-compose name "app".
 	var services []ServiceInfo
-	for i, svc := range cfg.Services {
+	for i, svc := range servers {
 		name := svc.Name
 		if i == 0 {
 			name = "app" // docker-compose service name for the primary service
 		}
-		port := svc.Port
+		port := svc.PrimaryPort()
 		if port == 0 {
 			port = 8080
 		}

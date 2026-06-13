@@ -316,7 +316,12 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 		if regErr != nil {
 			reg = &serviceRegistry{Exists: false}
 		}
-		for _, s := range cfg.Services {
+		for _, s := range cfg.Components {
+			// Binary components are inventoried in the Binaries section
+			// below, not as graph services.
+			if s.IsBinary() {
+				continue
+			}
 			gs := graphService{
 				Name:    s.Name,
 				Package: servicePackageDir(s),
@@ -387,9 +392,9 @@ func buildGraphDoc(ctx context.Context, projectDir, env string) graphDoc {
 		}
 	}
 
-	// Binaries.
+	// Binaries (kind=binary components).
 	if cfg != nil {
-		for _, b := range cfg.Binaries {
+		for _, b := range cfg.BinaryComponents() {
 			doc.Binaries = append(doc.Binaries, graphBinary{Name: b.Name})
 		}
 	}
@@ -485,10 +490,10 @@ func effectivePackageType(p config.PackageConfig) string {
 	return p.Type
 }
 
-// servicePackageDir returns the on-disk package dir for a service —
+// servicePackageDir returns the on-disk package dir for a component —
 // either the explicit Path (set by loadProjectConfig's default-fill)
 // or the canonical "handlers/<name>" fallback for safety.
-func servicePackageDir(s config.ServiceConfig) string {
+func servicePackageDir(s config.ComponentConfig) string {
 	if s.Path != "" {
 		return s.Path
 	}

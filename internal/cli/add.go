@@ -1410,9 +1410,9 @@ func runAddBinary(name string) error {
 	fmt.Printf("   - forge.yaml (binaries: entry)\n\n")
 	fmt.Printf("Next steps:\n")
 	fmt.Printf("  1. Edit internal/%s/%s.go to implement the runtime loop.\n", pkg, pkg)
-	fmt.Printf("  2. Add a Deployment for the binary in deploy/kcl/<env>/main.k\n")
-	fmt.Printf("     (the {{range .Binaries}} block under `applications` is wired\n")
-	fmt.Printf("     for new projects; existing projects need to copy the entry\n")
-	fmt.Printf("     pattern from a sibling Application).\n")
+	fmt.Printf("  2. Run `forge generate` — the binary flows into\n")
+	fmt.Printf("     deploy/kcl/components_gen.json automatically; the per-env\n")
+	fmt.Printf("     main.k expands it into a Deployment via the forge.components\n")
+	fmt.Printf("     KCL schema hierarchy. No main.k hand-edit needed.\n")
 	return nil
 }

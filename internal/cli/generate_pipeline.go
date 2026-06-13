@@ -341,6 +341,7 @@ func generateSteps() []GenStep {
 		{Name: "CI workflows", Gate: gateCIWorkflows, GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
 		{Name: "pack generate hooks", Gate: gateHasPacks, GateReason: "no packs installed or features.packs=false", Run: stepPackGenerateHooks, Tag: "codegen"},
 		{Name: "regenerate infra files", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepRegenerateInfra, Tag: "deploy"},
+		{Name: "components_gen.json", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepComponentsGenJSON, Tag: "deploy"},
 		{Name: "per-env deploy config", Gate: gateDeployHasConfig, GateReason: "no proto/config/ directory or features.deploy=false", Run: stepPerEnvDeployConfig, Tag: "deploy"},
 		{Name: "ingress k3d ports fragment", Gate: gateIngressEnabled, GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
 		{Name: "Grafana dashboards", Gate: gateObservabilityHasCfg, GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
@@ -1919,6 +1920,19 @@ func stepRegenerateInfra(ctx *pipelineContext) error {
 		return fmt.Errorf("regenerate infrastructure files: %w", err)
 	}
 	return nil
+}
+
+// stepComponentsGenJSON re-emits deploy/kcl/components_gen.json — the
+// denormalized, k8s-agnostic component shape the per-env main.k files
+// load and expand via the forge.components KCL schema hierarchy. This
+// is the deploy-as-data source of truth: adding/removing a component
+// in forge.yaml (e.g. `forge add binary`) flows into the rendered
+// manifests on the next `forge generate` with no main.k hand-edit.
+// Lockfile-class: regenerated every run, untracked (see
+// codegen.GenerateComponentsJSON for why it is not stomp-guarded).
+func stepComponentsGenJSON(ctx *pipelineContext) error {
+	return ctx.warnOrFail("components_gen.json generation",
+		codegen.GenerateComponentsJSON(ctx.AbsPath, ctx.Cfg.Name, ctx.Cfg.Components, ctx.Checksums))
 }
 
 // stepPerEnvDeployConfig — was Step 8d-0.

@@ -38,11 +38,15 @@ func TestE2EScaffoldKCLRendersDevManifest(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	// A minimal scaffold without --frontend is enough: KCL files come
-	// from the `new` flow regardless of services/frontends.
+	// Scaffold WITH a service so the deploy-as-data render emits a
+	// Deployment whose image carries the -D image_tag override. (A
+	// zero-component project has no workload to stamp the tag onto —
+	// that's the correct deploy-as-data semantics; the tag-contract
+	// guard needs a component to be meaningful.)
 	runCmd(t, dir, forgeBin,
 		"new", "kclapp",
 		"--mod", "example.com/kclapp",
+		"--service", "item",
 	)
 
 	projectDir := filepath.Join(dir, "kclapp")

@@ -72,7 +72,38 @@ const (
 // tests or long-lived processes.
 func ResetSkipWrite() {
 	WrittenThisRun = map[string]bool{}
+	Tier1TargetSet = map[string]bool{}
 }
+
+// Tier1TargetSet is the per-pipeline-run set of relative paths that the
+// current run TARGETED as Tier-1 (regenerated-every-run) output — every
+// path that flowed through a Tier-1 writer (WriteGeneratedFile /
+// WriteGeneratedFileTier1 / writeUnstampable), recorded BEFORE the
+// disown-skip early-return.
+//
+// Deliberately distinct from WrittenThisRun: a DISOWNED Tier-1 path is
+// skipped (never written), so it is absent from WrittenThisRun — yet
+// forge WOULD have regenerated it but for the disown, so it IS in
+// Tier1TargetSet. That distinction is exactly what obsolete-disown
+// retirement needs: a disown is still VALID iff its path is a current
+// Tier-1 target (in this set); it is OBSOLETE (the path became Tier-2
+// scaffold-once, or forge no longer emits it at all) iff it is NOT in
+// this set.
+//
+// Tier-2 (scaffold-once) writes do NOT record here — those paths are
+// user-owned write-if-absent, never Tier-1 targets.
+var Tier1TargetSet = map[string]bool{}
+
+// markTier1Target records relPath as a Tier-1 emit target for this run.
+// Called at the head of every Tier-1 writer, before any disown-skip, so
+// the set reflects what forge WOULD regenerate independent of ownership
+// transfers.
+func markTier1Target(relPath string) { Tier1TargetSet[relPath] = true }
+
+// MarkTier1Target is the exported shim for tests that bypass the
+// WriteGeneratedFile chokepoint but still need to simulate the Tier-1
+// target set the retirement logic consults.
+func MarkTier1Target(relPath string) { markTier1Target(relPath) }
 
 // WrittenThisRun is a per-pipeline-run set of relative paths that the
 // current `forge generate` invocation has successfully written via the
@@ -394,6 +425,13 @@ func Hash(content []byte) string {
 // remaining caller emits regenerated-every-run output, so both names
 // now share Tier-1 semantics.
 func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums, force bool) (bool, error) {
+	// Record the Tier-1 emit TARGET before any disown-skip below: forge
+	// would regenerate this path this run, whether or not it's disowned.
+	// The obsolete-disown retirement consults this set — a disowned path
+	// absent from it is no longer Tier-1-owned (became scaffold-once or
+	// dropped entirely) and the disown is dead weight.
+	markTier1Target(relPath)
+
 	// Disowned: user-owned — never overwrite, even with force=true
 	// (--force discards current-run hand-edits to forge-owned files; it
 	// does not undo a recorded ownership transfer). Exception —
@@ -831,6 +869,87 @@ func (cs *FileChecksums) DisownPaths(root string, relPaths []string, reason stri
 		WrittenThisRun[p] = true
 	}
 	return nil
+}
+
+// RetireNoticeFn is invoked once per auto-retired obsolete disown. A
+// disown is OBSOLETE when forge no longer Tier-1-owns its path: the path
+// became a Tier-2 scaffold-once file (write-if-absent, never
+// overwritten), or forge stopped emitting it entirely. Such a disown is
+// dead weight — it protects against an overwrite that can no longer
+// happen — and misleads users into thinking `forge disown` is routine.
+//
+// Package var so the CLI can redirect/capture the report; the default
+// prints to stderr. Never nil it out — assign a no-op in tests instead.
+var RetireNoticeFn = func(relPath string) {
+	fmt.Fprintf(os.Stderr,
+		"♻️  retired obsolete disown: %s — forge no longer owns this as generated code (it's now scaffold-once/user-owned); the file stays yours, the disown was dropped.\n",
+		relPath)
+}
+
+// RetireObsoleteDisowns drops disowns whose path is NO LONGER a current
+// Tier-1 emit target, firing RetireNoticeFn for each. It must run AFTER
+// every Tier-1 emitter (so Tier1TargetSet is fully populated) and BEFORE
+// the state is saved.
+//
+// Conservatism — the retirement is one-directional and only ever drops a
+// disown when forge is CERTAIN it no longer Tier-1-owns the path:
+//
+//   - a path IN Tier1TargetSet is one forge WOULD regenerate but for the
+//     disown → the disown is doing its job → KEPT.
+//   - a path NOT in Tier1TargetSet became scaffold-once (Tier-2) or is no
+//     longer emitted → the disown can never prevent an overwrite →
+//     RETIRED.
+//
+// The guard against false retirement: callers must only invoke this when
+// the Tier-1 target set is TRUSTWORTHY for the disowned path's owning
+// emitter — i.e. that emitter's pipeline step actually ran this run. A
+// disowned path whose emitter was gated OFF this run (e.g. a
+// frontend-only file under features.frontend=false) would be absent from
+// the target set for a reason unrelated to tiering, and must NOT be
+// retired. RetireObsoleteDisowns takes a `targetable` predicate: it only
+// considers a disown for retirement when targetable(path) is true,
+// meaning "an emitter that COULD own this path as Tier-1 ran this run".
+// A nil predicate means "trust the target set for every path" (used by
+// unit tests that drive the set directly).
+//
+// Returns the sorted list of retired paths.
+func RetireObsoleteDisowns(cs *FileChecksums, targetable func(relPath string) bool) []string {
+	if cs == nil || len(cs.Disowned) == 0 {
+		return nil
+	}
+	var retired []string
+	for path := range cs.Disowned {
+		if Tier1TargetSet[path] {
+			continue // still a live Tier-1 target — disown stays valid.
+		}
+		if targetable != nil && !targetable(path) {
+			// The owning emitter didn't run this run; absence from the
+			// target set is uninformative. Be conservative: keep it.
+			continue
+		}
+		retired = append(retired, path)
+	}
+	if len(retired) == 0 {
+		return nil
+	}
+	sortStrings(retired)
+	for _, path := range retired {
+		delete(cs.Disowned, path)
+		if RetireNoticeFn != nil {
+			RetireNoticeFn(path)
+		}
+	}
+	return retired
+}
+
+// sortStrings sorts s ascending in place (insertion sort — the slices
+// here are tiny: the disowned set of a project).
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 // sortDrift sorts a slice of Tier1DriftEntry by Path, ascending.

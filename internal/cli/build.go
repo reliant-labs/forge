@@ -121,6 +121,14 @@ type buildOptions struct {
 	// "compute from git" — the same resolution `forge deploy` falls
 	// back to when no build-state file is present.
 	tag string
+	// skipGenerate disables the pre-build "ensure generated code" step
+	// (--no-generate). The default (false) auto-runs `forge generate`
+	// when gen/ is missing or proto is newer than the generated tree, so
+	// a fresh checkout doesn't fail with the go.work "cannot load module
+	// gen" error. Set it when the generated tree is known-good and the
+	// caller wants to skip the staleness scan (e.g. a CI lane that runs
+	// generate as its own step). See ensureGeneratedCode.
+	skipGenerate bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -173,6 +181,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
+	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 
 	return cmd
 }
@@ -223,6 +232,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 	cfg := store.Config()
+
+	// Ensure generated code exists / is fresh before any `go build`.
+	// Missing gen/ (gitignored, or freshly cleaned) otherwise fails with
+	// the cryptic "cannot load module gen listed in go.work" error. Gated
+	// on staleness so the steady-state loop pays nothing; --no-generate
+	// opts out. See ensureGeneratedCode.
+	if err := ensureGeneratedCode(projectDirForKCL(), opts.skipGenerate); err != nil {
+		return err
+	}
 
 	// Resolve the docker image tag once, up front. Both the docker
 	// build/push path below and the post-push build-state write consume

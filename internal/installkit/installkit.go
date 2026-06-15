@@ -1,17 +1,15 @@
 // Package installkit holds the small set of genuinely-shared rendering
-// primitives used by both `internal/packs` and `internal/starters`.
+// primitives used by `internal/packs`.
 //
-// The packs and starters subsystems remain distinct: packs own a real
-// install/upgrade lifecycle (collision detection, dep graphs, migrations,
-// generate hooks, audit integration); starters are one-time scaffolds the
-// user owns after the first copy. What they share is the unglamorous
-// per-file plumbing — path-template evaluation, FS→template→disk writes
-// with overwrite policy, name-slug validation, and proto-file detection.
+// The packs subsystem owns a real install/upgrade lifecycle (collision
+// detection, dep graphs, migrations, generate hooks, audit integration).
+// What installkit provides is the unglamorous per-file plumbing —
+// path-template evaluation, FS→template→disk writes with overwrite policy,
+// name-slug validation, and proto-file detection.
 //
-// Extracting these primitives keeps the two subsystems from drifting on the
-// trivia (different log strings, different validator character classes,
-// different proto-detection rules) without forcing a merge of the layers
-// where they legitimately differ.
+// Extracting these primitives keeps that plumbing in one place (consistent
+// log strings, validator character classes, and proto-detection rules)
+// rather than duplicated across the pack-install paths.
 package installkit
 
 import (

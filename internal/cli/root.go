@@ -150,10 +150,8 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDeployCmd())
 	rootCmd.AddCommand(newTestCmd())
 	rootCmd.AddCommand(newLintCmd())
-	rootCmd.AddCommand(newFmtCmd())
 	rootCmd.AddCommand(newPackageCmd())
 	rootCmd.AddCommand(newPackCmd())
-	rootCmd.AddCommand(newStarterCmd())
 	rootCmd.AddCommand(newDebugCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
@@ -170,11 +168,9 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newIntrospectCmd())
-	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newDevCmd())
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
-	rootCmd.AddCommand(newExperimentalCmd())
 	rootCmd.AddCommand(newFeaturesCmd())
 
 	return rootCmd

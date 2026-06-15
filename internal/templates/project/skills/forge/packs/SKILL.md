@@ -12,7 +12,7 @@ Packs are the right shape when:
 - Forge owning the upgrade path is a feature, not a tax (security fixes, library bumps, codegen alignment)
 - Every project wants approximately the same thing
 
-Packs are the **wrong** shape when every project diverges (Stripe billing logic, Twilio SMS workflows, Clerk webhook user-sync). For those, use **[starters](../../../skills/forge/starters/SKILL.md)** instead — `forge starter add <name>` is a one-time copy, the user owns the result.
+Packs are the **wrong** shape when every project diverges in fundamentally non-shareable ways (bespoke billing logic, project-specific workflows). For those, write the code directly in your own service — there's nothing for forge to own centrally.
 
 ## Commands
 
@@ -92,4 +92,4 @@ Files marked `always` are re-rendered on every `forge generate` to stay in sync 
 - Do not hand-edit files marked `overwrite: always` — they are regenerated.
 - A pack cannot be installed twice — remove it first to re-install.
 - Some packs depend on each other (e.g., `api-key` sets `provider: both` which implies JWT). Check config defaults after install.
-- For business integrations (Stripe, Twilio, Clerk webhook user-sync), reach for `forge starter add` rather than expecting a pack.
+- The `clerk` pack scaffolds Clerk auth integration; other business integrations (bespoke billing/workflow logic) belong in your own service code rather than a pack.

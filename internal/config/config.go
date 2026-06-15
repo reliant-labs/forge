@@ -843,7 +843,7 @@ func (c ContractsConfig) IsExcluded(pkgPath string) bool {
 
 // FeaturesConfig controls which forge features are active. The `features:`
 // block in forge.yaml gates major subsystems (deploy, build, frontend, packs,
-// starters, ci, docs, observability, ...).
+// ci, docs, observability, ...).
 //
 // THE BLOCK IS AN OVERRIDE SURFACE, NOT REQUIRED CONFIGURATION. Scaffolded
 // forge.yaml files do not contain it. All fields are *bool so the loader can
@@ -892,7 +892,6 @@ type FeaturesConfig struct {
 	Observability *bool `yaml:"observability,omitempty"` // alloy, grafana dashboards, otel wiring
 	HotReload     *bool `yaml:"hot_reload,omitempty"`    // air config generation
 	Packs         *bool `yaml:"packs,omitempty"`         // forge packs (install/list/info), pack-generate hooks
-	Starters      *bool `yaml:"starters,omitempty"`      // forge starters (one-time business-integration copies)
 	Deploy        *bool `yaml:"deploy,omitempty"`        // deploy pipeline: KCL render → kubectl apply, per-env deploy config codegen
 
 	// Diagnostics enables runtime emission of pkg/diagnostics records at
@@ -929,7 +928,7 @@ func (f FeaturesConfig) IsZero() bool {
 	return f.ORM == nil && f.Codegen == nil && f.Migrations == nil &&
 		f.CI == nil && f.Build == nil && f.Contracts == nil &&
 		f.Docs == nil && f.Frontend == nil && f.Observability == nil &&
-		f.HotReload == nil && f.Packs == nil && f.Starters == nil &&
+		f.HotReload == nil && f.Packs == nil &&
 		f.Deploy == nil &&
 		f.Diagnostics == nil && f.Experimental == (ExperimentalConfig{})
 }
@@ -1082,12 +1081,6 @@ func (f FeaturesConfig) PacksEnabled() bool {
 	return f.featureEnabled(f.Packs, func(d *derivedFeatureDefaults) bool { return d.packs })
 }
 
-// StartersEnabled reports whether the starter subsystem is enabled
-// (default: on). Disables `forge starter list/add`.
-func (f FeaturesConfig) StartersEnabled() bool {
-	return f.featureEnabled(f.Starters, func(d *derivedFeatureDefaults) bool { return d.starters })
-}
-
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).
 // When off, forge skips ingress codegen, `forge dev cluster up` skips
@@ -1160,7 +1153,6 @@ const (
 	FeatureObservability FeatureName = "observability"
 	FeatureHotReload     FeatureName = "hot_reload"
 	FeaturePacks         FeatureName = "packs"
-	FeatureStarters      FeatureName = "starters"
 	FeatureDeploy        FeatureName = "deploy"
 
 	// Experimental feature names — opt-in under
@@ -1173,8 +1165,7 @@ const (
 
 // ExperimentalFeatureNames lists every Feature* constant that lives
 // under `features.experimental:`. Iteration order is the stable display
-// order used by `forge audit`, the startup warning, and
-// `forge experimental list`.
+// order used by `forge audit`, the startup warning, and `forge features`.
 var ExperimentalFeatureNames = []FeatureName{
 	FeatureIngress,
 	FeatureExternalBuilds,
@@ -1197,7 +1188,7 @@ func IsExperimentalFeature(name FeatureName) bool {
 
 // EnabledExperimentalFeatures returns the names of experimental
 // features currently turned on, in ExperimentalFeatureNames order.
-// Used by the startup warning and `forge experimental list`.
+// Used by the startup warning and `forge features`.
 func (f FeaturesConfig) EnabledExperimentalFeatures() []FeatureName {
 	checks := map[FeatureName]bool{
 		FeatureIngress:        f.Experimental.Ingress,
@@ -1235,7 +1226,6 @@ func (f FeaturesConfig) EffectiveFeatures() map[string]bool {
 		FeatureObservability:  f.ObservabilityEnabled(),
 		FeatureHotReload:      f.HotReloadEnabled(),
 		FeaturePacks:          f.PacksEnabled(),
-		FeatureStarters:       f.StartersEnabled(),
 		FeatureDeploy:         f.DeployEnabled(),
 		FeatureIngress:        f.IngressEnabled(),
 		FeatureExternalBuilds: f.ExternalBuildsEnabled(),

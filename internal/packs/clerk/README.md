@@ -6,13 +6,12 @@ JWKS rotation and Connect interceptor are pure infrastructure that
 benefit from forge keeping them up to date.
 
 For the **webhook side** of Clerk integration (user sync, org sync,
-membership events), use the `clerk-webhook` starter — that's a
-one-time scaffold rather than a tracked pack, because every project
-customizes the user-sync code anyway.
+membership events), write a Svix-verified webhook handler in your own
+service — that code is project-specific (every project's user table
+differs), so forge does not own it as a pack.
 
 ```bash
 forge pack install clerk
-forge starter add clerk-webhook --service api   # if you also need user sync
 ```
 
 ## Installation
@@ -86,16 +85,12 @@ claims := middleware.ClaimsFromContext(ctx)
 
 When `CLERK_DOMAIN` is not set, the interceptor injects synthetic claims. Override dev identity with `DEV_USER_ID`, `DEV_ORG_ID`, `DEV_USER_EMAIL`, and `DEV_USER_ROLE` environment variables.
 
-### Webhook User-Sync (separate scaffold)
+### Webhook User-Sync (your own code)
 
-```bash
-forge starter add clerk-webhook --service api
-```
-
-This drops a Svix-verified webhook router into `pkg/clerk/webhook.go`. You
-own the file thereafter. Implement `ClerkWebhookHandler` to persist users,
-orgs, and memberships into your own data model — every project's user
-table differs, so forge does not own a proto entity for this.
+For user/org/membership sync, add a Svix-verified webhook handler to your
+own service (e.g. `pkg/clerk/webhook.go`). Implement the handler to persist
+users, orgs, and memberships into your own data model — every project's user
+table differs, so forge does not own a proto entity or scaffold for this.
 
 ## Dependencies
 

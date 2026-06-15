@@ -222,7 +222,7 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 // overrides the closure's namespace — that's the new path where the
 // per-service deploy block dictates the namespace rather than
 // forge.yaml.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
@@ -239,6 +239,7 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 			Prune:        prune,
 			HostSkip:     hostSkip,
 			OneShotJobs:  oneShotJobs,
+			Targets:      targets,
 		}
 	}
 }

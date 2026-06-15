@@ -24,7 +24,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge up --target <service> --host-only [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), loading `HostDeploy.secrets_file` first then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. Skips build + cluster apply, scoped to the named service. |
 | `forge up stop --env=<env>` | Kill the background processes tracked by `forge up --background` for that env. |
 | `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--target <name>] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
-| `forge deploy dev [--prune]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. |
+| `forge deploy dev [--prune] [--target <app>]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. `--target <app>` (repeatable, by service/frontend name) deploys ONLY that app — the K8sCluster apply keeps the app's workloads plus shared resources (Namespace, ConfigMap/Secret, RBAC) and drops other apps' workloads; a typo'd target errors with the available app names. |
 
 ## Host vs cluster: where does each service run in dev?
 

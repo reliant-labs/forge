@@ -52,6 +52,7 @@ type upOptions struct {
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
 	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
+	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
 }
 
 func newUpCmd() *cobra.Command {
@@ -109,6 +110,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
+	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
 
 	cmd.AddCommand(newUpStopCmd())
 	return cmd
@@ -223,7 +225,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// features.frontend: false — the orchestrator otherwise tries to
 	// npm-run-dev a tree that the project never scaffolded.
 	if !skipFeature(store, config.FeatureFrontend, "up:frontend") {
-		feFailures := upFrontends(ctx, entities, opts.env, opts.background, procs)
+		feFailures := upFrontends(ctx, entities, opts.env, opts.background, opts.noInstall, procs)
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
@@ -472,9 +474,20 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 // upFrontends starts every declared frontend in its path. DevRunner
 // defaults to npm; we don't try yarn/pnpm fallback magic — if the
 // project uses pnpm, declare dev_runner: pnpm in KCL.
-func upFrontends(ctx context.Context, e *KCLEntities, env string, background bool, procs *procRegistry) int {
+//
+// Each frontend's dependencies are ensured first (unless noInstall): a
+// missing or stale node_modules is installed before `npm run dev`, so a
+// fresh checkout doesn't fail with "next: command not found". A failed
+// install counts as a frontend failure (logged, non-fatal) so the rest
+// of the loop still comes up.
+func upFrontends(ctx context.Context, e *KCLEntities, env string, background, noInstall bool, procs *procRegistry) int {
 	failures := 0
 	for _, fe := range e.Frontends {
+		if err := ensureFrontendDeps(ctx, fe, noInstall); err != nil {
+			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
+			failures++
+			continue
+		}
 		cmd := buildFrontendCmd(ctx, fe, env, os.Environ())
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
@@ -482,6 +495,63 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background boo
 		}
 	}
 	return failures
+}
+
+// ensureFrontendDeps installs a frontend's node_modules when they are
+// missing or stale relative to its lockfile/manifest, so `npm run dev`
+// doesn't fail with "next: command not found" on a fresh checkout. No-op
+// when noInstall is set, when the path has no package.json (not a node
+// project), or when deps are already up to date. Mirrors
+// ensureGeneratedCode's staleness gate for the frontend half of the loop.
+//
+// The install verb follows the frontend's dev_runner (npm/pnpm/yarn).
+// `npm install` (not `npm ci`) is used deliberately: it reconciles a
+// missing or partial tree and tolerates a slightly-drifted lockfile
+// rather than hard-failing the dev loop the way `npm ci` would.
+func ensureFrontendDeps(ctx context.Context, fe FrontendEntity, noInstall bool) error {
+	if noInstall || fe.Path == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(fe.Path, "package.json")); err != nil {
+		return nil // not a node project (or no manifest) — nothing to install
+	}
+	if !frontendDepsStale(fe.Path) {
+		return nil
+	}
+	runner := fe.DevRunner
+	if runner == "" {
+		runner = "npm"
+	}
+	fmt.Printf("[up] %s: node_modules missing/stale — running `%s install`\n", fe.Name, runner)
+	cmd := exec.CommandContext(ctx, runner, "install")
+	cmd.Dir = fe.Path
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("install deps in %s: %w", fe.Path, err)
+	}
+	return nil
+}
+
+// frontendDepsStale reports whether a frontend's node_modules is missing
+// or older than its lockfile/manifest — the cheap staleness gate that
+// keeps ensureFrontendDeps a no-op in the steady state. node_modules'
+// directory mtime is bumped by every install, so a lockfile/manifest
+// edit (or a never-installed tree) is what trips this.
+func frontendDepsStale(dir string) bool {
+	nm, err := os.Stat(filepath.Join(dir, "node_modules"))
+	if err != nil {
+		return true // missing → must install
+	}
+	nmTime := nm.ModTime()
+	for _, manifest := range []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "package.json"} {
+		if info, err := os.Stat(filepath.Join(dir, manifest)); err == nil {
+			if info.ModTime().After(nmTime) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildFrontendCmd composes the *exec.Cmd for a single frontend in the

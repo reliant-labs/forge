@@ -276,6 +276,54 @@ func TestBuildFrontendCmd_PortFromKCLOverridesParent(t *testing.T) {
 	}
 }
 
+// TestBuildFrontendCmd_KCLEnvVarsInjected confirms KCL-declared env_vars
+// (e.g. a VITE_ADMIN_URL composed from forge.resolve_port) reach the dev
+// process env, alongside the forced PORT and the passed-through shell.
+func TestBuildFrontendCmd_KCLEnvVarsInjected(t *testing.T) {
+	parent := []string{"PATH=/usr/bin", "SHELL_ONLY=keepme"}
+	fe := FrontendEntity{
+		Name: "reliant-web", Path: "web", Port: 3000, EnvFile: "/does/not/exist",
+		EnvVars: []KCLEnvVar{
+			{Name: "VITE_ADMIN_URL", Value: "http://localhost:3000/admin"},
+			{Name: "VITE_API_URL", Value: "http://localhost:3090"},
+		},
+	}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+
+	got := map[string]string{}
+	for _, kv := range cmd.Env {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			got[kv[:i]] = kv[i+1:]
+		}
+	}
+	want := map[string]string{
+		"VITE_ADMIN_URL": "http://localhost:3000/admin",
+		"VITE_API_URL":   "http://localhost:3090",
+		"PORT":           "3000",
+		"SHELL_ONLY":     "keepme",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("env %s = %q, want %q (full: %v)", k, got[k], v, cmd.Env)
+		}
+	}
+}
+
+// TestBuildFrontendCmd_ParentShellOverridesEnvVars pins the precedence:
+// the developer's shell wins over a KCL env_var of the same name (escape
+// hatch), matching host-service layering.
+func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
+	parent := []string{"VITE_ADMIN_URL=http://override"}
+	fe := FrontendEntity{Name: "web", Path: "web", EnvFile: "/does/not/exist",
+		EnvVars: []KCLEnvVar{{Name: "VITE_ADMIN_URL", Value: "http://kcl"}}}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+	for _, kv := range cmd.Env {
+		if kv == "VITE_ADMIN_URL=http://kcl" {
+			t.Errorf("KCL env_var should not override the parent shell; env: %v", cmd.Env)
+		}
+	}
+}
+
 // TestBuildFrontendCmd_PortZeroLeavesParentPortAlone confirms the
 // fe.Port == 0 fallback (legacy projects whose KCL doesn't emit the
 // port field): we don't force-inject "PORT=0" because that would crash

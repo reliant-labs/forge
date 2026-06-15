@@ -9,20 +9,39 @@ import (
 	"strings"
 )
 
-// expandVars substitutes ${KEY} (and $KEY) tokens in a command-string
+// ExpandVars substitutes ${KEY} (and $KEY) tokens in a command-string
 // template against the provided map. Unknown keys are left empty —
 // matches os.Expand's default behaviour and keeps the surprise floor
 // low (a typo in the template surfaces as a missing flag rather than
 // a leaked `${IMAGE}` literal landing on the remote shell).
 //
-// Intended for the user-supplied DeployCmd / RollbackCmd / HealthCmd
-// strings on External, where the kcl/schema.k contract advertises
-// ${IMAGE} / ${TAG} / ${LAST_TAG} / ${SERVICE} / ${ENV} / ${ENV_FILE}
-// / ${PROJECT_DIR}.
-func expandVars(template string, vars map[string]string) string {
+// Intended for any user-supplied shell-command template forge runs
+// via `sh -c` after substituting a documented set of tokens:
+//
+//   - External deploy: DeployCmd / RollbackCmd / HealthCmd, where the
+//     kcl/schema.k contract advertises ${IMAGE} / ${TAG} / ${LAST_TAG}
+//     / ${SERVICE} / ${ENV} / ${ENV_FILE} / ${PROJECT_DIR}.
+//   - Service.build_cmd: the build-side escape hatch, where the
+//     contract advertises ${IMAGE} / ${TAG} / ${SERVICE} / ${TARGETARCH}
+//     / ${REGISTRY} / ${PROJECT_DIR} / ${BUILD_CWD} + keys from
+//     `build_env`. See internal/buildtarget for the build-side
+//     consumer.
+//
+// Exported so the build-side runner can use the same substitution
+// semantics the deploy-side External provider uses — one mental model
+// across both the build and deploy escape hatches.
+func ExpandVars(template string, vars map[string]string) string {
 	return os.Expand(template, func(key string) string {
 		return vars[key]
 	})
+}
+
+// expandVars is the unexported alias kept for callers inside this
+// package (external.go, compose.go) so the existing call sites stay
+// untouched while public consumers get the canonical [ExpandVars]
+// name.
+func expandVars(template string, vars map[string]string) string {
+	return ExpandVars(template, vars)
 }
 
 // commandRunner is the indirection point the providers use to run

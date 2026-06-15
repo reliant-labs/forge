@@ -29,8 +29,8 @@ func (s *svc) GenerateMock(svc ServiceDef, mockDir string) (bool, error) {
 	return GenerateMock(svc, mockDir)
 }
 
-func (s *svc) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateAuthorizer(services, modulePath, targetDir, cs)
+func (s *svc) GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir string, skipDirs map[string]bool, cs *checksums.FileChecksums) error {
+	return GenerateAuthorizer(services, modulePath, targetDir, skipDirs, cs)
 }
 
 func (s *svc) GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMethods []string, targetDir string, cs *checksums.FileChecksums) error {
@@ -53,16 +53,16 @@ func (s *svc) GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *
 	return GenerateCmdServer(messages, targetDir, cs)
 }
 
-func (s *svc) GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateCmdServerWithFields(configFields, targetDir, cs)
+func (s *svc) GenerateCmdServerWithFields(configFields map[string]bool, authProvider string, targetDir string, cs *checksums.FileChecksums) error {
+	return GenerateCmdServerWithFields(configFields, authProvider, targetDir, cs)
 }
 
 func (s *svc) GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error {
 	return GenerateConfigLoader(messages, targetDir, cs)
 }
 
-func (s *svc) GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, hasDatabase bool, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
-	return GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir, configFields, webhookServices, features, cs)
+func (s *svc) GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
+	return GenerateBootstrap(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, configFields, webhookServices, features, cs)
 }
 
 func (s *svc) GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {

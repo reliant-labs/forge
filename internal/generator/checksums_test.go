@@ -1,10 +1,11 @@
 package generator
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 func TestHashContent(t *testing.T) {
@@ -23,113 +24,155 @@ func TestHashContent(t *testing.T) {
 	}
 }
 
-func TestFileChecksums_RecordAndIsModified(t *testing.T) {
+// TestWriteGeneratedFile_StampsAndCertifies ports the manifest-era
+// RecordFile/IsFileModified round-trip: "forge wrote it" is now proved
+// by the embedded marker, and "user modified it" by the marker failing
+// verification.
+func TestWriteGeneratedFile_StampsAndCertifies(t *testing.T) {
+	checksums.ResetSkipWrite()
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-	content := []byte("generated content")
-
-	// Write the file to disk
+	cs := &FileChecksums{}
+	content := []byte("// generated content\npackage f\n")
 	relPath := "test/file.go"
+
+	if _, err := WriteGeneratedFile(root, relPath, content, cs, false); err != nil {
+		t.Fatal(err)
+	}
 	fullPath := filepath.Join(root, relPath)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fullPath, content, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Record the checksum
-	cs.RecordFile(relPath, content)
-
-	// File should not be modified (content matches)
-	if cs.IsFileModified(root, relPath) {
-		t.Errorf("file should not be modified when content matches checksum")
-	}
-
-	// Modify the file on disk
-	if err := os.WriteFile(fullPath, []byte("user modified"), 0644); err != nil {
+	onDisk, err := os.ReadFile(fullPath)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Now it should be detected as modified
-	if !cs.IsFileModified(root, relPath) {
-		t.Errorf("file should be detected as modified after content change")
+	// File certifies itself (content matches → "not modified").
+	if checksums.Verify(onDisk) != checksums.Pristine {
+		t.Errorf("freshly written file should verify Pristine, got %v", checksums.Verify(onDisk))
+	}
+
+	// Modify the file on disk (marker survives, body changes) — now it
+	// must be detected as modified.
+	if err := os.WriteFile(fullPath, append(onDisk, []byte("// user modified\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edited, _ := os.ReadFile(fullPath)
+	if checksums.Verify(edited) != checksums.Modified {
+		t.Errorf("hand-edited file should verify Modified, got %v", checksums.Verify(edited))
 	}
 }
 
-func TestFileChecksums_IsModified_UntrackedFile(t *testing.T) {
-	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-
-	// Untracked file should not be considered modified
-	if cs.IsFileModified(root, "nonexistent.go") {
-		t.Errorf("untracked file should not be considered modified")
+// TestVerify_UntrackedFile: a file forge never wrote carries no marker
+// — the untracked state (never "modified").
+func TestVerify_UntrackedFile(t *testing.T) {
+	if got := checksums.Verify([]byte("package x\n")); got != checksums.NoMarker {
+		t.Errorf("untracked content should verify NoMarker, got %v", got)
 	}
 }
 
-func TestFileChecksums_IsModified_DeletedFile(t *testing.T) {
+// TestScanTier1Drift_DeletedTrackedFile ports "deleted file should not
+// be considered modified": a scoped-fallback record whose file is gone
+// is not a stomp candidate.
+func TestScanTier1Drift_DeletedTrackedFile(t *testing.T) {
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-
-	// Record a checksum for a file that doesn't exist on disk
-	h := HashContent([]byte("old content"))
-	cs.Files["deleted.go"] = FileChecksumEntry{Hash: h, History: []string{h}}
-
-	// Deleted file should not be considered modified
-	if cs.IsFileModified(root, "deleted.go") {
-		t.Errorf("deleted file should not be considered modified")
+	cs := &FileChecksums{Unstampable: map[string]string{
+		"deleted.json": checksums.BodyHash([]byte("old content")),
+	}}
+	if drift := checksums.ScanTier1Drift(root, cs); len(drift) != 0 {
+		t.Errorf("deleted tracked file should not be considered modified; drift = %+v", drift)
 	}
 }
 
 func TestLoadSaveChecksums(t *testing.T) {
 	root := t.TempDir()
 
-	// Loading from nonexistent file should return empty checksums
+	// Loading from an empty dir returns empty state — a project with no
+	// disowns and no comment-incapable outputs has NO forge state files.
 	cs, err := LoadChecksums(root)
 	if err != nil {
 		t.Fatalf("LoadChecksums from empty dir: %v", err)
 	}
-	if len(cs.Files) != 0 {
-		t.Errorf("expected empty files map, got %d entries", len(cs.Files))
+	if len(cs.Disowned) != 0 || len(cs.Unstampable) != 0 {
+		t.Errorf("expected empty state, got %+v", cs)
 	}
 
-	// Save checksums
+	// Save state and round-trip it.
 	cs.ForgeVersion = "1.0.0"
-	cs.RecordFile("a.go", []byte("aaa"))
-	cs.RecordFile("b.go", []byte("bbb"))
+	cs.Disowned["a.go"] = DisownedEntry{Reason: "mine now", DisownedAt: "2026-06-11T00:00:00Z"}
+	cs.Unstampable["b.json"] = HashContent([]byte("bbb"))
 
 	if err := SaveChecksums(root, cs); err != nil {
 		t.Fatalf("SaveChecksums: %v", err)
 	}
-
-	// Verify file was created
-	if _, err := os.Stat(filepath.Join(root, checksumFile)); err != nil {
-		t.Fatalf("checksum file should exist: %v", err)
+	if _, err := os.Stat(filepath.Join(root, checksums.DisownedFile)); err != nil {
+		t.Fatalf("disowned state file should exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, checksums.HashesFile)); err != nil {
+		t.Fatalf("hashes state file should exist: %v", err)
 	}
 
-	// Load back and verify
 	cs2, err := LoadChecksums(root)
 	if err != nil {
 		t.Fatalf("LoadChecksums: %v", err)
 	}
-	if cs2.ForgeVersion != "1.0.0" {
-		t.Errorf("ForgeVersion: got %q, want %q", cs2.ForgeVersion, "1.0.0")
+	if cs2.Disowned["a.go"] != cs.Disowned["a.go"] {
+		t.Errorf("disowned entry didn't round-trip: %+v", cs2.Disowned)
 	}
-	if len(cs2.Files) != 2 {
-		t.Errorf("expected 2 files, got %d", len(cs2.Files))
+	if cs2.Unstampable["b.json"] != cs.Unstampable["b.json"] {
+		t.Errorf("unstampable entry didn't round-trip: %+v", cs2.Unstampable)
 	}
-	if cs2.Files["a.go"].Hash != cs.Files["a.go"].Hash {
-		t.Errorf("checksum for a.go doesn't match")
+
+	// Emptying the maps and saving DELETES the state files — zero
+	// bookkeeping diff in the steady state.
+	cs2.Disowned = map[string]DisownedEntry{}
+	cs2.Unstampable = map[string]string{}
+	if err := SaveChecksums(root, cs2); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{checksums.DisownedFile, checksums.HashesFile} {
+		if _, err := os.Stat(filepath.Join(root, f)); !os.IsNotExist(err) {
+			t.Errorf("%s should be deleted when its map empties (stat err=%v)", f, err)
+		}
+	}
+}
+
+// TestLoadChecksums_IgnoresLegacyManifest: Load never reads the dead
+// .forge/checksums.json — only the one-time migration touches it (see
+// internal/checksums/migrate_test.go for the legacy flat-shape
+// promotion the old TestLoadChecksums_LegacyFlatShape covered).
+func TestLoadChecksums_IgnoresLegacyManifest(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".forge")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"forge_version":"0.5.0","files":{"a.go":"deadbeef"}}`)
+	if err := os.WriteFile(filepath.Join(dir, "checksums.json"), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := LoadChecksums(root)
+	if err != nil {
+		t.Fatalf("LoadChecksums: %v", err)
+	}
+	if len(cs.Disowned) != 0 || len(cs.Unstampable) != 0 {
+		t.Errorf("legacy manifest must not populate the new state: %+v", cs)
+	}
+	// And the file is left for the migration to consume.
+	if _, err := os.Stat(filepath.Join(dir, "checksums.json")); err != nil {
+		t.Errorf("Load must not delete the legacy manifest: %v", err)
 	}
 }
 
 func TestWriteGeneratedFile(t *testing.T) {
+	checksums.ResetSkipWrite()
+	checksums.ResetPerRunState() // unscoped force
+	t.Cleanup(checksums.ResetPerRunState)
+
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 
 	content := []byte("// generated code\npackage main\n")
 
-	// First write should succeed
+	// First write should succeed and stamp the file.
 	written, err := WriteGeneratedFile(root, "main.go", content, cs, false)
 	if err != nil {
 		t.Fatalf("WriteGeneratedFile: %v", err)
@@ -137,18 +180,19 @@ func TestWriteGeneratedFile(t *testing.T) {
 	if !written {
 		t.Errorf("first write should succeed")
 	}
-
-	// Verify file exists with correct content
 	got, err := os.ReadFile(filepath.Join(root, "main.go"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if string(got) != string(content) {
-		t.Errorf("file content mismatch")
+	if checksums.BodyHash(got) != checksums.BodyHash(content) {
+		t.Errorf("file content mismatch (marker-insensitive)")
+	}
+	if checksums.Verify(got) != checksums.Pristine {
+		t.Errorf("written file should self-certify")
 	}
 
-	// Second write with same generator should succeed (not modified)
-	written, err = WriteGeneratedFile(root, "main.go", []byte("// updated\n"), cs, false)
+	// Second write with new render should succeed (on-disk is pristine).
+	written, err = WriteGeneratedFile(root, "main.go", []byte("// updated\npackage main\n"), cs, false)
 	if err != nil {
 		t.Fatalf("WriteGeneratedFile (update): %v", err)
 	}
@@ -156,13 +200,16 @@ func TestWriteGeneratedFile(t *testing.T) {
 		t.Errorf("re-write of unmodified file should succeed")
 	}
 
-	// Now simulate user modification
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("// user edit\n"), 0644); err != nil {
+	// Now simulate user modification: marker kept, body changed. (A
+	// wholesale replace would drop the marker and become the legacy
+	// untracked-overwrite path instead.)
+	onDisk, _ := os.ReadFile(filepath.Join(root, "main.go"))
+	if err := os.WriteFile(filepath.Join(root, "main.go"), append(onDisk, []byte("// user edit\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Write should be skipped (user modified)
-	written, err = WriteGeneratedFile(root, "main.go", []byte("// new gen\n"), cs, false)
+	// Write should be skipped (user modified).
+	written, err = WriteGeneratedFile(root, "main.go", []byte("// new gen\npackage main\n"), cs, false)
 	if err != nil {
 		t.Fatalf("WriteGeneratedFile (skip): %v", err)
 	}
@@ -170,8 +217,8 @@ func TestWriteGeneratedFile(t *testing.T) {
 		t.Errorf("write should be skipped when file is user-modified")
 	}
 
-	// Force write should override
-	written, err = WriteGeneratedFile(root, "main.go", []byte("// forced\n"), cs, true)
+	// Force write should override.
+	written, err = WriteGeneratedFile(root, "main.go", []byte("// forced\npackage main\n"), cs, true)
 	if err != nil {
 		t.Fatalf("WriteGeneratedFile (force): %v", err)
 	}
@@ -180,169 +227,91 @@ func TestWriteGeneratedFile(t *testing.T) {
 	}
 }
 
-// TestRecordFile_TracksHistory exercises the prior-render history that
-// closes the stale-codegen-vs-user-modified gap. Each successive RecordFile
-// call appends to History; existing entries that are re-recorded are
-// deduped (existing prior occurrence dropped, new entry appended at the
-// tail) so identical re-renders don't churn the list.
-func TestRecordFile_TracksHistory(t *testing.T) {
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-	rel := "x.go"
-
-	cs.RecordFile(rel, []byte("v1"))
-	if got := cs.Files[rel].History; len(got) != 1 || got[0] != HashContent([]byte("v1")) {
-		t.Fatalf("after first record, history = %v", got)
-	}
-
-	cs.RecordFile(rel, []byte("v2"))
-	hist := cs.Files[rel].History
-	if len(hist) != 2 || hist[0] != HashContent([]byte("v1")) || hist[1] != HashContent([]byte("v2")) {
-		t.Fatalf("after second record, history = %v", hist)
-	}
-	if cs.Files[rel].Hash != HashContent([]byte("v2")) {
-		t.Fatalf("Hash should mirror tail of history")
-	}
-
-	// Re-recording v1 should dedupe — drop prior occurrence, push to tail.
-	cs.RecordFile(rel, []byte("v1"))
-	hist = cs.Files[rel].History
-	if len(hist) != 2 || hist[0] != HashContent([]byte("v2")) || hist[1] != HashContent([]byte("v1")) {
-		t.Fatalf("after re-record of v1, history = %v", hist)
+// TestStampedVintagesStayPristine repoints the manifest-history tests
+// (TestRecordFile_TracksHistory / TestRecordFile_HistoryBound): the
+// explicit render-history list — and therefore its depth bound — no
+// longer exists. The property history provided ("any prior forge
+// render is recognized as forge's, not the user's") is now structural:
+// every stamped vintage certifies itself, with no per-path state to
+// grow or bound.
+func TestStampedVintagesStayPristine(t *testing.T) {
+	const rel = "x.go"
+	for i := 0; i < 8; i++ {
+		render := []byte("package x // vintage " + string(rune('a'+i)) + "\n")
+		stamped, ok := checksums.Stamp(rel, render)
+		if !ok {
+			t.Fatal("unstampable")
+		}
+		if checksums.Verify(stamped) != checksums.Pristine {
+			t.Fatalf("vintage %d does not self-certify", i)
+		}
+		// Stamping is idempotent — re-stamping an old vintage never
+		// churns it (the dedupe role the history list used to play).
+		again, _ := checksums.Stamp(rel, stamped)
+		if string(again) != string(stamped) {
+			t.Fatalf("Stamp not idempotent for vintage %d", i)
+		}
 	}
 }
 
-// TestRecordFile_HistoryBound verifies the history list stays bounded to
-// testHistoryLimit entries — long-running projects re-rendering many template
-// updates shouldn't grow .forge/checksums.json without bound.
-func TestRecordFile_HistoryBound(t *testing.T) {
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
-	rel := "y.go"
+// TestWriteGeneratedFile_HealsStaleCodegen — the headline behaviour the
+// legacy history machinery existed for. A template update produces a
+// v2 render; the on-disk file is still the stamped v1 render (stale
+// codegen). Forge must NOT treat the file as user-modified: the marker
+// verifies, so regeneration proceeds (auto-heal). A genuine user edit
+// is still detected and skipped.
+func TestWriteGeneratedFile_HealsStaleCodegen(t *testing.T) {
+	checksums.ResetSkipWrite()
+	checksums.ResetPerRunState()
+	t.Cleanup(checksums.ResetPerRunState)
 
-	for i := 0; i < testHistoryLimit*2; i++ {
-		cs.RecordFile(rel, []byte{byte(i)})
-	}
-	hist := cs.Files[rel].History
-	if len(hist) != testHistoryLimit {
-		t.Fatalf("history len = %d, want %d", len(hist), testHistoryLimit)
-	}
-	// Tail must be the most recent render.
-	if hist[len(hist)-1] != HashContent([]byte{byte(testHistoryLimit*2 - 1)}) {
-		t.Errorf("tail of history is not the most recent render")
-	}
-}
-
-// TestIsFileModified_MatchesPriorRender — the headline behaviour. A
-// template update produces a v2 render; the on-disk file is still the v1
-// render (stale codegen). Forge must NOT treat the file as user-modified
-// because the v1 render is in history.
-func TestIsFileModified_MatchesPriorRender(t *testing.T) {
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 	rel := "stale.go"
 
-	// Initial render: v1 written, recorded.
-	v1 := []byte("// rendered v1\n")
-	if err := os.WriteFile(filepath.Join(root, rel), v1, 0644); err != nil {
+	// Initial render: v1 written and stamped.
+	v1 := []byte("// rendered v1\npackage s\n")
+	if _, err := WriteGeneratedFile(root, rel, v1, cs, false); err != nil {
 		t.Fatal(err)
 	}
-	cs.RecordFile(rel, v1)
 
-	// Template update: forge now renders v2 and re-records the new bytes.
-	// (We simulate the "next render"; on-disk file stays at v1 because
-	// upgrade hasn't run yet.)
-	v2 := []byte("// rendered v2\n")
-	cs.RecordFile(rel, v2)
-
-	// The on-disk content (v1) is now stale codegen — NOT user-modified.
-	if cs.IsFileModified(root, rel) {
-		t.Errorf("stale codegen (matches prior render) should not be flagged as modified")
+	// Template update: forge now renders v2; the on-disk file is the
+	// stale v1 vintage. Not user-modified → regenerated.
+	v2 := []byte("// rendered v2\npackage s\n")
+	wrote, err := WriteGeneratedFile(root, rel, v2, cs, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !cs.MatchesAnyKnownRender(rel, v1) {
-		t.Errorf("MatchesAnyKnownRender should accept a prior-render content")
+	if !wrote {
+		t.Errorf("stale codegen (pristine prior render) should regenerate without --force")
 	}
-	if !cs.MatchesAnyKnownRender(rel, v2) {
-		t.Errorf("MatchesAnyKnownRender should accept the current-render content")
+	got, _ := os.ReadFile(filepath.Join(root, rel))
+	if checksums.BodyHash(got) != checksums.BodyHash(v2) {
+		t.Errorf("on-disk not healed to the v2 render")
 	}
 
 	// A real user edit should still be detected.
-	user := []byte("// user wrote this\n")
-	if err := os.WriteFile(filepath.Join(root, rel), user, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, rel), append(got, []byte("// user wrote this\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !cs.IsFileModified(root, rel) {
-		t.Errorf("genuine user edit should still be flagged as modified")
-	}
-	if cs.MatchesAnyKnownRender(rel, user) {
-		t.Errorf("MatchesAnyKnownRender should reject content forge has never rendered")
-	}
-}
-
-// TestLoadChecksums_LegacyFlatShape verifies backwards-compat with the
-// pre-history checksum file format (files: path -> hex string). Loading
-// such a file promotes each entry into a FileChecksumEntry with a
-// 1-element history seeded from the legacy hash.
-func TestLoadChecksums_LegacyFlatShape(t *testing.T) {
-	root := t.TempDir()
-
-	// Hand-craft a legacy-shape checksums.json.
-	legacy := map[string]any{
-		"forge_version": "0.5.0",
-		"files": map[string]string{
-			"a.go": HashContent([]byte("aaa")),
-			"b.go": HashContent([]byte("bbb")),
-		},
-	}
-	data, err := json.MarshalIndent(legacy, "", "  ")
+	wrote, err = WriteGeneratedFile(root, rel, []byte("// rendered v3\npackage s\n"), cs, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, ".forge")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "checksums.json"), data, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Load — should promote each legacy entry into a FileChecksumEntry.
-	cs, err := LoadChecksums(root)
-	if err != nil {
-		t.Fatalf("LoadChecksums: %v", err)
-	}
-	entry, ok := cs.Files["a.go"]
-	if !ok {
-		t.Fatalf("a.go missing after legacy load")
-	}
-	if entry.Hash != HashContent([]byte("aaa")) {
-		t.Errorf("a.go hash mismatch: %s", entry.Hash)
-	}
-	if len(entry.History) != 1 || entry.History[0] != entry.Hash {
-		t.Errorf("a.go history should be seeded with current hash, got %v", entry.History)
-	}
-
-	// Round-trip: save → load preserves both fields.
-	if err := SaveChecksums(root, cs); err != nil {
-		t.Fatal(err)
-	}
-	cs2, err := LoadChecksums(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cs2.Files["a.go"].Hash != cs.Files["a.go"].Hash {
-		t.Errorf("hash didn't round-trip")
-	}
-	if len(cs2.Files["a.go"].History) != 1 {
-		t.Errorf("history didn't round-trip: %v", cs2.Files["a.go"].History)
+	if wrote {
+		t.Errorf("genuine user edit should still be flagged as modified and skipped")
 	}
 }
 
 // TestWriteGeneratedFile_CreatesSubdirectories verifies that nested
 // destination paths get their parent directories created.
 func TestWriteGeneratedFile_CreatesSubdirectories(t *testing.T) {
+	checksums.ResetSkipWrite()
 	root := t.TempDir()
-	cs := &FileChecksums{Files: make(map[string]FileChecksumEntry)}
+	cs := &FileChecksums{}
 
-	written, err := WriteGeneratedFile(root, "deep/nested/dir/file.go", []byte("pkg"), cs, false)
+	content := []byte("package pkg\n")
+	written, err := WriteGeneratedFile(root, "deep/nested/dir/file.go", content, cs, false)
 	if err != nil {
 		t.Fatalf("WriteGeneratedFile: %v", err)
 	}
@@ -354,7 +323,7 @@ func TestWriteGeneratedFile_CreatesSubdirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("file should exist: %v", err)
 	}
-	if string(got) != "pkg" {
+	if checksums.BodyHash(got) != checksums.BodyHash(content) {
 		t.Errorf("content mismatch")
 	}
 }

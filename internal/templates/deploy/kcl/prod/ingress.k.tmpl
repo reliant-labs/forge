@@ -1,0 +1,29 @@
+"""
+Production ingress overrides for {{.ProjectName}}.
+
+Wire in cert-manager-backed TLS and flip listener ports to the LB
+ports (80/443). The block below is commented out — uncomment + fill
+in the production hostname and ClusterIssuer name before deploying.
+
+cert-manager is expected to be installed cluster-side; forge doctor
+verifies the named ClusterIssuer exists.
+"""
+
+import deploy.kcl.ingress as base
+import forge
+
+# PROD_PUBLIC = base.PUBLIC | {
+#     host = "api.example.com"
+#     tls = forge.GatewayTLS {
+#         cert_issuer = "letsencrypt-prod"
+#         secret_name = "{{.ProjectName}}-tls"
+#     }
+#     listeners = [
+#         forge.GatewayListener {name = "http", port = 80, protocol = "HTTP"}
+#         forge.GatewayListener {name = "grpc", port = 443, protocol = "HTTPS"}
+#     ]
+# }
+
+GATEWAYS = base.GATEWAYS
+HTTP_ROUTES = base.HTTP_ROUTES
+GRPC_ROUTES = base.GRPC_ROUTES

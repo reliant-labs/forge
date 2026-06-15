@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
@@ -29,7 +30,6 @@ const descriptorStageDir = ".descriptor.d"
 // It aggregates all data the generate.go pipeline needs from proto descriptors.
 type ForgeDescriptor struct {
 	Services []codegen.ServiceDef    `json:"services"`
-	Entities []codegen.EntityDef     `json:"entities"`
 	Configs  []codegen.ConfigMessage `json:"configs"`
 }
 
@@ -73,34 +73,25 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 			desc.Services = append(desc.Services, sd)
 		}
 
-		// Extract entities from messages with explicit entity annotations.
-		// Forge has no auto-detection: a message becomes an entity only when
-		// it carries (forge.v1.entity) AND has a (forge.v1.field) = { pk: true }
-		// marker. extractEntityDef returns an error for malformed entities;
-		// surface it via p.Error so `forge generate` halts with a clear
-		// remediation message instead of silently producing broken code.
+		// Entity protos are dead: SQL is the schema language and entities
+		// are projected from the applied db/migrations schema. A message
+		// still carrying the legacy (forge.v1.entity) annotation gets a
+		// one-line migration notice — the annotation is otherwise IGNORED.
 		for _, msg := range f.Messages {
-			ed, ok, err := extractEntityDef(f, msg)
-			if err != nil {
-				p.Error(err)
-				return nil
-			}
-			if ok {
-				desc.Entities = append(desc.Entities, ed)
-			}
+			noticeLegacyEntityAnnotation(f, msg)
 		}
 
-		// Extract config messages
+		// Extract config messages. Walks nested message declarations too
+		// so a component config block declared inside AppConfig (instead
+		// of the conventional top-level declaration) still generates.
 		for _, msg := range f.Messages {
-			if cm, ok := extractConfigMessage(msg); ok {
-				desc.Configs = append(desc.Configs, cm)
-			}
+			appendConfigMessages(&desc.Configs, msg)
 		}
 	}
 
 	// Skip writing an empty fragment — saves a no-op file per plugin
 	// invocation and keeps the merge step's directory listing clean.
-	if len(desc.Services) == 0 && len(desc.Entities) == 0 && len(desc.Configs) == 0 {
+	if len(desc.Services) == 0 && len(desc.Configs) == 0 {
 		return nil
 	}
 
@@ -185,7 +176,6 @@ func MergeDescriptorFragments(descriptorOut string) error {
 			return fmt.Errorf("parse descriptor fragment %s: %w", name, err)
 		}
 		merged.Services = append(merged.Services, frag.Services...)
-		merged.Entities = append(merged.Entities, frag.Entities...)
 		merged.Configs = append(merged.Configs, frag.Configs...)
 	}
 
@@ -202,6 +192,22 @@ func MergeDescriptorFragments(descriptorOut string) error {
 	// for correctness because the next run starts with rm -rf.
 	_ = os.RemoveAll(stageDir)
 	return nil
+}
+
+// applyMethodOptions copies the proto-level (forge.v1.method) annotations
+// onto a codegen.Method. Kept as a tiny helper so the descriptor's
+// MethodOptions handling stays unit-testable without standing up a full
+// protogen graph — see TestApplyMethodOptions_*.
+func applyMethodOptions(method *codegen.Method, mo *forgev1.MethodOptions) {
+	if mo == nil {
+		return
+	}
+	if mo.AuthRequired != nil {
+		method.AuthRequired = *mo.AuthRequired
+	}
+	if len(mo.Errors) > 0 {
+		method.Errors = append([]string(nil), mo.Errors...)
+	}
 }
 
 // extractService builds a codegen.ServiceDef from a protogen.Service.
@@ -260,6 +266,8 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			Name:            string(m.Desc.Name()),
 			InputType:       string(m.Input.Desc.Name()),
 			OutputType:      string(m.Output.Desc.Name()),
+			InputTypeFQ:     string(m.Input.Desc.FullName()),
+			OutputTypeFQ:    string(m.Output.Desc.FullName()),
 			ClientStreaming: m.Desc.IsStreamingClient(),
 			ServerStreaming: m.Desc.IsStreamingServer(),
 			AuthRequired:    true,
@@ -272,9 +280,7 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 			ext := proto.GetExtension(methodOpts, forgev1.E_Method)
 			if ext != nil {
 				if mo, ok := ext.(*forgev1.MethodOptions); ok && mo != nil {
-					if mo.AuthRequired != nil {
-						method.AuthRequired = *mo.AuthRequired
-					}
+					applyMethodOptions(&method, mo)
 				}
 			}
 		}
@@ -284,9 +290,120 @@ func extractService(file *protogen.File, svc *protogen.Service) codegen.ServiceD
 		// Extract message field definitions for input and output types
 		extractMessageFields(sd.Messages, m.Input)
 		extractMessageFields(sd.Messages, m.Output)
+
+		// Extract the deep type graph (transitively reachable messages
+		// + enums, keyed by fully-qualified name) for full JSON-Schema
+		// emission in the MCP manifest.
+		extractMessageSchema(&sd, m.Input)
+		extractMessageSchema(&sd, m.Output)
 	}
 
 	return sd
+}
+
+// extractMessageSchema records msg's fields into sd.Schemas (keyed by
+// fully-qualified name) and recurses into every message/enum the fields
+// reference, so sd.Schemas ends up holding the complete type graph
+// reachable from the service's RPC inputs/outputs.
+//
+// Recursion safety: the fully-qualified name is inserted into
+// sd.Schemas BEFORE walking the fields, so self-referential messages
+// (Tree → children []Tree) and mutually-recursive pairs terminate — the
+// second visit hits the early-return.
+//
+// Well-known types (google.protobuf.*) are deliberately NOT recorded:
+// their protojson encodings are fixed (Timestamp → RFC 3339 string,
+// Struct → arbitrary object, ...) and the MCP schema emitter maps them
+// statically. Recording e.g. Struct's internal fields would describe
+// the proto representation, not the JSON wire shape.
+func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
+	fq := string(msg.Desc.FullName())
+	if strings.HasPrefix(fq, "google.protobuf.") {
+		return
+	}
+	if sd.Schemas == nil {
+		sd.Schemas = make(map[string][]codegen.SchemaFieldDef)
+	}
+	if _, done := sd.Schemas[fq]; done {
+		return
+	}
+	sd.Schemas[fq] = nil // recursion guard — overwritten with the real fields below
+
+	fields := make([]codegen.SchemaFieldDef, 0, len(msg.Fields))
+	for _, f := range msg.Fields {
+		fd := codegen.SchemaFieldDef{
+			Name:     string(f.Desc.Name()),
+			Optional: f.Desc.HasOptionalKeyword(),
+		}
+		// Real oneof membership only — proto3 `optional` is implemented
+		// as a synthetic single-member oneof and must not surface as an
+		// exclusivity constraint.
+		if f.Oneof != nil && !f.Oneof.Desc.IsSynthetic() {
+			fd.Oneof = string(f.Oneof.Desc.Name())
+		}
+		switch {
+		case f.Desc.IsMap():
+			fd.Kind = "map"
+			fd.MapKeyKind = protoKindToString(f.Desc.MapKey().Kind())
+			val := f.Desc.MapValue()
+			fd.MapValueKind = protoKindToString(val.Kind())
+			// For message/enum values, f.Message is the synthetic map
+			// entry whose Fields[1] is the value — recurse through it so
+			// the value type lands in the graph too.
+			switch val.Kind() {
+			case protoreflect.MessageKind:
+				fd.MapValueTypeName = string(val.Message().FullName())
+				if f.Message != nil && len(f.Message.Fields) == 2 && f.Message.Fields[1].Message != nil {
+					extractMessageSchema(sd, f.Message.Fields[1].Message)
+				}
+			case protoreflect.EnumKind:
+				fd.MapValueTypeName = string(val.Enum().FullName())
+				if f.Message != nil && len(f.Message.Fields) == 2 && f.Message.Fields[1].Enum != nil {
+					recordEnum(sd, f.Message.Fields[1].Enum)
+				}
+			}
+		case f.Desc.Kind() == protoreflect.MessageKind, f.Desc.Kind() == protoreflect.GroupKind:
+			fd.Kind = "message"
+			fd.Repeated = f.Desc.IsList()
+			fd.TypeName = string(f.Desc.Message().FullName())
+			if f.Message != nil {
+				extractMessageSchema(sd, f.Message)
+			}
+		case f.Desc.Kind() == protoreflect.EnumKind:
+			fd.Kind = "enum"
+			fd.Repeated = f.Desc.IsList()
+			fd.TypeName = string(f.Desc.Enum().FullName())
+			if f.Enum != nil {
+				recordEnum(sd, f.Enum)
+			}
+		default:
+			fd.Kind = protoKindToString(f.Desc.Kind())
+			fd.Repeated = f.Desc.IsList()
+		}
+		fields = append(fields, fd)
+	}
+	sd.Schemas[fq] = fields
+}
+
+// recordEnum stores an enum's declared value names (declaration order)
+// under its fully-qualified name. protojson encodes enum values as
+// their names, so this list is verbatim the JSON Schema "enum" array.
+func recordEnum(sd *codegen.ServiceDef, en *protogen.Enum) {
+	fq := string(en.Desc.FullName())
+	if strings.HasPrefix(fq, "google.protobuf.") {
+		return
+	}
+	if sd.Enums == nil {
+		sd.Enums = make(map[string][]string)
+	}
+	if _, done := sd.Enums[fq]; done {
+		return
+	}
+	vals := make([]string, 0, len(en.Values))
+	for _, v := range en.Values {
+		vals = append(vals, string(v.Desc.Name()))
+	}
+	sd.Enums[fq] = vals
 }
 
 // extractMessageFields populates the Messages map with field definitions for a message.
@@ -298,80 +415,104 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 
 	var fields []codegen.MessageFieldDef
 	for _, f := range msg.Fields {
+		// Repeated fields are encoded as "[]<elementKind>" so downstream
+		// codegen (the MCP JSON Schema mapper, frontend hooks, etc.)
+		// can distinguish scalar fields from arrays without inspecting
+		// cardinality separately. FRICTION (cp-forge, 2026-06-09):
+		// the MCP Inspector strict-validated structuredContent against
+		// the declared outputSchema and rejected a List response
+		// because the schema said `items: object` (singular message
+		// type) while the wire data was `items: [array of objects]`.
+		// Root cause was right here — the descriptor dropped
+		// cardinality before it reached any downstream consumer.
+		protoType := protoKindToString(f.Desc.Kind())
+		if f.Desc.Cardinality() == protoreflect.Repeated && !f.Desc.IsMap() {
+			protoType = "[]" + protoType
+		}
 		fd := codegen.MessageFieldDef{
 			Name:       string(f.Desc.Name()),
-			ProtoType:  protoKindToString(f.Desc.Kind()),
+			ProtoType:  protoType,
 			IsOptional: f.Desc.HasOptionalKeyword(),
+		}
+		// Carry the referenced type's name for message fields. ProtoType
+		// collapses these to the literal "message", which is unmatchable —
+		// the CRUD shape matcher needs to know that UpdateItemRequest.item
+		// is an Item, not just "a message" (F2 root cause).
+		if f.Desc.Kind() == protoreflect.MessageKind && !f.Desc.IsMap() {
+			fd.MessageType = string(f.Desc.Message().FullName())
 		}
 		fields = append(fields, fd)
 	}
 	messages[name] = fields
 }
 
-// extractEntityDef converts a proto message with entity annotations to a
-// codegen.EntityDef. Entities are annotation-only — a message becomes an
-// entity solely by carrying `option (forge.v1.entity) = { ... }` plus a
-// field marked `[(forge.v1.field) = { pk: true }]`. parseEntity returns a
-// non-nil error for messages that ARE annotated as entities but lack a PK
-// marker; that error is propagated via p.Error in the descriptor plugin.
-func extractEntityDef(file *protogen.File, msg *protogen.Message) (codegen.EntityDef, bool, error) {
-	ent, isEntity, err := parseEntity(msg)
-	if err != nil {
-		return codegen.EntityDef{}, false, err
+// noticeLegacyEntityAnnotation prints a one-line migration notice for
+// messages still carrying the retired (forge.v1.entity) annotation.
+// The annotation is ignored: entities are projections of the applied
+// db/migrations schema now, and these projects' migrations were already
+// the de-facto truth. The option DEFINITIONS remain in forge/v1/forge.proto
+// (deprecated) so legacy protos keep compiling for one release.
+func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
+	opts, ok := msg.Desc.Options().(*descriptorpb.MessageOptions)
+	if !ok || opts == nil {
+		return
 	}
-	if !isEntity {
-		return codegen.EntityDef{}, false, nil
+	if !proto.HasExtension(opts, forgev1.E_Entity) {
+		return
 	}
+	fmt.Fprintf(os.Stderr,
+		"ℹ️  %s: message %s carries the retired (forge.v1.entity) annotation — it is now ignored.\n"+
+			"   SQL is the schema: db/migrations drive the ORM/entity projections.\n"+
+			"   Your migrations are already the truth; delete the annotation (and any proto/db entity files).\n",
+		file.Desc.Path(), msg.Desc.Name())
+}
 
-	ed := codegen.EntityDef{
-		Name:      string(msg.Desc.Name()),
-		TableName: ent.tableName,
-		ProtoFile: file.Desc.Path(),
+// appendConfigMessages extracts msg (and, recursively, its nested
+// message declarations) into out. Nested declarations matter for
+// component config blocks: `message AppConfig { message TraderConfig
+// {...} TraderConfig trader = 21; }` must surface TraderConfig as its
+// own ConfigMessage even though it isn't a top-level declaration.
+func appendConfigMessages(out *[]codegen.ConfigMessage, msg *protogen.Message) {
+	if cm, ok := extractConfigMessage(msg); ok {
+		*out = append(*out, cm)
 	}
-
-	for _, fi := range ent.fields {
-		ef := codegen.EntityField{
-			Name:      string(fi.field.Desc.Name()),
-			GoName:    fi.field.GoName,
-			ProtoType: protoKindToString(fi.field.Desc.Kind()),
-			GoType:    goTypeForField(fi.field),
-		}
-
-		if fi.isPK {
-			ed.PkField = ef.Name
-			ed.PkGoType = ef.GoType
-		}
-
-		if fi.references != "" {
-			ef.IsFK = true
-			// Extract table name from "table.column" format
-			parts := splitRef(fi.references)
-			if len(parts) == 2 {
-				ef.FKTable = parts[0]
-			}
-		}
-
-		if fi.isTenantKey {
-			ed.HasTenant = true
-			ed.TenantFieldName = ef.Name
-			ed.TenantGoName = ef.GoName
-			ed.TenantColumnName = fi.columnName
-		}
-
-		ed.Fields = append(ed.Fields, ef)
+	for _, nested := range msg.Messages {
+		appendConfigMessages(out, nested)
 	}
-
-	// parseEntity already enforces that ed.PkField is non-empty for any
-	// entity that gets here — no fallback needed.
-	return ed, true, nil
 }
 
 // extractConfigMessage checks if a message has any fields with config_field options
 // and extracts them into a codegen.ConfigMessage.
+//
+// Two field shapes participate:
+//
+//   - scalar fields carrying the (forge.v1.config) extension — the classic
+//     env_var/flag/default leaves;
+//   - message-typed fields whose target message itself has config-annotated
+//     fields — component config-block references (e.g. `TraderConfig trader
+//     = 21;` on AppConfig). These need NO annotation of their own; the env
+//     binding lives entirely on the referenced block's leaf fields. They are
+//     recorded with ProtoType "message" + MessageType naming the block so
+//     config_gen can emit a nested struct and wire_gen can resolve Deps
+//     fields of the block type to `cfg.<Field>`.
 func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 	var configFields []codegen.ConfigField
 
 	for _, f := range msg.Fields {
+		// Component config-block reference: a message-typed field whose
+		// target message has config-annotated fields. Repeated/map fields
+		// are excluded — a config block composes exactly once per field.
+		if f.Desc.Kind() == protoreflect.MessageKind && !f.Desc.IsList() && !f.Desc.IsMap() &&
+			f.Message != nil && f.Message != msg && messageHasConfigFields(f.Message) {
+			configFields = append(configFields, codegen.ConfigField{
+				Name:        string(f.Desc.Name()),
+				GoName:      f.GoName,
+				ProtoType:   "message",
+				MessageType: string(f.Message.Desc.Name()),
+			})
+			continue
+		}
+
 		opts := f.Desc.Options()
 		if opts == nil {
 			continue
@@ -410,6 +551,23 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 		Name:   string(msg.Desc.Name()),
 		Fields: configFields,
 	}, true
+}
+
+// messageHasConfigFields reports whether any DIRECT field of msg
+// carries the (forge.v1.config) extension — the test for "is this
+// message a config block?". Deliberately non-recursive: one level of
+// block nesting is the supported shape (root Config → block leaves).
+func messageHasConfigFields(msg *protogen.Message) bool {
+	for _, f := range msg.Fields {
+		opts := f.Desc.Options()
+		if opts == nil {
+			continue
+		}
+		if proto.HasExtension(opts, forgev1.E_Config) {
+			return true
+		}
+	}
+	return false
 }
 
 // protoKindToString returns the proto type name for a protoreflect.Kind.

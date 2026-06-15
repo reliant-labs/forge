@@ -102,6 +102,14 @@ type Pack struct {
 	// for the common case (most packs are leaves with no pack-to-pack
 	// ordering need).
 	DependsOn []string `yaml:"depends_on,omitempty"`
+
+	// PostInstall is a human-facing "next steps" block the CLI prints
+	// after a successful install — the exact wiring the user must do by
+	// hand (call sites, interceptor chains, env vars). Packs that install
+	// code with zero call sites (e.g. jwt-auth's Init/Interceptor) MUST
+	// say so here: silently shipping unwired code is how users end up
+	// believing a pack is active when it isn't.
+	PostInstall string `yaml:"post_install,omitempty"`
 }
 
 // EffectiveKind returns the pack kind, defaulting to "go" so that legacy
@@ -359,6 +367,12 @@ func (p *Pack) InstallWithConfig(ctx context.Context, projectDir string, cfg *co
 		cfg.Packs = append(cfg.Packs, p.Name)
 	}
 
+	// Project the pack's auth config section onto forge.yaml's typed auth
+	// block (runPackInstall persists cfg right after this returns). Runs
+	// on resync too — re-install is the documented recovery path for a
+	// half-applied install.
+	p.applyAuthConfigSection(cfg, effectiveCfg)
+
 	// Add go dependencies
 	for _, dep := range p.Dependencies {
 		fmt.Printf("  Adding dependency: %s\n", dep)
@@ -567,6 +581,12 @@ func (p *Pack) installFrontend(ctx context.Context, projectDir string, cfg *conf
 	if !alreadyInstalled {
 		cfg.Packs = append(cfg.Packs, p.Name)
 	}
+
+	// Project the pack's auth config section onto forge.yaml's typed auth
+	// block (runPackInstall persists cfg right after this returns). Runs
+	// on resync too — re-install is the documented recovery path for a
+	// half-applied install.
+	p.applyAuthConfigSection(cfg, effectiveCfg)
 	return nil
 }
 
@@ -961,6 +981,51 @@ func removeMigrationsBySlug(projectDir, slug string) ([]string, error) {
 // packs, starters, and any future installable thing.
 func ValidPackName(name string) bool {
 	return installkit.ValidSlug(name)
+}
+
+// applyAuthConfigSection projects this pack's declared `config.section:
+// auth` defaults onto forge.yaml's typed auth block, so installing an
+// auth pack actually configures the project the way the pack docs say.
+// (Previously the defaults were template-render-only and the documented
+// "the pack adds an auth section to forge.yaml" was false — auth.provider
+// stayed empty and the generate pipeline's auth-aware steps never ran.)
+//
+// User intent wins: an already-set auth.provider is never overwritten
+// (a note is printed instead), and jwt subfields fill only when empty.
+// The caller (runPackInstall) persists cfg to forge.yaml after install.
+func (p *Pack) applyAuthConfigSection(cfg *config.ProjectConfig, effectiveCfg map[string]any) {
+	if p.Config.Section != "auth" {
+		return
+	}
+	provider, _ := effectiveCfg["provider"].(string)
+	if provider == "" {
+		return
+	}
+	if cfg.Auth.Provider != "" && cfg.Auth.Provider != provider {
+		fmt.Printf("  forge.yaml: auth.provider already %q — keeping it (pack default is %q; edit forge.yaml to switch)\n", cfg.Auth.Provider, provider)
+		return
+	}
+	if cfg.Auth.Provider == "" {
+		cfg.Auth.Provider = provider
+		fmt.Printf("  forge.yaml: auth.provider → %q\n", provider)
+	}
+	jwtRaw, _ := effectiveCfg["jwt"].(map[string]any)
+	if jwtRaw == nil {
+		return
+	}
+	setIfEmpty := func(dst *string, key string) {
+		if *dst != "" {
+			return
+		}
+		if v, ok := jwtRaw[key].(string); ok && v != "" {
+			*dst = v
+			fmt.Printf("  forge.yaml: auth.jwt.%s → %q\n", key, v)
+		}
+	}
+	setIfEmpty(&cfg.Auth.JWT.SigningMethod, "signing_method")
+	setIfEmpty(&cfg.Auth.JWT.JWKSURL, "jwks_url")
+	setIfEmpty(&cfg.Auth.JWT.Issuer, "issuer")
+	setIfEmpty(&cfg.Auth.JWT.Audience, "audience")
 }
 
 // mergePackConfig produces the PackConfig map exposed to templates: a

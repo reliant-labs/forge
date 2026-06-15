@@ -18,35 +18,36 @@ import (
 
 // TestStepSnapshotTier1Exports_RecordsGoExports verifies the
 // pre-codegen snapshot pass picks up the public identifiers of every
-// tracked Tier-1 Go file and skips Tier-2 / non-Go / forked entries.
+// certified Tier-1 Go file and skips Tier-2 / non-Go / disowned
+// entries. Tier-1 status is read from the files themselves now: a
+// stamped forge:hash marker IS the ownership record.
 func TestStepSnapshotTier1Exports_RecordsGoExports(t *testing.T) {
 	dir := t.TempDir()
 
 	// db/embed.go — Tier-1 Go file with two public exports.
-	writeUnderDir(t, dir,"db/embed.go", `package forgedb
+	writeStampedUnderDir(t, dir, "db/embed.go", `package forgedb
 
 var Migrations = "v1"
 
 func Hello() {}
 `)
 	// hooks.ts — Tier-1 non-Go: skipped by the snapshotter.
-	writeUnderDir(t, dir,"web/hooks.ts", `export const Foo = 1;`)
-	// fork.go — Tier-1 but forked: skipped (forge no longer owns it).
-	writeUnderDir(t, dir,"fork/fork.go", `package fork
+	writeStampedUnderDir(t, dir, "web/hooks.ts", `export const Foo = 1;`)
+	// disown.go — certified but disowned: skipped (forge no longer owns
+	// it; the legacy fork state converts to disowned at migration time).
+	writeStampedUnderDir(t, dir, "disown/disown.go", `package disown
 
-var ForkedExport = "x"
+var DisownedExport = "x"
 `)
-	// scaffolded.go — Tier-2: skipped (rename detection is Tier-1 only).
-	writeUnderDir(t, dir,"scaffold/scaffolded.go", `package scaffold
+	// scaffolded.go — Tier-2 (no marker): skipped (rename detection is
+	// Tier-1 only).
+	writeUnderDir(t, dir, "scaffold/scaffolded.go", `package scaffold
 
 var ScaffoldExport = "x"
 `)
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"db/embed.go":            {Hash: "h1", Tier: 1},
-		"web/hooks.ts":           {Hash: "h2", Tier: 1},
-		"fork/fork.go":           {Hash: "h3", Tier: 1, Forked: true},
-		"scaffold/scaffolded.go": {Hash: "h4", Tier: 2},
+	cs := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		"disown/disown.go": {Reason: "test", DisownedAt: "2026-06-01T00:00:00Z"},
 	}}
 	ctx := &pipelineContext{
 		ProjectDir: dir,
@@ -69,8 +70,8 @@ var ScaffoldExport = "x"
 	if _, ok := ctx.PriorExports["web/hooks.ts"]; ok {
 		t.Errorf("PriorExports should skip non-Go Tier-1 files")
 	}
-	if _, ok := ctx.PriorExports["fork/fork.go"]; ok {
-		t.Errorf("PriorExports should skip forked Tier-1 files")
+	if _, ok := ctx.PriorExports["disown/disown.go"]; ok {
+		t.Errorf("PriorExports should skip disowned files")
 	}
 	if _, ok := ctx.PriorExports["scaffold/scaffolded.go"]; ok {
 		t.Errorf("PriorExports should skip Tier-2 files")
@@ -93,14 +94,13 @@ func Apply() { _ = db.Migrations() }
 `)
 
 	// 2. Generated file (BEFORE the rename) — declares Migrations.
-	writeUnderDir(t, dir,"db/embed.go", `package db
+	// Stamped: the marker is what makes it a Tier-1 snapshot subject.
+	writeStampedUnderDir(t, dir, "db/embed.go", `package db
 
 func Migrations() string { return "old" }
 `)
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"db/embed.go": {Hash: "h1", Tier: 1},
-	}}
+	cs := &checksums.FileChecksums{}
 	ctx := &pipelineContext{
 		ProjectDir: dir,
 		AbsPath:    dir,
@@ -153,14 +153,12 @@ import "example.com/m/db"
 func Use() { _ = db.MigrationsFS }
 `)
 	// Old: declared both.
-	writeUnderDir(t, dir,"db/embed.go", `package db
+	writeStampedUnderDir(t, dir, "db/embed.go", `package db
 
 var Migrations = "old"
 var MigrationsFS = "x"
 `)
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"db/embed.go": {Tier: 1},
-	}}
+	cs := &checksums.FileChecksums{}
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -195,13 +193,11 @@ import "example.com/m/db"
 
 func init() { _ = db.Migrations() }
 `)
-	writeUnderDir(t, dir,"db/embed.go", `package db
+	writeStampedUnderDir(t, dir, "db/embed.go", `package db
 
 func Migrations() string { return "old" }
 `)
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"db/embed.go": {Tier: 1},
-	}}
+	cs := &checksums.FileChecksums{}
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -239,14 +235,12 @@ func Apply() { _ = forgedb.MigrationsFS }
 `)
 
 	// 1. Pre-rename: db/embed.go declares MigrationsFS in package forgedb.
-	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeStampedUnderDir(t, dir, "db/embed.go", `package forgedb
 
 var MigrationsFS = "v1"
 `)
 
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"db/embed.go": {Hash: "h1", Tier: 1},
-	}}
+	cs := &checksums.FileChecksums{}
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -296,7 +290,7 @@ func TestStepDetectRenamedExports_CollisionDisambiguates(t *testing.T) {
 	dir := t.TempDir()
 
 	// Pre-rename declarer.
-	writeUnderDir(t, dir, "db/embed.go", `package forgedb
+	writeStampedUnderDir(t, dir, "db/embed.go", `package forgedb
 
 var Migrations = "v1"
 `)
@@ -307,9 +301,7 @@ import "example.com/m/db"
 
 func Run() { _ = db.Migrations }
 `)
-	cs := &checksums.FileChecksums{Files: map[string]checksums.FileChecksumEntry{
-		"db/embed.go": {Tier: 1},
-	}}
+	cs := &checksums.FileChecksums{}
 	ctx := &pipelineContext{ProjectDir: dir, AbsPath: dir, Checksums: cs}
 	if err := stepSnapshotTier1Exports(ctx); err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -360,6 +352,19 @@ func writeUnderDir(t *testing.T, dir, rel, content string) {
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", full, err)
 	}
+}
+
+// writeStampedUnderDir writes content under dir/rel with the embedded
+// forge:hash marker stamped in — the self-certifying equivalent of
+// "forge wrote this Tier-1 file on a previous run" (the manifest era
+// recorded a hash in .forge/checksums.json instead).
+func writeStampedUnderDir(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	stamped, ok := checksums.Stamp(rel, []byte(content))
+	if !ok {
+		t.Fatalf("stamp %s: format is unstampable", rel)
+	}
+	writeUnderDir(t, dir, rel, string(stamped))
 }
 
 // sliceContains is the tiny string-set predicate used by the snapshot

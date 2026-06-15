@@ -5,32 +5,26 @@ import (
 	"database/sql"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// SetupMockDB returns an in-memory SQLite *sql.DB suitable for hermetic
-// unit tests. The DB is closed via t.Cleanup, so the caller does not
-// need to close it manually.
+// SetupMockDB returns a fresh, isolated real-postgres *sql.DB suitable for
+// hermetic unit tests. The DB and its underlying database are cleaned up
+// via t.Cleanup, so the caller does not need to close it manually.
 //
-// The SQLite driver is intentionally NOT imported here — pulling in
-// mattn/go-sqlite3 would add a CGO dependency to anything that imports
-// pkg/tdd, including projects that don't need it. Instead, callers are
-// expected to blank-import the driver in their _test.go file (or in a
-// shared test helper), e.g.:
-//
-//	import _ "github.com/mattn/go-sqlite3"
-//
-// Forge's bootstrap_testing.go.tmpl already does this for projects with
-// a database, so the import is "free" there.
-//
-// If the driver is not registered, sql.Open returns the usual
-// "unknown driver" error, which the helper surfaces via t.Fatalf.
+// forge is postgres-pinned: the DB is a per-test database on the
+// process-shared ephemeral postgres (pkg/pgtest — embedded-postgres by
+// default, or the FORGE_TEST_POSTGRES_URL server). No driver blank-import
+// is required; pgtest owns the driver. The first call in a process boots
+// the shared server (downloading the pg binary on a fresh machine).
 func SetupMockDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, cleanup, err := pgtest.New()
 	if err != nil {
-		t.Fatalf("open in-memory sqlite: %v (did you blank-import github.com/mattn/go-sqlite3?)", err)
+		t.Fatalf("open test postgres: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(cleanup)
 	return db
 }
 

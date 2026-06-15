@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // ErrProjectConfigNotFound is returned when forge.yaml does not exist.
@@ -54,6 +55,29 @@ func loadProjectConfig() (*config.ProjectConfig, error) {
 	return loadProjectConfigFrom(path)
 }
 
+// loadProjectStore reads forge.yaml (walking up from cwd) and returns a
+// projectstore.ProjectStore — the single read+mutate surface consumers
+// route through. It is the store-returning sibling of loadProjectConfig;
+// new code should prefer it so nothing outside the store impl holds a
+// *config.ProjectConfig.
+func loadProjectStore() (projectstore.ProjectStore, error) {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		return nil, err
+	}
+	return projectstore.New(cfg), nil
+}
+
+// loadProjectStoreFrom reads and wraps a project config at the given path
+// in a ProjectStore. Sibling of loadProjectConfigFrom.
+func loadProjectStoreFrom(path string) (projectstore.ProjectStore, error) {
+	cfg, err := loadProjectConfigFrom(path)
+	if err != nil {
+		return nil, err
+	}
+	return projectstore.New(cfg), nil
+}
+
 // loadProjectConfigFrom reads and parses a project config from the given path.
 // Returns ErrProjectConfigNotFound when the file does not exist.
 func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
@@ -65,23 +89,31 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 		return nil, fmt.Errorf("failed to read project config: %w", err)
 	}
 
-	parsed, err := config.LoadStrict(data, path)
+	// Per-component entities live in the project-root components.json
+	// sibling of forge.yaml (forge.yaml is global-only). Read it if
+	// present; absent is valid (a project with no components is a library).
+	componentsJSON, err := readComponentsJSONFile(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := config.LoadProject(data, componentsJSON, path)
 	if err != nil {
 		return nil, err
 	}
 	cfg := *parsed
 
-	// Apply defaults for service paths and normalize enum casing. Older
-	// generators wrote "GO_SERVICE"; new ones write "go_service". Accept
-	// both by canonicalizing to lowercase snake_case on load.
-	for i := range cfg.Services {
-		if cfg.Services[i].Path == "" {
-			cfg.Services[i].Path = "handlers/" + cfg.Services[i].Name
-		}
-		if cfg.Services[i].Type == "" {
-			cfg.Services[i].Type = "go_service"
+	// Apply kind-derived path defaults and normalize the kind enum
+	// casing. An empty kind defaults to "server" (the historical
+	// type: go_service default).
+	for i := range cfg.Components {
+		if cfg.Components[i].Kind == "" {
+			cfg.Components[i].Kind = config.ComponentKindServer
 		} else {
-			cfg.Services[i].Type = normalizeEnum(cfg.Services[i].Type)
+			cfg.Components[i].Kind = normalizeEnum(cfg.Components[i].Kind)
+		}
+		if cfg.Components[i].Path == "" {
+			cfg.Components[i].Path = defaultServicePath(cfg.Components[i])
 		}
 	}
 
@@ -108,6 +140,21 @@ func loadProjectConfigFrom(path string) (*config.ProjectConfig, error) {
 	}
 
 	return &cfg, nil
+}
+
+// readComponentsJSONFile reads the project-root components.json from dir
+// (the directory holding forge.yaml). A missing file is not an error — it
+// returns nil bytes, which config.LoadProject treats as "no components"
+// (a pure library, or a fresh service before its first `forge add`).
+func readComponentsJSONFile(dir string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(dir, config.ComponentsFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read %s: %w", config.ComponentsFileName, err)
+	}
+	return data, nil
 }
 
 // normalizeEnum canonicalizes an enum-like YAML string value to lowercase

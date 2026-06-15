@@ -3,12 +3,14 @@ package crud
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Test fixture types: a tiny "User" entity and per-RPC req/resp shapes
@@ -29,7 +31,10 @@ type createResp struct{ User *user }
 type getReq struct{ ID string }
 type getResp struct{ User *user }
 
-type updateReq struct{ User *user }
+type updateReq struct {
+	User *user
+	Mask []string // stands in for the proto's update_mask paths
+}
 type updateResp struct{ User *user }
 
 type deleteReq struct{ ID string }
@@ -137,8 +142,12 @@ func TestHandleCreate_RepoError_WrappedAsInternal(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "create user:") {
+	if !strings.Contains(cerr.Message(), "create user failed: svcerr: internal") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
+	}
+	// Repo error text must never reach the client.
+	if strings.Contains(cerr.Message(), "db down") {
+		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
 	}
 }
 
@@ -166,7 +175,8 @@ func TestHandleGet_NotFound(t *testing.T) {
 		EntityLower: "user",
 		ID:          func(r *getReq) string { return r.ID },
 		Fetch: func(context.Context, string, string) (*user, error) {
-			return nil, errors.New("no rows")
+			// Repos signal a missing row via orm.ErrNoRows (possibly wrapped).
+			return nil, fmt.Errorf("get users by id: %w", orm.ErrNoRows)
 		},
 		Pack: func(u *user) *getResp { return &getResp{User: u} },
 	})
@@ -175,8 +185,54 @@ func TestHandleGet_NotFound(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeNotFound {
 		t.Fatalf("want NotFound, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "get user:") {
+	// Clean svcerr envelope: entity name + not-found, no repo text.
+	if !strings.Contains(cerr.Message(), "user: svcerr: not found") {
 		t.Fatalf("error envelope wording changed: %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "get users by id") {
+		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
+	}
+}
+
+func TestHandleGet_SvcerrNotFound(t *testing.T) {
+	// A repository that already classified the miss via svcerr maps to
+	// NotFound too.
+	h := HandleGet(GetOp[getReq, getResp, *user]{
+		EntityLower: "user",
+		ID:          func(r *getReq) string { return r.ID },
+		Fetch: func(context.Context, string, string) (*user, error) {
+			return nil, svcerr.NotFound("user")
+		},
+		Pack: func(u *user) *getResp { return &getResp{User: u} },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "nope"}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeNotFound {
+		t.Fatalf("want NotFound, got %v", err)
+	}
+}
+
+func TestHandleGet_ArbitraryRepoError_Internal(t *testing.T) {
+	// A non-ErrNoRows repo error is INTERNAL, not NotFound, and its SQL
+	// text must never cross the wire.
+	h := HandleGet(GetOp[getReq, getResp, *user]{
+		EntityLower: "user",
+		ID:          func(r *getReq) string { return r.ID },
+		Fetch: func(context.Context, string, string) (*user, error) {
+			return nil, errors.New("boom: SELECT * FROM x")
+		},
+		Pack: func(u *user) *getResp { return &getResp{User: u} },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&getReq{ID: "u1"}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
+		t.Fatalf("want Internal, got %v", err)
+	}
+	if !strings.Contains(cerr.Message(), "get user failed: svcerr: internal") {
+		t.Fatalf("error envelope wording changed: %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "SELECT") {
+		t.Fatalf("SQL text leaked into client message: %q", cerr.Message())
 	}
 }
 
@@ -224,6 +280,164 @@ func TestHandleUpdate_NilEntity_InvalidArgument(t *testing.T) {
 	}
 }
 
+// --- HandleUpdate: AIP-134 update_mask dispatch -----------------------
+
+// maskedUpdateOp builds an UpdateOp with both persistence hooks
+// instrumented, so each test can assert exactly which path ran.
+func maskedUpdateOp(fullCalled *bool, maskedFields *[]string, maskedErr error) UpdateOp[updateReq, updateResp, *user] {
+	return UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity: func(r *updateReq) (*user, bool) {
+			return r.User, r.User != nil
+		},
+		Mask: func(r *updateReq) []string { return r.Mask },
+		Persist: func(context.Context, string, *user) error {
+			*fullCalled = true
+			return nil
+		},
+		PersistMasked: func(_ context.Context, _ string, _ *user, fields []string) error {
+			*maskedFields = append([]string{}, fields...)
+			return maskedErr
+		},
+		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+	}
+}
+
+func TestHandleUpdate_MaskedPaths_DispatchToPersistMasked(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, nil))
+	resp, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1", Name: "B"},
+		Mask: []string{"name"},
+	}))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if fullCalled {
+		t.Error("full-replace Persist ran despite a concrete update_mask — that is the data-loss bug")
+	}
+	if len(maskedFields) != 1 || maskedFields[0] != "name" {
+		t.Errorf("PersistMasked fields = %v, want [name]", maskedFields)
+	}
+	if resp.Msg.User == nil || resp.Msg.User.Name != "B" {
+		t.Error("entity not propagated through Pack")
+	}
+}
+
+func TestHandleUpdate_EmptyMask_FullReplace(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, nil))
+	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error("empty mask must mean documented full-object replace via Persist")
+	}
+	if maskedFields != nil {
+		t.Errorf("PersistMasked must not run on empty mask, got fields %v", maskedFields)
+	}
+}
+
+func TestHandleUpdate_StarMask_FullReplace(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, nil))
+	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"*"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error(`mask ["*"] must mean full-object replace via Persist`)
+	}
+	if maskedFields != nil {
+		t.Errorf("PersistMasked must not run on a * mask, got fields %v", maskedFields)
+	}
+}
+
+func TestHandleUpdate_MaskWithoutPersistMasked_Internal(t *testing.T) {
+	// Mask wired but PersistMasked missing is a generator wiring bug. It
+	// must surface as Internal — silently falling back to full replace is
+	// exactly the data-loss the mask exists to prevent.
+	var fullCalled bool
+	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
+		Mask:           func(r *updateReq) []string { return r.Mask },
+		Persist: func(context.Context, string, *user) error {
+			fullCalled = true
+			return nil
+		},
+		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+	})
+	_, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"name"},
+	}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
+		t.Fatalf("want Internal for missing PersistMasked wiring, got %v", err)
+	}
+	if fullCalled {
+		t.Error("must not silently full-replace when masked persistence is unwired")
+	}
+}
+
+func TestHandleUpdate_UnknownMaskPath_InvalidArgument(t *testing.T) {
+	var fullCalled bool
+	var maskedFields []string
+	repoErr := fmt.Errorf("update users: %w", &orm.UnknownFieldError{Field: "no_such_column"})
+	h := HandleUpdate(maskedUpdateOp(&fullCalled, &maskedFields, repoErr))
+	_, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"no_such_column"},
+	}))
+	cerr := new(connect.Error)
+	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
+		t.Fatalf("want InvalidArgument for unknown mask path, got %v", err)
+	}
+	if !strings.Contains(cerr.Message(), "no_such_column") {
+		t.Errorf("client error should name the offending path, got %q", cerr.Message())
+	}
+	for _, leak := range []string{"SELECT", "UPDATE", "sql:"} {
+		if strings.Contains(cerr.Message(), leak) {
+			t.Errorf("client error leaks SQL-ish text (%q): %q", leak, cerr.Message())
+		}
+	}
+}
+
+func TestHandleUpdate_NilMaskHook_LegacyFullReplace(t *testing.T) {
+	// No Mask hook (proto without update_mask): behavior is unchanged —
+	// Persist runs even when the request struct happens to carry paths.
+	var fullCalled bool
+	h := HandleUpdate(UpdateOp[updateReq, updateResp, *user]{
+		EntityLower:    "user",
+		EntityFieldLow: "user",
+		Entity:         func(r *updateReq) (*user, bool) { return r.User, r.User != nil },
+		Persist: func(context.Context, string, *user) error {
+			fullCalled = true
+			return nil
+		},
+		Pack: func(u *user) *updateResp { return &updateResp{User: u} },
+	})
+	if _, err := h(context.Background(), connect.NewRequest(&updateReq{
+		User: &user{ID: "u1"},
+		Mask: []string{"name"},
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fullCalled {
+		t.Error("nil Mask hook must preserve the legacy full-replace path")
+	}
+}
+
 // --- HandleDelete -----------------------------------------------------
 
 func TestHandleDelete_DefaultZeroResp(t *testing.T) {
@@ -265,8 +479,11 @@ func TestHandleDelete_RepoError_WrappedInternal(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInternal {
 		t.Fatalf("want Internal, got %v", err)
 	}
-	if !strings.Contains(cerr.Message(), "delete user:") {
+	if !strings.Contains(cerr.Message(), "delete user failed: svcerr: internal") {
 		t.Fatalf("envelope wording changed: %q", cerr.Message())
+	}
+	if strings.Contains(cerr.Message(), "fk violation") {
+		t.Fatalf("repo error leaked into client message: %q", cerr.Message())
 	}
 }
 
@@ -430,6 +647,53 @@ func TestHandleList_OrderByValidation(t *testing.T) {
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
 		t.Fatalf("want InvalidArgument from order-by validation, got %v", err)
 	}
+}
+
+// listOrderByOp builds a List handler with the given Columns allowlist
+// for the order-by allowlist tests.
+func listOrderByOp(columns []string) func(context.Context, *connect.Request[listReq]) (*connect.Response[listResp], error) {
+	return HandleList(ListOp[listReq, listResp, *user]{
+		EntityLower:   "user",
+		PkColumnName:  "id",
+		Columns:       columns,
+		HasPagination: true,
+		HasOrderBy:    true,
+		PageToken:     func(r *listReq) string { return r.PageToken },
+		PageSize:      func(r *listReq) int { return r.PageSize },
+		OrderBy:       func(r *listReq) (string, bool) { return r.OrderBy, r.Descending },
+		Query: func(ctx context.Context, _ string, _ []orm.QueryOption) ([]*user, error) {
+			return nil, nil
+		},
+		EntityID: func(u *user) string { return u.ID },
+		Pack:     func(items []*user, tok string) *listResp { return &listResp{} },
+	})
+}
+
+func TestHandleList_OrderByAllowlist(t *testing.T) {
+	columns := []string{"id", "name", "email"}
+
+	t.Run("declared column accepted", func(t *testing.T) {
+		h := listOrderByOp(columns)
+		if _, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "name DESC"})); err != nil {
+			t.Fatalf("declared column should pass allowlist: %v", err)
+		}
+	})
+
+	t.Run("undeclared column rejected", func(t *testing.T) {
+		h := listOrderByOp(columns)
+		_, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "password_hash ASC"}))
+		cerr := new(connect.Error)
+		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
+			t.Fatalf("want InvalidArgument for undeclared order-by column, got %v", err)
+		}
+	})
+
+	t.Run("nil Columns is shape-only", func(t *testing.T) {
+		h := listOrderByOp(nil)
+		if _, err := h(context.Background(), connect.NewRequest(&listReq{OrderBy: "password_hash ASC"})); err != nil {
+			t.Fatalf("nil Columns should skip allowlist validation: %v", err)
+		}
+	})
 }
 
 func TestHandleList_TenantPropagated(t *testing.T) {

@@ -35,9 +35,9 @@
 //   - [WithTimeout] returns a context.Context with the given deadline and
 //     a cleanup func, suitable for table-row Setup hooks.
 //
-//   - [SetupMockDB] returns an in-memory SQLite *sql.DB, registers
-//     cleanup, and is the same shape used by the bootstrap_testing
-//     scaffold.
+//   - [SetupMockDB] returns a real-postgres *sql.DB (pkg/pgtest),
+//     registers cleanup, and is the same shape used by the
+//     bootstrap_testing scaffold.
 //
 // See pkg/tdd/*_test.go for usage examples; the same patterns appear in
 // the templates under internal/templates/{service,internal-package,test/e2e}.

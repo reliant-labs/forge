@@ -48,6 +48,7 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 			Fallible                 bool
 		}
 		HasDatabase         bool
+		DatabaseDriver      string
 		OrmEnabled          bool
 		HasFallible         bool
 		BinaryShared        bool
@@ -56,6 +57,7 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		AllServiceNames     []string
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -84,15 +86,16 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 		t.Fatal("zero-service bootstrap should not import middleware")
 	}
 
-	// Regression for forge-new-empty-services-unused-runAll: BootstrapOnly
-	// declares `runAll := len(names) == 0` purely to feed the per-service
-	// `if runAll || nameSet["<svc>"]` mux-registration guard. When there are
-	// no services, that guard is never emitted, and `runAll :=` becomes a
-	// "declared and not used" compile error. go/parser doesn't flag unused
-	// locals so the ParseFile check below cannot catch this on its own;
-	// guard the literal declaration string instead.
-	if strings.Contains(rendered, "runAll := ") {
-		t.Fatal("zero-service bootstrap must not declare runAll (no consumer block emitted; would fail 'declared and not used')")
+	// Regression for forge-new-empty-services-unused-locals (originally
+	// the runAll declaration, then devMode after the 2026-06 appkit
+	// table migration, retired entirely with the M6 cmd-as-code rework):
+	// dev mode is read from cfg.Mode().IsDev() at each consumer, so the
+	// bootstrap must not declare ANY local that only service closures
+	// would consume. go/parser doesn't flag unused locals so the
+	// ParseFile check below cannot catch this on its own; guard the
+	// literal declaration string instead.
+	if strings.Contains(rendered, "devMode := ") {
+		t.Fatal("bootstrap must not declare devMode — the devMode parameter threading was removed; consumers read cfg.Mode().IsDev() directly")
 	}
 
 	// Verify it parses as valid Go
@@ -104,18 +107,23 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 }
 
 // TestBootstrapTemplate_WithServicesStillDeclaresRunAll guards the other side
-// of the forge-new-empty-services-unused-runAll fix: when services ARE
-// configured, the per-service mux-registration loop relies on `runAll` to
-// implement the "empty names slice == mount everything" identity used by
-// `./<bin> server`. The empty-case fix must not regress that path.
+// of the forge-new-empty-services-unused-locals fix: when services ARE
+// configured, the per-service Construct closures consume `devMode`, and
+// the def table must hand the names filter to appkit.Run (which owns
+// the "empty names slice == mount everything" identity used by
+// `./<bin> server` since the 2026-06 appkit table migration).
 func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
-		ConnectPkg, ProtoServiceName    string
+		Name, Package, ImportPath, FieldName, Alias string
+		Fallible, HasWebhooks                       bool
+		ConnectPkg, ProtoServiceName                string
 	}
 	data := struct {
 		Module              string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
+		LeaderElectionID    string
 		Services            []svc
 		Packages            []struct{}
 		Workers             []struct{}
@@ -125,10 +133,12 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		AllServiceNames     []string
 	}{
-		Module: "example.com/myproject",
+		Module:           "example.com/myproject",
+		LeaderElectionID: "myproject-leader",
 		Services: []svc{
-			{Name: "api", Package: "api", FieldName: "API", Alias: "apihandler"},
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "apihandler"},
 		},
 		ConfigFields: map[string]bool{},
 	}
@@ -139,31 +149,140 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	}
 	rendered := string(content)
 
-	if !strings.Contains(rendered, "runAll := len(names) == 0") {
-		t.Fatal("bootstrap with services must declare runAll for the per-service mux-registration guard")
+	// devMode threading is gone (M6 cmd-as-code): wireXxxDeps reads
+	// cfg.Mode().IsDev() itself, so bootstrap must not declare a local.
+	if strings.Contains(rendered, "devMode := ") {
+		t.Fatal("bootstrap must not declare devMode — wireXxxDeps reads cfg.Mode().IsDev() directly")
 	}
-	if !strings.Contains(rendered, "if runAll || nameSet[\"api\"]") {
-		t.Fatal("bootstrap with services must consume runAll in the per-service registration guard")
+	// Since the registration-in-code rework, the per-service Construct
+	// closures live in services_gen.go; bootstrap consumes the row list
+	// via the user-owned RegisteredServices.
+	if !strings.Contains(rendered, "RegisteredServices(app, cfg, logger, opts...)") {
+		t.Fatal("bootstrap with services must consume the user-owned RegisteredServices row list")
+	}
+	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
+		t.Fatal("bootstrap must delegate name filtering to appkit.Run via Options.Only")
 	}
 }
 
-// TestBootstrapTemplate_DiagnosticsEmitWhenEnabled asserts that the
-// `features.diagnostics: true` flag is the only thing that wires
-// diagnostics.Default.Boot into the rendered bootstrap. Off → no
-// import, no call. On + strict_wiring → StrictEmitter wrap.
+// TestBootstrapTemplate_LoudFilterBanner pins the loud-by-default contract
+// for the `./<bin> server <name>...` subcommand filter. The banner names
+// BOTH registered and excluded services/workers/operators so a user who
+// typo'd a name or forgot a service in the args sees it at boot instead of
+// chasing 404s through CORS/proxy/auth. Silent-skip here was a real
+// debug-time-sink; this test stops a future template edit from
+// reintroducing it.
 //
-// Existing projects without the flag keep their pre-diagnostics
-// bootstrap byte-for-byte (no regression), which is the central
-// promise of the opt-in design.
-func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
+// Since the 2026-06 appkit table migration the banner BEHAVIOR (known-set
+// computation, unknown-name warning, registered/excluded Warn) lives in
+// appkit.Run — pinned by pkg/appkit's filter-banner tests. What the
+// generated file must still guarantee is the DATA the banner is computed
+// from: a Name row for every service, worker, and operator, and the
+// names slice handed to appkit.Run via Options.Only. Dropping a
+// component kind from the def table would silently drop it from the
+// excluded report, defeating the whole point — exactly the regression
+// this test originally guarded.
+func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	type svc struct {
-		Name, Package, FieldName, Alias string
-		Fallible, HasWebhooks           bool
-		ConnectPkg, ProtoServiceName    string
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible, HasWebhooks                                bool
 	}
-	mkData := func(diagnostics, strict bool) any {
+	type wkr struct {
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible                                             bool
+	}
+	type op struct {
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible                                             bool
+	}
+	data := struct {
+		Module              string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
+		LeaderElectionID    string
+		Services            []svc
+		Packages            []struct{}
+		Workers             []wkr
+		Operators           []op
+		ConfigFields        map[string]bool
+		RESTEnabled         bool
+		ConnectImports      []string
+		DiagnosticsEnabled  bool
+		StrictWiringEnabled bool
+		AllServiceNames     []string
+	}{
+		Module:           "example.com/myproject",
+		LeaderElectionID: "myproject-leader",
+		Services: []svc{
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
+			{Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing", Alias: "billing", VarName: "billing"},
+		},
+		Workers: []wkr{
+			{Name: "indexer", Package: "indexer", ImportPath: "indexer", FieldName: "Indexer", Alias: "indexer", VarName: "indexer"},
+		},
+		Operators: []op{
+			{Name: "scaler", Package: "scaler", ImportPath: "scaler", FieldName: "Scaler", Alias: "scaler", VarName: "scaler"},
+		},
+		ConfigFields: map[string]bool{},
+	}
+
+	content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+	}
+	rendered := string(content)
+
+	// Every component kind must contribute Name rows to the def table —
+	// appkit.Run computes the banner's known set from these rows, so a
+	// missing kind cannot be reported as excluded. Service rows come
+	// from the user-owned RegisteredServices (registration-in-code);
+	// worker/operator rows stay inline.
+	for _, name := range []string{`Services: RegisteredServices(app, cfg, logger, opts...)`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
+		if !strings.Contains(rendered, name) {
+			t.Errorf("bootstrap def table missing row %s — appkit's filter banner cannot report this name as excluded", name)
+		}
+	}
+
+	// The names filter must reach appkit.Run, which owns the unknown-name
+	// warning and the registered/excluded banner.
+	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
+		t.Error("bootstrap must hand the names filter to appkit.Run via Options.Only — that is where the loud filter banner lives now")
+	}
+
+	// And the banner behavior itself must NOT leak back inline (the
+	// table-not-program rule).
+	if strings.Contains(rendered, "server filter active") {
+		t.Error("filter banner emission belongs to appkit.Run, not the generated table")
+	}
+
+	fset := token.NewFileSet()
+	if _, parseErr := parser.ParseFile(fset, "bootstrap.go", rendered, parser.AllErrors); parseErr != nil {
+		t.Fatalf("rendered bootstrap.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+	}
+}
+
+// TestBootstrapTemplate_DevModeAuthzBanner pins the loud-by-default
+// dev-mode banner. When cfg.Environment == "development" the per-service
+// Authorizer is swapped to middleware.DevAuthorizer{} (allow-all), so a
+// prod manifest that accidentally sets ENVIRONMENT=development would
+// silently ship with authz disabled. The Warn line surfaces this at
+// every container start so leakage between envs is caught immediately
+// rather than by a security review months later.
+//
+// Zero-service projects don't get the swap (no Authorizer to flip) so
+// the banner is gated on .Services.
+func TestBootstrapTemplate_DevModeAuthzBanner(t *testing.T) {
+	type svc struct {
+		Name, Package, ImportPath, FieldName, Alias, VarName string
+		Fallible, HasWebhooks                                bool
+	}
+	mkData := func(services []svc) any {
 		return struct {
 			Module              string
+			HasDatabase         bool
+			DatabaseDriver      string
+			OrmEnabled          bool
 			Services            []svc
 			Packages            []struct{}
 			Workers             []struct{}
@@ -173,10 +292,102 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 			ConnectImports      []string
 			DiagnosticsEnabled  bool
 			StrictWiringEnabled bool
+			AllServiceNames     []string
+			HasFallible         bool
+		}{
+			Module:       "example.com/myproject",
+			Services:     services,
+			ConfigFields: map[string]bool{"Environment": true},
+		}
+	}
+
+	t.Run("with-services-emits-banner", func(t *testing.T) {
+		data := mkData([]svc{
+			{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api", VarName: "api"},
+		})
+		content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+		if err != nil {
+			t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+		}
+		rendered := string(content)
+
+		// Since the 2026-06 appkit table migration Bootstrap is a thin
+		// delegate to BootstrapOnly, so a SINGLE banner site covers both
+		// entry points (pre-migration each function computed devMode and
+		// emitted its own). Per-service subcommands and `./<bin> server`
+		// both flow through BootstrapOnly, so neither path can silently
+		// swap to DevAuthorizer without the warn.
+		if got := strings.Count(rendered, "AUTH BYPASS — authorization checks disabled"); got != 1 {
+			t.Errorf("expected exactly one auth-bypass Warn site (BootstrapOnly, shared via the Bootstrap delegate), found %d occurrence(s)", got)
+		}
+		// Gate must match the wireXxxDeps swap condition exactly
+		// (cfg.DevAuthBypass() — dev mode AND AUTH_DEV_MODE, NOT IsDev); the
+		// banner must never fire when authz is actually still enforced.
+		if !strings.Contains(rendered, "if cfg.DevAuthBypass() {") {
+			t.Error("auth-bypass banner must be gated on `if cfg.DevAuthBypass() {`")
+		}
+		if !strings.Contains(rendered, `"environment", cfg.Environment`) {
+			t.Error("dev-mode banner should attach the actual environment value so operators can see what triggered the swap")
+		}
+
+		fset := token.NewFileSet()
+		if _, parseErr := parser.ParseFile(fset, "bootstrap.go", rendered, parser.AllErrors); parseErr != nil {
+			t.Fatalf("rendered bootstrap.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
+		}
+	})
+
+	t.Run("zero-services-suppresses-banner", func(t *testing.T) {
+		data := mkData(nil)
+		content, err := ProjectTemplates().Render("bootstrap.go.tmpl", data)
+		if err != nil {
+			t.Fatalf("Render bootstrap.go.tmpl: %v", err)
+		}
+		rendered := string(content)
+		// No services → no DevAuthorizer swap → no banner. Emitting it
+		// here would force an unused `logger` reference and surface a
+		// misleading warning in CLI-only projects.
+		if strings.Contains(rendered, "AUTH BYPASS — authorization checks disabled") {
+			t.Error("zero-service project must not emit the auth-bypass banner (no Authorizer to swap)")
+		}
+	})
+}
+
+// TestBootstrapTemplate_DiagnosticsEmitWhenEnabled asserts that the
+// `features.diagnostics: true` flag is the only thing that wires
+// diagnostics into the rendered bootstrap. Since the 2026-06 appkit
+// table migration the emit is a DATA FIELD on the def table
+// (`Diagnostics: appkit.DiagnosticsLog/Strict`) — the Boot call and
+// the pkg/diagnostics import live in appkit.Run. Off → no row.
+//
+// Existing projects without the flag keep their pre-diagnostics
+// bootstrap shape (no regression), which is the central promise of
+// the opt-in design.
+func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
+	type svc struct {
+		Name, Package, ImportPath, FieldName, Alias string
+		Fallible, HasWebhooks                       bool
+		ConnectPkg, ProtoServiceName                string
+	}
+	mkData := func(diagnostics, strict bool) any {
+		return struct {
+			Module              string
+			HasDatabase         bool
+			DatabaseDriver      string
+			OrmEnabled          bool
+			Services            []svc
+			Packages            []struct{}
+			Workers             []struct{}
+			Operators           []struct{}
+			ConfigFields        map[string]bool
+			RESTEnabled         bool
+			ConnectImports      []string
+			DiagnosticsEnabled  bool
+			StrictWiringEnabled bool
+			AllServiceNames     []string
 		}{
 			Module: "example.com/myproject",
 			Services: []svc{
-				{Name: "api", Package: "api", FieldName: "API", Alias: "api"},
+				{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "api"},
 			},
 			ConfigFields:        map[string]bool{},
 			DiagnosticsEnabled:  diagnostics,
@@ -197,8 +408,8 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 		rendered := render(t, mkData(false, false))
 		// Diagnostics-related symbols must NOT appear when the feature is
 		// off — guards the additive default-off contract.
-		if strings.Contains(rendered, "diagnostics.Default.Boot") {
-			t.Error("diagnostics.Default.Boot should not be emitted when DiagnosticsEnabled=false")
+		if strings.Contains(rendered, "Diagnostics: appkit.Diagnostics") {
+			t.Error("Diagnostics def row should not be emitted when DiagnosticsEnabled=false")
 		}
 		if strings.Contains(rendered, "pkg/diagnostics") {
 			t.Error("pkg/diagnostics import should not be emitted when DiagnosticsEnabled=false")
@@ -207,22 +418,19 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 
 	t.Run("on", func(t *testing.T) {
 		rendered := render(t, mkData(true, false))
-		if !strings.Contains(rendered, "diagnostics.Default.Boot(diagnostics.NewLogEmitter(logger))") {
-			t.Errorf("expected diagnostics.Default.Boot(NewLogEmitter) when DiagnosticsEnabled=true\n--- rendered ---\n%s", rendered)
+		if !strings.Contains(rendered, "Diagnostics: appkit.DiagnosticsLog,") {
+			t.Errorf("expected Diagnostics: appkit.DiagnosticsLog row when DiagnosticsEnabled=true\n--- rendered ---\n%s", rendered)
 		}
-		if !strings.Contains(rendered, `"github.com/reliant-labs/forge/pkg/diagnostics"`) {
-			t.Errorf("expected pkg/diagnostics import")
-		}
-		// Plain LogEmitter (no StrictEmitter wrap) when strict is off.
-		if strings.Contains(rendered, "NewStrictEmitter") {
-			t.Error("StrictEmitter should not appear when StrictWiringEnabled=false")
+		// Plain log mode (no strict escalation) when strict is off.
+		if strings.Contains(rendered, "DiagnosticsStrict") {
+			t.Error("DiagnosticsStrict should not appear when StrictWiringEnabled=false")
 		}
 	})
 
 	t.Run("strict", func(t *testing.T) {
 		rendered := render(t, mkData(true, true))
-		if !strings.Contains(rendered, "diagnostics.Default.Boot(diagnostics.NewStrictEmitter(diagnostics.NewLogEmitter(logger)))") {
-			t.Errorf("expected StrictEmitter wrap when StrictWiringEnabled=true\n--- rendered ---\n%s", rendered)
+		if !strings.Contains(rendered, "Diagnostics: appkit.DiagnosticsStrict,") {
+			t.Errorf("expected Diagnostics: appkit.DiagnosticsStrict row when StrictWiringEnabled=true\n--- rendered ---\n%s", rendered)
 		}
 	})
 }
@@ -232,6 +440,9 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 	data := struct {
 		Module   string
+		HasDatabase         bool
+		DatabaseDriver      string
+		OrmEnabled          bool
 		Services []struct {
 			Name, Package, FieldName, ProtoServiceName string
 			ProtoConnectImportPath, ProtoConnectPkg    string
@@ -279,38 +490,60 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 		t.Fatal("\"testing\" import should be suppressed when no services and no packages exist")
 	}
 
+	// The body uses *slog.Logger unconditionally (testConfig.logger,
+	// WithLogger), so the import must be present even in the
+	// zero-component state. Journey fr-994db53964: zero-service
+	// pkg/app/testing.go failed to compile with `undefined: slog`
+	// because the import was gated on `or .Services .Packages` while
+	// the symbols were not.
+	if strings.Contains(rendered, "slog.") && !strings.Contains(rendered, `"log/slog"`) {
+		t.Fatalf("rendered testing.go references slog without importing log/slog:\n%s", rendered)
+	}
+
 	// Verify it parses as valid Go
 	fset := token.NewFileSet()
 	_, parseErr := parser.ParseFile(fset, "testing.go", rendered, parser.AllErrors)
 	if parseErr != nil {
 		t.Fatalf("rendered testing.go does not parse as valid Go:\n%v\n\nSource:\n%s", parseErr, rendered)
 	}
+
+	// Belt-and-braces for the same class of bug on every qualifier the
+	// template can emit: any package qualifier used in the body must
+	// have a matching import. Parse-level only (no type checking), but
+	// it catches gated-import-vs-unconditional-symbol drift for all
+	// branches of the template, not just slog.
+	assertQualifiersImported(t, rendered)
 }
 
-// TestEntityExampleProto_HyphenatedPackageIsSnakeCased is a regression test
-// for the stripe-latent bug: project names with hyphens (e.g. "my-app")
-// would render as `package my-app.db.v1;` which is invalid proto. The fix
-// runs {{.Package}} through the snakeCase template func.
-func TestEntityExampleProto_HyphenatedPackageIsSnakeCased(t *testing.T) {
-	out, err := ProjectTemplates().Render("entity-example.proto.tmpl", map[string]any{
-		"Package": "my-app",
-	})
+// assertQualifiersImported parses a rendered Go file and asserts that
+// every known package qualifier referenced in the body has a matching
+// import path. The qualifier→path table covers the packages
+// bootstrap_testing.go.tmpl can emit; extend it when the template grows
+// a new import.
+func assertQualifiersImported(t *testing.T, src string) {
+	t.Helper()
+	qualifierImports := map[string]string{
+		"slog":     "log/slog",
+		"testing":  "testing",
+		"context":  "context",
+		"http":     "net/http",
+		"httptest": "net/http/httptest",
+		"connect":  "connectrpc.com/connect",
+		"orm":      "github.com/reliant-labs/forge/pkg/orm",
+		"testkit":  "github.com/reliant-labs/forge/pkg/testkit",
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "testing.go", src, parser.AllErrors)
 	if err != nil {
-		t.Fatalf("render entity-example.proto.tmpl: %v", err)
+		t.Fatalf("parse: %v", err)
 	}
-	rendered := string(out)
-	if !strings.Contains(rendered, "package my_app.db.v1;") {
-		t.Errorf("expected 'package my_app.db.v1;' in rendered proto, got:\n%s", rendered)
+	imported := map[string]bool{}
+	for _, imp := range f.Imports {
+		imported[strings.Trim(imp.Path.Value, `"`)] = true
 	}
-	// Inspect non-comment lines only — the file's own TODO/comment text is
-	// allowed to mention "package my-app.db.v1" inside a quoted explanation.
-	for _, line := range strings.Split(rendered, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "package ") && strings.Contains(trimmed, "my-app") {
-			t.Errorf("hyphenated package decl leaked through; snakeCase filter not applied: %q", trimmed)
+	for qual, path := range qualifierImports {
+		if strings.Contains(src, qual+".") && !imported[path] {
+			t.Errorf("rendered file references %s.* without importing %q", qual, path)
 		}
 	}
 }
@@ -318,36 +551,6 @@ func TestEntityExampleProto_HyphenatedPackageIsSnakeCased(t *testing.T) {
 // TestDBReadme_HyphenatedPackageIsSnakeCased covers the same stripe-latent
 // bug in the markdown README example, which is rendered into proto/db/README.md
 // at scaffold time (so consumers may copy-paste it into a real proto file).
-func TestDBReadme_HyphenatedPackageIsSnakeCased(t *testing.T) {
-	out, err := ProjectTemplates().Render("db-README.md.tmpl", map[string]any{
-		"Package": "my-app",
-	})
-	if err != nil {
-		t.Fatalf("render db-README.md.tmpl: %v", err)
-	}
-	rendered := string(out)
-	if !strings.Contains(rendered, "package my_app.db.v1;") {
-		t.Errorf("expected 'package my_app.db.v1;' in rendered markdown, got:\n%s", rendered)
-	}
-	// Inspect non-comment lines only (HTML comments in markdown / .proto-style
-	// // comments) — the file's own TODO/comment text may mention the bad form.
-	for _, line := range strings.Split(rendered, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "<!--") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "package ") && strings.Contains(trimmed, "my-app") {
-			t.Errorf("hyphenated package decl leaked through; snakeCase filter not applied: %q", trimmed)
-		}
-	}
-}
-
-// TestDockerfile_LocalForgePkgVendoredCopyLine verifies that the Dockerfile
-// template emits the `COPY .forge-pkg/ ./.forge-pkg/` line if and only if
-// the LocalForgePkgVendored flag is true. This is the load-bearing toggle
-// for the dev-mode local-replace workaround: it must be off in the
-// canonical (published-forge/pkg) shape and on when forge generate has
-// vendored a sibling forge checkout.
 func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 	type tc struct {
 		name        string
@@ -374,6 +577,9 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 				Name                   string
 				ProtoName              string
 				Module                 string
+				HasDatabase         bool
+				DatabaseDriver      string
+				OrmEnabled          bool
 				ServiceName            string
 				ServicePort            int
 				ProjectName            string
@@ -404,16 +610,24 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 	}
 }
 
-// TestCmdServerTemplate_CallsPostBootstrap verifies the generated
-// cmd/server.go invokes the user-owned PostBootstrap hook after
-// Bootstrap returns and propagates any error as a fatal boot failure.
-// This is the chokepoint the post-bootstrap user code relies on; if
-// the call disappears from the template, projects that wire
-// post-construct collaborators here will silently no-op.
-func TestCmdServerTemplate_CallsPostBootstrap(t *testing.T) {
+// TestCmdServerTemplate_WiresPostBootstrapHook verifies the generated
+// cmd/server.go wires the user-owned PostBootstrap hook into
+// serverkit.Hooks.PostBootstrap. This is the chokepoint the user code
+// relies on; if the wiring disappears from the template, projects that
+// register post-construct collaborators will silently no-op.
+//
+// The error-propagation contract ("post-bootstrap hook failed: ...")
+// now lives in serverkit.Run (see pkg/serverkit/run.go); the shim only
+// needs to forward the typed *app.App to the hook.
+func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
 	data := struct {
-		Module       string
-		ConfigFields map[string]bool
+		Module               string
+		HasDatabase          bool
+		DatabaseDriver       string
+		OrmEnabled           bool
+		ConfigFields         map[string]bool
+		AuthProvider         string
+		AuthProviderExternal bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -425,11 +639,11 @@ func TestCmdServerTemplate_CallsPostBootstrap(t *testing.T) {
 	}
 	rendered := string(content)
 
-	if !strings.Contains(rendered, "app.PostBootstrap(application)") {
-		t.Errorf("cmd-server.go.tmpl must call app.PostBootstrap(application); rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "PostBootstrap:") {
+		t.Errorf("cmd-server.go.tmpl must set serverkit.Hooks.PostBootstrap; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "post-bootstrap hook failed") {
-		t.Errorf("cmd-server.go.tmpl must propagate post-bootstrap errors with a 'post-bootstrap hook failed' message")
+	if !strings.Contains(rendered, "app.PostBootstrap(a.(*app.App))") {
+		t.Errorf("cmd-server.go.tmpl must forward the Application to app.PostBootstrap via type assertion; rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.

@@ -2,11 +2,16 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // LoadStrict parses a forge.yaml byte stream into a ProjectConfig with
@@ -33,7 +38,20 @@ import (
 // All issues across the three phases are batched into a single
 // ValidationError; the caller sees the full list rather than just the
 // first failure.
-func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
+// The variadic components argument carries the per-component entities the
+// caller has already parsed from the project-root components.json (see
+// LoadProject). They are no longer part of forge.yaml: the loader injects
+// them into the returned config and DERIVES the project kind from them
+// (DeriveProjectKind) before running shape-derived defaults + the feature
+// graph. Callers with no components (the common test path, or a pure
+// library) pass none — and the project kind derives to library (no
+// components.json signal). Callers that need the empty-service-shell
+// (components.json present but empty → service) must go through LoadProject.
+func LoadStrict(data []byte, path string, components ...ComponentConfig) (*ProjectConfig, error) {
+	return loadStrict(data, path, components, len(components) > 0)
+}
+
+func loadStrict(data []byte, path string, components []ComponentConfig, hasComponentsFile bool) (*ProjectConfig, error) {
 	label := path
 	if label == "" {
 		label = "forge.yaml"
@@ -50,12 +68,13 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 	}
 	var issues []validationIssue
 	if root != nil && root.Kind == yaml.MappingNode {
-		issues = append(issues, walkUnknownKeys(root, "", reflect.TypeOf(ProjectConfig{}))...)
+		issues = append(issues, walkUnknownKeys(root, "", reflect.TypeFor[ProjectConfig]())...)
 	} else if root != nil && root.Kind != 0 {
 		issues = append(issues, validationIssue{
-			line: root.Line,
-			msg:  "expected a YAML mapping at the top level",
-			fix:  "the file must be a YAML mapping (key: value pairs), not a list or scalar.",
+			line:   root.Line,
+			column: root.Column,
+			msg:    "expected a YAML mapping at the top level",
+			fix:    "the file must be a YAML mapping (key: value pairs), not a list or scalar.",
 		})
 	}
 
@@ -73,13 +92,70 @@ func LoadStrict(data []byte, path string) (*ProjectConfig, error) {
 		}
 	}
 
-	// Phase 3: required-field validation.
-	issues = append(issues, validateRequired(&cfg)...)
+	// Inject the components.json entities and derive the project kind from
+	// them BEFORE shape-derived defaults run (feature derivation reads
+	// kind). Components carry no YAML position, so their validation issues
+	// fall back to the file root.
+	if len(components) > 0 {
+		cfg.Components = components
+	}
+	cfg.Kind = DeriveProjectKind(cfg.Components, hasComponentsFile)
+
+	// Phase 3: required-field validation. The yaml root is threaded
+	// through so issues can carry the line:col of the *parent* mapping
+	// (or the existing-field's own line, when it's present but invalid).
+	// Without this, "module_path is required" reports no location and
+	// the model has to grep — model-friendly file:line:col on every
+	// issue is the goal of the LoadStrict surface.
+	issues = append(issues, validateRequired(&cfg, root)...)
+
+	// Phase 4: name-shape validation across services/binaries/frontends.
+	// This catches Go-package collisions and reserved-word/identifier
+	// shapes that would otherwise blow up the generator with a confusing
+	// downstream error.
+	issues = append(issues, validateServices(&cfg, root)...)
 
 	if len(issues) > 0 {
 		return nil, &ValidationError{Path: label, Issues: issues}
 	}
+
+	// Resolve shape-derived defaults: fill absent section blocks with the
+	// canonical scaffold defaults for the project kind, and attach the
+	// feature-derivation context so absent feature flags resolve from
+	// shape (see derive.go). Explicit values are never overridden.
+	ApplyDerivedDefaults(&cfg)
+
+	// Phase 5: feature dependency graph. Now that the feature set is
+	// fully resolved (derived defaults + explicit overrides folded in),
+	// reject any enabled feature whose dependency is off — a config that
+	// would otherwise load clean and then silently no-op or blow up
+	// mid-generate. Batched into the same ValidationError so the caller
+	// sees every contradiction at once (see feature_graph.go).
+	if graphIssues := validateFeatureGraph(&cfg); len(graphIssues) > 0 {
+		return nil, &ValidationError{Path: label, Issues: graphIssues}
+	}
 	return &cfg, nil
+}
+
+// LoadProject is the canonical project loader: it parses the global
+// forge.yaml bytes and the per-component components.json bytes, then runs
+// the full LoadStrict validation + kind derivation + shape-derived defaults
+// over the combined config. componentsJSON may be empty (no components.json
+// on disk → a pure library, or a service whose components are added later).
+//
+// This is the entry point both the CLI loader and the generator's
+// ReadProjectConfig route through, so forge.yaml-is-global / components-are-
+// json lives in exactly one place.
+func LoadProject(forgeYAML, componentsJSON []byte, path string) (*ProjectConfig, error) {
+	components, err := ParseComponentsJSON(componentsJSON)
+	if err != nil {
+		return nil, err
+	}
+	// A nil componentsJSON means "no components.json on disk" → the project
+	// is a library. A present-but-empty file (`{"components": []}`) is the
+	// canonical empty service shell → service. DeriveProjectKind needs this
+	// presence bit, which the slice alone can't carry.
+	return loadStrict(forgeYAML, path, components, componentsJSON != nil)
 }
 
 // ValidationError aggregates all forge.yaml validation issues into a
@@ -92,15 +168,12 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string {
 	if len(e.Issues) == 1 {
-		iss := e.Issues[0]
 		var b strings.Builder
-		fmt.Fprintf(&b, "%s", e.Path)
-		if iss.line > 0 {
-			fmt.Fprintf(&b, " line %d", iss.line)
-		}
-		fmt.Fprintf(&b, ": %s", iss.msg)
-		if iss.fix != "" {
-			fmt.Fprintf(&b, " Fix: %s", iss.fix)
+		b.WriteString(formatIssueLocation(e.Path, e.Issues[0]))
+		b.WriteString(": ")
+		b.WriteString(e.Issues[0].msg)
+		if e.Issues[0].fix != "" {
+			fmt.Fprintf(&b, " Fix: %s", e.Issues[0].fix)
 		}
 		return b.String()
 	}
@@ -112,9 +185,8 @@ func (e *ValidationError) Error() string {
 	b.WriteString(":\n")
 	for _, iss := range e.Issues {
 		b.WriteString("  ")
-		if iss.line > 0 {
-			fmt.Fprintf(&b, "line %d: ", iss.line)
-		}
+		b.WriteString(formatIssueLocation(e.Path, iss))
+		b.WriteString(": ")
 		b.WriteString(iss.msg)
 		if iss.fix != "" {
 			fmt.Fprintf(&b, " Fix: %s", iss.fix)
@@ -124,10 +196,153 @@ func (e *ValidationError) Error() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// formatIssueLocation renders the per-issue position in standard
+// compiler/editor format: `path:line:col` when both line and column are
+// known, `path:line` for line-only, `path` when neither. Matches what
+// every editor, LSP client, and `cc`/`go vet`-style tool already
+// understands — a model reading the error can immediately open the
+// right line, no grep round-trip required.
+func formatIssueLocation(path string, iss validationIssue) string {
+	switch {
+	case iss.line > 0 && iss.column > 0:
+		return fmt.Sprintf("%s:%d:%d", path, iss.line, iss.column)
+	case iss.line > 0:
+		return fmt.Sprintf("%s:%d", path, iss.line)
+	default:
+		return path
+	}
+}
+
 type validationIssue struct {
-	line int    // YAML line number (1-based); 0 if unknown.
-	msg  string // primary message ("unknown key 'auht' — did you mean 'auth'?")
-	fix  string // "Fix: rename to 'auth' or remove if unused."
+	line   int    // YAML line number (1-based); 0 if unknown.
+	column int    // YAML column (1-based); 0 if unknown.
+	msg    string // primary message ("unknown key 'auht' — did you mean 'auth'?")
+	fix    string // "Fix: rename to 'auth' or remove if unused."
+}
+
+// removedKeyHint carries the migration guidance for a forge.yaml key
+// that was deliberately removed from the schema (as opposed to a typo).
+// When strict validation hits one of these, the error message explains
+// what replaced the key instead of emitting a generic
+// "unknown key — did you mean ...?" that would mislead an agent into
+// renaming the key rather than migrating it.
+type removedKeyHint struct {
+	// removedIn names the change that removed the key — a migration /
+	// rework era rather than a semver (forge has no released tags to
+	// pin against). Shown in the error message for context.
+	removedIn string
+	// replacement is the one-line "what to do instead" guidance. It is
+	// emitted as the issue's Fix: hint, so keep it imperative and
+	// self-contained (mention the skill that documents the migration).
+	replacement string
+}
+
+// removedSchemaKeys maps a normalized key path to its migration hint.
+//
+// Path normalization: slice indices are collapsed to "[]" (e.g.
+// "services[3].dev_target" matches the "services[].dev_target" entry),
+// so one entry covers every element of a list. Top-level keys use the
+// bare key name. Map-valued sections (pack_overrides.<name>) carry
+// user-defined segments and so cannot be matched here — no removed key
+// has ever lived under one.
+//
+// Audit trail (git history of config.go):
+//   - k8s.provider: removed in 01bd491 ("remove dead BinaryConfig.Kind
+//     and K8sConfig.Provider fields"). Never load-bearing; per-env
+//     cluster choice lives in KCL `forge.K8sCluster` blocks.
+//   - binaries[].kind: removed in the same commit. The cron/oneshot
+//     kinds were reserved-but-unimplemented; every binary is
+//     long-running today.
+//   - services[].dev_target: added in cd25640, reverted in 16921aa.
+//     Host/cluster placement moved to the per-env `deploy:` field on
+//     the KCL `forge.Service` schema.
+//   - environments (top level): removed in the KCL-canonical cleanup
+//     (8d3e185) — handled separately by isDeprecatedTopLevelKey below
+//     because mid-migration projects must still LOAD; it is silently
+//     skipped rather than reported.
+var removedSchemaKeys = map[string]removedKeyHint{
+	"k8s.provider": {
+		removedIn: "the deploy-target-architecture rework",
+		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
+			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
+	},
+	// kind: moved off forge.yaml in the ProjectStore per-service data move.
+	// Project kind now DERIVES from the components in components.json (a
+	// server-shaped component → service, binary-only → cli, none → library).
+	"kind": {
+		removedIn: "the ProjectStore per-service data move (kind derives from components)",
+		replacement: "delete the key — project kind is now derived from the components in " +
+			"components.json (server-shaped → service, binary-only → cli, no components → library).",
+	},
+	// components: moved OUT of forge.yaml entirely (ProjectStore Phase-2
+	// per-service data move). forge.yaml is now GLOBAL-only; the per-service
+	// component entities are authored in the project-root components.json
+	// file. services:/binaries: (the pre-unification blocks) point at the
+	// same migration.
+	"components": {
+		removedIn: "the ProjectStore per-service data move (forge.yaml is global-only)",
+		replacement: "move the `components:` entries to a project-root `components.json` file " +
+			"(`{\"components\": [{\"name\": ..., \"kind\": ..., \"ports\": {\"http\": 8080}}]}`); " +
+			"forge.yaml keeps only global project state. Project kind now derives from the " +
+			"components, so delete any `kind:` field too.",
+	},
+	"services": {
+		removedIn: "the ProjectStore per-service data move (forge.yaml is global-only)",
+		replacement: "move per-service entities to a project-root `components.json` file with " +
+			"`kind: server` and a `ports: {http: 8080}` map (go_service → server); forge.yaml is global-only.",
+	},
+	"binaries": {
+		removedIn:   "the ProjectStore per-service data move (forge.yaml is global-only)",
+		replacement: "move each `binaries:` entry into the project-root `components.json` with `kind: binary`.",
+	},
+	"components[].type": {
+		removedIn:   "the component-model unification (kind replaces type)",
+		replacement: "delete `type:` and set `kind:` instead (go_service → server).",
+	},
+	"binaries[].kind": {
+		removedIn: "the deploy-target-architecture rework",
+		replacement: "remove the key — binary kinds (cron/oneshot) were never implemented; " +
+			"all `forge add binary` entries are long-running.",
+	},
+	"services[].dev_target": {
+		removedIn: "the KCL polymorphic-deploy migration",
+		replacement: "move host/cluster placement to the per-env `deploy:` field on the KCL " +
+			"`forge.Service` schema; see `forge skill load migrations/dev-target-to-kcl-deploy`.",
+	},
+	// serve/served_by shipped only on an unreleased branch (never adopted
+	// downstream) before being replaced by registration-in-code: what a
+	// binary serves is the row list in pkg/app/services.go, not a yaml
+	// knob.
+	"components[].serve": {
+		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
+		replacement: "delete the key — to stop serving a service from this binary, delete its " +
+			"serviceRow line in pkg/app/services.go and leave a comment naming the binary that " +
+			"serves it; see the `services` skill (Types-Only Services).",
+	},
+	"components[].served_by": {
+		removedIn: "the registration-in-code rework (what a binary serves is code, not config)",
+		replacement: "delete the key — document the serving binary as a comment next to the " +
+			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
+			"(Types-Only Services).",
+	},
+	// deploy graduated from experimental to a stable kind-derived flag in
+	// the front-door rework; projects scaffolded in the experimental
+	// window still carry the old nesting.
+	"features.experimental.deploy": {
+		removedIn: "the deploy-feature graduation (experimental → stable, derived from kind)",
+		replacement: "move the value to `features.deploy` — or delete it entirely if it matches " +
+			"the derived default (true for kind: service).",
+	},
+}
+
+// sliceIndexRe matches "[<digits>]" path segments so removed-key lookup
+// can collapse "services[3]" to "services[]".
+var sliceIndexRe = regexp.MustCompile(`\[\d+\]`)
+
+// normalizeKeyPath collapses slice indices in a dotted key path so it
+// can be looked up in removedSchemaKeys.
+func normalizeKeyPath(p string) string {
+	return sliceIndexRe.ReplaceAllString(p, "[]")
 }
 
 // isDeprecatedTopLevelKey returns true for top-level forge.yaml keys
@@ -160,7 +375,7 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 		return nil
 	}
 	// Unwrap pointer.
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	// We only descend into struct mappings here. Map[string]X with
@@ -188,14 +403,28 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 		}
 		field, ok := known[key]
 		if !ok {
-			suggestion := closestMatch(key, knownNames(known))
-			msg := fmt.Sprintf("unknown key %q", qualifiedKey(path, key))
+			full := qualifiedKey(path, key)
+			// Removed keys come FIRST: a key that used to be in the
+			// schema gets its specific migration message, never a
+			// Levenshtein "did you mean" (which would suggest renaming
+			// instead of migrating — the exact trap an agent reading
+			// the error would fall into).
+			if hint, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
+				out = append(out, validationIssue{
+					line:   keyNode.Line,
+					column: keyNode.Column,
+					msg:    fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
+					fix:    hint.replacement,
+				})
+				continue
+			}
+			msg := fmt.Sprintf("unknown key %q", full)
 			fix := "rename or remove this key."
-			if suggestion != "" {
+			if suggestion := closestMatch(key, knownNames(known)); suggestion != "" {
 				msg += fmt.Sprintf(" — did you mean %q?", suggestion)
 				fix = fmt.Sprintf("rename to %q or remove if unused.", suggestion)
 			}
-			out = append(out, validationIssue{line: keyNode.Line, msg: msg, fix: fix})
+			out = append(out, validationIssue{line: keyNode.Line, column: keyNode.Column, msg: msg, fix: fix})
 			continue
 		}
 		// Recurse into nested structs and slices of structs.
@@ -216,7 +445,7 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 					}
 				}
 			}
-		case reflect.Ptr:
+		case reflect.Pointer:
 			if ft.Elem().Kind() == reflect.Struct && valNode.Kind == yaml.MappingNode {
 				childPath := joinPath(path, key)
 				out = append(out, walkUnknownKeys(valNode, childPath, ft.Elem())...)
@@ -245,14 +474,12 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 // keys appear at the parent level (yaml.v3 default behaviour).
 func yamlKeysOf(t reflect.Type) map[string]reflect.StructField {
 	out := make(map[string]reflect.StructField)
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		f := t.Field(i)
 		tag := f.Tag.Get("yaml")
 		if tag == "" || tag == "-" {
 			if f.Anonymous {
-				for k, v := range yamlKeysOf(f.Type) {
-					out[k] = v
-				}
+				maps.Copy(out, yamlKeysOf(f.Type))
 			}
 			continue
 		}
@@ -383,61 +610,101 @@ func splitYAMLErrorLines(err error) []string {
 // be missing are present. The list intentionally stays small — every
 // required field here corresponds to a real downstream breakage when
 // absent (broken go.mod, empty deploy, ambiguous codegen target).
-func validateRequired(cfg *ProjectConfig) []validationIssue {
+func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
+
+	// rootPos is the fallback location for "this required field is
+	// missing entirely from the file" — we point at the top-level
+	// mapping (line 1, col 1) so the model knows it's a forge.yaml-wide
+	// concern, not a nested-block one.
+	var rootLine, rootCol int
+	if root != nil {
+		rootLine, rootCol = root.Line, root.Column
+	}
 
 	if strings.TrimSpace(cfg.Name) == "" {
 		out = append(out, validationIssue{
-			msg: "'name' is required but missing or empty",
-			fix: "add 'name: <project-name>' near the top of forge.yaml.",
+			line:   rootLine,
+			column: rootCol,
+			msg:    "'name' is required but missing or empty",
+			fix:    "add 'name: <project-name>' near the top of forge.yaml.",
 		})
 	}
 	if strings.TrimSpace(cfg.ModulePath) == "" {
 		out = append(out, validationIssue{
-			msg: "'module_path' is required but missing or empty",
-			fix: "add 'module_path: github.com/<org>/<project>' near the top of forge.yaml.",
+			line:   rootLine,
+			column: rootCol,
+			msg:    "'module_path' is required but missing or empty",
+			fix:    "add 'module_path: github.com/<org>/<project>' near the top of forge.yaml.",
 		})
 	} else if !looksLikeGoModulePath(cfg.ModulePath) {
+		// Existing-but-invalid: point at the actual `module_path:` line.
+		line, col := findNodePos(root, []string{"module_path"})
 		out = append(out, validationIssue{
-			msg: fmt.Sprintf("'module_path' value %q does not look like a Go module path", cfg.ModulePath),
-			fix: "use a path like 'github.com/<org>/<project>' (must contain a slash, no spaces).",
+			line:   line,
+			column: col,
+			msg:    fmt.Sprintf("'module_path' value %q does not look like a Go module path", cfg.ModulePath),
+			fix:    "use a path like 'github.com/<org>/<project>' (must contain a slash, no spaces).",
 		})
 	}
-	// Kind defaults to "service" via EffectiveProjectKind, so an empty
-	// kind is fine. Only validate when set.
-	if k := strings.ToLower(strings.TrimSpace(cfg.Kind)); k != "" {
-		switch k {
-		case ProjectKindService, ProjectKindCLI, ProjectKindLibrary:
-		default:
-			out = append(out, validationIssue{
-				msg: fmt.Sprintf("'kind' value %q is invalid", cfg.Kind),
-				fix: "use one of: service, cli, library.",
-			})
-		}
-	}
+	// kind is no longer a forge.yaml field — it is DERIVED from the
+	// components (DeriveProjectKind) before validateRequired runs, so it is
+	// always one of the valid values and needs no validation here.
 
-	for i, svc := range cfg.Services {
-		prefix := fmt.Sprintf("services[%d]", i)
-		if strings.TrimSpace(svc.Name) == "" {
+	for i, comp := range cfg.Components {
+		prefix := fmt.Sprintf("components[%d]", i)
+		if strings.TrimSpace(comp.Name) == "" {
+			// Position at the parent components[i] mapping so the model
+			// can open the right block and add the missing field.
+			line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i)})
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name is required", prefix),
-				fix: "add a 'name:' for this service entry.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name is required", prefix),
+				fix:    "add a 'name:' for this component entry.",
 			})
 		}
-		// services[].path is intentionally not required: the cli loader
-		// applies a 'handlers/<name>' default when the user omits it.
-		// Host/cluster placement was previously gated here via
-		// services[].dev_target. It moved to the KCL layer (per-env
-		// `deploy:` field on the [Service] schema) — see the
-		// migration/dev-target-to-kcl-deploy skill.
+		// components[].kind selects the scaffold/deploy treatment. Empty
+		// defaults to "server" via EffectiveKind, so only validate a set
+		// value.
+		if k := strings.ToLower(strings.TrimSpace(comp.Kind)); k != "" {
+			switch k {
+			case ComponentKindServer, ComponentKindWorker, ComponentKindCron,
+				ComponentKindOperator, ComponentKindBinary:
+			default:
+				line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i), "kind"})
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.kind value %q is invalid", prefix, comp.Kind),
+					fix:    "use one of: server, worker, cron, operator, binary.",
+				})
+			}
+		}
+		// components[].schedule is required for kind=cron and meaningless
+		// otherwise.
+		if strings.EqualFold(strings.TrimSpace(comp.Kind), ComponentKindCron) && strings.TrimSpace(comp.Schedule) == "" {
+			line, col := findNodePos(root, []string{"components", fmt.Sprintf("[%d]", i)})
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.schedule is required for kind=cron", prefix),
+				fix:    "add a 5-field cron expression, e.g. schedule: \"*/5 * * * *\".",
+			})
+		}
+		// components[].path is intentionally not required: the cli loader
+		// applies a kind-derived default when the user omits it.
 	}
 
 	for i, fe := range cfg.Frontends {
 		prefix := fmt.Sprintf("frontends[%d]", i)
 		if strings.TrimSpace(fe.Name) == "" {
+			line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i)})
 			out = append(out, validationIssue{
-				msg: fmt.Sprintf("%s.name is required", prefix),
-				fix: "add a 'name:' for this frontend entry.",
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name is required", prefix),
+				fix:    "add a 'name:' for this frontend entry.",
 			})
 		}
 		// frontends[].type and frontends[].path are filled in by the
@@ -446,9 +713,46 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 		// be a regression for existing forge.yaml files.
 		if t := strings.ToLower(strings.TrimSpace(fe.Type)); t != "" {
 			if t != "nextjs" && t != "react_native" && t != "react-native" && t != "vite-spa" {
+				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "type"})
 				out = append(out, validationIssue{
-					msg: fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
-					fix: "use one of: nextjs, react-native, vite-spa.",
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.type value %q is invalid", prefix, fe.Type),
+					fix:    "use one of: nextjs, react-native, vite-spa.",
+				})
+			}
+		}
+		// frontends[].output selects the Next.js build/runtime shape.
+		// Only meaningful for type=nextjs; we still validate the value
+		// for other types because changing the type later shouldn't
+		// silently re-validate against a stale value. Defaults to
+		// "standalone" when empty.
+		if o := strings.ToLower(strings.TrimSpace(fe.Output)); o != "" {
+			if o != "static" && o != "standalone" && o != "server" {
+				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "output"})
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.output value %q is invalid", prefix, fe.Output),
+					fix:    "use one of: standalone (default), static, server.",
+				})
+			}
+		}
+		// frontends[].base_path mounts the frontend under a URL prefix.
+		// The shape is deliberately strict (see FrontendConfig.BasePath):
+		// the literal is rendered verbatim into next.config.ts and the
+		// generated basepath_gen.ts helper, so a malformed value here
+		// becomes a silently-broken deploy there. As with `output`, we
+		// validate regardless of frontend type so a later type change
+		// can't resurrect a stale invalid value.
+		if bp := strings.TrimSpace(fe.BasePath); bp != "" {
+			if msg, ok := ValidateBasePath(bp); !ok {
+				line, col := findNodePos(root, []string{"frontends", fmt.Sprintf("[%d]", i), "base_path"})
+				out = append(out, validationIssue{
+					line:   line,
+					column: col,
+					msg:    fmt.Sprintf("%s.base_path value %q is invalid: %s", prefix, fe.BasePath, msg),
+					fix:    `use a "/"-prefixed path with no trailing slash, e.g. "/admin" (omit the field entirely for root mounting).`,
 				})
 			}
 		}
@@ -462,13 +766,247 @@ func validateRequired(cfg *ProjectConfig) []validationIssue {
 	// breaking change. Explicit `features.orm: true` is the signal that
 	// the user is committing to the ORM and so must declare a driver.
 	if cfg.Features.ORM != nil && *cfg.Features.ORM && strings.TrimSpace(cfg.Database.Driver) == "" {
+		// Point at the `database:` block (or the file root if absent).
+		line, col := findNodePos(root, []string{"database"})
+		if line == 0 {
+			line, col = rootLine, rootCol
+		}
 		out = append(out, validationIssue{
-			msg: "'database.driver' is required when features.orm is explicitly enabled",
-			fix: "add 'database:\\n  driver: postgres' (or 'sqlite').",
+			line:   line,
+			column: col,
+			msg:    "'database.driver' is required when features.orm is explicitly enabled",
+			fix:    "add 'database:\\n  driver: postgres'.",
 		})
 	}
 
 	return out
+}
+
+// basePathSegmentRE matches one path segment of frontends[].base_path:
+// letters, digits, dot, underscore, hyphen. Deliberately narrower than
+// what URLs technically allow — the value is spliced verbatim into
+// next.config.ts (basePath / assetPrefix) and into generated TypeScript
+// string literals, so "no fancy chars" is the safety contract.
+var basePathSegmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidateBasePath checks the shape of a non-empty frontends[].base_path
+// value. Returns (reason, false) on failure, ("", true) when valid.
+//
+// Valid:   "/admin", "/internal/admin", "/v2.1_beta"
+// Invalid: "admin" (no leading slash), "/admin/" (trailing slash),
+//
+//	"/" (root mount — omit the field instead), "/ad min", "/a%2Fb".
+func ValidateBasePath(bp string) (string, bool) {
+	if !strings.HasPrefix(bp, "/") {
+		return `must start with "/"`, false
+	}
+	if bp == "/" {
+		return `bare "/" means root mounting — omit base_path instead`, false
+	}
+	if strings.HasSuffix(bp, "/") {
+		return `must not end with "/"`, false
+	}
+	for _, seg := range strings.Split(bp[1:], "/") {
+		if seg == "" {
+			return "must not contain empty segments (\"//\")", false
+		}
+		if !basePathSegmentRE.MatchString(seg) {
+			return fmt.Sprintf("segment %q contains characters outside [A-Za-z0-9._-]", seg), false
+		}
+	}
+	return "", true
+}
+
+// findNodePos walks a YAML mapping/sequence tree along a dot/index path
+// and returns the line/col of the resolved node. Path segments are
+// either bare keys (e.g. "module_path") or sequence indices in literal
+// `[N]` form (e.g. "[0]") — same shape used in qualifiedKey output so
+// callers can construct paths once and reuse them across issue messages
+// and position lookups. Returns (0, 0) when the path doesn't resolve;
+// callers fall back to the root position (or omit position entirely)
+// in that case.
+func findNodePos(node *yaml.Node, segments []string) (int, int) {
+	if node == nil {
+		return 0, 0
+	}
+	cur := node
+	for _, seg := range segments {
+		if cur == nil {
+			return 0, 0
+		}
+		if strings.HasPrefix(seg, "[") && strings.HasSuffix(seg, "]") {
+			// Sequence index.
+			if cur.Kind != yaml.SequenceNode {
+				return 0, 0
+			}
+			idx := 0
+			if _, err := fmt.Sscanf(seg, "[%d]", &idx); err != nil {
+				return 0, 0
+			}
+			if idx < 0 || idx >= len(cur.Content) {
+				return 0, 0
+			}
+			cur = cur.Content[idx]
+			continue
+		}
+		// Mapping key lookup.
+		if cur.Kind != yaml.MappingNode {
+			return 0, 0
+		}
+		var matched *yaml.Node
+		for i := 0; i+1 < len(cur.Content); i += 2 {
+			if cur.Content[i].Kind == yaml.ScalarNode && cur.Content[i].Value == seg {
+				matched = cur.Content[i+1]
+				break
+			}
+		}
+		if matched == nil {
+			return 0, 0
+		}
+		cur = matched
+	}
+	if cur == nil {
+		return 0, 0
+	}
+	return cur.Line, cur.Column
+}
+
+// goReservedWords is the set of Go keywords plus predeclared identifiers
+// that cannot be used as package names without breaking the build.
+// We use this to flag service / binary / frontend names whose canonical
+// Go-package form (naming.ServicePackage) lands on one of them — e.g.
+// a service named "select" or "type" would compile-fail downstream.
+var goReservedWords = map[string]bool{
+	// Keywords.
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	// Predeclared identifiers that would shadow basic types and break
+	// `package <name>` in the generated tree.
+	"bool": true, "byte": true, "complex64": true, "complex128": true,
+	"error": true, "float32": true, "float64": true, "int": true, "int8": true,
+	"int16": true, "int32": true, "int64": true, "rune": true, "string": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "any": true, "true": true, "false": true, "nil": true,
+	"iota": true, "init": true,
+}
+
+// validateServices walks services / binaries / frontends and rejects
+// name shapes that would silently break codegen downstream:
+//
+//   - empty name (or name that normalises to empty)
+//   - non-Go-legal package shape after normalisation (starts with a
+//     digit, contains punctuation/space that survives `ServicePackage`)
+//   - normalisation collisions across the same slice (e.g.
+//     `admin-server` and `admin_server` both → `admin_server` since
+//     hyphens normalise to underscores) AND across slices (a service
+//     and a binary with the same canonical form would write to the same
+//     scaffold directory)
+//   - the canonical form lands on a Go reserved word / predeclared
+//     identifier (e.g. "select", "type"), which would compile-fail
+//
+// The lint is name-shape-only — it does not look at config semantics.
+// Returning the issues batched lets ValidationError surface every
+// problem in one go.
+func validateServices(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
+
+	// Track canonical -> first-seen-source so collisions can name both
+	// the earlier and the later entry in the error message.
+	seen := map[string]string{}
+
+	check := func(rawName, source string, pathSegs []string) {
+		trimmed := strings.TrimSpace(rawName)
+		if trimmed == "" {
+			// Empty-name issues are already reported by validateRequired
+			// for the slices that have a required-name rule. Don't double
+			// up; just skip the canonical check.
+			return
+		}
+		// Resolve position once for whichever issue fires. Falls back to
+		// (0,0) if the path doesn't resolve — formatIssueLocation handles
+		// that by omitting the position part of the error.
+		line, col := findNodePos(root, pathSegs)
+		canonical := naming.ServicePackage(trimmed)
+		if canonical == "" {
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q normalises to an empty Go package", source, rawName),
+				fix:    "use at least one ASCII letter or digit in the name.",
+			})
+			return
+		}
+		if !isValidGoPackageIdent(canonical) {
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q produces invalid Go package %q", source, rawName, canonical),
+				fix:    "use ASCII letters, digits, hyphens, and underscores only; must not start with a digit.",
+			})
+			return
+		}
+		if goReservedWords[canonical] {
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q normalises to Go reserved word %q", source, rawName, canonical),
+				fix:    "rename so the compact lowercase form is not a Go keyword or predeclared identifier.",
+			})
+			return
+		}
+		if prev, ok := seen[canonical]; ok {
+			out = append(out, validationIssue{
+				line:   line,
+				column: col,
+				msg:    fmt.Sprintf("%s.name %q collides with %s after normalisation (both → %q)", source, rawName, prev, canonical),
+				fix:    "rename one of the entries so their compact lowercase forms differ.",
+			})
+			return
+		}
+		seen[canonical] = source
+	}
+
+	for i, comp := range cfg.Components {
+		check(comp.Name, fmt.Sprintf("components[%d]", i), []string{"components", fmt.Sprintf("[%d]", i), "name"})
+	}
+	for i, fe := range cfg.Frontends {
+		check(fe.Name, fmt.Sprintf("frontends[%d]", i), []string{"frontends", fmt.Sprintf("[%d]", i), "name"})
+	}
+
+	return out
+}
+
+// isValidGoPackageIdent reports whether s is a syntactically-legal Go
+// package identifier: starts with an ASCII letter or underscore, and
+// the rest are ASCII letters, digits, or underscores. We restrict to
+// ASCII even though Go technically allows broader Unicode-letter
+// package names — every forge-generated import path, directory name,
+// and KCL/k8s identifier downstream assumes ASCII, so a Unicode-letter
+// service name would surface as a downstream error far from the cause.
+func isValidGoPackageIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r > unicode.MaxASCII {
+			return false
+		}
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if !isLetter {
+				return false
+			}
+			continue
+		}
+		if !isLetter && !isDigit {
+			return false
+		}
+	}
+	return true
 }
 
 // looksLikeGoModulePath does a cheap shape check so we catch obvious

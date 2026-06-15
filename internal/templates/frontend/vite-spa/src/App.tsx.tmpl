@@ -1,4 +1,4 @@
-// forge:scaffold one-shot
+// yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 // App shell — yours to edit. Forge writes this once at scaffold time and
 // never overwrites it. Wire your sidebar nav / header / footer here. The
@@ -11,10 +11,27 @@
 
 import type { ReactNode } from "react";
 
+// MockModeBanner renders a loud, always-visible reminder when the app is
+// running against mock data instead of the real backend. Mock mode is
+// opt-in (VITE_MOCK_API in .env.local); the banner exists so a
+// working-looking UI can never silently masquerade as a working stack.
+function MockModeBanner() {
+  const mode = import.meta.env.VITE_MOCK_API;
+  if (mode !== "true" && mode !== "hybrid") return null;
+  return (
+    <div className="bg-amber-400 px-4 py-1.5 text-center text-sm font-semibold text-amber-950">
+      {mode === "true"
+        ? "MOCK DATA — backend not connected (unset VITE_MOCK_API in .env.local to use the real backend)"
+        : "HYBRID MOCK MODE — ?scenario= overlays active; unmatched RPCs hit the real backend"}
+    </div>
+  );
+}
+
 export default function App({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
-      <main className="flex-1 overflow-y-auto p-6">
+    <div className="flex h-screen flex-col overflow-hidden bg-gray-50">
+      <MockModeBanner />
+      <main className="min-h-0 flex-1 overflow-y-auto p-6">
         {children}
       </main>
     </div>

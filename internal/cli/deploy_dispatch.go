@@ -65,7 +65,6 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 						Replicas: c.Replicas,
 						Platform: c.Platform,
 						Ports:    c.Ports,
-						Ingress:  ingressSpecFromK8s(c.Ingress),
 					},
 				},
 			})
@@ -107,13 +106,6 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 		}
 	}
 	return deploytarget.GroupServices(envName, raw)
-}
-
-func ingressSpecFromK8s(in *K8sIngressSpec) *deploytarget.IngressSpec {
-	if in == nil {
-		return nil
-	}
-	return &deploytarget.IngressSpec{Host: in.Host, Path: in.Path}
 }
 
 // dispatchDeployGroups runs every group through its provider. Per-

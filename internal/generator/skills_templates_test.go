@@ -83,6 +83,11 @@ func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 		}
 
 		fenced := extractFencedBlocks(string(content))
+		// The canonical Tier-2 ownership banner ("yours: scaffolded once,
+		// never touched again — forge will not overwrite this file") is
+		// quoted verbatim in skill code examples; "forge will not ..." is
+		// prose inside that fixed sentence, not a command reference.
+		fenced = strings.ReplaceAll(fenced, "forge will not overwrite this file", "")
 		matches := forgeCommandRE.FindAllStringSubmatch(fenced, -1)
 		for _, m := range matches {
 			tokens := strings.Fields(m[1])

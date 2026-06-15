@@ -21,6 +21,14 @@
 // as a real go.mod requirement, not a vendored copy. The opt-in is
 // implicit (presence of the host-absolute replace in go.mod) and can be
 // disabled with `forge.yaml -> dev.vendor_local_forge_pkg: false`.
+//
+// Release builds of forge skip this flow entirely: they scaffold a
+// clean `require github.com/reliant-labs/forge/pkg vX.Y.Z` pin (no
+// replace), and the sync below is contractually a no-op for such
+// projects (TestSyncDevForgePkgReplace_CleanVersionPinUntouched).
+// `forge doctor` warns when a project is still vendored even though the
+// running forge release publishes a pkg version (doctor_pkgpin.go).
+// Full model: docs/pkg-versioning.md.
 package cli
 
 import (
@@ -143,6 +151,18 @@ func syncDevForgePkgReplace(projectDir string) (vendored bool, err error) {
 		// Look for a sibling forge checkout to refresh from.
 		if sib := siblingForgePkg(projectDir); sib != "" {
 			sourceDir = sib
+		} else {
+			// Already vendored and no sibling checkout to refresh from
+			// (the forge checkout may live anywhere on the host, or
+			// nowhere). The vendored copy IS the source of truth here —
+			// silently no-op. Pre-fix this fell through to
+			// looksLikeForgePkgDir("") and warned `replace target ""
+			// does not look like forge/pkg ... refusing to vendor` on
+			// EVERY generate, which reads like breakage when nothing is
+			// wrong (kalshi-trader FORGE_BACKLOG #14). The warning is
+			// reserved for the case where a sync SOURCE exists but the
+			// sync genuinely fails.
+			return localVendorPresent(projectDir), nil
 		}
 	default:
 		// No replace, or block-form replace, or replace to something

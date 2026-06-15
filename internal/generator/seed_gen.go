@@ -11,26 +11,25 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// EntityDefsToSeedEntities converts codegen.EntityDef slices (parsed from
-// proto/db/) into SeedEntity slices suitable for seed-data generation.
+// EntityDefsToSeedEntities converts codegen.EntityDef slices into
+// SeedEntity slices suitable for seed-data generation. Seeds INSERT
+// into real columns, so the source is the entity's introspected
+// COLUMNS (the applied schema) — never the wire message.
 func EntityDefsToSeedEntities(defs []codegen.EntityDef) []SeedEntity {
 	entities := make([]SeedEntity, 0, len(defs))
 	for _, d := range defs {
 		ent := SeedEntity{
 			TableName:  d.TableName,
-			Timestamps: hasTimestampFields(d),
-			SoftDelete: hasSoftDelete(d),
+			Timestamps: d.Timestamps,
+			SoftDelete: d.SoftDelete,
 		}
-		for _, f := range d.Fields {
+		for _, c := range d.Columns {
 			sf := SeedField{
-				ColumnName: f.Name,
-				FieldType:  goTypeToSeedFieldType(f.GoType),
-				IsPK:       f.Name == d.PkField,
-				NotNull:    true,
-				IsTimestamp: isTimestampColumn(f.Name),
-			}
-			if f.IsFK {
-				sf.References = f.FKTable + ".id"
+				ColumnName:  c.Name,
+				FieldType:   goTypeToSeedFieldType(seedGoTypeForColumn(c)),
+				IsPK:        c.IsPK,
+				NotNull:     c.NotNull,
+				IsTimestamp: isTimestampColumn(c.Name),
 			}
 			ent.Fields = append(ent.Fields, sf)
 		}
@@ -39,22 +38,19 @@ func EntityDefsToSeedEntities(defs []codegen.EntityDef) []SeedEntity {
 	return entities
 }
 
-func hasTimestampFields(d codegen.EntityDef) bool {
-	for _, f := range d.Fields {
-		if f.Name == "created_at" || f.Name == "updated_at" {
-			return true
-		}
+// seedGoTypeForColumn maps a canonical column type onto the Go-type
+// vocabulary goTypeToSeedFieldType understands.
+func seedGoTypeForColumn(c codegen.EntityColumn) string {
+	if c.IsArray {
+		return "[]" + c.Type
 	}
-	return false
-}
-
-func hasSoftDelete(d codegen.EntityDef) bool {
-	for _, f := range d.Fields {
-		if f.Name == "deleted_at" {
-			return true
-		}
+	switch c.Type {
+	case "time":
+		return "time.Time"
+	case "json", "bytes":
+		return "string"
 	}
-	return false
+	return c.Type
 }
 
 func isTimestampColumn(name string) bool {
@@ -63,6 +59,18 @@ func isTimestampColumn(name string) bool {
 }
 
 func goTypeToSeedFieldType(goType string) SeedFieldType {
+	// Repeated scalar entity fields are slice-typed and stored as JSON
+	// columns (jsonb on postgres, TEXT on sqlite) — seed them with JSON
+	// array literals whose element kind matches the Go slice, so the
+	// generated orm.ScanJSON round-trip reads them back cleanly.
+	if strings.HasPrefix(goType, "[]") && goType != "[]byte" {
+		switch goType {
+		case "[]string":
+			return SeedFieldJSONStrings
+		default:
+			return SeedFieldJSONNumbers
+		}
+	}
 	switch goType {
 	case "string":
 		return SeedFieldText
@@ -78,7 +86,7 @@ func goTypeToSeedFieldType(goType string) SeedFieldType {
 		return SeedFieldBoolean
 	case "[]byte":
 		return SeedFieldBytes
-	case "timestamppb.Timestamp":
+	case "timestamppb.Timestamp", "*timestamppb.Timestamp", "time.Time":
 		return SeedFieldTimestamp
 	default:
 		return SeedFieldText
@@ -100,6 +108,9 @@ const (
 	SeedFieldTimestamp
 	SeedFieldFloat
 	SeedFieldBytes
+	// JSON array columns (repeated scalar entity fields).
+	SeedFieldJSONStrings
+	SeedFieldJSONNumbers
 )
 
 // SeedField describes a single column for seed-data generation.
@@ -261,6 +272,16 @@ func generateValue(tableName string, f SeedField, i int) string {
 	// Float
 	if f.FieldType == SeedFieldFloat {
 		return fmt.Sprintf("%.2f", float64(i+1)*10.5)
+	}
+
+	// JSON array columns (repeated scalar fields) — deterministic JSON
+	// literals; sqlQuote single-quotes them like text, which postgres
+	// casts to jsonb and sqlite stores as TEXT.
+	if f.FieldType == SeedFieldJSONStrings {
+		return fmt.Sprintf(`["%s-%d","%s-%d"]`, col, i+1, col, i+2)
+	}
+	if f.FieldType == SeedFieldJSONNumbers {
+		return fmt.Sprintf("[%d, %d]", i+1, i+2)
 	}
 
 	// String fields — match by column name pattern.
@@ -460,6 +481,9 @@ func typedJSONValue(fields []SeedField, colName, value string) interface{} {
 				var f64 float64
 				fmt.Sscanf(value, "%f", &f64)
 				return f64
+			case SeedFieldJSONStrings, SeedFieldJSONNumbers:
+				// Keep the JSON array structured in the fixture file.
+				return json.RawMessage(value)
 			}
 		}
 	}

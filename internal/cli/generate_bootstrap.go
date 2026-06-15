@@ -8,21 +8,30 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // generateBootstrap regenerates pkg/app/bootstrap.go with explicit service construction.
 func generateBootstrap(services []codegen.ServiceDef, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, bootstrapFeatures codegen.BootstrapFeatures, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/bootstrap.go...")
 
-	workers := discoverWorkers(projectDir)
-	operators := discoverOperators(projectDir)
+	workers, err := discoverWorkers(projectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
 		return nil
 	}
 
-	packages := discoverPackages(projectDir)
+	packages, err := discoverPackages(projectDir)
+	if err != nil {
+		return fmt.Errorf("discover internal packages: %w", err)
+	}
 
 	// Build the webhook-services map keyed by snake-case service package
 	// name. The bootstrap template uses this to emit
@@ -52,7 +61,7 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return fmt.Errorf("failed to generate app_extras.go: %w", err)
 	}
 
-	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, hasDatabase, ormEnabled, projectDir, configFields, webhookServices, bootstrapFeatures, cs); err != nil {
+	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, configFields, webhookServices, bootstrapFeatures, cs); err != nil {
 		return fmt.Errorf("failed to generate bootstrap: %w", err)
 	}
 
@@ -121,14 +130,23 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
 	fmt.Println("🔧 Generating pkg/app/testing.go...")
 
-	workers := discoverWorkers(projectDir)
-	operators := discoverOperators(projectDir)
+	workers, err := discoverWorkers(projectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(projectDir)
+	if err != nil {
+		return err
+	}
 
 	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
 		return nil
 	}
 
-	packages := discoverPackages(projectDir)
+	packages, err := discoverPackages(projectDir)
+	if err != nil {
+		return fmt.Errorf("discover internal packages: %w", err)
+	}
 
 	if err := codegen.GenerateBootstrapTesting(services, packages, workers, operators, modulePath, multiTenantEnabled, projectDir, cs); err != nil {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
@@ -162,14 +180,18 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 // FieldName/VarName and the bootstrap template can emit the correct import
 // path. Directories listed in cfg.Contracts.Exclude are skipped wholesale,
 // matching the behavior of generate_middleware.go's contract walk.
-func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
+//
+// A walk error is returned so the caller can fail the pipeline rather
+// than silently emit a partial bootstrap (which would surface later as
+// a mysterious "undefined: pkg" go build error in pkg/app/bootstrap.go).
+func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error) {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {
-		return nil
+		return nil, nil
 	}
 
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, _ := loadProjectConfigFrom(cfgPath) // best-effort; nil cfg means no excludes
+	store, _ := loadProjectStoreFrom(cfgPath) // best-effort; nil store means no excludes
 
 	var names []string
 	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
@@ -191,7 +213,7 @@ func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
-		if cfg != nil && cfg.Contracts.IsExcluded(rel) {
+		if store != nil && store.Contracts().IsExcluded(rel) {
 			return filepath.SkipDir
 		}
 		contractPath := filepath.Join(path, "contract.go")
@@ -206,28 +228,37 @@ func discoverPackages(projectDir string) []codegen.BootstrapPackageData {
 		return nil
 	})
 	if walkErr != nil && !os.IsNotExist(walkErr) {
-		fmt.Fprintf(os.Stderr, "Warning: walking %s: %v\n", internalDir, walkErr)
-		return nil
+		return nil, fmt.Errorf("walking %s: %w", internalDir, walkErr)
 	}
 
 	return codegen.PackageDataFromNames(names, projectDir)
 }
 
-// discoverWorkers returns BootstrapWorkerData for all worker-type services in the project config.
-func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
+// discoverWorkers returns BootstrapWorkerData for all worker-type services in
+// the project config. Passes each service's explicit `path:` field through so
+// snake_case dir layouts (e.g. workers/climatology_refresh) produce the
+// correct import line — without `path:`, the legacy compaction would emit
+// workers/climatologyrefresh and the generated bootstrap would fail to
+// compile. The returned error is a disk-first resolution failure (worker dir
+// exists but its package clause is unparseable/conflicting) — see
+// codegen.ResolveComponentDir.
+func discoverWorkers(projectDir string) ([]codegen.BootstrapWorkerData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, err := loadProjectConfigFrom(cfgPath)
-	if err != nil || cfg == nil {
-		return nil
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil || store == nil {
+		return nil, nil
 	}
 
-	var names []string
-	for _, svc := range cfg.Services {
-		if strings.EqualFold(svc.Type, "worker") {
-			names = append(names, svc.Name)
+	var specs []codegen.WorkerSpec
+	for _, comp := range store.Components() {
+		// Both long-running workers and scheduled crons register a
+		// Worker bootstrap row (cron-ness lives in the scaffolded
+		// worker.go body, not the bootstrap wiring).
+		if comp.IsWorker() || comp.IsCron() {
+			specs = append(specs, codegen.WorkerSpec{Name: comp.Name, Path: comp.Path})
 		}
 	}
-	return codegen.WorkerDataFromNames(names, projectDir)
+	return codegen.WorkerDataFromSpecs(specs, projectDir)
 }
 
 // discoverWebhookServices returns a set of snake-case service package
@@ -237,23 +268,38 @@ func discoverWorkers(projectDir string) []codegen.BootstrapWorkerData {
 // mux without the user having to hand-edit the user-owned `RegisterHTTP`
 // body in handlers/<svc>/service.go.
 //
-// Keying matches `codegen.toServicePackage(svc.Name)` for proto-derived
+// Keying matches `naming.ServicePackage(svc.Name)` for proto-derived
 // services: forge.yaml's hyphenated CLI name ("admin-server") and the
 // proto's PascalCase form ("AdminServerService") both normalize to
-// "admin_server", which is also the directory leaf under handlers/.
+// "admin_server" (post-2026-06-08 snake-canonicalisation), which is
+// also the directory leaf under handlers/.
 func discoverWebhookServices(projectDir string) map[string]bool {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, err := loadProjectConfigFrom(cfgPath)
-	if err != nil || cfg == nil {
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil || store == nil {
 		return nil
+	}
+	cfg := store.Config()
+	// Best-effort registration view: webhooks on an unregistered service
+	// are a hard error earlier in the pipeline (generateWebhookRoutes),
+	// but this map is also built on standalone paths, so filter here too
+	// rather than emitting a RegisterWebhookRoutes call into a row
+	// constructor whose service the binary doesn't serve. A parse error
+	// falls open to "registered" — the build/pipeline reports it.
+	reg, regErr := loadServiceRegistry(projectDir)
+	if regErr != nil {
+		reg = &serviceRegistry{Exists: false}
 	}
 
 	out := map[string]bool{}
-	for _, svc := range cfg.Services {
-		if len(svc.Webhooks) == 0 {
+	for _, comp := range cfg.Components {
+		if len(comp.Webhooks) == 0 {
 			continue
 		}
-		out[generator.ServicePackageName(svc.Name)] = true
+		if isConnectServiceConfig(comp) && !reg.registered(comp.Name) {
+			continue
+		}
+		out[naming.ServicePackage(comp.Name)] = true
 	}
 	if len(out) == 0 {
 		return nil
@@ -261,19 +307,21 @@ func discoverWebhookServices(projectDir string) map[string]bool {
 	return out
 }
 
-// discoverOperators returns BootstrapOperatorData for all operator-type services in the project config.
-func discoverOperators(projectDir string) []codegen.BootstrapOperatorData {
+// discoverOperators returns BootstrapOperatorData for all operator-type
+// services in the project config. Honors the `path:` field for the same
+// reason as discoverWorkers; error semantics match discoverWorkers.
+func discoverOperators(projectDir string) ([]codegen.BootstrapOperatorData, error) {
 	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
-	cfg, err := loadProjectConfigFrom(cfgPath)
-	if err != nil || cfg == nil {
-		return nil
+	store, err := loadProjectStoreFrom(cfgPath)
+	if err != nil || store == nil {
+		return nil, nil
 	}
 
-	var names []string
-	for _, svc := range cfg.Services {
-		if strings.EqualFold(svc.Type, "operator") {
-			names = append(names, svc.Name)
+	var specs []codegen.OperatorSpec
+	for _, comp := range store.Components() {
+		if comp.IsOperator() {
+			specs = append(specs, codegen.OperatorSpec{Name: comp.Name, Path: comp.Path})
 		}
 	}
-	return codegen.OperatorDataFromNames(names, projectDir)
+	return codegen.OperatorDataFromSpecs(specs, projectDir)
 }

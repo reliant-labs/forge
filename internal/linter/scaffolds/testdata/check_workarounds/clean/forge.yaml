@@ -2,6 +2,8 @@ name: clean-fixture
 module_path: example.com/clean
 kind: service
 binary: shared
-binaries:
+components:
   - name: server
+    kind: binary
   - name: workspace-proxy
+    kind: binary

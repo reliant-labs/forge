@@ -3,8 +3,11 @@ package middleware
 // KeyValidator is aliased from auth.KeyValidator in auth_gen.go.
 //
 // To wire API-key auth, implement KeyValidator with your storage backend
-// (database, cache, etc.) and pass it to GeneratedAuthInterceptor when
-// constructing the interceptor chain in pkg/app/setup.go.
+// (database, cache, etc.) and install it via
+// middleware.SetGeneratedKeyValidator from pkg/app/setup.go or
+// pkg/app/post_bootstrap.go (both run before the listener binds). The
+// generated cmd/server.go already mounts the header-aware interceptor;
+// until your validator is installed, API-key requests fail closed.
 //
 // Example implementation:
 //
@@ -22,3 +25,7 @@ package middleware
 //	    }
 //	    return &claims, nil
 //	}
+//
+// Then install it (pkg/app/post_bootstrap.go):
+//
+//	middleware.SetGeneratedKeyValidator(&DBKeyValidator{db: app.DB})

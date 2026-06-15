@@ -10,7 +10,6 @@ import (
 	"github.com/reliant-labs/forge/internal/assets"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/packs"
 )
 
@@ -83,6 +82,13 @@ func ensureGenGoMod(projectDir string) error {
 
 	modulePath, err := codegen.GetModulePath(projectDir)
 	if err != nil {
+		// Intentional soft warning: this is a best-effort bootstrap for
+		// fresh-checkout worktrees. If we can't read the module path the
+		// project is unusable anyway — the downstream `go list ./...`
+		// step (which the pipeline runs before any codegen) will surface
+		// the canonical "module path missing" error with full context.
+		// Promoting here would only produce a noisier, less actionable
+		// failure for the same underlying cause.
 		fmt.Fprintf(os.Stderr, "Warning: bootstrap gen/go.mod skipped (cannot read project module path): %v\n", err)
 		return nil
 	}
@@ -170,37 +176,6 @@ func runGoModTidyRoot(projectDir string) error {
 
 	fmt.Println("  ✅ go.mod tidied")
 	return nil
-}
-
-// rehashTrackedFiles refreshes the on-disk-content checksum for every entry
-// in cs.Files. Called after goimports (or any other post-write formatter)
-// runs over the project so that audit doesn't flag goimports-induced
-// import-group rearrangements as user edits. Missing files are dropped from
-// the tracker rather than left with stale hashes — they'll be re-recorded
-// next generate cycle if forge still emits them.
-//
-// This complements `WriteGeneratedFile`: WriteGeneratedFile records the
-// hash of the pre-formatter content (so the History entry survives), and
-// this pass updates the *current* Hash to match the formatter's output.
-func rehashTrackedFiles(projectDir string, cs *generator.FileChecksums) {
-	if cs == nil || len(cs.Files) == 0 {
-		return
-	}
-	for rel := range cs.Files {
-		full := filepath.Join(projectDir, rel)
-		content, err := os.ReadFile(full)
-		if err != nil {
-			// File was removed (e.g. cleanup of stale codegen). Drop the
-			// stale checksum so audit doesn't keep reporting it.
-			if os.IsNotExist(err) {
-				delete(cs.Files, rel)
-			}
-			continue
-		}
-		entry := cs.Files[rel]
-		entry.Hash = generator.HashContent(content)
-		cs.Files[rel] = entry
-	}
 }
 
 // runGoimportsOnGenerated runs goimports on generated Go files to fix import grouping.

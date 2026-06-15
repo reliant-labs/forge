@@ -109,7 +109,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
   );
 }
 
-const positionStyles: Record<string, string> = {
+const positionStyles: Record<NonNullable<ToastNotificationProps["position"]>, string> = {
   "top-right": "top-4 right-4",
   "top-left": "top-4 left-4",
   "bottom-right": "bottom-4 right-4",

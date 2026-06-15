@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 )
 
@@ -344,15 +345,16 @@ func TestLoadProjectConfigEnv_ProjectsForgeYAMLConfig(t *testing.T) {
 module_path: github.com/example/testproj
 version: "0.1.0"
 binary: shared
-services:
-  - name: api
-    type: go_service
-    path: handlers/api
-    port: 8080
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:  "api",
+		Kind:  "server",
+		Path:  "handlers/api",
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+	})
 	siblingContent := `environment: development
 log_format: text
 log_level: debug
@@ -389,15 +391,16 @@ func TestLoadProjectConfigEnv_UnknownEnvReturnsEmpty(t *testing.T) {
 module_path: github.com/example/testproj
 version: "0.1.0"
 binary: shared
-services:
-  - name: api
-    type: go_service
-    path: handlers/api
-    port: 8080
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:  "api",
+		Kind:  "server",
+		Path:  "handlers/api",
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+	})
 	t.Chdir(dir)
 
 	cfg, err := loadProjectConfig()
@@ -444,11 +447,11 @@ func TestHostEnvComposition_ProjectConfigUnderSecretsFile(t *testing.T) {
 	final := hostlaunch.LayerHostEnv(base, projectConfig, secrets, envVars)
 
 	wants := map[string]string{
-		"PATH":        "/usr/bin",   // base wins
+		"PATH":        "/usr/bin",    // base wins
 		"ENVIRONMENT": "development", // forge.yaml passes through
-		"LOG_LEVEL":   "debug",      // .env.<env> wins over forge.yaml
-		"LOG_FORMAT":  "json",       // KCL wins over forge.yaml
-		"STRIPE_KEY":  "sk_test_xx", // .env.<env> passes through
+		"LOG_LEVEL":   "debug",       // .env.<env> wins over forge.yaml
+		"LOG_FORMAT":  "json",        // KCL wins over forge.yaml
+		"STRIPE_KEY":  "sk_test_xx",  // .env.<env> passes through
 	}
 	for k, v := range wants {
 		if !envSliceContains(final, k+"="+v) {
@@ -471,8 +474,8 @@ func TestHostEnvComposition_ProjectConfigUnderSecretsFile(t *testing.T) {
 // developer-local overrides — the dev-local layer has to win or the
 // override is invisible.
 func TestHostEnvComposition_DotEnvWinsOverForgeYAML(t *testing.T) {
-	projectConfig := map[string]string{"LOG_LEVEL": "info"}      // committed
-	secrets := map[string]string{"LOG_LEVEL": "trace"}           // dev-local override
+	projectConfig := map[string]string{"LOG_LEVEL": "info"} // committed
+	secrets := map[string]string{"LOG_LEVEL": "trace"}      // dev-local override
 	final := hostlaunch.LayerHostEnv([]string{"PATH=/usr/bin"}, projectConfig, secrets, nil)
 
 	if !envSliceContains(final, "LOG_LEVEL=trace") {

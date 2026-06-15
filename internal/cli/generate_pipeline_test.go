@@ -37,6 +37,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 	want := []string{
 		"load project config",
 		"load checksums",
+		"migrate legacy checksums manifest",
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
 		"sync forge/pkg dev replace",
@@ -47,9 +48,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"buf generate (Go stubs)",
 		"descriptor extraction",
 		"OpenAPI specs (protoc-gen-connect-openapi)",
-		"ORM generate (proto/db)",
-		"initial migration scaffold",
-		"entity-aware migration",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",
 		"config loader (proto/config)",
@@ -58,7 +56,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"ensure frontend components",
 		"frontend CRUD pages",
 		"frontend nav + dashboard",
-		"cleanup stale codegen",
 		"service stubs",
 		"internal/db/ ORM (entity-driven)",
 		"CRUD handlers",
@@ -68,7 +65,10 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"auth middleware",
 		"tenant middleware (auto-enable + emit)",
 		"webhook routes",
+		"MCP manifest",
+		"go mod tidy (pre-wiring)",
 		"pkg/app/bootstrap.go",
+		"per-service subcommands (cmd/services_gen.go)",
 		"pkg/app/testing.go",
 		"pkg/app/migrate.go",
 		"sqlc generate",
@@ -76,17 +76,22 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"CI workflows",
 		"pack generate hooks",
 		"regenerate infra files",
+		"components_gen.json",
 		"per-env deploy config",
+		"ingress k3d ports fragment",
 		"Grafana dashboards",
 		"entity-aware seed data",
 		"frontend mocks + transport",
+		"agent skills (.claude/skills)",
 		"go mod tidy (root)",
 		"goimports on generated Go",
+		"cleanup stale codegen",
+		"retire obsolete disowns",
 		"rehash tracked files",
-		"refresh ORM output mtimes",
 		"post-gen validation",
 		"detect renamed Tier-1 exports",
-		"check forked-sibling dangling refs",
+		"check disowned-sibling dangling refs",
+		"check stale scaffold tests",
 		"go build (validate generated code)",
 	}
 
@@ -217,6 +222,154 @@ func TestGatePreChecksNotSkipped(t *testing.T) {
 	}
 }
 
+// TestTemplatesOnlyAllowlistMembersExist asserts every step.Name
+// listed in templatesOnlyStepAllow corresponds to a real step in
+// generateSteps(). A typo or a step rename that drops a member from
+// the live plan would otherwise silently turn `--templates-only` into
+// a no-op — exactly the surface the rest of this file exists to
+// prevent.
+func TestTemplatesOnlyAllowlistMembersExist(t *testing.T) {
+	live := make(map[string]bool, len(generateSteps()))
+	for _, s := range generateSteps() {
+		live[s.Name] = true
+	}
+	for name := range templatesOnlyStepAllow {
+		if !live[name] {
+			t.Errorf("templatesOnlyStepAllow lists %q, but no step in generateSteps() has that name", name)
+		}
+	}
+}
+
+// TestTemplatesOnlyExcludesCleanupAndValidate pins the contract that
+// `--templates-only` skips the cleanup sweep, drift guards, validation
+// tail, and external generators. Updating templatesOnlyStepAllow to
+// include any of these names should be a deliberate, reviewed change —
+// the whole point of the flag is to avoid them.
+func TestTemplatesOnlyExcludesCleanupAndValidate(t *testing.T) {
+	mustExclude := []string{
+		// Cleanup / rehash.
+		"cleanup stale codegen",
+		"rehash tracked files",
+		// Drift / Tier-1 guards.
+		"check Tier-1 file-stomp guard",
+		"snapshot Tier-1 exports",
+		"detect renamed Tier-1 exports",
+		"check disowned-sibling dangling refs",
+		// Validation.
+		"pre-codegen contract check",
+		"post-gen validation",
+		"go build (validate generated code)",
+		// External generators / subprocess tooling.
+		"buf generate (Go stubs)",
+		"descriptor extraction",
+		"OpenAPI specs (protoc-gen-connect-openapi)",
+		"TypeScript stubs (frontends)",
+		"sqlc generate",
+		"go mod tidy (gen/)",
+		"go mod tidy (root)",
+		"goimports on generated Go",
+		"ingress k3d ports fragment",
+		// Migration scaffolding (mutates db/migrations — unsafe mid-WIP).
+		"entity-aware seed data",
+	}
+	for _, name := range mustExclude {
+		if templatesOnlyStepAllow[name] {
+			t.Errorf("templatesOnlyStepAllow must NOT include %q — it's a cleanup/drift/validate/external-generator step", name)
+		}
+	}
+}
+
+// TestTemplatesOnlyIncludesTemplateRenderSteps pins the positive side:
+// the flag must keep the template-driven Tier-1 / Tier-2 / frontend
+// emit steps that the documented use case ("propagate a template
+// change to a WIP project") relies on. If one of these gets dropped
+// the flag silently fails to do its job — the downstream project would
+// run `forge generate --templates-only` and the changed bootstrap.go
+// template would not re-render.
+func TestTemplatesOnlyIncludesTemplateRenderSteps(t *testing.T) {
+	mustInclude := []string{
+		"service stubs",
+		"pkg/app/bootstrap.go",
+		"pkg/app/testing.go",
+		"pkg/app/migrate.go",
+		"CI workflows",
+		"regenerate infra files",
+		"frontend nav + dashboard",
+		"frontend mocks + transport",
+		"service mocks",
+		"internal package contracts",
+		"authorizer",
+		"CRUD handlers",
+	}
+	for _, name := range mustInclude {
+		if !templatesOnlyStepAllow[name] {
+			t.Errorf("templatesOnlyStepAllow MUST include %q — it's a template-driven render step the flag's use case depends on", name)
+		}
+	}
+}
+
+// TestTemplatesOnlyFilterShape exercises the same filter logic
+// runGeneratePipelineFlags applies (allowlist intersection). When the
+// flag is off, every step survives. When the flag is on,
+// stepCleanupStale and stepGoBuildValidate are dropped while
+// stepServiceStubs and stepBootstrap are kept. Mirrors the cobra
+// runtime path without spinning up a real project.
+func TestTemplatesOnlyFilterShape(t *testing.T) {
+	all := generateSteps()
+
+	// Flag off: filter is a no-op — every step survives.
+	t.Run("off", func(t *testing.T) {
+		got := filterByTemplatesOnly(all, false)
+		if len(got) != len(all) {
+			t.Errorf("with TemplatesOnly=false, filter dropped %d steps; want 0", len(all)-len(got))
+		}
+	})
+
+	// Flag on: cleanup + validate drop, template-emit steps survive.
+	t.Run("on", func(t *testing.T) {
+		got := filterByTemplatesOnly(all, true)
+		names := make(map[string]bool, len(got))
+		for _, s := range got {
+			names[s.Name] = true
+		}
+		if names["cleanup stale codegen"] {
+			t.Error("--templates-only should drop \"cleanup stale codegen\" but it survived the filter")
+		}
+		if names["go build (validate generated code)"] {
+			t.Error("--templates-only should drop \"go build (validate generated code)\" but it survived the filter")
+		}
+		if names["check Tier-1 file-stomp guard"] {
+			t.Error("--templates-only should drop \"check Tier-1 file-stomp guard\" but it survived the filter")
+		}
+		if !names["service stubs"] {
+			t.Error("--templates-only must keep \"service stubs\" — it's a template-driven render step")
+		}
+		if !names["pkg/app/bootstrap.go"] {
+			t.Error("--templates-only must keep \"pkg/app/bootstrap.go\" — the canonical template the flag exists to re-render")
+		}
+		if !names["regenerate infra files"] {
+			t.Error("--templates-only must keep \"regenerate infra files\" — Tier-1 infra is template-driven")
+		}
+	})
+}
+
+// filterByTemplatesOnly mirrors the allowlist-intersection filter
+// runGeneratePipelineFlags applies when flags.TemplatesOnly is set.
+// Extracted as a test-only helper so we can exercise the exact filter
+// shape without standing up the full cobra entrypoint.
+func filterByTemplatesOnly(steps []GenStep, on bool) []GenStep {
+	if !on {
+		return steps
+	}
+	out := steps[:0:0]
+	for _, s := range steps {
+		if templatesOnlyStepAllow[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // stepNames extracts the ordered names from a step slice. Helper for
 // the determinism test.
 func stepNames(steps []GenStep) []string {
@@ -228,38 +381,46 @@ func stepNames(steps []GenStep) []string {
 }
 
 // TestDeriveOrmEnabledMatrix is the golden test guarding step 6's
-// ORM-enable probe order. The pre-refactor inline block did:
-//
-//   1. if hasDB && proto/db has at least one .proto file → ormEnabled=true
-//   2. else if internal/db/types.go exists → ormEnabled=true
-//   3. else ormEnabled=false
-//
-// Reordering or skipping a probe changes which projects emit ORM
-// wire-up in pkg/app/bootstrap.go, which is hard to spot in a smoke
-// test. This matrix pins the exact behavior across every combination
-// of probe inputs that mattered pre-refactor.
+// ORM-enable probe. Entities are projections of the applied schema:
+// stepInternalDBORM (upstream) writes internal/db/*_orm.go from
+// db/migrations, so the ORM wire-up belongs in pkg/app/bootstrap.go
+// exactly when internal/db contains generated ORM output — any
+// *_orm.go file, or the legacy internal/db/types.go from older
+// projects. proto/db is no longer consulted (the proto-entity path is
+// retired).
 func TestDeriveOrmEnabledMatrix(t *testing.T) {
 	cases := []struct {
-		name           string
-		hasDB          bool
-		makeProtoFile  bool // create proto/db/v1/*.proto?
-		makeTypesFile  bool // create internal/db/types.go?
-		want           bool
+		name          string
+		makeDBDir     bool // create internal/db/ (possibly empty)?
+		makeOrmFile   bool // create internal/db/users_orm.go?
+		makeTypesFile bool // create internal/db/types.go?
+		makeProtoFile bool // create proto/db/v1/*.proto (must be ignored)?
+		want          bool
 	}{
-		{name: "neither: ORM off", want: false},
-		{name: "proto/db dir only (hasDB=true), no .proto files: ORM off", hasDB: true, want: false},
-		{name: "proto/db dir + .proto file: ORM on (rule 1)", hasDB: true, makeProtoFile: true, want: true},
-		{name: "internal/db/types.go only: ORM on (rule 2 fallback)", makeTypesFile: true, want: true},
-		{name: "hasDB=false but types.go present: ORM on", makeTypesFile: true, want: true},
-		{name: "proto/db with .proto AND types.go: ORM on (rule 1 wins)", hasDB: true, makeProtoFile: true, makeTypesFile: true, want: true},
-		{name: "hasDB=true, no proto files, types.go present: ORM on (falls through to rule 2)", hasDB: true, makeTypesFile: true, want: true},
+		{name: "no internal/db: ORM off", want: false},
+		{name: "empty internal/db: ORM off", makeDBDir: true, want: false},
+		{name: "internal/db/users_orm.go: ORM on", makeOrmFile: true, want: true},
+		{name: "legacy internal/db/types.go: ORM on", makeTypesFile: true, want: true},
+		{name: "both _orm.go and types.go: ORM on", makeOrmFile: true, makeTypesFile: true, want: true},
+		{name: "proto/db .proto alone no longer enables ORM", makeProtoFile: true, want: false},
+		{name: "proto/db .proto plus _orm.go: ORM on (from internal/db, not proto)", makeProtoFile: true, makeOrmFile: true, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if tc.hasDB {
-				if err := os.MkdirAll(filepath.Join(dir, "proto", "db"), 0o755); err != nil {
-					t.Fatalf("mkdir proto/db: %v", err)
+			if tc.makeDBDir || tc.makeOrmFile || tc.makeTypesFile {
+				if err := os.MkdirAll(filepath.Join(dir, "internal", "db"), 0o755); err != nil {
+					t.Fatalf("mkdir internal/db: %v", err)
+				}
+			}
+			if tc.makeOrmFile {
+				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "users_orm.go"), []byte("package db\n"), 0o644); err != nil {
+					t.Fatalf("write users_orm.go: %v", err)
+				}
+			}
+			if tc.makeTypesFile {
+				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "types.go"), []byte("package db\n"), 0o644); err != nil {
+					t.Fatalf("write types.go: %v", err)
 				}
 			}
 			if tc.makeProtoFile {
@@ -271,21 +432,13 @@ func TestDeriveOrmEnabledMatrix(t *testing.T) {
 					t.Fatalf("write proto: %v", err)
 				}
 			}
-			if tc.makeTypesFile {
-				if err := os.MkdirAll(filepath.Join(dir, "internal", "db"), 0o755); err != nil {
-					t.Fatalf("mkdir internal/db: %v", err)
-				}
-				if err := os.WriteFile(filepath.Join(dir, "internal", "db", "types.go"), []byte("package db\n"), 0o644); err != nil {
-					t.Fatalf("write types.go: %v", err)
-				}
-			}
-			got, err := deriveOrmEnabled(dir, tc.hasDB)
+			got, err := deriveOrmEnabled(dir)
 			if err != nil {
 				t.Fatalf("deriveOrmEnabled: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("deriveOrmEnabled(hasDB=%v, proto=%v, types=%v) = %v, want %v",
-					tc.hasDB, tc.makeProtoFile, tc.makeTypesFile, got, tc.want)
+				t.Errorf("deriveOrmEnabled(orm=%v, types=%v, proto=%v) = %v, want %v",
+					tc.makeOrmFile, tc.makeTypesFile, tc.makeProtoFile, got, tc.want)
 			}
 		})
 	}

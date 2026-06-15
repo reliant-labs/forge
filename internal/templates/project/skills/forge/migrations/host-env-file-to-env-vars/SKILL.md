@@ -4,6 +4,7 @@ description: Split HostDeploy's env_file into KCL-declared env_vars (reproducibl
 applies-from: v0.6.0
 applies-to: v0.7.0
 detection: grep -l "env_file" deploy/kcl/
+relevance: migration
 ---
 
 # Migrating HostDeploy env_file → env_vars + secrets_file

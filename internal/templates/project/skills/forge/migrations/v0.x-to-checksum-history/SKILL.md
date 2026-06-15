@@ -1,9 +1,19 @@
 ---
 name: v0.x-to-checksum-history
 description: Migrate `.forge/checksums.json` from the legacy flat shape (path -> hex string) to the structured shape (path -> {hash, history[]}). The new shape lets `forge upgrade` distinguish stale codegen from genuine user edits, eliminating false-positive "user-modified (skipped)" reports on real template upgrades.
+relevance: migration
 ---
 
 # Prior-render checksum history
+
+> **SUPERSEDED.** `.forge/checksums.json` no longer exists in either
+> shape: generated files are now self-certifying (each carries an
+> embedded `forge:hash=<sha256>` marker in its DO-NOT-EDIT header), and
+> the first `forge generate` / `forge upgrade` on a legacy project
+> migrates the manifest automatically — pristine files get stamped,
+> disowns move to `.forge/disowned.json`, comment-incapable outputs to
+> `.forge/hashes.json`, and checksums.json is deleted. This skill is
+> kept only as historical context for the intermediate shape.
 
 Use this skill when `forge upgrade` previously flagged Tier-2 files as
 user-modified even though you didn't touch them — the diff just showed a
@@ -119,6 +129,13 @@ genuinely user-edited ones.
   across a project's lifetime.
 - **`--force` still wins.** `forge upgrade --force` overwrites
   user-modified files unconditionally, same as before.
+- **Healing is loud, and `--no-heal` opts out.** When the on-disk
+  content matches a *prior* render (the auto-heal case), every
+  overwrite prints `♻️  healing stale codegen: <path>` — never silent.
+  If you deliberately reverted a file to content forge once rendered
+  (your edit hash-collides with history), re-run
+  `forge generate --no-heal`: historical matches are then treated as
+  hand-edits — the Tier-1 guard reports them instead of regenerating.
 
 ## 5. Verification
 

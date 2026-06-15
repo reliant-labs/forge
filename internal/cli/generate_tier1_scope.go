@@ -1,7 +1,7 @@
 // Tier-1 stomp-guard scoping.
 //
 // The pre-pipeline stomp guard (stepCheckTier1Drift) used to fail on
-// ANY drifted Tier-1 file in `.forge/checksums.json`, even when the
+// ANY drifted Tier-1 file the scan found, even when the
 // current `forge generate` invocation would never re-emit that file.
 // In multi-lane migrations that hard-failed the guard for sibling work
 // (e.g. agent A is porting internal/proxy/ and the guard rejected
@@ -53,7 +53,7 @@ func tier1OwnerGate(relPath string) func(*pipelineContext) bool {
 //   - prefix: trailing-slash directory prefix (e.g. "pkg/middleware/").
 //   - glob:   suffix-aware shell glob applied per segment using
 //     path.Match semantics (e.g. "pkg/middleware/*_gen.go",
-//     "handlers/*/handlers_crud_gen.go",
+//     "handlers/*/handlers_crud_ops_gen.go",
 //     "frontends/*/src/hooks/*-hooks.ts").
 type tier1OwnerEntry struct {
 	exact  string
@@ -115,11 +115,21 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// stepBootstrap. Same gate — no entrypoints means no wire shape.
 	{exact: "pkg/app/wire_gen.go", gate: gateCodegenHasAnyEntrypoint},
 
-	// handlers/<svc>/handlers_crud_gen.go is emitted by stepCRUDHandlers.
-	// Gated on codegen-enabled AND ctx.HasServices. A no-services project
-	// (e.g. lib/CLI kind) shouldn't see stale CRUD-handler drift block
-	// its run.
-	{glob: "handlers/*/handlers_crud_gen.go", gate: gateCodegenHasServices},
+	// handlers/<svc>/handlers_crud_ops_gen.go is emitted by
+	// stepCRUDHandlers (the Tier-1 projection half of the CRUD split; the
+	// RPC implementations live in user-owned handlers_crud.go). Gated on
+	// codegen-enabled AND ctx.HasServices. A no-services project (e.g.
+	// lib/CLI kind) shouldn't see stale CRUD-handler drift block its run.
+	{glob: "handlers/*/handlers_crud_ops_gen.go", gate: gateCodegenHasServices},
+
+	// internal/db/orm_shared.go + internal/db/*_orm.go are emitted by
+	// stepInternalDBORM (M3: the ORM emitter records its outputs in the
+	// manifest so `forge disown` works on them and audit doesn't see
+	// orphans). When the ORM step is gated off (features.orm=false or
+	// no services), absence from WrittenThisRun is uninformative and
+	// the stale sweep must leave the tracked entity code alone.
+	{exact: "internal/db/orm_shared.go", gate: gateORMHasServices},
+	{glob: "internal/db/*_orm.go", gate: gateORMHasServices},
 
 	// pkg/middleware/*_gen.go covers the auth/tenant middleware
 	// emitters (stepAuthMiddleware + stepTenantMiddleware). Both are
@@ -135,6 +145,20 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// stepFrontendHooks. Gated on frontend feature + HasServices
 	// (no services → no proto → nothing to hook).
 	{glob: "frontends/*/src/hooks/*-hooks.ts", gate: gateFrontendHasServices},
+
+	// internal/<pkg>/mock_gen.go is emitted by stepInternalContracts
+	// (gateContractsEnabled). When features.contracts=false the emitter
+	// never runs, so absence-from-WrittenThisRun is uninformative and
+	// the stale sweep must leave the mocks alone — `--force-cleanup`
+	// deleting live mocks that package tests compile against is the
+	// disaster case (kalshi FORGE_BACKLOG #15). Two depth variants
+	// because filepath.Match's `*` doesn't cross `/` and the contracts
+	// walk descends into nested packages (internal/mcp/database).
+	// Deeper nesting falls through to "no registered owner" which is
+	// fail-closed (stays in scope) — same posture as every other
+	// unregistered path.
+	{glob: "internal/*/mock_gen.go", gate: gateContractsEnabled},
+	{glob: "internal/*/*/mock_gen.go", gate: gateContractsEnabled},
 }
 
 // filterTier1DriftInScope returns the subset of `drift` whose owning

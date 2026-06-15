@@ -71,17 +71,36 @@ func generateTenantMiddleware(cfg *config.ProjectConfig, projectDir string, cs *
 // cs is the project's checksum tracker — passing it ensures the rendered
 // webhook_routes_gen.go is recorded so it doesn't show up as an orphan
 // in `forge audit`. A nil cs is tolerated.
-func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *generator.FileChecksums) error {
-	for _, svc := range cfg.Services {
+//
+// reg is the parsed pkg/app/services.go registration view: webhook
+// routes mount on the serving binary's mux, so declaring webhooks on a
+// service this binary does not register is a hard generate-time error
+// naming the registration file — the declaration could never take
+// effect, and skipping it silently would hide a real misconfiguration.
+func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, projectDir string, cs *generator.FileChecksums) error {
+	for _, svc := range cfg.Components {
 		if len(svc.Webhooks) == 0 {
 			continue
 		}
+		if isConnectServiceConfig(svc) && !reg.registered(svc.Name) {
+			return fmt.Errorf("service %q declares webhooks in forge.yaml but is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there, or move the webhooks to the binary that serves the service",
+				svc.Name, serviceRegistryRelPath, codegen.ServiceRowFuncName(svc.Name))
+		}
 
-		svcPkg := generator.ServicePackageName(svc.Name)
-		svcDir := filepath.Join(projectDir, "handlers", svcPkg)
-		if _, err := os.Stat(svcDir); os.IsNotExist(err) {
+		// Disk-first: webhook_routes_gen.go lands inside the EXISTING
+		// handler dir and must declare that dir's real package clause —
+		// the dir spelling and the clause can both legally differ from
+		// what naming.ServicePackage would synthesize from the forge.yaml
+		// name. See codegen.ResolveComponentDir for the bug class.
+		res, err := codegen.ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		if !res.FromDisk {
 			continue // service directory doesn't exist yet
 		}
+		svcPkg := res.PackageName
+		svcDirLeaf := filepath.FromSlash(res.ImportLeaf)
 
 		var entries []templates.WebhookRouteEntryData
 		for _, wh := range svc.Webhooks {
@@ -101,7 +120,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 			return fmt.Errorf("render webhook routes for %s: %w", svc.Name, err)
 		}
 
-		relPath := filepath.Join("handlers", svcPkg, "webhook_routes_gen.go")
+		relPath := filepath.Join("handlers", svcDirLeaf, "webhook_routes_gen.go")
 		if _, err := generator.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write webhook routes for %s: %w", svc.Name, err)
 		}
@@ -127,7 +146,15 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, projectDir string, cs *gen
 // path, e.g. "internal/linter/contract") are skipped wholesale — the walk does
 // not descend into them. testdata/ subtrees are also skipped because they hold
 // linter fixtures whose contract.go files are not real packages.
-func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConfig) error {
+//
+// cs is the project's checksum tracker. Passing it threads every emitted
+// mock_gen.go through the WriteGeneratedFile chokepoint so the path lands
+// in checksums.WrittenThisRun — without it, the stale-artifact sweep
+// flagged every manifest-tracked mock_gen.go as a deletion candidate on
+// every run (kalshi FORGE_BACKLOG #15). A nil cs is tolerated (the file
+// is still written; no checksum is recorded — and with no manifest there
+// is correspondingly no sweep that could flag it).
+func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConfig, cs *generator.FileChecksums) error {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {
 		return nil
@@ -145,7 +172,13 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			extraIfaceTypes[t] = true
 		}
 	}
-	contractOpts := contract.Options{ExtraInterfaceTypes: extraIfaceTypes}
+	contractOpts := contract.Options{
+		ExtraInterfaceTypes: extraIfaceTypes,
+		// Route the mock_gen.go write through the manifest chokepoint —
+		// see the cs param doc above for the stale-sweep rationale.
+		ProjectRoot: projectDir,
+		Checksums:   cs,
+	}
 
 	generated := 0
 	walkErr := filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
@@ -310,7 +343,9 @@ func packageHasTwoResultNew(dir string) bool {
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
-func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
+// authProvider (forge.yaml auth.provider, any spelling) gates the
+// generated middleware.InstallGeneratedAuth call site in runServer.
+func generateConfigLoader(projectDir string, features config.FeaturesConfig, authProvider string, cs *generator.FileChecksums) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/config/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto/config"))
@@ -344,8 +379,9 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 		delete(configFields, "ConnMaxLifetime")
 	}
 
-	// Re-render cmd/server.go so it stays in sync with the config fields.
-	if err := codegen.GenerateCmdServerWithFields(configFields, projectDir, cs); err != nil {
+	// Re-render cmd/server.go so it stays in sync with the config fields
+	// and the forge.yaml auth provider.
+	if err := codegen.GenerateCmdServerWithFields(configFields, authProvider, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
 	}
 

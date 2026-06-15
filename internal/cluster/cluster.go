@@ -31,14 +31,15 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"gopkg.in/yaml.v3"
 )
 
@@ -212,14 +213,30 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 //
 // env (when non-empty) is passed as `-D env=<env>` so main.k can do
 // `option("env")` and conditionally include manifests per-env.
-func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
-	var out bytes.Buffer
-	args := []string{"run", mainK,
-		"-D", "image_tag=" + imageTag,
-		"-D", "namespace=" + namespace,
+// projectRootFromMainK recovers the project root from a
+// `<root>/deploy/kcl/<env>/main.k` path by stripping the four trailing
+// components. Returns "" for a path that doesn't match that shape (a
+// relative or unexpected mainK) so the caller leaves cmd.Dir unset and
+// inherits the current cwd (which forge runs from the project root).
+func projectRootFromMainK(mainK string) string {
+	if mainK == "" || !filepath.IsAbs(mainK) {
+		return ""
+	}
+	// main.k -> <env> -> kcl -> deploy -> root
+	dir := filepath.Dir(mainK)              // <root>/deploy/kcl/<env>
+	if filepath.Base(filepath.Dir(dir)) != "kcl" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(filepath.Dir(dir))) // <root>
+}
+
+func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
+	dArgs := []string{
+		"image_tag=" + imageTag,
+		"namespace=" + namespace,
 	}
 	if env != "" {
-		args = append(args, "-D", "env="+env)
+		dArgs = append(dArgs, "env="+env)
 	}
 	// Stable ordering for reproducible output / easier diffing.
 	keys := make([]string, 0, len(envCfgKV))
@@ -228,15 +245,25 @@ func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "-D", k+"="+envCfgKV[k])
+		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
-	cmd := exec.CommandContext(ctx, "kcl", args...)
-	cmd.Stdout = &out
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	// Render from the project root so the deploy-as-data main.k's
+	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
+	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
+	// components to recover the project root. KCL's `file.read` is
+	// cwd-relative, so the cwd is part of the contract. Empty (a relative
+	// mainK) falls back to the process cwd, matching the old behaviour.
+	workDir := projectRootFromMainK(mainK)
+	if workDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			workDir = wd
+		}
+	}
+	out, err := kclrender.Run(workDir, mainK, dArgs)
+	if err != nil {
 		return "", err
 	}
-	return extractManifests(out.Bytes())
+	return extractManifests(out)
 }
 
 // extractManifests pulls the `manifests` list out of KCL's YAML output
@@ -304,17 +331,106 @@ func KubectlApply(ctx context.Context, manifests string) error {
 }
 
 // WaitRollout blocks until the named Deployment reaches a healthy
-// rollout state, with a 120s timeout (matches kubectl's typical dev
-// expectation for a Deployment with replicas <= 3).
+// rollout state, with a 60s timeout (down from 120s — dev iteration
+// is the dominant path, and a failing rollout almost always means
+// the image won't pull / the pod won't start, not that 120s of patience
+// would have rescued it).
+//
+// On timeout, automatically dumps a short diagnostic burst so the
+// developer doesn't have to context-switch to a separate kubectl
+// shell to figure out WHY it's stuck. The dump covers:
+//   - The non-Ready pod's `kubectl describe` Events tail (image-pull
+//     errors, scheduling failures, readiness probe failures).
+//   - Recent namespace events (`kubectl get events`) so cluster-level
+//     issues (admission webhooks, missing ConfigMaps, etc.) show up.
+//   - Pod log tail when the pod is at least pulled, captures
+//     CrashLoopBackOff reasons like "NATS_URL is required".
+// Diagnostics are best-effort — any kubectl invocation failure is
+// swallowed so the wait error itself remains the primary signal.
 func WaitRollout(ctx context.Context, name, namespace string) error {
 	cmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
 		"deployment/"+name,
 		"-n", namespace,
-		"--timeout=120s",
+		"--timeout=60s",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		diagnoseFailedRollout(ctx, name, namespace)
+		return err
+	}
+	return nil
+}
+
+// diagnoseFailedRollout prints the most useful kubectl diagnostics for
+// a Deployment that didn't reach Ready in time. Indented under a clear
+// banner so the existing "Warning: rollout for X" line precedes it.
+//
+// Order matters: pod status first (most likely culprit: ImagePullBackOff,
+// CrashLoopBackOff), then events (admission / scheduling failures),
+// then log tail (only when the container actually started — catches
+// "missing env var" startup crashes).
+func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
+	fmt.Printf("\n  ── Diagnostics for %s ──────────────────\n", deploy)
+
+	// Pod status — phase, reason, message. The most useful single line.
+	pods := exec.CommandContext(ctx, "kubectl", "get", "pods",
+		"-n", namespace,
+		"-l", "app="+deploy,
+		"-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason,MESSAGE:.status.containerStatuses[*].state.waiting.message",
+		"--no-headers",
+	)
+	if out, err := pods.Output(); err == nil && len(out) > 0 {
+		fmt.Println("  Pods:")
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fmt.Println("    " + line)
+		}
+	}
+
+	// Recent events for the deployment. Filtered to events that mention
+	// the deploy name keeps the output bounded.
+	events := exec.CommandContext(ctx, "kubectl", "get", "events",
+		"-n", namespace,
+		"--sort-by=.lastTimestamp",
+		"--field-selector=type!=Normal",
+		"-o", "custom-columns=LAST:.lastTimestamp,TYPE:.type,REASON:.reason,OBJECT:.involvedObject.name,MESSAGE:.message",
+		"--no-headers",
+	)
+	if out, err := events.Output(); err == nil && len(out) > 0 {
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		// Keep the 5 most recent matching this deployment name.
+		var kept []string
+		for i := len(lines) - 1; i >= 0 && len(kept) < 5; i-- {
+			if strings.Contains(lines[i], deploy) {
+				kept = append([]string{lines[i]}, kept...)
+			}
+		}
+		if len(kept) > 0 {
+			fmt.Println("  Recent warning/error events:")
+			for _, line := range kept {
+				fmt.Println("    " + line)
+			}
+		}
+	}
+
+	// Log tail — best effort. When the pod never pulled (ImagePullBackOff)
+	// kubectl returns an error which we swallow; when it crashed at
+	// startup (CrashLoopBackOff) this surfaces the panic / "X is required"
+	// line that explains why.
+	logs := exec.CommandContext(ctx, "kubectl", "logs",
+		"deployment/"+deploy,
+		"-n", namespace,
+		"--tail=15",
+		"--all-containers=true",
+	)
+	if out, err := logs.Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		fmt.Println("  Log tail (last 15 lines):")
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fmt.Println("    " + line)
+		}
+	}
+
+	fmt.Println("  ─────────────────────────────────────────────")
 }
 
 // WaitJobComplete blocks until the named Job in namespace reaches

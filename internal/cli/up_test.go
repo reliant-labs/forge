@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
+	"github.com/spf13/pflag"
 )
 
 // TestBuildHostServiceCmd covers each runner dispatch — go-run / air /
@@ -149,15 +152,16 @@ func TestBuildHostServiceCmd_LayersProjectConfig(t *testing.T) {
 module_path: github.com/example/testproj
 version: "0.1.0"
 binary: shared
-services:
-  - name: api
-    type: go_service
-    path: handlers/api
-    port: 8080
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{
+		Name:  "api",
+		Kind:  "server",
+		Path:  "handlers/api",
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: 8080}},
+	})
 	siblingContent := `environment: development
 log_level: debug
 `
@@ -199,17 +203,41 @@ log_level: debug
 }
 
 func TestUpLogPath_Sanitises(t *testing.T) {
-	got, err := upLogPath("dev", "pf:admin-server:8080")
+	got, err := upLogPath("dev", "frontend:admin/web")
 	if err != nil {
 		t.Fatalf("upLogPath: %v", err)
 	}
-	// Colons must be replaced so the path is safe.
+	// Colons and slashes must be replaced so the path is safe.
 	if strings.Contains(got, ":") {
 		t.Errorf("upLogPath returned unsanitised path %q", got)
 	}
-	if !strings.HasSuffix(got, "pf_admin-server_8080.log") {
-		t.Errorf("upLogPath: got %q, want pf_admin-server_8080.log suffix", got)
+	if !strings.HasSuffix(got, "frontend_admin_web.log") {
+		t.Errorf("upLogPath: got %q, want frontend_admin_web.log suffix", got)
 	}
+}
+
+// TestUpCmd_NoPortForwardSurface pins the phase-3 ingress refactor:
+// `forge up` no longer mentions port-forward in any user-facing string
+// (Short / Long / Example / flag help). Reaching cluster services from
+// the host is the Gateway API ingress path now (forge dev urls); the
+// orchestrator must not advertise a port-forward phase that doesn't
+// exist.
+func TestUpCmd_NoPortForwardSurface(t *testing.T) {
+	cmd := newUpCmd()
+	surfaces := map[string]string{
+		"Short": cmd.Short,
+		"Long":  cmd.Long,
+	}
+	for label, s := range surfaces {
+		if strings.Contains(strings.ToLower(s), "port-forward") {
+			t.Errorf("%s mentions port-forward: %q", label, s)
+		}
+	}
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if strings.Contains(strings.ToLower(f.Usage), "port-forward") {
+			t.Errorf("flag --%s usage mentions port-forward: %q", f.Name, f.Usage)
+		}
+	})
 }
 
 // TestBuildFrontendCmd_PortFromKCLOverridesParent pins Item 1: the
@@ -245,6 +273,54 @@ func TestBuildFrontendCmd_PortFromKCLOverridesParent(t *testing.T) {
 	}
 	if !hasPath {
 		t.Errorf("expected parent PATH to survive; got env: %v", cmd.Env)
+	}
+}
+
+// TestBuildFrontendCmd_KCLEnvVarsInjected confirms KCL-declared env_vars
+// (e.g. a VITE_ADMIN_URL composed from forge.resolve_port) reach the dev
+// process env, alongside the forced PORT and the passed-through shell.
+func TestBuildFrontendCmd_KCLEnvVarsInjected(t *testing.T) {
+	parent := []string{"PATH=/usr/bin", "SHELL_ONLY=keepme"}
+	fe := FrontendEntity{
+		Name: "reliant-web", Path: "web", Port: 3000, EnvFile: "/does/not/exist",
+		EnvVars: []KCLEnvVar{
+			{Name: "VITE_ADMIN_URL", Value: "http://localhost:3000/admin"},
+			{Name: "VITE_API_URL", Value: "http://localhost:3090"},
+		},
+	}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+
+	got := map[string]string{}
+	for _, kv := range cmd.Env {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			got[kv[:i]] = kv[i+1:]
+		}
+	}
+	want := map[string]string{
+		"VITE_ADMIN_URL": "http://localhost:3000/admin",
+		"VITE_API_URL":   "http://localhost:3090",
+		"PORT":           "3000",
+		"SHELL_ONLY":     "keepme",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("env %s = %q, want %q (full: %v)", k, got[k], v, cmd.Env)
+		}
+	}
+}
+
+// TestBuildFrontendCmd_ParentShellOverridesEnvVars pins the precedence:
+// the developer's shell wins over a KCL env_var of the same name (escape
+// hatch), matching host-service layering.
+func TestBuildFrontendCmd_ParentShellOverridesEnvVars(t *testing.T) {
+	parent := []string{"VITE_ADMIN_URL=http://override"}
+	fe := FrontendEntity{Name: "web", Path: "web", EnvFile: "/does/not/exist",
+		EnvVars: []KCLEnvVar{{Name: "VITE_ADMIN_URL", Value: "http://kcl"}}}
+	cmd := buildFrontendCmd(context.Background(), fe, "dev", parent)
+	for _, kv := range cmd.Env {
+		if kv == "VITE_ADMIN_URL=http://kcl" {
+			t.Errorf("KCL env_var should not override the parent shell; env: %v", cmd.Env)
+		}
 	}
 }
 

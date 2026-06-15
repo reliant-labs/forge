@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-env-config
 description: Migrate from hand-curated env-var groups in KCL to forge.yaml environments[].config (per-env config) + sensitive-field projection. forge versions before 1.6 emitted env-var soup; 1.6+ projects per-env config to ConfigMap/Secret/value automatically.
+relevance: migration
 ---
 
 # Migrating env-var soup to per-environment config

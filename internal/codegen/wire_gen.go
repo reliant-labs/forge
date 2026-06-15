@@ -45,11 +45,18 @@ import (
 //   2. Config     → cfg                                (bootstrap arg)
 //   3. Authorizer → middleware.Authorizer constructed in wire_gen,
 //                   with devMode swap to middleware.DevAuthorizer{}
-//   4. DB orm.Context  → app.ORM    (when ORM is enabled)
+//   4. DB orm.Context  → app.ORMContext() (when ORM is enabled; nil-safe)
 //   5. Otherwise: look up app.<DepFieldName> by exact-name match.
-//      If a matching exported App field exists, wire it. If not,
-//      emit `nil /* TODO: ... */` and warn (compile passes only when
-//      validateDeps doesn't require the field — a clean error path).
+//      If a matching exported App field exists, wire it.
+//   6. Config blocks by TYPE: a field typed `config.<Block>` /
+//      `*config.<Block>` (a component config block generated from
+//      proto/config) wires to `cfg.<Field>` / `&cfg.<Field>` when
+//      exactly one root Config field has that type. Zero matches fall
+//      through; multiple matches are a hard error listing candidates.
+//   7. Nothing matched: emit a typed zero + TODO and warn (compile
+//      passes only when validateDeps doesn't require the field — a
+//      clean error path). Scalar fields get the config-block hint:
+//      scalars are configuration, not collaborators.
 //
 // Adding new conventional sources should mean *one* new case in
 // wireExpressionFor below + one line in pkg/app/CONVENTIONS.md.
@@ -81,13 +88,9 @@ type WireGenServiceData struct {
 	// NeedsAuthzVar is true when the Deps struct has an Authorizer
 	// field. Skips the var-decl block in the template when no
 	// Authorizer is present (rare, but library-style services hit it).
+	// The rendered block reads cfg.Mode().IsDev() itself for the
+	// DevAuthorizer swap — there is no devMode parameter threading.
 	NeedsAuthzVar bool
-
-	// NeedsDevMode is true when wire_gen needs the devMode bool param —
-	// matches NeedsAuthzVar today (the only conditional consumer of
-	// devMode is the authz swap), kept as a separate flag so future
-	// devMode-gated fields don't have to reuse the authz hook.
-	NeedsDevMode bool
 
 	// Assignments are the per-Deps-field key/value pairs the template
 	// emits inside the struct literal. Order matches the order of
@@ -173,14 +176,20 @@ type UnresolvedPlaceholder struct {
 // written when there are no services AND no workers AND no operators.
 //
 // Resolution order for each Deps field (services, workers, operators):
-//   1. Conventional names (Logger, Config, Authorizer, DB) get hardcoded
-//      sources matching pkg/app/CONVENTIONS.md.
-//   2. Other field names are matched exact-case against existing *App
-//      fields. A match emits `app.<Field>`.
-//   3. No match emits a typed-zero-value placeholder (e.g. `""` for
-//      string, `0` for int, `false` for bool, `nil` for everything else)
-//      plus a header-comment note. Compile still succeeds; validateDeps
-//      surfaces the gap at startup if the field is marked required.
+//  1. Conventional names (Logger, Config, Authorizer, DB) get hardcoded
+//     sources matching pkg/app/CONVENTIONS.md.
+//  2. Other field names are matched exact-case against existing *App
+//     fields. A match emits `app.<Field>`.
+//  3. Fields typed as a generated config block (`config.<Block>` /
+//     `*config.<Block>` from proto/config) resolve by TYPE to the unique
+//     root Config field of that type → `cfg.<Field>` / `&cfg.<Field>`.
+//     Multiple Config fields of the same block type are a hard error.
+//  4. No match emits a typed-zero-value placeholder (e.g. `""` for
+//     string, `0` for int, `false` for bool, `nil` for everything else)
+//     plus a header-comment note. Compile still succeeds; validateDeps
+//     surfaces the gap at startup if the field is marked required.
+//     Scalar fields get a pointed hint to declare a config block —
+//     scalars are configuration, not collaborators.
 //
 // Workers and operators get the same wire treatment as services so the
 // per-RPC `if s.deps.X == nil` pattern is also gone for periodic-task
@@ -290,69 +299,144 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	// referenced from multiple components emits one helper.
 	resolverNeeds := map[string]PlaceholderResolver{}
 
+	// Project-wide assignability matcher — shared across services,
+	// workers, operators so pkg/app + each component package gets
+	// loaded at most once per generate. The matcher is consulted only
+	// when a Deps field has a name match against AppExtras but the
+	// pretty-printed type strings differ — exactly the case the
+	// legacy name-only resolution got wrong.
+	matcher := NewDepsAssignabilityMatcher(projectDir)
+
+	// Component config-block index: generated pkg/config block type name
+	// → root Config field(s) of that type, derived from the same forge
+	// descriptor GenerateConfigLoader consumes so wire_gen and
+	// pkg/config/config.go always agree on the block shape. Consulted
+	// only when a Deps field resolves to nothing else — a field typed
+	// `config.<Block>` / `*config.<Block>` wires to `cfg.<Field>` /
+	// `&cfg.<Field>` when exactly one Config field has the block type.
+	configBlocks := loadConfigBlockIndex(projectDir)
+
+	// Resolve each service's handler dir + package clause from disk ONCE
+	// (shared by the collision counts and the per-service loop below).
+	// Disk-first: the import line and the package selector must reflect
+	// what's actually under handlers/, not a re-synthesis of the proto
+	// name — see disk_resolver.go for the broken-imports bug class this
+	// kills. Synthesis only applies to not-yet-scaffolded services.
+	svcResolved := make([]ResolvedComponent, 0, len(services))
+	for _, svc := range services {
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return WireGenData{}, err
+		}
+		svcResolved = append(svcResolved, res)
+	}
+
 	// Build the collision-aware naming map ONCE, shared with bootstrap.
-	// We synthesize service "components" from ServiceDef just so the
-	// counts include service packages; bootstrap does the same in
+	// We synthesize service "components" from the resolved packages just
+	// so the counts include service packages; bootstrap does the same in
 	// GenerateBootstrap before calling AssignBootstrapAliases.
 	svcComponents := make([]BootstrapServiceData, 0, len(services))
-	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
-		svcComponents = append(svcComponents, BootstrapServiceData{Package: pkg})
+	for _, res := range svcResolved {
+		svcComponents = append(svcComponents, BootstrapServiceData{Package: res.PackageName})
 	}
 	counts := CollisionCounts(svcComponents, packages, workers, operators)
 
 	var wireSvcs []WireGenServiceData
 	needsAuthorizerImport := false
-	for _, svc := range services {
-		pkg := toServicePackage(svc.Name)
-		// Services use ToPascalCase for FieldName — matches
-		// GenerateBootstrap's per-service mapping. The collision branch
-		// (rare) gets the "SvcXxx" prefix from ResolveCollisionNaming.
-		alias, fieldName := ResolveCollisionNaming(pkg, naming.ToPascalCase(pkg), "svc", counts)
-		runtimeName := strings.ReplaceAll(pkg, "_", "-")
+	for i, svc := range services {
+		res := svcResolved[i]
+		pkg := res.PackageName
+		// FieldName derives from svc.Name (which retains separators /
+		// PascalCase boundaries) exactly like GenerateBootstrap's
+		// per-service mapping — bootstrap.go calls wire<FieldName>Deps,
+		// so the two MUST agree even for multi-word names where the
+		// compact package form ("adminserver") can't be split back into
+		// words. The collision branch (rare) gets the "SvcXxx" prefix
+		// from ResolveCollisionNaming.
+		fallbackFieldName := naming.ToPascalCase(strings.TrimSuffix(svc.Name, "Service"))
+		if fallbackFieldName == "" {
+			fallbackFieldName = naming.ToPascalCase(svc.Name)
+		}
+		alias, fieldName := ResolveCollisionNaming(pkg, fallbackFieldName, "svc", counts)
+		// Runtime (slog `service` attr) name: kebab of the original
+		// svc.Name — matches the BootstrapServiceData.Name bootstrap
+		// derives, so log queries by service name line up across both
+		// generated files.
+		runtimeName := naming.ToKebabCase(strings.TrimSuffix(svc.Name, "Service"))
+		if runtimeName == "" {
+			runtimeName = naming.ToKebabCase(svc.Name)
+		}
 
-		handlerDir := filepath.Join(projectDir, "handlers", pkg)
+		handlerDir := res.Dir
 		depsFields, parseErr := ParseServiceDeps(handlerDir)
 		if parseErr != nil {
-			// Best-effort: a parse failure here means the handler dir
-			// has a syntactically broken Deps struct. We log and move
-			// on so wire_gen.go is still emitted (with no entry for
-			// this service) and the user sees the real error from
-			// the regular Go compile step.
+			// Intentional soft warning (no --strict promotion): a parse
+			// failure here means the handler dir has a syntactically
+			// broken Deps struct. We log and move on so wire_gen.go is
+			// still emitted (with no entry for this service) and the
+			// user sees the canonical error from the regular Go
+			// compile step. Promoting to fatal here would mask the
+			// richer Go-compiler diagnostic with a redundant codegen
+			// abort. Lives in internal/codegen (no pipelineContext
+			// reach), so no --strict thread.
 			fmt.Fprintf(os.Stderr, "Warning: parsing %s Deps: %v\n", pkg, parseErr)
 			depsFields = nil
 		}
 
 		data := WireGenServiceData{
-			FieldName:    fieldName,
-			Package:      pkg,
-			Alias:        alias,
-			Name:         runtimeName,
-			ImportPath:   "handlers/" + pkg,
+			FieldName:     fieldName,
+			Package:       pkg,
+			Alias:         alias,
+			Name:          runtimeName,
+			ImportPath:    "handlers/" + res.ImportLeaf,
 			LoggerAttrKey: "service",
 		}
 
 		// Track whether we have an Authorizer field — drives the
-		// `var authz` block + the `devMode` parameter in the rendered
-		// function signature.
+		// `var authz` block (with its cfg.Mode().IsDev() DevAuthorizer
+		// swap) in the rendered function body.
 		for _, df := range depsFields {
 			if df.Name == "Authorizer" {
 				data.NeedsAuthzVar = true
-				data.NeedsDevMode = true
 				needsAuthorizerImport = true
 				break
 			}
 		}
 
+		// pkgDir is the on-disk directory leaf (res.ImportLeaf), not the
+		// package clause — the matcher loads the package by path.
+		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "handlers", pkgDir: res.ImportLeaf}
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds)
+			expr, comment, unresolved, provenMismatch := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, svcTC)
+			// Config-block resolution by TYPE: a fallthrough field whose
+			// type is a generated config block (`config.<Block>` /
+			// `*config.<Block>`) wires to the unique Config field of that
+			// type. Runs only when nothing else matched — an explicit
+			// AppExtras name match keeps precedence — and never on a
+			// proven name-match mismatch (that's a misconfiguration the
+			// user must see, not a fallthrough).
+			if unresolved != "" && !provenMismatch {
+				bexpr, bcomment, ok, berr := resolveConfigBlock(df, runtimeName, configBlocks)
+				if berr != nil {
+					return WireGenData{}, berr
+				}
+				if ok {
+					expr, comment, unresolved = bexpr, bcomment, ""
+				}
+			}
 			// Optional fields that fall through to the typed-zero
 			// branch get the silent treatment: no inline TODO comment,
 			// no contribution to the UNRESOLVED header. The user
 			// explicitly opted in to "may be nil" via
 			// `// forge:optional-dep`, so warning every regenerate
 			// would be noise.
-			if df.Optional && unresolved != "" {
+			//
+			// EXCEPT on a proven name-match type mismatch: that's a
+			// misconfiguration (AppExtras holds a value the user meant
+			// to wire, typed incompatibly), not the intentional-nil
+			// state — staying loud is what surfaces the silent-downgrade
+			// class from kalshi FORGE_BACKLOG #13.
+			if df.Optional && unresolved != "" && !provenMismatch {
 				comment = ""
 				unresolved = ""
 			}
@@ -377,11 +461,11 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	// WireGenServiceData carrier — the template treats them identically
 	// other than the import-path prefix and the per-component logger
 	// attribute key ("worker" / "operator" instead of "service").
-	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
+	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher, configBlocks)
 	if err != nil {
 		return WireGenData{}, fmt.Errorf("build worker wire data: %w", err)
 	}
-	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds)
+	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher, configBlocks)
 	if err != nil {
 		return WireGenData{}, fmt.Errorf("build operator wire data: %w", err)
 	}
@@ -435,7 +519,7 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 //
 // Returns an empty slice (not nil) when comps is empty so range over the
 // result is a no-op without nil-check ceremony at the call site.
-func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, loggerAttrKey, projectDir string, appFieldByName map[string]AppField, ormEnabled bool, counts map[string]int, resolverNeeds map[string]PlaceholderResolver) ([]WireGenServiceData, error) {
+func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, loggerAttrKey, projectDir string, appFieldByName map[string]AppField, ormEnabled bool, counts map[string]int, resolverNeeds map[string]PlaceholderResolver, matcher *DepsAssignabilityMatcher, configBlocks map[string][]string) ([]WireGenServiceData, error) {
 	if len(comps) == 0 {
 		return nil, nil
 	}
@@ -447,12 +531,31 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 		// emitted Workers / Operators struct field references. Matching
 		// here keeps wire_gen ↔ bootstrap aligned.
 		alias, fieldName := ResolveCollisionNaming(c.Package, c.FieldName, rolePrefix, counts)
-		runtimeName := strings.ReplaceAll(c.Package, "_", "-")
+		// Runtime (slog attr) name: kebab of the user-facing forge.yaml
+		// name (c.Name), which retains the original word boundaries.
+		// Pre-disk-first this derived from c.Package — fine when Package
+		// was the compact synthesis, but Package is now the on-disk
+		// package CLAUSE, which may not match the user-facing name at all.
+		runtimeName := strings.ReplaceAll(c.Name, "_", "-")
+		if runtimeName == "" {
+			runtimeName = strings.ReplaceAll(c.Package, "_", "-")
+		}
 
-		compDir := filepath.Join(projectDir, subdir, c.Package)
+		// c.ImportPath is the on-disk directory leaf (disk-first, from
+		// WorkerDataFromNames / OperatorDataFromNames) — the only valid
+		// base for BOTH the Deps AST probe and the generated import line.
+		// c.Package is the package clause and may legally differ from the
+		// directory name.
+		compDir := filepath.Join(projectDir, subdir, filepath.FromSlash(c.ImportPath))
 		depsFields, parseErr := ParseServiceDeps(compDir)
 		if parseErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: parsing %s/%s Deps: %v\n", subdir, c.Package, parseErr)
+			// Intentional soft warning — same rationale as the service
+			// branch above: a broken Deps struct surfaces a clearer
+			// error from `go build`. No --strict thread because we're
+			// in internal/codegen (no pipelineContext reach). Names the
+			// on-disk dir (c.ImportPath) — that's the path that was
+			// actually parsed.
+			fmt.Fprintf(os.Stderr, "Warning: parsing %s/%s Deps: %v\n", subdir, c.ImportPath, parseErr)
 			depsFields = nil
 		}
 
@@ -461,24 +564,39 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 			Package:       c.Package,
 			Alias:         alias,
 			Name:          runtimeName,
-			ImportPath:    subdir + "/" + c.Package,
+			ImportPath:    subdir + "/" + c.ImportPath,
 			LoggerAttrKey: loggerAttrKey,
 		}
 
+		// pkgDir is the on-disk directory leaf (c.ImportPath), not the
+		// package clause — the matcher loads the package by path.
+		compTC := &appFieldTypeChecker{matcher: matcher, roleRoot: subdir, pkgDir: c.ImportPath}
 		for _, df := range depsFields {
-			expr, comment, unresolved := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds)
+			expr, comment, unresolved, provenMismatch := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, compTC)
+			// Config-block resolution by TYPE — same rules as the
+			// service loop above: fallthrough-only, unique-match,
+			// ambiguity is a hard error.
+			if unresolved != "" && !provenMismatch {
+				bexpr, bcomment, ok, berr := resolveConfigBlock(df, runtimeName, configBlocks)
+				if berr != nil {
+					return nil, berr
+				}
+				if ok {
+					expr, comment, unresolved = bexpr, bcomment, ""
+				}
+			}
 			// Workers/operators are not expected to declare Authorizer
-			// (no inbound RPCs), so they don't get the devMode hook.
+			// (no inbound RPCs), so they rarely hit this hook.
 			// If a Deps struct does declare one, we honor it and set
 			// NeedsAuthzVar — keeps the codegen consistent if a project
 			// invents a worker that exposes an HTTP listener.
 			if df.Name == "Authorizer" {
 				data.NeedsAuthzVar = true
-				data.NeedsDevMode = true
 			}
 			// Optional Deps fields get the silent treatment — see the
-			// service-loop comment above for the full rationale.
-			if df.Optional && unresolved != "" {
+			// service-loop comment above for the full rationale (and
+			// for why a PROVEN name-match mismatch stays loud).
+			if df.Optional && unresolved != "" && !provenMismatch {
 				comment = ""
 				unresolved = ""
 			}
@@ -511,20 +629,34 @@ func buildWireComponentData(comps []BootstrapComponentData, rolePrefix, subdir, 
 // All other resolution rules (conventional names, exact-name app
 // match, typed-zero fallback) match wireExpressionFor exactly — the
 // placeholder branch is purely additive.
-func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver) (expr, comment, unresolvedHint string) {
+//
+// The fourth return, provenMismatch, is true ONLY when the field
+// name-matched an App/AppExtras field and the type checker PROVED (in
+// a single shared type universe — see deps_assignability.go) that the
+// app side is not assignable to the Deps side. Callers use it to keep
+// the typed-zero fallout LOUD even for `forge:optional-dep` fields: a
+// name-matched type conflict is a misconfiguration the user must see,
+// not the intentional "may be nil" state the optional marker opts
+// into. (kalshi FORGE_BACKLOG #13: optional worker deps were silently
+// downgraded from app.<Field> to nil with no TODO and no lint finding.)
+func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnabled bool, runtimeName string, resolverNeeds map[string]PlaceholderResolver, tm *appFieldTypeChecker) (expr, comment, unresolvedHint string, provenMismatch bool) {
 	switch df.Name {
 	case "Logger":
-		return fmt.Sprintf("logger.With(\"service\", %q)", runtimeName), "", ""
+		return fmt.Sprintf("logger.With(\"service\", %q)", runtimeName), "", "", false
 	case "Config":
-		return "cfg", "", ""
+		return "cfg", "", "", false
 	case "Authorizer":
-		return "authz", "devMode swap to middleware.DevAuthorizer in development", ""
+		return "authz", "devMode swap to middleware.DevAuthorizer in development", "", false
 	case "DB":
 		switch {
 		case strings.Contains(df.Type, "orm.Context") && ormEnabled:
-			return "app.ORM", "*orm.Client implements orm.Context", ""
+			// ORMContext() (app_gen.go) returns a TRUE nil interface when
+			// the client was never constructed — `app.ORM` directly would
+			// wrap a nil *orm.Client into a typed-nil that defeats
+			// validateDeps' `== nil` gate and panics on the first RPC.
+			return "app.ORMContext()", "nil-safe orm.Context accessor (validateDeps catches absence at boot)", "", false
 		case strings.Contains(df.Type, "sql.DB"):
-			return "app.DB", "", ""
+			return "app.DB", "", "", false
 		}
 	}
 
@@ -540,14 +672,35 @@ func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnable
 			}
 			return fmt.Sprintf("resolve%s(app)", df.Name),
 				fmt.Sprintf("typed accessor for forge:placeholder %s → %s", df.Name, af.Placeholder),
-				""
+				"", false
 		}
-		return "app." + df.Name, "", ""
+		// Name matches. Decide whether the types are compatible. The
+		// legacy code emitted `app.<Field>` on name alone, which
+		// produced a compile error when AppExtras.<Field> was typed
+		// incompatibly with Deps.<Field> (the cp-forge audit-no-op bug
+		// class). When the type checker PROVES a genuine mismatch
+		// (single shared type universe — see deps_assignability.go),
+		// fall through to the unresolved-typed-zero path so the failure
+		// is LOUD (TODO comment + UNRESOLVED header line + lint
+		// finding) rather than a compile error at a downstream call
+		// site.
+		//
+		// When assignability is merely UNPROVEN (project mid-edit, load
+		// failure), IsNameMismatch returns false and we wire the name
+		// match — the deterministic fail-loud policy: the compiler
+		// arbitrates a wrong wire loudly, and the rendered output no
+		// longer flip-flops between structural and steady-state regens.
+		if tm != nil && tm.IsNameMismatch(df.Name, df.Type, af.Type) {
+			hint := fmt.Sprintf("AppExtras.%s is %s but Deps.%s wants %s — types are not assignable; align AppExtras to %s or re-construct %s in pkg/app/setup.go",
+				df.Name, af.Type, df.Name, df.Type, df.Type, df.Name)
+			return zeroValueLiteral(df.Type),
+				fmt.Sprintf("TODO: wire %s — AppExtras.%s type (%s) is not assignable to %s", df.Name, df.Name, af.Type, df.Type),
+				hint, true
+		}
+		return "app." + df.Name, "", "", false
 	}
 
-	hint := fmt.Sprintf("add `%s %s` to AppExtras in pkg/app/app_extras.go, then assign `app.%s = ...` in pkg/app/setup.go",
-		df.Name, df.Type, df.Name)
-	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", hint
+	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", unresolvedDepHint(df, runtimeName), false
 }
 
 // wireExpressionFor maps one DepsField to the Go expression wire_gen
@@ -567,6 +720,36 @@ func wireExpressionForApp(df DepsField, appFields map[string]AppField, ormEnable
 // shape (AppField with Placeholder) is consumed by wireExpressionForApp
 // above; this thin wrapper exists so existing callers / tests keep
 // working without a signature churn.
+// appFieldTypeChecker is the per-component lens onto the project-wide
+// DepsAssignabilityMatcher. wireExpressionForApp consults it when it
+// has a name match but the AppExtras and Deps type strings differ —
+// the answer decides between "emit `app.<F>`" (assignable) and "emit
+// typed zero + loud UNRESOLVED hint" (mismatch). nil disables the
+// type-aware path entirely (legacy behavior: name-only match).
+type appFieldTypeChecker struct {
+	matcher  *DepsAssignabilityMatcher
+	roleRoot string
+	pkgDir   string
+}
+
+// IsNameMismatch reports true iff the matcher can PROVE AppExtras's
+// type is genuinely NOT assignable to the Deps field's declared type
+// (both sides type-checked in one shared universe). Returns false when
+// the matcher is unavailable (load failure, no pkg/app, project
+// mid-edit) — per the deterministic fail-loud policy in
+// deps_assignability.go's header, unproven name matches WIRE so the
+// compiler arbitrates; only a proven mismatch drops to typed-zero.
+// This is what makes wire_gen.go output a pure function of the on-disk
+// project state instead of flip-flopping with whether pkg/app happened
+// to type-check mid-pipeline (kalshi FORGE_BACKLOG #13).
+func (c *appFieldTypeChecker) IsNameMismatch(depsName, depsType, appType string) bool {
+	if c == nil || c.matcher == nil {
+		return false
+	}
+	kind := c.matcher.Match(c.roleRoot, c.pkgDir, depsName, depsType, appType, true)
+	return kind == MatchNameMismatch
+}
+
 func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled bool, runtimeName string) (expr, comment, unresolvedHint string) {
 	switch df.Name {
 	case "Logger":
@@ -584,14 +767,14 @@ func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled boo
 		return "authz", "devMode swap to middleware.DevAuthorizer in development", ""
 	case "DB":
 		// Two cases:
-		//   - Type "orm.Context" with ORM enabled → app.ORM (which
-		//     implements orm.Context). When ORM is *not* enabled but
-		//     the type is still orm.Context, the project is
-		//     mid-migration — emit a TODO.
+		//   - Type "orm.Context" with ORM enabled → app.ORMContext()
+		//     (nil-safe accessor; see wireExpressionForApp). When ORM is
+		//     *not* enabled but the type is still orm.Context, the
+		//     project is mid-migration — emit a TODO.
 		//   - Type "*sql.DB" → app.DB.
 		switch {
 		case strings.Contains(df.Type, "orm.Context") && ormEnabled:
-			return "app.ORM", "*orm.Client implements orm.Context", ""
+			return "app.ORMContext()", "nil-safe orm.Context accessor (validateDeps catches absence at boot)", ""
 		case strings.Contains(df.Type, "sql.DB"):
 			return "app.DB", "", ""
 		}
@@ -620,14 +803,102 @@ func wireExpressionFor(df DepsField, appFields map[string]string, ormEnabled boo
 	// is the legitimate "not configured" state.
 	//
 	// The hint is shaped as a literal one-line action the LLM/user can
-	// paste straight into pkg/app/app_extras.go: name + Go type as it
-	// appears in the Deps struct. If the type is unexported or comes
-	// from a non-imported package, the user still has to add the
-	// import — the fix is "obvious from the build error" once the
-	// field declaration is in place.
-	hint := fmt.Sprintf("add `%s %s` to AppExtras in pkg/app/app_extras.go, then assign `app.%s = ...` in pkg/app/setup.go",
+	// paste straight into pkg/app/app_extras.go (or, for scalar fields,
+	// into proto/config — see unresolvedDepHint). If the type is
+	// unexported or comes from a non-imported package, the user still
+	// has to add the import — the fix is "obvious from the build error"
+	// once the field declaration is in place.
+	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", unresolvedDepHint(df, runtimeName)
+}
+
+// loadConfigBlockIndex reads the project's parsed config messages (from
+// the forge descriptor — the same source GenerateConfigLoader consumes)
+// and returns generated block type name → root Config field GoNames
+// declaring that type, in declaration order. Returns nil when the
+// project has no descriptor / no config blocks — block resolution then
+// simply never matches, which is the pre-feature behavior.
+func loadConfigBlockIndex(projectDir string) map[string][]string {
+	messages, err := ParseConfigProto(filepath.Join(projectDir, "proto", "config"))
+	if err != nil || len(messages) == 0 {
+		return nil
+	}
+	idx := map[string][]string{}
+	for _, ref := range ConfigBlocksFromMessages(messages) {
+		idx[ref.TypeName] = append(idx[ref.TypeName], ref.FieldName)
+	}
+	if len(idx) == 0 {
+		return nil
+	}
+	return idx
+}
+
+// resolveConfigBlock resolves a Deps field to a component config block
+// by TYPE. The field type must be exactly `config.<Block>` (value) or
+// `*config.<Block>` (pointer) where <Block> is a generated block type —
+// the `config` qualifier is the conventional import name of the
+// project's generated pkg/config, and requiring it keeps the match
+// deterministic (a same-named type from another package never
+// false-positives; an unconventional import alias falls through to the
+// normal unresolved path).
+//
+// Unique-match policy:
+//
+//	exactly one Config field of the type → wire `cfg.<Field>` /
+//	                                       `&cfg.<Field>`
+//	zero                                 → no match (normal unresolved path)
+//	multiple                             → hard error listing candidates;
+//	                                       type-based resolution cannot
+//	                                       pick one deterministically
+//
+// componentName is the runtime-facing component name, used only in the
+// ambiguity error message.
+func resolveConfigBlock(df DepsField, componentName string, configBlocks map[string][]string) (expr, comment string, ok bool, err error) {
+	if len(configBlocks) == 0 {
+		return "", "", false, nil
+	}
+	t := strings.TrimSpace(df.Type)
+	ptr := strings.HasPrefix(t, "*")
+	t = strings.TrimSpace(strings.TrimPrefix(t, "*"))
+	const qualifier = "config."
+	if !strings.HasPrefix(t, qualifier) {
+		return "", "", false, nil
+	}
+	typeName := strings.TrimPrefix(t, qualifier)
+	candidates := configBlocks[typeName]
+	if len(candidates) == 0 {
+		return "", "", false, nil
+	}
+	if len(candidates) > 1 {
+		return "", "", false, fmt.Errorf(
+			"wire %s: Deps.%s is typed %s, but %d Config fields hold config block %s (%s) — type-based resolution needs exactly one; give each component its own block message in proto/config, or wire the field explicitly via AppExtras",
+			componentName, df.Name, df.Type, len(candidates), typeName, strings.Join(candidates, ", "))
+	}
+	expr = "cfg." + candidates[0]
+	if ptr {
+		expr = "&" + expr
+	}
+	return expr, fmt.Sprintf("config block %s (proto/config)", typeName), true, nil
+}
+
+// unresolvedDepHint renders the header-comment remediation for a Deps
+// field no producer matched. Two shapes:
+//
+//   - Scalar fields (string/int/bool/float/time.Duration/...) are
+//     CONFIGURATION, not collaborators — the AppExtras two-step would
+//     just hand-project config forever (the kalshi WTIPersistMaxPerTick
+//     friction, fr-ad24278452). The hint walks through declaring a
+//     component config block instead.
+//   - Everything else gets the classic AppExtras + setup.go two-step.
+func unresolvedDepHint(df DepsField, runtimeName string) string {
+	if zeroValueLiteral(df.Type) != "nil" {
+		block := naming.ToPascalCase(runtimeName) + "Config"
+		field := naming.ToSnakeCase(strings.TrimSuffix(block, "Config"))
+		return fmt.Sprintf(
+			"scalar Deps fields are configuration — declare `message %s { ... }` in proto/config/v1/config.proto, compose it on AppConfig (`%s %s = <next tag>;`), and replace `%s %s` with a typed field `Cfg config.%s`; wire_gen resolves it from cfg by type (see the forge architecture skill, \"Component config blocks\")",
+			block, block, field, df.Name, df.Type, block)
+	}
+	return fmt.Sprintf("add `%s %s` to AppExtras in pkg/app/app_extras.go, then assign `app.%s = ...` in pkg/app/setup.go",
 		df.Name, df.Type, df.Name)
-	return zeroValueLiteral(df.Type), "TODO: wire " + df.Name + " — see header comment", hint
 }
 
 // zeroValueLiteral returns the Go source literal that represents the
@@ -665,4 +936,3 @@ func zeroValueLiteral(typeExpr string) string {
 	}
 	return "nil"
 }
-

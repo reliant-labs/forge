@@ -1,3 +1,6 @@
+/* eslint-disable react/forbid-dom-props -- width/height here are runtime-computed
+   values (percentages, caller-provided px) that cannot be expressed in static
+   CSS; this is the documented exception to the rule. */
 import React from "react";
 
 type ProgressVariant = "default" | "success" | "warning" | "danger";

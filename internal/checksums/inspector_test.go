@@ -1,56 +1,88 @@
 // Tests for the ownership Inspector.
 //
-// Each table covers one query method against a synthetic manifest +
-// (when needed) a synthetic on-disk tree. Keep the cases small and
-// focused — the inspector is the single source of truth for ownership
-// queries, so a regression here cascades into every downstream check.
+// In the self-certifying era ownership is read from the files
+// themselves (the forge:hash marker scan) plus the two small state
+// files — there is no manifest. Tier()/IsTier2() are gone with the
+// manifest's tier field: Tier-2 files carry no record at all (user-
+// owned by convention), so "tracked" now means marker / scoped-fallback
+// entry / disown record. Keep the cases small and focused — the
+// inspector is the single source of truth for ownership queries, so a
+// regression here cascades into every downstream check.
 package checksums
 
 import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"testing"
 )
 
-func TestInspector_TierAndForkedClassification(t *testing.T) {
-	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
-		"pkg/app/bootstrap.go":     {Tier: 1},
-		"pkg/app/app_extras.go":    {Tier: 2},
-		"db/embed.go":              {Tier: 0}, // legacy → Tier-1
-		"internal/svc/contract.go": {Tier: 1, Forked: true},
-		"web/hooks.ts":             {Tier: 1},
-	}}
-	insp := NewInspector("", cs)
+// mustStamp writes Stamp(rel, content) under dir/rel.
+func mustStamp(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	stamped, ok := Stamp(rel, []byte(content))
+	if !ok {
+		t.Fatalf("Stamp(%q): unstampable", rel)
+	}
+	full := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, stamped, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInspector_OwnershipClassification(t *testing.T) {
+	dir := t.TempDir()
+
+	// Marker-bearing forge renders (Tier-1).
+	mustStamp(t, dir, "pkg/app/bootstrap.go", "package app\n")
+	mustStamp(t, dir, "web/hooks.ts", "export {}\n")
+	// A stamped file the user edited afterwards: marker fails, but the
+	// path is still tracked/Tier-1 (forge claims it; the drift guard
+	// adjudicates the edit).
+	mustStamp(t, dir, "pkg/app/edited_gen.go", "package app // v1\n")
+	edited, _ := os.ReadFile(filepath.Join(dir, "pkg/app/edited_gen.go"))
+	if err := os.WriteFile(filepath.Join(dir, "pkg/app/edited_gen.go"), append(edited, []byte("// edit\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plain user files: no marker, no record — untracked (the legacy
+	// manifest's Tier-2 entries kept no record in the new world).
+	mustWrite(t, dir, "pkg/app/app_extras.go", "package app\n")
+	// Disowned: record in .forge/disowned.json, marker stripped.
+	mustWrite(t, dir, "internal/svc/contract.go", "package svc\n")
+
+	cs := &FileChecksums{
+		Disowned:    map[string]DisownedEntry{"internal/svc/contract.go": {Reason: "ours"}},
+		Unstampable: map[string]string{"config/app.json": BodyHash([]byte("{}\n"))},
+	}
+	insp := NewInspector(dir, cs)
 
 	cases := []struct {
-		path       string
-		wantTier   int
-		wantTier1  bool
-		wantTier2  bool
-		wantForked bool
-		wantGo     bool
+		path         string
+		wantTracked  bool
+		wantTier1    bool
+		wantDisowned bool
+		wantGo       bool
 	}{
-		{"pkg/app/bootstrap.go", 1, true, false, false, true},
-		{"pkg/app/app_extras.go", 2, false, true, false, true},
-		{"db/embed.go", 0, true, false, false, true}, // legacy promotion
-		{"internal/svc/contract.go", 1, true, false, true, true},
-		{"web/hooks.ts", 1, true, false, false, false},
-		{"never/seen.go", 0, false, false, false, true}, // untracked
+		{"pkg/app/bootstrap.go", true, true, false, true},
+		{"pkg/app/edited_gen.go", true, true, false, true},
+		{"pkg/app/app_extras.go", false, false, false, true},  // scaffold-once: no record
+		{"internal/svc/contract.go", true, false, true, true}, // disowned: tracked, not Tier-1
+		{"web/hooks.ts", true, true, false, false},
+		{"config/app.json", true, true, false, false}, // scoped fallback entry
+		{"never/seen.go", false, false, false, true},  // untracked
 	}
 	for _, tc := range cases {
-		if got := insp.Tier(tc.path); got != tc.wantTier {
-			t.Errorf("Tier(%q) = %d, want %d", tc.path, got, tc.wantTier)
+		if got := insp.IsTracked(tc.path); got != tc.wantTracked {
+			t.Errorf("IsTracked(%q) = %v, want %v", tc.path, got, tc.wantTracked)
 		}
 		if got := insp.IsTier1(tc.path); got != tc.wantTier1 {
 			t.Errorf("IsTier1(%q) = %v, want %v", tc.path, got, tc.wantTier1)
 		}
-		if got := insp.IsTier2(tc.path); got != tc.wantTier2 {
-			t.Errorf("IsTier2(%q) = %v, want %v", tc.path, got, tc.wantTier2)
-		}
-		if got := insp.IsForked(tc.path); got != tc.wantForked {
-			t.Errorf("IsForked(%q) = %v, want %v", tc.path, got, tc.wantForked)
+		if got := insp.IsDisowned(tc.path); got != tc.wantDisowned {
+			t.Errorf("IsDisowned(%q) = %v, want %v", tc.path, got, tc.wantDisowned)
 		}
 		if got := insp.IsGo(tc.path); got != tc.wantGo {
 			t.Errorf("IsGo(%q) = %v, want %v", tc.path, got, tc.wantGo)
@@ -59,68 +91,67 @@ func TestInspector_TierAndForkedClassification(t *testing.T) {
 }
 
 func TestInspector_NilManifestSafe(t *testing.T) {
-	// Construction with a nil manifest must produce a non-nil Inspector
-	// whose queries return safe zero values. This is the "fresh project
-	// with no .forge/checksums.json yet" code path — callers should not
-	// have to nil-check before each query.
-	insp := NewInspector("", nil)
+	// Construction with nil ownership state must produce a non-nil
+	// Inspector whose queries return safe zero values. This is the
+	// "fresh project with no .forge state files yet" code path — callers
+	// should not have to nil-check before each query.
+	insp := NewInspector(t.TempDir(), nil)
 	if insp.IsTracked("anything.go") {
-		t.Errorf("IsTracked on nil manifest should be false")
+		t.Errorf("IsTracked on nil state should be false")
 	}
-	if insp.IsForked("anything.go") {
-		t.Errorf("IsForked on nil manifest should be false")
+	if insp.IsDisowned("anything.go") {
+		t.Errorf("IsDisowned on nil state should be false")
 	}
-	if insp.Tier("anything.go") != 0 {
-		t.Errorf("Tier on nil manifest should be 0")
+	if insp.IsTier1("anything.go") {
+		t.Errorf("IsTier1 on nil state should be false")
 	}
 	if got := insp.Tier1GoFiles(); got != nil {
-		t.Errorf("Tier1GoFiles on nil manifest = %v, want nil", got)
+		t.Errorf("Tier1GoFiles on nil state = %v, want nil", got)
 	}
-	if got := insp.ForkedGoFilesByDir(); len(got) != 0 {
-		t.Errorf("ForkedGoFilesByDir on nil manifest should be empty, got %v", got)
+	if got := insp.DisownedGoFilesByDir(); len(got) != 0 {
+		t.Errorf("DisownedGoFilesByDir on nil state should be empty, got %v", got)
 	}
 }
 
-func TestInspector_ForkedGoFilesByDir(t *testing.T) {
-	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
-		"pkg/app/bootstrap.go": {Tier: 1, Forked: true},
-		"pkg/app/wire_gen.go":  {Tier: 1, Forked: true},
-		"pkg/app/app_gen.go":   {Tier: 1}, // not forked
-		"internal/x/x.go":      {Tier: 1, Forked: true},
-		// Non-Go forked entries must NOT appear in the Go grouping —
+func TestInspector_DisownedGoFilesByDir(t *testing.T) {
+	cs := &FileChecksums{Disowned: map[string]DisownedEntry{
+		"pkg/app/bootstrap.go": {Reason: "user"},
+		"pkg/app/wire_gen.go":  {Reason: "migrated from legacy fork-era entry"},
+		"internal/x/x.go":      {Reason: "user"},
+		// Non-Go disowned entries must NOT appear in the Go grouping —
 		// a YAML or TSX file cannot satisfy a Go package-local
 		// reference, so the dangling-ref check ignores them.
-		".github/workflows/ci.yml": {Tier: 1, Forked: true},
-		"web/hooks.ts":             {Tier: 1, Forked: true},
-		"pkg/app/scaffold.go":      {Tier: 2, Forked: true}, // Tier-2 forked: still grouped as forked Go (forked-flag wins)
-		"untracked/sibling.go":     {Tier: 0},               // legacy entry, not forked
-		"unused/never-forked.go":   {Tier: 1},               // not forked
+		".github/workflows/ci.yml": {Reason: "user"},
+		"web/hooks.ts":             {Reason: "user"},
 	}}
 	insp := NewInspector("", cs)
-	got := insp.ForkedGoFilesByDir()
+	got := insp.DisownedGoFilesByDir()
 	want := map[string][]string{
-		"pkg/app":    {"pkg/app/bootstrap.go", "pkg/app/scaffold.go", "pkg/app/wire_gen.go"},
+		"pkg/app":    {"pkg/app/bootstrap.go", "pkg/app/wire_gen.go"},
 		"internal/x": {"internal/x/x.go"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ForkedGoFilesByDir mismatch.\ngot:  %v\nwant: %v", got, want)
+		t.Errorf("DisownedGoFilesByDir mismatch.\ngot:  %v\nwant: %v", got, want)
 	}
 
 	// Second call should return the cached map.
-	if got2 := insp.ForkedGoFilesByDir(); !reflect.DeepEqual(got, got2) {
+	if got2 := insp.DisownedGoFilesByDir(); !reflect.DeepEqual(got, got2) {
 		t.Errorf("second call returned a different map; got %v", got2)
 	}
 }
 
 func TestInspector_Tier1GoFiles(t *testing.T) {
-	cs := &FileChecksums{Files: map[string]FileChecksumEntry{
-		"db/embed.go":          {Tier: 0}, // legacy → Tier-1
-		"pkg/app/bootstrap.go": {Tier: 1},
-		"pkg/app/forked.go":    {Tier: 1, Forked: true}, // skip forked
-		"scaffold/svc.go":      {Tier: 2},               // skip Tier-2
-		"web/hooks.ts":         {Tier: 1},               // skip non-Go
+	dir := t.TempDir()
+	mustStamp(t, dir, "db/embed.go", "package db\n")
+	mustStamp(t, dir, "pkg/app/bootstrap.go", "package app\n")
+	mustStamp(t, dir, "pkg/app/disowned.go", "package app\n") // marker lingers, but disowned
+	mustStamp(t, dir, "web/hooks.ts", "export {}\n")          // skip non-Go
+	mustWrite(t, dir, "scaffold/svc.go", "package svc\n")     // no marker: user-owned scaffold
+
+	cs := &FileChecksums{Disowned: map[string]DisownedEntry{
+		"pkg/app/disowned.go": {Reason: "user"},
 	}}
-	insp := NewInspector("", cs)
+	insp := NewInspector(dir, cs)
 	got := insp.Tier1GoFiles()
 	want := []string{"db/embed.go", "pkg/app/bootstrap.go"}
 	if !reflect.DeepEqual(got, want) {
@@ -137,7 +168,7 @@ func TestInspector_GoSiblingsIn(t *testing.T) {
 	mustWrite(t, dir, "pkg/app/README.md", "doc\n")         // excluded
 	mustWrite(t, dir, "pkg/app/sub/c.go", "package sub\n")  // excluded (subdir)
 
-	insp := NewInspector(dir, &FileChecksums{Files: map[string]FileChecksumEntry{}})
+	insp := NewInspector(dir, &FileChecksums{})
 	got, err := insp.GoSiblingsIn("pkg/app")
 	if err != nil {
 		t.Fatalf("GoSiblingsIn: %v", err)
@@ -180,7 +211,7 @@ this is not valid go
 func Run() {}
 `)
 
-	insp := NewInspector(dir, &FileChecksums{Files: map[string]FileChecksumEntry{}})
+	insp := NewInspector(dir, &FileChecksums{})
 
 	got := insp.DeclaredTypesIn("pkg/app/types.go")
 	want := map[string]bool{"Workers": true, "Container": true, "internalAlias": true}
@@ -217,7 +248,7 @@ func TestInspector_DeclaredTypesIn_CachesResult(t *testing.T) {
 	mustWrite(t, dir, "x.go", `package x
 type Foo struct{}
 `)
-	insp := NewInspector(dir, &FileChecksums{Files: map[string]FileChecksumEntry{}})
+	insp := NewInspector(dir, &FileChecksums{})
 	first := insp.DeclaredTypesIn("x.go")
 
 	// Overwrite the file with new content; the inspector must return
@@ -246,7 +277,3 @@ func mustWrite(t *testing.T, dir, rel, content string) {
 		t.Fatalf("write %s: %v", full, err)
 	}
 }
-
-// Avoid unused-import in case sort is dropped elsewhere; keep an
-// assertion that sort.Strings was the choice for grouping.
-var _ = sort.Strings

@@ -13,22 +13,20 @@ import forge
 # Same Bundle as main.k. We duplicate it here rather than import
 # from main.k because KCL's -S `output` selection only works against
 # a single entrypoint file.
+_k8s = forge.K8sCluster {
+    cluster = "k3d-example"
+    namespace = "example-dev"
+    registry = "localhost:5050"
+    replicas = 1
+    ports = [8080]
+}
+
 _bundle = forge.Bundle {
     services = [
         forge.Service {
             name = "workspace-proxy"
             image = "example"
-            deploy = forge.K8sCluster {
-                cluster = "k3d-example"
-                namespace = "example-dev"
-                registry = "localhost:5050"
-                replicas = 1
-                ports = [8080]
-                ingress = forge.Ingress {
-                    host = "workspaces.localhost"
-                    tls = False
-                }
-            }
+            deploy = _k8s
         }
     ]
     operators = [
@@ -55,12 +53,33 @@ _bundle = forge.Bundle {
             command = ["./example", "cron", "billing-sweep"]
         }
     ]
+    gateways = [
+        forge.Gateway {
+            name = "public"
+            listeners = [
+                forge.GatewayListener {
+                    name = "http"
+                    port = 18080
+                    protocol = "HTTP"
+                }
+            ]
+            host = "workspaces.localhost"
+        }
+    ]
+    http_routes = [
+        forge.HTTPRoute {
+            name = "workspace-proxy"
+            gateway = "public"
+            listener = "http"
+            service = "workspace-proxy"
+            port = 8080
+        }
+    ]
 }
 
 _env = forge.RenderEnv {
-    namespace = "example-dev"
-    image_registry = "localhost:5050"
-    image_tag = "latest"
+    cluster = _k8s
+    image_tag = forge.image_tag("dev")
     network_policies = False
 }
 

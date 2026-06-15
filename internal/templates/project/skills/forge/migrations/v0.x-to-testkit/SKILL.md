@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-testkit
 description: Move pkg/app/bootstrap_testing.go's inlined sub-helpers (discard logger, in-memory SQLite, httptest harness, permissive authorizer, WithTestTenant) onto forge/pkg/testkit. The wiring shim stays codegen.
+relevance: migration
 ---
 
 # Migrating from inlined bootstrap-testing helpers to `forge/pkg/testkit`
@@ -32,8 +33,8 @@ Forge now imports `github.com/reliant-labs/forge/pkg/testkit` and the
 generated file calls into it:
 
 - `testkit.DiscardLogger()` returns the discard slog.
-- `testkit.NewSQLiteMemDB(t)` returns an `orm.Context` backed by a
-  fresh `:memory:` SQLite (driver + dialect blank-imported by the
+- `testkit.NewPostgresDB(t)` returns an `orm.Context` backed by a
+  fresh isolated real-postgres database (pkg/pgtest, no driver import by the
   library, so projects no longer need either import).
 - `testkit.NewTestServer(t, register)` runs an `httptest.Server`
   with `register` mounting one or more services on its mux; the
@@ -54,7 +55,7 @@ proto-Connect client constructor is per-RPC-package.
 
 The behavioural fingerprint is preserved. Specifically:
 
-- Per-call SQLite databases are still isolated.
+- Per-call postgres databases are still isolated.
 - The discard logger drops every record and never errors.
 - `PermissiveAuthorizer` always returns `nil` (matches the previous
   `testAuthorizer{}`).
@@ -113,7 +114,7 @@ What user code might need to change:
 - **References to the old `newTestDB(t)` function.** The function
   was unexported and lived in `package app`, so direct external
   references are unlikely, but in-package tests that called it
-  should switch to `testkit.NewSQLiteMemDB(t)`:
+  should switch to `testkit.NewPostgresDB(t)`:
 
   ```bash
   grep -rn "newTestDB(" --include="*.go" .
@@ -146,7 +147,7 @@ Plus:
 
 ```bash
 # Confirm the four sub-helpers are now testkit-backed.
-grep "testkit.DiscardLogger\|testkit.NewSQLiteMemDB\|testkit.PermissiveAuthorizer\|testkit.NewTestServer" \
+grep "testkit.DiscardLogger\|testkit.NewPostgresDB\|testkit.PermissiveAuthorizer\|testkit.NewTestServer" \
     pkg/app/testing.go
 
 # Confirm the legacy inlined helpers are gone.

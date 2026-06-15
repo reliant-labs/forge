@@ -9,7 +9,7 @@
 //                     scaffolder writes into the user project).
 //   - ConfigService — read / write / mutate forge.yaml on disk.
 //
-// Data carriers (FileChecksums, MemoryFormat, ProjectGenerator,
+// Data carriers (FileChecksums, Harness, ProjectGenerator,
 // SeedEntity, E2EMethodInfo, UpgradeResult, ServiceInfo, *TemplateData
 // structs) remain plain types — they have no behavioural seam to mock.
 package generator
@@ -21,9 +21,7 @@ import "github.com/reliant-labs/forge/internal/config"
 // finer-grained mocking can stub one method at a time.
 type Service interface {
 	// Plan-mode generators.
-	GeneratePlanDBTypes(root, modulePath, serviceName string, entityNames []string) error
-	GeneratePlanMigrations(root string, entities []config.PlanEntity) error
-	GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity) error
+	GeneratePlanORM(root, modulePath, serviceName string, entities []config.PlanEntity, cs *FileChecksums) error
 	GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.PlanRPC, entities []config.PlanEntity) error
 
 	// Component scaffolders.

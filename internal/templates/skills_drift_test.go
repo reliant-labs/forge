@@ -30,8 +30,18 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		"mock_gen.go": {},
 		// pkg/app/wire_gen.go — service/worker/operator Deps wiring.
 		"wire_gen.go": {},
+		// pkg/app/services_gen.go — per-service serviceRow constructors
+		// (registration-in-code; the user-owned pkg/app/services.go
+		// picks which rows the binary serves).
+		"services_gen.go": {},
 		// Per-handler-directory codegen off proto descriptors.
-		"handlers_gen.go":           {},
+		"handlers_gen.go": {},
+		// Tier-1 per-RPC CRUD op constructors (projection half of the
+		// CRUD split; the user-owned handlers_crud.go delegates to them).
+		"handlers_crud_ops_gen.go": {},
+		// Legacy pre-split CRUD implementation file. No longer emitted,
+		// but live skills may still name it in "legacy / still
+		// recognized" context (e.g. audit-json's crud_stubs row).
 		"handlers_crud_gen.go":      {},
 		"handlers_crud_test_gen.go": {},
 		"handlers_scaffold_test.go": {}, // post-1.x scaffolded test file

@@ -258,3 +258,103 @@ func TestSyncDevForgePkgReplace_NoReplaceNoVendor(t *testing.T) {
 		t.Fatal("expected vendored=false (no replace, no vendor)")
 	}
 }
+
+// TestSyncDevForgePkgReplace_LocalVendorNoSiblingIsSilentNoop pins the
+// fix for kalshi-trader FORGE_BACKLOG #14: go.mod already points the
+// replace at ./.forge-pkg and there is NO sibling <parent>/forge
+// checkout to refresh from. The vendored copy is the source of truth in
+// that layout — the sync must report vendored=true with NO error.
+// Pre-fix, sourceDir stayed "" and fell into looksLikeForgePkgDir(""),
+// emitting `replace target "" does not look like forge/pkg ... refusing
+// to vendor` on every `forge generate`.
+func TestSyncDevForgePkgReplace_LocalVendorNoSiblingIsSilentNoop(t *testing.T) {
+	root := t.TempDir()
+	// Project nested one level down so its parent (root) demonstrably
+	// has no `forge/` sibling checkout.
+	project := filepath.Join(root, "myproj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gomod := "module example.com/myproj\n\ngo 1.22\n\nreplace " + forgePkgModulePath + " => ./" + localForgePkgVendorDir + "\n"
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Vendored copy present (the steady state the warning fired in).
+	fakeForgePkgDir(t, filepath.Join(project, localForgePkgVendorDir), "vendored")
+
+	vendored, err := syncDevForgePkgReplace(project)
+	if err != nil {
+		t.Fatalf("expected silent no-op, got error: %v", err)
+	}
+	if !vendored {
+		t.Fatal("expected vendored=true (vendor dir present)")
+	}
+}
+
+// TestSyncDevForgePkgReplace_LocalVendorNoSiblingNoVendorDir covers the
+// degenerate variant of the same path: replace points at ./.forge-pkg
+// but the vendor dir was deleted and no sibling exists to rebuild it
+// from. Still no error — there is nothing to sync FROM, so warning
+// about a failed sync would be misleading. vendored=false lets the
+// Dockerfile COPY gate do the right thing.
+func TestSyncDevForgePkgReplace_LocalVendorNoSiblingNoVendorDir(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "myproj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gomod := "module example.com/myproj\n\ngo 1.22\n\nreplace " + forgePkgModulePath + " => ./" + localForgePkgVendorDir + "\n"
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vendored, err := syncDevForgePkgReplace(project)
+	if err != nil {
+		t.Fatalf("expected silent no-op, got error: %v", err)
+	}
+	if vendored {
+		t.Fatal("expected vendored=false (no vendor dir on disk)")
+	}
+}
+
+// TestSyncDevForgePkgReplace_CleanVersionPinUntouched pins the
+// release-flow safety contract (docs/pkg-versioning.md): a project whose
+// go.mod carries a clean `require github.com/reliant-labs/forge/pkg
+// vX.Y.Z` pin and NO replace must pass through `forge generate`'s
+// vendor-sync byte-identical — even when a sibling forge checkout sits
+// right next to it on disk. Rewriting the pin into a replace (or
+// warning about it) would silently drag released projects back onto the
+// dev path.
+func TestSyncDevForgePkgReplace_CleanVersionPinUntouched(t *testing.T) {
+	root := t.TempDir()
+	// Sibling forge checkout present — the strongest temptation for the
+	// sync to "help".
+	fakeForgePkgDir(t, filepath.Join(root, "forge", "pkg"), "sibling")
+
+	project := filepath.Join(root, "myproj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gomod := "module example.com/myproj\n\ngo 1.22\n\nrequire " + forgePkgModulePath + " v0.3.0\n"
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vendored, err := syncDevForgePkgReplace(project)
+	if err != nil {
+		t.Fatalf("clean pin must not produce an error/warning, got: %v", err)
+	}
+	if vendored {
+		t.Fatal("expected vendored=false (pinned release mode, no vendor dir)")
+	}
+	if _, statErr := os.Stat(filepath.Join(project, localForgePkgVendorDir)); !os.IsNotExist(statErr) {
+		t.Fatalf("sync must not create %s/ for a pinned project", localForgePkgVendorDir)
+	}
+	got, err := os.ReadFile(filepath.Join(project, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != gomod {
+		t.Fatalf("go.mod was modified.\nbefore:\n%s\nafter:\n%s", gomod, string(got))
+	}
+}

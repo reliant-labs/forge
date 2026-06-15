@@ -5,24 +5,23 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3" // register SQLite driver for SetupMockDB
-
 	"github.com/reliant-labs/forge/pkg/tdd"
 )
 
 func TestSetupMockDB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SetupMockDB boots real postgres; skipped under -short")
+	}
 	db := tdd.SetupMockDB(t)
 	if db == nil {
 		t.Fatal("SetupMockDB returned nil")
 	}
 	// Round-trip a trivial query to confirm the connection is usable.
 	if err := db.Ping(); err != nil {
-		t.Fatalf("ping in-memory db: %v", err)
+		t.Fatalf("ping db: %v", err)
 	}
 
-	// Ensure t.Cleanup closed the DB by reproducing the same setup in a
-	// subtest and verifying the DB is still usable mid-test.
-	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
+	if _, err := db.Exec("CREATE TABLE t (id BIGINT)"); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
 }

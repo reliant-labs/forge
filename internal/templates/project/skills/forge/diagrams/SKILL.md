@@ -1,6 +1,7 @@
 ---
 name: diagrams
 description: Drawing architecture, flow, and relationship diagrams without coordinate drift — reach for the component library first, declare a shared coordinate space when hand-rolling SVG+DOM, and explore multiple layouts for fan-out/anywhere topologies before committing.
+emit: both
 ---
 
 # Diagrams
@@ -16,9 +17,14 @@ This skill exists to prevent those.
 
 **Also load `[[design]]`.** It carries the visual brief, the verify-visually loop, and a copy-pasteable overflow probe you will want when checking your diagram. Diagrams are exactly the case both skills are tuned for — load them together, not just this one.
 
-## Try the component library first
+## Reach for a component library before hand-rolling
 
-Before drawing anything custom, search:
+If your environment ships a diagram component library, search it first. A well-built diagram primitive handles edge routing, anchor math, and consistent visual weight — none of which an LLM gets right on the first try from a blank file. If a library component is 80% right, install it and adapt; hand-rolling from scratch should be your last move.
+
+<!-- @forge-only:start -->
+### Forge's component library
+
+Forge ships a component library with diagram primitives. Search it:
 
 ```
 component_library(action="search", category="diagrams")
@@ -40,8 +46,7 @@ Shipped diagram components and what they're for:
 | `variation_grid` | Lay out 2-4 candidate diagrams (or any designs) as labeled artboards for the user to compare. Use whenever you produce alternative layouts for the same topology. |
 
 Narrative charts (`quadrant_chart`, `funnel_chart`, `concentric_circles`) handle all coordinate math internally — pass data, get pixels. Same applies to the diagram components above: they own positioning and edge routing. For commodity data viz (bar, line, area, donut, scatter) use Recharts — see the [[frontend]] skill.
-
-If a library component is 80% right, install it and adapt. Hand-rolling from a blank file should be your last move.
+<!-- @forge-only:end -->
 
 ## When you must hand-roll: declare a shared coordinate space
 
@@ -105,17 +110,21 @@ For these topologies, default to producing **2-3 layouts the user can compare**:
 - **Bus bar** — a horizontal/vertical bar with producers on one side and consumers on the other. Communicates decoupling (pub/sub).
 - **Matrix** — producers as rows, consumers as columns, cells marking who subscribes to what. Communicates routing rules.
 
-Each says something different about the relationship. Render them with the `variation_grid` layout (`component_library(action="get", name="variation_grid")`) so each option lands in a labeled artboard and the user can scan them side by side. Don't quietly commit to chains.
+Each says something different about the relationship. Render them in a labeled grid (one `<figure>` per variant with a `<figcaption>`) so the user can scan them side by side. Don't quietly commit to chains.
 
-**If you are writing static HTML (no React env), hand-roll the artboard layout:** a grid of labeled `<figure>` elements with a `<figcaption>` per variant, each holding one rendering of the topology. Do not skip the variations step just because `variation_grid` is a React component — the discipline is "show 2-3 layouts side by side," not "use that specific component."
+<!-- @forge-only:start -->
+In forge, use `component_library(action="get", name="variation_grid")` to render the side-by-side artboard layout — it handles consistent spacing across 2-4 variants.
+<!-- @forge-only:end -->
+
+**If you are writing static HTML (no React env), hand-roll the artboard layout:** a grid of labeled `<figure>` elements with a `<figcaption>` per variant, each holding one rendering of the topology. The discipline is "show 2-3 layouts side by side," not "use any specific component."
 
 ## Icons: use a library, don't draw them
 
-Use `lucide-react` for icons inside diagram nodes (`Cloud`, `Server`, `Database`, `Monitor`, `FolderCode`, `Cpu`, etc.). One icon family, sized consistently (16-22px is typical for diagram-node icons).
+Use `lucide-react` (or your stack's equivalent icon library) for icons inside diagram nodes (`Cloud`, `Server`, `Database`, `Monitor`, `FolderCode`, `Cpu`, etc.). One icon family, sized consistently (16-22px is typical for diagram-node icons).
 
 Do not hand-write multi-path SVG icons for "cloud" / "server" / "database" / "laptop" inside diagrams. They will be inconsistent in stroke width, viewbox, and visual weight with each other and with the rest of the app.
 
-## Sequence and state diagrams: use Mermaid, not the library
+## Sequence and state diagrams: use Mermaid, not custom SVG
 
 For **sequence diagrams** (time-axis traces — auth flows, request lifecycles) and **state machine diagrams** (states + labeled transitions — workflows, order lifecycles), use Mermaid. It's the industry standard, renders in GitHub/GitLab/Notion natively, and ships a tight syntax LLMs handle well.
 
@@ -134,7 +143,7 @@ sequenceDiagram
 </pre>
 ```
 
-The component library does NOT ship a `sequence_diagram` or `state_machine` component — Mermaid is better than anything we'd hand-roll for these shapes, and forcing them into the SVG+DOM coordinate-space pattern would be a step backwards.
+Mermaid is better than anything you'd hand-roll for these shapes, and forcing them into the SVG+DOM coordinate-space pattern would be a step backwards.
 
 ## Verify the diagram actually rendered correctly
 
@@ -150,8 +159,8 @@ The `[[design]]` skill covers the broader verify-visually discipline, including 
 
 ## Rules
 
-- Search `component_library(category="diagrams")` before hand-rolling.
+- Search any available component library for diagram primitives before hand-rolling.
 - When hand-rolling SVG+DOM, declare `W`, `H`, and named anchor points ONCE — use them for both the `viewBox` and the absolute-positioned nodes.
-- Use `lucide-react` icons inside diagram nodes — do not hand-write multi-path icon SVGs.
+- Use `lucide-react` icons (or equivalent) inside diagram nodes — do not hand-write multi-path icon SVGs.
 - For 1-to-many / fan-out / "anywhere" topologies, produce 2-3 layout options side by side instead of defaulting to a chain.
 - Screenshot the rendered diagram and look at it before declaring done.

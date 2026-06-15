@@ -5,212 +5,182 @@ import (
 	"database/sql"
 	"fmt"
 
-	_ "github.com/lib/pq" // PostgreSQL driver
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
+	"github.com/uptrace/bun/extra/bunotel"
+
+	_ "github.com/lib/pq" // PostgreSQL driver (database/sql registration)
 )
 
-// Client provides the core ORM functionality
+// Client is the forge ORM handle. Post-Phase-2 it is a thin wrapper over
+// a *bun.DB (uptrace/bun, postgres-pinned): generated CRUD ops reach the
+// engine via Bun(); the kept schema-truth machinery (introspect/differ/
+// migration) still consults Dialect() and the raw Exec/Query/QueryRow
+// seam. forge is postgres-only — the dialect argument is retained on the
+// constructors for call-site compatibility and must be "postgres".
 type Client struct {
-	db      *sql.DB
+	bun     *bun.DB
 	dialect Dialect
 }
 
-// NewClient creates a new ORM client using the specified dialect.
-// dialectName should be one of the registered dialects (e.g., "postgres", "sqlite").
-// Use ListDialects() to see all available dialects.
+// NewClient opens a new ORM client. dialectName must be "postgres".
 func NewClient(dialectName, dsn string) (*Client, error) {
-	db, dialect, err := openWithDialect(dialectName, dsn)
-	if err != nil {
+	if err := requirePostgres(dialectName); err != nil {
 		return nil, err
 	}
-
-	return &Client{
-		db:      db,
-		dialect: dialect,
-	}, nil
+	sqldb, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := sqldb.Ping(); err != nil {
+		sqldb.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+	return NewClientWithDB(sqldb, dialectName)
 }
 
-// NewClientWithDB creates a new ORM client from an existing database connection.
-// This is useful when you need more control over the database connection settings.
+// NewClientWithDB wraps an existing *sql.DB into an ORM client. This is
+// the seam the generated bootstrap/setup and pkg/testkit use: open a
+// postgres *sql.DB, hand it here. dialectName must be "postgres".
 func NewClientWithDB(db *sql.DB, dialectName string) (*Client, error) {
+	if err := requirePostgres(dialectName); err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
 	dialect, err := GetDialect(dialectName)
 	if err != nil {
 		return nil, err
 	}
+	bdb := bun.NewDB(db, pgdialect.New())
+	// Trace ORM SQL onto the active OTel span (forge's observability
+	// convention). The generated layer also opens per-op spans; this adds
+	// the SQL statement attributes.
+	bdb.AddQueryHook(bunotel.NewQueryHook())
+	return &Client{bun: bdb, dialect: dialect}, nil
+}
 
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+func requirePostgres(dialectName string) error {
+	if dialectName != "postgres" {
+		return fmt.Errorf("%w: forge is postgres-pinned, got %q", ErrInvalidDialect, dialectName)
 	}
-
-	return &Client{
-		db:      db,
-		dialect: dialect,
-	}, nil
+	return nil
 }
 
-// Close closes the database connection
-func (c *Client) Close() error {
-	return c.db.Close()
-}
+// Bun returns the underlying *bun.DB as a bun.IDB.
+func (c *Client) Bun() bun.IDB { return c.bun }
 
-// DB returns the underlying *sql.DB for advanced usage
-func (c *Client) DB() *sql.DB {
-	return c.db
-}
+// BunDB returns the concrete *bun.DB (for advanced callers that need
+// connection-pool control or BeginTx with bun's transaction type).
+func (c *Client) BunDB() *bun.DB { return c.bun }
 
-// Dialect returns the dialect being used by this client
-func (c *Client) Dialect() Dialect {
-	return c.dialect
-}
+// DB returns the underlying *sql.DB for advanced usage and for the kept
+// schema-truth machinery's database/sql seam.
+func (c *Client) DB() *sql.DB { return c.bun.DB }
 
-// Exec executes a raw SQL query
+// Dialect returns the SQL dialect (postgres). Consumed by the kept
+// schema-truth machinery (introspect/differ/migration), not by the
+// runtime CRUD engine.
+func (c *Client) Dialect() Dialect { return c.dialect }
+
+// Close closes the database connection.
+func (c *Client) Close() error { return c.bun.Close() }
+
+// Exec runs a raw SQL statement (escape hatch). It goes straight to the
+// underlying *sql.DB, NOT through bun's query formatter: callers write
+// native postgres SQL with $1/$2 placeholders, and bun's `?`-rewriting
+// must not touch it. (Generated code uses db.Bun()'s typed builders,
+// which handle their own placeholders.)
 func (c *Client) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return c.db.ExecContext(ctx, query, args...)
+	return c.bun.DB.ExecContext(ctx, query, args...)
 }
 
-// Query executes a raw SQL query and returns rows
+// Query runs a raw SQL query (escape hatch). See Exec for the
+// raw-passthrough rationale.
 func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return c.db.QueryContext(ctx, query, args...)
+	return c.bun.DB.QueryContext(ctx, query, args...)
 }
 
-// QueryRow executes a query that returns at most one row
+// QueryRow runs a raw SQL query returning at most one row (escape hatch).
 func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return c.db.QueryRowContext(ctx, query, args...)
+	return c.bun.DB.QueryRowContext(ctx, query, args...)
 }
 
-// BeginTx starts a transaction
+// Tx wraps a bun transaction as an orm.Context, so the same generated
+// CRUD functions run transparently inside a transaction.
+type Tx struct {
+	tx      bun.Tx
+	dialect Dialect
+}
+
+// Bun returns the transaction as a bun.IDB.
+func (t *Tx) Bun() bun.IDB { return t.tx }
+
+// Dialect returns the SQL dialect (postgres), so raw-SQL handlers running
+// inside a transaction get the same Placeholder()/QuoteIdentifier() seam as
+// on *Client. Carried from the parent Client at BeginTx time.
+func (t *Tx) Dialect() Dialect { return t.dialect }
+
+// Commit commits the transaction.
+func (t *Tx) Commit() error { return t.tx.Commit() }
+
+// Rollback rolls back the transaction.
+func (t *Tx) Rollback() error { return t.tx.Rollback() }
+
+// Exec runs a raw SQL statement within the transaction. Like Client.Exec
+// it bypasses bun's query formatter (native $1/$2 placeholders) by going
+// to the embedded *sql.Tx.
+func (t *Tx) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return t.tx.Tx.ExecContext(ctx, query, args...)
+}
+
+// Query runs a raw SQL query within the transaction (raw passthrough).
+func (t *Tx) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return t.tx.Tx.QueryContext(ctx, query, args...)
+}
+
+// QueryRow runs a raw SQL query within the transaction (raw passthrough).
+func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return t.tx.Tx.QueryRowContext(ctx, query, args...)
+}
+
+// BeginTx starts a transaction.
 func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
-	tx, err := c.db.BeginTx(ctx, opts)
+	tx, err := c.bun.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	return &Tx{tx: tx, dialect: c.dialect}, nil
 }
 
-// Tx wraps a database transaction
-type Tx struct {
-	tx      *sql.Tx
-	dialect Dialect
-}
-
-// Commit commits the transaction
-func (t *Tx) Commit() error {
-	return t.tx.Commit()
-}
-
-// Rollback rolls back the transaction
-func (t *Tx) Rollback() error {
-	return t.tx.Rollback()
-}
-
-// Exec executes a query within the transaction
-func (t *Tx) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return t.tx.ExecContext(ctx, query, args...)
-}
-
-// Query executes a query within the transaction
-func (t *Tx) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return t.tx.QueryContext(ctx, query, args...)
-}
-
-// QueryRow executes a query within the transaction
-func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return t.tx.QueryRowContext(ctx, query, args...)
-}
-
-// RunTransaction executes a function within a database transaction.
-// If the function returns an error, the transaction is rolled back.
-// Otherwise, the transaction is committed.
-// The transaction Context is passed to the function, allowing ORM methods
-// to transparently use the transaction.
+// RunTransaction executes fn within a transaction, committing on success
+// and rolling back on error or panic. The transaction Context is passed
+// to fn so generated ORM ops transparently use it.
 func (c *Client) RunTransaction(ctx context.Context, fn func(ctx Context) error) error {
-	tx, err := c.BeginTx(ctx, nil)
-	if err != nil {
-		return NewTransactionError("begin", err)
-	}
-
-	// Ensure we always either commit or rollback
-	defer func() {
-		if p := recover(); p != nil {
-			// If there's a panic, rollback and re-panic
-			_ = tx.Rollback()
-			panic(p)
-		}
-	}()
-
-	// Execute the function with the transaction context
-	if err := fn(tx); err != nil {
-		// If the function returns an error, rollback
-		if rbErr := tx.Rollback(); rbErr != nil {
-			return NewTransactionError("rollback", fmt.Errorf("rollback failed after error: %v, original error: %w", rbErr, err))
-		}
-		return err
-	}
-
-	// If the function succeeds, commit
-	if err := tx.Commit(); err != nil {
-		return NewTransactionError("commit", err)
-	}
-
-	return nil
+	return c.RunTransactionWithOptions(ctx, nil, fn)
 }
 
-// RunTransactionWithOptions executes a function within a database transaction with custom options.
-// If the function returns an error, the transaction is rolled back.
-// Otherwise, the transaction is committed.
+// RunTransactionWithOptions is RunTransaction with custom tx options.
 func (c *Client) RunTransactionWithOptions(ctx context.Context, opts *sql.TxOptions, fn func(ctx Context) error) error {
 	tx, err := c.BeginTx(ctx, opts)
 	if err != nil {
 		return NewTransactionError("begin", err)
 	}
-
-	// Ensure we always either commit or rollback
 	defer func() {
 		if p := recover(); p != nil {
-			// If there's a panic, rollback and re-panic
 			_ = tx.Rollback()
 			panic(p)
 		}
 	}()
-
-	// Execute the function with the transaction context
 	if err := fn(tx); err != nil {
-		// If the function returns an error, rollback
 		if rbErr := tx.Rollback(); rbErr != nil {
 			return NewTransactionError("rollback", fmt.Errorf("rollback failed after error: %v, original error: %w", rbErr, err))
 		}
 		return err
 	}
-
-	// If the function succeeds, commit
 	if err := tx.Commit(); err != nil {
 		return NewTransactionError("commit", err)
 	}
-
 	return nil
-}
-
-// Save inserts or updates a model in the database using an upsert operation.
-// This works with any type that implements the Model interface.
-//
-// Example:
-//
-//	user := &User{Id: "123", Email: "test@example.com"}
-//	err := client.Save(ctx, user)
-func (c *Client) Save(ctx context.Context, model Model) error {
-	return Save(ctx, c, model)
-}
-
-// Delete removes a model from the database by its primary key.
-//
-// Example:
-//
-//	user := &User{Id: "123"}
-//	err := client.Delete(ctx, user)
-func (c *Client) Delete(ctx context.Context, model Model) error {
-	return Delete(ctx, c, model)
-}
-
-// Dialect returns the SQL dialect being used by this transaction
-func (t *Tx) Dialect() Dialect {
-	return t.dialect
 }

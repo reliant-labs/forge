@@ -67,3 +67,31 @@ OTEL_ENV: [EnvVar] = [
 # Projects override this in their own files when they need a base
 # layer for every entity.
 COMMON_ENV: [EnvVar] = []
+
+# Per-env default image tags. Kept centrally so the forge CLI's
+# `-D image_tag=...` override has ONE fallback table to consult; the
+# scaffold templates no longer re-declare a per-env literal.
+_IMAGE_TAG_DEFAULTS: {str: str} = {
+    "dev" = "latest"
+    "staging" = "staging"
+    "prod" = "stable"
+}
+
+# image_tag(env) — resolve the image tag for an environment.
+#
+# Precedence:
+#   1. `kcl run -D image_tag=<tag>` (the forge CLI passes this on every
+#      deploy / build / dev cluster reload — see internal/cluster.RenderManifests)
+#   2. The per-env default from _IMAGE_TAG_DEFAULTS (latest/staging/stable)
+#   3. "latest" for unknown envs (so user-defined envs like "preview"
+#      still get a usable tag without a forced override)
+#
+# Usage in a per-env main.k:
+#
+#     _env = forge.RenderEnv {
+#         cluster   = _dev_k8s
+#         image_tag = forge.image_tag("dev")
+#     }
+image_tag = lambda env: str -> str {
+    option("image_tag") or _IMAGE_TAG_DEFAULTS[env] or "latest"
+}

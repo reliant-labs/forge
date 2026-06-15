@@ -20,12 +20,18 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	// VarName is the lowerCamel form of FieldName for any local-var
 	// references the template expands.
 	type bootstrapService struct {
-		Name      string
-		Package   string
-		FieldName string
-		Fallible  bool
-		Alias     string
-		VarName   string
+		Name    string
+		Package string
+		// ImportPath is the handlers/ directory leaf the template's import
+		// line uses. At initial-scaffold time forge is about to CREATE the
+		// directory, so this is always the synthesized Package — the
+		// disk-first resolver (codegen.ResolveServiceComponent) only takes
+		// over on later regenerates once the directory exists.
+		ImportPath string
+		FieldName  string
+		Fallible   bool
+		Alias      string
+		VarName    string
 		// HasWebhooks mirrors codegen.BootstrapServiceData.HasWebhooks. The
 		// initial-scaffold pass never declares webhooks (forge.yaml hasn't
 		// grown a webhooks: block yet), so this stays false here; the
@@ -45,21 +51,23 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	}
 
 	type bootstrapWorker struct {
-		Name      string
-		Package   string
-		FieldName string
-		Fallible  bool
-		Alias     string
-		VarName   string
+		Name       string
+		Package    string
+		ImportPath string // see bootstrapService.ImportPath
+		FieldName  string
+		Fallible   bool
+		Alias      string
+		VarName    string
 	}
 
 	type bootstrapOperator struct {
-		Name      string
-		Package   string
-		FieldName string
-		Fallible  bool
-		Alias     string
-		VarName   string
+		Name       string
+		Package    string
+		ImportPath string // see bootstrapService.ImportPath
+		FieldName  string
+		Fallible   bool
+		Alias      string
+		VarName    string
 	}
 
 	var services []bootstrapService
@@ -70,15 +78,16 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// name. FieldName uses ToPascalCase so "admin-server" becomes
 		// "AdminServer" — matching what the unit/integration test templates
 		// emit via `{{.ServiceName | pascalCase}}` (e.g. NewTestAdminServer).
-		pkg := ServicePackageName(g.ServiceName)
+		pkg := naming.ServicePackage(g.ServiceName)
 		fieldName := naming.ToPascalCase(g.ServiceName)
 		services = []bootstrapService{
 			{
-				Name:      g.ServiceName,
-				Package:   pkg,
-				FieldName: fieldName,
-				Alias:     pkg,
-				VarName:   lowerFirstRune(fieldName),
+				Name:       g.ServiceName,
+				Package:    pkg,
+				ImportPath: pkg,
+				FieldName:  fieldName,
+				Alias:      pkg,
+				VarName:    lowerFirstRune(fieldName),
 			},
 		}
 	}
@@ -88,18 +97,37 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	// cobra subcommands compile against a complete dependency graph. In
 	// binary=per-service mode this is preserved as-is (only ServiceName);
 	// AppendServiceToConfig/GenerateServiceFiles handles the rest later.
-	if g.isBinaryShared() && len(g.AdditionalServices) > 0 {
+	// Every declared service joins the scaffold data REGARDLESS of binary
+	// mode: this slice seeds the scaffold-once pkg/app/services.go
+	// registration universe, and a service missing there at birth stays
+	// UNLISTED forever (services.go is user-owned; generate never adds
+	// rows). Which services a given invocation mounts is the runtime
+	// names-filter's job, not the universe's. (Previously gated on
+	// isBinaryShared(), which silently dropped every non-first service
+	// from per-service-mode scaffolds — caught by the multi-service
+	// corpus fixture when the add-webhook registration guard landed.)
+	if len(g.AdditionalServices) > 0 {
 		for _, svcName := range g.AdditionalServices {
-			pkg := ServicePackageName(svcName)
+			pkg := naming.ServicePackage(svcName)
 			fieldName := naming.ToPascalCase(svcName)
 			services = append(services, bootstrapService{
-				Name:      svcName,
-				Package:   pkg,
-				FieldName: fieldName,
-				Alias:     pkg,
-				VarName:   lowerFirstRune(fieldName),
+				Name:       svcName,
+				Package:    pkg,
+				ImportPath: pkg,
+				FieldName:  fieldName,
+				Alias:      pkg,
+				VarName:    lowerFirstRune(fieldName),
 			})
 		}
+	}
+
+	// AllServiceNames drives BootstrapOnly's registration guard. At
+	// initial scaffold every declared service is registered (services.go
+	// is scaffolded below listing all of them), so the inventory is just
+	// the scaffolded set's runtime names.
+	var allServiceNames []string
+	for _, s := range services {
+		allServiceNames = append(allServiceNames, naming.ToKebabCase(s.Name))
 	}
 
 	data := struct {
@@ -109,6 +137,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		Workers             []bootstrapWorker
 		Operators           []bootstrapOperator
 		HasDatabase         bool
+		DatabaseDriver      string
 		OrmEnabled          bool
 		HasFallible         bool
 		BinaryShared        bool
@@ -117,6 +146,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		ConnectImports      []string
 		DiagnosticsEnabled  bool
 		StrictWiringEnabled bool
+		AllServiceNames     []string
 	}{
 		Module:    g.ModulePath,
 		Services:  services,
@@ -142,6 +172,7 @@ func (g *ProjectGenerator) generateBootstrap() error {
 		// `forge generate` to wire the boot-time emit path.
 		DiagnosticsEnabled:  false,
 		StrictWiringEnabled: false,
+		AllServiceNames:     allServiceNames,
 	}
 
 	content, err := templates.ProjectTemplates().Render("bootstrap.go.tmpl", data)
@@ -166,6 +197,54 @@ func (g *ProjectGenerator) generateBootstrap() error {
 	destPath := filepath.Join(g.Path, "pkg", "app", "bootstrap.go")
 	if err := os.WriteFile(destPath, content, 0644); err != nil {
 		return err
+	}
+
+	// pkg/app/services_gen.go — the generated serviceRow constructors
+	// bootstrap's RegisteredServices consumption compiles against.
+	// Tier-1; the post-scaffold `forge generate` re-emits it with
+	// disk-resolved identities. Rendered even with zero services (the
+	// template degrades to a header-only file) so the package shape is
+	// identical across project sizes.
+	rowsContent, err := templates.ProjectTemplates().Render("services_gen.go.tmpl", struct {
+		Module         string
+		Services       []bootstrapService
+		RESTEnabled    bool
+		ConnectImports []string
+	}{
+		Module:   g.ModulePath,
+		Services: services,
+		// REST is off at initial scaffold — same rationale as the
+		// bootstrap data above.
+		RESTEnabled:    false,
+		ConnectImports: nil,
+	})
+	if err != nil {
+		return fmt.Errorf("render services_gen.go.tmpl: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(g.Path, "pkg", "app", "services_gen.go"), rowsContent, 0644); err != nil {
+		return err
+	}
+
+	// pkg/app/services.go — the user-owned registration list (what THIS
+	// binary serves is code, not config). Scaffolded once listing every
+	// service `forge new` creates; never rewritten afterwards. Zero-
+	// service projects get the empty-list version so the contract is
+	// visible from day one.
+	registryPath := filepath.Join(g.Path, "pkg", "app", "services.go")
+	if _, statErr := os.Stat(registryPath); os.IsNotExist(statErr) {
+		registryContent, rerr := templates.ProjectTemplates().Render("services.go.tmpl", struct {
+			Module   string
+			Services []bootstrapService
+		}{
+			Module:   g.ModulePath,
+			Services: services,
+		})
+		if rerr != nil {
+			return fmt.Errorf("render services.go.tmpl: %w", rerr)
+		}
+		if err := os.WriteFile(registryPath, registryContent, 0644); err != nil {
+			return err
+		}
 	}
 
 	// Emit wire_gen.go alongside bootstrap.go at scaffold time so the
@@ -203,10 +282,10 @@ type scaffoldWireAssignment struct {
 }
 
 type scaffoldWireService struct {
-	FieldName        string
-	Package          string
-	Alias            string
-	Name             string
+	FieldName string
+	Package   string
+	Alias     string
+	Name      string
 	// ImportPath / LoggerAttrKey mirror the production
 	// codegen.WireGenServiceData fields. The shared template uses
 	// {{.ImportPath}} in the import line so workers/operators can reuse
@@ -215,7 +294,6 @@ type scaffoldWireService struct {
 	ImportPath       string
 	LoggerAttrKey    string
 	NeedsAuthzVar    bool
-	NeedsDevMode     bool
 	Assignments      []scaffoldWireAssignment
 	UnresolvedFields []struct{ Name, Type, Hint string }
 }
@@ -249,11 +327,10 @@ func (g *ProjectGenerator) generateWireGen(services []scaffoldServiceInfo) error
 			ImportPath:    "handlers/" + s.Package,
 			LoggerAttrKey: "service",
 			NeedsAuthzVar: true,
-			NeedsDevMode:  true,
 			Assignments: []scaffoldWireAssignment{
 				{Field: "Logger", Expr: fmt.Sprintf("logger.With(%q, %q)", "service", s.Name)},
 				{Field: "Config", Expr: "cfg"},
-				{Field: "Authorizer", Expr: "authz", Comment: "devMode swap to middleware.DevAuthorizer in development"},
+				{Field: "Authorizer", Expr: "authz", Comment: "dev-mode swap to middleware.DevAuthorizer (cfg.Mode().IsDev())"},
 			},
 		})
 	}
@@ -307,6 +384,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	type bootstrapTestService struct {
 		Name                   string
 		Package                string
+		ImportPath             string // handlers/ dir leaf; see generateBootstrap's bootstrapService
 		FieldName              string
 		ProtoServiceName       string
 		ProtoConnectImportPath string
@@ -336,7 +414,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 	var services []bootstrapTestService
 	var connectImports []string
 	if g.ServiceName != "" {
-		pkg := ServicePackageName(g.ServiceName)
+		pkg := naming.ServicePackage(g.ServiceName)
 		fieldName := naming.ToPascalCase(g.ServiceName)
 		// ProtoServiceName matches what the proto template emits:
 		// `service {{.ServiceName | pascalCase}}Service` (PascalCase handles hyphens).
@@ -350,6 +428,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			{
 				Name:                   g.ServiceName,
 				Package:                pkg,
+				ImportPath:             pkg,
 				FieldName:              fieldName,
 				ProtoServiceName:       protoServiceName,
 				ProtoConnectImportPath: connectImport,

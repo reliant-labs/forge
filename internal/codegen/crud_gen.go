@@ -22,22 +22,35 @@ type CRUDMethod struct {
 
 // CRUDTemplateData holds all data needed to render the CRUD handlers template.
 type CRUDTemplateData struct {
-	Package       string       // Go package name, e.g. "patients"
-	Module        string       // Go module path, e.g. "github.com/demo-project"
-	ProtoPackage  string       // e.g. "proto/services/patients"
-	DBPackagePath string       // e.g. "github.com/demo-project/gen/db/v1"
-	HasPagination bool         // true if any list method uses pagination
-	HasFilters    bool         // true if any list method has filter fields
-	HasOrderBy    bool         // true if any list method has order_by
-	NeedsORM      bool         // true if pagination, filters, or ordering requires orm import
-	HasTenant     bool         // true if any CRUD method operates on a tenant-scoped entity
+	Package       string // Go package name, e.g. "patients"
+	Module        string // Go module path, e.g. "github.com/demo-project"
+	ProtoPackage  string // e.g. "proto/services/patients"
+	DBPackagePath string // e.g. "github.com/demo-project/gen/db/v1"
+	HasPagination bool   // true if any list method uses pagination
+	HasFilters    bool   // true if any list method has filter fields
+	HasOrderBy    bool   // true if any list method has order_by
+	NeedsORM      bool   // true if pagination, filters, or ordering requires orm import
+	HasTenant     bool   // true if any CRUD method operates on a tenant-scoped entity
 	// NeedsCRUDLib is true when at least one method emits a real CRUD
 	// body (i.e. uses pkg/crud, internal/db, middleware). When every
 	// method's request/response shape failed validation and we emit
 	// only TODO stubs, the template skips those imports to keep the
 	// file compiling.
 	NeedsCRUDLib bool
+	// NeedsOpsFile is true when the Tier-1 ops file must be written:
+	// either NeedsCRUDLib (a real op constructor) OR there is at least
+	// one entity conversion pair a wired custom-read-shape body depends
+	// on. An all-custom service still needs the conversion helpers, so
+	// it gets an ops file carrying only the <entity>ToProto/FromProto
+	// pairs (no crud/middleware imports — see the template gating).
+	NeedsOpsFile bool
 	CRUDMethods  []CRUDMethodTemplateData
+	// Entities carries the per-entity proto<->struct conversion pairs
+	// (<entity>ToProto / <entity>FromProto) emitted alongside the ops.
+	Entities []EntityConvTemplateData
+	// NeedsTimestamppb gates the timestamppb import (set when any
+	// conversion touches a timestamp column).
+	NeedsTimestamppb bool
 }
 
 // CRUDMethodTemplateData holds per-method template data.
@@ -59,23 +72,47 @@ type CRUDMethodTemplateData struct {
 	PaginationStyle   string // "cursor" (default for now)
 	HasFilters        bool   // true if list method has filter fields
 	FilterFields      []FilterFieldData
-	HasOrderBy        bool   // true if list method has order_by field
-	HasTenant         bool   // true when the entity has a tenant key field
-	TenantGoName      string // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
-	TenantColumnName  string // e.g., "org_id", "tenant_id"
+	HasOrderBy        bool              // true if list method has order_by field
+	HasTenant         bool              // true when the entity has a tenant key field
+	TenantGoName      string            // e.g., "OrgId", "TenantId" (PascalCase Go field name on entity)
+	TenantColumnName  string            // e.g., "org_id", "tenant_id"
 	UpdateEntityField string            // e.g., "Project" — Go field name in the update request that holds the entity
-	CreateFields      []CreateFieldData // fields from the create request message
+	// UpdateMaskField is the Go field name of the update request's
+	// google.protobuf.FieldMask field (e.g. "UpdateMask"). Empty when the
+	// request carries no mask — the generated UpdateOp then omits
+	// Mask/PersistMasked and pkg/crud keeps the legacy full-replace path.
+	// When set, the op wires both hooks so HandleUpdate honors AIP-134:
+	// concrete mask paths write only the named columns via
+	// db.Update<Entity>Masked.
+	UpdateMaskField string
+	CreateFields    []CreateFieldData // fields from the create request message
 	// ShapeMismatch is true when the request/response message shapes
 	// observed in svc.Messages don't line up with what the CRUD body
 	// templates assume (AIP-158 page_size/page_token for list, an `id`
 	// scalar key for get/update/delete, an entity-typed response field,
-	// etc.). When true the template emits a tagged TODO stub returning
-	// CodeUnimplemented rather than CRUD-body code that wouldn't compile
-	// against the real proto. See validateCRUDShape for the rules. The
-	// stub carries a FORGE_CRUD_SHAPE_MISMATCH marker plus MismatchReason
-	// so the user (and any future `forge audit`) can spot it.
+	// etc.). That's a legitimate domain decision, not an error — the
+	// template emits a tagged stub returning CodeUnimplemented rather
+	// than CRUD-body code that wouldn't compile against the real proto,
+	// and the user implements the custom shape in the owned shim. See
+	// validateCRUDShape for the rules. The stub carries a
+	// `forge:custom-read-shape` marker plus MismatchReason so the user
+	// (and `forge audit`) can spot it. (Markers emitted before this
+	// release spelled it FORGE_CRUD_SHAPE_MISMATCH; audit still
+	// recognizes that string for one release.)
 	ShapeMismatch  bool
 	MismatchReason string
+	// CustomFilters are the request fields that DID map to a declared
+	// column on the entity (best-effort), used to seed the wired
+	// custom-read-shape body's []orm.QueryOption skeleton. Unlike the
+	// strict FilterFields (which fail the generate on an unmappable
+	// field), these are advisory: fields that don't map to a column are
+	// silently skipped so the scaffold always compiles. Only populated
+	// when ShapeMismatch is true.
+	CustomFilters []FilterFieldData
+	// CreateAssigns are the precomputed `e.X = req.X` statements that
+	// map create-request fields onto the entity struct (with timestamp/
+	// wrapper/array/width conversions baked in).
+	CreateAssigns []string
 }
 
 // CreateFieldData holds a field mapping from a create request to the ORM entity.
@@ -95,9 +132,13 @@ type FilterFieldData struct {
 	FieldType  string // "bool", "string", "int32", "int64"
 	FilterType string // "exact", "search"
 	IsOptional bool   // proto optional keyword
+	// SearchColumns is the entity's declared string columns (minus the
+	// PK) that a "search" filter spans via orm.WhereILikeAny. A search
+	// field never maps to a column of its own — the historical
+	// WhereILike("search", ...) hit a phantom column and either errored
+	// or (SQLite double-quote fallback) silently matched nothing.
+	SearchColumns []string
 }
-
-
 
 // MatchCRUDMethods correlates a service's RPC methods with entity definitions
 // and returns the matched CRUD methods. Only unary RPCs are matched.
@@ -190,8 +231,16 @@ func parseCRUDOperation(methodName string) (operation, entityName string) {
 // handlers_crud_gen.go is recorded so it doesn't show up as an orphan in
 // `forge audit`. A nil cs is tolerated.
 func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := toServicePackage(svc.Name)
-	targetDir := filepath.Join(projectDir, "handlers", pkg)
+	// Disk-first: handlers_crud_gen.go lands inside the EXISTING handler
+	// dir and must declare that dir's real package clause. Re-synthesizing
+	// the path from the proto name is how the historical
+	// handlers/adminserver-vs-admin_server duplicate-dir bug was created.
+	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+	if resErr != nil {
+		return resErr
+	}
+	pkg := res.PackageName
+	targetDir := res.Dir
 
 	// Scan existing user-owned methods to avoid generating duplicates
 	existingMethods, err := scanExistingMethods(targetDir, false)
@@ -208,10 +257,22 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		filteredMethods = append(filteredMethods, cm)
 	}
 
-	crudGenPath := filepath.Join(targetDir, "handlers_crud_gen.go")
+	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
+	opsRel := filepath.Join(relDir, "handlers_crud_ops_gen.go")
+
+	// The pre-split Tier-1 implementation file is dead: forge no longer
+	// emits RPC method bodies as generated code. Sweep it (and its
+	// manifest entry) unless the user took ownership of it. Snapshot the
+	// methods it really implemented FIRST: if one of them is about to be
+	// re-scaffolded as a custom-read-shape stub, that replaces a working
+	// implementation with CodeUnimplemented and must be LOUD — a
+	// downstream agent had a near-miss with live traffic on exactly this.
+	previouslyImplemented := implementedMethodsIn(filepath.Join(projectDir, relDir, "handlers_crud_gen.go"))
+	removeRetiredForgeFile(projectDir, filepath.Join(relDir, "handlers_crud_gen.go"), cs)
+
 	if len(filteredMethods) == 0 {
-		// Clean up stale file if no CRUD methods needed
-		_ = os.Remove(crudGenPath)
+		// No CRUD methods left for forge to wire — drop the ops file.
+		removeRetiredForgeFile(projectDir, opsRel, cs)
 		return nil
 	}
 
@@ -220,19 +281,316 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
 	}
 
-	// Build template data
-	data := buildCRUDTemplateData(svc, filteredMethods, modulePath)
-
-	content, err := templates.ServiceTemplates().Render("handlers_crud_gen.go.tmpl", data)
+	// Build template data. Package is overridden with the disk-resolved
+	// clause so the emitted file always matches the directory it lands in
+	// (buildCRUDTemplateData's synthesis only holds for fresh scaffolds).
+	// A filter-mapping failure here is a hard error by design: a filter
+	// field that maps to no declared column must fail the generate, not
+	// ship a phantom-column query.
+	data, err := buildCRUDTemplateData(svc, filteredMethods, modulePath)
 	if err != nil {
-		return fmt.Errorf("render handlers_crud_gen.go.tmpl: %w", err)
+		return err
+	}
+	data.Package = pkg
+
+	// Tier-1 projection: the per-entity wiring ops + conversion helpers.
+	// Emitted when at least one method passed shape validation OR a wired
+	// custom-read-shape body needs the entity conversion helpers (an
+	// all-custom service still gets the <entity>ToProto/FromProto pairs).
+	if data.NeedsOpsFile {
+		content, rerr := templates.ServiceTemplates().Render("handlers_crud_ops_gen.go.tmpl", data)
+		if rerr != nil {
+			return fmt.Errorf("render handlers_crud_ops_gen.go.tmpl: %w", rerr)
+		}
+		if _, werr := checksums.WriteGeneratedFile(projectDir, opsRel, content, cs, true); werr != nil {
+			return fmt.Errorf("write handlers_crud_ops_gen.go: %w", werr)
+		}
+	} else {
+		removeRetiredForgeFile(projectDir, opsRel, cs)
 	}
 
-	relPath := filepath.Join("handlers", pkg, "handlers_crud_gen.go")
-	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
-		return fmt.Errorf("write handlers_crud_gen.go: %w", err)
+	// User-owned implementation: scaffold handlers_crud.go once; on later
+	// runs append shims for newly-added CRUD RPCs only (existing content
+	// is never modified).
+	return ensureCRUDShimFile(projectDir, relDir, data, cs, previouslyImplemented)
+}
+
+// removeRetiredForgeFile deletes a generated file forge no longer
+// emits — but never a file the user owns. Ownership is read from the
+// file itself: a VERIFYING forge:hash marker certifies the bytes as
+// forge output (delete); a Modified marker means the user edited it
+// (keep); no marker falls back to the legacy "Code generated by forge"
+// banner check for pre-marker projects. Disowned paths are never
+// touched.
+func removeRetiredForgeFile(projectDir, relPath string, cs *checksums.FileChecksums) {
+	if cs.IsDisowned(relPath) {
+		return // user-owned by recorded intent
 	}
+	fullPath := filepath.Join(projectDir, relPath)
+	body, err := os.ReadFile(fullPath)
+	if err != nil {
+		return
+	}
+	switch checksums.Verify(body) {
+	case checksums.Pristine:
+		_ = os.Remove(fullPath)
+	case checksums.Modified:
+		return // hand-edited — not forge's to delete
+	case checksums.NoMarker:
+		// Pre-marker forge output: only sweep what self-identifies.
+		if bytes.Contains(body, []byte("Code generated by forge")) {
+			_ = os.Remove(fullPath)
+		}
+	}
+}
+
+// crudShimImports computes the import block for the user-owned
+// handlers_crud.go shim from the methods it will contain.
+func crudShimImports(data CRUDTemplateData) []string {
+	imports := []string{"context", "connectrpc.com/connect"}
+	hasMismatch := false
+	hasReal := false
+	hasTenantMismatch := false
+	for _, m := range data.CRUDMethods {
+		if m.ShapeMismatch {
+			hasMismatch = true
+			if m.HasTenant {
+				hasTenantMismatch = true
+			}
+		} else {
+			hasReal = true
+		}
+	}
+	if hasReal {
+		imports = append(imports, "github.com/reliant-labs/forge/pkg/crud")
+	}
+	if hasMismatch {
+		// The WIRED custom-read-shape body runs a real query: it builds
+		// orm.QueryOption filters and calls db.List<Entity>, projecting
+		// rows via the generated <entity>ToProto helper.
+		imports = append(imports,
+			"github.com/reliant-labs/forge/pkg/orm",
+			data.Module+"/internal/db")
+		if hasTenantMismatch {
+			imports = append(imports, data.Module+"/pkg/middleware")
+		}
+	}
+	imports = append(imports, "pb "+data.Module+"/gen/"+data.ProtoPackage+"/v1")
+	return imports
+}
+
+// renderCRUDShimMethods renders the per-RPC shim blocks (delegation or
+// explanatory Unimplemented stub) for the given methods.
+func renderCRUDShimMethods(methods []CRUDMethodTemplateData) (string, error) {
+	var b strings.Builder
+	for _, m := range methods {
+		block, err := templates.ServiceTemplates().Render("handlers_crud_shim_method.go.tmpl", m)
+		if err != nil {
+			return "", fmt.Errorf("render handlers_crud_shim_method.go.tmpl for %s: %w", m.MethodName, err)
+		}
+		b.WriteString("\n")
+		b.Write(bytes.TrimSpace(block))
+		b.WriteString("\n")
+	}
+	return b.String(), nil
+}
+
+// ensureCRUDShimFile maintains the user-owned handlers_crud.go:
+//
+//   - absent  → scaffold the whole file (the ONLY full write, ever);
+//   - present → append shims for CRUD RPCs that have no method in the
+//     file yet (a newly-annotated entity, a new RPC). Existing content
+//     is never rewritten; needed imports are inserted into the existing
+//     import block if missing.
+//
+// Methods the user implemented in sibling files were already filtered
+// out by the caller, so an append never collides with a hand-written
+// handler.
+func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *checksums.FileChecksums, previouslyImplemented map[string]bool) error {
+	shimRel := filepath.Join(relDir, "handlers_crud.go")
+	fullPath := filepath.Join(projectDir, shimRel)
+
+	existing, readErr := os.ReadFile(fullPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read %s: %w", shimRel, readErr)
+	}
+
+	if os.IsNotExist(readErr) {
+		blocks, err := renderCRUDShimMethods(data.CRUDMethods)
+		if err != nil {
+			return err
+		}
+		warnCustomReadShapeStubs(data.CRUDMethods, shimRel, previouslyImplemented)
+		var b strings.Builder
+		b.WriteString("// yours: scaffolded once, never touched again — forge will not overwrite this file\n")
+		b.WriteString("//\n")
+		b.WriteString("// Each method is a thin delegation: the CRUD lifecycle\n")
+		b.WriteString("// (auth, tenant scoping, pagination, error mapping) lives in\n")
+		b.WriteString("// github.com/reliant-labs/forge/pkg/crud, and the per-entity wiring is\n")
+		b.WriteString("// generated in handlers_crud_ops_gen.go (Tier-1, regenerated every run).\n")
+		b.WriteString("// Because these bodies never name an entity field, proto/schema changes\n")
+		b.WriteString("// flow through the regenerated ops file without touching this one.\n")
+		b.WriteString("//\n")
+		b.WriteString("// To customize an RPC, replace its delegation with a real implementation\n")
+		b.WriteString("// right here. CRUD RPCs added later are appended to this file by\n")
+		b.WriteString("// `forge generate`; your existing content is never modified.\n")
+		b.WriteString("package " + data.Package + "\n\n")
+		b.WriteString("import (\n")
+		for _, imp := range crudShimImports(data) {
+			if alias, path, ok := strings.Cut(imp, " "); ok {
+				b.WriteString("\t" + alias + " \"" + path + "\"\n")
+			} else {
+				b.WriteString("\t\"" + imp + "\"\n")
+			}
+		}
+		b.WriteString(")\n")
+		b.WriteString(blocks)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			return err
+		}
+		content := []byte(b.String())
+		if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", shimRel, err)
+		}
+		recordTier2(cs, shimRel, content)
+		return nil
+	}
+
+	// Append shims for methods missing from the file.
+	var missing []CRUDMethodTemplateData
+	for _, m := range data.CRUDMethods {
+		if !bytes.Contains(existing, []byte("func (s *Service) "+m.MethodName+"(")) {
+			missing = append(missing, m)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	blocks, err := renderCRUDShimMethods(missing)
+	if err != nil {
+		return err
+	}
+	warnCustomReadShapeStubs(missing, shimRel, previouslyImplemented)
+	content := string(existing)
+	for _, imp := range crudShimImports(CRUDTemplateData{
+		Module:       data.Module,
+		ProtoPackage: data.ProtoPackage,
+		CRUDMethods:  missing,
+	}) {
+		content = ensureImportLine(content, imp)
+	}
+	content = strings.TrimRight(content, "\n") + "\n" + blocks
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("append CRUD shims to %s: %w", shimRel, err)
+	}
+	recordTier2(cs, shimRel, []byte(content))
+	fmt.Printf("  ✅ Appended %d new CRUD shim(s) to %s (user-owned)\n", len(missing), shimRel)
 	return nil
+}
+
+// warnCustomReadShapeStubs prints one loud line per RPC whose shim is
+// being written as a WIRED custom-read-shape scaffold. The scaffold is the
+// system WORKING — the request/response shape is a legitimate domain
+// decision and the body is the user's to refine — but it must never land
+// silently: the wired body runs a naive query and returns an EMPTY
+// response (a `// TODO: refine` marker on the response packing) until the
+// user finishes it, so a deploy ships a procedure that 200s with no data.
+// When the RPC previously had a real generated implementation (the retired
+// handlers_crud_gen.go carried a non-stub body for it), say so
+// explicitly — that's a behavior change on a live procedure, and a
+// downstream agent filed a near-miss with live traffic on exactly this
+// transition.
+func warnCustomReadShapeStubs(methods []CRUDMethodTemplateData, shimRel string, previouslyImplemented map[string]bool) {
+	for _, m := range methods {
+		if !m.ShapeMismatch {
+			continue
+		}
+		if previouslyImplemented[m.MethodName] {
+			fmt.Printf("  ⚠️  %s: REPLACING a previously generated implementation with a WIRED custom-read-shape scaffold in %s (custom read shape: %s) — finish wiring the response before serving traffic\n",
+				m.MethodName, shimRel, m.MismatchReason)
+			continue
+		}
+		fmt.Printf("  ⚠️  %s: custom read shape (%s) — scaffolded a WIRED starting point in %s (runs a real query; finish wiring the response onto pb.%s)\n",
+			m.MethodName, m.MismatchReason, shimRel, m.OutputType)
+	}
+}
+
+// implementedMethodsIn scans a retired generated handler file for
+// *Service methods that had REAL bodies — i.e. methods NOT tagged with
+// a shape-mismatch marker (`forge:custom-read-shape`, or the legacy
+// `FORGE_CRUD_SHAPE_MISMATCH` spelling) in the comment block above the
+// declaration. Returns nil when the file doesn't exist (the common,
+// post-migration case). Line-based on purpose: the file is forge's own
+// past output with a fixed shape, and this runs once per generate.
+func implementedMethodsIn(path string) map[string]bool {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	implemented := map[string]bool{}
+	pendingMarker := false
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "// forge:custom-read-shape:") ||
+			strings.HasPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:") {
+			pendingMarker = true
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "func (s *Service) ") {
+			// The marker stays pending until the next func declaration —
+			// the template emits it inside the doc comment directly above
+			// the func, so being lenient about intervening comment lines
+			// is safe and being strict would miss reformatted output.
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, "func (s *Service) ")
+		if end := strings.IndexAny(rest, "(\t "); end > 0 {
+			if !pendingMarker {
+				implemented[rest[:end]] = true
+			}
+		}
+		pendingMarker = false
+	}
+	return implemented
+}
+
+// recordTier2 marks a user-owned scaffold as touched this run. Tier-2
+// files carry no certification marker (user-owned from birth), so the
+// stale sweep can never target them; the written-this-run mark is kept
+// for parity with the chokepoint writers.
+func recordTier2(cs *checksums.FileChecksums, relPath string, content []byte) {
+	_ = cs
+	_ = content
+	checksums.MarkWrittenThisRun(relPath)
+}
+
+// ensureImportLine inserts an import (optionally "alias path") into the
+// file's first import block when no line for that path exists yet. Same
+// minimal-mutation approach as ensureDepsDBField: the file is user-owned,
+// so we touch only what the appended code needs to compile.
+func ensureImportLine(content, imp string) string {
+	alias, path, hasAlias := strings.Cut(imp, " ")
+	if !hasAlias {
+		path = imp
+		alias = ""
+	}
+	if strings.Contains(content, "\""+path+"\"") {
+		return content
+	}
+	idx := strings.Index(content, "import (")
+	if idx < 0 {
+		return content
+	}
+	closing := strings.Index(content[idx:], ")")
+	if closing < 0 {
+		return content
+	}
+	line := "\t\"" + path + "\"\n"
+	if alias != "" {
+		line = "\t" + alias + " \"" + path + "\"\n"
+	}
+	insertPos := idx + closing
+	return content[:insertPos] + line + content[insertPos:]
 }
 
 // validateCRUDShape decides whether the request/response messages observed
@@ -249,10 +607,11 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 // Callers should mark the method ShapeMismatch and skip emitting CRUD-body
 // fields that would dereference unavailable proto fields (PageSize,
 // PageToken, the entity-typed PK accessor, the repeated-entity response
-// field). The handlers_crud_gen.go.tmpl template renders a tagged
-// CodeUnimplemented stub in that branch so the generated file still
+// field). The shim template renders a `forge:custom-read-shape`-tagged
+// CodeUnimplemented stub in that branch so the user-owned file still
 // compiles against bespoke proto shapes (Limit/enum filters, string Ticker
-// keys, repeated-message responses).
+// keys, repeated-message responses) — the custom shape is the user's to
+// implement, by design.
 //
 // The rules deliberately stay conservative — they only fail when we can
 // see message fields and prove they don't fit. Anything ambiguous (no
@@ -287,7 +646,7 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 		// If the request has no field with that name at all, the
 		// generated body won't compile.
 		if _, has := inputByName[cm.Entity.PkField]; !has {
-			return false, fmt.Sprintf("request %s has no %s field matching entity PK", cm.Method.InputType, cm.Entity.PkField)
+			return false, fmt.Sprintf("request %s has no %s field matching entity PK (observed fields: %s)", cm.Method.InputType, cm.Entity.PkField, describeFields(inputFields))
 		}
 	case "update":
 		if !inputKnown {
@@ -298,26 +657,36 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 		// carries an entity-typed field.
 		found := false
 		for _, f := range inputFields {
-			if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
+			if fieldMatchesEntity(f, cm.Entity.Name) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return false, fmt.Sprintf("request %s carries no %s message field", cm.Method.InputType, cm.Entity.Name)
+			return false, fmt.Sprintf("request %s carries no %s message field (observed fields: %s)", cm.Method.InputType, cm.Entity.Name, describeFields(inputFields))
 		}
 	case "list":
-		// AIP-158-style template emits req.PageSize / req.PageToken
-		// when the input type follows List*Request naming. If we
-		// have field data and either is missing, the generated body
-		// fails to compile against the real proto (kalshi-trader's
-		// ListMarketsRequest carries `Limit` instead, for instance).
+		// Two valid AIP-132 list shapes are Tier-1:
+		//
+		//   - cursor-paginated: BOTH page_size and page_token present
+		//     (the template emits req.PageSize / req.PageToken and packs
+		//     NextPageToken);
+		//   - non-paginated: NEITHER present — a plain filtered/ordered
+		//     list that returns all matches (no cursor dereferences).
+		//
+		// Only an INCONSISTENT pair (exactly one of the two) falls to the
+		// custom path: the cursor template needs both, and a lone
+		// page_size (kalshi-trader's `Limit`/offset style, say) is a
+		// bespoke pagination contract the user must wire by hand.
 		if inputKnown && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
-			if _, hasSize := inputByName["page_size"]; !hasSize {
-				return false, fmt.Sprintf("request %s lacks page_size (AIP-158 pagination assumed by template)", cm.Method.InputType)
-			}
-			if _, hasTok := inputByName["page_token"]; !hasTok {
-				return false, fmt.Sprintf("request %s lacks page_token (AIP-158 pagination assumed by template)", cm.Method.InputType)
+			_, hasSize := inputByName["page_size"]
+			_, hasTok := inputByName["page_token"]
+			if hasSize != hasTok {
+				missing := "page_token"
+				if hasTok {
+					missing = "page_size"
+				}
+				return false, fmt.Sprintf("request %s has one half of AIP-158 cursor pagination but not the other (missing %s); add both for a cursor-paginated list, or neither for a plain filtered list (observed fields: %s)", cm.Method.InputType, missing, describeFields(inputFields))
 			}
 		}
 		// List response template emits `<EntityPlural>: items` and
@@ -326,7 +695,7 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 		if outputKnown {
 			pluralLower := strings.ToLower(inflection.Plural(cm.Entity.Name))
 			if _, has := outputByName[pluralLower]; !has {
-				return false, fmt.Sprintf("response %s lacks repeated %s field %s", cm.Method.OutputType, cm.Entity.Name, pluralLower)
+				return false, fmt.Sprintf("response %s lacks repeated %s field %s (observed fields: %s)", cm.Method.OutputType, cm.Entity.Name, pluralLower, describeFields(outputFields))
 			}
 		}
 	case "create":
@@ -336,15 +705,54 @@ func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
 		if outputKnown {
 			lower := strings.ToLower(cm.Entity.Name)
 			if _, has := outputByName[lower]; !has {
-				return false, fmt.Sprintf("response %s lacks %s field %s", cm.Method.OutputType, cm.Entity.Name, lower)
+				return false, fmt.Sprintf("response %s lacks %s field %s (observed fields: %s)", cm.Method.OutputType, cm.Entity.Name, lower, describeFields(outputFields))
 			}
 		}
 	}
 	return true, ""
 }
 
-func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) CRUDTemplateData {
-	pkg := toServicePackage(svc.Name)
+// detectListPagination reports whether a list RPC gets cursor pagination
+// wired in. Cursor pagination is opt-in: the request must follow
+// List*Request naming AND actually carry both page_size and page_token.
+// A List*Request without them is a valid non-paginated AIP-132 list
+// (filter/order only) that validateCRUDShape admits to Tier-1 — its body
+// must NOT dereference req.PageSize/req.PageToken (they don't exist on
+// that proto). When there is no field descriptor at all (legacy path),
+// the historical assume-paginated behavior is preserved. Returns
+// ("", false-equivalents) for non-list / shape-mismatched methods.
+func detectListPagination(svc ServiceDef, cm CRUDMethod, shapeOK bool) (bool, string) {
+	if !shapeOK || cm.Operation != "list" {
+		return false, ""
+	}
+	if !strings.HasPrefix(cm.Method.InputType, "List") || !strings.HasSuffix(cm.Method.InputType, "Request") {
+		return false, ""
+	}
+	fields, ok := svc.Messages[cm.Method.InputType]
+	if !ok {
+		// No descriptor — preserve the historical assume-cursor default.
+		return true, "cursor"
+	}
+	hasSize, hasTok := false, false
+	for _, f := range fields {
+		switch f.Name {
+		case "page_size":
+			hasSize = true
+		case "page_token":
+			hasTok = true
+		}
+	}
+	if hasSize && hasTok {
+		return true, "cursor"
+	}
+	return false, ""
+}
+
+func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath string) (CRUDTemplateData, error) {
+	// Synthesized Package is a placeholder only: GenerateCRUDHandlers
+	// overrides it with the disk-resolved package clause before rendering
+	// (the file lands inside an EXISTING handler dir).
+	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as mapServiceDefToTemplateData)
 	protoPackage := ""
@@ -372,17 +780,10 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		// responses).
 		shapeOK, shapeReason := validateCRUDShape(svc, cm)
 
-		// Detect pagination for list operations: check if the input type
-		// follows AIP-158 naming (List<Entity>Request implies page_size).
-		// Skip when the shape didn't match — the stub branch doesn't
-		// dereference PageSize/PageToken so suppressing keeps the
-		// generated file from importing the crud lib unnecessarily.
-		hasPagination := false
-		paginationStyle := ""
-		if shapeOK && cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
-			hasPagination = true
-			paginationStyle = "cursor"
-		}
+		// Cursor pagination is opt-in (both page_size + page_token
+		// present); a List*Request without them is a plain non-paginated
+		// AIP-132 filtered/ordered list, still Tier-1.
+		hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
 
 		// Detect filters and ordering from request message fields.
 		// Skip when the shape didn't match: classifyFilterField would
@@ -402,7 +803,14 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 						hasOrderBy = true
 						continue
 					}
-					ff := classifyFilterField(mf)
+					ff, ferr := classifyEntityFilterField(mf, cm.Entity)
+					if ferr != nil {
+						// LOUD by design: a filter the generator cannot map
+						// to a declared column must fail the generate, not
+						// ship a phantom-column query that silently returns
+						// nothing (or leaks SQL errors) at runtime.
+						return CRUDTemplateData{}, fmt.Errorf("%s.%s: %w", svc.Name, cm.Method.Name, ferr)
+					}
 					filterFields = append(filterFields, ff)
 				}
 			}
@@ -416,7 +824,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 		if cm.Operation == "update" && svc.Messages != nil {
 			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, f := range fields {
-					if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
+					if fieldMatchesEntity(f, cm.Entity.Name) {
 						updateEntityField = naming.ToProtoPascalCase(f.Name)
 						break
 					}
@@ -424,34 +832,34 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			}
 		}
 
-		// Collect fields from the create request message for entity construction.
+		// AIP-134: a FieldMask field on the update request wires the
+		// masked-persistence hooks. Skip on shape mismatch — the stub
+		// branch never dereferences it.
+		updateMaskField := ""
+		if shapeOK && cm.Operation == "update" {
+			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
+		}
+
+		// Best-effort filter mapping for the WIRED custom-read-shape body.
+		// Only when the shape didn't match (the stub branch): seed the
+		// scaffold's []orm.QueryOption skeleton from request fields that
+		// happen to name a declared column. Advisory, never fatal.
+		var customFilters []FilterFieldData
+		if !shapeOK {
+			customFilters = buildCustomFilters(svc, cm)
+		}
+
+		// Precompute the create-request -> entity-struct assignments.
 		// Skip on shape mismatch — the stub doesn't reference these.
-		var createFields []CreateFieldData
-		if shapeOK && cm.Operation == "create" && svc.Messages != nil {
-			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
-				for _, f := range fields {
-					goType := ProtoTypeToGoType(f.ProtoType)
-					// Try to get richer GoType from the entity definition
-					for _, ef := range cm.Entity.Fields {
-						if ef.Name == f.Name {
-							goType = ef.GoType
-							break
-						}
-					}
-					kind := DetermineFieldKind(f.ProtoType, goType)
-					var enumGoType string
-					if kind == FieldKindEnum {
-						enumGoType = goType
-					}
-					createFields = append(createFields, CreateFieldData{
-						ProtoGoName:  naming.ToProtoPascalCase(f.Name),
-						EntityGoName: naming.ToProtoPascalCase(f.Name),
-						Kind:         kind,
-						GoType:       goType,
-						EnumGoType:   enumGoType,
-					})
-				}
+		var createAssigns []string
+		if shapeOK && cm.Operation == "create" {
+			m := Method{
+				Name:        cm.Method.Name,
+				InputType:   cm.Method.InputType,
+				OutputType:  cm.Method.OutputType,
+				InputTypeFQ: svc.Package + "." + cm.Method.InputType,
 			}
+			createAssigns = buildCreateAssigns(svc, m, cm.Entity)
 		}
 
 		methods = append(methods, CRUDMethodTemplateData{
@@ -477,9 +885,11 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 			TenantGoName:      cm.Entity.TenantGoName,
 			TenantColumnName:  cm.Entity.TenantColumnName,
 			UpdateEntityField: updateEntityField,
-			CreateFields:      createFields,
+			UpdateMaskField:   updateMaskField,
+			CreateAssigns:     createAssigns,
 			ShapeMismatch:     !shapeOK,
 			MismatchReason:    shapeReason,
+			CustomFilters:     customFilters,
 		})
 	}
 
@@ -514,29 +924,54 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	}
 	needsORM := hasPagination || hasFilters || hasOrderBy || hasTenant
 
-	return CRUDTemplateData{
-		Package:       pkg,
-		Module:        modulePath,
-		ProtoPackage:  protoPackage,
-		DBPackagePath: modulePath + "/internal/db",
-		HasPagination: hasPagination,
-		HasFilters:    hasFilters,
-		HasOrderBy:    hasOrderBy,
-		NeedsORM:      needsORM,
-		HasTenant:     hasTenant,
-		NeedsCRUDLib:  needsCRUDLib,
-		CRUDMethods:   methods,
+	// One conversion pair per entity referenced by ANY CRUD body —
+	// real (non-stub) OR a wired custom-read-shape stub. The wired
+	// custom body calls <entity>ToProto to project the rows it fetches
+	// onto the wire, so the projection pair must exist even when every
+	// method on the service is custom (no real op constructor at all).
+	var convs []EntityConvTemplateData
+	seenConv := map[string]bool{}
+	for i, m := range methods {
+		if seenConv[m.EntityName] {
+			continue
+		}
+		seenConv[m.EntityName] = true
+		convs = append(convs, BuildEntityConv(svc, crudMethods[i].Entity))
 	}
+
+	// The ops file is emitted when there's at least one real op to wire
+	// OR at least one conversion pair a wired custom body depends on.
+	needsOpsFile := needsCRUDLib || len(convs) > 0
+
+	return CRUDTemplateData{
+		Package:          pkg,
+		Module:           modulePath,
+		ProtoPackage:     protoPackage,
+		DBPackagePath:    modulePath + "/internal/db",
+		HasPagination:    hasPagination,
+		HasFilters:       hasFilters,
+		HasOrderBy:       hasOrderBy,
+		NeedsORM:         needsORM,
+		HasTenant:        hasTenant,
+		NeedsCRUDLib:     needsCRUDLib,
+		NeedsOpsFile:     needsOpsFile,
+		CRUDMethods:      methods,
+		Entities:         convs,
+		NeedsTimestamppb: ConvNeedsTimestamppb(convs),
+	}, nil
 }
 
 // CRUDTestTemplateData holds all data needed to render the CRUD test template.
 type CRUDTestTemplateData struct {
-	Package       string                    // Go package name, e.g. "patients"
-	Module        string                    // Go module path, e.g. "github.com/demo-project"
-	ProtoPackage  string                    // e.g. "proto/services/patients"
-	HasTenant     bool                      // true if any entity has tenant isolation
-	Entities      []CRUDTestEntityData      // Grouped per-entity test data
-	CRUDMethods   []CRUDMethodTemplateData  // All CRUD methods (for individual error tests)
+	Package      string                   // Go package name, e.g. "patients"
+	Module       string                   // Go module path, e.g. "github.com/demo-project"
+	ProtoPackage string                   // e.g. "proto/services/patients"
+	HasTenant    bool                     // true if any entity has tenant isolation
+	Entities     []CRUDTestEntityData     // Grouped per-entity test data
+	CRUDMethods  []CRUDMethodTemplateData // All CRUD methods (for individual error tests)
+	// NeedsFieldMask gates the fieldmaskpb import: true when at least one
+	// entity's lifecycle test emits the AIP-134 masked-update block.
+	NeedsFieldMask bool
 	// TestHelperName mirrors ServiceTemplateData.TestHelperName: the suffix
 	// the bootstrap testing generator emits on `app.NewTest<X>` /
 	// `app.NewTest<X>Server`. CRUD test scaffolds use this rather than
@@ -547,27 +982,43 @@ type CRUDTestTemplateData struct {
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
 type CRUDTestEntityData struct {
-	EntityName       string // "Patient"
-	EntityLower      string // "patient"
-	PkField          string // "Id"
-	PkGoType         string // "int64"
-	HasCreate        bool
-	HasGet           bool
-	HasList          bool
-	HasUpdate        bool
-	HasDelete        bool
-	HasAllCRUD       bool   // true if all 5 operations exist
-	HasTenant        bool   // true when the entity has a tenant key field
-	TenantGoName     string // e.g., "OrgId"
-	TenantColumnName string // e.g., "org_id"
-	CreateMethod     CRUDMethodTemplateData
-	GetMethod        CRUDMethodTemplateData
-	ListMethod       CRUDMethodTemplateData
-	UpdateMethod     CRUDMethodTemplateData
-	DeleteMethod     CRUDMethodTemplateData
-	Fields           []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
-	CreateFields     []CRUDTestFieldData // fields from the CreateRequest message
-	UpdateEntityField string             // Go field name holding entity in UpdateRequest, e.g. "Project"
+	EntityName        string // "Patient"
+	EntityLower       string // "patient"
+	PkField           string // "Id"
+	PkGoType          string // "int64"
+	HasCreate         bool
+	HasGet            bool
+	HasList           bool
+	HasUpdate         bool
+	HasDelete         bool
+	HasAllCRUD        bool   // true if all 5 operations exist
+	HasTenant         bool   // true when the entity has a tenant key field
+	TenantGoName      string // e.g., "OrgId"
+	TenantColumnName  string // e.g., "org_id"
+	HasTimestamps     bool   // entity annotation timestamps:true — created_at is asserted set
+	// MutableStringField is the Go name of the first non-PK string field
+	// (e.g. "Name") — the field the lifecycle test mutates to prove
+	// update actually writes. Empty when the entity has none.
+	MutableStringField string
+	// MutableStringFieldPath is MutableStringField's proto field name
+	// (snake_case) — the AIP-134 update_mask path for it.
+	MutableStringFieldPath string
+	// SecondStringField/-Path name a SECOND mutable string field when the
+	// entity has one (skipping the tenant key). The masked-update test
+	// loads it with a clobber value the mask does NOT name, then asserts
+	// it survived — proving the mask restricts the write. Empty when the
+	// entity has only one string field (the non-clobber assertion is then
+	// skipped; the masked write itself is still exercised).
+	SecondStringField     string
+	SecondStringFieldPath string
+	CreateMethod       CRUDMethodTemplateData
+	GetMethod         CRUDMethodTemplateData
+	ListMethod        CRUDMethodTemplateData
+	UpdateMethod      CRUDMethodTemplateData
+	DeleteMethod      CRUDMethodTemplateData
+	Fields            []CRUDTestFieldData // entity proto message fields (minus PK, minus deleted_at)
+	CreateFields      []CRUDTestFieldData // fields from the CreateRequest message
+	UpdateEntityField string              // Go field name holding entity in UpdateRequest, e.g. "Project"
 }
 
 // CRUDTestFieldData holds per-field data for generating test values.
@@ -589,18 +1040,27 @@ type CRUDTestFieldData struct {
 // the file becomes user-owned and forge stops re-rendering it (and stops
 // updating the checksum). A nil cs is tolerated.
 func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath string, projectDir string, cs *checksums.FileChecksums) error {
-	pkg := toServicePackage(svc.Name)
-	targetDir := filepath.Join(projectDir, "handlers", pkg)
+	// Disk-first: same handler-dir + package-clause resolution as
+	// GenerateCRUDHandlers (the two MUST land in the same directory and
+	// declare the same package).
+	res, resErr := ResolveServiceComponent(projectDir, svc.Name)
+	if resErr != nil {
+		return resErr
+	}
+	pkg := res.PackageName
+	targetDir := res.Dir
+	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
 
-	unitPath := filepath.Join(targetDir, "handlers_crud_gen_test.go")
-	integrationPath := filepath.Join(targetDir, "handlers_crud_integration_test.go")
+	// Retire the marker-scaffold test pair this generator used to emit
+	// (per-RPC AnyOutcome frames + a build-tag-gated integration suite).
+	// Their replacement is ONE user-owned lifecycle test with real
+	// assertions; files where the user already cleared every
+	// FORGE_SCAFFOLD marker are theirs and are left alone.
+	removeRetiredScaffoldTest(projectDir, filepath.Join(relDir, "handlers_crud_gen_test.go"), cs)
+	removeRetiredScaffoldTest(projectDir, filepath.Join(relDir, "handlers_crud_integration_test.go"), cs)
 
-	// Filter out CRUD methods the user has already taken ownership of by
-	// writing a real handler — mirrors the dedup GenerateCRUDHandlers
-	// applies. Without this filter the test scaffold re-emits a stale
-	// handlers_crud_gen_test.go that references AIP-158-shaped request
-	// fields (PageSize, Id-int64, …) the user-owned handler no longer
-	// accepts, and the test package goes red on the next `go test ./...`.
+	// Mirror the dedup GenerateCRUDHandlers applies: methods the user
+	// implemented by hand keep their own tests.
 	existingMethods, err := scanExistingMethods(targetDir, false)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("scan existing methods for %s tests: %w", pkg, err)
@@ -612,84 +1072,74 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		}
 		filteredMethods = append(filteredMethods, cm)
 	}
-
 	if len(filteredMethods) == 0 {
-		_ = os.Remove(unitPath)
-		_ = os.Remove(integrationPath)
 		return nil
 	}
 
+	// Package + TestHelperName are overridden with the disk-resolved
+	// package clause so the emitted test file always matches the directory
+	// it lands in AND calls the `app.NewTest<X>` factory the bootstrap
+	// testing generator (which uses the same resolver) actually emitted.
 	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir)
+	data.Package = pkg
+	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
 
+	// The lifecycle test covers string-PK entities with create+get (the
+	// forge CRUD convention). Nothing qualifying → nothing to scaffold.
+	qualifying := false
+	for _, e := range data.Entities {
+		if e.HasCreate && e.HasGet && e.PkGoType == "string" {
+			qualifying = true
+			break
+		}
+	}
+	if !qualifying {
+		return nil
+	}
+
+	// Scaffold-once: handlers_crud_test.go is user-owned from line one.
+	lifecycleRel := filepath.Join(relDir, "handlers_crud_test.go")
+	lifecyclePath := filepath.Join(projectDir, lifecycleRel)
+	if _, statErr := os.Stat(lifecyclePath); statErr == nil {
+		return nil
+	}
+
+	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render handlers_crud_test.go.tmpl: %w", err)
+	}
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
-
-	unitContent, err := templates.ServiceTemplates().Render("handlers_crud_test_gen.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render handlers_crud_test_gen.go.tmpl: %w", err)
+	if err := os.WriteFile(lifecyclePath, content, 0o644); err != nil {
+		return fmt.Errorf("write handlers_crud_test.go: %w", err)
 	}
-	if err := writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_gen_test.go"), unitContent, cs); err != nil {
-		return err
-	}
-
-	integrationContent, err := templates.ServiceTemplates().Render("handlers_crud_integration_test.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render handlers_crud_integration_test.go.tmpl: %w", err)
-	}
-	return writeScaffoldFile(projectDir, filepath.Join("handlers", pkg, "handlers_crud_integration_test.go"), integrationContent, cs)
-}
-
-// writeScaffoldFile writes a scaffold-with-placeholders file at
-// projectDir/relPath. If the file already exists on disk and contains no
-// remaining "FORGE_SCAFFOLD:" markers, the user has finished customising
-// it and forge will not overwrite it. Otherwise the file is (re)written
-// from the template and its checksum recorded so `forge audit` doesn't
-// flag it as an orphan.
-//
-// This is the mechanism that lets `_gen` filenames carry "until-customized"
-// semantics: as long as any marker is present the file is forge-owned and
-// regenerated; the moment every marker is removed the file becomes user-owned.
-//
-// The file is tagged Tier-2 in the checksum manifest so the pre-pipeline
-// Tier-1 file-stomp guard skips it — Tier-2 means "scaffold once, user
-// edits expected", which is exactly the steady state after a user clears
-// the FORGE_SCAFFOLD markers. When the user has taken ownership we also
-// refresh the recorded checksum to the on-disk content so a future run of
-// `forge audit` doesn't flag a tracked-but-modified mismatch (and so any
-// legacy Tier-0/Tier-1 entry from before this fix gets re-stamped to
-// Tier-2 + forked, matching the user's intent without requiring
-// `forge generate --accept`).
-func writeScaffoldFile(projectDir, relPath string, content []byte, cs *checksums.FileChecksums) error {
-	fullPath := filepath.Join(projectDir, relPath)
-	if existing, err := os.ReadFile(fullPath); err == nil {
-		if !bytes.Contains(existing, []byte("FORGE_SCAFFOLD:")) {
-			// User has cleared every marker — they own the file now.
-			// Re-stamp the manifest entry to Tier-2 (forked) so the
-			// stomp guard stops flagging the legitimate hand-edit on
-			// the next run. Without this re-stamp a pre-existing Tier-1
-			// recorded checksum would cause `forge generate` to error
-			// out with a "Tier-1 file-stomp" report even though
-			// writeScaffoldFile silently transferred ownership.
-			if cs != nil {
-				if entry, ok := cs.Files[relPath]; ok {
-					entry.Hash = checksums.Hash(existing)
-					entry.Tier = 2
-					entry.Forked = true
-					cs.Files[relPath] = entry
-				}
-			}
-			return nil
-		}
-	}
-	if _, err := checksums.WriteGeneratedFileTier2(projectDir, relPath, content, cs, true); err != nil {
-		return err
-	}
+	recordTier2(cs, lifecycleRel, content)
 	return nil
 }
 
+// removeRetiredScaffoldTest deletes a retired marker-scaffold test file —
+// but ONLY while it still carries FORGE_SCAFFOLD markers (i.e. forge
+// still owned it). A file the user customized (markers cleared) is
+// user-owned and stays, manifest entry and all.
+func removeRetiredScaffoldTest(projectDir, relPath string, cs *checksums.FileChecksums) {
+	fullPath := filepath.Join(projectDir, relPath)
+	body, err := os.ReadFile(fullPath)
+	if err != nil {
+		return
+	}
+	if !bytes.Contains(body, []byte("FORGE_SCAFFOLD:")) {
+		return
+	}
+	_ = os.Remove(fullPath)
+	_ = cs
+}
+
 func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string) CRUDTestTemplateData {
-	pkg := toServicePackage(svc.Name)
+	// Synthesized Package/TestHelperName are placeholders only:
+	// GenerateCRUDTests overrides both with disk-resolved values before
+	// rendering — see the call site for the rationale.
+	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)
 	protoPackage := ""
@@ -721,12 +1171,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		// `Id: 1` on a GetMarketRequest keyed on `string ticker`).
 		shapeOK, shapeReason := validateCRUDShape(svc, cm)
 
-		hasPagination := false
-		paginationStyle := ""
-		if shapeOK && cm.Operation == "list" && strings.HasPrefix(cm.Method.InputType, "List") && strings.HasSuffix(cm.Method.InputType, "Request") {
-			hasPagination = true
-			paginationStyle = "cursor"
-		}
+		hasPagination, paginationStyle := detectListPagination(svc, cm, shapeOK)
 
 		// Detect filters and ordering from request message fields.
 		// Skip when the shape didn't match — the stub branch doesn't
@@ -756,12 +1201,20 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		if cm.Operation == "update" && svc.Messages != nil {
 			if fields, ok := svc.Messages[cm.Method.InputType]; ok {
 				for _, f := range fields {
-					if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
+					if fieldMatchesEntity(f, cm.Entity.Name) {
 						updateEntityField = naming.ToProtoPascalCase(f.Name)
 						break
 					}
 				}
 			}
+		}
+
+		// Mirror the handler generator: a FieldMask on the update request
+		// means the generated op honors AIP-134, so the test scaffold can
+		// exercise masked AND unmasked updates.
+		updateMaskField := ""
+		if shapeOK && cm.Operation == "update" {
+			updateMaskField = updateMaskGoField(svc, cm.Method.InputType)
 		}
 
 		mtd := CRUDMethodTemplateData{
@@ -784,6 +1237,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 			FilterFields:      filterFields,
 			HasOrderBy:        hasOrderBy,
 			UpdateEntityField: updateEntityField,
+			UpdateMaskField:   updateMaskField,
 			ShapeMismatch:     !shapeOK,
 			MismatchReason:    shapeReason,
 		}
@@ -803,6 +1257,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 
 			// Build entity fields (for update test): fields in both DB entity AND proto service message, minus PK
 			var fields []CRUDTestFieldData
+			protoNameByGoName := make(map[string]string)
 			for _, f := range cm.Entity.Fields {
 				if f.Name == cm.Entity.PkField {
 					continue
@@ -817,6 +1272,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 					Kind:      kind,
 					TestValue: testValueForType(f.GoType),
 				})
+				protoNameByGoName[f.GoName] = f.Name
 			}
 
 			// Determine update entity field name from UpdateRequest message
@@ -825,7 +1281,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				updateReqName := "Update" + cm.Entity.Name + "Request"
 				if msgFields, ok := svc.Messages[updateReqName]; ok {
 					for _, f := range msgFields {
-						if protoTypeMatchesEntity(f.ProtoType, cm.Entity.Name) {
+						if fieldMatchesEntity(f, cm.Entity.Name) {
 							updateEntityField = naming.ToProtoPascalCase(f.Name)
 							break
 						}
@@ -833,16 +1289,40 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 				}
 			}
 
+			mutable, second := "", ""
+			for _, f := range fields {
+				if f.GoType != "string" {
+					continue
+				}
+				// The tenant key is no good as a mutation target: the ORM
+				// excludes it from the updatable set, so neither the
+				// masked write nor the clobber assertion would observe it.
+				if cm.Entity.HasTenant && f.ProtoName == cm.Entity.TenantGoName {
+					continue
+				}
+				if mutable == "" {
+					mutable = f.ProtoName
+					continue
+				}
+				second = f.ProtoName
+				break
+			}
+
 			ent = &CRUDTestEntityData{
-				EntityName:        cm.Entity.Name,
-				EntityLower:       strings.ToLower(cm.Entity.Name),
-				PkField:           naming.ToProtoPascalCase(cm.Entity.PkField),
-				PkGoType:          cm.Entity.PkGoType,
-				HasTenant:         cm.Entity.HasTenant,
-				TenantGoName:      cm.Entity.TenantGoName,
-				TenantColumnName:  cm.Entity.TenantColumnName,
-				Fields:            fields,
-				UpdateEntityField: updateEntityField,
+				EntityName:             cm.Entity.Name,
+				EntityLower:            strings.ToLower(cm.Entity.Name),
+				PkField:                naming.ToProtoPascalCase(cm.Entity.PkField),
+				PkGoType:               cm.Entity.PkGoType,
+				HasTenant:              cm.Entity.HasTenant,
+				TenantGoName:           cm.Entity.TenantGoName,
+				TenantColumnName:       cm.Entity.TenantColumnName,
+				HasTimestamps:          cm.Entity.Timestamps,
+				MutableStringField:     mutable,
+				MutableStringFieldPath: protoNameByGoName[mutable],
+				SecondStringField:      second,
+				SecondStringFieldPath:  protoNameByGoName[second],
+				Fields:                 fields,
+				UpdateEntityField:      updateEntityField,
 			}
 			entityMap[cm.Entity.Name] = ent
 			entityOrder = append(entityOrder, cm.Entity.Name)
@@ -908,6 +1388,19 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		}
 	}
 
+	// fieldmaskpb is imported only when some lifecycle test will actually
+	// emit a masked-update block — mirror the template's emission gates
+	// exactly or the generated file has an unused import.
+	needsFieldMask := false
+	for _, e := range entities {
+		if e.HasCreate && e.HasGet && e.PkGoType == "string" &&
+			e.HasUpdate && e.MutableStringField != "" &&
+			e.UpdateMethod.UpdateMaskField != "" {
+			needsFieldMask = true
+			break
+		}
+	}
+
 	return CRUDTestTemplateData{
 		Package:        pkg,
 		Module:         modulePath,
@@ -915,6 +1408,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		HasTenant:      testHasTenant,
 		Entities:       entities,
 		CRUDMethods:    allMethods,
+		NeedsFieldMask: needsFieldMask,
 		TestHelperName: ComputeTestHelperName(pkg, projectDir),
 	}
 }
@@ -980,6 +1474,103 @@ func classifySkipField(name string) bool {
 	return false
 }
 
+// classifyEntityFilterField builds a FilterFieldData validated against the
+// entity's DECLARED columns:
+//
+//   - search-style fields (search/query/q) span the entity's string
+//     columns (minus the PK) via orm.WhereILikeAny — they never map to a
+//     column of their own;
+//   - every other filter field must name a declared column, or the
+//     generate fails loudly. Shipping a filter on a phantom column is the
+//     review-confirmed silence bug: the query either errors at runtime or
+//     (SQLite double-quoted fallback) silently matches nothing.
+func classifyEntityFilterField(mf MessageFieldDef, entity EntityDef) (FilterFieldData, error) {
+	ff := classifyFilterField(mf)
+	if ff.FilterType == "search" {
+		cols := entityStringColumns(entity)
+		if len(cols) == 0 {
+			return ff, fmt.Errorf(
+				"list filter %q: entity %s has no non-PK string columns to search (declared columns: %s); drop the filter or implement the RPC by hand",
+				mf.Name, entity.Name, entityColumnList(entity))
+		}
+		ff.SearchColumns = cols
+		return ff, nil
+	}
+	for _, c := range entity.Columns {
+		if c.Name == mf.Name {
+			return ff, nil
+		}
+	}
+	return ff, fmt.Errorf(
+		"list filter field %q has no matching column on entity %s in the applied schema (columns: %s); rename the request field to a real column (or add the column via a migration), or implement the RPC by hand in a sibling file",
+		mf.Name, entity.Name, entityColumnList(entity))
+}
+
+// buildCustomFilters maps a custom-read-shape RPC's request fields onto
+// entity columns BEST-EFFORT, for seeding the wired scaffold body's
+// []orm.QueryOption skeleton. Unlike classifyEntityFilterField (which
+// fails the generate on an unmappable field — the strict Tier-1 list
+// path), this is advisory: a field that doesn't name a declared column
+// (or isn't a search field) is silently skipped, so the scaffold always
+// compiles regardless of how bespoke the request is. Pagination/cursor/
+// ordering control fields are skipped via classifySkipField. The result
+// is a starting point the user refines, not a contract.
+func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
+	if svc.Messages == nil {
+		return nil
+	}
+	msgFields, ok := svc.Messages[cm.Method.InputType]
+	if !ok {
+		return nil
+	}
+	var out []FilterFieldData
+	for _, mf := range msgFields {
+		if classifySkipField(mf.Name) || mf.Name == "order_by" {
+			continue
+		}
+		// Only scalar fields make sense as WhereEq/ILike predicates;
+		// message/enum/repeated fields are the user's to interpret.
+		switch mf.ProtoType {
+		case "message", "enum", "":
+			continue
+		}
+		ff := classifyFilterField(mf)
+		if ff.FilterType == "search" {
+			cols := entityStringColumns(cm.Entity)
+			if len(cols) == 0 {
+				continue // nothing to search; let the user wire it
+			}
+			ff.SearchColumns = cols
+			out = append(out, ff)
+			continue
+		}
+		// exact: keep only when the field names a real column.
+		for _, c := range cm.Entity.Columns {
+			if c.Name == mf.Name {
+				out = append(out, ff)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// entityStringColumns returns the columns a "search" filter spans: the
+// entity's text columns by convention (SearchColumns is populated from
+// the introspected schema — see schemadef.DetectConventions).
+func entityStringColumns(entity EntityDef) []string {
+	return entity.SearchColumns
+}
+
+// entityColumnList renders the applied schema's column names for diagnostics.
+func entityColumnList(entity EntityDef) string {
+	names := make([]string, 0, len(entity.Columns))
+	for _, c := range entity.Columns {
+		names = append(names, c.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
 // classifyFilterField builds a FilterFieldData from a proto message field.
 func classifyFilterField(mf MessageFieldDef) FilterFieldData {
 	goType := ProtoTypeToGoType(mf.ProtoType)
@@ -1035,49 +1626,79 @@ func ensureDepsDBField(serviceDir string) error {
 	}
 
 	content := string(data)
+	original := content
 
-	// If the Deps struct already has a DB field, nothing to do.
-	if strings.Contains(content, "DB ") && (strings.Contains(content, "orm.Context") || strings.Contains(content, "orm.Client")) {
-		return nil
-	}
-
-	// Find the Deps struct and inject the DB field after the opening line.
-	marker := "// Add your dependencies here."
-	if !strings.Contains(content, marker) {
-		// Try to find the Deps struct opening brace
-		marker = "type Deps struct {"
-		idx := strings.Index(content, marker)
-		if idx < 0 {
-			return nil // Can't find Deps struct, skip
+	// If the Deps struct doesn't have a DB field yet, inject it.
+	if !(strings.Contains(content, "DB ") && (strings.Contains(content, "orm.Context") || strings.Contains(content, "orm.Client"))) {
+		// Find the Deps struct and inject the DB field after the opening line.
+		marker := "// Add your dependencies here."
+		if !strings.Contains(content, marker) {
+			// Try to find the Deps struct opening brace
+			marker = "type Deps struct {"
+			idx := strings.Index(content, marker)
+			if idx < 0 {
+				return nil // Can't find Deps struct, skip
+			}
+			// Insert after the opening brace line
+			newlineIdx := strings.Index(content[idx:], "\n")
+			if newlineIdx < 0 {
+				return nil
+			}
+			insertPos := idx + newlineIdx + 1
+			dbField := "\tDB         orm.Context\n"
+			content = content[:insertPos] + dbField + content[insertPos:]
+		} else {
+			// Insert the DB field before the marker comment
+			content = strings.Replace(content, marker, "DB         orm.Context\n\t"+marker, 1)
 		}
-		// Insert after the opening brace line
-		newlineIdx := strings.Index(content[idx:], "\n")
-		if newlineIdx < 0 {
-			return nil
-		}
-		insertPos := idx + newlineIdx + 1
-		dbField := "\tDB         orm.Context\n"
-		content = content[:insertPos] + dbField + content[insertPos:]
-	} else {
-		// Insert the DB field before the marker comment
-		content = strings.Replace(content, marker, "DB         orm.Context\n\t"+marker, 1)
-	}
 
-	// Ensure the orm import is present
-	if !strings.Contains(content, "\"github.com/reliant-labs/forge/pkg/orm\"") {
-		// Find the import block and add the orm import
-		importIdx := strings.Index(content, "import (")
-		if importIdx >= 0 {
-			// Find the closing paren of the import block
-			closingIdx := strings.Index(content[importIdx:], ")")
-			if closingIdx >= 0 {
-				insertPos := importIdx + closingIdx
-				content = content[:insertPos] + "\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n" + content[insertPos:]
+		// Ensure the orm import is present
+		if !strings.Contains(content, "\"github.com/reliant-labs/forge/pkg/orm\"") {
+			// Find the import block and add the orm import
+			importIdx := strings.Index(content, "import (")
+			if importIdx >= 0 {
+				// Find the closing paren of the import block
+				closingIdx := strings.Index(content[importIdx:], ")")
+				if closingIdx >= 0 {
+					insertPos := importIdx + closingIdx
+					content = content[:insertPos] + "\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n" + content[insertPos:]
+				}
 			}
 		}
 	}
 
+	// The DB field is REQUIRED for the generated CRUD handlers — gate it
+	// in validateDeps so a missing database fails at boot with an
+	// actionable error, not as a nil-interface panic on the first RPC.
+	// (wire_gen passes a true nil interface via app.ORMContext(), so this
+	// check actually fires.) Inject at the scaffold's extension marker;
+	// services whose validateDeps was rewritten by hand are left alone —
+	// the marker is the opt-in surface.
+	content = injectValidateDepsDBCheck(content)
+
+	if content == original {
+		return nil
+	}
 	return os.WriteFile(servicePath, []byte(content), 0644)
+}
+
+// injectValidateDepsDBCheck inserts `if d.DB == nil { ... }` into the
+// scaffolded validateDeps() ahead of the "Add checks" marker comment.
+// No-ops when the check (any `d.DB == nil` mention) already exists or
+// the marker is gone (user-rewritten validateDeps).
+func injectValidateDepsDBCheck(content string) string {
+	if strings.Contains(content, "d.DB == nil") {
+		return content
+	}
+	const marker = "// Add checks for your required Deps fields here."
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return content
+	}
+	check := "if d.DB == nil {\n" +
+		"\t\treturn fmt.Errorf(\"Deps.DB is required by the generated CRUD handlers — set DATABASE_URL (the generated bootstrap constructs the ORM client from it)\")\n" +
+		"\t}\n\t"
+	return content[:idx] + check + content[idx:]
 }
 
 // operationToAuthAction maps a CRUD operation to the middleware action constant.
@@ -1102,4 +1723,54 @@ func operationToAuthAction(op string) string {
 // Handles both bare types ("Patient") and qualified types ("db.v1.Patient").
 func protoTypeMatchesEntity(protoType, entityName string) bool {
 	return protoType == entityName || protoType == "db.v1."+entityName
+}
+
+// fieldMatchesEntity reports whether a message field references the given
+// entity type. The modern descriptor carries the referenced message name
+// in MessageType ("Item", or fully-qualified "services.api.v1.Item");
+// ProtoType alone is the literal "message" for every message field, which
+// is unmatchable — relying on it produced a false custom-read-shape stub
+// (then spelled FORGE_CRUD_SHAPE_MISMATCH) on forge's own scaffold (the F2 bug).
+func fieldMatchesEntity(f MessageFieldDef, entityName string) bool {
+	if f.MessageType != "" {
+		if f.MessageType == entityName || strings.HasSuffix(f.MessageType, "."+entityName) {
+			return true
+		}
+	}
+	return protoTypeMatchesEntity(f.ProtoType, entityName)
+}
+
+// updateMaskGoField returns the Go field name of the AIP-134
+// google.protobuf.FieldMask field on the given request message ("" when
+// the message declares none, or when no field data is available). The
+// modern descriptor carries the referenced message name in MessageType;
+// the suffix match also accepts a bare "FieldMask" from older descriptors.
+func updateMaskGoField(svc ServiceDef, inputType string) string {
+	if svc.Messages == nil {
+		return ""
+	}
+	for _, f := range svc.Messages[inputType] {
+		if f.MessageType == "google.protobuf.FieldMask" || strings.HasSuffix(f.MessageType, ".FieldMask") || f.MessageType == "FieldMask" {
+			return naming.ToProtoPascalCase(f.Name)
+		}
+	}
+	return ""
+}
+
+// describeFields renders an observed-field list ("name type, ...") for
+// shape-mismatch diagnostics, so a wrong matcher self-incriminates: the
+// reason shows exactly what the matcher saw, not just what it wanted.
+func describeFields(fields []MessageFieldDef) string {
+	if len(fields) == 0 {
+		return "(no fields)"
+	}
+	parts := make([]string, 0, len(fields))
+	for _, f := range fields {
+		t := f.ProtoType
+		if f.MessageType != "" {
+			t = f.MessageType
+		}
+		parts = append(parts, f.Name+" "+t)
+	}
+	return strings.Join(parts, ", ")
 }

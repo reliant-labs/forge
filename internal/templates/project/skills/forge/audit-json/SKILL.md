@@ -241,7 +241,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install forge
+      - name: Install the forge CLI
         run: go install github.com/reliant-labs/forge/cmd/forge@main
 
       - name: Forge audit

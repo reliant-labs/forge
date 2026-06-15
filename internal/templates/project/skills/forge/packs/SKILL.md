@@ -76,7 +76,7 @@ Edit these values to match your auth provider (Auth0, Supabase, Firebase, etc.) 
 
 ## Auth packs are for REAL auth — dev mode needs no pack
 
-`forge run` defaults to dev mode, where the scaffold's auth passthrough attaches the synthetic principal from `devClaims()` (`pkg/middleware/middleware.go`) and generated CRUD works with zero auth config. Install `jwt-auth`/`clerk`/`firebase-auth` when you need real token validation (JWKS, issuer/audience checks) — not to make local development work. See `forge skill load auth` for the full split.
+`forge up --env=dev` defaults to dev mode, where the scaffold's auth passthrough attaches the synthetic principal from `devClaims()` (`pkg/middleware/middleware.go`) and generated CRUD works with zero auth config. Install `jwt-auth`/`clerk`/`firebase-auth` when you need real token validation (JWKS, issuer/audience checks) — not to make local development work. See `forge skill load auth` for the full split.
 
 ## File ownership
 

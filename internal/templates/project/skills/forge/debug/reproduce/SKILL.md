@@ -11,7 +11,7 @@ The bug requires runtime evidence — you can't determine the cause from code re
 
 ## System Discovery
 
-1. Check `forge run` output for service ports and startup logs
+1. Check `forge up --env=dev` output for service ports and startup logs
 2. Find API routes in `proto/` definitions
 3. Identify the service and handler involved in the bug
 

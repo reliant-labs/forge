@@ -14,7 +14,7 @@ E2E tests exercise the **full running stack** — real services, real database, 
 The full stack must be running before you execute e2e tests:
 
 ```bash
-forge run              # in one terminal — starts all services
+forge up --env=dev     # in one terminal — starts all services
 forge test e2e         # in another terminal — runs e2e suite
 ```
 
@@ -50,7 +50,7 @@ E2E tests are the most flake-prone level. Follow these rules strictly:
 When an e2e test fails, the stack is still running. You can attach a debugger:
 
 ```bash
-forge run --debug
+forge debug start
 ```
 
 Inspect logs, database state, and service health while the failure is reproducible.

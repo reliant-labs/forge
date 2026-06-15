@@ -21,9 +21,9 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge cluster info` | Diagnostic dump — cluster, context, namespace, registry, declared service/frontend ports. |
 | `forge cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
 | `forge cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
-| `forge run <service> [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), loading `HostDeploy.secrets_file` first then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. |
-| `forge run <service> stop` | Kill the background process tracked by `forge run <service> --background`. |
-| `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
+| `forge up --target <service> --host-only [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), loading `HostDeploy.secrets_file` first then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. Skips build + cluster apply, scoped to the named service. |
+| `forge up stop --env=<env>` | Kill the background processes tracked by `forge up --background` for that env. |
+| `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--target <name>] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
 | `forge deploy dev [--prune]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. |
 
 ## Host vs cluster: where does each service run in dev?
@@ -34,8 +34,9 @@ This is the right shape for services that need cluster-only primitives —
 operators, CRD watchers, ingress webhooks, sidecars that depend on
 dynamic-config injection.
 
-**Host mode** flips a service to run as a host process under `forge run
-<service>`. Set the deploy target in `deploy/kcl/<env>/main.k` to
+**Host mode** flips a service to run as a host process under `forge up
+--target <service> --host-only`. Set the deploy target in
+`deploy/kcl/<env>/main.k` to
 `forge.HostDeploy` (per-env — typically only in `dev`, with `staging` and
 `prod` staying on `forge.K8sCluster`):
 
@@ -98,7 +99,8 @@ What flipping a service to host mode buys:
 - `forge deploy dev` skips its rollout wait (saves 120s/service).
 - `forge deploy dev --prune` deletes its stale in-cluster Deployment.
 - `forge build --env=dev` lists it under "host-mode services" so users know
-  they need to run it with `forge run <name>` (or just `forge up --env=dev`).
+  they need to run it with `forge up --target <name> --host-only` (or just
+  `forge up --env=dev`).
 - The scaffolded `cmd/server.go` operator-gating helper won't start the
   controller manager when the user filters to host-mode-only services
   (no more spurious "not running in-cluster" errors during a host run).
@@ -125,18 +127,17 @@ forge cluster up --wait
 forge deploy dev
 
 # Terminal 2: the service you're actively editing
-forge run admin-server                  # foreground; Ctrl-C to stop
+forge up --target admin-server --host-only                 # foreground; Ctrl-C to stop
 # or detach + tail logs separately:
-forge run admin-server --background     # PID at ~/.cache/forge/run/admin-server.pid
-forge run admin-server stop             # later teardown
+forge up --target admin-server --host-only --background    # detach; PIDs tracked per env
+forge up stop --env=dev                                    # later teardown
 ```
 
-`forge run admin-server` reads the service's `HostDeploy.secrets_file`
-(if declared) FIRST, then layers `HostDeploy.env_vars` on top — KCL
-wins on conflict so per-env config can't drift between developer
-machines. Override the secrets-file path with `--env-file`. The child
-process also inherits the host shell's env, so anything already
-exported wins over both.
+`forge up --target admin-server --host-only` reads the service's
+`HostDeploy.secrets_file` (if declared) FIRST, then layers
+`HostDeploy.env_vars` on top — KCL wins on conflict so per-env config
+can't drift between developer machines. The child process also inherits
+the host shell's env, so anything already exported wins over both.
 
 ## Logs & the `forge up` summary
 
@@ -194,13 +195,12 @@ tasks:
     cmds:
       - forge cluster up --wait
       - forge deploy dev --prune       # cluster services only; host services pruned
-      - forge run admin-server --background
-      - forge run workspace-proxy --background
+      - forge up --target admin-server --host-only --background
+      - forge up --target workspace-proxy --host-only --background
 
   dev-stop:
     cmds:
-      - forge run admin-server stop
-      - forge run workspace-proxy stop
+      - forge up stop --env=dev
 ```
 
 ## Safety: kubectl context pinning

@@ -45,7 +45,7 @@ schema HostDeploy:
     delve_port: int = 2345
 ```
 
-`forge run` / `forge up` host phase loads `secrets_file` first (if
+The `forge up --env=<env>` host phase loads `secrets_file` first (if
 set), then layers `env_vars` on top — KCL wins on conflict so
 reproducible config can't drift across machines. Host services compose
 the same `cfg.APP_ENV` / `base.DB_ENV` slices K8sDeploy services use,
@@ -144,12 +144,13 @@ What user code / config might need to change:
 - **CI / local scripts that source `.env.<env>` directly.** Anything
   that did `source .env.dev && go run ...` to pick up DATABASE_URL
   must either source `.env.<env>.secrets` AND wire the KCL env_vars
-  manually, or go through `forge run` / `forge up` which does the
+  manually, or go through `forge up --env=<env>` which does the
   composition for you.
-- **The `--env-file` flag on `forge run`.** The flag still exists for
-  muscle-memory continuity; its contract is now "override the KCL
-  HostDeploy.secrets_file path" — KCL env_vars are layered on top of
-  whatever file the flag points at.
+- **The old `--env-file` CLI override is gone.** The secrets file is now
+  declared per-service as `HostDeploy.secrets_file` in KCL; the `forge up`
+  host phase loads it first, then layers KCL `env_vars` on top. Point a
+  service at a different dotenv by editing its `secrets_file` in
+  `deploy/kcl/<env>/main.k`.
 
 ## 5. Verification
 

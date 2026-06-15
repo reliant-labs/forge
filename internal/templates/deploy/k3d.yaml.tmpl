@@ -29,7 +29,7 @@ registries:
           - http://registry.localhost:5000
 # Host port -> loadbalancer mappings are auto-generated from your
 # project's Gateway listeners (see deploy/kcl/ingress.k) and merged
-# in at `forge dev cluster up` time from deploy/k3d-ports.yaml. Don't
+# in at `forge cluster up` time from deploy/k3d-ports.yaml. Don't
 # hand-declare a `ports:` block here unless you need a mapping the
 # Gateway listeners don't cover — on host-port collisions, the
 # generated fragment wins.

@@ -73,8 +73,8 @@ func TestBuildIngressDoctorChecks_GatewayClassMissing(t *testing.T) {
 	if gc.Status != doctor.StatusFail {
 		t.Fatalf("GatewayClass status = %q, want fail", gc.Status)
 	}
-	if !strings.Contains(gc.Evidence, "forge dev cluster up") {
-		t.Errorf("evidence should hint at `forge dev cluster up` for traefik; got: %s", gc.Evidence)
+	if !strings.Contains(gc.Evidence, "forge cluster up") {
+		t.Errorf("evidence should hint at `forge cluster up` for traefik; got: %s", gc.Evidence)
 	}
 	if !strings.Contains(gc.Evidence, "error:") {
 		t.Errorf("evidence should carry severity-prefixed line; got: %s", gc.Evidence)
@@ -94,8 +94,8 @@ func TestBuildIngressDoctorChecks_GKEGatewayClassHint(t *testing.T) {
 	if !strings.Contains(gc.Evidence, "GKE Gateway controller") {
 		t.Errorf("expected GKE hint; got: %s", gc.Evidence)
 	}
-	if strings.Contains(gc.Evidence, "forge dev cluster up") {
-		t.Errorf("must not suggest forge dev cluster up for gke-gateway; got: %s", gc.Evidence)
+	if strings.Contains(gc.Evidence, "forge cluster up") {
+		t.Errorf("must not suggest forge cluster up for gke-gateway; got: %s", gc.Evidence)
 	}
 }
 
@@ -165,7 +165,7 @@ func TestBuildIngressDoctorChecks_CertManagerCRDMissing(t *testing.T) {
 
 // TestBuildIngressDoctorChecks_GatewayAPICRDMissing — when the
 // GatewayClass CRD itself is missing, the user needs to install the
-// Gateway API CRDs (typically via forge dev cluster up).
+// Gateway API CRDs (typically via forge cluster up).
 func TestBuildIngressDoctorChecks_GatewayAPICRDMissing(t *testing.T) {
 	rc := stubResourceChecker{
 		classes: map[string]resourceLookupStatus{"traefik": resourceCRDMissing},
@@ -390,7 +390,7 @@ func TestAppendIngressChecksToReport_SkipDoesNotEscalate(t *testing.T) {
 // so adding a new provider keeps the existing matches intact.
 func TestInstallHintForGatewayClass_DispatchTable(t *testing.T) {
 	cases := map[string]string{
-		"traefik":     "forge dev cluster up",
+		"traefik":     "forge cluster up",
 		"gke-gateway": "GKE Gateway",
 		"aws-gateway": "AWS Gateway API Controller",
 		"unknown-xyz": "unknown-xyz", // fallback path quotes the name

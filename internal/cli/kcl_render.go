@@ -56,7 +56,7 @@ type GatewayListenerEntity struct {
 // GatewayTLSEntity is the TLS block on a Gateway. Mode selects the
 // cert origin: "cert_manager" (default — cert-manager Certificate
 // emitted alongside the Gateway, CertIssuer names a ClusterIssuer)
-// or "mkcert" (Secret populated host-side by `forge dev cluster up`
+// or "mkcert" (Secret populated host-side by `forge cluster up`
 // via the mkcert binary; CertIssuer unused).
 type GatewayTLSEntity struct {
 	CertIssuer string `json:"cert_issuer,omitempty"`

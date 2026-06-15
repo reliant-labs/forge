@@ -71,7 +71,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	// Ingress is experimental but we still scaffold the wiring files at
 	// `forge new` so the user has a complete starting point. The
 	// runtime gate (cert-manager install, audit category) lives on the
-	// `forge dev cluster up` / `forge dev urls` paths and reads
+	// `forge cluster up` / `forge cluster urls` paths and reads
 	// IngressEnabled() at call time. Setting IngressEnabled: true here
 	// flips the wiring lines in main.k so an opt-in just needs the
 	// experimental.ingress: true flag with no rescaffold.

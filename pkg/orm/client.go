@@ -110,11 +110,17 @@ func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}
 // Tx wraps a bun transaction as an orm.Context, so the same generated
 // CRUD functions run transparently inside a transaction.
 type Tx struct {
-	tx bun.Tx
+	tx      bun.Tx
+	dialect Dialect
 }
 
 // Bun returns the transaction as a bun.IDB.
 func (t *Tx) Bun() bun.IDB { return t.tx }
+
+// Dialect returns the SQL dialect (postgres), so raw-SQL handlers running
+// inside a transaction get the same Placeholder()/QuoteIdentifier() seam as
+// on *Client. Carried from the parent Client at BeginTx time.
+func (t *Tx) Dialect() Dialect { return t.dialect }
 
 // Commit commits the transaction.
 func (t *Tx) Commit() error { return t.tx.Commit() }
@@ -145,7 +151,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &Tx{tx: tx}, nil
+	return &Tx{tx: tx, dialect: c.dialect}, nil
 }
 
 // RunTransaction executes fn within a transaction, committing on success

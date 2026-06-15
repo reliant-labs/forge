@@ -40,6 +40,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
 // upOptions bundles flags for `forge up`.
@@ -141,6 +142,13 @@ func runUp(ctx context.Context, opts upOptions) error {
 	}
 	cfg := store.Config()
 	projectDir := projectDirForKCL()
+
+	// Persist resolve_port allocations per env so dev ports stay stable
+	// across `forge up` runs (reliant-web keeps its port, etc.). Only the
+	// dev-launch path opts in — read-only renders (forge ci) don't write
+	// a ports file. The store is machine-local; .forge/ports-*.json is
+	// gitignored.
+	kclplugin.UsePortStore(filepath.Join(projectDir, ".forge", "ports-"+opts.env+".json"))
 
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)
@@ -371,11 +379,13 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background boo
 //
 // Env layering:
 //
-//  1. parentEnv (typically os.Environ()) is the floor.
-//  2. The env-file (fe.EnvFile or `.env.<env>`) is layered on top via
-//     hostlaunch.MergeEnv (parent wins on conflict — developer-shell
-//     override semantics, matching the host-service shape).
-//  3. PORT from the KCL declaration is force-injected last so it
+//  1. The env-file (fe.EnvFile or `.env.<env>`) is the lowest layer.
+//  2. KCL-declared env_vars layer on top of the env-file — explicit
+//     per-env config (e.g. a VITE_ADMIN_URL composed from
+//     forge.resolve_port(...)) beats the generic env-file.
+//  3. parentEnv (os.Environ()) wins over both — developer-shell override
+//     semantics, matching the host-service shape.
+//  4. PORT from the KCL declaration is force-injected last so it
 //     overrides ANY PORT in the parent env. The KCL declaration is the
 //     canonical port binding for the dev loop; a stale `PORT=8080` in
 //     the parent shell (typical when the parent has another service's
@@ -397,17 +407,33 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	if envFile == "" {
 		envFile = ".env." + env
 	}
-	extra, lerr := hostlaunch.ReadDotEnvFile(envFile)
-	if lerr == nil {
-		cmd.Env = hostlaunch.MergeEnv(extra, parentEnv)
-	} else {
-		cmd.Env = append([]string{}, parentEnv...)
-	}
+	// Precedence (low→high): env-file < KCL env_vars < parent shell, then
+	// forced PORT (below). Mirrors host-service layering (LayerHostEnv):
+	// explicit per-env KCL config beats the generic env-file, the
+	// developer's shell can still override, and the KCL port binding wins
+	// last. Missing env-file is non-fatal (nil map collapses to no-op).
+	envFileMap, _ := hostlaunch.ReadDotEnvFile(envFile)
+	cmd.Env = hostlaunch.LayerHostEnv(parentEnv, envFileMap, nil, kclEnvVarsToMap(fe.EnvVars))
 
 	if fe.Port > 0 {
 		cmd.Env = withForcedEnv(cmd.Env, "PORT", fmt.Sprintf("%d", fe.Port))
 	}
 	return cmd
+}
+
+// kclEnvVarsToMap projects a frontend's KCL-declared env_vars to a
+// name→value map, dropping entries without an inline value (secret_ref /
+// config_map_ref entries are cluster-manifest concerns, not host-launch
+// env). Mirrors hostEnvVarsToMap for host services.
+func kclEnvVarsToMap(vars []KCLEnvVar) map[string]string {
+	out := make(map[string]string, len(vars))
+	for _, ev := range vars {
+		if ev.Name == "" || ev.Value == "" {
+			continue
+		}
+		out[ev.Name] = ev.Value
+	}
+	return out
 }
 
 // procRegistry tracks long-running child processes started by the up

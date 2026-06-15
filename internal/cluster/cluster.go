@@ -31,7 +31,6 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -40,6 +39,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"gopkg.in/yaml.v3"
 )
 
@@ -230,14 +230,13 @@ func projectRootFromMainK(mainK string) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(dir))) // <root>
 }
 
-func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
-	var out bytes.Buffer
-	args := []string{"run", mainK,
-		"-D", "image_tag=" + imageTag,
-		"-D", "namespace=" + namespace,
+func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
+	dArgs := []string{
+		"image_tag=" + imageTag,
+		"namespace=" + namespace,
 	}
 	if env != "" {
-		args = append(args, "-D", "env="+env)
+		dArgs = append(dArgs, "env="+env)
 	}
 	// Stable ordering for reproducible output / easier diffing.
 	keys := make([]string, 0, len(envCfgKV))
@@ -246,23 +245,25 @@ func RenderManifests(ctx context.Context, mainK, imageTag, namespace, env string
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "-D", k+"="+envCfgKV[k])
+		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
-	cmd := exec.CommandContext(ctx, "kcl", args...)
-	// Run from the project root so the deploy-as-data main.k's
+	// Render from the project root so the deploy-as-data main.k's
 	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
 	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
 	// components to recover the project root. KCL's `file.read` is
-	// process-cwd-relative, so the cwd is part of the contract.
-	if root := projectRootFromMainK(mainK); root != "" {
-		cmd.Dir = root
+	// cwd-relative, so the cwd is part of the contract. Empty (a relative
+	// mainK) falls back to the process cwd, matching the old behaviour.
+	workDir := projectRootFromMainK(mainK)
+	if workDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			workDir = wd
+		}
 	}
-	cmd.Stdout = &out
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	out, err := kclrender.Run(workDir, mainK, dArgs)
+	if err != nil {
 		return "", err
 	}
-	return extractManifests(out.Bytes())
+	return extractManifests(out)
 }
 
 // extractManifests pulls the `manifests` list out of KCL's YAML output

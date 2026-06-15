@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
@@ -115,10 +116,10 @@ func newCIValidateKCLCmd() *cobra.Command {
 				mainK := filepath.Join("deploy", "kcl", env, "main.k")
 				fmt.Printf("Validating %s ... ", mainK)
 
-				kclCmd := exec.CommandContext(cmd.Context(), "kcl", "run", mainK)
-				kclCmd.Stdout = nil // discard output; we only care about exit code
-				kclCmd.Stderr = os.Stderr
-				if err := kclCmd.Run(); err != nil {
+				// Validate by rendering through the embedded runtime (no
+				// external `kcl` binary); we only care about success/failure.
+				wd, _ := os.Getwd()
+				if _, err := kclrender.Run(wd, mainK, nil); err != nil {
 					fmt.Println("FAIL")
 					hasFailed = true
 				} else {

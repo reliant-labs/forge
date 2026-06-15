@@ -31,6 +31,7 @@ func EntityDefToPlanEntity(entity EntityDef) config.PlanEntity {
 			PrimaryKey: c.IsPK,
 			NotNull:    c.NotNull,
 			Default:    c.Default,
+			Generated:  c.IsGenerated,
 		}
 		if entity.HasTenant && c.Name == entity.TenantColumnName {
 			pf.TenantKey = true

@@ -39,7 +39,7 @@ type Method struct {
 	OutputType      string
 	ClientStreaming bool
 	ServerStreaming bool
-	AuthRequired    bool     // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
+	AuthRequired    bool // from (forge.v1.method).auth_required; defaults to true (fail-closed) when unannotated
 	// RequiredRoles is the per-method role allow-list. NO proto annotation
 	// populates it — forge.v1.MethodOptions has no required_roles field;
 	// role policy is code (the user-owned handlers/<svc>/authorizer.go),
@@ -174,13 +174,13 @@ type EntityDef struct {
 	Columns []EntityColumn `json:",omitempty"`
 	// SearchColumns are the text columns the generated list search
 	// filter matches against (convention: every text column).
-	SearchColumns []string `json:",omitempty"`
-	SoftDelete    bool     `json:",omitempty"`
-	Timestamps    bool     `json:",omitempty"`
-	HasTenant     bool     // true when the table has a tenant_id column
-	TenantFieldName  string // proto field name: "tenant_id"
-	TenantGoName     string // Go name: "TenantId"
-	TenantColumnName string // DB column: "tenant_id"
+	SearchColumns    []string `json:",omitempty"`
+	SoftDelete       bool     `json:",omitempty"`
+	Timestamps       bool     `json:",omitempty"`
+	HasTenant        bool     // true when the table has a tenant_id column
+	TenantFieldName  string   // proto field name: "tenant_id"
+	TenantGoName     string   // Go name: "TenantId"
+	TenantColumnName string   // DB column: "tenant_id"
 }
 
 // EntityColumn is one introspected column of an entity's table.
@@ -195,6 +195,9 @@ type EntityColumn struct {
 	// DeclType is the declared SQL type verbatim ("TIMESTAMPTZ").
 	DeclType string `json:",omitempty"`
 	Default  string `json:",omitempty"`
+	// IsGenerated marks GENERATED ALWAYS AS (...) STORED columns — the DB
+	// computes them, so the ORM must never write them (Bun's ,scanonly).
+	IsGenerated bool `json:",omitempty"`
 }
 
 // FieldKind classifies a proto field for code generation branching.

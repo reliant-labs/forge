@@ -84,13 +84,14 @@ func buildEntityDef(name string, table schemadef.Table, svc ServiceDef) EntityDe
 	// Columns: the applied schema, verbatim.
 	for _, c := range table.Columns {
 		e.Columns = append(e.Columns, EntityColumn{
-			Name:     c.Name,
-			Type:     string(c.Type),
-			IsArray:  c.IsArray,
-			NotNull:  c.NotNull,
-			IsPK:     c.IsPK,
-			DeclType: c.DeclType,
-			Default:  c.Default,
+			Name:        c.Name,
+			Type:        string(c.Type),
+			IsArray:     c.IsArray,
+			NotNull:     c.NotNull,
+			IsPK:        c.IsPK,
+			DeclType:    c.DeclType,
+			Default:     c.Default,
+			IsGenerated: c.IsGenerated,
 		})
 	}
 

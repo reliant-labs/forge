@@ -274,6 +274,10 @@ type ormField struct {
 	// hand-rolled (Bun's ,soft_delete stamps a time.Time that a TEXT column
 	// can't round-trip — kalshi fr-3fba9166ba style).
 	softDeleteNative bool
+	// isGenerated marks a GENERATED ALWAYS AS (...) STORED column → ,scanonly
+	// so Bun reads it but never writes it (postgres rejects writes to
+	// generated columns).
+	isGenerated bool
 }
 
 // isBunSoftDeleteTimeType reports whether a deleted_at field's projected
@@ -581,6 +585,14 @@ func bunTag(f ormField) string {
 		}
 	}
 
+	// GENERATED ALWAYS AS (...) STORED: the DB computes it. ,scanonly tells
+	// Bun to read the column but never write it on INSERT/UPDATE (postgres
+	// rejects writes to a generated column). Applied after the switch so it
+	// stacks on whatever else the column needs (array/notnull for scanning).
+	if f.isGenerated {
+		parts = append(parts, "scanonly")
+	}
+
 	return fmt.Sprintf("`bun:%q`", strings.Join(parts, ","))
 }
 
@@ -694,6 +706,7 @@ func resolveORMFields(ent config.PlanEntity) []ormField {
 			references:  e.References,
 			hasDefault:  strings.TrimSpace(e.Default) != "",
 			columnDef:   strings.TrimSpace(e.Default),
+			isGenerated: e.Generated,
 		}
 		// Nullable column → pointer struct field. Arrays and bytes are
 		// reference types already (NULL scans to nil).

@@ -4,10 +4,67 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
 )
+
+// TestDescriptorParsesErrors verifies that a (forge.v1.method).errors list
+// is plumbed onto codegen.Method.Errors. This is the proto-side half of
+// the typed-error-contract feature: the LLM/handler-author reads the
+// generated methodErrors map; the data has to actually come through the
+// descriptor extraction or that map is always empty.
+func TestDescriptorParsesErrors(t *testing.T) {
+	method := codegen.Method{Name: "GetWidget"}
+	mo := &forgev1.MethodOptions{
+		Errors: []string{"NotFound", "PermissionDenied"},
+	}
+
+	applyMethodOptions(&method, mo)
+
+	want := []string{"NotFound", "PermissionDenied"}
+	if !reflect.DeepEqual(method.Errors, want) {
+		t.Errorf("Errors = %v, want %v", method.Errors, want)
+	}
+}
+
+// Regression: methods with no declared errors must yield a nil/empty
+// slice (not panic, not propagate a stale value). The template omits
+// methods with no errors from the methodErrors map; that hinges on
+// len(method.Errors) == 0 here.
+func TestDescriptorParsesErrors_Unset(t *testing.T) {
+	method := codegen.Method{Name: "GetWidget"}
+	mo := &forgev1.MethodOptions{} // no errors field set
+
+	applyMethodOptions(&method, mo)
+
+	if len(method.Errors) != 0 {
+		t.Errorf("Errors = %v, want empty", method.Errors)
+	}
+}
+
+// Regression: applyMethodOptions must coexist with the existing
+// AuthRequired plumbing — adding the new errors field should not break
+// the optional-bool auth_required round-trip.
+func TestDescriptorParsesErrors_PreservesAuthRequired(t *testing.T) {
+	method := codegen.Method{Name: "GetWidget", AuthRequired: true}
+	authOff := false
+	mo := &forgev1.MethodOptions{
+		AuthRequired: &authOff,
+		Errors:       []string{"NotFound"},
+	}
+
+	applyMethodOptions(&method, mo)
+
+	if method.AuthRequired {
+		t.Errorf("AuthRequired = true, want false (explicit opt-out)")
+	}
+	if len(method.Errors) != 1 || method.Errors[0] != "NotFound" {
+		t.Errorf("Errors = %v, want [NotFound]", method.Errors)
+	}
+}
 
 // Regression: per-invocation fragments under gen/.descriptor.d/ must be
 // merged into a single forge_descriptor.json with all sections preserved
@@ -28,9 +85,8 @@ func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
 			Services: []codegen.ServiceDef{{Name: "AdminServerService"}},
 		},
 		{
-			// "entities" fragment — what the proto/db plugin invocation
-			// would emit.
-			Entities: []codegen.EntityDef{{Name: "Workspace", TableName: "workspaces"}},
+			// A second services fragment from another plugin invocation.
+			Services: []codegen.ServiceDef{{Name: "WorkspaceService"}},
 		},
 		{
 			// "configs" fragment — what the proto/config plugin invocation
@@ -65,11 +121,8 @@ func TestMergeDescriptorFragments_CombinesAllFragments(t *testing.T) {
 		t.Fatalf("parse merged descriptor: %v", err)
 	}
 
-	if len(got.Services) != 1 || got.Services[0].Name != "AdminServerService" {
+	if len(got.Services) != 2 || got.Services[0].Name != "AdminServerService" || got.Services[1].Name != "WorkspaceService" {
 		t.Errorf("services not merged correctly: %+v", got.Services)
-	}
-	if len(got.Entities) != 1 || got.Entities[0].Name != "Workspace" {
-		t.Errorf("entities not merged correctly: %+v", got.Entities)
 	}
 	if len(got.Configs) != 1 || got.Configs[0].Name != "Config" {
 		t.Errorf("configs not merged correctly: %+v", got.Configs)

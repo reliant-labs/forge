@@ -2,11 +2,13 @@ package crud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/orm"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // Authorize is a hook the shim passes in to perform the per-RPC
@@ -61,16 +63,33 @@ func runTenant(ctx context.Context, hook RequireTenant) (string, error) {
 	return tid, nil
 }
 
-// wrapInternal wraps a repository error in the canonical
-// "<op> <entity>: %w" envelope at CodeInternal. This format matches
-// what the previous generated handler emitted, byte for byte.
-func wrapInternal(op, entity string, err error) error {
-	return connect.NewError(connect.CodeInternal, fmt.Errorf("%s %s: %w", op, entity, err))
-}
-
-// wrapNotFound is the same envelope at CodeNotFound (used by Get).
-func wrapNotFound(op, entity string, err error) error {
-	return connect.NewError(connect.CodeNotFound, fmt.Errorf("%s %s: %w", op, entity, err))
+// mapRepoErr is the single repository-error -> client-error chokepoint,
+// routed through pkg/svcerr (the prescribed handler convention IS the
+// demonstrated one):
+//
+//   - a missing row (orm.ErrNoRows, or an svcerr.ErrNotFound the
+//     repository already classified) maps to CodeNotFound with a clean
+//     "<entity>: not found" message;
+//   - EVERYTHING else maps to CodeInternal with safe text. Repository
+//     errors carry SQL fragments and driver internals ("sql: no rows in
+//     result set", "no such column: ..."), and a connect.Error message
+//     is client-visible — raw SQL must never cross the wire. The full
+//     error is still observable server-side: the generated ORM layer
+//     records it on the active trace span before returning it.
+func mapRepoErr(op, entity string, err error) error {
+	if errors.Is(err, orm.ErrNoRows) || svcerr.IsNotFound(err) {
+		return svcerr.Wrap(svcerr.NotFound(entity))
+	}
+	// An update_mask path that names no updatable column is the CALLER's
+	// mistake, not a server fault: InvalidArgument, with the offending
+	// path named and no SQL in the message (the typed error carries only
+	// the field name).
+	var unknownField *orm.UnknownFieldError
+	if errors.As(err, &unknownField) {
+		return svcerr.Wrap(svcerr.InvalidArgument(fmt.Sprintf(
+			"%s %s: unknown or immutable update_mask path %q", op, entity, unknownField.Field)))
+	}
+	return svcerr.Wrap(svcerr.Internal(fmt.Sprintf("%s %s failed", op, entity)))
 }
 
 // CreateOp wires the per-RPC concerns of a Create handler.
@@ -108,7 +127,7 @@ func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.
 		}
 		entity := op.Entity(req.Msg)
 		if err := op.Persist(ctx, tid, entity); err != nil {
-			return nil, wrapInternal("create", op.EntityLower, err)
+			return nil, mapRepoErr("create", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
@@ -137,7 +156,7 @@ func HandleGet[Req, Resp, Ent any](op GetOp[Req, Resp, Ent]) func(context.Contex
 		}
 		entity, err := op.Fetch(ctx, tid, op.ID(req.Msg))
 		if err != nil {
-			return nil, wrapNotFound("get", op.EntityLower, err)
+			return nil, mapRepoErr("get", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
@@ -155,9 +174,39 @@ type UpdateOp[Req, Resp, Ent any] struct {
 	Entity         func(req *Req) (entity Ent, ok bool)
 	Persist        func(ctx context.Context, tenantID string, entity Ent) error
 	Pack           func(entity Ent) *Resp
+
+	// Mask extracts the AIP-134 update_mask paths from the request
+	// (req.GetUpdateMask().GetPaths()). nil when the proto's update
+	// request has no update_mask field — HandleUpdate then behaves
+	// exactly as before this field existed (full replace via Persist).
+	Mask func(req *Req) []string
+
+	// PersistMasked writes ONLY the named fields (proto field names ==
+	// column names, snake_case). The generator wires it whenever it
+	// wires Mask. If Mask is set but PersistMasked is nil and a request
+	// arrives with concrete paths, HandleUpdate fails CodeInternal —
+	// silently widening a masked write to a full replace is the
+	// data-loss bug this hook exists to prevent.
+	PersistMasked func(ctx context.Context, tenantID string, entity Ent, fields []string) error
 }
 
 // HandleUpdate runs auth -> tenant -> validate-required -> persist -> pack.
+//
+// AIP-134 update_mask semantics (when op.Mask is wired):
+//
+//   - mask absent/empty, or containing "*"  → full-object replace via
+//     op.Persist. AIP-134 permits full replacement when the behavior is
+//     documented — this is that documentation. Callers that want a
+//     partial update MUST send a mask.
+//   - mask with concrete paths → op.PersistMasked writes only those
+//     fields. Paths are proto field names (snake_case, == column names).
+//   - unknown or immutable path → CodeInvalidArgument naming the path
+//     (mapped from orm.UnknownFieldError by mapRepoErr).
+//
+// After a masked write the response echoes the request entity: masked
+// fields hold their new values, unmasked fields hold whatever the caller
+// sent (NOT necessarily the stored values). Re-read with Get for the
+// authoritative row.
 func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
 	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
 		if err := runAuth(ctx, op.Auth); err != nil {
@@ -174,11 +223,44 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 				fmt.Errorf("update %s: %s is required", op.EntityLower, op.EntityFieldLow),
 			)
 		}
+		if op.Mask != nil {
+			if paths, full := maskPaths(op.Mask(req.Msg)); !full {
+				if op.PersistMasked == nil {
+					// Wiring bug, not caller error: the generator emits Mask
+					// and PersistMasked together. Fail loudly rather than
+					// silently rewriting every column.
+					return nil, connect.NewError(
+						connect.CodeInternal,
+						fmt.Errorf("update %s: update_mask received but masked persistence is not wired", op.EntityLower),
+					)
+				}
+				if err := op.PersistMasked(ctx, tid, entity, paths); err != nil {
+					return nil, mapRepoErr("update", op.EntityLower, err)
+				}
+				return connect.NewResponse(op.Pack(entity)), nil
+			}
+		}
 		if err := op.Persist(ctx, tid, entity); err != nil {
-			return nil, wrapInternal("update", op.EntityLower, err)
+			return nil, mapRepoErr("update", op.EntityLower, err)
 		}
 		return connect.NewResponse(op.Pack(entity)), nil
 	}
+}
+
+// maskPaths normalizes update_mask paths: blank entries are dropped, and
+// full reports whether the mask requests a full replace (no concrete
+// paths, or any "*" entry).
+func maskPaths(raw []string) (paths []string, full bool) {
+	for _, p := range raw {
+		if p == "" {
+			continue
+		}
+		if p == "*" {
+			return nil, true
+		}
+		paths = append(paths, p)
+	}
+	return paths, len(paths) == 0
 }
 
 // DeleteOp wires the per-RPC concerns of a Delete handler.
@@ -204,7 +286,7 @@ func HandleDelete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *
 			return nil, err
 		}
 		if err := op.Persist(ctx, tid, op.ID(req.Msg)); err != nil {
-			return nil, wrapInternal("delete", op.EntityLower, err)
+			return nil, mapRepoErr("delete", op.EntityLower, err)
 		}
 		var resp *Resp
 		if op.Pack != nil {
@@ -227,6 +309,13 @@ type ListOp[Req, Resp, Ent any] struct {
 	Auth         Authorize
 	Tenant       RequireTenant
 	PkColumnName string // empty disables PK-cursor pagination
+
+	// Columns is the entity's declared column allowlist (the generated
+	// db.<Entity>Columns var). User-supplied order_by columns are
+	// validated against it — identifier-shape validation alone lets an
+	// undeclared column reach the database, where some engines silently
+	// treat it as a constant (an ordering no-op).
+	Columns []string
 
 	// Pagination knobs. The library applies the same defaults the legacy
 	// template did when these are zero.
@@ -322,7 +411,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		if op.HasOrderBy && op.OrderBy != nil {
 			clause, desc := op.OrderBy(req.Msg)
 			if clause != "" {
-				if err := orm.ValidateOrderBy(clause); err != nil {
+				if err := orm.ValidateOrderBy(clause, op.Columns); err != nil {
 					return nil, connect.NewError(connect.CodeInvalidArgument, err)
 				}
 				ord := orm.Asc
@@ -339,7 +428,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 
 		results, err := op.Query(ctx, tid, opts)
 		if err != nil {
-			return nil, wrapInternal("list", op.EntityLower, err)
+			return nil, mapRepoErr("list", op.EntityLower, err)
 		}
 
 		var nextPageToken string

@@ -1,15 +1,36 @@
 name: jwt-auth
 description: |
-  Production-ready JWT authentication with JWKS, dev-mode bypass, and
-  multi-provider support (Auth0, Clerk, Supabase, Firebase). Code is
-  installed into pkg/middleware/auth/jwtauth/ — wire it in pkg/app/setup.go:
+  Production-ready JWT validation with JWKS and multi-provider support
+  (Auth0, Clerk, Supabase, Firebase). This pack is for REAL token
+  validation — local development needs NO pack at all: forge run
+  defaults to dev mode, where the scaffold's auth passthrough attaches
+  the devClaims() principal from pkg/middleware/middleware.go and
+  generated CRUD works with zero auth config.
 
-    import "<module>/pkg/middleware/auth/jwtauth"
-    jwtauth.Init(logger)
-    interceptors := connect.WithInterceptors(jwtauth.Interceptor())
+  Install sets forge.yaml's auth.provider (jwt) and installs code into
+  pkg/middleware/auth/jwtauth/. The code has NO call sites until you
+  wire it — see the post-install steps printed by `forge pack install`.
 
   Pair with the `auth-ui` frontend pack for opinionated login/signup UI:
     forge pack install auth-ui --config provider=jwt-auth
+post_install: |
+  jwtauth.Init() / jwtauth.Interceptor() have no call sites yet — wire
+  them where your server is constructed (cmd/server.go builds the
+  interceptor chain; setup.go runs before services are constructed):
+
+    import "<module>/pkg/middleware/auth/jwtauth"
+    if err := jwtauth.Init(logger, cfg.Mode()); err != nil { return err }
+    defer jwtauth.Close()
+    // add jwtauth.Interceptor() to the connect.WithInterceptors chain
+
+  jwtauth.Init() calls middleware.MarkExternalAuth() so the scaffold's
+  auth interceptor flips to passthrough and this pack's interceptor
+  becomes the source of truth. The cfg.Mode() argument injects the typed
+  dev-mode gate; the pack never reads ENVIRONMENT itself.
+
+  Set JWT_JWKS_URL (or JWT_HMAC_SECRET / JWT_RSA_PUBLIC_KEY), JWT_ISSUER,
+  JWT_AUDIENCE for real validation. Local development does not need this
+  pack — dev mode already attaches a synthetic principal.
 version: 1.0.0
 subpath: middleware/auth/jwtauth
 

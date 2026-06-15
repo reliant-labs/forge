@@ -42,7 +42,6 @@ ci:
 docker:
     registry: ""
 k8s:
-    provider: ""
     kcl_dir: ""
 lint:
     contract: true
@@ -80,12 +79,20 @@ features:
     codegen: false
     migrations: false
     ci: true
-    deploy: false
     contracts: true
     docs: true
     frontend: false
     observability: false
     hot_reload: false
+    # Experimental features default off. forge itself is a CLI project
+    # that doesn't ship an ingress/operator surface, so we leave this
+    # block empty. (deploy is a stable flag now — it derives from kind,
+    # on for service projects.) Service-shape projects opt in per feature:
+    #   experimental:
+    #     ingress: true         # Gateway API + cert-manager wiring
+    #     external_builds: true # KCL Service.build_cmd shell escape hatch
+    #     operators: true       # controller-runtime operators + CRDs
+    #     strict_wiring: true   # diagnostics fail-fast at Bootstrap
 stack:
     backend:
         language: go

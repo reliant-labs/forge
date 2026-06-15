@@ -11,6 +11,21 @@ description: Create a new Forge project, add components, and understand the deve
 forge new <project-name> --mod <go-module-path>
 ```
 
+A bare `forge new` scaffolds **zero services**: binary shell (`cmd/`),
+`pkg/app` wiring, buf/proto scaffolding, Taskfile/CI/deploy — and
+`services: []` in forge.yaml. The binary is a deployment unit that
+mounts services; it is **not** a domain entity, so forge never invents
+a `<project>Service` from the binary name. The first step after a bare
+scaffold is:
+
+```bash
+forge add service <entity>   # name it after a domain entity (item, order, user), not the binary
+```
+
+Pass `--service <entity>` at creation time to opt into an initial
+service (an empty service proto stub — add RPCs by hand or via
+`forge add entity`, which scaffolds the CRUD messages and RPCs for you).
+
 ### Required flags
 
 | Flag | Description |
@@ -21,7 +36,7 @@ forge new <project-name> --mod <go-module-path>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--service <name>` | _(none)_ | Initial Go service(s) — repeatable or comma-separated |
+| `--service <name>` | _(none — zero services)_ | Initial Go service(s) — repeatable or comma-separated; name after a domain entity, not the binary |
 | `--frontend <name>` | _(none)_ | Initial Next.js frontend(s) — repeatable or comma-separated |
 | `--path <dir>` | `.` | Parent directory for the project |
 | `--in-place` | `false` | Scaffold into the current directory instead of creating a subdirectory |
@@ -33,7 +48,7 @@ forge new <project-name> --mod <go-module-path>
 ### Examples
 
 ```bash
-# Minimal — creates project dir, no initial service
+# Minimal — creates project dir with ZERO services; follow with `forge add service <entity>`
 forge new my-app --mod github.com/acme/my-app
 
 # With service and frontend
@@ -53,11 +68,11 @@ my-app/
 ├── proto/services/<svc>/v1/   # Proto definitions (if --service given)
 ├── handlers/<svc>/            # Go handler skeleton (if --service given)
 ├── frontends/<name>/          # Next.js app (if --frontend given)
-├── internal/db/               # DB types (aliases) + ORM functions
+├── internal/db/               # Generated entity ORM (appears once you have entities)
 ├── pkg/app/                   # bootstrap.go (generated) + setup.go (yours)
 ├── pkg/middleware/             # Auth, logging, tenant middleware
 ├── pkg/config/                # Config struct + loader
-├── db/migrations/             # SQL migration directory (initial schema)
+├── db/migrations/             # SQL migrations — THE schema source of truth (empty until you add entities)
 ├── db/queries/                # SQL query directory
 ├── deploy/                    # Docker, KCL, observability configs
 ├── e2e/                       # E2E test directory
@@ -69,64 +84,61 @@ my-app/
 
 ## The Development Workflow
 
-Proto gets you a working demo fast. After that, your DB schema and entity types evolve independently.
+SQL migrations are the schema truth; service protos are the wire truth. `forge generate` projects both into working infrastructure.
 
-### Phase 1: Scaffold (proto gets you started)
+### Phase 1: Scaffold
 
 ```bash
 forge new my-app --mod github.com/acme/my-app --service users --frontend web
 cd my-app
 ```
 
-Proto defines your initial API surface. Forge scaffolds everything — handlers, DB types as proto aliases, an initial migration, middleware, mocks, and frontend hooks.
+Forge scaffolds the shell — handler skeleton, an empty service proto, middleware, wiring, and frontend. There are no tables (and no entity code) until you add an entity.
 
-### Phase 2: Define your API surface
-
-Edit proto to define RPCs and request/response messages:
-
-```
-proto/services/users/v1/users.proto
-```
-
-Then generate infrastructure from it:
+### Phase 2: Add your first entity
 
 ```bash
+forge add entity user name:string email:string active:bool
 forge generate
 ```
 
-This rebuilds `gen/` (Go stubs, TS clients, mocks, middleware, wiring). It does **not** touch your handlers, DB layer, or business logic.
+`forge add entity` writes the create-table migration into `db/migrations/` and (once) scaffolds the CRUD messages + RPCs into the service proto. `forge generate` then applies the migrations to an in-memory shadow DB, introspects the schema, and projects the entity struct + ORM (`internal/db/user_orm.go`), CRUD wiring, and frontend pages. Both scaffolded halves — the migration and the proto — are yours afterwards.
+
+For non-CRUD RPCs, edit the proto directly and re-run `forge generate`. It rebuilds `gen/` (Go stubs, TS clients, mocks, wiring) and never touches your handlers or business logic.
 
 ### Phase 3: Implement business logic
 
-Write your handler logic in `handlers/<svc>/service.go`. Use the generated types and your `internal/db/` ORM functions.
+Write your handler logic in `handlers/<svc>/service.go`. Use the generated types and the `internal/db/` ORM functions.
 
-### Phase 4: Evolve the DB schema (independently of proto)
-
-As your domain grows, the database schema will diverge from your API shape. This is expected and correct.
+### Phase 4: Evolve the DB schema (migrations lead, projections follow)
 
 ```bash
 # Create a new migration
 forge db migration new add_login_tracking
 
 # Write the SQL
-# db/migrations/00002_add_login_tracking.up.sql
+# db/migrations/00002_add_login_tracking.up.sql  (ALTER TABLE users ADD COLUMN ...)
 # db/migrations/00002_add_login_tracking.down.sql
 
-# Apply it
+# Re-project the entity struct/ORM from the new schema
+forge generate
+
+# Apply against a live database
 forge db migrate up --dsn "$DATABASE_URL"
 ```
 
-Update entity types and ORM functions to match — see the `db` sub-skill.
+Write plain postgres DDL — forge is postgres-pinned, so anything postgres accepts works (`::type` casts, schema-qualified names, `JSONB`, `TEXT[]`). See the `db` sub-skill.
 
-### Phase 5: Entity types diverge from proto
+### Phase 5: Wire and schema evolve independently
 
-Entity types start as proto aliases (`type User = apiv1.User`). When your DB has fields the API doesn't (or vice versa), replace the alias with a concrete Go struct and add mapper functions. This is the natural evolution — not a problem to avoid.
+The service-proto messages are the API truth; the schema is the storage truth. The generated conversions map the intersection of wire fields and columns by name — a DB-only column (audit trail, denormalized cache) never leaks onto the wire, and a wire-only field never reaches the DB. Add either side freely; this divergence is the design, not a problem to avoid.
 
 ## Adding Components
 
 ```bash
 forge add service <name>              # New Connect RPC service
 forge add service <name> --port 8082  # Specify port
+forge add entity <name> [f:type ...]  # DB entity: create-table migration + CRUD proto scaffold
 forge add worker <name>               # Background worker (Start/Stop lifecycle)
 forge add binary <name>               # Standalone long-running binary (own Deployment)
 forge add adapter <name>              # Outbound boundary translator (HTTP client, SDK wrapper)
@@ -141,8 +153,8 @@ All `forge add` commands update `forge.yaml` and run the generation pipeline aut
 
 | Command | What it does |
 |---------|-------------|
-| `forge generate` | Regenerates infrastructure from proto (safe to re-run anytime) |
-| `forge run` | Full stack: Docker infra + Go services (hot reload) + frontends |
+| `forge generate` | Regenerates infrastructure from protos + applied migrations (safe to re-run anytime) |
+| `forge run` | Full stack: Docker infra + Go services (hot reload) + frontends. Defaults `ENVIRONMENT=development` and dev CORS origins when unset, and dev mode attaches a synthetic dev user (`devClaims()` in `pkg/middleware/middleware.go`) — so the API and generated CRUD are callable with zero auth config |
 | `forge up --env=<env>` | Build + deploy + host launch + frontend dev — one command, reads `deploy/kcl/<env>/` |
 | `forge test` | Unit + integration tests |
 | `forge test e2e` | E2E tests (requires stack running via `forge run`) |
@@ -178,12 +190,18 @@ Ports are auto-assigned and tracked in `forge.yaml`:
 
 Override with `--port` on `forge add service` or `forge add frontend`.
 
+The `forge run` dev proxy also starts at 8080 but auto-shifts past
+every declared service/frontend port — read the `[run] Dev URL:`
+banner for the port actually bound. If a postgres already runs on the
+host's 5432, `forge run` fails fast before `docker compose up` and
+prints the exact `POSTGRES_PORT=<free> forge run` rerun command.
+
 ## Rules
 
-- Always run `forge generate` after any proto change.
+- Always run `forge generate` after any proto or migration change.
 - Never hand-edit `gen/` or `bootstrap.go` — they are regenerated.
 - Use `forge add` to scaffold — never copy-paste existing directories.
 - Use `forge test`, not raw `go test` — the CLI sets the right build tags.
 - One service per proto package. One handler directory per service.
-- DB schema changes go through migrations, not proto edits.
-- `forge generate` is always safe — it only touches infrastructure, never your business logic or DB layer.
+- DB schema changes go through migrations, not proto edits — the SQL in `db/migrations/` is the schema truth; the ORM follows it.
+- `forge generate` is always safe — it only touches infrastructure (including the generated `internal/db/<entity>_orm.go`), never your business logic or migrations.

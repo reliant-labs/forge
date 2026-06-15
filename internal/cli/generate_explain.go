@@ -9,7 +9,7 @@
 // Implementation choice: rather than instrument every individual generator
 // (mock_gen, middleware_gen, crud_gen, …) with a callback, we read the
 // post-generate state from forge_descriptor.json, the project filesystem,
-// and .forge/checksums.json. The derived provenance is "approximate but
+// and the embedded forge:hash markers. The derived provenance is "approximate but
 // useful" — exactly what the LLM caller wants. We can tighten it later by
 // threading a callback through the codegen package, but we don't need to
 // pay that cost up front to ship the most-useful 80%.
@@ -27,7 +27,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // ExplainEntry is one row in the per-file provenance log.
@@ -40,17 +41,15 @@ type ExplainEntry struct {
 }
 
 // printExplainLog walks the post-generate project, computes provenance for
-// every tracked output, and prints a human-readable log. Called from
-// generate's RunE only when --explain is set.
+// every certified output (embedded forge:hash marker), and prints a
+// human-readable log. Called from generate's RunE only when --explain
+// is set.
 //
-// preChecksums is the checksum map captured BEFORE the pipeline ran. We
-// diff it against the post-generate state to label each entry as written
-// or skipped (idempotent no-op).
+// preChecksums is the path→body-hash map captured BEFORE the pipeline
+// ran (captureExplainBaseline). We diff it against the post-generate
+// state to label each entry as written or skipped (idempotent no-op).
 func printExplainLog(projectDir string, preChecksums map[string]string) error {
-	cs, err := generator.LoadChecksums(projectDir)
-	if err != nil {
-		return fmt.Errorf("load checksums: %w", err)
-	}
+	markers := checksums.ScanMarkers(projectDir)
 
 	// Pull descriptor data. If the descriptor doesn't exist (degenerate
 	// project) we just skip the proto-driven explain section.
@@ -62,13 +61,13 @@ func printExplainLog(projectDir string, preChecksums map[string]string) error {
 	if desc != nil {
 		for _, s := range desc.Services {
 			svcByName[s.Name] = s
-			svcByName[serviceNameToPackage(s.Name)] = s
+			svcByName[naming.ServicePackage(s.Name)] = s
 		}
 	}
 
-	// Walk every tracked file, classify it, attach sources.
-	tracked := make([]string, 0, len(cs.Files))
-	for k := range cs.Files {
+	// Walk every certified file, classify it, attach sources.
+	tracked := make([]string, 0, len(markers))
+	for k := range markers {
 		tracked = append(tracked, k)
 	}
 	sort.Strings(tracked)
@@ -78,11 +77,11 @@ func printExplainLog(projectDir string, preChecksums map[string]string) error {
 		entry := ExplainEntry{OutputPath: rel}
 		entry.Kind, entry.Sources, entry.Notes = classifyGeneratedFile(rel, projectDir, svcByName, desc)
 
-		// Was this file rewritten this run? Compare pre vs post checksum.
-		if pre, hadPre := preChecksums[rel]; hadPre && pre == cs.Files[rel].Hash {
+		// Was this file rewritten this run? Compare pre vs post body hash.
+		if pre, hadPre := preChecksums[rel]; hadPre && pre == markers[rel].Body {
 			entry.Skipped = true
 			entry.Notes = append(entry.Notes, "no input change since last gen (idempotent skip)")
-		} else if !cs.IsFileModified(projectDir, rel) {
+		} else if markers[rel].Status == checksums.Pristine {
 			entry.Notes = append(entry.Notes, "rewritten this run")
 		}
 		entries = append(entries, entry)
@@ -194,19 +193,10 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 
 	case strings.HasPrefix(relSlash, "internal/db/") && strings.HasSuffix(relSlash, "_gen.go"):
 		kind = "entity-orm"
-		// internal/db/<entity>_orm_gen.go from proto entity
-		base := filepath.Base(relSlash)
-		base = strings.TrimSuffix(base, "_orm_gen.go")
-		base = strings.TrimSuffix(base, "_gen.go")
-		if desc != nil {
-			for _, e := range desc.Entities {
-				if strings.EqualFold(e.Name, base) || strings.EqualFold(e.TableName, base) {
-					sources = append(sources, e.ProtoFile)
-					notes = append(notes, fmt.Sprintf("entity %s (table=%s, %d field(s))", e.Name, e.TableName, len(e.Fields)))
-					break
-				}
-			}
-		}
+		// internal/db/<entity>_orm.go is a projection of the APPLIED
+		// schema: db/migrations is the source.
+		sources = append(sources, "db/migrations/")
+		notes = append(notes, "entity ORM projected from the applied schema (shadow-introspected db/migrations)")
 
 	case strings.HasPrefix(relSlash, "internal/") && (strings.HasSuffix(relSlash, "/mock_gen.go") || strings.HasSuffix(relSlash, "/middleware_gen.go") ||
 		strings.HasSuffix(relSlash, "/tracing_gen.go") || strings.HasSuffix(relSlash, "/metrics_gen.go")):

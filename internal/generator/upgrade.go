@@ -1,12 +1,13 @@
 package generator
 
 import (
-	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -66,13 +67,18 @@ func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
 	isService := kind == config.ProjectKindService
 
 	// Kind gates first — service-shape files don't apply to CLI/library.
+	// The SCAFFOLD always emits these files for service-kind (deploy
+	// derives on for service projects, and even a `features.deploy:
+	// false` project keeps the tree on disk). upgrade therefore also
+	// manages them for every service-kind project — gating on the flag
+	// would strand opted-out scaffolds with un-upgradable Dockerfiles.
 	switch {
 	case strings.HasPrefix(p, "cmd/"):
 		return isService
 	case strings.HasPrefix(p, "pkg/middleware/"):
 		return isService
 	case p == "Dockerfile" || p == "docker-compose.yml":
-		return isService && cfg.Features.DeployEnabled()
+		return isService
 	case p == "deploy/alloy-config.alloy":
 		return isService && cfg.Features.ObservabilityEnabled()
 	}
@@ -80,7 +86,7 @@ func fileEnabledByFeatures(f managedFile, cfg *config.ProjectConfig) bool {
 	// Feature gates for files that aren't kind-restricted.
 	switch {
 	case strings.HasPrefix(p, "deploy/") && strings.HasSuffix(p, ".k"):
-		return cfg.Features.DeployEnabled()
+		return isService
 	case p == ".air.toml" || p == ".air-debug.toml":
 		return cfg.Features.HotReloadEnabled()
 	case strings.HasPrefix(p, ".github/workflows/"):
@@ -103,12 +109,11 @@ func filterManagedFiles(files []managedFile, cfg *config.ProjectConfig) []manage
 // managedFiles returns the list of frozen files that upgrade manages.
 //
 // `binary: shared` projects swap cmd/main.go's source template from
-// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. Per-service cobra
-// subcommand files (cmd/<svc>.go) are intentionally NOT in this list:
-// they are scaffolded once and not re-rendered by `forge generate` /
-// `forge upgrade` since their content is mechanical (a single delegate
-// to runServer) and adding/removing services is handled by the
-// `forge add service` / per-service file generators.
+// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. The per-service cobra
+// subcommand file (cmd/services_gen.go) is intentionally NOT in this
+// list: it is a projection of the pkg/app/services.go registration
+// rows, owned by the generate pipeline (stepCmdSubcommands), which has
+// the registry parse that upgrade lacks.
 func managedFiles() []managedFile {
 	return managedFilesFor(config.ProjectBinaryPerService)
 }
@@ -192,40 +197,142 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		{templateName: "golangci.yml.tmpl", destPath: ".golangci.yml", templated: true, tier: Tier2},
 		{templateName: ".gitignore", destPath: ".gitignore", templated: false, tier: Tier2},
 
-		// Middleware — scaffolded once, then owned by the user.
-		// All eight files are committed to git and protected by checksum so
-		// `forge upgrade` leaves user edits alone. Treating them uniformly
-		// avoids the split-brain footgun where some middleware files were
-		// gitignored and overwritten while others were tracked.
-		{templateName: "middleware-recovery.go", destPath: "pkg/middleware/recovery.go", templated: false, tier: Tier2},
-		{templateName: "middleware-recovery_test.go", destPath: "pkg/middleware/recovery_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-logging.go", destPath: "pkg/middleware/logging.go", templated: false, tier: Tier2},
-		{templateName: "middleware-logging_test.go", destPath: "pkg/middleware/logging_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-http.go", destPath: "pkg/middleware/http.go", templated: false, tier: Tier2},
-		{templateName: "middleware-audit.go", destPath: "pkg/middleware/audit.go", templated: false, tier: Tier2},
-		{templateName: "middleware-authz.go", destPath: "pkg/middleware/authz.go", templated: false, tier: Tier2},
-		{templateName: "middleware-permissive-authz.go", destPath: "pkg/middleware/permissive_authz.go", templated: false, tier: Tier2},
-		{templateName: "middleware-cors.go", destPath: "pkg/middleware/cors.go", templated: false, tier: Tier2},
-		{templateName: "middleware-cors_test.go", destPath: "pkg/middleware/cors_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-auth.go", destPath: "pkg/middleware/auth.go", templated: false, tier: Tier2},
-		{templateName: "middleware-auth_test.go", destPath: "pkg/middleware/auth_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-claims.go", destPath: "pkg/middleware/claims.go", templated: false, tier: Tier2},
-		{templateName: "middleware-security-headers.go", destPath: "pkg/middleware/security_headers.go", templated: false, tier: Tier2},
-		{templateName: "middleware-security-headers_test.go", destPath: "pkg/middleware/security_headers_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-ratelimit.go", destPath: "pkg/middleware/ratelimit.go", templated: false, tier: Tier2},
-		{templateName: "middleware-ratelimit_test.go", destPath: "pkg/middleware/ratelimit_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-requestid.go", destPath: "pkg/middleware/requestid.go", templated: false, tier: Tier2},
-		{templateName: "middleware-requestid_test.go", destPath: "pkg/middleware/requestid_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-idempotency.go", destPath: "pkg/middleware/idempotency.go", templated: false, tier: Tier2},
-		{templateName: "middleware-idempotency_test.go", destPath: "pkg/middleware/idempotency_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-redact.go", destPath: "pkg/middleware/redact.go", templated: false, tier: Tier2},
-		{templateName: "middleware-redact_test.go", destPath: "pkg/middleware/redact_test.go", templated: false, tier: Tier2},
-		{templateName: "middleware-logevents.go", destPath: "pkg/middleware/logevents.go", templated: false, tier: Tier2},
-		{templateName: "middleware-trace-handler.go", destPath: "pkg/middleware/trace_handler.go", templated: false, tier: Tier2},
+		// Middleware — the thin auth-policy file + its policy-wiring
+		// test. Scaffolded once, then owned by the user; committed to
+		// git and protected by checksum so `forge upgrade` leaves user
+		// edits alone. The middleware MECHANISMS (auth modes, CORS,
+		// security headers, rate limiting, etc.) live in the forge
+		// libraries (pkg/authn, pkg/authz, pkg/middleware, pkg/observe)
+		// — projects scaffolded before the library split keep their old
+		// pkg/middleware/*.go copies; those files are user-owned and
+		// simply stop being managed here (see the
+		// migrations/v0.x-to-middleware-lib skill for hand-adoption).
+		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2},
+		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2},
+
+		// cmd/commands.go — the user-owned cobra extension point the
+		// Tier-1 cmd/main.go consumes (userCommands()). Scaffolded once,
+		// then owned by the user; listed here so `forge upgrade` CREATES
+		// it on pre-M6 trees (whose regenerated cmd/main.go now
+		// references userCommands) and never stomps an edited copy.
+		{templateName: "cmd-commands.go.tmpl", destPath: "cmd/commands.go", templated: true, tier: Tier2},
 
 		// Alloy config — Tier 1 since it's fully derived from forge.yaml services.
 		{templateName: "alloy-config.alloy.tmpl", destPath: "deploy/alloy-config.alloy", templated: true, tier: Tier1},
 	}
+}
+
+// UpgradeManagedPaths returns the set of project-relative paths that
+// `forge upgrade` (not `forge generate`) is responsible for emitting.
+// Used by `forge generate`'s stale-artifact sweep to exclude these
+// paths from the "stale codegen" candidate list: they're tracked in
+// `.forge/checksums.json` but only re-rendered by upgrade, so seeing
+// them missing from this run's WrittenThisRun set is the expected
+// state, not a stale signal.
+//
+// The set is the union over every (kind, binary) combination. Forge
+// only ships a small number of these combinations so the union is
+// cheap; computing the union (rather than asking the caller for the
+// project's specific kind/binary) keeps the helper signature simple
+// and means a kind/binary mismatch in detection doesn't accidentally
+// flag a managed file as stale.
+//
+// FRICTION 2026-06-05 (cp-forge audit-cleanup agent): `forge generate`
+// warned 7 "stale" files — .github/CODEOWNERS, .golangci.yml,
+// cmd/main.go, cmd/db.go, cmd/version.go, .github/workflows/e2e.yml,
+// .github/pull_request_template.md — all of which are managed by
+// `forge upgrade`. The user worked around it by hand-flipping
+// `forked: true` in checksums.json, which silenced the warnings but
+// also disconnected the files from the upgrade pipeline. The right
+// fix is for the stale-sweep to know about the upgrade-managed set.
+func UpgradeManagedPaths() map[string]bool {
+	out := map[string]bool{}
+	for _, kind := range []string{
+		config.ProjectKindService,
+		config.ProjectKindCLI,
+		config.ProjectKindLibrary,
+	} {
+		for _, binary := range []string{
+			config.ProjectBinaryPerService,
+			config.ProjectBinaryShared,
+		} {
+			for _, f := range managedFilesForKindBinary(kind, binary) {
+				out[f.destPath] = true
+			}
+		}
+	}
+	// Files emitted by ProjectGenerator outside the managedFiles list —
+	// these still belong to the upgrade lane (templates that scaffold
+	// once and stay user-owned, or one-shot Tier-2 metadata that
+	// `forge generate` never touches). Without the additions below the
+	// stale-sweep would re-flag them with the same false positive the
+	// FRICTION note above describes. Add new upgrade-owned scaffolds
+	// here when surfaces emerge.
+	for _, p := range []string{
+		// .github/* templates emitted by project_metadata.go's GitHub
+		// scaffold pass — Tier-1 in checksums but `forge generate` never
+		// re-emits them; `forge upgrade` does on version bumps.
+		".github/CODEOWNERS",
+		".github/pull_request_template.md",
+		".github/dependabot.yml",
+		".github/workflows/e2e.yml",
+	} {
+		out[p] = true
+	}
+	return out
+}
+
+// Tier2ManagedPaths returns the set of project-relative paths whose
+// canonical template tier is Tier-2 (scaffold-once, user-owned after the
+// first write). It is the source of truth for `forge generate`'s
+// tier-migration step (generate_tier_migrate.go in internal/cli): a
+// `.forge/checksums.json` entry for one of these paths that still
+// carries tier=1 (or the legacy unset tier=0) predates the template's
+// reclassification and must be flipped to tier=2 so the file stops
+// being drift-guarded and stops surfacing as a "fork".
+//
+// Two sources:
+//
+//   - The managed-file registry entries tagged Tier2. A destPath's tier
+//     is invariant across the (kind, binary) matrix — only the source
+//     template varies — so the union over combinations is safe (same
+//     posture as UpgradeManagedPaths).
+//   - The one-shot .github scaffolds written once at `forge new` time
+//     (project_ci.go) and never re-emitted by `forge generate`.
+//     CODEOWNERS even carries the `yours: scaffolded once ... (starter)`
+//     banner; recording them as Tier-1 was a historical accident that
+//     made hand-editing your own CODEOWNERS trip the Tier-1 stomp
+//     guard. (FRICTION 2026-06-05, cp-forge: users worked around the
+//     misclassification by hand-flipping `forked: true`.)
+//
+// Deliberately NOT in this set: .github/workflows/e2e.yml and
+// .github/dependabot.yml — those are re-rendered by `forge generate`'s
+// CI step when enabled, so Tier-1 is their honest tier.
+func Tier2ManagedPaths() map[string]bool {
+	out := map[string]bool{}
+	for _, kind := range []string{
+		config.ProjectKindService,
+		config.ProjectKindCLI,
+		config.ProjectKindLibrary,
+	} {
+		for _, binary := range []string{
+			config.ProjectBinaryPerService,
+			config.ProjectBinaryShared,
+		} {
+			for _, f := range managedFilesForKindBinary(kind, binary) {
+				if f.tier == Tier2 {
+					out[f.destPath] = true
+				}
+			}
+		}
+	}
+	for _, p := range []string{
+		".github/CODEOWNERS",
+		".github/pull_request_template.md",
+	} {
+		out[p] = true
+	}
+	return out
 }
 
 // ServiceInfo holds the name and port of a service for template rendering.
@@ -260,6 +367,13 @@ type upgradeTemplateData struct {
 	// buf.yaml template to add the googleapis BSR dep when REST is on
 	// (so vanguard's `google/api/annotations.proto` imports resolve).
 	RESTEnabled bool
+	// AuthProvider / AuthProviderExternal mirror forge.yaml's
+	// auth.provider (normalized: unset/none collapse to ""). cmd-server
+	// gates the generated middleware.InstallGeneratedAuth call site on
+	// them so the Tier-1 regen keeps the auth wiring in sync with the
+	// generate pipeline's render.
+	AuthProvider         string
+	AuthProviderExternal bool
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -276,12 +390,13 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 	}
 	protoName := strings.ReplaceAll(cfg.Name, "-", "_")
 
+	servers := cfg.Servers()
 	serviceName := "api"
 	servicePort := 8080
-	if len(cfg.Services) > 0 {
-		serviceName = cfg.Services[0].Name
-		if cfg.Services[0].Port != 0 {
-			servicePort = cfg.Services[0].Port
+	if len(servers) > 0 {
+		serviceName = servers[0].Name
+		if p := servers[0].PrimaryPort(); p != 0 {
+			servicePort = p
 		}
 	}
 
@@ -295,14 +410,14 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 	}
 
 	// Build the services list for templates like alloy-config.
-	// The first service maps to docker-compose name "app".
+	// The first server maps to docker-compose name "app".
 	var services []ServiceInfo
-	for i, svc := range cfg.Services {
+	for i, svc := range servers {
 		name := svc.Name
 		if i == 0 {
 			name = "app" // docker-compose service name for the primary service
 		}
-		port := svc.Port
+		port := svc.PrimaryPort()
 		if port == 0 {
 			port = 8080
 		}
@@ -333,6 +448,8 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		}
 	}
 
+	authProvider, authExternal := codegen.NormalizeAuthProvider(cfg.Auth.Provider)
+
 	return upgradeTemplateData{
 		Name:                   cfg.Name,
 		ProtoName:              protoName,
@@ -349,6 +466,8 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		ConfigFields:           configFields,
 		LocalForgePkgVendored:  localForgePkgVendored,
 		RESTEnabled:            cfg.API.REST,
+		AuthProvider:           authProvider,
+		AuthProviderExternal:   authExternal,
 	}
 }
 
@@ -363,6 +482,20 @@ func renderManagedFile(f managedFile, data upgradeTemplateData) ([]byte, error) 
 	}
 	if err != nil {
 		return nil, err
+	}
+	// gofmt Go renders. The generate pipeline runs goimports over
+	// everything it writes, but the upgrade lane historically wrote raw
+	// template output — so conditional templates (cmd-server.go.tmpl's
+	// ConfigFields-gated struct literal) produced misaligned code that
+	// diffed against the on-disk gofmt'd file and surfaced as phantom
+	// "would update"/fork noise. format.Source can't reproduce
+	// goimports' import-group reordering, but it eliminates the
+	// alignment class entirely. Unformattable output (template bug)
+	// falls through unformatted rather than failing the render.
+	if strings.HasSuffix(f.destPath, ".go") {
+		if formatted, ferr := format.Source(content); ferr == nil {
+			content = formatted
+		}
 	}
 	// Canonicalize trailing newline. gofmt-formatted Go files (and most
 	// editor-on-save defaults across yaml/json/md) end with exactly one
@@ -522,8 +655,29 @@ func simpleDiff(path string, old, new []byte) string {
 // source for cmd/main.go (instead of the canonical cmd-root.go.tmpl) so the
 // shared-binary scaffold survives generate cycles.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
+	return RegenerateInfraFilesTracked(projectDir, cfg, nil)
+}
+
+// RegenerateInfraFilesTracked is RegenerateInfraFiles routed through the
+// checksums chokepoint. With a non-nil cs every Tier-1 infra write:
+//
+//   - honors disowned entries (the user ran `forge disown`: the write
+//     is skipped while the file exists — the raw os.WriteFile path this
+//     replaces violated the "forge never regenerates user-owned files"
+//     contract for cmd/*.go and friends);
+//   - records the render hash + WrittenThisRun so the stale sweep and
+//     the next run's drift guard see an accurate manifest;
+//   - tags the entry Tier-1 (these files ARE regenerated every run).
+//
+// force=true preserves the historical always-overwrite semantics for
+// forge-owned files: the Tier-1 stomp guard ran earlier in the pipeline,
+// so any surviving drift was already adjudicated (--force / disown).
+//
+// A nil cs falls back to untracked writes (legacy callers).
+func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, cs *FileChecksums) error {
 	data := buildTemplateData(cfg, projectDir)
-	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+	filtered := filterManagedFiles(managedFilesForCfg(cfg), cfg)
+	for _, f := range filtered {
 		if f.tier != Tier1 {
 			continue
 		}
@@ -531,15 +685,43 @@ func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 		if err != nil {
 			return fmt.Errorf("render %s: %w", f.destPath, err)
 		}
-		fullPath := filepath.Join(projectDir, f.destPath)
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(fullPath, content, 0644); err != nil {
+		if _, err := checksums.WriteGeneratedFileTier1(projectDir, f.destPath, content, cs, true); err != nil {
 			return fmt.Errorf("write %s: %w", f.destPath, err)
 		}
 	}
+	// The Tier-1 cmd/main.go just (re)rendered above references the
+	// user-owned userCommands() extension point. Ensure cmd/commands.go
+	// exists (write-once; never overwrites) so a pre-M6 tree whose
+	// main.go gained the reference this run still compiles — the
+	// codegen pipeline's stepCmdSubcommands does the same, but this
+	// path also runs for service projects with features.codegen=false.
+	for _, f := range filtered {
+		if f.destPath == "cmd/main.go" {
+			if err := codegen.GenerateCmdCommands(projectDir); err != nil {
+				return fmt.Errorf("scaffold cmd/commands.go: %w", err)
+			}
+			break
+		}
+	}
 	return nil
+}
+
+// hasLegacyMiddlewareLayout reports whether the project's
+// pkg/middleware still has the pre-library-split shape: legacy
+// mechanism files present (auth.go / claims.go are the sentinels —
+// every old scaffold had both) and no thin middleware.go yet. Upgrade
+// must not emit the thin policy pair into such a package — the symbol
+// sets collide.
+func hasLegacyMiddlewareLayout(projectDir string) bool {
+	if _, err := os.Stat(filepath.Join(projectDir, "pkg", "middleware", "middleware.go")); err == nil {
+		return false // already on the thin layout
+	}
+	for _, sentinel := range []string{"auth.go", "claims.go"} {
+		if _, err := os.Stat(filepath.Join(projectDir, "pkg", "middleware", sentinel)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Upgrade checks all managed (frozen) files against the current templates
@@ -557,7 +739,38 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 	var results []UpgradeResult
 
+	// Pre-library-split projects still carry the old pkg/middleware
+	// mechanism files (auth.go, claims.go, …). Those declare the same
+	// symbols as the thin policy pair (Claims, NewAuthInterceptor,
+	// Authorizer, …), so dropping middleware.go next to them would stop
+	// the package compiling. Their copies are user-owned and keep
+	// working; converging on the library is the user-driven
+	// migrations/v0.x-to-middleware-lib path, never an upgrade side
+	// effect.
+	legacyMiddleware := hasLegacyMiddlewareLayout(projectDir)
+
 	for _, f := range filterManagedFiles(managedFilesForCfg(cfg), cfg) {
+		if legacyMiddleware && strings.HasPrefix(f.destPath, "pkg/middleware/") {
+			results = append(results, UpgradeResult{
+				Path:   f.destPath,
+				Status: UpgradeSkipped,
+			})
+			continue
+		}
+		// Disowned entries are user-owned: upgrade never touches them
+		// while the file exists. A missing file falls through — deletion
+		// is the documented re-adoption path, and upgrade re-emitting it
+		// is the same contract as `forge generate`.
+		if cs.IsDisowned(f.destPath) {
+			if _, statErr := os.Stat(filepath.Join(projectDir, f.destPath)); statErr == nil {
+				results = append(results, UpgradeResult{
+					Path:   f.destPath,
+					Status: UpgradeSkipped,
+				})
+				continue
+			}
+		}
+
 		// Render the expected content from the current template
 		expected, err := renderManagedFile(f, data)
 		if err != nil {
@@ -588,8 +801,10 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 			return nil, fmt.Errorf("read %s: %w", f.destPath, err)
 		}
 
-		// Compare rendered template with what's on disk
-		if bytes.Equal(existing, expected) {
+		// Compare rendered template with what's on disk. The on-disk
+		// copy carries an embedded forge:hash marker the raw render
+		// doesn't — compare marker-excluded body hashes.
+		if checksums.BodyHash(existing) == checksums.BodyHash(expected) {
 			results = append(results, UpgradeResult{
 				Path:   f.destPath,
 				Status: UpgradeUpToDate,
@@ -615,18 +830,19 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 
 		// Tier 2: File differs — check if user has modified it.
 		//
-		// "Modified" means the on-disk content matches neither the
-		// current checksum nor any prior render forge has produced for
-		// this path. The history check is what closes the stale-codegen
-		// gap: when a template is updated and the on-disk file is a
-		// prior render (matches a checksum in history but not the
-		// current one), forge treats it as auto-updateable rather than
-		// flagging it as user-modified. See FileChecksums docs in
-		// checksums.go.
+		// The file is self-certifying: a VERIFYING embedded forge:hash
+		// marker proves the on-disk bytes are an unedited forge render
+		// of some vintage, so the template delta is stale codegen —
+		// auto-updateable without --force. A marker that fails
+		// verification (or no marker at all, for pre-marker projects)
+		// means user-modified. Comment-incapable formats consult the
+		// scoped .forge/hashes.json record instead.
 		diff := simpleDiff(f.destPath, existing, expected)
-		entry, hasChecksum := cs.Files[f.destPath]
-		matchesKnownRender := hasChecksum && cs.MatchesAnyKnownRender(f.destPath, existing)
-		_ = entry // entry retained for future per-entry diagnostics
+		matchesKnownRender := checksums.Verify(existing) == checksums.Pristine
+		if !checksums.Stampable(f.destPath) && cs != nil {
+			recorded, tracked := cs.Unstampable[f.destPath]
+			matchesKnownRender = tracked && checksums.BodyHash(existing) == recorded
+		}
 
 		if matchesKnownRender {
 			// File matches stored checksum or a prior render → user
@@ -677,8 +893,18 @@ func Upgrade(projectDir string, cfg *config.ProjectConfig, force bool, checkOnly
 	return results, nil
 }
 
-// writeManagedFile writes content to a file and records its checksum.
+// writeManagedFile writes a managed file through the certification
+// chokepoint: stampable formats get the embedded forge:hash marker;
+// comment-incapable ones get a scoped .forge/hashes.json record.
 func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) error {
+	if stamped, ok := checksums.Stamp(relPath, content); ok {
+		content = stamped
+	} else if cs != nil {
+		if cs.Unstampable == nil {
+			cs.Unstampable = map[string]string{}
+		}
+		cs.Unstampable[relPath] = checksums.BodyHash(content)
+	}
 	fullPath := filepath.Join(root, relPath)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
@@ -686,6 +912,13 @@ func writeManagedFile(root, relPath string, content []byte, cs *FileChecksums) e
 	if err := os.WriteFile(fullPath, content, 0644); err != nil {
 		return err
 	}
-	cs.RecordFile(relPath, content)
+	checksums.MarkWrittenThisRun(relPath)
+	// A write through the upgrade chokepoint means forge owns the result
+	// again — the only way a disowned entry reaches here is the deletion
+	// re-adoption path (Upgrade skips disowned entries whose file
+	// exists), so clear the ownership-transfer record.
+	if cs != nil {
+		delete(cs.Disowned, relPath)
+	}
 	return nil
 }

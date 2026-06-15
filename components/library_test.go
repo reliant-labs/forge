@@ -71,7 +71,7 @@ func TestLibraryCategories(t *testing.T) {
 		CategoryCharts:   3,
 		CategoryDiagrams: 6,
 		CategoryDeck:     7,
-		CategoryUI:       42,
+		CategoryUI:       43,
 	}
 
 	for cat, want := range expected {
@@ -192,8 +192,8 @@ func TestLibraryList(t *testing.T) {
 
 	// List all
 	all := lib.List("", "")
-	if len(all) != 73 {
-		t.Errorf("list all should return 73 components, got %d", len(all))
+	if len(all) != 74 {
+		t.Errorf("list all should return 74 components, got %d", len(all))
 	}
 
 	// List filtered by category

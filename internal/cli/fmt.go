@@ -96,9 +96,9 @@ func resolveFmtModulePath(projectDir string) string {
 	// forge.yaml first — it's the project-authoritative module path. A
 	// missing forge.yaml (CLI projects with no .yaml) is fine; the
 	// go.mod fallback covers that case.
-	cfg, err := loadProjectConfig()
-	if err == nil && cfg != nil && cfg.ModulePath != "" {
-		return cfg.ModulePath
+	store, err := loadProjectStore()
+	if err == nil && store != nil && store.Meta().ModulePath != "" {
+		return store.Meta().ModulePath
 	}
 	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 		// Surface the config-load error as a warning so the user knows

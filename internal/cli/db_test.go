@@ -43,9 +43,18 @@ func TestDBCommandIncludesExpectedTopLevelSubcommands(t *testing.T) {
 		t.Fatalf("db command path = %q, want %q", command.CommandPath(), "forge db")
 	}
 
-	for _, subcommand := range []string{"migration", "migrate", "introspect", "proto", "codegen"} {
+	for _, subcommand := range []string{"migration", "migrate", "introspect", "squash"} {
 		if got := commandName(command, subcommand); got == nil {
 			t.Fatalf("expected db command to include %q subcommand", subcommand)
+		}
+	}
+
+	// Retired with the entity-proto subsystem: SQL is the schema; entities
+	// are projections of db/migrations, so the proto-sync and ORM-codegen
+	// command trees are gone.
+	for _, retired := range []string{"proto", "codegen"} {
+		if got := commandName(command, retired); got != nil {
+			t.Fatalf("db %q subcommand was removed and must not be registered", retired)
 		}
 	}
 }
@@ -77,20 +86,6 @@ func TestDBMigrateCommandIncludesExpectedLifecycleCommands(t *testing.T) {
 	for _, subcommand := range []string{"up", "down", "status", "version", "force"} {
 		if got := commandName(migrateCmd, subcommand); got == nil {
 			t.Fatalf("expected migrate command to include %q", subcommand)
-		}
-	}
-}
-
-func TestDBProtoCommandIncludesExpectedSubcommands(t *testing.T) {
-	dbCmd := newDBCmd()
-	protoCmd := commandName(dbCmd, "proto")
-	if protoCmd == nil {
-		t.Fatal("proto command not found")
-	}
-
-	for _, subcommand := range []string{"sync-from-db", "check"} {
-		if got := commandName(protoCmd, subcommand); got == nil {
-			t.Fatalf("expected proto command to include %q", subcommand)
 		}
 	}
 }

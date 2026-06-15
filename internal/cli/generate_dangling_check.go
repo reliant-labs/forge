@@ -1,31 +1,33 @@
-// Forked-sibling dangling-reference detection.
+// Disowned-sibling dangling-reference detection.
 //
-// FRICTION 2026-06-04 (cp-forge layer-6 workers lane): the user
-// previously ran `forge generate --accept` on `pkg/app/bootstrap.go` and
-// `pkg/app/wire_gen.go`, marking them `"forked": true` in
-// `.forge/checksums.json`. After adding a worker, `forge generate`
-// happily re-emits `pkg/app/app_gen.go` (NOT forked) — and the freshly
-// regenerated `app_gen.go` declares `Workers *Workers`. But the
-// `Workers` TYPE is defined inside `bootstrap.go`, which is forked and
-// therefore frozen at its pre-workers content. `go build` then fails
-// with `pkg/app/app_gen.go:42:13: undefined: Workers` — a silent build
-// break with no obvious escape (`forge generate --force` still respects
-// the fork; there is no `forge unfork <path>`).
+// FRICTION 2026-06-04 (cp-forge layer-6 workers lane, fork era): the
+// user had frozen `pkg/app/bootstrap.go` and `pkg/app/wire_gen.go` out
+// of regeneration. After adding a worker, `forge generate` happily
+// re-emitted `pkg/app/app_gen.go` — and the freshly regenerated
+// `app_gen.go` declared `Workers *Workers`. But the `Workers` TYPE was
+// defined inside the frozen `bootstrap.go`, still at its pre-workers
+// content. `go build` then failed with `pkg/app/app_gen.go:42:13:
+// undefined: Workers` — a silent build break far from its cause.
 //
-// Resolution: after codegen finishes, scan the regenerated non-forked
-// Tier-1 files inside the same package as any forked sibling. For each
-// referenced package-local type name that is NOT defined in either
+// The same hazard exists for DISOWNED files (the frozen-file mechanics
+// are identical: forge never re-emits them, even with `--force`), so
+// the check survives the fork removal with disowned entries as its
+// subject. Resolution: after codegen finishes, scan the regenerated
+// forge-owned Tier-1 files inside the same package as any disowned
+// sibling. For each referenced package-local type name that is NOT
+// defined in either
 //
 //   - the file doing the reference, or
-//   - any non-forked sibling in the same package, or
-//   - any forked sibling in the same package,
+//   - any forge-owned sibling in the same package, or
+//   - any disowned sibling in the same package,
 //
 // surface a loud, actionable error listing the type, the call site,
-// the forked sibling that probably ought to have defined it, and the
-// concrete escape hatches (hand-merge the latest template hunk, or
-// unfork by flipping `forked: false` in `.forge/checksums.json`).
+// the disowned sibling that probably ought to have defined it, and the
+// concrete escape hatches (hand-add the missing declaration to the
+// disowned file — it's yours — or re-adopt it by deleting it and
+// re-running `forge generate`).
 //
-// The scan is restricted to the same Go package as the forked file
+// The scan is restricted to the same Go package as the disowned file
 // because that's where Go's package-local resolution applies — a
 // dangling unqualified type name `Workers` in `app_gen.go` can only be
 // resolved by a sibling .go file with the same `package app` clause.
@@ -49,16 +51,16 @@ import (
 )
 
 // The manifest walks + AST type-collection that used to live inline
-// here now flow through checksums.Inspector: ForkedGoFilesByDir,
+// here now flow through checksums.Inspector: DisownedGoFilesByDir,
 // GoSiblingsIn, DeclaredTypesIn. The unqualified-reference walker
 // (extractUnqualifiedTypeRefs) stays local because it is the only
 // caller that needs it and the AST visitor is not shareable with the
 // rename-detection or scaffolds-lint code paths.
 
 // danglingFinding identifies one unqualified type reference in a
-// non-forked Tier-1 file that resolves to nothing in the same Go
+// forge-owned Tier-1 file that resolves to nothing in the same Go
 // package — neither in the file itself, nor in any sibling file
-// (forked or otherwise).
+// (disowned or otherwise).
 type danglingFinding struct {
 	// TypeName is the unqualified identifier referenced as a type.
 	TypeName string
@@ -67,18 +69,18 @@ type danglingFinding struct {
 	RefFile string
 	// RefLine is the 1-indexed source line of the first reference.
 	RefLine int
-	// ForkedSiblings is the list of project-relative paths of forked
-	// files in the same package — the candidates whose hand-frozen
+	// DisownedSiblings is the list of project-relative paths of
+	// disowned files in the same package — the candidates whose frozen
 	// content is the most likely culprit. May have multiple entries
-	// when a package has more than one forked sibling.
-	ForkedSiblings []string
+	// when a package has more than one disowned sibling.
+	DisownedSiblings []string
 }
 
-// checkForkedDanglingRefs is the entry point invoked from the
+// checkDisownedDanglingRefs is the entry point invoked from the
 // generate pipeline. It walks the checksum manifest to find every
-// forked Tier-1 file, groups the forked entries by their Go package
+// disowned file, groups the disowned entries by their Go package
 // directory, and for each such directory parses the regenerated
-// non-forked sibling files looking for package-local type references
+// forge-owned sibling files looking for package-local type references
 // that resolve to nothing.
 //
 // Returns a single batched error listing every finding when at least
@@ -91,36 +93,36 @@ type danglingFinding struct {
 // The ctx is currently unused but reserved for future cancellation /
 // log-correlation plumbing; the function signature matches the GenStep
 // shape so it can be plugged in directly.
-func checkForkedDanglingRefs(_ context.Context, projectDir string, cs *checksums.FileChecksums) error {
-	if cs == nil || len(cs.Files) == 0 {
+func checkDisownedDanglingRefs(_ context.Context, projectDir string, cs *checksums.FileChecksums) error {
+	if cs == nil || len(cs.Disowned) == 0 {
 		return nil
 	}
 	insp := checksums.NewInspector(projectDir, cs)
 
-	// Group forked Go files by their parent directory. Each parent
+	// Group disowned Go files by their parent directory. Each parent
 	// directory is one Go package's source dir (Go's one-package-per-
 	// directory rule). Sibling files in that same directory are the
 	// only candidates that could satisfy a package-local type reference.
-	forkedByDir := insp.ForkedGoFilesByDir()
-	if len(forkedByDir) == 0 {
+	disownedByDir := insp.DisownedGoFilesByDir()
+	if len(disownedByDir) == 0 {
 		return nil
 	}
 
 	var findings []danglingFinding
 	// Iterate over directories in sorted order so the batched error is
 	// deterministic (Go's map iteration is randomized).
-	dirs := make([]string, 0, len(forkedByDir))
-	for d := range forkedByDir {
+	dirs := make([]string, 0, len(disownedByDir))
+	for d := range disownedByDir {
 		dirs = append(dirs, d)
 	}
 	sort.Strings(dirs)
 
 	for _, dir := range dirs {
-		forkedFiles := forkedByDir[dir]
+		disownedFiles := disownedByDir[dir]
 		// Snapshot every declared top-level type name in the package's
 		// directory by parsing each *.go file under it. The inspector
-		// reads + parses the forked file's on-disk content too — the
-		// user's frozen fork IS the source of truth for what the package
+		// reads + parses the disowned file's on-disk content too — the
+		// user's frozen file IS the source of truth for what the package
 		// now declares.
 		siblingFiles, err := insp.GoSiblingsIn(dir)
 		if err != nil {
@@ -137,24 +139,21 @@ func checkForkedDanglingRefs(_ context.Context, projectDir string, cs *checksums
 			}
 		}
 
-		// For each non-forked Tier-1 Go sibling, parse and look for
+		// For each forge-owned Tier-1 Go sibling, parse and look for
 		// unqualified type references that resolve to nothing in
 		// declaredTypes.
-		forkedSet := map[string]bool{}
-		for _, f := range forkedFiles {
-			forkedSet[f] = true
+		disownedSet := map[string]bool{}
+		for _, f := range disownedFiles {
+			disownedSet[f] = true
 		}
 		for _, relPath := range siblingFiles {
-			if forkedSet[relPath] {
+			if disownedSet[relPath] {
 				continue
 			}
-			if !insp.IsTracked(relPath) {
-				// Untracked sibling (rare — hand-written file in the
-				// same package). Not a Tier-1 regen target; skip.
-				continue
-			}
-			if insp.IsTier2(relPath) {
-				// Tier-2 files are user-owned scaffolds — out of scope.
+			if !insp.IsTier1(relPath) {
+				// Not forge-certified (hand-written file or user-owned
+				// Tier-2 scaffold in the same package). Not a Tier-1
+				// regen target; skip.
 				continue
 			}
 			refs := extractUnqualifiedTypeRefs(projectDir, relPath)
@@ -163,10 +162,10 @@ func checkForkedDanglingRefs(_ context.Context, projectDir string, cs *checksums
 					continue
 				}
 				findings = append(findings, danglingFinding{
-					TypeName:       ref.TypeName,
-					RefFile:        relPath,
-					RefLine:        ref.Line,
-					ForkedSiblings: append([]string(nil), forkedFiles...),
+					TypeName:         ref.TypeName,
+					RefFile:          relPath,
+					RefLine:          ref.Line,
+					DisownedSiblings: append([]string(nil), disownedFiles...),
 				})
 			}
 		}
@@ -194,7 +193,7 @@ type typeRef struct {
 //
 //   - Qualified references (`pkg.Workers`) resolve via Go's import
 //     machinery and would fail with a different error class at
-//     `go build` time. The forked-dangling case is specifically about
+//     `go build` time. The disowned-dangling case is specifically about
 //     names that the COMPILER would otherwise expect to resolve to a
 //     sibling .go file in the same package.
 //
@@ -379,13 +378,13 @@ var predeclaredTypes = map[string]bool{
 	"comparable": true,
 }
 
-// stepCheckForkedDanglingRefs is the GenStep wrapper around
-// checkForkedDanglingRefs. Kept in this file (and not in
+// stepCheckDisownedDanglingRefs is the GenStep wrapper around
+// checkDisownedDanglingRefs. Kept in this file (and not in
 // generate_pipeline.go) so the single touch on the pipeline file is
 // purely a one-line invocation, isolating this addition from parallel
 // edits another agent is making in the same file.
-func stepCheckForkedDanglingRefs(ctx *pipelineContext) error {
-	return checkForkedDanglingRefs(context.Background(), ctx.AbsPath, ctx.Checksums)
+func stepCheckDisownedDanglingRefs(ctx *pipelineContext) error {
+	return checkDisownedDanglingRefs(context.Background(), ctx.AbsPath, ctx.Checksums)
 }
 
 // formatDanglingFindingsError renders the batched-error message. Each
@@ -394,8 +393,8 @@ func stepCheckForkedDanglingRefs(ctx *pipelineContext) error {
 //
 // We group by TypeName so a single missing type referenced from N
 // regenerated files surfaces as one group of N call sites rather than
-// N independent groups (the user's fix — merge the type back into the
-// forked file, or unfork — is identical for all N references).
+// N independent groups (the user's fix — add the type to the disowned
+// file, or re-adopt it — is identical for all N references).
 func formatDanglingFindingsError(findings []danglingFinding) error {
 	byType := map[string][]danglingFinding{}
 	for _, f := range findings {
@@ -408,24 +407,24 @@ func formatDanglingFindingsError(findings []danglingFinding) error {
 	sort.Strings(types)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Forked-sibling dangling reference check:\n\n")
+	fmt.Fprintf(&b, "Disowned-sibling dangling reference check:\n\n")
 	fmt.Fprintf(&b, "%d type name(s) referenced by regenerated Tier-1 files but not defined in any sibling file:\n\n", len(types))
 	for _, t := range types {
 		group := byType[t]
 		// Collect the union of forked siblings across every site that
 		// referenced this type — usually they're all the same, but a
 		// future multi-package forked layout could differ.
-		forkedSet := map[string]bool{}
+		disownedSet := map[string]bool{}
 		for _, f := range group {
-			for _, s := range f.ForkedSiblings {
-				forkedSet[s] = true
+			for _, s := range f.DisownedSiblings {
+				disownedSet[s] = true
 			}
 		}
-		forked := make([]string, 0, len(forkedSet))
-		for s := range forkedSet {
-			forked = append(forked, s)
+		disowned := make([]string, 0, len(disownedSet))
+		for s := range disownedSet {
+			disowned = append(disowned, s)
 		}
-		sort.Strings(forked)
+		sort.Strings(disowned)
 
 		fmt.Fprintf(&b, "  • type %s\n", t)
 		// Stable sort of call sites — by path, then line.
@@ -438,18 +437,18 @@ func formatDanglingFindingsError(findings []danglingFinding) error {
 		for _, f := range group {
 			fmt.Fprintf(&b, "      referenced by %s:%d\n", f.RefFile, f.RefLine)
 		}
-		if len(forked) == 1 {
-			fmt.Fprintf(&b, "      expected to be defined in: %s (forked)\n", forked[0])
+		if len(disowned) == 1 {
+			fmt.Fprintf(&b, "      expected to be defined in: %s (disowned)\n", disowned[0])
 		} else {
-			fmt.Fprintf(&b, "      expected to be defined in one of (forked):\n")
-			for _, s := range forked {
+			fmt.Fprintf(&b, "      expected to be defined in one of (disowned):\n")
+			for _, s := range disowned {
 				fmt.Fprintf(&b, "        - %s\n", s)
 			}
 		}
 	}
-	fmt.Fprintf(&b, "\nA forked Tier-1 file is frozen at its accepted content (`\"forked\": true` in `.forge/checksums.json`); forge never re-emits it, even with `--force`. The regenerated sibling file above expects a type the frozen fork doesn't define — a build break is imminent.\n\n")
+	fmt.Fprintf(&b, "\nA disowned file is user-owned and frozen from forge's perspective (recorded in `.forge/disowned.json`); forge never re-emits it, even with `--force`. The regenerated sibling file above expects a type the disowned file doesn't define — a build break is imminent.\n\n")
 	fmt.Fprintf(&b, "Two ways out:\n")
-	fmt.Fprintf(&b, "  1. Hand-merge the latest template hunk for the missing type into the forked file. Keep the file forked, but bring its declarations forward.\n")
-	fmt.Fprintf(&b, "  2. Unfork the file: open `.forge/checksums.json` and flip the forked entry from `\"forked\": true` to `\"forked\": false` (or remove the key), then re-run `forge generate`. Forge will overwrite the file with the current template content. WARNING: any hand edits the fork was preserving will be lost.\n")
+	fmt.Fprintf(&b, "  1. Add the missing declaration to the disowned file — it is your code; bring its declarations forward to match the regenerated siblings.\n")
+	fmt.Fprintf(&b, "  2. Re-adopt the file: delete it and re-run `forge generate`. Forge re-emits the current template content and owns the file again. WARNING: your disowned content is discarded — copy anything you want to keep into a user-owned extension point first.\n")
 	return fmt.Errorf("%s", b.String())
 }

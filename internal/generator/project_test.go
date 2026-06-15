@@ -32,8 +32,9 @@ func TestProjectGeneratorGenerateCreatesMigrationFirstLayout(t *testing.T) {
 		t.Fatalf("expected legacy proto/forge/options.proto to be absent, err = %v", err)
 	}
 
-	// CORS middleware should always be generated
-	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
+	// The thin auth-policy middleware file should always be generated
+	// (mechanisms live in forge/pkg/{authn,authz,middleware}).
+	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
 
 	// CORS should be wired in server.go even without a frontend
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
@@ -50,12 +51,18 @@ func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(configContents, "migrations_dir: db/migrations") {
-		t.Fatalf("expected forge.yaml to include db/migrations, got:\n%s", configContents)
+	// The scaffolded forge.yaml is minimal — the database section is
+	// derived at load time. Assert the LOADED config resolves the
+	// canonical database defaults for a service project.
+	cfg, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	if !strings.Contains(configContents, "driver: postgres") {
-		t.Fatalf("expected forge.yaml to include database driver, got:\n%s", configContents)
+	if cfg.Database.MigrationsDir != "db/migrations" {
+		t.Fatalf("loaded config Database.MigrationsDir = %q, want db/migrations (derived)", cfg.Database.MigrationsDir)
+	}
+	if cfg.Database.Driver != "postgres" {
+		t.Fatalf("loaded config Database.Driver = %q, want postgres (derived)", cfg.Database.Driver)
 	}
 
 	composeContents := readFile(t, filepath.Join(root, "docker-compose.yml"))
@@ -106,13 +113,25 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("bootstrap.go should contain generated header, got:\n%s", bootstrapContents)
 	}
 	// (2026-05-07 wire-gen migration) wire_gen owns the Deps literal;
-	// bootstrap calls wireXxxDeps(app, cfg, logger, devMode) and feeds
-	// the result into xxx.New.
-	if !strings.Contains(bootstrapContents, "api.New(apiDeps)") {
-		t.Fatalf("bootstrap.go should construct api service with wire_gen-built Deps, got:\n%s", bootstrapContents)
+	// the row constructor calls wireXxxDeps(app, cfg, logger)
+	// and feeds the result into xxx.New. Since the registration-in-code
+	// rework those row constructors live in services_gen.go, bootstrap
+	// consumes the user-owned RegisteredServices (pkg/app/services.go),
+	// and both companion files must be scaffolded for the project to
+	// compile.
+	rowContents := readFile(t, filepath.Join(root, "pkg", "app", "services_gen.go"))
+	if !strings.Contains(rowContents, "api.New(apiDeps)") {
+		t.Fatalf("services_gen.go should construct api service with wire_gen-built Deps, got:\n%s", rowContents)
 	}
-	if !strings.Contains(bootstrapContents, "wireAPIDeps(app, cfg, logger") {
-		t.Fatalf("bootstrap.go should call wireAPIDeps(...), got:\n%s", bootstrapContents)
+	if !strings.Contains(rowContents, "wireAPIDeps(app, cfg, logger") {
+		t.Fatalf("services_gen.go should call wireAPIDeps(...), got:\n%s", rowContents)
+	}
+	if !strings.Contains(bootstrapContents, "RegisteredServices(app, cfg, logger, opts...)") {
+		t.Fatalf("bootstrap.go should consume RegisteredServices, got:\n%s", bootstrapContents)
+	}
+	registryContents := readFile(t, filepath.Join(root, "pkg", "app", "services.go"))
+	if !strings.Contains(registryContents, "serviceRowAPI(app, cfg, logger, opts...),") {
+		t.Fatalf("services.go should list the api row, got:\n%s", registryContents)
 	}
 	if !strings.Contains(bootstrapContents, "func Bootstrap(") {
 		t.Fatalf("bootstrap.go should contain Bootstrap function, got:\n%s", bootstrapContents)
@@ -124,26 +143,54 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if !strings.Contains(bootstrapContents, "func (a *App) Shutdown(ctx context.Context) error") {
 		t.Fatalf("bootstrap.go should contain Shutdown method, got:\n%s", bootstrapContents)
 	}
-	// A3: BootstrapOnly should validate unknown service names
-	if !strings.Contains(bootstrapContents, "unknown service") {
-		t.Fatalf("bootstrap.go BootstrapOnly should warn about unknown service names, got:\n%s", bootstrapContents)
+	// A3: BootstrapOnly name filtering (including the unknown-name
+	// warning) is delegated to appkit.Run — the generated file only
+	// passes the names through as appkit.Options.Only (2026-06 appkit
+	// table migration; the warn string itself lives in pkg/appkit).
+	if !strings.Contains(bootstrapContents, "appkit.Options{Only: names}") {
+		t.Fatalf("bootstrap.go BootstrapOnly should pass names to appkit.Run as Options.Only, got:\n%s", bootstrapContents)
 	}
 
-	// cmd/server.go should use app.Bootstrap, not registry
+	// cmd/server.go should wire app.Bootstrap through the serverkit shim
+	// (the shim dispatches to app.Bootstrap / app.BootstrapOnly via
+	// Hooks.Bootstrap; the registry pattern is gone).
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
 	if strings.Contains(serverContents, "registry") {
 		t.Fatalf("cmd/server.go should not reference registry, got:\n%s", serverContents)
 	}
 	if !strings.Contains(serverContents, "app.Bootstrap(") {
-		t.Fatalf("cmd/server.go should use app.Bootstrap(), got:\n%s", serverContents)
+		t.Fatalf("cmd/server.go should wire app.Bootstrap() into serverkit.Hooks.Bootstrap, got:\n%s", serverContents)
 	}
-	// A2: Server should call application.Shutdown
-	if !strings.Contains(serverContents, "application.Shutdown(shutdownCtx)") {
-		t.Fatalf("cmd/server.go should call application.Shutdown(), got:\n%s", serverContents)
+	// A2: Server should hand off to serverkit.Run — application.Shutdown
+	// is invoked inside serverkit's graceful-shutdown sequence, not by the
+	// shim. Assert the serverkit handoff instead of a literal Shutdown call.
+	if !strings.Contains(serverContents, "serverkit.Run(") {
+		t.Fatalf("cmd/server.go should hand off lifecycle to serverkit.Run(), got:\n%s", serverContents)
 	}
-	// A7: Server should wrap with CORS when frontend exists
+
+	// M6 cmd-as-code: every service-kind codegen scaffold gets the
+	// per-service subcommand projection (cmd/services_gen.go) and the
+	// user-owned extension point (cmd/commands.go) that cmd/main.go
+	// consumes — all three must agree or the scaffold doesn't compile.
+	subcmdContents := readFile(t, filepath.Join(root, "cmd", "services_gen.go"))
+	if !strings.Contains(subcmdContents, "var serviceCmdAPI = &cobra.Command{") {
+		t.Fatalf("cmd/services_gen.go should declare the api subcommand, got:\n%s", subcmdContents)
+	}
+	if !strings.Contains(subcmdContents, `return runServer(cmd, []string{"api"})`) {
+		t.Fatalf("cmd/services_gen.go subcommand should delegate to runServer with the api filter, got:\n%s", subcmdContents)
+	}
+	commandsContents := readFile(t, filepath.Join(root, "cmd", "commands.go"))
+	if !strings.Contains(commandsContents, "func userCommands() []*cobra.Command {") {
+		t.Fatalf("cmd/commands.go should scaffold the userCommands extension point, got:\n%s", commandsContents)
+	}
+	mainContents := readFile(t, filepath.Join(root, "cmd", "main.go"))
+	if !strings.Contains(mainContents, "for _, c := range userCommands() {") {
+		t.Fatalf("cmd/main.go should consume userCommands(), got:\n%s", mainContents)
+	}
+	// A7: Server should wire the CORS middleware factory when frontend exists.
+	// Serverkit drives the actual wrap based on Config.CORSOrigins.
 	if !strings.Contains(serverContents, "CORSMiddleware") {
-		t.Fatalf("cmd/server.go should use CORSMiddleware when frontend exists, got:\n%s", serverContents)
+		t.Fatalf("cmd/server.go should wire middleware.CORSMiddleware into serverkit.Hooks.CORSMiddleware when frontend exists, got:\n%s", serverContents)
 	}
 
 	// services/all should NOT exist
@@ -202,22 +249,18 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("expected frontend package.json build script to force production NODE_ENV, got:\n%s", fePackageContents)
 	}
 
-	// A6: Middleware should use slog, not log.Printf
-	loggingMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "logging.go"))
-	if strings.Contains(loggingMiddleware, "log.Printf") {
-		t.Fatalf("middleware/logging.go should use slog, not log.Printf, got:\n%s", loggingMiddleware)
+	// A6/A7: the project keeps ONE thin middleware file wiring auth
+	// policy; logging/recovery/CORS mechanisms come from the forge
+	// libraries (pkg/observe, pkg/middleware) and are not photocopied
+	// into the scaffold anymore.
+	thinMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
+	if !strings.Contains(thinMiddleware, "forge/pkg/authn") {
+		t.Fatalf("middleware/middleware.go should delegate to forge/pkg/authn, got:\n%s", thinMiddleware)
 	}
-	if !strings.Contains(loggingMiddleware, "LogRequestCompleted") {
-		t.Fatalf("middleware/logging.go should use typed log event helpers, got:\n%s", loggingMiddleware)
-	}
-	recoveryMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "recovery.go"))
-	if strings.Contains(recoveryMiddleware, "log.Printf") {
-		t.Fatalf("middleware/recovery.go should use slog, not log.Printf, got:\n%s", recoveryMiddleware)
-	}
-	// A7: CORS middleware should exist
-	corsMiddleware := readFile(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
-	if !strings.Contains(corsMiddleware, "CORSMiddleware") {
-		t.Fatalf("middleware/cors.go should contain CORSMiddleware, got:\n%s", corsMiddleware)
+	for _, retired := range []string{"logging.go", "recovery.go", "cors.go"} {
+		if _, err := os.Stat(filepath.Join(root, "pkg", "middleware", retired)); !os.IsNotExist(err) {
+			t.Fatalf("pkg/middleware/%s should no longer be scaffolded (library-fied), err=%v", retired, err)
+		}
 	}
 
 	// M1: db/migrations/.gitkeep should exist
@@ -231,7 +274,6 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("expected root go.mod to replace the local gen module path, got:\n%s", rootGoModContents)
 	}
 }
-
 
 func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "cli-only")
@@ -250,7 +292,7 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "setup.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "post_bootstrap.go"))
 	assertPathExists(t, filepath.Join(root, "pkg", "app", "testing.go"))
-	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "cors.go"))
+	assertPathExists(t, filepath.Join(root, "pkg", "middleware", "middleware.go"))
 	assertPathExists(t, filepath.Join(root, "forge.yaml"))
 
 	// Service-specific directories should NOT exist
@@ -278,10 +320,17 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 		t.Fatal("cmd/main.go missing rootCmd")
 	}
 
-	// forge.yaml should have an empty services list
+	// Components live in components.json now (forge.yaml is global-only).
+	// A zero-service service shell writes an empty components.json — its
+	// presence (not absence) is what makes the project derive to "service".
+	componentsContents := readFile(t, filepath.Join(root, "components.json"))
+	if !strings.Contains(componentsContents, "\"components\": []") {
+		t.Fatalf("expected components.json to have empty components list, got:\n%s", componentsContents)
+	}
+	// forge.yaml must NOT carry a components block anymore.
 	configContents := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(configContents, "services: []") {
-		t.Fatalf("expected forge.yaml to have empty services list, got:\n%s", configContents)
+	if strings.Contains(configContents, "components:") {
+		t.Fatalf("forge.yaml must be global-only (no components:), got:\n%s", configContents)
 	}
 }
 
@@ -333,10 +382,16 @@ func TestProjectGeneratorKindCLIScaffold(t *testing.T) {
 		}
 	}
 
-	// forge.yaml records the kind.
+	// kind is no longer a forge.yaml field — it derives from components.
+	// A cli project carries a single binary-kind component (the cobra main)
+	// in components.json, which makes the project derive to "cli".
 	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "kind: cli") {
-		t.Errorf("expected forge.yaml to declare kind: cli, got:\n%s", cfg)
+	if strings.Contains(cfg, "kind:") {
+		t.Errorf("forge.yaml must not carry kind: (derives from components), got:\n%s", cfg)
+	}
+	comps := readFile(t, filepath.Join(root, "components.json"))
+	if !strings.Contains(comps, "\"kind\": \"binary\"") {
+		t.Errorf("expected components.json to carry a binary-kind component (cli main), got:\n%s", comps)
 	}
 
 	// go.mod is the lean CLI variant: only cobra in `require` block.
@@ -396,9 +451,14 @@ func TestProjectGeneratorKindLibraryScaffold(t *testing.T) {
 		}
 	}
 
+	// kind is no longer a forge.yaml field. A library has NO components, and
+	// the ABSENCE of components.json is the "library" signal on reload.
 	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "kind: library") {
-		t.Errorf("expected forge.yaml to declare kind: library, got:\n%s", cfg)
+	if strings.Contains(cfg, "kind:") {
+		t.Errorf("forge.yaml must not carry kind: (derives from components), got:\n%s", cfg)
+	}
+	if _, err := os.Stat(filepath.Join(root, "components.json")); !os.IsNotExist(err) {
+		t.Errorf("library project must NOT write components.json (its absence is the library signal), err=%v", err)
 	}
 }
 
@@ -418,7 +478,7 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 		filepath.Join(root, "cmd", "main.go"),
 		filepath.Join(root, "cmd", "server.go"),
 		filepath.Join(root, "cmd", "version.go"),
-		filepath.Join(root, "pkg", "middleware", "cors.go"),
+		filepath.Join(root, "pkg", "middleware", "middleware.go"),
 		filepath.Join(root, "pkg", "app", "bootstrap.go"),
 		filepath.Join(root, "Dockerfile"),
 		filepath.Join(root, "docker-compose.yml"),
@@ -429,21 +489,24 @@ func TestProjectGeneratorKindServiceDefault(t *testing.T) {
 		}
 	}
 
-	// forge.yaml should record kind: service (or omit it — both
-	// are valid because EffectiveKind() defaults to service).
-	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "kind: service") {
-		t.Errorf("expected forge.yaml to declare kind: service, got:\n%s", cfg)
+	// forge.yaml omits kind: for the default service kind —
+	// EffectiveKind() on the loaded config must resolve it.
+	loaded, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if loaded.EffectiveKind() != config.ProjectKindService {
+		t.Errorf("EffectiveKind() = %q, want service", loaded.EffectiveKind())
 	}
 }
 
 func TestParseGoVersion(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantMajor   int
-		wantMinor   int
-		wantPatch   int
-		wantOK      bool
+		input     string
+		wantMajor int
+		wantMinor int
+		wantPatch int
+		wantOK    bool
 	}{
 		{"1.25.3", 1, 25, 3, true},
 		{"1.25", 1, 25, 0, true},
@@ -535,26 +598,23 @@ func TestCompareGoVersion(t *testing.T) {
 	}
 }
 
-func TestAppendServiceToConfigPreservesUnknownFields(t *testing.T) {
+// TestAppendServiceToConfigWritesComponentsJSON verifies that
+// AppendServiceToConfig appends a server component to the project-root
+// components.json (the authored per-service source of truth). Components
+// moved out of forge.yaml in the ProjectStore per-service data move, so this
+// no longer touches forge.yaml — it preserves the existing components and
+// appends the new one.
+func TestAppendServiceToConfigWritesComponentsJSON(t *testing.T) {
 	root := t.TempDir()
-	configPath := filepath.Join(root, "forge.yaml")
 
-	// Hand-written config with a user-added top-level key and a user-added
-	// key inside an existing service entry. The Go struct does not know
-	// about either, so a naive unmarshal+remarshal round-trip would drop them.
-	original := `name: sample
-module_path: example.com/sample
-version: 0.1.0
-services:
-  - name: api
-    type: go_service
-    path: handlers/api
-    port: 8080
-    custom_annotation: keep-me
-my_custom_section:
-  something: true
+	// A pre-existing components.json with one server component.
+	existing := `{
+  "components": [
+    {"name": "api", "kind": "server", "path": "handlers/api", "ports": {"http": 8080}}
+  ]
+}
 `
-	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "components.json"), []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -562,15 +622,16 @@ my_custom_section:
 		t.Fatalf("AppendServiceToConfig() error = %v", err)
 	}
 
-	after := readFile(t, configPath)
-	if !strings.Contains(after, "custom_annotation: keep-me") {
-		t.Errorf("expected unknown per-service key to be preserved, got:\n%s", after)
+	after := readFile(t, filepath.Join(root, "components.json"))
+	if !strings.Contains(after, "\"name\": \"users\"") {
+		t.Errorf("expected new service appended to components.json, got:\n%s", after)
 	}
-	if !strings.Contains(after, "my_custom_section:") {
-		t.Errorf("expected unknown top-level key to be preserved, got:\n%s", after)
+	if !strings.Contains(after, "\"name\": \"api\"") {
+		t.Errorf("expected existing service preserved in components.json, got:\n%s", after)
 	}
-	if !strings.Contains(after, "name: users") {
-		t.Errorf("expected new service to be appended, got:\n%s", after)
+	// forge.yaml is untouched (and need not even exist for this path).
+	if _, err := os.Stat(filepath.Join(root, "forge.yaml")); !os.IsNotExist(err) {
+		t.Errorf("AppendServiceToConfig must not create forge.yaml, err=%v", err)
 	}
 }
 
@@ -578,14 +639,12 @@ func TestAppendFrontendToConfigPreservesUnknownFields(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "forge.yaml")
 
+	// forge.yaml is global-only now (components live in components.json);
+	// this fixture exercises the frontend append path, which stays in
+	// forge.yaml and must preserve user-added unknown keys.
 	original := `name: sample
 module_path: example.com/sample
 version: 0.1.0
-services:
-  - name: api
-    type: go_service
-    path: handlers/api
-    port: 8080
 frontends:
   - name: web
     type: nextjs
@@ -671,16 +730,16 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// The user-owned stub lives at the project root and is auto-loaded
-	// into LLM context every session.
+	// Top-level reliant.md must NOT be written for the reliant harness:
+	// reliant loads the framework content in-memory via
+	// forgecli.RenderProjectMemory whenever it sees forge.yaml, so a
+	// stale on-disk copy would just create upgrade drift.
 	stubPath := filepath.Join(root, "reliant.md")
-	assertPathExists(t, stubPath)
-	stub := readFile(t, stubPath)
-	if !strings.Contains(stub, "# memory-app") {
-		t.Fatalf("expected reliant.md to start with project name heading, got:\n%s", stub)
+	if _, err := os.Stat(stubPath); err == nil {
+		t.Fatalf("top-level reliant.md should NOT exist for --harness=reliant (the framework content is injected in-memory by reliant); found one at %s", stubPath)
 	}
 
-	// The user-owned .reliant/reliant.md project memory file.
+	// The user-owned .reliant/reliant.md project memory file is still written.
 	reliantMemoryPath := filepath.Join(root, ".reliant", "reliant.md")
 	assertPathExists(t, reliantMemoryPath)
 	reliantMemory := readFile(t, reliantMemoryPath)
@@ -725,10 +784,10 @@ func TestProjectGeneratorPreservesExistingReliantMemoryFile(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, ".reliant", "project.json"))
 }
 
-func TestProjectGeneratorMemoryFormatClaude(t *testing.T) {
+func TestProjectGeneratorHarnessClaude(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "claude-app")
 	gen := NewProjectGenerator("claude-app", root, "example.com/claude-app")
-	gen.MemoryFormat = MemoryFormatClaude
+	gen.Harness = HarnessClaude
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -744,17 +803,17 @@ func TestProjectGeneratorMemoryFormatClaude(t *testing.T) {
 
 	// reliant.md should NOT exist at the top level.
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=claude")
+		t.Fatal("reliant.md should not exist when --harness=claude")
 	}
 
 	// .reliant/reliant.md (internal) should still exist.
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
-func TestProjectGeneratorMemoryFormatCursor(t *testing.T) {
+func TestProjectGeneratorHarnessCursor(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "cursor-app")
 	gen := NewProjectGenerator("cursor-app", root, "example.com/cursor-app")
-	gen.MemoryFormat = MemoryFormatCursor
+	gen.Harness = HarnessCursor
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -767,16 +826,16 @@ func TestProjectGeneratorMemoryFormatCursor(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=cursor")
+		t.Fatal("reliant.md should not exist when --harness=cursor")
 	}
 
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
-func TestProjectGeneratorMemoryFormatCopilot(t *testing.T) {
+func TestProjectGeneratorHarnessCopilot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "copilot-app")
 	gen := NewProjectGenerator("copilot-app", root, "example.com/copilot-app")
-	gen.MemoryFormat = MemoryFormatCopilot
+	gen.Harness = HarnessCopilot
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -790,16 +849,16 @@ func TestProjectGeneratorMemoryFormatCopilot(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=copilot")
+		t.Fatal("reliant.md should not exist when --harness=copilot")
 	}
 
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
 }
 
-func TestProjectGeneratorMemoryFormatCodex(t *testing.T) {
+func TestProjectGeneratorHarnessCodex(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "codex-app")
 	gen := NewProjectGenerator("codex-app", root, "example.com/codex-app")
-	gen.MemoryFormat = MemoryFormatCodex
+	gen.Harness = HarnessCodex
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -812,7 +871,7 @@ func TestProjectGeneratorMemoryFormatCodex(t *testing.T) {
 	}
 
 	if _, err := os.Stat(filepath.Join(root, "reliant.md")); err == nil {
-		t.Fatal("reliant.md should not exist when --memory=codex")
+		t.Fatal("reliant.md should not exist when --harness=codex")
 	}
 
 	assertPathExists(t, filepath.Join(root, ".reliant", "reliant.md"))
@@ -831,7 +890,7 @@ func TestProjectGeneratorPreservesExistingMemoryFileNonReliant(t *testing.T) {
 	}
 
 	gen := NewProjectGenerator("existing-claude-app", root, "example.com/existing-claude-app")
-	gen.MemoryFormat = MemoryFormatClaude
+	gen.Harness = HarnessClaude
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
@@ -988,11 +1047,17 @@ func TestFeatureFlag_MigrationsDisabled(t *testing.T) {
 	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "migrate.go"))
 
 	// cmd/server.go should exist (codegen is still enabled) but must NOT
-	// reference AutoMigrate
+	// wire the AutoMigrate hook or call app.AutoMigrate. The string
+	// "AutoMigrate" still appears in the package-level docstring as a
+	// reference to the optional hook surface — gate on the actual call
+	// sites instead of a substring match.
 	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
-	if strings.Contains(serverContents, "AutoMigrate") {
-		t.Fatalf("cmd/server.go should NOT reference AutoMigrate when migrations disabled, got:\n%s", serverContents)
+	if strings.Contains(serverContents, "app.AutoMigrate(") {
+		t.Fatalf("cmd/server.go should NOT call app.AutoMigrate() when migrations disabled, got:\n%s", serverContents)
+	}
+	if strings.Contains(serverContents, "AutoMigrate:") {
+		t.Fatalf("cmd/server.go should NOT wire serverkit.Hooks.AutoMigrate when migrations disabled, got:\n%s", serverContents)
 	}
 }
 
@@ -1028,29 +1093,32 @@ func TestFeatureFlag_CodegenDisabled(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "cmd", "version.go"))
 }
 
-func TestFeatureFlag_DeployDisabled(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "no-deploy")
-	gen := NewProjectGenerator("no-deploy", root, "example.com/no-deploy")
+// TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn locks in
+// the contract: the SCAFFOLD always emits the deploy artefacts for a
+// service-kind project — deploy derives on for service kind, and even
+// an explicit `features.deploy: false` keeps the tree on disk so the
+// user can flip the flag back with no rescaffold. The previous
+// "deploy=false strips Dockerfile" behaviour is gone — the runtime
+// gate lives on `forge deploy` itself.
+func TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "deploy-shape")
+	gen := NewProjectGenerator("deploy-shape", root, "example.com/deploy-shape")
 	gen.ServiceName = "api"
-	gen.Features = config.FeaturesConfig{
-		Deploy: falsePtr(),
-	}
+	// Zero-value FeaturesConfig — experimental.Deploy is false.
+	gen.Features = config.FeaturesConfig{}
 
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// Dockerfile and .dockerignore should not exist
-	assertPathNotExists(t, filepath.Join(root, "Dockerfile"))
-	assertPathNotExists(t, filepath.Join(root, ".dockerignore"))
+	// Service-kind scaffolds always ship the deploy shape so the user
+	// can flip the experimental flag without rescaffolding.
+	assertPathExists(t, filepath.Join(root, "Dockerfile"))
+	assertPathExists(t, filepath.Join(root, ".dockerignore"))
+	assertPathExists(t, filepath.Join(root, "docker-compose.yml"))
+	assertPathExists(t, filepath.Join(root, "deploy", "kcl"))
 
-	// docker-compose.yml should not exist (generated by deploy)
-	assertPathNotExists(t, filepath.Join(root, "docker-compose.yml"))
-
-	// deploy/kcl directory should not exist
-	assertPathNotExists(t, filepath.Join(root, "deploy", "kcl"))
-
-	// Non-deploy files should still exist
+	// Non-deploy files exist too.
 	assertPathExists(t, filepath.Join(root, "cmd", "main.go"))
 	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
 }
@@ -1158,9 +1226,19 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 	// CI
 	assertPathExists(t, filepath.Join(root, ".github", "workflows", "ci.yml"))
 
-	// Hot reload
+	// Hot reload. exclude_dir entries are root-relative, so the bare
+	// "node_modules" entry does NOT cover frontends/<name>/node_modules
+	// — air walked ~4,235 node_modules dirs per boot (journey
+	// fr-12520ad3d2) until "frontends" itself was excluded. No Go code
+	// lives under frontends/; npm owns that dev loop.
 	assertPathExists(t, filepath.Join(root, ".air.toml"))
 	assertPathExists(t, filepath.Join(root, ".air-debug.toml"))
+	for _, airFile := range []string{".air.toml", ".air-debug.toml"} {
+		airContents := readFile(t, filepath.Join(root, airFile))
+		if !strings.Contains(airContents, `"frontends"`) {
+			t.Errorf("%s exclude_dir must contain \"frontends\" (air watches frontends/*/node_modules otherwise), got:\n%s", airFile, airContents)
+		}
+	}
 
 	// Observability
 	assertPathExists(t, filepath.Join(root, "deploy", "alloy-config.alloy"))
@@ -1184,43 +1262,46 @@ func TestFreshScaffoldDefaults(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
+	raw := readFile(t, filepath.Join(root, "forge.yaml"))
 
-	// Contracts: strict floor.
-	wantContractLines := []string{
-		"contracts:",
-		"strict: true",
-		"allow_exported_funcs: false",
-		"allow_exported_vars: false",
-	}
-	for _, want := range wantContractLines {
-		if !strings.Contains(cfg, want) {
-			t.Errorf("forge.yaml missing %q; full contents:\n%s", want, cfg)
+	// The scaffolded file is minimal: no features: block, no contracts:
+	// block — both derive at load time. Presence on disk would mean the
+	// minimal-scaffold contract regressed.
+	for _, line := range strings.Split(raw, "\n") {
+		switch {
+		case strings.HasPrefix(line, "features:"),
+			strings.HasPrefix(line, "contracts:"),
+			strings.HasPrefix(line, "database:"),
+			strings.HasPrefix(line, "ci:"):
+			t.Errorf("forge.yaml should not materialize %q (derived at load); got:\n%s", line, raw)
 		}
 	}
 
-	// Features: every flag should serialize to true for --kind service with
-	// no --frontend (frontend defaults to false when no frontend is named —
-	// see buildFeaturesConfig comments).
-	wantFeatureLines := []string{
-		"orm: true",
-		"codegen: true",
-		"migrations: true",
-		"ci: true",
-		"deploy: true",
-		"contracts: true",
-		"docs: true",
-		"observability: true",
-		"hot_reload: true",
+	cfg, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	for _, want := range wantFeatureLines {
-		if !strings.Contains(cfg, want) {
-			t.Errorf("forge.yaml missing feature line %q; full contents:\n%s", want, cfg)
+
+	// Contracts: strict floor (derived).
+	if !cfg.Contracts.Strict {
+		t.Error("loaded config Contracts.Strict = false, want true (derived)")
+	}
+	if cfg.Contracts.AllowExportedVars || cfg.Contracts.AllowExportedFuncs {
+		t.Error("loaded config contracts allow_exported_* should derive to false")
+	}
+
+	// Features: everything on for --kind service with a DB, except
+	// frontend (no --frontend passed → frontends list empty → derived
+	// off). `deploy` is experimental — default-off.
+	eff := cfg.Features.EffectiveFeatures()
+	wantOn := []string{"orm", "codegen", "migrations", "ci", "build", "contracts", "docs", "observability", "hot_reload", "packs", "starters"}
+	for _, name := range wantOn {
+		if !eff[name] {
+			t.Errorf("loaded config feature %q = false, want true (derived)", name)
 		}
 	}
-	// frontend explicitly defaults to false when no --frontend was passed.
-	if !strings.Contains(cfg, "frontend: false") {
-		t.Errorf("forge.yaml expected `frontend: false` (no --frontend was passed); got:\n%s", cfg)
+	if eff["frontend"] {
+		t.Error("loaded config feature \"frontend\" = true, want false (no frontends declared)")
 	}
 }
 
@@ -1234,8 +1315,35 @@ func TestFreshScaffoldDefaultsWithFrontend(t *testing.T) {
 	if err := gen.Generate(); err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	cfg := readFile(t, filepath.Join(root, "forge.yaml"))
-	if !strings.Contains(cfg, "frontend: true") {
-		t.Errorf("forge.yaml expected `frontend: true` when --frontend is set; got:\n%s", cfg)
+	cfg, err := ReadProjectConfig(filepath.Join(root, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if !cfg.Features.FrontendEnabled() {
+		t.Error("loaded config FrontendEnabled() = false, want true (frontends list non-empty)")
+	}
+}
+
+// TestDockerComposePostgresFixedPort pins the J-round dev-loop fix: the
+// compose template must publish a FIXED, loopback-bound host port for
+// postgres. The old "0:5432" random mapping meant the scaffolded
+// DATABASE_URL/host dev loop could never find the database without
+// inspecting `docker compose ps`.
+func TestDockerComposePostgresFixedPort(t *testing.T) {
+	dir := t.TempDir()
+	g := &ProjectGenerator{Name: "bookmarks", Path: dir}
+	if err := g.generateDockerCompose(); err != nil {
+		t.Fatalf("generateDockerCompose() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	compose := string(data)
+	if strings.Contains(compose, `"0:5432"`) {
+		t.Error("postgres still maps to a random host port (\"0:5432\") — host dev loop cannot find it")
+	}
+	if !strings.Contains(compose, `"127.0.0.1:${POSTGRES_PORT:-5432}:5432"`) {
+		t.Errorf("postgres should publish a fixed loopback host port; compose:\n%s", compose)
 	}
 }

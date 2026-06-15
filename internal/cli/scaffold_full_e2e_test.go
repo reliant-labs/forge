@@ -29,8 +29,11 @@ import (
 // Each guard traces back to a bug we've already shipped to users once.
 // Don't soften them without replacing with an equivalent check.
 func TestE2EScaffoldFullSpecProject(t *testing.T) {
+	requirePublishedForgePkg(t)
+	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
+	linkForgeSibling(t, dir)
 
 	// Exact invocation from the spec. Any deviation here reduces the value
 	// of this test as a user-facing regression guard.
@@ -95,20 +98,13 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"cmd/otel.go",
 		"cmd/db.go",
 
-		// pkg/middleware — security-critical files. Any one of these
-		// going missing silently degrades the scaffold's security
-		// posture, so check each explicitly.
-		"pkg/middleware/auth.go",
-		"pkg/middleware/authz.go",
-		"pkg/middleware/cors.go",
-		"pkg/middleware/recovery.go",
-		"pkg/middleware/audit.go",
-		"pkg/middleware/http.go",
-		"pkg/middleware/logging.go",
-		"pkg/middleware/ratelimit.go",
-		"pkg/middleware/claims.go",
-		"pkg/middleware/security_headers.go",
-		"pkg/middleware/permissive_authz.go",
+		// pkg/middleware — the ONE thin user-owned auth-policy file (plus
+		// its policy test). The security-critical mechanisms (auth modes,
+		// authz interceptor, CORS, recovery, audit, rate limiting, …) live
+		// in forge/pkg/{authn,authz,middleware,observe} and are NOT
+		// photocopied into the scaffold anymore.
+		"pkg/middleware/middleware.go",
+		"pkg/middleware/middleware_test.go",
 
 		// Service + proto — the scaffold's raison d'être.
 		"handlers/api/service.go",
@@ -171,11 +167,12 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 
 	serverGo := readFileE2E(t, filepath.Join(projectDir, "cmd", "server.go"))
 	// Past bug: server used a raw error compare on srv.Serve's return,
-	// which misclassified wrapped errors. Regressing this causes the
-	// server process to exit cleanly when it should have logged a real
-	// error.
-	if !strings.Contains(serverGo, "errors.Is(err, http.ErrServerClosed)") {
-		t.Errorf("cmd/server.go must use errors.Is(err, http.ErrServerClosed); got:\n%s",
+	// which misclassified wrapped errors. The listener lifecycle (and
+	// its errors.Is(err, http.ErrServerClosed) handling — see
+	// pkg/serverkit/run.go) now lives in serverkit; the shim must hand
+	// the lifecycle off rather than half-reimplementing it.
+	if !strings.Contains(serverGo, "serverkit.Run(") {
+		t.Errorf("cmd/server.go must hand the serve lifecycle to serverkit.Run(); got:\n%s",
 			excerpt(serverGo, "Serve", 400))
 	}
 	// Past bug: server used the `postgres://` URL directly with
@@ -187,16 +184,19 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 			excerpt(serverGo, "import", 400))
 	}
 
-	authGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "auth.go"))
+	authGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 	// Past bug: the unauthenticated allow-list was implemented as
 	// `strings.Contains(procedure, "Health")`, which matches any RPC with
 	// "Health" anywhere in its name — e.g. a user-defined `HealthReport`
-	// silently bypassed auth. The scaffold must use an exact-match map,
-	// not substring matching.
+	// silently bypassed auth. The thin policy file must declare an
+	// exact-match map (the gate itself lives in forge/pkg/authn).
 	healthContains := regexp.MustCompile(`strings\.Contains\([^)]*Health`)
 	if healthContains.MatchString(authGo) {
-		t.Errorf("pkg/middleware/auth.go must not use strings.Contains(...Health...) for unauthenticated allow-list; use exact procedure matching instead. Got:\n%s",
+		t.Errorf("pkg/middleware/middleware.go must not use strings.Contains(...Health...) for unauthenticated allow-list; use exact procedure matching instead. Got:\n%s",
 			authGo)
+	}
+	if !strings.Contains(authGo, "unauthenticatedProcedures") {
+		t.Errorf("pkg/middleware/middleware.go must declare the unauthenticatedProcedures allow-list; got:\n%s", authGo)
 	}
 
 	configGo := readFileE2E(t, filepath.Join(projectDir, "pkg", "config", "config.go"))
@@ -204,8 +204,8 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// values outside the 16-bit port range (e.g. 99999) and then silently
 	// truncates when assigned. `ParseUint(v, 10, 16)` range-checks at
 	// parse time.
-	if !strings.Contains(configGo, "ParseUint(v, 10, 16)") {
-		t.Errorf("pkg/config/config.go must use strconv.ParseUint(v, 10, 16) for PORT parsing; got:\n%s",
+	if !strings.Contains(configGo, ", 10, 16)") || !strings.Contains(configGo, "strconv.ParseUint(") {
+		t.Errorf("pkg/config/config.go must range-check ports via strconv.ParseUint(_, 10, 16); got:\n%s",
 			excerpt(configGo, "PORT", 400))
 	}
 
@@ -220,9 +220,10 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	assertIncludeImportsPlacement(t, frontendBufGen)
 
 	frontendLayout := readFileE2E(t, filepath.Join(projectDir, "frontends", "web", "src", "app", "layout.tsx"))
-	// Component library integration: layout must import SidebarLayout.
-	if !strings.Contains(frontendLayout, "SidebarLayout") {
-		t.Errorf("frontends/web/src/app/layout.tsx must import SidebarLayout; got:\n%s",
+	// Component library integration: layout must wire the scaffold's
+	// shared chrome (the Nav component from @/components).
+	if !strings.Contains(frontendLayout, "Nav") {
+		t.Errorf("frontends/web/src/app/layout.tsx must import the Nav component; got:\n%s",
 			excerpt(frontendLayout, "import", 400))
 	}
 

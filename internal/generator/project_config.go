@@ -9,38 +9,10 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
-	frontendFramework := "none"
-	if g.FrontendName != "" {
-		frontendFramework = "nextjs"
-	}
-
-	// If frontend was explicitly disabled, override the framework to "none".
-	if g.Features.Frontend != nil && !*g.Features.Frontend {
-		frontendFramework = "none"
-	}
-
-	// Stack/database/deploy fields are service-shaped. CLI/library kinds
-	// emit a leaner forge.yaml without the k8s deploy + database blocks
-	// so it accurately reflects the project they're describing.
-	stack := config.StackConfig{
-		Backend:  config.StackBackend{Language: "go"},
-		Frontend: config.StackFrontend{Framework: frontendFramework},
-		Database: config.StackDatabase{Driver: "postgres"},
-		Proto:    config.StackProto{Provider: "buf"},
-		Deploy:   config.StackDeploy{Target: "k8s", Provider: "k3d", Registry: "ghcr.io"},
-		CI:       config.StackCI{Provider: "github"},
-	}
-	if !g.isService() {
-		// CLI/library: drop deploy + database from the stack — the project
-		// has no server to deploy and no DB layer.
-		stack.Database = config.StackDatabase{Driver: "none"}
-		stack.Deploy = config.StackDeploy{Target: "none"}
-		stack.Frontend = config.StackFrontend{Framework: "none"}
-	}
-
 	// Persist `binary:` only when explicitly opted-in (shared) so existing
 	// forge.yaml files keep their cleaner shape and the field is omitted by
 	// default. EffectiveBinary on the read-side defaults this to per-service.
@@ -49,119 +21,71 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		binaryYAML = config.ProjectBinaryShared
 	}
 
+	// kind is no longer written to forge.yaml — it DERIVES from the
+	// components.json (and its presence). The scaffold writes the components
+	// (or, for a library, omits the file) so the derived kind matches the
+	// requested --kind. See writeComponentsFile below.
+
+	// The scaffolded forge.yaml is MINIMAL and GLOBAL-only: identity
+	// (name/module), the forge version pin, frontends, and explicit feature
+	// overrides. The per-service component entities live in components.json
+	// (written below); everything else — the features: block and the
+	// database/ci/lint/contracts/auth/deploy/docker/k8s sections — is derived
+	// from the project shape at load time (config.ApplyDerivedDefaults). Any
+	// of those keys remain valid in forge.yaml as overrides; they're just not
+	// required boilerplate. Explicit user choices (e.g. `forge new --disable
+	// ci`) are recorded in Features below and survive the write-time
+	// normalization because they differ from the derived default.
 	cfg := config.ProjectConfig{
 		Name:         g.Name,
 		ModulePath:   g.ModulePath,
-		Kind:         g.effectiveKind(),
 		Binary:       binaryYAML,
-		Version:      "0.1.0",
 		ForgeVersion: buildinfo.Version(),
-		HotReload:    g.isService(), // hot-reload only meaningful for long-running servers
-		Features:     g.buildFeaturesConfig(),
-		Stack:        stack,
-		Database: config.DatabaseConfig{
-			Driver:        "postgres",
-			MigrationsDir: "db/migrations",
-			SQLCEnabled:   false,
-			MigrationSafety: config.MigrationSafetyConfig{
-				Enabled:           boolPtr(true),
-				UnsafeAddColumn:   "error",
-				DestructiveChange: "error",
-				VolatileDefault:   "warn",
-			},
-		},
-		CI: config.CIConfig{
-			Provider: "github",
-			Lint: config.CILintConfig{
-				Golangci:        true,
-				Buf:             true,
-				BufBreaking:     true,
-				Frontend:        g.FrontendName != "",
-				MigrationSafety: true,
-			},
-			Test: config.CITestConfig{
-				Race:     true,
-				Coverage: false,
-			},
-			VulnScan: config.CIVulnConfig{
-				Go:     true,
-				Docker: true,
-				NPM:    g.FrontendName != "",
-			},
-		},
-		Deploy: config.DeployConfig{
-			Provider: "github",
-			// Zero-value DeployConcurrency means enabled
-		},
-		Docker: config.DockerConfig{
-			Registry: "ghcr.io",
-		},
-		K8s: config.K8sConfig{
-			KCLDir: "deploy/kcl",
-		},
-		Lint: config.LintConfig{
-			Contract: true,
-			Frontend: config.FrontendLintConfig{
-				CSSHealth:      g.FrontendName != "",
-				NoImportant:    "warn",
-				NoInlineStyles: "warn",
-			},
-		},
-		// Contracts: strict-by-default — every internal/<pkg>/ that exposes
-		// behavior must declare an interface in contract.go. Exported package
-		// vars and free funcs are both rejected so all surface goes through
-		// the test-seam interface. See MIGRATION_TIPS.md "Contracts-first
-		// migration" for why we lock this in at scaffold time rather than
-		// asking users to flip it after the fact.
-		Contracts: config.ContractsConfig{
-			Strict:             true,
-			AllowExportedVars:  false,
-			AllowExportedFuncs: false,
-			Exclude:            []string{},
-		},
-		Auth: config.AuthConfig{
-			Provider: "none",
-		},
+		Features:     g.Features,
 	}
 
+	// Build the components, then write them to components.json. Kind sync:
+	// cfg.Kind is set from the requested kind so NormalizeForWrite's feature
+	// derivation (which reads kind) drops the right kind-default falses.
+	cfg.Kind = g.effectiveKind()
+	var components []config.ComponentConfig
 	if g.ServiceName != "" && g.isService() {
-		cfg.Services = []config.ServiceConfig{
-			{
-				Name: g.ServiceName,
-				Type: "go_service",
-				Path: fmt.Sprintf("handlers/%s", ServicePackageName(g.ServiceName)),
-				Port: g.ServicePort,
-			},
-		}
-		// In binary=shared, write ALL services to forge.yaml at scaffold
-		// time so the generated bootstrap.go and per-service cobra
-		// subcommands see them immediately. In per-service mode this is
-		// done post-scaffold via AppendServiceToConfig (preserves the
-		// existing additive flow + log output).
+		components = append(components, config.ComponentConfig{
+			Name:  g.ServiceName,
+			Kind:  config.ComponentKindServer,
+			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
+			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
+		})
+		// In binary=shared, write ALL server components at scaffold time so
+		// the generated bootstrap.go and per-service cobra subcommands see
+		// them immediately. In per-service mode this is done post-scaffold
+		// via AppendServiceToConfig (preserves the additive flow + log output).
 		if g.isBinaryShared() {
 			for i, svcName := range g.AdditionalServices {
-				cfg.Services = append(cfg.Services, config.ServiceConfig{
-					Name: svcName,
-					Type: "go_service",
-					Path: fmt.Sprintf("handlers/%s", ServicePackageName(svcName)),
-					Port: g.ServicePort + i + 1,
+				components = append(components, config.ComponentConfig{
+					Name:  svcName,
+					Kind:  config.ComponentKindServer,
+					Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
+					Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort + i + 1}},
 				})
 			}
 		}
 	}
-
-	// Strip server-shaped sections from non-service forge.yaml so the
-	// emitted file describes the actual project layout.
-	if !g.isService() {
-		cfg.Database = config.DatabaseConfig{}
-		cfg.Deploy = config.DeployConfig{}
-		cfg.Docker = config.DockerConfig{}
-		cfg.K8s = config.K8sConfig{}
-		cfg.CI.Lint.Buf = false
-		cfg.CI.Lint.BufBreaking = false
-		cfg.CI.Lint.MigrationSafety = false
-		cfg.CI.VulnScan.Docker = false
+	// A cli project's cobra main IS a binary-kind component: it's what makes
+	// the project derive to "cli" (binary-only) rather than "library" (no
+	// components) on reload. Named after the project, pointing at its cmd
+	// main. Library projects deliberately get NO components — the absence of
+	// components.json is the library signal.
+	if g.isCLI() {
+		components = append(components, config.ComponentConfig{
+			Name: naming.ServicePackage(g.Name),
+			Kind: config.ComponentKindBinary,
+			// The cli main is a standalone cobra binary at cmd/<name>/main.go
+			// (distinct from a `forge add binary` subcommand at cmd/<name>.go).
+			Path: fmt.Sprintf("cmd/%s", naming.ServicePackage(g.Name)),
+		})
 	}
+	cfg.Components = components
 
 	if g.FrontendName != "" {
 		cfg.Frontends = []config.FrontendConfig{
@@ -183,123 +107,130 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		cfg.Frontend = config.FrontendProjectConfig{Workspaces: true}
 	}
 
-	data, err := yaml.Marshal(&cfg)
+	// Normalize before marshalling: feature flags and section values that
+	// match the shape-derived defaults are dropped, so what hits disk is
+	// only identity + components + explicit user choices. Kind-default
+	// feature falses set by ApplyKindFeatureDefaults (cli/library) match
+	// derivation and disappear; `--disable` choices differ and survive.
+	data, err := yaml.Marshal(config.NormalizeForWrite(&cfg))
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
 
-	// Prepend a header explaining the shape of this file. In particular the
-	// `database:` block is declared unconditionally even when no entity
-	// protos exist yet — downstream codegen (`protoc-gen-forge-orm`) reads
-	// it when proto/db/*.proto are added later. Until then it's a no-op.
-	//
-	// The `frontend:` block is commented in-line — opt-in pnpm-workspaces
-	// is off by default. See `forge skill load frontend-workspaces` for
-	// when (and why) to flip it on.
-	//
-	// The `api:` example below is the documented opt-in path for vanguard
-	// REST transcoding (and the OpenAPI-spec sibling toggle). Both default
-	// to off; uncomment + flip to true to install the relevant skin. See
-	// .reliant/SKILL.md → forge/api-rest for the runtime story.
+	// Prepend a short header. The file is intentionally minimal — the
+	// database/ci/lint/contracts/auth sections and the features: block
+	// are derived from the project shape at load time and only need to
+	// appear here when overriding a default.
 	header := []byte("# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
-		"# `database:` is declared here even if you haven't added any\n" +
-		"# proto/db/*.proto entities yet; protoc-gen-forge-orm consults it\n" +
-		"# once you do. Leave the defaults in place if you're unsure.\n" +
-		"#\n" +
-		"# Opt into the pnpm-workspaces layout (shared packages/api +\n" +
-		"# packages/hooks across all frontends) by uncommenting:\n" +
-		"#   frontend:\n" +
-		"#     workspaces: true\n" +
-		"# Recommended once you have 2+ frontends (web + mobile).\n" +
-		"#\n" +
-		"# To expose REST URLs on your Connect handlers (vanguard transcoding):\n" +
-		"# api:\n" +
-		"#   rest: true     # vanguard REST↔Connect transcoder; CRUD RPCs get default google.api.http URLs\n" +
-		"#   # openapi: true  # emit an OpenAPI spec alongside the proto compile (sibling toggle)\n\n")
+		"# This file is minimal on purpose: database, ci, lint, contracts,\n" +
+		"# auth and the features: block are derived from the project shape.\n" +
+		"# Add any of those keys only to override a derived default\n" +
+		"# (`forge skill load forge` documents the full schema).\n\n")
 	data = append(header, data...)
 
-	// Append a commented-out example of the api: block. It's omitempty
-	// in the struct so an unset map skips it on marshal — surfacing it
-	// here as documentation makes the flags discoverable without
-	// changing default behavior. See SKILL.md (skills/forge/api-openapi)
-	// for the OpenAPI consumer playbook.
-	if g.isService() {
-		footer := []byte("\n# api:\n" +
-			"#   # Emit OpenAPI 3 specs (one yaml per service under openapi/) via\n" +
-			"#   # protoc-gen-connect-openapi. Install once:\n" +
-			"#   #   go install github.com/sudorandom/protoc-gen-connect-openapi@latest\n" +
-			"#   openapi: false\n")
-		data = append(data, footer...)
-	}
-
 	destPath := filepath.Join(g.Path, "forge.yaml")
-	return os.WriteFile(destPath, data, 0644)
-}
+	if err := os.WriteFile(destPath, data, 0644); err != nil {
+		return err
+	}
 
-func (g *ProjectGenerator) buildFeaturesConfig() config.FeaturesConfig {
-	t := boolPtr(true)
-	orDefault := func(v *bool) *bool {
-		if v != nil {
-			return v
+	// Write the per-component source of truth, components.json. Library
+	// projects (no components) deliberately get NO file: its absence is the
+	// "library" kind signal on reload. Service shells write an empty
+	// `{"components": []}` (file present, zero entries) so the project still
+	// derives to "service"; cli/service-with-components write their entries.
+	if !g.isLibrary() {
+		if err := WriteComponentsFile(g.Path, cfg.Components); err != nil {
+			return fmt.Errorf("write %s: %w", config.ComponentsFileName, err)
 		}
-		return t
 	}
-	return config.FeaturesConfig{
-		ORM:        orDefault(g.Features.ORM),
-		Codegen:    orDefault(g.Features.Codegen),
-		Migrations: orDefault(g.Features.Migrations),
-		CI:         orDefault(g.Features.CI),
-		Build:      orDefault(g.Features.Build),
-		Deploy:     orDefault(g.Features.Deploy),
-		Contracts:  orDefault(g.Features.Contracts),
-		Docs:       orDefault(g.Features.Docs),
-		Frontend: func() *bool {
-			if g.Features.Frontend != nil {
-				return g.Features.Frontend
-			}
-			return boolPtr(g.FrontendName != "")
-		}(),
-		Observability: orDefault(g.Features.Observability),
-		HotReload:     orDefault(g.Features.HotReload),
-		Packs:         orDefault(g.Features.Packs),
-		Starters:      orDefault(g.Features.Starters),
-	}
+	return nil
 }
 
 // ReadProjectConfig reads a forge.yaml from the given path with strict
 // validation: unknown keys, missing required fields, and type mismatches
 // are surfaced together via config.ValidationError rather than failing
-// fast on the first issue. See config.LoadStrict for the full semantics.
+// fast on the first issue. The per-component entities are read from the
+// project-root components.json sibling of forge.yaml and the project kind
+// is derived from them (see config.LoadProject). See config.LoadStrict for
+// the full validation semantics.
 func ReadProjectConfig(path string) (*config.ProjectConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read project config: %w", err)
 	}
-	return config.LoadStrict(data, path)
+	componentsJSON, err := readComponentsJSON(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	return config.LoadProject(data, componentsJSON, path)
+}
+
+// readComponentsJSON reads the project-root components.json from dir (the
+// directory holding forge.yaml). A missing file is not an error: it returns
+// nil bytes, treated by config.LoadProject as "no components".
+func readComponentsJSON(dir string) ([]byte, error) {
+	data, err := os.ReadFile(filepath.Join(dir, config.ComponentsFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", config.ComponentsFileName, err)
+	}
+	return data, nil
+}
+
+// WriteComponentsFile writes the project's components to the project-root
+// components.json (the authored per-service source of truth). Components are
+// sorted by name for a stable, diff-friendly file. This is the write path
+// for `forge add service|worker|cron|operator|binary` and `forge new`.
+func WriteComponentsFile(projectRoot string, components []config.ComponentConfig) error {
+	data, err := config.MarshalComponentsJSON(config.SortComponentsForWrite(components))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(projectRoot, config.ComponentsFileName), data, 0o644)
+}
+
+// AppendComponentToFile reads components.json at projectRoot, appends the
+// entry, and writes it back. Used by the `forge add` write paths so a new
+// component lands in components.json (NOT forge.yaml, which is global-only).
+func AppendComponentToFile(projectRoot string, entry config.ComponentConfig) error {
+	data, err := readComponentsJSON(projectRoot)
+	if err != nil {
+		return err
+	}
+	existing, err := config.ParseComponentsJSON(data)
+	if err != nil {
+		return err
+	}
+	return WriteComponentsFile(projectRoot, append(existing, entry))
 }
 
 // WriteProjectConfig writes a config.ProjectConfig to the given path.
+// The config is normalized first (config.NormalizeForWrite): values that
+// match their shape-derived defaults are dropped so load → mutate →
+// write round-trips keep forge.yaml minimal instead of materializing
+// every derived default back into the file. Explicit overrides (values
+// differing from derivation) always survive.
 func WriteProjectConfigFile(cfg *config.ProjectConfig, path string) error {
-	data, err := yaml.Marshal(cfg)
+	data, err := yaml.Marshal(config.NormalizeForWrite(cfg))
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
 	return os.WriteFile(path, data, 0644)
 }
 
-// AppendServiceToConfig reads the project config at the given project root,
-// appends a new service entry, and writes it back. It uses yaml.Node
-// round-tripping so that unknown keys, comments, and field ordering added
-// by the user are preserved.
+// AppendServiceToConfig appends a new server component to the project-root
+// components.json (the authored per-service source of truth). Components
+// moved out of forge.yaml in the ProjectStore per-service data move, so this
+// no longer touches forge.yaml.
 func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
-	configPath := filepath.Join(projectRoot, "forge.yaml")
-	entry := config.ServiceConfig{
-		Name: serviceName,
-		Type: "go_service",
-		Path: fmt.Sprintf("handlers/%s", ServicePackageName(serviceName)),
-		Port: port,
-	}
-	return appendToProjectConfigSequence(configPath, "services", entry)
+	return AppendComponentToFile(projectRoot, config.ComponentConfig{
+		Name:  serviceName,
+		Kind:  config.ComponentKindServer,
+		Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
+		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
+	})
 }
 
 // AppendFrontendToConfig reads the project config at the given project root,

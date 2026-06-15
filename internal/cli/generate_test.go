@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -79,22 +80,52 @@ func TestDirExists(t *testing.T) {
 	}
 }
 
-func TestToServiceDir(t *testing.T) {
+// TestServiceDirResolution covers the service-name → handlers/<dir>
+// mapping generateServiceStubs now derives via the disk-first resolver:
+// the synthesized fallback for brand-new services (the snake_case
+// canonical form from naming.ServicePackage — the exhaustive
+// table-driven cases live at internal/naming/naming_test.go), and the
+// on-disk directory winning whenever one already exists under any
+// historical naming variant.
+func TestServiceDirResolution(t *testing.T) {
+	// Fallback synthesis (no dir on disk yet).
 	tests := []struct {
 		input string
 		want  string
 	}{
-		{"EchoService", "handlers/echo"},
-		{"UserService", "handlers/user"},
-		{"NotificationService", "handlers/notification"},
-		{"Foo", "handlers/foo"},
+		{"EchoService", "echo"},
+		{"UserService", "user"},
+		{"NotificationService", "notification"},
+		{"Foo", "foo"},
+		// Multi-word names canonicalise to snake_case, matching
+		// naming.ServicePackage (post-2026-06-08 scaffold form).
+		{"AdminServerService", "admin_server"},
+	}
+	for _, tt := range tests {
+		res, err := codegen.ResolveServiceComponent(t.TempDir(), tt.input)
+		if err != nil {
+			t.Fatalf("ResolveServiceComponent(%q): %v", tt.input, err)
+		}
+		if res.FromDisk || res.ImportLeaf != tt.want {
+			t.Errorf("ResolveServiceComponent(%q) = %+v, want synthesized leaf %q", tt.input, res, tt.want)
+		}
 	}
 
-	for _, tt := range tests {
-		got := toServiceDir(tt.input)
-		if got != tt.want {
-			t.Errorf("toServiceDir(%q) = %q, want %q", tt.input, got, tt.want)
-		}
+	// Disk-first: an existing snake_case dir wins over synthesis.
+	projectDir := t.TempDir()
+	dir := filepath.Join(projectDir, "handlers", "admin_server")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte("package admin_server\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := codegen.ResolveServiceComponent(projectDir, "AdminServerService")
+	if err != nil {
+		t.Fatalf("ResolveServiceComponent: %v", err)
+	}
+	if !res.FromDisk || res.ImportLeaf != "admin_server" || res.PackageName != "admin_server" {
+		t.Errorf("ResolveServiceComponent disk-first = %+v, want admin_server/admin_server", res)
 	}
 }
 
@@ -257,73 +288,6 @@ func TestRunBufGenerateTypeScriptWritesWorkspaceRelativeConfig(t *testing.T) {
 	}
 }
 
-func TestRunOrmGenerateSkipsWhenProtoDBHasNoProtoFiles(t *testing.T) {
-	dir := t.TempDir()
-
-	if err := os.MkdirAll(filepath.Join(dir, "proto", "db"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := runOrmGenerate(dir); err != nil {
-		t.Fatalf("runOrmGenerate() error = %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(dir, "buf.gen.orm.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("expected temporary ORM config to be absent after skip, err = %v", err)
-	}
-}
-
-func TestRunOrmGenerateUsesProtoDBPathAndCleansUpTempConfig(t *testing.T) {
-	dir := t.TempDir()
-
-	if err := os.MkdirAll(filepath.Join(dir, "proto", "db", "v1"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	protoSource := `syntax = "proto3";
-package db.v1;
-message Account {}
-`
-	if err := os.WriteFile(filepath.Join(dir, "proto", "db", "v1", "account.proto"), []byte(protoSource), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	bufStubPath := filepath.Join(dir, "buf")
-	bufStubScript := "#!/bin/sh\npwd > buf.cwd\nprintf '%s' \"$*\" > buf.args\nif [ -f buf.gen.orm.yaml ]; then cp buf.gen.orm.yaml buf.gen.orm.yaml.captured; fi\nexit 0\n"
-	if err := os.WriteFile(bufStubPath, []byte(bufStubScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	ormPluginPath := filepath.Join(dir, "protoc-gen-forge")
-	ormPluginScript := "#!/bin/sh\nexit 0\n"
-	if err := os.WriteFile(ormPluginPath, []byte(ormPluginScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pathEnv := os.Getenv("PATH")
-	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+pathEnv); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Setenv("PATH", pathEnv) }()
-
-	if err := runOrmGenerate(dir); err != nil {
-		t.Fatalf("runOrmGenerate() error = %v", err)
-	}
-
-	invocationArgs := readFileForTest(t, filepath.Join(dir, "buf.args"))
-	if !strings.Contains(invocationArgs, "generate --template buf.gen.orm.yaml --path proto/db") {
-		t.Fatalf("expected buf generate to target proto/db with temp template, got %q", invocationArgs)
-	}
-
-	ormConfig := readFileForTest(t, filepath.Join(dir, "buf.gen.orm.yaml.captured"))
-	for _, want := range []string{"version: v2", "local:", "protoc-gen-forge", "out: gen", "mode=orm"} {
-		if !strings.Contains(ormConfig, want) {
-			t.Fatalf("expected ORM temp config to contain %q, got:\n%s", want, ormConfig)
-		}
-	}
-
-	if _, err := os.Stat(filepath.Join(dir, "buf.gen.orm.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("expected temporary ORM config to be cleaned up, err = %v", err)
-	}
-}
-
 func TestLoadProjectConfigFromNormalizesFrontendTypeCasing(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "forge.yaml")
@@ -452,6 +416,12 @@ func TestWithForcedEnvAddsMissingValue(t *testing.T) {
 }
 
 func TestBootstrapGeneratedCodeRunsGeneratePipelineInProjectDirectory(t *testing.T) {
+	if testing.Short() {
+		// Scaffolds a real project and drives the full generate
+		// pipeline (real subprocess work, ~4s). Full mode (CI:
+		// `go test ./...` without -short) still runs it.
+		t.Skip("skipping real scaffold+pipeline run under -short")
+	}
 	dir := t.TempDir()
 	generator := generator.NewProjectGenerator("sample-app", dir, "example.com/sample-app")
 	generator.ServiceName = "api"
@@ -527,7 +497,7 @@ exit 0
 	}
 	defer func() { _ = os.Setenv("PATH", pathEnv) }()
 
-	// Generated code (pkg/middleware/claims.go etc.) imports
+	// Generated code (pkg/middleware/middleware.go etc.) imports
 	// github.com/reliant-labs/forge/pkg/auth which doesn't exist in the
 	// last published forge/pkg snapshot. Point the project at the in-repo
 	// pkg via a replace directive so `go mod tidy` resolves locally.

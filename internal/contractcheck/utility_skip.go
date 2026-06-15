@@ -47,6 +47,11 @@
 
 package contractcheck
 
+import (
+	"go/ast"
+	"strings"
+)
+
 // isUtilityPackage reports whether a package's contract surface is
 // "utility-shaped" — i.e. it has no interface declarations at all.
 // Such packages cannot be Service-shaped by construction and should
@@ -65,4 +70,25 @@ func isUtilityPackage(interfaceCount int) bool {
 	// and the canonical "no interface — rename to 'Service'" finding
 	// is the right action there.
 	return interfaceCount == 0
+}
+
+// fileHasStrategyDirective reports whether f carries the
+// `//forge:strategy` marker as a top-level comment. The directive
+// opts the package out of the canonical Service/Deps/New enforcement
+// for strategy-registry packages (one interface, many independently-
+// constructed impls).
+//
+// Both the bare form (`//forge:strategy`) and the gofmt'd form
+// (`// forge:strategy`) are accepted, matching the existing convention
+// for `//forge:allow` and `//forge:optional-dep`.
+func fileHasStrategyDirective(f *ast.File) bool {
+	for _, group := range f.Comments {
+		for _, c := range group.List {
+			line := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+			if line == "forge:strategy" {
+				return true
+			}
+		}
+	}
+	return false
 }

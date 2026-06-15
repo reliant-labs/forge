@@ -1,85 +1,149 @@
 """
 Development environment configuration for {{.ProjectName}}.
 
-This file declares typed forge entities (Service / Operator / Frontend
-/ CronJob). The schemas live in the upstream `forge` KCL module pinned
-in `deploy/kcl/kcl.mod`. Run `forge upgrade` to bump the module
-version.
+DEPLOY-AS-DATA: forge no longer hand-writes a `forge.Service` per
+component here. It serializes the denormalized component base shape to
+`deploy/kcl/components_gen.json`, and the forge.components KCL schema
+hierarchy (Server / Worker / Cron / Operator / Binary) owns ALL
+normalization into k8s resources. This file LOADS that data, overlays
+the per-env knobs (replicas, registry, resources, secrets), and renders.
 
 Two outputs:
 
-  * `output` — JSON contract that the forge CLI consumes
-    (`forge build`, `forge run`, `forge deploy`).
-    Select with `kcl run dev -S output --format json`.
+  * `manifests` — Kubernetes manifest list rendered for the env from
+    components_gen.json + the forge.components schemas. Pipe to
+    `kubectl apply -f -` or `forge deploy dev`. Select with
+    `kcl run deploy/kcl/dev -S manifests --format yaml`.
 
-  * `manifests` — Kubernetes manifest list rendered for the env.
-    Pipe to `kubectl apply -f -` or `forge deploy dev`.
+  * `output` — JSON contract the forge CLI consumes (`forge build`,
+    `forge run`, `forge deploy`) for host-vs-cluster dispatch + builds.
+    Bridged from the same component data. Select with
+    `kcl run deploy/kcl/dev -S output --format json`.
 
-Top-level identifiers `image_tag` and `registry` are overridable via
-`kcl run -D image_tag=<tag> -D registry=<registry> ...` because KCL's -D
-flag only binds top-level names, not nested struct fields.
+Per-env tag/registry overrides are consumed by `forge.image_tag(env)`
+(reads `option("image_tag")`) and the `registry` field. The forge CLI
+passes `-D image_tag=` on every build/deploy.
+
+Path note: `forge.components.load_components` reads
+components_gen.json relative to the project root — the directory forge
+runs `kcl run deploy/kcl/<env>` from, and where the documented manual
+command `kcl run deploy/kcl/dev` is run from.
 """
 
 import forge
+import forge.components as fc
 
 # Per-environment config (generated from forge.yaml + proto annotations).
 # Run `forge generate` to refresh after editing forge.yaml or the config
 # proto. Hand-editing this file is not recommended.
 import deploy.kcl.dev.config_gen as cfg
+{{- if .IngressEnabled}}
 
-# Overridable via `kcl run -D image_tag=...`
-_image_tag = option("image_tag") or "latest"
+# Gateway API ingress topology — user-owned. Base lives in
+# `deploy/kcl/ingress.k`; this env may override hosts, ports, or TLS.
+import deploy.kcl.dev.ingress as ing
+{{- end}}
 
-# Overridable via `kcl run -D registry=...`. Local dev defaults to the k3d
-# registry created by `deploy/k3d.yaml`.
+# Env-wide deploy target. Overridable via `kcl run -D registry=...`.
+# Local dev defaults to the k3d registry created by `deploy/k3d.yaml`.
 _registry = option("registry") or "localhost:5050"
-
-_dev_k8s = forge.K8sCluster {
+_namespace = "{{.ProjectName}}-dev"
+_cluster = forge.K8sCluster {
     cluster = "k3d-{{.ProjectName}}"
-    namespace = "{{.ProjectName}}-dev"
+    namespace = _namespace
     registry = _registry
-    replicas = 1
     ports = [8080]
 }
 
-_bundle = forge.Bundle {
-    services = [
-        forge.Service {
-            name = "{{.ProjectName}}"
-            image = "{{.ProjectName}}"
-            env_vars = forge.COMMON_ENV + cfg.APP_ENV + [
-                forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
-                forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{.ProjectName}}"}
-            ]
-            deploy = _dev_k8s
-        }
-        # Binaries declared via `forge add binary <name>`. Each runs the
-        # same image with a different cobra subcommand. They project as
-        # BuildOnly services because forge handles their orchestration
-        # via the CLI, not k8s manifests.
-{{- range .Binaries}}
-        forge.Service {
-            name = "{{$.ProjectName}}-{{.Name}}"
-            image = "{{$.ProjectName}}"
-            command = ["/app/{{$.ProjectName}}", "{{.Name}}"]
-            env_vars = forge.COMMON_ENV + cfg.APP_ENV + [
-                forge.EnvVar {name = "OTEL_SERVICE_NAME", value = "{{$.ProjectName}}-{{.Name}}"}
-            ]
-            deploy = forge.BuildOnly {}
-        }
-{{- end}}
-    ]
-    config_maps = cfg.CONFIG_MAPS
-}
+# Base env every component sees (COMMON_ENV + per-env config_gen).
+_base_env = forge.COMMON_ENV + cfg.APP_ENV + [
+    forge.EnvVar {name = "SERVICE_NAME", value = "{{.ProjectName}}"}
+]
 
-# JSON contract consumed by forge build/run/deploy.
-output = forge.render(_bundle)
+# Load the denormalized components forge emitted and overlay the dev
+# knobs. The `|` merge layers per-env config onto each loaded component;
+# all components run the project image (one image, cobra subcommands per
+# binary).
+_components = [c | {
+    image = "{{.ProjectName}}"
+    registry = _registry
+    namespace = _namespace
+    replicas = 1
+    env_vars = _base_env + [forge.EnvVar {name = "OTEL_SERVICE_NAME", value = c.name}]
+} for c in fc.load_components(fc.COMPONENTS_GEN)]
 
-# k8s manifests for `kubectl apply -f -`.
-_env = forge.RenderEnv {
-    namespace = "{{.ProjectName}}-dev"
-    image_registry = _registry
-    image_tag = _image_tag
+_component_env = fc.ComponentEnv {
+    namespace = _namespace
+    registry = _registry
+    image_tag = forge.image_tag("dev")
     network_policies = False
 }
-manifests = forge.render_manifests(_bundle, _env)
+
+# Support resources (ConfigMaps + ingress) come from a Bundle the forge
+# render layer projects; the workloads come from the component
+# expansion. render_support omits namespace/netpol (render_components
+# owns those).
+_support = forge.Bundle {
+    config_maps = cfg.CONFIG_MAPS
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
+{{- end}}
+}
+_render_env = forge.RenderEnv {
+    cluster = _cluster
+    image_tag = forge.image_tag("dev")
+    network_policies = False
+}
+
+# k8s manifests for `kubectl apply -f -`.
+manifests = fc.render_components(_components, _component_env) \
+    + forge.render_support(_support, _render_env)
+
+# JSON contract consumed by forge build/run/deploy. Bridges the loaded
+# components into forge.Service / CronJob / Operator entities so the
+# build + host/cluster dispatch contract is unchanged. Binaries deploy
+# build-only (forge orchestrates them via the CLI); servers/workers run
+# in-cluster.
+_svc_components = [c for c in _components if c.kind in ["server", "worker"]]
+_bin_components = [c for c in _components if c.kind == "binary"]
+_cron_components = [c for c in _components if c.kind == "cron"]
+_op_components = [c for c in _components if c.kind == "operator"]
+
+_bundle = forge.Bundle {
+    services = [forge.Service {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        env_vars = c.env_vars
+        deploy = _cluster | {ports = [p.port for p in c.ports]}
+    } for c in _svc_components] + [forge.Service {
+        name = c.name
+        image = "{{.ProjectName}}"
+        command = c.command
+        env_vars = c.env_vars
+        deploy = forge.BuildOnly {}
+    } for c in _bin_components]
+    cronjobs = [forge.CronJob {
+        name = c.name
+        image = "{{.ProjectName}}"
+        schedule = c.schedule
+        command = c.command
+        env_vars = c.env_vars
+    } for c in _cron_components]
+    operators = [forge.Operator {
+        name = c.name
+        image = "{{.ProjectName}}"
+        crds = c.crds
+        env_vars = c.env_vars
+    } for c in _op_components]
+    config_maps = cfg.CONFIG_MAPS
+{{- if .IngressEnabled}}
+    gateways = ing.GATEWAYS
+    http_routes = ing.HTTP_ROUTES
+    grpc_routes = ing.GRPC_ROUTES
+{{- end}}
+}
+
+output = forge.render(_bundle)

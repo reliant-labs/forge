@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // KCLEntities is the typed, dispatched view of the JSON the sibling
@@ -23,21 +24,101 @@ import (
 // because deployment placement is a per-env decision that lives in the
 // KCL layer, not on services[] in the project config.
 type KCLEntities struct {
-	Services  []ServiceEntity  `json:"services,omitempty"`
-	Operators []OperatorEntity `json:"operators,omitempty"`
-	Frontends []FrontendEntity `json:"frontends,omitempty"`
-	CronJobs  []CronJobEntity  `json:"cronjobs,omitempty"`
+	Services   []ServiceEntity   `json:"services,omitempty"`
+	Operators  []OperatorEntity  `json:"operators,omitempty"`
+	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
+	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
+	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
+	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
+	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+}
+
+// GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
+// Tls is nil when the gateway is plaintext.
+type GatewayEntity struct {
+	Name             string                  `json:"name"`
+	GatewayClassName string                  `json:"gateway_class_name,omitempty"`
+	Host             string                  `json:"host,omitempty"`
+	TLS              *GatewayTLSEntity       `json:"tls,omitempty"`
+	Listeners        []GatewayListenerEntity `json:"listeners,omitempty"`
+	RawPolicy        string                  `json:"raw_policy,omitempty"`
+}
+
+// GatewayListenerEntity mirrors the kcl/schema.k GatewayListener.
+// Protocol is "HTTP" | "HTTPS" | "H2C".
+type GatewayListenerEntity struct {
+	Name       string `json:"name"`
+	Port       int    `json:"port"`
+	Protocol   string `json:"protocol"`
+	PathPrefix string `json:"path_prefix,omitempty"`
+}
+
+// GatewayTLSEntity is the TLS block on a Gateway. Mode selects the
+// cert origin: "cert_manager" (default — cert-manager Certificate
+// emitted alongside the Gateway, CertIssuer names a ClusterIssuer)
+// or "mkcert" (Secret populated host-side by `forge dev cluster up`
+// via the mkcert binary; CertIssuer unused).
+type GatewayTLSEntity struct {
+	CertIssuer string `json:"cert_issuer,omitempty"`
+	SecretName string `json:"secret_name"`
+	Mode       string `json:"mode,omitempty"`
+}
+
+// HTTPRouteEntity mirrors the kcl/schema.k HTTPRoute. Service is a
+// backend Service name; Port is the backend port.
+type HTTPRouteEntity struct {
+	Name      string `json:"name"`
+	Gateway   string `json:"gateway"`
+	Listener  string `json:"listener"`
+	Service   string `json:"service"`
+	Port      int    `json:"port"`
+	Host      string `json:"host,omitempty"`
+	Path      string `json:"path,omitempty"`
+	RawPolicy string `json:"raw_policy,omitempty"`
+}
+
+// GRPCRouteEntity mirrors the kcl/schema.k GRPCRoute. Shape matches
+// HTTPRouteEntity — the distinction is the rendered Gateway API
+// resource kind (GRPCRoute vs HTTPRoute).
+type GRPCRouteEntity struct {
+	Name      string `json:"name"`
+	Gateway   string `json:"gateway"`
+	Listener  string `json:"listener"`
+	Service   string `json:"service"`
+	Port      int    `json:"port"`
+	Host      string `json:"host,omitempty"`
+	Path      string `json:"path,omitempty"`
+	RawPolicy string `json:"raw_policy,omitempty"`
 }
 
 // ServiceEntity is one service from rendered KCL. The Deploy field is
 // polymorphic — exactly one of Host / Cluster / BuildOnly is populated
 // according to Deploy.Type. See [DeployConfigEntity] for the discriminator.
+//
+// Build-side fields (mirror of the External deploy provider for the
+// build step):
+//
+//   - BuildCmd, when non-empty, is the shell command `forge build`
+//     runs via `sh -c` instead of the built-in Go-build pipeline.
+//     Tokens (${IMAGE}/${TAG}/${SERVICE}/${TARGETARCH}/${REGISTRY}/
+//     ${PROJECT_DIR}/${BUILD_CWD} + keys from BuildEnv) are substituted
+//     by the build-side runner (see internal/buildtarget once Phase 2
+//     lands).
+//   - BuildCwd is the working directory the shell command runs from.
+//     Relative paths resolve against the project root. Skip-with-warn
+//     when the resolved path doesn't exist on disk.
+//   - BuildEnv carries extra env vars merged into the command's
+//     environment AND added to the substitution map (built-ins win
+//     on conflict).
 type ServiceEntity struct {
-	Name    string             `json:"name"`
-	Image   string             `json:"image,omitempty"`
-	Deploy  DeployConfigEntity `json:"deploy"`
-	EnvVars []KCLEnvVar        `json:"env_vars,omitempty"`
-	Command []string           `json:"command,omitempty"`
+	Name     string             `json:"name"`
+	Image    string             `json:"image,omitempty"`
+	Deploy   DeployConfigEntity `json:"deploy"`
+	EnvVars  []KCLEnvVar        `json:"env_vars,omitempty"`
+	Command  []string           `json:"command,omitempty"`
+	BuildCmd string             `json:"build_cmd,omitempty"`
+	BuildCwd string             `json:"build_cwd,omitempty"`
+	BuildEnv map[string]string  `json:"build_env,omitempty"`
 }
 
 // DeployConfigEntity is the dispatched-by-type view of a service's
@@ -108,6 +189,10 @@ type HostDeploy struct {
 // Cluster/Namespace/Registry are mandatory env-wide fields the
 // KCL-side `K8sCluster` schema declares as required — an empty value
 // here indicates a malformed render rather than a legacy shape.
+//
+// Ingress used to be a per-service field on this struct; it now lives
+// at the Bundle level as Gateway/HTTPRoute/GRPCRoute (see
+// KCLEntities.Gateways etc.). Routes reference services by name.
 type K8sCluster struct {
 	// Env-wide knobs — same value across every service in a deploy
 	// group.
@@ -117,17 +202,10 @@ type K8sCluster struct {
 	Domain    string `json:"domain,omitempty"`
 
 	// Per-service knobs.
-	Replicas int             `json:"replicas,omitempty"`
-	Ingress  *K8sIngressSpec `json:"ingress,omitempty"`
-	Platform string          `json:"platform,omitempty"` // GOARCH override; empty = use forge.yaml deploy.target_arch
-	Ports    []int           `json:"ports,omitempty"`
-	EnvVars  []KCLEnvVar     `json:"env_vars,omitempty"`
-}
-
-// K8sIngressSpec is the rendered ingress for a cluster service.
-type K8sIngressSpec struct {
-	Host string `json:"host,omitempty"`
-	Path string `json:"path,omitempty"`
+	Replicas int         `json:"replicas,omitempty"`
+	Platform string      `json:"platform,omitempty"` // GOARCH override; empty = use forge.yaml deploy.target_arch
+	Ports    []int       `json:"ports,omitempty"`
+	EnvVars  []KCLEnvVar `json:"env_vars,omitempty"`
 }
 
 // BuildOnlyDeploy is the deploy block for services that produce
@@ -140,11 +218,11 @@ type BuildOnlyDeploy struct {
 
 // BuildVariant describes one binary produced by a build-only service.
 type BuildVariant struct {
-	Name        string            `json:"name"`
-	Ldflags     []string          `json:"ldflags,omitempty"`
-	BuildTags   []string          `json:"build_tags,omitempty"`
-	EnvAtBuild  map[string]string `json:"env_at_build,omitempty"`
-	OutputName  string            `json:"output_name,omitempty"` // default: <service>-<variant>
+	Name       string            `json:"name"`
+	Ldflags    []string          `json:"ldflags,omitempty"`
+	BuildTags  []string          `json:"build_tags,omitempty"`
+	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
+	OutputName string            `json:"output_name,omitempty"` // default: <service>-<variant>
 }
 
 // OperatorEntity is one operator from rendered KCL. Operators are
@@ -180,13 +258,14 @@ type RBACSpec struct{}
 // side; the type discriminator is the only thing the build pipeline
 // needs to make the skip/build decision.
 type FrontendEntity struct {
-	Name      string                  `json:"name"`
-	Type      string                  `json:"type,omitempty"`       // "nextjs" | "vite-spa" | "react-native"
-	Path      string                  `json:"path"`
-	DevRunner string                  `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
-	Port      int                     `json:"port,omitempty"`
-	EnvFile   string                  `json:"env_file,omitempty"`
-	Deploy    *FrontendDeployEntity   `json:"deploy,omitempty"`
+	Name      string                `json:"name"`
+	Type      string                `json:"type,omitempty"` // "nextjs" | "vite-spa" | "react-native"
+	Path      string                `json:"path"`
+	DevRunner string                `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
+	Port      int                   `json:"port,omitempty"`
+	EnvFile   string                `json:"env_file,omitempty"`
+	EnvVars   []KCLEnvVar           `json:"env_vars,omitempty"`
+	Deploy    *FrontendDeployEntity `json:"deploy,omitempty"`
 }
 
 // FrontendDeployEntity carries the deploy.type discriminator for a
@@ -213,27 +292,50 @@ type CronJobEntity struct {
 // KCLEnvVar is a single env var entry from the rendered KCL. Distinct
 // type so we don't pull in the project-config EnvVar (which carries
 // codegen-specific fields the KCL renderer doesn't know about).
+//
+// Three projection channels mirror the KCL EnvVar schema (kcl/schema.k):
+//
+//   - Value: inline literal. The dominant case host-mode consumes.
+//   - SecretRef + SecretKey: cluster-mode projection from a Secret
+//     (Deployment.env.valueFrom.secretKeyRef). No host equivalent —
+//     host-mode picks the value up from the gitignored secrets_file.
+//   - ConfigMapRef + ConfigMapKey: cluster-mode projection from a
+//     forge-generated ConfigMap.
+//
+// SecretRef / ConfigMapRef are surfaced (rather than dropped) so the
+// `forge doctor parity` diff can attribute cluster-side projected env
+// vars to their source rather than treating an empty Value as "unset".
 type KCLEnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value,omitempty"`
+	Name         string `json:"name"`
+	Value        string `json:"value,omitempty"`
+	SecretRef    string `json:"secret_ref,omitempty"`
+	SecretKey    string `json:"secret_key,omitempty"`
+	ConfigMapRef string `json:"config_map_ref,omitempty"`
+	ConfigMapKey string `json:"config_map_key,omitempty"`
 }
 
 // kclRenderRaw is the JSON shape emitted by `kcl run deploy/kcl/<env>/
 // -o json`. We unmarshal into this first, then dispatch each service's
 // deploy block by type to populate the typed [KCLEntities].
 type kclRenderRaw struct {
-	Services  []kclServiceRaw  `json:"services,omitempty"`
-	Operators []OperatorEntity `json:"operators,omitempty"`
-	Frontends []FrontendEntity `json:"frontends,omitempty"`
-	CronJobs  []CronJobEntity  `json:"cronjobs,omitempty"`
+	Services   []kclServiceRaw   `json:"services,omitempty"`
+	Operators  []OperatorEntity  `json:"operators,omitempty"`
+	Frontends  []FrontendEntity  `json:"frontends,omitempty"`
+	CronJobs   []CronJobEntity   `json:"cronjobs,omitempty"`
+	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
+	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
+	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
 }
 
 type kclServiceRaw struct {
-	Name    string          `json:"name"`
-	Image   string          `json:"image,omitempty"`
-	Deploy  json.RawMessage `json:"deploy"`
-	EnvVars []KCLEnvVar     `json:"env_vars,omitempty"`
-	Command []string        `json:"command,omitempty"`
+	Name     string            `json:"name"`
+	Image    string            `json:"image,omitempty"`
+	Deploy   json.RawMessage   `json:"deploy"`
+	EnvVars  []KCLEnvVar       `json:"env_vars,omitempty"`
+	Command  []string          `json:"command,omitempty"`
+	BuildCmd string            `json:"build_cmd,omitempty"`
+	BuildCwd string            `json:"build_cwd,omitempty"`
+	BuildEnv map[string]string `json:"build_env,omitempty"`
 }
 
 // RenderKCL shells `kcl run deploy/kcl/<env>/ -o json`, parses the
@@ -274,30 +376,11 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	if _, err := os.Stat(kclDir); err != nil {
 		return nil, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
-	var out bytes.Buffer
-	// `kcl run -o <path>` writes to a file in kcl >= 0.11; for stdout
-	// JSON, use `--format json`. The previous `-o json` form was
-	// silently misread as "write to file named json", leaving stdout
-	// empty and every downstream consumer (forge run dispatch,
-	// lookupKCLHostDeploy) degrading to a nil result with no error.
-	cmd := exec.CommandContext(ctx, "kcl", kclRunArgs(kclDir, env)...)
-	cmd.Stdout = &out
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("kcl run %s: %w", kclDir, err)
-	}
-	return out.Bytes(), nil
-}
-
-// kclRunArgs returns the `kcl run` argv used by [renderKCLRaw]. Split
-// out so the env-name plumbing can be asserted from a unit test without
-// shelling a real kcl binary.
-func kclRunArgs(kclDir, env string) []string {
-	return []string{
-		"run", kclDir,
-		"--format", "json",
-		"-D", "env=" + env,
-	}
+	// Render the JSON contract through the shared embedded kpm + kcl-go
+	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
+	// conditionals in the deploy module. workDir = projectDir so the
+	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
+	return kclrender.Run(projectDir, kclDir, []string{"env=" + env})
 }
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,
@@ -328,9 +411,12 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
-		Operators: raw.Operators,
-		Frontends: raw.Frontends,
-		CronJobs:  raw.CronJobs,
+		Operators:  raw.Operators,
+		Frontends:  raw.Frontends,
+		CronJobs:   raw.CronJobs,
+		Gateways:   raw.Gateways,
+		HTTPRoutes: raw.HTTPRoutes,
+		GRPCRoutes: raw.GRPCRoutes,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)
@@ -338,11 +424,14 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 			return nil, err
 		}
 		out.Services = append(out.Services, ServiceEntity{
-			Name:    s.Name,
-			Image:   s.Image,
-			Deploy:  deploy,
-			EnvVars: s.EnvVars,
-			Command: s.Command,
+			Name:     s.Name,
+			Image:    s.Image,
+			Deploy:   deploy,
+			EnvVars:  s.EnvVars,
+			Command:  s.Command,
+			BuildCmd: s.BuildCmd,
+			BuildCwd: s.BuildCwd,
+			BuildEnv: s.BuildEnv,
 		})
 	}
 	return out, nil

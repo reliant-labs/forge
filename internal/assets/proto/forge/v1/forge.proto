@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package forge.v1;
 
-option go_package = "github.com/reliant-labs/forge/gen/forge/v1;forgev1";
+option go_package = "github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1";
 
 import "google/protobuf/descriptor.proto";
 import "google/protobuf/duration.proto";
@@ -13,6 +13,10 @@ import "google/protobuf/duration.proto";
 // =============================================================================
 
 // Entity-level annotations on protobuf messages that represent database tables.
+//
+// Retired: ignored by forge. SQL is the schema — db/migrations drive entity
+// projections. The extension is kept only so legacy projects' protos keep
+// compiling; `forge generate` prints a notice when it sees the annotation.
 extend google.protobuf.MessageOptions {
   EntityOptions entity = 50200;
 }
@@ -20,6 +24,9 @@ extend google.protobuf.MessageOptions {
 // Field-level annotations for database column mapping and configuration binding.
 extend google.protobuf.FieldOptions {
   // Database column mapping and constraints.
+  //
+  // Retired: ignored by forge. SQL is the schema — db/migrations drive entity
+  // projections. Kept only so legacy protos keep compiling.
   FieldOptions field = 50300;
   // Configuration binding to environment variables and CLI flags.
   ConfigFieldOptions config = 50400;
@@ -40,8 +47,10 @@ extend google.protobuf.MethodOptions {
 // =============================================================================
 
 // EntityOptions defines how a protobuf message maps to a database table.
-// Apply via [(forge.v1.entity) = { ... }] on any message that represents
-// a persistent entity.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Kept for one release so legacy projects' protos
+// keep compiling; remove the annotations from your protos.
 message EntityOptions {
   // Database table name. Inferred from the message name (snake_case, pluralized)
   // when left empty.
@@ -62,6 +71,9 @@ message EntityOptions {
 }
 
 // IndexDef defines a database index on one or more columns.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Declare indexes in migration SQL instead.
 message IndexDef {
   // Index name. Auto-generated from field names when left empty.
   string name = 1;
@@ -78,7 +90,10 @@ message IndexDef {
 // =============================================================================
 
 // FieldOptions defines how a protobuf field maps to a database column.
-// Apply via [(forge.v1.field) = { ... }] on any field inside an entity message.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Kept for one release so legacy projects' protos
+// keep compiling; remove the annotations from your protos.
 message FieldOptions {
   // Mark this field as the primary key.
   bool pk = 1;
@@ -114,6 +129,9 @@ message FieldOptions {
 
 // StoreAs controls how complex or non-scalar protobuf types are persisted
 // in the database.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Column storage types live in migration SQL.
 enum StoreAs {
   // Inferred from the protobuf type (default behavior).
   STORE_AS_UNSPECIFIED = 0;
@@ -235,6 +253,17 @@ message MethodOptions {
   // unique key (e.g., an Idempotency-Key header) so the server can safely
   // deduplicate retried mutations.
   bool idempotency_key = 5;
+
+  // Declared Connect/gRPC error codes this method can return. Codegen
+  // surfaces these so handler authors (and LLMs implementing handlers)
+  // can see the typed error contract at a glance. Values match
+  // connect.Code names — e.g. "NotFound", "PermissionDenied",
+  // "InvalidArgument". Empty (or unset) means "no declared errors" — the
+  // method either succeeds or returns an undeclared Connect.Code.
+  //
+  // The list is informational at runtime today; future work may enforce
+  // that handlers can only return declared codes.
+  repeated string errors = 6;
 }
 
 // =============================================================================

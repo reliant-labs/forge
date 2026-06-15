@@ -85,12 +85,16 @@ Each category is the same shape:
 |----------|-------------------------------------|
 | `version` | `pinned_version`, `binary_version`, `hint` (when mismatch) |
 | `shape` | `services[]`, `workers[]`, `operators[]`, `frontends[]`, `packs[]`, `packages[]` |
+| `shape.services[]` | `name`, `type`, `rpc_count`, `served`, `rpcs[]` — each rpc is `{name, streaming?, mcp_callable, served?}`. `served: false` (service-level always present; rpc-level additive, present only when false) marks a service with no `serviceRow` in the user-owned `pkg/app/services.go` (registration-in-code): the types/client generate here but this binary does not serve the API, so its RPCs are excluded from the MCP manifest (`mcp_callable: false`). `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`. `mcp_callable: true` means the RPC is exposed as an MCP tool by the `forge-mcp` bridge; streaming RPCs are `mcp_callable: false` (they stay in `gen/mcp/manifest.json` with a `streaming` marker but are excluded from MCP `tools/list` because MCP tool calls are unary). Check this BEFORE planning to call an RPC via MCP. |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |
-| `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]` |
+| `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `unregistered_services[]` (each `{service, dir, state, message}` — `handlers/<svc>` exists but `pkg/app/services.go` has no `serviceRow` for it; `state: "unlisted"` = row constructor generated but unreferenced (add the printed line to RegisteredServices), `state: "tombstoned"` = deliberately retired via comment (delete the dir or restore the row)) |
 | `packs` | per-pack `{name, installed_version, latest_version, status}` |
 | `proto_migration_alignment` | `divergence[]` (entities whose proto definition disagrees with migrations) |
+| `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
+| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (each `{file, method, reason}`), `marker`, `legacy_marker` — custom-read-shape stubs (`forge:custom-read-shape` markers; the pre-rename `FORGE_CRUD_SHAPE_MISMATCH` spelling is still recognized for one release, and `legacy_marker` carries it for grep migration) scanned from the user-owned `handlers_crud.go` (the legacy `handlers_crud_gen.go` is also scanned). A stub marks a deliberate non-AIP-158 read shape whose body is the user's to implement — but each stubbed RPC returns `CodeUnimplemented` in production, so the category is `warn` whenever `total_stubs > 0`. |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
 | `deps` | `go_mod`, `go_sum` presence flags |
+| `friction` | `count`, `by_severity{}`, `newest_recorded_at`, `hint`, `malformed_lines` (when torn writes were skipped) — standing generator-friction reports from `.forge/friction.jsonl`. Entries describe forge, not the project, so the category stays `ok` (it never gates CI); `warn` only on malformed lines. Run `forge friction list` for the entries. |
 
 The full set of keys per category is stable; new categories may be
 added (additive). Consumers should `select` the keys they care about
@@ -135,8 +139,8 @@ and tolerate unknown extras.
       ]
     },
     {
-      "path": "handlers/users/handlers_crud_gen.go",
-      "name": "handlers_crud_gen.go",
+      "path": "handlers/users/handlers_crud_ops_gen.go",
+      "name": "handlers_crud_ops_gen.go",
       "is_dir": false,
       "ownership": "forge-space, hand-edited (drift from regen)",
       "flags": ["drift"]
@@ -198,6 +202,11 @@ forge audit --json | jq '.categories.shape.details |
    workers:  (.workers  | length // 0),
    frontends:(.frontends | length // 0)}'
 
+# Which RPCs can be called through the forge-mcp bridge (MCP tools)?
+forge audit --json | jq -r '.categories.shape.details.services[]?
+  | .name as $svc | .rpcs[]?
+  | "\($svc).\(.name): mcp_callable=\(.mcp_callable)\(if .streaming then " (streaming: \(.streaming))" else "" end)"'
+
 # Pack health: any pack pinned older than what the binary ships?
 forge audit --json | jq -r '.categories.packs.details[]?
   | select(.installed_version != .latest_version)
@@ -217,7 +226,7 @@ artifacts, and posts a summary comment on PRs:
 
 ```yaml
 # .github/workflows/forge-audit.yml (Tier-2 — user-owned)
-# forge:scaffold one-shot — user-owned workflow (not a Tier-1 codegen target).
+# yours: scaffolded once, never touched again — forge will not overwrite this file
 name: Forge Audit
 on:
   pull_request:

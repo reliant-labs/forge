@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-//go:embed all:project all:deploy all:frontend all:ci all:test service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
+//go:embed all:project all:deploy all:frontend all:ci all:test all:ingress service/*.tmpl middleware/*.tmpl all:internal-package webhook/*.tmpl worker/*.tmpl worker-cron/*.tmpl operator/*.tmpl crd/*.tmpl
 var templateFS embed.FS
 
 // FuncMap returns the shared template function map used across all templates.
@@ -107,6 +107,14 @@ func FrontendTemplates() TemplateCategory { return TemplateCategory{basePath: "f
 
 // DeployTemplates returns the category for deploy-scaffold templates.
 func DeployTemplates() TemplateCategory { return TemplateCategory{basePath: "deploy"} }
+
+// IngressTemplates returns the embedded Gateway API install assets
+// (vendored Traefik install, GatewayClass) keyed under
+// `internal/templates/ingress/<provider>/`. The Gateway API CRDs
+// themselves are fetched from the upstream GitHub release at
+// `forge dev cluster up` time and cached under ~/.cache/forge/ —
+// see internal/cli/dev_cluster_ingress.go for the download path.
+func IngressTemplates() TemplateCategory { return TemplateCategory{basePath: "ingress"} }
 
 // TestTemplates returns the category for test-scaffold templates.
 func TestTemplates() TemplateCategory { return TemplateCategory{basePath: "test"} }
@@ -375,6 +383,38 @@ type NavPageData struct {
 	Label      string // display name, e.g. "Tasks"
 	LabelLower string // lowercase for descriptions, e.g. "tasks"
 	Slug       string // URL path segment, e.g. "tasks"
+	// LabelSingular is the singular display name ("Task") — used by
+	// "Create X" buttons. Derived from the proto entity name, not a
+	// strip-the-trailing-s guess ("Categories" → "Category", not
+	// "Categorie").
+	LabelSingular string
+	// HasCreate reports whether the page generator emitted a create page
+	// (<slug>/new) for this entity. The dashboard's QuickActions grid
+	// gates its "Create X" buttons on this — advertising a create route
+	// the page generator never wrote is a guaranteed 404.
+	HasCreate bool
+	// ListHook is the generated React Query list hook name
+	// ("useListTasks"); the dashboard tile uses it to render a real
+	// entity count instead of a placeholder.
+	ListHook string
+	// HooksModule is the import path of the generated hooks file, e.g.
+	// "@/hooks/task-service-hooks".
+	HooksModule string
+	// ItemsField is the camelCase repeated field on the list response
+	// holding the entities ("tasks").
+	ItemsField string
+	// ComponentIdent is a valid TS identifier for per-entity generated
+	// components ("Tasks" → TasksTile).
+	ComponentIdent string
+}
+
+// NavHookImport is one merged import statement the dashboard template
+// emits for list hooks: all hook symbols whose generated hooks file is
+// the same module. Pre-grouped in Go so two entities served by one
+// service don't produce duplicate import statements (import/no-duplicates).
+type NavHookImport struct {
+	Module  string   // "@/hooks/task-service-hooks"
+	Symbols []string // ["useListTasks", "useListProjects"] — sorted
 }
 
 // FrontendTemplateData holds data for frontend template rendering.
@@ -392,6 +432,9 @@ type FrontendTemplateData struct {
 	ApiPort string //nolint:revive // template field name; see comment above
 	Module  string
 	Pages   []NavPageData
+	// NavHookImports is the per-module aggregation of the list hooks the
+	// dashboard tiles consume. Derived from Pages by the nav generator.
+	NavHookImports []NavHookImport
 	// Workspaces reports whether the project opted into the pnpm-
 	// workspaces layout. When true, frontend templates emit imports
 	// of ApiPackage / HooksPackage instead of relative @/gen and
@@ -422,6 +465,38 @@ type FrontendTemplateData struct {
 	// React Native templates reference this in their package.json
 	// workspace deps and example screens.
 	UINativePackage string
+	// Output selects the Next.js build/runtime shape. Mirrors
+	// config.FrontendConfig.Output. Only the nextjs templates read it
+	// (`next.config.ts.tmpl`); other template trees ignore it.
+	//
+	// Valid values rendered by templates:
+	//   - "standalone" (default): emit `output: "standalone"`
+	//     unconditionally — pairs with the shipped Dockerfile and
+	//     supports the generated dynamic `[id]` CRUD routes.
+	//   - "static":     emit `output: "export"` gated on
+	//     NODE_ENV=production. Dev server stays unchanged. Opt-in
+	//     only: static export fails `next build` on dynamic route
+	//     segments without generateStaticParams, which the generated
+	//     CRUD detail/edit pages cannot provide.
+	//   - "server":     omit `output` entirely (full Next.js dev+prod).
+	//
+	// Empty string is treated as "standalone" by the template — callers
+	// that don't thread this field get the scaffold default.
+	Output string
+	// BasePath mirrors config.FrontendConfig.BasePath — the URL prefix
+	// the frontend is mounted under (e.g. "/admin"), or "" for root.
+	// Read by the nextjs templates only:
+	//
+	//   - next.config.ts.tmpl renders it as the build-time default for
+	//     `basePath` + `assetPrefix` (overridable via the single
+	//     canonical env var NEXT_PUBLIC_BASE_PATH).
+	//   - src/lib/basepath_gen.ts.tmpl bakes it as the fallback for
+	//     BASE_PATH / joinBasePath().
+	//
+	// Already validated by config.LoadStrict (leading "/", no trailing
+	// "/", [A-Za-z0-9._-] segments) — templates splice it verbatim into
+	// TypeScript string literals.
+	BasePath string
 }
 
 // WebhookTemplateData holds data for webhook template rendering.
@@ -475,8 +550,6 @@ func (e *TemplateEngine) loadTemplates() error {
 		"service/handlers.go.tmpl",
 		"service/authorizer.go.tmpl",
 		"service/unit_test.go.tmpl",
-		"service/integration_test.go.tmpl",
-		"middleware/auth.go.tmpl",
 		"worker/worker.go.tmpl",
 		"worker/worker_test.go.tmpl",
 		"worker-cron/worker.go.tmpl",

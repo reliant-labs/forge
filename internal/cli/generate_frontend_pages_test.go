@@ -15,7 +15,7 @@ import (
 // regression test for the kalshi-trader friction round's blocker:
 // `forge generate` unconditionally re-rendered
 // `frontends/<fe>/src/app/<slug>/page.tsx` despite every page template
-// carrying a `// forge:scaffold one-shot — list page emitted by 'forge
+// carrying a canonical Tier-2 "yours:" banner (list page emitted by 'forge
 // add page'` banner promising the user that hand-edits would survive.
 // Pre-fix, the renderer used a bare `os.WriteFile` with no
 // stat-check guard, so the second `forge generate` invocation
@@ -23,7 +23,8 @@ import (
 //
 // Fix: emit through `checksums.WriteGeneratedFileTier2` with a
 // stat-check pre-guard mirroring `emitTier2OnceIfMissing`, so the
-// destination is left alone on re-run unless --force.
+// destination is left alone on re-run unless the `--reset-tier2`
+// hook is installed.
 func TestGenerateFrontendPages_PreservesHandEditsOnRegenerate(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -43,10 +44,10 @@ func TestGenerateFrontendPages_PreservesHandEditsOnRegenerate(t *testing.T) {
 		},
 	}
 	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
 	// First run: scaffolds the file.
-	if err := generateFrontendPages(cfg, services, projectDir, entities, cs, false); err != nil {
+	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
 		t.Fatalf("first generateFrontendPages: %v", err)
 	}
 
@@ -64,7 +65,7 @@ export default function PatientsPage() { return null; }
 	}
 
 	// Second run: hand-edit must survive.
-	if err := generateFrontendPages(cfg, services, projectDir, entities, cs, false); err != nil {
+	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
 		t.Fatalf("second generateFrontendPages: %v", err)
 	}
 
@@ -77,60 +78,12 @@ export default function PatientsPage() { return null; }
 	}
 }
 
-// TestGenerateFrontendPages_ForcePreservesHandEdits asserts the item-15
-// behavior change: `--force` alone is Tier-1-only — it must NOT clobber
-// hand-edited Tier-2 scaffolds like a frontend page. To overwrite a
-// Tier-2 file the user has to pass `--reset-tier2` (covered by the
-// Tier2OverwriteFn-driven test below). Pre-item-15 the renderer routed
-// `force` through to WriteGeneratedFileTier2 and would happily nuke
-// hand-edits; the regression guard now lives at the writer level.
-func TestGenerateFrontendPages_ForcePreservesHandEdits(t *testing.T) {
-	checksums.ResetTier2State()
-	defer checksums.ResetTier2State()
-
-	projectDir := t.TempDir()
-
-	cfg := &config.ProjectConfig{
-		Name: "demo",
-		Frontends: []config.FrontendConfig{
-			{Name: "dashboard", Type: "nextjs"},
-		},
-	}
-	services := []codegen.ServiceDef{
-		{
-			Name:    "ClinicService",
-			Package: "demo.v1",
-			Methods: []codegen.Method{
-				{Name: "ListPatients", InputType: "ListPatientsRequest", OutputType: "ListPatientsResponse"},
-			},
-		},
-	}
-	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
-
-	if err := generateFrontendPages(cfg, services, projectDir, entities, cs, false); err != nil {
-		t.Fatalf("first generateFrontendPages: %v", err)
-	}
-
-	pagePath := filepath.Join(projectDir, "frontends", "dashboard", "src", "app", "patients", "page.tsx")
-	const handEdited = `// user edit that --force MUST preserve under item 15`
-	if err := os.WriteFile(pagePath, []byte(handEdited), 0o644); err != nil {
-		t.Fatalf("simulating hand-edit: %v", err)
-	}
-
-	// force=true on a hand-edited Tier-2 must NOT overwrite.
-	if err := generateFrontendPages(cfg, services, projectDir, entities, cs, true); err != nil {
-		t.Fatalf("force generateFrontendPages: %v", err)
-	}
-
-	got, err := os.ReadFile(pagePath)
-	if err != nil {
-		t.Fatalf("read page after force re-run: %v", err)
-	}
-	if string(got) != handEdited {
-		t.Errorf("--force clobbered hand-edited Tier-2 page (item 15 violated). Got:\n%s", string(got))
-	}
-}
+// (The old TestGenerateFrontendPages_ForcePreservesHandEdits is gone:
+// `force` is no longer plumbed into the frontend page renderer at all —
+// `--force` is scoped to the Tier-1 files the stomp guard flagged
+// (generate_force_scope_test.go), so there is no force path that can
+// reach a Tier-2 page. The chokepoint-level pin lives in
+// internal/checksums/tier2_test.go.)
 
 // TestGenerateFrontendPages_ResetTier2OverwritesHandEdits asserts the
 // new `--reset-tier2` opt-in path: when the pipeline installs a Tier-2
@@ -156,9 +109,9 @@ func TestGenerateFrontendPages_ResetTier2OverwritesHandEdits(t *testing.T) {
 		},
 	}
 	entities := []codegen.EntityDef{{Name: "Patient"}}
-	cs := &checksums.FileChecksums{Files: make(map[string]checksums.FileChecksumEntry)}
+	cs := &checksums.FileChecksums{}
 
-	if err := generateFrontendPages(cfg, services, projectDir, entities, cs, false); err != nil {
+	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
 		t.Fatalf("first generateFrontendPages: %v", err)
 	}
 
@@ -170,8 +123,8 @@ func TestGenerateFrontendPages_ResetTier2OverwritesHandEdits(t *testing.T) {
 
 	// --reset-tier2 --yes shape: unconditional approval.
 	checksums.Tier2OverwriteFn = func(string) bool { return true }
-	if err := generateFrontendPages(cfg, services, projectDir, entities, cs, true); err != nil {
-		t.Fatalf("force generateFrontendPages: %v", err)
+	if err := generateFrontendPages(cfg, services, projectDir, entities, cs); err != nil {
+		t.Fatalf("reset-tier2 generateFrontendPages: %v", err)
 	}
 
 	got, err := os.ReadFile(pagePath)

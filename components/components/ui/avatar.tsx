@@ -8,7 +8,7 @@ interface AvatarProps {
   status?: "online" | "offline" | "busy" | "away";
 }
 
-const sizeStyles: Record<string, { container: string; text: string; status: string }> = {
+const sizeStyles: Record<NonNullable<AvatarProps["size"]>, { container: string; text: string; status: string }> = {
   xs: { container: "h-6 w-6", text: "text-[10px]", status: "h-1.5 w-1.5 ring-1" },
   sm: { container: "h-8 w-8", text: "text-xs", status: "h-2 w-2 ring-[1.5px]" },
   md: { container: "h-10 w-10", text: "text-sm", status: "h-2.5 w-2.5 ring-2" },
@@ -16,7 +16,7 @@ const sizeStyles: Record<string, { container: string; text: string; status: stri
   xl: { container: "h-16 w-16", text: "text-lg", status: "h-3.5 w-3.5 ring-2" },
 };
 
-const statusColors: Record<string, string> = {
+const statusColors: Record<NonNullable<AvatarProps["status"]>, string> = {
   online: "bg-green-500",
   offline: "bg-gray-400",
   busy: "bg-red-500",
@@ -39,7 +39,9 @@ function initialsColor(name: string): string {
     "bg-indigo-500", "bg-teal-500", "bg-orange-500", "bg-cyan-500",
   ];
   const hash = [...name].reduce((a, c) => a + c.charCodeAt(0), 0);
-  return colors[hash % colors.length];
+  // Index is provably in-bounds, but noUncheckedIndexedAccess can't see
+  // that — the fallback keeps the lookup total.
+  return colors[hash % colors.length] ?? "bg-gray-500";
 }
 
 export default function Avatar({ src, alt, name, size = "md", status }: AvatarProps) {
@@ -48,6 +50,9 @@ export default function Avatar({ src, alt, name, size = "md", status }: AvatarPr
   return (
     <div className={`relative inline-flex flex-shrink-0 ${s.container}`}>
       {src ? (
+        // Framework-agnostic library component (also ships to Vite SPAs); wrap
+        // with next/image at the call site if you want Next's optimization.
+        // eslint-disable-next-line @next/next/no-img-element -- see above
         <img
           src={src}
           alt={alt ?? name ?? "Avatar"}

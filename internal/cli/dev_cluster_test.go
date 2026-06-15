@@ -57,13 +57,16 @@ func TestReadK3dClusterName_EmptyMetadataName(t *testing.T) {
 // subcommand spec'd in the dev tree.
 func TestNewDevCmd_Subtree(t *testing.T) {
 	cmd := newDevCmd()
+	// port-forward is intentionally NOT in the dev subtree — the Gateway
+	// API ingress path (`forge dev urls`) is the canonical host-to-service
+	// entry point. See the comment block at the top of dev.go.
 	want := map[string]bool{
-		"cluster":      false,
-		"status":       false,
-		"logs":         false,
-		"info":         false,
-		"port-forward": false,
-		"instances":    false,
+		"cluster":   false,
+		"status":    false,
+		"logs":      false,
+		"info":      false,
+		"urls":      false,
+		"instances": false,
 	}
 	for _, sub := range cmd.Commands() {
 		if _, ok := want[sub.Name()]; ok {

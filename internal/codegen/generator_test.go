@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func TestGenerateServiceStub_ZeroMethods_NoUnusedImports(t *testing.T) {
@@ -172,7 +173,7 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -207,20 +208,43 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		t.Error("bootstrap.go should contain BootstrapOnly function")
 	}
 
-	// Must contain constructor calls. wire_gen owns the Deps literal
-	// now; bootstrap calls wireXxxDeps then passes the result into
-	// xxx.New (2026-05-07 wire-gen migration).
-	if !strings.Contains(content, `api.New(apiDeps)`) {
-		t.Error("bootstrap.go should construct api service with wire_gen-built Deps")
+	// Must contain constructor calls. wire_gen owns the Deps literal;
+	// the row constructors (which call wireXxxDeps then pass the result
+	// into xxx.New) live in services_gen.go since the
+	// registration-in-code rework, and bootstrap.go consumes them via
+	// the user-owned RegisteredServices list.
+	rowsData, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(services_gen.go) error = %v", err)
 	}
-	if !strings.Contains(content, `orders.New(ordersDeps)`) {
-		t.Error("bootstrap.go should construct orders service with wire_gen-built Deps")
+	rows := string(rowsData)
+	if !strings.Contains(rows, `api.New(apiDeps)`) {
+		t.Error("services_gen.go should construct api service with wire_gen-built Deps")
 	}
-	if !strings.Contains(content, `wireAPIDeps(app, cfg, logger`) {
-		t.Error("bootstrap.go should call wireAPIDeps(app, cfg, logger, devMode)")
+	if !strings.Contains(rows, `orders.New(ordersDeps)`) {
+		t.Error("services_gen.go should construct orders service with wire_gen-built Deps")
 	}
-	if !strings.Contains(content, `wireOrdersDeps(app, cfg, logger`) {
-		t.Error("bootstrap.go should call wireOrdersDeps(app, cfg, logger, devMode)")
+	if !strings.Contains(rows, `wireAPIDeps(app, cfg, logger`) {
+		t.Error("services_gen.go should call wireAPIDeps(app, cfg, logger)")
+	}
+	if !strings.Contains(rows, `wireOrdersDeps(app, cfg, logger`) {
+		t.Error("services_gen.go should call wireOrdersDeps(app, cfg, logger)")
+	}
+	if !strings.Contains(content, `RegisteredServices(app, cfg, logger, opts...)`) {
+		t.Error("bootstrap.go should consume the user-owned RegisteredServices row list")
+	}
+	// The scaffold-once user-owned registration file lists every row.
+	registryData, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(services.go) error = %v", err)
+	}
+	for _, line := range []string{
+		"serviceRowAPI(app, cfg, logger, opts...),",
+		"serviceRowOrders(app, cfg, logger, opts...),",
+	} {
+		if !strings.Contains(string(registryData), line) {
+			t.Errorf("scaffolded services.go missing row %q", line)
+		}
 	}
 
 	// Must contain generated file header
@@ -266,7 +290,7 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -282,22 +306,26 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	if strings.Contains(content, "vanguard.NewTranscoder") {
 		t.Error("bootstrap.go should NOT call vanguard.NewTranscoder when api.rest is off")
 	}
-	if strings.Contains(content, "app.RESTHandler =") {
-		t.Error("bootstrap.go should NOT assign app.RESTHandler when api.rest is off")
+	if strings.Contains(content, "app.restHandler =") {
+		t.Error("bootstrap.go should NOT assign app.restHandler when api.rest is off")
 	}
 }
 
 // TestGenerateBootstrap_RESTEnabled_WrapsMux verifies that a project
 // with `api.rest: true` in forge.yaml regenerates bootstrap.go with:
-//   - a `connectrpc.com/vanguard` import,
-//   - a `vanguard.NewTranscoder(...)` call inside both Bootstrap and
-//     BootstrapOnly, populated with one entry per service keyed by the
+//   - an `appkit.RESTDef` row in the def table (the vanguard transcoder
+//     construction itself lives in pkg/appkit, not in the generated
+//     file — "tables, not programs"),
+//   - one `ConnectName:` data field per service row keyed by the
 //     Connect-generated `<X>ServiceName` constant, and
-//   - the wrapped handler stored on `app.RESTHandler`.
+//   - the Assign closure pointing the wrapped handler at the
+//     unexported `app.restHandler` field.
 //
-// The generated app_gen.go grows a `RESTHandler http.Handler` field;
-// this test confirms the field is always emitted so cmd-server.go can
-// read it unconditionally without a templated branch.
+// The generated app_gen.go grows an unexported `restHandler http.Handler`
+// field plus a `RESTHandler() http.Handler` accessor method (required by
+// the serverkit.Application interface); this test confirms both are
+// always emitted so serverkit can call the method unconditionally without
+// a templated branch.
 func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	targetDir := t.TempDir()
 
@@ -310,7 +338,7 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	if err := GenerateAppGen(false, false, len(services) > 0, false, false, false, targetDir, nil); err != nil {
@@ -323,37 +351,50 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	}
 	bContent := string(bootstrap)
 
-	if !strings.Contains(bContent, `"connectrpc.com/vanguard"`) {
-		t.Error("bootstrap.go should import connectrpc.com/vanguard when api.rest is on")
+	// The transcoder construction moved into pkg/appkit — the generated
+	// file carries only the data row that turns it on.
+	if strings.Contains(bContent, "connectrpc.com/vanguard") {
+		t.Error("bootstrap.go should NOT import vanguard directly — the transcoder construction lives in pkg/appkit")
 	}
-	if !strings.Contains(bContent, "vanguard.NewTranscoder(vanguardSvcs)") {
-		t.Errorf("bootstrap.go should call vanguard.NewTranscoder; got:\n%s", bContent)
+	if !strings.Contains(bContent, "REST: &appkit.RESTDef{") {
+		t.Errorf("bootstrap.go should carry an appkit.RESTDef row when api.rest is on; got:\n%s", bContent)
 	}
-	// Per-service NewService call with the connect ServiceName constant.
-	if !strings.Contains(bContent, "apiv1connect.APIServiceName") {
-		t.Error("bootstrap.go should reference apiv1connect.APIServiceName for APIService")
+	// Per-service ConnectName data field with the connect ServiceName
+	// constant — on the row constructors in services_gen.go since the
+	// registration-in-code rework (the row data moved with the rows).
+	rowsData, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(services_gen.go) error = %v", err)
 	}
-	if !strings.Contains(bContent, "ordersv1connect.OrdersServiceName") {
-		t.Error("bootstrap.go should reference ordersv1connect.OrdersServiceName for OrdersService")
+	rows := string(rowsData)
+	if !strings.Contains(rows, "ConnectName: apiv1connect.APIServiceName") {
+		t.Error("services_gen.go should reference apiv1connect.APIServiceName for APIService")
 	}
-	if !strings.Contains(bContent, "app.RESTHandler = transcoder") {
-		t.Error("bootstrap.go should assign the transcoder to app.RESTHandler")
+	if !strings.Contains(rows, "ConnectName: ordersv1connect.OrdersServiceName") {
+		t.Error("services_gen.go should reference ordersv1connect.OrdersServiceName for OrdersService")
 	}
-	// Both Bootstrap and BootstrapOnly should wrap — count occurrences.
-	if got := strings.Count(bContent, "vanguard.NewTranscoder"); got != 2 {
-		t.Errorf("bootstrap.go should call vanguard.NewTranscoder twice (Bootstrap + BootstrapOnly); got %d", got)
+	// The Assign closure must land on the unexported restHandler field
+	// — the backing store for the RESTHandler() accessor that
+	// serverkit.Application requires (A2/serverkit shape), with the
+	// transcoder construction itself in appkit (A5 table shape).
+	if !strings.Contains(bContent, "app.restHandler = h") {
+		t.Error("bootstrap.go RESTDef.Assign should point at app.restHandler (unexported field backing the RESTHandler() method)")
 	}
-	// Connect imports should appear in the import block.
-	if !strings.Contains(bContent, `"example.com/proj/gen/services/api/v1/apiv1connect"`) {
-		t.Errorf("bootstrap.go should import the apiv1connect package; got:\n%s", bContent)
+	// Connect imports should appear in services_gen.go's import block
+	// (bootstrap.go no longer references the connect packages).
+	if !strings.Contains(rows, `"example.com/proj/gen/services/api/v1/apiv1connect"`) {
+		t.Errorf("services_gen.go should import the apiv1connect package; got:\n%s", rows)
 	}
 
 	appGen, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "app_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile(app_gen) error = %v", err)
 	}
-	if !strings.Contains(string(appGen), "RESTHandler http.Handler") {
-		t.Error("app_gen.go should declare RESTHandler http.Handler on App")
+	if !strings.Contains(string(appGen), "restHandler http.Handler") {
+		t.Error("app_gen.go should declare the unexported restHandler http.Handler field on App")
+	}
+	if !strings.Contains(string(appGen), "func (a *App) RESTHandler() http.Handler") {
+		t.Error("app_gen.go should declare the RESTHandler() http.Handler accessor method on App")
 	}
 
 	// Sanity-parse the generated bootstrap.go to catch templating bugs
@@ -379,17 +420,21 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},      // no webhooks
 	}
 
-	// Compact-lowercase package names match codegen.toServicePackage output
-	// (post-2026 snake/kebab-stripping rule — "AdminServerService" -> "adminserver").
+	// Snake_case package names match naming.ServicePackage output
+	// (post-2026-06-08 snake-canonicalisation rule —
+	// "AdminServerService" -> "admin_server", aligning with the
+	// universal on-disk proto / handler dir convention).
 	webhookServices := map[string]bool{
-		"adminserver": true,
+		"admin_server": true,
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	// The mount closures live in services_gen.go since the
+	// registration-in-code rework.
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "services_gen.go"))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
@@ -398,21 +443,21 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 	// Auto-wired RegisterWebhookRoutes for the webhook-bearing service.
 	// (2026-05-07 wire-gen migration: services now hang directly off
 	// `app.Services.<Field>` instead of a local `svcs` var.)
-	if !strings.Contains(content, "app.Services.AdminServer.RegisterWebhookRoutes(mux, middleware.HTTPStack(logger))") {
-		t.Errorf("bootstrap.go should auto-wire RegisterWebhookRoutes for admin_server (has webhooks); got:\n%s", content)
+	if !strings.Contains(content, "app.Services.AdminServer.RegisterWebhookRoutes(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))") {
+		t.Errorf("services_gen.go should auto-wire RegisterWebhookRoutes for admin_server (has webhooks); got:\n%s", content)
 	}
 
 	// No auto-wire for the service without webhooks.
 	if strings.Contains(content, "app.Services.Orders.RegisterWebhookRoutes(") {
-		t.Errorf("bootstrap.go should NOT auto-wire RegisterWebhookRoutes for orders (no webhooks)")
+		t.Errorf("services_gen.go should NOT auto-wire RegisterWebhookRoutes for orders (no webhooks)")
 	}
 
 	// Both services still get RegisterHTTP — the auto-wire is additive.
-	if !strings.Contains(content, "app.Services.AdminServer.RegisterHTTP(mux, middleware.HTTPStack(logger))") {
-		t.Errorf("bootstrap.go should still call RegisterHTTP for admin_server")
+	if !strings.Contains(content, "app.Services.AdminServer.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))") {
+		t.Errorf("services_gen.go should still call RegisterHTTP for admin_server")
 	}
-	if !strings.Contains(content, "app.Services.Orders.RegisterHTTP(mux, middleware.HTTPStack(logger))") {
-		t.Errorf("bootstrap.go should still call RegisterHTTP for orders")
+	if !strings.Contains(content, "app.Services.Orders.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))") {
+		t.Errorf("services_gen.go should still call RegisterHTTP for orders")
 	}
 }
 
@@ -428,7 +473,7 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", ImportPath: "notifications", FieldName: "Notifications", VarName: "notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// app_gen.go owns the App struct definition (with Packages field
@@ -591,6 +636,324 @@ type Deps struct {
 	}
 }
 
+// canonicalAliasFixture writes a minimal project shape for the
+// CanonicalAppField tests: pkg/app/app_extras.go with the given source,
+// internal/<pkg>/contract.go with the given source, and a go.mod naming
+// the module so import-path resolution is exact.
+func canonicalAliasFixture(t *testing.T, appExtrasSrc, pkgName, contractSrc string) string {
+	t.Helper()
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"),
+		[]byte("module example.com/proj\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(appExtrasSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkgDir := filepath.Join(projectDir, "internal", pkgName)
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "contract.go"), []byte(contractSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return projectDir
+}
+
+// TestInspectComponentDepsShape_CanonicalServiceAlias mirrors the
+// cp-forge svcdaemon shape: the package's Deps declares collaborator
+// fields that have NO name match on App/AppExtras (DaemonRepo,
+// URLBuilder — they are constructed inline in user-owned setup.go), so
+// bootstrap's auto-wire cannot express the construction and the
+// generated `daemon.New(Deps{...})` panics at boot ("Deps.DaemonRepo
+// is required"). AppExtras DOES hold the canonical, fully-wired
+// instance (`DaemonService daemon.Service`, assigned in Setup, which
+// appkit runs before the package table). Expect CanonicalAppField to
+// name it so the template emits an alias instead of a second,
+// half-built instance.
+func TestInspectComponentDepsShape_CanonicalServiceAlias(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import daemon "example.com/proj/internal/daemon"
+
+type AppExtras struct {
+	Conn          string
+	DaemonService daemon.Service
+}
+`, "daemon", `package daemon
+
+import "log/slog"
+
+type Repository interface{ Get() string }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	Logger     *slog.Logger
+	Conn       string
+	DaemonRepo Repository
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "daemon", Package: "daemon", ImportPath: "daemon", FieldName: "Daemon", Alias: "daemon"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "DaemonService" {
+		t.Errorf("CanonicalAppField = %q, want %q (Deps.DaemonRepo is unwireable and AppExtras.DaemonService holds the canonical instance)", got, "DaemonService")
+	}
+	// The name+type matches must still be recorded — testing.go and the
+	// non-alias fallback paths read them.
+	if !components[0].HasLogger {
+		t.Error("HasLogger should still be true")
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_FullyWiredStaysConstructed
+// mirrors cp-forge's enforcement/Checker shape: every Deps field
+// auto-wires by name+type, so even though AppExtras holds a field of
+// the package's Service type, bootstrap keeps constructing its own
+// instance — the alias mechanism is strictly for unexpressible wirings.
+func TestInspectComponentDepsShape_CanonicalAlias_FullyWiredStaysConstructed(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import enforcement "example.com/proj/internal/enforcement"
+
+type AppExtras struct {
+	EnforcementRepo string
+	Checker         enforcement.Service
+}
+`, "enforcement", `package enforcement
+
+import "log/slog"
+
+type Service interface{ Check() }
+
+type Deps struct {
+	Logger          *slog.Logger
+	EnforcementRepo string
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "enforcement", Package: "enforcement", ImportPath: "enforcement", FieldName: "Enforcement", Alias: "enforcement"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (all Deps fields auto-wire; no alias)", got)
+	}
+	if len(components[0].AppFieldRefs) != 1 || components[0].AppFieldRefs[0].DepsField != "EnforcementRepo" {
+		t.Errorf("AppFieldRefs = %+v, want exactly [EnforcementRepo]", components[0].AppFieldRefs)
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_ScalarOnlyGapStaysConstructed
+// mirrors cp-forge's billing/APIKey shape: the only unwired Deps fields
+// are configuration scalars (string / []byte / numeric). Scalars are
+// never auto-wired and their zero value is the package's documented
+// degraded mode — not the panic/no-op collaborator class — so the
+// package keeps constructing even when a canonical instance exists.
+func TestInspectComponentDepsShape_CanonicalAlias_ScalarOnlyGapStaysConstructed(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import billing "example.com/proj/internal/billing"
+
+type AppExtras struct {
+	Stripe billing.Service
+}
+`, "billing", `package billing
+
+type Service interface{ Charge() }
+
+type Deps struct {
+	APIKey    string
+	PlansData []byte
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "billing", Package: "billing", ImportPath: "billing", FieldName: "Billing", Alias: "billing"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (only config scalars are unwired)", got)
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_AliasedImport mirrors
+// cp-forge's internal/user shape: app_extras.go imports the package
+// under a renamed qualifier (internaluser "…/internal/user") so a
+// package-name string compare would miss the field. The resolver must
+// follow the file's import table.
+func TestInspectComponentDepsShape_CanonicalAlias_AliasedImport(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import internaluser "example.com/proj/internal/user"
+
+type AppExtras struct {
+	UserService internaluser.Service
+}
+`, "user", `package user
+
+type AuditLogger interface{ Log() }
+
+type Service interface{ Get() }
+
+type Deps struct {
+	Audit AuditLogger
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "user", Package: "user", ImportPath: "user", FieldName: "PkgUser", Alias: "pkgUser"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "UserService" {
+		t.Errorf("CanonicalAppField = %q, want %q (aliased import must resolve)", got, "UserService")
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_AmbiguousSkips: two
+// App/AppExtras fields of the package's Service type — there is no
+// deterministic canonical instance, so fall back to construction (the
+// deps-coverage lint surfaces the unwired field).
+func TestInspectComponentDepsShape_CanonicalAlias_AmbiguousSkips(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import daemon "example.com/proj/internal/daemon"
+
+type AppExtras struct {
+	DaemonService daemon.Service
+	DaemonShadow  daemon.Service
+}
+`, "daemon", `package daemon
+
+type Repository interface{ Get() string }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	DaemonRepo Repository
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "daemon", Package: "daemon", ImportPath: "daemon", FieldName: "Daemon", Alias: "daemon"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (two candidate fields is ambiguous)", got)
+	}
+}
+
+// TestInspectComponentDepsShape_CanonicalAlias_OptionalDepDoesNotTrigger:
+// a collaborator explicitly marked `// forge:optional-dep` is designed
+// to be nil at construction — it must not count toward the
+// "construction is unexpressible" trigger.
+func TestInspectComponentDepsShape_CanonicalAlias_OptionalDepDoesNotTrigger(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import notifier "example.com/proj/internal/notifier"
+
+type AppExtras struct {
+	NotifierService notifier.Service
+}
+`, "notifier", `package notifier
+
+type Sink interface{ Send() }
+
+type Service interface{ Notify() }
+
+type Deps struct {
+	// forge:optional-dep
+	Sink Sink
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	components := []BootstrapComponentData{
+		{Name: "notifier", Package: "notifier", ImportPath: "notifier", FieldName: "Notifier", Alias: "notifier"},
+	}
+	inspectComponentDepsShape(components, projectDir, "internal")
+
+	if got := components[0].CanonicalAppField; got != "" {
+		t.Errorf("CanonicalAppField = %q, want \"\" (only optional-marked deps are unwired)", got)
+	}
+}
+
+// TestGenerateBootstrap_CanonicalServiceAlias is the render-level
+// regression for the cp-forge svcdaemon hand-edit: when a package's
+// Deps cannot be auto-wired and AppExtras holds the canonical
+// instance, bootstrap.go must emit
+// `app.Packages.<Field> = app.<CanonicalField>` and must NOT construct
+// a second instance.
+func TestGenerateBootstrap_CanonicalServiceAlias(t *testing.T) {
+	projectDir := canonicalAliasFixture(t, `package app
+
+import daemon "example.com/proj/internal/daemon"
+
+type AppExtras struct {
+	DaemonService daemon.Service
+}
+`, "daemon", `package daemon
+
+type Repository interface{ Get() string }
+
+type Service interface{ Do() }
+
+type Deps struct {
+	DaemonRepo Repository
+}
+
+func New(deps Deps) Service { return nil }
+`)
+
+	packages, err := PackageDataFromNames([]string{"daemon"}, projectDir)
+	if err != nil {
+		t.Fatalf("PackageDataFromNames() error = %v", err)
+	}
+	if err := GenerateBootstrap(nil, packages, nil, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "app.Packages.Daemon = app.DaemonService") {
+		t.Error("bootstrap.go should alias app.Packages.Daemon to the canonical app.DaemonService instance")
+	}
+	if strings.Contains(content, "daemon.New(daemon.Deps{") {
+		t.Error("bootstrap.go must not construct a second daemon instance when the canonical alias applies")
+	}
+	// The Packages struct still declares the slot (typed by import).
+	if !strings.Contains(content, "Daemon daemon.Service") {
+		t.Error("bootstrap.go should keep the Packages.Daemon field declaration")
+	}
+}
+
 func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 	targetDir := t.TempDir()
 
@@ -620,28 +983,56 @@ func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 		t.Error("testing.go should contain TestOption type")
 	}
 
-	// Must contain per-service dep override options
-	if !strings.Contains(content, `func WithAPIDeps(deps api.Deps) TestOption`) {
-		t.Error("testing.go should contain WithAPIDeps option")
+	// Per-service dep override options return SERVICE-SCOPED option types
+	// (review DI#8): WithAPIDeps must not be passable to NewTestOrders —
+	// the old single TestOption type made that compile and silently no-op.
+	if !strings.Contains(content, `func WithAPIDeps(deps api.Deps) APITestOption`) {
+		t.Error("testing.go should contain WithAPIDeps option returning APITestOption")
 	}
-	if !strings.Contains(content, `func WithOrdersDeps(deps orders.Deps) TestOption`) {
-		t.Error("testing.go should contain WithOrdersDeps option")
+	if !strings.Contains(content, `func WithOrdersDeps(deps orders.Deps) OrdersTestOption`) {
+		t.Error("testing.go should contain WithOrdersDeps option returning OrdersTestOption")
+	}
+	// Cross-cutting TestOption must satisfy each per-service interface.
+	if !strings.Contains(content, `func (o TestOption) applyAPI(c *testConfig)`) {
+		t.Error("testing.go should adapt TestOption to APITestOption")
+	}
+	if !strings.Contains(content, `func (o TestOption) applyOrders(c *testConfig)`) {
+		t.Error("testing.go should adapt TestOption to OrdersTestOption")
 	}
 
-	// Must contain NewTestXxx functions
-	if !strings.Contains(content, `func NewTestAPI(t *testing.T, opts ...TestOption) *api.Service`) {
+	// Must contain NewTestXxx functions taking the per-service option type
+	if !strings.Contains(content, `func NewTestAPI(t *testing.T, opts ...APITestOption) *api.Service`) {
 		t.Error("testing.go should contain NewTestAPI function")
 	}
-	if !strings.Contains(content, `func NewTestOrders(t *testing.T, opts ...TestOption) *orders.Service`) {
+	if !strings.Contains(content, `func NewTestOrders(t *testing.T, opts ...OrdersTestOption) *orders.Service`) {
 		t.Error("testing.go should contain NewTestOrders function")
 	}
 
 	// Must contain NewTestXxxServer functions
-	if !strings.Contains(content, `func NewTestAPIServer(t *testing.T, opts ...TestOption)`) {
+	if !strings.Contains(content, `func NewTestAPIServer(t *testing.T, opts ...APITestOption)`) {
 		t.Error("testing.go should contain NewTestAPIServer function")
 	}
-	if !strings.Contains(content, `func NewTestOrdersServer(t *testing.T, opts ...TestOption)`) {
+	if !strings.Contains(content, `func NewTestOrdersServer(t *testing.T, opts ...OrdersTestOption)`) {
 		t.Error("testing.go should contain NewTestOrdersServer function")
+	}
+
+	// The test server must mount the production interceptor chain shape:
+	// AuthzInterceptor wired with the effective (default: permissive)
+	// authorizer — never an empty connect.WithInterceptors().
+	if !strings.Contains(content, `middleware.AuthzInterceptor(deps.Authorizer)`) {
+		t.Error("testing.go should mount middleware.AuthzInterceptor in NewTestXxxServer")
+	}
+	if strings.Contains(content, "connect.WithInterceptors()") {
+		t.Error("testing.go must not register with an EMPTY interceptor chain")
+	}
+
+	// AuthedContext re-export: claims-bearing ctx via the project's own
+	// middleware.ContextWithClaims setter.
+	if !strings.Contains(content, `func AuthedContext(t *testing.T, opts ...testkit.ClaimsOption) context.Context`) {
+		t.Error("testing.go should re-export testkit.AuthedContext bound to middleware.ContextWithClaims")
+	}
+	if !strings.Contains(content, `testkit.AuthedContext(t, middleware.ContextWithClaims, opts...)`) {
+		t.Error("testing.go AuthedContext should delegate to testkit with the project setter")
 	}
 
 	// Must import service packages
@@ -709,19 +1100,91 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 		t.Error("testing.go should import cache package")
 	}
 
-	// Must contain WithCacheDeps option
-	if !strings.Contains(content, `func WithCacheDeps(deps cache.Deps) TestOption`) {
-		t.Error("testing.go should contain WithCacheDeps option")
+	// Must contain WithCacheDeps option returning the package-scoped type
+	// (review DI#8: a cache option must not silently no-op in NewTestAPI).
+	if !strings.Contains(content, `func WithCacheDeps(deps cache.Deps) CacheTestOption`) {
+		t.Error("testing.go should contain WithCacheDeps option returning CacheTestOption")
 	}
 
 	// Must contain NewTestCache function returning interface type
-	if !strings.Contains(content, `func NewTestCache(t *testing.T, opts ...TestOption) cache.Service`) {
+	if !strings.Contains(content, `func NewTestCache(t *testing.T, opts ...CacheTestOption) cache.Service`) {
 		t.Error("testing.go should contain NewTestCache function")
 	}
 }
 
+// TestGenerateBootstrapTesting_MigratedDBOptIn pins the DB harness
+// contract for projects with embedded migrations: the DEFAULT test DB is
+// a bare (schema-less) real-postgres database, and a NewMigratedTestDB
+// helper is emitted so tests opt in to the real schema via
+// WithDB(NewMigratedTestDB(t)).
+func TestGenerateBootstrapTesting_MigratedDBOptIn(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// A service whose Deps carry a DB field (AnyServiceHasDB → true).
+	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	serviceGo := `package api
+
+import (
+	"log/slog"
+
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+type Deps struct {
+	Logger *slog.Logger
+	DB     orm.Context
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+`
+	if err := os.WriteFile(filepath.Join(handlerDir, "service.go"), []byte(serviceGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Embedded migrations present (the GenerateMigrate predicate).
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migDir, "00001_init.up.sql"), []byte("CREATE TABLE items (id TEXT);"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
+	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectDir, nil); err != nil {
+		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, "pkg", "app", "testing.go"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, `db:     testkit.NewPostgresDB(t)`) {
+		t.Error("default test DB must be the BARE real-postgres DB (migrations are opt-in)")
+	}
+	if !strings.Contains(content, `func NewMigratedTestDB(t *testing.T) orm.Context`) {
+		t.Error("testing.go should emit the NewMigratedTestDB opt-in helper when migrations exist")
+	}
+	if !strings.Contains(content, `testkit.NewMigratedPostgresDB(t, forgedb.MigrationsFS)`) {
+		t.Error("NewMigratedTestDB should delegate to testkit.NewMigratedPostgresDB over forgedb.MigrationsFS")
+	}
+	if !strings.Contains(content, `forgedb "example.com/proj/db"`) {
+		t.Error("testing.go should import the project db package as forgedb")
+	}
+}
+
 func TestPackageDataFromNames(t *testing.T) {
-	pkgs := PackageDataFromNames([]string{"cache", "db", "notifications"}, t.TempDir())
+	pkgs, err := PackageDataFromNames([]string{"cache", "db", "notifications"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("PackageDataFromNames: %v", err)
+	}
 
 	if len(pkgs) != 3 {
 		t.Fatalf("expected 3 packages, got %d", len(pkgs))
@@ -742,7 +1205,10 @@ func TestPackageDataFromNames(t *testing.T) {
 // distinct ImportPath / FieldName / VarName so two nested packages with the
 // same leaf don't collide in the bootstrap struct.
 func TestPackageDataFromNames_Nested(t *testing.T) {
-	pkgs := PackageDataFromNames([]string{"mcp/database", "cache"}, t.TempDir())
+	pkgs, err := PackageDataFromNames([]string{"mcp/database", "cache"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("PackageDataFromNames: %v", err)
+	}
 	if len(pkgs) != 2 {
 		t.Fatalf("expected 2 packages, got %d", len(pkgs))
 	}
@@ -933,6 +1399,11 @@ func (s *Service) Echo() {}
 	if err := os.WriteFile(filepath.Join(targetDir, "handlers_test.go"), []byte(testFile), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// Real handler dirs always carry a service.go; the disk-first
+	// resolver reads the package clause from it.
+	if err := os.WriteFile(filepath.Join(targetDir, "service.go"), []byte("package echo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := ServiceDef{
 		Name:      "EchoService",
@@ -1067,8 +1538,8 @@ func TestGenerateSetup_CreatesFile(t *testing.T) {
 	if !strings.Contains(content, "example.com/proj/pkg/config") {
 		t.Error("setup.go should import the project config package")
 	}
-	if !strings.Contains(content, "never overwrite") {
-		t.Error("setup.go should document that it's never overwritten")
+	if !strings.Contains(content, "yours: scaffolded once, never touched again — forge will not overwrite this file") {
+		t.Error("setup.go should carry the canonical Tier-2 'yours:' banner")
 	}
 }
 
@@ -1105,7 +1576,7 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", false, false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -1180,8 +1651,8 @@ func TestGeneratePostBootstrap_CreatesFile(t *testing.T) {
 	if !strings.Contains(content, "return nil") {
 		t.Error("post_bootstrap.go default body must be a no-op (return nil)")
 	}
-	if !strings.Contains(content, "never overwrite") {
-		t.Error("post_bootstrap.go should document that it's never overwritten")
+	if !strings.Contains(content, "yours: scaffolded once, never touched again — forge will not overwrite this file") {
+		t.Error("post_bootstrap.go should carry the canonical Tier-2 'yours:' banner")
 	}
 }
 
@@ -1240,7 +1711,7 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", true, true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "postgres", true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// App struct (with DB field + database/sql import) now lives in
@@ -1263,31 +1734,63 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 	}
 }
 
-func TestToServicePackage(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"EchoService", "echo"},
-		{"OrdersService", "orders"},
-		{"Service", "service"},
-		{"notifications", "notifications"},
-		// Multi-word PascalCase compacts to a single lowercase identifier
-		// (separators stripped) so the result agrees with
-		// generator.ServicePackageName on the equivalent CLI name
-		// ("admin-server" / "admin_server" -> "adminserver").
-		{"AdminServerService", "adminserver"},
-		{"admin-server", "adminserver"},
-		{"admin_server", "adminserver"},
+// TestGenerateBootstrap_ConstructsDatabaseAndORM pins the J-round fix for
+// "nothing constructs app.ORM": construction must live in Tier-1
+// bootstrap.go (regenerated with the project's real shape), NOT only in
+// the scaffold-once setup.go — projects that grow their first entity
+// after scaffold time have a setup.go with no DB wiring, and the
+// resulting typed-nil ORM panicked on the first RPC.
+func TestGenerateBootstrap_ConstructsDatabaseAndORM(t *testing.T) {
+	targetDir := t.TempDir()
+
+	services := []ServiceDef{
+		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	for _, tt := range tests {
-		got := toServicePackage(tt.input)
-		if got != tt.want {
-			t.Errorf("toServicePackage(%q) = %q, want %q", tt.input, got, tt.want)
-		}
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "postgres", true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(bootstrap.go) error = %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "func ensureDatabase(") {
+		t.Error("bootstrap.go should emit ensureDatabase — DB/ORM construction must be Tier-1, not scaffold-once setup.go")
+	}
+	if !strings.Contains(content, "ensureDatabase(app, cfg, logger)") {
+		t.Error("bootstrap.go's Setup row should call ensureDatabase after the user-owned Setup")
+	}
+	if !strings.Contains(content, `_ "github.com/jackc/pgx/v5/stdlib"`) {
+		t.Error("bootstrap.go should import the pgx driver for postgres projects")
+	}
+	if !strings.Contains(content, `orm.NewClientWithDB(app.DB, "postgres")`) {
+		t.Error("bootstrap.go should construct the ORM client from app.DB when ORM is enabled")
+	}
+
+	// Postgres is the only driver: any non-"none" value emits the pgx
+	// import and the postgres ORM client (asserted above). There is no
+	// sqlite bootstrap variant anymore.
+
+	// No database → no construction machinery, Setup row stays bare.
+	noDBDir := t.TempDir()
+	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, noDBDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+		t.Fatalf("GenerateBootstrap(no db) error = %v", err)
+	}
+	data, err = os.ReadFile(filepath.Join(noDBDir, "pkg", "app", "bootstrap.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(bootstrap.go no-db) error = %v", err)
+	}
+	if strings.Contains(string(data), "ensureDatabase") {
+		t.Error("no-database bootstrap.go should not emit ensureDatabase")
 	}
 }
+
+// TestToServicePackage_MovedToNaming notes the canonical test moved to
+// internal/naming/naming_test.go (TestServicePackage). The codegen
+// helper now delegates to naming.ServicePackage; the table-driven cases
+// live with the canonical implementation.
 // TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper covers
 // the cross-role collision case: when an internal/<svc> directory exists,
 // GenerateBootstrapTesting emits NewTestSvc<Pascal> rather than NewTest<Pascal>.
@@ -1384,10 +1887,13 @@ func TestComputeTestHelperName(t *testing.T) {
 // not the underscore-preserving `Calibrator_refit` form that revive /
 // staticcheck ST1003 would flag.
 //
-// Post-2026: the on-disk Package + Go package identifier also compacts
-// ("calibrator_refit" -> "calibratorrefit") so workers/operators match Go
-// style. FieldName still derives from the original separator-bearing name
-// so the exported identifier reads as multiple words.
+// Post-2026-06-08: the on-disk Package + Go package identifier is
+// snake_case ("calibrator_refit" stays "calibrator_refit", "email-sender"
+// becomes "email_sender"). Snake_case is a valid Go package identifier
+// and matches the universal on-disk dir convention proto buf emits for
+// multi-word proto packages. FieldName still derives from the original
+// name via ToPascalCase so the exported Go identifier reads as multiple
+// words.
 func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -1395,18 +1901,21 @@ func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 		wantFieldName string
 		wantVarName   string
 	}{
-		// Snake-case → compact pkg; PascalCase via ToPascalCase from the
+		// Snake-case → snake pkg; PascalCase via ToPascalCase from the
 		// original name so word boundaries survive.
-		{"calibrator_refit", "calibratorrefit", "CalibratorRefit", "calibratorRefit"},
-		// Hyphenated → same compact rule.
-		{"email-sender", "emailsender", "EmailSender", "emailSender"},
+		{"calibrator_refit", "calibrator_refit", "CalibratorRefit", "calibratorRefit"},
+		// Hyphenated → normalized to snake.
+		{"email-sender", "email_sender", "EmailSender", "emailSender"},
 		// Single-word stays as-is (just upper-cased first letter).
 		{"refresh", "refresh", "Refresh", "refresh"},
 		// Initialism — ToPascalCase recognizes API and uppercases it.
-		{"api_poll", "apipoll", "APIPoll", "aPIPoll"},
+		{"api_poll", "api_poll", "APIPoll", "aPIPoll"},
 	}
 	for _, c := range cases {
-		got := WorkerDataFromNames([]string{c.name}, "")
+		got, err := WorkerDataFromNames([]string{c.name}, "")
+		if err != nil {
+			t.Fatalf("WorkerDataFromNames(%q): %v", c.name, err)
+		}
 		if len(got) != 1 {
 			t.Fatalf("WorkerDataFromNames(%q) returned %d entries, want 1", c.name, len(got))
 		}
@@ -1430,9 +1939,150 @@ func TestWorkerDataFromNames_PascalCaseFieldName(t *testing.T) {
 // TestOperatorDataFromNames_PascalCaseFieldName mirrors the worker
 // regression test — operators share the snake_case → PascalCase rule.
 func TestOperatorDataFromNames_PascalCaseFieldName(t *testing.T) {
-	got := OperatorDataFromNames([]string{"cert_rotator"}, "")
+	got, err := OperatorDataFromNames([]string{"cert_rotator"}, "")
+	if err != nil {
+		t.Fatalf("OperatorDataFromNames: %v", err)
+	}
 	if len(got) != 1 || got[0].FieldName != "CertRotator" {
 		t.Errorf("OperatorDataFromNames(\"cert_rotator\")[0].FieldName = %q, want \"CertRotator\"", got[0].FieldName)
+	}
+}
+
+// TestWorkerDataFromSpecs_HonorsExplicitPath locks in the path-
+// honoring rule: when forge.yaml declares
+// `path: workers/climatology_refresh`, the generated bootstrap import must
+// be `"<module>/workers/climatology_refresh"` (matching the on-disk dir).
+// Same rule applies to the Alias — it must equal the `package X`
+// declaration in the dir's .go file so call sites like `<Alias>.New(...)`
+// resolve correctly.
+//
+// Coverage:
+//   - Explicit snake_case path → ImportPath + Package + Alias all
+//     preserve the underscore.
+//   - Empty path (legacy entry point) → falls back to
+//     `naming.GoPackage(name)` which canonicalises to snake_case.
+//   - On-disk `package X` declaration overrides the path-derived alias —
+//     ground truth wins when the user renamed the package after scaffolding
+//     (e.g. legacy `package widgetv2` from the pre-2026-06-08 compact-form
+//     interlude).
+func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
+	projectDir := t.TempDir()
+	// Seed an on-disk worker dir with the snake_case package declaration
+	// so the ground-truth alias detection has something to read.
+	workerDir := filepath.Join(projectDir, "workers", "climatology_refresh")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	src := "package climatology_refresh\n\ntype Worker struct{}\n\nfunc New(Deps) *Worker { return &Worker{} }\n\ntype Deps struct{}\n"
+	if err := os.WriteFile(filepath.Join(workerDir, "worker.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Mismatched on-disk dir for the "ground truth overrides path leaf" case:
+	// path says workers/widget_v2 but the actual `package X` is `widgetv2`.
+	mismatchDir := filepath.Join(projectDir, "workers", "widget_v2")
+	if err := os.MkdirAll(mismatchDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	mismatchSrc := "package widgetv2\n\ntype Worker struct{}\n"
+	if err := os.WriteFile(filepath.Join(mismatchDir, "worker.go"), []byte(mismatchSrc), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cases := []struct {
+		desc           string
+		spec           WorkerSpec
+		projectDir     string
+		wantPackage    string
+		wantImportPath string
+		wantAlias      string
+		wantFieldName  string
+	}{
+		{
+			desc:           "explicit snake_case path preserves underscore for import + alias",
+			spec:           WorkerSpec{Name: "climatology_refresh", Path: "workers/climatology_refresh"},
+			projectDir:     projectDir,
+			wantPackage:    "climatology_refresh",
+			wantImportPath: "climatology_refresh",
+			wantAlias:      "climatology_refresh",
+			wantFieldName:  "ClimatologyRefresh",
+		},
+		{
+			desc:           "empty path falls back to snake_case Go-style form",
+			spec:           WorkerSpec{Name: "calibrator_refit"},
+			projectDir:     "",
+			wantPackage:    "calibrator_refit",
+			wantImportPath: "calibrator_refit",
+			wantAlias:      "calibrator_refit",
+			wantFieldName:  "CalibratorRefit",
+		},
+		{
+			desc:           "on-disk package declaration overrides path-derived alias",
+			spec:           WorkerSpec{Name: "widget_v2", Path: "workers/widget_v2"},
+			projectDir:     projectDir,
+			wantPackage:    "widgetv2", // overridden by ground truth
+			wantImportPath: "widget_v2",
+			wantAlias:      "widgetv2", // overridden by ground truth
+			wantFieldName:  "WidgetV2",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			got, err := WorkerDataFromSpecs([]WorkerSpec{c.spec}, c.projectDir)
+			if err != nil {
+				t.Fatalf("WorkerDataFromSpecs: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("WorkerDataFromSpecs returned %d entries, want 1", len(got))
+			}
+			w := got[0]
+			if w.Package != c.wantPackage {
+				t.Errorf("Package = %q, want %q", w.Package, c.wantPackage)
+			}
+			if w.ImportPath != c.wantImportPath {
+				t.Errorf("ImportPath = %q, want %q", w.ImportPath, c.wantImportPath)
+			}
+			if w.Alias != c.wantAlias {
+				t.Errorf("Alias = %q, want %q", w.Alias, c.wantAlias)
+			}
+			if w.FieldName != c.wantFieldName {
+				t.Errorf("FieldName = %q, want %q", w.FieldName, c.wantFieldName)
+			}
+		})
+	}
+}
+
+// TestOperatorDataFromSpecs_HonorsExplicitPath mirrors the worker test —
+// the path-honoring rule applies equally to operators.
+func TestOperatorDataFromSpecs_HonorsExplicitPath(t *testing.T) {
+	projectDir := t.TempDir()
+	opDir := filepath.Join(projectDir, "operators", "cert_rotator")
+	if err := os.MkdirAll(opDir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	src := "package cert_rotator\n\ntype Controller struct{}\n"
+	if err := os.WriteFile(filepath.Join(opDir, "controller.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	got, err := OperatorDataFromSpecs([]OperatorSpec{
+		{Name: "cert_rotator", Path: "operators/cert_rotator"},
+	}, projectDir)
+	if err != nil {
+		t.Fatalf("OperatorDataFromSpecs: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("OperatorDataFromSpecs returned %d entries, want 1", len(got))
+	}
+	op := got[0]
+	if op.ImportPath != "cert_rotator" {
+		t.Errorf("ImportPath = %q, want %q", op.ImportPath, "cert_rotator")
+	}
+	if op.Alias != "cert_rotator" {
+		t.Errorf("Alias = %q, want %q", op.Alias, "cert_rotator")
+	}
+	if op.FieldName != "CertRotator" {
+		t.Errorf("FieldName = %q, want %q", op.FieldName, "CertRotator")
 	}
 }
 
@@ -1476,6 +2126,11 @@ package patients_test
 	if err := os.WriteFile(filepath.Join(targetDir, "integration_test.go"), []byte(intPlaceholder), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Real handler dirs always carry a service.go; the disk-first
+	// resolver reads the package clause from it (test files are skipped).
+	if err := os.WriteFile(filepath.Join(targetDir, "service.go"), []byte("package patients\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := ServiceDef{
 		Name:       "PatientsService",
@@ -1515,5 +2170,55 @@ package patients_test
 	// Non-CRUD method must still appear — unit_test.go.tmpl owns it.
 	if !strings.Contains(got, "TestEcho_Generated") {
 		t.Errorf("handlers_scaffold_test.go should contain TestEcho_Generated (non-CRUD method); got:\n%s", got)
+	}
+}
+
+// TestUnitTestScaffold_SelfDestructingRows pins the scaffold-test contract:
+// every generated row must be able to FAIL. The scaffold row asserts
+// WantErr: connect.CodeUnimplemented against the stub handler, so it goes
+// red the moment the handler is implemented — forcing the row to be
+// rewritten with a real assertion. The permissive AnyOutcome knob is gone
+// from pkg/tdd entirely; a test that cannot fail teaches green-means-nothing.
+//
+// The scaffold must also:
+//   - emit Ctx: app.AuthedContext(t) so handlers that read claims via
+//     middleware.GetUser see an authenticated context (review F4),
+//   - replace the assertion-free WiresPermissiveAuthorizer shim with a
+//     real authorizer-chain test (deny-all denies, default allows).
+func TestUnitTestScaffold_SelfDestructingRows(t *testing.T) {
+	data := ServiceTemplateData{
+		ServiceName:         "EchoService",
+		ServicePackage:      "echo",
+		Module:              "example.com/test",
+		ProtoPackage:        "services/echo",
+		ProtoImportPath:     "services/echo",
+		ProtoConnectPackage: "echov1connect",
+		HandlerName:         "EchoService",
+		TestHelperName:      "Echo",
+		ServiceImportPath:   "echo",
+		Methods: []MethodTemplateData{
+			{Name: "Echo", InputType: "EchoRequest", OutputType: "EchoResponse"},
+		},
+	}
+	content, err := templates.ServiceTemplates().Render("unit_test.go.tmpl", data)
+	if err != nil {
+		t.Fatalf("render unit_test.go.tmpl: %v", err)
+	}
+	got := string(content)
+
+	if strings.Contains(got, "AnyOutcome") {
+		t.Errorf("scaffold must not reference AnyOutcome (deleted from pkg/tdd — permissive rows belong in no library); got:\n%s", got)
+	}
+	if !strings.Contains(got, "WantErr: connect.CodeUnimplemented") {
+		t.Errorf("scaffold row must self-destruct via WantErr: connect.CodeUnimplemented; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Ctx:") || !strings.Contains(got, "app.AuthedContext(t)") {
+		t.Errorf("scaffold row must emit Ctx: app.AuthedContext(t); got:\n%s", got)
+	}
+	if strings.Contains(got, "WiresPermissiveAuthorizer") {
+		t.Errorf("assertion-free WiresPermissiveAuthorizer test must be gone; got:\n%s", got)
+	}
+	if !strings.Contains(got, "AuthorizerChain") || !strings.Contains(got, "denyAllAuthorizer") {
+		t.Errorf("scaffold must contain the authorizer-chain test (deny-all denied, default allowed); got:\n%s", got)
 	}
 }

@@ -113,4 +113,5 @@ tmp/
 
 # ── Claude Code runtime artifacts (skill docs under .claude/skills/ stay tracked) ──
 .claude/scheduled_tasks.lock
-.claude/worktrees/
+.claude/worktrees/forge-mcp
+.scratch/

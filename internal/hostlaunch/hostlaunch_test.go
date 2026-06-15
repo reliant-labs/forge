@@ -226,6 +226,57 @@ func TestLoadSecretsFile_Missing(t *testing.T) {
 	}
 }
 
+// TestLoadSecretsFile_CrossRepoPath pins the cross-repo dev-loop
+// contract: `HostDeploy.secrets_file = "../sibling/.env"` resolves
+// against the caller's working directory and loads the file even
+// though the path escapes the project root. Multi-checkout setups
+// (forge project here, second binary in a sibling repo) rely on
+// this — a future path-traversal sanity check that rejects `..`
+// segments would silently break them.
+//
+// We construct a parent + sibling layout under t.TempDir(), chdir
+// into the "project" dir, point secrets_file at "../sibling/.env",
+// and assert the loader reads it. Symmetric with the WorkingDir
+// cross-repo case already pinned in TestResolveWorkingDir.
+func TestLoadSecretsFile_CrossRepoPath(t *testing.T) {
+	parent := t.TempDir()
+	project := filepath.Join(parent, "project")
+	sibling := filepath.Join(parent, "sibling")
+	for _, d := range []string{project, sibling} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	const secretsBody = "DATABASE_URL=postgres://sibling/db\nNATS_PASSWORD=hunter2\n"
+	if err := os.WriteFile(filepath.Join(sibling, ".env"), []byte(secretsBody), 0o644); err != nil {
+		t.Fatalf("seed sibling .env: %v", err)
+	}
+
+	// LoadSecretsFile resolves relative paths against the caller's
+	// working directory, mirroring how `forge run` invokes it after
+	// chdir'ing into the project dir. Restore cwd on cleanup so the
+	// rest of the suite isn't affected.
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatalf("chdir project: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
+
+	got, err := LoadSecretsFile("../sibling/.env")
+	if err != nil {
+		t.Fatalf("LoadSecretsFile(../sibling/.env): %v", err)
+	}
+	if got["DATABASE_URL"] != "postgres://sibling/db" {
+		t.Errorf("DATABASE_URL = %q, want postgres://sibling/db", got["DATABASE_URL"])
+	}
+	if got["NATS_PASSWORD"] != "hunter2" {
+		t.Errorf("NATS_PASSWORD = %q, want hunter2", got["NATS_PASSWORD"])
+	}
+}
+
 // TestLayerHostEnv pins the layering contract: projectConfig first,
 // then secrets on top, then env_vars (KCL) on top so KCL wins on
 // conflict; base os.Environ() always wins last (developer shell

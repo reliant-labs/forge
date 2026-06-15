@@ -703,8 +703,18 @@ type MethodOptions struct {
 	// unique key (e.g., an Idempotency-Key header) so the server can safely
 	// deduplicate retried mutations.
 	IdempotencyKey bool `protobuf:"varint,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Declared Connect/gRPC error codes this method can return. Codegen
+	// surfaces these so handler authors (and LLMs implementing handlers)
+	// can see the typed error contract at a glance. Values match
+	// connect.Code names — e.g. "NotFound", "PermissionDenied",
+	// "InvalidArgument". Empty (or unset) means "no declared errors" — the
+	// method either succeeds or returns an undeclared Connect.Code.
+	//
+	// The list is informational at runtime today; future work may enforce
+	// that handlers can only return declared codes.
+	Errors        []string `protobuf:"bytes,6,rep,name=errors,proto3" json:"errors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MethodOptions) Reset() {
@@ -763,6 +773,13 @@ func (x *MethodOptions) GetIdempotencyKey() bool {
 		return x.IdempotencyKey
 	}
 	return false
+}
+
+func (x *MethodOptions) GetErrors() []string {
+	if x != nil {
+		return x.Errors
+	}
+	return nil
 }
 
 // ConfigFieldOptions defines how a config protobuf field maps to runtime
@@ -1013,14 +1030,15 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\n" +
 	"AuthConfig\x12#\n" +
 	"\rauth_required\x18\x01 \x01(\bR\fauthRequired\x12#\n" +
-	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xc9\x01\n" +
+	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xe1\x01\n" +
 	"\rMethodOptions\x12(\n" +
 	"\rauth_required\x18\x01 \x01(\bH\x00R\fauthRequired\x88\x01\x01\x12\x1e\n" +
 	"\n" +
 	"idempotent\x18\x03 \x01(\bR\n" +
 	"idempotent\x123\n" +
 	"\atimeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\atimeout\x12'\n" +
-	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKeyB\x10\n" +
+	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
+	"\x06errors\x18\x06 \x03(\tR\x06errorsB\x10\n" +
 	"\x0e_auth_required\"\xde\x01\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +

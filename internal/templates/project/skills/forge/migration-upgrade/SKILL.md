@@ -114,6 +114,10 @@ helper, a changed file layout — those do.
   lifecycle → `forge/pkg/crud` delegation shims.
 - `migrations/v0.x-to-authz-lib` — `handlers/<svc>/authorizer_gen.go`
   inline matching logic → `forge/pkg/authz` interface-driven shim.
+- `migrations/v0.x-to-middleware-lib` — ~25 scaffolded pkg/middleware
+  mechanism files → forge libraries (`pkg/authn`, `pkg/authz`,
+  `pkg/middleware`, `pkg/observe`) + ONE thin user-owned policy file.
+  Optional; old copies keep working.
 - `migrations/v0.x-to-tdd-rpccases` — `handlers_crud_gen_test.go`
   per-RPC inline test boilerplate → `tdd.RunRPCCases` row-driven shims.
 - `migrations/v0.x-to-pack-starter-split` — stripe / twilio /
@@ -128,10 +132,12 @@ helper, a changed file layout — those do.
   struct`, and `func New(Deps) Service` exactly. Lint-enforced via
   `forgeconv-internal-package-contract-names`; non-canonical names
   previously produced silently-broken bootstrap codegen.
-- `migrations/v0.x-to-checksum-history` — `.forge/checksums.json` flat
-  shape (path -> hex string) -> structured shape (path -> {hash, history[]})
-  so `forge upgrade` distinguishes stale codegen from real user edits.
-  Transparent migration — most users will not notice.
+- `migrations/v0.x-to-checksum-history` — historical: flat -> structured
+  `.forge/checksums.json`. SUPERSEDED: the manifest itself is gone now —
+  generated files carry an embedded `forge:hash` marker and the first
+  `forge generate`/`forge upgrade` migrates a legacy manifest
+  automatically (stamps pristine files, converts disowns to
+  `.forge/disowned.json`, deletes checksums.json).
 - `migrations/kcl-schemas-to-module` — in-tree
   `deploy/kcl/{schema,base,render}.k` deleted; projects `import forge`
   from the upstream KCL module and instantiate typed entities
@@ -160,12 +166,11 @@ Two things to know when `forge upgrade` interacts with branches:
   gets rewritten twice from different baselines, and the textual merge
   cannot tell which side owns which call. Treat `forge upgrade` like a
   global codemod: land it on `main`, then rebase every open branch.
-- **`.forge/checksums.json` conflict recipe: union the `history[]`
-  blocks, then re-stamp.** When both branches re-stamped a generated
-  file the JSON merge will conflict on the per-file `history[]` array.
-  Accept BOTH `history[]` blocks (union them by hash — the array is
-  append-only so duplicates are safe to dedupe later), then run
-  `forge generate --accept` to regenerate the active `Hash` field
-  against the merged tree. Never blindly accept one side — the merge
-  will silently drop the other branch's stamp and the next `forge
-  upgrade` will misreport that branch's files as "user-modified".
+- **Generated-file merge conflicts: regenerate, don't hand-merge.**
+  There is no global checksums manifest to reconcile anymore — each
+  generated file carries its own `forge:hash` marker, so a textual
+  merge of two pristine renders produces a file whose marker no longer
+  verifies. Resolve by accepting either side and running
+  `forge generate` (the writer heals pristine-but-stale vintages
+  loudly); only a file BOTH branches hand-edited needs real conflict
+  resolution, and the drift guard will name it.

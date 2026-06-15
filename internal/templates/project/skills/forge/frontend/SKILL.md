@@ -7,7 +7,7 @@ description: Write Next.js frontends — generated hooks, component library, Tai
 
 ## Project Structure
 
-Each frontend lives in `frontends/<name>/` as a standalone Next.js app with App Router. Create one with:
+Each frontend lives in `frontends/<name>/` as a Next.js app with App Router. Create one with:
 
 ```bash
 forge add frontend <name>
@@ -20,6 +20,90 @@ Key directories inside `frontends/<name>/`:
 - `src/lib/` — Utilities and Connect RPC client setup
 
 Generated TypeScript clients live in `gen/` at the project root, shared across all frontends.
+
+### Production build shape (`output:`)
+
+`forge add frontend` emits a `next.config.ts` configured for the common forge shape: a Next.js shell that calls a Go backend via Connect RPC. The default is **standalone** — production builds emit a self-contained Node server at `.next-prod/standalone/server.js`, which is the shape the shipped Dockerfile copies into its runner image, and the only default that builds with the dynamic `[id]` detail/edit routes forge generates for every CRUD entity.
+
+The choice is captured in `forge.yaml`:
+
+```yaml
+frontends:
+  - name: admin
+    type: nextjs
+    path: frontends/admin
+    port: 3000
+    output: standalone   # default — production = Node server, dev = next dev
+```
+
+Three values are accepted:
+
+| `output:`    | Production shape                            | Use when                                                                          |
+| ------------ | ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `standalone` | Node sidecar (`output: "standalone"`)       | The default. Pairs with the shipped Dockerfile; supports the generated dynamic CRUD routes, server components, server actions, request-time `redirect()` / `cookies()`. |
+| `static`     | Static export (`output: "export"`)          | Pure UI shell with NO dynamic routes — drop `out/` on a CDN or object store.       |
+| `server`     | Full Next.js (no `output:` field)           | Custom server, ISR, managed host (Vercel) where you want `next start` semantics.   |
+
+Opt into a non-default at scaffold time:
+
+```bash
+forge add frontend dashboard --output static
+```
+
+**`static` is incompatible with generated CRUD pages.** `output: "export"` requires `generateStaticParams()` on every dynamic route segment, and the generated detail/edit pages (`/<entity>/[id]`) are dynamic client routes whose ids only exist at runtime — `npm run build` fails on any project with a CRUD entity. Choose `static` only when the frontend has no dynamic routes (or you hand-write static params). The production artifact is then the contents of `out/`; the shipped Dockerfile (sized for `standalone`) can be ignored or deleted.
+
+The `output:` field only takes effect at scaffold time; `next.config.ts` is Tier-2 (yours to edit after scaffold) so changing the YAML later does not retroactively rewrite the file — re-scaffold with `forge generate --force` or hand-edit.
+
+**Build dirs are fenced.** In `standalone`/`server` modes, production builds write to `.next-prod` (via a `distDir` conditional in `next.config.ts`) while `next dev` keeps `.next` — so running `npm run build` while `forge run`'s dev server is live cannot clobber the dev cache. `next start` and the Dockerfile both read `.next-prod`. The `static` mode keeps Next.js defaults (`out/` export, `.next` intermediates) because export mode repurposes a custom `distDir` as the export destination; avoid production builds during a live dev session in that mode.
+
+If a frontend uses server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) it MUST use `output: standalone` (the default) or `output: server` — those calls don't work in a static export.
+
+For a root-route redirect (e.g. `/` → `/dashboard`) under static export, do NOT use `redirect()` from `next/navigation` — it requires the Next.js server runtime. Use a client component with `useRouter().replace()`:
+
+```tsx
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+
+export default function RootPage() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace("/dashboard");
+  }, [router]);
+  return null;
+}
+```
+
+### Serving under a path prefix (`base_path`)
+
+To mount a frontend under a URL prefix (e.g. `/admin` behind a proxy that blends it with another app), declare it in `forge.yaml`:
+
+```yaml
+frontends:
+  - name: admin
+    type: nextjs
+    base_path: /admin    # must start with "/", no trailing "/"
+```
+
+(or scaffold with `forge add frontend admin --base-path /admin`). What this drives:
+
+- `next.config.ts` sets **both** `basePath` and `assetPrefix` to the same value — `assetPrefix` is required or some RSC chunk URLs skip the prefix and React never hydrates.
+- **One env var**: `NEXT_PUBLIC_BASE_PATH` is the only override forge reads or writes — the same name in `next.config.ts` and in the browser bundle. Never invent a second variant (`ADMIN_WEB_BASE_PATH`, etc.); it will be silently ignored.
+- `src/lib/basepath_gen.ts` (Tier-1, regenerated every `forge generate`) exports `BASE_PATH` and `joinBasePath(path)`.
+- Static-export builds **fail loudly** if `NEXT_PUBLIC_BASE_PATH` is overridden to empty while `forge.yaml` declares a prefix — a baked root-mounted export 404s behind the proxy.
+
+Rules of thumb:
+
+- Internal navigation: keep using `<Link href="/tasks">` and `router.push("/tasks")` with app-relative paths — Next.js prepends the basePath automatically. Do NOT wrap these in `joinBasePath` (harmless — it's idempotent — but noise).
+- Hand-built URLs Next.js can't see — `window.location.origin`-based payment return URLs, OAuth `redirect_uri`, share links, raw `fetch()`/`<a>` paths — go through `joinBasePath`:
+
+```typescript
+import { joinBasePath } from "@/lib/basepath_gen";
+const successUrl = window.location.origin + joinBasePath("/billing/success");
+```
+
+Lint-worthy anti-patterns: bare `"/admin" + path` string literals (break the day the mount point changes), bare `/route` strings in hand-built URLs (bypass the prefix entirely), and reading any env var other than `NEXT_PUBLIC_BASE_PATH`.
 
 For React Native mobile frontends, `forge add frontend <name> --kind mobile` creates an Expo app with the same systems:
 - `app/` — Expo Router screens and layouts
@@ -185,6 +269,25 @@ import { transport } from "@/lib/connect";
 export const myServiceClient = createClient(MyService, transport);
 ```
 
+### Real backend by default; mock mode is opt-in
+
+The scaffold talks to the REAL backend out of the box: `src/lib/connect.ts`
+reads `NEXT_PUBLIC_API_URL` (or the `forge generate`-maintained dev port in
+`src/lib/apiurl_gen.ts`) and builds a real Connect transport. Start the
+backend with `forge run` and the UI is live end-to-end.
+
+Mock mode exists for offline UI-only work and is **opt-in** via
+`.env.local`:
+
+| `NEXT_PUBLIC_MOCK_API` / `VITE_MOCK_API` | Behavior |
+|---|---|
+| unset (default) | Real backend. RPC failures surface as real errors. |
+| `true` | Mock transport only — the backend is NEVER contacted. The layout renders a persistent "MOCK DATA — backend not connected" banner so a working-looking UI can't masquerade as a working stack. |
+| `hybrid` | `?scenario=` overlays on a real transport (see the `scenarios` sub-skill). Banner shows hybrid mode. |
+
+Never remove the mock banner from the layout: silent mock mode is exactly
+the failure mode it exists to prevent.
+
 ## Protobuf-ES v2 Patterns
 
 Forge uses protobuf-es v2. Create message instances with `create()`, not constructors:
@@ -285,6 +388,7 @@ These files are regenerated by `forge generate` — changes will be overwritten:
 
 - `src/gen/` — Generated TypeScript stubs and clients
 - `src/lib/connect.ts` — Connect transport setup
+- `src/lib/basepath_gen.ts` — `BASE_PATH` + `joinBasePath()` from `forge.yaml`'s `frontends[].base_path`
 - `src/hooks/*-hooks.ts` — Generated React Query hooks
 
 Put custom code in separate files alongside them (e.g., `src/hooks/custom-hooks.ts`, `src/lib/utils.ts`).
@@ -298,7 +402,7 @@ These files are created by `forge add frontend` and are yours to modify:
 - `src/lib/event-context.tsx` — Event bus React context and hooks.
 - `src/stores/ui-store.ts` — Zustand base UI store. Extend or create domain stores in `src/stores/`.
 - `src/lib/format-utils.ts` — Shared formatting utilities used by generated pages.
-- `src/lib/admin-url.ts` — `adminUrl(path)` + `absoluteAdminUrl(path)` helpers for any string passed to an external system that round-trips back to this frontend (Stripe `success_url`, OAuth `redirect_uri`, share links, magic-link emails). Reads `process.env.NEXT_PUBLIC_BASE_PATH` so the runtime value tracks `next.config.js`'s `basePath`. Use these instead of hand-concatenating origin + path — the basePath leaks through `<Link>` for free but NOT into raw URL strings, and `forge`'s Next.js scaffold supports the `/admin`-mounted layout out of the box.
+- `src/lib/admin-url.ts` — `adminUrl(path)` + `absoluteAdminUrl(path)` convenience wrappers over the generated `src/lib/basepath_gen.ts` (the single source of truth for the prefix; see "Serving under a path prefix"). Use these (or `joinBasePath` directly) for any string passed to an external system that round-trips back to this frontend (Stripe `success_url`, OAuth `redirect_uri`, share links, magic-link emails) — the basePath leaks through `<Link>` for free but NOT into raw URL strings.
 
 ## Dev Workflow
 
@@ -326,6 +430,63 @@ process. Next.js binds the declared port even if a stale `PORT=...`
 bled in from the parent shell — drift between the KCL-declared port,
 the generated docker-compose, and the actual dev server is now
 structurally impossible.
+
+### Multi-frontend dev URLs (`*.localhost:<proxy port>`)
+
+`forge run` spins up a single host-based reverse proxy that fronts
+every frontend + HTTP-routed service under a unified URL pattern. The
+port defaults to 8080 but auto-shifts past any port a service or
+frontend declares (the first scaffolded service also defaults to
+8080) — trust the `[run] Dev URL:` banner, which prints the port
+actually bound:
+
+```
+http://admin.localhost:<port>   → the admin frontend (KCL port)
+http://web.localhost:<port>     → the web frontend (KCL port)
+http://api.localhost:<port>     → the api service (HTTPRoute host match)
+```
+
+`*.localhost` resolves to `127.0.0.1` automatically per RFC 6761, so
+no `/etc/hosts` edits are needed. The proxy binds BOTH loopback
+families (127.0.0.1 and ::1), so the URLs work no matter which
+address the browser resolves `localhost` to. The first declared
+frontend is the fallback for unmatched hosts (a bare
+`http://localhost:<port>/` works).
+
+**Why host-based, not path-based?** Path prefixes would require
+setting `basePath` in `next.config.js` — a file forge does not own,
+and a config that affects production routing too. Host-based
+dispatch keeps `next.config.js` untouched and gives prod-parity for
+free: the same KCL `HTTPRoute.host` values route the same way under
+the production Gateway as they do under the dev proxy.
+
+WebSocket upgrades are forwarded with a hijacked TCP splice — this
+is what makes Next.js HMR work end-to-end. If HMR breaks, suspect a
+backend port that drifted out of the KCL declaration rather than the
+proxy itself.
+
+Knobs:
+- `forge run --proxy-port 9090` — override the bind port. An explicit
+  port that collides with a declared service/frontend port is an
+  error (the proxy and the backend would race for it).
+- `FORGE_RUN_PROXY_PORT=9090 forge run` — same via env.
+- `forge run --no-proxy` — disable the proxy and use the raw per-frontend ports.
+
+Adding service hosts to the dispatch table: declare an HTTPRoute in
+your `deploy/kcl/<env>/main.k` with a `host:` value:
+
+```kcl
+forge.HTTPRoute {
+    name = "api-route"
+    service = "api"
+    port = 8000
+    host = "api.localhost"   # used by `forge run` AND the prod Gateway
+}
+```
+
+Path-based HTTPRoutes (no `host`, with a `/prefix` match) work in
+cluster but are skipped by the dev proxy — the basePath dance is
+intentionally avoided in the dev loop.
 
 ## Scaffolded Systems
 

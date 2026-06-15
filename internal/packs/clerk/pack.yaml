@@ -8,6 +8,11 @@ description: |
     clerkauth.Init(logger)
     interceptors := connect.WithInterceptors(clerkauth.Interceptor())
 
+  clerkauth.Init() calls middleware.MarkExternalAuth() so the scaffold's
+  AuthInterceptor (already wired in cmd/server.go) flips to passthrough
+  and this pack's interceptor becomes the source of truth. Both run
+  alongside in the chain — the scaffold stub is not replaced.
+
   Pair with the `auth-ui` frontend pack to drop in Clerk-flavoured
   <SignIn>/<SignUp>/<UserButton> components:
     forge pack install auth-ui --config provider=clerk

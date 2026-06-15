@@ -37,16 +37,13 @@ gen/
 # Handler-level generated code — CRUD handlers, authorizers (Tier-1; forge
 # regenerates these on every run).
 handlers/**/*_gen.go
-# NOTE: `handlers/**/*_gen_test.go` is intentionally NOT ignored. These
-# `handlers_crud_gen_test.go` files start life as scaffolds with
-# `FORGE_SCAFFOLD:` markers, but transfer ownership to the user the moment
-# every marker is cleared (see `writeScaffoldFile`). Once user-owned they
-# carry real assertions and MUST be committed — otherwise CI runs `forge
-# generate` against the file's absence, re-emits the broken stub, and
-# `go test ./...` fails on a fresh clone. Track the scaffold (forge will
-# refresh it if the user hasn't customized it) and rely on the
-# scaffold-vs-customized check inside the file to decide whether the user
-# owns it.
+# NOTE: `handlers/**/*_gen_test.go` is intentionally NOT ignored. The
+# current CRUD test scaffold (`handlers_crud_test.go`) is yours from line
+# one — scaffolded once, never touched again — and MUST be committed.
+# Legacy projects may still carry a retired `handlers_crud_gen_test.go`
+# with `FORGE_SCAFFOLD:` markers; forge refreshes that file only while
+# markers remain, and it becomes yours the moment the markers are cleared.
+# Either way, committing it keeps `go test ./...` green on a fresh clone.
 
 # Middleware generated code — auth, tenant scoping
 pkg/middleware/*_gen.go
@@ -92,13 +89,35 @@ tmp/
 
 # ── Forge internal state ──
 # .forge/ contains debug-session.json, caches, .forge/state/build-<env>.json
-# (handoff from `forge build --push` to `forge deploy`), and other runtime
-# state. checksums.json is the exception — it tracks what forge generated
-# so other developers' `forge generate` can detect user modifications.
+# (handoff from `forge build --push` to `forge deploy`), transient side
+# renders (.forge/render/ holds `--explain-drift` diff inputs), and
+# other runtime state. Generated files certify THEMSELVES (each carries
+# an embedded `forge:hash` marker), so there is no generated-state
+# manifest to commit. Three exceptions are negated back in and MUST be
+# committed when they exist:
+#   disowned.json   — one-way ownership transfers (`forge disown`):
+#                     path + reason + timestamp. Travels with the repo
+#                     so forge never regenerates a disowned file in any
+#                     clone or worktree.
+#   hashes.json     — scoped render hashes for the few generated files
+#                     whose format cannot carry an embedded marker
+#                     (JSON outputs only).
+#   friction.jsonl  — append-only generator-friction log written by
+#                     `forge friction add`. Shared project state: it
+#                     travels with the repo so friction recorded by any
+#                     agent/developer survives worktrees and clones.
 # Everything else under .forge/ is per-developer state and intentionally
-# excluded by the broad `.forge/` rule below.
-.forge/
-!.forge/checksums.json
+# excluded by the broad children rule below.
+#
+# NOTE: this must be `.forge/*` (children), not `.forge/` (the dir):
+# git cannot re-include a file whose parent DIRECTORY is excluded, so a
+# `.forge/` + `!.forge/<file>` pair would silently ignore the file and
+# it would never get committed. (Found the hard way in cp-forge — see
+# its .gitignore fork note.)
+.forge/*
+!.forge/disowned.json
+!.forge/hashes.json
+!.forge/friction.jsonl
 
 # ── What NOT to ignore ──
 #

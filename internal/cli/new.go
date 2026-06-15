@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 func newNewCmd() *cobra.Command {
@@ -28,7 +29,7 @@ func newNewCmd() *cobra.Command {
 		license         string
 		licenseAuthor   string
 		disableFeatures []string
-		memoryFormat    string
+		harness         string
 		skipTools       bool
 		bufPlugins      string
 		binaryMode      string
@@ -43,6 +44,12 @@ func newNewCmd() *cobra.Command {
 		Use:   "new [project-name] --mod [module-path]",
 		Short: "Create a new Forge project (service / CLI / library)",
 		Long: `Create a new project with the Forge framework structure.
+
+By default no service is scaffolded: the binary is a deployment unit
+that mounts services — it is not a domain entity. Add your first
+service after scaffolding with 'forge add service <entity>' (name it
+after a domain entity like item/order/user, not the binary), or opt
+into an initial service at creation time with --service <entity>.
 
 Pick a project kind with --kind:
 
@@ -74,14 +81,14 @@ Example:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, memoryFormat, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
+			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, license, licenseAuthor, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces)
 		},
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (required, e.g., github.com/example/my-project)")
 	cmd.Flags().StringVar(&kindFlag, "kind", "service", "Project kind: service (default), cli, library")
-	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (can be repeated or comma-separated)")
+	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge add service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated)")
 	cmd.Flags().StringVar(&goVersion, "go-version", "", "Go version to use in go.mod (e.g., 1.24); defaults to detected version")
 	cmd.Flags().BoolVar(&inPlace, "in-place", false, "Create project in current directory instead of a new subdirectory")
@@ -89,7 +96,7 @@ Example:
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters")
-	cmd.Flags().StringVar(&memoryFormat, "memory", "reliant", "AI memory file format: reliant (default), claude, cursor, copilot, codex")
+	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for: reliant (default; reliant CLI auto-discovers skills via forge.yaml), claude (writes CLAUDE.md + .claude/skills/), cursor (.cursorrules), copilot (.github/copilot-instructions.md), codex (AGENTS.md)")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
@@ -185,7 +192,7 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 }
 
 //nolint:revive,cyclop // TODO: collapse into a runNewOptions struct; the cyclomatic complexity comes from cobra flag fan-out (resume/force/in-place/per-feature toggles) and refactoring requires a shared options type — cobra flag wiring is the only call site.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, memoryFormat string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, license, licenseAuthor string, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool) error {
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
@@ -340,12 +347,12 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	}
 	gen.FrontendWorkspaces = frontendWorkspaces
 
-	// Apply memory format
-	mf, err := generator.ParseMemoryFormat(memoryFormat)
+	// Apply harness
+	h, err := generator.ParseHarness(harness)
 	if err != nil {
 		return err
 	}
-	gen.MemoryFormat = mf
+	gen.Harness = h
 
 	// Apply kind-aware feature defaults BEFORE --disable so an
 	// explicit --disable always wins. Service is the default and
@@ -370,6 +377,28 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	// Write LICENSE file if requested
 	if err := writeLicenseFile(targetPath, license, licenseAuthor); err != nil {
 		return fmt.Errorf("failed to write LICENSE: %w", err)
+	}
+
+	// Emit forge skills to disk for harnesses that have a native skills
+	// concept (e.g. claude → .claude/skills/). Reliant skips this — the
+	// reliant CLI auto-discovers forge skills via the project's
+	// forge.yaml, so no on-disk emission is needed. Copilot / codex
+	// skip too — no native skills mechanism.
+	if dir := gen.Harness.SkillsDir(); dir != "" {
+		style, ok := skillStyleForHarness(gen.Harness)
+		if ok {
+			skillsDir := filepath.Join(targetPath, dir)
+			// SkillAudienceAll means "all" — a new forge project always
+			// has forge.yaml, so the harness gets both general
+			// methodology and framework skills with full bodies (no
+			// @forge-only stripping).
+			n, err := WriteSkills(skillsDir, style, SkillAudienceAll)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to write forge skills to %s: %v\n", skillsDir, err)
+			} else {
+				fmt.Printf("📚 Wrote %d forge skills to %s\n", n, dir)
+			}
+		}
 	}
 
 	// Generate additional services beyond the first (if any).
@@ -506,8 +535,38 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 
 	success = true
 	fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
+	printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames)
 
 	return nil
+}
+
+// printNewNextSteps prints the post-scaffold guidance block. The
+// zero-service default is deliberate: a binary is a deployment unit that
+// mounts services — it is NOT a domain entity, so `forge new` never
+// invents a `<project>Service` with CRUD RPCs nobody asked for. On a
+// bare service-kind scaffold the documented first step is
+// `forge add service <entity>` with a real domain entity name.
+func printNewNextSteps(projectName string, inPlace bool, kind string, serviceNames []string) {
+	n := Name()
+	fmt.Println("\nNext steps:")
+	if !inPlace {
+		fmt.Printf("  cd %s\n", projectName)
+	}
+	switch {
+	case kind == config.ProjectKindCLI:
+		fmt.Println("  go build ./...        # the cobra skeleton compiles out of the box")
+		fmt.Println("  see README.md for the CLI workflow")
+	case kind == config.ProjectKindLibrary:
+		fmt.Println("  go build ./...        # the pkg/ skeleton compiles out of the box")
+		fmt.Println("  add exported types under pkg/ and tests alongside them")
+	case len(serviceNames) == 0:
+		fmt.Printf("  %s add service <entity>   # first step — name it after a DOMAIN ENTITY (e.g. item, order, user), not the binary\n", n)
+		fmt.Printf("  %s run                    # boots the stack; /healthz serves even before any service exists\n", n)
+	default:
+		fmt.Printf("  edit proto/services/%s/v1/ to define your API (the scaffold ships an example Item entity)\n", naming.ServicePackage(serviceNames[0]))
+		fmt.Printf("  %s generate               # regenerate after proto edits\n", n)
+		fmt.Printf("  %s run                    # boots the stack\n", n)
+	}
 }
 
 // rewriteBufGenYamlToRemote switches the scaffolded buf.gen.yaml from
@@ -758,8 +817,6 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.CI = f
 		case "build":
 			gen.Features.Build = f
-		case "deploy":
-			gen.Features.Deploy = f
 		case "contracts":
 			gen.Features.Contracts = f
 		case "docs":
@@ -774,6 +831,13 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.Packs = f
 		case "starters":
 			gen.Features.Starters = f
+		case "deploy":
+			gen.Features.Deploy = f
+		case "ingress", "external_builds", "operators", "strict_wiring":
+			return cliutil.UserErr("forge new --disable",
+				fmt.Sprintf("feature %q is experimental (opt-in only); cannot be --disable'd because it's already off by default", name),
+				"",
+				"experimental features default off; opt in per project via `features.experimental.<name>: true` in forge.yaml")
 		default:
 			return cliutil.UserErr("forge new --disable",
 				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters", name),

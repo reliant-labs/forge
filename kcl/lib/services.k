@@ -29,7 +29,11 @@ _managed_labels = lambda name: str -> {str: str} {
 _env_source = lambda ev: any -> any {
     {
         name = ev.name
-        if ev.value:
+        # `ev.value != Undefined` preserves an explicitly-set empty
+        # string (e.g. `value = ""` as a disable sentinel) while still
+        # omitting `value` from the manifest when the field was never
+        # set (secret_ref/config_map_ref-only entries).
+        if ev.value != Undefined:
             value = ev.value
         if ev.secret_ref:
             valueFrom = {
@@ -71,6 +75,46 @@ _image_ref = lambda image: str, image_registry: str, image_tag: str -> str {
         else "${image}:${image_tag}"
 }
 
+# Pick `imagePullPolicy` for a container based on the image tag.
+#
+# Default is `IfNotPresent` (the k8s default for tagged images), which
+# is what we want for committed/clean SHA tags — the kubelet can cache
+# the layer and skip the network round-trip.
+#
+# Two cases force `Always`:
+#
+#   1. Tag ends in `-dirty`. `forge build` appends `-dirty` to the
+#      git-sha image tag whenever the worktree has uncommitted changes.
+#      The SHA doesn't move while the worktree stays dirty, so each
+#      rebuild lands a NEW image under the SAME `<sha>-dirty` tag.
+#      With `IfNotPresent`, the kubelet sees the tag locally already
+#      and runs the stale layer — `forge deploy` then reports
+#      "rollout successful" while the cluster runs the previous binary.
+#      `Always` forces a re-pull on every pod start, which restores
+#      the dev iteration loop. (The long-term answer is content-
+#      addressed tags — see `docs/proposals/image-content-addressed-tags.md`.)
+#
+#   2. Tag is `latest` (the implicit default when no `:tag` is set).
+#      `:latest` is a moving target by definition; the standard k8s
+#      behavior is to flip the default to `Always` for `:latest`. We
+#      do the same explicitly so the policy is grep-able from the
+#      rendered manifest.
+#
+# Only matches when the tag actually *ends* in `-dirty` — an image
+# whose tag happens to contain "dirty" in the middle (e.g.
+# `:dirty-feature-v1`) gets the `IfNotPresent` default.
+_pull_policy = lambda image_ref: str -> str {
+    # `image_ref` is the full reference, e.g. `localhost:5051/foo:abc1234-dirty`
+    # or `ghcr.io/x/y:latest`. The tag is the substring AFTER the last
+    # `:` AFTER the last `/` (the registry-port `:` is before the last
+    # `/`, so the rightmost `/` then rightmost `:` lookup is safe).
+    _last_slash = image_ref.rfind("/")
+    _ref_tail = image_ref[_last_slash + 1:] if _last_slash >= 0 else image_ref
+    _last_colon = _ref_tail.rfind(":")
+    _tag = _ref_tail[_last_colon + 1:] if _last_colon >= 0 else "latest"
+    "Always" if _tag.endswith("-dirty") or _tag == "latest" else "IfNotPresent"
+}
+
 _resource_block = lambda r: any -> any {
     {
         requests = {
@@ -94,7 +138,9 @@ _default_resources = {
 }
 
 # Render a Service whose deploy is K8sCluster. Returns
-# [Deployment, Service] (+ [Ingress] when set).
+# [Deployment, Service]. Ingress is no longer rendered here — see
+# kcl/lib/gateway.k for Gateway API resources owned by the project's
+# top-level `deploy/kcl/ingress.k` file.
 render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image_tag: str -> [any] {
     _name = svc.name
     _labels = _managed_labels(_name)
@@ -122,6 +168,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                         {
                             name = _name
                             image = _image
+                            imagePullPolicy = _pull_policy(_image)
                             if svc.command:
                                 command = svc.command
                             ports = [
@@ -156,48 +203,7 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
         }
     }
 
-    _ingress_list = [{
-        apiVersion = "networking.k8s.io/v1"
-        kind = "Ingress"
-        metadata = {
-            name = "${_name}-ingress"
-            namespace = namespace
-            labels = _labels
-            annotations = {
-                "cert-manager.io/cluster-issuer" = _deploy.ingress.cert_manager_issuer
-            } if _deploy.ingress.tls else {}
-        }
-        spec = {
-            if _deploy.ingress.tls:
-                tls = [
-                    {
-                        hosts = [_deploy.ingress.host]
-                        secretName = "${_name}-tls"
-                    }
-                ]
-            rules = [
-                {
-                    host = _deploy.ingress.host
-                    http = {
-                        paths = [
-                            {
-                                path = _deploy.ingress.path
-                                pathType = "Prefix"
-                                backend = {
-                                    service = {
-                                        name = _name
-                                        port = {number = _ports[0]}
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            ]
-        }
-    }] if _deploy.ingress else []
-
-    [_deployment, _service] + _ingress_list
+    [_deployment, _service]
 }
 
 # Render a CronJob (or one-shot Job when schedule == "").
@@ -211,6 +217,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
             {
                 name = _name
                 image = _image
+                imagePullPolicy = _pull_policy(_image)
                 if cj.command:
                     command = cj.command
                 if cj.env_vars:
@@ -274,6 +281,7 @@ render_operator = lambda op: any, namespace: str, image_registry: str, image_tag
                         {
                             name = _name
                             image = _image
+                            imagePullPolicy = _pull_policy(_image)
                             if _all_env:
                                 env = _all_env
                             securityContext = _default_container_security_context

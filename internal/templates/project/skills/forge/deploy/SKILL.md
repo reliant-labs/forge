@@ -174,6 +174,50 @@ surprising on first read:
   regardless of whether `config.<env>.yaml` provides a `${...}`
   override — the project-level default secret name + lowercased
   env-var key apply unconditionally.
+- **Component config-block leaves use flat keys.** Fields of a
+  component config block (`message TraderConfig { int32 max_per_tick
+  ... }` composed on `AppConfig` — see the `architecture` skill,
+  "Component config blocks") participate in `config.<env>.yaml` under
+  their own snake_case leaf name (`max_per_tick: 50`), the same flat
+  namespace as root fields, and project to the ConfigMap/env vars
+  identically. Keep leaf names unique across blocks.
+
+## Cross-references between schemas — declare once, denormalize at render
+
+When two fields must agree — a service's bind port and the HTTPRoute that targets it, or a service's name and a route's backend ref — **declare the value on one schema and reference it from the other**. KCL expands the reference at render time, so the rendered output carries the literal value in both places, but the user-edited input has only one source of truth:
+
+```kcl
+ADMIN = forge.Service {
+    name = "admin-server"
+    port = 8090
+    source = forge.GoSource { path = "handlers/admin_server" }
+}
+
+ADMIN_ROUTE = forge.HTTPRoute {
+    host    = "admin.localhost"
+    service = ADMIN.name      # cross-reference, not literal "admin-server"
+    port    = ADMIN.port      # denormalized at render: both end up 8090
+}
+```
+
+The rendered JSON:
+
+```json
+{
+  "services":    [{"name": "admin-server", "port": 8090, ...}],
+  "http_routes": [{"host": "admin.localhost", "service": "admin-server", "port": 8090}]
+}
+```
+
+Both fields carry `8090` literally — consumers (`forge run`'s dev proxy, the cluster Gateway, audit/explain tools) read the denormalized output and trust it. Drift between the route and the service it targets is impossible by construction.
+
+When to lean on cross-references:
+- **Port** — any place a route, ingress, or sidecar declares the port of a service it points at.
+- **Name** — backend `service =` fields, gateway `listener =` refs, anywhere one schema names another.
+- **Image** — if two services need to share an image tag (e.g. a sidecar built from the same source), reference `MAIN.image`.
+- **Per-env scaling toggles** — e.g. `dev = MAIN | { replicas = 1 }` overlays via the spread operator so only the env-specific field is rewritten.
+
+The principle: **normalized KCL in, denormalized JSON out.** Consumers never read KCL syntax; they read the rendered bundle. Anything you can derive from one source belongs as a cross-reference, not a duplicated literal.
 
 ## Per-env conditional manifests via `option("env")`
 

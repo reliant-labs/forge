@@ -1,6 +1,7 @@
 ---
 name: v0.1-to-v0.2
 description: Migrate a forge project from v0.1's two-phase Bootstrap+Setup+ApplyDeps DI shape to v0.2's codegen-based wire_gen.go single-phase DI. The change unifies dep construction so validateDeps gates the COMPLETE dep set at New(), eliminating per-RPC nil-check boilerplate. Use when bumping forge_version from v0.1 to v0.2.
+relevance: migration
 ---
 
 # Migrating from forge v0.1 to v0.2
@@ -23,10 +24,10 @@ mux-already-captured pointer is why ApplyDeps had to mutate rather than
 re-assign.
 
 **After (v0.2).** `forge generate` emits `pkg/app/wire_gen.go` with
-one `wireXxxDeps(app, cfg, logger, devMode)` function per service. The
+one `wireXxxDeps(app, cfg, logger)` function per service. The
 function returns the COMPLETE Deps struct (logger + config + authorizer
 + everything from app fields). Bootstrap calls
-`X.New(wireXxxDeps(app, cfg, logger, devMode))` so `validateDeps()`
+`X.New(wireXxxDeps(app, cfg, logger))` so `validateDeps()`
 gates every required dep at construction time. Setup keeps its job of
 building infrastructure but assigns it onto user-extendable fields of
 *App (`app.Repo = ...`) rather than calling ApplyDeps on each service.
@@ -69,7 +70,7 @@ The codemod handles the deterministic mechanical work:
 
 3. **Regenerates the project**: a single `forge generate` emits
    `pkg/app/wire_gen.go` and rewrites `pkg/app/bootstrap.go` to call
-   `wireXxxDeps(app, cfg, logger, devMode)` instead of the two-phase
+   `wireXxxDeps(app, cfg, logger)` instead of the two-phase
    construct-then-ApplyDeps dance. This step also creates
    `pkg/app/app_gen.go` and `pkg/app/app_extras.go` if they don't
    already exist.
@@ -171,7 +172,7 @@ failure modes:
   exact-name match against *App fields (including AppExtras-promoted
   fields).
 - `pkg/app/bootstrap.go` (MODIFIED, Tier-1) — Bootstrap calls
-  `wireXxxDeps(app, cfg, logger, devMode)` then `X.New(deps)` instead
+  `wireXxxDeps(app, cfg, logger)` then `X.New(deps)` instead
   of the construct-register-ApplyDeps three-step.
 - `pkg/app/setup.go` (MODIFIED, Tier-2) — comments updated; user
   assigns infrastructure to App fields (`app.Repo = ...`) instead of

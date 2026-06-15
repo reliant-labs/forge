@@ -15,8 +15,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // goKeywords is the set of Go reserved keywords.
@@ -69,9 +72,10 @@ func validateServiceName(name string) error {
 // validateIdentifier checks that a name is valid for use as a service, worker,
 // or operator name. Hyphens and underscores are allowed in the display name;
 // templates use snakeCase/pascalCase helpers to convert when a Go identifier
-// is needed (e.g. "admin-server" / "admin_server" -> package "adminserver"
-// and field "AdminServer"). The leading-character and reserved-word rules
-// match validateProjectName so all top-level scaffold names share one shape.
+// is needed (e.g. "admin-server" / "admin_server" -> package "admin_server"
+// and field "AdminServer" — snake_case is the canonical on-disk form post-
+// 2026-06-08). The leading-character and reserved-word rules match
+// validateProjectName so all top-level scaffold names share one shape.
 func validateIdentifier(name string) error {
 	if name == "" {
 		return fmt.Errorf("name cannot be empty")
@@ -141,7 +145,9 @@ Subcommands:
   forge add package <name>                        Add a new internal package (alias for package new)
   forge add adapter <name>                        Add an outbound adapter (HTTP/queue/storage gateway)
   forge add library <name>                        Scaffold a library-shaped package (no contract.go; pre-excluded)
-  forge add handler-file <svc> <name>             Scaffold an additional RPC-group file in handlers/<svc>/`,
+  forge add handler-file <svc> <name>             Scaffold an additional RPC-group file in handlers/<svc>/
+  forge add rpc <svc> <Name> [--stream M]         Scaffold a single hand-written RPC stub + proto snippet
+  forge add entity <name> [field:type ...]        Add a DB entity: SQL migration + CRUD wire contract`,
 	}
 
 	cmd.AddCommand(newAddServiceCmd())
@@ -156,6 +162,8 @@ Subcommands:
 	cmd.AddCommand(newAddBinaryCmd())
 	cmd.AddCommand(newAddLibraryCmd())
 	cmd.AddCommand(newAddHandlerFileCmd())
+	cmd.AddCommand(newAddRPCCmd())
+	cmd.AddCommand(newAddEntityCmd())
 
 	return cmd
 }
@@ -174,6 +182,32 @@ func projectRoot() (string, error) {
 			"cd into your project root, or run 'forge new <name>' to scaffold a new project")
 	}
 	return cwd, nil
+}
+
+// snapshotComponentsFile reads the components.json at path for rollback.
+// It returns the bytes, whether the file existed (a fresh service shell may
+// have no components.json yet), and any non-not-exist read error.
+func snapshotComponentsFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+// restoreComponentsFile rolls components.json back to its pre-add state:
+// rewrites the original bytes, or removes the file if it didn't exist before.
+func restoreComponentsFile(path string, original []byte, existed bool) error {
+	if !existed {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(path, original, 0o644)
 }
 
 // requireServiceKind reads forge.yaml at root and returns an error if the
@@ -283,7 +317,7 @@ func runAddService(name string, port int, resume, force bool) error {
 	// the forge.yaml append step in that case so we don't duplicate the
 	// services: entry.
 	existingIdx := -1
-	for i, svc := range cfg.Services {
+	for i, svc := range cfg.Components {
 		if svc.Name == name {
 			existingIdx = i
 			break
@@ -301,12 +335,12 @@ func runAddService(name string, port int, resume, force bool) error {
 	// port so the regenerated scaffold matches the recorded config.
 	if port == 0 {
 		if existingIdx >= 0 {
-			port = cfg.Services[existingIdx].Port
+			port = cfg.Components[existingIdx].PrimaryPort()
 		} else {
 			port = 8080
-			for _, svc := range cfg.Services {
-				if svc.Port >= port {
-					port = svc.Port + 1
+			for _, svc := range cfg.Components {
+				if p := svc.PrimaryPort(); p >= port {
+					port = p + 1
 				}
 			}
 		}
@@ -335,30 +369,33 @@ func runAddService(name string, port int, resume, force bool) error {
 		return fmt.Errorf("generate service files: %w", err)
 	}
 
-	// Snapshot the existing project config so we can roll back to it if the
-	// generation pipeline fails — otherwise the on-disk config would claim a
-	// service that has no generated stubs, proto, or wiring.
-	originalConfigBytes, err := os.ReadFile(configPath)
+	// Snapshot the existing components.json so we can roll back to it if the
+	// generation pipeline fails — otherwise the on-disk source would claim a
+	// service that has no generated stubs, proto, or wiring. Components live
+	// in components.json now (forge.yaml is global-only); restoreComponents
+	// captures its bytes (or absence).
+	componentsPath := filepath.Join(root, config.ComponentsFileName)
+	originalComponentsBytes, hadComponentsFile, err := snapshotComponentsFile(componentsPath)
 	if err != nil {
-		return fmt.Errorf("read project config for rollback snapshot: %w", err)
+		return fmt.Errorf("read components.json for rollback snapshot: %w", err)
 	}
 
-	// Update forge.yaml (must happen before the generation pipeline
-	// so the pipeline sees the new service in the config). The Path uses
-	// the Go-package form so it matches the directory the scaffolder
-	// actually creates ("admin-server" -> handlers/adminserver).
+	// Update components.json (must happen before the generation pipeline so
+	// the pipeline sees the new service). The Path uses the snake_case
+	// Go-package form so it matches the directory the scaffolder actually
+	// creates ("admin-server" -> handlers/admin_server).
 	//
-	// Under --resume / --force the service entry may already exist in
-	// forge.yaml; only append when this is a fresh add.
+	// Under --resume / --force the service entry may already exist; only
+	// append when this is a fresh add.
 	if existingIdx < 0 {
-		cfg.Services = append(cfg.Services, config.ServiceConfig{
-			Name: name,
-			Type: "go_service",
-			Path: fmt.Sprintf("handlers/%s", generator.ServicePackageName(name)),
-			Port: port,
+		projectstore.New(cfg).AppendComponent(config.ComponentConfig{
+			Name:  name,
+			Kind:  config.ComponentKindServer,
+			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
+			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 		})
-		if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-			return fmt.Errorf("update project config: %w", err)
+		if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+			return fmt.Errorf("update components.json: %w", err)
 		}
 	}
 
@@ -369,14 +406,14 @@ func runAddService(name string, port int, resume, force bool) error {
 	err = runGeneratePipeline(root, false, false)
 	generateMu.Unlock()
 	if err != nil {
-		// Only restore the config when we actually appended to it this
+		// Only restore the source when we actually appended to it this
 		// invocation; otherwise --resume would clobber a valid config
 		// after a transient pipeline failure.
 		if existingIdx < 0 {
-			if restoreErr := os.WriteFile(configPath, originalConfigBytes, 0o644); restoreErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to restore original project config after pipeline failure: %v\n", restoreErr)
+			if restoreErr := restoreComponentsFile(componentsPath, originalComponentsBytes, hadComponentsFile); restoreErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to restore original components.json after pipeline failure: %v\n", restoreErr)
 			}
-			return fmt.Errorf("generation pipeline failed for service %q (project config restored): %w", name, err)
+			return fmt.Errorf("generation pipeline failed for service %q (components.json restored): %w", name, err)
 		}
 		return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
 	}
@@ -394,6 +431,24 @@ func runAddService(name string, port int, resume, force bool) error {
 	}
 
 	fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
+
+	// Registration: pkg/app/services.go is user-owned — forge never
+	// edits it. When the file predates this service (the usual add-flow:
+	// the registry was scaffolded with the project's earlier services),
+	// the new row constructor is generated but unreferenced, so the
+	// binary won't serve the service until the user adds the line. Print
+	// the exact line; `forge audit` keeps the gap visible
+	// (codegen.unregistered_services) until it's resolved. This is
+	// deliberate: the registration line is the one decision the user (or
+	// their agent) writes — forge generates the guardrails around it.
+	if reg, regErr := loadServiceRegistry(root); regErr == nil && reg.Exists && !reg.registered(name) {
+		fmt.Println()
+		fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", serviceRegistryRelPath)
+		fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
+		fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
+		fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
+		fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
+	}
 
 	return nil
 }
@@ -523,8 +578,8 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 		return fmt.Errorf("read project config: %w", err)
 	}
 
-	// Check for name conflict (workers are stored in Services with type "worker")
-	for _, svc := range cfg.Services {
+	// Check for name conflict (workers/crons are components).
+	for _, svc := range cfg.Components {
 		if svc.Name == name {
 			return fmt.Errorf("%q already exists in the project", name)
 		}
@@ -543,15 +598,21 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 
 	// Update forge.yaml. Path uses the Go-package form so it matches the
 	// directory the scaffolder creates ("email-sender" -> workers/email_sender).
-	cfg.Services = append(cfg.Services, config.ServiceConfig{
+	// kind=cron is first-class now; a plain worker has kind=worker. The
+	// scaffolded worker.go body (worker vs worker-cron template) still
+	// encodes the schedule loop; the component just records the kind.
+	componentKind := config.ComponentKindWorker
+	if kind == "cron" {
+		componentKind = config.ComponentKindCron
+	}
+	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 		Name:     name,
-		Type:     "worker",
-		Kind:     kind,
-		Path:     fmt.Sprintf("workers/%s", generator.ServicePackageName(name)),
+		Kind:     componentKind,
+		Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
 		Schedule: schedule,
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	// --no-generate: scaffold-only mode. Skip the post-scaffold generate
@@ -671,9 +732,12 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
 	}
+	if !cfg.Features.OperatorsEnabled() {
+		return config.DisabledFeatureError(config.FeatureOperators)
+	}
 
-	// Check for name conflict (operators are stored in Services with type "operator")
-	for _, svc := range cfg.Services {
+	// Check for name conflict (operators are kind=operator components).
+	for _, svc := range cfg.Components {
 		if svc.Name == name {
 			return fmt.Errorf("%q already exists in the project", name)
 		}
@@ -705,15 +769,15 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	// Update forge.yaml. Path uses the Go-package form so it matches the
 	// directory the scaffolder creates. Group/Version are persisted so
 	// `forge add crd` can default from them.
-	cfg.Services = append(cfg.Services, config.ServiceConfig{
+	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 		Name:    name,
-		Type:    "operator",
-		Path:    fmt.Sprintf("operators/%s", generator.ServicePackageName(name)),
+		Kind:    config.ComponentKindOperator,
+		Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
 		Group:   group,
 		Version: version,
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	// Run the generation pipeline to update bootstrap.go and cmd-server.go
@@ -805,8 +869,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 	// Resolve target operator: explicit flag > only-operator > error.
 	operatorIdx := -1
 	if operator != "" {
-		for i, svc := range cfg.Services {
-			if svc.Type == "operator" && svc.Name == operator {
+		for i, svc := range cfg.Components {
+			if svc.IsOperator() && svc.Name == operator {
 				operatorIdx = i
 				break
 			}
@@ -816,8 +880,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		}
 	} else {
 		operatorCount := 0
-		for i, svc := range cfg.Services {
-			if svc.Type == "operator" {
+		for i, svc := range cfg.Components {
+			if svc.IsOperator() {
 				operatorCount++
 				operatorIdx = i
 			}
@@ -826,13 +890,13 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		case 0:
 			return fmt.Errorf("no operators in this project; run `forge add operator <name>` first")
 		case 1:
-			operator = cfg.Services[operatorIdx].Name
+			operator = cfg.Components[operatorIdx].Name
 		default:
 			return fmt.Errorf("multiple operators in this project; pass --operator <name> to disambiguate")
 		}
 	}
 
-	op := &cfg.Services[operatorIdx]
+	op := &cfg.Components[operatorIdx]
 	if group == "" {
 		group = op.Group
 	}
@@ -878,8 +942,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		Version: version,
 		Shape:   string(crdShape),
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ CRD '%s' added to operator '%s'!\n", name, operator)
@@ -891,6 +955,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 func newAddFrontendCmd() *cobra.Command {
 	var port int
 	var kind string
+	var output string
+	var basePath string
 
 	cmd := &cobra.Command{
 		Use:   "frontend <name>",
@@ -901,19 +967,37 @@ By default this creates a Next.js web frontend with Connect RPC client setup.
 Use --kind mobile to scaffold a React Native app using Expo.
 Use --kind vite-spa to scaffold a Vite + React + tanstack-router SPA.
 
+For Next.js frontends (--kind web, the default), --output selects the
+production build/runtime shape. "standalone" (the default) emits a
+self-contained Node server that pairs with the generated Dockerfile and
+supports the dynamic [id] CRUD routes forge generates. Opt into
+"static" only when the frontend has no dynamic routes — static export
+fails the build on the generated /<entity>/[id] pages. Use "server"
+for full Next.js dev+prod (next start).
+
+--base-path mounts the frontend under a URL prefix (e.g. /admin behind a
+reverse proxy that blends several apps on one host). It is persisted as
+frontends[].base_path in forge.yaml and rendered into next.config.ts
+(basePath + assetPrefix) and the generated src/lib/basepath_gen.ts
+helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
+
 Example:
   forge add frontend web
   forge add frontend dashboard --port 3001
   forge add frontend mobile --kind mobile
-  forge add frontend admin --kind vite-spa`,
+  forge add frontend admin --kind vite-spa
+  forge add frontend dashboard --output standalone
+  forge add frontend admin --base-path /admin`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAddFrontend(cmd.Context(), args[0], port, kind)
+			return runAddFrontend(cmd.Context(), args[0], port, kind, output, basePath)
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 0, "Frontend dev server port (default: auto-increment from 3000)")
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
+	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: standalone (default), static, or server. Only applies to --kind web.")
+	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
 
 	return cmd
 }
@@ -935,7 +1019,7 @@ func validateFrontendName(name string) error {
 	return nil
 }
 
-func runAddFrontend(ctx context.Context, name string, port int, kind string) error {
+func runAddFrontend(ctx context.Context, name string, port int, kind, output, basePath string) error {
 	if err := validateFrontendName(name); err != nil {
 		return fmt.Errorf("invalid frontend name: %w", err)
 	}
@@ -945,6 +1029,33 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 	case "", "web", "mobile", "vite-spa":
 	default:
 		return fmt.Errorf("invalid frontend kind %q: valid kinds are web, mobile, vite-spa", kind)
+	}
+
+	// --output applies only to Next.js (kind=web / kind=""). Reject
+	// up-front for mobile / vite-spa so the user gets a clear error
+	// instead of silently-ignored flag.
+	output = strings.ToLower(strings.TrimSpace(output))
+	switch output {
+	case "", "static", "standalone", "server":
+	default:
+		return fmt.Errorf("invalid --output %q: valid values are standalone (default), static, server", output)
+	}
+	if output != "" && kind != "" && kind != "web" {
+		return fmt.Errorf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind)
+	}
+
+	// --base-path follows the same Next.js-only rule, plus the strict
+	// shape contract shared with forge.yaml validation (leading "/", no
+	// trailing "/", [A-Za-z0-9._-] segments) — the value is spliced
+	// verbatim into next.config.ts and generated TypeScript literals.
+	basePath = strings.TrimSpace(basePath)
+	if basePath != "" {
+		if msg, ok := config.ValidateBasePath(basePath); !ok {
+			return fmt.Errorf("invalid --base-path %q: %s", basePath, msg)
+		}
+		if kind != "" && kind != "web" {
+			return fmt.Errorf("--base-path only applies to Next.js frontends (--kind web); got --kind %q", kind)
+		}
 	}
 
 	root, err := projectRoot()
@@ -994,10 +1105,10 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 
 	fmt.Printf("Adding %s '%s' (port %d)...\n", frontendDescription, name, port)
 
-	// Determine the API port from the first service
+	// Determine the API port from the first server component
 	apiPort := 8080
-	if len(cfg.Services) > 0 {
-		apiPort = cfg.Services[0].Port
+	if servers := cfg.Servers(); len(servers) > 0 {
+		apiPort = servers[0].PrimaryPort()
 	}
 
 	// Generate frontend files. When the project has opted into the
@@ -1012,6 +1123,8 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 	}
 	if err := generator.GenerateFrontendFilesWithOptions(root, cfg.ModulePath, cfg.Name, name, apiPort, kind, generator.FrontendGenOptions{
 		Workspaces: workspaces,
+		Output:     output,
+		BasePath:   basePath,
 	}); err != nil {
 		return fmt.Errorf("generate frontend files: %w", err)
 	}
@@ -1028,14 +1141,26 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 		}
 	}
 
-	// Update forge.yaml
-	cfg.Frontends = append(cfg.Frontends, config.FrontendConfig{
+	// Update forge.yaml. Only persist `output:` when the user passed
+	// the flag — keeping the field empty lets the per-frontend
+	// scaffold default (currently "standalone") evolve without forcing
+	// every existing forge.yaml to track it explicitly.
+	feEntry := config.FrontendConfig{
 		Name: name,
 		Type: frontendType,
 		Kind: frontendKind,
 		Path: fmt.Sprintf("frontends/%s", name),
 		Port: port,
-	})
+	}
+	if output != "" && (kind == "" || kind == "web") {
+		feEntry.Output = output
+	}
+	// Persist base_path so `forge generate` keeps regenerating the
+	// basepath_gen.ts helper with the right prefix.
+	if basePath != "" && (kind == "" || kind == "web") {
+		feEntry.BasePath = basePath
+	}
+	cfg.Frontends = append(cfg.Frontends, feEntry)
 	// Flip features.frontend on so subsequent `forge generate` runs
 	// pick up the frontend codegen pass. Projects scaffolded with
 	// `forge new --kind service` (no --frontend) leave this field
@@ -1078,7 +1203,20 @@ func runAddFrontend(ctx context.Context, name string, port int, kind string) err
 // frontend directory so the user can immediately run the dev server.
 // A missing `npm` binary is treated as a soft warning — the scaffold
 // itself succeeded and the user can install dependencies later.
+//
+// FORGE_SKIP_NPM_INSTALL=1 short-circuits the install. This is the
+// testing seam: unit tests that exercise the forge.yaml/scaffold logic
+// of `forge add frontend` don't care about node_modules, and the npm
+// install is ~13s apiece — three such tests dominated the entire
+// internal/cli suite (~80s of an ~85s package). They set this under
+// `go test -short` only (see skipNpmInstallInShortMode in
+// add_frontend_test.go), so full mode still runs the real install; the
+// npm-driven frontend build is additionally covered by the e2e frontend
+// fixture, which needs node_modules to actually build.
 func runFrontendNpmInstall(ctx context.Context, frontendDir string) error {
+	if os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
+		return nil
+	}
 	cmd := exec.CommandContext(ctx, "npm", "install")
 	cmd.Dir = frontendDir
 	cmd.Stdout = os.Stdout
@@ -1142,7 +1280,7 @@ func runAddWebhook(name, serviceName string) error {
 
 	// Find the target service.
 	svcIdx := -1
-	for i, svc := range cfg.Services {
+	for i, svc := range cfg.Components {
 		if svc.Name == serviceName {
 			svcIdx = i
 			break
@@ -1151,9 +1289,19 @@ func runAddWebhook(name, serviceName string) error {
 	if svcIdx == -1 {
 		return fmt.Errorf("service %q not found in forge.yaml", serviceName)
 	}
+	// Webhooks require a serving binary; declaring one on a service this
+	// binary does not register (no serviceRow in pkg/app/services.go)
+	// would fail the next `forge generate`. Reject at add time with the
+	// full story. Best-effort parse: a broken registry falls open here —
+	// the generate-time check is the hard gate.
+	if reg, regErr := loadServiceRegistry(root); regErr == nil &&
+		isConnectServiceConfig(cfg.Components[svcIdx]) && !reg.registered(serviceName) {
+		return fmt.Errorf("service %q is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it",
+			serviceName, serviceRegistryRelPath, codegen.ServiceRowFuncName(serviceName))
+	}
 
 	// Check for duplicate webhook.
-	for _, wh := range cfg.Services[svcIdx].Webhooks {
+	for _, wh := range cfg.Components[svcIdx].Webhooks {
 		if wh.Name == name {
 			return fmt.Errorf("webhook %q already exists in service %q", name, serviceName)
 		}
@@ -1167,11 +1315,11 @@ func runAddWebhook(name, serviceName string) error {
 	}
 
 	// Update forge.yaml.
-	cfg.Services[svcIdx].Webhooks = append(cfg.Services[svcIdx].Webhooks, config.WebhookConfig{
+	projectstore.New(cfg).AppendWebhook(serviceName, config.WebhookConfig{
 		Name: name,
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ Webhook '%s' added to service '%s'!\n", name, serviceName)
@@ -1251,19 +1399,14 @@ func runAddBinary(name string) error {
 
 	// Conflict checks. Binaries share the cmd/ directory with the
 	// canonical `cmd/server.go` and any per-service shared subcommands,
-	// so we check both binaries: AND services:.
-	for _, b := range cfg.Binaries {
-		if b.Name == name {
-			return fmt.Errorf("binary %q already exists in the project", name)
-		}
-	}
-	for _, svc := range cfg.Services {
-		if svc.Name == name {
-			return fmt.Errorf("%q already exists in the project as a %s", name, svc.Type)
+	// so we check every component (server/worker/cron/operator/binary).
+	for _, comp := range cfg.Components {
+		if comp.Name == name {
+			return fmt.Errorf("%q already exists in the project as a %s", name, comp.EffectiveKind())
 		}
 	}
 	// Reserved cobra subcommand names that would shadow the binary.
-	switch generator.ServicePackageName(name) {
+	switch naming.ServicePackage(name) {
 	case "server", "version", "db":
 		return fmt.Errorf("%q conflicts with a reserved cobra subcommand; pick a different name", name)
 	}
@@ -1279,13 +1422,14 @@ func runAddBinary(name string) error {
 	// Update forge.yaml. Path uses the Go-package form so it matches
 	// the directory the scaffolder creates ("workspace-proxy" ->
 	// cmd/workspace_proxy.go).
-	pkg := generator.ServicePackageName(name)
-	cfg.Binaries = append(cfg.Binaries, config.BinaryConfig{
+	pkg := naming.ServicePackage(name)
+	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
 		Name: name,
+		Kind: config.ComponentKindBinary,
 		Path: fmt.Sprintf("cmd/%s.go", pkg),
 	})
-	if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-		return fmt.Errorf("update project config: %w", err)
+	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+		return fmt.Errorf("update components.json: %w", err)
 	}
 
 	fmt.Printf("\n✅ Binary '%s' added successfully!\n", name)
@@ -1296,9 +1440,9 @@ func runAddBinary(name string) error {
 	fmt.Printf("   - forge.yaml (binaries: entry)\n\n")
 	fmt.Printf("Next steps:\n")
 	fmt.Printf("  1. Edit internal/%s/%s.go to implement the runtime loop.\n", pkg, pkg)
-	fmt.Printf("  2. Add a Deployment for the binary in deploy/kcl/<env>/main.k\n")
-	fmt.Printf("     (the {{range .Binaries}} block under `applications` is wired\n")
-	fmt.Printf("     for new projects; existing projects need to copy the entry\n")
-	fmt.Printf("     pattern from a sibling Application).\n")
+	fmt.Printf("  2. Run `forge generate` — the binary flows into\n")
+	fmt.Printf("     deploy/kcl/components_gen.json automatically; the per-env\n")
+	fmt.Printf("     main.k expands it into a Deployment via the forge.components\n")
+	fmt.Printf("     KCL schema hierarchy. No main.k hand-edit needed.\n")
 	return nil
 }

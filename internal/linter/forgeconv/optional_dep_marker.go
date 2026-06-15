@@ -180,7 +180,12 @@ func lintOptionalDepMarkerPkg(pkgDir, rootDir string) ([]Finding, error) {
 			rel = fp
 		}
 		for _, cg := range file.Comments {
-			if !codegen.HasOptionalDepMarker(cg.Text()) {
+			// Use the AST-aware variant — cg.Text() drops the
+			// `//forge:optional-dep` directive form (no space after
+			// `//`), which is exactly the typo this lint exists to
+			// catch. Iterating cg.List recovers both spaced and
+			// unspaced forms.
+			if !codegen.HasOptionalDepMarkerCommentGroup(cg) {
 				continue
 			}
 			if legitGroups[cg.End()] {

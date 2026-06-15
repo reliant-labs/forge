@@ -586,13 +586,18 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 			_ = logFile.Close()
 			return err
 		}
+		// Capture the PID BEFORE Release() — Release resets
+		// cmd.Process.Pid to -1, and persist()/the log line below need the
+		// real PID so `forge up stop` can later SIGTERM it.
+		pid := 0
 		if cmd.Process != nil {
+			pid = cmd.Process.Pid
 			_ = cmd.Process.Release()
 		}
 		p.mu.Lock()
-		p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd})
+		p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd, pid: pid})
 		p.mu.Unlock()
-		fmt.Printf("[up] %s: detached (pid=%d, log=%s)\n", name, cmd.Process.Pid, logPath)
+		fmt.Printf("[up] %s: detached (pid=%d, log=%s)\n", name, pid, logPath)
 		return nil
 	}
 
@@ -692,10 +697,19 @@ func (p *procRegistry) persist() {
 	var b strings.Builder
 	p.mu.Lock()
 	for _, mp := range p.processes {
-		if mp.cmd.Process == nil {
+		// Prefer the PID captured at Start (survives Process.Release on
+		// the detach path); fall back to the live handle for any process
+		// registered without a captured PID. Skip never-started / already-
+		// released-without-capture entries so we never persist a 0/-1 that
+		// `forge up stop` would try to signal.
+		pid := mp.pid
+		if pid == 0 && mp.cmd.Process != nil {
+			pid = mp.cmd.Process.Pid
+		}
+		if pid <= 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "%s\t%d\n", mp.name, mp.cmd.Process.Pid)
+		fmt.Fprintf(&b, "%s\t%d\n", mp.name, pid)
 	}
 	p.mu.Unlock()
 	if err := os.WriteFile(statePath, []byte(b.String()), 0o644); err != nil {
@@ -805,6 +819,14 @@ func runUpStop(env string) error {
 		}
 		var pid int
 		if _, err := fmt.Sscanf(parts[1], "%d", &pid); err != nil {
+			continue
+		}
+		// Guard against a non-positive PID slipping into the state file
+		// (e.g. a pre-fix file written with a Release()'d -1). Signalling
+		// pid -1 / 0 is a footgun — on Unix kill(-1) targets every process
+		// the user can reach — so refuse rather than risk it.
+		if pid <= 0 {
+			fmt.Printf("[up] %s: skipping invalid pid %d in state file\n", parts[0], pid)
 			continue
 		}
 		proc, ferr := os.FindProcess(pid)

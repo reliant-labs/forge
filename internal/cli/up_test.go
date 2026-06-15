@@ -380,3 +380,39 @@ func TestUpNoDeployFlag(t *testing.T) {
 		t.Errorf("--no-deploy: parsed value got false, want true")
 	}
 }
+
+func TestSummaryLogPath_MatchesUpLogPath(t *testing.T) {
+	// The displayed path must be the tail of the file upLogPath writes,
+	// so a printed path is exactly what `grep`/`tail` will find.
+	full, err := upLogPath("dev", "frontend:admin/web")
+	if err != nil {
+		t.Fatalf("upLogPath: %v", err)
+	}
+	disp := summaryLogPath("dev", "frontend:admin/web")
+	if !strings.HasSuffix(full, disp) {
+		t.Errorf("summaryLogPath %q is not a suffix of upLogPath %q", disp, full)
+	}
+	if want := ".forge/logs/dev/frontend_admin_web.log"; disp != want {
+		t.Errorf("summaryLogPath: got %q, want %q", disp, want)
+	}
+}
+
+func TestHostEnvPort(t *testing.T) {
+	if got := hostEnvPort(nil); got != "" {
+		t.Errorf("nil host: got %q, want empty", got)
+	}
+	host := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "DATABASE_URL", Value: "postgres://x"},
+		{Name: "PORT", Value: "8080"},
+	}}
+	if got := hostEnvPort(host); got != "8080" {
+		t.Errorf("hostEnvPort: got %q, want 8080", got)
+	}
+	// config_map_ref-only PORT (no inline value) yields no URL.
+	refHost := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", ConfigMapRef: "cfg", ConfigMapKey: "PORT"},
+	}}
+	if got := hostEnvPort(refHost); got != "" {
+		t.Errorf("hostEnvPort ref-only: got %q, want empty", got)
+	}
+}

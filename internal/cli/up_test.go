@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -400,21 +401,31 @@ func TestSummaryLogPath_MatchesUpLogPath(t *testing.T) {
 }
 
 func TestHostEnvPort(t *testing.T) {
-	if got := hostEnvPort(nil); got != "" {
+	if got := hostEnvPort("svc", nil); got != "" {
 		t.Errorf("nil host: got %q, want empty", got)
 	}
+	// Only PORT set → use it.
 	host := &HostDeploy{EnvVars: []KCLEnvVar{
 		{Name: "DATABASE_URL", Value: "postgres://x"},
 		{Name: "PORT", Value: "8080"},
 	}}
-	if got := hostEnvPort(host); got != "8080" {
-		t.Errorf("hostEnvPort: got %q, want 8080", got)
+	if got := hostEnvPort("api", host); got != "8080" {
+		t.Errorf("hostEnvPort PORT-only: got %q, want 8080", got)
+	}
+	// Both PORT and <NAME>_PORT → the service-specific one wins (the real
+	// bind port; the generic PORT is often a vestigial default).
+	both := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+		{Name: "ADMIN_SERVER_PORT", Value: "8090"},
+	}}
+	if got := hostEnvPort("admin-server", both); got != "8090" {
+		t.Errorf("hostEnvPort specific-wins: got %q, want 8090", got)
 	}
 	// config_map_ref-only PORT (no inline value) yields no URL.
 	refHost := &HostDeploy{EnvVars: []KCLEnvVar{
 		{Name: "PORT", ConfigMapRef: "cfg", ConfigMapKey: "PORT"},
 	}}
-	if got := hostEnvPort(refHost); got != "" {
+	if got := hostEnvPort("api", refHost); got != "" {
 		t.Errorf("hostEnvPort ref-only: got %q, want empty", got)
 	}
 }
@@ -475,5 +486,26 @@ func TestFrontendDepsStale(t *testing.T) {
 	_ = os.Chtimes(filepath.Join(dir, "package-lock.json"), future.Add(time.Minute), future.Add(time.Minute))
 	if !frontendDepsStale(dir) {
 		t.Fatal("lockfile newer than node_modules should be stale")
+	}
+}
+
+func TestProcPID_PrefersCaptured(t *testing.T) {
+	// Captured pid wins (survives Release on the detach path).
+	if got := procPID(&managedProcess{pid: 4242, cmd: &exec.Cmd{}}); got != 4242 {
+		t.Errorf("captured pid: got %d, want 4242", got)
+	}
+	// No captured pid, no live process → 0 (callers skip, never signal).
+	if got := procPID(&managedProcess{cmd: &exec.Cmd{}}); got != 0 {
+		t.Errorf("unset: got %d, want 0", got)
+	}
+}
+
+func TestSignalProcessGroup_NonPositiveIsNoop(t *testing.T) {
+	// A 0/-1 pid must never fan a signal out (negative pid = whole group).
+	if err := signalProcessGroup(0, syscall.SIGTERM); err != nil {
+		t.Errorf("pid 0: %v", err)
+	}
+	if err := signalProcessGroup(-1, syscall.SIGTERM); err != nil {
+		t.Errorf("pid -1: %v", err)
 	}
 }

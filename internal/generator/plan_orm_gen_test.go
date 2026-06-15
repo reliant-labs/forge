@@ -1371,3 +1371,24 @@ func TestGeneratePlanORM_Int32PKCreate_ServerAllocated(t *testing.T) {
 		t.Error("GetTickByID should take an int32 id")
 	}
 }
+
+// TestBunTag_GeneratedColumnScanOnly proves a GENERATED ALWAYS column gets
+// the ,scanonly Bun tag (Bun reads it, never writes it — postgres rejects
+// writes to a generated column), and that a normal column does not.
+func TestBunTag_GeneratedColumnScanOnly(t *testing.T) {
+	gen := bunTag(ormField{columnName: "search_vector", isGenerated: true, notNull: true})
+	if !strings.Contains(gen, "scanonly") {
+		t.Errorf("generated column should carry ,scanonly; got %s", gen)
+	}
+
+	plain := bunTag(ormField{columnName: "title", notNull: true})
+	if strings.Contains(plain, "scanonly") {
+		t.Errorf("non-generated column must not carry ,scanonly; got %s", plain)
+	}
+
+	// A generated array column keeps ,array (for scanning) alongside ,scanonly.
+	genArr := bunTag(ormField{columnName: "tags_lc", isGenerated: true, isArray: true})
+	if !strings.Contains(genArr, "array") || !strings.Contains(genArr, "scanonly") {
+		t.Errorf("generated array column should carry both ,array and ,scanonly; got %s", genArr)
+	}
+}

@@ -66,4 +66,8 @@ type PlanEntityField struct {
 	Default    string `yaml:"default,omitempty" json:"default,omitempty"`
 	References string `yaml:"references,omitempty" json:"references,omitempty"` // "users.id"
 	TenantKey  bool   `yaml:"tenant_key,omitempty" json:"tenant_key,omitempty"`
+	// Generated marks a GENERATED ALWAYS AS (...) STORED column: the DB
+	// computes it, so the ORM emits ,scanonly (never written on
+	// INSERT/UPDATE).
+	Generated bool `yaml:"generated,omitempty" json:"generated,omitempty"`
 }

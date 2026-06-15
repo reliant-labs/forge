@@ -75,6 +75,10 @@ type Column struct {
 	// Default is the raw default expression, "" when none.
 	Default string
 	IsPK    bool
+	// IsGenerated is true for GENERATED ALWAYS AS (...) STORED columns —
+	// the database computes them, so they must never be written on
+	// INSERT/UPDATE (postgres rejects writes to generated columns).
+	IsGenerated bool
 }
 
 // Index is a non-PK index on a table.
@@ -494,7 +498,7 @@ func introspectTable(ctx context.Context, db *sql.DB, schema, name string) (Tabl
 	// MapDeclaredType already understands; data_type = 'ARRAY' marks
 	// array columns (udt_name then has the `_elem` form).
 	rows, err := db.QueryContext(ctx, `
-		SELECT column_name, data_type, udt_name, is_nullable, column_default
+		SELECT column_name, data_type, udt_name, is_nullable, column_default, is_generated
 		FROM information_schema.columns
 		WHERE table_schema = $1 AND table_name = $2
 		ORDER BY ordinal_position`, schema, name)
@@ -503,19 +507,23 @@ func introspectTable(ctx context.Context, db *sql.DB, schema, name string) (Tabl
 	}
 	for rows.Next() {
 		var (
-			col        Column
-			dataType   string
-			udtName    string
-			isNullable string
-			deflt      sql.NullString
+			col         Column
+			dataType    string
+			udtName     string
+			isNullable  string
+			deflt       sql.NullString
+			isGenerated string
 		)
-		if err := rows.Scan(&col.Name, &dataType, &udtName, &isNullable, &deflt); err != nil {
+		if err := rows.Scan(&col.Name, &dataType, &udtName, &isNullable, &deflt, &isGenerated); err != nil {
 			_ = rows.Close()
 			return t, err
 		}
 		col.DeclType = pgDeclType(dataType, udtName)
 		col.Type, col.IsArray = MapDeclaredType(col.DeclType)
 		col.NotNull = isNullable == "NO"
+		// is_generated is 'ALWAYS' for GENERATED ALWAYS AS (...) STORED
+		// columns, 'NEVER' otherwise.
+		col.IsGenerated = isGenerated == "ALWAYS"
 		if deflt.Valid {
 			col.Default = deflt.String
 		}
@@ -621,7 +629,7 @@ func introspectIndexes(ctx context.Context, db *sql.DB, schema, table string) ([
 	}
 	defer func() { _ = rows.Close() }()
 	var (
-		order []string
+		order  []string
 		byName = map[string]*Index{}
 	)
 	for rows.Next() {

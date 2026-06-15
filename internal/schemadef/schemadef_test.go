@@ -420,3 +420,37 @@ CREATE INDEX idx_deployments_tenant ON controlplane.deployments (tenant_id);
 		t.Errorf("conventions = %+v, want SoftDelete+Timestamps+HasTenant", conv)
 	}
 }
+
+// TestApplyAndIntrospect_GeneratedColumn proves a GENERATED ALWAYS AS
+// (...) STORED column is flagged IsGenerated (it drives the ORM's
+// ,scanonly tag so the generated code never writes a DB-computed column).
+func TestApplyAndIntrospect_GeneratedColumn(t *testing.T) {
+	requireRealPG(t)
+	dir := t.TempDir()
+	writeMig(t, dir, "00001_create_people.up.sql", `
+CREATE TABLE people (
+    id BIGSERIAL PRIMARY KEY,
+    first_name TEXT NOT NULL DEFAULT '',
+    last_name TEXT NOT NULL DEFAULT '',
+    full_name TEXT GENERATED ALWAYS AS (first_name || ' ' || last_name) STORED
+);
+`)
+
+	tables, err := ApplyAndIntrospect(dir)
+	if err != nil {
+		t.Fatalf("ApplyAndIntrospect: %v", err)
+	}
+	if len(tables) != 1 {
+		t.Fatalf("got %d tables, want 1", len(tables))
+	}
+	byName := map[string]Column{}
+	for _, c := range tables[0].Columns {
+		byName[c.Name] = c
+	}
+	if !byName["full_name"].IsGenerated {
+		t.Errorf("full_name should be IsGenerated")
+	}
+	if byName["first_name"].IsGenerated {
+		t.Errorf("first_name (plain column) must not be IsGenerated")
+	}
+}

@@ -107,8 +107,17 @@ What flipping a service to host mode buys:
 
 `forge up --env=dev` is the one-command inner loop — it brings up infra,
 applies the cluster-mode services, launches the host-mode services, and
-dev-serves every frontend. Use the breakdown below when you want
-fine-grained control:
+dev-serves every frontend. It also keeps the two gitignored
+prerequisites fresh so a clean checkout just works, each gated on
+staleness (a no-op in the steady state):
+
+- **Generated code** — runs `forge generate` when `gen/` is missing or
+  `proto/` is newer than the generated tree (`--no-generate` to skip).
+- **Frontend deps** — runs `<dev_runner> install` for a frontend whose
+  `node_modules` is missing or older than its lockfile/manifest
+  (`--no-install` to skip).
+
+Use the breakdown below when you want fine-grained control:
 
 ```bash
 # Terminal 1: long-running infra + cluster services

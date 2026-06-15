@@ -36,6 +36,14 @@ type Context interface {
 	// QueryRow executes a query expected to return at most one row
 	// (raw-SQL path).
 	QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row
+
+	// Dialect returns the SQL dialect (postgres — forge is postgres-pinned).
+	// The raw-SQL escape hatch needs it: a hand-written handler that builds
+	// its own SQL string calls db.Dialect().Placeholder(i) for $N parameter
+	// markers and db.Dialect().QuoteIdentifier(name) for safe identifiers,
+	// instead of hardcoding postgres syntax. Available on both *Client and
+	// *Tx so raw SQL composes the same way inside and outside a transaction.
+	Dialect() Dialect
 }
 
 // Ensure Client and Tx implement Context.

@@ -13,7 +13,11 @@
 // (filters), orm.WithOrderBy / orm.WithLimit (shaping; validate any order_by
 // against db.{{.EntityName}}Columns first), orm.EncodeCursor / orm.DecodeCursor
 // (cursor pagination) — or drop to raw SQL via s.deps.DB.Bun() (bun.Raw /
-// NewRaw / NewSelect). See internal/db/{{.EntityLower}}_repo_ext.go for the
+// NewRaw / NewSelect), or s.deps.DB.Exec/Query/QueryRow for a hand-written
+// string. When you build a SQL string yourself, get postgres-correct markers
+// and identifiers from s.deps.DB.Dialect() — Placeholder(i) for $N params,
+// QuoteIdentifier(name) for safe column/table names — instead of hardcoding
+// $1/"col". See internal/db/{{.EntityLower}}_repo_ext.go for the
 // hand-written-query seam. `forge audit` lists this RPC under crud_stubs
 // until you finish wiring the response (remove the TODO below).
 func (s *Service) {{.MethodName}}(

@@ -140,3 +140,98 @@ func TestRenderedDeploymentNames_EmptyAndMalformed(t *testing.T) {
 		})
 	}
 }
+
+// filterTestManifests is a representative env bundle: two app
+// Deployments (each carrying app.kubernetes.io/name), a shared ConfigMap
+// and a Namespace (NO app.kubernetes.io/name — the shared/infra shape
+// forge's renderer produces). It mirrors what RenderManifests emits and
+// is `\n---\n`-joined exactly like the production stream.
+const filterTestManifests = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: example-dev
+  labels:
+    app.kubernetes.io/managed-by: forge
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-config
+  namespace: example-dev
+  labels:
+    app.kubernetes.io/managed-by: forge
+    app.kubernetes.io/part-of: example-dev
+data:
+  KEY: value
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+  namespace: example-dev
+  labels:
+    app.kubernetes.io/name: admin-server
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-proxy
+  namespace: example-dev
+  labels:
+    app.kubernetes.io/name: workspace-proxy
+    app.kubernetes.io/managed-by: forge
+spec: {}`
+
+// TestFilterManifestsByApp_KeepsTargetAndShared is the core assertion
+// of the --target application filter: targeting one app keeps that app's
+// Deployment plus every shared resource (the ConfigMap and Namespace
+// have no app.kubernetes.io/name label) and drops the other app's
+// Deployment.
+func TestFilterManifestsByApp_KeepsTargetAndShared(t *testing.T) {
+	got, err := FilterManifestsByApp(filterTestManifests, []string{"admin-server"})
+	if err != nil {
+		t.Fatalf("FilterManifestsByApp: %v", err)
+	}
+	if !strings.Contains(got, "name: admin-server") {
+		t.Errorf("expected targeted app admin-server to be kept, got:\n%s", got)
+	}
+	if !strings.Contains(got, "kind: Namespace") {
+		t.Errorf("expected shared Namespace (no app label) to be kept, got:\n%s", got)
+	}
+	if !strings.Contains(got, "name: example-config") {
+		t.Errorf("expected shared ConfigMap (no app label) to be kept, got:\n%s", got)
+	}
+	if strings.Contains(got, "name: workspace-proxy") {
+		t.Errorf("expected non-targeted app workspace-proxy to be dropped, got:\n%s", got)
+	}
+}
+
+// TestFilterManifestsByApp_MultipleTargets confirms the filter unions
+// multiple --target apps and still keeps shared resources.
+func TestFilterManifestsByApp_MultipleTargets(t *testing.T) {
+	got, err := FilterManifestsByApp(filterTestManifests, []string{"admin-server", "workspace-proxy"})
+	if err != nil {
+		t.Fatalf("FilterManifestsByApp: %v", err)
+	}
+	for _, want := range []string{"name: admin-server", "name: workspace-proxy", "kind: Namespace", "name: example-config"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, got)
+		}
+	}
+}
+
+// TestFilterManifestsByApp_UnknownTargetErrors confirms a typo'd target
+// (matching no app workload) errors with the available app names rather
+// than applying a shared-only bundle that does nothing the user wanted.
+func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
+	_, err := FilterManifestsByApp(filterTestManifests, []string{"nope"})
+	if err == nil {
+		t.Fatal("expected error for unknown target, got nil")
+	}
+	// Available app names should be surfaced for the fix.
+	if !strings.Contains(err.Error(), "admin-server") || !strings.Contains(err.Error(), "workspace-proxy") {
+		t.Errorf("expected available app names in error, got: %v", err)
+	}
+}

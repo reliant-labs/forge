@@ -66,7 +66,7 @@ Use --disable to turn off features at creation time:
   forge new my-project --mod ... --disable orm --disable migrations
 
 Valid feature names: orm, codegen, migrations, ci, build, deploy,
-contracts, docs, frontend, observability, hot_reload, packs, starters.
+contracts, docs, frontend, observability, hot_reload, packs.
 
 Example:
   forge new my-project --mod github.com/example/my-project
@@ -95,7 +95,7 @@ Example:
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing project configuration")
 	cmd.Flags().StringVar(&license, "license", "MIT", "License to include (MIT, Apache-2.0, BSD-3-Clause, none)")
 	cmd.Flags().StringVar(&licenseAuthor, "license-author", "", "Author/copyright holder for the LICENSE file (defaults to git config user.name)")
-	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters")
+	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to disable (comma-separated): orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs")
 	cmd.Flags().StringVar(&harness, "harness", "reliant", "AI harness conventions to scaffold for: reliant (default; reliant CLI auto-discovers skills via forge.yaml), claude (writes CLAUDE.md + .claude/skills/), cursor (.cursorrules), copilot (.github/copilot-instructions.md), codex (AGENTS.md)")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
@@ -829,8 +829,6 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 			gen.Features.HotReload = f
 		case "packs":
 			gen.Features.Packs = f
-		case "starters":
-			gen.Features.Starters = f
 		case "deploy":
 			gen.Features.Deploy = f
 		case "ingress", "external_builds", "operators", "strict_wiring":
@@ -840,7 +838,7 @@ func applyDisableFlags(gen *generator.ProjectGenerator, disable []string) error 
 				"experimental features default off; opt in per project via `features.experimental.<name>: true` in forge.yaml")
 		default:
 			return cliutil.UserErr("forge new --disable",
-				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs, starters", name),
+				fmt.Sprintf("unknown feature %q; valid features: orm, codegen, migrations, ci, build, deploy, contracts, docs, frontend, observability, hot_reload, packs", name),
 				"",
 				"pick a feature from the list above (comma-separated, repeatable); names are case-insensitive")
 		}

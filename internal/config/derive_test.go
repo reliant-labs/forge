@@ -89,7 +89,6 @@ features:
     observability: true
     hot_reload: true
     packs: true
-    starters: true
 `
 
 // minimalForgeYAML is the post-change scaffold output for the same
@@ -174,7 +173,7 @@ func TestDerivedDefaults_RealProjectShapesMatchExplicit(t *testing.T) {
 	for _, name := range []FeatureName{
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
 		FeatureBuild, FeatureContracts, FeatureDocs, FeatureFrontend,
-		FeatureObservability, FeatureHotReload, FeaturePacks, FeatureStarters,
+		FeatureObservability, FeatureHotReload, FeaturePacks,
 	} {
 		if !derived[name] {
 			t.Errorf("reference-shape derivation: feature %q = false, want true (must match the explicit `true` in cp-forge/kalshi forge.yaml)", name)
@@ -275,7 +274,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 				FeatureORM: true, FeatureCodegen: true, FeatureMigrations: true,
 				FeatureCI: true, FeatureBuild: true, FeatureContracts: true,
 				FeatureDocs: true, FeatureFrontend: false, FeatureObservability: true,
-				FeatureHotReload: true, FeaturePacks: true, FeatureStarters: true,
+				FeatureHotReload: true, FeaturePacks: true,
 			},
 		},
 		{
@@ -295,7 +294,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 				FeatureORM: false, FeatureCodegen: false, FeatureMigrations: false,
 				FeatureCI: true, FeatureBuild: true, FeatureContracts: true,
 				FeatureDocs: true, FeatureFrontend: false, FeatureObservability: false,
-				FeatureHotReload: false, FeaturePacks: false, FeatureStarters: false,
+				FeatureHotReload: false, FeaturePacks: false,
 			},
 		},
 		{

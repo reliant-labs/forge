@@ -783,17 +783,12 @@ func (g *ProjectGenerator) applyKindFeatureDefaults() {
 	if g.Features.HotReload == nil {
 		g.Features.HotReload = off()
 	}
-	// Packs and starters target server-shaped projects. CLI and
-	// library kinds get no useful work out of either: packs install
-	// auth middleware, audit interceptors, payment integrations
-	// (all service-shape); starters scaffold one-time business
-	// integrations against a service. Disabling at scaffold time
-	// matches the per-kind --kind matrix in the prompt.
+	// Packs target server-shaped projects. CLI and library kinds get
+	// no useful work out of packs: they install auth middleware, audit
+	// interceptors, payment integrations (all service-shape). Disabling
+	// at scaffold time matches the per-kind --kind matrix in the prompt.
 	if g.Features.Packs == nil {
 		g.Features.Packs = off()
-	}
-	if g.Features.Starters == nil {
-		g.Features.Starters = off()
 	}
 	// Deploy derives from kind (deploy ⇔ service) at load time, but
 	// generators consult g.Features before any forge.yaml exists, so

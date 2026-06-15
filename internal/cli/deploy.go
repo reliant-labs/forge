@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ func newDeployCmd() *cobra.Command {
 		targetArch      string
 		prune           bool
 		rollback        bool
+		targets         []string
 	)
 
 	cmd := &cobra.Command{
@@ -58,12 +60,20 @@ Use --context to override when a single CI deploy-bot context legitimately
 targets multiple environments. Use --explain to print the resolved guard
 decision (expected / current / verdict) without applying anything.
 
+Use --target <app> (repeatable) to deploy ONLY the named application(s)
+instead of the whole env bundle. It filters by service/frontend NAME:
+the K8sCluster apply keeps the targeted app's workload manifests plus
+all shared resources (Namespace, the shared ConfigMap/Secret, RBAC),
+and the External/Compose dispatch + rollout-wait are scoped to the named
+apps. A typo'd target errors with the list of available app names.
+
 Examples:
   forge deploy dev                          # Deploy to dev (local k3d)
   forge deploy staging --image-tag v1.2     # Deploy to staging with specific tag
   forge deploy prod --dry-run               # Preview prod manifests (guard runs)
   forge deploy prod --explain               # Show the env-cluster guard verdict
   forge deploy dev --namespace custom-ns    # Override namespace
+  forge deploy dev --target admin-server    # Deploy only the admin-server app
   forge deploy prod --context deploy-bot    # Override the expected kubectl context`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,6 +106,7 @@ Examples:
 				targetArch:      targetArch,
 				prune:           prune,
 				rollback:        rollback,
+				targets:         targets,
 			})
 		},
 	}
@@ -109,6 +120,7 @@ Examples:
 	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
+	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 
 	return cmd
 }
@@ -197,6 +209,17 @@ type deployOptions struct {
 	// Mutually exclusive with imageTag — the deploy command rejects
 	// the combination at flag-parse time.
 	rollback bool
+
+	// targets, when non-empty, scopes the deploy to the named
+	// applications (service / frontend names). Two layers honour it:
+	// (1) entities.Services / entities.Frontends are filtered to the
+	// targeted names before buildDeployGroups, so External/Compose
+	// dispatch and the rollout-wait / host-skip sets cover only the
+	// targeted apps; (2) the K8sCluster apply filters the rendered
+	// multi-doc manifest stream to the targeted apps' workloads plus
+	// shared resources (see cluster.FilterManifestsByApp). Empty means
+	// "deploy the whole env bundle", the unchanged default.
+	targets []string
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -207,6 +230,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	targetArchFlag := opts.targetArch
 	prune := opts.prune
 	rollback := opts.rollback
+	targets := opts.targets
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
@@ -272,6 +296,21 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	if kerr != nil {
 		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
 	}
+
+	// --target scoping (application-level filter). Filter the rendered
+	// Services / Frontends down to the named apps BEFORE everything that
+	// derives from the entity set: buildDeployGroups (External/Compose
+	// bucketing), the rollout-wait / host-skip / one-shot-Job sets, and
+	// the cluster banners. An empty filter is a no-op (every app), the
+	// unchanged default. A typo'd target is caught here with the list of
+	// available app names rather than producing a silent no-op deploy.
+	if len(targets) > 0 && entities != nil {
+		if err := validateDeployTargets(entities, targets); err != nil {
+			return err
+		}
+		entities = filterEntitiesByTarget(entities, targets)
+	}
+
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
 
 	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
@@ -389,7 +428,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// the builder is unused for rollback groups, but the registry
 		// still needs the provider registered. We reuse the deploy-
 		// shaped builder for symmetry with the deploy path.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := rollbackDeployGroups(ctx, registry, groups, projectDir); err != nil {
@@ -420,6 +459,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			Prune:        prune,
 			HostSkip:     hostDeploymentSkipSetFromKCL(cfg, entities),
 			OneShotJobs:  oneShotJobNamesFromKCL(entities),
+			Targets:      targets,
 		}); err != nil {
 			return err
 		}
@@ -430,7 +470,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
@@ -444,6 +484,67 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// validateDeployTargets checks every name passed to --target against
+// the set of deployable app names in the rendered KCL (services +
+// frontends). A target that matches nothing is almost always a typo;
+// erroring here — with the list of available app names — is far
+// friendlier than silently deploying nothing (group filter empties out)
+// or applying a shared-only manifest bundle. Reuses inTargetSet's
+// membership semantics indirectly via a name set.
+func validateDeployTargets(e *KCLEntities, targets []string) error {
+	avail := map[string]struct{}{}
+	for _, s := range e.Services {
+		avail[s.Name] = struct{}{}
+	}
+	for _, f := range e.Frontends {
+		avail[f.Name] = struct{}{}
+	}
+	var unknown []string
+	for _, t := range targets {
+		if _, ok := avail[t]; !ok {
+			unknown = append(unknown, t)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(avail))
+	for n := range avail {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("unknown --target %s; available apps in env: %s",
+		strings.Join(unknown, ", "), strings.Join(names, ", "))
+}
+
+// filterEntitiesByTarget returns a shallow copy of e with Services and
+// Frontends narrowed to the names in targets (reusing inTargetSet from
+// up.go for the membership test). Every other entity slice — operators,
+// cronjobs, gateways, routes — is carried through UNCHANGED: those are
+// either shared infra or aren't addressable by the app-name filter, and
+// the K8sCluster manifest filter (cluster.FilterManifestsByApp) keeps
+// them anyway because they don't carry a targeted app-name label.
+// Narrowing Services/Frontends here is what scopes the External/Compose
+// dispatch and the rollout-wait / host-skip / one-shot-Job sets.
+func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
+	out := *e // shallow copy; slices below are rebuilt, the rest shared
+	var svcs []ServiceEntity
+	for _, s := range e.Services {
+		if inTargetSet(targets, s.Name) {
+			svcs = append(svcs, s)
+		}
+	}
+	var fes []FrontendEntity
+	for _, f := range e.Frontends {
+		if inTargetSet(targets, f.Name) {
+			fes = append(fes, f)
+		}
+	}
+	out.Services = svcs
+	out.Frontends = fes
+	return &out
 }
 
 // kclEntitiesHaveK8sCluster returns true when at least one service in

@@ -106,7 +106,29 @@ type ApplyOpts struct {
 	// is skipping in-cluster infra (NATS, Temporal, LiteLLM) on dev-host
 	// envs where docker-compose provides the same services.
 	Env string
+
+	// Targets, when non-empty, scopes the apply to the named
+	// applications (service / frontend names). The whole env bundle is
+	// still rendered (KCL renders the env as a unit), but after
+	// RenderManifests and before KubectlApply the multi-doc YAML is
+	// filtered: a workload manifest is kept when its
+	// `app.kubernetes.io/name` label is in Targets, and a shared/infra
+	// manifest (no `app.kubernetes.io/name` label — Namespace, the
+	// shared ConfigMap/Secret, RuntimeClass, etc.) is always kept so a
+	// targeted app's dependencies aren't dropped. Empty means "apply the
+	// whole bundle", the unchanged default. See FilterManifestsByApp.
+	Targets []string
 }
+
+// appNameLabel is the per-service workload label forge's KCL renderer
+// stamps on every Deployment / Service / RBAC object via
+// `_managed_labels(<svc-name>)` (kcl/lib/services.k, kcl/lib/rbac.k).
+// Shared / infra manifests (Namespace, the shared ConfigMap/Secret,
+// RuntimeClass) deliberately omit it — they carry only
+// `app.kubernetes.io/managed-by` and `app.kubernetes.io/part-of`. That
+// asymmetry is what lets FilterManifestsByApp tell a targeted app's
+// workloads from another app's workloads while keeping shared deps.
+const appNameLabel = "app.kubernetes.io/name"
 
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
 // It is the single entry point for the three call sites this package
@@ -123,6 +145,19 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 			return fmt.Errorf("KCL render: %w", err)
 		}
 		return fmt.Errorf("KCL manifest generation failed: %w", err)
+	}
+
+	// Application-level filter: when --target scoped the deploy to one
+	// or more named apps, drop the other apps' workload manifests while
+	// keeping every shared/infra manifest. Applied to the rendered
+	// bundle (which KCL produces as a unit) so a single targeted app
+	// still lands with its Namespace, shared ConfigMap/Secret, etc.
+	if len(opts.Targets) > 0 {
+		filtered, ferr := FilterManifestsByApp(manifests, opts.Targets)
+		if ferr != nil {
+			return ferr
+		}
+		manifests = filtered
 	}
 
 	if opts.DryRun {
@@ -474,6 +509,85 @@ func ListManagedDeployments(ctx context.Context, namespace string) ([]string, er
 		}
 	}
 	return names, nil
+}
+
+// FilterManifestsByApp filters a `---`-separated multi-doc YAML stream
+// down to the manifests belonging to the named apps, PLUS every shared
+// manifest. The rule, doc by doc:
+//
+//   - KEEP when the doc's `metadata.labels[app.kubernetes.io/name]`
+//     value is one of targets — that's a targeted app's workload.
+//   - KEEP when the doc has NO `app.kubernetes.io/name` label — that's
+//     a shared/infra resource (Namespace, the shared ConfigMap/Secret,
+//     RuntimeClass, CRDs) a targeted app may depend on. Dropping these
+//     would leave the app's pods unable to start.
+//   - DROP when the label is present but names a NON-targeted app.
+//
+// Empty / whitespace-only docs are dropped. A doc that doesn't parse as
+// YAML is conservatively KEPT (better to apply an opaque doc than to
+// silently swallow it; kubectl will reject genuinely-broken YAML).
+//
+// If the filter would drop every workload-labelled doc — i.e. none of
+// targets matched any app in the bundle (a typo'd --target) — it
+// returns an error listing the app names actually present, rather than
+// applying a shared-only bundle that does nothing the user asked for.
+func FilterManifestsByApp(manifests string, targets []string) (string, error) {
+	want := map[string]struct{}{}
+	for _, t := range targets {
+		want[t] = struct{}{}
+	}
+
+	docs := strings.Split(manifests, "\n---\n")
+	var kept []string
+	present := map[string]struct{}{} // every app name seen on a labelled doc
+	matchedAny := false              // did any doc carry a targeted app label?
+
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		app := manifestAppLabel(trimmed)
+		if app == "" {
+			// Shared / infra resource — always keep.
+			kept = append(kept, trimmed)
+			continue
+		}
+		present[app] = struct{}{}
+		if _, ok := want[app]; ok {
+			kept = append(kept, trimmed)
+			matchedAny = true
+		}
+	}
+
+	if !matchedAny {
+		avail := make([]string, 0, len(present))
+		for a := range present {
+			avail = append(avail, a)
+		}
+		sort.Strings(avail)
+		return "", fmt.Errorf(
+			"no application matched --target %s; available apps in this env: %s",
+			strings.Join(targets, ", "), strings.Join(avail, ", "))
+	}
+
+	return strings.Join(kept, "\n---\n"), nil
+}
+
+// manifestAppLabel reads metadata.labels["app.kubernetes.io/name"] from
+// a single YAML manifest document. Returns "" when the doc has no such
+// label (shared/infra resource) or doesn't parse — callers treat "" as
+// "shared, keep".
+func manifestAppLabel(doc string) string {
+	var m struct {
+		Metadata struct {
+			Labels map[string]string `yaml:"labels"`
+		} `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+		return ""
+	}
+	return m.Metadata.Labels[appNameLabel]
 }
 
 // RenderedDeploymentNames extracts the `metadata.name` of every

@@ -14,7 +14,7 @@
 # path don't need them, and skipping keeps the install surface area
 # small and audit-friendly.
 #
-# This file is rendered per-project at `forge dev cluster up` time by
+# This file is rendered per-project at `forge cluster up` time by
 # internal/cli/dev_cluster_ingress.go: the dev env's KCL Gateway
 # listeners are projected into `.Entrypoints`, and one
 # `--entrypoints.<name>.address=:<port>` arg, one containerPort, and
@@ -23,7 +23,7 @@
 # sockets from Gateway.spec.listeners[*].port — each port needs a
 # matching static entrypoint declared at install time. Adding or
 # removing a Gateway listener requires a re-run of
-# `forge dev cluster up` to pick up the new entrypoints (idempotent).
+# `forge cluster up` to pick up the new entrypoints (idempotent).
 ---
 apiVersion: v1
 kind: Namespace
@@ -148,7 +148,7 @@ spec:
               protocol: TCP
             {{- end }}
           # Listener ports above are derived from the dev env's KCL
-          # Gateway resources at `forge dev cluster up` time. The k3d
+          # Gateway resources at `forge cluster up` time. The k3d
           # port mapping (driven by deploy/k3d-ports.yaml) exposes the
           # listener ports through to the host.
           livenessProbe:

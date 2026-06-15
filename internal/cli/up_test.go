@@ -222,7 +222,7 @@ func TestUpLogPath_Sanitises(t *testing.T) {
 // TestUpCmd_NoPortForwardSurface pins the phase-3 ingress refactor:
 // `forge up` no longer mentions port-forward in any user-facing string
 // (Short / Long / Example / flag help). Reaching cluster services from
-// the host is the Gateway API ingress path now (forge dev urls); the
+// the host is the Gateway API ingress path now (forge cluster urls); the
 // orchestrator must not advertise a port-forward phase that doesn't
 // exist.
 func TestUpCmd_NoPortForwardSurface(t *testing.T) {

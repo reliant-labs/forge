@@ -39,8 +39,8 @@ import (
 
 // experimentalWarningEmitted ensures the startup warning fires at most
 // once per process. PersistentPreRun runs for every cobra command in
-// the tree (root + subcommand), so without this guard `forge dev
-// cluster up` would print the warning twice.
+// the tree (root + subcommand), so without this guard `forge cluster
+// up` would print the warning twice.
 var experimentalWarningEmitted atomic.Bool
 
 // emitExperimentalWarning prints the canonical "experimental features

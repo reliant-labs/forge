@@ -14,7 +14,7 @@
 //  6. Wait Ctrl-C → cascade cleanup → exit.
 //
 // Reaching cluster services from the host is the Gateway API ingress
-// path (see `forge dev urls`); ad-hoc shells against stateful workloads
+// path (see `forge cluster urls`); ad-hoc shells against stateful workloads
 // stay available via `kubectl port-forward` directly.
 //
 // Replaces the dev-loop bash script every forge project would otherwise
@@ -76,7 +76,7 @@ Phases:
   4. frontend: start every declared frontend in its path
 
 Reaching cluster services from the host is the Gateway API ingress
-path; run ` + "`forge dev urls`" + ` to list the routes.
+path; run ` + "`forge cluster urls`" + ` to list the routes.
 
 Use --no-build / --no-deploy to skip phases when iterating. Use
 --cluster-only / --host-only to scope the orchestrator to one side of
@@ -319,7 +319,7 @@ func printUpSummary(e *KCLEntities, env string, background bool) {
 	}
 	fmt.Printf("%s\n", bar)
 	fmt.Printf("%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
-	fmt.Printf("%s Cluster routes:  forge dev urls\n", bar)
+	fmt.Printf("%s Cluster routes:  forge cluster urls\n", bar)
 	if background {
 		fmt.Printf("%s Detached — stop with `forge up stop --env=%s`\n", bar, env)
 	} else {

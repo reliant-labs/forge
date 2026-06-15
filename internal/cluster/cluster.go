@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/kclrender"
@@ -265,15 +266,22 @@ func projectRootFromMainK(mainK string) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(dir))) // <root>
 }
 
-func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
+// renderDArgs builds the `-D key=value` top-level bindings for the KCL
+// manifest render. The forge-controlled string args (image_tag, namespace,
+// env) are passed as QUOTED KCL string literals via strconv.Quote so KCL
+// types them as `str` — without the quotes an all-digit value like a
+// numeric git-describe tag ("3826648") is coerced to `int`, which fails
+// RenderEnv.image_tag's `str` type (the forge-deploy-prod regression).
+// envCfgKV values are left unquoted: they are project config whose KCL
+// type (int/bool/str) is intentional.
+func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string) []string {
 	dArgs := []string{
-		"image_tag=" + imageTag,
-		"namespace=" + namespace,
+		"image_tag=" + strconv.Quote(imageTag),
+		"namespace=" + strconv.Quote(namespace),
 	}
 	if env != "" {
-		dArgs = append(dArgs, "env="+env)
+		dArgs = append(dArgs, "env="+strconv.Quote(env))
 	}
-	// Stable ordering for reproducible output / easier diffing.
 	keys := make([]string, 0, len(envCfgKV))
 	for k := range envCfgKV {
 		keys = append(keys, k)
@@ -282,6 +290,11 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 	for _, k := range keys {
 		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
+	return dArgs
+}
+
+func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
+	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV)
 	// Render from the project root so the deploy-as-data main.k's
 	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
 	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path

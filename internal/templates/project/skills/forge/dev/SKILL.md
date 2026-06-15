@@ -130,6 +130,50 @@ machines. Override the secrets-file path with `--env-file`. The child
 process also inherits the host shell's env, so anything already
 exported wins over both.
 
+## Logs & the `forge up` summary
+
+`forge up --env=<env>` writes every host service's and frontend's output
+to a stable, greppable location:
+
+```
+.forge/logs/<env>/<service>.log
+.forge/logs/<env>/frontend_<name>.log
+```
+
+This holds in **both** modes — foreground tees the file alongside the
+live `[name]`-prefixed terminal stream, `--background` uses it as the
+sole sink. The directory is gitignored (`.forge/*`). Because the path is
+project-relative and deterministic, an agent can read a single service's
+output directly instead of scraping interleaved scrollback:
+
+```bash
+tail -f .forge/logs/dev/admin-server.log
+grep -i "error\|panic" .forge/logs/dev/*.log
+```
+
+After the host + frontend phases start, `up` prints a summary box of what
+is listening where and the log path for each process:
+
+```
+╭─ forge up · env=dev ─────────────────────────────────────
+│ Host services
+│   admin-server           http://localhost:8080
+│     ↳ .forge/logs/dev/admin-server.log
+│ Frontends
+│   reliant-web            http://localhost:3000
+│     ↳ .forge/logs/dev/frontend_reliant-web.log
+│
+│ Logs   .forge/logs/dev/   — tail -f / grep the per-service *.log here
+│ Cluster routes:  forge dev urls
+│ Ctrl-C to stop.
+╰─────────────────────────────────────────────────────────
+```
+
+Host-service URLs are derived from each service's KCL `PORT` env var;
+a service that declares no `PORT` is listed without a URL. Cluster
+service routes (Gateway API) are not host-local — list them with
+`forge dev urls`.
+
 ## Composing with Taskfile (cloud-dev pattern)
 
 The host/cluster split makes the canonical `task dev` shape:

@@ -51,6 +51,7 @@ type upOptions struct {
 	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
+	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
 }
 
 func newUpCmd() *cobra.Command {
@@ -107,6 +108,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
 	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
+	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 
 	cmd.AddCommand(newUpStopCmd())
 	return cmd
@@ -171,7 +173,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 		if !opts.noBuild {
 			if !skipFeature(store, config.FeatureBuild, "up:build") {
 				fmt.Println("\n[up] build phase")
-				if err := upBuildCluster(ctx, cfg, opts.env); err != nil {
+				if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate); err != nil {
 					return fmt.Errorf("build: %w", err)
 				}
 			}
@@ -191,6 +193,18 @@ func runUp(ctx context.Context, opts upOptions) error {
 	if opts.clusterOnly {
 		fmt.Println("\n[up] --cluster-only: skipping host/frontend phases")
 		return nil
+	}
+
+	// When the build phase was skipped (--host-only / --no-build) the
+	// host runners (air / go-run) still compile against gen/, so ensure
+	// generated code is present here too — otherwise host services fail
+	// with the same "cannot load module gen" error the build phase would
+	// have pre-empted. No-op when up-to-date or --no-generate. (The
+	// non-skipped path already ran this inside runBuild.)
+	if opts.hostOnly || opts.noBuild {
+		if err := ensureGeneratedCode(projectDirForKCL(), opts.noGenerate); err != nil {
+			return fmt.Errorf("ensure generated code: %w", err)
+		}
 	}
 
 	// Host phases — host services + frontends. These are tracked under
@@ -215,31 +229,127 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
-	// Ingress replaces the legacy port-forward phase; surface a hint so
-	// users know where to find the host-reachable URLs.
-	if cfg.Features.IngressEnabled() {
-		fmt.Println("[up] ingress URLs available — run `forge dev urls` to list them")
-	}
+	// Summary box: what's listening where, and where to find each
+	// service's log. Printed in both foreground and background so the
+	// URLs + log paths are one glance away (and greppable for an agent).
+	printUpSummary(entities, opts.env, opts.background)
 
 	if opts.background {
-		fmt.Printf("\n[up] detached %d process(es). Stop with `forge up stop --env=%s`.\n",
+		fmt.Printf("[up] detached %d process(es). Stop with `forge up stop --env=%s`.\n",
 			procs.count(), opts.env)
 		procs.persist()
 		return nil
 	}
 
 	if procs.count() == 0 {
-		fmt.Println("\n[up] no host/frontend processes to wait on; deploy is up.")
+		fmt.Println("[up] no host/frontend processes to wait on; deploy is up.")
 		return nil
 	}
 
-	fmt.Printf("\n[up] %d process(es) running. Ctrl-C to stop.\n", procs.count())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	fmt.Println("\n[up] shutting down...")
 	procs.shutdown()
 	return nil
+}
+
+// printUpSummary prints a compact box of what `forge up` just brought
+// up: each host service and frontend, its URL (when a listen port is
+// known), and the path to its log file — plus where to grep all logs
+// and how to list cluster routes. Mirrors the cloud-dev "final banner"
+// so a developer (or an LLM agent) can find URLs and logs at a glance
+// instead of scraping them out of interleaved startup scrollback.
+//
+// Best-effort: host-service ports are read from the KCL `PORT` env var
+// (the bind-port convention); a service that doesn't declare one is
+// listed without a URL. No-op when nothing host/frontend ran.
+func printUpSummary(e *KCLEntities, env string, background bool) {
+	if e == nil {
+		return
+	}
+	type row struct{ name, url, log string }
+	var hosts, fronts []row
+	for _, svc := range e.Services {
+		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+			continue
+		}
+		url := ""
+		if p := hostEnvPort(svc.Deploy.Host); p != "" {
+			url = "http://localhost:" + p
+		}
+		hosts = append(hosts, row{svc.Name, url, summaryLogPath(env, svc.Name)})
+	}
+	for _, fe := range e.Frontends {
+		url := ""
+		if fe.Port > 0 {
+			url = fmt.Sprintf("http://localhost:%d", fe.Port)
+		}
+		fronts = append(fronts, row{fe.Name, url, summaryLogPath(env, "frontend:"+fe.Name)})
+	}
+	if len(hosts) == 0 && len(fronts) == 0 {
+		return
+	}
+
+	const bar = "│"
+	line := func(name, url, log string) {
+		if url != "" {
+			fmt.Printf("%s   %-22s %s\n", bar, name, url)
+		} else {
+			fmt.Printf("%s   %s\n", bar, name)
+		}
+		fmt.Printf("%s     ↳ %s\n", bar, log)
+	}
+
+	fmt.Println()
+	fmt.Printf("╭─ forge up · env=%s ─────────────────────────────────────\n", env)
+	if len(hosts) > 0 {
+		fmt.Printf("%s Host services\n", bar)
+		for _, r := range hosts {
+			line(r.name, r.url, r.log)
+		}
+	}
+	if len(fronts) > 0 {
+		fmt.Printf("%s Frontends\n", bar)
+		for _, r := range fronts {
+			line(r.name, r.url, r.log)
+		}
+	}
+	fmt.Printf("%s\n", bar)
+	fmt.Printf("%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
+	fmt.Printf("%s Cluster routes:  forge dev urls\n", bar)
+	if background {
+		fmt.Printf("%s Detached — stop with `forge up stop --env=%s`\n", bar, env)
+	} else {
+		fmt.Printf("%s Ctrl-C to stop.\n", bar)
+	}
+	fmt.Println("╰─────────────────────────────────────────────────────────")
+	fmt.Println()
+}
+
+// summaryLogPath returns the display (project-relative) log path for a
+// started process, matching the file upLogPath actually writes. Kept in
+// sync with upLogPath's name sanitisation so the printed path is the one
+// a `grep`/`tail` will find.
+func summaryLogPath(env, name string) string {
+	safe := strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), ":", "_")
+	return filepath.Join(upLogDir(env), safe+".log")
+}
+
+// hostEnvPort returns the host service's declared PORT env value (the
+// bind-port convention), or "" when none is declared. Only the inline
+// `value` channel applies — config_map_ref / secret_ref ports have no
+// host-side literal to show.
+func hostEnvPort(host *HostDeploy) string {
+	if host == nil {
+		return ""
+	}
+	for _, ev := range host.EnvVars {
+		if ev.Name == "PORT" && ev.Value != "" {
+			return ev.Value
+		}
+	}
+	return ""
 }
 
 // entitiesEmpty reports whether the entity set has zero declarations
@@ -252,7 +362,7 @@ func entitiesEmpty(e *KCLEntities) bool {
 // per-env KCL filter applied (deliverable 3's runBuild path). The
 // registry comes from the rendered KCL's K8sCluster.registry —
 // defaults to localhost:5050 for dev (the canonical k3d mirror).
-func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string) error {
+func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, noGenerate bool) error {
 	registry := "localhost:5050"
 	if reg := k8sClusterRegistryForEnv(ctx, env); reg != "" {
 		registry = reg
@@ -265,6 +375,7 @@ func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string) er
 		pushRegistry:  registry,
 		env:           env,
 		skipFrontends: true,
+		skipGenerate:  noGenerate,
 	}
 	return runBuild(ctx, opts)
 }
@@ -494,11 +605,29 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	if err != nil {
 		return fmt.Errorf("stderr pipe %s: %w", name, err)
 	}
+	// Tee a raw copy of the child's output to its well-known log file so
+	// it stays greppable after the fact, even in foreground mode where
+	// the live stream is the interleaved, prefixed terminal output. A
+	// failure to open the log file is non-fatal — the live stream still
+	// works; we just warn and carry on without the file sink. The single
+	// *os.File is shared by the stdout+stderr goroutines through a
+	// lockedWriter so their line writes don't interleave mid-line.
+	var sink io.Writer
+	if logPath, perr := upLogPath(p.env, name); perr == nil {
+		if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o755); mkErr == nil {
+			if f, ferr := os.Create(logPath); ferr == nil {
+				sink = &lockedWriter{w: f}
+			} else {
+				fmt.Printf("[up] %s: warning: cannot open log file %s: %v\n", name, logPath, ferr)
+			}
+		}
+	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
-	go streamUpOutput(prefix, stdout)
-	go streamUpOutput(prefix, stderr)
+	go streamUpOutput(prefix, stdout, sink)
+	go streamUpOutput(prefix, stderr, sink)
 
 	p.mu.Lock()
 	p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd})
@@ -507,15 +636,34 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	return nil
 }
 
-// streamUpOutput tags each child line with [<name>] and writes it to
-// the orchestrator's stdout. Kept separate from the run.go variant so
-// the up orchestrator owns its log convention.
-func streamUpOutput(prefix string, r io.Reader) {
+// streamUpOutput tags each child line with [<name>] and writes it to the
+// orchestrator's stdout. When logSink is non-nil it also writes the raw
+// (un-prefixed) line there — the foreground file-tee. Kept separate from
+// the run.go variant so the up orchestrator owns its log convention.
+func streamUpOutput(prefix string, r io.Reader, logSink io.Writer) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), 1024*1024)
 	for scanner.Scan() {
-		fmt.Print(prefix + scanner.Text() + "\n")
+		line := scanner.Text()
+		fmt.Print(prefix + line + "\n")
+		if logSink != nil {
+			fmt.Fprintln(logSink, line)
+		}
 	}
+}
+
+// lockedWriter serialises writes from the concurrent stdout/stderr
+// stream goroutines onto a single log file so their lines don't corrupt
+// each other mid-write.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (lw *lockedWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.w.Write(p)
 }
 
 // count returns the registered process count.
@@ -699,11 +847,24 @@ func upStatePath(env string) (string, error) {
 //
 // The `name` is sanitised (slashes → underscores) so it's safe to use
 // as a path component.
+// upLogPath returns the well-known log file for a host service or
+// frontend started by `forge up`. Logs land under the project-relative
+// .forge/logs/<env>/ directory — gitignored via the `.forge/*` rule, and
+// a stable, greppable location so a human (or an LLM agent working in the
+// repo) can `tail -f` / `grep` one service's output without scraping it
+// out of the interleaved terminal scrollback.
+//
+// Used by BOTH modes: background writes here as the sole sink; foreground
+// tees a raw copy here alongside the live `[name]`-prefixed terminal
+// stream. The `<name>` is sanitised ("/" and ":" → "_") so frontend
+// labels like "frontend:web" map to a flat filename.
 func upLogPath(env, name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
-	}
 	safe := strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), ":", "_")
-	return filepath.Join(home, ".cache", "forge", "up", env, safe+".log"), nil
+	return filepath.Join(projectDirForKCL(), ".forge", "logs", env, safe+".log"), nil
+}
+
+// upLogDir returns the directory upLogPath writes into, for the summary's
+// "grep here" pointer.
+func upLogDir(env string) string {
+	return filepath.Join(".forge", "logs", env)
 }

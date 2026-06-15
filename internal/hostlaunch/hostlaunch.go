@@ -78,6 +78,16 @@ type RunnerSpec struct {
 	AirConfig string // path relative to project root; default DefaultAirConfig
 	DelvePort int    // dlv --listen=:<port>; default DefaultDelvePort
 
+	// Command, when non-empty, is run verbatim (Command[0] + args) instead
+	// of any runner convention — the escape hatch for host services whose
+	// entrypoint doesn't fit `go run ./cmd server <name>`. The canonical
+	// case is a sibling-repo binary: pair it with WorkingDir so the
+	// command's own relative paths resolve against the sibling root, e.g.
+	// Command=["go","run","./cmd/reliant","server","api"] +
+	// WorkingDir="../reliant". Relative paths in Command resolve against
+	// the effective cmd.Dir (WorkingDir), matching shell semantics.
+	Command []string
+
 	// WorkingDir is the subprocess cwd override. Empty = inherit parent.
 	// Relative paths resolve against ProjectDir; absolute paths are
 	// used verbatim.
@@ -124,8 +134,18 @@ func BuildCmd(ctx context.Context, name string, spec RunnerSpec) *exec.Cmd {
 			"--api-version=2", "--accept-multiclient",
 			"--continue", "./bin/"+name)
 	default:
-		// "go-run" or "" or unknown — the legacy shape.
-		cmd = exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
+		// "go-run" / "" / unknown — the default shape. An explicit
+		// Command overrides JUST this convention (the escape hatch for
+		// sibling-repo binaries / non-standard entrypoints); air/binary/
+		// delve are deliberate alternative runners that own their command
+		// shape, so a Command set alongside them is ignored (the runner
+		// wins). This keeps services that declare a documentation-only
+		// `command` next to `runner = air` working as before.
+		if len(spec.Command) > 0 {
+			cmd = exec.CommandContext(ctx, spec.Command[0], spec.Command[1:]...)
+		} else {
+			cmd = exec.CommandContext(ctx, "go", "run", "./cmd", "server", name)
+		}
 	}
 	if dir := resolveWorkingDir(spec.WorkingDir, spec.ProjectDir); dir != "" {
 		cmd.Dir = dir

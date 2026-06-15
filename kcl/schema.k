@@ -637,6 +637,11 @@ schema Frontend:
     dev_runner: str = "npm"
     port: int = 3000
     env_file?: str
+    # KCL-declared per-env vars, layered on top of env_file at dev launch
+    # (same EnvVar shape services use). Values may be composed
+    # declaratively — e.g. forge.resolve_port(...) for a host port — so the
+    # dev URLs a frontend needs live in KCL, not a launcher script.
+    env_vars: [EnvVar] = []
 
     check:
         name, "Frontend.name is required"

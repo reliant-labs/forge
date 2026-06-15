@@ -197,6 +197,7 @@ _render_frontend = lambda f: Frontend -> any {
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None
+        "env_vars": [_render_env_var(e) for e in f.env_vars]
     }
 }
 

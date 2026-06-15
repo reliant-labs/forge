@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"kcl-lang.io/kpm/pkg/client"
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // KCLEntities is the typed, dispatched view of the JSON the sibling
@@ -264,6 +264,7 @@ type FrontendEntity struct {
 	DevRunner string                `json:"dev_runner,omitempty"` // "npm" (default) | "pnpm" | "yarn"
 	Port      int                   `json:"port,omitempty"`
 	EnvFile   string                `json:"env_file,omitempty"`
+	EnvVars   []KCLEnvVar           `json:"env_vars,omitempty"`
 	Deploy    *FrontendDeployEntity `json:"deploy,omitempty"`
 }
 
@@ -375,41 +376,11 @@ func renderKCLRaw(ctx context.Context, projectDir, env string) ([]byte, error) {
 	if _, err := os.Stat(kclDir); err != nil {
 		return nil, fmt.Errorf("kcl dir %s: %w", kclDir, err)
 	}
-	// Render the JSON contract through the embedded kpm + kcl-go runtime
-	// (no external `kcl` binary). `-D env=<env>` drives the per-env
-	// conditionals in the deploy module.
-	return renderKCLViaKpm(ctx, projectDir, kclDir, []string{"env=" + env})
-}
-
-// renderKCLViaKpm renders the KCL package rooted at kclDir through the
-// embedded kpm package manager + kcl-go runtime, returning the raw JSON
-// result. kpm reads the package's kcl.mod and resolves dependencies —
-// git, local path, and OCI/registry — exactly like the `kcl` CLI, so
-// projects declare the forge module (and any extra packages) in kcl.mod
-// in whatever style they like; forge neither parses nor special-cases
-// deps. This is the single seam every forge KCL render flows through.
-//
-// workDir is the process cwd KCL's `file.read` resolves against — the
-// project root, since the deploy-as-data main.k reads
-// `deploy/kcl/components_gen.json` cwd-relative, so the cwd is part of
-// the contract. args are `-D key=value` top-level option assignments
-// (e.g. "env=dev"). kpm progress/diagnostics go to stderr, matching the
-// previous `exec("kcl")`'s stderr passthrough.
-func renderKCLViaKpm(_ context.Context, workDir, kclDir string, args []string) ([]byte, error) {
-	cli, err := client.NewKpmClient()
-	if err != nil {
-		return nil, fmt.Errorf("kpm client: %w", err)
-	}
-	res, err := cli.Run(
-		client.WithRunSourceUrl(kclDir),
-		client.WithWorkDir(workDir),
-		client.WithArguments(args),
-		client.WithLogger(os.Stderr),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("kpm run %s: %w", kclDir, err)
-	}
-	return []byte(res.GetRawJsonResult()), nil
+	// Render the JSON contract through the shared embedded kpm + kcl-go
+	// seam (no external `kcl` binary). `-D env=<env>` drives the per-env
+	// conditionals in the deploy module. workDir = projectDir so the
+	// deploy-as-data main.k's `file.read("deploy/kcl/...")` resolves.
+	return kclrender.Run(projectDir, kclDir, []string{"env=" + env})
 }
 
 // parseKCLEntities turns the JSON bytes into the typed entity set,

@@ -763,8 +763,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 
 // streamUpOutput tags each child line with [<name>] and writes it to the
 // orchestrator's stdout. When logSink is non-nil it also writes the raw
-// (un-prefixed) line there — the foreground file-tee. Kept separate from
-// the run.go variant so the up orchestrator owns its log convention.
+// (un-prefixed) line there — the foreground file-tee.
 func streamUpOutput(prefix string, r io.Reader, logSink io.Writer) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), 1024*1024)

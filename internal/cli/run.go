@@ -42,6 +42,14 @@ const colorReset = "\033[0m"
 type managedProcess struct {
 	name string
 	cmd  *exec.Cmd
+	// pid is the child PID captured at Start time. It exists because
+	// `forge up --background` calls cmd.Process.Release() to detach the
+	// child — Release() resets cmd.Process.Pid to -1, so reading it
+	// afterwards (for the detach log line and the persisted state file)
+	// would record -1, and `forge up stop` would then "signal pid -1".
+	// Capturing the real PID up front survives Release(). Zero when
+	// unset (foreground paths sign via cmd.Process directly).
+	pid int
 	// ports are the child's declared listen ports (fe.Port for
 	// frontends, the per-service ports for the single server binary).
 	// Used by the port-conflict diagnosis when the child dies

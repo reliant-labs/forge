@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -414,5 +415,39 @@ func TestHostEnvPort(t *testing.T) {
 	}}
 	if got := hostEnvPort(refHost); got != "" {
 		t.Errorf("hostEnvPort ref-only: got %q, want empty", got)
+	}
+}
+
+func TestPersistUsesCapturedPid(t *testing.T) {
+	// Regression: `forge up --background` Release()s the child (resetting
+	// cmd.Process.Pid to -1), so persist() must use the PID captured at
+	// Start, and skip entries with no usable PID rather than writing -1/0.
+	env := "test-persist-pidcapture"
+	statePath, err := upStatePath(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(statePath)
+
+	p := newProcRegistry(env)
+	p.processes = []*managedProcess{
+		{name: "svc-a", pid: 4242, cmd: &exec.Cmd{}}, // detached: captured pid, no live handle
+		{name: "svc-b", pid: 0, cmd: &exec.Cmd{}},    // never captured: must be skipped
+	}
+	p.persist()
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "svc-a\t4242\n") {
+		t.Errorf("captured pid not persisted; got %q", got)
+	}
+	if strings.Contains(got, "svc-b") {
+		t.Errorf("entry without a pid should be skipped; got %q", got)
+	}
+	if strings.Contains(got, "-1") {
+		t.Errorf("a -1 pid leaked into the state file; got %q", got)
 	}
 }

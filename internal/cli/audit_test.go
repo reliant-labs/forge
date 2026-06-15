@@ -426,7 +426,7 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 	// and are asserted separately below.
 	for _, name := range []string{
 		config.FeatureBuild, config.FeatureFrontend,
-		config.FeaturePacks, config.FeatureStarters, config.FeatureCI,
+		config.FeaturePacks, config.FeatureCI,
 		config.FeatureDocs, config.FeatureObservability,
 	} {
 		if !resolved[name] {

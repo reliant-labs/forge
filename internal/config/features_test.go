@@ -32,7 +32,6 @@ func TestFeaturesConfig_ZeroValue_AllEnabled(t *testing.T) {
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
 		{"PacksEnabled", f.PacksEnabled},
-		{"StartersEnabled", f.StartersEnabled},
 		{"DeployEnabled", f.DeployEnabled},
 	}
 	for _, m := range methods {
@@ -120,7 +119,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		Observability: boolPtr(false),
 		HotReload:     boolPtr(false),
 		Packs:         boolPtr(false),
-		Starters:      boolPtr(false),
 		Deploy:        boolPtr(false),
 		// Experimental fields are plain bool: zero value IS the "off"
 		// case, so we don't need to set them.
@@ -142,7 +140,6 @@ func TestFeaturesConfig_ExplicitlyFalse(t *testing.T) {
 		{"ObservabilityEnabled", f.ObservabilityEnabled},
 		{"HotReloadEnabled", f.HotReloadEnabled},
 		{"PacksEnabled", f.PacksEnabled},
-		{"StartersEnabled", f.StartersEnabled},
 		{"IngressEnabled", f.IngressEnabled},
 	}
 	for _, m := range methods {
@@ -267,28 +264,21 @@ func TestFeaturesConfig_NewFeatures_ZeroValue(t *testing.T) {
 	if !f.PacksEnabled() {
 		t.Error("PacksEnabled() on zero-value = false, want true")
 	}
-	if !f.StartersEnabled() {
-		t.Error("StartersEnabled() on zero-value = false, want true")
-	}
 }
 
 // TestFeaturesConfig_NewFeatures_ExplicitFalse covers the
-// `features.build/packs/starters: false` opt-out path used by
+// `features.build/packs: false` opt-out path used by
 // `forge new --kind cli/library` and explicit user disabling.
 func TestFeaturesConfig_NewFeatures_ExplicitFalse(t *testing.T) {
 	f := FeaturesConfig{
-		Build:    boolPtr(false),
-		Packs:    boolPtr(false),
-		Starters: boolPtr(false),
+		Build: boolPtr(false),
+		Packs: boolPtr(false),
 	}
 	if f.BuildEnabled() {
 		t.Error("BuildEnabled() with explicit false = true, want false")
 	}
 	if f.PacksEnabled() {
 		t.Error("PacksEnabled() with explicit false = true, want false")
-	}
-	if f.StartersEnabled() {
-		t.Error("StartersEnabled() with explicit false = true, want false")
 	}
 }
 
@@ -343,7 +333,7 @@ func TestEffectiveFeatures_MapShape(t *testing.T) {
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
 		FeatureBuild, FeatureContracts, FeatureDocs,
 		FeatureFrontend, FeatureObservability, FeatureHotReload,
-		FeaturePacks, FeatureStarters, FeatureDeploy,
+		FeaturePacks, FeatureDeploy,
 	}
 	var f FeaturesConfig
 	resolved := f.EffectiveFeatures()
@@ -403,7 +393,6 @@ version: "1.0"
 		{"ObservabilityEnabled", cfg.Features.ObservabilityEnabled},
 		{"HotReloadEnabled", cfg.Features.HotReloadEnabled},
 		{"PacksEnabled", cfg.Features.PacksEnabled},
-		{"StartersEnabled", cfg.Features.StartersEnabled},
 	}
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {

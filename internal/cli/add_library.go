@@ -209,7 +209,7 @@ package %s
 	fmt.Println("Next steps:")
 	fmt.Printf("  1. Edit %s to add your library code.\n", filepath.Join(relPath, pkgIdent+".go"))
 	fmt.Println("  2. Per the migration-service skill, library code skips the")
-	fmt.Println("     contract.go pattern but still benefits from forge fmt and forge lint.")
+	fmt.Println("     contract.go pattern but still benefits from forge lint.")
 	return nil
 }
 

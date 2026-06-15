@@ -175,7 +175,7 @@ forge new my-app --mod github.com/acme/my-app --kind library    # pure Go librar
 Each kind has its own default `features:` block in forge.yaml:
 
 - `service` — every feature enabled (today's behavior).
-- `cli` — build/ci/docs enabled; deploy/frontend/packs/starters/observability/codegen disabled.
+- `cli` — build/ci/docs enabled; deploy/frontend/packs/observability/codegen disabled.
 - `library` — docs/contracts enabled; everything else disabled.
 
 Override per-project in forge.yaml's `features:` block — set

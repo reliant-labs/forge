@@ -1294,7 +1294,7 @@ func TestFreshScaffoldDefaults(t *testing.T) {
 	// frontend (no --frontend passed → frontends list empty → derived
 	// off). `deploy` is experimental — default-off.
 	eff := cfg.Features.EffectiveFeatures()
-	wantOn := []string{"orm", "codegen", "migrations", "ci", "build", "contracts", "docs", "observability", "hot_reload", "packs", "starters"}
+	wantOn := []string{"orm", "codegen", "migrations", "ci", "build", "contracts", "docs", "observability", "hot_reload", "packs"}
 	for _, name := range wantOn {
 		if !eff[name] {
 			t.Errorf("loaded config feature %q = false, want true (derived)", name)

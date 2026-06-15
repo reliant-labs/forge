@@ -277,7 +277,7 @@ func printUpSummary(e *KCLEntities, env string, background bool) {
 			continue
 		}
 		url := ""
-		if p := hostEnvPort(svc.Deploy.Host); p != "" {
+		if p := hostEnvPort(svc.Name, svc.Deploy.Host); p != "" {
 			url = "http://localhost:" + p
 		}
 		hosts = append(hosts, row{svc.Name, url, summaryLogPath(env, svc.Name)})
@@ -338,20 +338,32 @@ func summaryLogPath(env, name string) string {
 	return filepath.Join(upLogDir(env), safe+".log")
 }
 
-// hostEnvPort returns the host service's declared PORT env value (the
-// bind-port convention), or "" when none is declared. Only the inline
-// `value` channel applies — config_map_ref / secret_ref ports have no
-// host-side literal to show.
-func hostEnvPort(host *HostDeploy) string {
+// hostEnvPort returns the host service's declared listen port from its
+// env vars, or "" when none is declared. It prefers a service-specific
+// <NAME>_PORT (e.g. ADMIN_SERVER_PORT for "admin-server") over the
+// generic PORT: a service that declares both usually binds the specific
+// one, and the generic PORT is often a vestigial default the binary
+// ignores (cp-forge's admin-server sets PORT=8080 but actually binds
+// ADMIN_SERVER_PORT=8090). Only the inline `value` channel applies —
+// config_map_ref / secret_ref ports have no host-side literal to show.
+func hostEnvPort(name string, host *HostDeploy) string {
 	if host == nil {
 		return ""
 	}
+	specific := strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_PORT"
+	generic := ""
 	for _, ev := range host.EnvVars {
-		if ev.Name == "PORT" && ev.Value != "" {
+		if ev.Value == "" {
+			continue
+		}
+		switch ev.Name {
+		case specific:
 			return ev.Value
+		case "PORT":
+			generic = ev.Value
 		}
 	}
-	return ""
+	return generic
 }
 
 // entitiesEmpty reports whether the entity set has zero declarations
@@ -432,7 +444,10 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 // gate is what makes this call site strict.
 func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc ServiceEntity, env string) (*exec.Cmd, string, error) {
 	host := svc.Deploy.Host
-	if !hostlaunch.IsKnownRunner(host.Runner) {
+	// An explicit `command` overrides the runner convention (sibling-repo
+	// binaries, non-standard entrypoints), so the strict runner-name check
+	// only applies when no command is given.
+	if len(svc.Command) == 0 && !hostlaunch.IsKnownRunner(host.Runner) {
 		return nil, "", fmt.Errorf("unknown host runner %q (expected go-run/air/binary/delve)", host.Runner)
 	}
 	spec := hostlaunch.RunnerSpec{
@@ -441,6 +456,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 		DelvePort:  host.DelvePort,
 		WorkingDir: host.WorkingDir,
 		ProjectDir: projectDirForKCL(),
+		Command:    svc.Command,
 	}
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
@@ -652,6 +668,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		}
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
+		startInOwnProcessGroup(cmd)
 		if err := cmd.Start(); err != nil {
 			_ = logFile.Close()
 			return err
@@ -698,6 +715,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		}
 	}
 
+	startInOwnProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", name, err)
 	}
@@ -705,7 +723,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	go streamUpOutput(prefix, stderr, sink)
 
 	p.mu.Lock()
-	p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd})
+	p.processes = append(p.processes, &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid})
 	p.mu.Unlock()
 	fmt.Printf("[up] %s: started (pid=%d)\n", name, cmd.Process.Pid)
 	return nil
@@ -787,8 +805,22 @@ func (p *procRegistry) persist() {
 	}
 }
 
-// shutdown sends SIGTERM to every registered process and waits up to
-// 10s for them to exit. Anything still alive after the budget is
+// procPID returns the best-known PID for a managed process: the value
+// captured at Start (which survives Process.Release on the detach path),
+// falling back to the live handle. Zero when never started — callers
+// skip those so a 0 can't become a group-signal footgun.
+func procPID(mp *managedProcess) int {
+	if mp.pid > 0 {
+		return mp.pid
+	}
+	if mp.cmd != nil && mp.cmd.Process != nil {
+		return mp.cmd.Process.Pid
+	}
+	return 0
+}
+
+// shutdown sends SIGTERM to every registered process group and waits up
+// to 10s for them to exit. Anything still alive after the budget is
 // SIGKILLed. State file is removed on success.
 func (p *procRegistry) shutdown() {
 	p.mu.Lock()
@@ -801,11 +833,15 @@ func (p *procRegistry) shutdown() {
 	// lines clean.
 	for i := len(procs) - 1; i >= 0; i-- {
 		mp := procs[i]
-		if mp.cmd.Process == nil {
+		pid := procPID(mp)
+		if pid <= 0 {
 			continue
 		}
-		fmt.Printf("[up] stopping %s (pid=%d)...\n", mp.name, mp.cmd.Process.Pid)
-		_ = mp.cmd.Process.Signal(syscall.SIGTERM)
+		fmt.Printf("[up] stopping %s (pid=%d)...\n", mp.name, pid)
+		// Signal the whole process group so `go run`'s execed child (and
+		// any other grandchildren) die with the parent instead of
+		// orphaning and squatting on their ports.
+		_ = signalProcessGroup(pid, syscall.SIGTERM)
 	}
 
 	done := make(chan struct{})
@@ -827,11 +863,12 @@ func (p *procRegistry) shutdown() {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		for _, mp := range procs {
-			if mp.cmd.Process == nil {
+			pid := procPID(mp)
+			if pid <= 0 {
 				continue
 			}
 			fmt.Printf("[up] %s: did not exit, killing.\n", mp.name)
-			_ = mp.cmd.Process.Kill()
+			_ = signalProcessGroup(pid, syscall.SIGKILL)
 		}
 		<-done
 	}
@@ -899,15 +936,13 @@ func runUpStop(env string) error {
 			fmt.Printf("[up] %s: skipping invalid pid %d in state file\n", parts[0], pid)
 			continue
 		}
-		proc, ferr := os.FindProcess(pid)
-		if ferr != nil {
-			fmt.Printf("[up] %s: find pid %d: %v\n", parts[0], pid, ferr)
-			continue
-		}
-		if err := proc.Signal(syscall.SIGTERM); err != nil {
+		// Signal the whole process group (negative pid) so a detached
+		// `go run`'s execed child dies too — the persisted pid is the
+		// group leader (Setpgid at Start made pgid == pid).
+		if err := signalProcessGroup(pid, syscall.SIGTERM); err != nil {
 			fmt.Printf("[up] %s: signal pid %d: %v (already exited?)\n", parts[0], pid, err)
 		} else {
-			fmt.Printf("[up] %s: SIGTERM sent to pid %d\n", parts[0], pid)
+			fmt.Printf("[up] %s: SIGTERM sent to group %d\n", parts[0], pid)
 			stopped++
 		}
 	}

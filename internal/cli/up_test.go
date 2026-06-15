@@ -509,3 +509,18 @@ func TestSignalProcessGroup_NonPositiveIsNoop(t *testing.T) {
 		t.Errorf("pid -1: %v", err)
 	}
 }
+
+func TestInTargetSet(t *testing.T) {
+	// Empty filter matches everything (default).
+	if !inTargetSet(nil, "admin-server") {
+		t.Error("empty filter should match everything")
+	}
+	// Non-empty: only named entries match.
+	targets := []string{"admin-server", "reliant-web"}
+	if !inTargetSet(targets, "admin-server") {
+		t.Error("named target should match")
+	}
+	if inTargetSet(targets, "workspace-proxy") {
+		t.Error("unnamed target should not match")
+	}
+}

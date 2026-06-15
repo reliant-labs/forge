@@ -53,6 +53,25 @@ type upOptions struct {
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
 	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
+	// targets, when non-empty, scopes the host + frontend phases to the
+	// named services/frontends — `forge up --target admin-server` is the
+	// single-service inner loop (combine with --host-only to skip the
+	// cluster build+deploy). Empty means "everything", the default.
+	targets []string
+}
+
+// inTargetSet reports whether name should run given the --target filter.
+// An empty filter matches everything (the default).
+func inTargetSet(targets []string, name string) bool {
+	if len(targets) == 0 {
+		return true
+	}
+	for _, t := range targets {
+		if t == name {
+			return true
+		}
+	}
+	return false
 }
 
 func newUpCmd() *cobra.Command {
@@ -111,6 +130,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
+	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the host + frontend phases to specific services/frontends by name (repeatable). `forge up --target admin-server --host-only` is the single-service inner loop. Default: everything.")
 
 	cmd.AddCommand(newUpStopCmd())
 	return cmd
@@ -216,7 +236,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	defer procs.shutdownOnExit()
 
 	// Phase 3: host-mode services.
-	hostFailures := upHostServices(ctx, cfg, entities, opts.env, opts.background, procs)
+	hostFailures := upHostServices(ctx, cfg, entities, opts.env, opts.background, opts.targets, procs)
 	if hostFailures > 0 {
 		fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
 	}
@@ -225,7 +245,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// features.frontend: false — the orchestrator otherwise tries to
 	// npm-run-dev a tree that the project never scaffolded.
 	if !skipFeature(store, config.FeatureFrontend, "up:frontend") {
-		feFailures := upFrontends(ctx, entities, opts.env, opts.background, opts.noInstall, procs)
+		feFailures := upFrontends(ctx, entities, opts.env, opts.background, opts.noInstall, opts.targets, procs)
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
@@ -234,7 +254,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// Summary box: what's listening where, and where to find each
 	// service's log. Printed in both foreground and background so the
 	// URLs + log paths are one glance away (and greppable for an agent).
-	printUpSummary(entities, opts.env, opts.background)
+	printUpSummary(entities, opts.env, opts.background, opts.targets)
 
 	if opts.background {
 		fmt.Printf("[up] detached %d process(es). Stop with `forge up stop --env=%s`.\n",
@@ -266,7 +286,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 // Best-effort: host-service ports are read from the KCL `PORT` env var
 // (the bind-port convention); a service that doesn't declare one is
 // listed without a URL. No-op when nothing host/frontend ran.
-func printUpSummary(e *KCLEntities, env string, background bool) {
+func printUpSummary(e *KCLEntities, env string, background bool, targets []string) {
 	if e == nil {
 		return
 	}
@@ -276,6 +296,9 @@ func printUpSummary(e *KCLEntities, env string, background bool) {
 		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
 			continue
 		}
+		if !inTargetSet(targets, svc.Name) {
+			continue
+		}
 		url := ""
 		if p := hostEnvPort(svc.Name, svc.Deploy.Host); p != "" {
 			url = "http://localhost:" + p
@@ -283,6 +306,9 @@ func printUpSummary(e *KCLEntities, env string, background bool) {
 		hosts = append(hosts, row{svc.Name, url, summaryLogPath(env, svc.Name)})
 	}
 	for _, fe := range e.Frontends {
+		if !inTargetSet(targets, fe.Name) {
+			continue
+		}
 		url := ""
 		if fe.Port > 0 {
 			url = fmt.Sprintf("http://localhost:%d", fe.Port)
@@ -405,10 +431,13 @@ func upDeployCluster(ctx context.Context, env string) error {
 // dispatching on deploy.Host.Runner. Returns the count of services that
 // failed to start (logged but not fatal — the orchestrator brings up as
 // many as it can rather than bailing on the first failure).
-func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, procs *procRegistry) int {
+func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, targets []string, procs *procRegistry) int {
 	failures := 0
 	for _, svc := range e.Services {
 		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+			continue
+		}
+		if !inTargetSet(targets, svc.Name) {
 			continue
 		}
 		cmd, name, err := buildHostServiceCmd(ctx, cfg, svc, env)
@@ -496,9 +525,12 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 // fresh checkout doesn't fail with "next: command not found". A failed
 // install counts as a frontend failure (logged, non-fatal) so the rest
 // of the loop still comes up.
-func upFrontends(ctx context.Context, e *KCLEntities, env string, background, noInstall bool, procs *procRegistry) int {
+func upFrontends(ctx context.Context, e *KCLEntities, env string, background, noInstall bool, targets []string, procs *procRegistry) int {
 	failures := 0
 	for _, fe := range e.Frontends {
+		if !inTargetSet(targets, fe.Name) {
+			continue
+		}
 		if err := ensureFrontendDeps(ctx, fe, noInstall); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++

@@ -1083,8 +1083,8 @@ func (f FeaturesConfig) PacksEnabled() bool {
 
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).
-// When off, forge skips ingress codegen, `forge dev cluster up` skips
-// the Traefik + GatewayClass install, `forge dev urls` returns nothing,
+// When off, forge skips ingress codegen, `forge cluster up` skips
+// the Traefik + GatewayClass install, `forge cluster urls` returns nothing,
 // and the audit ingress category is suppressed.
 func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
 

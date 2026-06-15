@@ -112,7 +112,7 @@ func DeployTemplates() TemplateCategory { return TemplateCategory{basePath: "dep
 // (vendored Traefik install, GatewayClass) keyed under
 // `internal/templates/ingress/<provider>/`. The Gateway API CRDs
 // themselves are fetched from the upstream GitHub release at
-// `forge dev cluster up` time and cached under ~/.cache/forge/ —
+// `forge cluster up` time and cached under ~/.cache/forge/ —
 // see internal/cli/dev_cluster_ingress.go for the download path.
 func IngressTemplates() TemplateCategory { return TemplateCategory{basePath: "ingress"} }
 

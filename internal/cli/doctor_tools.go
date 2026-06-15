@@ -217,7 +217,7 @@ func defaultToolChecks() []toolCheck {
 		},
 		{
 			Name:        "k3d",
-			Description: "k3d — local k3s-in-docker dev cluster (forge dev cluster up)",
+			Description: "k3d — local k3s-in-docker dev cluster (forge cluster up)",
 			Required:    requiredWhen(func(f config.FeaturesConfig) bool { return f.DeployEnabled() }),
 			VersionArgs: []string{"version"},
 			InstallHints: map[string]string{

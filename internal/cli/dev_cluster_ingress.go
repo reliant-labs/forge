@@ -1,4 +1,4 @@
-// Package cli — `forge dev cluster up` ingress install plumbing.
+// Package cli — `forge cluster up` ingress install plumbing.
 //
 // Three pieces, run in order after the k3d cluster is created and
 // kubectl context pinned:
@@ -14,7 +14,7 @@
 //     Traefik v3.2's kubernetesgateway provider does NOT dynamically
 //     create listener sockets from Gateway.spec.listeners[*].port —
 //     each port needs a matching static entrypoint declared at
-//     install time. Re-run `forge dev cluster up` after adding or
+//     install time. Re-run `forge cluster up` after adding or
 //     removing a listener to install the new entrypoints
 //     (idempotent — the rendered Deployment restarts on apply).
 //  3. Apply the vendored `traefik` GatewayClass.
@@ -217,7 +217,7 @@ type traefikEntrypoint struct {
 // directory is missing. That's a normal state — projects with
 // features.ingress on but no ingress.k yet still need the bundle
 // installed; they just get the default `ping` entrypoint and add
-// listeners later via a re-run of `forge dev cluster up`.
+// listeners later via a re-run of `forge cluster up`.
 func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefikEntrypoint, error) {
 	if projectDir == "" {
 		return nil, nil
@@ -286,7 +286,7 @@ func collectTraefikEntrypoints(ctx context.Context, projectDir string) ([]traefi
 // against the given entrypoints and returns the rendered YAML bytes.
 // Empty entrypoints are valid — the bundle still installs (Traefik
 // runs with the default `ping` entrypoint) and the user can re-run
-// `forge dev cluster up` after adding listeners.
+// `forge cluster up` after adding listeners.
 func renderTraefikInstall(entrypoints []traefikEntrypoint) ([]byte, error) {
 	return templates.IngressTemplates().Render("traefik/traefik.yaml.tmpl", struct {
 		Entrypoints []traefikEntrypoint
@@ -305,7 +305,7 @@ func renderTraefikInstall(entrypoints []traefikEntrypoint) ([]byte, error) {
 //
 // projectDir is used to evaluate the dev env's KCL gateways for step
 // 3 — same data the k3d-ports generator uses. Adding or removing a
-// listener requires re-running `forge dev cluster up` to install the
+// listener requires re-running `forge cluster up` to install the
 // new entrypoints (idempotent — re-applying the rendered Deployment
 // restarts the pod with the new args).
 //
@@ -349,7 +349,7 @@ func installIngressBundle(ctx context.Context, projectDir string) error {
 		// non-fatal — the project may not have a dev env yet, or kcl
 		// may not be installed locally. Install the bundle with no
 		// extra entrypoints and let the user re-run cluster-up once
-		// their KCL is ready. `forge dev cluster-up` has no --strict
+		// their KCL is ready. `forge cluster up` has no --strict
 		// equivalent because the command is itself a developer-loop
 		// helper, not a CI gate.
 		fmt.Fprintf(os.Stderr, "Warning: could not evaluate dev gateways for Traefik entrypoints; installing without listener-derived entrypoints: %v\n", err)

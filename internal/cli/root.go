@@ -168,7 +168,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())
 	rootCmd.AddCommand(newIntrospectCmd())
-	rootCmd.AddCommand(newDevCmd())
+	rootCmd.AddCommand(newClusterCmd())
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
 	rootCmd.AddCommand(newFeaturesCmd())
@@ -205,7 +205,7 @@ func newVersionCmd() *cobra.Command {
 // The host-mode runner is the inner loop for services declared
 // `deploy = "host"` in `deploy/kcl/<env>/`: faster iteration than
 // building+pushing a docker image and waiting on a cluster rollout.
-// Mirrors the `forge dev port-forward --background` PID-tracking pattern.
+// Mirrors the `forge up --background` PID-tracking pattern.
 func newRunCmd() *cobra.Command {
 	var opts runOptions
 	var serviceFlag string

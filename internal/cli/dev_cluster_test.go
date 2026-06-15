@@ -53,15 +53,22 @@ func TestReadK3dClusterName_EmptyMetadataName(t *testing.T) {
 	}
 }
 
-// TestNewDevCmd_Subtree confirms the dev parent registers every
-// subcommand spec'd in the dev tree.
-func TestNewDevCmd_Subtree(t *testing.T) {
-	cmd := newDevCmd()
-	// port-forward is intentionally NOT in the dev subtree — the Gateway
-	// API ingress path (`forge dev urls`) is the canonical host-to-service
-	// entry point. See the comment block at the top of dev.go.
+// TestNewClusterCmd_Subtree confirms the flattened `forge cluster`
+// namespace registers every subcommand directly (no double-nested
+// `cluster cluster`). The k3d lifecycle children (up/down/reset/reload)
+// are promoted flat alongside the dev-state introspection commands
+// (status/logs/info/urls/instances).
+//
+// port-forward is intentionally absent — the Gateway API ingress path
+// (`forge cluster urls`) is the canonical host-to-service entry point.
+// See the comment block at the top of dev.go.
+func TestNewClusterCmd_Subtree(t *testing.T) {
+	cmd := newClusterCmd()
 	want := map[string]bool{
-		"cluster":   false,
+		"up":        false,
+		"down":      false,
+		"reset":     false,
+		"reload":    false,
 		"status":    false,
 		"logs":      false,
 		"info":      false,
@@ -75,30 +82,13 @@ func TestNewDevCmd_Subtree(t *testing.T) {
 	}
 	for name, found := range want {
 		if !found {
-			t.Errorf("forge dev: missing %q subcommand", name)
+			t.Errorf("forge cluster: missing %q subcommand", name)
 		}
 	}
-}
-
-// TestNewDevClusterCmd_Subtree confirms the cluster subtree registers
-// every subcommand.
-func TestNewDevClusterCmd_Subtree(t *testing.T) {
-	cmd := newDevClusterCmd()
-	want := map[string]bool{
-		"up":     false,
-		"down":   false,
-		"status": false,
-		"reset":  false,
-		"reload": false,
-	}
+	// The old nested `cluster` namespace must be gone — no double nesting.
 	for _, sub := range cmd.Commands() {
-		if _, ok := want[sub.Name()]; ok {
-			want[sub.Name()] = true
-		}
-	}
-	for name, found := range want {
-		if !found {
-			t.Errorf("forge dev cluster: missing %q subcommand", name)
+		if sub.Name() == "cluster" {
+			t.Error("forge cluster: unexpected nested `cluster` subcommand (should be flat)")
 		}
 	}
 }

@@ -1,0 +1,66 @@
+"""
+Project-wide Gateway API ingress topology for {{.ProjectName}}.
+
+This file is the single source of truth for which gateways and routes
+the project exposes. Per-environment files in
+`deploy/kcl/<env>/ingress.k` import this module and override hostnames,
+ports, or TLS as needed (KCL `|` merge handles the per-env diff
+cleanly).
+
+The env's `main.k` wires `GATEWAYS` / `HTTP_ROUTES` / `GRPC_ROUTES` into
+the Bundle's `gateways` / `http_routes` / `grpc_routes` fields, and
+forge.render_manifests emits the gateway.networking.k8s.io/v1
+resources alongside the typed entities.
+
+GatewayClass is NOT declared here — it's cluster-scoped and installed
+by `forge dev cluster up` (in dev) or by the user's cloud Gateway
+controller (in prod). Gateways reference it by `gateway_class_name`.
+"""
+
+import forge
+
+# The `public` Gateway exposes one HTTP listener for REST/gRPC-web
+# traffic and one H2C listener for native gRPC. Add additional named
+# gateways (`internal`, `webhooks`, …) here for separate-domain
+# routing. The dev k3d setup maps each listener's port from the host;
+# the prod env override flips ports and adds TLS.
+PUBLIC = forge.Gateway {
+    name = "public"
+    listeners = [
+        forge.GatewayListener {
+            name = "http"
+            port = 18080
+            protocol = "HTTP"
+        }
+        forge.GatewayListener {
+            name = "grpc"
+            port = 19190
+            protocol = "H2C"
+        }
+    ]
+}
+
+GATEWAYS: [forge.Gateway] = [PUBLIC]
+
+# Routes attach to a Gateway+listener and forward traffic to a backend
+# Service (matched by `service` name in the env's Bundle). Uncomment a
+# route to expose the corresponding service.
+HTTP_ROUTES: [forge.HTTPRoute] = [
+    # forge.HTTPRoute {
+    #     name = "{{.ProjectName}}"
+    #     gateway = "public"
+    #     listener = "http"
+    #     service = "{{.ProjectName}}"
+    #     port = 8080
+    # }
+]
+
+GRPC_ROUTES: [forge.GRPCRoute] = [
+    # forge.GRPCRoute {
+    #     name = "{{.ProjectName}}-grpc"
+    #     gateway = "public"
+    #     listener = "grpc"
+    #     service = "{{.ProjectName}}"
+    #     port = 8080
+    # }
+]

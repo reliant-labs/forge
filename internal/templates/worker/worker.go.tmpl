@@ -3,6 +3,7 @@ package {{.Package}}
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"{{.Module}}/pkg/config"
 )
@@ -26,29 +27,47 @@ func New(deps Deps) *Worker {
 // Name returns the worker's identifier.
 func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
 
-// Start blocks until ctx is cancelled. Implement your processing loop here.
+// Start runs the worker's cycle loop until ctx is cancelled. The
+// supervisor cancels ctx the moment graceful shutdown begins, so the
+// select below is the shutdown seam: the next loop iteration observes
+// ctx.Done() and Start returns promptly instead of finishing out the
+// schedule.
 func (w *Worker) Start(ctx context.Context) error {
 	w.deps.Logger.Info("worker started", "worker", w.Name())
 
-	// TODO: Implement your worker logic here.
-	// Example patterns:
-	//   - Poll a queue in a loop
-	//   - Subscribe to an event stream
-	//   - Run periodic batch jobs
-	//
-	// Always respect ctx cancellation:
-	//   select {
-	//   case <-ctx.Done():
-	//       return nil
-	//   case msg := <-messages:
-	//       process(msg)
-	//   }
+	// TODO: tune the cadence — or replace the ticker with a queue
+	// subscription / event stream. Keep the ctx.Done() arm either way;
+	// it is what lets this worker honor graceful shutdown.
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
-	<-ctx.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			// Graceful shutdown: return promptly so the supervisor can
+			// proceed to Stop and the rest of the shutdown sequence.
+			return nil
+		case <-ticker.C:
+			if err := w.runOnce(ctx); err != nil {
+				w.deps.Logger.Error("worker cycle failed", "worker", w.Name(), "error", err)
+			}
+		}
+	}
+}
+
+// runOnce performs a single work cycle. ctx is the worker's lifecycle
+// context — pass it into every context-aware call (DB queries, HTTP
+// requests, downstream adapters) so a long cycle observes shutdown
+// mid-flight instead of running to completion after the supervisor
+// cancels. Return ctx.Err() (or bail early) once ctx is done.
+func (w *Worker) runOnce(ctx context.Context) error {
+	// TODO: implement your per-cycle work here.
+	w.deps.Logger.InfoContext(ctx, "worker cycle", "worker", w.Name())
 	return nil
 }
 
-// Stop is called during graceful shutdown. Drain in-flight work here.
+// Stop is called during graceful shutdown, after Start's ctx has been
+// cancelled and the cycle loop has returned. Drain in-flight work here.
 func (w *Worker) Stop(ctx context.Context) error {
 	w.deps.Logger.Info("worker stopping", "worker", w.Name())
 	return nil

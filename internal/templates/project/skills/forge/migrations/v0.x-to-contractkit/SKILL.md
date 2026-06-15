@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-contractkit
 description: Migrate generated mock/middleware/tracing/metrics shape from inline-everything to contractkit shim + library. Forge versions before 1.5 used the old shape; 1.5+ uses contractkit.
+relevance: migration
 ---
 
 # Migrating from pre-1.5 inline codegen to `forge/pkg/contractkit`

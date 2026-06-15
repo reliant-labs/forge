@@ -1,304 +1,155 @@
+// Marker-driven stale-artifact cleanup.
+//
+// Forge's pre-2026-06-05 cleanup walked generated-artifact directories
+// and removed anything whose name didn't match a re-derived "expected"
+// set computed from forge.yaml — and deleted user code when the
+// re-derivation disagreed with on-disk snake_case proto layouts. The
+// manifest era fixed that by deleting only manifest-recorded paths; the
+// self-certifying era keeps the same safety property without the
+// manifest: only files that carry a forge:hash certification marker are
+// candidates. The marker IS forge's authorship record, embedded in the
+// file itself — paths without one are user content and forge doesn't
+// get to delete them.
+//
+// A candidate is a marker-bearing file the current run did NOT re-emit
+// (per the WrittenThisRun set). Guardrails before deletion:
+//
+//   - Owner-step gate. The tier1OwnerRegistry in generate_tier1_scope.go
+//     maps generated paths back to the step that emits them. A path
+//     whose owning step is gated off this run is left in place; that
+//     step wasn't going to write it regardless, so missing-from-
+//     WrittenThisRun is uninformative.
+//   - Upgrade-managed paths. `forge upgrade` is their emitter; `forge
+//     generate` deliberately leaves them alone.
+//   - Verification. Only PRISTINE markers (certified machine output)
+//     are deleted. A file whose marker fails verification was
+//     hand-edited — stale or not, those bytes are the user's now, so
+//     it is reported but never removed.
+//   - Disowned paths are never candidates.
+//
+// Scoped-fallback entries (.forge/hashes.json, comment-incapable
+// formats) get the same treatment keyed off the recorded hash.
 package cli
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"sort"
 
-	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// cleanupStaleArtifacts walks generated-artifact directories and removes paths
-// for proto services that no longer exist in the current descriptor. The
-// cleanup is conservative: only directories under gen/services/, handlers/,
-// handlers/mocks/, and frontends/<fe>/src/{hooks,mocks,app}/ are considered,
-// and within those only files/dirs that match a generated-artifact name shape
-// (handlers_gen.go, handlers_crud_gen.go, *_gen.go, *_mock.go, etc.) are
-// removed. User-owned files (handlers.go, service.go, contract.go, *_test.go
-// without a `_gen` suffix) are preserved with a one-line warning.
+// upgradeManagedPaths is a single-load cache of the upgrade-managed
+// path set. The set is constant for the binary's lifetime (it's
+// derived from compiled-in upgrade.go file lists), so loading it once
+// avoids re-walking the kind/binary matrix every cleanup pass. Tests
+// that need to swap it can do so by reassigning before invoking
+// cleanupStaleArtifacts.
+var upgradeManagedPaths = generator.UpgradeManagedPaths()
+
+// cleanupStaleArtifacts scans for forge-certified files the current
+// pipeline run did not re-emit and returns them as deletion candidates,
+// plus the list of stale-but-hand-edited files (reported, never
+// deleted). Both slices are sorted for deterministic output. Candidate
+// paths are returned absolute (legacy contract of the caller's
+// Rel-based display); handEdited paths are project-relative.
 //
-// The "current proto services" set is derived from the parsed ServiceDef list
-// that the generate pipeline already computes upstream — this function takes
-// it as input rather than re-parsing.
-//
-// Returns the list of removed paths so the pipeline can report them.
-func cleanupStaleArtifacts(cfg *config.ProjectConfig, services []codegen.ServiceDef, projectDir string) ([]string, error) {
-	current := currentServicePackageSet(services)
-
-	var removed []string
-
-	// 1) gen/services/<svc>/ directories with no matching proto service.
-	if r, err := cleanupStaleGenServices(projectDir, current); err != nil {
-		return removed, err
-	} else {
-		removed = append(removed, r...)
+// Deletion is gated on ctx.ForceCleanup: when true the function deletes
+// each pristine candidate as it walks; when false it returns the
+// candidate list without touching the filesystem so the caller can
+// format a "would delete" warning.
+func cleanupStaleArtifacts(ctx *pipelineContext) (candidates []string, handEdited []string, err error) {
+	if ctx == nil {
+		return nil, nil, nil
 	}
+	cs := ctx.Checksums
 
-	// 2) handlers/<svc>/ generated files with no matching proto service.
-	if r, err := cleanupStaleHandlers(projectDir, current); err != nil {
-		return removed, err
-	} else {
-		removed = append(removed, r...)
+	markers := checksums.ScanMarkers(ctx.AbsPath)
+	rels := make([]string, 0, len(markers))
+	for rel := range markers {
+		rels = append(rels, rel)
 	}
-
-	// 3) handlers/mocks/<svc>_mock.go entries.
-	if r, err := cleanupStaleHandlerMocks(projectDir, current); err != nil {
-		return removed, err
-	} else {
-		removed = append(removed, r...)
-	}
-
-	// 4) frontends/<fe>/src/hooks/<svc-kebab>-hooks.ts entries.
-	if cfg != nil {
-		if r, err := cleanupStaleFrontendHooks(cfg, projectDir, services); err != nil {
-			return removed, err
-		} else {
-			removed = append(removed, r...)
-		}
-	}
-
-	return removed, nil
-}
-
-// currentServicePackageSet returns the set of forge-derived package names
-// (e.g. "admin_server" for "AdminServerService") that have a corresponding
-// proto service in the current descriptor. Stale-cleanup compares directory
-// names against this set.
-func currentServicePackageSet(services []codegen.ServiceDef) map[string]struct{} {
-	out := make(map[string]struct{}, len(services))
-	for _, svc := range services {
-		pkg := serviceNameToPackage(svc.Name)
-		out[pkg] = struct{}{}
-	}
-	return out
-}
-
-// serviceNameToPackage converts a proto service name like "EchoService" or
-// "AdminServerService" into the snake_case package form used for handler
-// directories and gen package paths ("echo", "admin_server").
-func serviceNameToPackage(name string) string {
-	trimmed := strings.TrimSuffix(name, "Service")
-	if trimmed == "" {
-		trimmed = name
-	}
-	return strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
-}
-
-// cleanupStaleGenServices removes gen/services/<pkg>/ subdirectories whose
-// <pkg> doesn't appear in current. The whole tree under each removed dir
-// is generated by buf, so removal is safe.
-func cleanupStaleGenServices(projectDir string, current map[string]struct{}) ([]string, error) {
-	root := filepath.Join(projectDir, "gen", "services")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var removed []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if _, keep := current[e.Name()]; keep {
-			continue
-		}
-		dir := filepath.Join(root, e.Name())
-		if err := os.RemoveAll(dir); err != nil {
-			return removed, fmt.Errorf("remove stale gen dir %s: %w", dir, err)
-		}
-		removed = append(removed, dir)
-	}
-	return removed, nil
-}
-
-// cleanupStaleHandlers removes handlers/<pkg>/ directories whose <pkg>
-// doesn't appear in current. Within a kept handler dir, generated files
-// (*_gen.go, authorizer.go) are NOT touched. User-owned handlers.go,
-// service.go are preserved.
-//
-// The handler dir is removed wholesale only when ALL files in it are
-// generated artifacts (banner-line check). When user-edited files are
-// present, only the *_gen.go siblings are removed and a warning is logged.
-func cleanupStaleHandlers(projectDir string, current map[string]struct{}) ([]string, error) {
-	root := filepath.Join(projectDir, "handlers")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var removed []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if e.Name() == "mocks" || e.Name() == "webhooks" {
-			continue // mocks handled separately; webhooks not service-bound
-		}
-		if _, keep := current[e.Name()]; keep {
-			continue
-		}
-		dir := filepath.Join(root, e.Name())
-		userFiles, genFiles, err := classifyHandlerDirFiles(dir)
-		if err != nil {
-			return removed, err
-		}
-		if len(userFiles) == 0 {
-			// All generated — safe to remove the whole tree.
-			if err := os.RemoveAll(dir); err != nil {
-				return removed, fmt.Errorf("remove stale handler dir %s: %w", dir, err)
+	if cs != nil {
+		for rel := range cs.Unstampable {
+			if _, dup := markers[rel]; !dup {
+				rels = append(rels, rel)
 			}
-			removed = append(removed, dir)
+		}
+	}
+	sort.Strings(rels)
+
+	for _, rel := range rels {
+		// This run wrote this path — definitely not stale.
+		if checksums.WrittenThisRun[rel] {
 			continue
 		}
-		// User-owned files exist. Only remove *_gen.go (and per-file generated
-		// siblings); leave user files in place with a warning.
-		fmt.Fprintf(os.Stderr, "Warning: handlers/%s/ has user-owned files but no matching proto service; leaving user files in place. Generated artifacts removed.\n", e.Name())
-		for _, gf := range genFiles {
-			if err := os.Remove(gf); err != nil && !os.IsNotExist(err) {
-				return removed, fmt.Errorf("remove stale gen file %s: %w", gf, err)
+		// Disowned: user-owned by recorded intent (markers are stripped
+		// at disown time; this is a belt-and-braces check).
+		if cs.IsDisowned(rel) {
+			continue
+		}
+		// Upgrade-managed paths: certified, but `forge generate` is not
+		// the emitter — `forge upgrade` writes these on version bumps.
+		if upgradeManagedPaths[rel] {
+			continue
+		}
+		// Owner-step gate. If the owning emitter step is gated off this
+		// run, we can't conclude the path is stale.
+		if gate := tier1OwnerGate(rel); gate != nil && !gate(ctx) {
+			continue
+		}
+
+		full := filepath.Join(ctx.ProjectDir, rel)
+
+		// Pristineness decides delete-vs-report. For marker files the
+		// scan already classified them; fallback entries compare the
+		// recorded hash.
+		pristine := false
+		if info, ok := markers[rel]; ok {
+			pristine = info.Status == checksums.Pristine
+		} else if cs != nil {
+			content, rerr := os.ReadFile(full)
+			if rerr != nil {
+				continue // gone or unreadable — nothing to clean
 			}
-			removed = append(removed, gf)
+			pristine = checksums.BodyHash(content) == cs.Unstampable[rel]
 		}
-	}
-	return removed, nil
-}
-
-// classifyHandlerDirFiles partitions files in a handler directory into
-// user-owned vs generated. Generated files: anything ending in _gen.go.
-// authorizer.go is generated when authorizer_gen-style template is used; we
-// treat it conservatively as user-owned unless it carries the standard
-// "Code generated by forge" banner.
-func classifyHandlerDirFiles(dir string) (userFiles, genFiles []string, err error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			// Subdirs (testdata, mocks_local) — be conservative; treat as user.
-			userFiles = append(userFiles, filepath.Join(dir, e.Name()))
+		if !pristine {
+			// Stale AND hand-edited: the bytes are the user's now.
+			// Surface it so the drift isn't silent, but never delete.
+			handEdited = append(handEdited, rel)
 			continue
 		}
-		full := filepath.Join(dir, e.Name())
-		name := e.Name()
-		if strings.HasSuffix(name, "_gen.go") || strings.HasSuffix(name, "_gen_test.go") {
-			genFiles = append(genFiles, full)
+
+		candidates = append(candidates, full)
+		if !ctx.ForceCleanup {
 			continue
 		}
-		// Banner check for non-_gen files (authorizer.go, integration_test.go).
-		if isForgeGeneratedBanner(full) {
-			genFiles = append(genFiles, full)
+
+		if removeErr := os.Remove(full); removeErr != nil && !os.IsNotExist(removeErr) {
+			// Permission-denied and friends: surface a warning rather
+			// than aborting — a single locked file shouldn't tank the
+			// sweep.
+			fmt.Fprintf(os.Stderr, "⚠️  cleanup partial: could not remove %s (%v)\n", full, removeErr)
 			continue
 		}
-		userFiles = append(userFiles, full)
-	}
-	return userFiles, genFiles, nil
-}
-
-// isForgeGeneratedBanner returns true when the file's first line declares
-// it as "Code generated by forge". This is the standard forge marker, used
-// across bootstrap/testing/etc. templates.
-func isForgeGeneratedBanner(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	buf := make([]byte, 256)
-	n, _ := f.Read(buf)
-	head := string(buf[:n])
-	if i := strings.IndexByte(head, '\n'); i >= 0 {
-		head = head[:i]
-	}
-	return strings.Contains(head, "Code generated by forge")
-}
-
-// cleanupStaleHandlerMocks removes handlers/mocks/<pkg>_mock.go entries
-// whose <pkg> isn't in current.
-func cleanupStaleHandlerMocks(projectDir string, current map[string]struct{}) ([]string, error) {
-	root := filepath.Join(projectDir, "handlers", "mocks")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+		if cs != nil {
+			delete(cs.Unstampable, rel)
 		}
-		return nil, err
+
+		// Best-effort: prune the now-empty parent directory. A single
+		// os.Remove on the dir succeeds only if it's empty; "directory
+		// not empty" is the dominant, expected case.
+		if rmDirErr := os.Remove(filepath.Dir(full)); rmDirErr != nil && !os.IsNotExist(rmDirErr) {
+			if ctx.Verbose {
+				fmt.Fprintf(os.Stderr, "  ℹ️  cleanup: empty-dir prune failed for %s (%v) — usually expected (sibling files present)\n", filepath.Dir(full), rmDirErr)
+			}
+		}
 	}
 
-	var removed []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !strings.HasSuffix(name, "_mock.go") {
-			continue
-		}
-		pkg := strings.TrimSuffix(name, "_mock.go")
-		if _, keep := current[pkg]; keep {
-			continue
-		}
-		full := filepath.Join(root, name)
-		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
-			return removed, fmt.Errorf("remove stale mock %s: %w", full, err)
-		}
-		removed = append(removed, full)
-	}
-	return removed, nil
-}
-
-// cleanupStaleFrontendHooks removes <fe>/src/hooks/<svc-kebab>-hooks.ts and
-// re-derives the index.ts barrel after removal.
-func cleanupStaleFrontendHooks(cfg *config.ProjectConfig, projectDir string, services []codegen.ServiceDef) ([]string, error) {
-	// Build the set of currently-valid hook file names.
-	keepFile := make(map[string]struct{}, len(services))
-	for _, svc := range services {
-		keepFile[serviceNameToHookFile(svc.Name)] = struct{}{}
-	}
-
-	var removed []string
-	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") && !strings.EqualFold(fe.Type, "react-native") && !strings.EqualFold(fe.Type, "vite-spa") {
-			continue
-		}
-		feDir := fe.Path
-		if feDir == "" {
-			feDir = filepath.Join("frontends", fe.Name)
-		}
-		hooksDir := filepath.Join(projectDir, feDir, "src", "hooks")
-		entries, err := os.ReadDir(hooksDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return removed, err
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if !strings.HasSuffix(name, "-hooks.ts") {
-				continue
-			}
-			if _, keep := keepFile[name]; keep {
-				continue
-			}
-			full := filepath.Join(hooksDir, name)
-			if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
-				return removed, fmt.Errorf("remove stale hook file %s: %w", full, err)
-			}
-			removed = append(removed, full)
-		}
-	}
-	return removed, nil
+	sort.Strings(candidates)
+	sort.Strings(handEdited)
+	return candidates, handEdited, nil
 }

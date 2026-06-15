@@ -1,49 +1,22 @@
 ---
 name: adapter
-description: Outbound boundary translators. One adapter per third-party system / queue / storage backend; narrow Go interface, vendor-neutral callers.
+description: Outbound boundary translators. One adapter per third-party system / queue / storage backend; narrow interface, vendor-neutral callers.
+emit: both
 ---
 
 # Adapter
 
-An adapter is the package that translates between your domain and one
-external system: a third-party HTTP API, a message broker, a storage
-gateway, an OAuth provider. It owns the wire format, the retries, the
-timeout policy, and the response mapping. It does not own business
-logic — that lives in interactors and services.
-
-```
-internal/stripe-adapter/
-  contract.go        # // forge:adapter — Service interface, narrow surface
-  adapter.go         # Service struct + downstream calls; New(Deps) Service
-  adapter_test.go    # httptest stub of the downstream
-```
-
-Scaffold one with:
-
-```
-forge add adapter stripe-adapter
-```
-
-This emits the four files above with the canonical Service / Deps /
-New(Deps) Service shape and the `// forge:adapter` marker on
-contract.go, plus a `cache.go` stub for any local caching the adapter
-needs (delete it if you don't). `forge add package <name> --type
-adapter` resolves to the same code path and stays wired for muscle
-memory.
+An adapter is the package that translates between your domain and one external system: a third-party HTTP API, a message broker, a storage gateway, an OAuth provider. It owns the wire format, the retries, the timeout policy, and the response mapping. It does not own business logic — that lives one layer up.
 
 ## When to add an adapter
 
-Add an adapter the moment you need to call an external system that
-isn't your own database. Symptoms:
+Add an adapter the moment you need to call an external system that isn't your own database. Symptoms:
 
-- You're about to import an SDK in `pkg/app/setup.go` or in a handler.
-- You're about to write `http.NewRequestWithContext(ctx, "POST", "https://api.stripe.com/v1/...", ...)` in a service.
-- You're orchestrating two external calls together (that's an
-  *interactor* over two adapters, not an unstructured helper).
+- You're about to import a vendor SDK in your application bootstrap or in a handler.
+- You're about to write `POST https://api.stripe.com/v1/...` (or the equivalent in your stack) inline in a service.
+- You're orchestrating two external calls together — that's an interactor over two adapters, not an unstructured helper.
 
-If the external system is your own first-party Connect service, you
-don't need an adapter — depend on the generated client. Adapters exist
-for boundaries forge codegen doesn't already manage.
+If the external system is your own first-party API that you already generate clients for, you don't need an adapter — depend on the generated client. Adapters exist for boundaries you don't already manage.
 
 ## What goes in
 
@@ -51,32 +24,25 @@ for boundaries forge codegen doesn't already manage.
 - Per-request authentication header construction.
 - Retry / circuit-breaker / rate-limit policy.
 - Response-body parsing, vendor → domain type mapping.
-- Vendor-error → domain-error translation (wrap with svcerr sentinels
-  where appropriate).
+- Vendor-error → domain-error translation.
 
 ## What does NOT go in
 
-- Multi-step workflows (validate → fetch → send → audit). Compose
-  those in an interactor that depends on this adapter's `Service`.
-- Connect RPC handler registration (`NewXxxHandler`). The
-  forgeconv-adapter-no-rpc lint rule will warn — adapters are
-  outbound-only by convention, so RPC means it's actually a service.
-- Business logic — eligibility checks, pricing, dedupe. Those belong
-  to the domain.
-- Reaching into other adapters or services. Adapters are leaf nodes.
+- Multi-step workflows (validate → fetch → send → audit). Compose those in an interactor that depends on this adapter's interface.
+- Business logic — eligibility checks, pricing, dedupe. Those belong to the domain.
+- Reaching into other adapters or services. Adapters are leaf nodes; they don't know about each other.
 
-## The Service interface
+## The narrow interface
+
+The adapter exposes ONE narrow interface in the language of your domain — not the full vendor SDK. Conventions worth keeping:
+
+- **One method per use case the downstream supports.** Resist mirroring the entire vendor SDK; you only owe an interface for what your domain actually needs.
+- **Domain types in / out, not vendor types.** Even if the vendor SDK has 40 fields per object, your adapter exposes the 1-2 your domain consumes.
+- **Cancellation propagates.** Always accept a context / cancellation token as the first argument so timeouts and tracing work end-to-end.
+
+Illustrative shape (Go):
 
 ```go
-// internal/stripe-adapter/contract.go
-// forge:adapter
-//
-// stripe-adapter wraps the Stripe Payments API. Callers depend on
-// Service; the concrete struct stays unexported.
-package stripe_adapter
-
-import "context"
-
 type Service interface {
     HealthCheck(ctx context.Context) error
     CreateCharge(ctx context.Context, in CreateChargeInput) (CreateChargeResult, error)
@@ -93,26 +59,14 @@ type CreateChargeResult struct {
 }
 ```
 
-Conventions worth keeping:
-
-- **One method per use case the downstream supports.** Resist mirroring
-  the entire vendor SDK; you only owe an interface for what your
-  domain actually needs.
-- **Domain types in / out, not vendor types.** Even if `*stripe.Charge`
-  has 40 fields, this adapter exposes the 1-2 your domain consumes.
-- **`context.Context` first arg, always.** Cancellation propagates,
-  tracing works.
-- **Marker comment `// forge:adapter` on the package doc.** This is
-  what the lint rule looks for (and what the next reader looks for).
+Same shape in any language: a narrow interface in domain types, hiding the vendor's wire format.
 
 ## How to test
 
-Adapter tests use `net/http/httptest` (or the SDK's record-and-replay
-equivalent). The shape:
+Adapter tests use an in-process HTTP test server (or the SDK's record-and-replay equivalent) to stand in for the vendor. The point is to exercise the *adapter's* translation logic — request construction, header injection, response parsing, error mapping — against a controlled downstream.
 
 ```go
 func TestCreateCharge_OK(t *testing.T) {
-    t.Parallel()
     stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         if r.URL.Path != "/v1/charges" { http.NotFound(w, r); return }
         if got := r.Header.Get("Authorization"); got == "" {
@@ -122,11 +76,7 @@ func TestCreateCharge_OK(t *testing.T) {
     }))
     defer stub.Close()
 
-    svc := New(Deps{
-        Logger:     slog.Default(),
-        HTTPClient: stub.Client(),
-        BaseURL:    stub.URL,
-    })
+    svc := New(Deps{HTTPClient: stub.Client(), BaseURL: stub.URL})
 
     res, err := svc.CreateCharge(context.Background(), CreateChargeInput{...})
     if err != nil { t.Fatalf("CreateCharge: %v", err) }
@@ -134,10 +84,48 @@ func TestCreateCharge_OK(t *testing.T) {
 }
 ```
 
-The point is to exercise the *adapter's* translation logic — request
-construction, header injection, response parsing, error mapping —
-against a controlled downstream. Your interactor tests will use a mock
-of `Service`, never an httptest stub of the downstream.
+The interactor that calls this adapter in production mocks the interface, never the downstream HTTP server.
+
+## Library choice is yours
+
+Your adapter wraps whatever client you choose — raw HTTP, the vendor SDK, an RPC client, a queue / streaming client. The convention is the *shape* of the package (narrow interface in domain types), not the transport library.
+
+## Rules
+
+- **One adapter per outbound boundary.** No multi-system "integration" packages.
+- **Narrow interface in domain types.** Don't expose vendor types or mirror the vendor SDK.
+- **Test against a stub server.** Never against the live downstream.
+- **Adapters are leaf nodes.** No other adapters / services in the dep struct.
+
+## When an adapter needs a value from another constructed component
+
+Adapters are leaf nodes at construction time, but occasionally a downstream consumer wants to register a callback / sink / handler onto the adapter after both it and the consumer exist (e.g. an event bus adapter receiving subscribers from services constructed later). Don't add the consumer to the adapter's `Deps` — that inverts the leaf rule. Use `PostBootstrap` in `pkg/app/post_bootstrap.go` to do the registration after `Bootstrap` returns. See the `interactor` skill's "Late-bound dependencies" section for the canonical shape.
+
+<!-- @forge-only:start -->
+## Forge scaffolding
+
+Scaffold an adapter with:
+
+```
+forge add adapter stripe-adapter
+```
+
+This emits the canonical package layout:
+
+```
+internal/stripe-adapter/
+  contract.go        # // forge:adapter — Service interface, narrow surface
+  adapter.go         # Service struct + downstream calls; New(Deps) Service
+  adapter_test.go    # httptest stub of the downstream
+```
+
+Plus a `cache.go` stub for any local caching the adapter needs (delete it if you don't). `forge add package <name> --type adapter` resolves to the same code path.
+
+## Marker comment and lint enforcement
+
+Every adapter package's `contract.go` carries a `// forge:adapter` marker comment on the package doc. The marker tells the next reader the package's role in the architecture, and one lint rule enforces invariant:
+
+- `forgeconv-adapter-no-rpc` — adapter packages must not register Connect RPC handlers. Adapters are outbound-only; an RPC means it's actually a service.
 
 ## Wiring in `pkg/app/setup.go`
 
@@ -154,32 +142,10 @@ func Setup(app *App) error {
 
 The bootstrap template emits the wiring slot; you fill it.
 
-## Library choice is yours
-
-Your adapter wraps whatever client you choose — `net/http` directly,
-the vendor SDK, a `connectrpc.com/connect` client, an NATS / Kafka /
-Temporal client, an `aws-sdk-go-v2` service client. The forge
-convention is the *shape* of the package, not the transport library.
-
-## Rules
-
-- One adapter per outbound boundary. No multi-system "integration"
-  packages.
-- `// forge:adapter` marker comment on the package doc in
-  `contract.go`. Lint enforces this.
-- No Connect RPC handlers in an adapter package. Lint enforces this
-  (`forgeconv-adapter-no-rpc`).
-- Service interface in `contract.go`; concrete `service` struct
-  unexported in `adapter.go`; constructor returns the interface.
-- Test against an httptest stub (or vendor-SDK equivalent), never
-  against the live downstream.
-- Adapters are leaf nodes — no other adapters / services in `Deps`.
-
-## When this skill is not enough
+## When this skill is not enough (forge sub-skills)
 
 - **Composing multiple adapters into a workflow** — see `interactor`.
 - **The Service / Deps / New shape itself** — see `service-layer`.
-- **Wrapping vendor errors into svcerr sentinels** — see `service-layer`'s
-  errors section and `forge/pkg/svcerr`.
-- **Webhook ingestion (inbound from a vendor)** — that's a webhook
-  handler, not an adapter. See `forge add webhook`.
+- **Wrapping vendor errors into svcerr sentinels** — see `service-layer`'s errors section and `forge/pkg/svcerr`.
+- **Webhook ingestion (inbound from a vendor)** — that's a webhook handler, not an adapter. See `forge add webhook`.
+<!-- @forge-only:end -->

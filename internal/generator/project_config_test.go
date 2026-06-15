@@ -55,16 +55,22 @@ func TestWriteProjectConfig_StampsForgeVersion(t *testing.T) {
 
 // TestApplyKindFeatureDefaults_Service is a no-op assertion: the
 // default scaffold (`forge new --kind service` or no flag) must leave
-// every feature enabled. Today's behavior is preserved as long as
-// every *Enabled() accessor returns true after the helper runs on a
-// freshly-built generator.
+// every STABLE feature enabled. Experimental features are default-off
+// for every kind (including service) — the user opts in per project
+// via `features.experimental.<name>: true` after scaffolding.
 func TestApplyKindFeatureDefaults_Service(t *testing.T) {
 	g := NewProjectGenerator("svc", "/tmp/svc", "example.com/svc")
 	g.ApplyKindFeatureDefaults(config.ProjectKindService)
 	effective := g.Features.EffectiveFeatures()
 	for name, on := range effective {
+		if config.IsExperimentalFeature(name) {
+			if on {
+				t.Errorf("kind=service: experimental feature %q expected disabled, got enabled", name)
+			}
+			continue
+		}
 		if !on {
-			t.Errorf("kind=service: feature %q expected enabled, got disabled", name)
+			t.Errorf("kind=service: stable feature %q expected enabled, got disabled", name)
 		}
 	}
 }
@@ -96,6 +102,7 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 		config.FeatureCodegen:       false, // existing forge default — no proto/services to codegen
 		config.FeatureMigrations:    false,
 		config.FeatureHotReload:     false,
+		config.FeatureIngress:       false,
 	}
 	for name, expect := range want {
 		if effective[name] != expect {
@@ -133,6 +140,7 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 		config.FeatureCodegen:       false,
 		config.FeatureMigrations:    false,
 		config.FeatureHotReload:     false,
+		config.FeatureIngress:       false,
 	}
 	for name, expect := range want {
 		if effective[name] != expect {
@@ -143,27 +151,27 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 
 // TestApplyKindFeatureDefaults_PreservesExplicit ensures the per-kind
 // defaults are commutative with --disable: a caller that already set
-// `gen.Features.Deploy = boolPtr(true)` before invoking
+// `gen.Features.Frontend = boolPtr(true)` before invoking
 // ApplyKindFeatureDefaults("cli") keeps the explicit true (the helper
 // only sets fields that were still nil). Matches the doc on
 // ApplyKindFeatureDefaults.
 func TestApplyKindFeatureDefaults_PreservesExplicit(t *testing.T) {
 	g := NewProjectGenerator("c", "/tmp/c", "example.com/c")
 	keepTrue := true
-	g.Features.Deploy = &keepTrue // user explicitly wants deploy ON even in CLI mode
+	g.Features.Frontend = &keepTrue // user explicitly wants frontend ON even in CLI mode
 
 	g.ApplyKindFeatureDefaults(config.ProjectKindCLI)
-	if !g.Features.DeployEnabled() {
-		t.Error("explicit Deploy=true overwritten by ApplyKindFeatureDefaults(cli)")
+	if !g.Features.FrontendEnabled() {
+		t.Error("explicit Frontend=true overwritten by ApplyKindFeatureDefaults(cli)")
 	}
 }
 
-// TestWriteProjectConfig_CLIPersistsFeatureBlock verifies the
-// scaffold actually writes the features:` block to disk for CLI
-// projects so a subsequent `loadProjectConfig` resolves the per-kind
-// defaults. Without this, the per-kind toggles wouldn't survive the
-// `forge new` → `forge build` round-trip.
-func TestWriteProjectConfig_CLIPersistsFeatureBlock(t *testing.T) {
+// TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad verifies the
+// scaffolded CLI forge.yaml carries NO features: block — the per-kind
+// matrix is derived from `kind: cli` at load time. The round-trip that
+// matters is `forge new` → loadProjectConfig: the loaded config must
+// resolve build=on / packs=off without any explicit flags on disk.
+func TestWriteProjectConfig_CLIKindFeaturesDeriveOnLoad(t *testing.T) {
 	tmp := t.TempDir()
 	g := NewProjectGenerator("cli-feat", tmp, "example.com/cli-feat")
 	g.Kind = config.ProjectKindCLI
@@ -175,19 +183,23 @@ func TestWriteProjectConfig_CLIPersistsFeatureBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read forge.yaml: %v", err)
 	}
-	var cfg config.ProjectConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "features:") {
+			t.Errorf("kind=cli forge.yaml should not materialize a features: block (derived from kind); got:\n%s", data)
+		}
 	}
-	// Deploy must be present-and-false; build must be present-and-true.
-	if cfg.Features.Deploy == nil || *cfg.Features.Deploy {
-		t.Errorf("kind=cli forge.yaml: features.deploy = %v, want explicit false", cfg.Features.Deploy)
+	cfg, err := ReadProjectConfig(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	if cfg.Features.Build == nil || !*cfg.Features.Build {
-		t.Errorf("kind=cli forge.yaml: features.build = %v, want explicit true", cfg.Features.Build)
+	if !cfg.Features.BuildEnabled() {
+		t.Error("kind=cli loaded config: BuildEnabled() = false, want true (derived)")
 	}
-	if cfg.Features.Packs == nil || *cfg.Features.Packs {
-		t.Errorf("kind=cli forge.yaml: features.packs = %v, want explicit false", cfg.Features.Packs)
+	if cfg.Features.PacksEnabled() {
+		t.Error("kind=cli loaded config: PacksEnabled() = true, want false (derived)")
+	}
+	if cfg.Features.CodegenEnabled() {
+		t.Error("kind=cli loaded config: CodegenEnabled() = true, want false (derived)")
 	}
 }
 

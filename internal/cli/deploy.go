@@ -118,10 +118,11 @@ Examples:
 // debugging why `forge deploy staging` refuses to apply or what context
 // staging is expected to live in.
 func runDeployExplain(ctx context.Context, envName, override string) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 	expected := expectedClusterForEnv(ctx, cfg, envName)
 	current := strings.TrimSpace(currentKubectlContext(ctx))
 
@@ -206,17 +207,18 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	targetArchFlag := opts.targetArch
 	prune := opts.prune
 	rollback := opts.rollback
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
-	if !cfg.Features.DeployEnabled() {
+	if !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
 	// Resolve KCL directory.
-	kclDir := cfg.K8s.KCLDir
+	kclDir := store.K8s().KCLDir
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
@@ -249,7 +251,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		if ns := k8sClusterNamespaceForEnv(ctx, envName); ns != "" {
 			namespace = ns
 		} else {
-			namespace = cfg.Name + "-" + envName
+			namespace = store.Meta().Name + "-" + envName
 		}
 	}
 
@@ -272,7 +274,22 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	}
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
 
-	fmt.Printf("Deploying project: %s\n", cfg.Name)
+	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
+	// a project-prefixed `*.svc.cluster.local` reference that disagrees
+	// with the namespace we're about to deploy into, fail BEFORE any
+	// manifest applies. This is the silent CrashLoop the cp-forge-dev
+	// smoke test surfaced — pods land in namespace A, env vars point at
+	// services in namespace B, every dial returns `no such host` and no
+	// step in the pipeline names the misconfiguration. See the helper for
+	// the heuristic that distinguishes legitimate cross-namespace refs
+	// from typos.
+	if hasK8sServices {
+		if err := checkNamespaceReferences(entities, store.Meta().Name, namespace); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("Deploying project: %s\n", store.Meta().Name)
 	fmt.Printf("  Environment: %s\n", envName)
 	if rollback {
 		fmt.Printf("  Mode:        rollback\n")

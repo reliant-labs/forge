@@ -38,7 +38,7 @@ import (
 // Mirrors the friction repro exactly:
 //   - cfg.Kind = "service"
 //   - cfg.Features.Frontend = &false (explicit, from `forge new`)
-//   - cfg.Services has one worker entry
+//   - cfg.Components has one cron entry
 //   - cfg.Frontends is empty
 //   - proto/services/ is empty (no --service was passed)
 //   - workers/ has the just-scaffolded bar/ dir (HasWorkers=true)
@@ -58,8 +58,8 @@ func TestAddWorkerPipelineSkipsFrontendSteps(t *testing.T) {
 			Features: config.FeaturesConfig{
 				Frontend: &frontendOff,
 			},
-			Services: []config.ServiceConfig{
-				{Name: "bar", Type: "worker", Kind: "cron", Path: "workers/bar", Schedule: "*/5 * * * *"},
+			Components: []config.ComponentConfig{
+				{Name: "bar", Kind: config.ComponentKindCron, Path: "workers/bar", Schedule: "*/5 * * * *"},
 			},
 			// No Frontends entries.
 		},
@@ -221,7 +221,7 @@ func TestBootstrapOnlyStepPresetExcludesStompedSteps(t *testing.T) {
 		t.Fatal("stepPresetAllowlist is missing the bootstrap-only entry")
 	}
 	stomped := []string{
-		"CI workflows",            // .github/workflows/ci.yml
+		"CI workflows",                 // .github/workflows/ci.yml
 		"config loader (proto/config)", // pkg/config/config.go (+ cmd/server.go re-render)
 		"frontend mocks + transport",   // frontends/<name>/src/lib/mock-transport.ts
 		"regenerate infra files",       // deploy/ / Dockerfile.* / etc.
@@ -293,18 +293,18 @@ func TestMocksStepPresetExcludesUnrelatedHeavyEmitters(t *testing.T) {
 		t.Fatal("stepPresetAllowlist is missing the mocks entry")
 	}
 	unrelated := []string{
-		"CI workflows",                  // .github/workflows/ci.yml
-		"regenerate infra files",        // deploy/ / Dockerfile.* / etc.
-		"per-env deploy config",         // deploy/ env-specific KCL
-		"Grafana dashboards",            // observability dashboards
-		"frontend hooks",                // frontends/<name>/src/hooks/*-hooks.ts
-		"frontend CRUD pages",           // frontends/<name>/src/app/<svc>/page.tsx
-		"frontend nav + dashboard",      // frontends/<name>/src/components/nav.tsx
-		"frontend mocks + transport",    // frontends/<name>/src/lib/mock-transport.ts
-		"pkg/app/bootstrap.go",          // bootstrap-only preset's territory
-		"pkg/app/testing.go",            // bootstrap-only preset's territory
-		"pkg/app/migrate.go",            // bootstrap-only preset's territory
-		"service stubs",                 // hand-editable service.go scaffolds
+		"CI workflows",                       // .github/workflows/ci.yml
+		"regenerate infra files",             // deploy/ / Dockerfile.* / etc.
+		"per-env deploy config",              // deploy/ env-specific KCL
+		"Grafana dashboards",                 // observability dashboards
+		"frontend hooks",                     // frontends/<name>/src/hooks/*-hooks.ts
+		"frontend CRUD pages",                // frontends/<name>/src/app/<svc>/page.tsx
+		"frontend nav + dashboard",           // frontends/<name>/src/components/nav.tsx
+		"frontend mocks + transport",         // frontends/<name>/src/lib/mock-transport.ts
+		"pkg/app/bootstrap.go",               // bootstrap-only preset's territory
+		"pkg/app/testing.go",                 // bootstrap-only preset's territory
+		"pkg/app/migrate.go",                 // bootstrap-only preset's territory
+		"service stubs",                      // hand-editable service.go scaffolds
 		"go build (validate generated code)", // user runs go test in their loop
 	}
 	for _, name := range unrelated {

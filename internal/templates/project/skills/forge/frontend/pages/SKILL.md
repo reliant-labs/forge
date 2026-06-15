@@ -21,13 +21,13 @@ import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
 
 message User {
-  option (forge.v1.entity) = { table_name: "users", timestamps: true };
+  option (forge.v1.entity) = { table: "users", timestamps: true };
 
   string id = 1 [(forge.v1.field) = { pk: true }];
   string org_id = 2 [(forge.v1.field) = { tenant: true }];
-  string email = 3 [(forge.v1.field) = { store: true, unique: true }];
-  string name = 4 [(forge.v1.field) = { store: true }];
-  google.protobuf.Timestamp created_at = 100 [(forge.v1.field) = { store: true }];
+  string email = 3 [(forge.v1.field) = { unique: true }];
+  string name = 4;  // plain fields persist by default — no annotation needed
+  google.protobuf.Timestamp created_at = 100;  // managed by timestamps: true
 }
 
 service UserService {
@@ -66,7 +66,7 @@ forge generate
 
 This produces:
 
-- Go service stubs and CRUD handler implementations (`handlers_crud_gen.go` for matching method names — see `api`).
+- Go service stubs and CRUD handler wiring (`handlers_crud_ops_gen.go` op constructors plus thin delegations in the user-owned `handlers_crud.go` for matching method names — see `api`).
 - Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser` in `frontends/<name>/src/hooks/users-hooks.ts`.
 - Generated Connect transport in `src/lib/connect.ts`.
 
@@ -241,7 +241,7 @@ take_screenshot()    # actual rendered pixels
 4. **Forgetting `"use client"`** on a page that uses hooks. Build error.
 5. **Hand-editing `src/hooks/users-hooks.ts`.** Overwritten on next `forge generate`.
 6. **Skipping screenshots.** Snapshots compile, tests pass, layout is broken in the browser.
-7. **`mutate(...)`** without an error handler. Wrap in try/catch (or `mutateAsync` + try/catch) and surface failures via the event bus or a toast.
+7. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@/lib/format-utils`), never raw `err.message`.
 
 ## Rules
 

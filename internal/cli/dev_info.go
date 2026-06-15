@@ -3,7 +3,7 @@
 // Diagnostic dump of the dev-loop config: which cluster, which context,
 // which namespace, which service ports. Replaces the small bash recipe
 // every project would otherwise hand-write to debug "why is my
-// port-forward going to the wrong place?"
+// ingress URL hitting the wrong service?"
 package cli
 
 import (
@@ -27,8 +27,8 @@ Static means "what the project says it expects" — cluster name, expected
 kubectl context, registry URL, declared service/frontend ports. It does
 NOT contact the cluster or check pod state.
 
-For dynamic state (is the cluster up? are pods running? are port-forwards
-active?) use ` + "`forge dev status`" + `.`,
+For dynamic state (is the cluster up? are pods running? what are the
+live ingress URLs?) use ` + "`forge dev status`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevInfo(configPath)
 		},
@@ -42,7 +42,7 @@ func runDevInfo(configPath string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
@@ -54,39 +54,39 @@ func runDevInfo(configPath string) error {
 		registry = reg
 	}
 
-	fmt.Printf("Project:                    %s\n", cfg.Name)
+	fmt.Printf("Project:                    %s\n", store.Meta().Name)
 	fmt.Printf("Cluster (declared):         %s\n", clusterName)
 	fmt.Printf("Namespace (declared):       %s\n", ns)
 	fmt.Printf("Registry (declared):        %s\n", registry)
 	fmt.Printf("kubectl context (expected): %s\n", expectedCtx)
 	fmt.Printf("k3d config:                 %s\n", configPath)
 	fmt.Println()
-	fmt.Println("Declared service ports:")
-	printServicePorts(cfg.Services)
-	if len(cfg.Frontends) > 0 {
+	fmt.Println("Declared component ports:")
+	printServicePorts(store.Config().Components)
+	if len(store.Frontends()) > 0 {
 		fmt.Println()
 		fmt.Println("Declared frontend ports:")
-		printFrontendPorts(cfg.Frontends)
+		printFrontendPorts(store.Frontends())
 	}
 	fmt.Println()
-	fmt.Println("For dynamic state (cluster up/down, pods, port-forwards), run `forge dev status`.")
+	fmt.Println("For dynamic state (cluster up/down, pods, ingress URLs), run `forge dev status`.")
 	return nil
 }
 
-func printServicePorts(svcs []config.ServiceConfig) {
-	if len(svcs) == 0 {
+func printServicePorts(comps []config.ComponentConfig) {
+	if len(comps) == 0 {
 		fmt.Println("  (none)")
 		return
 	}
-	sorted := append([]config.ServiceConfig{}, svcs...)
+	sorted := append([]config.ComponentConfig{}, comps...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	for _, s := range sorted {
-		port := s.Port
+	for _, c := range sorted {
+		port := c.PrimaryPort()
 		if port == 0 {
-			fmt.Printf("  %-30s (no port declared)\n", s.Name)
+			fmt.Printf("  %-30s (no port declared)\n", c.Name)
 			continue
 		}
-		fmt.Printf("  %-30s %d\n", s.Name, port)
+		fmt.Printf("  %-30s %d\n", c.Name, port)
 	}
 }
 

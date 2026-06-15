@@ -9,12 +9,14 @@ Workers are long-running background processes that don't serve HTTP but particip
 
 ## Naming
 
-Worker names canonicalize to lowercase with `-` and `_` stripped. The canonical form is what appears on disk, in the Go package decl, in `wire_gen.go` imports, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
+Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, in `wire_gen.go` imports, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
 
-- `forge add worker calibrator_refit` → directory `workers/calibratorrefit/`, `package calibratorrefit`, `path: workers/calibratorrefit` in `forge.yaml`.
-- `forge add worker email-sender` → directory `workers/emailsender/`, `package emailsender`, `path: workers/emailsender`.
+- `forge add worker calibrator_refit` → directory `workers/calibrator_refit/`, `package calibrator_refit`, `path: workers/calibrator_refit` in `forge.yaml`.
+- `forge add worker email-sender` → directory `workers/email_sender/`, `package email_sender`, `path: workers/email_sender`.
 
-**Migrating from a non-forge codebase:** if you have existing worker directories named `snake_case` or `kebab-case`, rename them to the canonical form *before* running `forge generate`. Otherwise `forge generate` will write `bootstrap.go` / `wire_gen.go` imports pointing at the canonical name (e.g. `workers/calibratorrefit`) while the code lives under the original (`workers/calibrator_refit/`), and the build will fail with missing-package errors. The canonical form in `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+(Compact form with separators stripped — `workers/calibratorrefit/` — is a dead pre-2026-06-08 convention; do not create new directories in that shape.)
+
+**Migrating from a non-forge codebase:** if you have existing worker directories named `kebab-case` or compact, rename them to the canonical snake_case form *before* running `forge generate`. Otherwise `forge generate` will write `bootstrap.go` / `wire_gen.go` imports pointing at the canonical name (e.g. `workers/calibrator_refit`) while the code lives under the original (`workers/calibrator-refit/`), and the build will fail with missing-package errors. The canonical form in `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
 
 ## Adding a Worker
 
@@ -37,21 +39,37 @@ Every worker implements the same contract:
 ```go
 func (w *Worker) Name() string { return "email-sender" }
 
-// Start blocks until ctx is cancelled.
+// Start runs the cycle loop until ctx is cancelled. The supervisor
+// cancels ctx the moment graceful shutdown begins.
 func (w *Worker) Start(ctx context.Context) error {
-    w.deps.Logger.Info("worker started", "worker", w.Name())
-    <-ctx.Done()
-    return nil
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            return nil // graceful shutdown — return promptly
+        case <-ticker.C:
+            if err := w.runOnce(ctx); err != nil {
+                w.deps.Logger.Error("worker cycle failed", "error", err)
+            }
+        }
+    }
 }
 
-// Stop is called during graceful shutdown. Drain in-flight work here.
+// runOnce is a single work cycle. Pass ctx into every context-aware
+// call so a long cycle observes shutdown mid-flight.
+func (w *Worker) runOnce(ctx context.Context) error { /* ... */ return nil }
+
+// Stop is called during graceful shutdown, after the loop returned.
 func (w *Worker) Stop(ctx context.Context) error {
     w.deps.Logger.Info("worker stopping", "worker", w.Name())
     return nil
 }
 ```
 
-Key contract: `Start` must block until `ctx` is cancelled. `Stop` is called after cancellation with a deadline context for cleanup.
+Key contract: `Start` must block until `ctx` is cancelled, then return promptly — the supervisor waits for it before continuing shutdown. `Stop` is called after cancellation with a deadline context for cleanup. Always thread `ctx` into per-cycle work (DB queries, HTTP calls, adapters) so in-flight cycles honor shutdown instead of running to completion.
+
+A worker may also implement serverkit's optional `ContextWorker` extension — `RunContext(ctx context.Context) error` — which the supervisor prefers over `Start` when present (legacy `Start` workers are unaffected). Note: workers wired through the generated `pkg/app/bootstrap.go` are wrapped in `WorkerInstance`, which currently forwards only `Start`/`Stop`; for those, the ctx-aware `Start` loop above is the shutdown seam.
 
 ## Common Patterns
 
@@ -126,16 +144,42 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ## Adding Dependencies
 
-Extend the `Deps` struct in the worker file, then wire them in `pkg/app/setup.go`:
+Extend the `Deps` struct in the worker file, then rerun `forge generate` —
+the generated `pkg/app/wire_gen.go` resolves each Deps field automatically.
+You do **not** hand-wire Deps anywhere:
 
 ```go
 type Deps struct {
-    Logger *slog.Logger
-    Config *config.Config
-    DB     *sql.DB
-    Queue  *queue.Client
+    Logger *slog.Logger    // auto: logger.With("service", ...)
+    Config *config.Config  // auto: the loaded config
+    DB     orm.Context     // auto: app.ORMContext() when the ORM is enabled
+    Queue  *queue.Client   // auto: matched to an exported App field named Queue
 }
 ```
+
+For a custom collaborator like `Queue`, construct the infrastructure in
+user-owned `pkg/app/setup.go` and assign it to an exported `*App` field
+with the **same name** as the Deps field (`app.Queue = ...`); wire_gen
+matches by exact field name on the next `forge generate`. A Deps field
+with no matching App field gets a typed zero value plus a TODO warning
+at generate time. See `pkg/app/CONVENTIONS.md` for the full resolution
+rules. Never edit `wire_gen.go` itself — it is regenerated every run.
+
+## Late-bound dependencies between workers
+
+When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't put it in B's `Deps` — wire_gen resolves Deps once at construction and both workers are constructed in the same pass, so there's a construction-order cycle.
+
+The seam is `PostBootstrap` in `pkg/app/post_bootstrap.go`, called after `Bootstrap` returns with the fully-constructed `*App`:
+
+```go
+func PostBootstrap(app *App) error {
+    saver := app.Workers.Snapshotter.SnapshotSaver()
+    app.Workers.Trader.SetSnapshotSaver(saver)
+    return nil
+}
+```
+
+`PostBootstrap` is user-owned; forge generate never overwrites it. An error returned here aborts boot loudly. **Don't invent a parallel hook system (`wire_*_hooks.go`, post-Setup passes) for this — PostBootstrap IS that system.** See the `interactor` skill for the full pattern.
 
 ## Testing
 
@@ -161,7 +205,7 @@ func TestWorkerProcessesMessage(t *testing.T) {
 
 - `Start()` must respect context cancellation — always select on `ctx.Done()`.
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
-- Worker names canonicalize to lowercase with `-` and `_` stripped — see the Naming section. On-disk directories must match the canonical form.
+- Worker names canonicalize to lowercase snake_case (`email-sender` → `email_sender`) — see the Naming section. On-disk directories must match the canonical form.
 - Use `forge add worker`, not manual directory creation.
-- `bootstrap.go` is regenerated — wire custom dependencies in `setup.go`.
+- `bootstrap.go` and `wire_gen.go` are regenerated — never edit them. Custom Deps fields are auto-resolved by wire_gen against exported `*App` fields; `setup.go` (user-owned) is where you construct the infrastructure and assign those App fields.
 - Cron workers require `--schedule` with a valid cron expression (5-field standard format).

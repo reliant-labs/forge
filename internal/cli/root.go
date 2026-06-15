@@ -64,7 +64,7 @@ func SetVersion(v, date, commit string) {
 
 // GetVersion returns the forge binary's version string. Callers can use this
 // to stamp the current forge version into generated artifacts (e.g. the
-// .forge/checksums.json header), which enables pinned installs in CI.
+// forge.yaml pin), which enables pinned installs in CI.
 func GetVersion() string {
 	return version
 }
@@ -78,6 +78,7 @@ func GetGitCommit() string {
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
 	var verbose bool
+	var silenceExperimental bool
 
 	rootCmd := &cobra.Command{
 		Use:   "forge",
@@ -89,13 +90,58 @@ It enables easy mocking, middleware injection, spec-driven development,
 and component swapping - all while maintaining a single, consistent
 interface pattern throughout the entire stack.`,
 		Version: fmt.Sprintf("%s (built %s, commit %s)", version, buildDate, gitCommit),
+		// SilenceErrors: cobra never prints the error itself — main()
+		// owns the single, final "Error: ..." line. Without this every
+		// failure printed twice (cobra's copy first, buried under the
+		// usage block, then main's copy) — multi-line failure reports
+		// (e.g. the Tier-1 stomp-guard report, journey fr-a04f8c0609)
+		// appeared twice with usage spam sandwiched between the copies.
+		// SilenceUsage is NOT set here: it is set in PersistentPreRun
+		// (after flag/arg parsing succeeds) so runtime errors skip the
+		// usage dump while genuine usage mistakes keep the help block.
+		SilenceErrors: true,
+		// PersistentPreRun fires once per invocation regardless of
+		// which subcommand the user typed. We use it to emit a single
+		// "experimental features on" warning so users running with
+		// `features.experimental.<x>: true` are reminded the schema
+		// may break between versions. Suppress with
+		// --silence-experimental (or FORGE_SILENCE_EXPERIMENTAL=1 in
+		// CI). Errors loading config are swallowed — a missing
+		// forge.yaml is the normal "outside-a-project" path.
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Usage-dump suppression for RUNTIME errors only. This
+			// hook runs after flag parsing and arg validation succeed,
+			// so genuine usage mistakes (unknown flag, wrong arg
+			// count) still print the usage block — but a pipeline-step
+			// failure inside RunE (generate, add, build, …) no longer
+			// buries the real error under 40 lines of flag help.
+			cmd.SilenceUsage = true
+
+			if silenceExperimental || os.Getenv("FORGE_SILENCE_EXPERIMENTAL") != "" {
+				return
+			}
+			store, err := loadProjectStore()
+			if err != nil || store == nil {
+				return
+			}
+			emitExperimentalWarning(cmd.ErrOrStderr(), store.Features().EnabledExperimentalFeatures())
+		},
 	}
 
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().BoolVar(&silenceExperimental, "silence-experimental", false, "suppress the experimental-features warning (also: FORGE_SILENCE_EXPERIMENTAL=1)")
 
 	// Add all commands
 	rootCmd.AddCommand(newRunCmd())
 	rootCmd.AddCommand(newGenerateCmd())
+	// `forge disown` is the one-way door from forge-owned (Tier-1) to
+	// user-owned (Tier-2). Top-level because the drift-guard error
+	// message prints it.
+	rootCmd.AddCommand(newDisownCmd())
+	// (`forge unfork`, the legacy-fork migration tool, was removed after
+	// its one-release deprecation window — the legacy-manifest migration
+	// in `forge generate` converts forked entries to disowned
+	// automatically.)
 	rootCmd.AddCommand(newDBCmd())
 	rootCmd.AddCommand(newMigrateCmd())
 	rootCmd.AddCommand(newNewCmd())
@@ -112,7 +158,6 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newDocsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
-	rootCmd.AddCommand(newUnforkCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	rootCmd.AddCommand(newComponentCmd())
@@ -120,12 +165,17 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newToolsCmd())
 	rootCmd.AddCommand(newBacklogCmd())
+	rootCmd.AddCommand(newFrictionCmd())
 	rootCmd.AddCommand(newAuditCmd())
+	rootCmd.AddCommand(newGraphCmd())
 	rootCmd.AddCommand(newMapCmd())
+	rootCmd.AddCommand(newIntrospectCmd())
 	rootCmd.AddCommand(newConfigCmd())
 	rootCmd.AddCommand(newDevCmd())
 	rootCmd.AddCommand(newAPICmd())
 	rootCmd.AddCommand(newUpCmd())
+	rootCmd.AddCommand(newExperimentalCmd())
+	rootCmd.AddCommand(newFeaturesCmd())
 
 	return rootCmd
 }
@@ -197,6 +247,10 @@ Examples:
   forge run admin-server --background    # Detach, track PID for later stop
   forge run admin-server stop            # Kill the tracked background PID
   forge run admin-server --env-file .env.local  # Override KCL secrets_file path`,
+		// Runtime failures (a host postgres squatting on 5432, a child
+		// dying) are not usage errors — dumping the flag table after
+		// them buries the actionable message (journey fr-8236556f2e).
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// `forge run <service> stop` short-circuits to the PID kill.
 			if len(args) == 2 && args[1] == "stop" {
@@ -220,6 +274,8 @@ Examples:
 	runCmd.Flags().BoolVar(&opts.debug, "debug", false, "Start with Delve debugger (hot-reload + debug on :2345) — orchestrator only")
 	runCmd.Flags().BoolVar(&background, "background", false, "Detach the host-mode runner and return immediately (stop with `forge run <service> stop`)")
 	runCmd.Flags().StringVar(&secretsFile, "env-file", "", "Override the KCL HostDeploy.secrets_file path (gitignored dotenv with secrets only — config lives in KCL env_vars)")
+	runCmd.Flags().IntVar(&opts.proxyPort, "proxy-port", 0, "Cross-frontend dev proxy port (default 8080, auto-shifted past any declared service/frontend port; env var FORGE_RUN_PROXY_PORT also honoured). Maps <name>.localhost:<port> → each frontend / HTTP-routed service.")
+	runCmd.Flags().BoolVar(&opts.noProxy, "no-proxy", false, "Disable the cross-frontend dev proxy (orchestrator only) — use the raw per-frontend ports instead of the unified <name>.localhost URL.")
 
 	return runCmd
 }

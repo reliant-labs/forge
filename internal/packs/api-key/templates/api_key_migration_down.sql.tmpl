@@ -1,4 +1,5 @@
--- forge:scaffold one-shot — api-key down migration; canonical pattern in `forge skill load packs`.
+-- yours: scaffolded once, never touched again — forge will not overwrite this file
+-- Api-key down migration; canonical pattern in `forge skill load packs`.
 BEGIN;
 DROP TABLE IF EXISTS api_keys;
 COMMIT;

@@ -24,7 +24,6 @@ func TestAuditReport_BasicShape(t *testing.T) {
 module_path: github.com/test/test-project
 version: 0.0.1
 forge_version: dev
-services: []
 database: {}
 ci: {}
 docker: {}
@@ -37,15 +36,13 @@ docs: {}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
+	// Empty components.json → service kind (the empty-service shell).
+	writeComponentsJSON(t, dir)
 
-	// Empty .forge/checksums.json so the codegen audit has data to read.
-	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
-		t.Fatalf("mkdir .forge: %v", err)
-	}
-	cs := `{"forge_version":"dev","files":{}}`
-	if err := os.WriteFile(filepath.Join(dir, ".forge", "checksums.json"), []byte(cs), 0o644); err != nil {
-		t.Fatalf("write checksums: %v", err)
-	}
+	// No .forge state files at all — the steady state in the
+	// self-certifying era (the manifest-era empty checksums.json would
+	// now read as a pending legacy migration). The codegen audit reads
+	// ownership from the files themselves.
 
 	report, err := buildAuditReport(dir)
 	if err != nil {
@@ -53,10 +50,11 @@ docs: {}
 	}
 
 	wantKeys := []string{
-		"version", "shape", "features", "environments", "conventions", "codegen",
-		"packs", "pack_graph", "proto_migration_alignment",
+		"version", "shape", "features", "environments", "external_builds",
+		"conventions", "codegen",
+		"packs", "pack_graph",
 		"migration_safety", "wire_coverage", "scaffold_markers",
-		"crud_stubs", "diagnostics", "deps",
+		"crud_stubs", "diagnostics", "deps", "friction",
 	}
 	for _, key := range wantKeys {
 		if _, ok := report.Categories[key]; !ok {
@@ -128,7 +126,7 @@ func TestAuditCRUDStubs_NoStubs(t *testing.T) {
 	if cat.Status != AuditStatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
-	if !strings.Contains(cat.Summary, "0 CRUD") {
+	if !strings.Contains(cat.Summary, "0 custom-read-shape CRUD stubs") {
 		t.Errorf("summary should report 0 stubs, got %q", cat.Summary)
 	}
 	if total, _ := cat.Details["total_stubs"].(int); total != 0 {
@@ -136,14 +134,15 @@ func TestAuditCRUDStubs_NoStubs(t *testing.T) {
 	}
 }
 
-// TestAuditCRUDStubs_DetectsStub fixtures a handlers_crud_gen.go
-// carrying a FORGE_CRUD_SHAPE_MISMATCH marker and confirms audit
-// surfaces (a) warn status, (b) the file path, (c) the method name
-// stitched to the marker, and (d) the reason text. This is the
+// TestAuditCRUDStubs_DetectsLegacyMarker fixtures a handlers_crud_gen.go
+// carrying the PRE-RENAME FORGE_CRUD_SHAPE_MISMATCH marker and confirms
+// audit still surfaces it — the marker was renamed to
+// forge:custom-read-shape, and the old spelling stays recognized for one
+// release so existing files keep producing findings. This is also the
 // kalshi-trader friction's regression case — ListSettlements
 // returning CodeUnimplemented in production must be a structured
 // finding, not a buried comment in a generated file.
-func TestAuditCRUDStubs_DetectsStub(t *testing.T) {
+func TestAuditCRUDStubs_DetectsLegacyMarker(t *testing.T) {
 	dir := t.TempDir()
 	pkgDir := filepath.Join(dir, "handlers", "api")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
@@ -194,6 +193,64 @@ func (s *Service) ListSettlements(
 	}
 	if !strings.HasSuffix(s["file"], "handlers/api/handlers_crud_gen.go") {
 		t.Errorf("file: want handlers/api/handlers_crud_gen.go suffix, got %q", s["file"])
+	}
+}
+
+// TestAuditCRUDStubs_DetectsCurrentMarker covers the renamed marker the
+// shim template emits today (`forge:custom-read-shape`) in the
+// user-owned handlers_crud.go, and the grep-compat details the finding
+// carries for consumers migrating off the old string.
+func TestAuditCRUDStubs_DetectsCurrentMarker(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "handlers", "api")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `package api
+
+import (
+	"context"
+	"connectrpc.com/connect"
+	pb "example.com/p/gen/services/api/v1"
+)
+
+// ListTrades implements the ListTrades RPC.
+//
+// forge:custom-read-shape: request ListTradesRequest shaped by ticker+limit (observed fields: ticker, limit)
+//
+// Custom read shape — yours to implement.
+func (s *Service) ListTrades(
+	ctx context.Context,
+	req *connect.Request[pb.ListTradesRequest],
+) (*connect.Response[pb.ListTradesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+`
+	if err := os.WriteFile(filepath.Join(pkgDir, "handlers_crud.go"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cat := auditCRUDStubs(dir)
+	if cat.Status != AuditStatusWarn {
+		t.Errorf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
+	}
+	stubs, ok := cat.Details["stubs"].([]map[string]string)
+	if !ok || len(stubs) != 1 {
+		t.Fatalf("stubs: want 1 entry, got %#v", cat.Details["stubs"])
+	}
+	if stubs[0]["method"] != "ListTrades" {
+		t.Errorf("method: want ListTrades, got %q", stubs[0]["method"])
+	}
+	if !strings.Contains(stubs[0]["reason"], "ticker+limit") {
+		t.Errorf("reason should carry the marker text, got %q", stubs[0]["reason"])
+	}
+	// Grep-compat note: consumers must be able to discover the rename
+	// from the finding itself.
+	if got, _ := cat.Details["marker"].(string); got != "forge:custom-read-shape" {
+		t.Errorf("marker detail: want forge:custom-read-shape, got %q", got)
+	}
+	if got, _ := cat.Details["legacy_marker"].(string); got != "FORGE_CRUD_SHAPE_MISMATCH" {
+		t.Errorf("legacy_marker detail: want FORGE_CRUD_SHAPE_MISMATCH, got %q", got)
 	}
 }
 
@@ -333,9 +390,10 @@ func init() {
 	if err := os.WriteFile(filepath.Join(appDir, "diagnostics_gen.go"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	strict := true
 	cfg := &config.ProjectConfig{
-		Features: config.FeaturesConfig{StrictWiring: &strict},
+		Features: config.FeaturesConfig{
+			Experimental: config.ExperimentalConfig{StrictWiring: true},
+		},
 	}
 	cat := auditDiagnostics(cfg, dir)
 	if cat.Status != AuditStatusError {
@@ -364,13 +422,20 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("details.resolved missing or wrong type: %T", cat.Details["resolved"])
 	}
+	// Stable features default ON. Experimental features default OFF
+	// and are asserted separately below.
 	for _, name := range []string{
-		config.FeatureDeploy, config.FeatureBuild, config.FeatureFrontend,
+		config.FeatureBuild, config.FeatureFrontend,
 		config.FeaturePacks, config.FeatureStarters, config.FeatureCI,
 		config.FeatureDocs, config.FeatureObservability,
 	} {
 		if !resolved[name] {
-			t.Errorf("resolved[%q] = false, want true (no features block → all enabled)", name)
+			t.Errorf("resolved[%q] = false, want true (no features block → stable enabled)", name)
+		}
+	}
+	for _, name := range config.ExperimentalFeatureNames {
+		if resolved[name] {
+			t.Errorf("resolved[%q] = true, want false (no features block → experimental disabled)", name)
 		}
 	}
 	disabled, ok := cat.Details["disabled"].([]string)
@@ -387,19 +452,21 @@ func TestAuditFeatures_ZeroConfig(t *testing.T) {
 
 // TestAuditFeatures_PartialDisable asserts the enabled/disabled
 // splits in the details payload are derived from the resolved map:
-// disabling a couple of features must surface them in `disabled`
-// (alphabetised) and remove them from `enabled`.
+// disabling a couple of stable features must surface them in
+// `disabled` (alphabetised) and remove them from `enabled`.
+// Experimental features land in their own buckets so they don't
+// pollute the stable-disabled signal.
 func TestAuditFeatures_PartialDisable(t *testing.T) {
 	off := false
 	cfg := &config.ProjectConfig{
-		Features: config.FeaturesConfig{Deploy: &off, Packs: &off},
+		Features: config.FeaturesConfig{Build: &off, Packs: &off},
 	}
 	cat := auditFeatures(cfg)
 	disabled, ok := cat.Details["disabled"].([]string)
 	if !ok {
 		t.Fatalf("details.disabled wrong type: %T", cat.Details["disabled"])
 	}
-	wantDisabled := map[string]bool{config.FeatureDeploy: true, config.FeaturePacks: true}
+	wantDisabled := map[string]bool{config.FeatureBuild: true, config.FeaturePacks: true}
 	for _, name := range disabled {
 		if !wantDisabled[name] {
 			t.Errorf("unexpected disabled feature %q", name)
@@ -410,6 +477,49 @@ func TestAuditFeatures_PartialDisable(t *testing.T) {
 	}
 }
 
+// TestAuditFeatures_ExperimentalBuckets asserts experimental
+// features are surfaced in their own buckets and don't pollute
+// the stable enabled/disabled lists. A project with no opt-ins
+// must show every experimental name in `experimental_available`
+// and an empty `experimental_enabled`.
+func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
+	cfg := &config.ProjectConfig{
+		Features: config.FeaturesConfig{
+			Experimental: config.ExperimentalConfig{
+				Ingress: true,
+			},
+		},
+	}
+	cat := auditFeatures(cfg)
+	expEnabled, ok := cat.Details["experimental_enabled"].([]string)
+	if !ok {
+		t.Fatalf("details.experimental_enabled wrong type: %T", cat.Details["experimental_enabled"])
+	}
+	wantEnabled := map[string]bool{config.FeatureIngress: true}
+	if len(expEnabled) != len(wantEnabled) {
+		t.Errorf("experimental_enabled = %v, want %v", expEnabled, wantEnabled)
+	}
+	for _, name := range expEnabled {
+		if !wantEnabled[name] {
+			t.Errorf("unexpected experimental_enabled feature %q", name)
+		}
+	}
+	expAvail, ok := cat.Details["experimental_available"].([]string)
+	if !ok {
+		t.Fatalf("details.experimental_available wrong type: %T", cat.Details["experimental_available"])
+	}
+	if len(expAvail) != len(config.ExperimentalFeatureNames) {
+		t.Errorf("experimental_available count = %d, want %d", len(expAvail), len(config.ExperimentalFeatureNames))
+	}
+	// Experimental opt-ins must NOT appear in the stable enabled bucket.
+	stableEnabled, _ := cat.Details["enabled"].([]string)
+	for _, name := range stableEnabled {
+		if config.IsExperimentalFeature(name) {
+			t.Errorf("experimental feature %q leaked into stable `enabled` bucket", name)
+		}
+	}
+}
+
 // TestAuditFeatures_NilConfig surfaces "no forge.yaml" as error so
 // sub-agents branching on `.features.status == "error"` don't get
 // a false-ok on a non-forge project.
@@ -417,5 +527,116 @@ func TestAuditFeatures_NilConfig(t *testing.T) {
 	cat := auditFeatures(nil)
 	if cat.Status != AuditStatusError {
 		t.Errorf("nil cfg status = %q, want error", cat.Status)
+	}
+}
+
+// TestAuditShape_PerRPCStreamingAndMCPCallable pins the additive
+// per-RPC extension to the shape category: each service entry gains an
+// `rpcs` list with name / streaming / mcp_callable so agents learn —
+// before ever talking to forge-mcp — which RPCs the MCP bridge can
+// dispatch (unary) and which it cannot (streaming; excluded from MCP
+// tools/list). Additive-extension contract: pre-existing keys
+// (name/type/rpc_count) are asserted untouched alongside.
+func TestAuditShape_PerRPCStreamingAndMCPCallable(t *testing.T) {
+	dir := t.TempDir()
+
+	yamlBody := `name: test-project
+module_path: github.com/test/test-project
+forge_version: dev
+`
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
+		t.Fatalf("write forge.yaml: %v", err)
+	}
+	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "internal/tasks"})
+	// proto/services must exist for auditShape to attempt the parse.
+	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
+		t.Fatalf("mkdir proto/services: %v", err)
+	}
+	// ParseServicesFromProtos reads gen/forge_descriptor.json.
+	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
+		t.Fatalf("mkdir gen: %v", err)
+	}
+	descriptor := `{
+  "services": [
+    {
+      "Name": "TasksService",
+      "Package": "tasks.v1",
+      "Methods": [
+        {"Name": "Create", "InputType": "CreateRequest", "OutputType": "CreateResponse"},
+        {"Name": "Tail", "InputType": "TailRequest", "OutputType": "TailResponse", "ServerStreaming": true},
+        {"Name": "Sync", "InputType": "SyncRequest", "OutputType": "SyncResponse", "ClientStreaming": true, "ServerStreaming": true}
+      ]
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(dir, "gen", "forge_descriptor.json"), []byte(descriptor), 0o644); err != nil {
+		t.Fatalf("write descriptor: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/test/test-project\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cat := auditShape(cfg, dir)
+
+	// Round-trip through JSON — that's the shape sub-agents consume.
+	data, err := json.Marshal(cat.Details)
+	if err != nil {
+		t.Fatalf("marshal details: %v", err)
+	}
+	var details struct {
+		Services []struct {
+			Name     string `json:"name"`
+			Type     string `json:"type"`
+			RPCCount int    `json:"rpc_count"`
+			RPCs     []struct {
+				Name        string `json:"name"`
+				Streaming   string `json:"streaming"`
+				MCPCallable bool   `json:"mcp_callable"`
+			} `json:"rpcs"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(data, &details); err != nil {
+		t.Fatalf("unmarshal details: %v", err)
+	}
+	if len(details.Services) != 1 {
+		t.Fatalf("services = %#v, want 1 entry", details.Services)
+	}
+	svc := details.Services[0]
+	// Pre-existing keys keep their meaning (additive contract).
+	if svc.Name != "tasks" || svc.RPCCount != 3 {
+		t.Errorf("name/rpc_count = %q/%d, want tasks/3", svc.Name, svc.RPCCount)
+	}
+	if len(svc.RPCs) != 3 {
+		t.Fatalf("rpcs = %#v, want 3 entries", svc.RPCs)
+	}
+	want := []struct {
+		name      string
+		streaming string
+		callable  bool
+	}{
+		{"Create", "", true},
+		{"Tail", "server", false},
+		{"Sync", "bidi", false},
+	}
+	for i, w := range want {
+		got := svc.RPCs[i]
+		if got.Name != w.name || got.Streaming != w.streaming || got.MCPCallable != w.callable {
+			t.Errorf("rpcs[%d] = %+v, want %+v", i, got, w)
+		}
+	}
+
+	// Wire-shape check: unary RPCs must omit the streaming key
+	// entirely (omitempty), mirroring the MCP manifest convention.
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	firstRPC := raw["services"].([]any)[0].(map[string]any)["rpcs"].([]any)[0].(map[string]any)
+	if _, present := firstRPC["streaming"]; present {
+		t.Errorf("unary rpc entry must omit streaming key, got %v", firstRPC["streaming"])
 	}
 }

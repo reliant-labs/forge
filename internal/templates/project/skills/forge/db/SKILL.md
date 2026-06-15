@@ -1,203 +1,171 @@
 ---
 name: db
-description: Database work — migrations own the schema, entity types evolve independently, forge generate never touches the DB layer.
+description: Database work — SQL migrations are the single schema source of truth; forge generate projects the applied schema into entity structs, ORM, CRUD wiring, and frontend pages.
+emit: both
 ---
 
 # Database Work
 
 ## The key principle
 
-**Migrations are the source of truth for your database schema.** Not proto, not Go structs — the SQL files in `db/migrations/`. Proto defines your API contracts. Migrations define your persistence. These evolve independently.
-
-`forge generate` does **NOT** touch the database layer. It never modifies `internal/db/`, `db/migrations/`, or `db/queries/`. You own all of this completely — evolve it freely.
-
-## Proto entities: greenfield vs migrated
-
-Two modes of operation, and `forge audit` (`proto_migration_alignment`
-category) tells you which one you're in:
-
-- **Greenfield (proto authoritative).** A fresh `forge new` with proto
-  entity annotations. `forge generate` produces ORM and CRUD handlers
-  from the proto; on the first run with no migrations it also generates
-  an initial migration from the entities. Proto leads, migrations track.
-
-- **Migrated (migrations authoritative).** When you bring an existing
-  schema into forge via `migration-service` or `migration-cli`, the
-  migrations carry the schema and proto entities become **advisory**.
-  `forge generate` does not regenerate migrations from proto. If you
-  removed proto entities entirely, `forge audit` reports
-  `migrations authoritative (no proto entities)`. If both exist and
-  diverge it flags
-  `diverged: N table(s) in migrations not in proto, M in proto not in
-  migrations` and you decide whether to drop the proto entities, sync
-  them via `forge db proto sync-from-db`, or roll a migration forward
-  to match proto.
-
-In both modes, **migrations remain the runtime source of truth.** Proto
-entities are either driving codegen (greenfield) or documenting it
-(migrated) — but the schema itself lives in `db/migrations/`. See the
-`proto` skill for the proto-side view of the same boundary.
-
-## Architecture
-
-```
-db/migrations/              # SQL migrations — THE schema source of truth
-db/queries/                 # SQL query definitions (for sqlc or manual use)
-internal/db/types.go        # Entity types (start as proto aliases, evolve to concrete structs)
-internal/db/<entity>_orm.go # CRUD functions for each entity
-```
-
-### Entity type lifecycle
-
-Entity types follow a natural progression:
-
-**Stage 1 — Proto alias** (scaffolded by Forge):
-```go
-// internal/db/types.go
-type User = apiv1.User
-```
-
-When API and DB schema are identical, this keeps things simple. No mapping needed — same type everywhere.
-
-**Stage 2 — Concrete struct** (when API and DB diverge):
-```go
-// internal/db/types.go
-type User struct {
-    ID           string
-    Name         string
-    Email        string
-    // DB-only fields not in the API
-    PasswordHash string
-    LoginCount   int
-    LastLoginAt  time.Time
-}
-```
-
-This divergence is expected and correct. Your API exposes what clients need. Your DB stores what the domain requires. These are different concerns.
-
-**Stage 3 — Mapper functions** (convert between API and DB types):
-```go
-// internal/db/mappers.go (or in the handler)
-func UserToProto(u *User) *apiv1.User {
-    return &apiv1.User{
-        Id:    u.ID,
-        Name:  u.Name,
-        Email: u.Email,
-    }
-}
-
-func UserFromProto(u *apiv1.User) *User {
-    return &User{
-        ID:    u.Id,
-        Name:  u.Name,
-        Email: u.Email,
-    }
-}
-```
-
-## Common tasks
-
-### Changing the schema
-
-1. Create a migration:
-   ```
-   forge db migration new <name>
-   ```
-2. Write both the `.up.sql` and `.down.sql` in the generated pair.
-3. Apply it:
-   ```
-   forge db migrate up --dsn "$DATABASE_URL"
-   ```
-4. Update the entity type:
-   - If API and DB still match → keep the proto alias.
-   - If they diverge → replace the alias with a concrete struct in `internal/db/types.go`.
-5. Update ORM functions in `internal/db/<entity>_orm.go` to match.
-
-Dev DSN:
-```
-postgres://postgres:postgres@localhost:5432/<project>?sslmode=disable
-```
-
-### Adding a new entity
-
-1. **Migration first** — create the table:
-   ```
-   forge db migration new add_invoices_table
-   ```
-   Write the SQL to create the table.
-
-2. **Entity type** — add to `internal/db/types.go`:
-   ```go
-   // If the API shape matches your table, use an alias:
-   type Invoice = apiv1.Invoice
-
-   // If the table has fields the API doesn't, use a concrete struct:
-   type Invoice struct {
-       ID          string
-       CustomerID  string
-       Amount      int64
-       // ... DB-specific fields
-   }
-   ```
-
-3. **ORM functions** — create `internal/db/invoice_orm.go` with CRUD operations.
-
-4. **Proto (if needed)** — if this entity needs API exposure, define the message in proto and run `forge generate`. But not every DB entity needs an API message.
-
-### Adding or updating a query
-
-- Simple queries: add functions in `internal/db/<entity>_orm.go` using `pgx` directly.
-- Complex queries: write SQL in `db/queries/` and use sqlc to generate type-safe Go code. Run `forge generate` to pick up sqlc changes.
-
-### Checking what's in the database
-
-```bash
-forge db introspect --dsn "$DATABASE_URL"   # Show live schema
-forge db migrate status --dsn "$DATABASE_URL"  # Migration status
-task dev-psql                                # Interactive shell
-```
-
-### Fixing a broken migration
-
-1. Check current state:
-   ```
-   forge db migrate status --dsn "$DATABASE_URL"
-   ```
-2. If the migration table is dirty, force to the last good version:
-   ```
-   forge db migrate force <version> --dsn "$DATABASE_URL"
-   ```
-3. Fix the SQL and roll forward — don't try to re-run the broken migration.
+**Migrations are the source of truth for your database schema.** Not API types, not ORM structs — the SQL files in your migrations directory. API contracts and DB schema evolve independently: the API describes what crosses the wire, the schema describes what the domain stores. These are different concerns with different evolution clocks.
 
 ## Schema evolution patterns
 
 ### Adding DB-only fields
 
-Your DB often needs fields the API doesn't expose (audit trails, internal state, denormalized caches). Add them via migration, update the concrete struct — no proto change needed.
-
-### API and DB with different field names or shapes
-
-Proto fields are `snake_case` (e.g. `created_at`, `org_id`) and the generated Go types are `PascalCase` (`CreatedAt`, `OrgID`). Your DB might use different column names or different types (e.g. `pgtype.Timestamptz` instead of `*timestamppb.Timestamp`). Concrete structs + mappers handle this cleanly. See `architecture` for the canonical naming-conventions table.
+Your DB often needs fields the API doesn't expose: audit trails, internal state, denormalized caches, soft-delete tombstones. Add them via migration — no API change needed.
 
 ### Entities that exist only in the DB
 
-Not every table needs a proto message. Internal bookkeeping tables, junction tables, event logs — create these with migrations and concrete structs. No proto, no API, no `forge generate` needed.
+Not every table needs an API exposure. Internal bookkeeping tables, junction tables, event logs, queue state — create these with migrations and query them with hand-written code. No API contract, no cross-stack changes.
 
-## Auto-generated features (at scaffold time)
+## Migration discipline
 
-These are generated during initial project scaffolding based on entity definitions in the plan:
+- **Migrations are append-only.** Never edit a merged migration — write a new one. Future developers' local state assumes the merged migration is immutable.
+- **Always write the down-migration.** Even if you'll never run it in production, your test harness uses it for setup/teardown cycles.
+- **Never migrate down against staging or prod.** Roll forward only. If a migration is wrong, write a new migration that undoes it, don't run the down.
+- **Keep seed data out of migrations.** Migrations define schema; seeds populate it. Mixing them makes both harder to reason about.
 
-- **Tenant scoping** — Entities with a field explicitly marked `tenant_key: true` get automatic `WHERE` clause scoping in ORM functions. Field names alone (e.g., `org_id`, `tenant_id`) do NOT trigger tenant scoping — use the explicit annotation. See the auth skill for multi-tenant config.
-- **Soft delete** — Entities with a `deleted_at` field use `SET deleted_at = NOW()` instead of `DELETE`, and List/Get excludes soft-deleted rows.
-- **Seed data** — Deterministic SQL seeds in `db/seeds/0002_*.sql` and JSON fixtures in `db/fixtures/` are generated from entity definitions. Put custom seed data in `db/seeds/0001_*.sql`.
+<!-- @forge-only:start -->
+## SQL is the schema language
 
-## Rules
+In forge, `db/migrations/*.up.sql` is the **single source of truth** — there is no schema DSL and no proto annotation. `forge generate` applies every up-migration (in lexical order) to a real ephemeral postgres shadow database, introspects the resulting tables (columns, types, nullability, PKs, indexes), and projects:
 
-- **Migrations are append-only.** Never edit a merged migration — write a new one.
-- **Always write the `.down.sql`** — the test harness uses it.
-- **Never `forge db migrate down` against staging/prod** — roll forward only.
-- **Don't hand-edit `gen/`** — fix the proto or query, then regenerate.
-- **Keep seed data out of migrations** — use `db/seeds/`.
-- **`forge generate` never touches the DB layer.** You own migrations, entity types, and ORM code. Evolve them freely.
-- **Seed files and fixtures are regenerated** by `forge generate` — put custom seed data in `db/seeds/0001_*.sql`.
-- **Entity types are expected to diverge from proto.** Start with aliases, evolve to concrete structs when the domain requires it.
+- **Entity structs + ORM** — `internal/db/<entity>_orm.go`. The struct is a projection of the applied schema: `time.Time` for timestamp columns (never `timestamppb`), pointer fields for nullable columns, native slices for array columns.
+- **CRUD wiring** — `handlers/<svc>/handlers_crud_ops_gen.go`, including generated `<entity>ToProto` / `<entity>FromProto` conversions between the entity struct and the service-proto wire message.
+- **Frontend pages, nav, and mocks** for each entity.
+
+```
+db/migrations/              # SQL migrations — THE schema source of truth (yours)
+db/queries/                 # SQL query definitions (for sqlc or manual use; yours)
+internal/db/<entity>_orm.go # Generated: entity struct + CRUD functions (regenerated)
+```
+
+Evolve the schema by writing a migration and re-running `forge generate`; the projections follow. Forge never modifies `db/migrations/` or `db/queries/` — the schema is always yours.
+
+## What makes an entity
+
+An entity exists when **both halves** exist:
+
+1. **Wire truth** — a service proto declares the CRUD RPCs (`Create<X>` / `Get<X>` / `Update<X>` / `Delete<X>` / `List<Xs>`).
+2. **Storage truth** — the applied schema has the matching table (pluralized snake_case of the entity name; `Bookmark` → `bookmarks`).
+
+CRUD RPCs without a table generate **nothing** — honest stubs, no pages, no ORM. Tables without CRUD RPCs are **plain schema**: owned by your hand-written code, invisible to the CRUD/frontend projections.
+
+## Starting a new entity
+
+```bash
+forge add entity bookmark url:string title:string tags:[]string done:bool
+```
+
+This emits `db/migrations/NNNNN_create_bookmarks.up.sql` (+ `.down.sql`) and — once — scaffolds the CRUD messages and RPCs into the service proto. Flags:
+
+| Flag | Effect |
+|------|--------|
+| `--soft-delete` | add `deleted_at TIMESTAMPTZ` — deletes become UPDATEs, reads filter `IS NULL` |
+| `--no-timestamps` | skip the managed `created_at` / `updated_at` columns |
+| `--service <name>` | which service proto receives the CRUD RPCs (default: the project's only service) |
+| `--no-rpcs` | emit only the migration; do not touch the service proto |
+| `--table <name>` | table name override (default: pluralized snake_case of the entity name) |
+
+Field type vocabulary (`name:type`):
+
+| type | SQL column | proto field |
+|------|-----------|-------------|
+| `string` | `TEXT` | `string` |
+| `int` / `int64` | `BIGINT` | `int64` |
+| `float` | `DOUBLE PRECISION` | `double` |
+| `bool` | `BOOLEAN` | `bool` |
+| `time` | `TIMESTAMPTZ` | `google.protobuf.Timestamp` |
+| `[]string` | `TEXT[]` | `repeated string` |
+| `[]int` | `BIGINT[]` | `repeated int64` |
+| `json` | `JSONB` | `string` (JSON text on the wire) |
+
+The generated migration uses `id TEXT PRIMARY KEY CHECK (id <> '')`, `NOT NULL` with type-appropriate defaults on declared fields, and `created_at` / `updated_at TIMESTAMPTZ NOT NULL DEFAULT (now())`. The migration is yours after emission — adjust constraints and defaults freely, then run `forge generate`.
+
+## Behavior by convention — real columns, no annotations
+
+The columns ARE the declaration. The generators read these conventions off the introspected schema:
+
+| columns | behavior |
+|---------|----------|
+| `deleted_at` | soft delete: DELETE becomes UPDATE, reads filter `IS NULL`, `ListAll*` is the unfiltered variant |
+| `created_at` + `updated_at` | managed timestamps (stamped by the ORM) — type-gated: time columns (`TIMESTAMPTZ` et al) or legacy `TEXT` columns count; anything else (epoch integers) stays plain schema |
+| `tenant_id` | tenant-scoped rows (auto-filtered queries) |
+| text columns | spanned by the generated list `search` filter |
+| every column | included in the `order_by` / filter allowlist (`<Entity>Columns`) |
+
+## Just write postgres
+
+forge is postgres-pinned. Your project's tests **and** forge's shadow introspection apply `db/migrations/*.up.sql` **verbatim** to a real ephemeral postgres (no Docker — a cached embedded-postgres binary, or a running server via `FORGE_TEST_POSTGRES_URL`). There is no portability subset to honor: anything postgres accepts works — `::type` casts, schema-qualified names (`CREATE TABLE app.foo`), `JSONB`, native arrays (`TEXT[]`, `BIGINT[]`), generated/identity columns.
+
+Auxiliary statements the bare ephemeral DB can't satisfy (`CREATE EXTENSION` for an uninstalled extension, a role that doesn't exist) are skipped by the shadow — they can't affect the table/column model. A failing `CREATE TABLE` / `ALTER TABLE` / `DROP TABLE` / `CREATE INDEX` is a **hard `forge generate` error**: silently skipping one would generate an ORM that lies.
+
+## Evolving an entity
+
+Write a migration; the projections follow:
+
+```sql
+-- db/migrations/00007_add_bookmark_rating.up.sql
+ALTER TABLE bookmarks ADD COLUMN rating BIGINT NOT NULL DEFAULT 0;
+UPDATE bookmarks SET rating = 5 WHERE done;   -- data movement is plain SQL
+```
+
+```bash
+forge generate   # struct, ORM, conversions, pages all pick up the column
+```
+
+Data movement (`UPDATE`, backfills) is natively expressible in SQL — something a schema DSL never gave you. Dropping a column is `ALTER TABLE ... DROP COLUMN` plus a regenerate.
+
+## Wire evolution stays proto
+
+The service-proto messages are the **API truth** and evolve independently after the one-time `forge add entity` scaffold. The generated conversions map the **intersection** of wire fields and columns by name: wire-only fields never reach the DB; column-only fields never leak onto the wire. Add a wire-only field to the proto, or a DB-only column via migration — neither side needs to know.
+
+## Generated ORM semantics
+
+- `Create<Entity>` is a plain `INSERT` — never an upsert. String PKs left unset are generated via `ulid.Make()` at the Create chokepoint. **Integer PKs are server-allocated**: the column is omitted from the INSERT and the database-assigned value is scanned back into the struct via `RETURNING` — any caller-provided value is ignored.
+- With stampable `created_at` / `updated_at` columns present, both are stamped on create and `updated_at` on update; `created_at` is immutable on update. Stamps are emitted **in the column's projected type**: time columns get `time.Now().UTC()`, legacy `TEXT` columns get RFC3339Nano text, nullable columns are stamped through their pointer.
+- `internal/db/*_orm.go` (and `orm_shared.go`) are Tier-1 self-certifying files: each carries an embedded `forge:hash` marker in its header, so hand-edits trip the drift guard in any clone or worktree. `forge disown internal/db/<entity>_orm.go --reason ...` is the sanctioned one-way exit when the generated CRUD can't express what you need.
+- Each entity exports `<Entity>Columns` — the declared-column allowlist. `forge/pkg/crud` validates user-supplied `order_by` against it; an undeclared column is `InvalidArgument`, not a silent no-op.
+- Missing rows surface as `errors.Is(err, orm.ErrNoRows)`; `forge/pkg/crud` maps them through `pkg/svcerr` to a clean `NotFound`. All other repo errors map to `Internal` with safe text — no SQL on the wire.
+- With a `deleted_at` column, `Delete<Entity>` issues an UPDATE, reads filter `IS NULL`, and a `ListAll<Entities>` variant returns soft-deleted rows too.
+
+## Forge DB commands
+
+### Changing the schema
+
+```
+forge add entity <name> [field:type ...]               # new table + CRUD scaffold
+forge db migration new <name>                          # create an empty migration pair
+forge db migrate up --dsn "$DATABASE_URL"              # apply pending migrations
+forge db migrate status --dsn "$DATABASE_URL"          # show what's applied
+forge db migrate force <version> --dsn "$DATABASE_URL" # recover from a dirty migration
+```
+
+Dev DSN convention:
+```
+postgres://postgres:postgres@localhost:5432/<project>?sslmode=disable
+```
+
+### Inspecting the database
+
+```
+forge db introspect --dsn "$DATABASE_URL"   # show live schema
+task dev-psql                                # interactive shell
+```
+
+### Queries
+
+- Simple queries: add functions in a sibling file you own (e.g. `internal/db/<entity>_queries.go`) using `pgx` directly — `<entity>_orm.go` is regenerated.
+- Complex queries: write SQL in `db/queries/` and use sqlc to generate type-safe Go code. Run `forge generate` to pick up sqlc changes.
+
+## Forge-specific rules
+
+- **Don't hand-edit `gen/`** or `internal/db/<entity>_orm.go` — fix the migration or proto, then regenerate.
+- **`forge generate` rewrites only the generated entity ORM files** in the DB layer. Migrations, queries, seeds you wrote, and custom query files are yours. Evolve them freely.
+- **The schema drives the struct, never the reverse.** Need a field on the entity struct? Write the migration that adds the column.
+- **Legacy `(forge.v1.entity)` annotations are retired and ignored.** If a proto message still carries one, `forge generate` prints a notice; delete the annotation (and any `proto/db/` entity files) — see the `migrations/proto-entities-to-schema-truth` skill.
+
+See also: `proto` for the wire half (CRUD RPC naming), `architecture` for the canonical naming-conventions table.
+<!-- @forge-only:end -->

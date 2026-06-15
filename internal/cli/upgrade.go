@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -68,10 +69,11 @@ func runUpgrade(check, force bool, toVersion string) error {
 		return err
 	}
 
-	cfg, err := loadProjectConfigFrom(configPath)
+	store, err := loadProjectStoreFrom(configPath)
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
 	projectDir := filepath.Dir(configPath)
 
@@ -83,7 +85,7 @@ func runUpgrade(check, force bool, toVersion string) error {
 		target = buildinfo.Version()
 	}
 
-	from := cfg.EffectiveForgeVersion()
+	from := store.Meta().EffectiveForgeVersion()
 
 	// Pre-v0.1 baselines (the "0.0.0" sentinel from EffectiveForgeVersion
 	// when forge_version is unset, or pseudoversion strings like
@@ -172,6 +174,31 @@ func runUpgrade(check, force bool, toVersion string) error {
 		}
 	}
 
+	// One-time legacy .forge/checksums.json migration (same conversion
+	// `forge generate` performs; see generate_legacy_migrate.go). Unlike
+	// the pipeline, upgrade has no emitters to side-render against, so
+	// unverifiable entries get the unverified-legacy sentinel directly —
+	// the next generate's guard names them with the standard remedies.
+	// Skipped under --check/--dry-run (read-only contract).
+	if !check {
+		if mcs, lerr := generator.LoadChecksums(projectDir); lerr == nil {
+			outcome, merr := checksums.MigrateLegacyManifest(projectDir, mcs, legacyMigrationStampable)
+			if merr != nil {
+				return fmt.Errorf("legacy checksums migration: %w", merr)
+			}
+			if outcome != nil {
+				fmt.Printf("\U0001F4DC Migrated off the legacy .forge/checksums.json (%d entries) — generated files are self-certifying now.\n", outcome.Total())
+				for _, p := range outcome.Unverified {
+					checksums.StampUnverified(projectDir, p)
+					fmt.Fprintf(os.Stderr, "   ? %s — matches nothing the legacy manifest recorded; the next `forge generate` will name it (resolve with --force or `forge disown`)\n", p)
+				}
+				if serr := generator.SaveChecksums(projectDir, mcs); serr != nil {
+					return fmt.Errorf("save .forge ownership state: %w", serr)
+				}
+			}
+		}
+	}
+
 	results, err := generator.Upgrade(projectDir, cfg, force, check)
 	if err != nil {
 		return err
@@ -239,14 +266,17 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// Bump the project's forge_version after a successful, non-dry-run
 	// upgrade. We do this last so a partial failure above leaves the
 	// existing pin in place rather than silently advancing it.
+	//
+	// Hard error: silently failing to bump leaves the project pinned to
+	// the old version, so the next `forge generate` runs the wrong
+	// template set against an already-migrated tree.
 	if !check && target != "" && target != "dev" && target != "(devel)" {
 		if cfg.ForgeVersion != target {
 			cfg.ForgeVersion = target
 			if err := generator.WriteProjectConfigFile(cfg, configPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to bump forge_version in forge.yaml: %v\n", err)
-			} else {
-				fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
+				return fmt.Errorf("bump forge_version in forge.yaml: %w", err)
 			}
+			fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
 		}
 	}
 
@@ -255,14 +285,17 @@ func runUpgrade(check, force bool, toVersion string) error {
 	// auto-applied changes + items needing manual attention. Skip on
 	// dry-run — the report would be misleading without the actual
 	// rewrites having happened.
+	//
+	// Hard error: this report is the canonical worklist for manual
+	// follow-up items. Silently dropping it strands the user with no
+	// record of what still needs hand-attention.
 	if !check && (len(codemodReport.Auto) > 0 || len(codemodReport.Manual) > 0) {
 		if err := writeUpgradeNotes(projectDir, from, target, codemodReport); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to write UPGRADE_NOTES.md: %v\n", err)
-		} else {
-			fmt.Println()
-			fmt.Println("📝 UPGRADE_NOTES.md written at the project root.")
-			fmt.Println("    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
+			return fmt.Errorf("write UPGRADE_NOTES.md: %w", err)
 		}
+		fmt.Println()
+		fmt.Println("📝 UPGRADE_NOTES.md written at the project root.")
+		fmt.Println("    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
 	}
 
 	return nil

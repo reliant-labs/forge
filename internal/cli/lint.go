@@ -16,7 +16,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
-	"github.com/reliant-labs/forge/internal/linter/dblint"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
@@ -26,7 +25,6 @@ import (
 // lintFlags holds the flag values for the lint command.
 type lintFlags struct {
 	contract          bool
-	db                bool
 	migrationSafety   bool
 	fix               bool
 	exportedVars      bool
@@ -41,6 +39,9 @@ type lintFlags struct {
 	wireCoverage      bool
 	bootstrapCoverage bool
 	checkWorkarounds  bool
+	optionalDepsGuard bool
+	configDeps        bool
+	jsonOut           bool
 }
 
 func newLintCmd() *cobra.Command {
@@ -55,44 +56,25 @@ This command will:
 - Run standard Go linters (golangci-lint)
 - Run proto linters (buf lint)
 - Run TypeScript linters for Next.js frontends (if frontends/ exists)
-- Optionally run contract interface enforcement linter (--contract)
-- Optionally run DB entity lint rules (--db)
-- Optionally run SQL migration safety checks (--migration-safety)
-- Optionally run forge convention rules (--conventions)
-- Optionally run frontend pack convention rules (--frontend-packs)
-- Optionally run scaffold ownership rules (--scaffolds)
-- Optionally run test-convention rules across backend handlers and frontend hooks (--tests)
-- Optionally run lifecycle-banner rules on forge templates (--banners)
+- Optionally run targeted rule sets (--contract, --db, --migration-safety,
+  --conventions, --tests)
 
 Examples:
-  forge lint                    # Run all standard linters
-  forge lint --contract         # Run contract interface enforcement linter
-  forge lint --db               # Run DB entity lint rules
+  forge lint                     # Run all standard linters
+  forge lint --fix               # Auto-fix issues where possible
+  forge lint --contract          # Run contract interface enforcement linter
+  forge lint --db                # Run DB entity lint rules
   forge lint --migration-safety  # Run SQL migration safety checks
-  forge lint --exported-vars     # Run exported vars linter
   forge lint --conventions       # Run forge convention rules on proto files
-  forge lint --frontend-packs   # Flag third-party UI imports in frontend pack templates
-  forge lint --frontend-stores  # Flag Zustand stores that import generated Connect
-                                # clients (server data belongs in React Query)
-  forge lint --scaffolds        # Flag committed FORGE_SCAFFOLD markers and
-                                # _gen files missing the canonical header
-  forge lint --tests            # Nudge handler tests toward tdd.RunRPCCases AND
-                                # surface generated frontend hooks without sibling tests
-                                # (warnings only — see migrations/v0.x-to-tdd-rpccases
-                                # and the frontend-testing skill)
-  forge lint --banners          # Verify every forge template carries the
-                                # right Tier-1 / Tier-2 lifecycle banner
-                                # (warnings only — runs only inside the forge repo)
-  forge lint --suggest-excludes # Print a YAML snippet of internal packages that look
-                                # like good candidates for contracts.exclude in forge.yaml
-                                # (analyzer-style, embed-only, etc.)
-  forge lint --wire-coverage    # Report unresolved Deps fields in pkg/app/wire_gen.go
-                                # (warnings) AND unresolved forge:placeholder annotations
-                                # in pkg/app/app_extras.go (errors — gate the build)
-  forge lint --check-workarounds # Flag cross-lane workarounds (cast<X>Repo helpers in
-                                # pkg/app/wire_gen.go, hand-rolled pkg/app/testing_extras.go,
-                                # cmd/<name>.go files not declared in forge.yaml binaries:)
-  forge lint --fix              # Auto-fix issues where possible`,
+  forge lint --tests             # Run test-convention rules across backend
+                                 # handlers and frontend hooks (warnings only)
+  forge lint --json              # Machine-readable findings for sub-agents / CI
+                                 # (schema in lint_json.go; exit code matches
+                                 # text mode; combines with the targeted flags
+                                 # above, but not with --fix / --suggest-*)
+
+Additional maintainer/debug flags exist (forge-repo internals, wiring
+audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var paths []string
 			if len(args) > 0 {
@@ -101,13 +83,15 @@ Examples:
 				paths = []string{"./..."}
 			}
 
+			if flags.jsonOut {
+				return runLintJSON(cmd.Context(), flags, paths)
+			}
 			return runLint(cmd.Context(), flags, paths)
 		},
 	}
 
 	cmd.Flags().BoolVar(&flags.contract, "contract", false, "Run contract interface enforcement linter")
 	cmd.Flags().BoolVar(&flags.exportedVars, "exported-vars", false, "Run exported vars linter")
-	cmd.Flags().BoolVar(&flags.db, "db", false, "Run DB entity lint rules on proto/db/ files")
 	cmd.Flags().BoolVar(&flags.migrationSafety, "migration-safety", false, "Run SQL migration safety checks")
 	cmd.Flags().BoolVar(&flags.conventions, "conventions", false, "Run forge convention rules on proto files")
 	cmd.Flags().BoolVar(&flags.frontendPacks, "frontend-packs", false, "Flag third-party UI imports in frontend pack templates (warnings only)")
@@ -120,7 +104,29 @@ Examples:
 	cmd.Flags().BoolVar(&flags.wireCoverage, "wire-coverage", false, "Report unresolved Deps fields in pkg/app/wire_gen.go (warnings) and unresolved forge:placeholder annotations in pkg/app/app_extras.go (errors)")
 	cmd.Flags().BoolVar(&flags.bootstrapCoverage, "bootstrap-deps-coverage", false, "Verify pkg/app/bootstrap.go wires every package Deps field that name-matches an AppExtras field (catches the audit-no-op silent-drop bug class)")
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
+	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of `// forge:optional-dep` Deps fields (warnings only; suppress with `// forge:optional-checked` on the deref line)")
+	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
+	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
+
+	// User-vs-maintainer surface split: the flags below are fully
+	// functional but hidden from --help (visible via --help-dev). The
+	// visible set is pinned by TestLintHelpSurface — a new flag must
+	// consciously pick a side. See help_dev.go for the rule of thumb.
+	hideDevFlags(cmd,
+		"exported-vars",           // forge-internal style rule
+		"frontend-packs",          // lints forge's own pack templates
+		"frontend-stores",         // convention audit, agent-workflow nudge
+		"scaffolds",               // forge ownership-boundary enforcement
+		"banners",                 // no-op outside the forge repo
+		"suggest-excludes",        // one-shot migration/setup helper
+		"suggest-buf-excepts",     // one-shot migration/setup helper
+		"wire-coverage",           // DI wiring audit (forge codegen internals)
+		"bootstrap-deps-coverage", // DI wiring audit (forge codegen internals)
+		"check-workarounds",       // parallel-lane agent-workflow audit
+		"optional-deps-guard",     // forge:optional-dep annotation audit
+		"config-deps",             // Deps-shape convention audit
+	)
 
 	return cmd
 }
@@ -128,9 +134,13 @@ Examples:
 func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	// When a specific flag is set, run only that linter (preserving current behavior).
 	if flags.suggestExcludes {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
 		}
 		return runSuggestExcludes(cfg)
 	}
@@ -138,40 +148,41 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runSuggestBufExcepts(ctx)
 	}
 	if flags.contract {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
-		if cfg != nil && !cfg.Features.ContractsEnabled() {
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
+		}
+		if store != nil && !store.Features().ContractsEnabled() {
 			fmt.Println("contracts feature is disabled in forge.yaml")
 			return nil
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
 	if flags.exportedVars {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
+		}
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
 		}
 		return runContractLinter(ctx, paths, contractExcludesFromConfig(cfg))
 	}
-	if flags.db {
-		cfg, err := loadProjectConfig()
-		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config: %w", err)
-		}
-		if cfg != nil && !cfg.Features.ORMEnabled() {
-			fmt.Println("orm feature is disabled in forge.yaml")
-			return nil
-		}
-		return runDBLint()
-	}
 	if flags.migrationSafety {
-		cfg, err := loadProjectConfig()
+		store, err := loadProjectStore()
 		if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 			return fmt.Errorf("failed to load project config: %w", err)
 		}
-		if cfg != nil && !cfg.Features.MigrationsEnabled() {
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
+		}
+		if store != nil && !store.Features().MigrationsEnabled() {
 			fmt.Println("migrations feature is disabled in forge.yaml")
 			return nil
 		}
@@ -216,13 +227,31 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		}
 		return runCheckWorkaroundsLint(cwd)
 	}
+	if flags.optionalDepsGuard {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runOptionalDepsGuardLint(cwd)
+	}
+	if flags.configDeps {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getwd: %w", err)
+		}
+		return runConfigDepsLint(cwd)
+	}
 
 	// Load project config for lint defaults. A missing config file is fine
 	// (we fall back to defaults), but a parse/read error should fail hard so
 	// users don't silently lint with the wrong configuration.
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil && !errors.Is(err, ErrProjectConfigNotFound) {
 		return fmt.Errorf("failed to load project config: %w", err)
+	}
+	var cfg *config.ProjectConfig
+	if store != nil {
+		cfg = store.Config()
 	}
 
 	// No flags set — run ALL linters, each skipping gracefully if tool not available.
@@ -344,31 +373,6 @@ func resolveContractLintBinary(ctx context.Context) (string, error) {
 	return localBin, nil
 }
 
-// runDBLint runs advisory lint rules on proto/db/ entity definitions.
-// Findings are printed as warnings and never cause a non-zero exit.
-func runDBLint() error {
-	fmt.Println("🔍 Running DB entity lint rules...")
-	fmt.Println()
-
-	protoDBDir := filepath.Join("proto", "db")
-	if _, err := os.Stat(protoDBDir); os.IsNotExist(err) {
-		fmt.Println("⚠️  No proto/db/ directory found — skipping DB lint")
-		return nil
-	}
-
-	result, err := dblint.LintProtoDir(protoDBDir)
-	if err != nil {
-		return fmt.Errorf("DB lint failed: %w", err)
-	}
-
-	fmt.Print(result.FormatText())
-
-	if !result.HasWarnings() {
-		fmt.Println("✅ No DB lint warnings!")
-	}
-	return nil
-}
-
 // runConventionLint runs the forge-convention analyzers (forgeconv) over
 // every .proto file in the project, plus the internal-package contract
 // shape analyzer over every internal/<pkg>/contract.go. These analyzers
@@ -381,18 +385,53 @@ func runDBLint() error {
 func runConventionLint() error {
 	fmt.Println("Running forge convention rules...")
 
+	combined, notes, hasAny, err := collectConventionFindings()
+	if err != nil {
+		return err
+	}
+	for _, n := range notes {
+		fmt.Println("  ⚠️  " + n)
+	}
+	if !hasAny {
+		return nil
+	}
+
+	if len(combined.Findings) == 0 {
+		fmt.Println("✓ forge conventions passed")
+		return nil
+	}
+
+	fmt.Print(combined.FormatText())
+	if combined.HasErrors() {
+		return cliutil.UserErr("forge lint --conventions",
+			"forge convention violations found",
+			"",
+			"fix the findings above (proto annotations, contract.go names) — see 'forge skill load contracts' and 'forge skill load proto' for the rules")
+	}
+	fmt.Println("(warnings only — not failing the build)")
+	return nil
+}
+
+// collectConventionFindings gathers every forge-convention finding
+// without printing — the shared engine behind runConventionLint (text)
+// and `forge lint --json`. Returns the combined findings, any
+// informational skip notes ("No proto/ directory found — …"), and
+// hasAny=false when none of the lintable trees (proto/, internal/,
+// handlers/, workers/, operators/) exist at all.
+func collectConventionFindings() (forgeconv.Result, []string, bool, error) {
 	combined := forgeconv.Result{}
+	var notes []string
 	hasProto := false
 
 	if _, err := os.Stat("proto"); err == nil {
 		hasProto = true
 		res, err := forgeconv.LintProtoTree("proto")
 		if err != nil {
-			return fmt.Errorf("forge convention lint (proto) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (proto) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 	} else {
-		fmt.Println("  ⚠️  No proto/ directory found — skipping proto convention lint")
+		notes = append(notes, "No proto/ directory found — skipping proto convention lint")
 	}
 
 	// Internal-package contract shape, plus the hexagonal-architecture
@@ -408,11 +447,15 @@ func runConventionLint() error {
 	hasInternal := false
 	if _, err := os.Stat("internal"); err == nil {
 		hasInternal = true
-		cfg, cfgErr := loadProjectConfig()
+		store, cfgErr := loadProjectStore()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
+			return combined, notes, false, fmt.Errorf("failed to load project config for contract-shape lint: %w", cfgErr)
 		}
-		// runConventionLint is not (yet) ctx-aware; the engine's
+		var cfg *config.ProjectConfig
+		if store != nil {
+			cfg = store.Config()
+		}
+		// The convention lint is not (yet) ctx-aware; the engine's
 		// inter-rule cancellation hook is a forward-looking concern.
 		// Using context.Background() preserves today's behavior; threading
 		// the cobra cmd.Context() through is a separate cleanup.
@@ -420,7 +463,7 @@ func runConventionLint() error {
 			Excludes: contractExcludesFromConfig(cfg),
 		})
 		if err != nil {
-			return fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (contract-shape) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, fs...)
 	}
@@ -437,7 +480,7 @@ func runConventionLint() error {
 		hasHandlers = true
 		res, err := forgeconv.LintHandlerErrorMapping(".")
 		if err != nil {
-			return fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (handler error mapping) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 
@@ -446,17 +489,17 @@ func runConventionLint() error {
 		// is project-configurable via forge.yaml. Warnings only — the
 		// nudge points at the future `forge add handler-file` split
 		// subcommand rather than blocking on file size.
-		cfg, cfgErr := loadProjectConfig()
+		store, cfgErr := loadProjectStore()
 		if cfgErr != nil && !errors.Is(cfgErr, ErrProjectConfigNotFound) {
-			return fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
+			return combined, notes, false, fmt.Errorf("failed to load project config for handler-file-size lint: %w", cfgErr)
 		}
 		threshold := config.DefaultHandlerFileMaxLOC
-		if cfg != nil {
-			threshold = cfg.Lint.EffectiveHandlerFileMaxLOC()
+		if store != nil {
+			threshold = store.Lint().EffectiveHandlerFileMaxLOC()
 		}
 		sizeRes, err := forgeconv.LintHandlerFileSize(".", threshold)
 		if err != nil {
-			return fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, sizeRes.Findings...)
 	}
@@ -477,31 +520,15 @@ func runConventionLint() error {
 	if hasComponentTree {
 		res, err := forgeconv.LintOptionalDepMarkerPosition(".")
 		if err != nil {
-			return fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
+			return combined, notes, false, fmt.Errorf("forge convention lint (optional-dep marker position) failed: %w", err)
 		}
 		combined.Findings = append(combined.Findings, res.Findings...)
 	}
 
 	// If none of proto/, internal/, handlers/, workers/, or operators/
 	// exist, there's nothing to lint.
-	if !hasProto && !hasInternal && !hasComponentTree {
-		return nil
-	}
-
-	if len(combined.Findings) == 0 {
-		fmt.Println("✓ forge conventions passed")
-		return nil
-	}
-
-	fmt.Print(combined.FormatText())
-	if combined.HasErrors() {
-		return cliutil.UserErr("forge lint --conventions",
-			"forge convention violations found",
-			"",
-			"fix the findings above (proto annotations, contract.go names) — see 'forge skill load contracts' and 'forge skill load proto' for the rules")
-	}
-	fmt.Println("(warnings only — not failing the build)")
-	return nil
+	hasAny := hasProto || hasInternal || hasComponentTree
+	return combined, notes, hasAny, nil
 }
 
 // runFrontendPackLint scans frontend pack templates (under
@@ -613,9 +640,12 @@ func runTestsLint() error {
 // runBannersLint verifies forge's own template files carry the
 // lifecycle banner that matches their tier:
 //
-//   - Tier 1 (regenerated every run): "// Code generated by forge ... DO NOT EDIT."
-//   - Tier 2 (one-shot scaffold): "// forge:scaffold one-shot"
-//   - Tier 3 (user-owned skeleton): banner-less by design.
+//   - Tier 1 (forge-owned, regenerated every run): "// Code generated
+//     by forge. DO NOT EDIT." + "// forge-owned: regenerated every run
+//     — do not edit (forge disown to take ownership)"
+//   - Tier 2 (yours): "// yours: scaffolded once, never touched again
+//     — forge will not overwrite this file"
+//   - Fragments / skip-listed files: banner-less by design.
 //
 // Warnings only — the rule is a hint to template authors that LLMs and
 // humans alike rely on the banner to know whether they may edit the
@@ -824,16 +854,6 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 		hasFailed = true
 	}
 
-	// 6. DB entity lint (advisory — warnings only, does not fail the build)
-	if cfg != nil && !cfg.Features.ORMEnabled() {
-		fmt.Println("⚠️  orm feature disabled — skipping DB lint")
-	} else if dirExists("proto/db") {
-		if err := runDBLint(); err != nil {
-			// DB lint errors are non-fatal; they print warnings but don't block.
-			fmt.Fprintf(os.Stderr, "⚠️  DB lint: %v\n", err)
-		}
-	}
-
 	// 7. SQL migration safety lint
 	if cfg != nil && !cfg.Features.MigrationsEnabled() {
 		fmt.Println("⚠️  migrations feature disabled — skipping migration safety lint")
@@ -892,17 +912,6 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 		}
 	}
 
-	// 12. Proto-vs-ORM staleness — warns when gen/db/v1/*.pb.go has no
-	// matching .pb.orm.go sibling or when the .pb.go is newer than every
-	// sibling. This catches the "ran buf generate alone" pitfall (see
-	// the proto skill for the full rationale). Warnings only; never
-	// gates the build.
-	if dirExists(filepath.Join("gen", "db", "v1")) {
-		if err := runORMSyncLint("."); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  proto-orm sync lint: %v\n", err)
-		}
-	}
-
 	// 13. Wire-coverage — surfaces unresolved Deps fields in
 	// pkg/app/wire_gen.go and unresolved `forge:placeholder` markers
 	// in pkg/app/app_extras.go. TODO findings are warnings (active
@@ -937,6 +946,42 @@ func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.Pr
 			if err := runBootstrapDepsCoverageLint(cwd); err != nil {
 				fmt.Fprintf(os.Stderr, "bootstrap-deps-coverage lint failed: %v\n", err)
 				hasFailed = true
+			}
+		}
+	}
+
+	// 13c. Optional-deps-guard — flags derefs of `// forge:optional-dep`
+	// Deps fields not dominated by a nil-guard in the same function.
+	// Optional fields skip validateDeps by design, so an unguarded
+	// `s.deps.X.Method(...)` is a latent nil-panic no startup gate
+	// catches (cp-forge FRICTION #23/#33/#69; kalshi optional-many
+	// workers). Warnings only — the walker is intentionally not full
+	// dataflow; confirmed-safe sites suppress with
+	// `// forge:optional-checked` on the deref line.
+	if dirExists("internal") || dirExists("handlers") ||
+		dirExists("workers") || dirExists("operators") {
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runOptionalDepsGuardLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  optional-deps-guard lint: %v\n", err)
+			}
+		}
+	}
+
+	// 13d. Config-deps — flags scalar Deps fields (the naked-scalar
+	// antipattern). Scalars are configuration, not collaborators:
+	// wire_gen can never resolve them from App/AppExtras, so they
+	// regenerate as typed zeros + TODOs forever (kalshi-trader
+	// WTIPersistMaxPerTick, fr-ad24278452) or force the AppExtras +
+	// setup.go hand-projection workaround. The supported shape is a
+	// component config block in proto/config taken as ONE typed field
+	// (`Cfg config.<Component>Config`). Warnings only.
+	if dirExists("internal") || dirExists("handlers") ||
+		dirExists("workers") || dirExists("operators") {
+		cwd, err := os.Getwd()
+		if err == nil {
+			if err := runConfigDepsLint(cwd); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠️  config-deps lint: %v\n", err)
 			}
 		}
 	}

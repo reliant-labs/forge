@@ -1,8 +1,10 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { AuthProvider, AuthUser } from "./provider";
+
 import { createStubAuthProvider } from "./stub-provider";
+
+import type { AuthProvider, AuthUser } from "./provider";
 
 const defaultProvider = createStubAuthProvider();
 

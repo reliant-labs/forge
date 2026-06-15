@@ -8,9 +8,12 @@ import (
 
 // Authorizer handles access control for the {{.ServiceName}} service.
 //
-// By default it delegates to the GeneratedAuthorizer which uses role
-// annotations from proto method options. Override the methods below to
-// add custom authorization logic beyond the generated role checks.
+// By default it delegates to the GeneratedAuthorizer, whose tables carry
+// the (forge.v1.method).auth_required flags from the proto. Role policy
+// is NOT proto-driven (there is no required_roles annotation) — this
+// file is where it lives: override the methods below to add role checks
+// or any other custom authorization logic. forge generate never touches
+// this file.
 type Authorizer struct {
 	generated *GeneratedAuthorizer
 }
@@ -31,8 +34,8 @@ func (a *Authorizer) CanAccess(ctx context.Context, procedure string) error {
 // Override this method to implement custom authorization logic beyond
 // the generated role checks.
 //
-// Actions: middleware.ActionCreate, ActionRead, ActionUpdate, ActionDelete, ActionList
-// Resource: entity name in lowercase, e.g. "patient", "invoice"
+// Actions: middleware.ActionCreate, ActionRead, ActionUpdate, ActionDelete, ActionList.
+// Resource: entity name in lowercase, e.g. "patient" or "invoice".
 func (a *Authorizer) Can(ctx context.Context, claims *middleware.Claims, action, resource string) error {
 	return a.generated.Can(ctx, claims, action, resource)
 }

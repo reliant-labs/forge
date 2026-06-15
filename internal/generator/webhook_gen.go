@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -13,7 +14,7 @@ import (
 //   - handlers/<service>/webhook_<name>_test.go   (tests)
 //   - handlers/<service>/webhook_store.go         (idempotency store, only if not present)
 func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) error {
-	svcPkg := ServicePackageName(serviceName)
+	svcPkg := naming.ServicePackage(serviceName)
 	svcDir := filepath.Join(root, "handlers", svcPkg)
 
 	// Ensure the service directory exists.

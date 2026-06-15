@@ -25,11 +25,18 @@ import (
 // no-ops in production. This is the audit-log-silently-dropped bug
 // class surfaced by the cp-forge v2 migration.
 //
-// This lint walks every internal/<pkg>/ that declares a Deps struct,
-// checks each field name against AppExtras, and reports a finding
-// when the name matches but the type doesn't. Logger and Config are
-// skipped — those are handled by HasLogger / HasConfig in the
-// bootstrap template.
+// This lint walks every internal/<pkg>/, handlers/<svc>/, workers/<w>/,
+// and operators/<o>/ that declares a Deps struct, checks each field
+// name against AppExtras, and reports a finding when the name matches
+// but the type doesn't. Logger and Config are skipped — those are
+// handled by HasLogger / HasConfig in the bootstrap template.
+//
+// All four roots use the same name-match-but-type-mismatch rule. The
+// shape was originally internal-only because the audit-no-op bug was
+// first reproduced there; in practice handlers / workers / operators
+// suffer the same class of silent drop because wire_gen.go's
+// wireXxxDeps function emits app.<Field> on a name match without a
+// type check (Matcher B in deps_assignability.go's header).
 //
 // Setup.go re-construction detection: the lint also walks
 // pkg/app/setup.go AST. When the user re-constructs the affected
@@ -47,6 +54,11 @@ import (
 // here for the same reason.
 
 type bootstrapCoverageFinding struct {
+	// Role is the directory under projectDir that holds the package:
+	// "internal", "handlers", "workers", or "operators". Empty value
+	// is treated as "internal" for backwards compatibility with the
+	// existing tests that pre-date the multi-root walk.
+	Role     string
 	Package  string
 	Field    string
 	DepsType string
@@ -64,29 +76,41 @@ type bootstrapCoverageFinding struct {
 // scaffold or library shape just have nothing to lint.
 func runBootstrapDepsCoverageLint(projectDir string) error {
 	fmt.Println("Running bootstrap-deps-coverage lint...")
-	appDir := filepath.Join(projectDir, "pkg", "app")
-	if _, err := os.Stat(appDir); os.IsNotExist(err) {
-		fmt.Println("  no pkg/app — skipping")
+	findings, skipReason, err := collectBootstrapCoverageFindings(projectDir)
+	if err != nil {
+		return err
+	}
+	if skipReason != "" {
+		fmt.Println("  " + skipReason)
 		return nil
+	}
+
+	formatBootstrapCoverage(os.Stdout, findings)
+	if len(findings) > 0 {
+		return fmt.Errorf("%d bootstrap-deps-coverage gap(s) — see output above", len(findings))
+	}
+	return nil
+}
+
+// collectBootstrapCoverageFindings computes the bootstrap-coverage gap
+// set without printing — the shared engine behind
+// runBootstrapDepsCoverageLint (text) and `forge lint --json`. A
+// non-empty skipReason means the project has nothing to lint (missing
+// pkg/app) and findings is nil; missing role roots are tolerated by
+// the per-root scan instead.
+func collectBootstrapCoverageFindings(projectDir string) (findings []bootstrapCoverageFinding, skipReason string, err error) {
+	appDir := filepath.Join(projectDir, "pkg", "app")
+	if _, statErr := os.Stat(appDir); os.IsNotExist(statErr) {
+		return nil, "no pkg/app — skipping", nil
 	}
 
 	appFields, err := codegen.ParseAppFields(appDir)
 	if err != nil {
-		return fmt.Errorf("parse pkg/app: %w", err)
+		return nil, "", fmt.Errorf("parse pkg/app: %w", err)
 	}
 	appByName := map[string]string{}
 	for _, f := range appFields {
 		appByName[f.Name] = f.Type
-	}
-
-	internalDir := filepath.Join(projectDir, "internal")
-	entries, err := os.ReadDir(internalDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("  no internal/ — skipping")
-			return nil
-		}
-		return fmt.Errorf("read internal: %w", err)
 	}
 
 	// Scan setup.go for re-construction patterns. Missing file is fine —
@@ -94,7 +118,44 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 	// and every static mismatch reports.
 	setupWired, err := scanSetupReconstructions(filepath.Join(appDir, "setup.go"))
 	if err != nil {
-		return fmt.Errorf("parse pkg/app/setup.go: %w", err)
+		return nil, "", fmt.Errorf("parse pkg/app/setup.go: %w", err)
+	}
+
+	// Walk every role root that hosts a *.Deps struct. internal/ was
+	// the original target; handlers/ workers/ operators/ all go through
+	// the same wire_gen / bootstrap path and reproduce the same silent-
+	// drop / nil-panic shape when AppExtras.<F> and roleRoot.Deps.<F>
+	// agree on name but not type.
+	roleRoots := []string{"internal", "handlers", "workers", "operators"}
+
+	for _, role := range roleRoots {
+		roleFindings, scanErr := scanRoleRootForDepsMismatch(projectDir, role, appByName, setupWired)
+		if scanErr != nil {
+			return nil, "", fmt.Errorf("scan %s: %w", role, scanErr)
+		}
+		findings = append(findings, roleFindings...)
+	}
+
+	return findings, "", nil
+}
+
+// scanRoleRootForDepsMismatch walks projectDir/<role>/ — each
+// immediate subdirectory is treated as a Go package whose Deps struct
+// might collide with AppExtras. Returns one finding per
+// name-match-but-type-mismatch field not closed by setup.go
+// re-construction.
+//
+// A missing role root is NOT an error — many projects skip operators/
+// or workers/ entirely. We treat the directory as empty and return
+// zero findings, matching the original internal/ behavior.
+func scanRoleRootForDepsMismatch(projectDir, role string, appByName map[string]string, setupWired map[string]map[string]bool) ([]bootstrapCoverageFinding, error) {
+	rootDir := filepath.Join(projectDir, role)
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 
 	var findings []bootstrapCoverageFinding
@@ -102,7 +163,7 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 		if !e.IsDir() {
 			continue
 		}
-		pkgDir := filepath.Join(internalDir, e.Name())
+		pkgDir := filepath.Join(rootDir, e.Name())
 		deps, err := codegen.ParseServiceDeps(pkgDir)
 		if err != nil || len(deps) == 0 {
 			continue
@@ -124,11 +185,12 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 			// Manual re-construction in setup.go closes the runtime hole.
 			// The wired set is keyed by package import name (the selector
 			// in `<pkg>.Deps{...}`) since that's what the AST gives us,
-			// and matches the conventional internal/<dir> == <pkg> layout.
+			// and matches the conventional <role>/<dir> == <pkg> layout.
 			if fields, ok := setupWired[e.Name()]; ok && fields[d.Name] {
 				continue
 			}
 			findings = append(findings, bootstrapCoverageFinding{
+				Role:     role,
 				Package:  e.Name(),
 				Field:    d.Name,
 				DepsType: d.Type,
@@ -136,12 +198,7 @@ func runBootstrapDepsCoverageLint(projectDir string) error {
 			})
 		}
 	}
-
-	formatBootstrapCoverage(os.Stdout, findings)
-	if len(findings) > 0 {
-		return fmt.Errorf("%d bootstrap-deps-coverage gap(s) — see output above", len(findings))
-	}
-	return nil
+	return findings, nil
 }
 
 // scanSetupReconstructions parses pkg/app/setup.go and returns the set
@@ -246,13 +303,20 @@ func formatBootstrapCoverage(w io.Writer, findings []bootstrapCoverageFinding) {
 		return
 	}
 	sort.SliceStable(findings, func(i, j int) bool {
+		if findings[i].Role != findings[j].Role {
+			return findings[i].Role < findings[j].Role
+		}
 		if findings[i].Package != findings[j].Package {
 			return findings[i].Package < findings[j].Package
 		}
 		return findings[i].Field < findings[j].Field
 	})
 	for _, f := range findings {
-		_, _ = fmt.Fprintf(w, "  ✗ [forge-bootstrap-deps-coverage] internal/%s/contract.go\n", f.Package)
+		role := f.Role
+		if role == "" {
+			role = "internal"
+		}
+		_, _ = fmt.Fprintf(w, "  ✗ [forge-bootstrap-deps-coverage] %s/%s/contract.go\n", role, f.Package)
 		_, _ = fmt.Fprintf(w, "      %s matches AppExtras.%s by name but the types diverge\n", f.Field, f.Field)
 		_, _ = fmt.Fprintf(w, "      Deps.%s        = %s\n", f.Field, f.DepsType)
 		_, _ = fmt.Fprintf(w, "      AppExtras.%s   = %s\n", f.Field, f.AppType)

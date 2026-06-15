@@ -1,4 +1,4 @@
-// app_extras.go is YOUR code — forge generate will never overwrite it.
+// yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 // AppExtras is embedded into the forge-owned *App struct as a pointer
 // (see pkg/app/app_gen.go). Any field you add here is reachable via
@@ -39,13 +39,16 @@
 //	    UserRepo any
 //	}
 //
-//forge:scaffold one-shot
 //forge:allow
 package app
 
 // AppExtras is the user-owned extension surface for *App. Add fields
 // here as you grow the application; setup.go assigns them, wire_gen
 // reads them.
+//
+//nolint:revive // The name stutters as app.AppExtras by design: wire_gen's
+// dep matching keys on the literal "AppExtras" field type, and external
+// call sites always see it embedded in *App, never spelled out.
 type AppExtras struct {
 	// Add user-extension fields here. The struct can be empty until
 	// the first dependency outgrows the bare {Logger, Config} pair.

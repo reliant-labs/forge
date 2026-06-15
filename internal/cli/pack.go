@@ -27,7 +27,7 @@ import (
 // be in a forge project" UX is preserved when the user is outside any
 // project.
 func packsFeatureGate() error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		// Outside a forge project: let `forge pack list` and friends
 		// fall through so the existing "no forge.yaml" messaging
@@ -38,7 +38,7 @@ func packsFeatureGate() error {
 		}
 		return err
 	}
-	if !cfg.Features.PacksEnabled() {
+	if !store.Features().PacksEnabled() {
 		return config.DisabledFeatureError(config.FeaturePacks)
 	}
 	return nil
@@ -219,10 +219,10 @@ func runPackList() error {
 
 	// Check which are installed (if we're in a project)
 	var installed map[string]bool
-	cfg, cfgErr := loadProjectConfig()
+	store, cfgErr := loadProjectStore()
 	if cfgErr == nil {
 		installed = make(map[string]bool)
-		for _, name := range cfg.Packs {
+		for _, name := range store.Packs() {
 			installed[name] = true
 		}
 	}
@@ -481,6 +481,16 @@ func runPackInstall(ctx context.Context, name string, configPairs []string) erro
 		if len(pack.Generate) > 0 {
 			fmt.Printf("\nThis pack has generate hooks. Run '%s generate' to generate pack code.\n", Name())
 		}
+		// Wiring the user must do by hand — printed at the moment of
+		// install, not buried in a README. A pack whose code has zero
+		// call sites until the user edits setup/server wiring MUST say
+		// so here (see Pack.PostInstall).
+		if pi := strings.TrimSpace(pack.PostInstall); pi != "" {
+			fmt.Printf("\nNext steps for '%s':\n", pack.Name)
+			for _, line := range strings.Split(pi, "\n") {
+				fmt.Printf("  %s\n", line)
+			}
+		}
 	}
 
 	// Pending-proto hint: at least one pack in the install cluster emitted
@@ -598,7 +608,7 @@ func runPackInfo(name string, asJSON bool) error {
 	// CWD chain, surface conflicts using a read-only stat against each
 	// declared output path. Mirrors `pack install`'s fresh-install
 	// collision check shape but never mutates anything.
-	if _, err := loadProjectConfig(); err == nil {
+	if _, err := loadProjectStore(); err == nil {
 		if root, rerr := projectRoot(); rerr == nil {
 			summary.Conflicts = collectPackConflicts(pack, root)
 		}

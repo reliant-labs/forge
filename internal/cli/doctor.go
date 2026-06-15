@@ -44,14 +44,20 @@ Examples:
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Overall timeout for all checks")
 	cmd.Flags().StringVar(&signal, "signal", "", "Check a specific signal only (metrics, traces, logs, profiles)")
 
+	// Subcommands. `parity` is the host-mode vs cluster-mode env+config
+	// divergence detector — surfaces "local wasn't representative of
+	// prod" bugs before deploy.
+	cmd.AddCommand(newDoctorParityCmd())
+
 	return cmd
 }
 
 func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 
 	// The project directory is where forge.yaml (and docker-compose.yml) live.
 	configPath, err := findProjectConfigFile()
@@ -66,13 +72,39 @@ func runDoctor(jsonOutput, verbose bool, timeout time.Duration, signal string) e
 	d := doctor.New(doctor.Deps{})
 
 	if !jsonOutput {
-		fmt.Printf("\n  Checking %s development stack...\n\n", cfg.Name)
+		fmt.Printf("\n  Checking %s development stack...\n\n", store.Meta().Name)
 	}
 
-	report, err := d.RunFiltered(ctx, cfg.Name, projectDir, signal)
+	report, err := d.RunFiltered(ctx, store.Meta().Name, projectDir, signal)
 	if err != nil {
 		return err
 	}
+
+	// Ingress checks live alongside the signal checks but are wired
+	// at the cli layer because they need RenderKCL + ListEnvs +
+	// kubectl, none of which the internal/doctor package has access
+	// to. Skips when features.ingress is off or the signal filter
+	// excludes them.
+	appendIngressChecksToReport(&report, runIngressDoctorChecks(ctx, cfg, projectDir, signal))
+
+	// Tool checks verify every host binary forge shells out to is
+	// installed (+ meets a minimum version where pinned). Wired at
+	// the cli layer for the same reason as ingress: the predicate
+	// for mkcert needs RenderKCL/ListEnvs, and the install hints
+	// are user-facing CLI guidance.
+	appendIngressChecksToReport(&report, runToolDoctorChecks(ctx, cfg, projectDir, signal))
+
+	// forge/pkg dependency-mode check: warns when the project is still
+	// on the dev-mode .forge-pkg vendoring even though this forge
+	// release publishes a pinned pkg version. See doctor_pkgpin.go and
+	// docs/pkg-versioning.md.
+	appendIngressChecksToReport(&report, runPkgPinDoctorChecks(cfg, projectDir, signal))
+
+	// External-build checks surface per-service warnings for KCL
+	// services that declare build_cmd — missing build_cwd, first
+	// token not on PATH, plus the resolved (substituted) command
+	// preview so the user sees what `forge build` will actually exec.
+	appendExternalBuildChecksToReport(&report, runExternalBuildDoctorChecks(ctx, cfg, projectDir, signal))
 
 	if jsonOutput {
 		return d.PrintJSON(os.Stdout, report)

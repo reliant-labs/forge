@@ -36,6 +36,52 @@ Run `forge skill list` to see all available skills with descriptions. Run `forge
 
 Skills are **opinionated**. They encode project conventions and the non-obvious gotchas. Don't treat them as optional — the shortcuts around them cause pain.
 
+## Dual-audience skills: `emit:` and `@forge-only` blocks
+
+A skill can be authored once and emitted to two audiences: **general** (any project — methodology that doesn't depend on forge) and **forge** (forge projects, which see the full thing including framework-specific tooling). The compiler picks what to include based on per-skill frontmatter and inline block markers.
+
+**Directory layout** decides the default audience:
+
+```
+skills/
+├── forge/      # default emit: forge — framework skills (db, proto, api, ...)
+└── general/    # default emit: general — methodology (code-review, refactor, ...)
+```
+
+A skill placed under `skills/forge/<name>/SKILL.md` defaults to `emit: forge`; under `skills/general/<name>/SKILL.md` defaults to `emit: general`. The frontmatter `emit:` field overrides this default — `debug` lives under `skills/forge/` but declares `emit: both` because its methodology applies anywhere while the forge-CLI tooling guidance is forge-only.
+
+**Frontmatter `emit:` field** declares which audiences see the skill at all:
+
+```yaml
+emit: forge      # forge projects only (default for framework skills like proto, db, api)
+emit: general    # any project (methodology that has no forge content)
+emit: both       # both audiences (compiler strips @forge-only blocks for general emit)
+```
+
+**`@forge-only` block markers** mark content that only appears in the forge-audience emit. Use HTML comment markers so the raw source still renders cleanly in any markdown viewer:
+
+```markdown
+<!-- @forge-only:start -->
+## Forge-Specific Debug Tools
+
+forge run --debug              # attach Delve debugger
+forge test --race              # run tests with race detector
+<!-- @forge-only:end -->
+```
+
+**Markers must sit on their own line** (whitespace around the line and inside the comment is fine). The renderer is line-based — inline markers in the middle of a sentence will not be stripped. If you need to gate a single sentence, lift it into its own paragraph between the markers.
+
+Content outside `@forge-only` blocks is included in both emits. **The general prose has to be more than just CLI-free — it has to be architecture-free.** Anything that assumes a forge-shaped project belongs in `@forge-only`, including:
+
+- Specific generated files / paths (`wire_gen.go`, `internal/<svc>/`, `pkg/tdd`).
+- Forge architectural concepts (proto-as-canonical-input, generated mocks, Tier-1 vs Tier-2 ownership, DI wiring, `forge generate` pipelines, `forge audit`).
+- Cross-references to forge sibling skills (`see the X sub-skill`) — those links are dead in a non-forge project. Fold the key idea inline in the general prose, then name the sub-skill inside the `@forge-only` block.
+- Stack-specific tooling that only makes sense in a forge project (Connect RPC handler patterns, KCL deploy specifics, sqlc query files).
+
+Generic principles (mock-vs-real, test pyramid, race detection, the verify-visually loop) stay in the general prose — they apply anywhere. The test: a reader on a Python or Rust project should still get value from the general emit; if they hit "see the wire_gen.go" or "swap the generated mock," you've leaked.
+
+See `forge/debug/SKILL.md` and `forge/diagrams/SKILL.md` for worked examples.
+
 ## Adding your own skills
 
 To add project-specific skills, create `.reliant/skills/<name>/SKILL.md` files. Use the existing forge skills as a template:

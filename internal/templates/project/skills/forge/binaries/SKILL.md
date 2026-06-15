@@ -15,10 +15,31 @@ Binaries sit alongside services, workers, and operators as the four long-running
 |---|---|---|
 | **service** | Connect-RPC server registered with `pkg/app/bootstrap.go`. | You're exposing typed RPCs to clients (frontend, other services, daemons). |
 | **worker** | In-process goroutine running under the canonical server lifecycle. Gets the same Deps as services and starts when the server boots. | You need background work that *belongs to* the server's lifecycle (queue consumer, periodic sweep, cron). One process, no separate Deployment. |
-| **binary** | Standalone long-running process with its own cobra subcommand and Deployment. Does not register Connect handlers. | You need a process with its own deploy lifecycle: a reverse proxy, a sidecar, a webhook receiver isolated from the API server, a tools daemon. |
+| **binary** | Standalone process with its own cobra subcommand and (optional) Deployment. Does not register Connect handlers. | You need a process with its own deploy lifecycle: a reverse proxy, a sidecar, a webhook receiver isolated from the API server, a tools daemon. Also covers **one-off operational binaries** — backfills, data migrations, ad-hoc scripts. |
 | **operator** | Kubernetes controller-runtime manager with CRD reconcilers. | You're reconciling Kubernetes resources (CRDs). Operators are a specialised flavour of binary; pick this only when CRDs are involved. |
 
-The litmus test for binary vs worker is: **does this need its own Deployment?** If yes — different scaling, different crash blast radius, different image — it's a binary. If no, it's a worker.
+The litmus test for binary vs worker is: **does this need its own Deployment, OR is it a run-once operational tool?** If either — it's a binary. If neither — it's a worker.
+
+Resist the temptation to drop a `cmd/<name>/main.go` straight into the tree. A hand-rolled `package main` outside the shared cobra root is invisible to `forge generate`, `forge build`, and `forge deploy` — the binary doesn't get the canonical Deps shape, doesn't share `serverCmd.Flags()`, and doesn't get an image tag. `forge add binary` solves all of that with one command.
+
+## The cmd/ surface (what registers where)
+
+What a binary's subcommand surface is, is code:
+
+- **`cmd/services_gen.go`** (forge-owned, regenerated) — one subcommand
+  per service listed in `RegisteredServices` (`pkg/app/services.go`).
+  Never hand-edit; register/tombstone rows in services.go instead.
+- **`cmd/<package>.go`** (yours, from `forge add binary`) — one file
+  per declared binary; registers itself on the shared root in `init()`.
+- **`cmd/commands.go`** (yours, scaffolded once) — `userCommands()`,
+  the catch-all extension point `cmd/main.go` consumes. Use it for
+  commands that don't warrant a `binaries:` entry + Deployment story —
+  ad-hoc admin verbs, dev-only tooling, or a command you're porting by
+  hand before deciding its final shape. Opt into the pieces you need:
+  `config.RegisterFlags(cmd)` + `config.Load(cmd)` for the typed
+  config, `setupOTel(ctx)` (cmd/otel.go) for traces/metrics,
+  `signal.NotifyContext` for shutdown. If the command grows a deploy
+  lifecycle, graduate it to `forge add binary`.
 
 ## Adding a binary
 
@@ -75,6 +96,10 @@ func New(deps Deps) (*Runner, error) {
 The `cmd/<package>.go` cobra subcommand is the thin adapter: it loads config, builds Deps, calls `New(deps).Run(ctx)`. SIGINT/SIGTERM is wired into ctx so `Run` can drain in-flight work.
 
 `Runner.Run(ctx)` is where you put the actual loop — `http.Server.ListenAndServe`, NATS consumer, ticker. The scaffolded body blocks on `<-ctx.Done()` so the freshly-generated binary builds and exits cleanly on Ctrl-C; replace it.
+
+### One-off scripts (backfills, migrations, ad-hoc tools)
+
+`Run(ctx)` is allowed to return when its work is done — it doesn't have to block forever. For a backfill or migration: do the work, log the summary, return `nil`. The cobra adapter exits with success and Kubernetes won't restart the pod if you deploy it as a `Job` instead of a `Deployment`. The same scaffold works for both shapes; the only difference is the KCL block (`forge.Service` vs `forge.Job`) in `deploy/kcl/<env>/main.k`.
 
 ## Sharing the canonical server's flag set
 

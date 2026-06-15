@@ -4,7 +4,7 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -44,8 +44,24 @@ func GetForgeV1Proto() ([]byte, error) {
 	return EmbeddedFiles.ReadFile("proto/forge/v1/forge.proto")
 }
 
+// goPackageOptionRE matches the file-level go_package option line of the
+// embedded forge.proto regardless of what path it currently declares.
+// WriteForgeV1Proto must not depend on the exact embedded value: a stale
+// literal-match here is exactly how scaffolds historically shipped a
+// forge.proto pointing at `github.com/reliant-labs/forge/gen/...` — a
+// module that does not exist — leaving every generated *.pb.go in the
+// project with an unresolvable import.
+var goPackageOptionRE = regexp.MustCompile(`(?m)^option go_package = "[^"]*";$`)
+
 // WriteForgeV1Proto writes the unified forge.proto into destDir/forge.proto,
-// rewriting the go_package option to match the target project's module path.
+// rewriting the go_package option to `<modulePath>/gen/forge/v1`.
+//
+// Rationale: scaffolded projects vendor forge.proto into proto/forge/v1/
+// and run buf generate over it with `paths=source_relative`, so the
+// generated forge.pb.go lands at gen/forge/v1/ inside the project's own
+// `<module>/gen` submodule. Pointing go_package at the project module
+// makes every other generated *.pb.go import the project-local copy —
+// no external "forge/gen" module is required (none is published).
 func WriteForgeV1Proto(destDir, modulePath string) error {
 	content, err := GetForgeV1Proto()
 	if err != nil {
@@ -54,9 +70,8 @@ func WriteForgeV1Proto(destDir, modulePath string) error {
 
 	adjusted := string(content)
 	if modulePath != "" {
-		oldPkg := `option go_package = "github.com/reliant-labs/forge/internal/gen/forge/v1;forgev1";`
 		newPkg := `option go_package = "` + modulePath + `/gen/forge/v1;forgev1";`
-		adjusted = strings.Replace(adjusted, oldPkg, newPkg, 1)
+		adjusted = goPackageOptionRE.ReplaceAllString(adjusted, newPkg)
 	}
 
 	destPath := filepath.Join(destDir, "forge.proto")

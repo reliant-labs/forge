@@ -1,14 +1,20 @@
 "use client";
 
-// forge:scaffold one-shot — create page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
-import { use{{.CreateRPC}} } from "{{.HooksImportPath}}";
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// Create page emitted by `forge add page`. See `forge skill load frontend/pages` for canonical patterns.
+{{- if .HasDateCreateFields}}
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
+{{- end}}
+import { zodResolver } from "@hookform/resolvers/zod";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import PageHeader from "@/components/ui/page_header";
+
 import AlertBanner from "@/components/ui/alert_banner";
+import PageHeader from "@/components/ui/page_header";
+import { use{{.CreateRPC}} } from "{{.HooksImportPath}}";
+import { userMessage } from "@/lib/format-utils";
 
 const schema = z.object({
   {{- range .CreateFields}}
@@ -31,14 +37,35 @@ export default function Create{{.EntityName}}Page() {
 
   const mutation = use{{.CreateRPC}}({
     onSuccess: () => router.push("/{{.EntitySlug}}"),
+    // The error renders inline below — opt out of the app-wide error
+    // toast so the failure isn't announced twice.
+    meta: { silenceErrorToast: true },
   });
 
-  const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({
+  {{- /* register/errors are only consumed by the per-field inputs below —
+         destructuring them for a zero-field form ships eslint
+         no-unused-vars warnings on the pristine scaffold. */}}
+  const { {{if .CreateFields}}register, {{end}}handleSubmit{{if .CreateFields}}, formState: { errors }{{end}} } = useForm<FormValues>({
     resolver: zodResolver(schema),
   });
 
   function onSubmit(values: FormValues) {
-    mutation.mutate(values as Parameters<typeof mutation.mutate>[0]);
+    // Typed end-to-end: date strings become proto Timestamps and 64-bit
+    // ints become bigints BEFORE mutate(), so the request matches the
+    // schema instead of being cast into shape.
+    mutation.mutate({
+      ...values,
+      {{- range .CreateFields}}
+      {{- if eq .Type "date"}}
+      {{.Name}}: values.{{.Name}} ? timestampFromDate(new Date(values.{{.Name}})) : undefined,
+      {{- else if .IsBigInt}}
+      {{.Name}}: BigInt(Math.trunc(values.{{.Name}})),
+      {{- else if .IsRepeated}}
+      // Repeated scalar: comma-separated text input → the array the RPC expects.
+      {{.Name}}: values.{{.Name}}.split(",").map((s) => s.trim()).filter(Boolean){{if .RepeatedNumeric}}.map(Number){{end}},
+      {{- end}}
+      {{- end}}
+    });
   }
 
   return (
@@ -53,7 +80,7 @@ export default function Create{{.EntityName}}Page() {
 
       {mutation.error && (
         <div className="mb-6">
-          <AlertBanner variant="error" message={mutation.error.message} dismissible onDismiss={() => mutation.reset()} />
+          <AlertBanner variant="error" message={userMessage(mutation.error)} dismissible onDismiss={() => mutation.reset()} />
         </div>
       )}
 

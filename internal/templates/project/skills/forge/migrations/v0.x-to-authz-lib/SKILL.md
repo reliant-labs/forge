@@ -1,6 +1,7 @@
 ---
 name: v0.x-to-authz-lib
 description: Migrate per-service authorizer_gen.go from inline matching logic to a thin shim over forge/pkg/authz. Same public API (NewGeneratedAuthorizer / Can / CanAccess); decision logic now lives in one tested library.
+relevance: migration
 ---
 
 # Migrating from inline `authorizer_gen.go` to `forge/pkg/authz`
@@ -44,9 +45,12 @@ The library provides the policy primitives:
 Public API preserved exactly: `NewGeneratedAuthorizer()` still returns
 something with `Can(ctx, claims, action, resource)` and
 `CanAccess(ctx, procedure)`, and the user-owned `authorizer.go`
-delegates as before. `TestAuthorizerDenyByDefault` still passes
-verbatim — empty procedure, unknown procedure, and `Can(ctx, nil, "", "")`
-all deny.
+delegates as before. Note on the unknown-method contract: the decider
+fails closed (deny + once-per-method warn) — `FailMode`'s zero value is
+`FailClosed`. Newer scaffolds emit `TestAuthorizerUnknownMethodFailMode`
+pinning the deny. Projects that intentionally serve procedures outside
+the generated tables opt out explicitly with
+`FailMode: authz.AllowUnknownMethods` on the RolesDecider.
 
 ## 2. Detection
 
@@ -203,7 +207,8 @@ older binary.
 - `auth` skill — the authentication layer that produces the claims
   `authz.Decider` consumes. `auth.Claims` (= `middleware.Claims` via
   alias) flows through unchanged.
-- `api` skill — `required_roles` and `auth_required` proto annotations
-  that drive `methodRoles` / `methodAuthRequired`.
+- `api` skill — the `auth_required` proto annotation that drives
+  `methodAuthRequired` (the `methodRoles` table exists in the generated
+  shape; role logic is customized in `authorizer.go`, not proto).
 - `migrations/v0.x-to-contractkit` — canonical example of a per-version
   migration skill following this same six-section shape.

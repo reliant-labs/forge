@@ -210,8 +210,8 @@ func resolveClusterName(configPath string) (string, error) {
 	if name, err := readK3dClusterName(configPath); err == nil && name != "" {
 		return name, nil
 	}
-	if cfg, err := loadProjectConfig(); err == nil {
-		return cfg.Name, nil
+	if store, err := loadProjectStore(); err == nil {
+		return store.Meta().Name, nil
 	}
 	return "dev", nil
 }
@@ -280,7 +280,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// whose only purpose is hosting the project's deploy. A library /
 	// CLI project that's opted out of deploy has no reason to spin
 	// one up. Mirrors the deploy gate in runDeploy / runDevClusterReload.
-	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 	clusterName, err := resolveClusterName(configPath)
@@ -301,11 +301,29 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		return nil
 	}
 
+	// Resolve the effective k3d config. When features.ingress is on
+	// and deploy/k3d-ports.yaml exists, merge the listener-port
+	// fragment into the user's deploy/k3d.yaml (in memory) and pass
+	// k3d a tempfile holding the merged YAML. See dev_cluster_ingress.go
+	// for the merge policy.
+	ingressOn := false
+	if store, err := loadProjectStore(); err == nil {
+		ingressOn = store.Features().IngressEnabled()
+	}
+	effective, cleanupCfg, err := mergeK3dConfig(configPath, ingressOn)
+	if err != nil {
+		return err
+	}
+	defer cleanupCfg()
+
 	// Cluster doesn't exist — create from config if present, else use
 	// the same fallback path forge deploy dev has used historically.
-	if _, statErr := os.Stat(configPath); statErr == nil {
+	if _, statErr := os.Stat(effective.path); statErr == nil {
 		fmt.Printf("Creating k3d cluster from %s...\n", configPath)
-		create := exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", configPath)
+		if effective.temporary {
+			fmt.Printf("  (merging deploy/k3d-ports.yaml from project's ingress KCL)\n")
+		}
+		create := exec.CommandContext(ctx, "k3d", "cluster", "create", "--config", effective.path)
 		create.Stdout = os.Stdout
 		create.Stderr = os.Stderr
 		if err := create.Run(); err != nil {
@@ -335,6 +353,24 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		}
 	}
 
+	// Install the ingress bundle (Gateway API CRDs + Traefik +
+	// GatewayClass) when the project has features.ingress enabled.
+	// Runs AFTER the kubectl context is pinned so applies hit the
+	// right cluster.
+	if ingressOn {
+		projectDir, _ := os.Getwd()
+		if err := installIngressBundle(ctx, projectDir); err != nil {
+			return fmt.Errorf("install ingress: %w", err)
+		}
+		// Provision mkcert TLS Secrets for any dev Gateway that
+		// opted in via tls.mode == "mkcert". Runs AFTER the ingress
+		// bundle so the GatewayClass is ready when the Secret lands;
+		// no-op when no mkcert gateways are declared.
+		if err := provisionMkcertSecrets(ctx, projectDir); err != nil {
+			return fmt.Errorf("provision mkcert TLS: %w", err)
+		}
+	}
+
 	fmt.Printf("k3d cluster %q is up.\n", clusterName)
 	return nil
 }
@@ -344,7 +380,7 @@ func runDevClusterDown(ctx context.Context, configPath string) error {
 	// `cluster up` won't create is at worst a no-op, but we keep the
 	// error symmetric so a `forge dev cluster up && forge dev cluster
 	// down` cycle fails uniformly when deploy is off.
-	if cfg, err := loadProjectConfig(); err == nil && !cfg.Features.DeployEnabled() {
+	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 	clusterName, err := resolveClusterName(configPath)
@@ -459,15 +495,15 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		}
 	}
 
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
-	if !cfg.Features.DeployEnabled() {
+	if !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
 	}
 
-	kclDir := cfg.K8s.KCLDir
+	kclDir := store.K8s().KCLDir
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
@@ -491,7 +527,7 @@ func runDevClusterReload(ctx context.Context, configPath, imageTag, namespace st
 		if ns := k8sClusterNamespaceForEnv(ctx, "dev"); ns != "" {
 			namespace = ns
 		} else {
-			namespace = cfg.Name + "-dev"
+			namespace = store.Meta().Name + "-dev"
 		}
 	}
 

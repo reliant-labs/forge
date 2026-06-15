@@ -39,10 +39,10 @@ func collectCRUDMethodNames(services []codegen.ServiceDef, projectDir string) ma
 //
 // Detection rule (matches FORGE_REVIEW_REBUILD.md §3.5):
 //
-//	1. service has webhooks declared in forge.yaml, AND
-//	2. every RPC in the proto is one of {Create, Get, Update, Delete,
-//	   List} with NO matching entity definition (i.e. crudMethodNames
-//	   from collectCRUDMethodNames does NOT contain the RPC name).
+//  1. service has webhooks declared in forge.yaml, AND
+//  2. every RPC in the proto is one of {Create, Get, Update, Delete,
+//     List} with NO matching entity definition (i.e. crudMethodNames
+//     from collectCRUDMethodNames does NOT contain the RPC name).
 //
 // When both hold, GenerateMissingHandlerStubs treats the proto's RPCs
 // as logically-absent: handlers_gen.go is empty and the stale stubs
@@ -58,8 +58,8 @@ func webhookOnlyServiceNames(cfg *config.ProjectConfig, services []codegen.Servi
 	// equivalence. forge.yaml uses kebab ("admin-server"); svc.Name is
 	// PascalCase ("AdminServerService"). We pascalCase the yaml name
 	// and append "Service" to match.
-	webhookByGoName := make(map[string]bool, len(cfg.Services))
-	for _, ysvc := range cfg.Services {
+	webhookByGoName := make(map[string]bool, len(cfg.Components))
+	for _, ysvc := range cfg.Components {
 		if len(ysvc.Webhooks) == 0 {
 			continue
 		}
@@ -83,9 +83,12 @@ func webhookOnlyServiceNames(cfg *config.ProjectConfig, services []codegen.Servi
 		//
 		// "CRUD-shaped" here means either:
 		//   - bare names: Create / Get / Update / Delete / List
-		//     (the user-example.proto.tmpl scaffold default), OR
-		//   - entity-suffixed: CreateUser, GetUser, ... (the typical
-		//     real-handler shape — handled by ParseCRUDOperation).
+		//     (the historical user-example.proto.tmpl scaffold default,
+		//     pre-convention-fix — kept for projects scaffolded by older
+		//     forge versions), OR
+		//   - entity-suffixed: CreateItem, GetUser, ... (the current
+		//     scaffold default and the typical real-handler shape —
+		//     handled by ParseCRUDOperation).
 		// Anything else is project-specific surface; we leave the
 		// stub block alone.
 		bareCRUD := map[string]bool{
@@ -138,8 +141,20 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 
 	hasNewStubs := false
 	for _, svc := range services {
-		relServiceDir := toServiceDir(svc.Name)
-		absServiceDir := filepath.Join(projectDir, relServiceDir)
+		// Disk-first: target the handler directory that actually exists
+		// (snake/compact/kebab — whatever era scaffolded it). Pre-fix this
+		// synthesized a snake_case dir while the scaffolder created the
+		// compact form, so `forge generate` on an AdminServerService could
+		// scaffold a SECOND handlers/admin_server next to the scaffolder's
+		// handlers/adminserver — the duplicate-dir bug class. The fallback
+		// (no dir yet) is the compact form, matching
+		// generator.ServicePackageName so scaffold + generate agree.
+		res, err := codegen.ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return err
+		}
+		relServiceDir := "handlers/" + res.ImportLeaf
+		absServiceDir := res.Dir
 
 		// Build the per-service skip set: anything CRUD-shaped that
 		// matched an entity (already there from crudMethodNames) PLUS
@@ -210,12 +225,15 @@ func generateCRUDHandlers(services []codegen.ServiceDef, modulePath string, proj
 			continue
 		}
 
-		pkg := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
+		pkg := naming.ServicePackage(svc.Name)
 		if err := codegen.GenerateCRUDHandlers(svc, crudMethods, modulePath, projectDir, cs); err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD generation for %s failed: %v\n", svc.Name, err)
-			continue
+			// Hard failure by design: the CRUD generator only errors on
+			// real wiring problems (e.g. a list filter field that maps to
+			// no declared entity column). Shipping a phantom-column query
+			// that silently returns nothing is the worse outcome.
+			return fmt.Errorf("CRUD generation for %s: %w", svc.Name, err)
 		}
-		fmt.Printf("  ✅ Generated handlers/%s/handlers_crud_gen.go (%d methods)\n", pkg, len(crudMethods))
+		fmt.Printf("  ✅ Generated handlers/%s CRUD wiring (%d methods; ops in handlers_crud_ops_gen.go, shims in user-owned handlers_crud.go)\n", pkg, len(crudMethods))
 
 		if err := codegen.GenerateCRUDTests(svc, crudMethods, modulePath, projectDir, cs); err != nil {
 			fmt.Fprintf(os.Stderr, "  ⚠️  CRUD test generation for %s failed: %v\n", svc.Name, err)
@@ -244,7 +262,7 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 		if err != nil {
 			return fmt.Errorf("failed to generate mock for %s: %w", svc.Name, err)
 		}
-		mockName := strings.ToLower(strings.TrimSuffix(svc.Name, "Service"))
+		mockName := naming.ServicePackage(svc.Name)
 		if written {
 			fmt.Printf("  ✅ Updated handlers/mocks/%s_mock.go\n", mockName)
 		} else {
@@ -255,14 +273,9 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 	return nil
 }
 
-func toServiceDir(serviceName string) string {
-	// EchoService -> handlers/echo
-	// AdminServerService -> handlers/admin_server (snake-case so the generate
-	// pipeline targets the same directory the scaffolder created).
-	trimmed := strings.TrimSuffix(serviceName, "Service")
-	if trimmed == "" {
-		trimmed = serviceName
-	}
-	name := strings.ReplaceAll(naming.ToSnakeCase(trimmed), "-", "_")
-	return fmt.Sprintf("handlers/%s", name)
-}
+// Service-name → handlers/<dir> mapping is no longer synthesized here:
+// generateServiceStubs resolves the existing directory disk-first via
+// codegen.ResolveServiceComponent (and only synthesizes the compact form
+// for brand-new services). The old toServiceDir helper snake_cased the
+// proto name, which disagreed with the compact scaffold form and could
+// create duplicate handler dirs on regenerate.

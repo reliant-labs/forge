@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -59,40 +60,28 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 	}
 
-	type kclService struct {
-		Name string
-	}
-	var kclServices []kclService
-	for _, svcName := range g.allServices() {
-		kclServices = append(kclServices, kclService{Name: svcName})
-	}
-	// Fall back to the project name when no services are scaffolded yet
-	// (rare: bare scaffold with --binary shared and no --service flags).
-	// Without this the rendered services: list is empty and KCL rejects
-	// MultiServiceApplication via its `len(services) > 0` check.
-	if g.isBinaryShared() && len(kclServices) == 0 {
-		kclServices = []kclService{{Name: g.Name}}
-	}
+	// DEPLOY-AS-DATA: the per-env main.k no longer hand-writes a
+	// `forge.Service` per component (the old `{{range .Services}}` /
+	// `{{range .Binaries}}` KCL-text projection is gone). It loads the
+	// denormalized component shape from `deploy/kcl/components_gen.json`
+	// and lets the forge.components KCL schema hierarchy expand it. The
+	// only data the env templates still need is the project name and
+	// the ingress toggle.
 
-	// Binaries are emitted as additional Applications in the per-env
-	// KCL. At scaffold time there are none; this placeholder + the
-	// `{{range .Binaries}}` block in the env templates means projects
-	// can grow binaries via `forge add binary <name>` without a
-	// template-level migration. `forge generate` re-renders these
-	// files with the up-to-date list from forge.yaml.
-	type kclBinary struct {
-		Name string
-	}
-	var kclBinaries []kclBinary // empty at scaffold time
-
+	// Ingress is experimental but we still scaffold the wiring files at
+	// `forge new` so the user has a complete starting point. The
+	// runtime gate (cert-manager install, audit category) lives on the
+	// `forge dev cluster up` / `forge dev urls` paths and reads
+	// IngressEnabled() at call time. Setting IngressEnabled: true here
+	// flips the wiring lines in main.k so an opt-in just needs the
+	// experimental.ingress: true flag with no rescaffold.
+	ingressOn := true
 	templateData := struct {
-		ProjectName string
-		Services    []kclService
-		Binaries    []kclBinary
+		ProjectName    string
+		IngressEnabled bool
 	}{
-		ProjectName: g.Name,
-		Services:    kclServices,
-		Binaries:    kclBinaries,
+		ProjectName:    g.Name,
+		IngressEnabled: ingressOn,
 	}
 
 	for _, f := range envTemplates {
@@ -107,6 +96,52 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", f.dest, err)
 		}
+	}
+
+	// Gateway API ingress scaffolding. The base topology
+	// (`deploy/kcl/ingress.k`) is user-owned and shared across envs;
+	// each env's `deploy/kcl/<env>/ingress.k` re-exports the base
+	// with optional overrides. Both render once at `forge new`; not
+	// regenerated on subsequent `forge generate` runs.
+	if ingressOn {
+		ingressFiles := []struct {
+			templateName string
+			dest         string
+		}{
+			{"kcl/ingress.k.tmpl", "ingress.k"},
+			{"kcl/dev/ingress.k.tmpl", "dev/ingress.k"},
+			{"kcl/staging/ingress.k.tmpl", "staging/ingress.k"},
+			{"kcl/prod/ingress.k.tmpl", "prod/ingress.k"},
+		}
+		for _, f := range ingressFiles {
+			content, err := templates.DeployTemplates().Render(f.templateName, templateData)
+			if err != nil {
+				return fmt.Errorf("render ingress template %s: %w", f.templateName, err)
+			}
+			destPath := filepath.Join(deployDir, f.dest)
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(destPath, content, 0644); err != nil {
+				return fmt.Errorf("write %s: %w", f.dest, err)
+			}
+		}
+	}
+
+	// DEPLOY-AS-DATA: emit the denormalized component shape the per-env
+	// main.k files load. writeProjectConfig (called just before this in
+	// the scaffold sequence) already wrote forge.yaml + components.json, so
+	// read the components back through ReadProjectConfig (which now sources
+	// them from components.json — the authored per-service SOT). deploy/kcl/
+	// components_gen.json stays a lockfile-class PROJECTION of that source
+	// (regenerated every run, untracked), distinct from the authored
+	// components.json at the project root.
+	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
+	if err != nil {
+		return fmt.Errorf("read project config for components_gen.json: %w", err)
+	}
+	if err := codegen.GenerateComponentsJSON(g.Path, g.Name, cfg.Components, nil); err != nil {
+		return fmt.Errorf("write components_gen.json: %w", err)
 	}
 
 	return nil

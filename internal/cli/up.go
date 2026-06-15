@@ -11,12 +11,14 @@
 //  4. Host phase: start every host-mode service as a host process,
 //     dispatching on deploy.Host.Runner (go-run / air / binary / delve).
 //  5. Frontend phase: start every declared frontend in its path dir.
-//  6. Port-forward phase: kubectl port-forward every cluster service
-//     with deploy.Cluster.Ports.
-//  7. Wait Ctrl-C → cascade cleanup → exit.
+//  6. Wait Ctrl-C → cascade cleanup → exit.
+//
+// Reaching cluster services from the host is the Gateway API ingress
+// path (see `forge dev urls`); ad-hoc shells against stateful workloads
+// stay available via `kubectl port-forward` directly.
 //
 // Replaces the dev-loop bash script every forge project would otherwise
-// hand-write to coordinate build + deploy + run + port-forward.
+// hand-write to coordinate build + deploy + run.
 package cli
 
 import (
@@ -38,6 +40,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/kclplugin"
 )
 
 // upOptions bundles flags for `forge up`.
@@ -45,7 +48,7 @@ type upOptions struct {
 	env         string
 	noBuild     bool
 	noDeploy    bool
-	clusterOnly bool // build + deploy cluster manifests, skip host/frontend/port-forward
+	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
 }
@@ -55,22 +58,23 @@ func newUpCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Bring the whole dev loop up: build + deploy + host + frontend + port-forward",
+		Short: "Bring the whole dev loop up: build + deploy + host + frontend",
 		Long: `Bring the whole dev loop up for an environment.
 
 Reads deploy/kcl/<env>/ to figure out which services run in-cluster vs
-on the host, which frontends to start, and which port-forwards to open.
+on the host and which frontends to start.
 
 Phases:
-  1. build:        docker build + push every cluster image; go build
-                   each build-only variant
-  2. deploy:       kubectl apply cluster manifests; wait rollouts and
-                   one-shot Jobs
-  3. host:         start every host-mode service (go-run / air / binary
-                   / delve)
-  4. frontend:     start every declared frontend in its path
-  5. port-forward: kubectl port-forward every cluster service with
-                   declared ports
+  1. build:    docker build + push every cluster image; go build
+               each build-only variant
+  2. deploy:   kubectl apply cluster manifests; wait rollouts and
+               one-shot Jobs
+  3. host:     start every host-mode service (go-run / air / binary
+               / delve)
+  4. frontend: start every declared frontend in its path
+
+Reaching cluster services from the host is the Gateway API ingress
+path; run ` + "`forge dev urls`" + ` to list the routes.
 
 Use --no-build / --no-deploy to skip phases when iterating. Use
 --cluster-only / --host-only to scope the orchestrator to one side of
@@ -100,8 +104,8 @@ Examples:
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment to bring up (e.g. dev, staging) — required")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.noDeploy, "no-deploy", false, "Skip the cluster apply phase (host services and frontends still launch)")
-	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend/port-forward")
-	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend + port-forward); skip build/deploy")
+	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
+	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
 
 	cmd.AddCommand(newUpStopCmd())
@@ -129,14 +133,22 @@ func newUpStopCmd() *cobra.Command {
 
 // runUp is the orchestrator. Returns the first error encountered in
 // phases 1-2 (no point bringing host processes up against a busted
-// cluster). Phases 3-5 are collected into the running-process set and
+// cluster). Phases 3-4 are collected into the running-process set and
 // torn down by the Ctrl-C cleanup cascade on exit.
 func runUp(ctx context.Context, opts upOptions) error {
-	cfg, err := loadProjectConfig()
+	store, err := loadProjectStore()
 	if err != nil {
 		return err
 	}
+	cfg := store.Config()
 	projectDir := projectDirForKCL()
+
+	// Persist resolve_port allocations per env so dev ports stay stable
+	// across `forge up` runs (reliant-web keeps its port, etc.). Only the
+	// dev-launch path opts in — read-only renders (forge ci) don't write
+	// a ports file. The store is machine-local; .forge/ports-*.json is
+	// gitignored.
+	kclplugin.UsePortStore(filepath.Join(projectDir, ".forge", "ports-"+opts.env+".json"))
 
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)
@@ -157,7 +169,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// RunE for those commands.
 	if !opts.hostOnly {
 		if !opts.noBuild {
-			if !skipFeature(cfg, config.FeatureBuild, "up:build") {
+			if !skipFeature(store, config.FeatureBuild, "up:build") {
 				fmt.Println("\n[up] build phase")
 				if err := upBuildCluster(ctx, cfg, opts.env); err != nil {
 					return fmt.Errorf("build: %w", err)
@@ -165,7 +177,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 			}
 		}
 		if !opts.noDeploy {
-			if !skipFeature(cfg, config.FeatureDeploy, "up:deploy") {
+			if !skipFeature(store, config.FeatureDeploy, "up:deploy") {
 				fmt.Println("\n[up] deploy phase")
 				if err := upDeployCluster(ctx, opts.env); err != nil {
 					return fmt.Errorf("deploy: %w", err)
@@ -174,16 +186,16 @@ func runUp(ctx context.Context, opts upOptions) error {
 		}
 	}
 
-	// --cluster-only stops here: skip the host/frontend/port-forward
-	// phases. Useful for CI lanes that only care about the apply.
+	// --cluster-only stops here: skip the host/frontend phases. Useful
+	// for CI lanes that only care about the apply.
 	if opts.clusterOnly {
-		fmt.Println("\n[up] --cluster-only: skipping host/frontend/port-forward phases")
+		fmt.Println("\n[up] --cluster-only: skipping host/frontend phases")
 		return nil
 	}
 
-	// Host phases — host services + frontends + port-forwards. These
-	// are tracked under the orchestrator's child-process registry so
-	// Ctrl-C tears them all down together.
+	// Host phases — host services + frontends. These are tracked under
+	// the orchestrator's child-process registry so Ctrl-C tears them
+	// all down together.
 	procs := newProcRegistry(opts.env)
 	defer procs.shutdownOnExit()
 
@@ -196,17 +208,17 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// Phase 4: frontends. Skipped (with a log line) when
 	// features.frontend: false — the orchestrator otherwise tries to
 	// npm-run-dev a tree that the project never scaffolded.
-	if !skipFeature(cfg, config.FeatureFrontend, "up:frontend") {
+	if !skipFeature(store, config.FeatureFrontend, "up:frontend") {
 		feFailures := upFrontends(ctx, entities, opts.env, opts.background, procs)
 		if feFailures > 0 {
 			fmt.Printf("[up] %d frontend(s) failed to start (see above)\n", feFailures)
 		}
 	}
 
-	// Phase 5: port-forwards for cluster services with declared ports.
-	pfFailures := upPortForwards(ctx, cfg, entities, opts.env, opts.background, procs)
-	if pfFailures > 0 {
-		fmt.Printf("[up] %d port-forward(s) failed to start (see above)\n", pfFailures)
+	// Ingress replaces the legacy port-forward phase; surface a hint so
+	// users know where to find the host-reachable URLs.
+	if cfg.Features.IngressEnabled() {
+		fmt.Println("[up] ingress URLs available — run `forge dev urls` to list them")
 	}
 
 	if opts.background {
@@ -217,7 +229,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	}
 
 	if procs.count() == 0 {
-		fmt.Println("\n[up] no host/frontend/port-forward processes to wait on; deploy is up.")
+		fmt.Println("\n[up] no host/frontend processes to wait on; deploy is up.")
 		return nil
 	}
 
@@ -367,11 +379,13 @@ func upFrontends(ctx context.Context, e *KCLEntities, env string, background boo
 //
 // Env layering:
 //
-//  1. parentEnv (typically os.Environ()) is the floor.
-//  2. The env-file (fe.EnvFile or `.env.<env>`) is layered on top via
-//     hostlaunch.MergeEnv (parent wins on conflict — developer-shell
-//     override semantics, matching the host-service shape).
-//  3. PORT from the KCL declaration is force-injected last so it
+//  1. The env-file (fe.EnvFile or `.env.<env>`) is the lowest layer.
+//  2. KCL-declared env_vars layer on top of the env-file — explicit
+//     per-env config (e.g. a VITE_ADMIN_URL composed from
+//     forge.resolve_port(...)) beats the generic env-file.
+//  3. parentEnv (os.Environ()) wins over both — developer-shell override
+//     semantics, matching the host-service shape.
+//  4. PORT from the KCL declaration is force-injected last so it
 //     overrides ANY PORT in the parent env. The KCL declaration is the
 //     canonical port binding for the dev loop; a stale `PORT=8080` in
 //     the parent shell (typical when the parent has another service's
@@ -393,12 +407,13 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	if envFile == "" {
 		envFile = ".env." + env
 	}
-	extra, lerr := hostlaunch.ReadDotEnvFile(envFile)
-	if lerr == nil {
-		cmd.Env = hostlaunch.MergeEnv(extra, parentEnv)
-	} else {
-		cmd.Env = append([]string{}, parentEnv...)
-	}
+	// Precedence (low→high): env-file < KCL env_vars < parent shell, then
+	// forced PORT (below). Mirrors host-service layering (LayerHostEnv):
+	// explicit per-env KCL config beats the generic env-file, the
+	// developer's shell can still override, and the KCL port binding wins
+	// last. Missing env-file is non-fatal (nil map collapses to no-op).
+	envFileMap, _ := hostlaunch.ReadDotEnvFile(envFile)
+	cmd.Env = hostlaunch.LayerHostEnv(parentEnv, envFileMap, nil, kclEnvVarsToMap(fe.EnvVars))
 
 	if fe.Port > 0 {
 		cmd.Env = withForcedEnv(cmd.Env, "PORT", fmt.Sprintf("%d", fe.Port))
@@ -406,41 +421,19 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	return cmd
 }
 
-// upPortForwards starts a `kubectl port-forward` for every cluster
-// service with declared ports. Local port == remote port (the simplest
-// shape; users with conflicts can fall back to `forge dev port-forward
-// --local <p>:<r>` manually). Service-name → deployment-name uses the
-// shared-binary prefix when forge.yaml declares binary=shared.
-func upPortForwards(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, procs *procRegistry) int {
-	namespace := cfg.Name + "-" + env
-	if ns := k8sClusterNamespaceForEnv(ctx, env); ns != "" {
-		namespace = ns
-	}
-
-	failures := 0
-	for _, svc := range e.Services {
-		if svc.Deploy.Type != "cluster" || svc.Deploy.Cluster == nil {
+// kclEnvVarsToMap projects a frontend's KCL-declared env_vars to a
+// name→value map, dropping entries without an inline value (secret_ref /
+// config_map_ref entries are cluster-manifest concerns, not host-launch
+// env). Mirrors hostEnvVarsToMap for host services.
+func kclEnvVarsToMap(vars []KCLEnvVar) map[string]string {
+	out := make(map[string]string, len(vars))
+	for _, ev := range vars {
+		if ev.Name == "" || ev.Value == "" {
 			continue
 		}
-		for _, port := range svc.Deploy.Cluster.Ports {
-			depName := svc.Name
-			if cfg.IsBinaryShared() {
-				depName = cfg.Name + "-" + svc.Name
-			}
-			pfName := fmt.Sprintf("pf:%s:%d", svc.Name, port)
-			pfArgs := []string{"port-forward",
-				"-n", namespace,
-				"deployment/" + depName,
-				fmt.Sprintf("%d:%d", port, port),
-			}
-			cmd := exec.CommandContext(ctx, "kubectl", pfArgs...)
-			if err := procs.start(pfName, cmd, background); err != nil {
-				fmt.Printf("[up] %s: %v\n", pfName, err)
-				failures++
-			}
-		}
+		out[ev.Name] = ev.Value
 	}
-	return failures
+	return out
 }
 
 // procRegistry tracks long-running child processes started by the up
@@ -571,8 +564,9 @@ func (p *procRegistry) shutdown() {
 	copy(procs, p.processes)
 	p.mu.Unlock()
 
-	// Reverse order so port-forwards die before the services they
-	// forward to — keeps the user's last log lines clean.
+	// Reverse order so later-started frontends die before the host
+	// services they may have spoken to — keeps the user's last log
+	// lines clean.
 	for i := len(procs) - 1; i >= 0; i-- {
 		mp := procs[i]
 		if mp.cmd.Process == nil {

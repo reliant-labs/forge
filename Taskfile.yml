@@ -28,6 +28,16 @@ tasks:
     cmds:
       - go install -trimpath -buildvcs=true ./cmd/forge
 
+  release:pkg:
+    desc: "Tag a forge/pkg release: task release:pkg -- vX.Y.Z (add --dry-run to validate only)"
+    cmds:
+      # Validates version shape, clean pkg/ tree, no existing tag, and a
+      # standalone (GOWORK=off) build/vet of the pkg module before
+      # creating the pkg/vX.Y.Z submodule tag. Pushing the tag is a
+      # deliberate manual step the script prints at the end. See
+      # docs/pkg-versioning.md for the dev-vs-release dependency model.
+      - ./scripts/release-pkg.sh {{.CLI_ARGS}}
+
   test:
     desc: Run Go unit tests (excludes `//go:build integration` files)
     cmds:
@@ -35,6 +45,11 @@ tasks:
       # hung test fails the suite quickly rather than wedging CI. Integration
       # tests use the `integration` build tag and ship their own task below.
       - go test -race -count=1 -timeout 120s ./...
+
+  test:short:
+    desc: "Inner-loop tests: whole repo in seconds (skips/bypasses >2s tests; see CLAUDE.md Testing tiers)"
+    cmds:
+      - go test -short -count=1 -timeout 60s ./...
 
   test:integration:
     desc: Run integration tests (build tag `integration`, real dependencies expected)

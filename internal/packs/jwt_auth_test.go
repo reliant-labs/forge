@@ -6,6 +6,7 @@ import (
 	"testing"
 	"text/template"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -21,8 +22,19 @@ func TestJWTAuthPackManifest(t *testing.T) {
 	if !strings.Contains(p.Description, "JWKS") {
 		t.Errorf("Description should mention JWKS, got: %s", p.Description)
 	}
-	if !strings.Contains(p.Description, "dev-mode") {
-		t.Errorf("Description should mention dev-mode, got: %s", p.Description)
+	// Honesty: the description must state the dev/JWT split (dev mode
+	// needs no pack) and that the code ships with no call sites.
+	if !strings.Contains(p.Description, "needs NO pack") {
+		t.Errorf("Description should state local dev needs no pack, got: %s", p.Description)
+	}
+	if !strings.Contains(p.Description, "NO call sites") {
+		t.Errorf("Description should state the code has no call sites until wired, got: %s", p.Description)
+	}
+	// The wiring the user must do by hand is printed at install time.
+	for _, want := range []string{"jwtauth.Init", "jwtauth.Interceptor", "jwtauth.Close"} {
+		if !strings.Contains(p.PostInstall, want) {
+			t.Errorf("PostInstall should show the %s wiring, got: %s", want, p.PostInstall)
+		}
 	}
 
 	// Check dependencies. Match by module path prefix so version-pinned
@@ -261,5 +273,90 @@ func TestAuthGenOverrideTemplateContent(t *testing.T) {
 		if !strings.Contains(content, check) {
 			t.Errorf("auth_gen_override.go.tmpl should contain %q", check)
 		}
+	}
+}
+
+// TestDevAuthTemplate_NoEnvGate pins the dev-mode unification: the
+// jwt-auth pack's dev gate consumes the typed config.Mode injected at
+// Init — it must NOT read os.Getenv("ENVIRONMENT") itself. Three
+// scattered env gates (bootstrap, middleware-auth, jwtauth) is how
+// dev-mode skew between authn and authz happened.
+func TestDevAuthTemplate_NoEnvGate(t *testing.T) {
+	tmplContent, err := packsFS.ReadFile("jwt-auth/templates/dev_auth.go.tmpl")
+	if err != nil {
+		t.Fatalf("read template: %v", err)
+	}
+	content := string(tmplContent)
+
+	if strings.Contains(content, "os.Getenv") {
+		t.Errorf("dev_auth.go.tmpl must not read the environment directly — dev mode is injected as config.Mode:\n%s", content)
+	}
+	for _, want := range []string{"config.Mode", "func SetMode("} {
+		if !strings.Contains(content, want) {
+			t.Errorf("dev_auth.go.tmpl should contain %q (typed-mode injection)", want)
+		}
+	}
+
+	// Init must accept the injected mode.
+	override, err := packsFS.ReadFile("jwt-auth/templates/auth_gen_override.go.tmpl")
+	if err != nil {
+		t.Fatalf("read override template: %v", err)
+	}
+	if !strings.Contains(string(override), "func Init(logger *slog.Logger, mode config.Mode) error") {
+		t.Errorf("auth_gen_override.go.tmpl Init should take the injected config.Mode")
+	}
+}
+
+// TestApplyAuthConfigSection pins install-time config wiring: installing
+// an auth pack sets forge.yaml's typed auth block the way the pack docs
+// claim (the J1 finding: the packs skill SAID install sets auth.provider;
+// nothing did, so the generate pipeline's auth-aware steps never ran).
+func TestApplyAuthConfigSection(t *testing.T) {
+	p, err := LoadPack("jwt-auth")
+	if err != nil {
+		t.Fatalf("LoadPack(jwt-auth) error: %v", err)
+	}
+	eff := mergePackConfig(p.Config.Defaults, nil)
+
+	// Fresh project: provider + jwt defaults projected.
+	cfg := &config.ProjectConfig{}
+	p.applyAuthConfigSection(cfg, eff)
+	if cfg.Auth.Provider != "jwt" {
+		t.Errorf("Auth.Provider = %q, want %q", cfg.Auth.Provider, "jwt")
+	}
+	if cfg.Auth.JWT.SigningMethod != "RS256" {
+		t.Errorf("Auth.JWT.SigningMethod = %q, want RS256", cfg.Auth.JWT.SigningMethod)
+	}
+	// Empty defaults (jwks_url etc.) must not be projected as "".
+	if cfg.Auth.JWT.JWKSURL != "" || cfg.Auth.JWT.Issuer != "" || cfg.Auth.JWT.Audience != "" {
+		t.Errorf("empty jwt defaults should stay empty, got %+v", cfg.Auth.JWT)
+	}
+
+	// User intent wins: an existing different provider is never stomped.
+	cfg2 := &config.ProjectConfig{Auth: config.AuthConfig{Provider: "api_key"}}
+	p.applyAuthConfigSection(cfg2, eff)
+	if cfg2.Auth.Provider != "api_key" {
+		t.Errorf("existing Auth.Provider was overwritten: %q", cfg2.Auth.Provider)
+	}
+	if cfg2.Auth.JWT.SigningMethod != "" {
+		t.Errorf("jwt defaults should not apply when the provider is kept, got %+v", cfg2.Auth.JWT)
+	}
+
+	// User-set jwt fields survive a matching-provider install.
+	cfg3 := &config.ProjectConfig{Auth: config.AuthConfig{
+		Provider: "jwt",
+		JWT:      config.JWTConfig{SigningMethod: "ES256", Issuer: "https://issuer.example"},
+	}}
+	p.applyAuthConfigSection(cfg3, eff)
+	if cfg3.Auth.JWT.SigningMethod != "ES256" || cfg3.Auth.JWT.Issuer != "https://issuer.example" {
+		t.Errorf("user-set jwt fields were overwritten: %+v", cfg3.Auth.JWT)
+	}
+
+	// Non-auth packs never touch the auth block.
+	np := &Pack{Config: PackConfig{Section: "nats", Defaults: map[string]any{"provider": "x"}}}
+	cfg4 := &config.ProjectConfig{}
+	np.applyAuthConfigSection(cfg4, mergePackConfig(np.Config.Defaults, nil))
+	if cfg4.Auth.Provider != "" {
+		t.Errorf("non-auth pack set Auth.Provider = %q", cfg4.Auth.Provider)
 	}
 }

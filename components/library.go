@@ -113,6 +113,7 @@ var registry = []Entry{
 	{Name: "metric_card", Category: CategoryUI, Description: "Single metric display with trend indicator, sparkline chart, and optional link.", Tags: []string{"ui", "metric", "stat", "dashboard", "analytics", "admin"}},
 
 	// ── UI Primitives (low-level building blocks consumed by frontend packs) ──
+	{Name: "link", Category: CategoryUI, Description: "Navigation primitive other components route through (PageHeader actions, RowActionsMenu hrefs). Framework-neutral anchor by default; forge scaffolds overwrite it with a next/link or tanstack-router aware version so internal hrefs get client routing + basePath handling. External http(s)/mailto/tel hrefs always render a plain <a>.", Tags: []string{"ui", "primitive", "link", "navigation", "routing"}},
 	{Name: "button", Category: CategoryUI, Description: "Generic button primitive with primary/secondary/outline/ghost/danger variants, sizes, and loading state.", Tags: []string{"ui", "primitive", "button", "form", "action"}},
 	{Name: "input", Category: CategoryUI, Description: "Generic text input primitive with sizes, invalid state, and forwarded refs. Pair with the Label primitive.", Tags: []string{"ui", "primitive", "input", "form"}},
 	{Name: "label", Category: CategoryUI, Description: "Form field label primitive with optional required-asterisk affordance.", Tags: []string{"ui", "primitive", "label", "form"}},

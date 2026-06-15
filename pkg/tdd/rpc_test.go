@@ -123,48 +123,43 @@ func TestRunRPCCases_RPCCaseIsCaseAlias(t *testing.T) {
 	_ = rc
 }
 
-func TestTableRPC_AnyOutcomeAcceptsErrorAndSuccess(t *testing.T) {
-	// AnyOutcome rows tolerate either a Connect error or a happy
-	// response — used for scaffold-style "the handler dispatches" rows
-	// before real assertions land.
-	cases := []tdd.Case[fakeReq, fakeResp]{
-		{
-			Name:       "scaffold accepts success",
-			Req:        connect.NewRequest(&fakeReq{Name: "ada"}),
-			AnyOutcome: true,
-		},
-		{
-			Name:       "scaffold accepts CodeInvalidArgument",
-			Req:        connect.NewRequest(&fakeReq{}),
-			AnyOutcome: true,
-		},
-		{
-			Name:       "scaffold accepts CodeInternal",
-			Req:        connect.NewRequest(&fakeReq{Name: "boom"}),
-			AnyOutcome: true,
-		},
+func TestTableRPC_ScaffoldRowSelfDestructs(t *testing.T) {
+	// The canonical scaffold row asserts WantErr: CodeUnimplemented.
+	// Against an unimplemented stub it passes; against an implemented
+	// handler it MUST fail — that failure is the contract that forces
+	// scaffold rows to be rewritten with real assertions. There is no
+	// permissive mode in this library: every row can fail.
+	unimplemented := func(_ context.Context, _ *connect.Request[fakeReq]) (*connect.Response[fakeResp], error) {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("not yet implemented"))
 	}
-	tdd.TableRPC(t, cases, helloHandler)
-}
+	tdd.TableRPC(t, []tdd.Case[fakeReq, fakeResp]{
+		{
+			Name:    "stub satisfies the scaffold row",
+			Req:     connect.NewRequest(&fakeReq{Name: "ada"}),
+			WantErr: connect.CodeUnimplemented,
+		},
+	}, unimplemented)
 
-func TestTableRPC_AnyOutcomeStillRunsCheckOnSuccess(t *testing.T) {
-	// Check is consulted on successful responses even in AnyOutcome
-	// mode, so happy-path assertions can be pinned without losing the
-	// scaffold's lenience on error paths.
-	var checkCalled bool
-	cases := []tdd.Case[fakeReq, fakeResp]{
-		{
-			Name:       "happy with check",
-			Req:        connect.NewRequest(&fakeReq{Name: "ada"}),
-			AnyOutcome: true,
-			Check: func(_ *testing.T, _ *connect.Response[fakeResp]) {
-				checkCalled = true
-			},
-		},
+	// Implemented handler: the same scaffold row must go red. TableRPC's
+	// WantErr path delegates to AssertConnectError, so drive that
+	// assertion directly with the implemented handler's (nil-error)
+	// outcome — a zero-value testing.T cannot host t.Run subtests.
+	_, err := helloHandler(context.Background(), connect.NewRequest(&fakeReq{Name: "ada"}))
+	if err != nil {
+		t.Fatalf("implemented handler should succeed, got %v", err)
 	}
-	tdd.TableRPC(t, cases, helloHandler)
-	if !checkCalled {
-		t.Fatal("Check should still run on a successful response in AnyOutcome mode")
+	fakeT := &testing.T{}
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			_ = recover()
+			close(done)
+		}()
+		tdd.AssertConnectError(fakeT, err, connect.CodeUnimplemented)
+	}()
+	<-done
+	if !fakeT.Failed() {
+		t.Fatal("scaffold row (WantErr: CodeUnimplemented) must FAIL once the handler is implemented")
 	}
 }
 

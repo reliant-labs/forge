@@ -1,8 +1,10 @@
-// forge:scaffold one-shot — audit-log handler; canonical pattern in `forge skill load packs`.
+// yours: scaffolded once, never touched again — forge will not overwrite this file
+// Audit-log handler; canonical pattern in `forge skill load packs`.
 package auditlog
 
 import (
 	"context"
+	"errors"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -10,6 +12,7 @@ import (
 	auditv1 "{{.ModulePath}}/gen/audit/v1"
 	"{{.ModulePath}}/gen/audit/v1/auditv1connect"
 	"{{.ModulePath}}/pkg/audit"
+	"{{.ModulePath}}/pkg/middleware"
 )
 
 // Handler implements the read-side AuditLogService Connect handler.
@@ -28,13 +31,87 @@ import (
 type Handler struct {
 	auditv1connect.UnimplementedAuditLogServiceHandler
 	store audit.AuditStore
+	scope ScopePredicate
+}
+
+// ScopePredicate authorizes (and may rewrite) a ListAuditEvents request
+// before it reaches the store. Implementations typically read the caller
+// identity from ctx (middleware.ClaimsFromContext) and either:
+//
+//   - return nil to let the request through as-is,
+//   - mutate req in place (e.g. force user_id to the caller's own ID), or
+//   - return a *connect.Error (PermissionDenied / Unauthenticated) to
+//     reject it.
+//
+// The default is [SelfOrAdminScope]. Audit logs enumerate who did what —
+// an unscoped read handler is a cross-user enumeration hole, so the safe
+// policy ships by default and projects widen it explicitly via
+// [WithScopePredicate] instead of every installation hand-rolling the
+// same wrapper.
+type ScopePredicate func(ctx context.Context, req *auditv1.ListAuditEventsRequest) error
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithScopePredicate replaces the default self-or-admin scoping policy.
+// Pass a custom predicate to widen (or further restrict) who may query
+// whose audit events:
+//
+//	// Example: allow anyone with the "auditor" role to query any user.
+//	auditlog.NewHandler(store, auditlog.WithScopePredicate(myPredicate))
+//
+// A nil predicate disables scoping entirely (every authenticated caller
+// can query any user_id) — only do that behind an authorizer that
+// already restricts this RPC to admins.
+func WithScopePredicate(p ScopePredicate) Option {
+	return func(h *Handler) { h.scope = p }
+}
+
+// SelfOrAdminScope is the default ScopePredicate: callers with the
+// "admin" role (on Claims.Role or anywhere in Claims.Roles) pass
+// through unchanged; everyone else is restricted to their own events.
+// A non-admin's empty user_id filter is rewritten to the caller's own
+// UserID; an explicit non-self user_id is rejected with
+// PermissionDenied (loud failure beats a silently scoped-down result).
+// Missing claims map to Unauthenticated — the authorizer layer should
+// have guaranteed authentication, so absence is a wiring regression
+// worth surfacing.
+func SelfOrAdminScope(ctx context.Context, req *auditv1.ListAuditEventsRequest) error {
+	claims, ok := middleware.ClaimsFromContext(ctx)
+	if !ok || claims == nil || claims.UserID == "" {
+		return connect.NewError(connect.CodeUnauthenticated,
+			errors.New("no authentication claims for ListAuditEvents"))
+	}
+	if claims.Role == "admin" {
+		return nil
+	}
+	for _, r := range claims.Roles {
+		if r == "admin" {
+			return nil
+		}
+	}
+	requested := req.GetUserId()
+	if requested == "" {
+		req.UserId = claims.UserID
+		return nil
+	}
+	if requested != claims.UserID {
+		return connect.NewError(connect.CodePermissionDenied,
+			errors.New("cannot query audit events for another user"))
+	}
+	return nil
 }
 
 // NewHandler returns an AuditLogService handler backed by the given store.
 // Pass the same store the Interceptor was constructed with so reads see
-// the writes.
-func NewHandler(store audit.AuditStore) *Handler {
-	return &Handler{store: store}
+// the writes. The default scoping policy is [SelfOrAdminScope]; override
+// with [WithScopePredicate].
+func NewHandler(store audit.AuditStore, opts ...Option) *Handler {
+	h := &Handler{store: store, scope: SelfOrAdminScope}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // ListAuditEvents implements auditv1connect.AuditLogServiceHandler.
@@ -42,6 +119,11 @@ func (h *Handler) ListAuditEvents(ctx context.Context, req *connect.Request[audi
 	if h.store == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			ErrAuditStoreNotConfigured)
+	}
+	if h.scope != nil {
+		if err := h.scope(ctx, req.Msg); err != nil {
+			return nil, err
+		}
 	}
 
 	filter := audit.AuditFilter{
@@ -63,7 +145,8 @@ func (h *Handler) ListAuditEvents(ctx context.Context, req *connect.Request[audi
 	}
 
 	out := make([]*auditv1.AuditEvent, 0, len(entries))
-	for _, e := range entries {
+	for i := range entries {
+		e := &entries[i]
 		out = append(out, &auditv1.AuditEvent{
 			Id:           e.ID,
 			Timestamp:    timestamppb.New(e.Timestamp),

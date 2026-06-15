@@ -380,6 +380,41 @@ func TestGenerate_InterfaceReturns(t *testing.T) {
 	}
 }
 
+// TestGenerate_RecordMethodShadowsRecorder is the regression pin for
+// the Recorder-shadowing bug the fixture corpus caught: a contract
+// method literally named Record makes the generated
+// MockService.Record shadow the promoted contractkit.Recorder.Record,
+// so a bare `m.Record("Record", ...)` inside the mock body is a
+// self-call — wrong arity (compile error) or, with a matching
+// signature, infinite recursion. The template must qualify the call
+// as `m.Recorder.Record(...)`.
+func TestGenerate_RecordMethodShadowsRecorder(t *testing.T) {
+	dir := copyTestdata(t, "testdata/recordshadow")
+	contractPath := filepath.Join(dir, "contract.go")
+
+	if err := Generate(contractPath); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	mockPath := filepath.Join(dir, "mock_gen.go")
+	assertFileExists(t, mockPath)
+	assertValidGo(t, mockPath)
+	assertContains(t, mockPath, `m.Recorder.Record("Record", ctx, entry)`)
+
+	// Type-check the generated mock — the shadowing failure mode is an
+	// arity error `go build` catches, not a parse error.
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(buildSandboxGoMod("recordshadowtest")), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	writeSandboxGoSum(t, dir)
+
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build of generated mock failed (Recorder shadowing regressed): %v\n%s", err, string(out))
+	}
+}
+
 // TestGenerate_ExtraInterfaceTypes verifies the forge.yaml extension hook:
 // a project-local cross-package interface declared via Options.
 // ExtraInterfaceTypes flips the mock fallback from the invalid composite

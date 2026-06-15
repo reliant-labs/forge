@@ -321,6 +321,11 @@ func TestFormatBootstrapCoverage_HintMentionsSetupGo(t *testing.T) {
 // project and returns the findings slice that would have been printed.
 // It mirrors runBootstrapDepsCoverageLint's body so tests can assert
 // on the structured findings rather than parse stdout.
+//
+// Walks the same four role roots as the production lint
+// (internal / handlers / workers / operators). Findings carry Role
+// so multi-root tests can distinguish them; the original
+// internal-only tests filter by Role == "" / "internal" below.
 func runAndCollect(t *testing.T, projectDir string) []bootstrapCoverageFinding {
 	t.Helper()
 	appDir := filepath.Join(projectDir, "pkg", "app")
@@ -332,45 +337,17 @@ func runAndCollect(t *testing.T, projectDir string) []bootstrapCoverageFinding {
 	for name, typ := range appFields {
 		appByName[name] = typ
 	}
-	internalDir := filepath.Join(projectDir, "internal")
-	entries, err := os.ReadDir(internalDir)
-	if err != nil {
-		t.Fatalf("read internal: %v", err)
-	}
 	setupWired, err := scanSetupReconstructions(filepath.Join(appDir, "setup.go"))
 	if err != nil {
 		t.Fatalf("scanSetupReconstructions: %v", err)
 	}
 	var findings []bootstrapCoverageFinding
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	for _, role := range []string{"internal", "handlers", "workers", "operators"} {
+		rf, err := scanRoleRootForDepsMismatch(projectDir, role, appByName, setupWired)
+		if err != nil {
+			t.Fatalf("scan %s: %v", role, err)
 		}
-		deps, err := readDeps(filepath.Join(internalDir, e.Name()))
-		if err != nil || len(deps) == 0 {
-			continue
-		}
-		for name, typ := range deps {
-			if name == "Logger" || name == "Config" {
-				continue
-			}
-			appType, hasName := appByName[name]
-			if !hasName {
-				continue
-			}
-			if appType == typ {
-				continue
-			}
-			if fields, ok := setupWired[e.Name()]; ok && fields[name] {
-				continue
-			}
-			findings = append(findings, bootstrapCoverageFinding{
-				Package:  e.Name(),
-				Field:    name,
-				DepsType: typ,
-				AppType:  appType,
-			})
-		}
+		findings = append(findings, rf...)
 	}
 	return findings
 }
@@ -433,5 +410,193 @@ func writeSetup(t *testing.T, projectDir, src string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "setup.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// writeRoleContract writes contract.go (or service.go for handlers)
+// under projectDir/<role>/<pkg>/. Used by the multi-root lint tests
+// that exercise the handlers/ workers/ operators/ branches.
+func writeRoleContract(t *testing.T, projectDir, role, pkg, src string) {
+	t.Helper()
+	dir := filepath.Join(projectDir, role, pkg)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// File name doesn't matter — ParseServiceDeps walks every non-test
+	// .go file in the dir looking for `type Deps struct`. Keep
+	// contract.go for symmetry with the internal/ tests.
+	if err := os.WriteFile(filepath.Join(dir, "contract.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBootstrapDepsCoverage_HandlersMismatchReported asserts the lint
+// now covers handlers/. Before the multi-root walk this was a silent
+// drop just like internal/.
+func TestBootstrapDepsCoverage_HandlersMismatchReported(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	writeAppExtras(t, projectDir, `package app
+
+import "example.com/proj/internal/db"
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	Repo *db.PostgresRepository
+}
+`)
+	writeRoleContract(t, projectDir, "handlers", "billing", `package billing
+
+type Repository interface{ Charge() }
+
+type Deps struct {
+	Repo Repository
+}
+`)
+	got := runAndCollect(t, projectDir)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(got), got)
+	}
+	if got[0].Role != "handlers" || got[0].Package != "billing" || got[0].Field != "Repo" {
+		t.Errorf("finding = %+v, want handlers/billing/Repo", got[0])
+	}
+}
+
+// TestBootstrapDepsCoverage_WorkersMismatchReported — same shape for
+// workers/.
+func TestBootstrapDepsCoverage_WorkersMismatchReported(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	writeAppExtras(t, projectDir, `package app
+
+import "example.com/proj/internal/db"
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	Queue *db.PostgresRepository
+}
+`)
+	writeRoleContract(t, projectDir, "workers", "reaper", `package reaper
+
+type Queue interface{ Pop() }
+
+type Deps struct {
+	Queue Queue
+}
+`)
+	got := runAndCollect(t, projectDir)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(got), got)
+	}
+	if got[0].Role != "workers" || got[0].Package != "reaper" || got[0].Field != "Queue" {
+		t.Errorf("finding = %+v, want workers/reaper/Queue", got[0])
+	}
+}
+
+// TestBootstrapDepsCoverage_OperatorsMismatchReported — same shape for
+// operators/.
+func TestBootstrapDepsCoverage_OperatorsMismatchReported(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	writeAppExtras(t, projectDir, `package app
+
+import "example.com/proj/internal/db"
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	Store *db.PostgresRepository
+}
+`)
+	writeRoleContract(t, projectDir, "operators", "scheduler", `package scheduler
+
+type Store interface{ Get() }
+
+type Deps struct {
+	Store Store
+}
+`)
+	got := runAndCollect(t, projectDir)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(got), got)
+	}
+	if got[0].Role != "operators" || got[0].Package != "scheduler" || got[0].Field != "Store" {
+		t.Errorf("finding = %+v, want operators/scheduler/Store", got[0])
+	}
+}
+
+// TestBootstrapDepsCoverage_LegitimateMatchAcrossRoots — negative
+// case: when every Deps field's type matches AppExtras's type
+// EXACTLY across all three new roots, no findings fire. Keeps the
+// extended walk from over-reporting on a healthy project shape.
+func TestBootstrapDepsCoverage_LegitimateMatchAcrossRoots(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	writeAppExtras(t, projectDir, `package app
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct {
+	Repo  string
+	Queue int
+	Store bool
+}
+`)
+	writeRoleContract(t, projectDir, "handlers", "billing", `package billing
+
+type Deps struct {
+	Repo string
+}
+`)
+	writeRoleContract(t, projectDir, "workers", "reaper", `package reaper
+
+type Deps struct {
+	Queue int
+}
+`)
+	writeRoleContract(t, projectDir, "operators", "scheduler", `package scheduler
+
+type Deps struct {
+	Store bool
+}
+`)
+	got := runAndCollect(t, projectDir)
+	if len(got) != 0 {
+		t.Fatalf("expected 0 findings on legitimate matches, got %d: %+v", len(got), got)
+	}
+}
+
+// TestBootstrapDepsCoverage_MissingRoleRootsNoop — projects without a
+// workers/ or operators/ directory must not error. The lint should
+// silently skip missing roots and process the ones that exist.
+func TestBootstrapDepsCoverage_MissingRoleRootsNoop(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	writeAppExtras(t, projectDir, `package app
+
+type App struct {
+	*AppExtras
+}
+
+type AppExtras struct{}
+`)
+	// Only internal/ — no handlers, workers, or operators directories.
+	writeContract(t, projectDir, "audit", `package audit
+
+type Deps struct{}
+`)
+	got := runAndCollect(t, projectDir)
+	if len(got) != 0 {
+		t.Fatalf("expected 0 findings on empty project, got %d: %+v", len(got), got)
 	}
 }

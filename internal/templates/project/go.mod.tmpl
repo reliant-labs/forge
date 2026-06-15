@@ -7,11 +7,11 @@ require (
 	connectrpc.com/otelconnect v0.7.1{{if .RESTEnabled}}
 	connectrpc.com/vanguard v0.3.0{{end}}
 	github.com/golang-migrate/migrate/v4 v4.19.1
-	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/prometheus/client_golang v1.21.1
 	github.com/spf13/cobra v1.9.1
+	github.com/uptrace/bun v1.2.18
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.34.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.34.0
@@ -20,9 +20,22 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.34.0
 	go.opentelemetry.io/otel/trace v1.34.0
 	golang.org/x/net v0.28.0
-	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.9
-	{{.Module}}/gen v0.0.0
+	{{.Module}}/gen v0.0.0{{if .ForgePkgVersion}}
+	github.com/reliant-labs/forge/pkg {{.ForgePkgVersion}}{{else if .ForgePkgDevReplace}}
+	github.com/reliant-labs/forge/pkg v0.0.0{{end}}
 )
 
 replace {{.Module}}/gen => ./gen
+{{- if and .ForgePkgDevReplace (not .ForgePkgVersion)}}
+
+// Dev-mode forge/pkg wiring (this forge binary is a dev build, so no
+// published pkg release is pinned). `forge generate` vendors the target
+// below into ./.forge-pkg/ and rewrites this directive to point there,
+// keeping host and docker builds on the same source. When you move to a
+// released forge, drop this replace and pin a real version:
+//   go mod edit -dropreplace=github.com/reliant-labs/forge/pkg
+//   go get github.com/reliant-labs/forge/pkg@<vX.Y.Z>
+// See docs/pkg-versioning.md in the forge repo.
+replace github.com/reliant-labs/forge/pkg => {{.ForgePkgDevReplace}}
+{{- end}}

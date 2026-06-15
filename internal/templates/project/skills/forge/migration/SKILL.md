@@ -105,27 +105,36 @@ Triage every grep hit. README/`go install` references should remain canonical; r
 - **Generated proto descriptors and sed do not mix.** A blanket `sed s|forge|forge-next|` rewrites the `go_package` string inside `*.pb.go` rawDesc bytes but does NOT update the varint length prefix → runtime panic in `protobuf/internal/filedesc.unmarshalSeedOptions`. Regenerate via `buf generate` instead of sed-rewriting compiled descriptors.
 - **Manifest files (`pack.yaml`, etc.) are a third file class** alongside `.go` and templates. Pack manifests have a top-level `dependencies:` list of Go module paths. Include manifests in the rewrite glob.
 
-## Proto entity strategy in migrations
+## Entity strategy in migrations: your schema is already the truth
 
 When you migrate an existing project, you arrive with `db/migrations/`
-already authoritative — that's the schema. Decide upfront how proto
-entities fit:
+already authoritative — and in forge, that IS the entity model. SQL is
+the schema language: `forge generate` applies the migrations to an
+in-memory shadow database, introspects the tables, and projects entity
+structs, ORM, and CRUD wiring from them. There is no proto-side schema
+declaration to keep in sync (the legacy `(forge.v1.entity)` annotations
+are retired and ignored).
 
-- **Drop proto entities entirely.** If you don't need ORM/CRUD codegen
-  for these tables (handler is hand-rolled, queries are bespoke),
-  remove the entity messages from proto. `forge audit` will then report
-  `migrations authoritative (no proto entities)` — clean.
-- **Keep proto entities advisory.** Useful when the API surface mirrors
-  the table shape and you want CRUD codegen. Annotate them as you would
-  greenfield entities; `forge generate` produces handlers/ORM/hooks but
-  does NOT touch migrations. Use `forge db proto sync-from-db` to seed
-  the proto from existing schema. Run `forge audit` to confirm
-  alignment; the `proto_migration_alignment` category flags drift.
+Copy the migrations over as-is, then decide per table:
 
-In both modes the migrations are runtime truth. Don't try to make proto
-authoritative on a migrated project — `forge generate` won't rebuild
-migrations from proto, and you'll fight the tooling. See the `db` and
-`proto` skills for the same explanation from those angles.
+- **Want generated CRUD?** Declare the five CRUD RPCs
+  (`Create<X>`/`Get<X>`/`Update<X>`/`Delete<X>`/`List<Xs>`) in the
+  service proto — the table plus the RPCs make an entity, and
+  `forge generate` projects the ORM, conversions, and frontend pages.
+- **Hand-rolled access?** Declare nothing. Tables without CRUD RPCs are
+  plain schema, invisible to the CRUD/frontend projections.
+
+One gotcha: the shadow apply (and your project's tests via
+`pkg/testkit`) run the migrations on a real ephemeral postgres, so just
+write plain postgres DDL — `DEFAULT (now())`
+parenthesized, no `::type` casts. Postgres-only auxiliary DDL
+(extensions, functions, triggers, comments) is skipped harmlessly; a
+failing `CREATE/ALTER/DROP TABLE` is a hard generate error you fix in a
+new migration. See the `db` skill for details.
+
+If the source project was an older forge project with annotated entity
+protos (or a `proto/db/` directory), see
+`migrations/proto-entities-to-schema-truth` for the flip.
 
 ## Halt-and-report rule on forge bugs
 

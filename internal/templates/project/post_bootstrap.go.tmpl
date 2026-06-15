@@ -35,9 +35,24 @@ package app
 //   - Return any unrecoverable construction error so the boot fails
 //     loudly instead of silently degrading.
 //
-// This file is YOUR code — forge generate will never overwrite it.
+// Canonical example — late-bound dep where worker A produces a value
+// worker B needs:
 //
-//forge:scaffold one-shot
+//	func PostBootstrap(app *App) error {
+//	    // SnapshotSaver is constructed by wire_gen as part of the
+//	    // snapshotter worker; the trader worker can't take it in its
+//	    // Deps struct (would be a construction-order cycle), so we
+//	    // register it after both workers exist.
+//	    saver := app.Workers.Snapshotter.SnapshotSaver()
+//	    app.Workers.Trader.SetSnapshotSaver(saver)
+//	    return nil
+//	}
+//
+// Don't invent a parallel hook system (`wire_*_hooks.go`, post-Setup
+// passes, etc.) for this — PostBootstrap IS that system. If you need
+// late-bound coupling between a service / worker / adapter, do it here.
+//
+// yours: scaffolded once, never touched again — forge will not overwrite this file
 //forge:allow
 func PostBootstrap(app *App) error {
 	_ = app

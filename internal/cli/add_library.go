@@ -38,7 +38,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
-	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // newAddLibraryCmd is the cobra surface for `forge add library <name>`.
@@ -105,9 +105,9 @@ func runAddLibrary(name, pathFlag string, force, noExclude bool) error {
 	// Resolve target path. The default lives under internal/<pkg>/; --path
 	// lets users put the package under pkg/<name>/ or anywhere else they
 	// prefer. The directory name doubles as the Go package name, so we
-	// run it through ServicePackageName to normalize hyphens to
+	// run it through naming.ServicePackage to normalize hyphens to
 	// underscores when defaulting ("http-util" -> "http_util").
-	pkg := generator.ServicePackageName(name)
+	pkg := naming.ServicePackage(name)
 	relPath := pathFlag
 	if relPath == "" {
 		relPath = filepath.Join("internal", pkg)
@@ -126,7 +126,7 @@ func runAddLibrary(name, pathFlag string, force, noExclude bool) error {
 	// Derive the on-disk package identifier from the last segment of the
 	// resolved path so a --path override drives the package name. Falling
 	// back to pkg keeps the default path's behavior unchanged.
-	pkgIdent := generator.ServicePackageName(filepath.Base(relPath))
+	pkgIdent := naming.ServicePackage(filepath.Base(relPath))
 
 	absDir := filepath.Join(root, relPath)
 	if _, err := os.Stat(absDir); err == nil {

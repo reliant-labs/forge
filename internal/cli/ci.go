@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 )
 
@@ -28,13 +30,39 @@ func newCICmd() *cobra.Command {
 func newCIVerifyGeneratedCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify-generated",
-		Short: "Verify generated code is up to date",
-		Long:  "Runs forge generate and verifies no files changed. Used in CI to catch stale generated code.",
+		Short: "Verify generated code is pristine and up to date",
+		Long: "Two checks, both local to the checkout:\n" +
+			"  1. Self-certification: every generated file's embedded forge:hash marker\n" +
+			"     must verify (recompute vs embedded) — catches hand-edits that were\n" +
+			"     committed without --force / forge disown.\n" +
+			"  2. Freshness: runs forge generate and verifies no files changed —\n" +
+			"     catches stale generated code after an input (proto/forge.yaml) change.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := requireFeature(config.FeatureCI); err != nil {
 				return err
 			}
-			// Run forge generate.
+
+			// Pass 1: recompute embedded hashes. A hand-edited generated
+			// file fails HERE, by name, before the regenerate pass would
+			// abort on the same files with a less CI-shaped message.
+			root, err := projectRoot()
+			if err != nil {
+				return err
+			}
+			cs, err := generator.LoadChecksums(root)
+			if err != nil {
+				return fmt.Errorf("load .forge ownership state: %w", err)
+			}
+			if drift := scanProjectDrift(root, cs); len(drift) > 0 {
+				fmt.Fprintf(os.Stderr, "Error: %d generated file(s) were hand-edited after forge wrote them:\n", len(drift))
+				for _, d := range drift {
+					fmt.Fprintf(os.Stderr, "  - %s\n", d.Path)
+				}
+				fmt.Fprintln(os.Stderr, "Move the edits to a user-owned extension point (then regenerate), or `forge disown <path> --reason \"<why>\"` to take ownership.")
+				return fmt.Errorf("generated files failed self-certification")
+			}
+
+			// Pass 2: regenerate and diff.
 			parts, err := forgeExecCommand()
 			if err != nil {
 				return fmt.Errorf("resolve forge binary: %w", err)
@@ -88,10 +116,10 @@ func newCIValidateKCLCmd() *cobra.Command {
 				mainK := filepath.Join("deploy", "kcl", env, "main.k")
 				fmt.Printf("Validating %s ... ", mainK)
 
-				kclCmd := exec.CommandContext(cmd.Context(), "kcl", "run", mainK)
-				kclCmd.Stdout = nil // discard output; we only care about exit code
-				kclCmd.Stderr = os.Stderr
-				if err := kclCmd.Run(); err != nil {
+				// Validate by rendering through the embedded runtime (no
+				// external `kcl` binary); we only care about success/failure.
+				wd, _ := os.Getwd()
+				if _, err := kclrender.Run(wd, mainK, nil); err != nil {
 					fmt.Println("FAIL")
 					hasFailed = true
 				} else {
@@ -115,22 +143,22 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 		Short: "Run SQL migration safety checks based on forge.yaml config",
 		Long:  "Checks SQL migrations for patterns that pass on empty databases but fail or lock populated databases.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadProjectConfig()
+			store, err := loadProjectStore()
 			if err != nil {
 				return fmt.Errorf("load project config: %w", err)
 			}
-			if !cfg.Features.CIEnabled() {
+			if !store.Features().CIEnabled() {
 				return config.DisabledFeatureError(config.FeatureCI)
 			}
-			if !cfg.Features.MigrationsEnabled() {
+			if !store.Features().MigrationsEnabled() {
 				return config.DisabledFeatureError(config.FeatureMigrations)
 			}
 
-			migrationsDir := cfg.Database.MigrationsDir
+			migrationsDir := store.Database().MigrationsDir
 			if migrationsDir == "" {
 				migrationsDir = filepath.Join("db", "migrations")
 			}
-			result, err := migrationlint.LintMigrationsDir(migrationsDir, migrationlint.ConfigFromProject(cfg.Database.MigrationSafety))
+			result, err := migrationlint.LintMigrationsDir(migrationsDir, migrationlint.ConfigFromProject(store.Database().MigrationSafety))
 			if err != nil {
 				return fmt.Errorf("migration safety lint failed: %w", err)
 			}
@@ -155,10 +183,11 @@ func newCIVulnScanCmd() *cobra.Command {
 		Short: "Run vulnerability scanners based on forge.yaml config",
 		Long:  "Runs govulncheck for Go and npm audit for frontends. Defaults to scanning everything enabled in forge.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := requireFeature(config.FeatureCI)
+			store, err := requireFeature(config.FeatureCI)
 			if err != nil {
 				return err
 			}
+			ci := store.CI()
 
 			// If no specific flag set, default to --all behavior.
 			if !flagGo && !flagNPM {
@@ -166,9 +195,9 @@ func newCIVulnScanCmd() *cobra.Command {
 			}
 
 			// Zero-value VulnScan config means "all enabled" (project convention).
-			allEnabled := cfg.CI.VulnScan == (config.CIVulnConfig{})
-			runGo := flagGo || (flagAll && (allEnabled || cfg.CI.VulnScan.Go))
-			runNPM := flagNPM || (flagAll && (allEnabled || cfg.CI.VulnScan.NPM))
+			allEnabled := ci.VulnScan == (config.CIVulnConfig{})
+			runGo := flagGo || (flagAll && (allEnabled || ci.VulnScan.Go))
+			runNPM := flagNPM || (flagAll && (allEnabled || ci.VulnScan.NPM))
 
 			hasFailed := false
 
@@ -180,7 +209,7 @@ func newCIVulnScanCmd() *cobra.Command {
 			}
 
 			if runNPM {
-				if err := ciRunNPMAudit(cmd.Context(), cfg); err != nil {
+				if err := ciRunNPMAudit(cmd.Context(), store.Config()); err != nil {
 					fmt.Fprintf(os.Stderr, "❌ npm audit failed: %v\n", err)
 					hasFailed = true
 				}

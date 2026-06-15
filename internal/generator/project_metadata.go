@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,13 +9,13 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/assets"
-	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // writeProjectMetadata writes everything under .reliant/, the top-level
-// memory file (whose name depends on MemoryFormat), and the project-level
-// .mcp.json files.
+// memory file (whose name depends on the project's Harness), and the
+// project-level .mcp.json files.
 //
 // File ownership model:
 //
@@ -46,22 +47,29 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 	}{Name: g.Name, CLI: cliName()}
 
 	// User-owned .reliant/reliant.md — project memory file. Write only if absent.
-	// This is always generated regardless of --memory format (forge's own memory).
+	// This is always generated regardless of --harness (forge's own memory).
 	if err := writeIfAbsent(filepath.Join(reliantDir, "reliant.md"), "reliant-reliant.md.tmpl", templateData); err != nil {
 		return fmt.Errorf("failed to write .reliant/reliant.md: %w", err)
 	}
 
-	// User-owned top-level memory file — path depends on --memory format.
-	memoryFile := g.MemoryFormat.MemoryFilePath()
-	memoryDest := filepath.Join(g.Path, memoryFile)
-	// Ensure parent directory exists (needed for copilot: .github/).
-	if dir := filepath.Dir(memoryDest); dir != g.Path {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("failed to create directory for %s: %w", memoryFile, err)
+	// User-owned top-level memory file — path depends on --harness.
+	// Skipped for the reliant harness: reliant loads the framework
+	// content in-memory via forgecli.RenderProjectMemory whenever it
+	// detects forge.yaml, so a stale on-disk copy would just create
+	// upgrade drift. Other harnesses (claude/cursor/copilot/codex) have
+	// no such auto-discovery path and still need the file written.
+	if g.Harness != HarnessReliant && g.Harness != "" {
+		memoryFile := g.Harness.MemoryFilePath()
+		memoryDest := filepath.Join(g.Path, memoryFile)
+		// Ensure parent directory exists (needed for copilot: .github/).
+		if dir := filepath.Dir(memoryDest); dir != g.Path {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("failed to create directory for %s: %w", memoryFile, err)
+			}
 		}
-	}
-	if err := writeIfAbsent(memoryDest, "reliant.md.tmpl", templateData); err != nil {
-		return fmt.Errorf("failed to write %s: %w", memoryFile, err)
+		if err := writeIfAbsent(memoryDest, "reliant.md.tmpl", templateData); err != nil {
+			return fmt.Errorf("failed to write %s: %w", memoryFile, err)
+		}
 	}
 
 	// User-owned MCP config — write only if absent.
@@ -141,45 +149,34 @@ func (g *ProjectGenerator) generateExamplesReadme() error {
 	return os.WriteFile(filepath.Join(examplesDir, "README.md"), content, 0o644)
 }
 
-// generatePkgMiddleware writes Connect-compatible interceptors into pkg/middleware/.
+// generatePkgMiddleware scaffolds the project's thin auth-policy file
+// (pkg/middleware/middleware.go) plus its policy-wiring test.
+//
+// The middleware MECHANISMS live in the forge libraries
+// (pkg/authn, pkg/authz, pkg/middleware, pkg/observe) — versioned with
+// forge so security fixes flow to every project. Historically ~25
+// static middleware files were photocopied here; field evidence showed
+// they stayed byte-identical and never received fixes, so they were
+// folded into the libraries. The two files below are user-owned from
+// line one (scaffold-once; never overwritten if present).
 func (g *ProjectGenerator) generatePkgMiddleware() error {
 	middlewareFiles := []struct {
 		templateName string
 		destName     string
 	}{
-		{"middleware-recovery.go", "recovery.go"},
-		{"middleware-recovery_test.go", "recovery_test.go"},
-		{"middleware-logging.go", "logging.go"},
-		{"middleware-logging_test.go", "logging_test.go"},
-		{"middleware-auth.go", "auth.go"},
-		{"middleware-auth_test.go", "auth_test.go"},
-		{"middleware-authz.go", "authz.go"},
-		{"middleware-permissive-authz.go", "permissive_authz.go"},
-		{"middleware-claims.go", "claims.go"},
-		{"middleware-audit.go", "audit.go"},
-		{"middleware-http.go", "http.go"},
-		{"middleware-cors.go", "cors.go"},
-		{"middleware-cors_test.go", "cors_test.go"},
-		{"middleware-security-headers.go", "security_headers.go"},
-		{"middleware-security-headers_test.go", "security_headers_test.go"},
-		{"middleware-ratelimit.go", "ratelimit.go"},
-		{"middleware-ratelimit_test.go", "ratelimit_test.go"},
-		{"middleware-requestid.go", "requestid.go"},
-		{"middleware-requestid_test.go", "requestid_test.go"},
-		{"middleware-idempotency.go", "idempotency.go"},
-		{"middleware-idempotency_test.go", "idempotency_test.go"},
-		{"middleware-redact.go", "redact.go"},
-		{"middleware-redact_test.go", "redact_test.go"},
-		{"middleware-logevents.go", "logevents.go"},
-		{"middleware-trace-handler.go", "trace_handler.go"},
+		{"middleware.go", "middleware.go"},
+		{"middleware_test.go", "middleware_test.go"},
 	}
 
 	for _, f := range middlewareFiles {
+		destPath := filepath.Join(g.Path, "pkg", "middleware", f.destName)
+		if _, err := os.Stat(destPath); err == nil {
+			continue // user-owned — never clobber an existing copy
+		}
 		content, err := templates.ProjectTemplates().Get(f.templateName)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.templateName, err)
 		}
-		destPath := filepath.Join(g.Path, "pkg", "middleware", f.destName)
 		if err := os.WriteFile(destPath, content, 0644); err != nil {
 			return fmt.Errorf("write %s: %w", f.destName, err)
 		}
@@ -187,27 +184,22 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 	return nil
 }
 
-// recordFrozenChecksums records checksums for all frozen files managed by
-// `forge upgrade`. This must be called after the frozen files have been
-// written to disk so that new projects have baseline checksums.
+// recordFrozenChecksums re-certifies the frozen files managed by
+// `forge upgrade`. Must run after the frozen files have been written so
+// new projects start with valid embedded hashes.
 func (g *ProjectGenerator) recordFrozenChecksums() error {
 	return RecordFrozenChecksums(g.Path, g.effectiveBinary(), g.effectiveKind())
 }
 
-// RecordFrozenChecksums records checksums for all managed files at
-// projectDir. Exposed publicly so callers outside the scaffold path
-// (e.g. `forge new` after `bootstrapGeneratedCode` runs goimports
-// and reformats Tier-2 files) can re-record the post-formatting bytes
-// — otherwise the checksums baked at scaffold time would not match
-// the on-disk content, and `forge upgrade --dry-run` would flag every
-// formatted file as user-modified.
+// RecordFrozenChecksums re-stamps the embedded forge:hash marker on
+// every marker-bearing managed file at projectDir. Exposed publicly so
+// callers outside the scaffold path (e.g. `forge new` after
+// `bootstrapGeneratedCode` runs goimports and reformats files) can
+// re-certify the post-formatting bytes — otherwise the hashes stamped
+// at scaffold time would not match the on-disk content, and the drift
+// guard / `forge upgrade --dry-run` would flag every formatted file as
+// user-modified.
 func RecordFrozenChecksums(projectDir, binary, kind string) error {
-	cs, err := LoadChecksums(projectDir)
-	if err != nil {
-		return fmt.Errorf("load checksums: %w", err)
-	}
-	cs.ForgeVersion = buildinfo.Version()
-
 	for _, f := range managedFilesForKindBinary(kind, binary) {
 		fullPath := filepath.Join(projectDir, f.destPath)
 		content, err := os.ReadFile(fullPath)
@@ -215,9 +207,20 @@ func RecordFrozenChecksums(projectDir, binary, kind string) error {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return fmt.Errorf("read %s for checksum: %w", f.destPath, err)
+			return fmt.Errorf("read %s for re-stamp: %w", f.destPath, err)
 		}
-		cs.RecordFile(f.destPath, content)
+		// Only re-certify files that already carry a marker — Tier-2
+		// scaffolds are user-owned from birth and stay unmarked.
+		if _, found := checksums.ExtractMarker(content); !found {
+			continue
+		}
+		restamped, ok := checksums.Stamp(f.destPath, content)
+		if !ok || bytes.Equal(restamped, content) {
+			continue
+		}
+		if err := os.WriteFile(fullPath, restamped, 0o644); err != nil {
+			return fmt.Errorf("re-stamp %s: %w", f.destPath, err)
+		}
 	}
-	return SaveChecksums(projectDir, cs)
+	return nil
 }

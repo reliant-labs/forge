@@ -31,6 +31,18 @@ type KCLEntities struct {
 	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
 	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
 	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	// SecretProvider is the bundle-level secret provider declaration
+	// (WHERE secret values come from for this env). Nil when the bundle
+	// declares no provider — preserving today's no-provider behavior.
+	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+}
+
+// SecretProviderEntity is the parsed bundle-level secret provider
+// declaration. Type is "dotenv" | "external". Path is the dotenv path
+// (dotenv only), resolved relative to the project root by the CLI.
+type SecretProviderEntity struct {
+	Type string `json:"type"`
+	Path string `json:"path,omitempty"`
 }
 
 // GatewayEntity mirrors the kcl/schema.k Gateway. Listeners are inlined.
@@ -325,6 +337,9 @@ type kclRenderRaw struct {
 	Gateways   []GatewayEntity   `json:"gateways,omitempty"`
 	HTTPRoutes []HTTPRouteEntity `json:"http_routes,omitempty"`
 	GRPCRoutes []GRPCRouteEntity `json:"grpc_routes,omitempty"`
+	// SecretProvider rides alongside services in the entity output; nil
+	// when the bundle declares no provider (KCL omits the key entirely).
+	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
 }
 
 type kclServiceRaw struct {
@@ -411,12 +426,13 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
-		Operators:  raw.Operators,
-		Frontends:  raw.Frontends,
-		CronJobs:   raw.CronJobs,
-		Gateways:   raw.Gateways,
-		HTTPRoutes: raw.HTTPRoutes,
-		GRPCRoutes: raw.GRPCRoutes,
+		Operators:      raw.Operators,
+		Frontends:      raw.Frontends,
+		CronJobs:       raw.CronJobs,
+		Gateways:       raw.Gateways,
+		HTTPRoutes:     raw.HTTPRoutes,
+		GRPCRoutes:     raw.GRPCRoutes,
+		SecretProvider: raw.SecretProvider,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)

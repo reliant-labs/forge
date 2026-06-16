@@ -4,6 +4,8 @@ package cli
 
 import (
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -39,4 +41,70 @@ func signalProcessGroup(pid int, sig syscall.Signal) error {
 		return syscall.Kill(pid, sig)
 	}
 	return nil
+}
+
+// processAlive reports whether pid is a live process, via a signal-0 probe.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
+}
+
+// killProcessTree signals pid, its process group, AND every transitive
+// descendant. The tree walk is the robust part: a runner like Air re-execs
+// its server in a NEW process group on every rebuild, so signalling only
+// pid's group (signalProcessGroup) leaves the respawned child squatting its
+// port. Walking ppid catches it regardless of group/session games — the
+// parent/child relationship is the one stable handle. Descendants are
+// collected BEFORE signalling so a dying tree's shifting ppids can't hide
+// a child.
+func killProcessTree(pid int, sig syscall.Signal) {
+	if pid <= 0 {
+		return
+	}
+	descendants := descendantPIDs(pid)
+	_ = syscall.Kill(-pid, sig) // the group (cheap; catches in-group children)
+	_ = syscall.Kill(pid, sig)  // the leader
+	for _, d := range descendants {
+		_ = syscall.Kill(d, sig)
+	}
+}
+
+// descendantPIDs returns every transitive child of root, reading the
+// (pid, ppid) table from `ps` so it works on macOS and Linux alike without
+// depending on /proc.
+func descendantPIDs(root int) []int {
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	if err != nil {
+		return nil
+	}
+	children := map[int][]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		ppid, e2 := strconv.Atoi(f[1])
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		children[ppid] = append(children[ppid], pid)
+	}
+	var result []int
+	seen := map[int]bool{root: true}
+	queue := []int{root}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		for _, c := range children[p] {
+			if !seen[c] {
+				seen[c] = true
+				result = append(result, c)
+				queue = append(queue, c)
+			}
+		}
+	}
+	return result
 }

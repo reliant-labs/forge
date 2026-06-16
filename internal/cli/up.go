@@ -53,6 +53,7 @@ type upOptions struct {
 	clusterOnly bool // build + deploy cluster manifests, skip host/frontend
 	hostOnly    bool // skip cluster build+deploy, run host + frontend phases only
 	background  bool // detach and write PID files; use `forge up stop --env=<env>` to teardown
+	restart     bool // stop any stack already running for this env first, then up
 	noGenerate  bool // skip the pre-build "ensure generated code" step (--no-generate)
 	noInstall   bool // skip the pre-dev-serve "ensure frontend deps" step (--no-install)
 	// targets, when non-empty, scopes the host + frontend phases to the
@@ -130,6 +131,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.clusterOnly, "cluster-only", false, "Only run cluster phases (build + deploy); skip host/frontend")
 	cmd.Flags().BoolVar(&opts.hostOnly, "host-only", false, "Only run host phases (host + frontend); skip build/deploy")
 	cmd.Flags().BoolVar(&opts.background, "background", false, "Detach long-running phases and return immediately (stop with `forge up stop --env=<env>`)")
+	cmd.Flags().BoolVar(&opts.restart, "restart", false, "If a stack is already running for this env, stop it (whole process tree) and bring it back up, instead of erroring on the port conflict")
 	cmd.Flags().BoolVar(&opts.noGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge up` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.noInstall, "no-install", false, "Skip the pre-dev-serve frontend dependency install. By default `forge up` installs a frontend's deps when node_modules is missing or older than its lockfile/manifest.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the host + frontend phases to specific services/frontends by name (repeatable). `forge up --target admin-server --host-only` is the single-service inner loop. Default: everything.")
@@ -257,17 +259,42 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// the frontend feature gate. Cluster-only never reaches here.
 	frontendsOn := !skipFeature(store, config.FeatureFrontend, "up:frontend:portcheck")
 	if conflicts := conflictingPorts(entities, opts.targets, frontendsOn, portInUse); len(conflicts) > 0 {
-		var b strings.Builder
-		fmt.Fprintf(&b, "[up] a %s stack already appears to be running for env=%s:\n", opts.env, opts.env)
-		for _, c := range conflicts {
-			fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+		// Tell OUR own already-running stack from a FOREIGN port holder via
+		// the per-env lock (the tracked PIDs), not by guessing from the
+		// bound port alone. Three outcomes:
+		//   * our stack is live and --restart  -> stop it (tree-kill, which
+		//     waits for the listeners to free) and continue;
+		//   * our stack is live, no --restart  -> a clear error pointing at
+		//     the unblock that actually works (forge up stop / --restart);
+		//   * nothing tracked but the port is busy -> a foreign process;
+		//     error pointing at lsof.
+		ours := upStackLive(opts.env)
+		if ours && opts.restart {
+			fmt.Printf("\n[up] --restart: stopping the running env=%s stack first\n", opts.env)
+			_ = runUpStop(opts.env) // tree-kill + wait-for-exit => ports released
+			conflicts = conflictingPorts(entities, opts.targets, frontendsOn, portInUse)
 		}
-		fmt.Fprintf(&b, "     stop it first:  forge up stop --env=%s\n", opts.env)
-		b.WriteString("     (or free those ports / use --target to start a different service)")
-		// Undo any resolve_port drift this rejected render persisted, so
-		// the next clean run still gets the canonical port assignments.
-		restorePortStore()
-		return errors.New(b.String())
+		if len(conflicts) > 0 {
+			var b strings.Builder
+			if ours && !opts.restart {
+				fmt.Fprintf(&b, "[up] a forge stack is already running for env=%s:\n", opts.env)
+				for _, c := range conflicts {
+					fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+				}
+				fmt.Fprintf(&b, "     stop it:     forge up stop --env=%s\n", opts.env)
+				fmt.Fprintf(&b, "     or refresh:  forge up --env=%s --restart", opts.env)
+			} else {
+				fmt.Fprintf(&b, "[up] these ports are held by a process forge doesn't manage (env=%s):\n", opts.env)
+				for _, c := range conflicts {
+					fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+				}
+				b.WriteString("     free them (lsof -i :<port>, kill the PID) or use --target to start a different service")
+			}
+			// Undo any resolve_port drift this rejected render persisted, so
+			// the next clean run still gets the canonical port assignments.
+			restorePortStore()
+			return errors.New(b.String())
+		}
 	}
 
 	// Host phases — host services + frontends. These are tracked under
@@ -297,10 +324,15 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// URLs + log paths are one glance away (and greppable for an agent).
 	printUpSummary(entities, opts.env, opts.background, opts.targets)
 
+	// Persist the per-env lock (tracked PIDs) for BOTH foreground and
+	// background, so a concurrent `forge up` for this env detects the running
+	// stack and `forge up stop` works. Foreground removes it again on
+	// shutdown (procs.shutdown / shutdownOnExit).
+	procs.persist()
+
 	if opts.background {
 		fmt.Printf("[up] detached %d process(es). Stop with `forge up stop --env=%s`.\n",
 			procs.count(), opts.env)
-		procs.persist()
 		return nil
 	}
 
@@ -984,10 +1016,10 @@ func (p *procRegistry) shutdown() {
 			continue
 		}
 		fmt.Printf("[up] stopping %s (pid=%d)...\n", mp.name, pid)
-		// Signal the whole process group so `go run`'s execed child (and
-		// any other grandchildren) die with the parent instead of
-		// orphaning and squatting on their ports.
-		_ = signalProcessGroup(pid, syscall.SIGTERM)
+		// Kill the whole process TREE so `go run`/Air's execed child — which
+		// may have moved into its own process group — dies with the parent
+		// instead of orphaning and squatting its port.
+		killProcessTree(pid, syscall.SIGTERM)
 	}
 
 	done := make(chan struct{})
@@ -1014,7 +1046,7 @@ func (p *procRegistry) shutdown() {
 				continue
 			}
 			fmt.Printf("[up] %s: did not exit, killing.\n", mp.name)
-			_ = signalProcessGroup(pid, syscall.SIGKILL)
+			killProcessTree(pid, syscall.SIGKILL)
 		}
 		<-done
 	}
@@ -1047,20 +1079,25 @@ func (p *procRegistry) shutdownOnExit() {
 // runUpStop reads the persisted state file and SIGTERMs every tracked
 // pid. Missing state file is a friendly no-op so the command is safe
 // to invoke unconditionally on teardown.
-func runUpStop(env string) error {
+// trackedProc is one (name, pid) entry parsed from an env's lock file.
+type trackedProc struct {
+	name string
+	pid  int
+}
+
+// trackedStack parses the env's lock file (~/.cache/forge/up/<env>.pids)
+// into its (name, pid) entries. Returns nil when no lock is present. This
+// is the single source of truth for "what did THIS env's `forge up` start".
+func trackedStack(env string) []trackedProc {
 	statePath, err := upStatePath(env)
 	if err != nil {
-		return err
+		return nil
 	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("[up] no tracked processes for env=%s (state file missing).\n", env)
-			return nil
-		}
-		return fmt.Errorf("read state: %w", err)
+		return nil
 	}
-	var stopped int
+	var out []trackedProc
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -1071,31 +1108,80 @@ func runUpStop(env string) error {
 			continue
 		}
 		var pid int
-		if _, err := fmt.Sscanf(parts[1], "%d", &pid); err != nil {
+		// A non-positive pid is dropped: signalling 0/-1 is a footgun (on
+		// Unix kill(-1) hits every process the user can reach).
+		if _, err := fmt.Sscanf(parts[1], "%d", &pid); err != nil || pid <= 0 {
 			continue
 		}
-		// Guard against a non-positive PID slipping into the state file
-		// (e.g. a pre-fix file written with a Release()'d -1). Signalling
-		// pid -1 / 0 is a footgun — on Unix kill(-1) targets every process
-		// the user can reach — so refuse rather than risk it.
-		if pid <= 0 {
-			fmt.Printf("[up] %s: skipping invalid pid %d in state file\n", parts[0], pid)
-			continue
-		}
-		// Signal the whole process group (negative pid) so a detached
-		// `go run`'s execed child dies too — the persisted pid is the
-		// group leader (Setpgid at Start made pgid == pid).
-		if err := signalProcessGroup(pid, syscall.SIGTERM); err != nil {
-			fmt.Printf("[up] %s: signal pid %d: %v (already exited?)\n", parts[0], pid, err)
-		} else {
-			fmt.Printf("[up] %s: SIGTERM sent to group %d\n", parts[0], pid)
-			stopped++
+		out = append(out, trackedProc{name: parts[0], pid: pid})
+	}
+	return out
+}
+
+// upStackLive reports whether the env's tracked stack has at least one live
+// process. Lets the guard tell "re-running my own stack" from "a foreign
+// process is on my port" deterministically, instead of guessing from a bound
+// port. A lock whose PIDs are all dead is stale and treated as "not live".
+func upStackLive(env string) bool {
+	for _, t := range trackedStack(env) {
+		if processAlive(t.pid) {
+			return true
 		}
 	}
+	return false
+}
+
+func runUpStop(env string) error {
+	statePath, err := upStatePath(env)
+	if err != nil {
+		return err
+	}
+	if _, statErr := os.Stat(statePath); statErr != nil {
+		if os.IsNotExist(statErr) {
+			fmt.Printf("[up] no tracked stack for env=%s.\n", env)
+			return nil
+		}
+		return fmt.Errorf("stat state: %w", statErr)
+	}
+	procs := trackedStack(env)
+
+	// SIGTERM each process TREE — the runner plus every transitive
+	// descendant, including the server a runner like Air re-execs in its own
+	// process group. (Signalling only the runner's group left that respawned
+	// child orphaned and squatting its port — the bug we're fixing.)
+	for _, t := range procs {
+		fmt.Printf("[up] %s: stopping (pid %d + tree)\n", t.name, t.pid)
+		killProcessTree(t.pid, syscall.SIGTERM)
+	}
+
+	// Wait for the runners to actually exit by POLLING liveness, so a caller
+	// like `--restart` knows the listeners are released on return. Return the
+	// instant they're gone; SIGKILL stragglers after a bounded grace.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		anyAlive := false
+		for _, t := range procs {
+			if processAlive(t.pid) {
+				anyAlive = true
+				break
+			}
+		}
+		if !anyAlive || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, t := range procs {
+		if processAlive(t.pid) {
+			fmt.Printf("[up] %s: did not exit, SIGKILL\n", t.name)
+			killProcessTree(t.pid, syscall.SIGKILL)
+		}
+	}
+
 	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("[up] warning: remove state: %v\n", err)
 	}
-	fmt.Printf("[up] stopped %d process(es).\n", stopped)
+	fmt.Printf("[up] stopped %d process(es) for env=%s.\n", len(procs), env)
 	return nil
 }
 

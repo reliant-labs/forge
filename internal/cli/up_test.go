@@ -89,7 +89,7 @@ func TestBuildHostServiceCmd(t *testing.T) {
 			// nil cfg is the test-shaped projectConfig — the dispatch
 			// matrix shouldn't depend on forge.yaml layering at all,
 			// and a nil cfg makes that explicit.
-			cmd, _, err := buildHostServiceCmd(ctx, nil, c.svc, "dev")
+			cmd, _, err := buildHostServiceCmd(ctx, nil, c.svc, nil, "dev")
 			if c.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 					t.Fatalf("want err containing %q, got %v", c.wantErr, err)
@@ -186,7 +186,7 @@ log_level: debug
 			Host: &HostDeploy{Runner: "go-run"},
 		},
 	}
-	cmd, _, err := buildHostServiceCmd(context.Background(), cfg, svc, "dev-host")
+	cmd, _, err := buildHostServiceCmd(context.Background(), cfg, svc, nil, "dev-host")
 	if err != nil {
 		t.Fatalf("buildHostServiceCmd: %v", err)
 	}

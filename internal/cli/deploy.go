@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -413,6 +415,17 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	for i := range groups {
 		if groups[i].ImageTag == "" {
 			groups[i].ImageTag = imageTag
+		}
+	}
+
+	// k8s Secret projection: for a dotenv secret_provider, render the
+	// declared cluster secret refs into plaintext Secret manifests and
+	// apply them BEFORE the Deployments roll out (so each Deployment's
+	// secretKeyRef resolves on first schedule). Skipped on rollback —
+	// rollback reuses the tag (and the Secret) already in the cluster.
+	if !rollback {
+		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, dryRun); err != nil {
+			return err
 		}
 	}
 
@@ -988,6 +1001,123 @@ func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envNam
 	}
 	fmt.Printf("kubectl context: %s (matches env %s)\n", current, envName)
 	return nil
+}
+
+// applyK8sSecretsFromProvider renders + applies plaintext k8s Secret
+// manifests from a dotenv secret_provider, BEFORE the Deployments roll
+// out so each Deployment's secretKeyRef resolves on first schedule.
+//
+// Sequence:
+//  1. Build the provider and fail-fast validate that every declared
+//     cluster secret ref resolves (no-op for external/none providers —
+//     forge can't see those values, they're provisioned out-of-band).
+//  2. For a dotenv provider ONLY: guard that every targeted k8s cluster
+//     is a recognized LOCAL dev cluster. dotenv renders PLAINTEXT
+//     Secrets; shipping those into a remote/prod cluster is a footgun,
+//     so we refuse and point the user at forge.ExternalSecrets {}.
+//  3. Render the Secret manifests and apply them via the same
+//     cluster.KubectlApply path the Deployments use.
+//
+// external/none providers produce no manifests (RenderK8sSecrets returns
+// nil), so this is a no-op for them beyond the validation gate.
+func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace string, dryRun bool) error {
+	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
+	if err != nil {
+		return fmt.Errorf("secret provider: %w", err)
+	}
+	// Fail-fast: declared cluster refs must resolve (no-op for
+	// external/none).
+	dotenvPath := ""
+	if entities != nil && entities.SecretProvider != nil {
+		dotenvPath = entities.SecretProvider.Path
+	}
+	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForK8sServices(entities), dotenvPath); err != nil {
+		return err
+	}
+	if prov.Kind() != "dotenv" {
+		return nil
+	}
+
+	// GUARD: dotenv renders PLAINTEXT Secrets — local clusters only.
+	// Reject if any k8s-cluster group targets a non-local cluster.
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" {
+			continue
+		}
+		if !isLocalCluster(g.Cluster) {
+			return fmt.Errorf(
+				"secret_provider 'dotenv' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
+					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters.",
+				g.Cluster)
+		}
+	}
+
+	mans := secrets.RenderK8sSecrets(prov, secretRefsForK8sServices(entities), namespace)
+	if len(mans) == 0 {
+		return nil
+	}
+
+	// Marshal the []map[string]any into the `---`-separated YAML document
+	// stream cluster.KubectlApply consumes (identical shape to
+	// RenderManifests' output that the Deployment apply uses).
+	stream, merr := marshalManifestStream(mans)
+	if merr != nil {
+		return fmt.Errorf("render k8s secrets: %w", merr)
+	}
+
+	if dryRun {
+		fmt.Println("\n--- Generated Secret Manifests (dry-run) ---")
+		fmt.Println(stream)
+		fmt.Println("--- End Secret Manifests ---")
+		return nil
+	}
+
+	fmt.Printf("Applying %d secret manifest(s) into namespace %s...\n", len(mans), namespace)
+	if err := cluster.KubectlApply(ctx, stream); err != nil {
+		return fmt.Errorf("apply k8s secrets: %w", err)
+	}
+	return nil
+}
+
+// marshalManifestStream serialises a list of manifest maps into the
+// `---`-separated multi-doc YAML stream `kubectl apply -f -` consumes —
+// the same shape cluster.extractManifests produces for the Deployment
+// apply, so KubectlApply handles both identically.
+func marshalManifestStream(mans []map[string]any) (string, error) {
+	var sb strings.Builder
+	for i, m := range mans {
+		if i > 0 {
+			sb.WriteString("---\n")
+		}
+		b, err := yaml.Marshal(m)
+		if err != nil {
+			return "", fmt.Errorf("marshal manifest %d: %w", i, err)
+		}
+		sb.Write(b)
+	}
+	return sb.String(), nil
+}
+
+// isLocalCluster reports whether a cluster name / kubectl context is
+// clearly a local dev cluster — the only place plaintext dotenv Secrets
+// are safe to project. Recognizes the k3d / kind context prefixes and
+// the docker-desktop / minikube / rancher-desktop / colima / orbstack
+// local-runtime markers. An empty name is treated as non-local so a
+// missing cluster declaration can't silently bypass the guard.
+func isLocalCluster(name string) bool {
+	if name == "" {
+		return false
+	}
+	n := strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(n, "k3d-") || strings.HasPrefix(n, "kind-") {
+		return true
+	}
+	for _, marker := range []string{"docker-desktop", "minikube", "rancher-desktop", "colima", "orbstack"} {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // kubectlContextGuardVerdict is the pure comparison core of the

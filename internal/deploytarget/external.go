@@ -144,6 +144,21 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 		return fmt.Errorf("external %s: env_file: %w", svc.Name, ferr)
 	}
 
+	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
+	// layer, then let env_file entries override on conflict — the explicit
+	// file wins. No-op when svc.Secrets is nil/empty (the common case for
+	// external/none providers), preserving the pre-secrets behaviour.
+	if len(svc.Secrets) > 0 {
+		merged := make(map[string]string, len(svc.Secrets)+len(envOverlay))
+		for k, v := range svc.Secrets {
+			merged[k] = v
+		}
+		for k, v := range envOverlay {
+			merged[k] = v // env_file wins
+		}
+		envOverlay = merged
+	}
+
 	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
 		return fmt.Errorf("external %s: deploy_cmd: %w", svc.Name, err)
 	}

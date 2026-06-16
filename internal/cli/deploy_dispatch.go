@@ -42,6 +42,20 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 	if entities == nil {
 		return nil, nil
 	}
+
+	// Resolve the bundle's secret provider once. For a dotenv provider,
+	// All() returns the resolved key→value map we inline into the runtime
+	// env of External/Compose services (env_file overrides on conflict —
+	// see the merge in compose.go / external.go deployOne). External/none
+	// providers return nil (those resolve secrets out-of-band), so the
+	// merge is a no-op for them. K8sCluster services deliberately do NOT
+	// receive this map: they get rendered Secret objects + secretKeyRef.
+	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
+	if err != nil {
+		return nil, fmt.Errorf("secret provider: %w", err)
+	}
+	secretEnv := prov.All()
+
 	var raw []deploytarget.RawService
 	for _, svc := range entities.Services {
 		switch svc.Deploy.Type {
@@ -87,6 +101,7 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 					EnvFile:     e.EnvFile,
 					Env:         e.Env,
 				},
+				Secrets: secretEnv,
 			})
 		case "compose":
 			cm := svc.Deploy.Compose
@@ -100,6 +115,7 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 					Service:     cm.Service,
 					EnvFile:     cm.EnvFile,
 				},
+				Secrets: secretEnv,
 			})
 		default:
 			// host, build-only, "" — skipped.

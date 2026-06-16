@@ -44,6 +44,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 // upOptions bundles flags for `forge up`.
@@ -205,6 +206,29 @@ func runUp(ctx context.Context, opts upOptions) error {
 	}
 	summarizeKCLBuildPlan(entities)
 
+	// Build the per-env secret provider ONCE for this run (dotenv reads
+	// the file now; external/none are cheap no-ops). Reused for both the
+	// fail-fast validation below and the host-service env injection in
+	// upHostServices — building it here avoids re-reading the dotenv per
+	// service. Unless --cluster-only, the host phase WILL run, so validate
+	// up front that every host service's declared secret_ref resolves
+	// against the provider before any process starts. ValidateDeclaredRefs
+	// is a no-op for external/none providers, so this only bites a dotenv
+	// provider missing a declared key (and lists every miss at once).
+	prov, err := secretProviderFromEntities(entities, projectDir)
+	if err != nil {
+		return fmt.Errorf("secret provider: %w", err)
+	}
+	if !opts.clusterOnly {
+		dotenvPath := ""
+		if entities.SecretProvider != nil {
+			dotenvPath = entities.SecretProvider.Path
+		}
+		if err := secrets.ValidateDeclaredRefs(prov, secretRefsForHostServices(entities), dotenvPath); err != nil {
+			return err // already actionable; lists every missing key
+		}
+	}
+
 	// Cluster phases — build + deploy. Both are feature-gated: if the
 	// project's forge.yaml turns either off (`features.build: false`
 	// or `features.deploy: false`), the orchestrator skips the phase
@@ -333,7 +357,7 @@ func runUp(ctx context.Context, opts upOptions) error {
 	defer procs.shutdownOnExit()
 
 	// Phase 3: host-mode services.
-	hostFailures := upHostServices(ctx, cfg, entities, opts.env, opts.background, opts.targets, procs)
+	hostFailures := upHostServices(ctx, cfg, entities, prov, opts.env, opts.background, opts.targets, procs)
 	if hostFailures > 0 {
 		fmt.Printf("[up] %d host service(s) failed to start (see above)\n", hostFailures)
 	}
@@ -632,7 +656,13 @@ func upDeployCluster(ctx context.Context, env string) error {
 // dispatching on deploy.Host.Runner. Returns the count of services that
 // failed to start (logged but not fatal — the orchestrator brings up as
 // many as it can rather than bailing on the first failure).
-func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, env string, background bool, targets []string, procs *procRegistry) int {
+func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntities, prov secrets.Provider, env string, background bool, targets []string, procs *procRegistry) int {
+	// Resolve the secrets layer ONCE for the whole host phase. The
+	// provider was built (and the dotenv read) once in runUp; All() is the
+	// full per-env secret map for a dotenv provider, or nil for
+	// external/none. buildHostServiceCmd layers this map (or the legacy
+	// per-service secrets_file fallback) onto each service's env.
+	secretsLayer := prov.All()
 	failures := 0
 	for _, svc := range e.Services {
 		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
@@ -641,7 +671,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 		if !inTargetSet(targets, svc.Name) {
 			continue
 		}
-		cmd, name, err := buildHostServiceCmd(ctx, cfg, svc, env)
+		cmd, name, err := buildHostServiceCmd(ctx, cfg, svc, secretsLayer, env)
 		if err != nil {
 			fmt.Printf("[up] host %s: %v\n", svc.Name, err)
 			failures++
@@ -663,8 +693,15 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 // without erroring.
 //
 // Env layering matches `forge run <svc>` exactly: projectConfig →
-// secrets_file → env_vars → os.Environ() wins last. See
+// secrets → env_vars → os.Environ() wins last. See
 // hostlaunch.LayerHostEnv for the full precedence rationale.
+//
+// secretsLayer is the per-env secret provider's resolved map (the dotenv
+// provider's full map; nil for external/none). It is the authoritative
+// secrets source when a provider is declared. When it is empty (no
+// provider declared) the legacy per-service secrets_file is loaded as a
+// backward-compat fallback so projects that haven't adopted a provider
+// keep working.
 //
 // Unlike `forge run <svc>`, `forge up` is strict about unknown runners:
 // a typo in KCL is fail-loud here because the orchestrator owns the
@@ -672,7 +709,7 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 // pin the user meant to apply. The hostlaunch package itself falls
 // through to go-run on unknown runners; the explicit IsKnownRunner
 // gate is what makes this call site strict.
-func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc ServiceEntity, env string) (*exec.Cmd, string, error) {
+func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc ServiceEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
 	host := svc.Deploy.Host
 	// An explicit `command` overrides the runner convention (sibling-repo
 	// binaries, non-standard entrypoints), so the strict runner-name check
@@ -690,18 +727,26 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, svc Ser
 	}
 	cmd := hostlaunch.BuildCmd(ctx, svc.Name, spec)
 
-	// Env composition: projectConfig → secrets_file → env_vars →
-	// os.Environ() wins last. Missing secrets_file is non-fatal
+	// Env composition: projectConfig → secrets → env_vars →
+	// os.Environ() wins last. Secrets are provider-first: the per-env
+	// secret provider (built once in runUp, passed down as secretsLayer)
+	// is the authoritative source when declared. Only when no provider is
+	// declared (empty secretsLayer) do we fall back to the legacy
+	// per-service secrets_file. A missing secrets_file is non-fatal
 	// (warn-and-continue); parse / permission errors are fatal because
 	// they signal a broken KCL pin rather than a developer who hasn't
 	// created the file yet.
-	secrets, lerr := hostlaunch.LoadSecretsFile(host.SecretsFile)
-	switch {
-	case lerr == nil:
-	case errors.Is(lerr, os.ErrNotExist):
-		fmt.Printf("[up] host %s: warning: secrets file %s missing; continuing without it\n", svc.Name, host.SecretsFile)
-	default:
-		return nil, "", fmt.Errorf("host %s: read secrets file %s: %w", svc.Name, host.SecretsFile, lerr)
+	secrets := secretsLayer
+	if len(secrets) == 0 {
+		loaded, lerr := hostlaunch.LoadSecretsFile(host.SecretsFile)
+		switch {
+		case lerr == nil:
+			secrets = loaded
+		case errors.Is(lerr, os.ErrNotExist):
+			fmt.Printf("[up] host %s: warning: secrets file %s missing; continuing without it\n", svc.Name, host.SecretsFile)
+		default:
+			return nil, "", fmt.Errorf("host %s: read secrets file %s: %w", svc.Name, host.SecretsFile, lerr)
+		}
 	}
 	envVars := hostEnvVarsToMap(host)
 	// projectConfig layer: forge.yaml environments[<env>].config projected

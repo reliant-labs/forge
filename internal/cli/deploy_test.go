@@ -234,3 +234,32 @@ func TestEffectiveTargetArch(t *testing.T) {
 // were moved to internal/cluster/cluster_test.go alongside the function
 // they exercise (cluster.RenderedDeploymentNames) when the cluster
 // pipeline was lifted out of internal/cli.
+
+// TestIsLocalCluster covers the local-cluster guard recognizer that
+// gates plaintext dotenv Secret projection. Local dev contexts pass;
+// remote/prod names and the empty string are rejected.
+func TestIsLocalCluster(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"k3d-myproject", true},
+		{"kind-myproject", true},
+		{"docker-desktop", true},
+		{"minikube", true},
+		{"rancher-desktop", true},
+		{"colima", true},
+		{"orbstack", true},
+		{"K3D-MyProject", true}, // case-insensitive
+		{"  k3d-dev  ", true},   // trimmed
+		{"prod-cluster", false},
+		{"gke_proj_us-central1_prod", false},
+		{"arn:aws:eks:us-east-1:123:cluster/prod", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isLocalCluster(c.name); got != c.want {
+			t.Errorf("isLocalCluster(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

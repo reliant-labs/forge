@@ -518,6 +518,27 @@ schema Compose:
     check:
         type == "compose", "Compose.type must be 'compose'"
 
+schema DotenvSecrets:
+    """Dev/local secret provider. Values come from a gitignored dotenv
+    (keyed by env-var NAME). forge resolves declared secret_refs from it
+    and, for k8s targets, RENDERS Secret objects from it on the CLI side —
+    so it is for LOCAL clusters only. Prod/staging must use ExternalSecrets.
+    KCL never sees the values; only this declaration is rendered."""
+    type: str = "dotenv"
+    path: str = ".env"
+    check:
+        type == "dotenv", "DotenvSecrets.type must be 'dotenv'"
+        path, "DotenvSecrets.path is required"
+
+schema ExternalSecrets:
+    """Prod/staging secret provider. forge does NOT see values: k8s
+    references pre-existing Secrets (External Secrets Operator / sealed),
+    host & external runtimes obtain secrets via workload identity or
+    ambient env. forge only validates the secretKeyRef wiring."""
+    type: str = "external"
+    check:
+        type == "external", "ExternalSecrets.type must be 'external'"
+
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
 
@@ -707,6 +728,13 @@ schema Bundle:
     # — anything that doesn't fit a typed entity. Each entry is a
     # raw manifest dict.
     additional_manifests: [any] = []
+    # Per-env secret PROVIDER declaration: WHERE secret values come from.
+    # Absent = today's behavior (no provider). "dotenv" (dev/local) lets
+    # forge resolve declared secret_refs from a gitignored dotenv and
+    # render Secret objects CLI-side; "external" (prod/staging) means
+    # forge never sees values — k8s references pre-existing Secrets.
+    # KCL only emits this DECLARATION; secret VALUES never enter KCL.
+    secret_provider?: DotenvSecrets | ExternalSecrets
     # Cluster-scoped node.k8s.io/v1 RuntimeClass declarations. Used to
     # bind a workload-facing name ("gvisor", "kata-qemu") to a
     # node-installed handler, OR to declare a dev-cluster alias that

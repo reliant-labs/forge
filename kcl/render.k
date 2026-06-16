@@ -301,6 +301,12 @@ render = lambda bundle: Bundle -> any {
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
         "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
         "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
+        # The secret PROVIDER declaration rides alongside the entities so
+        # the CLI can read WHERE secret values come from. Absent when
+        # unset (no null garbage). Secret VALUES never enter this output —
+        # only the declaration (type + path). NOT in render_manifests.
+        if bundle.secret_provider:
+            "secret_provider": bundle.secret_provider
     }
 }
 

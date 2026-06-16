@@ -164,6 +164,21 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 		return fmt.Errorf("compose %s: env_file: %w", svc.Name, ferr)
 	}
 
+	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
+	// layer, then let env_file entries override on conflict — the explicit
+	// file wins. No-op when svc.Secrets is nil/empty (the common case for
+	// external/none providers), preserving the pre-secrets behaviour.
+	if len(svc.Secrets) > 0 {
+		merged := make(map[string]string, len(svc.Secrets)+len(envOverlay))
+		for k, v := range svc.Secrets {
+			merged[k] = v
+		}
+		for k, v := range envOverlay {
+			merged[k] = v // env_file wins
+		}
+		envOverlay = merged
+	}
+
 	if err := runner.RunWithEnv(ctx, envOverlay, "docker", pullArgs...); err != nil {
 		return fmt.Errorf("compose %s: pull: %w", svc.Name, err)
 	}

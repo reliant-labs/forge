@@ -41,6 +41,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 )
@@ -212,12 +213,40 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// in feature_gate.go for the strict-gate shape used by the cobra
 	// RunE for those commands.
 	if !opts.hostOnly {
+		// Kick off the docker-compose infra (postgres/nats/temporal/...)
+		// NOW, concurrent with the build phase. Image pulls + container
+		// health warmup are the long pole on a warm `up` and are wholly
+		// independent of the project image build, so overlapping the two
+		// shaves that wall-clock off every run. The deploy phase below
+		// re-dispatches the same compose group as an idempotent no-op once
+		// warm (pull is current; `up -d` sees the containers already
+		// running) and stays the authoritative health barrier before the
+		// k8s rollout — so a best-effort failure here is non-fatal. Skipped
+		// when the deploy phase won't run (--no-deploy): nothing would
+		// consume the infra and nothing later barriers on it.
+		var infraWarm chan error
+		if !opts.noDeploy && !skipFeature(store, config.FeatureDeploy, "up:infra") {
+			infraWarm = make(chan error, 1)
+			go func() {
+				fmt.Println("\n[up] infra phase (compose — concurrent with build)")
+				infraWarm <- prewarmComposeInfra(ctx, opts.env, entities)
+			}()
+		}
 		if !opts.noBuild {
 			if !skipFeature(store, config.FeatureBuild, "up:build") {
 				fmt.Println("\n[up] build phase")
 				if err := upBuildCluster(ctx, cfg, opts.env, opts.noGenerate); err != nil {
 					return fmt.Errorf("build: %w", err)
 				}
+			}
+		}
+		// Barrier: the k8s pods the deploy phase rolls out connect to the
+		// compose infra, so join the pre-warm before deploying. Joining here
+		// (rather than letting the deploy phase's own compose-up race the
+		// goroutine) also keeps a single docker-compose writer at a time.
+		if infraWarm != nil {
+			if err := <-infraWarm; err != nil {
+				fmt.Printf("[up] infra pre-warm: %v (deploy phase will retry)\n", err)
 			}
 		}
 		if !opts.noDeploy {
@@ -565,6 +594,31 @@ func upBuildCluster(ctx context.Context, _ *config.ProjectConfig, env string, no
 		skipGenerate:  noGenerate,
 	}
 	return runBuild(ctx, opts)
+}
+
+// prewarmComposeInfra brings up the project's docker-compose deploy
+// targets so their image pulls + health warmup can run concurrently with
+// the build phase. It reuses the exact same path the deploy phase takes —
+// buildDeployGroups → ComposeProvider.Deploy (pull + up -d + health
+// check) — so the deploy phase's later re-dispatch is a true idempotent
+// no-op, not a second, subtly-different code path. Namespace is irrelevant
+// to compose targets, so the group builder gets an empty fallback. Returns
+// the first compose group's error; the caller treats it as best-effort.
+func prewarmComposeInfra(ctx context.Context, env string, entities *KCLEntities) error {
+	groups, err := buildDeployGroups(env, entities, "")
+	if err != nil {
+		return fmt.Errorf("group compose services: %w", err)
+	}
+	provider := deploytarget.ComposeProvider{ProjectDir: projectDirForKCL()}
+	for _, g := range groups {
+		if g.ProviderID != provider.Name() {
+			continue
+		}
+		if err := provider.Deploy(ctx, g); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // upDeployCluster invokes runDeploy with the per-env defaults. The

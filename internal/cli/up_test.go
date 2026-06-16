@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -523,4 +524,110 @@ func TestInTargetSet(t *testing.T) {
 	if inTargetSet(targets, "workspace-proxy") {
 		t.Error("unnamed target should not match")
 	}
+}
+
+// TestPortInUse asserts the real-socket probe: a held listener reads as
+// in-use, a port nothing binds reads as free. The post-close flip is
+// best-effort (ephemeral reuse can be racy) — we assert the true case
+// against a held listener and the false case against a never-bound port.
+func TestPortInUse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	held := ln.Addr().(*net.TCPAddr).Port
+
+	if !portInUse(held) {
+		t.Errorf("portInUse(%d) = false; want true (listener is held)", held)
+	}
+
+	// Find a port that is (almost certainly) free: bind, capture, release.
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen free: %v", err)
+	}
+	freePort := free.Addr().(*net.TCPAddr).Port
+	_ = free.Close()
+	if portInUse(freePort) {
+		t.Errorf("portInUse(%d) = true; want false (port was released)", freePort)
+	}
+}
+
+// TestConflictingPorts exercises the pure collection logic with an
+// injected probe — no real sockets. It covers --target scoping, the
+// host-service inline-PORT skip, the frontend feature gate, and the
+// fe.Port==0 skip.
+func TestConflictingPorts(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
+			}}},
+			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		},
+		Frontends: []FrontendEntity{
+			{Name: "reliant-web", Port: 3000},
+			{Name: "noportfe", Port: 0},
+		},
+	}
+	// busy treats these ports as in-use.
+	busy := func(ports ...int) func(int) bool {
+		set := map[int]bool{}
+		for _, p := range ports {
+			set[p] = true
+		}
+		return func(p int) bool { return set[p] }
+	}
+
+	names := func(cs []portConflict) []string {
+		out := make([]string, len(cs))
+		for i, c := range cs {
+			out[i] = c.name
+		}
+		return out
+	}
+
+	t.Run("both host and frontend ports busy", func(t *testing.T) {
+		got := conflictingPorts(entities, nil, true, busy(8090, 3000))
+		if g := names(got); len(g) != 2 || g[0] != "admin-server" || g[1] != "reliant-web" {
+			t.Fatalf("got %v; want [admin-server reliant-web]", g)
+		}
+	})
+
+	t.Run("nothing busy → no conflicts", func(t *testing.T) {
+		if got := conflictingPorts(entities, nil, true, busy()); len(got) != 0 {
+			t.Fatalf("got %v; want none", names(got))
+		}
+	})
+
+	t.Run("target scopes the check", func(t *testing.T) {
+		// admin-server is up, but we only target reliant-web → allowed.
+		got := conflictingPorts(entities, []string{"reliant-web"}, true, busy(8090))
+		if len(got) != 0 {
+			t.Fatalf("got %v; want none (admin-server not in target set)", names(got))
+		}
+		// Now reliant-web's own port is busy → it should flag.
+		got = conflictingPorts(entities, []string{"reliant-web"}, true, busy(3000))
+		if g := names(got); len(g) != 1 || g[0] != "reliant-web" {
+			t.Fatalf("got %v; want [reliant-web]", g)
+		}
+	})
+
+	t.Run("frontend gate off skips frontends", func(t *testing.T) {
+		got := conflictingPorts(entities, nil, false, busy(8090, 3000))
+		if g := names(got); len(g) != 1 || g[0] != "admin-server" {
+			t.Fatalf("got %v; want [admin-server] (frontends gated off)", g)
+		}
+	})
+
+	t.Run("host service without inline PORT is skipped", func(t *testing.T) {
+		// Even if some port the probe would call true for, noport declares
+		// no PORT so it never contributes a conflict.
+		got := conflictingPorts(entities, []string{"noport"}, true, func(int) bool { return true })
+		if len(got) != 0 {
+			t.Fatalf("got %v; want none (noport declares no PORT)", names(got))
+		}
+	})
 }

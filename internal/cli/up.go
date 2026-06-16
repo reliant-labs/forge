@@ -27,7 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"strconv"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
@@ -172,7 +174,23 @@ func runUp(ctx context.Context, opts upOptions) error {
 	// dev-launch path opts in — read-only renders (forge ci) don't write
 	// a ports file. The store is machine-local; .forge/ports-*.json is
 	// gitignored.
-	kclplugin.UsePortStore(filepath.Join(projectDir, ".forge", "ports-"+opts.env+".json"))
+	portStorePath := filepath.Join(projectDir, ".forge", "ports-"+opts.env+".json")
+	// Snapshot the store before render: RenderKCL's resolve_port shifts +
+	// persists a port when the preferred one is busy (e.g. a second stack
+	// is already up). If the already-running guard below then refuses this
+	// run, we restore the snapshot so a rejected attempt can't drift the
+	// stable port assignments. portStoreExisted distinguishes "restore the
+	// old bytes" from "the store didn't exist; remove what render created".
+	portStoreSnapshot, portStoreErr := os.ReadFile(portStorePath)
+	portStoreExisted := portStoreErr == nil
+	restorePortStore := func() {
+		if portStoreExisted {
+			_ = os.WriteFile(portStorePath, portStoreSnapshot, 0o644)
+		} else {
+			_ = os.Remove(portStorePath)
+		}
+	}
+	kclplugin.UsePortStore(portStorePath)
 
 	fmt.Printf("[up] env=%s\n", opts.env)
 	entities, err := RenderKCL(ctx, projectDir, opts.env)
@@ -227,6 +245,29 @@ func runUp(ctx context.Context, opts upOptions) error {
 		if err := ensureGeneratedCode(projectDirForKCL(), opts.noGenerate); err != nil {
 			return fmt.Errorf("ensure generated code: %w", err)
 		}
+	}
+
+	// Pre-flight "already running" guard. Before starting any host
+	// process, check whether the ports the services/frontends THIS run
+	// will start are already bound — a second stack on the same env
+	// would otherwise silently shift resolve_port'd frontends to wrong
+	// ports (persisting the wrong value) and hard-fail fixed-port host
+	// services with "bind: address already in use". Respects --target
+	// (only the services this invocation would start are checked) and
+	// the frontend feature gate. Cluster-only never reaches here.
+	frontendsOn := !skipFeature(store, config.FeatureFrontend, "up:frontend:portcheck")
+	if conflicts := conflictingPorts(entities, opts.targets, frontendsOn, portInUse); len(conflicts) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "[up] a %s stack already appears to be running for env=%s:\n", opts.env, opts.env)
+		for _, c := range conflicts {
+			fmt.Fprintf(&b, "       %-14s :%d\n", c.name, c.port)
+		}
+		fmt.Fprintf(&b, "     stop it first:  forge up stop --env=%s\n", opts.env)
+		b.WriteString("     (or free those ports / use --target to start a different service)")
+		// Undo any resolve_port drift this rejected render persisted, so
+		// the next clean run still gets the canonical port assignments.
+		restorePortStore()
+		return errors.New(b.String())
 	}
 
 	// Host phases — host services + frontends. These are tracked under
@@ -390,6 +431,80 @@ func hostEnvPort(name string, host *HostDeploy) string {
 		}
 	}
 	return generic
+}
+
+// portConflict names a service/frontend the current `forge up` would
+// start whose expected listen port is already bound by something else.
+type portConflict struct {
+	name string
+	port int
+}
+
+// portInUse reports whether something is already listening on
+// 127.0.0.1:<port>. A successful TCP dial within a short timeout means a
+// listener is accepting connections; "connection refused" (the common
+// free-port case) returns false. Used by the `forge up` pre-flight guard
+// to refuse a colliding second stack before any process starts.
+func portInUse(port int) bool {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// conflictingPorts computes the set of services/frontends THIS `forge up`
+// invocation would start whose expected listen port is already bound.
+// It is the pure core of the pre-flight guard: probe is injected so the
+// collection logic is testable without real sockets.
+//
+//   - Host services (deploy.Type=="host"): expected port via hostEnvPort
+//     (skipped when the service declares no inline PORT).
+//   - Frontends: fe.Port (skipped when 0, and entirely when frontendsOn
+//     is false — the frontend feature is gated off).
+//
+// Only entities in the --target set are checked (inTargetSet), so
+// `forge up --target reliant-web` next to a running admin-server is fine
+// — the guard only fires for a service THIS run is about to start.
+func conflictingPorts(e *KCLEntities, targets []string, frontendsOn bool, probe func(int) bool) []portConflict {
+	if e == nil {
+		return nil
+	}
+	var conflicts []portConflict
+	for _, svc := range e.Services {
+		if svc.Deploy.Type != "host" || svc.Deploy.Host == nil {
+			continue
+		}
+		if !inTargetSet(targets, svc.Name) {
+			continue
+		}
+		p := hostEnvPort(svc.Name, svc.Deploy.Host)
+		if p == "" {
+			continue
+		}
+		port, err := strconv.Atoi(p)
+		if err != nil || port <= 0 {
+			continue
+		}
+		if probe(port) {
+			conflicts = append(conflicts, portConflict{name: svc.Name, port: port})
+		}
+	}
+	if frontendsOn {
+		for _, fe := range e.Frontends {
+			if !inTargetSet(targets, fe.Name) {
+				continue
+			}
+			if fe.Port <= 0 {
+				continue
+			}
+			if probe(fe.Port) {
+				conflicts = append(conflicts, portConflict{name: fe.Name, port: fe.Port})
+			}
+		}
+	}
+	return conflicts
 }
 
 // entitiesEmpty reports whether the entity set has zero declarations

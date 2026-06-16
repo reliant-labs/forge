@@ -25,3 +25,19 @@ func signalProcessGroup(pid int, sig syscall.Signal) error {
 	}
 	return p.Signal(sig)
 }
+
+// processAlive: best-effort liveness via FindProcess (always succeeds on
+// Windows, so this is a weak signal — adequate for the Unix-first dev loop).
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	_, err := os.FindProcess(pid)
+	return err == nil
+}
+
+// killProcessTree: no job-object tree walk on Windows; fall back to
+// signalling the single process. The Unix path does the real tree teardown.
+func killProcessTree(pid int, sig syscall.Signal) {
+	_ = signalProcessGroup(pid, sig)
+}

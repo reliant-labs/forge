@@ -13,6 +13,16 @@ Use this skill when `forge upgrade` reports a jump that crosses v0.7.0
 and the project's `deploy/kcl/<env>/main.k` declares one or more
 `forge.HostDeploy { env_file = "..." }` blocks.
 
+> **Note — the secrets half has since evolved.** This skill splits
+> `env_file` into KCL `env_vars` (config) + a per-service
+> `HostDeploy.secrets_file` (secrets). The **env_vars split below is still
+> correct**, but the per-service `secrets_file` has been superseded by a
+> single bundle-level `secret_provider` (one source across host / compose
+> / k8s, with fail-fast and a real prod story). `secrets_file` now survives
+> only as a backward-compat fallback. After doing the env_vars split here,
+> move the secrets half over with the `secrets-file-to-secret-provider`
+> migration; see the `forge/secrets` skill for the full model.
+
 ## 1. What changed
 
 Forge v0.6 and earlier modeled host-mode env composition with a single

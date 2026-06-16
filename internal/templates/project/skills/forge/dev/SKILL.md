@@ -21,7 +21,7 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 | `forge cluster info` | Diagnostic dump — cluster, context, namespace, registry, declared service/frontend ports. |
 | `forge cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
 | `forge cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
-| `forge up --target <service> --host-only [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), loading `HostDeploy.secrets_file` first then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. Skips build + cluster apply, scoped to the named service. |
+| `forge up --target <service> --host-only [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), injecting the bundle `secret_provider` (dotenv in dev) as the secrets layer, then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. Skips build + cluster apply, scoped to the named service. |
 | `forge up stop --env=<env>` | Kill the background processes tracked by `forge up --background` for that env. |
 | `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--target <name>] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
 | `forge deploy dev [--prune] [--target <app>]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. `--target <app>` (repeatable, by service/frontend name) deploys ONLY that app — the K8sCluster apply keeps the app's workloads plus shared resources (Namespace, ConfigMap/Secret, RBAC) and drops other apps' workloads; a typo'd target errors with the available app names. |
@@ -54,7 +54,6 @@ _bundle = forge.Bundle {
                 env_vars = [
                     forge.EnvVar { name = "DATABASE_URL", value = "postgres://..." }
                 ]
-                secrets_file = ".env.dev.local"   # gitignored
             }
         }
         forge.Service {
@@ -66,6 +65,8 @@ _bundle = forge.Bundle {
             }
         }
     ]
+    # Secret VALUES come from the bundle provider, not per-service.
+    secret_provider = forge.DotenvSecrets { path = ".env.dev.secrets" }   # gitignored
 }
 ```
 
@@ -89,10 +90,14 @@ dev does.
 - `env_vars` — KCL-declared per-env config (DATABASE_URL, NATS_URL,
   LOG_LEVEL, …). Reproducible, version-controlled, composes with
   the same sources `K8sCluster` services see via the Deployment's env block.
-- `secrets_file` — gitignored dotenv with JUST the secrets (STRIPE_*,
-  SUPABASE_*, JWT_PUBLIC_KEY, …). Loaded first; `env_vars` layers on top
-  so KCL wins on conflict and per-env config can't drift between
-  developer machines.
+- Secret VALUES come from the bundle-level `secret_provider` (see below),
+  NOT from a per-service file. In dev that's
+  `forge.DotenvSecrets { path = ".env.dev.secrets" }` — a gitignored
+  dotenv with JUST the secrets (STRIPE_*, SUPABASE_*, JWT_PUBLIC_KEY, …),
+  injected per runtime as the secrets layer; `env_vars` layers on top so
+  KCL wins on conflict and per-env config can't drift between machines.
+  A per-service `HostDeploy.secrets_file` is now only a backward-compat
+  fallback. See the `forge/secrets` skill for the full model.
 
 What flipping a service to host mode buys:
 
@@ -133,11 +138,13 @@ forge up --target admin-server --host-only --background    # detach; PIDs tracke
 forge up stop --env=dev                                    # later teardown
 ```
 
-`forge up --target admin-server --host-only` reads the service's
-`HostDeploy.secrets_file` (if declared) FIRST, then layers
+`forge up --target admin-server --host-only` injects the bundle
+`secret_provider` (the dev dotenv) as the secrets layer FIRST, then layers
 `HostDeploy.env_vars` on top — KCL wins on conflict so per-env config
-can't drift between developer machines. The child process also inherits
-the host shell's env, so anything already exported wins over both.
+can't drift between developer machines. (A per-service
+`HostDeploy.secrets_file` is honored only as a backward-compat fallback;
+see the `forge/secrets` skill.) The child process also inherits the host
+shell's env, so anything already exported wins over both.
 
 ## Logs & the `forge up` summary
 

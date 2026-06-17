@@ -116,6 +116,7 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
         "platform": d.platform if d.platform else None
         "ports": d.ports
         "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
+        "image_pull_secrets": d.image_pull_secrets if d.image_pull_secrets else None
     }
 }
 
@@ -173,6 +174,7 @@ _render_service = lambda s: Service -> any {
         "build_cmd": s.build_cmd if s.build_cmd else None
         "build_cwd": s.build_cwd if s.build_cwd else None
         "build_env": s.build_env if s.build_env else {}
+        "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
     }
 }
 
@@ -364,19 +366,31 @@ _render_namespace = lambda env: RenderEnv -> any {
     }
 }
 
+# Env-wide image-pull Secrets (private registry). Declared once on the
+# K8sCluster ref and applied to every workload's generated
+# ServiceAccount. Defaults to [] (field omitted on the SA) when unset.
+_pull_secrets = lambda env: RenderEnv -> [str] {
+    env.cluster.image_pull_secrets if env.cluster.image_pull_secrets else []
+}
+
 _render_cluster_service = lambda s: Service, env: RenderEnv -> [any] {
     svc_lib.render_k8s_service(s, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_namespaced_rbac(s.name, env.cluster.namespace)
+        + rbac_lib.render_namespaced_rbac(
+            s.name,
+            env.cluster.namespace,
+            s.namespaced_rbac if s.namespaced_rbac else [],
+            _pull_secrets(env),
+        )
 }
 
 _render_operator_manifests = lambda o: Operator, env: RenderEnv -> [any] {
     svc_lib.render_operator(o, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_cluster_rbac(o.name, env.cluster.namespace, o.cluster_rbac)
+        + rbac_lib.render_cluster_rbac(o.name, env.cluster.namespace, o.cluster_rbac, _pull_secrets(env))
 }
 
 _render_cronjob_manifests = lambda c: CronJob, env: RenderEnv -> [any] {
     svc_lib.render_cronjob(c, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_namespaced_rbac(c.name, env.cluster.namespace)
+        + rbac_lib.render_namespaced_rbac(c.name, env.cluster.namespace, [], _pull_secrets(env))
 }
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped

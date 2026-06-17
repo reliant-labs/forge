@@ -424,7 +424,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// secretKeyRef resolves on first schedule). Skipped on rollback —
 	// rollback reuses the tag (and the Secret) already in the cluster.
 	if !rollback {
-		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, dryRun); err != nil {
+		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, contextOverride, dryRun); err != nil {
 			return err
 		}
 	}
@@ -441,9 +441,9 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// the builder is unused for rollback groups, but the registry
 		// still needs the provider registered. We reuse the deploy-
 		// shaped builder for symmetry with the deploy path.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, contextOverride, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
 		registry := deploytarget.NewRegistry()
-		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
+		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder, Context: contextOverride})
 		if err := rollbackDeployGroups(ctx, registry, groups, projectDir); err != nil {
 			return err
 		}
@@ -473,6 +473,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			ImageTag:     imageTag,
 			Namespace:    namespace,
 			Env:          envName,
+			Context:      contextOverride,
 			EnvConfigKV:  envCfgKV,
 			DryRun:       dryRun,
 			DryRunFramed: true,
@@ -490,7 +491,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, contextOverride, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
@@ -1070,14 +1071,17 @@ func k8sClusterRegistryForEnv(ctx context.Context, envName string) string {
 // notice so the override is visible in the deploy log.
 func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName, override string) error {
 	if override != "" {
-		fmt.Printf("kubectl context override: %s (env-cluster guard skipped)\n", override)
-		// Switch the context so the apply lands in the right place.
-		switchCmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", override)
-		switchCmd.Stdout = os.Stdout
-		switchCmd.Stderr = os.Stderr
-		if err := switchCmd.Run(); err != nil {
-			return fmt.Errorf("kubectl config use-context %s: %w", override, err)
-		}
+		// The override is threaded into cluster.ApplyOpts.Context and
+		// passed as `--context <override>` to EVERY kubectl invocation in
+		// the apply/wait path — we must NOT mutate the global active
+		// context here (`kubectl config use-context`). That global switch
+		// is process-wide and shared across the single kubeconfig, so
+		// under concurrent deploys to different clusters it RACES: one
+		// deploy's switch clobbers another's, and a `kubectl apply` lands
+		// on the wrong cluster (the cross-cluster contamination incident).
+		// Per-command `--context` is concurrency-safe because nothing
+		// shared is mutated.
+		fmt.Printf("kubectl context override: %s (env-cluster guard skipped; passed per-command via --context)\n", override)
 		return nil
 	}
 
@@ -1120,7 +1124,7 @@ func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envNam
 //
 // external/none providers produce no manifests (RenderK8sSecrets returns
 // nil), so this is a no-op for them beyond the validation gate.
-func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace string, dryRun bool) error {
+func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext string, dryRun bool) error {
 	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
 	if err != nil {
 		return fmt.Errorf("secret provider: %w", err)
@@ -1173,7 +1177,7 @@ func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, gro
 	}
 
 	fmt.Printf("Applying %d secret manifest(s) into namespace %s...\n", len(mans), namespace)
-	if err := cluster.KubectlApply(ctx, stream); err != nil {
+	if err := cluster.KubectlApply(ctx, kubeContext, stream); err != nil {
 		return fmt.Errorf("apply k8s secrets: %w", err)
 	}
 	return nil

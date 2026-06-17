@@ -31,6 +31,15 @@ type K8sClusterProvider struct {
 	// and let cluster.Apply default everything else", which is enough
 	// for tests but not for the real forge deploy path.
 	ApplyOptsBuilder func(group ServiceGroup) cluster.ApplyOpts
+
+	// Context, when non-empty, is the kubectl context the rollback's
+	// `kubectl rollout undo` invocations run against, passed per-command
+	// as `--context <ctx>`. It mirrors the same per-command threading the
+	// Deploy path does via ApplyOpts.Context — the deploy `--context`
+	// override sets both — so a concurrent multi-cluster rollback can't
+	// land on the wrong cluster by relying on a globally-switched active
+	// context. Empty = kubectl's current/default context.
+	Context string
 }
 
 // Name returns the provider identifier.
@@ -73,13 +82,20 @@ func (p K8sClusterProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 // The function falls back to a no-op when kubectl isn't on PATH or
 // the namespace is empty (an invalid group shape) — those cases
 // already failed louder upstream.
-func (K8sClusterProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
+func (p K8sClusterProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
 	if group.Namespace == "" {
 		return errors.New("k8s-cluster rollback: ServiceGroup.Namespace is empty")
 	}
 	var failures []string
 	for _, svc := range group.Services {
 		args := []string{"rollout", "undo", "deployment/" + svc.Name, "-n", group.Namespace}
+		// Thread the `--context <ctx>` override per command (not via a
+		// global `kubectl config use-context`) so a concurrent rollback to
+		// a different cluster can't be clobbered by another deploy's
+		// context switch. Empty p.Context = current/default context.
+		if p.Context != "" {
+			args = append([]string{"--context", p.Context}, args...)
+		}
 		// The annotated revision lets users see which tag we rolled
 		// back from. Best-effort — failures are logged below.
 		cmd := exec.CommandContext(ctx, "kubectl", args...)

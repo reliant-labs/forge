@@ -113,6 +113,16 @@ type ApplyOpts struct {
 	// envs where docker-compose provides the same services.
 	Env string
 
+	// Context, when non-empty, is the kubectl context every kubectl
+	// invocation in the apply/wait path runs against — passed as
+	// `--context <ctx>` per command rather than mutating the global
+	// active context (`kubectl config use-context`). This is what makes
+	// concurrent multi-cluster `forge deploy` safe: two deploys sharing
+	// one kubeconfig but targeting different clusters no longer race on
+	// the single global context. Empty = use kubectl's current/default
+	// context (unchanged for single-cluster users).
+	Context string
+
 	// Targets, when non-empty, scopes the apply to the named
 	// applications (service / frontend names). The whole env bundle is
 	// still rendered (KCL renders the env as a unit), but after
@@ -197,14 +207,14 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// apply of rest — identical to the pre-split behaviour.
 	config, rest := PartitionConfigManifests(manifests)
 	if strings.TrimSpace(config) != "" {
-		if err := KubectlApply(ctx, config); err != nil {
+		if err := KubectlApply(ctx, opts.Context, config); err != nil {
 			if opts.Quiet {
 				return fmt.Errorf("kubectl apply (config): %w", err)
 			}
 			return fmt.Errorf("kubectl apply failed (config): %w", err)
 		}
 	}
-	if err := KubectlApply(ctx, rest); err != nil {
+	if err := KubectlApply(ctx, opts.Context, rest); err != nil {
 		// Reload uses the shorter "kubectl apply:" wrap; the framed
 		// deploy/up path uses the longer "kubectl apply failed:" form.
 		if opts.Quiet {
@@ -214,7 +224,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	}
 
 	if opts.Prune {
-		if err := Prune(ctx, manifests, opts.Namespace); err != nil {
+		if err := Prune(ctx, opts.Context, manifests, opts.Namespace); err != nil {
 			fmt.Printf("Warning: prune: %v\n", err)
 		}
 	}
@@ -222,7 +232,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	if !opts.Quiet {
 		fmt.Println("Waiting for rollouts...")
 	}
-	deployments, lerr := ListManagedDeployments(ctx, opts.Namespace)
+	deployments, lerr := ListManagedDeployments(ctx, opts.Context, opts.Namespace)
 	if lerr != nil {
 		// Reload's pre-extraction form printed "Warning: ..." (no
 		// leading indent) and short-circuited the rest of the wait
@@ -240,7 +250,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 				skipped = append(skipped, dep)
 				continue
 			}
-			if err := WaitRollout(ctx, dep, opts.Namespace); err != nil {
+			if err := WaitRollout(ctx, opts.Context, dep, opts.Namespace); err != nil {
 				fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
 			} else {
 				fmt.Printf("  %s: ready\n", dep)
@@ -261,7 +271,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	// stream. De-duped, with the caller's order preserved first.
 	for _, name := range unionJobNames(opts.OneShotJobs, RenderedJobNames(manifests)) {
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
-		if err := WaitJobComplete(ctx, name, opts.Namespace); err != nil {
+		if err := WaitJobComplete(ctx, opts.Context, name, opts.Namespace); err != nil {
 			fmt.Printf("  Warning: job %s: %v\n", name, err)
 		} else {
 			fmt.Printf("  %s: complete\n", name)
@@ -432,12 +442,40 @@ func extractManifests(kclOutput []byte) (string, error) {
 	return sb.String(), nil
 }
 
+// kubectlArgs prepends `--context <kctx>` to a kubectl argument list
+// when kctx is non-empty, and returns the args unchanged otherwise.
+// Threading the context PER COMMAND (rather than mutating the global
+// active context via `kubectl config use-context`) is what makes
+// concurrent multi-cluster `forge deploy` safe — two deploys sharing
+// one kubeconfig can target different clusters without racing on the
+// single global context. An empty kctx means "use kubectl's
+// current/default context", the unchanged single-cluster behaviour.
+//
+// `--context` is a global kubectl flag, so it's valid as the leading
+// argument before any subcommand (apply / wait / rollout / get / …).
+func kubectlArgs(kctx string, args ...string) []string {
+	if kctx == "" {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, "--context", kctx)
+	return append(out, args...)
+}
+
+// kubectlCmd builds an *exec.Cmd for `kubectl <args>` with the context
+// flag threaded in via kubectlArgs. The single construction point keeps
+// the per-command `--context` invariant in one place (and testable).
+func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "kubectl", kubectlArgs(kctx, args...)...)
+}
+
 // KubectlApply pipes the rendered YAML document stream into
-// `kubectl apply --server-side -f -`. Stdout/stderr are inherited so
-// the user sees the per-resource `created`/`configured`/`unchanged`
-// lines kubectl emits.
-func KubectlApply(ctx context.Context, manifests string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "--server-side", "-f", "-")
+// `kubectl [--context <kctx>] apply --server-side -f -`. Stdout/stderr
+// are inherited so the user sees the per-resource
+// `created`/`configured`/`unchanged` lines kubectl emits. kctx (when
+// non-empty) targets a specific kubectl context for this command only.
+func KubectlApply(ctx context.Context, kctx, manifests string) error {
+	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -462,8 +500,8 @@ func KubectlApply(ctx context.Context, manifests string) error {
 //
 // Diagnostics are best-effort — any kubectl invocation failure is
 // swallowed so the wait error itself remains the primary signal.
-func WaitRollout(ctx context.Context, name, namespace string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
+func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
+	cmd := kubectlCmd(ctx, kctx, "rollout", "status",
 		"deployment/"+name,
 		"-n", namespace,
 		"--timeout=60s",
@@ -471,7 +509,7 @@ func WaitRollout(ctx context.Context, name, namespace string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		diagnoseFailedRollout(ctx, name, namespace)
+		diagnoseFailedRollout(ctx, kctx, name, namespace)
 		return err
 	}
 	return nil
@@ -485,11 +523,11 @@ func WaitRollout(ctx context.Context, name, namespace string) error {
 // CrashLoopBackOff), then events (admission / scheduling failures),
 // then log tail (only when the container actually started — catches
 // "missing env var" startup crashes).
-func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
+func diagnoseFailedRollout(ctx context.Context, kctx, deploy, namespace string) {
 	fmt.Printf("\n  ── Diagnostics for %s ──────────────────\n", deploy)
 
 	// Pod status — phase, reason, message. The most useful single line.
-	pods := exec.CommandContext(ctx, "kubectl", "get", "pods",
+	pods := kubectlCmd(ctx, kctx, "get", "pods",
 		"-n", namespace,
 		"-l", "app="+deploy,
 		"-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason,MESSAGE:.status.containerStatuses[*].state.waiting.message",
@@ -504,7 +542,7 @@ func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
 
 	// Recent events for the deployment. Filtered to events that mention
 	// the deploy name keeps the output bounded.
-	events := exec.CommandContext(ctx, "kubectl", "get", "events",
+	events := kubectlCmd(ctx, kctx, "get", "events",
 		"-n", namespace,
 		"--sort-by=.lastTimestamp",
 		"--field-selector=type!=Normal",
@@ -532,7 +570,7 @@ func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
 	// kubectl returns an error which we swallow; when it crashed at
 	// startup (CrashLoopBackOff) this surfaces the panic / "X is required"
 	// line that explains why.
-	logs := exec.CommandContext(ctx, "kubectl", "logs",
+	logs := kubectlCmd(ctx, kctx, "logs",
 		"deployment/"+deploy,
 		"-n", namespace,
 		"--tail=15",
@@ -551,8 +589,8 @@ func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
 // WaitJobComplete blocks until the named Job in namespace reaches
 // `condition=complete`. Timeout is 5m — Jobs in this lane are
 // deploy-time migrations / backfills, which routinely run for minutes.
-func WaitJobComplete(ctx context.Context, name, namespace string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "wait",
+func WaitJobComplete(ctx context.Context, kctx, name, namespace string) error {
+	cmd := kubectlCmd(ctx, kctx, "wait",
 		"--for=condition=complete",
 		"job/"+name,
 		"-n", namespace,
@@ -570,8 +608,8 @@ func WaitJobComplete(ctx context.Context, name, namespace string) error {
 // `<project>-<svc>` names, per-service `<svc>` names, operator and
 // worker deployments, and anything packs add, without forge having to
 // guess naming schemes per scaffold mode.
-func ListManagedDeployments(ctx context.Context, namespace string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "deployments",
+func ListManagedDeployments(ctx context.Context, kctx, namespace string) ([]string, error) {
+	cmd := kubectlCmd(ctx, kctx, "get", "deployments",
 		"-n", namespace,
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}",
@@ -807,7 +845,7 @@ func RenderedJobNames(manifests string) []string {
 // Errors during the list or per-Deployment delete are returned to the
 // caller (which logs them as warnings rather than failing the whole
 // deploy — pruning is a maintenance step, not a correctness gate).
-func Prune(ctx context.Context, manifests, namespace string) error {
+func Prune(ctx context.Context, kctx, manifests, namespace string) error {
 	desired := map[string]struct{}{}
 	for _, n := range RenderedDeploymentNames(manifests) {
 		desired[n] = struct{}{}
@@ -816,7 +854,7 @@ func Prune(ctx context.Context, manifests, namespace string) error {
 		fmt.Println("Skipping prune (no Deployments in render).")
 		return nil
 	}
-	current, err := ListManagedDeployments(ctx, namespace)
+	current, err := ListManagedDeployments(ctx, kctx, namespace)
 	if err != nil {
 		return fmt.Errorf("list deployments: %w", err)
 	}
@@ -832,7 +870,7 @@ func Prune(ctx context.Context, manifests, namespace string) error {
 	fmt.Printf("Pruning %d orphan Deployment(s) in %s: %s\n",
 		len(orphans), namespace, strings.Join(orphans, ", "))
 	for _, name := range orphans {
-		delCmd := exec.CommandContext(ctx, "kubectl", "delete", "deployment", name,
+		delCmd := kubectlCmd(ctx, kctx, "delete", "deployment", name,
 			"-n", namespace, "--ignore-not-found=true")
 		delCmd.Stdout = os.Stdout
 		delCmd.Stderr = os.Stderr

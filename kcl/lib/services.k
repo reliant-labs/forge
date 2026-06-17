@@ -218,6 +218,14 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
     _labels = _managed_labels(_name)
     _image = _image_ref(cj.image, image_registry, image_tag)
     _pod_spec = {
+        # Bind the per-CronJob ServiceAccount forge generates
+        # (_render_cronjob_manifests -> render_namespaced_rbac). Without
+        # this the Job pod runs as `default`, which lacks the
+        # imagePullSecrets forge attaches to the per-workload SA — so a
+        # schedule=="" one-shot migrate Job ImagePullBackOffs on private
+        # registries. Mirrors render_k8s_service (~line 171) and
+        # render_operator (~line 286).
+        serviceAccountName = _name
         restartPolicy = "OnFailure"
         securityContext = _default_pod_security_context
         containers = [

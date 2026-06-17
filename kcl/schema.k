@@ -14,7 +14,8 @@ JSON contract (stable; missing optional fields project as `null`):
 
     {
       "services": [
-        { "name", "image", "deploy", "env_vars", "command", "ports" }
+        { "name", "image", "deploy", "env_vars", "command", "ports",
+          "namespaced_rbac" }
       ],
       "operators": [
         { "name", "image", "crds", "cluster_rbac", "leader_election",
@@ -33,7 +34,8 @@ For Service.deploy the dispatch keys are:
     { "type": "host",       "runner", "air_config",
                             "env_vars", "secrets_file", "delve_port",
                             "working_dir" }
-    { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports" }
+    { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports",
+                            "cluster_rbac", "image_pull_secrets" }
     { "type": "build-only", "build_variants" }
 
 HostDeploy splits per-env config from secrets:
@@ -460,6 +462,20 @@ schema K8sCluster:
     ports: [int] = []
     platform?: str
     cluster_rbac?: ClusterRBAC
+    # Names of EXISTING image-pull Secrets (kubernetes.io/dockerconfigjson)
+    # used to pull this deploy group's images from a private registry.
+    # forge does NOT create these Secrets — provision them out-of-band
+    # (the same out-of-band model EnvVar.secret_ref uses). Env-wide:
+    # because the registry is an env-wide knob, the pull secret is too,
+    # so it's declared once on the K8sCluster ref and applied to every
+    # workload (Service / Operator / CronJob) in the group.
+    #
+    # Injection point: the forge-GENERATED ServiceAccount each workload
+    # binds (see lib/rbac.k). Putting `imagePullSecrets` on the SA
+    # rather than each pod spec is the durable choice — it also covers
+    # the Jobs/CronJobs an operator or the workload may spawn, which a
+    # pod-spec-only injection would miss. Unset => field omitted entirely.
+    image_pull_secrets?: [str]
 
     check:
         type == "cluster", "K8sCluster.type must be 'cluster'"
@@ -611,6 +627,18 @@ schema Service:
     build_cmd?: str
     build_cwd?: str
     build_env: {str: str} = {}
+    # Extra namespaced RBAC rules appended to this Service's forge-
+    # generated Role (lib/rbac.k always grants configmaps/secrets read;
+    # these rules add to that). Use it when a Service runs a controller-
+    # runtime manager or otherwise needs in-namespace perms beyond config
+    # reads — e.g. coordination.k8s.io/leases for leader election. Same
+    # PolicyRule dict shape as Operator.cluster_rbac.rules:
+    #   { apiGroups: [...], resources: [...], verbs: [...] }
+    # This is the namespaced-Role analogue of Operator.cluster_rbac;
+    # Operators get cluster-scoped rules, Services get namespaced ones.
+    # Only valid for a K8sCluster (cluster) deploy — ignored otherwise.
+    # Unset => no extra rules (Role keeps just the default config-read).
+    namespaced_rbac?: [{str: any}]
 
     check:
         name, "Service.name is required"

@@ -163,6 +163,12 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
             template = {
                 metadata = {labels = _labels}
                 spec = {
+                    # Bind the per-Service ServiceAccount forge generates
+                    # (render_namespaced_rbac). Without this the pod runs
+                    # as `default` and the generated Role/RoleBinding —
+                    # plus any imagePullSecrets on the SA — grant it
+                    # nothing. Mirrors render_operator (~line 280).
+                    serviceAccountName = _name
                     securityContext = _default_pod_security_context
                     containers = [
                         {

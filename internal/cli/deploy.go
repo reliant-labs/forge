@@ -456,7 +456,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// via the cluster pipeline. Skip the check above (no namespace)
 	// and let dispatchDeployGroups handle the per-provider paths or
 	// no-op trivially.
-	if len(groups) == 0 {
+	// A frontend-only env (e.g. just a Firebase Hosting frontend, no
+	// services / operators / cronjobs) has nothing for the cluster
+	// pipeline to apply. Skip the empty-groups cluster.Apply below so
+	// such projects don't need kubectl configured at all — the frontend
+	// dispatch further down does the real work.
+	frontendOnly := len(groups) == 0 && !hasK8sServices && hasFirebaseFrontend(entities) &&
+		entities != nil && len(entities.Operators) == 0 && len(entities.CronJobs) == 0
+	if len(groups) == 0 && !frontendOnly {
 		// Nothing to dispatch — historical behaviour was to still run
 		// cluster.Apply against the env's main.k in case host-only
 		// entities still produced manifests (CronJobs etc.). Preserve
@@ -476,7 +483,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}); err != nil {
 			return err
 		}
-	} else {
+	} else if len(groups) > 0 {
 		// Dispatch each group through its provider. The K8sCluster
 		// provider wraps cluster.Apply via the builder closure so the
 		// per-call envelope (mainK / image tag / env config / dry-run
@@ -491,12 +498,105 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 
+	// Frontend deploy dispatch — frontends declaring a first-class deploy
+	// target (today: forge.FirebaseHosting) are built + shipped after the
+	// service groups. Runs under --dry-run too so the assemble/firebase
+	// plan surfaces before any side effect. No-op when no frontend
+	// declares a deploy target — the unchanged default for k8s/host/none
+	// frontends.
+	if err := dispatchFrontendDeploys(ctx, entities, projectDir, envCfgKV, dryRun); err != nil {
+		return err
+	}
+
 	if dryRun {
 		return nil
 	}
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// dispatchFrontendDeploys ships every frontend declaring a first-class
+// deploy target. Today that's exclusively forge.FirebaseHosting: build
+// the frontend (npm install + npm run build) with the frontend's
+// env_vars injected as build-time env, assemble public_dir + any bundle
+// dirs into a staging tree honoring base_path, write firebase.json +
+// .firebaserc, then `firebase deploy`.
+//
+// Frontends without a deploy block — and frontends whose deploy target
+// isn't Firebase — are skipped, preserving the pre-feature behaviour for
+// every existing project. envCfgKV (the per-env -D config) is layered
+// UNDER the frontend's KCL env_vars so an explicit env_var wins, and is
+// only injected when the env var name was actually declared on the
+// frontend (we don't leak the whole env config into the JS build).
+func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir string, envCfgKV map[string]string, dryRun bool) error {
+	if entities == nil {
+		return nil
+	}
+	var fes []deploytarget.FirebaseFrontend
+	for _, f := range entities.Frontends {
+		if f.Deploy == nil || f.Deploy.Type != "firebase" || f.Deploy.Firebase == nil {
+			continue
+		}
+		fes = append(fes, frontendToFirebase(f))
+	}
+	if len(fes) == 0 {
+		return nil
+	}
+
+	fmt.Printf("\nDeploying %d frontend(s) to Firebase Hosting...\n", len(fes))
+	prov := deploytarget.FirebaseProvider{ProjectDir: projectDir}
+	return prov.Deploy(ctx, fes, dryRun)
+}
+
+// hasFirebaseFrontend reports whether any rendered frontend declares a
+// Firebase Hosting deploy target. Used to recognise a frontend-only env
+// (skip the cluster pipeline) and gates nothing else.
+func hasFirebaseFrontend(e *KCLEntities) bool {
+	if e == nil {
+		return false
+	}
+	for _, f := range e.Frontends {
+		if f.Deploy != nil && f.Deploy.Type == "firebase" {
+			return true
+		}
+	}
+	return false
+}
+
+// frontendToFirebase maps a rendered FrontendEntity (with a Firebase
+// deploy block) onto the deploytarget.FirebaseFrontend the provider
+// consumes. The frontend's env_vars become the build-time env injected
+// into the JS build (NEXT_PUBLIC_* / VITE_*); only inline Value entries
+// are forwarded — secret/configmap-projected vars have no host build-time
+// value to inject.
+func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
+	fb := f.Deploy.Firebase
+	buildEnv := map[string]string{}
+	for _, ev := range f.EnvVars {
+		if ev.Value != "" {
+			buildEnv[ev.Name] = ev.Value
+		}
+	}
+	bundles := make([]deploytarget.FirebaseBundleSpec, 0, len(fb.Bundle))
+	for _, b := range fb.Bundle {
+		bundles = append(bundles, deploytarget.FirebaseBundleSpec{Src: b.Src, Dest: b.Dest})
+	}
+	return deploytarget.FirebaseFrontend{
+		Name:      f.Name,
+		Path:      f.Path,
+		DevRunner: f.DevRunner,
+		BuildEnv:  buildEnv,
+		Spec: deploytarget.FirebaseHostingSpec{
+			Project:   fb.Project,
+			Site:      fb.Site,
+			Target:    fb.Target,
+			PublicDir: fb.PublicDir,
+			BasePath:  fb.BasePath,
+			Bundle:    bundles,
+			Rewrites:  fb.Rewrites,
+		},
+	}
 }
 
 // validateDeployTargets checks every name passed to --target against

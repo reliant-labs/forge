@@ -213,6 +213,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
     _image = _image_ref(cj.image, image_registry, image_tag)
     _pod_spec = {
         restartPolicy = "OnFailure"
+        securityContext = _default_pod_security_context
         containers = [
             {
                 name = _name
@@ -222,6 +223,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
                     command = cj.command
                 if cj.env_vars:
                     env = [_env_source(e) for e in cj.env_vars]
+                securityContext = _default_container_security_context
             }
         ]
     }

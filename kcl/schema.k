@@ -99,6 +99,57 @@ schema EnvVar:
         value != Undefined or secret_ref or config_map_ref, \
             "EnvVar must set value (empty string is OK), secret_ref, or config_map_ref"
 
+schema Volume:
+    """A pod volume + its single container mount.
+
+    The escape hatch for forge's restricted-PSA securityContext, which
+    sets `readOnlyRootFilesystem = true` on every container. A workload
+    that legitimately writes to disk (a service writing TLS certs to
+    /data, a tool populating ~/.config, a scratch cache) dies at runtime
+    with "mkdir <path>: read-only file system" unless it is given a
+    WRITABLE volume mounted at that path. `type = "empty_dir"` (the
+    default) is exactly that — a pod-lifetime scratch volume — and is
+    the critical case. `config_map` / `secret` cover the read-only
+    projection of forge-generated ConfigMaps / out-of-band Secrets onto
+    a path (e.g. a config file the app reads from /etc/app).
+
+    One `Volume` models BOTH the pod-level `spec.volumes[*]` entry and
+    the container's `spec.containers[*].volumeMounts[*]` entry — they
+    share a `name`, so collapsing them into one declaration keeps the
+    common one-mount-per-volume case a single line. The render layer
+    (lib/services.k) splits it back into the two k8s arrays.
+
+    Fields:
+      * `name`       — volume name; ties the pod volume to its mount.
+      * `mount_path` — absolute container path the volume mounts at.
+      * `sub_path`   — optional sub-path WITHIN the volume to mount (k8s
+                       `subPath`); omit to mount the volume root.
+      * `read_only`  — mount read-only. Defaults False for empty_dir
+                       (the writable-scratch case), but config_map /
+                       secret mounts are conventionally read-only — set
+                       it True for those.
+      * `type`       — "empty_dir" (default) | "config_map" | "secret".
+      * `source`     — ConfigMap / Secret NAME to project. Required when
+                       type != "empty_dir"; must be empty for empty_dir.
+    """
+    name: str
+    mount_path: str
+    sub_path?: str
+    read_only: bool = False
+    type: str = "empty_dir"
+    source?: str
+
+    check:
+        name, "Volume.name is required"
+        mount_path, "Volume.mount_path is required"
+        mount_path.startswith("/"), "Volume.mount_path must be absolute (start with '/')"
+        type in ["empty_dir", "config_map", "secret"], \
+            "Volume.type must be 'empty_dir' | 'config_map' | 'secret'"
+        type == "empty_dir" or source, \
+            "Volume.source (ConfigMap/Secret name) is required when type is 'config_map' or 'secret'"
+        type != "empty_dir" or source == Undefined, \
+            "Volume.source must be unset when type is 'empty_dir'"
+
 schema Resources:
     """CPU / memory requests + limits."""
     cpu_request: str = "100m"
@@ -722,6 +773,16 @@ schema Service:
     # Only valid for a K8sCluster (cluster) deploy — ignored otherwise.
     # Unset => no extra rules (Role keeps just the default config-read).
     namespaced_rbac?: [{str: any}]
+    # Pod volumes + their container mounts (see Volume). The escape
+    # hatch for the restricted-PSA `readOnlyRootFilesystem = true`
+    # baseline: declare an empty_dir volume at the writable path the
+    # service needs (e.g. /data for TLS certs, ~/.config for a tool's
+    # state). The render layer emits pod-level `spec.volumes` +
+    # container `volumeMounts`; the readOnlyRootFilesystem container
+    # securityContext is UNCHANGED, so only the mounted paths are
+    # writable. Only meaningful for a K8sCluster (cluster) deploy.
+    # Unset => no volumes (field omitted from the manifest entirely).
+    volumes?: [Volume]
 
     check:
         name, "Service.name is required"
@@ -747,6 +808,11 @@ schema Operator:
     cluster_rbac: ClusterRBAC = ClusterRBAC {}
     leader_election: bool = True
     env_vars: [EnvVar] = []
+    # Pod volumes + container mounts — same escape hatch as
+    # Service.volumes (writable empty_dir paths under the
+    # readOnlyRootFilesystem baseline, or config_map / secret
+    # projections). Unset => no volumes. See Volume.
+    volumes?: [Volume]
 
     check:
         name, "Operator.name is required"
@@ -810,6 +876,11 @@ schema CronJob:
     platform?: str
     command: [str] = []
     env_vars: [EnvVar] = []
+    # Pod volumes + container mounts — same escape hatch as
+    # Service.volumes (writable empty_dir paths under the
+    # readOnlyRootFilesystem baseline, or config_map / secret
+    # projections). Unset => no volumes. See Volume.
+    volumes?: [Volume]
 
     check:
         name, "CronJob.name is required"

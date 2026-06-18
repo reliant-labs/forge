@@ -301,3 +301,153 @@ func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
 		t.Errorf("expected available app names in error, got: %v", err)
 	}
 }
+
+// jobStreamManifests is a multi-doc stream mirroring a real forge
+// render: RuntimeClass + Namespace first, then a ConfigMap and a
+// Secret, then a workload Deployment, a schedule=="" one-shot Job
+// (the migrate pattern), and a scheduled CronJob. Used by the GAP 1
+// (config-first ordering) and GAP 2 (manifest-derived Job wait) tests.
+const jobStreamManifests = `apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cp-forge
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+  namespace: cp-forge
+spec: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: cp-forge
+data:
+  KEY: value
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+  namespace: cp-forge
+data:
+  database-url: aHR0cA==
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cp-forge-migrate
+  namespace: cp-forge
+spec: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-report
+  namespace: cp-forge
+spec:
+  schedule: "0 0 * * *"
+`
+
+// TestPartitionConfigManifests_ConfigFirst pins the GAP 1 fix: the
+// config kinds (Namespace, ConfigMap, Secret) are split into the
+// first-pass stream, every other kind (RuntimeClass, Deployment, Job,
+// CronJob) into the second. Apply applies the config pass — and waits
+// for kubectl to return — before the rest pass, so a workload pod never
+// schedules ahead of the ConfigMap/Secret it references.
+func TestPartitionConfigManifests_ConfigFirst(t *testing.T) {
+	config, rest := PartitionConfigManifests(jobStreamManifests)
+
+	// Config pass: exactly Namespace + ConfigMap + Secret.
+	for _, want := range []string{"kind: Namespace", "name: app-config", "name: db-credentials"} {
+		if !strings.Contains(config, want) {
+			t.Errorf("config pass missing %q:\n%s", want, config)
+		}
+	}
+	for _, notWant := range []string{"kind: Deployment", "kind: Job", "kind: CronJob", "kind: RuntimeClass"} {
+		if strings.Contains(config, notWant) {
+			t.Errorf("config pass should not contain %q:\n%s", notWant, config)
+		}
+	}
+
+	// Rest pass: workloads + cluster-scoped config, NOT the namespaced
+	// ConfigMap/Secret.
+	for _, want := range []string{"kind: Deployment", "kind: Job", "kind: CronJob", "kind: RuntimeClass"} {
+		if !strings.Contains(rest, want) {
+			t.Errorf("rest pass missing %q:\n%s", want, rest)
+		}
+	}
+	for _, notWant := range []string{"name: app-config", "name: db-credentials"} {
+		if strings.Contains(rest, notWant) {
+			t.Errorf("rest pass should not contain %q:\n%s", notWant, rest)
+		}
+	}
+}
+
+// TestPartitionConfigManifests_NoConfig confirms a bundle with no config
+// kinds yields an empty config pass (so Apply skips it) and routes
+// everything to rest — the unchanged single-apply behaviour.
+func TestPartitionConfigManifests_NoConfig(t *testing.T) {
+	const noConfig = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+spec: {}
+`
+	config, rest := PartitionConfigManifests(noConfig)
+	if strings.TrimSpace(config) != "" {
+		t.Errorf("expected empty config pass, got:\n%s", config)
+	}
+	if !strings.Contains(rest, "kind: Deployment") {
+		t.Errorf("expected Deployment in rest pass, got:\n%s", rest)
+	}
+}
+
+// TestRenderedJobNames_PicksUpOneShotJob is the GAP 2 regression test:
+// a schedule=="" CronJob renders as a `kind: Job`, and the wait set is
+// derived from the rendered manifest stream so the migrate Job is
+// blocked on even if the entity-list derivation (OneShotJobs) came back
+// empty. A scheduled CronJob renders as `kind: CronJob` and is excluded.
+func TestRenderedJobNames_PicksUpOneShotJob(t *testing.T) {
+	got := RenderedJobNames(jobStreamManifests)
+	if !contains(got, "cp-forge-migrate") {
+		t.Errorf("expected one-shot Job %q in wait set, got %v", "cp-forge-migrate", got)
+	}
+	// The scheduled CronJob (kind: CronJob) must NOT be waited on.
+	if contains(got, "nightly-report") {
+		t.Errorf("scheduled CronJob should not be in the one-shot wait set, got %v", got)
+	}
+	// Nothing else should sneak in (Deployment, Namespace, etc.).
+	if len(got) != 1 {
+		t.Errorf("expected exactly one one-shot Job, got %v", got)
+	}
+}
+
+// TestUnionJobNames_DedupesCallerFirst confirms the wait set unions the
+// caller-supplied OneShotJobs with the manifest-derived names, keeps the
+// caller's order first, and de-dupes the overlap — so a Job named in
+// both sources is waited on exactly once.
+func TestUnionJobNames_DedupesCallerFirst(t *testing.T) {
+	got := unionJobNames([]string{"caller-job", "cp-forge-migrate"}, []string{"cp-forge-migrate", "rendered-only"})
+	want := []string{"caller-job", "cp-forge-migrate", "rendered-only"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected %v (order-preserving, de-duped), got %v", want, got)
+		}
+	}
+	// Empty names are dropped from both sides.
+	if g := unionJobNames([]string{""}, []string{"", "real"}); len(g) != 1 || g[0] != "real" {
+		t.Errorf("expected empty names dropped, got %v", g)
+	}
+}

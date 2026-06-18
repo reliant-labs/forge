@@ -85,12 +85,17 @@ type ApplyOpts struct {
 	// disables the skip (every managed Deployment is awaited).
 	HostSkip map[string]struct{}
 
-	// OneShotJobs is the list of Job names rendered from CronJobs with
-	// empty Schedule. Each is waited on with `kubectl wait
+	// OneShotJobs is an OPTIONAL caller-supplied list of Job names to
+	// wait on. Apply UNIONs it with every `kind: Job` it finds in the
+	// rendered manifest stream (see RenderedJobNames), so the wait set
+	// is authoritative-by-manifest and a caller no longer has to derive
+	// it correctly for the schedule=="" migrate-Job wait to fire — this
+	// field is now belt-and-suspenders for a Job not present in the
+	// stream. Each Job in the union is waited on with `kubectl wait
 	// --for=condition=complete` so the caller gets a definitive
-	// done/fail signal before Apply returns. Scheduled CronJobs are
-	// NOT waited on — they run on their own cadence and the deploy is
-	// done as soon as the manifest is applied.
+	// done/fail signal before Apply returns. Scheduled CronJobs render
+	// as `kind: CronJob` (not `kind: Job`) and are NOT waited on — they
+	// run on their own cadence and the deploy is done once applied.
 	OneShotJobs []string
 
 	// Quiet suppresses the section-header banners ("Applying
@@ -176,7 +181,30 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	if !opts.Quiet {
 		fmt.Println("Applying manifests...")
 	}
-	if err := KubectlApply(ctx, manifests); err != nil {
+	// Two-pass apply to close the ConfigMap/Secret ordering race: a
+	// single `kubectl apply --server-side -f -` admits documents as it
+	// streams them, but the apiserver can schedule a workload pod before
+	// the ConfigMaps/Secrets it references are readable across every
+	// apiserver cache — the pod then wedges on CreateContainerConfigError
+	// / "secret not found" and the rollout wait below expires as a
+	// spurious timeout (seen on a real GKE launch where the config was
+	// fine). Splitting the stream so the config kinds (Namespace,
+	// ConfigMap, Secret) are applied AND returned BEFORE the workloads
+	// gives a real happens-before: the second pass's pods only schedule
+	// once their referenced config already exists. apply --server-side is
+	// idempotent, so re-sending any doc is harmless. When the bundle has
+	// no config kinds, config is empty and we fall through to a single
+	// apply of rest — identical to the pre-split behaviour.
+	config, rest := PartitionConfigManifests(manifests)
+	if strings.TrimSpace(config) != "" {
+		if err := KubectlApply(ctx, config); err != nil {
+			if opts.Quiet {
+				return fmt.Errorf("kubectl apply (config): %w", err)
+			}
+			return fmt.Errorf("kubectl apply failed (config): %w", err)
+		}
+	}
+	if err := KubectlApply(ctx, rest); err != nil {
 		// Reload uses the shorter "kubectl apply:" wrap; the framed
 		// deploy/up path uses the longer "kubectl apply failed:" form.
 		if opts.Quiet {
@@ -224,7 +252,14 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		}
 	}
 
-	for _, name := range opts.OneShotJobs {
+	// Wait set = caller-supplied OneShotJobs UNION every `kind: Job` in
+	// the rendered stream. Deriving from the applied manifests is the
+	// authoritative path (see RenderedJobNames) and is what makes the
+	// schedule=="" migrate-Job wait reliable even when the entity-list
+	// derivation comes back empty; OneShotJobs is still honoured so a
+	// caller can request a wait on a Job name not present in this
+	// stream. De-duped, with the caller's order preserved first.
+	for _, name := range unionJobNames(opts.OneShotJobs, RenderedJobNames(manifests)) {
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
 		if err := WaitJobComplete(ctx, name, opts.Namespace); err != nil {
 			fmt.Printf("  Warning: job %s: %v\n", name, err)
@@ -234,6 +269,37 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	}
 
 	return nil
+}
+
+// unionJobNames merges the caller-supplied one-shot Job names with the
+// names derived from the rendered manifests, de-duping while keeping the
+// caller's entries first (stable, predictable wait order). Used by Apply
+// so the manifest-derived wait set augments rather than replaces an
+// explicit OneShotJobs request.
+func unionJobNames(supplied, rendered []string) []string {
+	seen := make(map[string]struct{}, len(supplied)+len(rendered))
+	out := make([]string, 0, len(supplied)+len(rendered))
+	for _, n := range supplied {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	for _, n := range rendered {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }
 
 // RenderManifests shells `kcl run <mainK> -D image_tag=<tag>
@@ -259,7 +325,7 @@ func projectRootFromMainK(mainK string) string {
 		return ""
 	}
 	// main.k -> <env> -> kcl -> deploy -> root
-	dir := filepath.Dir(mainK)              // <root>/deploy/kcl/<env>
+	dir := filepath.Dir(mainK) // <root>/deploy/kcl/<env>
 	if filepath.Base(filepath.Dir(dir)) != "kcl" {
 		return ""
 	}
@@ -393,6 +459,7 @@ func KubectlApply(ctx context.Context, manifests string) error {
 //     issues (admission webhooks, missing ConfigMaps, etc.) show up.
 //   - Pod log tail when the pod is at least pulled, captures
 //     CrashLoopBackOff reasons like "NATS_URL is required".
+//
 // Diagnostics are best-effort — any kubectl invocation failure is
 // swallowed so the wait error itself remains the primary signal.
 func WaitRollout(ctx context.Context, name, namespace string) error {
@@ -627,6 +694,98 @@ func RenderedDeploymentNames(manifests string) []string {
 			continue
 		}
 		if m.Kind == "Deployment" && m.Metadata.Name != "" {
+			out = append(out, m.Metadata.Name)
+		}
+	}
+	return out
+}
+
+// configFirstKinds are the manifest kinds applied in the first pass of
+// Apply's two-pass apply. They are the resources a workload pod can
+// reference at schedule time and that must therefore exist (and be
+// readable) before the workload lands: the Namespace the workload is
+// created in, and the ConfigMaps / Secrets its containers mount or
+// project into env. Cluster-scoped config (RuntimeClass, CRDs) is left
+// in the second pass — those are already ordered ahead of workloads
+// within the rendered stream and don't suffer the same apiserver-cache
+// readability race that a freshly-applied namespaced Secret does.
+var configFirstKinds = map[string]struct{}{
+	"Namespace": {},
+	"ConfigMap": {},
+	"Secret":    {},
+}
+
+// PartitionConfigManifests splits a `---`-separated multi-doc YAML
+// stream into (config, rest): config holds the documents whose `kind`
+// is one of configFirstKinds (Namespace, ConfigMap, Secret) in their
+// original relative order, rest holds everything else (also in order).
+// Empty / whitespace-only docs are dropped from both halves. A doc that
+// doesn't parse as YAML is conservatively placed in rest — it can't be
+// confirmed config, and rest is the pass that always runs.
+//
+// This is the ordering primitive behind Apply's two-pass apply: config
+// is applied (and kubectl returns) before rest, so a workload in rest
+// never schedules ahead of the ConfigMap/Secret it references.
+func PartitionConfigManifests(manifests string) (config, rest string) {
+	docs := strings.Split(manifests, "\n---\n")
+	var cfg, other []string
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		var m struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
+			other = append(other, trimmed)
+			continue
+		}
+		if _, ok := configFirstKinds[m.Kind]; ok {
+			cfg = append(cfg, trimmed)
+		} else {
+			other = append(other, trimmed)
+		}
+	}
+	return strings.Join(cfg, "\n---\n"), strings.Join(other, "\n---\n")
+}
+
+// RenderedJobNames extracts the `metadata.name` of every `kind: Job`
+// document in a `---`-separated YAML stream. This is the authoritative
+// source for the one-shot-Job wait set: forge waits on whatever Jobs
+// the deploy actually applies, regardless of how they entered the
+// bundle.
+//
+// The entity-list derivation (oneShotJobNamesFromKCL, reading
+// KCLEntities.CronJobs) is fragile — it only sees Jobs that round-trip
+// through the typed `forge.CronJob` -> `output.cronjobs` contract, and
+// misses a `schedule==""` Job that didn't surface in that list (the
+// real-launch gap where OneShotJobs came back empty and forge rolled
+// the workloads without blocking on the migrate Job) as well as any raw
+// `kind: Job` added via `additional_manifests`. The rendered manifests
+// are what kubectl actually applies, so deriving the wait set from them
+// closes both holes. Apply unions these with any caller-supplied
+// OneShotJobs and de-dupes.
+//
+// Malformed documents are skipped (callers get a best-effort list).
+func RenderedJobNames(manifests string) []string {
+	docs := strings.Split(manifests, "\n---\n")
+	var out []string
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		var m struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
+			continue
+		}
+		if m.Kind == "Job" && m.Metadata.Name != "" {
 			out = append(out, m.Metadata.Name)
 		}
 	}

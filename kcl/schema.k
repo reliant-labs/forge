@@ -356,6 +356,27 @@ schema GatewayTLS:
         mode != "gke_certmap" or certmap, \
             "GatewayTLS.certmap is required when mode == 'gke_certmap'"
 
+schema GatewayAddress:
+    """One entry in a Gateway's `spec.addresses` — pins the Gateway to a
+    specific load-balancer address so it survives delete/recreate.
+
+    The Gateway API standard supports `type = "IPAddress"` (a literal IP)
+    and `type = "Hostname"`. On GKE the cloud Gateway controller adds a
+    provider extension `type = "NamedAddress"`, whose `value` is the NAME
+    of a reserved global static IP reservation (NOT the IP literal). With
+    a NamedAddress the GKE load balancer keeps that reserved IP across
+    Gateway recreation, which keeps DNS stable. forge models NamedAddress
+    (the GKE reserved-IP case we need) and IPAddress (a literal IP).
+    """
+    # NamedAddress (GKE reserved-IP reservation name) or IPAddress (a
+    # literal IP). Defaults to NamedAddress — the GKE static-IP case.
+    type: "NamedAddress" | "IPAddress" = "NamedAddress"
+    # The reservation name (NamedAddress) or literal IP (IPAddress).
+    value: str
+
+    check:
+        value, "GatewayAddress.value is required (reservation name or IP)"
+
 schema Gateway:
     """A Gateway API Gateway. One Gateway exposes one or more listeners
     on the cluster's load balancer (or k3d host port) and is referenced
@@ -374,6 +395,13 @@ schema Gateway:
     for provider-specific policy CRDs (Traefik Middleware, Envoy
     Gateway BackendTrafficPolicy, etc.) — emitted verbatim alongside
     the route.
+
+    `addresses` pins the Gateway to specific load-balancer addresses
+    (Gateway API `spec.addresses`). On GKE, reference a reserved global
+    static IP by its reservation name via a NamedAddress GatewayAddress
+    so the Gateway keeps its IP across delete/recreate (otherwise a
+    recreated Gateway gets a fresh ephemeral IP and breaks DNS). Empty
+    by default — the controller assigns an ephemeral address.
     """
     name: str
     listeners: [GatewayListener]
@@ -381,6 +409,7 @@ schema Gateway:
     host: str = ""
     tls?: GatewayTLS
     raw_policy: str = ""
+    addresses: [GatewayAddress] = []
 
     check:
         name, "Gateway.name is required"

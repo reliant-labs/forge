@@ -54,6 +54,16 @@ type GatewayEntity struct {
 	TLS              *GatewayTLSEntity       `json:"tls,omitempty"`
 	Listeners        []GatewayListenerEntity `json:"listeners,omitempty"`
 	RawPolicy        string                  `json:"raw_policy,omitempty"`
+	Addresses        []GatewayAddressEntity  `json:"addresses,omitempty"`
+}
+
+// GatewayAddressEntity mirrors the kcl/schema.k GatewayAddress — one
+// entry in the Gateway's spec.addresses, pinning it to a load-balancer
+// address. Type is "NamedAddress" (Value is a GKE reserved static-IP
+// reservation name) or "IPAddress" (Value is a literal IP).
+type GatewayAddressEntity struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 // GatewayListenerEntity mirrors the kcl/schema.k GatewayListener.

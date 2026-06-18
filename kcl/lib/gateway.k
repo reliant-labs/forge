@@ -29,12 +29,28 @@ _listener_protocol = lambda p: str -> str {
     "HTTPS" if p == "HTTPS" else "HTTP"
 }
 
-_render_listener = lambda l: any, gw_tls: any -> any {
+_render_listener = lambda l: any, gw_tls: any, gw_host: str -> any {
     {
         name = l.name
         port = l.port
         protocol = _listener_protocol(l.protocol)
-        if l.protocol == "HTTPS" and gw_tls:
+        # An HTTPS listener MUST carry a `hostname` when the gateway has a
+        # default host: the cert-manager gateway-shim iterates the listener
+        # blocks to build per-host Certificates and REJECTS the whole
+        # gateway config ("spec.listeners[*].hostname: Required value: the
+        # hostname cannot be empty") for an HTTPS listener with no hostname,
+        # which in turn wedges the cloud Gateway controller's reconcile.
+        # It is also what the LB uses for SNI cert selection. Plaintext HTTP
+        # listeners stay hostname-less (they serve all hosts, e.g. the ACME
+        # HTTP-01 solver route).
+        if l.protocol == "HTTPS" and gw_host:
+            hostname = gw_host
+        # gke_certmap terminates TLS via a GCP Certificate Manager map
+        # (stamped as an annotation on the Gateway, see render_gateway),
+        # NOT a cluster Secret — so the HTTPS listener carries NO tls
+        # block (no certificateRefs, no mode). The other modes reference
+        # the Secret by name via certificateRefs.
+        if l.protocol == "HTTPS" and gw_tls and gw_tls.mode != "gke_certmap":
             tls = {
                 mode = "Terminate"
                 certificateRefs = [
@@ -48,15 +64,33 @@ _render_listener = lambda l: any, gw_tls: any -> any {
     }
 }
 
-# Render a Gateway resource. The optional cert-manager Certificate
-# annotation lives on the Gateway when TLS is in cert_manager mode,
-# mirroring cert-manager's gateway-shim path. mkcert mode skips the
-# annotation — the Secret is populated host-side instead.
+# Render a Gateway resource.
+#
+# In cert_manager mode forge emits an EXPLICIT cert-manager Certificate
+# (see render_certificate below) with full control over dnsNames /
+# issuerRef. It therefore does NOT also stamp the
+# `cert-manager.io/cluster-issuer` annotation on the Gateway: that
+# annotation drives cert-manager's gateway-shim, which would auto-create
+# a SECOND Certificate targeting the same Secret. With both present the
+# shim's cert and forge's cert race two parallel ACME orders for one
+# Secret — redundant churn at best, and the shim's stricter listener
+# validation (every HTTPS listener must carry a hostname) can wedge the
+# whole gateway reconcile. One mechanism only: the explicit Certificate.
+#
+# mkcert mode emits no Certificate and no annotation — the Secret is
+# populated host-side by `forge dev cluster up`.
+#
+# gke_certmap mode stamps `networking.gke.io/certmap: <certmap>` on the
+# Gateway: the GKE Gateway controller reads that annotation and binds the
+# named GCP Certificate Manager map to the Gateway, which terminates TLS
+# and serves the cert for each route hostname. No Certificate and no
+# Secret are involved (the listener carries no tls block — see
+# _render_listener).
 render_gateway = lambda gw: any, namespace: str -> [any] {
     _labels = _managed_labels(gw.name)
     _annotations = {
-        "cert-manager.io/cluster-issuer" = gw.tls.cert_issuer
-    } if gw.tls and gw.tls.mode == "cert_manager" else {}
+        "networking.gke.io/certmap" = gw.tls.certmap
+    } if gw.tls and gw.tls.mode == "gke_certmap" else {}
     [{
         apiVersion = "gateway.networking.k8s.io/v1"
         kind = "Gateway"
@@ -69,7 +103,7 @@ render_gateway = lambda gw: any, namespace: str -> [any] {
         }
         spec = {
             gatewayClassName = gw.gateway_class_name
-            listeners = [_render_listener(l, gw.tls) for l in gw.listeners]
+            listeners = [_render_listener(l, gw.tls, gw.host) for l in gw.listeners]
         }
     }]
 }

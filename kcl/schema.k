@@ -311,29 +311,50 @@ schema GatewayListener:
 schema GatewayTLS:
     """TLS config for a Gateway.
 
-    Two cert-origin modes share the same cluster-side shape (Gateway
-    listener is HTTPS, references the Secret by name); only how the
-    Secret gets populated differs:
+    The cert-manager / mkcert modes share the same cluster-side shape
+    (Gateway listener is HTTPS, references the Secret by name); only how
+    the Secret gets populated differs. The gke_certmap mode is a
+    different cluster-side shape entirely (no Secret, no certificateRefs;
+    GCP terminates via a Certificate Manager map):
 
       * mode = "cert_manager" (default) — cert-manager.io/v1 Certificate
         is emitted alongside the Gateway; cert-manager watches it and
         writes the cert+key into the Secret. cert_issuer names a
-        cluster-scoped ClusterIssuer.
+        cluster-scoped ClusterIssuer. secret_name is required.
 
       * mode = "mkcert" — Secret is populated host-side by `forge dev
         cluster up`, which shells out to mkcert (host-trusted CA in the
         OS keychain → browser-trusted certs without `-k` / warnings).
         No Certificate resource is emitted; cert_issuer is unused and
-        should be left empty.
+        should be left empty. secret_name is required.
+
+      * mode = "gke_certmap" — TLS is terminated by a GCP Certificate
+        Manager certificate map, NOT cert-manager. forge stamps the
+        `networking.gke.io/certmap: <certmap>` annotation on the Gateway
+        and renders the HTTPS listener with NO tls block (no
+        certificateRefs, no mode) — the certmap supplies the cert. No
+        Certificate is emitted and no Secret is referenced, so
+        cert_issuer / secret_name are unused and should be left empty. A
+        certmap Gateway typically serves MANY hostnames (the map maps
+        each to its cert) so it usually has no single `host`; the
+        attached routes' `hostnames` select the listener.
     """
     cert_issuer: str = ""
-    secret_name: str
-    mode: "cert_manager" | "mkcert" = "cert_manager"
+    # Required for cert_manager / mkcert (names the Secret the HTTPS
+    # listener references); unused for gke_certmap (no Secret).
+    secret_name: str = ""
+    # GCP Certificate Manager map name — required for gke_certmap, unused
+    # otherwise. Stamped as `networking.gke.io/certmap` on the Gateway.
+    certmap: str = ""
+    mode: "cert_manager" | "mkcert" | "gke_certmap" = "cert_manager"
 
     check:
-        secret_name, "GatewayTLS.secret_name is required"
+        mode == "gke_certmap" or secret_name, \
+            "GatewayTLS.secret_name is required when mode is 'cert_manager' or 'mkcert'"
         mode != "cert_manager" or cert_issuer, \
             "GatewayTLS.cert_issuer is required when mode == 'cert_manager'"
+        mode != "gke_certmap" or certmap, \
+            "GatewayTLS.certmap is required when mode == 'gke_certmap'"
 
 schema Gateway:
     """A Gateway API Gateway. One Gateway exposes one or more listeners

@@ -67,12 +67,16 @@ type GatewayListenerEntity struct {
 
 // GatewayTLSEntity is the TLS block on a Gateway. Mode selects the
 // cert origin: "cert_manager" (default — cert-manager Certificate
-// emitted alongside the Gateway, CertIssuer names a ClusterIssuer)
-// or "mkcert" (Secret populated host-side by `forge cluster up`
-// via the mkcert binary; CertIssuer unused).
+// emitted alongside the Gateway, CertIssuer names a ClusterIssuer),
+// "mkcert" (Secret populated host-side by `forge cluster up` via the
+// mkcert binary; CertIssuer unused), or "gke_certmap" (GCP Certificate
+// Manager map named by Certmap terminates TLS; CertIssuer / SecretName
+// unused — the GKE Gateway controller binds the map via the
+// `networking.gke.io/certmap` annotation forge stamps on the Gateway).
 type GatewayTLSEntity struct {
 	CertIssuer string `json:"cert_issuer,omitempty"`
-	SecretName string `json:"secret_name"`
+	SecretName string `json:"secret_name,omitempty"`
+	Certmap    string `json:"certmap,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 }
 

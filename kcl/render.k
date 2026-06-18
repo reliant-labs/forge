@@ -243,7 +243,8 @@ _render_gateway_listener = lambda l: GatewayListener -> any {
 _render_gateway_tls = lambda t: GatewayTLS -> any {
     {
         "cert_issuer": t.cert_issuer if t.cert_issuer else None
-        "secret_name": t.secret_name
+        "secret_name": t.secret_name if t.secret_name else None
+        "certmap": t.certmap if t.certmap else None
         "mode": t.mode
     }
 }

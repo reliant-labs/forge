@@ -90,6 +90,17 @@ _bundle = forge.Bundle {
             image = "cleanup-img"
             command = ["/cleanup"]
         }
+        # schedule == "" renders as a one-shot Job (the migrate-Job
+        # pattern). It MUST bind its own SA so it inherits the cluster's
+        # imagePullSecrets — otherwise the Job runs as `default` and
+        # ImagePullBackOffs on a private registry. Pins the render_cronjob
+        # serviceAccountName fix.
+        forge.CronJob {
+            name = "migrate"
+            schedule = ""
+            image = "migrate-img"
+            command = ["/migrate"]
+        }
     ]
 }
 
@@ -114,6 +125,12 @@ _plain_role = [m for m in _manifests if m.kind == "Role" and m.metadata.name == 
 _op_sa = [m for m in _manifests if m.kind == "ServiceAccount" and m.metadata.name == "controller"][0]
 _cron_sa = [m for m in _manifests if m.kind == "ServiceAccount" and m.metadata.name == "cleanup"][0]
 
+# Scheduled CronJob (kind: CronJob) and one-shot Job (kind: Job, from
+# schedule == "") pods, plus the one-shot Job's generated SA.
+_cron_cj = [m for m in _manifests if m.kind == "CronJob" and m.metadata.name == "cleanup"][0]
+_migrate_job = [m for m in _manifests if m.kind == "Job" and m.metadata.name == "migrate"][0]
+_migrate_sa = [m for m in _manifests if m.kind == "ServiceAccount" and m.metadata.name == "migrate"][0]
+
 # ── GAP 1: serviceAccountName on the Service Deployment ─────────────
 
 assert_service_binds_sa = _api_deploy.spec.template.spec.serviceAccountName == "api"
@@ -124,8 +141,18 @@ assert_service_binds_sa = _api_deploy.spec.template.spec.serviceAccountName == "
 assert_api_sa_pull = _api_sa.imagePullSecrets == [{name = "ghcr-creds"}, {name = "extra-creds"}]
 assert_op_sa_pull = _op_sa.imagePullSecrets == [{name = "ghcr-creds"}, {name = "extra-creds"}]
 assert_cron_sa_pull = _cron_sa.imagePullSecrets == [{name = "ghcr-creds"}, {name = "extra-creds"}]
+# The one-shot migrate Job's generated SA carries the pull secrets too.
+assert_migrate_sa_pull = _migrate_sa.imagePullSecrets == [{name = "ghcr-creds"}, {name = "extra-creds"}]
 # It is injected on the SA, NOT on the pod spec — the durable choice.
 assert_pull_not_on_pod = _api_deploy.spec.template.spec.imagePullSecrets == Undefined
+
+# ── render_cronjob fix: serviceAccountName on Job/CronJob pods ───────
+
+# The one-shot Job pod binds its own SA → inherits the pull secrets the
+# SA carries (no more ImagePullBackOff as `default`).
+assert_migrate_job_binds_sa = _migrate_job.spec.template.spec.serviceAccountName == "migrate"
+# The scheduled CronJob's jobTemplate pod binds its SA as well.
+assert_cron_cj_binds_sa = _cron_cj.spec.jobTemplate.spec.template.spec.serviceAccountName == "cleanup"
 
 # ── GAP 3: extra namespaced RBAC rules on the Service Role ──────────
 

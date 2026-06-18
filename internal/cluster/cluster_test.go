@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,68 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 	}
 	if ia, ib := indexOf(got, "A=1"), indexOf(got, "B=2"); ia == -1 || ib == -1 || ia > ib {
 		t.Errorf("expected A=1 before B=2 (sorted), got %v", got)
+	}
+}
+
+// TestKubectlArgs_ThreadsContext is the BUG 1 regression test: when an
+// ApplyOpts.Context is set, every kubectl invocation in the apply/wait
+// path must carry `--context <ctx>` as the leading argument (a global
+// kubectl flag, valid before any subcommand) — NOT a global
+// `kubectl config use-context` switch. Per-command threading is what
+// makes concurrent multi-cluster `forge deploy` safe: two deploys
+// sharing one kubeconfig but targeting different clusters can no longer
+// race on the single global active context (the cross-cluster
+// contamination incident). An empty context leaves the args untouched
+// (current/default context — unchanged single-cluster behaviour).
+func TestKubectlArgs_ThreadsContext(t *testing.T) {
+	// With a context: --context <ctx> is prepended before the subcommand.
+	got := kubectlArgs("prod-cluster", "apply", "--server-side", "-f", "-")
+	want := []string{"--context", "prod-cluster", "apply", "--server-side", "-f", "-"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("[%d]: got %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	// --context must be the LEADING arg (global flag, ahead of the
+	// subcommand) so kubectl accepts it for every verb.
+	if ic, ia := indexOf(got, "--context"), indexOf(got, "apply"); ic == -1 || ic > ia {
+		t.Errorf("expected --context ahead of the subcommand, got %v", got)
+	}
+
+	// Empty context: args pass through verbatim (no --context injected).
+	got = kubectlArgs("", "rollout", "status", "deployment/x")
+	if contains(got, "--context") {
+		t.Errorf("expected no --context for empty context, got %v", got)
+	}
+	if len(got) != 3 || got[0] != "rollout" {
+		t.Errorf("expected unchanged args for empty context, got %v", got)
+	}
+}
+
+// TestKubectlCmd_IncludesContext confirms the *exec.Cmd built by the
+// single construction point (kubectlCmd) carries `--context <ctx>` in
+// its argv — every kubectl-executing function in this package
+// (KubectlApply, WaitRollout, WaitJobComplete, ListManagedDeployments,
+// Prune, diagnoseFailedRollout) goes through it, so this pins the
+// per-command context threading for the whole apply/wait path.
+func TestKubectlCmd_IncludesContext(t *testing.T) {
+	cmd := kubectlCmd(context.Background(), "edge-cluster", "apply", "--server-side", "-f", "-")
+	// cmd.Args[0] is the binary ("kubectl"); the rest is the argv.
+	if !contains(cmd.Args, "--context") || !contains(cmd.Args, "edge-cluster") {
+		t.Fatalf("expected --context edge-cluster in argv, got %v", cmd.Args)
+	}
+	ic, ia := indexOf(cmd.Args, "--context"), indexOf(cmd.Args, "apply")
+	if ic == -1 || ia == -1 || ic > ia {
+		t.Errorf("expected --context ahead of the apply subcommand, got %v", cmd.Args)
+	}
+
+	// No context → no --context flag.
+	cmd = kubectlCmd(context.Background(), "", "get", "deployments")
+	if contains(cmd.Args, "--context") {
+		t.Errorf("expected no --context for empty context, got %v", cmd.Args)
 	}
 }
 

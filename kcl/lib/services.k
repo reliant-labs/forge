@@ -115,6 +115,36 @@ _pull_policy = lambda image_ref: str -> str {
     "Always" if _tag.endswith("-dirty") or _tag == "latest" else "IfNotPresent"
 }
 
+# Build the pod-level `spec.volumes[*]` entry for one forge.Volume.
+# empty_dir => `{name, emptyDir: {}}`; config_map / secret =>
+# `{name, configMap|secret: {<name-key>: source}}`. The container-side
+# mount is built separately by `_volume_mount`.
+_volume_source = lambda v: any -> any {
+    {
+        name = v.name
+        if v.type == "empty_dir":
+            emptyDir = {}
+        if v.type == "config_map":
+            configMap = {name = v.source}
+        if v.type == "secret":
+            secret = {secretName = v.source}
+    }
+}
+
+# Build the container `spec.containers[*].volumeMounts[*]` entry for one
+# forge.Volume. `subPath` / `readOnly` are omitted when not set/false so
+# the rendered manifest stays minimal.
+_volume_mount = lambda v: any -> any {
+    {
+        name = v.name
+        mountPath = v.mount_path
+        if v.sub_path != Undefined:
+            subPath = v.sub_path
+        if v.read_only:
+            readOnly = True
+    }
+}
+
 _resource_block = lambda r: any -> any {
     {
         requests = {
@@ -148,6 +178,9 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
     _resources = _deploy.resources if _deploy.resources else _default_resources
     _image = _image_ref(svc.image, image_registry, image_tag)
     _ports = _deploy.ports if len(_deploy.ports) > 0 else [8080]
+    # Optional writable / projected volumes (the readOnlyRootFilesystem
+    # escape hatch). `svc.volumes` is None/Undefined when unset.
+    _volumes = svc.volumes if svc.volumes else []
 
     _deployment = {
         apiVersion = "apps/v1"
@@ -185,8 +218,12 @@ render_k8s_service = lambda svc: any, namespace: str, image_registry: str, image
                             if svc.env_vars:
                                 env = [_env_source(e) for e in svc.env_vars]
                             securityContext = _default_container_security_context
+                            if _volumes:
+                                volumeMounts = [_volume_mount(v) for v in _volumes]
                         }
                     ]
+                    if _volumes:
+                        volumes = [_volume_source(v) for v in _volumes]
                 }
             }
         }
@@ -217,6 +254,7 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
     _name = cj.name
     _labels = _managed_labels(_name)
     _image = _image_ref(cj.image, image_registry, image_tag)
+    _volumes = cj.volumes if cj.volumes else []
     _pod_spec = {
         # Bind the per-CronJob ServiceAccount forge generates
         # (_render_cronjob_manifests -> render_namespaced_rbac). Without
@@ -238,8 +276,12 @@ render_cronjob = lambda cj: any, namespace: str, image_registry: str, image_tag:
                 if cj.env_vars:
                     env = [_env_source(e) for e in cj.env_vars]
                 securityContext = _default_container_security_context
+                if _volumes:
+                    volumeMounts = [_volume_mount(v) for v in _volumes]
             }
         ]
+        if _volumes:
+            volumes = [_volume_source(v) for v in _volumes]
     }
     [{
         apiVersion = "batch/v1"
@@ -281,6 +323,7 @@ render_operator = lambda op: any, namespace: str, image_registry: str, image_tag
     ] if op.leader_election else []
     _user_env = [_env_source(e) for e in op.env_vars]
     _all_env = _user_env + _leader_env_dict
+    _volumes = op.volumes if op.volumes else []
     [{
         apiVersion = "apps/v1"
         kind = "Deployment"
@@ -301,8 +344,12 @@ render_operator = lambda op: any, namespace: str, image_registry: str, image_tag
                             if _all_env:
                                 env = _all_env
                             securityContext = _default_container_security_context
+                            if _volumes:
+                                volumeMounts = [_volume_mount(v) for v in _volumes]
                         }
                     ]
+                    if _volumes:
+                        volumes = [_volume_source(v) for v in _volumes]
                 }
             }
         }

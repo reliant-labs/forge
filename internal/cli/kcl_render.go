@@ -280,13 +280,66 @@ type FrontendEntity struct {
 	Deploy    *FrontendDeployEntity `json:"deploy,omitempty"`
 }
 
-// FrontendDeployEntity carries the deploy.type discriminator for a
-// frontend. The full per-mode config (replicas, registry, etc.) lives
-// in the KCL output as additional fields the Go side doesn't currently
-// need — only the type drives the build skip-list. Adding new dispatch
-// keys later is a pure additive change.
+// FrontendDeployEntity carries the deploy discriminator for a frontend.
+// Today the only populated variant is FirebaseHosting (Type=="firebase");
+// the Firebase field is non-nil exactly when Type=="firebase". The Type
+// discriminator still drives the build skip-list; the embedded variant
+// blocks carry the per-target config the deploy dispatch needs. Adding
+// new dispatch keys (e.g. a Vercel variant) later is a pure additive
+// change — a new pointer field + a new Type string.
 type FrontendDeployEntity struct {
-	Type string `json:"type"` // "host" | "cluster" | "external" | "compose"
+	Type string `json:"type"` // "firebase" (host/cluster/external/compose reserved for future frontend targets)
+
+	// Firebase is populated when Type=="firebase". The Firebase Hosting
+	// deploy spec — build output dir, target site/project, base-path
+	// mount, and any extra static dirs to assemble into the same site.
+	Firebase *FirebaseHostingDeploy `json:"-"`
+}
+
+// FirebaseHostingDeploy mirrors the kcl/schema.k FirebaseHosting schema.
+// The forge-side FirebaseProvider builds the frontend, assembles
+// public_dir + Bundle dirs into a staging tree honoring BasePath, writes
+// a firebase.json + .firebaserc, and runs `firebase deploy`.
+type FirebaseHostingDeploy struct {
+	Project   string              `json:"project"`
+	Site      string              `json:"site"`
+	Target    string              `json:"target,omitempty"`
+	PublicDir string              `json:"public_dir"`
+	BasePath  string              `json:"base_path,omitempty"`
+	Bundle    []FirebaseBundleDir `json:"bundle,omitempty"`
+	Rewrites  []map[string]any    `json:"rewrites,omitempty"`
+}
+
+// FirebaseBundleDir is one extra pre-built static directory assembled
+// into the hosting site alongside the frontend's own build output.
+// Dest empty means the site root.
+type FirebaseBundleDir struct {
+	Src  string `json:"src"`
+	Dest string `json:"dest,omitempty"`
+}
+
+// UnmarshalJSON dispatches the frontend deploy block by its `type`
+// discriminator. An absent / null deploy leaves the zero value (Type=="").
+// Today only "firebase" carries a typed body; unknown types are retained
+// as the bare Type string so a forward-compatible KCL render (a deploy
+// variant this binary predates) degrades to "skip build / no dispatch"
+// rather than erroring the whole render.
+func (d *FrontendDeployEntity) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	d.Type = probe.Type
+	if probe.Type == "firebase" {
+		var fb FirebaseHostingDeploy
+		if err := json.Unmarshal(data, &fb); err != nil {
+			return fmt.Errorf("parse firebase frontend deploy: %w", err)
+		}
+		d.Firebase = &fb
+	}
+	return nil
 }
 
 // CronJobEntity is one cron-shaped binary from rendered KCL. Empty

@@ -191,6 +191,33 @@ _render_operator = lambda o: Operator -> any {
     }
 }
 
+_render_firebase_bundle_dir = lambda b: FirebaseBundleDir -> any {
+    {
+        "src": b.src
+        "dest": b.dest
+    }
+}
+
+_render_firebase_hosting = lambda d: FirebaseHosting -> any {
+    {
+        "type": "firebase"
+        "project": d.project
+        "site": d.site
+        "target": d.target if d.target else None
+        "public_dir": d.public_dir
+        "base_path": d.base_path if d.base_path else None
+        "bundle": [_render_firebase_bundle_dir(b) for b in d.bundle]
+        "rewrites": d.rewrites if d.rewrites else []
+    }
+}
+
+# Frontend deploy dispatcher. Only FirebaseHosting today; an unset deploy
+# projects as null (consumer treats that as "dev-serve / build only,
+# never auto-ship").
+_render_frontend_deploy = lambda d: any -> any {
+    _render_firebase_hosting(d) if d else None
+}
+
 _render_frontend = lambda f: Frontend -> any {
     {
         "name": f.name
@@ -200,6 +227,7 @@ _render_frontend = lambda f: Frontend -> any {
         "port": f.port
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars]
+        "deploy": _render_frontend_deploy(f.deploy)
     }
 }
 

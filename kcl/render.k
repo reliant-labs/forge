@@ -249,6 +249,13 @@ _render_gateway_tls = lambda t: GatewayTLS -> any {
     }
 }
 
+_render_gateway_address = lambda a: GatewayAddress -> any {
+    {
+        "type": a.type
+        "value": a.value
+    }
+}
+
 _render_gateway = lambda g: Gateway -> any {
     {
         "name": g.name
@@ -257,6 +264,7 @@ _render_gateway = lambda g: Gateway -> any {
         "tls": _render_gateway_tls(g.tls) if g.tls else None
         "listeners": [_render_gateway_listener(l) for l in g.listeners]
         "raw_policy": g.raw_policy if g.raw_policy else None
+        "addresses": [_render_gateway_address(a) for a in g.addresses] if g.addresses else None
     }
 }
 

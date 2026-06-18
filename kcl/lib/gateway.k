@@ -103,6 +103,13 @@ render_gateway = lambda gw: any, namespace: str -> [any] {
         }
         spec = {
             gatewayClassName = gw.gateway_class_name
+            # Pin the Gateway to specific load-balancer addresses when set
+            # (e.g. a GKE reserved static IP by reservation name via a
+            # NamedAddress) so the IP survives delete/recreate. Omitted
+            # entirely when empty — emitting `addresses: []` would churn
+            # existing gateways and let the controller assign ephemerally.
+            if gw.addresses:
+                addresses = [{type = a.type, value = a.value} for a in gw.addresses]
             listeners = [_render_listener(l, gw.tls, gw.host) for l in gw.listeners]
         }
     }]

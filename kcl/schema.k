@@ -568,6 +568,89 @@ schema BuildOnly:
         type == "build-only", "BuildOnly.type must be 'build-only'"
 
 # ---------------------------------------------------------------------------
+# Frontend deploy union.
+#
+# Frontends have their own deploy discriminator (parallel to the Service
+# one) because their deploy targets differ: a static export ships to a
+# CDN / Firebase Hosting / Vercel, not a Deployment. The first variant is
+# FirebaseHosting; FirebaseHosting / (future) Vercel share the `type`
+# discriminator so the consumer dispatches on `deploy.type`.
+# ---------------------------------------------------------------------------
+
+schema FirebaseBundleDir:
+    """An extra static directory assembled into a Firebase Hosting site
+    alongside the frontend's own build output.
+
+    Use it to co-locate a sibling repo's already-built static SPA under
+    the same hosting site as the forge frontend — e.g. a Vite SPA at the
+    site root (`dest = ""`) with the forge Next.js admin export mounted
+    under `/admin` (the frontend's own `base_path`).
+
+      * `src`  — directory on disk holding the pre-built static files
+                 (relative paths resolve against the project root). It is
+                 NOT built by forge; the caller is expected to have run
+                 the sibling build already (or to wire it via a separate
+                 forge.Service build_cmd).
+      * `dest` — sub-path under the hosting site's public root to copy
+                 `src` into. Empty (the default) means the site root.
+                 A leading "/" is tolerated and stripped.
+    """
+    src: str
+    dest: str = ""
+
+    check:
+        src, "FirebaseBundleDir.src is required"
+
+schema FirebaseHosting:
+    """Deploy a frontend's static build output to Firebase Hosting.
+
+    forge builds the frontend (`<dev_runner> install` + `npm run build`)
+    with the frontend's `env_vars` injected as build-time environment
+    (NEXT_PUBLIC_* / VITE_*), assembles `public_dir` (plus any `bundle`
+    dirs) into a staging directory honoring `base_path`, writes a
+    firebase.json + .firebaserc targeting `project`/`site`, then runs
+    `firebase deploy --project <project> --only hosting:<target>`.
+
+    Fields:
+      * `project`    — Firebase / GCP project id (e.g. reliant-prod-475814).
+                       Per-env values are supplied either by declaring a
+                       distinct deploy ref per env's main.k or via `-D`.
+      * `site`       — Firebase Hosting site id (e.g. reliant-prod).
+      * `target`     — hosting target alias used in `--only hosting:<target>`
+                       and in `firebase target:apply`. Defaults to `site`.
+      * `public_dir` — the frontend build's static output directory,
+                       relative to the frontend `path` (e.g. "out" for a
+                       Next.js static export, "dist" for Vite).
+      * `base_path`  — sub-path under the hosting site root to mount the
+                       frontend's own output under (e.g. "/admin"). Empty
+                       means the site root. Mirrors Frontend base_path so
+                       the deployed URL matches the dev mount.
+      * `bundle`     — extra pre-built static dirs assembled into the same
+                       site (see FirebaseBundleDir). Use to co-host a
+                       sibling SPA at the root with this frontend under
+                       base_path.
+      * `rewrites`   — Firebase Hosting rewrites passed through verbatim
+                       into the generated firebase.json `hosting.rewrites`
+                       (SPA fallback, etc.). Empty omits the key.
+    """
+    type: str = "firebase"
+    project: str
+    site: str
+    target?: str
+    public_dir: str
+    base_path?: str
+    bundle: [FirebaseBundleDir] = []
+    rewrites: [{str: any}] = []
+
+    check:
+        type == "firebase", "FirebaseHosting.type must be 'firebase'"
+        project, "FirebaseHosting.project is required (Firebase/GCP project id)"
+        site, "FirebaseHosting.site is required (Firebase Hosting site id)"
+        public_dir, "FirebaseHosting.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
+        base_path == Undefined or base_path.startswith("/"), \
+            "FirebaseHosting.base_path must start with '/' (e.g. '/admin'); omit for the site root"
+
+# ---------------------------------------------------------------------------
 # Typed entities — each captures ONE orchestration shape.
 # ---------------------------------------------------------------------------
 
@@ -679,6 +762,12 @@ schema Frontend:
       * nextjs — server-rendered, ships as a container.
       * vite   — static SPA, deploys to CDN / object store.
       * rn     — React Native; no in-cluster deploy.
+
+    The optional `deploy` block declares a first-class production deploy
+    target the same way Service.deploy does. Today the only variant is
+    FirebaseHosting (static export → Firebase Hosting). Omit `deploy`
+    to keep the legacy behaviour — the frontend is dev-served / built
+    only, never auto-shipped by `forge deploy`.
     """
     name: str
     type: str = "nextjs"
@@ -690,7 +779,12 @@ schema Frontend:
     # (same EnvVar shape services use). Values may be composed
     # declaratively — e.g. forge.resolve_port(...) for a host port — so the
     # dev URLs a frontend needs live in KCL, not a launcher script.
+    #
+    # For a `deploy = forge.FirebaseHosting { ... }` frontend these are
+    # ALSO injected as build-time env (NEXT_PUBLIC_* / VITE_*) so per-env
+    # config lives in KCL, not hardcoded in CI.
     env_vars: [EnvVar] = []
+    deploy?: FirebaseHosting
 
     check:
         name, "Frontend.name is required"

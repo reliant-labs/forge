@@ -233,12 +233,14 @@ func requireRollbackState(projectDir string, group deploytarget.ServiceGroup) er
 
 // applyOptsBuilderFromContext returns an ApplyOptsBuilder closure
 // that captures the deploy-wide opts (mainK, image tag, env config,
-// dry-run, prune, host-skip, one-shot jobs) and emits a per-group
-// cluster.ApplyOpts. For K8sCluster groups the group's Namespace
-// overrides the closure's namespace — that's the new path where the
-// per-service deploy block dictates the namespace rather than
-// forge.yaml.
-func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
+// dry-run, prune, host-skip, one-shot jobs, kube-context) and emits a
+// per-group cluster.ApplyOpts. For K8sCluster groups the group's
+// Namespace overrides the closure's namespace — that's the new path
+// where the per-service deploy block dictates the namespace rather than
+// forge.yaml. kubeContext (the `--context` override) is threaded onto
+// ApplyOpts.Context so every kubectl invocation runs `--context <ctx>`
+// rather than relying on a globally-switched active context.
+func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env, kubeContext string, envCfgKV map[string]string, dryRun, prune bool, hostSkip map[string]struct{}, oneShotJobs, targets []string) func(deploytarget.ServiceGroup) cluster.ApplyOpts {
 	return func(group deploytarget.ServiceGroup) cluster.ApplyOpts {
 		ns := group.Namespace
 		if ns == "" {
@@ -249,6 +251,7 @@ func applyOptsBuilderFromContext(mainK, imageTag, fallbackNamespace, env string,
 			ImageTag:     imageTag,
 			Namespace:    ns,
 			Env:          env,
+			Context:      kubeContext,
 			EnvConfigKV:  envCfgKV,
 			DryRun:       dryRun,
 			DryRunFramed: true,

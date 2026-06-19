@@ -359,43 +359,54 @@ func TestLoadStrict_ValidServiceVariants_Accepted(t *testing.T) {
 // input, and the dot-path must match where the key actually lives in
 // the YAML tree.
 func TestLoadStrict_NestedUnknownKey_LineAndPath(t *testing.T) {
-	// Inject an unknown subkey "provider: k3d" inside k8s: at a known
-	// position so we can compute the expected line precisely.
+	// Inject a genuinely unknown subkey "bogus_knob: 1" inside k8s: at a
+	// known position so we can compute the expected line precisely. We use
+	// a NEVER-a-real-key name (not a removed key like k8s.provider, which
+	// is now a non-fatal warning) so this stays a fatal error and keeps
+	// exercising the line/path reporting it was written to pin.
 	in := strings.Replace(validBaseYAML,
 		"k8s:\n  kcl_dir: deploy/kcl\n",
-		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
+		"k8s:\n  bogus_knob: 1\n  kcl_dir: deploy/kcl\n",
 		1)
-	wantLine := lineOf(t, in, "  provider: k3d")
+	wantLine := lineOf(t, in, "  bogus_knob: 1")
 	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
 	ve := requireValidationError(t, err)
 	got := ve.Error()
-	if !strings.Contains(got, `"k8s.provider"`) {
-		t.Errorf("expected key path 'k8s.provider' in error, got:\n%s", got)
+	if !strings.Contains(got, `"k8s.bogus_knob"`) {
+		t.Errorf("expected key path 'k8s.bogus_knob' in error, got:\n%s", got)
 	}
 	// Standard compiler/editor format: `path:line:col:`. Lets an LLM
 	// (or human in vim/emacs/VS Code) jump straight to the offending
 	// token without grep round-trips.
 	wantLineMarker := "forge.yaml:" + strconv.Itoa(wantLine) + ":"
 	if !strings.Contains(got, wantLineMarker) {
-		t.Errorf("expected %q in error (the literal line of `provider: k3d`), got:\n%s", wantLineMarker, got)
+		t.Errorf("expected %q in error (the literal line of `bogus_knob: 1`), got:\n%s", wantLineMarker, got)
 	}
 }
 
 // TestLoadStrict_RemovedSchemaKey_K8sProvider asserts the
-// migration-aware "Fix:" suggestion for a key the forge schema once
-// owned and has since dropped. The generic "rename or remove" framing
-// misleads users into hunting for a typo when the real answer is "this
-// field moved to KCL".
+// migration-aware behaviour for a key the forge schema once owned and
+// has since dropped: it is a non-fatal WARNING (fr-57edf33aca) — a
+// forge.yaml forge itself wrote must keep loading across a schema
+// removal — carrying the migration hint, never a generic "rename or
+// remove" typo suggestion that would mislead the user into hunting for
+// a misspelling when the real answer is "this field moved to KCL".
 func TestLoadStrict_RemovedSchemaKey_K8sProvider(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
 	in := strings.Replace(validBaseYAML,
 		"k8s:\n  kcl_dir: deploy/kcl\n",
 		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
 		1)
-	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
-	ve := requireValidationError(t, err)
-	got := ve.Error()
+	// Removed keys no longer gate the load: the project must keep running.
+	if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
+		t.Fatalf("removed key k8s.provider must WARN, not fail the load; got: %v", err)
+	}
+	got := sink.String()
 	if !containsAll(got, `"k8s.provider"`, "removed", "K8sCluster") {
-		t.Errorf("expected schema-drift hint naming K8sCluster, got:\n%s", got)
+		t.Errorf("expected schema-drift warning naming K8sCluster, got:\n%s", got)
 	}
 	// The migration hint must replace the generic suggestion — not
 	// stack alongside it. A "did you mean kcl_dir?" tail would be
@@ -436,42 +447,54 @@ func TestLoadStrict_StackDeployProvider_NotFalsePositive(t *testing.T) {
 // TestLoadStrict_RemovedSchemaKey_ServicesBlock covers the
 // component-model migration hint: a top-level `services:` block (the
 // pre-unification shape) resolves to the components migration message
-// rather than a bare unknown-key error.
+// rather than a bare unknown-key error — and as a non-fatal WARNING, so
+// a project carrying the retired block still loads (fr-57edf33aca).
 func TestLoadStrict_RemovedSchemaKey_ServicesBlock(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
 	// A stale top-level `services:` block (the pre-unification shape) must
 	// resolve to the components migration hint, not a bare unknown-key error.
 	in := validBaseYAML + "services:\n  - name: api\n    type: go_service\n    path: handlers/api\n"
-	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
-	ve := requireValidationError(t, err)
-	got := ve.Error()
+	if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
+		t.Fatalf("removed top-level `services:` block must WARN, not fail; got: %v", err)
+	}
+	got := sink.String()
 	if !containsAll(got, `"services" was removed in`, "components") {
-		t.Errorf("expected services→components migration hint, got:\n%s", got)
+		t.Errorf("expected services→components migration warning, got:\n%s", got)
 	}
 }
 
 // TestLoadStrict_UnknownKeyClassification is the table-driven matrix for
-// the three unknown-key outcomes:
+// the unknown-key outcomes:
 //
-//  1. removed key  → specific migration hint, NO Levenshtein suggestion
-//  2. typo'd key   → "did you mean" suggestion
-//  3. distant key  → plain unknown-key error, no suggestion, no hint
+//  1. removed key  → non-fatal WARNING with migration hint, NO Levenshtein
+//                    suggestion, load SUCCEEDS (a key forge itself wrote
+//                    must not strand the project — fr-57edf33aca)
+//  2. typo'd key   → fatal error, "did you mean" suggestion
+//  3. distant key  → fatal error, plain unknown-key, no suggestion/hint
 //
 // Removed keys must win over suggestions: an agent that sees
 // "did you mean 'kcl_dir'?" for k8s.provider would rename instead of
-// migrating.
+// migrating. The fatal/warn split is the load-bearing distinction —
+// genuine typos (cases 2/3) stay hard errors so typo detection stays
+// useful.
 func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 	cases := []struct {
 		name       string
 		mutate     func(string) string // injects the fault into validBaseYAML
-		wantSubstr []string            // all must appear in the error
-		notSubstr  []string            // none may appear in the error
+		wantWarn   bool                // true: load succeeds, message lands in the warning sink
+		wantSubstr []string            // all must appear in the surfaced message
+		notSubstr  []string            // none may appear in the surfaced message
 	}{
 		{
-			name: "removed key k8s.provider gets migration hint",
+			name: "removed key k8s.provider warns with migration hint",
 			mutate: func(in string) string {
 				return strings.Replace(in, "k8s:\n  kcl_dir: deploy/kcl\n",
 					"k8s:\n  kcl_dir: deploy/kcl\n  provider: k3d\n", 1)
 			},
+			wantWarn: true,
 			wantSubstr: []string{
 				`"k8s.provider" was removed in`,
 				"forge.K8sCluster",
@@ -480,12 +503,13 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed top-level key services gets components migration hint",
+			name: "removed top-level key services warns with components migration hint",
 			mutate: func(in string) string {
 				// A stale top-level services: block (the pre-unification
 				// shape) must point at the components migration.
 				return in + "services:\n  - name: api\n    type: go_service\n    path: handlers/api\n"
 			},
+			wantWarn: true,
 			wantSubstr: []string{
 				`"services" was removed in`,
 				"components",
@@ -493,10 +517,11 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed top-level key binaries gets components migration hint",
+			name: "removed top-level key binaries warns with components migration hint",
 			mutate: func(in string) string {
 				return in + "binaries:\n  - name: proxy\n    path: cmd/proxy.go\n"
 			},
+			wantWarn: true,
 			wantSubstr: []string{
 				`"binaries" was removed in`,
 				"kind: binary",
@@ -504,18 +529,20 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "typo'd key gets a did-you-mean suggestion",
+			name: "typo'd key gets a fatal did-you-mean suggestion",
 			mutate: func(in string) string {
 				return strings.Replace(in, "auth:", "auht:", 1)
 			},
+			wantWarn:   false,
 			wantSubstr: []string{"unknown key", "auht", "did you mean", "auth"},
 			notSubstr:  []string{"was removed in"},
 		},
 		{
-			name: "distant key gets plain unknown-key error",
+			name: "distant key gets a fatal plain unknown-key error",
 			mutate: func(in string) string {
 				return in + "completely_unrelated_key: 42\n"
 			},
+			wantWarn:   false,
 			wantSubstr: []string{"unknown key", "completely_unrelated_key"},
 			notSubstr:  []string{"did you mean", "was removed in"},
 		},
@@ -523,17 +550,29 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			var sink strings.Builder
+			prev := SetConfigWarningSink(&sink)
+			defer SetConfigWarningSink(prev)
+
 			_, err := LoadStrict([]byte(tc.mutate(validBaseYAML)), "forge.yaml", baseComponents()...)
-			ve := requireValidationError(t, err)
-			got := ve.Error()
+			var got string
+			if tc.wantWarn {
+				if err != nil {
+					t.Fatalf("removed key must WARN, not fail the load; got: %v", err)
+				}
+				got = sink.String()
+			} else {
+				ve := requireValidationError(t, err)
+				got = ve.Error()
+			}
 			for _, want := range tc.wantSubstr {
 				if !strings.Contains(got, want) {
-					t.Errorf("expected %q in error, got:\n%s", want, got)
+					t.Errorf("expected %q in surfaced message, got:\n%s", want, got)
 				}
 			}
 			for _, not := range tc.notSubstr {
 				if strings.Contains(got, not) {
-					t.Errorf("did not expect %q in error, got:\n%s", not, got)
+					t.Errorf("did not expect %q in surfaced message, got:\n%s", not, got)
 				}
 			}
 		})
@@ -564,6 +603,29 @@ func TestLoadStrict_DeprecatedEnvironmentsStillLoads(t *testing.T) {
 	}
 	if !strings.Contains(out, "migrations/environments-to-kcl") {
 		t.Errorf("expected warning to point at the environments-to-kcl migration skill, got: %q", out)
+	}
+}
+
+// TestLoadStrict_RetiredNestedKey_FeaturesExperimentalDeploy pins the
+// headline fr-57edf33aca case: `features.experimental.deploy: true` —
+// a key forge ITSELF wrote in the experimental window — must NOT
+// hard-fail every config-loading command after the schema graduated the
+// flag. It loads with a non-fatal warning carrying the migration hint.
+func TestLoadStrict_RetiredNestedKey_FeaturesExperimentalDeploy(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
+	in := validBaseYAML + "features:\n  experimental:\n    deploy: true\n"
+	if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
+		t.Fatalf("forge's own retired key features.experimental.deploy must WARN, not fail; got: %v", err)
+	}
+	got := sink.String()
+	if !containsAll(got, `"features.experimental.deploy" was removed in`, "features.deploy") {
+		t.Errorf("expected migration warning pointing at features.deploy, got:\n%s", got)
+	}
+	if strings.Contains(got, "did you mean") {
+		t.Errorf("retired key must not emit a typo suggestion, got:\n%s", got)
 	}
 }
 

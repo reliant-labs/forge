@@ -208,7 +208,11 @@ func buildCIWorkflowData(cfg *config.ProjectConfig) templates.CIWorkflowData {
 		// the verify job).
 		VerifyGenerated: true,
 
-		ForgeVersion:   buildinfo.Version(),
+		// Stamp the INSTALLABLE version (release tag or clean pseudo-version)
+		// so the CI `go install` ref is resolvable — never a `+dirty` build.
+		// A dirty/dev binary yields "" here and the template pins by SHA
+		// instead (fr-8c8a24ea97).
+		ForgeVersion:   buildinfo.InstallableVersion(),
 		ForgeGitCommit: buildinfo.GitCommit(),
 	}
 }

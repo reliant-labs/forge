@@ -81,7 +81,7 @@ Before the block.
 <!-- @forge-only:start -->
 ## Forge Tools
 
-forge run --debug
+forge debug start
 <!-- @forge-only:end -->
 
 After the block.
@@ -93,7 +93,7 @@ func TestRenderSkillForAudience_General(t *testing.T) {
 	if strings.Contains(out, "Forge Tools") {
 		t.Errorf("expected @forge-only content removed, got:\n%s", out)
 	}
-	if strings.Contains(out, "forge run --debug") {
+	if strings.Contains(out, "forge debug start") {
 		t.Errorf("expected forge command removed, got:\n%s", out)
 	}
 	if strings.Contains(out, "@forge-only") {

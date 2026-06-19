@@ -263,7 +263,8 @@ func TestGetPackClerk(t *testing.T) {
 }
 
 // Defense-in-depth: the dropped packs must NOT be loadable as packs anymore.
-// They should now exist as starters via `forge starter add`.
+// They were moved out of the pack catalog (formerly to starters, which have
+// since been removed from the CLI).
 func TestDroppedPacksNotLoadable(t *testing.T) {
 	for _, name := range []string{"stripe", "twilio"} {
 		t.Run(name, func(t *testing.T) {

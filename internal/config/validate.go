@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"reflect"
 	"regexp"
 	"sort"
@@ -13,6 +15,75 @@ import (
 
 	"github.com/reliant-labs/forge/internal/naming"
 )
+
+// configWarningSink is where non-fatal config warnings (deprecated
+// top-level keys) are written. It defaults to os.Stderr so the notice
+// reaches the user on every load path (forge generate / forge upgrade /
+// any caller of LoadStrict|LoadProject) without those callers having to
+// thread a warnings slice through. The config package is otherwise
+// log-free; this is a single, swappable io.Writer rather than a logger so
+// tests can capture it (SetConfigWarningSink).
+var configWarningSink io.Writer = os.Stderr
+
+// emittedConfigWarnings dedupes warnings within a single process. A
+// single CLI command (e.g. `forge lint`) loads forge.yaml several times
+// across its sub-steps; without dedup the same deprecated-key notice
+// prints once per load. Keyed on label+line+message so a genuinely
+// distinct warning (different file, different key) still surfaces.
+var emittedConfigWarnings = map[string]bool{}
+
+// SetConfigWarningSink overrides the destination for non-fatal config
+// warnings and returns the previous sink so callers can restore it. Used
+// by tests to capture warning output; production code leaves the default
+// (os.Stderr). Swapping the sink also resets the per-process dedup set so
+// each test starts from a clean slate.
+func SetConfigWarningSink(w io.Writer) io.Writer {
+	prev := configWarningSink
+	if w == nil {
+		w = io.Discard
+	}
+	configWarningSink = w
+	emittedConfigWarnings = map[string]bool{}
+	return prev
+}
+
+// partitionIssues splits a flat issue list into the fatal errors (which
+// gate the load via ValidationError) and the non-fatal warnings (which
+// are flushed to the warning sink but never gate). Order within each
+// bucket is preserved.
+func partitionIssues(issues []validationIssue) (errs, warns []validationIssue) {
+	for _, iss := range issues {
+		if iss.warning {
+			warns = append(warns, iss)
+		} else {
+			errs = append(errs, iss)
+		}
+	}
+	return errs, warns
+}
+
+// flushConfigWarnings writes each warning to the warning sink in the
+// standard `label:line:col: message Fix: ...` shape (same format the
+// fatal ValidationError uses) so a user sees warnings and errors in a
+// consistent layout. No-op when there are no warnings.
+func flushConfigWarnings(label string, warns []validationIssue) {
+	for _, w := range warns {
+		dedupKey := fmt.Sprintf("%s:%d:%s", label, w.line, w.msg)
+		if emittedConfigWarnings[dedupKey] {
+			continue
+		}
+		emittedConfigWarnings[dedupKey] = true
+		var b strings.Builder
+		b.WriteString("⚠️  forge.yaml: ")
+		b.WriteString(formatIssueLocation(label, w))
+		b.WriteString(": ")
+		b.WriteString(w.msg)
+		if w.fix != "" {
+			fmt.Fprintf(&b, " Fix: %s", w.fix)
+		}
+		fmt.Fprintln(configWarningSink, b.String())
+	}
+}
 
 // LoadStrict parses a forge.yaml byte stream into a ProjectConfig with
 // strict validation: unknown keys (typos, dropped fields) and missing
@@ -115,8 +186,15 @@ func loadStrict(data []byte, path string, components []ComponentConfig, hasCompo
 	// downstream error.
 	issues = append(issues, validateServices(&cfg, root)...)
 
-	if len(issues) > 0 {
-		return nil, &ValidationError{Path: label, Issues: issues}
+	// Partition non-fatal warnings (deprecated top-level keys) out of the
+	// gating error set. Warnings are flushed to the user unconditionally —
+	// whether or not the load also has hard errors — so a deprecated key
+	// is never lost to a silent rewrite even when other issues abort the
+	// load.
+	errIssues, warnIssues := partitionIssues(issues)
+	flushConfigWarnings(label, warnIssues)
+	if len(errIssues) > 0 {
+		return nil, &ValidationError{Path: label, Issues: errIssues}
 	}
 
 	// Resolve shape-derived defaults: fill absent section blocks with the
@@ -218,6 +296,12 @@ type validationIssue struct {
 	column int    // YAML column (1-based); 0 if unknown.
 	msg    string // primary message ("unknown key 'auht' — did you mean 'auth'?")
 	fix    string // "Fix: rename to 'auth' or remove if unused."
+	// warning marks a non-fatal notice. The zero value (false) is an
+	// error: it gates the load via ValidationError. Warnings are
+	// partitioned out in loadStrict — they never gate, but they are
+	// surfaced to the user (see flushConfigWarnings) so silently-dropped
+	// config doesn't vanish without a trace.
+	warning bool
 }
 
 // removedKeyHint carries the migration guidance for a forge.yaml key
@@ -257,9 +341,10 @@ type removedKeyHint struct {
 //     Host/cluster placement moved to the per-env `deploy:` field on
 //     the KCL `forge.Service` schema.
 //   - environments (top level): removed in the KCL-canonical cleanup
-//     (8d3e185) — handled separately by isDeprecatedTopLevelKey below
-//     because mid-migration projects must still LOAD; it is silently
-//     skipped rather than reported.
+//     (8d3e185) — handled separately by deprecatedTopLevelKeys below
+//     because mid-migration projects must still LOAD; it is reported as
+//     a non-fatal WARNING (not silently skipped) so the user migrates it
+//     before the next forge.yaml rewrite drops it.
 var removedSchemaKeys = map[string]removedKeyHint{
 	"k8s.provider": {
 		removedIn: "the deploy-target-architecture rework",
@@ -345,11 +430,14 @@ func normalizeKeyPath(p string) string {
 	return sliceIndexRe.ReplaceAllString(p, "[]")
 }
 
-// isDeprecatedTopLevelKey returns true for top-level forge.yaml keys
-// that were once part of the schema but have been removed. Strict
-// validation skips them rather than reporting "unknown key" so
-// projects that haven't run the corresponding migration skill yet
-// still load.
+// deprecatedTopLevelKeys maps a top-level forge.yaml key that was once
+// part of the schema (but has since been removed) to the migration
+// guidance shown when it is encountered. These keys are NOT errors: a
+// project mid-migration must still LOAD. But they are also NOT silently
+// dropped — NormalizeForWrite re-serializes forge.yaml without them, so
+// the next rewrite would lose the user's real config (e.g. per-env log
+// levels under `environments:`) with zero trace. We emit a warning so
+// the loss is visible and the user is pointed at the migration skill.
 //
 // Currently:
 //   - `environments`: removed in the deploy-target-architecture
@@ -357,12 +445,11 @@ func normalizeKeyPath(p string) string {
 //     domain) now lives in KCL `forge.K8sCluster` blocks; per-env
 //     app config lives in sibling `config.<env>.yaml` files. See
 //     the `environments-to-kcl` migration skill.
-func isDeprecatedTopLevelKey(key string) bool {
-	switch key {
-	case "environments":
-		return true
-	}
-	return false
+var deprecatedTopLevelKeys = map[string]string{
+	"environments": "this key is no longer part of the forge.yaml schema and will be DROPPED on the next " +
+		"forge.yaml rewrite (forge generate / forge upgrade re-serialize the file). Migrate per-env config " +
+		"before you lose it: per-env deploy info moves to KCL `forge.K8sCluster` blocks and per-env app config " +
+		"moves to sibling `config.<env>.yaml` files — run `forge skill load migrations/environments-to-kcl`.",
 }
 
 // walkUnknownKeys recursively descends a yaml.Node mapping against the
@@ -395,11 +482,22 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			continue
 		}
 		key := keyNode.Value
-		// Deprecated keys at the top level: silently ignored so
-		// projects mid-migration don't fail validation. The
-		// `environments-to-kcl` skill handles user-facing communication.
-		if path == "" && isDeprecatedTopLevelKey(key) {
-			continue
+		// Deprecated keys at the top level do NOT fail validation
+		// (projects mid-migration must still load), but they are NOT
+		// silently dropped either: the next forge.yaml rewrite would
+		// lose the config without a trace. Emit a non-gating warning
+		// that names the key and points at the migration skill.
+		if path == "" {
+			if hint, ok := deprecatedTopLevelKeys[key]; ok {
+				out = append(out, validationIssue{
+					line:    keyNode.Line,
+					column:  keyNode.Column,
+					msg:     fmt.Sprintf("%q is a deprecated top-level key", key),
+					fix:     hint,
+					warning: true,
+				})
+				continue
+			}
 		}
 		field, ok := known[key]
 		if !ok {

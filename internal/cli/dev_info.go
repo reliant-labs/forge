@@ -1,4 +1,4 @@
-// Package cli — `forge dev info` command.
+// Package cli — `forge cluster info` command.
 //
 // Diagnostic dump of the dev-loop config: which cluster, which context,
 // which namespace, which service ports. Replaces the small bash recipe
@@ -28,7 +28,7 @@ kubectl context, registry URL, declared service/frontend ports. It does
 NOT contact the cluster or check pod state.
 
 For dynamic state (is the cluster up? are pods running? what are the
-live ingress URLs?) use ` + "`forge dev status`" + `.`,
+live ingress URLs?) use ` + "`forge cluster status`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevInfo(configPath)
 		},
@@ -69,7 +69,7 @@ func runDevInfo(configPath string) error {
 		printFrontendPorts(store.Frontends())
 	}
 	fmt.Println()
-	fmt.Println("For dynamic state (cluster up/down, pods, ingress URLs), run `forge dev status`.")
+	fmt.Println("For dynamic state (cluster up/down, pods, ingress URLs), run `forge cluster status`.")
 	return nil
 }
 

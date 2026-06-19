@@ -14,7 +14,8 @@ JSON contract (stable; missing optional fields project as `null`):
 
     {
       "services": [
-        { "name", "image", "deploy", "env_vars", "command", "ports" }
+        { "name", "image", "deploy", "env_vars", "command", "ports",
+          "namespaced_rbac" }
       ],
       "operators": [
         { "name", "image", "crds", "cluster_rbac", "leader_election",
@@ -33,7 +34,8 @@ For Service.deploy the dispatch keys are:
     { "type": "host",       "runner", "air_config",
                             "env_vars", "secrets_file", "delve_port",
                             "working_dir" }
-    { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports" }
+    { "type": "cluster",    "replicas", "ingress", "resources", "platform", "ports",
+                            "cluster_rbac", "image_pull_secrets" }
     { "type": "build-only", "build_variants" }
 
 HostDeploy splits per-env config from secrets:
@@ -96,6 +98,57 @@ schema EnvVar:
         name, "EnvVar.name is required"
         value != Undefined or secret_ref or config_map_ref, \
             "EnvVar must set value (empty string is OK), secret_ref, or config_map_ref"
+
+schema Volume:
+    """A pod volume + its single container mount.
+
+    The escape hatch for forge's restricted-PSA securityContext, which
+    sets `readOnlyRootFilesystem = true` on every container. A workload
+    that legitimately writes to disk (a service writing TLS certs to
+    /data, a tool populating ~/.config, a scratch cache) dies at runtime
+    with "mkdir <path>: read-only file system" unless it is given a
+    WRITABLE volume mounted at that path. `type = "empty_dir"` (the
+    default) is exactly that — a pod-lifetime scratch volume — and is
+    the critical case. `config_map` / `secret` cover the read-only
+    projection of forge-generated ConfigMaps / out-of-band Secrets onto
+    a path (e.g. a config file the app reads from /etc/app).
+
+    One `Volume` models BOTH the pod-level `spec.volumes[*]` entry and
+    the container's `spec.containers[*].volumeMounts[*]` entry — they
+    share a `name`, so collapsing them into one declaration keeps the
+    common one-mount-per-volume case a single line. The render layer
+    (lib/services.k) splits it back into the two k8s arrays.
+
+    Fields:
+      * `name`       — volume name; ties the pod volume to its mount.
+      * `mount_path` — absolute container path the volume mounts at.
+      * `sub_path`   — optional sub-path WITHIN the volume to mount (k8s
+                       `subPath`); omit to mount the volume root.
+      * `read_only`  — mount read-only. Defaults False for empty_dir
+                       (the writable-scratch case), but config_map /
+                       secret mounts are conventionally read-only — set
+                       it True for those.
+      * `type`       — "empty_dir" (default) | "config_map" | "secret".
+      * `source`     — ConfigMap / Secret NAME to project. Required when
+                       type != "empty_dir"; must be empty for empty_dir.
+    """
+    name: str
+    mount_path: str
+    sub_path?: str
+    read_only: bool = False
+    type: str = "empty_dir"
+    source?: str
+
+    check:
+        name, "Volume.name is required"
+        mount_path, "Volume.mount_path is required"
+        mount_path.startswith("/"), "Volume.mount_path must be absolute (start with '/')"
+        type in ["empty_dir", "config_map", "secret"], \
+            "Volume.type must be 'empty_dir' | 'config_map' | 'secret'"
+        type == "empty_dir" or source, \
+            "Volume.source (ConfigMap/Secret name) is required when type is 'config_map' or 'secret'"
+        type != "empty_dir" or source == Undefined, \
+            "Volume.source must be unset when type is 'empty_dir'"
 
 schema Resources:
     """CPU / memory requests + limits."""
@@ -258,29 +311,71 @@ schema GatewayListener:
 schema GatewayTLS:
     """TLS config for a Gateway.
 
-    Two cert-origin modes share the same cluster-side shape (Gateway
-    listener is HTTPS, references the Secret by name); only how the
-    Secret gets populated differs:
+    The cert-manager / mkcert modes share the same cluster-side shape
+    (Gateway listener is HTTPS, references the Secret by name); only how
+    the Secret gets populated differs. The gke_certmap mode is a
+    different cluster-side shape entirely (no Secret, no certificateRefs;
+    GCP terminates via a Certificate Manager map):
 
       * mode = "cert_manager" (default) — cert-manager.io/v1 Certificate
         is emitted alongside the Gateway; cert-manager watches it and
         writes the cert+key into the Secret. cert_issuer names a
-        cluster-scoped ClusterIssuer.
+        cluster-scoped ClusterIssuer. secret_name is required.
 
       * mode = "mkcert" — Secret is populated host-side by `forge dev
         cluster up`, which shells out to mkcert (host-trusted CA in the
         OS keychain → browser-trusted certs without `-k` / warnings).
         No Certificate resource is emitted; cert_issuer is unused and
-        should be left empty.
+        should be left empty. secret_name is required.
+
+      * mode = "gke_certmap" — TLS is terminated by a GCP Certificate
+        Manager certificate map, NOT cert-manager. forge stamps the
+        `networking.gke.io/certmap: <certmap>` annotation on the Gateway
+        and renders the HTTPS listener with NO tls block (no
+        certificateRefs, no mode) — the certmap supplies the cert. No
+        Certificate is emitted and no Secret is referenced, so
+        cert_issuer / secret_name are unused and should be left empty. A
+        certmap Gateway typically serves MANY hostnames (the map maps
+        each to its cert) so it usually has no single `host`; the
+        attached routes' `hostnames` select the listener.
     """
     cert_issuer: str = ""
-    secret_name: str
-    mode: "cert_manager" | "mkcert" = "cert_manager"
+    # Required for cert_manager / mkcert (names the Secret the HTTPS
+    # listener references); unused for gke_certmap (no Secret).
+    secret_name: str = ""
+    # GCP Certificate Manager map name — required for gke_certmap, unused
+    # otherwise. Stamped as `networking.gke.io/certmap` on the Gateway.
+    certmap: str = ""
+    mode: "cert_manager" | "mkcert" | "gke_certmap" = "cert_manager"
 
     check:
-        secret_name, "GatewayTLS.secret_name is required"
+        mode == "gke_certmap" or secret_name, \
+            "GatewayTLS.secret_name is required when mode is 'cert_manager' or 'mkcert'"
         mode != "cert_manager" or cert_issuer, \
             "GatewayTLS.cert_issuer is required when mode == 'cert_manager'"
+        mode != "gke_certmap" or certmap, \
+            "GatewayTLS.certmap is required when mode == 'gke_certmap'"
+
+schema GatewayAddress:
+    """One entry in a Gateway's `spec.addresses` — pins the Gateway to a
+    specific load-balancer address so it survives delete/recreate.
+
+    The Gateway API standard supports `type = "IPAddress"` (a literal IP)
+    and `type = "Hostname"`. On GKE the cloud Gateway controller adds a
+    provider extension `type = "NamedAddress"`, whose `value` is the NAME
+    of a reserved global static IP reservation (NOT the IP literal). With
+    a NamedAddress the GKE load balancer keeps that reserved IP across
+    Gateway recreation, which keeps DNS stable. forge models NamedAddress
+    (the GKE reserved-IP case we need) and IPAddress (a literal IP).
+    """
+    # NamedAddress (GKE reserved-IP reservation name) or IPAddress (a
+    # literal IP). Defaults to NamedAddress — the GKE static-IP case.
+    type: "NamedAddress" | "IPAddress" = "NamedAddress"
+    # The reservation name (NamedAddress) or literal IP (IPAddress).
+    value: str
+
+    check:
+        value, "GatewayAddress.value is required (reservation name or IP)"
 
 schema Gateway:
     """A Gateway API Gateway. One Gateway exposes one or more listeners
@@ -300,6 +395,13 @@ schema Gateway:
     for provider-specific policy CRDs (Traefik Middleware, Envoy
     Gateway BackendTrafficPolicy, etc.) — emitted verbatim alongside
     the route.
+
+    `addresses` pins the Gateway to specific load-balancer addresses
+    (Gateway API `spec.addresses`). On GKE, reference a reserved global
+    static IP by its reservation name via a NamedAddress GatewayAddress
+    so the Gateway keeps its IP across delete/recreate (otherwise a
+    recreated Gateway gets a fresh ephemeral IP and breaks DNS). Empty
+    by default — the controller assigns an ephemeral address.
     """
     name: str
     listeners: [GatewayListener]
@@ -307,6 +409,7 @@ schema Gateway:
     host: str = ""
     tls?: GatewayTLS
     raw_policy: str = ""
+    addresses: [GatewayAddress] = []
 
     check:
         name, "Gateway.name is required"
@@ -460,6 +563,20 @@ schema K8sCluster:
     ports: [int] = []
     platform?: str
     cluster_rbac?: ClusterRBAC
+    # Names of EXISTING image-pull Secrets (kubernetes.io/dockerconfigjson)
+    # used to pull this deploy group's images from a private registry.
+    # forge does NOT create these Secrets — provision them out-of-band
+    # (the same out-of-band model EnvVar.secret_ref uses). Env-wide:
+    # because the registry is an env-wide knob, the pull secret is too,
+    # so it's declared once on the K8sCluster ref and applied to every
+    # workload (Service / Operator / CronJob) in the group.
+    #
+    # Injection point: the forge-GENERATED ServiceAccount each workload
+    # binds (see lib/rbac.k). Putting `imagePullSecrets` on the SA
+    # rather than each pod spec is the durable choice — it also covers
+    # the Jobs/CronJobs an operator or the workload may spawn, which a
+    # pod-spec-only injection would miss. Unset => field omitted entirely.
+    image_pull_secrets?: [str]
 
     check:
         type == "cluster", "K8sCluster.type must be 'cluster'"
@@ -518,6 +635,27 @@ schema Compose:
     check:
         type == "compose", "Compose.type must be 'compose'"
 
+schema DotenvSecrets:
+    """Dev/local secret provider. Values come from a gitignored dotenv
+    (keyed by env-var NAME). forge resolves declared secret_refs from it
+    and, for k8s targets, RENDERS Secret objects from it on the CLI side —
+    so it is for LOCAL clusters only. Prod/staging must use ExternalSecrets.
+    KCL never sees the values; only this declaration is rendered."""
+    type: str = "dotenv"
+    path: str = ".env"
+    check:
+        type == "dotenv", "DotenvSecrets.type must be 'dotenv'"
+        path, "DotenvSecrets.path is required"
+
+schema ExternalSecrets:
+    """Prod/staging secret provider. forge does NOT see values: k8s
+    references pre-existing Secrets (External Secrets Operator / sealed),
+    host & external runtimes obtain secrets via workload identity or
+    ambient env. forge only validates the secretKeyRef wiring."""
+    type: str = "external"
+    check:
+        type == "external", "ExternalSecrets.type must be 'external'"
+
 schema BuildOnly:
     """Service is built but not auto-orchestrated.
 
@@ -529,6 +667,89 @@ schema BuildOnly:
 
     check:
         type == "build-only", "BuildOnly.type must be 'build-only'"
+
+# ---------------------------------------------------------------------------
+# Frontend deploy union.
+#
+# Frontends have their own deploy discriminator (parallel to the Service
+# one) because their deploy targets differ: a static export ships to a
+# CDN / Firebase Hosting / Vercel, not a Deployment. The first variant is
+# FirebaseHosting; FirebaseHosting / (future) Vercel share the `type`
+# discriminator so the consumer dispatches on `deploy.type`.
+# ---------------------------------------------------------------------------
+
+schema FirebaseBundleDir:
+    """An extra static directory assembled into a Firebase Hosting site
+    alongside the frontend's own build output.
+
+    Use it to co-locate a sibling repo's already-built static SPA under
+    the same hosting site as the forge frontend — e.g. a Vite SPA at the
+    site root (`dest = ""`) with the forge Next.js admin export mounted
+    under `/admin` (the frontend's own `base_path`).
+
+      * `src`  — directory on disk holding the pre-built static files
+                 (relative paths resolve against the project root). It is
+                 NOT built by forge; the caller is expected to have run
+                 the sibling build already (or to wire it via a separate
+                 forge.Service build_cmd).
+      * `dest` — sub-path under the hosting site's public root to copy
+                 `src` into. Empty (the default) means the site root.
+                 A leading "/" is tolerated and stripped.
+    """
+    src: str
+    dest: str = ""
+
+    check:
+        src, "FirebaseBundleDir.src is required"
+
+schema FirebaseHosting:
+    """Deploy a frontend's static build output to Firebase Hosting.
+
+    forge builds the frontend (`<dev_runner> install` + `npm run build`)
+    with the frontend's `env_vars` injected as build-time environment
+    (NEXT_PUBLIC_* / VITE_*), assembles `public_dir` (plus any `bundle`
+    dirs) into a staging directory honoring `base_path`, writes a
+    firebase.json + .firebaserc targeting `project`/`site`, then runs
+    `firebase deploy --project <project> --only hosting:<target>`.
+
+    Fields:
+      * `project`    — Firebase / GCP project id (e.g. reliant-prod-475814).
+                       Per-env values are supplied either by declaring a
+                       distinct deploy ref per env's main.k or via `-D`.
+      * `site`       — Firebase Hosting site id (e.g. reliant-prod).
+      * `target`     — hosting target alias used in `--only hosting:<target>`
+                       and in `firebase target:apply`. Defaults to `site`.
+      * `public_dir` — the frontend build's static output directory,
+                       relative to the frontend `path` (e.g. "out" for a
+                       Next.js static export, "dist" for Vite).
+      * `base_path`  — sub-path under the hosting site root to mount the
+                       frontend's own output under (e.g. "/admin"). Empty
+                       means the site root. Mirrors Frontend base_path so
+                       the deployed URL matches the dev mount.
+      * `bundle`     — extra pre-built static dirs assembled into the same
+                       site (see FirebaseBundleDir). Use to co-host a
+                       sibling SPA at the root with this frontend under
+                       base_path.
+      * `rewrites`   — Firebase Hosting rewrites passed through verbatim
+                       into the generated firebase.json `hosting.rewrites`
+                       (SPA fallback, etc.). Empty omits the key.
+    """
+    type: str = "firebase"
+    project: str
+    site: str
+    target?: str
+    public_dir: str
+    base_path?: str
+    bundle: [FirebaseBundleDir] = []
+    rewrites: [{str: any}] = []
+
+    check:
+        type == "firebase", "FirebaseHosting.type must be 'firebase'"
+        project, "FirebaseHosting.project is required (Firebase/GCP project id)"
+        site, "FirebaseHosting.site is required (Firebase Hosting site id)"
+        public_dir, "FirebaseHosting.public_dir is required (frontend build output dir, e.g. 'out' or 'dist')"
+        base_path == Undefined or base_path.startswith("/"), \
+            "FirebaseHosting.base_path must start with '/' (e.g. '/admin'); omit for the site root"
 
 # ---------------------------------------------------------------------------
 # Typed entities — each captures ONE orchestration shape.
@@ -590,6 +811,28 @@ schema Service:
     build_cmd?: str
     build_cwd?: str
     build_env: {str: str} = {}
+    # Extra namespaced RBAC rules appended to this Service's forge-
+    # generated Role (lib/rbac.k always grants configmaps/secrets read;
+    # these rules add to that). Use it when a Service runs a controller-
+    # runtime manager or otherwise needs in-namespace perms beyond config
+    # reads — e.g. coordination.k8s.io/leases for leader election. Same
+    # PolicyRule dict shape as Operator.cluster_rbac.rules:
+    #   { apiGroups: [...], resources: [...], verbs: [...] }
+    # This is the namespaced-Role analogue of Operator.cluster_rbac;
+    # Operators get cluster-scoped rules, Services get namespaced ones.
+    # Only valid for a K8sCluster (cluster) deploy — ignored otherwise.
+    # Unset => no extra rules (Role keeps just the default config-read).
+    namespaced_rbac?: [{str: any}]
+    # Pod volumes + their container mounts (see Volume). The escape
+    # hatch for the restricted-PSA `readOnlyRootFilesystem = true`
+    # baseline: declare an empty_dir volume at the writable path the
+    # service needs (e.g. /data for TLS certs, ~/.config for a tool's
+    # state). The render layer emits pod-level `spec.volumes` +
+    # container `volumeMounts`; the readOnlyRootFilesystem container
+    # securityContext is UNCHANGED, so only the mounted paths are
+    # writable. Only meaningful for a K8sCluster (cluster) deploy.
+    # Unset => no volumes (field omitted from the manifest entirely).
+    volumes?: [Volume]
 
     check:
         name, "Service.name is required"
@@ -615,6 +858,11 @@ schema Operator:
     cluster_rbac: ClusterRBAC = ClusterRBAC {}
     leader_election: bool = True
     env_vars: [EnvVar] = []
+    # Pod volumes + container mounts — same escape hatch as
+    # Service.volumes (writable empty_dir paths under the
+    # readOnlyRootFilesystem baseline, or config_map / secret
+    # projections). Unset => no volumes. See Volume.
+    volumes?: [Volume]
 
     check:
         name, "Operator.name is required"
@@ -630,6 +878,12 @@ schema Frontend:
       * nextjs — server-rendered, ships as a container.
       * vite   — static SPA, deploys to CDN / object store.
       * rn     — React Native; no in-cluster deploy.
+
+    The optional `deploy` block declares a first-class production deploy
+    target the same way Service.deploy does. Today the only variant is
+    FirebaseHosting (static export → Firebase Hosting). Omit `deploy`
+    to keep the legacy behaviour — the frontend is dev-served / built
+    only, never auto-shipped by `forge deploy`.
     """
     name: str
     type: str = "nextjs"
@@ -641,7 +895,12 @@ schema Frontend:
     # (same EnvVar shape services use). Values may be composed
     # declaratively — e.g. forge.resolve_port(...) for a host port — so the
     # dev URLs a frontend needs live in KCL, not a launcher script.
+    #
+    # For a `deploy = forge.FirebaseHosting { ... }` frontend these are
+    # ALSO injected as build-time env (NEXT_PUBLIC_* / VITE_*) so per-env
+    # config lives in KCL, not hardcoded in CI.
     env_vars: [EnvVar] = []
+    deploy?: FirebaseHosting
 
     check:
         name, "Frontend.name is required"
@@ -667,6 +926,11 @@ schema CronJob:
     platform?: str
     command: [str] = []
     env_vars: [EnvVar] = []
+    # Pod volumes + container mounts — same escape hatch as
+    # Service.volumes (writable empty_dir paths under the
+    # readOnlyRootFilesystem baseline, or config_map / secret
+    # projections). Unset => no volumes. See Volume.
+    volumes?: [Volume]
 
     check:
         name, "CronJob.name is required"
@@ -707,6 +971,13 @@ schema Bundle:
     # — anything that doesn't fit a typed entity. Each entry is a
     # raw manifest dict.
     additional_manifests: [any] = []
+    # Per-env secret PROVIDER declaration: WHERE secret values come from.
+    # Absent = today's behavior (no provider). "dotenv" (dev/local) lets
+    # forge resolve declared secret_refs from a gitignored dotenv and
+    # render Secret objects CLI-side; "external" (prod/staging) means
+    # forge never sees values — k8s references pre-existing Secrets.
+    # KCL only emits this DECLARATION; secret VALUES never enter KCL.
+    secret_provider?: DotenvSecrets | ExternalSecrets
     # Cluster-scoped node.k8s.io/v1 RuntimeClass declarations. Used to
     # bind a workload-facing name ("gvisor", "kata-qemu") to a
     # node-installed handler, OR to declare a dev-cluster alias that

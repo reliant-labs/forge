@@ -41,7 +41,6 @@ type derivedFeatureDefaults struct {
 	observability bool
 	hotReload     bool
 	packs         bool
-	starters      bool
 	deploy        bool
 }
 
@@ -59,7 +58,6 @@ type derivedFeatureDefaults struct {
 //	observability ⇔ kind == service
 //	hot_reload    ⇔ kind == service
 //	packs         ⇔ kind == service
-//	starters      ⇔ kind == service
 //	deploy        ⇔ kind == service
 //
 // "database driver configured" means Database.Driver after section
@@ -96,7 +94,6 @@ func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
 		FeatureObservability: d.observability,
 		FeatureHotReload:     d.hotReload,
 		FeaturePacks:         d.packs,
-		FeatureStarters:      d.starters,
 		FeatureDeploy:        d.deploy,
 	}
 }
@@ -132,7 +129,6 @@ func deriveFeatureDefaults(c *ProjectConfig) *derivedFeatureDefaults {
 		observability: isService,
 		hotReload:     isService,
 		packs:         isService,
-		starters:      isService,
 		deploy:        isService,
 	}
 }
@@ -335,7 +331,6 @@ func normalizeFeatures(f FeaturesConfig, d *derivedFeatureDefaults) FeaturesConf
 	f.Observability = drop(f.Observability, d.observability)
 	f.HotReload = drop(f.HotReload, d.hotReload)
 	f.Packs = drop(f.Packs, d.packs)
-	f.Starters = drop(f.Starters, d.starters)
 	f.Deploy = drop(f.Deploy, d.deploy)
 	// Diagnostics derives to off; drop an explicit false.
 	f.Diagnostics = drop(f.Diagnostics, false)

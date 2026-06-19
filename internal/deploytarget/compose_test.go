@@ -93,6 +93,59 @@ func TestCompose_Deploy_WithEnvFile(t *testing.T) {
 	}
 }
 
+// TestCompose_Deploy_SecretsMergedEnvFileWins confirms resolved secrets
+// reach the docker process env as the BASE layer, with env_file entries
+// overriding on key conflict.
+func TestCompose_Deploy_SecretsMergedEnvFileWins(t *testing.T) {
+	dir := t.TempDir()
+	// env_file declares ONE key that also exists in Secrets (to prove the
+	// file wins) plus a file-only key.
+	envFile := filepath.Join(dir, ".env.prod")
+	if err := os.WriteFile(envFile, []byte("SHARED=from_file\nFILE_ONLY=f\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	r := &fakeRunner{
+		outputs: map[string]string{
+			"docker compose -f docker-compose.yml ps": "edge_1   Up\n",
+		},
+	}
+	p := ComposeProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env:        "prod",
+		ProviderID: "compose",
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				Compose: &ComposeSpec{
+					ComposeFile: "docker-compose.yml",
+					EnvFile:     envFile,
+				},
+				Secrets: map[string]string{
+					"SHARED":      "from_secret", // overridden by env_file
+					"SECRET_ONLY": "s",
+				},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	// pull is the first RunWithEnv call; its overlay is the merged map.
+	if len(r.envCalls) == 0 || r.envCalls[0] == nil {
+		t.Fatalf("expected a non-nil env overlay on the first RunWithEnv call, got %v", r.envCalls)
+	}
+	got := r.envCalls[0]
+	if got["SHARED"] != "from_file" {
+		t.Errorf("env_file should win on conflict: SHARED = %q, want from_file", got["SHARED"])
+	}
+	if got["SECRET_ONLY"] != "s" {
+		t.Errorf("secret-only key missing: SECRET_ONLY = %q, want s", got["SECRET_ONLY"])
+	}
+	if got["FILE_ONLY"] != "f" {
+		t.Errorf("file-only key missing: FILE_ONLY = %q, want f", got["FILE_ONLY"])
+	}
+}
+
 // TestCompose_Rollback_NoState confirms Rollback errors loudly when
 // there's no state file AND no fallback tag.
 func TestCompose_Rollback_NoState(t *testing.T) {

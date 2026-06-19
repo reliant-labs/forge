@@ -1,4 +1,4 @@
-// Package cli — `forge dev instances` command.
+// Package cli — `forge cluster instances` command.
 //
 // Lists every forge-managed dev namespace on every reachable k3d
 // cluster. Supports the multi-worktree workflow where each worktree
@@ -30,8 +30,8 @@ multi-worktree workflow: many worktrees, each with its own namespace,
 all sharing one cluster (or one per worktree).
 
 Examples:
-  forge dev instances
-  forge dev instances --json`,
+  forge cluster instances
+  forge cluster instances --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevInstances(cmd.Context(), jsonOut)
 		},

@@ -15,7 +15,7 @@ flag — the provider is whatever the service's `deploy = ...` resolves to:
 | `forge.K8sCluster` | k8s native (`cluster.Apply`) | Anything in a k8s cluster you control (k3d / GKE / EKS) |
 | `forge.External` | generic shell-command | Fly.io, Cloud Run, Cloudflare Workers, ECS, Lambda, Vercel, Railway, systemd-on-VM — anything CLI-driven |
 | `forge.Compose` | docker-compose | Docker-compose on a remote host |
-| `forge.HostDeploy` | host process | Dev-loop only — `forge run` / `forge up` launches it locally |
+| `forge.HostDeploy` | host process | Dev-loop only — `forge up --env=dev` launches it locally |
 | `forge.BuildOnly` | build, don't deploy | CLIs and library binaries with no runtime scheduling |
 
 All four runtime providers honour `--dry-run` and `--rollback` (with the
@@ -209,7 +209,7 @@ The rendered JSON:
 }
 ```
 
-Both fields carry `8090` literally — consumers (`forge run`'s dev proxy, the cluster Gateway, audit/explain tools) read the denormalized output and trust it. Drift between the route and the service it targets is impossible by construction.
+Both fields carry `8090` literally — consumers (`forge up`'s dev proxy, the cluster Gateway, audit/explain tools) read the denormalized output and trust it. Drift between the route and the service it targets is impossible by construction.
 
 When to lean on cross-references:
 - **Port** — any place a route, ingress, or sidecar declares the port of a service it points at.

@@ -221,7 +221,7 @@ For navigation links, use the project's existing nav component (likely in `src/c
 ## Step 7 — verify visually
 
 ```bash
-forge run
+forge up --env=dev
 ```
 
 Open the page in a browser. Use Chrome DevTools' MCP integration:

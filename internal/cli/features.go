@@ -9,9 +9,8 @@
 // config loads clean, this command shows the coherent set; the validator
 // guarantees what it prints can never contradict itself.
 //
-// This is the read-only sibling of `forge experimental list` (which only
-// covers the four opt-in experimental flags). `forge features` covers
-// the whole menu, stable + experimental, with the dependency column.
+// `forge features` covers the whole menu, stable + experimental, with
+// the dependency column — including the four opt-in experimental flags.
 
 package cli
 
@@ -44,7 +43,6 @@ var featureDisplayOrder = []config.FeatureName{
 	config.FeatureBuild,
 	config.FeatureDeploy,
 	config.FeaturePacks,
-	config.FeatureStarters,
 	// Experimental — printed in the same list with an (experimental) tag.
 	config.FeatureIngress,
 	config.FeatureExternalBuilds,
@@ -165,8 +163,6 @@ func featureExplicitlySet(f config.FeaturesConfig, name config.FeatureName) bool
 		return f.HotReload != nil
 	case config.FeaturePacks:
 		return f.Packs != nil
-	case config.FeatureStarters:
-		return f.Starters != nil
 	case config.FeatureDeploy:
 		return f.Deploy != nil
 	default:

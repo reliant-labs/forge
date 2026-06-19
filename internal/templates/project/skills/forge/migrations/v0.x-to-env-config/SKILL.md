@@ -43,7 +43,7 @@ Forge 1.6+ inverts the model:
 4. **`forge generate`** emits `deploy/kcl/<env>/config_gen.k` for every
    env. Each `main.k` imports it as `cfg` and concatenates
    `cfg.APP_ENV + cfg.<CATEGORY>_ENV` into `Application.env_vars`.
-5. **`forge run --env <env>`** projects the merged per-env config to
+5. **`forge up --env=<env>`** projects the merged per-env config to
    subprocess env vars (sensitive fields skipped — set those locally
    via direnv / .env).
 6. **`forge deploy <env>`** passes non-sensitive scalars to KCL via
@@ -133,7 +133,7 @@ What user code / config might need to change:
   infrastructure, not app config. Keep them in
   `base.OTEL_ENV` / similar, then concatenate alongside `cfg.APP_ENV`
   in each `main.k`.
-- **`forge run` consumers.** If the project relies on `forge run`
+- **`forge up` consumers.** If the project relies on `forge up --env=<env>`
   exporting specific env-var names, double-check the snake-to-
   SCREAMING_SNAKE conversion (proto `database_url` →
   env `DATABASE_URL`).
@@ -190,8 +190,8 @@ deleted once nothing references it.
 grep -r "DATABASE_URL\|STRIPE_API_KEY" deploy/kcl/
 # Expect: only secret_ref lines (no `value = "<plaintext>"` for sensitive fields).
 
-# `forge run` projects merged config to subprocess env.
-forge run --env dev | head    # check the inherited env shows your fields
+# `forge up` projects merged config to subprocess env.
+forge up --env=dev | head    # check the inherited env shows your fields
 
 # Build / deploy still work.
 forge generate && go build ./...

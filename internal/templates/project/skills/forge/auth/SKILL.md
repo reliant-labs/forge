@@ -168,7 +168,7 @@ rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
 
 ## Dev Mode
 
-`forge run` defaults the children to `ENVIRONMENT=development` when nothing else sets it (per-env config or your shell always wins), so the canonical dev command never boots the server in production mode — where an unconfigured auth provider would refuse to start.
+`forge up --env=dev` defaults the children to `ENVIRONMENT=development` when nothing else sets it (per-env config or your shell always wins), so the canonical dev command never boots the server in production mode — where an unconfigured auth provider would refuse to start.
 
 In dev mode (or `AUTH_MODE=none`) the auth interceptor runs in passthrough and attaches the synthetic principal from `devClaims()` in `pkg/middleware/middleware.go` to every request, so handlers and generated CRUD that demand claims via `middleware.GetUser` work with zero auth config. To disable, return `nil` from `devClaims()` — dev requests then carry no claims and claim-demanding RPCs return Unauthenticated. The dev principal is only consulted in passthrough mode; installing a validator or registering external auth makes `pkg/authn` ignore it.
 

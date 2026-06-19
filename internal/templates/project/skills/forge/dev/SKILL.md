@@ -1,6 +1,6 @@
 ---
 name: dev
-description: Local-cluster dev loop primitives — cluster lifecycle, port-forward, status, logs, host/cluster split. Compose with project-specific bash for sibling-repo deploys, helm bootstraps, and webhook listeners.
+description: Local-cluster dev loop primitives — cluster lifecycle, status, logs, ingress URLs, host/cluster split. Compose with project-specific bash for sibling-repo deploys, helm bootstraps, and webhook listeners.
 ---
 
 # Forge Dev Loop
@@ -12,30 +12,31 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 
 | Command | What it does |
 |---|---|
-| `forge dev cluster up [--wait]` | Create k3d cluster from `deploy/k3d.yaml`. Idempotent — no-op if already up. |
-| `forge dev cluster down` | Delete the cluster. Idempotent — no-op if not present. |
-| `forge dev cluster status [--json]` | Show cluster up/down, kubectl context, config path. |
-| `forge dev cluster reset` | Down then up (default `--wait=true`). |
-| `forge dev cluster reload` | Re-render `deploy/kcl/dev/` + kubectl apply + wait rollout. The inner-loop reload after editing code or KCL. |
-| `forge dev status [--json]` | Cluster + pods in dev namespace + active port-forwards + sibling dev namespaces. |
-| `forge dev logs [--service x] [--tail N]` | Stream `kubectl logs -f` for one or all forge-managed pods in the dev namespace. |
-| `forge dev info` | Diagnostic dump — cluster, context, namespace, registry, declared service/frontend ports. |
-| `forge dev port-forward` | Forward every service in `forge.yaml` (parallel). Ctrl-C cleans up. PIDs in `~/.cache/forge/dev/<cluster>/<ns>.pids`. |
-| `forge dev instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
-| `forge run <service> [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), loading `HostDeploy.secrets_file` first then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. |
-| `forge run <service> stop` | Kill the background process tracked by `forge run <service> --background`. |
-| `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
-| `forge deploy dev [--prune]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. |
+| `forge cluster up [--wait]` | Create k3d cluster from `deploy/k3d.yaml`. Idempotent — no-op if already up. |
+| `forge cluster down` | Delete the cluster. Idempotent — no-op if not present. |
+| `forge cluster reset` | Down then up (default `--wait=true`). |
+| `forge cluster reload` | Re-render `deploy/kcl/dev/` + kubectl apply + wait rollout. The inner-loop reload after editing code or KCL. |
+| `forge cluster status [--json]` | Cluster up/down + kubectl context + config path + pods in the dev namespace + ingress URLs + sibling dev namespaces. |
+| `forge cluster logs [--service x] [--tail N]` | Stream `kubectl logs -f` for one or all forge-managed pods in the dev namespace. |
+| `forge cluster info` | Diagnostic dump — cluster, context, namespace, registry, declared service/frontend ports. |
+| `forge cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
+| `forge cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
+| `forge up --target <service> --host-only [--background]` | Host-mode single-service runner. Dispatches on KCL `Service.deploy.runner` (`go-run` / `air` / `binary` / `delve`), injecting the bundle `secret_provider` (dotenv in dev) as the secrets layer, then layering `env_vars` on top. For services whose dev env declares `deploy = forge.HostDeploy {...}`. Skips build + cluster apply, scoped to the named service. |
+| `forge up stop --env=<env>` | Kill the background processes tracked by `forge up --background` for that env. |
+| `forge up --env=<env> [--no-build] [--no-deploy] [--cluster-only] [--host-only] [--target <name>] [--background]` | The whole-loop orchestrator: build (host-mode services filtered out) → cluster apply → host launch → frontend dev-serve. Reads `deploy/kcl/<env>/` to split services by provider. |
+| `forge deploy dev [--prune] [--target <app>]` | Apply `deploy/kcl/dev/`. Skips rollout wait for services declaring `deploy = forge.HostDeploy {...}`. `--prune` deletes orphan forge-managed Deployments. `--target <app>` (repeatable, by service/frontend name) deploys ONLY that app — the K8sCluster apply keeps the app's workloads plus shared resources (Namespace, ConfigMap/Secret, RBAC) and drops other apps' workloads; a typo'd target errors with the available app names. |
 
 ## Host vs cluster: where does each service run in dev?
 
-Default is **cluster**: every service runs in k3d, reached via
-`forge dev port-forward`. This is the right shape for services that need
-cluster-only primitives — operators, CRD watchers, ingress webhooks,
-sidecars that depend on dynamic-config injection.
+Default is **cluster**: every service runs in k3d, reached from the host
+via the Gateway API ingress path (`forge cluster urls` lists the routes).
+This is the right shape for services that need cluster-only primitives —
+operators, CRD watchers, ingress webhooks, sidecars that depend on
+dynamic-config injection.
 
-**Host mode** flips a service to run as a host process under `forge run
-<service>`. Set the deploy target in `deploy/kcl/<env>/main.k` to
+**Host mode** flips a service to run as a host process under `forge up
+--target <service> --host-only`. Set the deploy target in
+`deploy/kcl/<env>/main.k` to
 `forge.HostDeploy` (per-env — typically only in `dev`, with `staging` and
 `prod` staying on `forge.K8sCluster`):
 
@@ -53,7 +54,6 @@ _bundle = forge.Bundle {
                 env_vars = [
                     forge.EnvVar { name = "DATABASE_URL", value = "postgres://..." }
                 ]
-                secrets_file = ".env.dev.local"   # gitignored
             }
         }
         forge.Service {
@@ -65,6 +65,8 @@ _bundle = forge.Bundle {
             }
         }
     ]
+    # Secret VALUES come from the bundle provider, not per-service.
+    secret_provider = forge.DotenvSecrets { path = ".env.dev.secrets" }   # gitignored
 }
 ```
 
@@ -88,17 +90,22 @@ dev does.
 - `env_vars` — KCL-declared per-env config (DATABASE_URL, NATS_URL,
   LOG_LEVEL, …). Reproducible, version-controlled, composes with
   the same sources `K8sCluster` services see via the Deployment's env block.
-- `secrets_file` — gitignored dotenv with JUST the secrets (STRIPE_*,
-  SUPABASE_*, JWT_PUBLIC_KEY, …). Loaded first; `env_vars` layers on top
-  so KCL wins on conflict and per-env config can't drift between
-  developer machines.
+- Secret VALUES come from the bundle-level `secret_provider` (see below),
+  NOT from a per-service file. In dev that's
+  `forge.DotenvSecrets { path = ".env.dev.secrets" }` — a gitignored
+  dotenv with JUST the secrets (STRIPE_*, SUPABASE_*, JWT_PUBLIC_KEY, …),
+  injected per runtime as the secrets layer; `env_vars` layers on top so
+  KCL wins on conflict and per-env config can't drift between machines.
+  A per-service `HostDeploy.secrets_file` is now only a backward-compat
+  fallback. See the `forge/secrets` skill for the full model.
 
 What flipping a service to host mode buys:
 
 - `forge deploy dev` skips its rollout wait (saves 120s/service).
 - `forge deploy dev --prune` deletes its stale in-cluster Deployment.
 - `forge build --env=dev` lists it under "host-mode services" so users know
-  they need to run it with `forge run <name>` (or just `forge up --env=dev`).
+  they need to run it with `forge up --target <name> --host-only` (or just
+  `forge up --env=dev`).
 - The scaffolded `cmd/server.go` operator-gating helper won't start the
   controller manager when the user filters to host-mode-only services
   (no more spurious "not running in-cluster" errors during a host run).
@@ -107,28 +114,81 @@ What flipping a service to host mode buys:
 
 `forge up --env=dev` is the one-command inner loop — it brings up infra,
 applies the cluster-mode services, launches the host-mode services, and
-dev-serves every frontend. Use the breakdown below when you want
-fine-grained control:
+dev-serves every frontend. It also keeps the two gitignored
+prerequisites fresh so a clean checkout just works, each gated on
+staleness (a no-op in the steady state):
+
+- **Generated code** — runs `forge generate` when `gen/` is missing or
+  `proto/` is newer than the generated tree (`--no-generate` to skip).
+- **Frontend deps** — runs `<dev_runner> install` for a frontend whose
+  `node_modules` is missing or older than its lockfile/manifest
+  (`--no-install` to skip).
+
+Use the breakdown below when you want fine-grained control:
 
 ```bash
 # Terminal 1: long-running infra + cluster services
-forge dev cluster up --wait
+forge cluster up --wait
 forge deploy dev
-forge dev port-forward &
 
 # Terminal 2: the service you're actively editing
-forge run admin-server                  # foreground; Ctrl-C to stop
+forge up --target admin-server --host-only                 # foreground; Ctrl-C to stop
 # or detach + tail logs separately:
-forge run admin-server --background     # PID at ~/.cache/forge/run/admin-server.pid
-forge run admin-server stop             # later teardown
+forge up --target admin-server --host-only --background    # detach; PIDs tracked per env
+forge up stop --env=dev                                    # later teardown
 ```
 
-`forge run admin-server` reads the service's `HostDeploy.secrets_file`
-(if declared) FIRST, then layers `HostDeploy.env_vars` on top — KCL
-wins on conflict so per-env config can't drift between developer
-machines. Override the secrets-file path with `--env-file`. The child
-process also inherits the host shell's env, so anything already
-exported wins over both.
+`forge up --target admin-server --host-only` injects the bundle
+`secret_provider` (the dev dotenv) as the secrets layer FIRST, then layers
+`HostDeploy.env_vars` on top — KCL wins on conflict so per-env config
+can't drift between developer machines. (A per-service
+`HostDeploy.secrets_file` is honored only as a backward-compat fallback;
+see the `forge/secrets` skill.) The child process also inherits the host
+shell's env, so anything already exported wins over both.
+
+## Logs & the `forge up` summary
+
+`forge up --env=<env>` writes every host service's and frontend's output
+to a stable, greppable location:
+
+```
+.forge/logs/<env>/<service>.log
+.forge/logs/<env>/frontend_<name>.log
+```
+
+This holds in **both** modes — foreground tees the file alongside the
+live `[name]`-prefixed terminal stream, `--background` uses it as the
+sole sink. The directory is gitignored (`.forge/*`). Because the path is
+project-relative and deterministic, an agent can read a single service's
+output directly instead of scraping interleaved scrollback:
+
+```bash
+tail -f .forge/logs/dev/admin-server.log
+grep -i "error\|panic" .forge/logs/dev/*.log
+```
+
+After the host + frontend phases start, `up` prints a summary box of what
+is listening where and the log path for each process:
+
+```
+╭─ forge up · env=dev ─────────────────────────────────────
+│ Host services
+│   admin-server           http://localhost:8080
+│     ↳ .forge/logs/dev/admin-server.log
+│ Frontends
+│   reliant-web            http://localhost:3000
+│     ↳ .forge/logs/dev/frontend_reliant-web.log
+│
+│ Logs   .forge/logs/dev/   — tail -f / grep the per-service *.log here
+│ Cluster routes:  forge cluster urls
+│ Ctrl-C to stop.
+╰─────────────────────────────────────────────────────────
+```
+
+Host-service URLs are derived from each service's KCL `PORT` env var;
+a service that declares no `PORT` is listed without a URL. Cluster
+service routes (Gateway API) are not host-local — list them with
+`forge cluster urls`.
 
 ## Composing with Taskfile (cloud-dev pattern)
 
@@ -140,24 +200,21 @@ tasks:
   dev:
     desc: Bring up cluster + cluster services, run host services locally
     cmds:
-      - forge dev cluster up --wait
+      - forge cluster up --wait
       - forge deploy dev --prune       # cluster services only; host services pruned
-      - forge dev port-forward --background
-      - forge run admin-server --background
-      - forge run workspace-proxy --background
+      - forge up --target admin-server --host-only --background
+      - forge up --target workspace-proxy --host-only --background
 
   dev-stop:
     cmds:
-      - forge run admin-server stop
-      - forge run workspace-proxy stop
-      - forge dev port-forward stop
+      - forge up stop --env=dev
 ```
 
 ## Safety: kubectl context pinning
 
-Every `forge dev` command runs against `k3d-<cluster-name>` (resolved from
+Every `forge cluster` command runs against `k3d-<cluster-name>` (resolved from
 `deploy/k3d.yaml` metadata.name, falling back to forge.yaml `name`). This means
-you cannot accidentally `forge dev cluster reload` into staging or prod.
+you cannot accidentally `forge cluster reload` into staging or prod.
 
 `forge deploy <env>` enforces the same guard: before applying, it verifies the
 current kubectl context matches the env's `forge.K8sCluster.cluster` declared
@@ -182,7 +239,7 @@ CI deploy-bots that legitimately target multiple envs from one context use
 `cloud-dev` / `cluster-bootstrap` scripts that deploy sibling repos, install
 helm charts, run Stripe webhook listeners, or seed per-tenant DBs — keep those
 in `scripts/` and `Taskfile.yml`. Forge owns the universal cluster +
-port-forward + status mechanics; the project owns the project-specific
+ingress + status mechanics; the project owns the project-specific
 orchestration. Compose them:
 
 ```yaml
@@ -191,27 +248,26 @@ tasks:
   cloud-dev:
     desc: Full dev loop with sibling deploys
     cmds:
-      - forge dev cluster up --wait
+      - forge cluster up --wait
       - task deploy-reliant       # your bash — sibling-repo helm install
       - task ensure-litellm-db    # your bash — out-of-band DB bootstrap
       - forge deploy dev          # forge KCL apply (with context guard)
-      - forge dev port-forward &
       - task stripe-listen &
       - wait
 ```
 
 ## Multi-worktree / multi-namespace
 
-`forge dev instances` lists every dev namespace on the host — designed for
+`forge cluster instances` lists every dev namespace on the host — designed for
 projects using per-worktree namespacing (each worktree gets its own namespace
 sharing one cluster). The pattern:
 
 ```bash
-$ forge dev instances
-CLUSTER             NAMESPACE                           PODS   PORT-FORWARDS
-cp-forge            cp-forge-dev                        12     4
-cp-forge            cp-forge-dev-feat-billing           12     0
-cp-forge            cp-forge-dev-fix-auth               12     0
+$ forge cluster instances
+CLUSTER             NAMESPACE                           PODS
+cp-forge            cp-forge-dev                        12
+cp-forge            cp-forge-dev-feat-billing           12
+cp-forge            cp-forge-dev-fix-auth               12
 ```
 
 Each worktree sets the `namespace` field on its `forge.K8sCluster` block
@@ -228,7 +284,7 @@ against one shared cluster.
 - Cross-service smoke tests (project-specific business invariants)
 
 Keep these in `scripts/` and call them from `Taskfile.yml`. Compose them with
-`forge dev` primitives.
+`forge cluster` primitives.
 
 ## CI usage
 

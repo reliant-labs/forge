@@ -48,7 +48,7 @@ Your test isn't testing the right thing. Fix by:
 - Going broader — remove mocks, test a larger scope
 - Checking your test inputs — are they realistic?
 - Verifying you're hitting the same code path as production
-- Using `forge run --debug` to step through the actual execution
+- Using `forge debug start` to step through the actual execution
 
 ## After the Fix
 

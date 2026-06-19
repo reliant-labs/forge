@@ -2,8 +2,8 @@
 
 Production-ready JWT validation with JWKS auto-rotation and multi-provider support.
 
-**You do not need this pack for local development.** `forge run` defaults
-to dev mode, where the scaffold's auth passthrough attaches the synthetic
+**You do not need this pack for local development.** `forge up --env=dev`
+defaults to dev mode, where the scaffold's auth passthrough attaches the synthetic
 principal from `devClaims()` (`pkg/middleware/middleware.go`) and generated
 CRUD works with zero auth config. Install this pack when you need REAL
 token validation (JWKS, issuer/audience checks).

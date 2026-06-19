@@ -89,7 +89,6 @@ features:
     observability: true
     hot_reload: true
     packs: true
-    starters: true
 `
 
 // minimalForgeYAML is the post-change scaffold output for the same
@@ -174,7 +173,7 @@ func TestDerivedDefaults_RealProjectShapesMatchExplicit(t *testing.T) {
 	for _, name := range []FeatureName{
 		FeatureORM, FeatureCodegen, FeatureMigrations, FeatureCI,
 		FeatureBuild, FeatureContracts, FeatureDocs, FeatureFrontend,
-		FeatureObservability, FeatureHotReload, FeaturePacks, FeatureStarters,
+		FeatureObservability, FeatureHotReload, FeaturePacks,
 	} {
 		if !derived[name] {
 			t.Errorf("reference-shape derivation: feature %q = false, want true (must match the explicit `true` in cp-forge/kalshi forge.yaml)", name)
@@ -238,6 +237,35 @@ database:
 	}
 }
 
+// TestNormalizeForWrite_BuildVersionVarSurvives confirms a config with
+// build.version_var set survives Load → NormalizeForWrite → Marshal →
+// reload. BuildConfig has no derived default, so NormalizeForWrite must
+// leave it verbatim rather than dropping it.
+func TestNormalizeForWrite_BuildVersionVarSurvives(t *testing.T) {
+	src := minimalForgeYAML + `
+build:
+    version_var: github.com/acme/app/internal/buildinfo.Version
+`
+	cfg, err := LoadStrict([]byte(src), "build.yaml", usersComponent()...)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Build.VersionVar != "github.com/acme/app/internal/buildinfo.Version" {
+		t.Fatalf("load dropped build.version_var, got %q", cfg.Build.VersionVar)
+	}
+	out, err := yaml.Marshal(NormalizeForWrite(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	re, err := LoadStrict(out, "roundtrip.yaml", usersComponent()...)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if re.Build.VersionVar != "github.com/acme/app/internal/buildinfo.Version" {
+		t.Errorf("build.version_var lost in round-trip (got %q):\n%s", re.Build.VersionVar, out)
+	}
+}
+
 // TestNormalizeForWrite_DisableMigrationsSurvivesEmptyDatabase guards
 // the subtle case: a scaffold-time `--disable migrations` on a config
 // whose database section is still absent. Derivation against the RAW
@@ -275,7 +303,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 				FeatureORM: true, FeatureCodegen: true, FeatureMigrations: true,
 				FeatureCI: true, FeatureBuild: true, FeatureContracts: true,
 				FeatureDocs: true, FeatureFrontend: false, FeatureObservability: true,
-				FeatureHotReload: true, FeaturePacks: true, FeatureStarters: true,
+				FeatureHotReload: true, FeaturePacks: true,
 			},
 		},
 		{
@@ -295,7 +323,7 @@ func TestDeriveFeatureDefaults_PerKindMatrix(t *testing.T) {
 				FeatureORM: false, FeatureCodegen: false, FeatureMigrations: false,
 				FeatureCI: true, FeatureBuild: true, FeatureContracts: true,
 				FeatureDocs: true, FeatureFrontend: false, FeatureObservability: false,
-				FeatureHotReload: false, FeaturePacks: false, FeatureStarters: false,
+				FeatureHotReload: false, FeaturePacks: false,
 			},
 		},
 		{

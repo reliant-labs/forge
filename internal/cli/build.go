@@ -121,6 +121,14 @@ type buildOptions struct {
 	// "compute from git" — the same resolution `forge deploy` falls
 	// back to when no build-state file is present.
 	tag string
+	// skipGenerate disables the pre-build "ensure generated code" step
+	// (--no-generate). The default (false) auto-runs `forge generate`
+	// when gen/ is missing or proto is newer than the generated tree, so
+	// a fresh checkout doesn't fail with the go.work "cannot load module
+	// gen" error. Set it when the generated tree is known-good and the
+	// caller wants to skip the staleness scan (e.g. a CI lane that runs
+	// generate as its own step). See ensureGeneratedCode.
+	skipGenerate bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -173,6 +181,7 @@ without forcing the user to add /etc/hosts entries on the host.`,
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
 	cmd.Flags().StringVar(&opts.env, "env", "", "Deploy environment (e.g. dev, staging, prod). When set, services declared `deploy: host` in deploy/kcl/<env>/ are excluded from docker build/push (the Go binary still includes their code).")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag (default: git describe --tags --always --dirty). Persisted to .forge/state/build-<env>.json when --push succeeds so forge deploy uses the same value.")
+	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default `forge build` runs `forge generate` when gen/ is missing or proto sources are newer than the generated tree.")
 
 	return cmd
 }
@@ -224,6 +233,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	}
 	cfg := store.Config()
 
+	// Ensure generated code exists / is fresh before any `go build`.
+	// Missing gen/ (gitignored, or freshly cleaned) otherwise fails with
+	// the cryptic "cannot load module gen listed in go.work" error. Gated
+	// on staleness so the steady-state loop pays nothing; --no-generate
+	// opts out. See ensureGeneratedCode.
+	if err := ensureGeneratedCode(projectDirForKCL(), opts.skipGenerate); err != nil {
+		return err
+	}
+
 	// Resolve the docker image tag once, up front. Both the docker
 	// build/push path below and the post-push build-state write consume
 	// this; resolving once guarantees the tag the user sees printed
@@ -240,6 +258,19 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		resolvedTag = t
 	}
+
+	// Resolve the EMBEDDED build version once, up front, so the host
+	// binary and the docker image stamp the identical version for this
+	// build. Override priority: --tag > forge.yaml build.version > "".
+	// This is distinct from resolvedTag (the IMAGE tag) — the embedded
+	// version follows build.version, the image tag follows resolveImageTag.
+	// They coincide when --tag is set (--tag pins both) but diverge when
+	// the tag is git-derived and build.version is unset.
+	versionOverride := opts.tag
+	if versionOverride == "" {
+		versionOverride = cfg.Build.Version
+	}
+	resolvedVersion := resolveBuildVersion(ctx, versionOverride)
 
 	fmt.Printf("[build] Building project: %s\n", cfg.Name)
 	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
@@ -371,9 +402,9 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	var results []buildResult
 
 	if opts.parallel {
-		results = buildParallel(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, opts)
+		results = buildParallel(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
 	} else {
-		results = buildSequential(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, opts)
+		results = buildSequential(ctx, cfg, frontends, dockerFrontends, buildBinary, skipProjectDocker, cfgArchForDocker, resolvedTag, resolvedVersion, opts)
 	}
 
 	// Build-only variants from KCL: each declared variant produces one
@@ -441,14 +472,14 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 	}
 
-	// Persist build state when the project docker image was pushed
-	// successfully. Skipped when --push was not set (no push → nothing
-	// to record), when the project docker build itself failed, or when
-	// the project docker build was skipped (host-only env, no Dockerfile).
-	// This is the contract that `forge deploy <env>` reads to pin the
-	// image-tag to what `forge build` actually pushed, eliminating the
-	// build/deploy tag divergence the user hit on dirty working trees.
-	if opts.buildDocker && opts.pushRegistry != "" && resolvedTag != "" && !skipProjectDocker {
+	// Persist build state on ANY successful project docker build — not
+	// just --push. The state file is the build→deploy tag handoff, which
+	// every transport needs (scp/compose deploy a local image just as much
+	// as a registry deploy). Pushing only adds the registry coordinates;
+	// it is not what makes the handoff worth recording. Skipped only when
+	// no docker image was built (host-only env / no --docker / no
+	// Dockerfile) or the docker build failed.
+	if opts.buildDocker && resolvedTag != "" && !skipProjectDocker {
 		projectDockerSucceeded := false
 		for _, r := range succeeded {
 			if r.kind == "docker" && r.name == cfg.Name+" (docker)" {
@@ -457,10 +488,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			}
 		}
 		if projectDockerSucceeded {
+			commit, gitTag, dirty := gitBuildProvenance(ctx)
 			state := BuildState{
 				Image:    cfg.Name,
 				Tag:      resolvedTag,
 				Registry: opts.pushRegistry,
+				Pushed:   opts.pushRegistry != "",
+				Commit:   commit,
+				GitTag:   gitTag,
+				Dirty:    dirty,
 				PushedAt: nowRFC3339(),
 			}
 			if werr := WriteBuildState(projectDirForKCL(), opts.env, state); werr != nil {
@@ -496,7 +532,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	return nil
 }
 
-func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, opts buildOptions) []buildResult {
+func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
 	var (
 		mu      sync.Mutex
 		wg      sync.WaitGroup
@@ -508,7 +544,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false))
+			r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false), resolvedVersion)
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
@@ -547,7 +583,7 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag)
+				r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
 				mu.Lock()
 				results = append(results, r)
 				mu.Unlock()
@@ -569,11 +605,11 @@ func buildParallel(ctx context.Context, cfg *config.ProjectConfig, frontends, do
 	return results
 }
 
-func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, opts buildOptions) []buildResult {
+func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, dockerFrontends []config.FrontendConfig, buildBinary, skipProjectDocker bool, cfgArchForDocker, resolvedTag string, resolvedVersion versionInfo, opts buildOptions) []buildResult {
 	var results []buildResult
 
 	if buildBinary {
-		r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false))
+		r := buildGoBinary(ctx, cfg, opts.outputDir, opts.debug, resolveBuildArch(cfg.Deploy.TargetArch, opts.targetArch, false), resolvedVersion)
 		results = append(results, r)
 		if r.err != nil {
 			return results // Stop on first failure in sequential mode
@@ -591,7 +627,7 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	if opts.buildDocker {
 		dockerArch := resolveBuildArch(cfgArchForDocker, opts.targetArch, true)
 		if buildBinary && !skipProjectDocker {
-			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag)
+			r := dockerBuildProject(ctx, cfg, opts.pushRegistry, dockerArch, resolvedTag, resolvedVersion)
 			results = append(results, r)
 			if r.err != nil {
 				return results
@@ -609,7 +645,7 @@ func buildSequential(ctx context.Context, cfg *config.ProjectConfig, frontends, 
 	return results
 }
 
-func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir string, debug bool, crossArch string) buildResult {
+func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir string, debug bool, crossArch string, versionInfo versionInfo) buildResult {
 	start := time.Now()
 	binaryPath := filepath.Join(outputDir, cfg.Name)
 
@@ -627,9 +663,14 @@ func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir str
 	if debug {
 		args = append(args, "-gcflags=all=-N -l")
 	} else {
-		versionInfo := gitVersionInfo(ctx)
 		ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s -X main.date=%s",
 			versionInfo.version, versionInfo.commit, versionInfo.date)
+		// Stamp an additional project-chosen version target (forge.yaml
+		// build.version_var) with the SAME resolved version, for runtime
+		// code that can't import package main.
+		if cfg.Build.VersionVar != "" {
+			ldflags += fmt.Sprintf(" -X %s=%s", cfg.Build.VersionVar, versionInfo.version)
+		}
 		args = append(args, "-ldflags", ldflags)
 	}
 	args = append(args, "./cmd")
@@ -655,34 +696,64 @@ func buildGoBinary(ctx context.Context, cfg *config.ProjectConfig, outputDir str
 }
 
 // versionInfo captures the source-of-truth version/commit/date injected into
-// built binaries via -ldflags. Fields fall back to "dev"/"none"/"unknown"
-// when the project is not a git repo.
+// built binaries via -ldflags. Fields fall back to a time-based dev version /
+// "none" / the current timestamp when the project is not a git repo.
 type versionInfo struct {
 	version string
 	commit  string
 	date    string
 }
 
-// gitVersionInfo returns version metadata derived from git, falling back to
-// safe defaults when git commands fail (e.g. not a git repo).
-func gitVersionInfo(ctx context.Context) versionInfo {
+// resolveBuildVersion is the ONE version resolver shared by the host
+// binary build and the docker image build, so both embed the identical
+// version for a given build. The previous split — gitVersionInfo on the
+// host side, an in-container `git describe` on the docker side — was the
+// root cause of the "every image is main.version=dev" bug: .dockerignore
+// excludes .git, so the in-container describe always failed.
+//
+// version policy, in order:
+//
+//	a. override (non-empty) — `--tag`, else forge.yaml build.version.
+//	b. `git describe --tags --always --dirty` — semver when tagged,
+//	   commit-ish otherwise.
+//	c. `git rev-parse --short HEAD` — commit fallback for shallow / no-
+//	   describe repos.
+//	d. fmt.Sprintf("0.0.0-dev.%d", <unix seconds>) — time-based dev
+//	   fallback when there is no git at all.
+//
+// commit: `git rev-parse HEAD`, else "none". date: now in RFC3339 UTC.
+func resolveBuildVersion(ctx context.Context, override string) versionInfo {
 	info := versionInfo{
-		version: "dev",
-		commit:  "none",
-		date:    "unknown",
+		commit: "none",
+		date:   time.Now().UTC().Format(time.RFC3339),
 	}
 
-	if out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
-		if v := strings.TrimSpace(string(out)); v != "" {
-			info.version = v
+	switch {
+	case override != "":
+		info.version = override
+	default:
+		if out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				info.version = v
+			}
+		}
+		if info.version == "" {
+			if out, err := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD").Output(); err == nil {
+				if v := strings.TrimSpace(string(out)); v != "" {
+					info.version = v
+				}
+			}
+		}
+		if info.version == "" {
+			info.version = fmt.Sprintf("0.0.0-dev.%d", time.Now().Unix())
 		}
 	}
+
 	if out, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
 		if c := strings.TrimSpace(string(out)); c != "" {
 			info.commit = c
 		}
 	}
-	info.date = time.Now().UTC().Format(time.RFC3339)
 	return info
 }
 
@@ -743,7 +814,7 @@ func withForcedEnv(env []string, key, value string) []string {
 // so the resulting image runs on a node whose arch matches the deploy
 // target rather than the build host. Empty means "let docker use the
 // host arch" — appropriate when host == target.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegistry, crossArch, resolvedTag string, resolvedVersion versionInfo) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -768,6 +839,16 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, pushRegi
 	}
 
 	dockerArgs := []string{"build"}
+	// Pass the resolved build version into the image build as build-args.
+	// The Dockerfile bakes these into -ldflags (FORGE_VERSION/COMMIT/DATE),
+	// replacing the old in-container `git describe` that always failed
+	// because .dockerignore excludes .git. The VersionVar PATH is baked
+	// into the Dockerfile at generate time, so only the VALUE flows here.
+	dockerArgs = append(dockerArgs,
+		"--build-arg", "FORGE_VERSION="+resolvedVersion.version,
+		"--build-arg", "FORGE_COMMIT="+resolvedVersion.commit,
+		"--build-arg", "FORGE_DATE="+resolvedVersion.date,
+	)
 	if crossArch != "" {
 		dockerArgs = append(dockerArgs, "--platform=linux/"+crossArch)
 		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",

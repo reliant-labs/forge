@@ -147,6 +147,7 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newAddCmd())
 	rootCmd.AddCommand(newBuildCmd())
 	rootCmd.AddCommand(newDeployCmd())
+	rootCmd.AddCommand(newSmokeCmd())
 	rootCmd.AddCommand(newSecretsCmd())
 	rootCmd.AddCommand(newTestCmd())
 	rootCmd.AddCommand(newLintCmd())

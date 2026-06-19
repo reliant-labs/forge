@@ -1129,6 +1129,17 @@ func firstK8sClusterField(ctx context.Context, envName, field string) string {
 			}
 		}
 	}
+	// Fallback for the manifests-only render shape: a project whose
+	// main.k emits only `manifests` (no `output = forge.render(_bundle)`
+	// entity echo) yields no cluster-shaped service entity above, so the
+	// loop finds nothing. The namespace is still recoverable from the
+	// rendered objects' metadata.namespace; the cluster (kubectl context)
+	// is not — it isn't a field on any k8s object — so only "namespace"
+	// has a manifest fallback. Callers needing the context in this shape
+	// pass --context, or the project echoes `output`.
+	if field == "namespace" && entities.ManifestNamespace != "" {
+		return entities.ManifestNamespace
+	}
 	return ""
 }
 

@@ -177,8 +177,8 @@ func TestRunSmokeWith(t *testing.T) {
 		t.Fatalf("runSmokeWith (all-pass): %v\n%s", err, buf.String())
 	}
 	out := buf.String()
-	if !strings.Contains(out, "3 PASS") {
-		t.Errorf("expected 3 PASS in summary:\n%s", out)
+	if !strings.Contains(out, "4 PASS") {
+		t.Errorf("expected 4 PASS in summary:\n%s", out)
 	}
 }
 
@@ -220,7 +220,7 @@ func TestRunSmokeWith_JSON(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &rep); err != nil {
 		t.Fatalf("json output not parseable: %v\n%s", err, buf.String())
 	}
-	if !rep.Summary.OK || rep.Summary.Pass != 3 || len(rep.Routes) != 3 {
+	if !rep.Summary.OK || rep.Summary.Pass != 4 || len(rep.Routes) != 4 {
 		t.Errorf("json report unexpected: %+v", rep.Summary)
 	}
 }

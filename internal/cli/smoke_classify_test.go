@@ -5,23 +5,28 @@ import (
 	"testing"
 )
 
-// sampleSmokeBundle is a Bundle JSON with two http routes, one grpc
-// route, a hostless route (skipped), and a Firebase frontend (so an
-// origin is derivable). Mirrors the real shape RenderKCL emits.
+// sampleSmokeBundle is the ROUTE-HOSTED topology (single `edge` gateway,
+// host="", each route carries its own host) — prod/preprod's shape. The
+// frontend declares its API host via NEXT_PUBLIC_API_URL so CORS is
+// scoped to exactly the admin route; the other routes (apex API, wildcard
+// proxy) serve no CORS and must not carry an origin. A truly hostless
+// route on a hostless gateway is still skipped (no addressable host).
 const sampleSmokeBundle = `{
   "services": [
     {"name": "admin-server", "deploy": {"type": "cluster", "cluster": "gke_x", "namespace": "ns"}}
   ],
   "frontends": [
     {"name": "admin-web", "type": "nextjs", "path": "frontend",
-     "deploy": {"type": "firebase", "project": "p", "site": "admin-preprod", "public_dir": "out"}}
+     "env_vars": [{"name": "NEXT_PUBLIC_API_URL", "value": "https://admin-preprod.reliantapi.com"}],
+     "deploy": {"type": "firebase", "project": "p", "site": "reliant-preprod", "public_dir": "out"}}
   ],
   "gateways": [
-    {"name": "edge", "host": "preprod.reliantapi.com"}
+    {"name": "edge", "host": ""}
   ],
   "http_routes": [
     {"name": "api", "gateway": "edge", "service": "admin-server", "port": 8080, "host": "preprod.reliantapi.com", "path": "/"},
     {"name": "admin", "gateway": "edge", "service": "admin-server", "port": 8080, "host": "admin-preprod.reliantapi.com", "path": "/admin"},
+    {"name": "workspace-proxy", "gateway": "edge", "service": "proxy", "port": 8080, "host": "*.workspaces-preprod.reliantapi.com", "path": "/"},
     {"name": "prefix-mount", "gateway": "edge", "service": "admin-server", "port": 8080, "path": "/internal"}
   ],
   "grpc_routes": [
@@ -36,18 +41,28 @@ func TestExtractSmokeTargets(t *testing.T) {
 	}
 	targets := extractSmokeTargets(e)
 
-	// 2 http with host + 1 grpc with host = 3; the hostless http route is
-	// skipped.
-	if len(targets) != 3 {
-		t.Fatalf("want 3 targets (hostless skipped), got %d: %+v", len(targets), targets)
+	// 3 http with host + 1 grpc with host = 4; the hostless route on the
+	// hostless gateway (prefix-mount) is skipped.
+	if len(targets) != 4 {
+		t.Fatalf("want 4 targets (hostless-on-hostless-gw skipped), got %d: %+v", len(targets), targets)
 	}
 
-	wantOrigin := "https://admin-preprod.web.app"
 	byName := map[string]smokeTarget{}
 	for _, tgt := range targets {
 		byName[tgt.RouteName] = tgt
-		if tgt.Origin != wantOrigin {
-			t.Errorf("route %s: origin = %q, want %q", tgt.RouteName, tgt.Origin, wantOrigin)
+	}
+
+	// CORS scoping: only the route whose host matches the frontend's
+	// NEXT_PUBLIC_API_URL host (admin-preprod.reliantapi.com) carries the
+	// origin — the apex API host, the wildcard proxy host, and the grpc
+	// host do NOT (they serve no CORS by design).
+	wantOrigin := "https://reliant-preprod.web.app"
+	if got := byName["admin"].Origin; got != wantOrigin {
+		t.Errorf("admin route origin = %q, want %q (it IS the frontend API host)", got, wantOrigin)
+	}
+	for _, name := range []string{"api", "workspace-proxy", "grpc-api"} {
+		if got := byName[name].Origin; got != "" {
+			t.Errorf("route %s: origin = %q, want empty (not a frontend API host)", name, got)
 		}
 	}
 
@@ -62,13 +77,127 @@ func TestExtractSmokeTargets(t *testing.T) {
 		t.Errorf("admin path = %q, want /admin", got)
 	}
 	if _, ok := byName["prefix-mount"]; ok {
-		t.Errorf("hostless route prefix-mount should be skipped")
+		t.Errorf("hostless route on hostless gateway prefix-mount should be skipped")
+	}
+}
+
+// TestExtractSmokeTargets_GatewayHosted covers staging's topology: the
+// host lives on the GATEWAY and the routes attached to it carry an empty
+// host. Every gateway's route must still be probed (against its own
+// gateway), and CORS scoped to the gateway whose host matches the
+// frontend API URL.
+func TestExtractSmokeTargets_GatewayHosted(t *testing.T) {
+	bundle := `{
+	  "frontends": [
+	    {"name": "admin-web", "type": "nextjs", "path": "frontend",
+	     "env_vars": [{"name": "NEXT_PUBLIC_API_URL", "value": "https://admin-staging.reliantapi.com"}],
+	     "deploy": {"type": "firebase", "project": "p", "site": "reliant-staging", "public_dir": "out"}}
+	  ],
+	  "gateways": [
+	    {"name": "public", "host": "staging.reliantapi.com"},
+	    {"name": "public-admin", "host": "admin-staging.reliantapi.com"},
+	    {"name": "public-grpc", "host": "gateway-staging.reliantapi.com"}
+	  ],
+	  "http_routes": [
+	    {"name": "reliant-api", "gateway": "public", "service": "reliant", "port": 9090},
+	    {"name": "admin-server", "gateway": "public-admin", "service": "admin", "port": 8090},
+	    {"name": "workspace-proxy", "gateway": "public", "service": "proxy", "port": 8080, "host": "*.workspaces-staging.reliantapi.com"}
+	  ],
+	  "grpc_routes": [
+	    {"name": "daemon-gateway", "gateway": "public-grpc", "service": "gw", "port": 9190}
+	  ]
+	}`
+	e, err := parseKCLEntities([]byte(bundle))
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+	targets := extractSmokeTargets(e)
+	if len(targets) != 4 {
+		t.Fatalf("want 4 targets (all gateways probed), got %d: %+v", len(targets), targets)
+	}
+	byName := map[string]smokeTarget{}
+	gwByHost := map[string]string{}
+	for _, tgt := range targets {
+		byName[tgt.RouteName] = tgt
+		gwByHost[tgt.Host] = tgt.Gateway
+	}
+	// Hostless routes inherited their gateway's host.
+	if got := byName["reliant-api"].Host; got != "staging.reliantapi.com" {
+		t.Errorf("reliant-api inherited host = %q, want gateway host", got)
+	}
+	if got := byName["admin-server"].Host; got != "admin-staging.reliantapi.com" {
+		t.Errorf("admin-server inherited host = %q, want gateway host", got)
+	}
+	if got := byName["daemon-gateway"].Host; got != "gateway-staging.reliantapi.com" {
+		t.Errorf("daemon-gateway inherited host = %q, want gateway host", got)
+	}
+	// All three gateways are represented (multi-gateway extraction).
+	gws := map[string]bool{}
+	for _, tgt := range targets {
+		gws[tgt.Gateway] = true
+	}
+	for _, want := range []string{"public", "public-admin", "public-grpc"} {
+		if !gws[want] {
+			t.Errorf("gateway %s has no probed route", want)
+		}
+	}
+	// CORS scoped to the admin gateway's host only.
+	if got := byName["admin-server"].Origin; got != "https://reliant-staging.web.app" {
+		t.Errorf("admin-server origin = %q, want frontend origin", got)
+	}
+	for _, name := range []string{"reliant-api", "workspace-proxy", "daemon-gateway"} {
+		if got := byName[name].Origin; got != "" {
+			t.Errorf("route %s origin = %q, want empty", name, got)
+		}
+	}
+}
+
+// TestExtractSmokeTargets_NoFrontendAPIURL: when no frontend declares an
+// API URL env var, CORS is skipped for every route (no origin set), even
+// though a Firebase origin is derivable — we never guess the API host.
+func TestExtractSmokeTargets_NoFrontendAPIURL(t *testing.T) {
+	bundle := `{
+	  "frontends": [
+	    {"name": "admin-web", "type": "nextjs", "path": "frontend",
+	     "deploy": {"type": "firebase", "project": "p", "site": "reliant-preprod", "public_dir": "out"}}
+	  ],
+	  "gateways": [{"name": "edge", "host": ""}],
+	  "http_routes": [
+	    {"name": "admin", "gateway": "edge", "service": "admin", "port": 8090, "host": "admin.example.com", "path": "/"}
+	  ]
+	}`
+	e, _ := parseKCLEntities([]byte(bundle))
+	targets := extractSmokeTargets(e)
+	if len(targets) != 1 {
+		t.Fatalf("want 1 target, got %d", len(targets))
+	}
+	if targets[0].Origin != "" {
+		t.Errorf("origin = %q, want empty (no frontend API URL to scope CORS)", targets[0].Origin)
+	}
+}
+
+func TestFrontendAPIHosts(t *testing.T) {
+	bundle := `{"frontends":[
+	  {"name":"a","type":"vite-spa","path":"f","env_vars":[
+	    {"name":"VITE_API_URL","value":"https://api.example.com"},
+	    {"name":"VITE_CONTROL_PLANE_API_URL","value":"https://cp.example.com:8443"},
+	    {"name":"NEXT_PUBLIC_API_URL","value":"admin.example.com"},
+	    {"name":"OTHER","value":"https://ignored.example.com"}]}]}`
+	e, _ := parseKCLEntities([]byte(bundle))
+	hosts := frontendAPIHosts(e)
+	for _, want := range []string{"api.example.com", "cp.example.com", "admin.example.com"} {
+		if _, ok := hosts[want]; !ok {
+			t.Errorf("missing API host %q in %v", want, hosts)
+		}
+	}
+	if _, ok := hosts["ignored.example.com"]; ok {
+		t.Errorf("non-API env var host should be ignored")
 	}
 }
 
 func TestFrontendOrigin(t *testing.T) {
 	e, _ := parseKCLEntities([]byte(sampleSmokeBundle))
-	if got := frontendOrigin(e); got != "https://admin-preprod.web.app" {
+	if got := frontendOrigin(e); got != "https://reliant-preprod.web.app" {
 		t.Errorf("frontendOrigin = %q", got)
 	}
 

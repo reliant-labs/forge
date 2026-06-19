@@ -177,7 +177,7 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- if .HasList }}
         case "{{ .ServiceTypeName }}/{{ .ListRPC }}": {
           const result = create({{ .ListResponseType }}Schema, {
-            {{ .EntityNamePlural | camelCase }}: Array.from({{ .EntityNamePlural | camelCase }}Store.values()),
+            {{ .ItemsField }}: Array.from({{ .EntityNamePlural | camelCase }}Store.values()),
           });
           return makeUnaryResponse(method, result);
         }

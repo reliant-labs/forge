@@ -275,7 +275,7 @@ func buildNavPages(services []codegen.ServiceDef, entities []codegen.EntityDef) 
 				HasCreate:      e.HasCreate,
 				ListHook:       "use" + e.ListRPC,
 				HooksModule:    e.HooksImportPath,
-				ItemsField:     codegen.ToCamelCaseFromPascalExport(e.EntityNamePlural),
+				ItemsField:     e.ItemsField,
 				ComponentIdent: e.EntityNamePlural,
 			})
 		}

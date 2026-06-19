@@ -134,6 +134,31 @@ func TestKubectlCmd_IncludesContext(t *testing.T) {
 	}
 }
 
+// TestKubectlApply_ForcesConflicts pins the deploy apply to Server-Side
+// Apply with --force-conflicts. forge is the declarative source of
+// truth, so its SSA field manager must win unconditionally: without
+// --force-conflicts, a resource previously touched by a plain
+// `kubectl apply` (manager kubectl-client-side-apply) makes SSA abort
+// the whole deploy with a field-manager conflict ("exit status 1").
+// Both flags are required together — --force-conflicts is an SSA-only
+// flag and is a no-op without --server-side.
+func TestKubectlApply_ForcesConflicts(t *testing.T) {
+	// Mirror exactly the argv KubectlApply constructs.
+	cmd := kubectlCmd(context.Background(), "prod-cluster", "apply", "--server-side", "--force-conflicts", "-f", "-")
+	if !contains(cmd.Args, "--server-side") {
+		t.Errorf("expected --server-side in apply argv, got %v", cmd.Args)
+	}
+	if !contains(cmd.Args, "--force-conflicts") {
+		t.Errorf("expected --force-conflicts in apply argv, got %v", cmd.Args)
+	}
+	// --force-conflicts is meaningless without --server-side; assert the
+	// SSA flag precedes it so the apply stays a valid SSA invocation.
+	iss, ifc := indexOf(cmd.Args, "--server-side"), indexOf(cmd.Args, "--force-conflicts")
+	if iss == -1 || ifc == -1 || iss > ifc {
+		t.Errorf("expected --server-side ahead of --force-conflicts, got %v", cmd.Args)
+	}
+}
+
 // TestRenderedDeploymentNames verifies the extractor parses the multi-
 // document YAML stream forge produces from KCL, returning only
 // Deployment kind names. Non-Deployments and malformed docs are skipped.

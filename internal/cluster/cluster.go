@@ -470,12 +470,23 @@ func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
 }
 
 // KubectlApply pipes the rendered YAML document stream into
-// `kubectl [--context <kctx>] apply --server-side -f -`. Stdout/stderr
-// are inherited so the user sees the per-resource
+// `kubectl [--context <kctx>] apply --server-side --force-conflicts -f -`.
+// Stdout/stderr are inherited so the user sees the per-resource
 // `created`/`configured`/`unchanged` lines kubectl emits. kctx (when
 // non-empty) targets a specific kubectl context for this command only.
+//
+// --force-conflicts is unconditional and deliberate: forge is the
+// declarative source of truth, so its Server-Side Apply field manager
+// always wins. Without it, any resource previously touched by a plain
+// `kubectl apply` (manager `kubectl-client-side-apply`, common after
+// manual debugging or an older bootstrap) makes SSA abort the whole
+// deploy with "Apply failed with N conflicts ... conflicts with
+// kubectl-client-side-apply" / `exit status 1`. Forcing forge to take
+// ownership of those fields overrides the stale manager and keeps the
+// deploy idempotent. (--force-conflicts is an SSA-only flag — it has no
+// effect without --server-side, which we always pass.)
 func KubectlApply(ctx context.Context, kctx, manifests string) error {
-	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "-f", "-")
+	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

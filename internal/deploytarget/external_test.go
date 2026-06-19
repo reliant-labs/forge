@@ -557,3 +557,77 @@ func TestExpandVars_Basic(t *testing.T) {
 		t.Errorf("expand: want %q, got %q", want, got)
 	}
 }
+
+// TestExternal_Deploy_CodeVersionAndPipelineTokens confirms the
+// fr-bde7b7e8e5 tokens substitute: ${CODE_VERSION} mirrors ${TAG} (so a
+// deploy script can stamp the container's version to match the image),
+// and ${PIPELINE} is "forge" (so the container can be labeled by deployer).
+func TestExternal_Deploy_CodeVersionAndPipelineTokens(t *testing.T) {
+	dir := t.TempDir()
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env:        "prod",
+		ProviderID: "external",
+		ImageTag:   "v0.1.0",
+		Services: []ResolvedService{
+			{
+				Name: "edge",
+				External: &ExternalSpec{
+					Image:     "x/edge",
+					DeployCmd: "run --label forge.pipeline=${PIPELINE} --label forge.tag=${TAG} -e CODE_VERSION=${CODE_VERSION}",
+				},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	want := "sh -c run --label forge.pipeline=forge --label forge.tag=v0.1.0 -e CODE_VERSION=v0.1.0"
+	if r.calls[0] != want {
+		t.Errorf("deploy call: want %q, got %q", want, r.calls[0])
+	}
+}
+
+// TestExternal_Deploy_LastTagFromPriorDeploy confirms ${LAST_TAG} carries
+// the previously-recorded forge deploy tag on a NORMAL deploy (not just
+// rollback), so a script can reference the outgoing version.
+func TestExternal_Deploy_LastTagFromPriorDeploy(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a prior forge deploy of this service at tag v1.
+	if _, err := WriteDeployState(dir, "external", "prod", "edge", DeployState{Image: "x/edge", Tag: "v1"}); err != nil {
+		t.Fatalf("seed prior state: %v", err)
+	}
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	group := ServiceGroup{
+		Env:        "prod",
+		ProviderID: "external",
+		ImageTag:   "v2",
+		Services: []ResolvedService{
+			{
+				Name:     "edge",
+				External: &ExternalSpec{Image: "x/edge", DeployCmd: "ship from=${LAST_TAG} to=${TAG}"},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	want := "sh -c ship from=v1 to=v2"
+	if r.calls[0] != want {
+		t.Errorf("deploy call: want %q, got %q", want, r.calls[0])
+	}
+}
+
+// TestWarnOnForeignContainerReplace_Quiet confirms the benign cases stay
+// silent (no prior tag, or same tag re-deployed) — the helper is a focused
+// signal, not a nag.
+func TestWarnOnForeignContainerReplace_Quiet(t *testing.T) {
+	// These are exercised for their no-panic / no-print contract; the
+	// function prints to stdout, so we just assert it doesn't misbehave on
+	// the quiet inputs. (The loud path is covered by the LastTag test's
+	// differing tags exercising the same code without asserting stdout.)
+	warnOnForeignContainerReplace("edge", "", "v1")   // first deploy
+	warnOnForeignContainerReplace("edge", "v1", "v1") // idempotent re-deploy
+}

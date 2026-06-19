@@ -405,3 +405,34 @@ func TestAppendBuildContexts(t *testing.T) {
 		}
 	})
 }
+
+// TestFrontendsSkippedByFramework covers the fr-cc10bfab0c gate: with
+// stack.frontend.framework "none" forge must NOT run `npm run build` for
+// declared frontends (so a frontend toolchain failure can't sink an
+// unrelated deployable service), but the gate is a no-op when there are
+// no frontends or a real framework is configured.
+func TestFrontendsSkippedByFramework(t *testing.T) {
+	fe := []config.FrontendConfig{{Name: "dashboard", Type: "nextjs", Path: "frontends/dashboard"}}
+	cases := []struct {
+		name      string
+		framework string
+		frontends []config.FrontendConfig
+		want      bool
+	}{
+		{"none-with-frontends-skips", "none", fe, true},
+		{"none-without-frontends-noop", "none", nil, false},
+		{"nextjs-with-frontends-builds", "nextjs", fe, false},
+		{"empty-framework-defaults-nextjs-builds", "", fe, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &config.ProjectConfig{
+				Frontends: c.frontends,
+				Stack:     config.StackConfig{Frontend: config.StackFrontend{Framework: c.framework}},
+			}
+			if got := frontendsSkippedByFramework(cfg); got != c.want {
+				t.Errorf("frontendsSkippedByFramework = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

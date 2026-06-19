@@ -507,12 +507,24 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			// Levenshtein "did you mean" (which would suggest renaming
 			// instead of migrating — the exact trap an agent reading
 			// the error would fall into).
+			//
+			// A removed key is one forge ITSELF wrote a version ago, so it
+			// is a WARNING, not a hard fail (fr-57edf33aca): a forge.yaml
+			// forge authored must keep loading across a schema removal —
+			// every config-loading command hard-failing on forge's own
+			// retired key strands the project until a human edits the file.
+			// The warning still carries the migration hint, and the next
+			// forge.yaml rewrite (NormalizeForWrite) drops the dead key, so
+			// the deprecation is visible and self-healing. Genuine typos
+			// (NOT in removedSchemaKeys) stay fatal below — that distinction
+			// is the whole point of the map.
 			if hint, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
 				out = append(out, validationIssue{
-					line:   keyNode.Line,
-					column: keyNode.Column,
-					msg:    fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
-					fix:    hint.replacement,
+					line:    keyNode.Line,
+					column:  keyNode.Column,
+					msg:     fmt.Sprintf("%q was removed in %s", full, hint.removedIn),
+					fix:     hint.replacement,
+					warning: true,
 				})
 				continue
 			}

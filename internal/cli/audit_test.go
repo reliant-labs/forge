@@ -7,8 +7,85 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
 )
+
+// TestAuditVersion_RealComparison pins fr-82b717f521: audit must do a
+// REAL pinned-vs-binary comparison and never print a false-green
+// "matches" when the strings differ — even when the binary is a dev /
+// pseudo-version build (the dogfooding case where pins drift).
+func TestAuditVersion_RealComparison(t *testing.T) {
+	t.Cleanup(func() { buildinfo.Set("dev", "unknown", "unknown") })
+
+	t.Run("stale pin is flagged, not falsely green", func(t *testing.T) {
+		buildinfo.Set("v0.0.0-20260612070344-a3e3b883c97c", "unknown", "unknown")
+		cfg := &config.ProjectConfig{ForgeVersion: "v0.0.0-20260530233501-ec0254f463b3"}
+		cat := auditVersion(cfg, t.TempDir())
+		if cat.Status != AuditStatusWarn {
+			t.Errorf("stale pin must WARN, got %q (summary=%q)", cat.Status, cat.Summary)
+		}
+		if strings.Contains(cat.Summary, "matches binary") {
+			t.Errorf("must not claim 'matches binary' on a divergent pin: %q", cat.Summary)
+		}
+		if !strings.Contains(cat.Summary, "does NOT match") {
+			t.Errorf("summary should report the mismatch: %q", cat.Summary)
+		}
+	})
+
+	t.Run("exact match is OK", func(t *testing.T) {
+		buildinfo.Set("v0.0.0-20260612070344-a3e3b883c97c", "unknown", "unknown")
+		cfg := &config.ProjectConfig{ForgeVersion: "v0.0.0-20260612070344-a3e3b883c97c"}
+		cat := auditVersion(cfg, t.TempDir())
+		if cat.Status != AuditStatusOK {
+			t.Errorf("exact match must be OK, got %q (summary=%q)", cat.Status, cat.Summary)
+		}
+		if !strings.Contains(cat.Summary, "matches binary") {
+			t.Errorf("summary should confirm the match: %q", cat.Summary)
+		}
+	})
+
+	t.Run("missing pin warns", func(t *testing.T) {
+		buildinfo.Set("v1.0.0", "unknown", "unknown")
+		cfg := &config.ProjectConfig{ForgeVersion: ""}
+		cat := auditVersion(cfg, t.TempDir())
+		if cat.Status != AuditStatusWarn {
+			t.Errorf("missing pin must WARN, got %q", cat.Status)
+		}
+	})
+}
+
+// TestAuditVersion_DivergentPins pins the second half of fr-82b717f521:
+// when forge.yaml, the CI workflow, and .forge state carry three
+// different forge versions, audit flags the divergence (nothing else
+// does).
+func TestAuditVersion_DivergentPins(t *testing.T) {
+	t.Cleanup(func() { buildinfo.Set("dev", "unknown", "unknown") })
+	buildinfo.Set("v0.0.0-20260612070344-a3e3b883c97c", "unknown", "unknown")
+
+	dir := t.TempDir()
+	// CI workflow pins a third, different version.
+	wfDir := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ci := "jobs:\n  verify:\n    steps:\n      - run: go install github.com/reliant-labs/forge/cmd/forge@v0.0.0-20260611225538-09863e5d16f4\n"
+	if err := os.WriteFile(filepath.Join(wfDir, "ci.yml"), []byte(ci), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.ProjectConfig{ForgeVersion: "v0.0.0-20260530233501-ec0254f463b3"}
+	cat := auditVersion(cfg, dir)
+	if cat.Status != AuditStatusWarn {
+		t.Fatalf("divergent pins must WARN, got %q (summary=%q)", cat.Status, cat.Summary)
+	}
+	if !strings.Contains(cat.Summary, "divergent forge version pins") {
+		t.Errorf("summary should flag divergent pins: %q", cat.Summary)
+	}
+	if got, ok := cat.Details["ci_pin"].(string); !ok || got != "v0.0.0-20260611225538-09863e5d16f4" {
+		t.Errorf("ci_pin detail = %v, want the CI workflow's ref", cat.Details["ci_pin"])
+	}
+}
 
 // TestAuditReport_BasicShape exercises buildAuditReport against a
 // minimal fixture: a forge.yaml plus a few generated artifacts. We

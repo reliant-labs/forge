@@ -176,7 +176,7 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 		report.ProjectKind = "unknown"
 	}
 
-	report.Categories["version"] = auditVersion(cfg)
+	report.Categories["version"] = auditVersion(cfg, abs)
 	report.Categories["shape"] = auditShape(cfg, abs)
 	report.Categories["features"] = auditFeatures(cfg)
 	if cfg != nil && cfg.Features.IngressEnabled() {
@@ -217,10 +217,38 @@ func rollupStatus(cats map[string]AuditCategory) AuditStatus {
 	return worst
 }
 
-// auditVersion compares forge.yaml's pinned forge_version against the
-// running binary. Mismatches surface as warnings (not errors) because
-// running newer is usually fine — `forge upgrade` fixes it.
-func auditVersion(cfg *config.ProjectConfig) AuditCategory {
+// ciInstallRefRE extracts the ref a generated CI workflow pins forge to,
+// from a `go install github.com/reliant-labs/forge/cmd/forge@<ref>` line.
+var ciInstallRefRE = regexp.MustCompile(
+	`go install github\.com/reliant-labs/forge/cmd/forge@(\S+)`)
+
+// ciForgePin reads the forge install ref pinned by the generated CI
+// workflow (.github/workflows/ci.yml). Returns "" when there is no
+// workflow or no pin line — a project may legitimately have neither.
+func ciForgePin(projectDir string) string {
+	data, err := os.ReadFile(filepath.Join(projectDir, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		return ""
+	}
+	if m := ciInstallRefRE.FindSubmatch(data); m != nil {
+		return strings.TrimSpace(string(m[1]))
+	}
+	return ""
+}
+
+// auditVersion compares the project's forge_version pins against the
+// running binary AND against each other. It performs a REAL string
+// comparison: it does not borrow the once-per-session nudge silencing of
+// forgeVersionMismatchWarning (which intentionally goes quiet on dev /
+// pseudo-version binaries) — `forge audit` is an explicit diagnostic, so
+// a stale or divergent pin must be reported, never papered over with a
+// false "matches binary" (fr-82b717f521).
+//
+// Mismatches surface as warnings (not errors): running a newer binary is
+// usually fine and `forge upgrade` realigns. The category also flags when
+// the three independent pins (forge.yaml / CI workflow / .forge state)
+// disagree with each other, since nothing else does.
+func auditVersion(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 	binv := buildinfo.Version()
 	if cfg == nil {
 		return AuditCategory{
@@ -234,17 +262,68 @@ func auditVersion(cfg *config.ProjectConfig) AuditCategory {
 		"pinned_version": pinned,
 		"binary_version": binv,
 	}
-	if warning := forgeVersionMismatchWarning(cfg.ForgeVersion, binv); warning != "" {
-		details["hint"] = fmt.Sprintf("run `%s upgrade` to align", Name())
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: warning,
-			Details: details,
+
+	// Collect the other independent pins so divergence can be surfaced.
+	ciPin := ciForgePin(projectDir)
+	if ciPin != "" {
+		details["ci_pin"] = ciPin
+	}
+	var statePin string
+	if cs, err := generator.LoadChecksums(projectDir); err == nil && cs != nil {
+		statePin = strings.TrimSpace(cs.ForgeVersion)
+		if statePin != "" {
+			details["state_pin"] = statePin
 		}
 	}
+
+	var summaries []string
+	status := AuditStatusOK
+
+	// 1. forge.yaml pin vs running binary — a REAL compare. We do not
+	//    silence on dev/pseudo binaries here.
+	switch {
+	case strings.TrimSpace(cfg.ForgeVersion) == "":
+		status = AuditStatusWarn
+		summaries = append(summaries,
+			fmt.Sprintf("no forge_version declared in forge.yaml (binary is %s) — run `%s upgrade` to set a baseline", binv, Name()))
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to set + align the pin", Name())
+	case pinned == binv:
+		summaries = append(summaries, fmt.Sprintf("forge_version %s matches binary", pinned))
+	default:
+		status = AuditStatusWarn
+		summaries = append(summaries,
+			fmt.Sprintf("forge_version %s does NOT match binary %s", pinned, binv))
+		details["hint"] = fmt.Sprintf("run `%s upgrade` to align the pin with the binary", Name())
+	}
+
+	// 2. Divergent pins: if the known pins disagree with each other, the
+	//    project's "what forge built this?" answer is ambiguous. Flag it.
+	knownPins := map[string]bool{}
+	addPin := func(v string) {
+		if v = strings.TrimSpace(v); v != "" && v != "0.0.0" {
+			knownPins[v] = true
+		}
+	}
+	addPin(cfg.ForgeVersion)
+	addPin(ciPin)
+	addPin(statePin)
+	if len(knownPins) > 1 {
+		if status == AuditStatusOK {
+			status = AuditStatusWarn
+		}
+		pins := make([]string, 0, len(knownPins))
+		for p := range knownPins {
+			pins = append(pins, p)
+		}
+		sort.Strings(pins)
+		summaries = append(summaries,
+			fmt.Sprintf("divergent forge version pins across the project: %s — run `%s upgrade` to converge them",
+				strings.Join(pins, ", "), Name()))
+	}
+
 	return AuditCategory{
-		Status:  AuditStatusOK,
-		Summary: fmt.Sprintf("forge_version %s matches binary", pinned),
+		Status:  status,
+		Summary: strings.Join(summaries, "; "),
 		Details: details,
 	}
 }

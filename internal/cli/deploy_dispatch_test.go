@@ -263,6 +263,24 @@ func TestDeployCmd_RollbackFlagRegistered(t *testing.T) {
 	}
 }
 
+// TestDeployCmd_SkipFrontendFlagRegistered confirms `--skip-frontend`
+// is declared with a help line that names the k8s-only intent — the
+// GAP-2 flag that runs the k8s apply but suppresses the Frontend
+// (Firebase) build+deploy dispatch.
+func TestDeployCmd_SkipFrontendFlagRegistered(t *testing.T) {
+	cmd := newDeployCmd()
+	f := cmd.Flags().Lookup("skip-frontend")
+	if f == nil {
+		t.Fatal("--skip-frontend flag not registered")
+	}
+	if f.Value.Type() != "bool" {
+		t.Errorf("--skip-frontend should be a bool flag, got %q", f.Value.Type())
+	}
+	if !strings.Contains(f.Usage, "Frontend") && !strings.Contains(f.Usage, "frontend") {
+		t.Errorf("--skip-frontend usage should mention the frontend, got %q", f.Usage)
+	}
+}
+
 // TestDeployCmd_RollbackAndTagMutuallyExclusive confirms a
 // --rollback + --tag combination is rejected at flag-parse time. The
 // rollback path reads the per-service state file for the target tag;

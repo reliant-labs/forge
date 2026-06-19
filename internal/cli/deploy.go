@@ -798,18 +798,59 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 	if flagOverride != "" {
 		return flagOverride, "explicit --tag flag", nil
 	}
-	st, berr := ReadBuildState(projectDir, envName)
-	if berr != nil {
-		return "", "", fmt.Errorf("read build state: %w (delete .forge/state/build-%s.json to recompute from git)", berr, envName)
-	}
-	if st != nil {
-		return st.Tag, fmt.Sprintf(".forge/state/build-%s.json (pushed %s)", envName, st.PushedAt), nil
+	// Per-env record first, then the env-agnostic "default" written by a
+	// plain `forge build` (no --env). This is what makes
+	// `forge build --docker && forge deploy prod` work without forcing a
+	// matching --env / --tag on both.
+	for _, key := range buildStateLookupEnvs(envName) {
+		st, berr := ReadBuildState(projectDir, key)
+		if berr != nil {
+			return "", "", fmt.Errorf("read build state: %w (delete .forge/state/build-%s.json to recompute from git)", berr, key)
+		}
+		if st == nil {
+			continue
+		}
+		warnIfNonReproducible(st)
+		src := fmt.Sprintf(".forge/state/build-%s.json (built %s)", key, st.PushedAt)
+		return st.Tag, src, nil
 	}
 	t, terr := resolveImageTag(ctx, envName)
 	if terr != nil {
 		return "", "", fmt.Errorf("failed to determine image tag: %w\nUse --tag to specify one manually", terr)
 	}
 	return t, "git describe --tags --always --dirty", nil
+}
+
+// buildStateLookupEnvs is the ordered fallback of build-state keys to try
+// for a deploy env: the env itself, then the "default" record a plain
+// `forge build` writes. "default" is not retried for itself.
+func buildStateLookupEnvs(envName string) []string {
+	if envName == "" || envName == "default" {
+		return []string{"default"}
+	}
+	return []string{envName, "default"}
+}
+
+// warnIfNonReproducible prints a heads-up when the build being deployed
+// came from a dirty working tree or an untagged commit — the single
+// "discipline" nudge toward tag-then-build, with no enforcement.
+func warnIfNonReproducible(st *BuildState) {
+	switch {
+	case st.Dirty:
+		fmt.Printf("  Warning: deploying %q built from a DIRTY working tree (commit %s) — not reproducible.\n", st.Tag, shortSHA(st.Commit))
+	case st.GitTag == "":
+		fmt.Printf("  Warning: deploying %q built from an UNTAGGED commit (%s) — tag the release for a reproducible version.\n", st.Tag, shortSHA(st.Commit))
+	}
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	if sha == "" {
+		return "unknown"
+	}
+	return sha
 }
 
 func gitShortSHA(ctx context.Context) (string, error) {

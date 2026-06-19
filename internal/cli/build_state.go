@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -35,11 +38,41 @@ type BuildState struct {
 	Image    string `json:"image"`
 	Tag      string `json:"tag"`
 	Registry string `json:"registry"`
-	// PushedAt is the wall-clock time the push completed, formatted as
-	// time.RFC3339. The state file is informational across forge
-	// invocations, so we use real time here — reproducibility
-	// constraints don't apply.
+	// Pushed is true when the image was pushed to Registry. False for
+	// local/scp/compose builds — the image lives only on the build host.
+	// Recording the handoff no longer depends on a push (that gate left
+	// non-registry deploys with no tag to read); push just adds the
+	// registry coordinates.
+	Pushed bool `json:"pushed"`
+	// Git provenance of the build, so `forge deploy` can warn when it's
+	// about to ship a non-reproducible (dirty / untagged) build. Commit
+	// is the full HEAD sha; GitTag is the exact tag on HEAD (empty when
+	// HEAD isn't tagged); Dirty is true when the working tree had
+	// uncommitted changes at build time.
+	Commit string `json:"commit,omitempty"`
+	GitTag string `json:"git_tag,omitempty"`
+	Dirty  bool   `json:"dirty,omitempty"`
+	// PushedAt is the wall-clock build time, formatted as time.RFC3339.
+	// The state file is informational across forge invocations, so we use
+	// real time here — reproducibility constraints don't apply.
 	PushedAt string `json:"pushed_at"`
+}
+
+// gitBuildProvenance captures the HEAD commit, an exact tag on HEAD (if
+// any), and whether the working tree is dirty — recorded into BuildState
+// so deploy can flag non-reproducible builds. Best-effort: missing git
+// yields zero values, never an error (the build already succeeded).
+func gitBuildProvenance(ctx context.Context) (commit, gitTag string, dirty bool) {
+	if out, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
+		commit = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--exact-match").Output(); err == nil {
+		gitTag = strings.TrimSpace(string(out))
+	}
+	if out, err := exec.CommandContext(ctx, "git", "status", "--porcelain").Output(); err == nil {
+		dirty = strings.TrimSpace(string(out)) != ""
+	}
+	return commit, gitTag, dirty
 }
 
 // buildStatePath returns the absolute path to the per-env build-state

@@ -52,6 +52,47 @@ func TestLintWorkaroundsRoot_Firing(t *testing.T) {
 	}
 }
 
+func TestLintWorkaroundsRoot_DevVendorDockerfileMissingCopy(t *testing.T) {
+	t.Parallel()
+	res, err := LintWorkaroundsRoot(filepath.Join("testdata", "check_workarounds", "devvendor_missing_copy"))
+	if err != nil {
+		t.Fatalf("LintWorkaroundsRoot returned error: %v", err)
+	}
+	var fired bool
+	for _, f := range res.Findings {
+		if f.Rule != "workaround-dev-vendor-dockerfile" {
+			continue
+		}
+		fired = true
+		if f.Severity != SeverityWarning {
+			t.Errorf("expected severity %q, got %q", SeverityWarning, f.Severity)
+		}
+		if f.Path != "Dockerfile" {
+			t.Errorf("expected path Dockerfile, got %q", f.Path)
+		}
+	}
+	if !fired {
+		t.Fatalf("expected workaround-dev-vendor-dockerfile to fire, got findings: %+v", res.Findings)
+	}
+	// The rule is a warning and must never gate the build.
+	if res.HasErrors() {
+		t.Fatal("dev-vendor-dockerfile finding must be a warning, not an error")
+	}
+}
+
+func TestLintWorkaroundsRoot_DevVendorDockerfileHasCopy(t *testing.T) {
+	t.Parallel()
+	res, err := LintWorkaroundsRoot(filepath.Join("testdata", "check_workarounds", "devvendor_has_copy"))
+	if err != nil {
+		t.Fatalf("LintWorkaroundsRoot returned error: %v", err)
+	}
+	for _, f := range res.Findings {
+		if f.Rule == "workaround-dev-vendor-dockerfile" {
+			t.Fatalf("Dockerfile already has the COPY .forge-pkg/ line; rule must not fire: %+v", f)
+		}
+	}
+}
+
 func TestReadDeclaredBinaries(t *testing.T) {
 	t.Parallel()
 	got := readDeclaredBinaries(filepath.Join("testdata", "check_workarounds", "clean", "forge.yaml"))

@@ -29,13 +29,13 @@ type ProjectGenerator struct {
 	Name               string
 	Path               string
 	ModulePath         string
-	Kind               string                // project kind: "service" (default), "cli", "library"
-	Binary             string                // binary mode: "per-service" (default), "shared" — emit one Go binary with cobra subcommand per service when shared
-	ServiceName        string                // initial service name (empty if none specified)
-	AdditionalServices []string              // additional service names beyond ServiceName — only consumed by binary=shared scaffolds; per-service mode adds these post-scaffold
-	ServicePort        int                   // initial service port (default: 8080)
-	FrontendName       string                // optional initial Next.js frontend name
-	FrontendPort       int                   // frontend port (default: 3000)
+	Kind               string   // project kind: "service" (default), "cli", "library"
+	Binary             string   // binary mode: "per-service" (default), "shared" — emit one Go binary with cobra subcommand per service when shared
+	ServiceName        string   // initial service name (empty if none specified)
+	AdditionalServices []string // additional service names beyond ServiceName — only consumed by binary=shared scaffolds; per-service mode adds these post-scaffold
+	ServicePort        int      // initial service port (default: 8080)
+	FrontendName       string   // optional initial Next.js frontend name
+	FrontendPort       int      // frontend port (default: 3000)
 	// FrontendWorkspaces opts the project into the pnpm-workspaces
 	// layout: emit a root pnpm-workspace.yaml + packages/api +
 	// packages/hooks, frontends consume @<scope>/api / @<scope>/hooks
@@ -45,6 +45,13 @@ type ProjectGenerator struct {
 	GoVersionOverride  string                // if set, use this Go version instead of detecting
 	Features           config.FeaturesConfig // feature flags for generation
 	Harness            Harness               // AI harness (default: reliant) — controls memory file path and skill emission
+	// BuildVersionVar mirrors forge.yaml build.version_var: an additional
+	// `-ldflags -X` target the Dockerfile stamps with the build version.
+	// Empty at scaffold time (a fresh forge.yaml has no build: block), so
+	// the Dockerfile's `{{if .VersionVar}}` renders nothing — preserving
+	// the historical main.version-only stamping. `forge generate` /
+	// upgrade re-render with the live forge.yaml value.
+	BuildVersionVar string
 }
 
 // effectiveBinary returns the binary mode, defaulting to "per-service".
@@ -291,6 +298,11 @@ func (g *ProjectGenerator) Generate() error {
 		// re-renders cmd/server.go from the live forge.yaml value.
 		AuthProvider         string
 		AuthProviderExternal bool
+		// VersionVar mirrors forge.yaml build.version_var. The Dockerfile
+		// template stamps an extra `-X <VersionVar>=${FORGE_VERSION}` when
+		// set; empty (the scaffold default) renders nothing. See
+		// ProjectGenerator.BuildVersionVar.
+		VersionVar string
 	}{
 		Name:                   g.Name,
 		ProtoName:              protoName,
@@ -312,6 +324,7 @@ func (g *ProjectGenerator) Generate() error {
 		// editing forge.yaml's `api.rest:` and re-running `forge generate`
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
 		RESTEnabled: false,
+		VersionVar:  g.BuildVersionVar,
 	}
 	templateData.ForgePkgVersion, templateData.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
 	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is

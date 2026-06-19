@@ -239,6 +239,63 @@ func TestParseKCLEntities_OutputWrapper(t *testing.T) {
 	}
 }
 
+// TestParseKCLEntities_ManifestNamespaceFallback covers the
+// manifests-only render shape: a project's main.k emits ONLY
+// `manifests = forge.render_manifests(...)` (no `output = forge.render`
+// entity echo), so the entity contract — and every cluster-shaped
+// service's K8sCluster.namespace — is absent. The namespace must still
+// be recovered from the rendered objects' metadata.namespace so
+// k8sClusterNamespaceForEnv (forge deploy/smoke/secrets) keeps resolving
+// without --namespace. The cluster-scoped objects (Namespace, CRD,
+// ClusterRole) carry no namespace and are ignored; the dominant
+// namespaced value wins.
+func TestParseKCLEntities_ManifestNamespaceFallback(t *testing.T) {
+	manifestsOnly := `{
+  "GATEWAYS": [{"name": "public", "host": "preprod.example.com"}],
+  "HTTP_ROUTES": [{"name": "api", "gateway": "public", "service": "admin", "port": 8090, "host": "preprod.example.com"}],
+  "manifests": [
+    {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "control-plane-preprod"}},
+    {"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition", "metadata": {"name": "workspaces.x"}},
+    {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "admin-server", "namespace": "control-plane-preprod"}},
+    {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "admin-server", "namespace": "control-plane-preprod"}}
+  ]
+}`
+	entities, err := parseKCLEntities([]byte(manifestsOnly))
+	if err != nil {
+		t.Fatalf("parseKCLEntities manifests-only: %v", err)
+	}
+	// No entity contract -> no service entities.
+	if got := len(entities.Services); got != 0 {
+		t.Errorf("manifests-only services: got %d, want 0", got)
+	}
+	// Gateways/routes still come through (case-insensitive flat keys).
+	if got := len(entities.Gateways); got != 1 {
+		t.Errorf("manifests-only gateways: got %d, want 1", got)
+	}
+	// Namespace recovered from manifest metadata.
+	if got := entities.ManifestNamespace; got != "control-plane-preprod" {
+		t.Errorf("ManifestNamespace = %q, want control-plane-preprod", got)
+	}
+}
+
+// TestManifestNamespaceFromOuter_DominantWins confirms the namespace
+// tally ignores cluster-scoped (namespace-less) objects and picks the
+// dominant namespace deterministically when more than one appears.
+func TestManifestNamespaceFromOuter_DominantWins(t *testing.T) {
+	outer := `{"manifests": [
+	  {"kind": "ClusterRole", "metadata": {"name": "x"}},
+	  {"kind": "Deployment", "metadata": {"namespace": "main-ns"}},
+	  {"kind": "Service", "metadata": {"namespace": "main-ns"}},
+	  {"kind": "Secret", "metadata": {"namespace": "other-ns"}}
+	]}`
+	if got := manifestNamespaceFromOuter([]byte(outer)); got != "main-ns" {
+		t.Errorf("manifestNamespaceFromOuter = %q, want main-ns", got)
+	}
+	if got := manifestNamespaceFromOuter([]byte(`{"manifests":[]}`)); got != "" {
+		t.Errorf("empty manifests namespace = %q, want empty", got)
+	}
+}
+
 // TestParseKCLEntities_FlatShapeStillWorks confirms backward compat:
 // callers that pass the raw `{services: [...], operators: [...], ...}`
 // shape (e.g. tests using FORGE_KCL_RENDER_FIXTURE files written in

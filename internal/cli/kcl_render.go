@@ -35,6 +35,19 @@ type KCLEntities struct {
 	// (WHERE secret values come from for this env). Nil when the bundle
 	// declares no provider — preserving today's no-provider behavior.
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+
+	// ManifestNamespace is the namespace stamped on the rendered k8s
+	// manifests (`manifests[].metadata.namespace`), recovered even when
+	// the project's main.k omits the `output = forge.render(_bundle)`
+	// entity echo. Some projects deliberately render only `manifests`
+	// (e.g. to keep the deployable image refs single-prefixed), which
+	// leaves the entity contract — and therefore every cluster-shaped
+	// service's K8sCluster.namespace — absent. We derive the namespace
+	// from the manifests so the declared-namespace resolution
+	// (k8sClusterNamespaceForEnv → forge deploy/smoke/secrets) keeps
+	// working without forcing the user to echo `output` or pass
+	// --namespace. Empty when the render carries no namespaced manifests.
+	ManifestNamespace string `json:"-"`
 }
 
 // SecretProviderEntity is the parsed bundle-level secret provider
@@ -407,6 +420,20 @@ type kclRenderRaw struct {
 	// SecretProvider rides alongside services in the entity output; nil
 	// when the bundle declares no provider (KCL omits the key entirely).
 	SecretProvider *SecretProviderEntity `json:"secret_provider,omitempty"`
+	// Manifests is the rendered k8s object stream
+	// (`manifests = forge.render_manifests(...)`). Parsed loosely so we
+	// can recover the deploy namespace from object metadata when the
+	// entity contract (`output`) is absent. Each entry is a raw k8s
+	// object; we only read metadata.namespace off it.
+	Manifests []rawManifest `json:"manifests,omitempty"`
+}
+
+// rawManifest is a minimal view of one rendered k8s object — just enough
+// to read its namespace. The rest of the object is ignored.
+type rawManifest struct {
+	Metadata struct {
+		Namespace string `json:"namespace,omitempty"`
+	} `json:"metadata,omitempty"`
 }
 
 type kclServiceRaw struct {
@@ -480,8 +507,18 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return &KCLEntities{}, nil
 	}
+	// The rendered `manifests` stream lives at the OUTER top level
+	// alongside the `output` echo (a project may emit one, the other, or
+	// both). We read the namespace off it from the outer bytes BEFORE we
+	// unwrap `output` — under the wrapper the manifests aren't visible.
+	manifestNS := manifestNamespaceFromOuter(data)
+
 	// Peek for an "output" wrapper. If present, recurse on its bytes —
 	// the inner shape is the same kclRenderRaw shape we already parse.
+	// (A project may emit ONLY `manifests` — the entity contract is then
+	// absent and the entity lists come back empty; the namespace we
+	// already recovered above is the fallback the declared-context
+	// resolution leans on.)
 	var wrapper map[string]json.RawMessage
 	if err := json.Unmarshal(data, &wrapper); err == nil {
 		if inner, ok := wrapper["output"]; ok && len(inner) > 0 {
@@ -493,13 +530,14 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		return nil, fmt.Errorf("parse kcl json: %w", err)
 	}
 	out := &KCLEntities{
-		Operators:      raw.Operators,
-		Frontends:      raw.Frontends,
-		CronJobs:       raw.CronJobs,
-		Gateways:       raw.Gateways,
-		HTTPRoutes:     raw.HTTPRoutes,
-		GRPCRoutes:     raw.GRPCRoutes,
-		SecretProvider: raw.SecretProvider,
+		Operators:         raw.Operators,
+		Frontends:         raw.Frontends,
+		CronJobs:          raw.CronJobs,
+		Gateways:          raw.Gateways,
+		HTTPRoutes:        raw.HTTPRoutes,
+		GRPCRoutes:        raw.GRPCRoutes,
+		SecretProvider:    raw.SecretProvider,
+		ManifestNamespace: manifestNS,
 	}
 	for _, s := range raw.Services {
 		deploy, err := dispatchServiceDeploy(s.Name, s.Deploy)
@@ -518,6 +556,45 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		})
 	}
 	return out, nil
+}
+
+// manifestNamespaceFromOuter recovers the deploy namespace from the
+// rendered `manifests` stream — the single namespace stamped on the
+// namespaced objects. This is the fallback for projects whose main.k
+// renders only `manifests` (no `output = forge.render(_bundle)` entity
+// echo), where every cluster-shaped service's K8sCluster.namespace is
+// otherwise absent from the parsed entities.
+//
+// It tallies the distinct, non-empty metadata.namespace values and
+// returns the one that dominates: a forge render's namespaced objects
+// all carry the env's namespace, while a handful of cluster-scoped
+// objects (Namespace, CRD, ClusterRole/Binding) carry none and are
+// ignored. If the manifests somehow span multiple namespaces (a
+// non-canonical hand-rolled render) the most frequent one wins, so a
+// stray cross-namespace object can't hijack the result. Returns "" when
+// no namespaced object exists.
+func manifestNamespaceFromOuter(outer []byte) string {
+	var probe struct {
+		Manifests []rawManifest `json:"manifests,omitempty"`
+	}
+	if err := json.Unmarshal(outer, &probe); err != nil {
+		return ""
+	}
+	counts := map[string]int{}
+	for _, m := range probe.Manifests {
+		if ns := strings.TrimSpace(m.Metadata.Namespace); ns != "" {
+			counts[ns]++
+		}
+	}
+	best, bestN := "", 0
+	for ns, n := range counts {
+		// Deterministic tiebreak (lexical) so the result is stable across
+		// runs regardless of map iteration order.
+		if n > bestN || (n == bestN && ns < best) {
+			best, bestN = ns, n
+		}
+	}
+	return best
 }
 
 // dispatchServiceDeploy unmarshals the raw deploy block, reads the type

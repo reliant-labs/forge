@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -63,25 +64,66 @@ type smokeRouteResult struct {
 }
 
 // extractSmokeTargets turns a rendered Bundle into the ordered list of
-// probe targets, one per HTTPRoute + GRPCRoute that carries a host. The
-// frontend origin (when derivable) is attached to every target so the
-// probe can run the CORS assertion against API routes.
+// probe targets, one per HTTPRoute + GRPCRoute the probe can address.
+//
+// Two host topologies exist and BOTH must be probed:
+//
+//   - Route-hosted (single shared gateway): each route declares its own
+//     `host` and the gateway's host is empty. The route host is the
+//     address. (prod/preprod: one `public` gateway, three host-bearing
+//     routes.)
+//   - Gateway-hosted (per-host gateways): the host lives on the GATEWAY
+//     (`public-admin` → admin-staging.…) and the routes attached to it
+//     carry an empty host. (staging: public / public-admin / public-grpc,
+//     routes with empty host.)
+//
+// So a route's EFFECTIVE host is its own `host` when set, else its
+// gateway's host. Dropping empty-host routes (the old behavior) silently
+// skipped every gateway-hosted route — on staging that hid two of the
+// three gateways (admin + grpc), so smoke only probed `public`. We now
+// resolve the host from the attached gateway, so every gateway's routes
+// are probed against that gateway's own IP (resolveGatewayIPs already
+// keys IPs per gateway).
+//
+// CORS scoping (Fix): the Origin (which arms the CORS assertion) is set
+// ONLY on routes the frontend actually calls — those whose effective
+// host matches one of the frontend's declared API hosts (parsed from the
+// Frontend env vars VITE_API_URL / VITE_CONTROL_PLANE_API_URL /
+// NEXT_PUBLIC_API_URL). A non-API route (the workspace-proxy daemon
+// port-forward host, a gRPC host, a wildcard proxy host) gets the
+// transport check only — it legitimately serves no CORS and must not
+// FAIL for a missing Access-Control-Allow-Origin. When no frontend API
+// host is derivable the CORS check is skipped for every route (we never
+// guess an origin).
 //
 // Pure: no I/O. The gateway IP is resolved later (live cluster read), so
-// extraction is unit-testable from a sample Bundle alone. Routes without
-// a host are skipped (nothing to probe — a hostless route is a
-// path-prefix mount on a shared listener, which the probe can't address
-// pre-DNS without a host header to set).
+// extraction is unit-testable from a sample Bundle alone.
 func extractSmokeTargets(e *KCLEntities) []smokeTarget {
 	if e == nil {
 		return nil
 	}
+	gatewayHosts := gatewayHostIndex(e)
 	origin := frontendOrigin(e)
+	apiHosts := frontendAPIHosts(e)
 
 	var out []smokeTarget
 	add := func(kind, name, gateway, host, path string) {
+		// Effective host: the route's own host, or its gateway's host
+		// when the route is hostless (gateway-hosted topology).
+		host = strings.TrimSpace(host)
 		if host == "" {
+			host = gatewayHosts[gateway]
+		}
+		if host == "" {
+			// Still no host: a path-prefix mount on a hostless shared
+			// listener — the probe can't address it pre-DNS without a host
+			// header to set. Skip.
 			return
+		}
+		// CORS is asserted only against routes the frontend calls.
+		targetOrigin := ""
+		if origin != "" && hostMatchesAPI(host, apiHosts) {
+			targetOrigin = origin
 		}
 		out = append(out, smokeTarget{
 			RouteKind: kind,
@@ -90,7 +132,7 @@ func extractSmokeTargets(e *KCLEntities) []smokeTarget {
 			Host:      host,
 			ProbeHost: probeHostFor(host),
 			Path:      normalizeSmokePath(path),
-			Origin:    origin,
+			Origin:    targetOrigin,
 		})
 	}
 	for _, r := range e.HTTPRoutes {
@@ -100,6 +142,88 @@ func extractSmokeTargets(e *KCLEntities) []smokeTarget {
 		add("grpc", r.Name, r.Gateway, r.Host, r.Path)
 	}
 	return out
+}
+
+// gatewayHostIndex maps each gateway name to its declared host, so a
+// hostless route can inherit the host of the gateway it attaches to (the
+// gateway-hosted topology). Gateways with an empty host are still
+// indexed (as "") — harmless; the lookup just falls through.
+func gatewayHostIndex(e *KCLEntities) map[string]string {
+	idx := make(map[string]string, len(e.Gateways))
+	for _, g := range e.Gateways {
+		idx[g.Name] = strings.TrimSpace(g.Host)
+	}
+	return idx
+}
+
+// frontendAPIHosts returns the set of API hostnames the frontend calls,
+// parsed from the Frontend entities' env vars. We read the URL-bearing
+// build-time vars the SPA/Next app points at its backend:
+// VITE_API_URL, VITE_CONTROL_PLANE_API_URL, NEXT_PUBLIC_API_URL. The
+// host (no scheme, no port) is extracted from each. This is what scopes
+// the CORS assertion to the routes the browser actually cross-origin
+// calls — every other route serves no CORS by design.
+//
+// Returns an empty set when no frontend declares one of these vars (CORS
+// then skipped for the whole env). Deliberately does NOT fall back to the
+// Firebase site / .web.app origin guess for the host match — that origin
+// is the CALLER (the value we send in the Origin header), not an API host
+// the backend serves.
+func frontendAPIHosts(e *KCLEntities) map[string]struct{} {
+	const (
+		viteAPI        = "VITE_API_URL"
+		viteControlAPI = "VITE_CONTROL_PLANE_API_URL"
+		nextAPI        = "NEXT_PUBLIC_API_URL"
+	)
+	apiVarNames := map[string]struct{}{
+		viteAPI:        {},
+		viteControlAPI: {},
+		nextAPI:        {},
+	}
+	hosts := map[string]struct{}{}
+	for _, f := range e.Frontends {
+		for _, ev := range f.EnvVars {
+			if _, ok := apiVarNames[ev.Name]; !ok {
+				continue
+			}
+			if h := hostFromURL(ev.Value); h != "" {
+				hosts[strings.ToLower(h)] = struct{}{}
+			}
+		}
+	}
+	return hosts
+}
+
+// hostFromURL parses the hostname (no scheme, no port) out of a URL like
+// "https://admin.example.com" → "admin.example.com". Tolerant of a bare
+// host with no scheme. Returns "" when nothing host-shaped is found.
+func hostFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	// No scheme — url.Parse treats the whole thing as a path. Retry with
+	// a scheme prepended so Hostname() populates.
+	if u, err := url.Parse("https://" + raw); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return ""
+}
+
+// hostMatchesAPI reports whether a route's effective host is one of the
+// frontend's API hosts. A wildcard route host (`*.foo.com`) is never an
+// API host the frontend calls by name, so it never matches (the literal
+// `*` can't equal a concrete API hostname) — wildcard proxy hosts get the
+// transport check only, never CORS.
+func hostMatchesAPI(host string, apiHosts map[string]struct{}) bool {
+	if len(apiHosts) == 0 {
+		return false
+	}
+	_, ok := apiHosts[strings.ToLower(strings.TrimSpace(host))]
+	return ok
 }
 
 // probeHostFor returns the concrete host the probe should dial for a

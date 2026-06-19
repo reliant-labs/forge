@@ -490,11 +490,27 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		checksums.Tier2OverwriteFn = makeTier2OverwriteHook(ctx.AbsPath, ctx.Checksums, flags.AssumeYes)
 	}
 
+	// Arm the stage-then-validate rollback journal (fr-40f7ec9bd9). From
+	// here on, every forge write captures its target's pre-run bytes so a
+	// post-write failure — most importantly the final `go build` validate
+	// step — can rewind the tree to its clean pre-regen state instead of
+	// leaving it mid-regen for the user to `git checkout`. rolledBack is
+	// set by the deferred outcome handler below; it gates SaveChecksums so
+	// we never persist manifest state describing writes we just undid.
+	checksums.BeginRollbackJournal()
+	rolledBack := false
+
 	// Save checksums on exit, even on partial failures: a step that
 	// successfully wrote files should have those tracked so the user's
-	// next `forge audit` doesn't false-flag user-edited drift.
+	// next `forge audit` doesn't false-flag user-edited drift. EXCEPTION:
+	// a rolled-back run restored the tree to its pre-run state, so saving
+	// the post-write manifest would describe files that no longer exist on
+	// disk — skip it and let the pre-run state files stand.
 	defer func() {
 		if ctx.Checksums == nil {
+			return
+		}
+		if rolledBack {
 			return
 		}
 		if saveErr := generator.SaveChecksums(ctx.AbsPath, ctx.Checksums); saveErr != nil {
@@ -572,10 +588,18 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 			}
 			// Same for the legacy-migration quarantine: stamp the
 			// unverified sentinels now so the next run's guard still
-			// names the unresolved files.
+			// names the unresolved files. Done BEFORE the rollback so the
+			// sentinel stamps survive — they describe the user's pre-run
+			// drifted files, not this run's reverted output.
 			if migErr := finishLegacyMigration(ctx); migErr != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", migErr)
 			}
+			// Stage-then-validate rollback: a step failed AFTER writes
+			// landed (the classic case: the final `go build` validate),
+			// so the tree is mid-regen. Rewind every forge-written file to
+			// its pre-run state and tell the user the tree is clean rather
+			// than leaving them a `git checkout` to find (fr-40f7ec9bd9).
+			rolledBack = rollbackGeneratedTree(ctx.AbsPath)
 			return fmt.Errorf("step %q: %w", step.Name, err)
 		}
 	}
@@ -584,19 +608,53 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// report — the flag explains the drift, it never approves it. No-op
 	// nil when the guard found no drift (or the flag wasn't set).
 	if err := finishExplainDrift(ctx); err != nil {
+		// Deliberate end-state, not a mid-regen tree: --explain-drift
+		// redirected its writes to side renders and never touched the
+		// drifted files, so the journal's real-file captures stand.
+		checksums.CommitRollback()
 		return err
 	}
 
 	// Legacy-manifest quarantine adjudication: rescue fresh-render
 	// matches, stamp unverified sentinels on the rest, and fail with the
-	// standard drift report when any file stays unresolved.
+	// standard drift report when any file stays unresolved. The emit pass
+	// SUCCEEDED here; the failure is an adjudication the next run needs,
+	// so the writes (and the sentinel stamps) stand — do not roll back.
 	if err := finishLegacyMigration(ctx); err != nil {
+		checksums.CommitRollback()
 		return err
 	}
 
+	// Success: the writes stand. Drop the journal.
+	checksums.CommitRollback()
 	fmt.Println()
 	fmt.Println("✅ Code generation complete!")
 	return nil
+}
+
+// rollbackGeneratedTree rewinds every file forge wrote this run to its
+// captured pre-run state and reports what it recovered. Returns true when
+// a rollback actually ran (journaling was armed) so the caller can skip
+// the post-write checksums save — a restored tree must not be described
+// by a manifest of the writes it just undid. The user-facing message is
+// the antidote to fr-40f7ec9bd9: instead of an opaque mid-regen failure
+// the user learns the tree is back to its pre-run state and that the
+// codegen problem itself is what needs fixing.
+func rollbackGeneratedTree(absPath string) bool {
+	if !checksums.RollbackEnabled() {
+		return false
+	}
+	restored := checksums.RestoreRollback(absPath)
+	if len(restored) == 0 {
+		fmt.Fprintln(os.Stderr, "↩️  generate failed after validation; no forge-written files needed reverting (tree is unchanged).")
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "\n↩️  generate failed its own validation — reverted %d file(s) forge wrote this run; your tree is back to its pre-run state (no `git checkout` needed):\n", len(restored))
+	for _, p := range restored {
+		fmt.Fprintf(os.Stderr, "   - %s\n", p)
+	}
+	fmt.Fprintln(os.Stderr, "   Fix the codegen error above (the generated code did not build), then re-run `forge generate`.")
+	return true
 }
 
 // guardResetTier2NeedsTTY refuses to start a `--reset-tier2` run that

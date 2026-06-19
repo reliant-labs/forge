@@ -423,3 +423,83 @@ func synthesizeLegacyManifest(t *testing.T, projectDir string) {
 		t.Fatalf("write synthesized manifest: %v", err)
 	}
 }
+
+// TestE2EGenerateRollbackOnValidateFailure pins the stage-then-validate
+// rollback (fr-40f7ec9bd9): when `forge generate` rewrites Tier-1 files
+// and then its own `go build` validate step fails, the tree must be left
+// EXACTLY as it was before the run — not mid-regen with recovery left to
+// a `git checkout`.
+//
+// Construction: scaffold + generate clean + commit (green HEAD). Then
+// introduce a compile error in a USER-owned file (not regenerated) and
+// independently drift a Tier-1 file so a `--force` run actually rewrites
+// it. The run rewrites the Tier-1 file, runs go build, and fails on the
+// user file. The rollback must restore the Tier-1 file's pre-run bytes,
+// so `git status` is clean except for the deliberate user-file edit.
+func TestE2EGenerateRollbackOnValidateFailure(t *testing.T) {
+	t.Parallel()
+	projectDir, forgeBin := scaffoldSelfCertProject(t, "genrollback")
+	initGitRepoE2E(t, projectDir, "green HEAD")
+
+	// 1. Drift a Tier-1 file so the upcoming --force run rewrites it.
+	const tier1Rel = "pkg/app/wire_gen.go"
+	tier1Path := filepath.Join(projectDir, tier1Rel)
+	pristineTier1, err := os.ReadFile(tier1Path)
+	if err != nil {
+		t.Fatalf("read %s: %v", tier1Rel, err)
+	}
+	if err := os.WriteFile(tier1Path,
+		append(append([]byte(nil), pristineTier1...), []byte("\n// drift: forces a --force rewrite\n")...),
+		0o644); err != nil {
+		t.Fatalf("drift %s: %v", tier1Rel, err)
+	}
+
+	// 2. Inject a compile error into a user-owned, non-regenerated file so
+	//    the final `go build ./...` validate step fails AFTER the Tier-1
+	//    rewrite lands.
+	brokenRel := filepath.Join("internal", "rollbackbreak", "break.go")
+	brokenPath := filepath.Join(projectDir, brokenRel)
+	if err := os.MkdirAll(filepath.Dir(brokenPath), 0o755); err != nil {
+		t.Fatalf("mkdir for broken file: %v", err)
+	}
+	if err := os.WriteFile(brokenPath,
+		[]byte("package rollbackbreak\n\nfunc Broken() { this is not valid go }\n"), 0o644); err != nil {
+		t.Fatalf("write broken user file: %v", err)
+	}
+
+	// Commit the green-plus-deliberate-edits state so `git status` after
+	// the run reflects ONLY what the failed generate left behind.
+	gitE2E(t, projectDir, "add", "-A")
+	gitE2E(t, projectDir, "commit", "-q", "-m", "deliberate drift + broken user file")
+
+	// 3. Run generate --force: it rewrites the drifted Tier-1 file, then
+	//    fails go build on the broken user file.
+	out, genErr := runGenerate(t, projectDir, forgeBin, "--force")
+	if genErr == nil {
+		t.Fatalf("generate should have failed its validate step on the broken user file; it succeeded:\n%s", out)
+	}
+
+	// 4. The rollback must have reverted the Tier-1 rewrite. git status
+	//    must show NO changes (the broken file + drift were committed; the
+	//    Tier-1 file is back to its committed bytes).
+	status := gitE2E(t, projectDir, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("tree must be clean after a rolled-back generate (no mid-regen residue); git status:\n%s\n\ngenerate output:\n%s", status, out)
+	}
+
+	// 5. The Tier-1 file specifically must be byte-identical to its
+	//    committed (drifted) bytes — the run never converted it to the
+	//    fresh render that briefly landed mid-run.
+	afterTier1, err := os.ReadFile(tier1Path)
+	if err != nil {
+		t.Fatalf("read %s after rollback: %v", tier1Rel, err)
+	}
+	if !strings.Contains(string(afterTier1), "// drift: forces a --force rewrite") {
+		t.Fatalf("%s was not rolled back to its pre-run (drifted) state after validate failure", tier1Rel)
+	}
+
+	// 6. The user must be told the tree was reverted (loud, not silent).
+	if !strings.Contains(out, "reverted") && !strings.Contains(out, "pre-run state") {
+		t.Errorf("rollback should announce the revert to the user; output:\n%s", out)
+	}
+}

@@ -33,6 +33,7 @@ func newDeployCmd() *cobra.Command {
 		prune           bool
 		rollback        bool
 		targets         []string
+		skipFrontend    bool
 	)
 
 	cmd := &cobra.Command{
@@ -67,11 +68,20 @@ it replaces the declared context for every group. Use --explain to print
 the declared context, whether it exists, and the verdict without applying.
 
 Use --target <app> (repeatable) to deploy ONLY the named application(s)
-instead of the whole env bundle. It filters by service/frontend NAME:
-the K8sCluster apply keeps the targeted app's workload manifests plus
-all shared resources (Namespace, the shared ConfigMap/Secret, RBAC),
-and the External/Compose dispatch + rollout-wait are scoped to the named
-apps. A typo'd target errors with the list of available app names.
+instead of the whole env bundle. It filters by app NAME — service,
+operator, or frontend: the K8sCluster apply keeps the targeted app's
+workload manifests plus all shared resources (Namespace, the shared
+ConfigMap/Secret, RBAC), and the External/Compose dispatch + rollout-wait
+are scoped to the named apps. A typo'd target errors with the list of
+available app names. Targeting an operator (e.g. workspace-controller)
+applies just that operator's Deployment + cluster RBAC.
+
+k8s-only deploy: naming only backend apps via --target is itself the
+"k8s without touching the frontend" path — a Firebase frontend isn't in
+the --target set, so its build+deploy step never runs. To ship the WHOLE
+backend bundle while skipping the frontend (without enumerating every
+service), pass --skip-frontend: the k8s apply runs as normal and the
+Frontend (e.g. Firebase) build+deploy dispatch is skipped.
 
 Examples:
   forge deploy dev                          # Deploy to dev (local k3d)
@@ -80,6 +90,8 @@ Examples:
   forge deploy prod --explain               # Show the declared-cluster guard verdict
   forge deploy dev --namespace custom-ns    # Override namespace
   forge deploy dev --target admin-server    # Deploy only the admin-server app
+  forge deploy prod --target workspace-controller # Deploy only that operator
+  forge deploy prod --skip-frontend         # Deploy backend k8s, skip Firebase
   forge deploy prod --context my-renamed-ctx # Override the declared kubectl context`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -113,6 +125,7 @@ Examples:
 				prune:           prune,
 				rollback:        rollback,
 				targets:         targets,
+				skipFrontend:    skipFrontend,
 			})
 		},
 	}
@@ -126,7 +139,8 @@ Examples:
 	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
-	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
+	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
+	cmd.Flags().BoolVar(&skipFrontend, "skip-frontend", false, "Run the k8s apply but skip the Frontend (e.g. Firebase) build+deploy dispatch. The k8s-only path for the whole backend bundle without enumerating every --target.")
 
 	return cmd
 }
@@ -227,15 +241,25 @@ type deployOptions struct {
 	rollback bool
 
 	// targets, when non-empty, scopes the deploy to the named
-	// applications (service / frontend names). Two layers honour it:
-	// (1) entities.Services / entities.Frontends are filtered to the
-	// targeted names before buildDeployGroups, so External/Compose
-	// dispatch and the rollout-wait / host-skip sets cover only the
-	// targeted apps; (2) the K8sCluster apply filters the rendered
-	// multi-doc manifest stream to the targeted apps' workloads plus
-	// shared resources (see cluster.FilterManifestsByApp). Empty means
-	// "deploy the whole env bundle", the unchanged default.
+	// applications (service / operator / frontend names). Two layers
+	// honour it: (1) entities.Services / entities.Operators /
+	// entities.Frontends are filtered to the targeted names before
+	// buildDeployGroups, so External/Compose dispatch and the
+	// rollout-wait / host-skip sets cover only the targeted apps;
+	// (2) the K8sCluster apply filters the rendered multi-doc manifest
+	// stream to the targeted apps' workloads plus shared resources (see
+	// cluster.FilterManifestsByApp). Empty means "deploy the whole env
+	// bundle", the unchanged default.
 	targets []string
+
+	// skipFrontend, when true, runs the k8s apply but suppresses the
+	// Frontend (e.g. Firebase Hosting) build+deploy dispatch. It's the
+	// "k8s-only, leave the frontend alone" escape hatch for the WHOLE
+	// backend bundle — naming backend apps via --target already excludes
+	// frontends, but that forces enumerating every service; --skip-frontend
+	// covers the deploy-everything-but-the-frontend case in one flag. No
+	// effect on rollback (which never dispatches frontends).
+	skipFrontend bool
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -547,7 +571,19 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// plan surfaces before any side effect. No-op when no frontend
 	// declares a deploy target — the unchanged default for k8s/host/none
 	// frontends.
-	if err := dispatchFrontendDeploys(ctx, entities, projectDir, envCfgKV, dryRun); err != nil {
+	//
+	// --skip-frontend short-circuits the dispatch entirely: the k8s apply
+	// above already ran, and the user explicitly asked to leave the
+	// frontend (and its ../web/dist rebuild) untouched. (Naming only
+	// backend apps via --target also excludes frontends, because the
+	// target filter empties entities.Frontends; --skip-frontend is the
+	// "whole backend, no frontend" variant that doesn't require listing
+	// every service.)
+	if opts.skipFrontend {
+		if hasFirebaseFrontend(entities) {
+			fmt.Println("\nSkipping frontend deploy (--skip-frontend).")
+		}
+	} else if err := dispatchFrontendDeploys(ctx, entities, projectDir, envCfgKV, dryRun); err != nil {
 		return err
 	}
 
@@ -644,15 +680,28 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 
 // validateDeployTargets checks every name passed to --target against
 // the set of deployable app names in the rendered KCL (services +
-// frontends). A target that matches nothing is almost always a typo;
-// erroring here — with the list of available app names — is far
-// friendlier than silently deploying nothing (group filter empties out)
-// or applying a shared-only manifest bundle. Reuses inTargetSet's
-// membership semantics indirectly via a name set.
+// operators + frontends). A target that matches nothing is almost
+// always a typo; erroring here — with the list of available app names —
+// is far friendlier than silently deploying nothing (group filter
+// empties out) or applying a shared-only manifest bundle. Reuses
+// inTargetSet's membership semantics indirectly via a name set.
+//
+// Operators are first-class --target subjects: each renders as a
+// Deployment + cluster RBAC (ServiceAccount / ClusterRole /
+// ClusterRoleBinding) all carrying `app.kubernetes.io/name = <op>`, so
+// naming an operator scopes the K8sCluster apply to that operator's
+// workload + shared resources exactly the way a Service target does
+// (cluster.FilterManifestsByApp is app-label-driven, not kind-driven).
+// Without operators in this set, `forge deploy <env> --target <op>`
+// errored "unknown --target" because operators were absent from the
+// available-apps list — you couldn't deploy just an operator.
 func validateDeployTargets(e *KCLEntities, targets []string) error {
 	avail := map[string]struct{}{}
 	for _, s := range e.Services {
 		avail[s.Name] = struct{}{}
+	}
+	for _, o := range e.Operators {
+		avail[o.Name] = struct{}{}
 	}
 	for _, f := range e.Frontends {
 		avail[f.Name] = struct{}{}
@@ -675,21 +724,37 @@ func validateDeployTargets(e *KCLEntities, targets []string) error {
 		strings.Join(unknown, ", "), strings.Join(names, ", "))
 }
 
-// filterEntitiesByTarget returns a shallow copy of e with Services and
-// Frontends narrowed to the names in targets (reusing inTargetSet from
-// up.go for the membership test). Every other entity slice — operators,
-// cronjobs, gateways, routes — is carried through UNCHANGED: those are
-// either shared infra or aren't addressable by the app-name filter, and
-// the K8sCluster manifest filter (cluster.FilterManifestsByApp) keeps
-// them anyway because they don't carry a targeted app-name label.
-// Narrowing Services/Frontends here is what scopes the External/Compose
-// dispatch and the rollout-wait / host-skip / one-shot-Job sets.
+// filterEntitiesByTarget returns a shallow copy of e with Services,
+// Operators, and Frontends narrowed to the names in targets (reusing
+// inTargetSet from up.go for the membership test). The remaining entity
+// slices — cronjobs, gateways, routes — are carried through UNCHANGED:
+// those are either shared infra or aren't addressable by the app-name
+// filter, and cluster.FilterManifestsByApp keeps the ones with no app
+// label anyway.
+//
+// Narrowing Operators here (not just Services/Frontends) is what makes
+// an operator a first-class --target. It scopes the entity-derived sets
+// that key off the operator slice — chiefly the frontendOnly gate in
+// runDeploy (which checks len(entities.Operators)) — so `forge deploy
+// <env> --target <operator>` doesn't accidentally look like a
+// frontend-only env. The K8sCluster apply does the load-bearing scoping
+// at the manifest level: with the operator name in opts.Targets,
+// cluster.FilterManifestsByApp keeps that operator's Deployment + RBAC
+// (all app-labelled) and the shared/infra docs, and drops every other
+// app's workload — operators included. Operators have no
+// External/Compose/host dispatch, so there's nothing else to scope.
 func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 	out := *e // shallow copy; slices below are rebuilt, the rest shared
 	var svcs []ServiceEntity
 	for _, s := range e.Services {
 		if inTargetSet(targets, s.Name) {
 			svcs = append(svcs, s)
+		}
+	}
+	var ops []OperatorEntity
+	for _, o := range e.Operators {
+		if inTargetSet(targets, o.Name) {
+			ops = append(ops, o)
 		}
 	}
 	var fes []FrontendEntity
@@ -699,6 +764,7 @@ func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
 		}
 	}
 	out.Services = svcs
+	out.Operators = ops
 	out.Frontends = fes
 	return &out
 }

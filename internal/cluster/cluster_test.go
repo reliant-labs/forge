@@ -390,6 +390,88 @@ func TestFilterManifestsByApp_UnknownTargetErrors(t *testing.T) {
 	}
 }
 
+// operatorFilterManifests mirrors what forge renders for an Operator:
+// a Deployment plus its cluster RBAC trio (ServiceAccount, ClusterRole,
+// ClusterRoleBinding), every doc carrying app.kubernetes.io/name =
+// <operator>. A peer service Deployment (different app label) and a
+// shared Namespace (no app label) round it out — the exact shape the
+// control-plane `workspace-controller` operator produces alongside its
+// app services.
+const operatorFilterManifests = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: example-prod
+  labels:
+    app.kubernetes.io/managed-by: forge
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workspace-controller
+  namespace: example-prod
+  labels:
+    app.kubernetes.io/name: workspace-controller
+    app.kubernetes.io/managed-by: forge
+spec: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workspace-controller
+  namespace: example-prod
+  labels:
+    app.kubernetes.io/name: workspace-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: workspace-controller-clusterrole
+  labels:
+    app.kubernetes.io/name: workspace-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: workspace-controller-clusterrolebinding
+  labels:
+    app.kubernetes.io/name: workspace-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-server
+  namespace: example-prod
+  labels:
+    app.kubernetes.io/name: admin-server
+    app.kubernetes.io/managed-by: forge
+spec: {}`
+
+// TestFilterManifestsByApp_Operator is the GAP-1 assertion: targeting an
+// operator name keeps that operator's Deployment AND its cluster RBAC
+// (ServiceAccount / ClusterRole / ClusterRoleBinding all carry the
+// operator's app label), keeps shared infra (the Namespace), and drops
+// the unrelated service Deployment. This is what `forge deploy prod
+// --target workspace-controller` renders.
+func TestFilterManifestsByApp_Operator(t *testing.T) {
+	got, err := FilterManifestsByApp(operatorFilterManifests, []string{"workspace-controller"})
+	if err != nil {
+		t.Fatalf("FilterManifestsByApp: %v", err)
+	}
+	for _, want := range []string{
+		"name: workspace-controller\n",                  // Deployment + ServiceAccount
+		"name: workspace-controller-clusterrole\n",      // ClusterRole
+		"name: workspace-controller-clusterrolebinding", // ClusterRoleBinding
+		"kind: Namespace",                               // shared infra kept
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in scoped output, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "name: admin-server") {
+		t.Errorf("expected unrelated service admin-server to be dropped, got:\n%s", got)
+	}
+}
+
 // jobStreamManifests is a multi-doc stream mirroring a real forge
 // render: RuntimeClass + Namespace first, then a ConfigMap and a
 // Secret, then a workload Deployment, a schedule=="" one-shot Job

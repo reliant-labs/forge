@@ -68,7 +68,7 @@ func TestScanTier1Drift_VintageAutoHeal(t *testing.T) {
 			wantDrift: false,
 		},
 		{
-			name: "on-disk is a stamped OLDER vintage — pristine, no drift (heals at write time)",
+			name: "on-disk is a stamped OLDER vintage — pristine, no drift (the writer skips it by default; the scan only reports marker-vs-body breaks)",
 			write: func(t *testing.T, root string) {
 				writeStamped(t, root, rel, renderV1)
 			},
@@ -165,7 +165,7 @@ func TestScanTier1Drift_UnstampableFallback(t *testing.T) {
 	})
 }
 
-func TestWriteGeneratedFile_VintageAutoHeal(t *testing.T) {
+func TestWriteGeneratedFile_VintageDefaultSkips(t *testing.T) {
 	renderV1 := []byte("package app // v1\n")
 	renderV2 := []byte("package app // v2\n")
 	renderV3 := []byte("package app // v3\n")
@@ -177,20 +177,37 @@ func TestWriteGeneratedFile_VintageAutoHeal(t *testing.T) {
 		wantWrote bool
 	}{
 		{
-			name: "on-disk is a stamped recent vintage — clean, write proceeds",
+			// On-disk equals the CURRENT render (v3) — body-identical, so
+			// the write proceeds (no vintage gap, nothing to heal).
+			name: "on-disk is the stamped current render — clean, write proceeds",
 			onDisk: func(t *testing.T) []byte {
-				s, _ := Stamp(rel, renderV2)
+				s, _ := Stamp(rel, renderV3)
 				return s
 			},
 			wantWrote: true,
 		},
 		{
-			name: "on-disk is a stamped older vintage — auto-heal, write proceeds",
+			// A NEWER-than-v1 but still-stale vintage (v2 < current v3) is
+			// also skipped by default — the default protects every prior
+			// vintage, not just the oldest.
+			name: "on-disk is a stamped intermediate vintage (v2 < current v3) — DEFAULT skips it",
+			onDisk: func(t *testing.T) []byte {
+				s, _ := Stamp(rel, renderV2)
+				return s
+			},
+			wantWrote: false,
+		},
+		{
+			// fr-2c1c2328c7 correctness fix: an older-vintage pristine file
+			// is byte-indistinguishable from a deliberate edit, so the
+			// DEFAULT writer skips it (no silent revert). The --heal opt-in
+			// path is covered by TestWriteGeneratedFile_HealIsLoud.
+			name: "on-disk is a stamped older vintage — DEFAULT skips it (no silent heal)",
 			onDisk: func(t *testing.T) []byte {
 				s, _ := Stamp(rel, renderV1)
 				return s
 			},
-			wantWrote: true,
+			wantWrote: false,
 		},
 		{
 			name:      "marker mismatches body — hand-edit, write skipped",

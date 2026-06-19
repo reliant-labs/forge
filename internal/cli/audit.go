@@ -424,7 +424,7 @@ func auditShape(cfg *config.ProjectConfig, projectDir string) AuditCategory {
 
 // auditFeatures surfaces the resolved `features:` block from forge.yaml
 // at audit time. The category lists every feature gated by config —
-// deploy/build/frontend/packs/starters/ci/docs/observability/... — and
+// deploy/build/frontend/packs/ci/docs/observability/... — and
 // whether it resolves to enabled (default for nil) or disabled
 // (explicit false). The additive-extension contract holds: new
 // features added to config.FeaturesConfig.EffectiveFeatures() show up

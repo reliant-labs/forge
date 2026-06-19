@@ -22,7 +22,7 @@ type entrypoint struct {
 // renderTraefikInstall executes the per-project Traefik install
 // template against the given entrypoints and returns the YAML bytes
 // the install path would feed to kubectl. Mirrors what
-// internal/cli/dev_cluster_ingress.go does at `forge dev cluster up`
+// internal/cli/dev_cluster_ingress.go does at `forge cluster up`
 // time so this test exercises the same rendering path.
 func renderTraefikInstall(t *testing.T, entrypoints []entrypoint) []byte {
 	t.Helper()

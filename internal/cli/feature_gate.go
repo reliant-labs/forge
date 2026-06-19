@@ -29,10 +29,38 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"strings"
+	"sync/atomic"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
+
+// experimentalWarningEmitted ensures the startup warning fires at most
+// once per process. PersistentPreRun runs for every cobra command in
+// the tree (root + subcommand), so without this guard `forge cluster
+// up` would print the warning twice.
+var experimentalWarningEmitted atomic.Bool
+
+// emitExperimentalWarning prints the canonical "experimental features
+// are on" line to stderr the first time it's called per process.
+// Subsequent calls are no-ops. The exact wording is the public
+// contract: humans grepping logs and sub-agents matching on the
+// "warning: experimental features enabled:" prefix find one
+// authoritative string.
+func emitExperimentalWarning(w io.Writer, names []config.FeatureName) {
+	if len(names) == 0 {
+		return
+	}
+	if !experimentalWarningEmitted.CompareAndSwap(false, true) {
+		return
+	}
+	// One short grep-friendly line. Stays "warning:" so log scrapers and
+	// agents matching on that prefix keep working.
+	fmt.Fprintf(w, "warning: experimental: %s (--silence-experimental to hide)\n",
+		strings.Join(names, ", "))
+}
 
 // featureCheck is the per-feature predicate signature. Each Feature*
 // constant in package config has a paired FeaturesConfig.<Name>Enabled
@@ -59,7 +87,6 @@ var featureChecks = map[string]featureCheck{
 	config.FeatureObservability:  func(f config.FeaturesConfig) bool { return f.ObservabilityEnabled() },
 	config.FeatureHotReload:      func(f config.FeaturesConfig) bool { return f.HotReloadEnabled() },
 	config.FeaturePacks:          func(f config.FeaturesConfig) bool { return f.PacksEnabled() },
-	config.FeatureStarters:       func(f config.FeaturesConfig) bool { return f.StartersEnabled() },
 	config.FeatureDeploy:         func(f config.FeaturesConfig) bool { return f.DeployEnabled() },
 	config.FeatureIngress:        func(f config.FeaturesConfig) bool { return f.IngressEnabled() },
 	config.FeatureExternalBuilds: func(f config.FeaturesConfig) bool { return f.ExternalBuildsEnabled() },

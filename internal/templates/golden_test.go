@@ -75,6 +75,7 @@ func projectData() any {
 		DockerBuilderGoVersion string
 		CLI                    string
 		LocalForgePkgVendored  bool
+		VersionVar             string
 	}{
 		Name:                   "demo",
 		ProtoName:              "demo",
@@ -89,6 +90,7 @@ func projectData() any {
 		DockerBuilderGoVersion: "1.26",
 		CLI:                    "forge",
 		LocalForgePkgVendored:  false,
+		VersionVar:             "",
 	}
 }
 

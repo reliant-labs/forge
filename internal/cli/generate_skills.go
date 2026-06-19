@@ -60,14 +60,36 @@ func displayForgeVersion() string {
 	return v
 }
 
+// agentOperationPreamble is the shared agent-operation guidance injected
+// verbatim at the top of EVERY forge-generated skill (right after the
+// generated-by banner). It is defined ONCE here and never duplicated
+// per-skill: renderAgentSkill prepends it to every skill body, so editing
+// this constant changes the preamble on the next `forge generate` for
+// every skill in the project.
+//
+// Forge is an LLM-first tool — the reader of these skills is an agent, not
+// a human. The preamble tells that agent how to operate forge commands
+// reliably: run them directly, trust the non-interactive contract, treat
+// refusals as runbooks, background the slow ones, and hand back only true
+// interactive auth.
+const agentOperationPreamble = `> **Operating forge as an agent.** You run these forge commands yourself — don't ask the human to run them and paste the output back.
+> - forge commands are non-interactive without a TTY: they will never hang waiting for input. Each either applies a safe default or fails fast.
+> - A forge refusal or error is a runbook: it states what was expected vs. what was found and gives the literal fix command. Apply that fix and retry.
+> - Background long-running commands (` + "`forge up`" + `, ` + "`forge deploy`" + `, heavy ` + "`forge generate`" + `) and foreground quick ones, so you can iterate in a single turn.
+> - Hand back to the human only for interactive auth you cannot perform (e.g. ` + "`gcloud auth login`" + `).
+> - Project-specific guidance belongs in your project's own skills directory — these forge-owned files are regenerated every run and your edits here are overwritten.
+
+`
+
 // renderAgentSkill produces the final on-disk bytes for one forge-shipped
 // skill: frontmatter (guaranteed), then the generated-by banner, then the
-// body. The banner goes after the frontmatter close so the YAML block
-// stays at byte 0 (Claude Code's loader requires that).
+// shared agent-operation preamble, then the body. The banner+preamble go
+// after the frontmatter close so the YAML block stays at byte 0 (Claude
+// Code's loader requires that).
 func renderAgentSkill(meta skillMeta, body []byte) []byte {
 	content := ensureFrontmatter(body, meta)
-	banner := []byte(skillGeneratedBanner() + "\n")
-	return insertAfterFrontmatter(content, banner)
+	chunk := []byte(skillGeneratedBanner() + "\n\n" + agentOperationPreamble)
+	return insertAfterFrontmatter(content, chunk)
 }
 
 // agentSkillRelPath maps a forge skill path (e.g. "frontend/state") to its

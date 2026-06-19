@@ -29,7 +29,7 @@ func TestIsFeatureEnabled_DefaultsTrue(t *testing.T) {
 	cfg := &config.ProjectConfig{Name: "t", ModulePath: "x/t"}
 	for _, name := range []string{
 		config.FeatureBuild, config.FeatureFrontend,
-		config.FeaturePacks, config.FeatureStarters, config.FeatureCI,
+		config.FeaturePacks, config.FeatureCI,
 		config.FeatureDocs, config.FeatureObservability,
 	} {
 		if !isFeatureEnabled(projectstore.New(cfg), name) {
@@ -77,14 +77,13 @@ func TestIsFeatureEnabled_ExplicitFalse(t *testing.T) {
 	off := false
 	cfg := &config.ProjectConfig{
 		Features: config.FeaturesConfig{
-			Build:    &off,
-			Packs:    &off,
-			Starters: &off,
+			Build: &off,
+			Packs: &off,
 		},
 	}
 	for _, name := range []string{
 		config.FeatureBuild,
-		config.FeaturePacks, config.FeatureStarters,
+		config.FeaturePacks,
 	} {
 		if isFeatureEnabled(projectstore.New(cfg), name) {
 			t.Errorf("isFeatureEnabled(<%s=false>, %q) = true, want false", name, name)
@@ -117,7 +116,7 @@ func TestIsFeatureEnabled_UnknownNamePermissive(t *testing.T) {
 func TestDisabledFeatureError_Wording(t *testing.T) {
 	for _, name := range []string{
 		config.FeatureBuild,
-		config.FeaturePacks, config.FeatureStarters,
+		config.FeaturePacks,
 		config.FeatureFrontend, config.FeatureCI,
 		config.FeatureDocs, config.FeatureObservability,
 	} {

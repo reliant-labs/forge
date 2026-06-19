@@ -53,7 +53,7 @@ On top of the generic triage above, common forge-shaped bug classes:
 ## Forge Debug Tools
 
 ```
-forge run --debug              # attach Delve debugger on :2345
+forge debug start              # attach Delve debugger on :2345
 forge debug start <svc>        # debug a specific service
 forge debug break              # set breakpoint in active debug session
 forge debug continue           # resume execution past breakpoint

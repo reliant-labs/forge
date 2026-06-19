@@ -1,4 +1,4 @@
-// Package cli — `forge dev urls` command.
+// Package cli — `forge cluster urls` command.
 //
 // Reads the rendered dev-env KCL and prints the ingress URL table —
 // one row per HTTPRoute/GRPCRoute, grouped by gateway + listener.
@@ -35,8 +35,8 @@ exits 0. When the dev env has no gateways declared yet it prints a
 pointer to deploy/kcl/dev/ingress.k.
 
 Examples:
-  forge dev urls
-  forge dev urls --json    # machine-readable for scripts/dashboards`,
+  forge cluster urls
+  forge cluster urls --json    # machine-readable for scripts/dashboards`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevUrls(cmd.Context(), jsonOut)
 		},

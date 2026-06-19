@@ -271,6 +271,7 @@ var knownDotForgeEntries = map[string]bool{
 	"friction.jsonl": true,
 	"skills":                true,
 	"state":                 true,
+	"logs":                  true, // forge up writes per-service logs to .forge/logs/<env>/<name>.log
 	"debug":                 true,
 	"debug-session.json":    true,
 	"migrations.json":       true,

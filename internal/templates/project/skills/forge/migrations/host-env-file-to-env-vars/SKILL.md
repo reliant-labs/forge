@@ -13,6 +13,16 @@ Use this skill when `forge upgrade` reports a jump that crosses v0.7.0
 and the project's `deploy/kcl/<env>/main.k` declares one or more
 `forge.HostDeploy { env_file = "..." }` blocks.
 
+> **Note — the secrets half has since evolved.** This skill splits
+> `env_file` into KCL `env_vars` (config) + a per-service
+> `HostDeploy.secrets_file` (secrets). The **env_vars split below is still
+> correct**, but the per-service `secrets_file` has been superseded by a
+> single bundle-level `secret_provider` (one source across host / compose
+> / k8s, with fail-fast and a real prod story). `secrets_file` now survives
+> only as a backward-compat fallback. After doing the env_vars split here,
+> move the secrets half over with the `secrets-file-to-secret-provider`
+> migration; see the `forge/secrets` skill for the full model.
+
 ## 1. What changed
 
 Forge v0.6 and earlier modeled host-mode env composition with a single
@@ -45,7 +55,7 @@ schema HostDeploy:
     delve_port: int = 2345
 ```
 
-`forge run` / `forge up` host phase loads `secrets_file` first (if
+The `forge up --env=<env>` host phase loads `secrets_file` first (if
 set), then layers `env_vars` on top — KCL wins on conflict so
 reproducible config can't drift across machines. Host services compose
 the same `cfg.APP_ENV` / `base.DB_ENV` slices K8sDeploy services use,
@@ -144,12 +154,13 @@ What user code / config might need to change:
 - **CI / local scripts that source `.env.<env>` directly.** Anything
   that did `source .env.dev && go run ...` to pick up DATABASE_URL
   must either source `.env.<env>.secrets` AND wire the KCL env_vars
-  manually, or go through `forge run` / `forge up` which does the
+  manually, or go through `forge up --env=<env>` which does the
   composition for you.
-- **The `--env-file` flag on `forge run`.** The flag still exists for
-  muscle-memory continuity; its contract is now "override the KCL
-  HostDeploy.secrets_file path" — KCL env_vars are layered on top of
-  whatever file the flag points at.
+- **The old `--env-file` CLI override is gone.** The secrets file is now
+  declared per-service as `HostDeploy.secrets_file` in KCL; the `forge up`
+  host phase loads it first, then layers KCL `env_vars` on top. Point a
+  service at a different dotenv by editing its `secrets_file` in
+  `deploy/kcl/<env>/main.k`.
 
 ## 5. Verification
 

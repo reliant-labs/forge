@@ -1,4 +1,4 @@
-// Package cli — `forge dev cluster up` mkcert TLS provisioning.
+// Package cli — `forge cluster up` mkcert TLS provisioning.
 //
 // Why this exists: in dev, cert-manager's only stand-alone option is
 // a self-signed Issuer whose CA isn't in the host trust store, so
@@ -181,7 +181,7 @@ func provisionMkcertSecrets(ctx context.Context, projectDir string) error {
 	if !mkcertOnPath() {
 		fmt.Println("WARN: mkcert-mode Gateway(s) declared but `mkcert` not on PATH —")
 		fmt.Println("      install it (brew install mkcert / choco install mkcert /")
-		fmt.Println("      scoop install mkcert) and re-run `forge dev cluster up` to")
+		fmt.Println("      scoop install mkcert) and re-run `forge cluster up` to")
 		fmt.Println("      provision the TLS Secret(s). Cluster is otherwise up.")
 		return nil
 	}
@@ -223,7 +223,7 @@ func provisionMkcertSecrets(ctx context.Context, projectDir string) error {
 }
 
 // mkcertDevNamespace returns the namespace to apply mkcert Secrets
-// into. Mirrors `forge dev cluster reload`'s resolution (cfg.Name +
+// into. Mirrors `forge cluster reload`'s resolution (cfg.Name +
 // "-dev" fallback when forge.yaml has no explicit dev namespace).
 // `projectDir` is currently informational — loadProjectConfig walks
 // up from cwd which is the established convention.

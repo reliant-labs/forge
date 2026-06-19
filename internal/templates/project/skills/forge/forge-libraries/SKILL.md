@@ -42,7 +42,7 @@ When porting a utility from an existing codebase to forge:
 - **HTTP / Connect transport plumbing** — `connectrpc.com/connect` itself, not forge. Forge doesn't wrap Connect; it embraces it.
 - **Database driver** — `jackc/pgx`. Forge is postgres-pinned and doesn't ship its own driver; `pkg/orm` builds on top.
 - **OTel SDK init** — that lives in each project's `cmd/otel.go` (not in `pkg/observe`). `observe` is the *interceptor* layer; the SDK bootstrap is per-project so you can customize sampling, resource attrs, etc.
-- **Stripe / Twilio / NATS clients** — those ship as packs (`forge pack install`) or starters (`forge starter add`), not as `pkg/*` libraries.
+- **Stripe / Twilio / NATS clients** — those ship as packs (`forge pack install`), not as `pkg/*` libraries.
 
 ## When this skill is not enough
 

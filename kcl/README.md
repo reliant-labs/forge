@@ -79,7 +79,7 @@ for the common providers.
 | `env_vars`     | KCL (this file)     | Yes — version-controlled |
 | `secrets_file` | gitignored dotenv   | No — per developer |
 
-Forge's `forge run` / `forge up` host phase loads `secrets_file` first
+Forge's `forge up` host phase loads `secrets_file` first
 (if set), then layers `env_vars` on top so KCL-declared config wins on
 conflict. Host services see the same per-env config source that
 `K8sCluster` services see via the Deployment's `env` block — the split

@@ -72,7 +72,9 @@ type Controller struct {
 // row table supplies.
 type Options struct {
 	// LeaderElectionID is the lease name used for leader election —
-	// the generated table passes "<module>-leader".
+	// the generated table passes "<module>-leader". The LEADER_ELECTION_ID
+	// env var, when set, overrides this so distinct processes can take
+	// distinct leases (env > this default).
 	LeaderElectionID string
 
 	// HealthProbeBindAddress, when non-empty, binds a /healthz +
@@ -129,9 +131,11 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 		probeAddr = os.Getenv("HEALTH_PROBE_BIND_ADDRESS")
 	}
 
+	leaderID := resolveLeaderElectionID(opts.LeaderElectionID)
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		LeaderElection:   true,
-		LeaderElectionID: opts.LeaderElectionID,
+		LeaderElectionID: leaderID,
 		// Empty in-cluster — controller-runtime infers the namespace from
 		// the ServiceAccount mount. Non-empty only via the env opt-in above.
 		LeaderElectionNamespace: leaderNS,
@@ -175,6 +179,21 @@ func Run(ctx context.Context, logger *slog.Logger, opts Options, controllers []C
 
 	logger.Info("starting controller manager")
 	return mgr.Start(ctx)
+}
+
+// resolveLeaderElectionID applies the lease-name precedence:
+// LEADER_ELECTION_ID env var > the generated Options.LeaderElectionID
+// default. Without the env override the lease name is hardcoded per
+// project, so two processes that both run the manager (e.g. a catch-all
+// API server and the dedicated operator) contend for the SAME lease even
+// when the deployment sets a distinct LEADER_ELECTION_ID. Honouring the
+// env lets distinct processes take distinct leases. Empty/unset keeps the
+// generated default unchanged.
+func resolveLeaderElectionID(optsID string) string {
+	if envID := os.Getenv("LEADER_ELECTION_ID"); envID != "" {
+		return envID
+	}
+	return optsID
 }
 
 // runningInCluster reports whether the process is running inside a

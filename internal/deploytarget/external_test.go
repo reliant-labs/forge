@@ -10,6 +10,51 @@ import (
 	"testing"
 )
 
+// TestExternal_Deploy_SecretsMergedEnvFileWins confirms resolved
+// secrets reach the `sh -c` process env as the BASE layer, with
+// env_file entries overriding on key conflict.
+func TestExternal_Deploy_SecretsMergedEnvFileWins(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env.prod")
+	if err := os.WriteFile(envFile, []byte("SHARED=from_file\nFILE_ONLY=f\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	r := &fakeRunner{}
+	p := ExternalProvider{ProjectDir: dir, Runner: r}
+	spec := &ExternalSpec{DeployCmd: "echo deploy ${SERVICE}", EnvFile: envFile}
+	group := ServiceGroup{
+		Env:        "prod",
+		ProviderID: "external",
+		ImageTag:   "v1.0.0",
+		Services: []ResolvedService{
+			{
+				Name:     "edge",
+				External: spec,
+				Secrets: map[string]string{
+					"SHARED":      "from_secret",
+					"SECRET_ONLY": "s",
+				},
+			},
+		},
+	}
+	if err := p.Deploy(context.Background(), group); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(r.envCalls) == 0 || r.envCalls[0] == nil {
+		t.Fatalf("expected a non-nil env overlay on the first RunWithEnv call, got %v", r.envCalls)
+	}
+	got := r.envCalls[0]
+	if got["SHARED"] != "from_file" {
+		t.Errorf("env_file should win on conflict: SHARED = %q, want from_file", got["SHARED"])
+	}
+	if got["SECRET_ONLY"] != "s" {
+		t.Errorf("secret-only key missing: SECRET_ONLY = %q, want s", got["SECRET_ONLY"])
+	}
+	if got["FILE_ONLY"] != "f" {
+		t.Errorf("file-only key missing: FILE_ONLY = %q, want f", got["FILE_ONLY"])
+	}
+}
+
 // TestExternal_Deploy_HappyPath confirms the deploy_cmd is exec'd via
 // `sh -c` with the documented ${X} tokens substituted, and that the
 // state file lands on success.

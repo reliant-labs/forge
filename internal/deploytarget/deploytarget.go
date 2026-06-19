@@ -132,6 +132,15 @@ type ResolvedService struct {
 	K8sCluster *K8sClusterSpec
 	External   *ExternalSpec
 	Compose    *ComposeSpec
+
+	// Secrets carries resolved secret values to inject into the runtime
+	// env (compose / external). Populated by the deploy dispatch from a
+	// dotenv secret_provider's All() map; nil for external/none providers
+	// (those resolve secrets out-of-band) and always nil for K8sCluster
+	// services (those get rendered Secret objects + secretKeyRef, not
+	// inlined env values). Merged UNDER the env_file overlay so an
+	// explicit env_file entry wins on key conflict.
+	Secrets map[string]string
 }
 
 // K8sClusterSpec is the per-service portion of a K8sCluster deploy
@@ -284,6 +293,7 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 			grp.Services = append(grp.Services, ResolvedService{
 				Name:     s.Name,
 				External: s.External,
+				Secrets:  s.Secrets,
 			})
 
 		case s.Compose != nil:
@@ -300,6 +310,7 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 			grp.Services = append(grp.Services, ResolvedService{
 				Name:    s.Name,
 				Compose: s.Compose,
+				Secrets: s.Secrets,
 			})
 
 		default:
@@ -330,6 +341,13 @@ type RawService struct {
 
 	External *ExternalSpec
 	Compose  *ComposeSpec
+
+	// Secrets carries resolved secret values to inline into the runtime
+	// env for External/Compose services. Carried verbatim onto the
+	// ResolvedService. nil for K8sCluster services (those get rendered
+	// Secret objects, not inlined values) and for external/none
+	// providers.
+	Secrets map[string]string
 }
 
 // RawK8sCluster combines the env-wide K8sCluster fields (which key

@@ -477,3 +477,37 @@ func TestMergeEnv(t *testing.T) {
 		t.Errorf("DATABASE not appended; got %v", got)
 	}
 }
+
+func TestBuildCmd_ExplicitCommandOverridesRunner(t *testing.T) {
+	cmd := BuildCmd(context.Background(), "reliant-api-server", RunnerSpec{
+		Runner:     "go-run", // should be ignored when Command is set
+		Command:    []string{"go", "run", "./cmd/reliant", "server", "api"},
+		WorkingDir: "../reliant",
+		ProjectDir: "/projects/cp-forge",
+	})
+	want := []string{"go", "run", "./cmd/reliant", "server", "api"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("args = %v, want %v", cmd.Args, want)
+	}
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, cmd.Args[i], want[i])
+		}
+	}
+	if cmd.Dir != "/projects/reliant" {
+		t.Errorf("cmd.Dir = %q, want sibling-resolved path", cmd.Dir)
+	}
+}
+
+func TestBuildCmd_AirIgnoresCommand(t *testing.T) {
+	// A command set alongside runner=air must NOT hijack air (admin-server
+	// declares a documentation-only command next to its air runner).
+	cmd := BuildCmd(context.Background(), "admin-server", RunnerSpec{
+		Runner:    "air",
+		AirConfig: ".air.admin-server.toml",
+		Command:   []string{"./cp-forge", "server"},
+	})
+	if cmd.Args[0] != "air" {
+		t.Fatalf("air runner hijacked by command: args=%v", cmd.Args)
+	}
+}

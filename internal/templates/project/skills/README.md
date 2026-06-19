@@ -64,7 +64,7 @@ emit: both       # both audiences (compiler strips @forge-only blocks for genera
 <!-- @forge-only:start -->
 ## Forge-Specific Debug Tools
 
-forge run --debug              # attach Delve debugger
+forge debug start              # attach Delve debugger
 forge test --race              # run tests with race detector
 <!-- @forge-only:end -->
 ```

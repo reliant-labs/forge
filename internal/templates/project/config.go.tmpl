@@ -60,7 +60,7 @@ func (c *Config) Mode() Mode {
 // authn passthrough + authz allow-all + synthetic dev claims.
 //
 // This is an EXPLICIT, two-factor opt-in. It is NEVER implied by
-// ENVIRONMENT alone: ENVIRONMENT=development (e.g. from `forge run`)
+// ENVIRONMENT alone: ENVIRONMENT=development (e.g. from `forge up --env=dev`)
 // gives you dev ergonomics but KEEPS authentication and authorization
 // enforced. To actually bypass auth you must ALSO set AUTH_DEV_MODE=true.
 // In production the bypass is impossible — Mode() is never dev there.

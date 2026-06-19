@@ -1,4 +1,4 @@
-// Package cli — `forge dev status` command.
+// Package cli — `forge cluster status` command.
 //
 // Renders a human- or machine-readable snapshot of the dev cluster,
 // running pods, and ingress URLs derived from rendered KCL. Replaces a
@@ -34,11 +34,11 @@ the dev namespace, what ingress URLs are exposed by the dev env's
 KCL gateways, what sibling dev namespaces exist on this cluster.
 
 For static config (declared cluster name, expected context, declared
-service/frontend ports) run ` + "`forge dev info`" + `.
+service/frontend ports) run ` + "`forge cluster info`" + `.
 
 Examples:
-  forge dev status
-  forge dev status --json    # machine-readable for scripts/dashboards`,
+  forge cluster status
+  forge cluster status --json    # machine-readable for scripts/dashboards`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevStatus(cmd.Context(), configPath, jsonOut)
 		},
@@ -135,7 +135,7 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 
 	// Dynamic state: is the cluster up, what's the current kubectl
 	// context, what namespace are we reading from. Declared values
-	// (expected cluster name, expected context) live in `forge dev info`.
+	// (expected cluster name, expected context) live in `forge cluster info`.
 	fmt.Printf("Cluster %s: %s\n", cluster.Name, boolUpDown(cluster.Exists))
 	current := currentKubectlContext(ctx)
 	switch current {
@@ -147,11 +147,15 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 		fmt.Printf("kubectl context (current): %s (expected %s — run `kubectl config use-context %s`)\n",
 			current, cluster.Context, cluster.Context)
 	}
+	// Config path + found/missing — folded in from the old nested
+	// `dev cluster status` so nothing was lost when that command was
+	// dropped in favour of this superset implementation.
+	fmt.Printf("Config: %s (%s)\n", cluster.ConfigPath, foundOrMissing(cluster.ConfigFound))
 	fmt.Printf("Namespace: %s\n", ns)
 	fmt.Println()
 	if !exists {
-		fmt.Println("Cluster is down — run `forge dev cluster up` to start.")
-		fmt.Println("Run `forge dev info` for the declared config.")
+		fmt.Println("Cluster is down — run `forge cluster up` to start.")
+		fmt.Println("Run `forge cluster info` for the declared config.")
 		return nil
 	}
 
@@ -176,7 +180,7 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 		}
 	}
 	fmt.Println()
-	fmt.Println("For declared port mappings, run `forge dev info`.")
+	fmt.Println("For declared port mappings, run `forge cluster info`.")
 	return nil
 }
 
@@ -287,7 +291,7 @@ func collapseSlashes(s string) string {
 	return s
 }
 
-// devNamespace resolves the namespace forge dev operates against. Reads
+// devNamespace resolves the namespace forge cluster operates against. Reads
 // the dev environment's namespace from the rendered KCL's K8sCluster
 // when present; falls back to <project>-dev (which matches forge deploy
 // dev's behavior).

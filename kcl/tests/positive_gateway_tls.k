@@ -1,8 +1,11 @@
 """
-Positive test — Gateway with TLS emits both a Gateway resource (with
-cert-manager.io/cluster-issuer annotation) AND a cert-manager
-Certificate resource that fills the named Secret. Gateways without
-TLS emit no Certificate.
+Positive test — Gateway with TLS emits a cert-manager Certificate
+resource that fills the named Secret, and the HTTPS listener carries the
+gateway host as its `hostname`. The Gateway does NOT carry a
+cert-manager.io/cluster-issuer annotation: forge owns issuance via the
+explicit Certificate, so stamping the annotation too would make
+cert-manager's gateway-shim auto-create a second, competing Certificate.
+Gateways without TLS emit no Certificate.
 """
 
 import forge
@@ -71,9 +74,16 @@ _certs = [m for m in manifests if m.kind == "Certificate"]
 assert_gw_count = len(_gateways) == 2
 assert_cert_count = len(_certs) == 1
 
-# Gateway with TLS carries the cert-manager cluster-issuer annotation.
+# Gateway with TLS does NOT carry the cert-manager cluster-issuer
+# annotation — forge owns issuance via the explicit Certificate, so the
+# shim-driving annotation is intentionally absent (one issuance path).
 _public_gw = [g for g in _gateways if g.metadata.name == "public"][0]
-assert_gw_annotation = _public_gw.metadata.annotations["cert-manager.io/cluster-issuer"] == "letsencrypt-prod"
+assert_public_no_annotation = not _public_gw.metadata.get("annotations")
+
+# The HTTPS listener carries the gateway host as its hostname — required
+# by cert-manager's gateway-shim and used by the LB for SNI cert select.
+_public_https_listener = [l for l in _public_gw.spec.listeners if l.name == "https"][0]
+assert_https_listener_hostname = _public_https_listener.hostname == "api.example.com"
 
 # Gateway without TLS has no cert-manager annotation.
 _internal_gw = [g for g in _gateways if g.metadata.name == "internal"][0]

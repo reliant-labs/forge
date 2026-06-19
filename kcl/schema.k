@@ -594,13 +594,24 @@ schema External:
     The provider exec's `deploy_cmd` via `sh -c` after substituting
     the following tokens:
 
-      * ${IMAGE}       forge-built image name
-      * ${TAG}         current tag (build-resolved or overridden)
-      * ${LAST_TAG}    previous tag from state file (rollback only)
-      * ${SERVICE}     Service.name
-      * ${ENV}         env name (e.g. dev, staging, prod)
-      * ${ENV_FILE}    path declared in env_file (if any)
-      * ${PROJECT_DIR} project root
+      * ${IMAGE}        forge-built image name
+      * ${TAG}          current tag (build-resolved or overridden)
+      * ${CODE_VERSION} == ${TAG}; the canonical version to stamp into
+                        the running container (e.g.
+                        `docker run -e CODE_VERSION=${CODE_VERSION}` or a
+                        `--label`) so the binary's reported code_version
+                        always matches the image tag.
+      * ${PIPELINE}     deployer id ("forge"); label the container with it
+                        (`--label forge.pipeline=${PIPELINE}`) to keep a
+                        forge-deployed container distinguishable from one a
+                        manual script placed under the same name.
+      * ${LAST_TAG}     previously deployed tag from the state file (the
+                        prior forge deploy on a deploy; the rollback target
+                        on a rollback). Empty on the first deploy.
+      * ${SERVICE}      Service.name
+      * ${ENV}          env name (e.g. dev, staging, prod)
+      * ${ENV_FILE}     path declared in env_file (if any)
+      * ${PROJECT_DIR}  project root
       * Any keys declared in `env`.
 
     `rollback_cmd` is optional — forge rollback errors loudly when it

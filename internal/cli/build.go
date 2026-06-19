@@ -347,7 +347,14 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 			return fmt.Errorf("--target external requires --env to know which KCL services to build")
 		}
 		if !kclHasExternalBuildService(entities) {
-			return fmt.Errorf("--target external: no KCL services declare build_cmd in env %q", opts.env)
+			return fmt.Errorf("--target external: no service declares build_cmd in env %q.\n"+
+				"  Declare a `build_cmd` on your forge.External target (the build-side mirror of deploy_cmd) so\n"+
+				"  `forge build -t external` constructs the image, e.g.:\n"+
+				"      deploy = forge.External {\n"+
+				"          deploy_cmd = r\"...\"\n"+
+				"          build_cmd  = r\"docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} ${PROJECT_DIR}\"\n"+
+				"      }\n"+
+				"  (a top-level Service.build_cmd also works for non-External deploy types).", opts.env)
 		}
 		// Skip everything else — only the external dispatcher runs.
 		frontends = nil

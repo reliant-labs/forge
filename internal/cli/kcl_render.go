@@ -182,8 +182,15 @@ type ExternalDeploy struct {
 	DeployCmd   string            `json:"deploy_cmd,omitempty"`
 	RollbackCmd string            `json:"rollback_cmd,omitempty"`
 	HealthCmd   string            `json:"health_cmd,omitempty"`
-	EnvFile     string            `json:"env_file,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
+	// BuildCmd is the build-side mirror of DeployCmd: the shell command
+	// `forge build -t external` exec's to construct the deployable
+	// image. Optional — External targets without it build their image
+	// out-of-band and only deploy through forge. Token set matches
+	// DeployCmd (IMAGE/TAG/CODE_VERSION/PROJECT_DIR/ENV/SERVICE + Env
+	// keys). See [ServiceEntity.EffectiveBuildCmd].
+	BuildCmd string            `json:"build_cmd,omitempty"`
+	EnvFile  string            `json:"env_file,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
 }
 
 // ComposeDeploy is the deploy block for a docker-compose service.
@@ -648,6 +655,43 @@ func dispatchServiceDeploy(svcName string, raw json.RawMessage) (DeployConfigEnt
 	default:
 		return DeployConfigEntity{}, fmt.Errorf("service %q: unrecognised deploy.type %q (expected host/cluster/external/compose/build-only)", svcName, probe.Type)
 	}
+}
+
+// EffectiveBuildCmd returns the shell command the external-build
+// dispatcher should run for this service, resolving the two sources of
+// truth in precedence order:
+//
+//  1. The top-level Service.build_cmd (the generic build-side escape
+//     hatch — works for any deploy type).
+//  2. The External target's build_cmd (the build-side mirror of
+//     deploy_cmd, declared next to it on a forge.External deploy block).
+//
+// The top-level field wins when both are set so an explicit
+// Service.build_cmd override stays authoritative. Returns "" when
+// neither is declared — the dispatcher's "no build_cmd" signal.
+func (s ServiceEntity) EffectiveBuildCmd() string {
+	if s.BuildCmd != "" {
+		return s.BuildCmd
+	}
+	if s.Deploy.External != nil {
+		return s.Deploy.External.BuildCmd
+	}
+	return ""
+}
+
+// EffectiveBuildEnv returns the env-var map merged into the external
+// build command's environment + substitution map. Mirrors
+// EffectiveBuildCmd's precedence: the top-level Service.build_env wins;
+// otherwise an External target's `env` map (the same map deploy_cmd
+// sees) is used so build_cmd and deploy_cmd share one config surface.
+func (s ServiceEntity) EffectiveBuildEnv() map[string]string {
+	if s.BuildCmd != "" {
+		return s.BuildEnv
+	}
+	if s.Deploy.External != nil {
+		return s.Deploy.External.Env
+	}
+	return s.BuildEnv
 }
 
 // FindService returns the named service from the entity set, or nil.

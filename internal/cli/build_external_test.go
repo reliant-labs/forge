@@ -41,6 +41,174 @@ func TestKCLHasExternalBuildService_PositiveAndNegative(t *testing.T) {
 	}
 }
 
+// TestEffectiveBuildCmd_Precedence pins the two-source resolution the
+// dispatcher uses: a top-level Service.build_cmd wins; otherwise an
+// External target's build_cmd (the build-side mirror of deploy_cmd) is
+// used; neither set returns "".
+func TestEffectiveBuildCmd_Precedence(t *testing.T) {
+	cases := []struct {
+		name string
+		svc  ServiceEntity
+		want string
+	}{
+		{
+			name: "top-level Service.build_cmd wins",
+			svc: ServiceEntity{
+				BuildCmd: "service-level",
+				Deploy:   DeployConfigEntity{Type: "external", External: &ExternalDeploy{BuildCmd: "external-level"}},
+			},
+			want: "service-level",
+		},
+		{
+			name: "falls back to External.build_cmd",
+			svc: ServiceEntity{
+				Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{BuildCmd: "external-level"}},
+			},
+			want: "external-level",
+		},
+		{
+			name: "neither set",
+			svc:  ServiceEntity{Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{}}},
+			want: "",
+		},
+		{
+			name: "non-external deploy without Service.build_cmd",
+			svc:  ServiceEntity{Deploy: DeployConfigEntity{Type: "host"}},
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.svc.EffectiveBuildCmd(); got != c.want {
+				t.Errorf("EffectiveBuildCmd: got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestEffectiveBuildEnv_Precedence confirms the env-map resolution
+// mirrors EffectiveBuildCmd: Service.build_env when the top-level
+// build_cmd is set, else the External target's `env` map (so build_cmd
+// and deploy_cmd share one config surface).
+func TestEffectiveBuildEnv_Precedence(t *testing.T) {
+	// External-level build_cmd → External.env feeds the substitution map.
+	extSvc := ServiceEntity{
+		Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{
+			BuildCmd: "docker build .",
+			Env:      map[string]string{"REGION": "iad"},
+		}},
+	}
+	if got := extSvc.EffectiveBuildEnv()["REGION"]; got != "iad" {
+		t.Errorf("External env: got %q, want iad", got)
+	}
+
+	// Top-level build_cmd → Service.build_env wins.
+	svcSvc := ServiceEntity{
+		BuildCmd: "make image",
+		BuildEnv: map[string]string{"FOO": "bar"},
+		Deploy:   DeployConfigEntity{Type: "external", External: &ExternalDeploy{Env: map[string]string{"REGION": "iad"}}},
+	}
+	env := svcSvc.EffectiveBuildEnv()
+	if env["FOO"] != "bar" {
+		t.Errorf("Service env: got %q, want bar", env["FOO"])
+	}
+	if _, ok := env["REGION"]; ok {
+		t.Error("Service-level path must not leak External.env")
+	}
+}
+
+// TestKCLHasExternalBuildService_DetectsExternalLevel confirms the
+// discovery helper sees a build_cmd declared on the External deploy
+// block (not just the top-level Service.build_cmd). This is the exact
+// path the kalshi-trader e2e exercises.
+func TestKCLHasExternalBuildService_DetectsExternalLevel(t *testing.T) {
+	ext := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "trader", Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{
+				DeployCmd: "ship.sh",
+				BuildCmd:  "docker build .",
+			}}},
+		},
+	}
+	if !kclHasExternalBuildService(ext) {
+		t.Error("want true when an External target declares build_cmd")
+	}
+	got := externalBuildServices(ext)
+	if len(got) != 1 || got[0].Name != "trader" {
+		t.Errorf("externalBuildServices: got %v, want [trader]", got)
+	}
+
+	// External with only deploy_cmd (no build_cmd) must NOT be detected.
+	noBuild := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "trader", Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{DeployCmd: "ship.sh"}}},
+		},
+	}
+	if kclHasExternalBuildService(noBuild) {
+		t.Error("want false when External has deploy_cmd but no build_cmd")
+	}
+}
+
+// TestParseKCLEntities_ExternalBuildCmd confirms build_cmd on an
+// External deploy block survives the JSON round-trip into
+// ExternalDeploy.BuildCmd.
+func TestParseKCLEntities_ExternalBuildCmd(t *testing.T) {
+	js := `{"services":[{"name":"trader","image":"ghcr.io/x","deploy":{"type":"external","deploy_cmd":"ship.sh","build_cmd":"docker build -t ${IMAGE}:${TAG} ${PROJECT_DIR}"}}]}`
+	entities, err := parseKCLEntities([]byte(js))
+	if err != nil {
+		t.Fatalf("parseKCLEntities: %v", err)
+	}
+	svc := entities.FindService("trader")
+	if svc == nil {
+		t.Fatal("trader not found")
+	}
+	if svc.Deploy.External == nil {
+		t.Fatal("External deploy nil")
+	}
+	if got := svc.Deploy.External.BuildCmd; got != "docker build -t ${IMAGE}:${TAG} ${PROJECT_DIR}" {
+		t.Errorf("External.BuildCmd: got %q", got)
+	}
+	if svc.EffectiveBuildCmd() == "" {
+		t.Error("EffectiveBuildCmd empty after parse")
+	}
+}
+
+// TestBuildExternalServices_ExternalLevelWritesDeployState exercises the
+// External-level build_cmd path end-to-end and asserts BOTH state files
+// land: the per-service audit file AND the deploy-side build-<env>.json
+// that `forge deploy` reads (so --tag isn't required afterwards).
+func TestBuildExternalServices_ExternalLevelWritesDeployState(t *testing.T) {
+	projDir := t.TempDir()
+	services := []ServiceEntity{
+		{
+			Name:  "trader",
+			Image: "ghcr.io/x",
+			Deploy: DeployConfigEntity{Type: "external", External: &ExternalDeploy{
+				DeployCmd: "ship.sh",
+				BuildCmd:  "true", // resolved via EffectiveBuildCmd
+			}},
+		},
+	}
+	opts := buildOptions{env: "prod", parallel: false}
+	results := buildExternalServices(context.Background(), services, opts, "ghcr.io", "forge-test", projDir, "amd64")
+	if len(results) != 1 || results[0].err != nil {
+		t.Fatalf("results: %+v", results)
+	}
+	// Deploy-side state file (what forge deploy reads).
+	st, err := ReadBuildState(projDir, "prod")
+	if err != nil {
+		t.Fatalf("ReadBuildState: %v", err)
+	}
+	if st == nil || st.Tag != "forge-test" {
+		t.Errorf("deploy build-state: got %+v, want Tag=forge-test", st)
+	}
+	// Per-service audit file too.
+	auditPath := filepath.Join(projDir, ".forge", "state", "build-prod-trader.json")
+	if _, err := os.Stat(auditPath); err != nil {
+		t.Errorf("per-service state at %s: %v", auditPath, err)
+	}
+}
+
 // TestExternalBuildServices_FiltersBuildCmd confirms the dispatcher's
 // filter returns only services whose BuildCmd is non-empty. Services
 // without a build_cmd flow through the regular Go-build/docker path

@@ -83,6 +83,12 @@ type Spec struct {
 	// when BuildCwd is empty.
 	ProjectDir string
 
+	// Env is the deploy-env name (dev/staging/prod). Used as the
+	// ${ENV} substitution token so a build_cmd can branch on env (e.g.
+	// a different Dockerfile or build-arg per env). Mirrors the
+	// deploy-side External provider's ${ENV} token.
+	Env string
+
 	// BuildCmd is the shell command to exec via `sh -c`. Required —
 	// callers should NOT construct a Spec without a build_cmd set.
 	BuildCmd string
@@ -167,8 +173,8 @@ func mergeEnv(base []string, extra map[string]string) []string {
 }
 
 // Vars returns the substitution map for a Spec's ${X} tokens. The
-// built-in keys (IMAGE/TAG/SERVICE/TARGETARCH/REGISTRY/PROJECT_DIR/
-// BUILD_CWD) win on conflict with BuildEnv keys — same precedence
+// built-in keys (IMAGE/TAG/CODE_VERSION/SERVICE/TARGETARCH/REGISTRY/
+// PROJECT_DIR/ENV/BUILD_CWD) win on conflict with BuildEnv keys — same precedence
 // the deploy-side External provider uses (so users carry one mental
 // model across both escape hatches).
 //
@@ -184,10 +190,15 @@ func Vars(spec Spec) map[string]string {
 	}
 	vars["IMAGE"] = spec.Image
 	vars["TAG"] = spec.Tag
+	// CODE_VERSION mirrors TAG — the canonical version to stamp into
+	// the image so the running container's reported code_version always
+	// matches its tag. Same semantics as the deploy-side External token.
+	vars["CODE_VERSION"] = spec.Tag
 	vars["SERVICE"] = spec.Service
 	vars["TARGETARCH"] = spec.TargetArch
 	vars["REGISTRY"] = spec.Registry
 	vars["PROJECT_DIR"] = spec.ProjectDir
+	vars["ENV"] = spec.Env
 	vars["BUILD_CWD"] = spec.BuildCwd
 	return vars
 }

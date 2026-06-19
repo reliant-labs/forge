@@ -40,7 +40,7 @@ func kclHasExternalBuildService(e *KCLEntities) bool {
 		return false
 	}
 	for _, s := range e.Services {
-		if s.BuildCmd != "" {
+		if s.EffectiveBuildCmd() != "" {
 			return true
 		}
 	}
@@ -60,7 +60,7 @@ func externalBuildServices(e *KCLEntities) []ServiceEntity {
 	}
 	var out []ServiceEntity
 	for _, s := range e.Services {
-		if s.BuildCmd != "" {
+		if s.EffectiveBuildCmd() != "" {
 			out = append(out, s)
 		}
 	}
@@ -100,9 +100,16 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 			TargetArch: targetArch,
 			Registry:   registry,
 			ProjectDir: projectDir,
-			BuildCmd:   svc.BuildCmd,
-			BuildCwd:   svc.BuildCwd,
-			BuildEnv:   svc.BuildEnv,
+			Env:        opts.env,
+			// EffectiveBuildCmd resolves Service.build_cmd (generic
+			// escape hatch) before falling back to External.build_cmd
+			// (the build-side mirror of deploy_cmd). EffectiveBuildEnv
+			// mirrors that precedence so an External target's `env` map
+			// feeds the substitution + process env when build_cmd lives
+			// on the External block.
+			BuildCmd: svc.EffectiveBuildCmd(),
+			BuildCwd: svc.BuildCwd,
+			BuildEnv: svc.EffectiveBuildEnv(),
 		}
 		fmt.Printf("[build] %s: external build_cmd (tag %s)\n", svc.Name, tag)
 		res := runner.Build(ctx, spec)
@@ -150,6 +157,32 @@ func buildExternalServices(ctx context.Context, services []ServiceEntity, opts b
 			fmt.Printf("[build] %s: warning: failed to write build-state file: %v\n", svc.Name, werr)
 		} else {
 			fmt.Printf("[build] %s: wrote build state: %s\n", svc.Name, buildtarget.StatePath(projectDir, opts.env, svc.Name))
+		}
+
+		// Also write the deploy-side build-<env>.json so a subsequent
+		// `forge deploy <env>` reuses this exact tag without --tag. The
+		// per-service file above is consumed only by forge audit/doctor;
+		// deploy's tag-resolution reads THIS single-per-env file
+		// (build_state.go::buildStatePath, deploy.go:892). Closing this
+		// gap is the external-build half of fr-e6dbce2a01 (build-state
+		// was only written on --push, leaving external builds with no
+		// deploy-readable tag). Non-fatal — deploy falls back to git
+		// describe on a missing file. Last successful service wins; this
+		// matches the single-file-per-env shape the --push path uses.
+		deployState := BuildState{
+			Image:    svc.Image,
+			Tag:      tag,
+			Registry: registry,
+			// The user's build_cmd owns build AND push; we record the
+			// registry coordinates but can't prove a push happened, so
+			// Pushed stays false (the deploy-side tag read doesn't gate
+			// on it — see BuildState.Pushed).
+			PushedAt: nowRFC3339(),
+		}
+		if werr := WriteBuildState(projectDir, opts.env, deployState); werr != nil {
+			fmt.Printf("[build] %s: warning: failed to write deploy build-state file: %v\n", svc.Name, werr)
+		} else {
+			fmt.Printf("[build] %s: wrote deploy build state: %s\n", svc.Name, buildStatePath(projectDir, opts.env))
 		}
 		resultCh <- buildResult{
 			name:     svc.Name + " (external)",

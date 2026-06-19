@@ -618,11 +618,38 @@ schema External:
     isn't set rather than guessing. `health_cmd` runs after a
     successful deploy; failures short-circuit before the state-file
     write so the recorded last-good tag stays clean.
+
+    `build_cmd` is the build-side mirror of `deploy_cmd`. Set it so
+    `forge build -t external --env <env>` constructs the deployable
+    image via a user-supplied shell command (`docker build …`, `docker
+    buildx …`, a cross-repo build script, etc.) instead of requiring a
+    hand-run `docker build`. forge exec's it via `sh -c` after
+    substituting the SAME tokens deploy_cmd uses:
+
+      * ${IMAGE}        forge-built image name
+      * ${TAG}          current tag (build-resolved or --tag override)
+      * ${CODE_VERSION} == ${TAG}; the canonical version to stamp into
+                        the image (e.g. a build-arg or label) so the
+                        running container's reported code_version always
+                        matches the image tag.
+      * ${PROJECT_DIR}  project root
+      * ${ENV}          env name (e.g. dev, staging, prod)
+      * ${SERVICE}      Service.name
+      * Any keys declared in `env`.
+
+    The command owns BOTH the build AND any push — forge does NOT run
+    `docker push` after it (same "user owns the CLI" contract as
+    deploy_cmd). On a successful build forge persists the resolved tag
+    to `.forge/state/build-<env>.json` so a subsequent `forge deploy
+    <env>` reuses it without `--tag`. Optional: External targets that
+    omit `build_cmd` keep building their image out-of-band (the prior
+    behaviour) and only deploy through forge.
     """
     type: str = "external"
     deploy_cmd: str
     rollback_cmd?: str
     health_cmd?: str
+    build_cmd?: str
     env_file?: str
     env?: {str: str}
 

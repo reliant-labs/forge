@@ -440,6 +440,16 @@ type pipelineFlags struct {
 // runGeneratePipelineOpts (+ skipValidate) call through here. New flags
 // land on pipelineFlags.
 func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
+	// --reset-tier2 without --yes prompts per file before overwriting
+	// hand-edited Tier-2 scaffolds. Forge is driven by agents/CI (no TTY)
+	// far more often than by a human at a terminal, and this prompt gates
+	// a destructive, irreversible action. Refuse to prompt without a TTY
+	// and fail fast naming the flag that proceeds non-interactively. Done
+	// before any lock/context setup so the refusal is cheap and immediate.
+	if err := guardResetTier2NeedsTTY(flags); err != nil {
+		return err
+	}
+
 	// Cross-process file lock (complements the in-process generateMu).
 	// Held for the lifetime of the pipeline so a parallel `forge add`
 	// can't race a long `forge generate`.
@@ -587,6 +597,33 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	fmt.Println()
 	fmt.Println("✅ Code generation complete!")
 	return nil
+}
+
+// guardResetTier2NeedsTTY refuses to start a `--reset-tier2` run that
+// would block on the per-file overwrite prompt when there is no TTY to
+// answer it. The prompt only fires for --reset-tier2 without --yes; with
+// a TTY a human can answer it, and with --yes there is no prompt at all.
+// In every other case (no TTY, no --yes) forge would hang waiting for
+// input it can never receive, so we fail fast with the exact flag fix.
+func guardResetTier2NeedsTTY(flags pipelineFlags) error {
+	if resetTier2WouldHangWithoutTTY(flags.ResetTier2, flags.AssumeYes, cliutil.StdinIsTTY()) {
+		return cliutil.UserErr(
+			"forge generate (--reset-tier2)",
+			"refusing to prompt for per-file Tier-2 overwrite confirmation without a TTY",
+			"",
+			"re-run with `forge generate --reset-tier2 --yes` to overwrite hand-edited scaffolds non-interactively, or drop --reset-tier2 to preserve them",
+		)
+	}
+	return nil
+}
+
+// resetTier2WouldHangWithoutTTY is the pure decision behind
+// guardResetTier2NeedsTTY, split out so it can be unit-tested without
+// manipulating the process's real stdin. It returns true exactly when the
+// run would otherwise block on the interactive overwrite prompt: the user
+// opted into --reset-tier2, did NOT pass --yes, and stdin is not a TTY.
+func resetTier2WouldHangWithoutTTY(resetTier2, assumeYes, stdinIsTTY bool) bool {
+	return resetTier2 && !assumeYes && !stdinIsTTY
 }
 
 // makeTier2OverwriteHook returns the checksums.Tier2OverwriteFn the

@@ -126,6 +126,11 @@ _render_external = lambda d: External -> any {
         "deploy_cmd": d.deploy_cmd
         "rollback_cmd": d.rollback_cmd if d.rollback_cmd else None
         "health_cmd": d.health_cmd if d.health_cmd else None
+        # build_cmd is the build-side mirror of deploy_cmd; the Go-side
+        # parser (ExternalDeploy.BuildCmd) reads it for `forge build -t
+        # external`. None when unset so existing External targets that
+        # only deploy through forge stay unchanged.
+        "build_cmd": d.build_cmd if d.build_cmd else None
         "env_file": d.env_file if d.env_file else None
         "env": d.env if d.env else {}
     }

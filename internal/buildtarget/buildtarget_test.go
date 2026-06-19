@@ -94,6 +94,44 @@ func TestVars_BuiltinsWin(t *testing.T) {
 	}
 }
 
+// TestVars_CodeVersionAndEnv pins the two External-mirror tokens added
+// for the External.build_cmd feature: ${CODE_VERSION} (== ${TAG}, the
+// version to stamp into the image) and ${ENV} (the deploy env name).
+// These let an External build_cmd carry the same provenance the
+// deploy-side deploy_cmd does.
+func TestVars_CodeVersionAndEnv(t *testing.T) {
+	spec := Spec{
+		Tag: "forge-test",
+		Env: "prod",
+	}
+	got := Vars(spec)
+	if got["CODE_VERSION"] != "forge-test" {
+		t.Errorf("CODE_VERSION: want forge-test (==TAG), got %q", got["CODE_VERSION"])
+	}
+	if got["ENV"] != "prod" {
+		t.Errorf("ENV: want prod, got %q", got["ENV"])
+	}
+}
+
+// TestExpand_ExternalBuildShape validates the substitution against the
+// exact build_cmd the kalshi-trader e2e declares on its External target
+// — the build-side mirror of deploy_cmd. Pins that ${IMAGE} ${TAG}
+// ${PROJECT_DIR} ${TARGETARCH} all resolve in one shell string.
+func TestExpand_ExternalBuildShape(t *testing.T) {
+	spec := Spec{
+		Image:      "ghcr.io/kalshi-trader",
+		Tag:        "forge-test",
+		TargetArch: "amd64",
+		ProjectDir: "/Users/x/src/kalshi-trader",
+		Env:        "prod",
+	}
+	template := `docker build --platform linux/${TARGETARCH} -t ${IMAGE}:${TAG} -f ${PROJECT_DIR}/Dockerfile ${PROJECT_DIR}`
+	want := `docker build --platform linux/amd64 -t ghcr.io/kalshi-trader:forge-test -f /Users/x/src/kalshi-trader/Dockerfile /Users/x/src/kalshi-trader`
+	if got := Expand(template, spec); got != want {
+		t.Errorf("Expand:\n got %q\nwant %q", got, want)
+	}
+}
+
 // TestExpand_CPForgeShape validates the substitution against the
 // exact shape cp-forge's scripts/cloud-dev.sh:build_daemon_gateway_image
 // helper builds. This is the canonical real-world use case the feature

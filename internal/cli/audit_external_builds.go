@@ -66,10 +66,12 @@ import (
 var externalBuildBuiltinTokens = []string{
 	"IMAGE",
 	"TAG",
+	"CODE_VERSION",
 	"SERVICE",
 	"TARGETARCH",
 	"REGISTRY",
 	"PROJECT_DIR",
+	"ENV",
 	"BUILD_CWD",
 }
 

@@ -2164,6 +2164,22 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 		return nil, fmt.Errorf("scan existing methods: %w", err)
 	}
 
+	// handlers_crud.go is skipped by scanExistingMethods so its delegating
+	// CRUD shims don't masquerade as "user implemented this RPC by hand" and
+	// suppress regeneration of the very ops they delegate to. But the file is
+	// also the user's own (the scaffold header says so), and a user can hand-
+	// implement a non-CRUD RPC there (kalshi fr-fba0c4be8d: a custom-shape
+	// ListSettlements with no entity behind it). That hand impl IS a real
+	// implementation and MUST suppress the stub, or handlers_gen.go re-emits a
+	// duplicate method and the package fails to compile. Discriminate by name:
+	// a method in handlers_crud.go whose name is NOT a CRUD method is a hand
+	// impl (the CRUD-shaped delegating shims are exactly crudMethodNames).
+	for name := range scanHandlersCrudMethods(targetDir) {
+		if !crudMethodNames[name] {
+			existing[name] = true
+		}
+	}
+
 	var missing []Method
 	for _, m := range svc.Methods {
 		if !existing[m.Name] && !crudMethodNames[m.Name] {
@@ -2353,6 +2369,45 @@ func scanExistingMethods(dir string, includeGeneratedStubs bool) (map[string]boo
 	}
 
 	return existing, nil
+}
+
+// scanHandlersCrudMethods returns the set of *Service method names declared in
+// handlers_crud.go specifically. scanExistingMethods skips that file wholesale
+// (its delegating shims must not suppress ops regen); this lets the stub
+// generator look inside it to find HAND-WRITTEN (non-CRUD) impls that DO need
+// to suppress a duplicate stub. Returns an empty set if the file is absent or
+// unparseable — losing this signal only risks a duplicate-method compile error
+// surfacing at the validate step, never a silent wrong result.
+func scanHandlersCrudMethods(dir string) map[string]bool {
+	out := map[string]bool{}
+	path := filepath.Join(dir, "handlers_crud.go")
+	if _, err := os.Stat(path); err != nil {
+		return out
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: scanHandlersCrudMethods skipping %s (parse error): %v\n", path, err)
+		return out
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := star.X.(*ast.Ident)
+		if !ok || ident.Name != "Service" {
+			continue
+		}
+		if fn.Name != nil && fn.Name.Name != "" {
+			out[fn.Name.Name] = true
+		}
+	}
+	return out
 }
 
 // GenerateSetup generates pkg/app/setup.go if it does not already exist.

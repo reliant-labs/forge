@@ -42,6 +42,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/projectstore"
 )
@@ -1070,7 +1071,22 @@ func short(h string) string {
 func stepSyncDevForgePkg(ctx *pipelineContext) error {
 	vendored, vendorErr := syncDevForgePkgReplace(ctx.ProjectDir)
 	_ = vendored
-	return ctx.warnOrFail("forge/pkg dev-mode vendor sync", vendorErr)
+	if err := ctx.warnOrFail("forge/pkg dev-mode vendor sync", vendorErr); err != nil {
+		return err
+	}
+
+	// fr-04c408ebbe: generate manages `.forge-pkg/` but does NOT re-render
+	// the Tier-2 Dockerfile, so a project scaffolded before the
+	// `COPY .forge-pkg/` template feature has a Dockerfile that fails
+	// `go mod download` inside docker. generate knows the vendor state here
+	// — emit a non-gating WARN pointing at the one-line fix (or `forge
+	// upgrade`) so the broken docker build doesn't surface only at build
+	// time. Warn, don't fail: per the migrations-ship-partial-scaffolds
+	// rule, a stale Tier-2 file must not block iteration.
+	if finding, ok := scaffolds.DevVendorDockerfileWarning(ctx.ProjectDir); ok {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: %s — %s\n", finding.Path, finding.Message)
+	}
+	return nil
 }
 
 // stepAnnounceProject prints the "📦 Generating code for project: …"

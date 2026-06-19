@@ -124,6 +124,7 @@ type ProjectConfig struct {
 	// is taken literally — write the block (or a single key) to override.
 	Database  DatabaseConfig  `yaml:"database,omitempty"`
 	CI        CIConfig        `yaml:"ci,omitempty"`
+	Build     BuildConfig     `yaml:"build,omitempty"`
 	Deploy    DeployConfig    `yaml:"deploy,omitempty"`
 	Docker    DockerConfig    `yaml:"docker,omitempty"`
 	K8s       K8sConfig       `yaml:"k8s,omitempty"`
@@ -719,6 +720,20 @@ func (d *DeployConfig) EffectiveRegistry() string {
 // Zero value is treated as enabled.
 func (d *DeployConfig) IsConcurrencyEnabled() bool {
 	return d.Concurrency == (DeployConcurrency{}) || d.Concurrency.Enabled
+}
+
+// BuildConfig controls build-time version stamping. Empty = forge's
+// defaults (version derived from git, stamped into main.version).
+type BuildConfig struct {
+	// Version pins the embedded build version, overriding git derivation.
+	Version string `yaml:"version,omitempty"`
+	// VersionVar is an ADDITIONAL `-ldflags -X` target stamped with the
+	// resolved version, e.g.
+	//   "github.com/acme/app/internal/buildinfo.Version"
+	// main.version/commit/date are ALWAYS stamped; this is extra, for
+	// code that can't import package main. Requires an exported pkg-level
+	// string var at that path.
+	VersionVar string `yaml:"version_var,omitempty"`
 }
 
 // DockerConfig holds Docker registry configuration.

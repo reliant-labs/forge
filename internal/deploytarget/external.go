@@ -242,6 +242,7 @@ func loadExternalEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil
 	}
+	path = expandHomePath(path)
 	m, err := readDotEnvFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -251,6 +252,35 @@ func loadExternalEnvFile(path string) (map[string]string, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// expandHomePath expands a leading ~ or ~/ (and $HOME) to the user's home
+// directory. env_file paths in KCL are commonly written with ~ (e.g.
+// "~/src/app/.env"); os.ReadFile does NOT expand it (the shell normally
+// would), so without this the file silently isn't found and the secret
+// overlay is dropped. Non-tilde paths pass through unchanged.
+func expandHomePath(path string) string {
+	if path == "" {
+		return path
+	}
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, "$HOME") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	switch {
+	case path == "~":
+		return home
+	case strings.HasPrefix(path, "~/"):
+		return home + path[1:]
+	case strings.HasPrefix(path, "$HOME/"):
+		return home + path[len("$HOME"):]
+	case path == "$HOME":
+		return home
+	}
+	return path
 }
 
 // resolveExternalTag picks the tag for an external deploy. Precedence

@@ -1537,7 +1537,10 @@ func stepInternalDBORM(ctx *pipelineContext) error {
 		return err
 	}
 	// The alias file from the proto-entity era; remove so stale aliases
-	// to deleted pb types can't shadow the generated structs.
+	// to deleted pb types can't shadow the generated structs. Journal the
+	// pre-run bytes first so a failed-validate rollback restores it (this
+	// removal bypasses the WriteGeneratedFile* chokepoint).
+	checksums.RecordPreWrite(ctx.AbsPath, filepath.ToSlash(filepath.Join("internal", "db", "types.go")))
 	_ = os.Remove(filepath.Join(ctx.ProjectDir, "internal", "db", "types.go"))
 	fmt.Printf("  ✅ Generated internal/db/ (%d entity ORM files)\n", len(entities))
 	return nil

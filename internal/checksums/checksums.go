@@ -526,6 +526,9 @@ func WriteGeneratedFile(root, relPath string, content []byte, cs *FileChecksums,
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
+	// Capture the pre-run bytes BEFORE the first write so a failed run can
+	// be rolled back to a clean pre-regen tree (fr-40f7ec9bd9).
+	recordPreWrite(root, relPath)
 	if err := os.WriteFile(fullPath, stamped, 0o644); err != nil {
 		return false, err
 	}
@@ -586,6 +589,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
+	recordPreWrite(root, relPath)
 	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}
@@ -672,6 +676,7 @@ func WriteGeneratedFileTier2(root, relPath string, content []byte, cs *FileCheck
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return false, err
 	}
+	recordPreWrite(root, relPath)
 	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}

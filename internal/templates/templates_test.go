@@ -439,11 +439,11 @@ func TestBootstrapTemplate_DiagnosticsEmitWhenEnabled(t *testing.T) {
 // renders valid Go when all component lists are empty.
 func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 	data := struct {
-		Module   string
-		HasDatabase         bool
-		DatabaseDriver      string
-		OrmEnabled          bool
-		Services []struct {
+		Module         string
+		HasDatabase    bool
+		DatabaseDriver string
+		OrmEnabled     bool
+		Services       []struct {
 			Name, Package, FieldName, ProtoServiceName string
 			ProtoConnectImportPath, ProtoConnectPkg    string
 			Fallible                                   bool
@@ -577,9 +577,9 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 				Name                   string
 				ProtoName              string
 				Module                 string
-				HasDatabase         bool
-				DatabaseDriver      string
-				OrmEnabled          bool
+				HasDatabase            bool
+				DatabaseDriver         string
+				OrmEnabled             bool
 				ServiceName            string
 				ServicePort            int
 				ProjectName            string
@@ -589,6 +589,7 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 				GoVersionMinor         string
 				DockerBuilderGoVersion string
 				LocalForgePkgVendored  bool
+				VersionVar             string
 			}{
 				Name: "demo", ProtoName: "demo", Module: "github.com/example/demo",
 				ServiceName: "api", ServicePort: 8080, ProjectName: "demo",
@@ -600,6 +601,84 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 				t.Fatalf("render Dockerfile.tmpl: %v", err)
 			}
 			rendered := string(out)
+			if c.wantContain != "" && !strings.Contains(rendered, c.wantContain) {
+				t.Errorf("expected %q in rendered Dockerfile, got:\n%s", c.wantContain, rendered)
+			}
+			if c.wantAbsent != "" && strings.Contains(rendered, c.wantAbsent) {
+				t.Errorf("did not expect %q in rendered Dockerfile, got:\n%s", c.wantAbsent, rendered)
+			}
+		})
+	}
+}
+
+// TestDockerfile_VersionVarLdflags verifies the Dockerfile's build-stage
+// ldflags emit the extra `-X <path>=${FORGE_VERSION}` when build.version_var
+// is set, and omit it (leaving the canonical main.version/commit/date
+// stamping) when it is empty. Also pins that the in-container `git describe`
+// is gone — replaced by the FORGE_VERSION build-arg.
+func TestDockerfile_VersionVarLdflags(t *testing.T) {
+	type tc struct {
+		name        string
+		versionVar  string
+		wantContain string
+		wantAbsent  string
+	}
+	cases := []tc{
+		{
+			name:       "unset omits extra -X target",
+			versionVar: "",
+			wantAbsent: "-X github.com/acme/app/internal/buildinfo.Version=${FORGE_VERSION}",
+		},
+		{
+			name:        "set emits extra -X target with FORGE_VERSION value",
+			versionVar:  "github.com/acme/app/internal/buildinfo.Version",
+			wantContain: "-X github.com/acme/app/internal/buildinfo.Version=${FORGE_VERSION}",
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			data := struct {
+				Name                   string
+				ProtoName              string
+				Module                 string
+				ServiceName            string
+				ServicePort            int
+				ProjectName            string
+				FrontendName           string
+				FrontendPort           int
+				GoVersion              string
+				GoVersionMinor         string
+				DockerBuilderGoVersion string
+				LocalForgePkgVendored  bool
+				VersionVar             string
+			}{
+				Name: "demo", ProtoName: "demo", Module: "github.com/example/demo",
+				ServiceName: "api", ServicePort: 8080, ProjectName: "demo",
+				GoVersion: "1.26", GoVersionMinor: "26", DockerBuilderGoVersion: "1.26",
+				VersionVar: c.versionVar,
+			}
+			out, err := ProjectTemplates().Render("Dockerfile.tmpl", data)
+			if err != nil {
+				t.Fatalf("render Dockerfile.tmpl: %v", err)
+			}
+			rendered := string(out)
+			// The canonical main.version/commit/date stamping is always present.
+			for _, want := range []string{
+				"-X main.version=${FORGE_VERSION}",
+				"-X main.commit=${FORGE_COMMIT}",
+				"-X main.date=${FORGE_DATE}",
+				"ARG FORGE_VERSION=dev",
+			} {
+				if !strings.Contains(rendered, want) {
+					t.Errorf("expected %q in rendered Dockerfile, got:\n%s", want, rendered)
+				}
+			}
+			// The old in-container git-describe invocation in -ldflags must
+			// be gone (the prose comment may still mention it).
+			if strings.Contains(rendered, "$(git describe") {
+				t.Errorf("expected in-container `$(git describe ...)` ldflags to be removed, got:\n%s", rendered)
+			}
 			if c.wantContain != "" && !strings.Contains(rendered, c.wantContain) {
 				t.Errorf("expected %q in rendered Dockerfile, got:\n%s", c.wantContain, rendered)
 			}

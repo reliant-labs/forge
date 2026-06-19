@@ -17,6 +17,15 @@ ENV GOTOOLCHAIN=auto
 
 RUN apk add --no-cache git
 
+# Build version stamping. `forge build --docker` passes these as
+# --build-arg from its unified version resolver (the host binary build
+# embeds the identical values). We no longer run `git describe` inside
+# the container: .dockerignore excludes .git, so the in-build describe
+# always failed and every image embedded main.version=dev.
+ARG FORGE_VERSION=dev
+ARG FORGE_COMMIT=none
+ARG FORGE_DATE=unknown
+
 WORKDIR /app
 
 # Copy go workspace files
@@ -32,7 +41,7 @@ COPY . .
 # Build with optimizations.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o /app/bin/demo ./cmd
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}" -o /app/bin/demo ./cmd
 
 # ── Debug builder (only used by the `debug` stage) ──
 # Split out so the default production build doesn't pay the debug-build

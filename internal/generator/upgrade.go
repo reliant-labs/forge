@@ -374,6 +374,11 @@ type upgradeTemplateData struct {
 	// generate pipeline's render.
 	AuthProvider         string
 	AuthProviderExternal bool
+	// VersionVar mirrors forge.yaml build.version_var: an additional
+	// `-ldflags -X` target the Dockerfile stamps with the build version.
+	// Empty (the default) renders nothing, preserving main.version-only
+	// stamping for projects that don't set it.
+	VersionVar string
 }
 
 // buildTemplateData constructs the template data from a project config,
@@ -468,6 +473,7 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) upgradeTemp
 		RESTEnabled:            cfg.API.REST,
 		AuthProvider:           authProvider,
 		AuthProviderExternal:   authExternal,
+		VersionVar:             cfg.Build.VersionVar,
 	}
 }
 

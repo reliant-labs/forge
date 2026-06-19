@@ -130,6 +130,20 @@ func LintWorkaroundsRoot(root string) (Result, error) {
 		}
 	}
 
+	// Rule 4 is dev-vendor specific — a project in "dev-vendor mode" has
+	// `go.mod` with `replace github.com/reliant-labs/forge/pkg =>
+	// ./.forge-pkg` plus a vendored `.forge-pkg/` directory. The generated
+	// Dockerfile MUST `COPY .forge-pkg/` before `RUN go mod download`, else
+	// the in-container `go mod download` fails with
+	// `reading .forge-pkg/go.mod: no such file or directory`. The Dockerfile
+	// is a Tier-2 scaffold-once file that `forge generate` does NOT
+	// re-render, so projects scaffolded before the COPY-line template
+	// feature carry a silently-broken Docker build. Surface it as a warning
+	// so the user runs `forge upgrade` (or hand-adds the line).
+	if finding, ok := lintDevVendorDockerfile(root); ok {
+		result.Findings = append(result.Findings, finding)
+	}
+
 	// Rule 1 is content-based — walk pkg/app/wire_gen.go and look for
 	// `cast<Name>` function declarations. We could broaden this to all
 	// wire-gen-adjacent files but the canonical site is the only one
@@ -298,6 +312,67 @@ func readDeclaredBinaries(path string) map[string]bool {
 	}
 	flush()
 	return out
+}
+
+// devVendorReplaceRE matches the go.mod replace directive that puts a
+// project into dev-vendor mode: the forge/pkg module redirected at the
+// local `./.forge-pkg` checkout. Whitespace around `=>` is flexible
+// (gofmt aligns the column, but hand-edits vary); a leading `./` is
+// optional so both `=> ./.forge-pkg` and `=> .forge-pkg` match.
+var devVendorReplaceRE = regexp.MustCompile(
+	`replace\s+github\.com/reliant-labs/forge/pkg\s+=>\s+\.?/?\.forge-pkg\b`)
+
+// dockerfileCopyForgePkgRE matches the `COPY .forge-pkg/ ./.forge-pkg/`
+// line the Dockerfile template emits for dev-vendor projects. We accept
+// `COPY .forge-pkg/` and `COPY .forge-pkg ` (trailing space, no slash)
+// so a hand-added variant still satisfies the rule.
+var dockerfileCopyForgePkgRE = regexp.MustCompile(`(?m)^\s*COPY\s+\.forge-pkg[/ ]`)
+
+// lintDevVendorDockerfile reports the stale-dev-vendor-Dockerfile
+// workaround: the project is in dev-vendor mode (go.mod replace targeting
+// ./.forge-pkg, or a `.forge-pkg/go.mod` on disk) but its Dockerfile
+// lacks the `COPY .forge-pkg/` line that the in-container `go mod
+// download` needs. Returns ok=false when the project is not in dev-vendor
+// mode, has no Dockerfile, or the Dockerfile already carries the COPY line.
+func lintDevVendorDockerfile(root string) (Finding, bool) {
+	if !isDevVendorMode(root) {
+		return Finding{}, false
+	}
+	dockerfilePath := filepath.Join(root, "Dockerfile")
+	data, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		// No Dockerfile (or unreadable) — nothing to warn about. A
+		// dev-vendor project without a Dockerfile isn't building an image.
+		return Finding{}, false
+	}
+	if dockerfileCopyForgePkgRE.Match(data) {
+		return Finding{}, false
+	}
+	return Finding{
+		Rule:     "workaround-dev-vendor-dockerfile",
+		Severity: SeverityWarning,
+		Path:     relPath(dockerfilePath, root),
+		Message: "Dockerfile is missing a `COPY .forge-pkg/` line but go.mod vendors forge/pkg at ./.forge-pkg " +
+			"(dev-vendor mode). The in-container `go mod download` will fail with " +
+			"`reading .forge-pkg/go.mod: no such file or directory`. " +
+			"Should be: add `COPY .forge-pkg/ ./.forge-pkg/` before `RUN go mod download`, or run `forge upgrade` to re-render the Dockerfile.",
+	}, true
+}
+
+// isDevVendorMode reports whether the project rooted at root vendors
+// forge/pkg locally. Two independent signals, either sufficient: a
+// `.forge-pkg/go.mod` on disk (matches the generator's detection at
+// internal/generator/upgrade.go), or a go.mod replace directive pointing
+// at ./.forge-pkg.
+func isDevVendorMode(root string) bool {
+	if _, err := os.Stat(filepath.Join(root, ".forge-pkg", "go.mod")); err == nil {
+		return true
+	}
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return false
+	}
+	return devVendorReplaceRE.Match(data)
 }
 
 // scalarYAMLValue extracts the value of `key` from a line shaped like

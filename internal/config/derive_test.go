@@ -237,6 +237,35 @@ database:
 	}
 }
 
+// TestNormalizeForWrite_BuildVersionVarSurvives confirms a config with
+// build.version_var set survives Load → NormalizeForWrite → Marshal →
+// reload. BuildConfig has no derived default, so NormalizeForWrite must
+// leave it verbatim rather than dropping it.
+func TestNormalizeForWrite_BuildVersionVarSurvives(t *testing.T) {
+	src := minimalForgeYAML + `
+build:
+    version_var: github.com/acme/app/internal/buildinfo.Version
+`
+	cfg, err := LoadStrict([]byte(src), "build.yaml", usersComponent()...)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Build.VersionVar != "github.com/acme/app/internal/buildinfo.Version" {
+		t.Fatalf("load dropped build.version_var, got %q", cfg.Build.VersionVar)
+	}
+	out, err := yaml.Marshal(NormalizeForWrite(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	re, err := LoadStrict(out, "roundtrip.yaml", usersComponent()...)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if re.Build.VersionVar != "github.com/acme/app/internal/buildinfo.Version" {
+		t.Errorf("build.version_var lost in round-trip (got %q):\n%s", re.Build.VersionVar, out)
+	}
+}
+
 // TestNormalizeForWrite_DisableMigrationsSurvivesEmptyDatabase guards
 // the subtle case: a scaffold-time `--disable migrations` on a config
 // whose database section is still absent. Derivation against the RAW

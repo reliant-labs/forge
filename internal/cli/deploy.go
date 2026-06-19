@@ -810,6 +810,18 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 		if st == nil {
 			continue
 		}
+		// Stale-image guard: the recorded build may be from an older
+		// commit than the one currently checked out. Deploying it would
+		// silently ship code the user already moved past — a real-money
+		// footgun on prod. When the working tree is CLEAN and the build's
+		// source commit differs from HEAD, refuse by default and point at
+		// the two escape hatches (rebuild, or --tag to deploy the recorded
+		// tag anyway). Dirty trees skip this check: there's no single HEAD
+		// the build can be "behind," and warnIfNonReproducible already
+		// flags the dirty build.
+		if serr := checkBuildStateFreshness(ctx, projectDir, st); serr != nil {
+			return "", "", serr
+		}
 		warnIfNonReproducible(st)
 		src := fmt.Sprintf(".forge/state/build-%s.json (built %s)", key, st.PushedAt)
 		return st.Tag, src, nil
@@ -829,6 +841,78 @@ func buildStateLookupEnvs(envName string) []string {
 		return []string{"default"}
 	}
 	return []string{envName, "default"}
+}
+
+// checkBuildStateFreshness refuses to deploy a build whose recorded
+// source commit is behind the current git HEAD, so `forge deploy` never
+// silently ships a stale image after a fresh commit/push (fr-02d44d2b03).
+//
+// The check fires ONLY when all of these hold, to keep it a precise
+// footgun-guard rather than a nag:
+//
+//   - The build recorded a source commit (st.Commit non-empty). Older
+//     state files predating commit-stamping skip the check.
+//   - There are no uncommitted changes to TRACKED files. Such a tree
+//     has no single HEAD the build can be measured against, so the
+//     comparison would be meaningless (warnIfNonReproducible covers the
+//     dirty-build reproducibility angle separately). Untracked files
+//     (editor dirs, build artifacts, gitignored caches) are deliberately
+//     ignored — they don't change which commit HEAD points at, and a
+//     stray `.idea/` directory must not silently disable a real-money
+//     stale-deploy guard.
+//   - HEAD is resolvable and differs from st.Commit.
+//
+// Escape hatch: pass `--tag <tag>` to deploy a specific tag directly —
+// that path bypasses build-state (and therefore this check) entirely.
+// Git being unavailable is treated as "can't prove staleness" → allow.
+func checkBuildStateFreshness(ctx context.Context, projectDir string, st *BuildState) error {
+	if st == nil || st.Commit == "" {
+		return nil
+	}
+	head, clean, ok := gitHEADAndClean(ctx, projectDir)
+	if !ok || !clean {
+		// No HEAD to compare against, or a dirty tree (handled by the
+		// dirty warning) — don't block.
+		return nil
+	}
+	if head == st.Commit {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to deploy stale image: tag %q was built from %s, but HEAD is %s.\n"+
+			"  The recorded build predates your current commit — deploying it would ship old code.\n"+
+			"  Fix: rebuild from HEAD (forge build --docker ...), then deploy; or pass --tag %s to deploy the recorded image anyway.",
+		st.Tag, shortSHA(st.Commit), shortSHA(head), st.Tag)
+}
+
+// gitHEADAndClean returns the current HEAD commit, whether the working
+// tree has no uncommitted TRACKED changes, and whether git was usable at
+// all, evaluated in dir (the project root). ok=false means git failed
+// (not a repo, no git binary) — callers treat that as "can't prove
+// anything" and fall through rather than erroring. dir scopes the check
+// to the project so the result doesn't depend on the process CWD (and so
+// tests can run against a throwaway repo).
+//
+// "clean" uses --untracked-files=no on purpose: untracked files don't
+// move HEAD, so a stray editor/artifact directory must not flip the
+// staleness guard off. Genuine uncommitted edits to tracked files DO
+// count as not-clean (the build's recorded commit can't represent them).
+func gitHEADAndClean(ctx context.Context, dir string) (head string, clean, ok bool) {
+	rev := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	rev.Dir = dir
+	out, err := rev.Output()
+	if err != nil {
+		return "", false, false
+	}
+	head = strings.TrimSpace(string(out))
+	stat := exec.CommandContext(ctx, "git", "status", "--porcelain", "--untracked-files=no")
+	stat.Dir = dir
+	st, serr := stat.Output()
+	if serr != nil {
+		return head, false, false
+	}
+	clean = strings.TrimSpace(string(st)) == ""
+	return head, clean, true
 }
 
 // warnIfNonReproducible prints a heads-up when the build being deployed

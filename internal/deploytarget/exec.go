@@ -19,8 +19,9 @@ import (
 // via `sh -c` after substituting a documented set of tokens:
 //
 //   - External deploy: DeployCmd / RollbackCmd / HealthCmd, where the
-//     kcl/schema.k contract advertises ${IMAGE} / ${TAG} / ${LAST_TAG}
-//     / ${SERVICE} / ${ENV} / ${ENV_FILE} / ${PROJECT_DIR}.
+//     kcl/schema.k contract advertises ${IMAGE} / ${TAG} /
+//     ${CODE_VERSION} / ${PIPELINE} / ${LAST_TAG} / ${SERVICE} / ${ENV}
+//     / ${ENV_FILE} / ${PROJECT_DIR}.
 //   - Service.build_cmd: the build-side escape hatch, where the
 //     contract advertises ${IMAGE} / ${TAG} / ${SERVICE} / ${TARGETARCH}
 //     / ${REGISTRY} / ${PROJECT_DIR} / ${BUILD_CWD} + keys from

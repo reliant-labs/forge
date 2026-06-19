@@ -312,6 +312,21 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	frontends := cfg.Frontends
 	buildBinary := true
 
+	// `stack.frontend.framework: none` means the project has no frontend
+	// build toolchain forge should drive — drop every declared frontend
+	// from the build set BEFORE anything runs `npm run build`. Without
+	// this, a project that set framework:none (often because deps aren't
+	// installed / the frontend builds out-of-band) still had forge run
+	// `npm run build`, and a failure there (e.g. `next: command not
+	// found`) failed the WHOLE build, blocking an unrelated deployable Go
+	// service that compiled fine (fr-cc10bfab0c). Logged, not silent, so
+	// the user can see why their frontend wasn't built. The frontends stay
+	// in cfg.Frontends for non-build commands (generate, up's dev serve).
+	if frontendsSkippedByFramework(cfg) {
+		fmt.Printf("[build]   Skipping %d frontend(s): stack.frontend.framework is \"none\"\n", len(frontends))
+		frontends = nil
+	}
+
 	// `--target external` is the explicit "build ONLY the KCL services
 	// with build_cmd" filter. Useful for the cp-forge pattern where the
 	// sibling-repo binary changes faster than the project binary, so the
@@ -319,9 +334,15 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// the whole project image / frontends. Requires --env so we have a
 	// rendered KCL set to filter against.
 	if opts.buildTarget == "external" {
-		if !cfg.Features.ExternalBuildsEnabled() {
-			return config.DisabledFeatureError(config.FeatureExternalBuilds)
-		}
+		// No experimental gate here: `build_cmd` is the build-side mirror
+		// of External's `deploy_cmd`, and `forge deploy` of an External
+		// target needs no opt-in. Gating build behind
+		// features.experimental.external_builds while deploy ran free left
+		// the build/deploy pair of the SAME target with mismatched maturity
+		// gates (fr-da9a6614fb) — you could deploy an external target but
+		// not build it. The gates are unified by retiring the build-side
+		// one. The config key is still accepted (back-compat) but no longer
+		// governs whether build_cmd runs.
 		if opts.env == "" {
 			return fmt.Errorf("--target external requires --env to know which KCL services to build")
 		}
@@ -429,14 +450,10 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// the summary surfaces but doesn't count as a failure.
 	if entities != nil {
 		externalSvcs := externalBuildServices(entities)
-		// Gate: services declaring build_cmd require explicit opt-in via
-		// `features.experimental.external_builds: true`. Fail loud — a
-		// silent skip would leave behind a "image not built" error from
-		// the deploy step, which is harder to diagnose than the gate
-		// error.
-		if len(externalSvcs) > 0 && !cfg.Features.ExternalBuildsEnabled() {
-			return config.DisabledFeatureError(config.FeatureExternalBuilds)
-		}
+		// No experimental gate: build_cmd is the build-side mirror of
+		// External's deploy_cmd (which needs no opt-in), so a service that
+		// declares build_cmd just builds. See the --target external branch
+		// above for the rationale (fr-da9a6614fb).
 		if len(externalSvcs) > 0 {
 			externalRegistry := opts.pushRegistry
 			if externalRegistry == "" {
@@ -1066,6 +1083,19 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path, pus
 		duration: time.Since(start),
 		err:      nil,
 	}
+}
+
+// frontendsSkippedByFramework reports whether `forge build` should drop
+// ALL declared frontends from the build set because the project declares
+// `stack.frontend.framework: none`. That setting means "forge does not own
+// a frontend build toolchain here" — so forge must not run `npm run build`,
+// even when the `frontends:` list is populated (a frontend that builds
+// out-of-band, or one whose deps aren't installed). Honoring it keeps an
+// unrelated frontend build failure from sinking a deployable Go service
+// (fr-cc10bfab0c). Returns false when there are no frontends (nothing to
+// skip — the log line would be noise).
+func frontendsSkippedByFramework(cfg *config.ProjectConfig) bool {
+	return cfg.Stack.EffectiveFrontendFramework() == "none" && len(cfg.Frontends) > 0
 }
 
 func filterFrontends(frontends []config.FrontendConfig, target string) []config.FrontendConfig {

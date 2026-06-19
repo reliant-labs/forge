@@ -957,10 +957,17 @@ func (f FeaturesConfig) IsZero() bool {
 //   - Ingress:        Gateway API codegen + cert-manager + Traefik
 //     wiring. Provider matrix is fragile and not yet
 //     proven across real cloud providers.
-//   - ExternalBuilds: KCL `Service.build_cmd` shell escape hatch —
-//     forge runs `sh -c <build_cmd>` with substitution.
-//     Useful for sibling-repo or non-Go builds but
-//     pushes shell-safety onto the user.
+//   - ExternalBuilds: RETIRED gate (kept as an accepted, inert key for
+//     back-compat). `Service.build_cmd` is the build-side
+//     mirror of `External.deploy_cmd`; since `forge deploy`
+//     of an External target never required an opt-in,
+//     gating `forge build` of the same target behind this
+//     flag left the build/deploy pair with mismatched
+//     maturity gates (fr-da9a6614fb). The build path no
+//     longer consults this flag — build_cmd just builds.
+//     Setting it true is harmless (and still accepted so
+//     existing forge.yaml files don't trip the unknown-key
+//     check); a future major can drop the field.
 //   - Operators:      controller-runtime managers + CRD codegen. Niche,
 //     under-exercised, the API may need to change as we
 //     learn what real operator authors want.
@@ -1103,12 +1110,14 @@ func (f FeaturesConfig) PacksEnabled() bool {
 // and the audit ingress category is suppressed.
 func (f FeaturesConfig) IngressEnabled() bool { return f.Experimental.Ingress }
 
-// ExternalBuildsEnabled reports whether KCL `Service.build_cmd` shell
-// escape hatch is accepted (default: OFF — opt-in under
-// `features.experimental.external_builds: true`). When off, services
-// declaring `build_cmd` are rejected at config-load time, the
-// `forge build --target external` path errors, and the audit
-// external_builds category is suppressed.
+// ExternalBuildsEnabled reports the raw value of the RETIRED
+// `features.experimental.external_builds` flag. It no longer gates the
+// build path: `build_cmd` is the build-side mirror of `External.deploy_cmd`
+// (which needs no opt-in), so `forge build` of a build_cmd service runs
+// unconditionally (fr-da9a6614fb). The accessor is retained for the
+// startup warning / `forge audit` surface and any consumer still keyed off
+// the flag; the build dispatcher in internal/cli/build.go no longer calls
+// it.
 func (f FeaturesConfig) ExternalBuildsEnabled() bool { return f.Experimental.ExternalBuilds }
 
 // OperatorsEnabled reports whether controller-runtime operator codegen

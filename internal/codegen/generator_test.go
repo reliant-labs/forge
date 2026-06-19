@@ -1341,6 +1341,97 @@ func (s *Service) Echo(
 	}
 }
 
+// TestGenerateMissingHandlerStubs_HandwrittenImplInCrudFile reproduces
+// kalshi fr-fba0c4be8d: a user hand-implements a non-CRUD RPC inside the
+// user-owned handlers_crud.go (the scaffold header says it's their file).
+// scanExistingMethods skips handlers_crud.go wholesale so its delegating
+// CRUD shims don't suppress ops regen — but that also hid the hand impl,
+// so GenerateMissingHandlerStubs re-emitted a DUPLICATE stub into
+// handlers_gen.go and the package failed to compile. The fix scans
+// handlers_crud.go for methods whose name is NOT a CRUD method (i.e. a
+// hand impl) and treats those as already implemented.
+func TestGenerateMissingHandlerStubs_HandwrittenImplInCrudFile(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "settlements")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// handlers_crud.go: a forge-scaffolded shim that DELEGATES for the
+	// CRUD-shaped GetSettlement, plus a HAND-WRITTEN custom-shape
+	// ListSettlements (no entity behind it — not a CRUD method).
+	crudFile := `package settlements
+
+import (
+	"context"
+	"connectrpc.com/connect"
+)
+
+// GetSettlement is a generated CRUD shim that delegates to the ops layer.
+func (s *Service) GetSettlement(
+	ctx context.Context,
+	req *connect.Request[any],
+) (*connect.Response[any], error) {
+	return s.getSettlementOp(ctx, req)
+}
+
+// ListSettlements is HAND-WRITTEN: a custom read shape with no entity.
+func (s *Service) ListSettlements(
+	ctx context.Context,
+	req *connect.Request[any],
+) (*connect.Response[any], error) {
+	// custom query, hand-rolled
+	return nil, nil
+}
+`
+	if err := os.WriteFile(filepath.Join(targetDir, "handlers_crud.go"), []byte(crudFile), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ServiceDef{
+		Name:       "SettlementsService",
+		Package:    "settlements.v1",
+		GoPackage:  "github.com/test/proj/gen/proto/services/settlements/v1",
+		PkgName:    "settlementsv1",
+		ProtoFile:  "proto/services/settlements/v1/settlements.proto",
+		ModulePath: "github.com/test/proj",
+		Methods: []Method{
+			{Name: "GetSettlement", InputType: "GetSettlementRequest", OutputType: "GetSettlementResponse"},
+			{Name: "ListSettlements", InputType: "ListSettlementsRequest", OutputType: "ListSettlementsResponse"},
+			{Name: "GetTradeable", InputType: "GetTradeableRequest", OutputType: "GetTradeableResponse"},
+		},
+	}
+
+	// GetSettlement is a CRUD method (owned by CRUD gen); ListSettlements is
+	// NOT — it's the hand impl. GetTradeable is a genuinely-missing RPC.
+	crudMethodNames := map[string]bool{"GetSettlement": true}
+
+	result, err := GenerateMissingHandlerStubs(svc, t.TempDir(), targetDir, crudMethodNames, nil)
+	if err != nil {
+		t.Fatalf("GenerateMissingHandlerStubs() error = %v", err)
+	}
+
+	// Only GetTradeable should be stubbed — NOT ListSettlements (hand impl)
+	// and NOT GetSettlement (CRUD-owned).
+	if len(result.NewMethods) != 1 || result.NewMethods[0] != "GetTradeable" {
+		t.Fatalf("expected only GetTradeable stubbed, got %v", result.NewMethods)
+	}
+
+	data, err := os.ReadFile(filepath.Join(targetDir, "handlers_gen.go"))
+	if err != nil {
+		t.Fatalf("ReadFile(handlers_gen.go) error = %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "func (s *Service) ListSettlements(") {
+		t.Error("handlers_gen.go must NOT re-stub the hand-written ListSettlements (duplicate method → compile error)")
+	}
+	if strings.Contains(content, "func (s *Service) GetSettlement(") {
+		t.Error("handlers_gen.go must NOT stub the CRUD-owned GetSettlement")
+	}
+	if !strings.Contains(content, "func (s *Service) GetTradeable(") {
+		t.Error("handlers_gen.go should stub the genuinely-missing GetTradeable")
+	}
+}
+
 func TestGenerateMissingHandlerStubs_AllUpToDate(t *testing.T) {
 	targetDir := filepath.Join(t.TempDir(), "echoservice")
 	if err := os.MkdirAll(targetDir, 0755); err != nil {

@@ -41,6 +41,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"check Tier-1 file-stomp guard",
 		"snapshot Tier-1 exports",
 		"sync forge/pkg dev replace",
+		"forge/pkg compatibility handshake",
 		"announce project",
 		"pre-codegen contract check",
 		"detect proto directories",

@@ -73,6 +73,12 @@ func TestKCLModule_PositiveAssertions(t *testing.T) {
 		if name == "positive_env_option.k" {
 			continue
 		}
+		// Skip the image-tag fixture — it expects a quoted
+		// `-D image_tag=` and has a dedicated test
+		// (TestKCLModule_ImageTagNumericIsString).
+		if name == "positive_image_tag_numeric.k" {
+			continue
+		}
 		found++
 		t.Run(name, func(t *testing.T) {
 			out, err := runKCL(t, filepath.Join(testsDir, name))
@@ -144,6 +150,64 @@ func TestKCLModule_EnvOptionPlumbing(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestKCLModule_ImageTagNumericIsString pins the forge-deploy-prod
+// regression fix: passing the image tag to KCL as a QUOTED string
+// literal (`-D image_tag="3826648"`) types it as `str`, so an all-digit
+// git-describe tag no longer gets coerced to `int` and violates
+// RenderEnv.image_tag's `str` field. This is the form
+// internal/cluster.renderDArgs produces via strconv.Quote.
+//
+// It also pins the root cause: the BARE form (`-D image_tag=3826648`)
+// makes RenderEnv construction fail. That sub-assertion is tolerant —
+// if a future kcl coerces silently instead of erroring, the primary
+// (quoted) assertion still guards the fix.
+func TestKCLModule_ImageTagNumericIsString(t *testing.T) {
+	if _, err := exec.LookPath("kcl"); err != nil {
+		t.Skip("kcl not on PATH; skipping KCL image-tag string test")
+	}
+
+	root := kclModuleRoot(t)
+	entry := filepath.Join(root, "tests", "positive_image_tag_numeric.k")
+
+	// Primary: the quoted form the fix produces. The arg value is the
+	// KCL string literal `"3826648"` (double-quotes included), exactly
+	// what strconv.Quote("3826648") yields.
+	out, err := runKCL(t, entry, "-D", `image_tag="3826648"`)
+	if err != nil {
+		t.Fatalf("kcl run with quoted image_tag failed: %v\n%s", err, out)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal kcl json: %v\n%s", err, out)
+	}
+	var sawAssert bool
+	for k, v := range parsed {
+		if !strings.HasPrefix(k, "assert_") {
+			continue
+		}
+		sawAssert = true
+		b, ok := v.(bool)
+		if !ok {
+			t.Errorf("identifier %q not a bool: %v", k, v)
+			continue
+		}
+		if !b {
+			t.Errorf("assertion %q is false", k)
+		}
+	}
+	if !sawAssert {
+		t.Fatalf("no assert_* identifiers in output:\n%s", out)
+	}
+
+	// Root-cause pin (tolerant): the BARE numeric form should make kcl
+	// fail because the int value can't satisfy RenderEnv.image_tag: str.
+	// If kcl ever coerces silently, don't fail the test — the quoted
+	// path above is the real guarantee.
+	if bareOut, bareErr := runKCL(t, entry, "-D", "image_tag=3826648"); bareErr == nil {
+		t.Logf("note: bare `-D image_tag=3826648` did NOT fail; kcl may have coerced silently:\n%s", bareOut)
 	}
 }
 

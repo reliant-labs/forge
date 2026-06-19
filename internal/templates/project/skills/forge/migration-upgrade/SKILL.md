@@ -120,8 +120,6 @@ helper, a changed file layout — those do.
   Optional; old copies keep working.
 - `migrations/v0.x-to-tdd-rpccases` — `handlers_crud_gen_test.go`
   per-RPC inline test boilerplate → `tdd.RunRPCCases` row-driven shims.
-- `migrations/v0.x-to-pack-starter-split` — stripe / twilio /
-  clerk-webhook demoted from packs to one-time-copy starters.
 - `migrations/v0.x-to-env-config` — hand-curated KCL env-var groups →
   `forge.yaml environments[].config` + sensitive-field projection.
 - `migrations/v0.x-to-testkit` — bootstrap_testing.go inlined sub-helpers

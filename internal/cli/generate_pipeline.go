@@ -1963,7 +1963,7 @@ func stepPerEnvDeployConfig(ctx *pipelineContext) error {
 
 // stepIngressK3dPorts derives the k3d host→cluster port mappings
 // from the dev env's KCL gateway listeners and writes
-// `deploy/k3d-ports.yaml`. `forge dev cluster up` merges this
+// `deploy/k3d-ports.yaml`. `forge cluster up` merges this
 // fragment into the user-owned `deploy/k3d.yaml` at create time —
 // see internal/codegen/ingress_k3d_gen.go for the rendered shape
 // and the why behind the merge-at-create model.

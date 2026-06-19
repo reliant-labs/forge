@@ -2,10 +2,14 @@ package cli
 
 import (
 	"context"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/spf13/pflag"
@@ -85,7 +89,7 @@ func TestBuildHostServiceCmd(t *testing.T) {
 			// nil cfg is the test-shaped projectConfig — the dispatch
 			// matrix shouldn't depend on forge.yaml layering at all,
 			// and a nil cfg makes that explicit.
-			cmd, _, err := buildHostServiceCmd(ctx, nil, c.svc, "dev")
+			cmd, _, err := buildHostServiceCmd(ctx, nil, c.svc, nil, "dev")
 			if c.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 					t.Fatalf("want err containing %q, got %v", c.wantErr, err)
@@ -182,7 +186,7 @@ log_level: debug
 			Host: &HostDeploy{Runner: "go-run"},
 		},
 	}
-	cmd, _, err := buildHostServiceCmd(context.Background(), cfg, svc, "dev-host")
+	cmd, _, err := buildHostServiceCmd(context.Background(), cfg, svc, nil, "dev-host")
 	if err != nil {
 		t.Fatalf("buildHostServiceCmd: %v", err)
 	}
@@ -219,7 +223,7 @@ func TestUpLogPath_Sanitises(t *testing.T) {
 // TestUpCmd_NoPortForwardSurface pins the phase-3 ingress refactor:
 // `forge up` no longer mentions port-forward in any user-facing string
 // (Short / Long / Example / flag help). Reaching cluster services from
-// the host is the Gateway API ingress path now (forge dev urls); the
+// the host is the Gateway API ingress path now (forge cluster urls); the
 // orchestrator must not advertise a port-forward phase that doesn't
 // exist.
 func TestUpCmd_NoPortForwardSurface(t *testing.T) {
@@ -379,4 +383,251 @@ func TestUpNoDeployFlag(t *testing.T) {
 	if !got {
 		t.Errorf("--no-deploy: parsed value got false, want true")
 	}
+}
+
+func TestSummaryLogPath_MatchesUpLogPath(t *testing.T) {
+	// The displayed path must be the tail of the file upLogPath writes,
+	// so a printed path is exactly what `grep`/`tail` will find.
+	full, err := upLogPath("dev", "frontend:admin/web")
+	if err != nil {
+		t.Fatalf("upLogPath: %v", err)
+	}
+	disp := summaryLogPath("dev", "frontend:admin/web")
+	if !strings.HasSuffix(full, disp) {
+		t.Errorf("summaryLogPath %q is not a suffix of upLogPath %q", disp, full)
+	}
+	if want := ".forge/logs/dev/frontend_admin_web.log"; disp != want {
+		t.Errorf("summaryLogPath: got %q, want %q", disp, want)
+	}
+}
+
+func TestHostEnvPort(t *testing.T) {
+	if got := hostEnvPort("svc", nil); got != "" {
+		t.Errorf("nil host: got %q, want empty", got)
+	}
+	// Only PORT set → use it.
+	host := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "DATABASE_URL", Value: "postgres://x"},
+		{Name: "PORT", Value: "8080"},
+	}}
+	if got := hostEnvPort("api", host); got != "8080" {
+		t.Errorf("hostEnvPort PORT-only: got %q, want 8080", got)
+	}
+	// Both PORT and <NAME>_PORT → the service-specific one wins (the real
+	// bind port; the generic PORT is often a vestigial default).
+	both := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", Value: "8080"},
+		{Name: "ADMIN_SERVER_PORT", Value: "8090"},
+	}}
+	if got := hostEnvPort("admin-server", both); got != "8090" {
+		t.Errorf("hostEnvPort specific-wins: got %q, want 8090", got)
+	}
+	// config_map_ref-only PORT (no inline value) yields no URL.
+	refHost := &HostDeploy{EnvVars: []KCLEnvVar{
+		{Name: "PORT", ConfigMapRef: "cfg", ConfigMapKey: "PORT"},
+	}}
+	if got := hostEnvPort("api", refHost); got != "" {
+		t.Errorf("hostEnvPort ref-only: got %q, want empty", got)
+	}
+}
+
+func TestPersistUsesCapturedPid(t *testing.T) {
+	// Regression: `forge up --background` Release()s the child (resetting
+	// cmd.Process.Pid to -1), so persist() must use the PID captured at
+	// Start, and skip entries with no usable PID rather than writing -1/0.
+	env := "test-persist-pidcapture"
+	statePath, err := upStatePath(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(statePath)
+
+	p := newProcRegistry(env)
+	p.processes = []*managedProcess{
+		{name: "svc-a", pid: 4242, cmd: &exec.Cmd{}}, // detached: captured pid, no live handle
+		{name: "svc-b", pid: 0, cmd: &exec.Cmd{}},    // never captured: must be skipped
+	}
+	p.persist()
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "svc-a\t4242\n") {
+		t.Errorf("captured pid not persisted; got %q", got)
+	}
+	if strings.Contains(got, "svc-b") {
+		t.Errorf("entry without a pid should be skipped; got %q", got)
+	}
+	if strings.Contains(got, "-1") {
+		t.Errorf("a -1 pid leaked into the state file; got %q", got)
+	}
+}
+
+func TestFrontendDepsStale(t *testing.T) {
+	dir := t.TempDir()
+	// No node_modules yet → stale.
+	writeFileAt(t, dir, "package.json", `{"name":"x"}`)
+	writeFileAt(t, dir, "package-lock.json", `{}`)
+	if !frontendDepsStale(dir) {
+		t.Fatal("missing node_modules should be stale")
+	}
+	// Install: node_modules newer than manifests → fresh.
+	writeFileAt(t, dir, "node_modules/.keep", "")
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+	_ = os.Chtimes(filepath.Join(dir, "package.json"), past, past)
+	_ = os.Chtimes(filepath.Join(dir, "package-lock.json"), past, past)
+	_ = os.Chtimes(filepath.Join(dir, "node_modules"), future, future)
+	if frontendDepsStale(dir) {
+		t.Fatal("node_modules newer than manifests should be fresh")
+	}
+	// Touch the lockfile newer than node_modules → stale again.
+	_ = os.Chtimes(filepath.Join(dir, "package-lock.json"), future.Add(time.Minute), future.Add(time.Minute))
+	if !frontendDepsStale(dir) {
+		t.Fatal("lockfile newer than node_modules should be stale")
+	}
+}
+
+func TestProcPID_PrefersCaptured(t *testing.T) {
+	// Captured pid wins (survives Release on the detach path).
+	if got := procPID(&managedProcess{pid: 4242, cmd: &exec.Cmd{}}); got != 4242 {
+		t.Errorf("captured pid: got %d, want 4242", got)
+	}
+	// No captured pid, no live process → 0 (callers skip, never signal).
+	if got := procPID(&managedProcess{cmd: &exec.Cmd{}}); got != 0 {
+		t.Errorf("unset: got %d, want 0", got)
+	}
+}
+
+func TestSignalProcessGroup_NonPositiveIsNoop(t *testing.T) {
+	// A 0/-1 pid must never fan a signal out (negative pid = whole group).
+	if err := signalProcessGroup(0, syscall.SIGTERM); err != nil {
+		t.Errorf("pid 0: %v", err)
+	}
+	if err := signalProcessGroup(-1, syscall.SIGTERM); err != nil {
+		t.Errorf("pid -1: %v", err)
+	}
+}
+
+func TestInTargetSet(t *testing.T) {
+	// Empty filter matches everything (default).
+	if !inTargetSet(nil, "admin-server") {
+		t.Error("empty filter should match everything")
+	}
+	// Non-empty: only named entries match.
+	targets := []string{"admin-server", "reliant-web"}
+	if !inTargetSet(targets, "admin-server") {
+		t.Error("named target should match")
+	}
+	if inTargetSet(targets, "workspace-proxy") {
+		t.Error("unnamed target should not match")
+	}
+}
+
+// TestPortInUse asserts the real-socket probe: a held listener reads as
+// in-use, a port nothing binds reads as free. The post-close flip is
+// best-effort (ephemeral reuse can be racy) — we assert the true case
+// against a held listener and the false case against a never-bound port.
+func TestPortInUse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	held := ln.Addr().(*net.TCPAddr).Port
+
+	if !portInUse(held) {
+		t.Errorf("portInUse(%d) = false; want true (listener is held)", held)
+	}
+
+	// Find a port that is (almost certainly) free: bind, capture, release.
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen free: %v", err)
+	}
+	freePort := free.Addr().(*net.TCPAddr).Port
+	_ = free.Close()
+	if portInUse(freePort) {
+		t.Errorf("portInUse(%d) = true; want false (port was released)", freePort)
+	}
+}
+
+// TestConflictingPorts exercises the pure collection logic with an
+// injected probe — no real sockets. It covers --target scoping, the
+// host-service inline-PORT skip, the frontend feature gate, and the
+// fe.Port==0 skip.
+func TestConflictingPorts(t *testing.T) {
+	entities := &KCLEntities{
+		Services: []ServiceEntity{
+			{Name: "admin-server", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{
+				EnvVars: []KCLEnvVar{{Name: "ADMIN_SERVER_PORT", Value: "8090"}},
+			}}},
+			{Name: "noport", Deploy: DeployConfigEntity{Type: "host", Host: &HostDeploy{}}},
+			{Name: "cluster-svc", Deploy: DeployConfigEntity{Type: "cluster", Cluster: &K8sCluster{}}},
+		},
+		Frontends: []FrontendEntity{
+			{Name: "reliant-web", Port: 3000},
+			{Name: "noportfe", Port: 0},
+		},
+	}
+	// busy treats these ports as in-use.
+	busy := func(ports ...int) func(int) bool {
+		set := map[int]bool{}
+		for _, p := range ports {
+			set[p] = true
+		}
+		return func(p int) bool { return set[p] }
+	}
+
+	names := func(cs []portConflict) []string {
+		out := make([]string, len(cs))
+		for i, c := range cs {
+			out[i] = c.name
+		}
+		return out
+	}
+
+	t.Run("both host and frontend ports busy", func(t *testing.T) {
+		got := conflictingPorts(entities, nil, true, busy(8090, 3000))
+		if g := names(got); len(g) != 2 || g[0] != "admin-server" || g[1] != "reliant-web" {
+			t.Fatalf("got %v; want [admin-server reliant-web]", g)
+		}
+	})
+
+	t.Run("nothing busy → no conflicts", func(t *testing.T) {
+		if got := conflictingPorts(entities, nil, true, busy()); len(got) != 0 {
+			t.Fatalf("got %v; want none", names(got))
+		}
+	})
+
+	t.Run("target scopes the check", func(t *testing.T) {
+		// admin-server is up, but we only target reliant-web → allowed.
+		got := conflictingPorts(entities, []string{"reliant-web"}, true, busy(8090))
+		if len(got) != 0 {
+			t.Fatalf("got %v; want none (admin-server not in target set)", names(got))
+		}
+		// Now reliant-web's own port is busy → it should flag.
+		got = conflictingPorts(entities, []string{"reliant-web"}, true, busy(3000))
+		if g := names(got); len(g) != 1 || g[0] != "reliant-web" {
+			t.Fatalf("got %v; want [reliant-web]", g)
+		}
+	})
+
+	t.Run("frontend gate off skips frontends", func(t *testing.T) {
+		got := conflictingPorts(entities, nil, false, busy(8090, 3000))
+		if g := names(got); len(g) != 1 || g[0] != "admin-server" {
+			t.Fatalf("got %v; want [admin-server] (frontends gated off)", g)
+		}
+	})
+
+	t.Run("host service without inline PORT is skipped", func(t *testing.T) {
+		// Even if some port the probe would call true for, noport declares
+		// no PORT so it never contributes a conflict.
+		got := conflictingPorts(entities, []string{"noport"}, true, func(int) bool { return true })
+		if len(got) != 0 {
+			t.Fatalf("got %v; want none (noport declares no PORT)", names(got))
+		}
+	})
 }

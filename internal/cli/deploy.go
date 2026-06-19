@@ -8,14 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 func newDeployCmd() *cobra.Command {
@@ -29,6 +32,7 @@ func newDeployCmd() *cobra.Command {
 		targetArch      string
 		prune           bool
 		rollback        bool
+		targets         []string
 	)
 
 	cmd := &cobra.Command{
@@ -48,23 +52,35 @@ Supported deploy targets (declared in deploy/kcl/<env>/main.k):
 forge.HostDeploy and forge.BuildOnly are skipped by deploy — those are
 owned by forge run / forge up and forge build respectively.
 
-Safety: before applying K8sCluster groups, forge verifies the current
-kubectl context matches the environment's expected cluster (read from
-the rendered KCL's forge.K8sCluster.cluster; defaults to k3d-<project>
-for dev). The check ALSO runs under --dry-run so wrong-context mistakes
-surface before the strict apply.
+Safety (declarative context): the kubectl context is read from the env's
+KCL — forge.K8sCluster.cluster IS the kubectl context name (e.g.
+"gke_<project>_<region>_prod"; defaults to k3d-<project> for dev). Every
+kubectl call in the apply/wait/prune/rollback/secrets path runs
+--context <declared> per command, so the deploy applies to EXACTLY the
+cluster the env declares — independent of whatever context is currently
+active. You can't deploy the wrong env to the wrong cluster because the
+binding lives in the env file. forge fails fast (even under --dry-run) if
+the declared cluster has no matching kubectl context.
 
-Use --context to override when a single CI deploy-bot context legitimately
-targets multiple environments. Use --explain to print the resolved guard
-decision (expected / current / verdict) without applying anything.
+Use --context only as an explicit override (e.g. a renamed local context);
+it replaces the declared context for every group. Use --explain to print
+the declared context, whether it exists, and the verdict without applying.
+
+Use --target <app> (repeatable) to deploy ONLY the named application(s)
+instead of the whole env bundle. It filters by service/frontend NAME:
+the K8sCluster apply keeps the targeted app's workload manifests plus
+all shared resources (Namespace, the shared ConfigMap/Secret, RBAC),
+and the External/Compose dispatch + rollout-wait are scoped to the named
+apps. A typo'd target errors with the list of available app names.
 
 Examples:
   forge deploy dev                          # Deploy to dev (local k3d)
   forge deploy staging --image-tag v1.2     # Deploy to staging with specific tag
   forge deploy prod --dry-run               # Preview prod manifests (guard runs)
-  forge deploy prod --explain               # Show the env-cluster guard verdict
+  forge deploy prod --explain               # Show the declared-cluster guard verdict
   forge deploy dev --namespace custom-ns    # Override namespace
-  forge deploy prod --context deploy-bot    # Override the expected kubectl context`,
+  forge deploy dev --target admin-server    # Deploy only the admin-server app
+  forge deploy prod --context my-renamed-ctx # Override the declared kubectl context`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if explain {
@@ -96,6 +112,7 @@ Examples:
 				targetArch:      targetArch,
 				prune:           prune,
 				rollback:        rollback,
+				targets:         targets,
 			})
 		},
 	}
@@ -104,11 +121,12 @@ Examples:
 	cmd.Flags().StringVar(&tag, "tag", "", "Override the image tag (priority: --tag > .forge/state/build-<env>.json > git describe --tags --always --dirty)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print manifests without applying (env-cluster guard still runs)")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Override namespace from environment config")
-	cmd.Flags().StringVar(&contextOverride, "context", "", "Override expected kubectl context (skips the env-cluster guard)")
-	cmd.Flags().BoolVar(&explain, "explain", false, "Print the env-cluster guard decision (expected/current/verdict) and exit")
+	cmd.Flags().StringVar(&contextOverride, "context", "", "Override the kubectl context (default: the env's declared forge.K8sCluster.cluster). Escape hatch for a renamed local context.")
+	cmd.Flags().BoolVar(&explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
 	cmd.Flags().StringVar(&targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
 	cmd.Flags().BoolVar(&prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back the env to the last successfully deployed tag (per service, from .forge/state).")
+	cmd.Flags().StringArrayVar(&targets, "target", nil, "Deploy ONLY the named application(s) (service/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 
 	return cmd
 }
@@ -126,27 +144,37 @@ func runDeployExplain(ctx context.Context, envName, override string) error {
 	expected := expectedClusterForEnv(ctx, cfg, envName)
 	current := strings.TrimSpace(currentKubectlContext(ctx))
 
-	fmt.Printf("forge deploy %s — env-cluster guard\n", envName)
-	fmt.Printf("  expected context: %s\n", emptyAs(expected, "(not declared)"))
-	fmt.Printf("  current context:  %s\n", emptyAs(current, "(none — kubectl not configured)"))
+	fmt.Printf("forge deploy %s — declared-cluster guard\n", envName)
+	fmt.Printf("  declared context: %s\n", emptyAs(expected, "(not declared)"))
+	fmt.Printf("  current context:  %s  (informational — deploy applies to the DECLARED context via --context)\n", emptyAs(current, "(none — kubectl not configured)"))
 
 	if override != "" {
-		fmt.Printf("  override:         --context %s (guard skipped, kubectl context will switch)\n", override)
+		fmt.Printf("  override:         --context %s (declared context bypassed; --context passed per-command)\n", override)
 		fmt.Println("  verdict: ALLOW (override active)")
 		return nil
 	}
 	if expected == "" {
 		fmt.Printf("  hint:             declare `forge.K8sCluster.cluster` in deploy/kcl/%s/main.k to enable the guard\n", envName)
-		fmt.Println("  verdict: ALLOW (no expectation declared — guard skipped)")
+		fmt.Println("  verdict: ALLOW (no cluster declared — guard skipped, current context used)")
 		return printDeployExplainHostSkip(cfg, envName)
 	}
-	if current == expected {
-		fmt.Println("  verdict: ALLOW (current matches expected)")
-		return printDeployExplainHostSkip(cfg, envName)
+	// Declarative model: the deploy applies to the declared context
+	// regardless of the active one. The only failure is a declared
+	// context that doesn't exist in the kubeconfig.
+	available, aerr := kubectlContextNames(ctx)
+	if aerr != nil {
+		fmt.Printf("  fix:              %v\n", aerr)
+		fmt.Println("  verdict: REFUSE (kubectl not configured)")
+		return nil
 	}
-	fmt.Printf("  fix:              kubectl config use-context %s\n", expected)
-	fmt.Println("  verdict: REFUSE (context mismatch)")
-	return nil
+	if verr := declaredContextExistsVerdict(envName, expected, available); verr != nil {
+		fmt.Printf("  available:        %s\n", emptyAs(strings.Join(available, ", "), "(none)"))
+		fmt.Printf("  fix:              add the context to your kubeconfig, or pass --context <name>\n")
+		fmt.Println("  verdict: REFUSE (declared context not in kubeconfig)")
+		return nil
+	}
+	fmt.Println("  verdict: ALLOW (declared context exists; deploy applies there regardless of current)")
+	return printDeployExplainHostSkip(cfg, envName)
 }
 
 // printDeployExplainHostSkip is a placeholder for the post-orchestration
@@ -197,6 +225,17 @@ type deployOptions struct {
 	// Mutually exclusive with imageTag — the deploy command rejects
 	// the combination at flag-parse time.
 	rollback bool
+
+	// targets, when non-empty, scopes the deploy to the named
+	// applications (service / frontend names). Two layers honour it:
+	// (1) entities.Services / entities.Frontends are filtered to the
+	// targeted names before buildDeployGroups, so External/Compose
+	// dispatch and the rollout-wait / host-skip sets cover only the
+	// targeted apps; (2) the K8sCluster apply filters the rendered
+	// multi-doc manifest stream to the targeted apps' workloads plus
+	// shared resources (see cluster.FilterManifestsByApp). Empty means
+	// "deploy the whole env bundle", the unchanged default.
+	targets []string
 }
 
 func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
@@ -207,6 +246,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	targetArchFlag := opts.targetArch
 	prune := opts.prune
 	rollback := opts.rollback
+	targets := opts.targets
 	store, err := loadProjectStore()
 	if err != nil {
 		return err
@@ -272,6 +312,21 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	if kerr != nil {
 		fmt.Printf("Note: KCL entity read skipped (%v) — waiting on every Deployment in namespace.\n", kerr)
 	}
+
+	// --target scoping (application-level filter). Filter the rendered
+	// Services / Frontends down to the named apps BEFORE everything that
+	// derives from the entity set: buildDeployGroups (External/Compose
+	// bucketing), the rollout-wait / host-skip / one-shot-Job sets, and
+	// the cluster banners. An empty filter is a no-op (every app), the
+	// unchanged default. A typo'd target is caught here with the list of
+	// available app names rather than producing a silent no-op deploy.
+	if len(targets) > 0 && entities != nil {
+		if err := validateDeployTargets(entities, targets); err != nil {
+			return err
+		}
+		entities = filterEntitiesByTarget(entities, targets)
+	}
+
 	hasK8sServices := kclEntitiesHaveK8sCluster(entities)
 
 	// Loud-by-default namespace mismatch guard: when KCL env_vars hardcode
@@ -377,6 +432,42 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 
+	// Declarative kubectl context: the deploy target is read from the
+	// rendered KCL's `forge.K8sCluster.cluster` (== the kubectl context
+	// name), which every K8sCluster group carries on group.Cluster. The
+	// per-group dispatch builds its context per group (resolveGroupContext)
+	// so a multi-cluster env lands each group on ITS OWN declared cluster.
+	// For the env-wide consumers that don't iterate groups — the secrets
+	// pre-apply, the empty-groups direct cluster.Apply, and the rollback
+	// provider — we use the first declared cluster as the env's context.
+	// contextOverride (`--context`) is the explicit escape hatch and wins.
+	//
+	// Fail fast FIRST: if a declared cluster has no matching kubectl
+	// context, refuse here with the list of available contexts rather than
+	// silently applying to whatever's active. This is the guard that makes
+	// a wrong-cluster deploy impossible — skipped under --dry-run only
+	// implicitly via the override, otherwise it always runs (dry-run is for
+	// surfacing mistakes, not papering over them). The override bypasses it
+	// (renamed local context). Host-only / compose envs declare no cluster
+	// and are skipped.
+	if hasK8sServices {
+		if err := verifyDeclaredContextsExist(ctx, groups, contextOverride); err != nil {
+			return err
+		}
+	}
+	deployContext := declaredEnvContext(groups, contextOverride)
+
+	// k8s Secret projection: for a dotenv secret_provider, render the
+	// declared cluster secret refs into plaintext Secret manifests and
+	// apply them BEFORE the Deployments roll out (so each Deployment's
+	// secretKeyRef resolves on first schedule). Skipped on rollback —
+	// rollback reuses the tag (and the Secret) already in the cluster.
+	if !rollback {
+		if err := applyK8sSecretsFromProvider(ctx, entities, groups, namespace, deployContext, dryRun); err != nil {
+			return err
+		}
+	}
+
 	if rollback {
 		// Rollback path: dispatch each group to its provider's
 		// Rollback. The dispatcher reads per-service state files for
@@ -389,9 +480,12 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		// the builder is unused for rollback groups, but the registry
 		// still needs the provider registered. We reuse the deploy-
 		// shaped builder for symmetry with the deploy path.
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, contextOverride, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
 		registry := deploytarget.NewRegistry()
-		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
+		// Rollback's per-group context is resolved by the provider from
+		// each group's declared cluster (override wins). The provider-level
+		// Context is the env-wide override only.
+		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder, Context: contextOverride})
 		if err := rollbackDeployGroups(ctx, registry, groups, projectDir); err != nil {
 			return err
 		}
@@ -404,7 +498,14 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 	// via the cluster pipeline. Skip the check above (no namespace)
 	// and let dispatchDeployGroups handle the per-provider paths or
 	// no-op trivially.
-	if len(groups) == 0 {
+	// A frontend-only env (e.g. just a Firebase Hosting frontend, no
+	// services / operators / cronjobs) has nothing for the cluster
+	// pipeline to apply. Skip the empty-groups cluster.Apply below so
+	// such projects don't need kubectl configured at all — the frontend
+	// dispatch further down does the real work.
+	frontendOnly := len(groups) == 0 && !hasK8sServices && hasFirebaseFrontend(entities) &&
+		entities != nil && len(entities.Operators) == 0 && len(entities.CronJobs) == 0
+	if len(groups) == 0 && !frontendOnly {
 		// Nothing to dispatch — historical behaviour was to still run
 		// cluster.Apply against the env's main.k in case host-only
 		// entities still produced manifests (CronJobs etc.). Preserve
@@ -414,28 +515,40 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 			ImageTag:     imageTag,
 			Namespace:    namespace,
 			Env:          envName,
+			Context:      deployContext,
 			EnvConfigKV:  envCfgKV,
 			DryRun:       dryRun,
 			DryRunFramed: true,
 			Prune:        prune,
 			HostSkip:     hostDeploymentSkipSetFromKCL(cfg, entities),
 			OneShotJobs:  oneShotJobNamesFromKCL(entities),
+			Targets:      targets,
 		}); err != nil {
 			return err
 		}
-	} else {
+	} else if len(groups) > 0 {
 		// Dispatch each group through its provider. The K8sCluster
 		// provider wraps cluster.Apply via the builder closure so the
 		// per-call envelope (mainK / image tag / env config / dry-run
 		// / prune / host-skip / one-shot jobs) flows through verbatim.
 		hostSkip := hostDeploymentSkipSetFromKCL(cfg, entities)
 		oneShotJobs := oneShotJobNamesFromKCL(entities)
-		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, envCfgKV, dryRun, prune, hostSkip, oneShotJobs)
+		builder := applyOptsBuilderFromContext(mainK, imageTag, namespace, envName, contextOverride, envCfgKV, dryRun, prune, hostSkip, oneShotJobs, targets)
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
 		if err := dispatchDeployGroups(ctx, registry, groups, ""); err != nil {
 			return err
 		}
+	}
+
+	// Frontend deploy dispatch — frontends declaring a first-class deploy
+	// target (today: forge.FirebaseHosting) are built + shipped after the
+	// service groups. Runs under --dry-run too so the assemble/firebase
+	// plan surfaces before any side effect. No-op when no frontend
+	// declares a deploy target — the unchanged default for k8s/host/none
+	// frontends.
+	if err := dispatchFrontendDeploys(ctx, entities, projectDir, envCfgKV, dryRun); err != nil {
+		return err
 	}
 
 	if dryRun {
@@ -444,6 +557,150 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 
 	fmt.Printf("\nDeploy completed in %s.\n", time.Since(start).Truncate(time.Millisecond))
 	return nil
+}
+
+// dispatchFrontendDeploys ships every frontend declaring a first-class
+// deploy target. Today that's exclusively forge.FirebaseHosting: build
+// the frontend (npm install + npm run build) with the frontend's
+// env_vars injected as build-time env, assemble public_dir + any bundle
+// dirs into a staging tree honoring base_path, write firebase.json +
+// .firebaserc, then `firebase deploy`.
+//
+// Frontends without a deploy block — and frontends whose deploy target
+// isn't Firebase — are skipped, preserving the pre-feature behaviour for
+// every existing project. envCfgKV (the per-env -D config) is layered
+// UNDER the frontend's KCL env_vars so an explicit env_var wins, and is
+// only injected when the env var name was actually declared on the
+// frontend (we don't leak the whole env config into the JS build).
+func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir string, envCfgKV map[string]string, dryRun bool) error {
+	if entities == nil {
+		return nil
+	}
+	var fes []deploytarget.FirebaseFrontend
+	for _, f := range entities.Frontends {
+		if f.Deploy == nil || f.Deploy.Type != "firebase" || f.Deploy.Firebase == nil {
+			continue
+		}
+		fes = append(fes, frontendToFirebase(f))
+	}
+	if len(fes) == 0 {
+		return nil
+	}
+
+	fmt.Printf("\nDeploying %d frontend(s) to Firebase Hosting...\n", len(fes))
+	prov := deploytarget.FirebaseProvider{ProjectDir: projectDir}
+	return prov.Deploy(ctx, fes, dryRun)
+}
+
+// hasFirebaseFrontend reports whether any rendered frontend declares a
+// Firebase Hosting deploy target. Used to recognise a frontend-only env
+// (skip the cluster pipeline) and gates nothing else.
+func hasFirebaseFrontend(e *KCLEntities) bool {
+	if e == nil {
+		return false
+	}
+	for _, f := range e.Frontends {
+		if f.Deploy != nil && f.Deploy.Type == "firebase" {
+			return true
+		}
+	}
+	return false
+}
+
+// frontendToFirebase maps a rendered FrontendEntity (with a Firebase
+// deploy block) onto the deploytarget.FirebaseFrontend the provider
+// consumes. The frontend's env_vars become the build-time env injected
+// into the JS build (NEXT_PUBLIC_* / VITE_*); only inline Value entries
+// are forwarded — secret/configmap-projected vars have no host build-time
+// value to inject.
+func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
+	fb := f.Deploy.Firebase
+	buildEnv := map[string]string{}
+	for _, ev := range f.EnvVars {
+		if ev.Value != "" {
+			buildEnv[ev.Name] = ev.Value
+		}
+	}
+	bundles := make([]deploytarget.FirebaseBundleSpec, 0, len(fb.Bundle))
+	for _, b := range fb.Bundle {
+		bundles = append(bundles, deploytarget.FirebaseBundleSpec{Src: b.Src, Dest: b.Dest})
+	}
+	return deploytarget.FirebaseFrontend{
+		Name:      f.Name,
+		Path:      f.Path,
+		DevRunner: f.DevRunner,
+		BuildEnv:  buildEnv,
+		Spec: deploytarget.FirebaseHostingSpec{
+			Project:   fb.Project,
+			Site:      fb.Site,
+			Target:    fb.Target,
+			PublicDir: fb.PublicDir,
+			BasePath:  fb.BasePath,
+			Bundle:    bundles,
+			Rewrites:  fb.Rewrites,
+		},
+	}
+}
+
+// validateDeployTargets checks every name passed to --target against
+// the set of deployable app names in the rendered KCL (services +
+// frontends). A target that matches nothing is almost always a typo;
+// erroring here — with the list of available app names — is far
+// friendlier than silently deploying nothing (group filter empties out)
+// or applying a shared-only manifest bundle. Reuses inTargetSet's
+// membership semantics indirectly via a name set.
+func validateDeployTargets(e *KCLEntities, targets []string) error {
+	avail := map[string]struct{}{}
+	for _, s := range e.Services {
+		avail[s.Name] = struct{}{}
+	}
+	for _, f := range e.Frontends {
+		avail[f.Name] = struct{}{}
+	}
+	var unknown []string
+	for _, t := range targets {
+		if _, ok := avail[t]; !ok {
+			unknown = append(unknown, t)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(avail))
+	for n := range avail {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("unknown --target %s; available apps in env: %s",
+		strings.Join(unknown, ", "), strings.Join(names, ", "))
+}
+
+// filterEntitiesByTarget returns a shallow copy of e with Services and
+// Frontends narrowed to the names in targets (reusing inTargetSet from
+// up.go for the membership test). Every other entity slice — operators,
+// cronjobs, gateways, routes — is carried through UNCHANGED: those are
+// either shared infra or aren't addressable by the app-name filter, and
+// the K8sCluster manifest filter (cluster.FilterManifestsByApp) keeps
+// them anyway because they don't carry a targeted app-name label.
+// Narrowing Services/Frontends here is what scopes the External/Compose
+// dispatch and the rollout-wait / host-skip / one-shot-Job sets.
+func filterEntitiesByTarget(e *KCLEntities, targets []string) *KCLEntities {
+	out := *e // shallow copy; slices below are rebuilt, the rest shared
+	var svcs []ServiceEntity
+	for _, s := range e.Services {
+		if inTargetSet(targets, s.Name) {
+			svcs = append(svcs, s)
+		}
+	}
+	var fes []FrontendEntity
+	for _, f := range e.Frontends {
+		if inTargetSet(targets, f.Name) {
+			fes = append(fes, f)
+		}
+	}
+	out.Services = svcs
+	out.Frontends = fes
+	return &out
 }
 
 // kclEntitiesHaveK8sCluster returns true when at least one service in
@@ -541,18 +798,59 @@ func resolveDeployImageTag(ctx context.Context, projectDir, envName, flagOverrid
 	if flagOverride != "" {
 		return flagOverride, "explicit --tag flag", nil
 	}
-	st, berr := ReadBuildState(projectDir, envName)
-	if berr != nil {
-		return "", "", fmt.Errorf("read build state: %w (delete .forge/state/build-%s.json to recompute from git)", berr, envName)
-	}
-	if st != nil {
-		return st.Tag, fmt.Sprintf(".forge/state/build-%s.json (pushed %s)", envName, st.PushedAt), nil
+	// Per-env record first, then the env-agnostic "default" written by a
+	// plain `forge build` (no --env). This is what makes
+	// `forge build --docker && forge deploy prod` work without forcing a
+	// matching --env / --tag on both.
+	for _, key := range buildStateLookupEnvs(envName) {
+		st, berr := ReadBuildState(projectDir, key)
+		if berr != nil {
+			return "", "", fmt.Errorf("read build state: %w (delete .forge/state/build-%s.json to recompute from git)", berr, key)
+		}
+		if st == nil {
+			continue
+		}
+		warnIfNonReproducible(st)
+		src := fmt.Sprintf(".forge/state/build-%s.json (built %s)", key, st.PushedAt)
+		return st.Tag, src, nil
 	}
 	t, terr := resolveImageTag(ctx, envName)
 	if terr != nil {
 		return "", "", fmt.Errorf("failed to determine image tag: %w\nUse --tag to specify one manually", terr)
 	}
 	return t, "git describe --tags --always --dirty", nil
+}
+
+// buildStateLookupEnvs is the ordered fallback of build-state keys to try
+// for a deploy env: the env itself, then the "default" record a plain
+// `forge build` writes. "default" is not retried for itself.
+func buildStateLookupEnvs(envName string) []string {
+	if envName == "" || envName == "default" {
+		return []string{"default"}
+	}
+	return []string{envName, "default"}
+}
+
+// warnIfNonReproducible prints a heads-up when the build being deployed
+// came from a dirty working tree or an untagged commit — the single
+// "discipline" nudge toward tag-then-build, with no enforcement.
+func warnIfNonReproducible(st *BuildState) {
+	switch {
+	case st.Dirty:
+		fmt.Printf("  Warning: deploying %q built from a DIRTY working tree (commit %s) — not reproducible.\n", st.Tag, shortSHA(st.Commit))
+	case st.GitTag == "":
+		fmt.Printf("  Warning: deploying %q built from an UNTAGGED commit (%s) — tag the release for a reproducible version.\n", st.Tag, shortSHA(st.Commit))
+	}
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	if sha == "" {
+		return "unknown"
+	}
+	return sha
 }
 
 func gitShortSHA(ctx context.Context) (string, error) {
@@ -848,22 +1146,35 @@ func k8sClusterRegistryForEnv(ctx context.Context, envName string) string {
 	return firstK8sClusterField(ctx, envName, "registry")
 }
 
-// verifyKubectlContext refuses the deploy when the current kubectl
-// context doesn't match the env's expected cluster. An empty expected
-// value (no declaration in forge.yaml for non-dev envs) skips the
-// guard — projects opt in by declaring environments[<env>].cluster.
-// An explicit --context override also skips the guard, but emits a
-// notice so the override is visible in the deploy log.
+// verifyKubectlContext is the DECLARATIVE env-cluster guard. The env's
+// KCL declares its target cluster (`forge.K8sCluster.cluster`), and that
+// name IS the kubectl context the deploy applies to (threaded per-command
+// via --context). So the guard no longer cares what context is currently
+// ACTIVE — it deliberately does NOT refuse on a current-vs-expected
+// mismatch (that would block a valid deploy: we apply to the declared
+// cluster regardless of the active context). Instead it fails fast when
+// the declared cluster has no matching kubectl context, listing the
+// available contexts — the check that makes a wrong-cluster deploy
+// impossible while never depending on the globally-switched active
+// context (the cross-cluster contamination incident).
+//
+// An explicit --context override bypasses the existence check (the user
+// has deliberately pointed at a renamed local context). An env with no
+// declared cluster skips the guard (host-only / compose), preserving the
+// pre-declarative default of using kubectl's current context.
 func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envName, override string) error {
 	if override != "" {
-		fmt.Printf("kubectl context override: %s (env-cluster guard skipped)\n", override)
-		// Switch the context so the apply lands in the right place.
-		switchCmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", override)
-		switchCmd.Stdout = os.Stdout
-		switchCmd.Stderr = os.Stderr
-		if err := switchCmd.Run(); err != nil {
-			return fmt.Errorf("kubectl config use-context %s: %w", override, err)
-		}
+		// The override is threaded into cluster.ApplyOpts.Context and
+		// passed as `--context <override>` to EVERY kubectl invocation in
+		// the apply/wait path — we must NOT mutate the global active
+		// context here (`kubectl config use-context`). That global switch
+		// is process-wide and shared across the single kubeconfig, so
+		// under concurrent deploys to different clusters it RACES: one
+		// deploy's switch clobbers another's, and a `kubectl apply` lands
+		// on the wrong cluster (the cross-cluster contamination incident).
+		// Per-command `--context` is concurrency-safe because nothing
+		// shared is mutated.
+		fmt.Printf("kubectl context override: %s (declared-cluster guard skipped; passed per-command via --context)\n", override)
 		return nil
 	}
 
@@ -872,21 +1183,226 @@ func verifyKubectlContext(ctx context.Context, cfg *config.ProjectConfig, envNam
 		// No expectation declared for this env. Print a one-liner
 		// reminder so users know they can lock it down, but don't
 		// block the deploy (backwards-compatible default).
-		fmt.Printf("Note: no forge.K8sCluster.cluster declared in deploy/kcl/%s/main.k — kubectl-context guard skipped.\n", envName)
+		fmt.Printf("Note: no forge.K8sCluster.cluster declared in deploy/kcl/%s/main.k — declared-cluster guard skipped.\n", envName)
 		return nil
 	}
 
-	currentCmd := exec.CommandContext(ctx, "kubectl", "config", "current-context")
-	out, err := currentCmd.Output()
+	available, err := kubectlContextNames(ctx)
 	if err != nil {
-		return fmt.Errorf("kubectl config current-context: %w (is kubectl installed and configured?)", err)
-	}
-	current := strings.TrimSpace(string(out))
-	if err := kubectlContextGuardVerdict(envName, expected, current); err != nil {
 		return err
 	}
-	fmt.Printf("kubectl context: %s (matches env %s)\n", current, envName)
+	if err := declaredContextExistsVerdict(envName, expected, available); err != nil {
+		return err
+	}
+	fmt.Printf("kubectl context: %s (declared by env %s; applied per-command via --context)\n", expected, envName)
 	return nil
+}
+
+// kubectlContextNames returns the set of context names declared in the
+// active kubeconfig (`kubectl config get-contexts -o name`). Returns an
+// error when kubectl isn't installed / configured — the caller turns
+// that into a clear deploy-time failure rather than silently applying
+// to whatever's active.
+func kubectlContextNames(ctx context.Context) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "kubectl", "config", "get-contexts", "-o", "name").Output()
+	if err != nil {
+		return nil, fmt.Errorf("kubectl config get-contexts: %w (is kubectl installed and configured?)", err)
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			names = append(names, s)
+		}
+	}
+	return names, nil
+}
+
+// declaredContextExistsVerdict is the pure core of the declarative
+// fail-fast guard: the declared cluster name IS the kubectl context the
+// deploy will apply to, so if it isn't present in the kubeconfig we
+// refuse with a clear error listing the available contexts. Lifted out so
+// unit tests exercise the missing-context path without shelling to
+// kubectl. An empty declared value (env declares no cluster) is a no-op.
+func declaredContextExistsVerdict(envName, declared string, available []string) error {
+	if declared == "" {
+		return nil
+	}
+	for _, c := range available {
+		if c == declared {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"env %q declares cluster %q but no such kubectl context exists.\n"+
+			"  available contexts: %s\n"+
+			"\n"+
+			"refusing to deploy (the declared cluster is the kubectl context — this is what makes wrong-cluster deploys impossible). Fix with one of:\n"+
+			"  - add the context to your kubeconfig (e.g. `gcloud container clusters get-credentials ...`)\n"+
+			"  - pass --context <name> to deploy against a renamed local context",
+		envName, declared, emptyAs(strings.Join(available, ", "), "(none)"))
+}
+
+// verifyDeclaredContextsExist is the post-build, MULTI-CLUSTER completion
+// of the declarative guard: every K8sCluster group declares its target
+// cluster (group.Cluster, from KCL `forge.K8sCluster.cluster`), and that
+// name IS the kubectl context we'll apply that group to. If any declared
+// context isn't present in the kubeconfig we refuse the deploy listing the
+// available contexts — instead of silently landing on whatever context is
+// currently active. (The single-cluster case is already caught earlier by
+// verifyKubectlContext, before the image build; this covers a rare env
+// whose groups span multiple clusters.)
+//
+// The explicit `--context` override bypasses this guard. Groups without a
+// declared cluster (host-only / compose, dev env with blank cluster) are
+// skipped — Context stays empty and kubectl uses its current context.
+func verifyDeclaredContextsExist(ctx context.Context, groups []deploytarget.ServiceGroup, override string) error {
+	if override != "" {
+		return nil
+	}
+	// Collect the distinct declared clusters across the K8sCluster
+	// groups (a multi-cluster env applies each group to its own).
+	declared := map[string]struct{}{}
+	for _, g := range groups {
+		if g.ProviderID == "k8s-cluster" && g.Cluster != "" {
+			declared[g.Cluster] = struct{}{}
+		}
+	}
+	if len(declared) == 0 {
+		return nil
+	}
+	available, err := kubectlContextNames(ctx)
+	if err != nil {
+		return err
+	}
+	// Deterministic order so the error names the same cluster every run.
+	var declaredList []string
+	for c := range declared {
+		declaredList = append(declaredList, c)
+	}
+	sort.Strings(declaredList)
+	for _, c := range declaredList {
+		if verr := declaredContextExistsVerdict("(deploy)", c, available); verr != nil {
+			return verr
+		}
+	}
+	return nil
+}
+
+// applyK8sSecretsFromProvider renders + applies plaintext k8s Secret
+// manifests from a dotenv secret_provider, BEFORE the Deployments roll
+// out so each Deployment's secretKeyRef resolves on first schedule.
+//
+// Sequence:
+//  1. Build the provider and fail-fast validate that every declared
+//     cluster secret ref resolves (no-op for external/none providers —
+//     forge can't see those values, they're provisioned out-of-band).
+//  2. For a dotenv provider ONLY: guard that every targeted k8s cluster
+//     is a recognized LOCAL dev cluster. dotenv renders PLAINTEXT
+//     Secrets; shipping those into a remote/prod cluster is a footgun,
+//     so we refuse and point the user at forge.ExternalSecrets {}.
+//  3. Render the Secret manifests and apply them via the same
+//     cluster.KubectlApply path the Deployments use.
+//
+// external/none providers produce no manifests (RenderK8sSecrets returns
+// nil), so this is a no-op for them beyond the validation gate.
+func applyK8sSecretsFromProvider(ctx context.Context, entities *KCLEntities, groups []deploytarget.ServiceGroup, namespace, kubeContext string, dryRun bool) error {
+	prov, err := secretProviderFromEntities(entities, projectDirForKCL())
+	if err != nil {
+		return fmt.Errorf("secret provider: %w", err)
+	}
+	// Fail-fast: declared cluster refs must resolve (no-op for
+	// external/none).
+	dotenvPath := ""
+	if entities != nil && entities.SecretProvider != nil {
+		dotenvPath = entities.SecretProvider.Path
+	}
+	if err := secrets.ValidateDeclaredRefs(prov, secretRefsForK8sServices(entities), dotenvPath); err != nil {
+		return err
+	}
+	if prov.Kind() != "dotenv" {
+		return nil
+	}
+
+	// GUARD: dotenv renders PLAINTEXT Secrets — local clusters only.
+	// Reject if any k8s-cluster group targets a non-local cluster.
+	for _, g := range groups {
+		if g.ProviderID != "k8s-cluster" {
+			continue
+		}
+		if !isLocalCluster(g.Cluster) {
+			return fmt.Errorf(
+				"secret_provider 'dotenv' renders plaintext Secrets and is for LOCAL clusters only; target cluster %q is not local. "+
+					"Use secret_provider = forge.ExternalSecrets {} (Secrets provisioned out-of-band) for remote clusters.",
+				g.Cluster)
+		}
+	}
+
+	mans := secrets.RenderK8sSecrets(prov, secretRefsForK8sServices(entities), namespace)
+	if len(mans) == 0 {
+		return nil
+	}
+
+	// Marshal the []map[string]any into the `---`-separated YAML document
+	// stream cluster.KubectlApply consumes (identical shape to
+	// RenderManifests' output that the Deployment apply uses).
+	stream, merr := marshalManifestStream(mans)
+	if merr != nil {
+		return fmt.Errorf("render k8s secrets: %w", merr)
+	}
+
+	if dryRun {
+		fmt.Println("\n--- Generated Secret Manifests (dry-run) ---")
+		fmt.Println(stream)
+		fmt.Println("--- End Secret Manifests ---")
+		return nil
+	}
+
+	fmt.Printf("Applying %d secret manifest(s) into namespace %s...\n", len(mans), namespace)
+	if err := cluster.KubectlApply(ctx, kubeContext, stream); err != nil {
+		return fmt.Errorf("apply k8s secrets: %w", err)
+	}
+	return nil
+}
+
+// marshalManifestStream serialises a list of manifest maps into the
+// `---`-separated multi-doc YAML stream `kubectl apply -f -` consumes —
+// the same shape cluster.extractManifests produces for the Deployment
+// apply, so KubectlApply handles both identically.
+func marshalManifestStream(mans []map[string]any) (string, error) {
+	var sb strings.Builder
+	for i, m := range mans {
+		if i > 0 {
+			sb.WriteString("---\n")
+		}
+		b, err := yaml.Marshal(m)
+		if err != nil {
+			return "", fmt.Errorf("marshal manifest %d: %w", i, err)
+		}
+		sb.Write(b)
+	}
+	return sb.String(), nil
+}
+
+// isLocalCluster reports whether a cluster name / kubectl context is
+// clearly a local dev cluster — the only place plaintext dotenv Secrets
+// are safe to project. Recognizes the k3d / kind context prefixes and
+// the docker-desktop / minikube / rancher-desktop / colima / orbstack
+// local-runtime markers. An empty name is treated as non-local so a
+// missing cluster declaration can't silently bypass the guard.
+func isLocalCluster(name string) bool {
+	if name == "" {
+		return false
+	}
+	n := strings.ToLower(strings.TrimSpace(name))
+	if strings.HasPrefix(n, "k3d-") || strings.HasPrefix(n, "kind-") {
+		return true
+	}
+	for _, marker := range []string{"docker-desktop", "minikube", "rancher-desktop", "colima", "orbstack"} {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // kubectlContextGuardVerdict is the pure comparison core of the

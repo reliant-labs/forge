@@ -14,7 +14,7 @@ import (
 // K8sClusterProvider is the full Go implementation for the
 // K8sCluster deploy target. It wraps internal/cluster.Apply — the
 // existing render-KCL → kubectl-apply → wait-rollouts pipeline that
-// `forge deploy` / `forge dev cluster reload` / `forge up` share.
+// `forge deploy` / `forge cluster reload` / `forge up` share.
 //
 // The provider takes the env-wide knobs off the ServiceGroup (which
 // got them from the first K8sCluster ref in the group). The per-
@@ -31,6 +31,28 @@ type K8sClusterProvider struct {
 	// and let cluster.Apply default everything else", which is enough
 	// for tests but not for the real forge deploy path.
 	ApplyOptsBuilder func(group ServiceGroup) cluster.ApplyOpts
+
+	// Context is the EXPLICIT `--context` override for the rollback's
+	// `kubectl rollout undo` invocations, passed per-command as
+	// `--context <ctx>`. When empty, the rollback context is DECLARATIVE:
+	// each group's own declared cluster (group.Cluster, from KCL
+	// `forge.K8sCluster.cluster`, which IS the kubectl context name) is
+	// used — so a multi-cluster rollback routes each group to its own
+	// cluster, and a wrong-cluster rollback can't happen by relying on a
+	// globally-switched active context. Empty override + empty
+	// group.Cluster = kubectl's current/default context.
+	Context string
+}
+
+// rollbackContext resolves the kubectl context for a single rollback
+// group: the explicit override (p.Context) wins; otherwise the group's
+// declared cluster is the source of truth. Empty result = current
+// context.
+func (p K8sClusterProvider) rollbackContext(group ServiceGroup) string {
+	if p.Context != "" {
+		return p.Context
+	}
+	return group.Cluster
 }
 
 // Name returns the provider identifier.
@@ -73,13 +95,22 @@ func (p K8sClusterProvider) Deploy(ctx context.Context, group ServiceGroup) erro
 // The function falls back to a no-op when kubectl isn't on PATH or
 // the namespace is empty (an invalid group shape) — those cases
 // already failed louder upstream.
-func (K8sClusterProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
+func (p K8sClusterProvider) Rollback(ctx context.Context, group ServiceGroup, lastGoodTag string) error {
 	if group.Namespace == "" {
 		return errors.New("k8s-cluster rollback: ServiceGroup.Namespace is empty")
 	}
+	kctx := p.rollbackContext(group)
 	var failures []string
 	for _, svc := range group.Services {
 		args := []string{"rollout", "undo", "deployment/" + svc.Name, "-n", group.Namespace}
+		// Thread the `--context <ctx>` per command (not via a global
+		// `kubectl config use-context`) so a concurrent rollback to a
+		// different cluster can't be clobbered by another deploy's context
+		// switch. kctx is the declared cluster (or the override). Empty =
+		// current/default context.
+		if kctx != "" {
+			args = append([]string{"--context", kctx}, args...)
+		}
 		// The annotated revision lets users see which tag we rolled
 		// back from. Best-effort — failures are logged below.
 		cmd := exec.CommandContext(ctx, "kubectl", args...)

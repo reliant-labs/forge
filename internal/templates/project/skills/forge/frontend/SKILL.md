@@ -54,7 +54,7 @@ forge add frontend dashboard --output static
 
 The `output:` field only takes effect at scaffold time; `next.config.ts` is Tier-2 (yours to edit after scaffold) so changing the YAML later does not retroactively rewrite the file — re-scaffold with `forge generate --force` or hand-edit.
 
-**Build dirs are fenced.** In `standalone`/`server` modes, production builds write to `.next-prod` (via a `distDir` conditional in `next.config.ts`) while `next dev` keeps `.next` — so running `npm run build` while `forge run`'s dev server is live cannot clobber the dev cache. `next start` and the Dockerfile both read `.next-prod`. The `static` mode keeps Next.js defaults (`out/` export, `.next` intermediates) because export mode repurposes a custom `distDir` as the export destination; avoid production builds during a live dev session in that mode.
+**Build dirs are fenced.** In `standalone`/`server` modes, production builds write to `.next-prod` (via a `distDir` conditional in `next.config.ts`) while `next dev` keeps `.next` — so running `npm run build` while `forge up`'s dev server is live cannot clobber the dev cache. `next start` and the Dockerfile both read `.next-prod`. The `static` mode keeps Next.js defaults (`out/` export, `.next` intermediates) because export mode repurposes a custom `distDir` as the export destination; avoid production builds during a live dev session in that mode.
 
 If a frontend uses server-runtime APIs (`redirect()` from `next/navigation`, `cookies()`, server actions) it MUST use `output: standalone` (the default) or `output: server` — those calls don't work in a static export.
 
@@ -274,7 +274,7 @@ export const myServiceClient = createClient(MyService, transport);
 The scaffold talks to the REAL backend out of the box: `src/lib/connect.ts`
 reads `NEXT_PUBLIC_API_URL` (or the `forge generate`-maintained dev port in
 `src/lib/apiurl_gen.ts`) and builds a real Connect transport. Start the
-backend with `forge run` and the UI is live end-to-end.
+backend with `forge up --env=dev` and the UI is live end-to-end.
 
 Mock mode exists for offline UI-only work and is **opt-in** via
 `.env.local`:
@@ -407,8 +407,7 @@ These files are created by `forge add frontend` and are yours to modify:
 ## Dev Workflow
 
 ```bash
-forge run                # Full stack: infra + Go (hot reload) + Next.js
-forge up --env=dev       # Same, but reads deploy/kcl/<env>/ for the host/cluster split
+forge up --env=dev       # Full stack: infra + Go (hot reload) + Next.js, reads deploy/kcl/<env>/
 ```
 
 Changes to frontend code reflect instantly in the browser. After changing `.proto` files, always regenerate:
@@ -431,62 +430,36 @@ bled in from the parent shell — drift between the KCL-declared port,
 the generated docker-compose, and the actual dev server is now
 structurally impossible.
 
-### Multi-frontend dev URLs (`*.localhost:<proxy port>`)
+### Multi-frontend dev URLs (declared ports)
 
-`forge run` spins up a single host-based reverse proxy that fronts
-every frontend + HTTP-routed service under a unified URL pattern. The
-port defaults to 8080 but auto-shifts past any port a service or
-frontend declares (the first scaffolded service also defaults to
-8080) — trust the `[run] Dev URL:` banner, which prints the port
-actually bound:
+Under `forge up --env=dev`, each frontend dev-serves directly on its
+own KCL-declared port (`forge.Frontend.port`) — there is no dev
+reverse proxy. Open each frontend at its declared port:
 
 ```
-http://admin.localhost:<port>   → the admin frontend (KCL port)
-http://web.localhost:<port>     → the web frontend (KCL port)
-http://api.localhost:<port>     → the api service (HTTPRoute host match)
+http://localhost:<admin-port>   → the admin frontend (KCL port)
+http://localhost:<web-port>     → the web frontend (KCL port)
+http://localhost:<api-port>     → the api service (KCL port)
 ```
 
-`*.localhost` resolves to `127.0.0.1` automatically per RFC 6761, so
-no `/etc/hosts` edits are needed. The proxy binds BOTH loopback
-families (127.0.0.1 and ::1), so the URLs work no matter which
-address the browser resolves `localhost` to. The first declared
-frontend is the fallback for unmatched hosts (a bare
-`http://localhost:<port>/` works).
+The declared port is force-injected as the `PORT` env var into each
+Next.js child process, so the browser URL always matches the KCL
+declaration — drift between the KCL port and the actual dev server is
+structurally impossible. Next.js HMR works directly against each
+dev server.
 
-**Why host-based, not path-based?** Path prefixes would require
-setting `basePath` in `next.config.js` — a file forge does not own,
-and a config that affects production routing too. Host-based
-dispatch keeps `next.config.js` untouched and gives prod-parity for
-free: the same KCL `HTTPRoute.host` values route the same way under
-the production Gateway as they do under the dev proxy.
-
-WebSocket upgrades are forwarded with a hijacked TCP splice — this
-is what makes Next.js HMR work end-to-end. If HMR breaks, suspect a
-backend port that drifted out of the KCL declaration rather than the
-proxy itself.
-
-Knobs:
-- `forge run --proxy-port 9090` — override the bind port. An explicit
-  port that collides with a declared service/frontend port is an
-  error (the proxy and the backend would race for it).
-- `FORGE_RUN_PROXY_PORT=9090 forge run` — same via env.
-- `forge run --no-proxy` — disable the proxy and use the raw per-frontend ports.
-
-Adding service hosts to the dispatch table: declare an HTTPRoute in
-your `deploy/kcl/<env>/main.k` with a `host:` value:
+Adding a service: declare an HTTPRoute in your
+`deploy/kcl/<env>/main.k` with a `host:` value so it routes the same
+way under the production Gateway:
 
 ```kcl
 forge.HTTPRoute {
     name = "api-route"
     service = "api"
     port = 8000
-    host = "api.localhost"   # used by `forge run` AND the prod Gateway
+    host = "api.localhost"   # used by the prod Gateway
 }
 ```
-
-Path-based HTTPRoutes (no `host`, with a `/prefix` match) work in
-cluster but are skipped by the dev proxy — the basePath dance is
-intentionally avoided in the dev loop.
 
 ## Scaffolded Systems
 

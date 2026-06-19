@@ -13,7 +13,7 @@ forge.render_manifests emits the gateway.networking.k8s.io/v1
 resources alongside the typed entities.
 
 GatewayClass is NOT declared here — it's cluster-scoped and installed
-by `forge dev cluster up` (in dev) or by the user's cloud Gateway
+by `forge cluster up` (in dev) or by the user's cloud Gateway
 controller (in prod). Gateways reference it by `gateway_class_name`.
 """
 

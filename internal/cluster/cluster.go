@@ -1,5 +1,5 @@
 // Package cluster owns the render-KCL → kubectl-apply → wait-rollouts
-// pipeline that `forge deploy`, `forge dev cluster reload`, and the
+// pipeline that `forge deploy`, `forge cluster reload`, and the
 // deploy phase of `forge up` all execute. Before this package existed,
 // the pipeline was duplicated across three call sites:
 //
@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/kclrender"
@@ -69,7 +70,7 @@ type ApplyOpts struct {
 	// instead. With DryRunFramed, the output is wrapped in
 	// "--- Generated Manifests (dry-run) ---" / "--- End Manifests ---"
 	// markers (the forge deploy convention). Without it, raw manifests
-	// are printed (the forge dev cluster reload convention).
+	// are printed (the forge cluster reload convention).
 	DryRun       bool
 	DryRunFramed bool
 
@@ -84,18 +85,23 @@ type ApplyOpts struct {
 	// disables the skip (every managed Deployment is awaited).
 	HostSkip map[string]struct{}
 
-	// OneShotJobs is the list of Job names rendered from CronJobs with
-	// empty Schedule. Each is waited on with `kubectl wait
+	// OneShotJobs is an OPTIONAL caller-supplied list of Job names to
+	// wait on. Apply UNIONs it with every `kind: Job` it finds in the
+	// rendered manifest stream (see RenderedJobNames), so the wait set
+	// is authoritative-by-manifest and a caller no longer has to derive
+	// it correctly for the schedule=="" migrate-Job wait to fire — this
+	// field is now belt-and-suspenders for a Job not present in the
+	// stream. Each Job in the union is waited on with `kubectl wait
 	// --for=condition=complete` so the caller gets a definitive
-	// done/fail signal before Apply returns. Scheduled CronJobs are
-	// NOT waited on — they run on their own cadence and the deploy is
-	// done as soon as the manifest is applied.
+	// done/fail signal before Apply returns. Scheduled CronJobs render
+	// as `kind: CronJob` (not `kind: Job`) and are NOT waited on — they
+	// run on their own cadence and the deploy is done once applied.
 	OneShotJobs []string
 
 	// Quiet suppresses the section-header banners ("Applying
 	// manifests...", "Waiting for rollouts...") and emits the matching
 	// per-resource warnings in the bare format ("Warning: <msg>" with
-	// no leading indent) — the shape `forge dev cluster reload` used
+	// no leading indent) — the shape `forge cluster reload` used
 	// pre-extraction. Off by default; the deploy and up call sites
 	// keep the framed banners.
 	Quiet bool
@@ -106,7 +112,39 @@ type ApplyOpts struct {
 	// is skipping in-cluster infra (NATS, Temporal, LiteLLM) on dev-host
 	// envs where docker-compose provides the same services.
 	Env string
+
+	// Context, when non-empty, is the kubectl context every kubectl
+	// invocation in the apply/wait path runs against — passed as
+	// `--context <ctx>` per command rather than mutating the global
+	// active context (`kubectl config use-context`). This is what makes
+	// concurrent multi-cluster `forge deploy` safe: two deploys sharing
+	// one kubeconfig but targeting different clusters no longer race on
+	// the single global context. Empty = use kubectl's current/default
+	// context (unchanged for single-cluster users).
+	Context string
+
+	// Targets, when non-empty, scopes the apply to the named
+	// applications (service / frontend names). The whole env bundle is
+	// still rendered (KCL renders the env as a unit), but after
+	// RenderManifests and before KubectlApply the multi-doc YAML is
+	// filtered: a workload manifest is kept when its
+	// `app.kubernetes.io/name` label is in Targets, and a shared/infra
+	// manifest (no `app.kubernetes.io/name` label — Namespace, the
+	// shared ConfigMap/Secret, RuntimeClass, etc.) is always kept so a
+	// targeted app's dependencies aren't dropped. Empty means "apply the
+	// whole bundle", the unchanged default. See FilterManifestsByApp.
+	Targets []string
 }
+
+// appNameLabel is the per-service workload label forge's KCL renderer
+// stamps on every Deployment / Service / RBAC object via
+// `_managed_labels(<svc-name>)` (kcl/lib/services.k, kcl/lib/rbac.k).
+// Shared / infra manifests (Namespace, the shared ConfigMap/Secret,
+// RuntimeClass) deliberately omit it — they carry only
+// `app.kubernetes.io/managed-by` and `app.kubernetes.io/part-of`. That
+// asymmetry is what lets FilterManifestsByApp tell a targeted app's
+// workloads from another app's workloads while keeping shared deps.
+const appNameLabel = "app.kubernetes.io/name"
 
 // Apply runs the render-KCL → kubectl-apply → wait-rollouts pipeline.
 // It is the single entry point for the three call sites this package
@@ -125,6 +163,19 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		return fmt.Errorf("KCL manifest generation failed: %w", err)
 	}
 
+	// Application-level filter: when --target scoped the deploy to one
+	// or more named apps, drop the other apps' workload manifests while
+	// keeping every shared/infra manifest. Applied to the rendered
+	// bundle (which KCL produces as a unit) so a single targeted app
+	// still lands with its Namespace, shared ConfigMap/Secret, etc.
+	if len(opts.Targets) > 0 {
+		filtered, ferr := FilterManifestsByApp(manifests, opts.Targets)
+		if ferr != nil {
+			return ferr
+		}
+		manifests = filtered
+	}
+
 	if opts.DryRun {
 		if opts.DryRunFramed {
 			fmt.Println("\n--- Generated Manifests (dry-run) ---")
@@ -140,7 +191,30 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	if !opts.Quiet {
 		fmt.Println("Applying manifests...")
 	}
-	if err := KubectlApply(ctx, manifests); err != nil {
+	// Two-pass apply to close the ConfigMap/Secret ordering race: a
+	// single `kubectl apply --server-side -f -` admits documents as it
+	// streams them, but the apiserver can schedule a workload pod before
+	// the ConfigMaps/Secrets it references are readable across every
+	// apiserver cache — the pod then wedges on CreateContainerConfigError
+	// / "secret not found" and the rollout wait below expires as a
+	// spurious timeout (seen on a real GKE launch where the config was
+	// fine). Splitting the stream so the config kinds (Namespace,
+	// ConfigMap, Secret) are applied AND returned BEFORE the workloads
+	// gives a real happens-before: the second pass's pods only schedule
+	// once their referenced config already exists. apply --server-side is
+	// idempotent, so re-sending any doc is harmless. When the bundle has
+	// no config kinds, config is empty and we fall through to a single
+	// apply of rest — identical to the pre-split behaviour.
+	config, rest := PartitionConfigManifests(manifests)
+	if strings.TrimSpace(config) != "" {
+		if err := KubectlApply(ctx, opts.Context, config); err != nil {
+			if opts.Quiet {
+				return fmt.Errorf("kubectl apply (config): %w", err)
+			}
+			return fmt.Errorf("kubectl apply failed (config): %w", err)
+		}
+	}
+	if err := KubectlApply(ctx, opts.Context, rest); err != nil {
 		// Reload uses the shorter "kubectl apply:" wrap; the framed
 		// deploy/up path uses the longer "kubectl apply failed:" form.
 		if opts.Quiet {
@@ -150,7 +224,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	}
 
 	if opts.Prune {
-		if err := Prune(ctx, manifests, opts.Namespace); err != nil {
+		if err := Prune(ctx, opts.Context, manifests, opts.Namespace); err != nil {
 			fmt.Printf("Warning: prune: %v\n", err)
 		}
 	}
@@ -158,7 +232,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	if !opts.Quiet {
 		fmt.Println("Waiting for rollouts...")
 	}
-	deployments, lerr := ListManagedDeployments(ctx, opts.Namespace)
+	deployments, lerr := ListManagedDeployments(ctx, opts.Context, opts.Namespace)
 	if lerr != nil {
 		// Reload's pre-extraction form printed "Warning: ..." (no
 		// leading indent) and short-circuited the rest of the wait
@@ -176,7 +250,7 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 				skipped = append(skipped, dep)
 				continue
 			}
-			if err := WaitRollout(ctx, dep, opts.Namespace); err != nil {
+			if err := WaitRollout(ctx, opts.Context, dep, opts.Namespace); err != nil {
 				fmt.Printf("  Warning: rollout for %s: %v\n", dep, err)
 			} else {
 				fmt.Printf("  %s: ready\n", dep)
@@ -188,9 +262,16 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 		}
 	}
 
-	for _, name := range opts.OneShotJobs {
+	// Wait set = caller-supplied OneShotJobs UNION every `kind: Job` in
+	// the rendered stream. Deriving from the applied manifests is the
+	// authoritative path (see RenderedJobNames) and is what makes the
+	// schedule=="" migrate-Job wait reliable even when the entity-list
+	// derivation comes back empty; OneShotJobs is still honoured so a
+	// caller can request a wait on a Job name not present in this
+	// stream. De-duped, with the caller's order preserved first.
+	for _, name := range unionJobNames(opts.OneShotJobs, RenderedJobNames(manifests)) {
 		fmt.Printf("Waiting for one-shot Job %q to complete...\n", name)
-		if err := WaitJobComplete(ctx, name, opts.Namespace); err != nil {
+		if err := WaitJobComplete(ctx, opts.Context, name, opts.Namespace); err != nil {
 			fmt.Printf("  Warning: job %s: %v\n", name, err)
 		} else {
 			fmt.Printf("  %s: complete\n", name)
@@ -198,6 +279,37 @@ func Apply(ctx context.Context, opts ApplyOpts) error {
 	}
 
 	return nil
+}
+
+// unionJobNames merges the caller-supplied one-shot Job names with the
+// names derived from the rendered manifests, de-duping while keeping the
+// caller's entries first (stable, predictable wait order). Used by Apply
+// so the manifest-derived wait set augments rather than replaces an
+// explicit OneShotJobs request.
+func unionJobNames(supplied, rendered []string) []string {
+	seen := make(map[string]struct{}, len(supplied)+len(rendered))
+	out := make([]string, 0, len(supplied)+len(rendered))
+	for _, n := range supplied {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	for _, n := range rendered {
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }
 
 // RenderManifests shells `kcl run <mainK> -D image_tag=<tag>
@@ -223,22 +335,29 @@ func projectRootFromMainK(mainK string) string {
 		return ""
 	}
 	// main.k -> <env> -> kcl -> deploy -> root
-	dir := filepath.Dir(mainK)              // <root>/deploy/kcl/<env>
+	dir := filepath.Dir(mainK) // <root>/deploy/kcl/<env>
 	if filepath.Base(filepath.Dir(dir)) != "kcl" {
 		return ""
 	}
 	return filepath.Dir(filepath.Dir(filepath.Dir(dir))) // <root>
 }
 
-func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
+// renderDArgs builds the `-D key=value` top-level bindings for the KCL
+// manifest render. The forge-controlled string args (image_tag, namespace,
+// env) are passed as QUOTED KCL string literals via strconv.Quote so KCL
+// types them as `str` — without the quotes an all-digit value like a
+// numeric git-describe tag ("3826648") is coerced to `int`, which fails
+// RenderEnv.image_tag's `str` type (the forge-deploy-prod regression).
+// envCfgKV values are left unquoted: they are project config whose KCL
+// type (int/bool/str) is intentional.
+func renderDArgs(imageTag, namespace, env string, envCfgKV map[string]string) []string {
 	dArgs := []string{
-		"image_tag=" + imageTag,
-		"namespace=" + namespace,
+		"image_tag=" + strconv.Quote(imageTag),
+		"namespace=" + strconv.Quote(namespace),
 	}
 	if env != "" {
-		dArgs = append(dArgs, "env="+env)
+		dArgs = append(dArgs, "env="+strconv.Quote(env))
 	}
-	// Stable ordering for reproducible output / easier diffing.
 	keys := make([]string, 0, len(envCfgKV))
 	for k := range envCfgKV {
 		keys = append(keys, k)
@@ -247,6 +366,11 @@ func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, 
 	for _, k := range keys {
 		dArgs = append(dArgs, k+"="+envCfgKV[k])
 	}
+	return dArgs
+}
+
+func RenderManifests(_ context.Context, mainK, imageTag, namespace, env string, envCfgKV map[string]string) (string, error) {
+	dArgs := renderDArgs(imageTag, namespace, env, envCfgKV)
 	// Render from the project root so the deploy-as-data main.k's
 	// `file.read("deploy/kcl/components_gen.json")` resolves. mainK is
 	// `<root>/deploy/kcl/<env>/main.k`; strip the four trailing path
@@ -318,12 +442,40 @@ func extractManifests(kclOutput []byte) (string, error) {
 	return sb.String(), nil
 }
 
+// kubectlArgs prepends `--context <kctx>` to a kubectl argument list
+// when kctx is non-empty, and returns the args unchanged otherwise.
+// Threading the context PER COMMAND (rather than mutating the global
+// active context via `kubectl config use-context`) is what makes
+// concurrent multi-cluster `forge deploy` safe — two deploys sharing
+// one kubeconfig can target different clusters without racing on the
+// single global context. An empty kctx means "use kubectl's
+// current/default context", the unchanged single-cluster behaviour.
+//
+// `--context` is a global kubectl flag, so it's valid as the leading
+// argument before any subcommand (apply / wait / rollout / get / …).
+func kubectlArgs(kctx string, args ...string) []string {
+	if kctx == "" {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, "--context", kctx)
+	return append(out, args...)
+}
+
+// kubectlCmd builds an *exec.Cmd for `kubectl <args>` with the context
+// flag threaded in via kubectlArgs. The single construction point keeps
+// the per-command `--context` invariant in one place (and testable).
+func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "kubectl", kubectlArgs(kctx, args...)...)
+}
+
 // KubectlApply pipes the rendered YAML document stream into
-// `kubectl apply --server-side -f -`. Stdout/stderr are inherited so
-// the user sees the per-resource `created`/`configured`/`unchanged`
-// lines kubectl emits.
-func KubectlApply(ctx context.Context, manifests string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "--server-side", "-f", "-")
+// `kubectl [--context <kctx>] apply --server-side -f -`. Stdout/stderr
+// are inherited so the user sees the per-resource
+// `created`/`configured`/`unchanged` lines kubectl emits. kctx (when
+// non-empty) targets a specific kubectl context for this command only.
+func KubectlApply(ctx context.Context, kctx, manifests string) error {
+	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -345,10 +497,11 @@ func KubectlApply(ctx context.Context, manifests string) error {
 //     issues (admission webhooks, missing ConfigMaps, etc.) show up.
 //   - Pod log tail when the pod is at least pulled, captures
 //     CrashLoopBackOff reasons like "NATS_URL is required".
+//
 // Diagnostics are best-effort — any kubectl invocation failure is
 // swallowed so the wait error itself remains the primary signal.
-func WaitRollout(ctx context.Context, name, namespace string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "rollout", "status",
+func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
+	cmd := kubectlCmd(ctx, kctx, "rollout", "status",
 		"deployment/"+name,
 		"-n", namespace,
 		"--timeout=60s",
@@ -356,7 +509,7 @@ func WaitRollout(ctx context.Context, name, namespace string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		diagnoseFailedRollout(ctx, name, namespace)
+		diagnoseFailedRollout(ctx, kctx, name, namespace)
 		return err
 	}
 	return nil
@@ -370,11 +523,11 @@ func WaitRollout(ctx context.Context, name, namespace string) error {
 // CrashLoopBackOff), then events (admission / scheduling failures),
 // then log tail (only when the container actually started — catches
 // "missing env var" startup crashes).
-func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
+func diagnoseFailedRollout(ctx context.Context, kctx, deploy, namespace string) {
 	fmt.Printf("\n  ── Diagnostics for %s ──────────────────\n", deploy)
 
 	// Pod status — phase, reason, message. The most useful single line.
-	pods := exec.CommandContext(ctx, "kubectl", "get", "pods",
+	pods := kubectlCmd(ctx, kctx, "get", "pods",
 		"-n", namespace,
 		"-l", "app="+deploy,
 		"-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason,MESSAGE:.status.containerStatuses[*].state.waiting.message",
@@ -389,7 +542,7 @@ func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
 
 	// Recent events for the deployment. Filtered to events that mention
 	// the deploy name keeps the output bounded.
-	events := exec.CommandContext(ctx, "kubectl", "get", "events",
+	events := kubectlCmd(ctx, kctx, "get", "events",
 		"-n", namespace,
 		"--sort-by=.lastTimestamp",
 		"--field-selector=type!=Normal",
@@ -417,7 +570,7 @@ func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
 	// kubectl returns an error which we swallow; when it crashed at
 	// startup (CrashLoopBackOff) this surfaces the panic / "X is required"
 	// line that explains why.
-	logs := exec.CommandContext(ctx, "kubectl", "logs",
+	logs := kubectlCmd(ctx, kctx, "logs",
 		"deployment/"+deploy,
 		"-n", namespace,
 		"--tail=15",
@@ -436,8 +589,8 @@ func diagnoseFailedRollout(ctx context.Context, deploy, namespace string) {
 // WaitJobComplete blocks until the named Job in namespace reaches
 // `condition=complete`. Timeout is 5m — Jobs in this lane are
 // deploy-time migrations / backfills, which routinely run for minutes.
-func WaitJobComplete(ctx context.Context, name, namespace string) error {
-	cmd := exec.CommandContext(ctx, "kubectl", "wait",
+func WaitJobComplete(ctx context.Context, kctx, name, namespace string) error {
+	cmd := kubectlCmd(ctx, kctx, "wait",
 		"--for=condition=complete",
 		"job/"+name,
 		"-n", namespace,
@@ -455,8 +608,8 @@ func WaitJobComplete(ctx context.Context, name, namespace string) error {
 // `<project>-<svc>` names, per-service `<svc>` names, operator and
 // worker deployments, and anything packs add, without forge having to
 // guess naming schemes per scaffold mode.
-func ListManagedDeployments(ctx context.Context, namespace string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "deployments",
+func ListManagedDeployments(ctx context.Context, kctx, namespace string) ([]string, error) {
+	cmd := kubectlCmd(ctx, kctx, "get", "deployments",
 		"-n", namespace,
 		"-l", "app.kubernetes.io/managed-by=forge",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}",
@@ -474,6 +627,85 @@ func ListManagedDeployments(ctx context.Context, namespace string) ([]string, er
 		}
 	}
 	return names, nil
+}
+
+// FilterManifestsByApp filters a `---`-separated multi-doc YAML stream
+// down to the manifests belonging to the named apps, PLUS every shared
+// manifest. The rule, doc by doc:
+//
+//   - KEEP when the doc's `metadata.labels[app.kubernetes.io/name]`
+//     value is one of targets — that's a targeted app's workload.
+//   - KEEP when the doc has NO `app.kubernetes.io/name` label — that's
+//     a shared/infra resource (Namespace, the shared ConfigMap/Secret,
+//     RuntimeClass, CRDs) a targeted app may depend on. Dropping these
+//     would leave the app's pods unable to start.
+//   - DROP when the label is present but names a NON-targeted app.
+//
+// Empty / whitespace-only docs are dropped. A doc that doesn't parse as
+// YAML is conservatively KEPT (better to apply an opaque doc than to
+// silently swallow it; kubectl will reject genuinely-broken YAML).
+//
+// If the filter would drop every workload-labelled doc — i.e. none of
+// targets matched any app in the bundle (a typo'd --target) — it
+// returns an error listing the app names actually present, rather than
+// applying a shared-only bundle that does nothing the user asked for.
+func FilterManifestsByApp(manifests string, targets []string) (string, error) {
+	want := map[string]struct{}{}
+	for _, t := range targets {
+		want[t] = struct{}{}
+	}
+
+	docs := strings.Split(manifests, "\n---\n")
+	var kept []string
+	present := map[string]struct{}{} // every app name seen on a labelled doc
+	matchedAny := false              // did any doc carry a targeted app label?
+
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		app := manifestAppLabel(trimmed)
+		if app == "" {
+			// Shared / infra resource — always keep.
+			kept = append(kept, trimmed)
+			continue
+		}
+		present[app] = struct{}{}
+		if _, ok := want[app]; ok {
+			kept = append(kept, trimmed)
+			matchedAny = true
+		}
+	}
+
+	if !matchedAny {
+		avail := make([]string, 0, len(present))
+		for a := range present {
+			avail = append(avail, a)
+		}
+		sort.Strings(avail)
+		return "", fmt.Errorf(
+			"no application matched --target %s; available apps in this env: %s",
+			strings.Join(targets, ", "), strings.Join(avail, ", "))
+	}
+
+	return strings.Join(kept, "\n---\n"), nil
+}
+
+// manifestAppLabel reads metadata.labels["app.kubernetes.io/name"] from
+// a single YAML manifest document. Returns "" when the doc has no such
+// label (shared/infra resource) or doesn't parse — callers treat "" as
+// "shared, keep".
+func manifestAppLabel(doc string) string {
+	var m struct {
+		Metadata struct {
+			Labels map[string]string `yaml:"labels"`
+		} `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+		return ""
+	}
+	return m.Metadata.Labels[appNameLabel]
 }
 
 // RenderedDeploymentNames extracts the `metadata.name` of every
@@ -506,6 +738,98 @@ func RenderedDeploymentNames(manifests string) []string {
 	return out
 }
 
+// configFirstKinds are the manifest kinds applied in the first pass of
+// Apply's two-pass apply. They are the resources a workload pod can
+// reference at schedule time and that must therefore exist (and be
+// readable) before the workload lands: the Namespace the workload is
+// created in, and the ConfigMaps / Secrets its containers mount or
+// project into env. Cluster-scoped config (RuntimeClass, CRDs) is left
+// in the second pass — those are already ordered ahead of workloads
+// within the rendered stream and don't suffer the same apiserver-cache
+// readability race that a freshly-applied namespaced Secret does.
+var configFirstKinds = map[string]struct{}{
+	"Namespace": {},
+	"ConfigMap": {},
+	"Secret":    {},
+}
+
+// PartitionConfigManifests splits a `---`-separated multi-doc YAML
+// stream into (config, rest): config holds the documents whose `kind`
+// is one of configFirstKinds (Namespace, ConfigMap, Secret) in their
+// original relative order, rest holds everything else (also in order).
+// Empty / whitespace-only docs are dropped from both halves. A doc that
+// doesn't parse as YAML is conservatively placed in rest — it can't be
+// confirmed config, and rest is the pass that always runs.
+//
+// This is the ordering primitive behind Apply's two-pass apply: config
+// is applied (and kubectl returns) before rest, so a workload in rest
+// never schedules ahead of the ConfigMap/Secret it references.
+func PartitionConfigManifests(manifests string) (config, rest string) {
+	docs := strings.Split(manifests, "\n---\n")
+	var cfg, other []string
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		var m struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
+			other = append(other, trimmed)
+			continue
+		}
+		if _, ok := configFirstKinds[m.Kind]; ok {
+			cfg = append(cfg, trimmed)
+		} else {
+			other = append(other, trimmed)
+		}
+	}
+	return strings.Join(cfg, "\n---\n"), strings.Join(other, "\n---\n")
+}
+
+// RenderedJobNames extracts the `metadata.name` of every `kind: Job`
+// document in a `---`-separated YAML stream. This is the authoritative
+// source for the one-shot-Job wait set: forge waits on whatever Jobs
+// the deploy actually applies, regardless of how they entered the
+// bundle.
+//
+// The entity-list derivation (oneShotJobNamesFromKCL, reading
+// KCLEntities.CronJobs) is fragile — it only sees Jobs that round-trip
+// through the typed `forge.CronJob` -> `output.cronjobs` contract, and
+// misses a `schedule==""` Job that didn't surface in that list (the
+// real-launch gap where OneShotJobs came back empty and forge rolled
+// the workloads without blocking on the migrate Job) as well as any raw
+// `kind: Job` added via `additional_manifests`. The rendered manifests
+// are what kubectl actually applies, so deriving the wait set from them
+// closes both holes. Apply unions these with any caller-supplied
+// OneShotJobs and de-dupes.
+//
+// Malformed documents are skipped (callers get a best-effort list).
+func RenderedJobNames(manifests string) []string {
+	docs := strings.Split(manifests, "\n---\n")
+	var out []string
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			continue
+		}
+		var m struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
+			continue
+		}
+		if m.Kind == "Job" && m.Metadata.Name != "" {
+			out = append(out, m.Metadata.Name)
+		}
+	}
+	return out
+}
+
 // Prune deletes every forge-managed Deployment in namespace that is
 // NOT in the rendered manifest stream. The managed-by guard comes
 // from the kubectl label filter inside ListManagedDeployments — only
@@ -521,7 +845,7 @@ func RenderedDeploymentNames(manifests string) []string {
 // Errors during the list or per-Deployment delete are returned to the
 // caller (which logs them as warnings rather than failing the whole
 // deploy — pruning is a maintenance step, not a correctness gate).
-func Prune(ctx context.Context, manifests, namespace string) error {
+func Prune(ctx context.Context, kctx, manifests, namespace string) error {
 	desired := map[string]struct{}{}
 	for _, n := range RenderedDeploymentNames(manifests) {
 		desired[n] = struct{}{}
@@ -530,7 +854,7 @@ func Prune(ctx context.Context, manifests, namespace string) error {
 		fmt.Println("Skipping prune (no Deployments in render).")
 		return nil
 	}
-	current, err := ListManagedDeployments(ctx, namespace)
+	current, err := ListManagedDeployments(ctx, kctx, namespace)
 	if err != nil {
 		return fmt.Errorf("list deployments: %w", err)
 	}
@@ -546,7 +870,7 @@ func Prune(ctx context.Context, manifests, namespace string) error {
 	fmt.Printf("Pruning %d orphan Deployment(s) in %s: %s\n",
 		len(orphans), namespace, strings.Join(orphans, ", "))
 	for _, name := range orphans {
-		delCmd := exec.CommandContext(ctx, "kubectl", "delete", "deployment", name,
+		delCmd := kubectlCmd(ctx, kctx, "delete", "deployment", name,
 			"-n", namespace, "--ignore-not-found=true")
 		delCmd.Stdout = os.Stdout
 		delCmd.Stderr = os.Stderr

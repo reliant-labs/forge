@@ -541,13 +541,44 @@ func TestLoadStrict_UnknownKeyClassification(t *testing.T) {
 }
 
 // TestLoadStrict_DeprecatedEnvironmentsStillLoads pins the whitelist
-// behaviour: the removed top-level `environments` block is silently
-// skipped (mid-migration projects must keep loading), NOT reported as
-// an unknown or removed key.
+// behaviour: the removed top-level `environments` block does NOT gate the
+// load (mid-migration projects must keep loading), is NOT reported as an
+// unknown or removed key — but IS surfaced as a non-fatal WARNING so the
+// user migrates it before the next forge.yaml rewrite drops it.
 func TestLoadStrict_DeprecatedEnvironmentsStillLoads(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
 	in := validBaseYAML + "environments:\n  - name: dev\n    type: local\n"
 	if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
 		t.Fatalf("expected deprecated 'environments' block to load cleanly, got: %v", err)
+	}
+
+	out := sink.String()
+	if !strings.Contains(out, "environments") {
+		t.Errorf("expected warning to name the deprecated 'environments' key, got: %q", out)
+	}
+	if !strings.Contains(out, "deprecated top-level key") {
+		t.Errorf("expected warning to flag a deprecated top-level key, got: %q", out)
+	}
+	if !strings.Contains(out, "migrations/environments-to-kcl") {
+		t.Errorf("expected warning to point at the environments-to-kcl migration skill, got: %q", out)
+	}
+}
+
+// TestLoadStrict_NoDeprecatedKeyNoWarning guards against false-positive
+// warnings: a clean config must produce no warning output.
+func TestLoadStrict_NoDeprecatedKeyNoWarning(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
+	if _, err := LoadStrict([]byte(validBaseYAML), "forge.yaml", baseComponents()...); err != nil {
+		t.Fatalf("expected clean config to load, got: %v", err)
+	}
+	if out := sink.String(); out != "" {
+		t.Errorf("expected no warnings on a clean config, got: %q", out)
 	}
 }
 

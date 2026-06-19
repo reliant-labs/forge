@@ -154,10 +154,10 @@ All `forge add` commands update `forge.yaml` and run the generation pipeline aut
 | Command | What it does |
 |---------|-------------|
 | `forge generate` | Regenerates infrastructure from protos + applied migrations (safe to re-run anytime) |
-| `forge run` | Full stack: Docker infra + Go services (hot reload) + frontends. Defaults `ENVIRONMENT=development` and dev CORS origins when unset, and dev mode attaches a synthetic dev user (`devClaims()` in `pkg/middleware/middleware.go`) — so the API and generated CRUD are callable with zero auth config |
+| `forge up --env=dev` | Full stack: Docker infra + Go services (hot reload) + frontends. Defaults `ENVIRONMENT=development` and dev CORS origins when unset, and dev mode attaches a synthetic dev user (`devClaims()` in `pkg/middleware/middleware.go`) — so the API and generated CRUD are callable with zero auth config |
 | `forge up --env=<env>` | Build + deploy + host launch + frontend dev — one command, reads `deploy/kcl/<env>/` |
 | `forge test` | Unit + integration tests |
-| `forge test e2e` | E2E tests (requires stack running via `forge run`) |
+| `forge test e2e` | E2E tests (requires stack running via `forge up --env=dev`) |
 | `forge lint` | Go + proto + frontend linters |
 | `forge build` | Binaries + frontends + Docker images |
 | `forge deploy dev` | Deploy to local k3d cluster (or whatever deploy target dev's KCL declares) |
@@ -175,7 +175,7 @@ forge new my-app --mod github.com/acme/my-app --kind library    # pure Go librar
 Each kind has its own default `features:` block in forge.yaml:
 
 - `service` — every feature enabled (today's behavior).
-- `cli` — build/ci/docs enabled; deploy/frontend/packs/starters/observability/codegen disabled.
+- `cli` — build/ci/docs enabled; deploy/frontend/packs/observability/codegen disabled.
 - `library` — docs/contracts enabled; everything else disabled.
 
 Override per-project in forge.yaml's `features:` block — set
@@ -190,11 +190,11 @@ Ports are auto-assigned and tracked in `forge.yaml`:
 
 Override with `--port` on `forge add service` or `forge add frontend`.
 
-The `forge run` dev proxy also starts at 8080 but auto-shifts past
-every declared service/frontend port — read the `[run] Dev URL:`
-banner for the port actually bound. If a postgres already runs on the
-host's 5432, `forge run` fails fast before `docker compose up` and
-prints the exact `POSTGRES_PORT=<free> forge run` rerun command.
+Each service and frontend is reachable at its own declared port — read
+the port assignments in `forge.yaml` (or the launch banner) to find
+where each one binds. If a postgres already runs on the host's 5432,
+`forge up --env=dev` fails fast before `docker compose up` and prints
+the exact `POSTGRES_PORT=<free> forge up --env=dev` rerun command.
 
 ## Rules
 

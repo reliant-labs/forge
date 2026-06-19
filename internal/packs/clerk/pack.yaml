@@ -18,8 +18,8 @@ description: |
     forge pack install auth-ui --config provider=clerk
 
   For the Clerk webhook user-sync side (which every project customizes
-  anyway), use `forge starter add clerk-webhook` instead — that's a
-  one-time scaffold rather than a tracked pack.
+  anyway), write a Svix-verified webhook handler in your own service —
+  forge does not own that as a pack.
 version: 1.0.0
 subpath: middleware/auth/clerk
 

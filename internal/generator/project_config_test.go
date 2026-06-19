@@ -96,7 +96,6 @@ func TestApplyKindFeatureDefaults_CLI(t *testing.T) {
 		config.FeatureDeploy:        false,
 		config.FeatureFrontend:      false,
 		config.FeaturePacks:         false,
-		config.FeatureStarters:      false,
 		config.FeatureObservability: false,
 		config.FeatureORM:           false,
 		config.FeatureCodegen:       false, // existing forge default — no proto/services to codegen
@@ -134,7 +133,6 @@ func TestApplyKindFeatureDefaults_Library(t *testing.T) {
 		config.FeatureDeploy:        false,
 		config.FeatureFrontend:      false,
 		config.FeaturePacks:         false,
-		config.FeatureStarters:      false,
 		config.FeatureObservability: false,
 		config.FeatureORM:           false,
 		config.FeatureCodegen:       false,

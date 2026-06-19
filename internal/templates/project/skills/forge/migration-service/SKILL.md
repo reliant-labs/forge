@@ -192,7 +192,7 @@ forge generate          # idempotent on a healthy project
 forge lint              # contract + db + general lints
 forge build             # binaries + frontends + Docker images
 forge test              # unit + integration
-forge test e2e          # full-stack (requires `forge run` in another shell)
+forge test e2e          # full-stack (requires `forge up --env=dev` in another shell)
 forge deploy dev        # local k3d
 ```
 

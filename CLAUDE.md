@@ -1,5 +1,13 @@
 # forge — agent notes
 
+## Engineering disposition
+
+forge is a long-lived product (open-sourced, sold to external customers). For consequential decisions — architecture, public APIs, the KCL schema, the CLI surface, anything customers depend on — reason to the production-grade, durable solution first, not the quick fix. Before building a non-trivial design, name the realistic alternatives and the trade-off, and devil's-advocate the chosen approach **including your own proposals**; bias toward the coherent design that won't hit a ceiling. forge ORCHESTRATES and DELEGATES (build → BuildKit, releases → Helm); it must not reimplement a build system.
+
+**Don't manufacture urgency.** There is almost never real time pressure — user frustration usually means you haven't converged on the right thing, not "go faster / cut corners." Commit to the right design and ship it decisively; never rationalize a hack with invented pressure. When tempted by a shortcut, the question is "is this correct?", not "is this faster?"
+
+Skip this depth for trivial/mechanical work — there, just do it.
+
 ## Testing tiers
 
 Run the cheapest tier that answers your question. Wall-clock budgets are

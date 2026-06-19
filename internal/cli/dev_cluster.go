@@ -1,4 +1,4 @@
-// Package cli — `forge dev cluster` subtree.
+// Package cli — `forge cluster` k3d lifecycle subcommands.
 //
 // This file consolidates the k3d cluster lifecycle that every k8s-targeting
 // forge project would otherwise hand-write in bash (~30-50 lines of
@@ -12,7 +12,7 @@
 //     --servers/--no-lb/--registry-create flags scattered across scripts)
 //   - idempotent up/down semantics (`up` no-ops if the cluster exists,
 //     `down` no-ops if it doesn't)
-//   - kubectl context pinning so `forge dev cluster reload` can't
+//   - kubectl context pinning so `forge cluster reload` can't
 //     accidentally apply to staging or prod
 //   - one-command reload that re-renders KCL + applies + waits for rollout
 //     (the inner loop during local dev)
@@ -38,26 +38,10 @@ import (
 // Simple-config YAML. Override via --config.
 const defaultK3dConfigPath = "deploy/k3d.yaml"
 
-// newDevClusterCmd builds the `forge dev cluster` subtree.
-func newDevClusterCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "cluster",
-		Short: "Manage the local k3d cluster",
-		Long: `Manage the local k3d development cluster.
-
-The cluster config is read from deploy/k3d.yaml (override via --config).
-All subcommands pin the kubectl context to k3d-<cluster-name> as a
-guardrail against accidental prod-context leaks.`,
-	}
-
-	cmd.AddCommand(newDevClusterUpCmd())
-	cmd.AddCommand(newDevClusterDownCmd())
-	cmd.AddCommand(newDevClusterStatusCmd())
-	cmd.AddCommand(newDevClusterResetCmd())
-	cmd.AddCommand(newDevClusterReloadCmd())
-
-	return cmd
-}
+// The k3d lifecycle subcommands below (up/down/reset/reload) are
+// registered flat under `forge cluster` by newClusterCmd in dev.go.
+// `status` is served by the dev_status.go implementation (a superset of
+// the old nested cluster status), so there is no newDevClusterStatusCmd.
 
 func newDevClusterUpCmd() *cobra.Command {
 	var (
@@ -73,9 +57,9 @@ If the cluster already exists, this is a no-op success. With --wait,
 blocks until the cluster's nodes report ready.
 
 Examples:
-  forge dev cluster up
-  forge dev cluster up --wait
-  forge dev cluster up --config deploy/k3d.custom.yaml`,
+  forge cluster up
+  forge cluster up --wait
+  forge cluster up --config deploy/k3d.custom.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevClusterUp(cmd.Context(), configPath, wait)
 		},
@@ -95,23 +79,6 @@ func newDevClusterDownCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
-	return cmd
-}
-
-func newDevClusterStatusCmd() *cobra.Command {
-	var (
-		configPath string
-		jsonOut    bool
-	)
-	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show cluster up/down state, registry, and API port",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDevClusterStatus(cmd.Context(), configPath, jsonOut)
-		},
-	}
-	cmd.Flags().StringVar(&configPath, "config", defaultK3dConfigPath, "k3d config file")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
 	return cmd
 }
 
@@ -153,9 +120,9 @@ docker image (the same code path forge deploy dev uses, but skips the
 cluster bootstrap).
 
 Examples:
-  forge dev cluster reload
-  forge dev cluster reload --image-tag dev-2026-06-01
-  forge dev cluster reload --dry-run`,
+  forge cluster reload
+  forge cluster reload --image-tag dev-2026-06-01
+  forge cluster reload --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevClusterReload(cmd.Context(), configPath, imageTag, namespace, dryRun)
 		},
@@ -253,7 +220,7 @@ func clusterExists(ctx context.Context, name string) (bool, error) {
 // pinKubectlContext sets the current kubectl context to k3d-<name>.
 // k3d names its kubeconfig contexts as `k3d-<cluster-name>` by
 // convention, so this is the one-liner guard rail that prevents the
-// rest of `forge dev` from leaking commands into a non-dev context.
+// rest of `forge cluster` from leaking commands into a non-dev context.
 func pinKubectlContext(ctx context.Context, clusterName string) error {
 	target := "k3d-" + clusterName
 	cmd := exec.CommandContext(ctx, "kubectl", "config", "use-context", target)
@@ -276,7 +243,7 @@ func currentKubectlContext(ctx context.Context) string {
 }
 
 func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
-	// Deploy-feature gate: `forge dev cluster up` boots a k3d cluster
+	// Deploy-feature gate: `forge cluster up` boots a k3d cluster
 	// whose only purpose is hosting the project's deploy. A library /
 	// CLI project that's opted out of deploy has no reason to spin
 	// one up. Mirrors the deploy gate in runDeploy / runDevClusterReload.
@@ -378,7 +345,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 func runDevClusterDown(ctx context.Context, configPath string) error {
 	// Same gate as runDevClusterUp — tearing down a cluster that
 	// `cluster up` won't create is at worst a no-op, but we keep the
-	// error symmetric so a `forge dev cluster up && forge dev cluster
+	// error symmetric so a `forge cluster up && forge cluster
 	// down` cycle fails uniformly when deploy is off.
 	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
@@ -417,52 +384,6 @@ type clusterStatusSummary struct {
 	APIPort     string `json:"api_port,omitempty"`
 	ConfigPath  string `json:"config_path"`
 	ConfigFound bool   `json:"config_found"`
-}
-
-func runDevClusterStatus(ctx context.Context, configPath string, jsonOut bool) error {
-	clusterName, err := resolveClusterName(configPath)
-	if err != nil {
-		return err
-	}
-
-	exists, _ := clusterExists(ctx, clusterName)
-	_, statErr := os.Stat(configPath)
-
-	summary := clusterStatusSummary{
-		Name:        clusterName,
-		Exists:      exists,
-		Context:     "k3d-" + clusterName,
-		ConfigPath:  configPath,
-		ConfigFound: statErr == nil,
-	}
-
-	// Pull registry/port from the k3d cluster list entry when up.
-	if exists {
-		if entries, err := listK3dClusters(ctx); err == nil {
-			for _, e := range entries {
-				if e.Name == clusterName {
-					// k3d exposes ports via the cluster info; we
-					// surface what's available without parsing
-					// the full k3d cluster info schema. Leave
-					// these blank when not trivially derivable.
-					_ = e
-					break
-				}
-			}
-		}
-	}
-
-	if jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(summary)
-	}
-
-	fmt.Printf("Cluster:         %s\n", summary.Name)
-	fmt.Printf("State:           %s\n", boolUpDown(summary.Exists))
-	fmt.Printf("kubectl context: %s\n", summary.Context)
-	fmt.Printf("Config:          %s (%s)\n", summary.ConfigPath, foundOrMissing(summary.ConfigFound))
-	return nil
 }
 
 func boolUpDown(b bool) string {

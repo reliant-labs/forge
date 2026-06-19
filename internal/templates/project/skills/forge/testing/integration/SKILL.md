@@ -49,7 +49,7 @@ The `forge test integration` command automatically adds `-tags integration` to t
 Integration tests require a running Postgres instance via docker-compose. If you're already running the stack, you're set:
 
 ```bash
-forge run    # starts the full stack including postgres
+forge up --env=dev    # starts the full stack including postgres
 ```
 
 ## Transaction-Per-Test Isolation

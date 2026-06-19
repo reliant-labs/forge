@@ -12,6 +12,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -452,7 +453,21 @@ func newLogger(cfg Config) *slog.Logger {
 // operators" behaviour. When a filter is active, we only start the
 // manager if the filter explicitly includes at least one operator-
 // shape service.
+//
+// Explicit opt-out (RUN_OPERATORS=false) wins over the empty-filter
+// default. A project's catch-all API server (`server` with no service
+// filter) would otherwise ALSO start the controller-runtime manager the
+// dedicated operator process runs — needing the operator's cluster RBAC
+// just to sync informer caches, and contending with the operator for
+// the SAME leader-election lease. Setting RUN_OPERATORS=false on the
+// API-server Deployment lets it run no manager (and need no operator
+// RBAC) while a separate `server <operator>` process runs the manager.
+// Default behaviour is unchanged when the var is unset/empty, so
+// existing projects are unaffected.
 func shouldRunOperators(app Application, nameSet map[string]bool) bool {
+	if !runOperatorsEnvDefault() {
+		return false
+	}
 	if len(nameSet) == 0 {
 		return true
 	}
@@ -462,4 +477,18 @@ func shouldRunOperators(app Application, nameSet map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// runOperatorsEnvDefault reports whether operators are permitted to run
+// at all, honouring the RUN_OPERATORS opt-out. Only an explicit false
+// value ("false"/"0"/"no"/"off", case-insensitive) disables operators;
+// unset/empty/any other value preserves the default-on behaviour so
+// existing deployments are unaffected.
+func runOperatorsEnvDefault() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("RUN_OPERATORS"))) {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
 }

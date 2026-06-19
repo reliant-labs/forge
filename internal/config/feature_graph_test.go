@@ -160,7 +160,6 @@ features:
   observability: false
   hot_reload: false
   packs: false
-  starters: false
   contracts: false
   docs: false
 `
@@ -181,7 +180,6 @@ features:
 		FeatureObservability: false,
 		FeatureHotReload:     false,
 		FeaturePacks:         false,
-		FeatureStarters:      false,
 	} {
 		if eff[name] != want {
 			t.Errorf("feature %q: got %v, want %v", name, eff[name], want)

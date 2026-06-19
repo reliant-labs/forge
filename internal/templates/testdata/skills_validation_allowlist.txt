@@ -10,6 +10,4 @@
 # no longer appears in the named skill fail TestSkillsAllowlistEntriesStillNeeded.
 
 forge/migrations/v0.x-to-testkit/SKILL.md|pkg/app/bootstrap_testing.go|Historical reference: this migration skill documents the OLD pre-testkit file name being migrated FROM. Current forge emits pkg/app/testing.go; the old name must stay in the skill so upgraders can find their file.
-forge/dev/SKILL.md|forge dev port-forward|feat/gateways WIP: port-forward was removed by the gateway-ingress rework mid-branch; the dev skill rewrite is part of that ongoing work. Remove this entry when the skill is updated.
-forge/dev/SKILL.md|forge dev port-forward stop|feat/gateways WIP: same as above — pending dev-skill rewrite for the gateway-ingress flow.
 *|forge will not overwrite this file|canonical "yours" ownership banner text quoted in code blocks — prose, not a forge subcommand

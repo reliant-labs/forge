@@ -144,6 +144,21 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 		return fmt.Errorf("external %s: env_file: %w", svc.Name, ferr)
 	}
 
+	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
+	// layer, then let env_file entries override on conflict — the explicit
+	// file wins. No-op when svc.Secrets is nil/empty (the common case for
+	// external/none providers), preserving the pre-secrets behaviour.
+	if len(svc.Secrets) > 0 {
+		merged := make(map[string]string, len(svc.Secrets)+len(envOverlay))
+		for k, v := range svc.Secrets {
+			merged[k] = v
+		}
+		for k, v := range envOverlay {
+			merged[k] = v // env_file wins
+		}
+		envOverlay = merged
+	}
+
 	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
 		return fmt.Errorf("external %s: deploy_cmd: %w", svc.Name, err)
 	}
@@ -227,6 +242,7 @@ func loadExternalEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil
 	}
+	path = expandHomePath(path)
 	m, err := readDotEnvFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -236,6 +252,35 @@ func loadExternalEnvFile(path string) (map[string]string, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// expandHomePath expands a leading ~ or ~/ (and $HOME) to the user's home
+// directory. env_file paths in KCL are commonly written with ~ (e.g.
+// "~/src/app/.env"); os.ReadFile does NOT expand it (the shell normally
+// would), so without this the file silently isn't found and the secret
+// overlay is dropped. Non-tilde paths pass through unchanged.
+func expandHomePath(path string) string {
+	if path == "" {
+		return path
+	}
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, "$HOME") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	switch {
+	case path == "~":
+		return home
+	case strings.HasPrefix(path, "~/"):
+		return home + path[1:]
+	case strings.HasPrefix(path, "$HOME/"):
+		return home + path[len("$HOME"):]
+	case path == "$HOME":
+		return home
+	}
+	return path
 }
 
 // resolveExternalTag picks the tag for an external deploy. Precedence

@@ -213,7 +213,7 @@ What user code / config might need to change:
 - **Per-env config (`environments[].config`).** Move the map to a
   sibling `config.<env>.yaml` file at the project root. Forge reads
   `config.<env>.yaml` automatically for the per-env ConfigMap
-  projection AND for `forge run` / `forge up` host-mode env injection.
+  projection AND for `forge up --env=<env>` host-mode env injection.
 
 - **CI workflows that read `environments[]` to gate deploy jobs.**
   Update them to source the env list from the filesystem

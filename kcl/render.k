@@ -116,6 +116,7 @@ _render_k8s_cluster = lambda d: K8sCluster -> any {
         "platform": d.platform if d.platform else None
         "ports": d.ports
         "cluster_rbac": _render_cluster_rbac(d.cluster_rbac) if d.cluster_rbac else None
+        "image_pull_secrets": d.image_pull_secrets if d.image_pull_secrets else None
     }
 }
 
@@ -173,6 +174,7 @@ _render_service = lambda s: Service -> any {
         "build_cmd": s.build_cmd if s.build_cmd else None
         "build_cwd": s.build_cwd if s.build_cwd else None
         "build_env": s.build_env if s.build_env else {}
+        "namespaced_rbac": s.namespaced_rbac if s.namespaced_rbac else None
     }
 }
 
@@ -189,6 +191,33 @@ _render_operator = lambda o: Operator -> any {
     }
 }
 
+_render_firebase_bundle_dir = lambda b: FirebaseBundleDir -> any {
+    {
+        "src": b.src
+        "dest": b.dest
+    }
+}
+
+_render_firebase_hosting = lambda d: FirebaseHosting -> any {
+    {
+        "type": "firebase"
+        "project": d.project
+        "site": d.site
+        "target": d.target if d.target else None
+        "public_dir": d.public_dir
+        "base_path": d.base_path if d.base_path else None
+        "bundle": [_render_firebase_bundle_dir(b) for b in d.bundle]
+        "rewrites": d.rewrites if d.rewrites else []
+    }
+}
+
+# Frontend deploy dispatcher. Only FirebaseHosting today; an unset deploy
+# projects as null (consumer treats that as "dev-serve / build only,
+# never auto-ship").
+_render_frontend_deploy = lambda d: any -> any {
+    _render_firebase_hosting(d) if d else None
+}
+
 _render_frontend = lambda f: Frontend -> any {
     {
         "name": f.name
@@ -198,6 +227,7 @@ _render_frontend = lambda f: Frontend -> any {
         "port": f.port
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars]
+        "deploy": _render_frontend_deploy(f.deploy)
     }
 }
 
@@ -213,8 +243,16 @@ _render_gateway_listener = lambda l: GatewayListener -> any {
 _render_gateway_tls = lambda t: GatewayTLS -> any {
     {
         "cert_issuer": t.cert_issuer if t.cert_issuer else None
-        "secret_name": t.secret_name
+        "secret_name": t.secret_name if t.secret_name else None
+        "certmap": t.certmap if t.certmap else None
         "mode": t.mode
+    }
+}
+
+_render_gateway_address = lambda a: GatewayAddress -> any {
+    {
+        "type": a.type
+        "value": a.value
     }
 }
 
@@ -226,6 +264,7 @@ _render_gateway = lambda g: Gateway -> any {
         "tls": _render_gateway_tls(g.tls) if g.tls else None
         "listeners": [_render_gateway_listener(l) for l in g.listeners]
         "raw_policy": g.raw_policy if g.raw_policy else None
+        "addresses": [_render_gateway_address(a) for a in g.addresses] if g.addresses else None
     }
 }
 
@@ -301,6 +340,12 @@ render = lambda bundle: Bundle -> any {
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]
         "grpc_routes": [_render_grpc_route(r) for r in bundle.grpc_routes]
         "runtime_classes": [_render_runtime_class(rc) for rc in bundle.runtime_classes]
+        # The secret PROVIDER declaration rides alongside the entities so
+        # the CLI can read WHERE secret values come from. Absent when
+        # unset (no null garbage). Secret VALUES never enter this output —
+        # only the declaration (type + path). NOT in render_manifests.
+        if bundle.secret_provider:
+            "secret_provider": bundle.secret_provider
     }
 }
 
@@ -358,19 +403,31 @@ _render_namespace = lambda env: RenderEnv -> any {
     }
 }
 
+# Env-wide image-pull Secrets (private registry). Declared once on the
+# K8sCluster ref and applied to every workload's generated
+# ServiceAccount. Defaults to [] (field omitted on the SA) when unset.
+_pull_secrets = lambda env: RenderEnv -> [str] {
+    env.cluster.image_pull_secrets if env.cluster.image_pull_secrets else []
+}
+
 _render_cluster_service = lambda s: Service, env: RenderEnv -> [any] {
     svc_lib.render_k8s_service(s, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_namespaced_rbac(s.name, env.cluster.namespace)
+        + rbac_lib.render_namespaced_rbac(
+            s.name,
+            env.cluster.namespace,
+            s.namespaced_rbac if s.namespaced_rbac else [],
+            _pull_secrets(env),
+        )
 }
 
 _render_operator_manifests = lambda o: Operator, env: RenderEnv -> [any] {
     svc_lib.render_operator(o, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_cluster_rbac(o.name, env.cluster.namespace, o.cluster_rbac)
+        + rbac_lib.render_cluster_rbac(o.name, env.cluster.namespace, o.cluster_rbac, _pull_secrets(env))
 }
 
 _render_cronjob_manifests = lambda c: CronJob, env: RenderEnv -> [any] {
     svc_lib.render_cronjob(c, env.cluster.namespace, env.cluster.registry, env.image_tag) \
-        + rbac_lib.render_namespaced_rbac(c.name, env.cluster.namespace)
+        + rbac_lib.render_namespaced_rbac(c.name, env.cluster.namespace, [], _pull_secrets(env))
 }
 
 # Render a RuntimeClass as a node.k8s.io/v1 manifest. Cluster-scoped

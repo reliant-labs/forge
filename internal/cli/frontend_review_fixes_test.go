@@ -413,6 +413,7 @@ func TestMockTransport_MutableStoreAndNotFound(t *testing.T) {
 		HasCreate:          true,
 		HasUpdate:          true,
 		HasDelete:          true,
+		ItemsField:         "tasks",
 		ImportPath:         "services/tasks/v1/tasks_pb",
 		EntityImportPath:   "db/v1/tasks_pb",
 		SchemaImport:       "TaskSchema",

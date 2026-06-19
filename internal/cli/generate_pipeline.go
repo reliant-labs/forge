@@ -315,6 +315,7 @@ func generateSteps() []GenStep {
 		{Name: "check Tier-1 file-stomp guard", Gate: always, Run: stepCheckTier1Drift, Tag: "validate"},
 		{Name: "snapshot Tier-1 exports", Gate: always, Run: stepSnapshotTier1Exports, Tag: "validate"},
 		{Name: "sync forge/pkg dev replace", Gate: always, Run: stepSyncDevForgePkg, Tag: "config"},
+		{Name: "forge/pkg compatibility handshake", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPkgCompatHandshake, Tag: "validate"},
 		{Name: "announce project", Gate: always, Run: stepAnnounceProject, Tag: "config"},
 		{Name: "pre-codegen contract check", Gate: gatePreChecksNotSkipped, GateReason: "--skip-pre-checks was passed", Run: stepPreCodegenContractCheck, Tag: "validate"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
@@ -1149,6 +1150,20 @@ func populateComponentPresence(ctx *pipelineContext) (rawHasOperators bool) {
 // fail to compile.
 func stepPreCodegenContractCheck(ctx *pipelineContext) error {
 	return preCodegenContractCheck(ctx.ProjectDir, ctx.Cfg)
+}
+
+// stepPkgCompatHandshake probes the project's resolved forge/pkg for the
+// symbols this binary's ORM/CRUD generator emits, BEFORE any codegen
+// mutates the tree (kalshi fr-ac69216583). A too-old forge/pkg pin lacking
+// e.g. orm.UnknownFieldError would otherwise let generate rewrite the
+// whole tree and only then fail its own validate, leaving the repo
+// mid-regen. Failing here keeps the tree untouched and names the fix.
+//
+// Gated by gatePreChecksNotSkipped (same opt-out as the contract check):
+// --skip-pre-checks bypasses it for the parallel-lane case where the
+// module graph is intentionally mid-migration.
+func stepPkgCompatHandshake(ctx *pipelineContext) error {
+	return checkPkgCompat(ctx.ProjectDir)
 }
 
 // stepDetectProtoDirs populates the proto-tree presence flags

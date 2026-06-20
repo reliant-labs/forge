@@ -5,16 +5,16 @@ description: Background workers — adding, implementing, and testing workers (i
 
 # Background Workers
 
-Workers are long-running background processes that don't serve HTTP but participate in the single-binary lifecycle with the same typed dependency injection and graceful shutdown as services. They live under `internal/<name>/`, like every other app-internal component — there is no top-level `workers/` directory.
+Workers are long-running background processes that don't serve HTTP but participate in the single-binary lifecycle with the same typed dependency injection and graceful shutdown as services. They live under `internal/workers/<name>/` — the `workers/` role subtree is nested under `internal/`, never a top-level `workers/` directory.
 
 ## Naming
 
 Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
 
-- `forge add worker calibrator_refit` → directory `internal/calibrator_refit/`, `package calibrator_refit`, `path: internal/calibrator_refit` in `forge.yaml`.
-- `forge add worker email-sender` → directory `internal/email_sender/`, `package email_sender`, `path: internal/email_sender`.
+- `forge add worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`, `path: internal/workers/calibrator_refit` in `forge.yaml`.
+- `forge add worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`, `path: internal/workers/email_sender`.
 
-**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case form under `internal/` *before* running `forge generate`. The `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`. The `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
 
 ## Adding a Worker
 
@@ -24,8 +24,8 @@ forge add worker <name> --kind cron --schedule "*/5 * * * *"
 ```
 
 This creates:
-- `internal/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
-- `internal/<name>/worker_test.go` — Basic lifecycle test
+- `internal/workers/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
+- `internal/workers/<name>/worker_test.go` — Basic lifecycle test
 - An entry in `forge.yaml` under `services:` with type `worker`
 
 After adding a worker, construct it in the binary's composition root (`Build`) and append it to `Server.Workers` — see [Wiring](#wiring) below.
@@ -116,7 +116,7 @@ services:
     type: worker
     kind: cron
     schedule: "0 */6 * * *"
-    path: internal/cleanup
+    path: internal/workers/cleanup
 ```
 
 ### Simple Periodic (no cron)
@@ -211,7 +211,7 @@ Because `Deps` fields are interfaces filled in one place, instantiating a worker
 
 - `Start()` must respect context cancellation — always select on `ctx.Done()`.
 - `Stop()` receives a context with a deadline — finish cleanup before it expires.
-- Workers live under `internal/<name>/`, never a top-level `workers/` dir. On-disk directories must match the canonical snake_case form.
+- Workers live under `internal/workers/<name>/`, never a top-level `workers/` dir. On-disk directory leaves must match the canonical snake_case form.
 - Worker `Deps` are interface-typed and filled by type in `Build`; scalars travel in a typed `<Component>Config` block, never as naked Deps fields.
 - Wire workers explicitly: construct in `Build`, append to `Server.Workers`. Use setters for late-bound, cross-worker deps. There is no `wire_gen.go` and no name-matched `*App` resolution.
 - Use `forge add worker`, not manual directory creation.

@@ -89,12 +89,12 @@ Each category is the same shape:
 | `shape` | `services[]`, `workers[]`, `operators[]`, `frontends[]`, `packs[]`, `packages[]` |
 | `shape.services[]` | `name`, `type`, `rpc_count`, `served`, `rpcs[]` — each rpc is `{name, streaming?, mcp_callable, served?}`. `served: false` (service-level always present; rpc-level additive, present only when false) marks a service that **no binary's `Build` composition root mounts** — the types/client generate from proto, but no `MountX`/constructor call in `internal/app/build.go` wires it into a served handler, so its RPCs are excluded from the MCP manifest (`mcp_callable: false`). This is determined structurally from the composition graph, NOT by matching a service-name string against a registry row. `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`. `mcp_callable: true` means the RPC is exposed as an MCP tool by the `forge-mcp` bridge; streaming RPCs are `mcp_callable: false` (they stay in `gen/mcp/manifest.json` with a `streaming` marker but are excluded from MCP `tools/list` because MCP tool calls are unary). Check this BEFORE planning to call an RPC via MCP. |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |
-| `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `orphan_stubs[]` (each `{service, dir, message}` — a service whose `internal/<svc>/` is a zero-impl `Unimplemented` stub that no `Build` mounts; resolve with `forge delete service <name>` or by implementing + mounting it in `internal/app/build.go`) |
+| `codegen` | `tracked_files`, `forge_version`, `last_generate`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `orphan_stubs[]` (each `{service, dir, message}` — a service whose `internal/handlers/<svc>/` is a zero-impl `Unimplemented` stub that no `Build` mounts; resolve with `forge delete service <name>` or by implementing + mounting it in `internal/app/build.go`) |
 | `packs` | per-pack `{name, installed_version, latest_version, status}` |
 | `proto_migration_alignment` | `divergence[]` (entities whose proto definition disagrees with migrations) |
 | `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
 | `composition` | `cycles[]` (each `{path[], message}` — a dependency cycle in a binary's `Build` graph), `narrow_interface_drops[]` (each `{consumer, dep, field, concrete, message}` — the constraint-3 hazard: a consumer's narrow Deps interface that no constructed concrete in the graph satisfies, i.e. would have been *silently dropped* under the old name-matched wiring; now surfaced loud). `error` on any cycle; `warn` on a silent-drop candidate. This is the guardrail that replaces the removed string-keyed registry magic — see the `forge map` graph below. |
-| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (each `{file, method, reason}`), `marker`, `legacy_marker` — custom-read-shape stubs (`forge:custom-read-shape` markers; the pre-rename `FORGE_CRUD_SHAPE_MISMATCH` spelling is still recognized for one release, and `legacy_marker` carries it for grep migration) scanned from the user-owned `internal/<svc>/handlers_crud.go`. A stub marks a deliberate non-AIP-158 read shape whose body is the user's to implement — but each stubbed RPC returns `CodeUnimplemented` in production, so the category is `warn` whenever `total_stubs > 0`. |
+| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (each `{file, method, reason}`), `marker`, `legacy_marker` — custom-read-shape stubs (`forge:custom-read-shape` markers; the pre-rename `FORGE_CRUD_SHAPE_MISMATCH` spelling is still recognized for one release, and `legacy_marker` carries it for grep migration) scanned from the user-owned `internal/handlers/<svc>/handlers_crud.go`. A stub marks a deliberate non-AIP-158 read shape whose body is the user's to implement — but each stubbed RPC returns `CodeUnimplemented` in production, so the category is `warn` whenever `total_stubs > 0`. |
 | `size_limits` | `findings[]` (each `{path, kind, count, threshold, message}` where `kind` is `file` or `method` — monster-file / monster-method warnings against the file/method-size thresholds). `warn`-level; the leverage that replaces hand-policing once the framework stops owning construction. |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
 | `deps` | `go_mod`, `go_sum` presence flags |
@@ -143,7 +143,7 @@ and tolerate unknown extras.
       ]
     },
     {
-      "path": "internal/users/handlers_crud_gen.go",
+      "path": "internal/handlers/users/handlers_crud_gen.go",
       "name": "handlers_crud_gen.go",
       "is_dir": false,
       "ownership": "forge-space, hand-edited (drift from regen)",
@@ -189,7 +189,7 @@ instead of silently skipped, as the old name-matched wiring would do).
 - `FORGE_SCAFFOLD` — file still carries placeholder markers.
 - `diverged-from-migrations` — proto entity whose shape disagrees with
   the migrations that own the schema.
-- `orphan-stub` — an `internal/<svc>/` dir that is a zero-impl
+- `orphan-stub` — an `internal/handlers/<svc>/` dir that is a zero-impl
   `Unimplemented` stub no binary's `Build` mounts.
 
 ## Common queries
@@ -339,7 +339,7 @@ if [ -n "$drift" ]; then
 fi
 
 # Before deleting a directory: check ownership.
-ownership=$(forge map --json | jq -r --arg p "internal/things" \
+ownership=$(forge map --json | jq -r --arg p "internal/handlers/things" \
   '.. | select(.path? == $p) | .ownership')
 ```
 

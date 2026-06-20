@@ -83,9 +83,9 @@ Then `forge lint --contract` is part of the per-phase gate. See the `contracts` 
 
 1. **Internal utility packages first** (domain types, naming, validation helpers). These have the fewest deps on the rest of the codebase.
 2. **Database layer** (`db/migrations/` plus any hand-written query files). Migrations are the schema source of truth — copy them as-is. `forge generate` shadow-applies them and projects the entity structs/ORM into `internal/db/<entity>_orm.go` for every table that also has CRUD RPCs in a service proto; don't port the source repo's generated ORM or entity types. Write plain postgres DDL (see the `db` skill) — the shadow applies migrations verbatim to a real ephemeral postgres; auxiliary DDL the bare DB can't satisfy is skipped.
-3. **Services** (`internal/<svc>/`). A service is one co-located directory: hand-written `contract.go` + impl alongside the generated `handlers_gen.go` / CRUD / authorizer stubs. The `*_gen.go` files get rewritten on every `forge generate`; only your hand-written code (the `contract.go` interface, its implementation, domain types) moves over. There is no separate top-level `handlers/<svc>/` tier to port into — collapse any source split into the one `internal/<svc>/`.
+3. **Services** (`internal/handlers/<svc>/`). A service is one co-located directory under the `internal/handlers/` role subtree: hand-written `contract.go` + impl alongside the generated `handlers_gen.go` / CRUD / authorizer stubs. The `*_gen.go` files get rewritten on every `forge generate`; only your hand-written code (the `contract.go` interface, its implementation, domain types) moves over. There is no separate top-level `handlers/<svc>/` tier to port into — collapse any source split into the one `internal/handlers/<svc>/`.
 4. **Composition root** (`internal/app/build.go`). This is owned Go you write and maintain — the typed `Build(infra) (*Server, error)` that constructs the dependency closure and fills each component's interface-typed `Deps` by type. Port the source repo's wiring intent into `Build` by hand; do NOT expect a regenerated `bootstrap.go` / `wire_gen.go` to wire things for you — that name-matched layer no longer exists.
-5. **Workers, operators, webhooks** — under `internal/<name>/`; implement the lifecycle methods (`Start`, `Stop`, `Reconcile`, webhook event handlers) and add them to the relevant `Server.Workers` / `Server.Operators` in `Build`.
+5. **Workers, operators, webhooks** — under `internal/workers/<name>/` and `internal/operators/<name>/` (webhooks attach to their service under `internal/handlers/<svc>/`); implement the lifecycle methods (`Start`, `Stop`, `Reconcile`, webhook event handlers) and add them to the relevant `Server.Workers` / `Server.Operators` in `Build`.
 
 ## Port-time design decisions you should NOT defer
 
@@ -104,7 +104,7 @@ If the source has a single wide `Repository` interface with many methods (a "god
 
 ### Adding a dep is a compile-time edit to `Build`
 
-The composition root (`internal/app/build.go`) is owned Go, not regenerated. Adding or removing a collaborator means editing two hand-written places: the component's `Deps` struct in `internal/<svc>/contract.go`, and the `Build` call site that fills it. Both are caught by the Go compiler — there is no name-matched regen step to run between editing `Deps` and building. If a port phase drops a vestigial `Logger` field from `<pkg>.Deps`, the only fix is to stop passing it at the `Build` call site; `go build` points you straight at the line. Do not look for a `forge generate` that re-emits wiring — there isn't one, and there is no generated `bootstrap.go` / `wire_gen.go` to chase.
+The composition root (`internal/app/build.go`) is owned Go, not regenerated. Adding or removing a collaborator means editing two hand-written places: the component's `Deps` struct in `internal/handlers/<svc>/contract.go`, and the `Build` call site that fills it. Both are caught by the Go compiler — there is no name-matched regen step to run between editing `Deps` and building. If a port phase drops a vestigial `Logger` field from `<pkg>.Deps`, the only fix is to stop passing it at the `Build` call site; `go build` points you straight at the line. Do not look for a `forge generate` that re-emits wiring — there isn't one, and there is no generated `bootstrap.go` / `wire_gen.go` to chase.
 
 ### Goose → golang-migrate
 
@@ -144,7 +144,7 @@ Forge's defaults are opinionated by design. A clean port should land with at mos
 
 ## Multi-binary `cmd/` layouts
 
-`cmd/` is entrypoints only: one cobra root (`cmd/main.go`) plus one real per-command subcommand file (`cmd/<svc>.go`, `cmd/<binary>.go`), each owning its own composition root (`serverCmd("<svc>", app.Mount<Svc>)`). `forge add service` adds the subcommand + its `internal/<svc>/`. If the source repo has additional binaries (CLI tools, background daemons, ops scripts) that aren't first-class forge components:
+`cmd/` is entrypoints only: one cobra root (`cmd/main.go`) plus one real per-command subcommand file (`cmd/<svc>.go`, `cmd/<binary>.go`), each owning its own composition root (`serverCmd("<svc>", app.Mount<Svc>)`). `forge add service` adds the subcommand + its `internal/handlers/<svc>/`. If the source repo has additional binaries (CLI tools, background daemons, ops scripts) that aren't first-class forge components:
 
 - For binaries that wrap forge-managed services or workers, prefer `forge add` and let forge own the wiring.
 - For genuinely standalone binaries (proxies, sidecars, off-service consumers) that need their own Deployment, use `forge add binary <name>` — it becomes a peer subcommand with its own `Build`. See the `binaries` skill for the decision tree.

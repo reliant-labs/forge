@@ -43,6 +43,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envutil"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/secrets"
@@ -947,7 +948,7 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	// explicit per-env KCL config beats the generic env-file, the
 	// developer's shell can still override, and the KCL port binding wins
 	// last. Missing env-file is non-fatal (nil map collapses to no-op).
-	envFileMap, _ := hostlaunch.ReadDotEnvFile(envFile)
+	envFileMap, _ := envutil.ParseDotEnv(envFile)
 	cmd.Env = hostlaunch.LayerHostEnv(parentEnv, envFileMap, nil, kclEnvVarsToMap(fe.EnvVars))
 
 	if fe.Port > 0 {

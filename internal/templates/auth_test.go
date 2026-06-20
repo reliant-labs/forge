@@ -195,6 +195,7 @@ func TestCmdServerTemplate_CallsInstallGeneratedAuth(t *testing.T) {
 			ConfigFields         map[string]bool
 			AuthProvider         string
 			AuthProviderExternal bool
+			RESTEnabled          bool
 		}{
 			Module:               "example.com/myproject",
 			ConfigFields:         map[string]bool{},

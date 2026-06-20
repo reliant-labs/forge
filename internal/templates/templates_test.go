@@ -70,12 +70,14 @@ func TestBootstrapTemplate_ZeroServices(t *testing.T) {
 
 	rendered := string(content)
 
-	// Must contain key functions
+	// Must contain key functions. BootstrapOnly (the string name filter)
+	// is retired (FORGE_SHAPE_REDESIGN §2): selection moved to the cmd
+	// layer over internal/app.Inventory.
 	if !strings.Contains(rendered, "func Bootstrap(") {
 		t.Fatal("missing Bootstrap function")
 	}
-	if !strings.Contains(rendered, "func BootstrapOnly(") {
-		t.Fatal("missing BootstrapOnly function")
+	if strings.Contains(rendered, "func BootstrapOnly(") {
+		t.Fatal("BootstrapOnly should be retired — string-keyed selection moved to the cmd layer")
 	}
 	if !strings.Contains(rendered, "func (a *App) Shutdown(") {
 		t.Fatal("missing Shutdown method")
@@ -160,29 +162,21 @@ func TestBootstrapTemplate_WithServicesStillDeclaresRunAll(t *testing.T) {
 	if !strings.Contains(rendered, "RegisteredServices(app, cfg, logger, opts...)") {
 		t.Fatal("bootstrap with services must consume the user-owned RegisteredServices row list")
 	}
-	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
-		t.Fatal("bootstrap must delegate name filtering to appkit.Run via Options.Only")
+	// String-keyed selection retired (§2): appkit.Run is filter-free.
+	if !strings.Contains(rendered, "appkit.Run(def, mux, logger)") {
+		t.Fatal("bootstrap must call the filter-free appkit.Run(def, mux, logger)")
+	}
+	if strings.Contains(rendered, "appkit.Options") {
+		t.Fatal("appkit.Options (the string filter) should be retired")
 	}
 }
 
-// TestBootstrapTemplate_LoudFilterBanner pins the loud-by-default contract
-// for the `./<bin> server <name>...` subcommand filter. The banner names
-// BOTH registered and excluded services/workers/operators so a user who
-// typo'd a name or forgot a service in the args sees it at boot instead of
-// chasing 404s through CORS/proxy/auth. Silent-skip here was a real
-// debug-time-sink; this test stops a future template edit from
-// reintroducing it.
-//
-// Since the 2026-06 appkit table migration the banner BEHAVIOR (known-set
-// computation, unknown-name warning, registered/excluded Warn) lives in
-// appkit.Run — pinned by pkg/appkit's filter-banner tests. What the
-// generated file must still guarantee is the DATA the banner is computed
-// from: a Name row for every service, worker, and operator, and the
-// names slice handed to appkit.Run via Options.Only. Dropping a
-// component kind from the def table would silently drop it from the
-// excluded report, defeating the whole point — exactly the regression
-// this test originally guarded.
-func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
+// TestBootstrapTemplate_ConstructsEveryComponentRow pins that the def
+// table carries a row for every service, worker, and operator. String-keyed
+// selection is retired (FORGE_SHAPE_REDESIGN §2): the old loud-filter banner
+// is gone (appkit.Run constructs+mounts everything), but the table must
+// still contribute a row per component kind so the binary serves them all.
+func TestBootstrapTemplate_ConstructsEveryComponentRow(t *testing.T) {
 	type svc struct {
 		Name, Package, ImportPath, FieldName, Alias, VarName string
 		Fallible, HasWebhooks                                bool
@@ -233,27 +227,21 @@ func TestBootstrapTemplate_LoudFilterBanner(t *testing.T) {
 	}
 	rendered := string(content)
 
-	// Every component kind must contribute Name rows to the def table —
-	// appkit.Run computes the banner's known set from these rows, so a
-	// missing kind cannot be reported as excluded. Service rows come
-	// from the user-owned RegisteredServices (registration-in-code);
-	// worker/operator rows stay inline.
+	// Every component kind must contribute a row to the def table. Service
+	// rows come from the user-owned RegisteredServices (registration-in-
+	// code); worker/operator rows stay inline.
 	for _, name := range []string{`Services: RegisteredServices(app, cfg, logger, opts...)`, `{Name: "indexer", Construct: func() error {`, `{Name: "scaler", Construct: func() error {`} {
 		if !strings.Contains(rendered, name) {
-			t.Errorf("bootstrap def table missing row %s — appkit's filter banner cannot report this name as excluded", name)
+			t.Errorf("bootstrap def table missing row %s", name)
 		}
 	}
 
-	// The names filter must reach appkit.Run, which owns the unknown-name
-	// warning and the registered/excluded banner.
-	if !strings.Contains(rendered, "appkit.Run(def, mux, logger, appkit.Options{Only: names})") {
-		t.Error("bootstrap must hand the names filter to appkit.Run via Options.Only — that is where the loud filter banner lives now")
+	// appkit.Run is filter-free (string-keyed selection retired).
+	if !strings.Contains(rendered, "appkit.Run(def, mux, logger)") {
+		t.Error("bootstrap must call the filter-free appkit.Run(def, mux, logger)")
 	}
-
-	// And the banner behavior itself must NOT leak back inline (the
-	// table-not-program rule).
-	if strings.Contains(rendered, "server filter active") {
-		t.Error("filter banner emission belongs to appkit.Run, not the generated table")
+	if strings.Contains(rendered, "server filter active") || strings.Contains(rendered, "appkit.Options") {
+		t.Error("the string filter / loud banner is retired and must not appear")
 	}
 
 	fset := token.NewFileSet()
@@ -690,12 +678,13 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 }
 
 // TestCmdServerTemplate_ComposesServer verifies the generated
-// cmd/server.go is the COMPOSITION SITE: it mounts services via the
-// appkit Bootstrap mechanism, runs the user-owned PostBootstrap with the
-// concrete *app.App (no serverkit.Hooks indirection / type assertion),
-// resolves the REST swap, selects workers/operators, and packs the
-// finished pieces into serverkit.Server before serverkit.Run. If any of
-// these wirings disappear, generated projects regress.
+// cmd/server.go is the §2 hybrid-DI COMPOSITION SITE: open the owned infra
+// (app.OpenInfra), run the generated injector (app.Build), run the owned
+// two-phase wiring (app.PostBuild), mount the selected services over the
+// data-only app.Inventory, select workers/operators from the constructed
+// *Services, and pack the finished pieces into serverkit.Server before
+// serverkit.Run. If any of these wirings disappear, generated projects
+// regress.
 func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	data := struct {
 		Module               string
@@ -705,6 +694,7 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		ConfigFields         map[string]bool
 		AuthProvider         string
 		AuthProviderExternal bool
+		RESTEnabled          bool
 	}{
 		Module:       "example.com/myproject",
 		ConfigFields: map[string]bool{},
@@ -716,41 +706,42 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	}
 	rendered := string(content)
 
-	// PostBootstrap runs with the concrete *app.App, NOT via a
-	// serverkit.Hooks type assertion.
-	if !strings.Contains(rendered, "app.PostBootstrap(theApp)") {
-		t.Errorf("cmd-server.go.tmpl must call app.PostBootstrap(theApp) directly; rendered output:\n%s", rendered)
+	// Hybrid DI: OpenInfra → Build → PostBuild over internal/app.
+	for _, want := range []string{
+		"app.OpenInfra(ctx, cfg, logger)",
+		"app.Build(infra)",
+		"app.PostBuild(services)",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("cmd-server.go.tmpl must call %q (§2 hybrid DI); rendered output:\n%s", want, rendered)
+		}
 	}
-	if strings.Contains(rendered, "serverkit.Hooks") {
-		t.Errorf("cmd-server.go.tmpl must not reference the removed serverkit.Hooks; rendered output:\n%s", rendered)
+	// The old appkit Bootstrap path is gone.
+	for _, gone := range []string{"app.BootstrapOnly(", "app.Bootstrap(", "app.PostBootstrap(", "theApp.RESTHandler()", "serverkit.Hooks"} {
+		if strings.Contains(rendered, gone) {
+			t.Errorf("cmd-server.go.tmpl must NOT reference the retired %q; rendered output:\n%s", gone, rendered)
+		}
 	}
-	// The cmd owns the mount call now (selection lives here).
-	if !strings.Contains(rendered, "app.BootstrapOnly(mux, logger, cfg, args, opts...)") {
-		t.Errorf("cmd-server.go.tmpl must call app.BootstrapOnly itself with the cmd-built mux+opts; rendered output:\n%s", rendered)
+	// Mount selection over the data-only inventory + worker/operator
+	// selection over the constructed *Services.
+	if !strings.Contains(rendered, "mountServices(services, mux, cfg, logger, args, opts...)") {
+		t.Errorf("cmd-server.go.tmpl must mount selected services over app.Inventory; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "app.Bootstrap(mux, logger, cfg, opts...)") {
-		t.Errorf("cmd-server.go.tmpl must call app.Bootstrap for the unfiltered path; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "selectWorkers(app.WorkerList(services), args)") {
+		t.Errorf("cmd-server.go.tmpl must select workers from the constructed *Services; rendered output:\n%s", rendered)
 	}
-	// REST swap resolved by the caller into the composed handler.
-	if !strings.Contains(rendered, "theApp.RESTHandler()") {
-		t.Errorf("cmd-server.go.tmpl must resolve the REST swap before building Server.Handler; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "selectOperators(app.OperatorList(services), args)") {
+		t.Errorf("cmd-server.go.tmpl must select operators from the constructed *Services; rendered output:\n%s", rendered)
 	}
-	// Selected workers/operators packed into Server.
-	if !strings.Contains(rendered, "selectWorkers(theApp.WorkerList(), args)") {
-		t.Errorf("cmd-server.go.tmpl must select workers by name before packing Server.Workers; rendered output:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "selectOperators(theApp.OperatorList(), args)") {
-		t.Errorf("cmd-server.go.tmpl must select operators by name before packing Server.Operators; rendered output:\n%s", rendered)
-	}
-	// Composed Server + RunOperators + OnShutdown.
+	// Composed Server + RunOperators (over services) + OnShutdown.
 	if !strings.Contains(rendered, "serverkit.Run(ctx, skCfg, serverkit.Server{") {
 		t.Errorf("cmd-server.go.tmpl must call serverkit.Run with a composed serverkit.Server; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "RunOperators: theApp.RunOperators") {
-		t.Errorf("cmd-server.go.tmpl must pass theApp.RunOperators into Server; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "app.RunOperators(services, ctx, logger, healthProbeAddr)") {
+		t.Errorf("cmd-server.go.tmpl must pass app.RunOperators(services, ...) into Server; rendered output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "OnShutdown:") {
-		t.Errorf("cmd-server.go.tmpl must compose Server.OnShutdown (app.Shutdown + otel flush); rendered output:\n%s", rendered)
+		t.Errorf("cmd-server.go.tmpl must compose Server.OnShutdown (otel flush); rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.

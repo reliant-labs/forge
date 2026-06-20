@@ -46,6 +46,32 @@ type ServiceTemplateData struct {
 	TestHelperName string
 }
 
+// protoImportPath derives the relative proto import path for a service
+// from its descriptor's GoPackage. GoPackage is like
+// "github.com/project/gen/proto/services/echo/v1"; the result strips the
+// module + "/gen/" prefix and the trailing "/v1" (or /v2, …) version
+// suffix, yielding "proto/services/echo". Returns "" when either
+// ModulePath or GoPackage is empty, or when GoPackage doesn't carry the
+// expected module+/gen/ prefix. Single source of the derivation shared by
+// mapServiceDefToTemplateData (ProtoImportPath/ProtoPackage),
+// buildCRUDTemplateData, and buildCRUDTestTemplateData.
+func protoImportPath(svc ServiceDef) string {
+	if svc.ModulePath == "" || svc.GoPackage == "" {
+		return ""
+	}
+	// Strip module + "/gen/" prefix and "/v1" suffix.
+	prefix := svc.ModulePath + "/gen/"
+	rest, ok := strings.CutPrefix(svc.GoPackage, prefix)
+	if !ok {
+		return ""
+	}
+	// Remove trailing /v1, /v2, etc.
+	if idx := strings.LastIndex(rest, "/v"); idx >= 0 {
+		rest = rest[:idx]
+	}
+	return rest
+}
+
 // mapServiceDefToTemplateData converts a ServiceDef to the data shape expected by embedded templates.
 // projectDir is used to detect cross-role package-name collisions for the
 // `app.NewTest<X>` helper name (when there's an internal/<pkg> matching the
@@ -59,18 +85,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 	}
 	// GoPackage is like "github.com/project/gen/proto/services/echo/v1"
 	// We need ProtoImportPath = "proto/services/echo" (relative, no /v1)
-	protoImportPath := ""
-	if svc.ModulePath != "" && svc.GoPackage != "" {
-		// Strip module + "/gen/" prefix and "/v1" suffix
-		prefix := svc.ModulePath + "/gen/"
-		if rest, ok := strings.CutPrefix(svc.GoPackage, prefix); ok {
-			protoImportPath = rest
-			// Remove trailing /v1, /v2, etc.
-			if idx := strings.LastIndex(protoImportPath, "/v"); idx >= 0 {
-				protoImportPath = protoImportPath[:idx]
-			}
-		}
-	}
+	importPath := protoImportPath(svc)
 
 	connectPkg := svc.PkgName + "connect"
 
@@ -107,8 +122,8 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		ServicePackage:      pkgName,
 		ServiceImportPath:   pkgName,
 		Module:              svc.ModulePath,
-		ProtoImportPath:     protoImportPath,
-		ProtoPackage:        protoImportPath,
+		ProtoImportPath:     importPath,
+		ProtoPackage:        importPath,
 		ProtoConnectPackage: connectPkg,
 		HandlerName:         svc.Name,
 		ProtoFileSymbol:     protoFileSymbol,

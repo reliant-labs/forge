@@ -154,10 +154,10 @@ func (a *App) WorkerList() []serverkit.Worker {
 	return nil
 {{- end}}
 }
-// OperatorList returns all operators as a slice for serverkit lifecycle
-// gating. OperatorInstance satisfies serverkit.Operator via its Name
-// method. Emitted unconditionally so the serverkit Application contract
-// is satisfied even in projects with no operators (returns nil there).
+// OperatorList returns all operators as a slice the cmd-server shim
+// selects from and packs into serverkit.Server.Operators.
+// OperatorInstance satisfies serverkit.Operator via its Name method.
+// Emitted unconditionally (returns nil in projects with no operators).
 func (a *App) OperatorList() []serverkit.Operator {
 {{- if .Operators}}
 	return []serverkit.Operator{
@@ -203,8 +203,8 @@ func (a *App) HasOperators() bool {
 }
 
 // RunOperators is a no-op when no operators are configured.
-// Signature matches serverkit.Application (with healthProbeAddr) so the
-// generated App satisfies the interface unconditionally.
+// Signature matches serverkit.Server.RunOperators (with healthProbeAddr)
+// so the cmd-server shim can pass it through unconditionally.
 func (a *App) RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error {
 	return nil
 }
@@ -407,9 +407,9 @@ func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, 
 {{- if and .RESTEnabled .Services}}
 		// REST (forge.yaml api.rest): appkit builds the vanguard transcoder
 		// from each row's ConnectName; the wrapped handler lands on the
-		// unexported restHandler field backing the RESTHandler() accessor
-		// (required by serverkit.Application), which serverkit serves in
-		// place of the bare mux when non-nil.
+		// unexported restHandler field backing the RESTHandler() accessor,
+		// which the cmd-server shim reads to serve in place of the bare mux
+		// when non-nil.
 		REST: &appkit.RESTDef{Assign: func(h http.Handler) { app.restHandler = h }},
 {{- end}}
 	}

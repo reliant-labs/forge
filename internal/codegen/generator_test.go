@@ -344,9 +344,9 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 //     unexported `app.restHandler` field.
 //
 // The generated app_gen.go grows an unexported `restHandler http.Handler`
-// field plus a `RESTHandler() http.Handler` accessor method (required by
-// the serverkit.Application interface); this test confirms both are
-// always emitted so serverkit can call the method unconditionally without
+// field plus a `RESTHandler() http.Handler` accessor method (read by the
+// cmd-server shim to resolve the REST swap); this test confirms both are
+// always emitted so the shim can call the method unconditionally without
 // a templated branch.
 func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 	targetDir := t.TempDir()
@@ -407,9 +407,9 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 		t.Error("services_gen.go should reference ordersv1connect.OrdersServiceName for OrdersService")
 	}
 	// The Assign closure must land on the unexported restHandler field
-	// — the backing store for the RESTHandler() accessor that
-	// serverkit.Application requires (A2/serverkit shape), with the
-	// transcoder construction itself in appkit (A5 table shape).
+	// — the backing store for the RESTHandler() accessor the cmd-server
+	// shim reads (A2/serverkit shape), with the transcoder construction
+	// itself in appkit (A5 table shape).
 	if !strings.Contains(bContent, "app.restHandler = h") {
 		t.Error("bootstrap.go RESTDef.Assign should point at app.restHandler (unexported field backing the RESTHandler() method)")
 	}

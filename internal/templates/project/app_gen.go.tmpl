@@ -67,12 +67,12 @@ type App struct {
 {{- end}}
 	// restHandler is the vanguard-wrapped Connect mux installed when
 	// `api.rest: true`. It serves REST↔Connect↔gRPC on the same handler
-	// chain; serverkit (via the RESTHandler() method below) substitutes
-	// it for the bare mux when non-nil. nil (default, REST off) means the
-	// runtime falls back to the bare mux. The field is unexported because
-	// serverkit.Application requires `RESTHandler() http.Handler` as a
-	// method, not a field — exposing both would shadow the method on
-	// callers that read app.RESTHandler as a field.
+	// chain; the cmd-server shim (via the RESTHandler() method below)
+	// substitutes it for the bare mux when non-nil before handing the
+	// composed handler to serverkit.Run. nil (default, REST off) means
+	// the runtime falls back to the bare mux. The field is unexported and
+	// read via the RESTHandler() method — exposing both would shadow the
+	// method on callers that read app.RESTHandler as a field.
 	restHandler http.Handler
 
 	// Hooks customizes the appkit-driven bootstrap orchestration
@@ -93,8 +93,9 @@ type App struct {
 }
 
 // RESTHandler returns the vanguard REST transcoder installed when
-// `api.rest: true` in forge.yaml, or nil when REST is disabled.
-// Implements the serverkit.Application contract.
+// `api.rest: true` in forge.yaml, or nil when REST is disabled. The
+// cmd-server shim reads it to resolve the REST swap before building
+// serverkit.Server.Handler.
 func (a *App) RESTHandler() http.Handler { return a.restHandler }
 {{- if .OrmEnabled}}
 

@@ -5,7 +5,7 @@
 //
 //   - runDeploy           (internal/cli/deploy.go)
 //   - runDevClusterReload (internal/cli/dev_cluster.go)
-//   - upDeployCluster     (internal/cli/up.go)
+//   - reconcileCluster    (internal/cli/up.go)
 //
 // All three drove the same kubectl invocations against the same KCL
 // renderer; they differed only in the pre-flight (context guard vs

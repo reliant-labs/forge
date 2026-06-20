@@ -357,7 +357,14 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 		{Name: "BillingService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectRoot, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 
@@ -433,7 +440,14 @@ type Deps struct {
 	services := []ServiceDef{
 		{Name: "BillingService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectRoot, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectRoot, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 	body, _ := os.ReadFile(filepath.Join(projectRoot, "pkg", "app", "testing.go"))

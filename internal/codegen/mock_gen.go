@@ -32,8 +32,8 @@ type MockService struct {
 	GenerateCmdServerFunc           func([]ConfigMessage, string, *checksums.FileChecksums) error
 	GenerateCmdServerWithFieldsFunc func(map[string]bool, string, string, *checksums.FileChecksums) error
 	GenerateConfigLoaderFunc        func([]ConfigMessage, string, *checksums.FileChecksums) error
-	GenerateBootstrapFunc           func([]ServiceDef, []BootstrapPackageData, []BootstrapWorkerData, []BootstrapOperatorData, string, string, bool, string, map[string]bool, map[string]bool, BootstrapFeatures, *checksums.FileChecksums) error
-	GenerateBootstrapTestingFunc    func([]ServiceDef, []BootstrapPackageData, []BootstrapWorkerData, []BootstrapOperatorData, string, bool, string, *checksums.FileChecksums) error
+	GenerateBootstrapFunc           func(BootstrapGenInput) error
+	GenerateBootstrapTestingFunc    func(BootstrapTestingGenInput) error
 	GenerateMigrateFunc             func(string, string, bool, *checksums.FileChecksums) error
 	GenerateSetupFunc               func(string, string, bool, string) error
 }
@@ -134,18 +134,18 @@ func (m *MockService) GenerateConfigLoader(messages []ConfigMessage, targetDir s
 	return contractkit.MockNotSet("MockService", "GenerateConfigLoader")
 }
 
-func (m *MockService) GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
-	m.Record("GenerateBootstrap", services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, configFields, webhookServices, features, cs)
+func (m *MockService) GenerateBootstrap(in BootstrapGenInput) error {
+	m.Record("GenerateBootstrap", in)
 	if m.GenerateBootstrapFunc != nil {
-		return m.GenerateBootstrapFunc(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, configFields, webhookServices, features, cs)
+		return m.GenerateBootstrapFunc(in)
 	}
 	return contractkit.MockNotSet("MockService", "GenerateBootstrap")
 }
 
-func (m *MockService) GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
-	m.Record("GenerateBootstrapTesting", services, packages, workers, operators, modulePath, multiTenantEnabled, projectDir, cs)
+func (m *MockService) GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
+	m.Record("GenerateBootstrapTesting", in)
 	if m.GenerateBootstrapTestingFunc != nil {
-		return m.GenerateBootstrapTestingFunc(services, packages, workers, operators, modulePath, multiTenantEnabled, projectDir, cs)
+		return m.GenerateBootstrapTestingFunc(in)
 	}
 	return contractkit.MockNotSet("MockService", "GenerateBootstrapTesting")
 }

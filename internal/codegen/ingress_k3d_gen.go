@@ -33,8 +33,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // K3dListener is the minimal slice of a Gateway listener that the
@@ -48,10 +46,12 @@ type K3dListener struct {
 }
 
 // K3dPortsGenInput is the per-project input for [GenerateK3dPorts].
+// Embeds GenContext for ProjectDir + Checksums (ModulePath is unused —
+// this fragment carries no Go imports).
 type K3dPortsGenInput struct {
-	ProjectDir string                   // project root; output relative to here
-	Listeners  []K3dListener            // every dev-env listener, in any order
-	Checksums  *checksums.FileChecksums // when set, the rendered fragment is recorded
+	GenContext
+
+	Listeners []K3dListener // every dev-env listener, in any order
 }
 
 // GenerateK3dPorts writes deploy/k3d-ports.yaml. Returns nil when

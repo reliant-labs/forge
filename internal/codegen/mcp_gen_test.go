@@ -263,7 +263,7 @@ func TestGenerateMCP_ProtoTypesMapToJSONSchema(t *testing.T) {
 // service yet"). MCP hosts treat the absent file as "no tools".
 func TestGenerateMCP_NoServicesNoManifest(t *testing.T) {
 	tmp := t.TempDir()
-	if err := GenerateMCPManifest(MCPGenInput{ProjectDir: tmp, ProjectName: "demo"}); err != nil {
+	if err := GenerateMCPManifest(MCPGenInput{GenContext: GenContext{ProjectDir: tmp}, ProjectName: "demo"}); err != nil {
 		t.Fatalf("GenerateMCPManifest: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "gen", "mcp", "manifest.json")); !os.IsNotExist(err) {

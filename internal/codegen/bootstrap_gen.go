@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -498,7 +497,43 @@ func leaderElectionID(modulePath string) string {
 	return slug + "-leader"
 }
 
-func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, databaseDriver string, ormEnabled bool, projectDir string, configFields map[string]bool, webhookServices map[string]bool, features BootstrapFeatures, cs *checksums.FileChecksums) error {
+// BootstrapGenInput is the input for [GenerateBootstrap]. It embeds
+// GenContext (ProjectDir / ModulePath / Checksums) and adds the
+// component inventory + feature toggles that drive pkg/app/bootstrap.go.
+//
+// This replaces the prior 12-positional-parameter signature; the field
+// names below map 1:1 to the old params (modulePath→ModulePath via
+// GenContext, projectDir→ProjectDir, cs→Checksums).
+type BootstrapGenInput struct {
+	GenContext
+
+	Services        []ServiceDef
+	Packages        []BootstrapPackageData
+	Workers         []BootstrapWorkerData
+	Operators       []BootstrapOperatorData
+	DatabaseDriver  string          // "" means no DB; non-"" gates DB field + setupDatabase wiring
+	OrmEnabled      bool            // gates the generated ORM client (independent of DatabaseDriver)
+	ConfigFields    map[string]bool // proto-derived config field names; nil → DefaultConfigFieldNames()
+	WebhookServices map[string]bool // snake-case service package name → has-webhooks
+	Features        BootstrapFeatures
+}
+
+func GenerateBootstrap(in BootstrapGenInput) error {
+	// Destructure into the local names the body has always used so the
+	// (large, comment-dense) emission logic below stays untouched.
+	services := in.Services
+	packages := in.Packages
+	workers := in.Workers
+	operators := in.Operators
+	modulePath := in.ModulePath
+	databaseDriver := in.DatabaseDriver
+	ormEnabled := in.OrmEnabled
+	projectDir := in.ProjectDir
+	configFields := in.ConfigFields
+	webhookServices := in.WebhookServices
+	features := in.Features
+	cs := in.Checksums
+
 	hasDatabase := databaseDriver != ""
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
@@ -813,7 +848,35 @@ type DepsAutoStub struct {
 //
 // cs is the project's checksum tracker — passing it keeps pkg/app/testing.go
 // recorded so `forge audit` doesn't flag stale state on it. A nil cs is tolerated.
-func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackageData, workers []BootstrapWorkerData, operators []BootstrapOperatorData, modulePath string, multiTenantEnabled bool, projectDir string, cs *checksums.FileChecksums) error {
+//
+// BootstrapTestingGenInput embeds GenContext (ProjectDir / ModulePath /
+// Checksums) and adds the component inventory + multi-tenancy toggle.
+// Replaces the prior 8-positional-parameter signature; field names map
+// 1:1 to the old params.
+type BootstrapTestingGenInput struct {
+	GenContext
+
+	Services           []ServiceDef
+	Packages           []BootstrapPackageData
+	Workers            []BootstrapWorkerData
+	Operators          []BootstrapOperatorData
+	MultiTenantEnabled bool
+}
+
+func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
+	// Destructure into the long-standing local names so the body below
+	// (disk resolution + auto-stub assembly) stays untouched.
+	services := in.Services
+	packages := in.Packages
+	// in.Workers / in.Operators are accepted for inventory symmetry with
+	// BootstrapGenInput but testing.go is service+package scoped only, so
+	// the body never reads them (it didn't before this struct conversion
+	// either — they were unused positional params).
+	modulePath := in.ModulePath
+	multiTenantEnabled := in.MultiTenantEnabled
+	projectDir := in.ProjectDir
+	cs := in.Checksums
+
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {
 		return err

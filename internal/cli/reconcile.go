@@ -19,10 +19,10 @@
 //	                               host process (go-run / air / binary /
 //	                               delve). up-only.
 //	              * frontend     — start every declared frontend's dev
-//	                               server (`npm run dev`). up-only.
-//	              * frontendShip — build + ship frontends that declare a
-//	                               first-class deploy target (Firebase
-//	                               Hosting). deploy-only.
+//	                               server (`npm run dev`). up-only. (deploy
+//	                               instead publishes Firebase frontends — a
+//	                               fixed, structural step of the deploy
+//	                               pipeline, not a scope field.)
 //
 //	lifecycle — what a run does once everything is started:
 //	              * once      — reconcile and RETURN. `forge deploy` is
@@ -41,8 +41,8 @@
 //
 // In this vocabulary:
 //
-//	forge deploy <env>  = scope{cluster, frontendShip}, lifecycle=once,
-//	                      opts=<from flags>
+//	forge deploy <env>  = scope{cluster} (+ structural Firebase publish),
+//	                      lifecycle=once, opts=<from flags>
 //	forge up --env=<e>  = scope=all,                     lifecycle=auto,
 //	                      opts={}
 //
@@ -57,9 +57,9 @@ package cli
 // reconcileScope names which entity kinds a reconcile run acts on. A run
 // touches only the kinds whose field is true. `forge up` derives its scope
 // from the --cluster-only / --host-only flags via upScope (fullUpScope
-// masked to one side of the split); `forge deploy`'s scope is the fixed
-// {cluster, frontendShip} set, expressed structurally by the deploy
-// pipeline rather than threaded as a value.
+// masked to one side of the split); `forge deploy`'s scope (cluster apply +
+// Firebase frontend publish) is fixed and expressed structurally by the
+// deploy pipeline rather than threaded as a value.
 type reconcileScope struct {
 	// cluster applies the in-cluster workloads + External/Compose deploy
 	// targets (the runDeploy pipeline). Both commands set this.
@@ -72,10 +72,6 @@ type reconcileScope struct {
 	host bool
 	// frontend starts each declared frontend's dev server. up-only.
 	frontend bool
-	// frontendShip builds + ships frontends with a first-class deploy
-	// target (Firebase Hosting). deploy-only — it's the production
-	// publish, not the dev-server start that `frontend` is.
-	frontendShip bool
 }
 
 // fullUpScope is `forge up`'s whole-dev-loop scope: build+deploy the cluster

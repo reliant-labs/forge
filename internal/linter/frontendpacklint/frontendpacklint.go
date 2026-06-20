@@ -31,30 +31,29 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/linter/finding"
 	"gopkg.in/yaml.v3"
 )
 
-// Severity indicates how important a finding is. The frontendpacklint
-// analyzer only emits warnings — it is intentionally non-blocking.
-type Severity string
-
-// Severity enum values.
-const (
-	SeverityWarning Severity = "warn"
+// Severity and Finding now live in the shared internal/linter/finding
+// package. This package historically spelled its warning level "warn";
+// it now resolves to the canonical "warning" via the alias below. The
+// change is invisible in FormatText (which renders a fixed ⚠️ icon, not
+// the severity string) and in the `forge lint --json` output (which
+// always emitted "warning" thanks to the now-deleted normalize shim).
+type (
+	Severity = finding.Severity
+	Finding  = finding.Finding
 )
 
-// Finding describes a single import that violates the soft rule.
-type Finding struct {
-	Pack     string   `json:"pack"`
-	File     string   `json:"file"`
-	Line     int      `json:"line"`
-	Import   string   `json:"import"`
-	Severity Severity `json:"severity"`
-	Rule     string   `json:"rule"`
-	Message  string   `json:"message"`
-}
+// Severity enum values. frontendpacklint only ever emits warnings — it
+// is intentionally non-blocking.
+const (
+	SeverityWarning = finding.SeverityWarning
+)
 
-// Result aggregates findings.
+// Result aggregates findings. Distinct type (not an alias) so
+// frontendpacklint keeps its own FormatText / HasWarnings.
 type Result struct {
 	Findings []Finding `json:"findings"`
 }

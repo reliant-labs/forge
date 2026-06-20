@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
 // TestLintJSONReportShape pins the exact serialized shape of the
@@ -178,18 +180,31 @@ func TestExternalLinesToFindings(t *testing.T) {
 	}
 }
 
-func TestNormalizeLintSeverity(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"error", lintSevError},
-		{"warn", lintSevWarning},
-		{"warning", lintSevWarning},
-		{"info", lintSevInfo},
-		{"WEIRD", lintSevWarning}, // unknown degrades to warning, never error
+// TestParseSeverity covers the canonical severity vocabulary that
+// replaced the old normalizeLintSeverity shim. The internal linters now
+// emit finding.Severity directly (single spelling), so the only
+// normalization left is parsing free-form forge.yaml rule levels: "warn"
+// is accepted as a legacy alias for "warning", and anything unrecognized
+// returns ("", false) — the disabled-rule sentinel — rather than the old
+// shim's "degrade to warning" fallback (which has been deleted).
+func TestParseSeverity(t *testing.T) {
+	okCases := []struct {
+		in   string
+		want finding.Severity
+	}{
+		{"error", finding.SeverityError},
+		{"warn", finding.SeverityWarning},
+		{"warning", finding.SeverityWarning},
+		{"info", finding.SeverityInfo},
 	}
-	for _, c := range cases {
-		if got := normalizeLintSeverity(c.in); got != c.want {
-			t.Errorf("normalizeLintSeverity(%q) = %q, want %q", c.in, got, c.want)
+	for _, c := range okCases {
+		got, ok := finding.ParseSeverity(c.in)
+		if !ok || got != c.want {
+			t.Errorf("ParseSeverity(%q) = (%q, %v), want (%q, true)", c.in, got, ok, c.want)
 		}
+	}
+	if got, ok := finding.ParseSeverity("WEIRD"); ok {
+		t.Errorf("ParseSeverity(%q) = (%q, true), want (\"\", false)", "WEIRD", got)
 	}
 }
 

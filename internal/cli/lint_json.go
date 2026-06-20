@@ -55,18 +55,20 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 	"github.com/reliant-labs/forge/internal/linter/frontendpacklint"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/scaffolds"
 )
 
-// Severity values used in the JSON report. Internal linters use a mix
-// of "warn"/"warning" spellings; normalizeLintSeverity collapses them.
+// Severity values used in the JSON report. These now match the canonical
+// internal/linter/finding spellings exactly, so no normalization is
+// needed when mapping linter findings onto the JSON contract.
 const (
-	lintSevError   = "error"
-	lintSevWarning = "warning"
-	lintSevInfo    = "info"
+	lintSevError   = string(finding.SeverityError)
+	lintSevWarning = string(finding.SeverityWarning)
+	lintSevInfo    = string(finding.SeverityInfo)
 )
 
 // lintJSONFinding is one normalized diagnostic. See the file header for
@@ -103,23 +105,6 @@ type lintJSONReport struct {
 // as errDoctorFailed: the report carries the detail; this line just
 // makes cobra exit 1 with a one-line stderr reason.
 var errLintJSONFailed = fmt.Errorf("lint reported errors; see JSON report above")
-
-// normalizeLintSeverity collapses the severity spellings used across
-// the internal linter packages ("warn" vs "warning") onto the JSON
-// contract values. Unknown spellings degrade to "warning" rather than
-// fabricating an error.
-func normalizeLintSeverity(s string) string {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "error":
-		return lintSevError
-	case "info":
-		return lintSevInfo
-	case "warn", "warning":
-		return lintSevWarning
-	default:
-		return lintSevWarning
-	}
-}
 
 // buildLintJSONReport assembles the report envelope from collected
 // findings plus the gating verdict computed by the caller (which
@@ -470,34 +455,38 @@ func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.Proj
 // Structured collectors — thin maps over the internal linter packages.
 // ---------------------------------------------------------------------------
 
-// forgeconvFindingsToJSON maps forgeconv findings (also produced by
-// contractcheck.Inspect) onto the JSON contract. Remediation text
-// becomes fix_hint.
-func forgeconvFindingsToJSON(fs []forgeconv.Finding) []lintJSONFinding {
+// findingsToJSON is the single canonical mapper from the shared
+// finding.Finding (emitted by every internal linter — forgeconv,
+// scaffolds, migrationlint, frontendpacklint) onto the lint --json
+// contract. It replaces the four near-identical per-package mappers that
+// existed before the finding package was introduced.
+//
+// Field mapping rules, unified:
+//   - Severity passes through directly: the canonical finding severities
+//     ("error"/"warning"/"info") ARE the JSON contract values, so no
+//     normalization shim is needed.
+//   - File comes from f.File, falling back to f.Path for whole-file
+//     (line-less) scaffold findings — exactly one of the two is ever set.
+//   - Remediation becomes fix_hint (forgeconv's actionable hints).
+//
+// Pack/Import are linter-internal context that the JSON contract folds
+// into Message at emit time, so they are not projected as separate
+// fields here (preserving the historical frontendpacklint JSON shape,
+// which never exposed them either).
+func findingsToJSON(fs []finding.Finding) []lintJSONFinding {
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
+		file := f.File
+		if file == "" {
+			file = f.Path
+		}
 		out = append(out, lintJSONFinding{
-			File:     f.File,
+			File:     file,
 			Line:     f.Line,
-			Severity: normalizeLintSeverity(string(f.Severity)),
+			Severity: string(f.Severity),
 			Rule:     f.Rule,
 			Message:  f.Message,
 			FixHint:  f.Remediation,
-		})
-	}
-	return out
-}
-
-// scaffoldsFindingsToJSON maps scaffold-lint findings (also produced by
-// BannerLintRoot and LintWorkaroundsRoot) onto the JSON contract.
-func scaffoldsFindingsToJSON(fs []scaffolds.Finding) []lintJSONFinding {
-	out := make([]lintJSONFinding, 0, len(fs))
-	for _, f := range fs {
-		out = append(out, lintJSONFinding{
-			File:     f.Path,
-			Severity: normalizeLintSeverity(string(f.Severity)),
-			Rule:     f.Rule,
-			Message:  f.Message,
 		})
 	}
 	return out
@@ -512,7 +501,7 @@ func collectConventionsJSON() ([]lintJSONFinding, bool, error) {
 	for _, n := range notes {
 		out = append(out, skippedFinding(n))
 	}
-	out = append(out, forgeconvFindingsToJSON(combined.Findings)...)
+	out = append(out, findingsToJSON(combined.Findings)...)
 	return out, combined.HasErrors(), nil
 }
 
@@ -529,16 +518,11 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 	if err != nil {
 		return nil, false, fmt.Errorf("migration safety lint failed: %w", err)
 	}
-	out := make([]lintJSONFinding, 0, len(result.Findings))
-	for _, f := range result.Findings {
-		out = append(out, lintJSONFinding{
-			File:     f.File,
-			Line:     f.Line,
-			Severity: normalizeLintSeverity(string(f.Severity)),
-			Rule:     f.Rule,
-			Message:  f.Message,
-			FixHint:  "either rewrite the destructive migration as a non-destructive sequence, or allowlist the file under migration_safety.allowed_destructive in forge.yaml",
-		})
+	out := findingsToJSON(result.Findings)
+	// Migration findings share one fixed remediation (they carry no
+	// per-finding Remediation of their own).
+	for i := range out {
+		out[i].FixHint = "either rewrite the destructive migration as a non-destructive sequence, or allowlist the file under migration_safety.allowed_destructive in forge.yaml"
 	}
 	return out, result.HasErrors(), nil
 }
@@ -552,17 +536,7 @@ func collectFrontendPacksJSON() ([]lintJSONFinding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("frontend pack lint failed: %w", err)
 	}
-	out := make([]lintJSONFinding, 0, len(res.Findings))
-	for _, f := range res.Findings {
-		out = append(out, lintJSONFinding{
-			File:     f.File,
-			Line:     f.Line,
-			Severity: normalizeLintSeverity(string(f.Severity)),
-			Rule:     f.Rule,
-			Message:  f.Message,
-		})
-	}
-	return out, nil
+	return findingsToJSON(res.Findings), nil
 }
 
 func collectFrontendStoresJSON(cwd string) ([]lintJSONFinding, error) {
@@ -570,7 +544,7 @@ func collectFrontendStoresJSON(cwd string) ([]lintJSONFinding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("frontend-stores lint failed: %w", err)
 	}
-	return forgeconvFindingsToJSON(res.Findings), nil
+	return findingsToJSON(res.Findings), nil
 }
 
 func collectScaffoldsJSON(cwd string) ([]lintJSONFinding, bool, error) {
@@ -578,7 +552,7 @@ func collectScaffoldsJSON(cwd string) ([]lintJSONFinding, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("scaffold lint failed: %w", err)
 	}
-	return scaffoldsFindingsToJSON(res.Findings), res.HasErrors(), nil
+	return findingsToJSON(res.Findings), res.HasErrors(), nil
 }
 
 func collectTestsJSON(cwd string) ([]lintJSONFinding, error) {
@@ -590,8 +564,8 @@ func collectTestsJSON(cwd string) ([]lintJSONFinding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("frontend-hook-test lint failed: %w", err)
 	}
-	out := forgeconvFindingsToJSON(handlerRes.Findings)
-	out = append(out, forgeconvFindingsToJSON(frontendRes.Findings)...)
+	out := findingsToJSON(handlerRes.Findings)
+	out = append(out, findingsToJSON(frontendRes.Findings)...)
 	return out, nil
 }
 
@@ -605,7 +579,7 @@ func collectBannersJSON(cwd string) ([]lintJSONFinding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("banner lint failed: %w", err)
 	}
-	return scaffoldsFindingsToJSON(res.Findings), nil
+	return findingsToJSON(res.Findings), nil
 }
 
 // collectWireCoverageJSON mirrors runWireCoverageLint: TODO markers are
@@ -729,7 +703,7 @@ func collectWorkaroundsJSON(cwd string) ([]lintJSONFinding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("check-workarounds lint failed: %w", err)
 	}
-	return scaffoldsFindingsToJSON(res.Findings), nil
+	return findingsToJSON(res.Findings), nil
 }
 
 // ---------------------------------------------------------------------------

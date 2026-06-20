@@ -370,6 +370,7 @@ func crudShimImports(data CRUDTemplateData) []string {
 		// rows via the generated <entity>ToProto helper.
 		imports = append(imports,
 			"github.com/reliant-labs/forge/pkg/orm",
+			"github.com/reliant-labs/forge/pkg/svcerr",
 			data.Module+"/internal/db")
 		if hasTenantMismatch {
 			imports = append(imports, data.Module+"/pkg/middleware")

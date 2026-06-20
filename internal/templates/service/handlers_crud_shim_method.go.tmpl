@@ -64,7 +64,7 @@ func (s *Service) {{.MethodName}}(
 
 	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB{{if .HasTenant}}, tenantID{{end}}, opts...)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, svcerr.Wrap(err)
 	}
 
 	items := make([]*pb.{{.EntityName}}, 0, len(rows))

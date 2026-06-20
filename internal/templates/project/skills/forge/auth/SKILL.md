@@ -30,10 +30,10 @@ auth:
 
 ## The Claims Struct
 
-`Claims` is the canonical auth payload, defined in `forge/pkg/auth` and aliased in `pkg/middleware/middleware.go` (the thin user-owned auth-policy file — it also owns the claims context key):
+`Claims` is the canonical auth payload, defined in `forge/pkg/auth` and aliased in `internal/middleware/middleware.go` (the thin user-owned auth-policy file — it also owns the claims context key):
 
 ```go
-// pkg/middleware/middleware.go (user-owned, scaffolded once)
+// internal/middleware/middleware.go (user-owned, scaffolded once)
 package middleware
 
 import "github.com/reliant-labs/forge/pkg/auth"
@@ -61,13 +61,13 @@ if !ok {
 }
 ```
 
-If you need additional claim DATA, prefer the `enrichClaims` hook in `pkg/middleware/middleware.go` — it runs after token validation and can hydrate roles/org/flags onto the validated claims before handlers see them. If you need additional claim FIELDS, add them to `forge/pkg/auth.Claims` so library code (auth interceptor, tenant interceptor) and project code share one type. Project-local extensions are not supported by the alias-based wiring; if you must, replace the `type Claims = auth.Claims` line with a struct that embeds `auth.Claims` and update the callbacks the file passes to the forge libraries.
+If you need additional claim DATA, prefer the `enrichClaims` hook in `internal/middleware/middleware.go` — it runs after token validation and can hydrate roles/org/flags onto the validated claims before handlers see them. If you need additional claim FIELDS, add them to `forge/pkg/auth.Claims` so library code (auth interceptor, tenant interceptor) and project code share one type. Project-local extensions are not supported by the alias-based wiring; if you must, replace the `type Claims = auth.Claims` line with a struct that embeds `auth.Claims` and update the callbacks the file passes to the forge libraries.
 
-## The thin policy file (pkg/middleware/middleware.go)
+## The thin policy file (internal/middleware/middleware.go)
 
-The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`; the authorization interceptor in `forge/pkg/authz`; commodity middlewares (CORS, security headers, request-id, rate limit, idempotency, HTTP stack, audit) in `forge/pkg/middleware`. The project keeps ONE scaffolded-once file, `pkg/middleware/middleware.go`, wiring the four things projects actually customize:
+The auth MECHANISM (mode resolution, refusal-to-start, allow-list gate, Bearer parsing, claims plumbing) lives in `forge/pkg/authn`; the authorization interceptor in `forge/pkg/authz`; commodity middlewares (CORS, security headers, request-id, rate limit, idempotency, HTTP stack, audit) in `forge/pkg/middleware`. The project keeps ONE scaffolded-once file, `internal/middleware/middleware.go`, wiring the four things projects actually customize:
 
-1. **Token validator** — `SetTokenValidator(fn)` installs it; `ValidateToken` dispatches per-request, so install timing is flexible (setup.go, a pack `Init`, or later — but before `cmd/server.go` constructs the chain if you want validate mode).
+1. **Token validator** — `SetTokenValidator(fn)` installs it; `ValidateToken` dispatches per-request. Install it in the composition root (`Build`) before the interceptor chain is assembled if you want validate mode — a two-phase setter is fine since dispatch is per-request.
 2. **Identity enricher** — `enrichClaims(ctx, claims)` runs after validation; hydrate roles/org membership/feature flags from your DB here. Errors reject the request.
 3. **Allow-list** — `unauthenticatedProcedures`, exact full-procedure strings only.
 4. **Dev claims** — `devClaims()` returns the synthetic principal attached while auth is off (dev mode / `AUTH_MODE=none`). The scaffolded default is a fixed dev user (`UserID: "dev-user"`, `Email: "dev@localhost"`, `Role: "admin"`) so claim-demanding handlers (generated CRUD calls `GetUser`) work in dev with zero config; return nil to keep dev passthrough claim-free. Ignored entirely in validate/external-auth modes.
@@ -79,12 +79,14 @@ Auth mode resolution (in `forge/pkg/authn`, decided ONCE at interceptor construc
 ## How auth wiring works
 
 When forge.yaml declares `auth.provider`, the generated
-`pkg/middleware/auth_gen.go` is a thin shim over `forge/pkg/auth` that
-the generated `cmd/server.go` actually CALLS — `runServer` invokes
-`middleware.InstallGeneratedAuth()` before the interceptor chain is
-constructed, except in dev mode (the dev-claims passthrough applies
-instead; set `ENVIRONMENT` to anything non-development to exercise
-real auth locally).
+`internal/middleware/auth_gen.go` is a thin shim over `forge/pkg/auth`.
+The composition root (`Build` in `internal/app`, where the handler
+assembly lives) calls `middleware.InstallGeneratedAuth()` as it wires
+the interceptor chain, except in dev mode (the dev-claims passthrough
+applies instead; set `ENVIRONMENT` to anything non-development to
+exercise real auth locally). The auth provider is installed where the
+chain is composed — not via a string-arg `runServer` and not via a
+post-bootstrap hook reading off an `App` value.
 
 - **`provider: jwt`** — `InstallGeneratedAuth` constructs the
   `pkg/auth` validator from the forge.yaml config and installs it via
@@ -94,14 +96,15 @@ real auth locally).
   stays fully in the loop; there is no parallel interceptor.
 - **`provider: api_key` / `both`** — API keys arrive in a header, not
   a bearer token, so `InstallGeneratedAuth` marks external auth
-  (`MarkExternalAuth`) and `cmd/server.go` mounts the header-aware
-  `middleware.GeneratedAuthInterceptor()` in the project chain.
-  API-key requests FAIL CLOSED until you implement `KeyValidator`
-  (`pkg/middleware/auth_validator.go`) and install it:
+  (`MarkExternalAuth`) and the chain mounts the header-aware
+  `middleware.GeneratedAuthInterceptor()`. API-key requests FAIL CLOSED
+  until you implement `KeyValidator`
+  (`internal/middleware/auth_validator.go`) and install it via a
+  post-construction setter in `Build`:
 
 ```go
-// pkg/app/post_bootstrap.go (runs before the listener binds)
-middleware.SetGeneratedKeyValidator(&DBKeyValidator{db: app.DB})
+// internal/app/build.go — after the DB is constructed, before Run
+middleware.SetGeneratedKeyValidator(&DBKeyValidator{db: repo})
 ```
 
 `KeyValidator` is aliased to `auth.KeyValidator`; implement `ValidateKey(ctx, key) (*Claims, error)` against your storage.
@@ -110,21 +113,26 @@ The library reads `JWT_SECRET` from the environment when `JWTConfig.Secret` is e
 
 ## Where the auth interceptor sits in the chain
 
-`cmd/server.go` builds the canonical observability chain via
+The interceptor chain is assembled **explicitly in the handler assembly
+of the composition root** (`Build`), with ordering composed by hand and
+documented hard: **otel-outermost → rate-limit → auth → audit**. The
+order is the code's, not a side effect of registration order.
+
+The chain builds the canonical observability stack via
 `observe.DefaultMiddlewares(...)` (recovery → request-id → logging →
 tracing → metrics) and appends project-specific interceptors via
 `Extras`. Auth is one of those Extras, so failures from the auth
 interceptor are still observable (counted, traced, logged):
 
 ```go
-// Constructed up front in runServer; an unconfigured auth provider is a
-// startup error, not a per-request surprise.
+// In Build, while assembling the handler. An unconfigured auth provider
+// is a startup error, not a per-request surprise.
 authInterceptor, err := middleware.NewAuthInterceptor(cfg.Mode().IsDev())
 if err != nil {
-    return fmt.Errorf("auth configuration: %w", err)
+    return nil, fmt.Errorf("auth configuration: %w", err)
 }
 projectInterceptors := []connect.Interceptor{
-    authInterceptor,                    // ← here
+    authInterceptor,                    // ← auth, before audit
     fmw.AuditInterceptor(logger, middleware.ClaimsFromContext),
 }
 interceptors := observe.DefaultMiddlewares(observe.DefaultMiddlewareDeps{
@@ -141,7 +149,7 @@ the result of `DefaultMiddlewares` directly. See
 
 ## Unauthenticated Endpoints
 
-The auth interceptor checks an allow-list before requiring auth (exact procedure match only — the gate lives in `forge/pkg/authn`). To allow additional unauthenticated endpoints, add them to the `unauthenticatedProcedures` map in `pkg/middleware/middleware.go`:
+The auth interceptor checks an allow-list before requiring auth (exact procedure match only — the gate lives in `forge/pkg/authn`). To allow additional unauthenticated endpoints, add them to the `unauthenticatedProcedures` map in `internal/middleware/middleware.go`:
 
 ```go
 var unauthenticatedProcedures = map[string]struct{}{
@@ -164,17 +172,19 @@ rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
 }
 ```
 
-`forge generate` produces `handlers/<svc>/authorizer_gen.go` with the per-method policy table (auth-required flags and declared error codes). Customize access control — including role checks — in `handlers/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default).
+`forge generate` produces `internal/<svc>/authorizer_gen.go` with the per-method policy table (auth-required flags and declared error codes). Customize access control — including role checks — in `internal/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default). The generated and owned files co-locate in the one `internal/<svc>/` directory.
+
+**No auth-by-omission.** An RPC with no `(forge.v1.method)` annotation has no declared auth posture. `forge lint` flags this and the policy table defaults the method to **deny** until you annotate it — a missing annotation must never silently generate an unauthenticated endpoint.
 
 ## Dev Mode
 
 `forge up --env=dev` defaults the children to `ENVIRONMENT=development` when nothing else sets it (per-env config or your shell always wins), so the canonical dev command never boots the server in production mode — where an unconfigured auth provider would refuse to start.
 
-In dev mode (or `AUTH_MODE=none`) the auth interceptor runs in passthrough and attaches the synthetic principal from `devClaims()` in `pkg/middleware/middleware.go` to every request, so handlers and generated CRUD that demand claims via `middleware.GetUser` work with zero auth config. To disable, return `nil` from `devClaims()` — dev requests then carry no claims and claim-demanding RPCs return Unauthenticated. The dev principal is only consulted in passthrough mode; installing a validator or registering external auth makes `pkg/authn` ignore it.
+In dev mode (or `AUTH_MODE=none`) the auth interceptor runs in passthrough and attaches the synthetic principal from `devClaims()` in `internal/middleware/middleware.go` to every request, so handlers and generated CRUD that demand claims via `middleware.GetUser` work with zero auth config. To disable, return `nil` from `devClaims()` — dev requests then carry no claims and claim-demanding RPCs return Unauthenticated. The dev principal is only consulted in passthrough mode; installing a validator or registering external auth makes `pkg/authn` ignore it.
 
 Note the split: the `jwt-auth` pack is for REAL JWT validation (JWKS, issuer/audience checks) — it is not part of the dev path. You do not need any pack to develop locally.
 
-In development (`cfg.Environment == "development"`), bootstrap also wires a `DevAuthorizer` that allows all requests. This is logged with a WARN at startup. Never use `DevAuthorizer` in production.
+In development (`cfg.Environment == "development"`), `Build` also wires a `DevAuthorizer` that allows all requests. This is logged with a WARN at startup. Never use `DevAuthorizer` in production.
 
 ## Multi-Tenant Config
 

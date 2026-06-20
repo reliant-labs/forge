@@ -116,6 +116,11 @@ type Spec struct {
 type commandRunner interface {
 	Run(ctx context.Context, name string, args ...string) error
 	RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error
+	// RunInDir runs the command with its working directory set to dir
+	// (and an optional env overlay). Unlike a shell `cd <dir> && …`
+	// prefix this never quotes the path through a shell, so a dir with
+	// spaces or shell metacharacters is handled correctly.
+	RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error
 }
 
 // execRunner is the production commandRunner. Run pipes through to
@@ -127,9 +132,16 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) error {
 }
 
 func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
+	return execRunner{}.RunInDir(ctx, "", env, name, args...)
+}
+
+func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Empty dir leaves cmd.Dir unset, so the command inherits the host
+	// cwd — which equals ProjectDir for forge build invocations.
+	cmd.Dir = dir
 	if len(env) > 0 {
 		cmd.Env = mergeEnv(os.Environ(), env)
 	}
@@ -305,20 +317,16 @@ func (r Runner) Build(ctx context.Context, spec Spec) BuildResult {
 
 	expanded := Expand(spec.BuildCmd, spec)
 
-	// Override the working directory via the shell `cd` prefix when
-	// non-empty. We can't set cmd.Dir on the runner indirection
-	// because the runner is the `sh -c` invocation, not the user's
-	// command. `cd <abs> && <expanded>` is the canonical shape.
-	final := expanded
-	if cwd != "" {
-		final = fmt.Sprintf("cd %s && %s", cwd, expanded)
-	}
-
 	runner := r.runner
 	if runner == nil {
 		runner = execRunner{}
 	}
-	err := runner.RunWithEnv(ctx, spec.BuildEnv, "sh", "-c", final)
+	// Set the working directory on the runner (cmd.Dir) rather than via
+	// a shell `cd <dir> && …` prefix: the latter breaks on a cwd with
+	// spaces or shell metacharacters. RunInDir with an empty dir leaves
+	// cmd.Dir unset, inheriting the host cwd (== ProjectDir for forge
+	// build) — matching the prior no-cwd behavior.
+	err := runner.RunInDir(ctx, cwd, spec.BuildEnv, "sh", "-c", expanded)
 	result.Err = err
 	result.Duration = time.Since(start)
 	return result

@@ -621,3 +621,20 @@ func TestUnionJobNames_DedupesCallerFirst(t *testing.T) {
 		t.Errorf("expected empty names dropped, got %v", g)
 	}
 }
+
+// TestPodSelectorForDeploy pins the rollout-diagnostic pod selector to
+// the appNameLabel constant. A literal "app=<deploy>" selector matched
+// zero pods (forge stamps app.kubernetes.io/name, not app), silently
+// producing empty diagnostics on a failed rollout. Building the selector
+// from the constant makes that drift impossible.
+func TestPodSelectorForDeploy(t *testing.T) {
+	got := podSelectorForDeploy("daemon-gateway")
+	want := appNameLabel + "=daemon-gateway"
+	if got != want {
+		t.Errorf("podSelectorForDeploy: got %q, want %q", got, want)
+	}
+	// Guard against a regression to the bare `app=` selector.
+	if strings.HasPrefix(got, "app=") {
+		t.Errorf("selector must use %q, not a bare app= label; got %q", appNameLabel, got)
+	}
+}

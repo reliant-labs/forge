@@ -526,6 +526,15 @@ func WaitRollout(ctx context.Context, kctx, name, namespace string) error {
 	return nil
 }
 
+// podSelectorForDeploy builds the label selector that matches the pods
+// of a forge-deployed Deployment. forge stamps workloads with
+// appNameLabel (app.kubernetes.io/name), never a bare `app=` label, so
+// the selector MUST reference the constant — a literal "app=" matched
+// zero pods and silently produced empty rollout diagnostics.
+func podSelectorForDeploy(deploy string) string {
+	return appNameLabel + "=" + deploy
+}
+
 // diagnoseFailedRollout prints the most useful kubectl diagnostics for
 // a Deployment that didn't reach Ready in time. Indented under a clear
 // banner so the existing "Warning: rollout for X" line precedes it.
@@ -540,7 +549,7 @@ func diagnoseFailedRollout(ctx context.Context, kctx, deploy, namespace string) 
 	// Pod status — phase, reason, message. The most useful single line.
 	pods := kubectlCmd(ctx, kctx, "get", "pods",
 		"-n", namespace,
-		"-l", "app="+deploy,
+		"-l", podSelectorForDeploy(deploy),
 		"-o", "custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.waiting.reason,MESSAGE:.status.containerStatuses[*].state.waiting.message",
 		"--no-headers",
 	)

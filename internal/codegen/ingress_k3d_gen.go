@@ -115,12 +115,12 @@ func GenerateK3dPorts(in K3dPortsGenInput) error {
 
 	rel := filepath.Join("deploy", "k3d-ports.yaml")
 	if in.Checksums != nil {
-		if _, err := checksums.WriteGeneratedFile(in.ProjectDir, rel, []byte(body.String()), in.Checksums, true); err != nil {
+		if err := writeForgeOwned(in.ProjectDir, rel, []byte(body.String()), in.Checksums); err != nil {
 			return fmt.Errorf("write %s: %w", rel, err)
 		}
 		return nil
 	}
-	return os.WriteFile(outPath, []byte(body.String()), 0o644)
+	return writeUserScaffold(outPath, []byte(body.String()))
 }
 
 // RemoveK3dPorts deletes deploy/k3d-ports.yaml when present. Used by

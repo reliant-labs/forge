@@ -48,7 +48,7 @@ func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMetho
 	if err != nil {
 		return fmt.Errorf("render auth_gen.go.tmpl: %w", err)
 	}
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "middleware", "auth_gen.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "middleware", "auth_gen.go"), content, cs); err != nil {
 		return fmt.Errorf("write auth_gen.go: %w", err)
 	}
 
@@ -62,7 +62,7 @@ func GenerateAuthMiddleware(cfg *config.AuthConfig, modulePath string, skipMetho
 			if err != nil {
 				return fmt.Errorf("render auth_validator.go.tmpl: %w", err)
 			}
-			if err := os.WriteFile(validatorPath, validatorContent, 0644); err != nil {
+			if err := writeUserScaffold(validatorPath, validatorContent); err != nil {
 				return fmt.Errorf("write auth_validator.go: %w", err)
 			}
 		}

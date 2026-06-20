@@ -185,7 +185,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		// here is how the historical handlers/adminserver-vs-admin_server
 		// duplicate-dir bug was born.
 		relPath := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf), "authorizer_gen.go")
-		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
+		if err := writeForgeOwned(targetDir, relPath, content, cs); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", svc.Name, err)
 		}
 		generatedDirs[res.ImportLeaf] = true
@@ -257,7 +257,7 @@ func GenerateAuthorizer(services []ServiceDef, modulePath string, targetDir stri
 		}
 
 		relPath := filepath.Join("handlers", dirName, "authorizer_gen.go")
-		if _, err := checksums.WriteGeneratedFile(targetDir, relPath, content, cs, true); err != nil {
+		if err := writeForgeOwned(targetDir, relPath, content, cs); err != nil {
 			return fmt.Errorf("write authorizer_gen.go for %s: %w", pkg, err)
 		}
 	}

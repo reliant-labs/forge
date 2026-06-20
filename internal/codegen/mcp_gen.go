@@ -200,7 +200,7 @@ func GenerateMCPManifest(in MCPGenInput) error {
 	body = append(body, '\n')
 
 	rel := filepath.Join("gen", "mcp", "manifest.json")
-	if _, err := checksums.WriteGeneratedFile(in.ProjectDir, rel, body, in.Checksums, true); err != nil {
+	if err := writeForgeOwned(in.ProjectDir, rel, body, in.Checksums); err != nil {
 		return fmt.Errorf("write %s: %w", rel, err)
 	}
 	return nil

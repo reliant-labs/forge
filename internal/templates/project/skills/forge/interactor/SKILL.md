@@ -81,27 +81,26 @@ func (s *service) ChargeAndAudit(ctx context.Context, in ChargeAndAuditInput) er
 
 The interactor is unaware that `Charger` is Stripe (or Adyen, or a test fake) — that's the point.
 
-## Late-bound dependencies between workers/services
+## Late-bound dependencies: construct-then-inject in `Build`
 
-Sometimes collaborator B needs a value that only exists *after* collaborator A is constructed (worker A produces a snapshot saver that worker B consumes; service X exposes a registry that interactor Y registers handlers into). Putting that value in B's `Deps` creates a construction-order cycle — wire_gen resolves Deps once at startup and has no slot for "set this later".
+Sometimes collaborator B needs a value that only exists *after* collaborator A is constructed (worker A produces a snapshot saver that worker B consumes; service X exposes a registry that interactor Y registers handlers into). Putting that value in B's `Deps` creates a construction-order cycle — `New(Deps)` resolves its dep closure once and has no slot for "set this later".
 
-The forge-blessed seam is `PostBootstrap` in `pkg/app/post_bootstrap.go`. It runs after `Bootstrap` returns and before the listener starts, with the fully-constructed `*App` in hand. Read the producer off `app`, hand the value to the consumer's setter:
+Construct-then-inject is a first-class plain method call in the composition root, not a framework hook. In `Build`, construct A and B, then call B's setter with A's product:
 
 ```go
-func PostBootstrap(app *App) error {
-    saver := app.Workers.Snapshotter.SnapshotSaver()
-    app.Workers.Trader.SetSnapshotSaver(saver)
-    return nil
+func BuildServer(infra Infra) (*serverkit.Server, error) {
+    snapshotter := snapshot.New(snapshot.Deps{...})
+    trader := trader.New(trader.Deps{...})
+
+    // two-phase wiring: B's setter, after both ends exist
+    trader.SetSnapshotSaver(snapshotter.SnapshotSaver())
+    ...
 }
 ```
 
-Notes:
+This is just ordinary Go in the root you own — no `PostBootstrap`, no `*App` field read by name, no parallel hook system. Near-diamonds and post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) are the same pattern: construct, then inject. Any model based on pure constructor topo-ordering deadlocks on the real graph; the composition root supports construct-then-inject explicitly.
 
-- `PostBootstrap` is user-owned; forge generate never overwrites it.
-- An error returned here aborts boot with the message — fail loudly rather than silently degrading.
-- Don't invent a parallel hook system (`wire_*_hooks.go`, post-Setup passes, etc.) for this. PostBootstrap IS that system.
-
-For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, see `forge:placeholder` in the `api` skill — that's a generate-time mechanism for cross-lane parallel work, distinct from the runtime-late-binding case above.
+For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, see `forge:placeholder` in the `api` skill — that's a generate-time mechanism for cross-lane parallel work, distinct from the runtime construct-then-inject case above.
 
 ## How to test
 
@@ -173,27 +172,30 @@ Every interactor package's `contract.go` carries a `// forge:interactor` marker 
 
 - `forgeconv-interactor-deps-are-interfaces` — every field on `Deps` in a `// forge:interactor`-marked package must be an interface type, not a concrete struct pointer. Concrete pointers defeat the all-mock test surface.
 
-## Wiring in `pkg/app/setup.go`
+## Wiring in the typed composition root (`Build`)
 
-The interactor sits between adapters and handlers. Wire adapters first, then the interactor on top, then the handler depends on the interactor:
+The interactor is wired in the binary's owned composition root (`internal/app/build.go`), as typed interface fills in one place: adapters first, then the interactor on top, then the handler depending on the interactor. Each fill is a local variable resolved by type — no `*App` fields, no name-matching, no string-keyed registry.
 
 ```go
-func Setup(app *App) error {
-    app.Stripe = stripe_adapter.New(stripe_adapter.Deps{...})
-    app.Audit  = audit.New(audit.Deps{...})
+func BuildServer(infra Infra) (*serverkit.Server, error) {
+    charger := stripeadapter.New(stripeadapter.Deps{...})
+    auditor := audit.New(audit.Deps{...})
 
-    app.BillingFlow, _ = billing_flow.New(billing_flow.Deps{
-        Logger:  app.Logger,
-        Charger: app.Stripe, // adapter satisfies the dep interface
-        Auditor: app.Audit,
+    flow, err := billingflow.New(billingflow.Deps{
+        Logger:  infra.Logger,
+        Charger: charger, // adapter satisfies the dep interface
+        Auditor: auditor,
     })
+    if err != nil {
+        return nil, err
+    }
 
-    app.BillingHandler = billinghandler.New(billinghandler.Deps{
-        Flow: app.BillingFlow,
-    })
-    return nil
+    billingHandler := billinghandler.New(billinghandler.Deps{Flow: flow})
+    // ... mount billingHandler, assemble the Server
 }
 ```
+
+Each collaborator is filled by its interface, so swapping the real in-process adapter for a Connect client or a mock is a one-line change here with the interactor untouched. That is also what makes "spin up this interactor with all collaborators mocked" a few-line call against `Build`.
 
 ## When this skill is not enough (forge sub-skills)
 

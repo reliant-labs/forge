@@ -357,7 +357,7 @@ Forge spans four ecosystems (Go, proto, TS, KCL) with different idiomatic casing
 | Go local var in the composition root | camelCase | `adminServer`, `billingFlow` |
 | Go variable / parameter | camelCase (initialisms stay capitalized) | `orgID`, `createdAt`, `userID` |
 | Pack name | kebab-case | `jwt-auth`, `audit-log`, `data-table` |
-| Pack subpath under `pkg/` | snake / lowercase, valid Go ident | `middleware/auth/jwtauth`, `middleware/audit/auditlog` |
+| Pack subpath under `internal/` | snake / lowercase, valid Go ident | `middleware/auth/jwtauth`, `middleware/audit/auditlog` |
 | Proto package | dot-separated lowercase | `myproject.services.users.v1` |
 | Proto message / RPC / service | PascalCase | `User`, `CreateUserRequest`, `UserService` |
 | Proto field | snake_case | `created_at`, `org_id`, `page_size` |

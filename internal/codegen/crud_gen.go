@@ -755,16 +755,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath 
 	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as mapServiceDefToTemplateData)
-	protoPackage := ""
-	if svc.ModulePath != "" && svc.GoPackage != "" {
-		prefix := svc.ModulePath + "/gen/"
-		if strings.HasPrefix(svc.GoPackage, prefix) {
-			protoPackage = strings.TrimPrefix(svc.GoPackage, prefix)
-			if idx := strings.LastIndex(protoPackage, "/v"); idx >= 0 {
-				protoPackage = protoPackage[:idx]
-			}
-		}
-	}
+	protoPackage := protoImportPath(svc)
 
 	var methods []CRUDMethodTemplateData
 	for _, cm := range crudMethods {
@@ -1142,16 +1133,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	pkg := naming.ServicePackage(svc.Name)
 
 	// Build ProtoPackage path (same logic as buildCRUDTemplateData)
-	protoPackage := ""
-	if svc.ModulePath != "" && svc.GoPackage != "" {
-		prefix := svc.ModulePath + "/gen/"
-		if strings.HasPrefix(svc.GoPackage, prefix) {
-			protoPackage = strings.TrimPrefix(svc.GoPackage, prefix)
-			if idx := strings.LastIndex(protoPackage, "/v"); idx >= 0 {
-				protoPackage = protoPackage[:idx]
-			}
-		}
-	}
+	protoPackage := protoImportPath(svc)
 
 	// Group by entity
 	entityMap := make(map[string]*CRUDTestEntityData)

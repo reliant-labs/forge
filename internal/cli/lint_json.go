@@ -309,158 +309,42 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 // only for the advisory linters but hard-fails the run for the gating
 // ones via hasFailed.
 func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.ProjectConfig, cwd string) (*lintJSONReport, error) {
+	rc := &lintRunCtx{ctx: ctx, fix: false, paths: paths, cfg: cfg, cwd: cwd}
+
 	var findings []lintJSONFinding
 	gated := false
 
-	// add folds one step's result in; collectErr converts a step's
-	// internal failure into a finding (gating mirrors text mode).
-	add := func(fs []lintJSONFinding, g bool) {
+	for _, step := range lintPipeline() {
+		run, skipMsg := step.shouldRun(rc)
+		if !run {
+			// A skip message surfaces as an info finding so JSON consumers
+			// can tell "clean" from "didn't run"; a silent skip (directory
+			// absent) contributes nothing — both mirror the text driver and
+			// the pre-refactor JSON output exactly.
+			if skipMsg != "" {
+				findings = append(findings, skippedFinding(skipMsg))
+			}
+			continue
+		}
+		fs, g, err := step.collect(rc)
+		if err != nil {
+			// A hard collection failure degrades to a finding rather than
+			// aborting the sweep — severity/gating governed by step.gates,
+			// exactly as the old per-step collectErr did.
+			sev := lintSevWarning
+			if step.gates {
+				sev = lintSevError
+			}
+			findings = append(findings, lintJSONFinding{
+				Severity: sev,
+				Rule:     "external",
+				Message:  fmt.Sprintf("%s failed: %v", step.name, err),
+			})
+			gated = gated || step.gates
+			continue
+		}
 		findings = append(findings, fs...)
 		gated = gated || g
-	}
-	collectErr := func(step string, err error, gates bool) {
-		findings = append(findings, lintJSONFinding{
-			Severity: map[bool]string{true: lintSevError, false: lintSevWarning}[gates],
-			Rule:     "external",
-			Message:  fmt.Sprintf("%s failed: %v", step, err),
-		})
-		gated = gated || gates
-	}
-
-	// 1. golangci-lint.
-	if _, err := exec.LookPath("golangci-lint"); err != nil {
-		add([]lintJSONFinding{skippedFinding("golangci-lint not found on PATH — skipping")}, false)
-	} else {
-		fs, g := collectGolangciLintJSON(ctx, paths)
-		add(fs, g)
-	}
-
-	// 2. Contract interface enforcement.
-	if cfg != nil && !cfg.Features.ContractsEnabled() {
-		add([]lintJSONFinding{skippedFinding("contracts feature disabled — skipping contract linter")}, false)
-	} else if _, err := resolveContractLintBinary(ctx); err != nil {
-		add([]lintJSONFinding{skippedFinding("contractlint not available — skipping")}, false)
-	} else if fs, g, err := collectContractLintJSON(ctx, paths, contractExcludesFromConfig(cfg)); err != nil {
-		collectErr("contract linter", err, true)
-	} else {
-		add(fs, g)
-	}
-
-	// 4. Buf lint. (Step numbers track runAllLinters for diffability.)
-	if _, err := exec.LookPath("buf"); err != nil {
-		add([]lintJSONFinding{skippedFinding("buf not found on PATH — skipping buf lint")}, false)
-	} else {
-		fs, g := collectBufLintJSON(ctx)
-		add(fs, g)
-	}
-
-	// 5. Frontend linters (npm run lint / typecheck / lint:styles).
-	{
-		fs, g := collectFrontendLintJSON(ctx, cfg)
-		add(fs, g)
-	}
-
-	// 7. SQL migration safety lint — errors gate.
-	if cfg != nil && !cfg.Features.MigrationsEnabled() {
-		add([]lintJSONFinding{skippedFinding("migrations feature disabled — skipping migration safety lint")}, false)
-	} else if fs, g, err := collectMigrationSafetyJSON(cfg); err != nil {
-		collectErr("migration safety lint", err, true)
-	} else {
-		add(fs, g)
-	}
-
-	// 8. Forge convention rules — errors gate.
-	if dirExists("proto") || dirExists("internal") {
-		if fs, g, err := collectConventionsJSON(); err != nil {
-			collectErr("forge convention lint", err, true)
-		} else {
-			add(fs, g)
-		}
-	}
-
-	// 9. Frontend pack convention rules — forge repo only, advisory.
-	if dirExists(filepath.Join("internal", "packs")) {
-		if fs, err := collectFrontendPacksJSON(); err != nil {
-			collectErr("frontend pack lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
-	// 10. Scaffold ownership lint — errors gate.
-	if fs, g, err := collectScaffoldsJSON(cwd); err != nil {
-		collectErr("scaffold ownership lint", err, true)
-	} else {
-		add(fs, g)
-	}
-
-	// 11. Test-convention lint — advisory.
-	if dirExists("handlers") {
-		if fs, err := collectTestsJSON(cwd); err != nil {
-			collectErr("test convention lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
-	// 11b. Lifecycle-banner lint — forge repo only, advisory.
-	if dirExists(filepath.Join("internal", "templates")) ||
-		dirExists(filepath.Join("internal", "packs")) {
-		if fs, err := collectBannersJSON(cwd); err != nil {
-			collectErr("banner lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
-	// 13. Wire-coverage — TODO warnings, placeholder errors gate.
-	if fileExists(filepath.Join("pkg", "app", "wire_gen.go")) ||
-		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
-		if fs, g, err := collectWireCoverageJSON(cwd); err != nil {
-			collectErr("wire-coverage lint", err, true)
-		} else {
-			add(fs, g)
-		}
-	}
-
-	// 13b. Bootstrap-deps-coverage — gaps gate.
-	if fileExists(filepath.Join("pkg", "app", "bootstrap.go")) &&
-		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
-		if fs, g, err := collectBootstrapCoverageJSON(cwd); err != nil {
-			collectErr("bootstrap-deps-coverage lint", err, true)
-		} else {
-			add(fs, g)
-		}
-	}
-
-	// 13c. Optional-deps-guard — advisory (warnings only, mirrors text
-	// mode's step 13c).
-	if dirExists("internal") || dirExists("handlers") ||
-		dirExists("workers") || dirExists("operators") {
-		if fs, err := collectOptionalDepsGuardJSON(cwd); err != nil {
-			collectErr("optional-deps-guard lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
-	// 13d. Config-deps — advisory (warnings only, mirrors text mode's
-	// step 13d): scalar Deps fields are configuration; declare a
-	// component config block instead.
-	if dirExists("internal") || dirExists("handlers") ||
-		dirExists("workers") || dirExists("operators") {
-		if fs, err := collectConfigDepsJSON(cwd); err != nil {
-			collectErr("config-deps lint", err, false)
-		} else {
-			add(fs, false)
-		}
-	}
-
-	// 14. Check-workarounds — advisory.
-	if fs, err := collectWorkaroundsJSON(cwd); err != nil {
-		collectErr("check-workarounds lint", err, false)
-	} else {
-		add(fs, false)
 	}
 
 	return buildLintJSONReport(findings, gated), nil

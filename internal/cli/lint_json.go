@@ -674,6 +674,31 @@ func collectGolangciLintJSON(ctx context.Context, paths []string) ([]lintJSONFin
 	return nil, false
 }
 
+// collectTypedAccessGuardJSON mirrors runTypedAccessGuardAdvisory with
+// captured output. It is the `warn` arm of config.enforce_typed_access:
+// forbidigo findings are surfaced as WARNINGS that never gate (the bool
+// return is always false). Run with --issues-exit-code=0 so a non-zero exit
+// only signals a genuine tool error, which degrades to a single warning
+// finding rather than gating.
+func collectTypedAccessGuardJSON(ctx context.Context, paths []string) ([]lintJSONFinding, bool, error) {
+	args := append([]string{"run", "--enable-only=forbidigo", "--issues-exit-code=0"}, paths...)
+	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+	var buf strings.Builder
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		// Tool error (not findings — those are neutralized by
+		// --issues-exit-code=0). Degrade to a single advisory finding.
+		return []lintJSONFinding{{
+			Severity: lintSevWarning,
+			Rule:     "typed-config-guardrail",
+			Message:  fmt.Sprintf("typed-config guardrail check could not run: %v", err),
+		}}, false, nil
+	}
+	fs := externalLinesToFindings(buf.String(), "typed-config-guardrail", lintSevWarning)
+	return fs, false, nil
+}
+
 // collectContractLintJSON mirrors runContractLinter with captured
 // output. Exit code 3 is the analyzer's "violations found" signal —
 // the diagnostics are parsed into findings and the run gates. Any

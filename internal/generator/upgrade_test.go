@@ -88,14 +88,14 @@ func TestManagedFiles(t *testing.T) {
 
 	// Check that expected files are in the list
 	expected := map[string]bool{
-		"cmd/server.go":            true,
-		"cmd/main.go":              true,
-		"cmd/version.go":           true,
-		"cmd/otel.go":              true,
-		"Taskfile.yml":             true,
-		"Dockerfile":               true,
-		"docker-compose.yml":       true,
-		".golangci.yml":            true,
+		"cmd/server.go":      true,
+		"cmd/main.go":        true,
+		"cmd/version.go":     true,
+		"cmd/otel.go":        true,
+		"Taskfile.yml":       true,
+		"Dockerfile":         true,
+		"docker-compose.yml": true,
+		".golangci.yml":      true,
 		// The thin auth-policy pair is the ONLY middleware the project
 		// keeps; the mechanism files (cors/auth/claims/…) moved to
 		// forge/pkg/{authn,authz,middleware} and must NOT be managed.
@@ -128,6 +128,91 @@ func TestRenderManagedFile(t *testing.T) {
 		if len(content) == 0 {
 			t.Errorf("renderManagedFile(%q) returned empty content", f.templateName)
 		}
+	}
+}
+
+// golangciManagedFile returns the .golangci.yml managed-file descriptor so
+// the guardrail tests render exactly what `forge upgrade` would emit.
+func golangciManagedFile(t *testing.T) managedFile {
+	t.Helper()
+	for _, f := range managedFiles() {
+		if f.destPath == ".golangci.yml" {
+			return f
+		}
+	}
+	t.Fatal(".golangci.yml not found in managedFiles()")
+	return managedFile{}
+}
+
+func TestGolangciTypedAccessGuard_Variants(t *testing.T) {
+	f := golangciManagedFile(t)
+
+	render := func(mode string) string {
+		cfg := testProjectConfig()
+		cfg.Config.EnforceTypedAccess = mode
+		out, err := renderManagedFile(f, buildTemplateData(cfg, ""))
+		if err != nil {
+			t.Fatalf("render %q: %v", mode, err)
+		}
+		return string(out)
+	}
+
+	// off → no forbidigo anywhere.
+	off := render(config.EnforceTypedAccessOff)
+	if strings.Contains(off, "forbidigo") {
+		t.Errorf("off mode must not emit forbidigo, got:\n%s", off)
+	}
+
+	// warn → forbidigo SETTINGS + loader allowlist present, but NOT in the
+	// gating linters.enable list (advisory pipeline step runs it instead).
+	warn := render(config.EnforceTypedAccessWarn)
+	enableBlock := warn[strings.Index(warn, "enable:"):strings.Index(warn, "settings:")]
+	if strings.Contains(enableBlock, "forbidigo") {
+		t.Errorf("warn mode must keep forbidigo OUT of linters.enable, got enable block:\n%s", enableBlock)
+	}
+	for _, want := range []string{"forbidigo:", `os\.Getenv`, `os\.LookupEnv`, `os\.Environ`,
+		"(forge.v1.config) annotation", "//nolint:forbidigo", "path: ^pkg/config/"} {
+		if !strings.Contains(warn, want) {
+			t.Errorf("warn mode missing %q in:\n%s", want, warn)
+		}
+	}
+
+	// error → forbidigo ALSO in the gating linters.enable list.
+	errMode := render(config.EnforceTypedAccessError)
+	errEnable := errMode[strings.Index(errMode, "enable:"):strings.Index(errMode, "settings:")]
+	if !strings.Contains(errEnable, "forbidigo") {
+		t.Errorf("error mode must enable forbidigo (gating), got enable block:\n%s", errEnable)
+	}
+	if !strings.Contains(errMode, "path: ^pkg/config/") {
+		t.Errorf("error mode must allowlist the loader package, got:\n%s", errMode)
+	}
+
+	// absent config: block → resolves to warn (advisory), same shape as warn.
+	cfgAbsent := testProjectConfig()
+	absent, err := renderManagedFile(f, buildTemplateData(cfgAbsent, ""))
+	if err != nil {
+		t.Fatalf("render absent: %v", err)
+	}
+	absentEnable := string(absent)[strings.Index(string(absent), "enable:"):strings.Index(string(absent), "settings:")]
+	if strings.Contains(absentEnable, "forbidigo") {
+		t.Errorf("absent config (→warn) must keep forbidigo out of enable, got:\n%s", absentEnable)
+	}
+	if !strings.Contains(string(absent), "forbidigo:") {
+		t.Errorf("absent config (→warn) must emit forbidigo settings, got:\n%s", string(absent))
+	}
+}
+
+func TestGolangciTypedAccessGuard_CustomLoaderPackage(t *testing.T) {
+	f := golangciManagedFile(t)
+	cfg := testProjectConfig()
+	cfg.Config.EnforceTypedAccess = config.EnforceTypedAccessError
+	cfg.Config.LoaderPackage = "internal/appconfig"
+	out, err := renderManagedFile(f, buildTemplateData(cfg, ""))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(string(out), "path: ^internal/appconfig/") {
+		t.Errorf("custom loader_package not honored in exclusion, got:\n%s", string(out))
 	}
 }
 
@@ -416,6 +501,7 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 		t.Errorf("Dockerfile status = %q, want %q (auto-update)", dockerfileResult.Status, UpgradeUpdated)
 	}
 }
+
 // TestUpgradeSkipsDisownedFiles: a disowned (or legacy forked) entry is
 // user-owned — `forge upgrade` must leave the on-disk file untouched
 // while it exists, reporting it as skipped instead.

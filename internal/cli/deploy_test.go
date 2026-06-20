@@ -80,40 +80,6 @@ func TestExpectedClusterForEnv_DevExplicitOverride(t *testing.T) {
 	}
 }
 
-// TestKubectlContextGuardVerdict_Match returns nil when the current
-// kubectl context matches the env's expected cluster — the happy path
-// that lets a deploy (or dry-run) proceed.
-func TestKubectlContextGuardVerdict_Match(t *testing.T) {
-	if err := kubectlContextGuardVerdict("prod", "gke_acme-prod", "gke_acme-prod"); err != nil {
-		t.Errorf("expected nil for matching contexts, got %v", err)
-	}
-}
-
-// TestKubectlContextGuardVerdict_Mismatch returns an error when current
-// differs from expected. This is the path that --dry-run now exercises
-// too: dry-run is for surfacing the mistake, not papering over it.
-func TestKubectlContextGuardVerdict_Mismatch(t *testing.T) {
-	err := kubectlContextGuardVerdict("prod", "gke_acme-prod", "k3d-cp-forge")
-	if err == nil {
-		t.Fatal("expected error for mismatched contexts, got nil")
-	}
-	msg := err.Error()
-	for _, want := range []string{"prod", "gke_acme-prod", "k3d-cp-forge", "refusing to deploy"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error should mention %q, got:\n%s", want, msg)
-		}
-	}
-}
-
-// TestKubectlContextGuardVerdict_NoExpectation returns nil when no
-// expected cluster is declared — preserves backwards compat for
-// projects that haven't yet added environments[].cluster.
-func TestKubectlContextGuardVerdict_NoExpectation(t *testing.T) {
-	if err := kubectlContextGuardVerdict("staging", "", "k3d-cp-forge"); err != nil {
-		t.Errorf("expected nil when no expectation, got %v", err)
-	}
-}
-
 // TestDeployDryRunHelpMentionsGuard documents that dry-run still runs
 // the env-cluster guard — the change in this commit. A user reading
 // `forge deploy --help` should see that.
@@ -275,45 +241,37 @@ func k8sGroup(cluster, namespace string) deploytarget.ServiceGroup {
 	}
 }
 
-// TestResolveGroupContext_DeclaredIsDefault is the core of the
-// declarative-context fix: with no --context override, the kubectl
-// context is the group's declared cluster (KCL forge.K8sCluster.cluster),
-// NOT whatever context is currently active.
-func TestResolveGroupContext_DeclaredIsDefault(t *testing.T) {
+// TestResolveGroupContext_DeclaredIsTheOnlySource is the core of the
+// declarative-only model: the kubectl context is the group's declared
+// cluster (KCL forge.K8sCluster.cluster), NOT whatever context is
+// currently active — and there is no CLI override to consult.
+func TestResolveGroupContext_DeclaredIsTheOnlySource(t *testing.T) {
 	g := k8sGroup("gke_reliant-labs-475814_us-central1_prod", "cp-forge-prod")
-	if got := resolveGroupContext(g, ""); got != g.Cluster {
-		t.Errorf("declared cluster should be the default context: want %q, got %q", g.Cluster, got)
-	}
-}
-
-// TestResolveGroupContext_OverrideWins confirms --context remains an
-// explicit escape hatch that replaces the declared cluster.
-func TestResolveGroupContext_OverrideWins(t *testing.T) {
-	g := k8sGroup("gke_reliant-labs-475814_us-central1_prod", "cp-forge-prod")
-	if got := resolveGroupContext(g, "my-renamed-ctx"); got != "my-renamed-ctx" {
-		t.Errorf("override should win: want %q, got %q", "my-renamed-ctx", got)
+	if got := resolveGroupContext(g); got != g.Cluster {
+		t.Errorf("declared cluster should be the context: want %q, got %q", g.Cluster, got)
 	}
 }
 
 // TestResolveGroupContext_NoClusterEmpty confirms a host-only / compose
-// group with no declared cluster yields an empty context (= kubectl's
-// current context), preserving the pre-declarative fallback.
+// group with no declared cluster yields an empty context. Empty is NOT a
+// silent fall-back to the active context — the cluster.KubectlApply
+// chokepoint refuses an empty context on any k8s write (see
+// TestKubectlApply_RefusesEmptyContext in internal/cluster).
 func TestResolveGroupContext_NoClusterEmpty(t *testing.T) {
 	g := deploytarget.ServiceGroup{ProviderID: "compose"}
-	if got := resolveGroupContext(g, ""); got != "" {
+	if got := resolveGroupContext(g); got != "" {
 		t.Errorf("no declared cluster should yield empty context, got %q", got)
 	}
 }
 
 // TestApplyOptsBuilder_ContextFromDeclaredCluster proves the full
 // builder path: the cluster.ApplyOpts the K8sCluster provider feeds into
-// every kubectl call carries the KCL-declared cluster as its Context,
-// with no --context override supplied.
+// every kubectl call carries the KCL-declared cluster as its Context.
+// There is no override parameter to bypass it.
 func TestApplyOptsBuilder_ContextFromDeclaredCluster(t *testing.T) {
 	const declared = "gke_reliant-labs-475814_us-central1_prod"
 	builder := applyOptsBuilderFromContext(
 		"deploy/kcl/prod/main.k", "v1.2.3", "fallback-ns", "prod",
-		"", // no --context override
 		nil, false, false, nil, nil, nil,
 	)
 	opts := builder(k8sGroup(declared, "cp-forge-prod"))
@@ -325,36 +283,19 @@ func TestApplyOptsBuilder_ContextFromDeclaredCluster(t *testing.T) {
 	}
 }
 
-// TestApplyOptsBuilder_OverrideReplacesDeclared confirms --context, when
-// supplied, replaces the declared cluster on every group's ApplyOpts.
-func TestApplyOptsBuilder_OverrideReplacesDeclared(t *testing.T) {
-	builder := applyOptsBuilderFromContext(
-		"deploy/kcl/prod/main.k", "v1", "fallback-ns", "prod",
-		"override-ctx",
-		nil, false, false, nil, nil, nil,
-	)
-	opts := builder(k8sGroup("gke_declared_cluster", "ns"))
-	if opts.Context != "override-ctx" {
-		t.Errorf("override should replace declared cluster: want %q, got %q", "override-ctx", opts.Context)
-	}
-}
-
 // TestDeclaredEnvContext picks the first declared cluster for the
-// env-wide consumers (secrets pre-apply / empty-groups apply / rollback),
-// with --context override winning and host-only envs yielding empty.
+// env-wide consumers (secrets pre-apply / empty-groups apply / rollback);
+// host-only envs yield empty. There is no override to consult.
 func TestDeclaredEnvContext(t *testing.T) {
 	groups := []deploytarget.ServiceGroup{
 		{ProviderID: "external"},
 		k8sGroup("gke_first", "ns"),
 		k8sGroup("gke_second", "ns2"),
 	}
-	if got := declaredEnvContext(groups, ""); got != "gke_first" {
+	if got := declaredEnvContext(groups); got != "gke_first" {
 		t.Errorf("env context should be the first declared cluster: want %q, got %q", "gke_first", got)
 	}
-	if got := declaredEnvContext(groups, "override"); got != "override" {
-		t.Errorf("override should win: want %q, got %q", "override", got)
-	}
-	if got := declaredEnvContext([]deploytarget.ServiceGroup{{ProviderID: "compose"}}, ""); got != "" {
+	if got := declaredEnvContext([]deploytarget.ServiceGroup{{ProviderID: "compose"}}); got != "" {
 		t.Errorf("no k8s cluster declared should yield empty, got %q", got)
 	}
 }

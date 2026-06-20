@@ -349,6 +349,7 @@ func generateSteps() []GenStep {
 		{Name: "tenant middleware (auto-enable + emit)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, hasServices), GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
 		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
+		{Name: "internal/app composition (hybrid DI)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepInternalAppComposition, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
 		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
 		{Name: "per-service subcommands (cmd/services_gen.go)", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepCmdSubcommands, Tag: "codegen"},
@@ -439,6 +440,7 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"detect proto directories":             true,
 		"ensure gen/go.mod":                    true,
 		"parse services + module path":         true,
+		"internal/app composition (hybrid DI)": true,
 		"go mod tidy (pre-wiring)":             true,
 		"pkg/app/bootstrap.go":                 true,
 		"pkg/app/testing.go":                   true,
@@ -563,6 +565,7 @@ var templatesOnlyStepAllow = map[string]bool{
 	"webhook routes":                                true,
 	"MCP manifest":                                  true,
 	"pkg/app/bootstrap.go":                          true,
+	"internal/app composition (hybrid DI)":          true,
 	"per-service subcommands (cmd/services_gen.go)": true,
 	"pkg/app/testing.go":                            true,
 	"pkg/app/migrate.go":                            true,
@@ -1805,6 +1808,72 @@ func stepBootstrap(ctx *pipelineContext) error {
 	}
 	if err := generateBootstrap(rows, ctx.ModulePath, dbDriver, ormEnabled, ctx.ProjectDir, ctx.ConfigFields, bootstrapFeatures, ctx.Checksums); err != nil {
 		return fmt.Errorf("bootstrap generation failed: %w", err)
+	}
+	return nil
+}
+
+// stepInternalAppComposition emits the §2 hybrid-DI composition layer under
+// internal/app (providers.go / post_build.go / app_services_gen.go /
+// inject_gen.go / inventory_gen.go / lifecycle_gen.go).
+//
+// It is gated on cmd/server.go EXISTING — not on len(services|workers|
+// operators) — because the generated cmd/server.go imports internal/app
+// unconditionally (OpenInfra → Build → PostBuild → mount via Inventory →
+// serverkit.Run). If internal/app were only emitted on the entrypoint-bearing
+// path, a degenerate tree (no proto service parses / no forge_descriptor.json,
+// so ctx.Services is empty) would leave internal/app EMPTY while cmd/server.go
+// still imports it — and `go mod tidy` would 404 trying to fetch the local
+// package remotely. The generators + templates render valid empty
+// Build/Inventory/Services/lifecycle so the package always compiles.
+//
+// Runs BEFORE the go-mod-tidy steps so the local package is resolvable.
+// Skipped silently when cmd/server.go doesn't exist (CLI/library kinds and
+// codegen-less trees have no runServer that imports internal/app).
+func stepInternalAppComposition(ctx *pipelineContext) error {
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", "server.go")); err != nil {
+		return nil
+	}
+
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	workers, err := discoverWorkers(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+	packages, err := discoverPackages(ctx.ProjectDir)
+	if err != nil {
+		return fmt.Errorf("discover internal packages: %w", err)
+	}
+	webhookServices := discoverWebhookServices(ctx.ProjectDir)
+
+	// ctx.ModulePath is only populated by the entrypoint-gated parse step, so
+	// it may be empty here (the very case this step exists to cover). Read it
+	// directly from go.mod as a fallback so the generated import lines resolve.
+	modulePath := ctx.ModulePath
+	if modulePath == "" {
+		modulePath, err = codegen.GetModulePath(ctx.ProjectDir)
+		if err != nil {
+			return fmt.Errorf("read module path for internal/app composition: %w", err)
+		}
+	}
+
+	var dbDriver string
+	if ctx.Cfg != nil {
+		dbDriver = ctx.Cfg.Database.Driver
+	}
+	ormEnabled, err := deriveOrmEnabled(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+
+	if err := generateHybridComposition(rows, packages, workers, operators, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums); err != nil {
+		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
 	return nil
 }

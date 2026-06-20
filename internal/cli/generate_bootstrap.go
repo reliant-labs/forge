@@ -166,24 +166,16 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		fmt.Println("  ✅ Generated pkg/app/interface_assertions_gen.go")
 	}
 
-	// HYBRID DI (FORGE_SHAPE_REDESIGN §2), PASS 1 — ADDITIVE. Emit the
-	// new internal/app composition layer alongside the existing pkg/app
-	// machinery so the tree always builds:
-	//
-	//   - internal/app/providers.go  (owned Infra + OpenInfra, scaffold-once)
-	//   - internal/app/post_build.go (owned PostBuild two-phase, scaffold-once)
-	//   - internal/app/app_services_gen.go (typed Services registry)
-	//   - internal/app/inject_gen.go (GENERATED Build injector, by-type DI)
-	//   - internal/app/inventory_gen.go (data-only mount inventory)
-	//
-	// wire_gen + appkit.Run stay present but UNUSED until PASS 2 flips
-	// cmd-server to Build/PostBuild; PASS 3 retires them. The injector is
-	// GENERATED (regenerated every run), per the redesign's key
-	// distinction from the prior scaffold-once attempt.
-	if err := generateHybridComposition(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, webhookServices, cs); err != nil {
-		return err
-	}
-
+	// HYBRID DI (FORGE_SHAPE_REDESIGN §2): the internal/app composition
+	// layer (providers.go / post_build.go / app_services_gen.go /
+	// inject_gen.go / inventory_gen.go / lifecycle_gen.go) is emitted by its
+	// OWN pipeline step (stepInternalAppComposition). That step is gated on
+	// cmd/server.go EXISTING rather than on len(services|workers|operators)
+	// so internal/app is always populated whenever the generated cmd/server.go
+	// imports it — including degenerate trees where no proto service parses
+	// (e.g. no forge_descriptor.json). If internal/app were only emitted on
+	// the entrypoint-bearing path, `go mod tidy` would 404 trying to fetch the
+	// empty local package the cmd imports.
 	return nil
 }
 
@@ -192,9 +184,13 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 // are written before the generated injector so its Infra-field resolution
 // sees the Infra struct on the first pass too.
 func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, workers []codegen.BootstrapWorkerData, operators []codegen.BootstrapOperatorData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
-	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
-		return nil
-	}
+	// NO len()==0 early-return: the generated cmd/server.go imports
+	// internal/app unconditionally (OpenInfra → Build → PostBuild → mount via
+	// Inventory → serverkit.Run), so internal/app must be a non-empty,
+	// compilable package even when no component is discovered (degenerate
+	// trees with no parseable proto service / no descriptor). The generators
+	// + templates below emit valid empty Build/Inventory/Services/lifecycle so
+	// `go mod tidy` resolves internal/app LOCALLY instead of 404ing.
 
 	// Owned, scaffold-once (never overwritten after first emit).
 	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
@@ -240,9 +236,7 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
 	}
 
-	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
-		fmt.Println("  ✅ Generated internal/app composition layer (Build + Inventory + Infra)")
-	}
+	fmt.Println("  ✅ Generated internal/app composition layer (Build + Inventory + Infra)")
 	return nil
 }
 

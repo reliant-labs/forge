@@ -75,16 +75,15 @@ type InventoryGenData struct {
 	ConnectImports []string
 }
 
-// GenerateInventory emits internal/app/inventory_gen.go. Returns nil with
-// no file written when there are no services (the inventory is the HTTP-
-// mount surface; a server with no Connect services has nothing to mount).
+// GenerateInventory emits internal/app/inventory_gen.go: the data-only
+// `var Inventory = []ComponentInfo{...}` the generated cmd/server.go reads to
+// list and mount services. It is ALWAYS written when internal/app is emitted
+// (no len(Services)==0 early-return): cmd/server.go references app.Inventory
+// unconditionally, so the symbol must exist even when there are no Connect
+// services to mount (the template renders an empty []ComponentInfo).
 //
 // ADDITIVE in PASS 1: written alongside the existing pkg/app machinery.
 func GenerateInventory(in InventoryGenInput) error {
-	if len(in.Services) == 0 {
-		return nil
-	}
-
 	appDir := filepath.Join(in.ProjectDir, "internal", "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		return err

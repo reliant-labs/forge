@@ -16,7 +16,9 @@
 package app
 
 import (
+{{- if .NeedsFmt}}
 	"fmt"
+{{- end}}
 	"log/slog"
 {{- if .NeedsAuthorizer}}
 

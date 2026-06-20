@@ -33,7 +33,6 @@ package buildtarget
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,6 +42,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/envutil"
+	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 // Spec is the per-service build-target shape consumed by the runner.
@@ -328,7 +328,15 @@ func statePath(projectDir, env, service string) string {
 	if env == "" {
 		env = "default"
 	}
-	return filepath.Join(projectDir, ".forge", "state", "build-"+env+"-"+service+".json")
+	// Sanitize the env/service segments before composing the filename.
+	// They're KCL-validated identifiers in practice, so for real inputs
+	// SafeSegment is a no-op and existing build-<env>-<service>.json
+	// files keep loading — but a separator-bearing value used to be able
+	// to escape .forge/state, which is the latent path-traversal smell
+	// this hoist closes (deploytarget already sanitized; this side did
+	// not).
+	name := "build-" + statefile.SafeSegment(env) + "-" + statefile.SafeSegment(service) + ".json"
+	return statefile.Path(projectDir, name)
 }
 
 // WriteState persists a successful Runner.Build to disk. Called from
@@ -340,18 +348,7 @@ func statePath(projectDir, env, service string) string {
 // external-build path never grow .forge/state/build-*-*.json files.
 // File mode is 0o644 to match the project-docker state file.
 func WriteState(projectDir, env string, state State) error {
-	path := statePath(projectDir, env, state.Service)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create build-state dir: %w", err)
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal build state: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write build state %s: %w", path, err)
-	}
-	return nil
+	return statefile.Write(statePath(projectDir, env, state.Service), "build state", state)
 }
 
 // ReadState loads the per-service build-state file. Returns
@@ -361,19 +358,7 @@ func WriteState(projectDir, env string, state State) error {
 // Returns (nil, err) for malformed JSON or unreadable files; callers
 // should not silently swallow these.
 func ReadState(projectDir, env, service string) (*State, error) {
-	path := statePath(projectDir, env, service)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read build state %s: %w", path, err)
-	}
-	var st State
-	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, fmt.Errorf("parse build state %s: %w", path, err)
-	}
-	return &st, nil
+	return statefile.Read[State](statePath(projectDir, env, service), "build state")
 }
 
 // StatePath exposes the per-service state path for callers that want

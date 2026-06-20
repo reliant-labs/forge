@@ -1727,10 +1727,9 @@ func stepMCPManifest(ctx *pipelineContext) error {
 	}
 	return ctx.warnOrFail("MCP manifest generation",
 		codegen.GenerateMCPManifest(codegen.MCPGenInput{
-			ProjectDir:  ctx.ProjectDir,
+			GenContext:  codegen.GenContext{ProjectDir: ctx.ProjectDir, Checksums: ctx.Checksums},
 			ProjectName: projectName,
 			Services:    registered,
-			Checksums:   ctx.Checksums,
 		}))
 }
 
@@ -2013,9 +2012,8 @@ func stepIngressK3dPorts(ctx *pipelineContext) error {
 		return ctx.warnOrFail("remove stale k3d-ports.yaml", codegen.RemoveK3dPorts(ctx.ProjectDir))
 	}
 	return ctx.warnOrFail("write deploy/k3d-ports.yaml", codegen.GenerateK3dPorts(codegen.K3dPortsGenInput{
-		ProjectDir: ctx.ProjectDir,
+		GenContext: codegen.GenContext{ProjectDir: ctx.ProjectDir, Checksums: ctx.Checksums},
 		Listeners:  listeners,
-		Checksums:  ctx.Checksums,
 	}))
 }
 

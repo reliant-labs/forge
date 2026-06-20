@@ -280,7 +280,7 @@ func TestStringifyConfigValue(t *testing.T) {
 		{true, "true"},
 		{false, "false"},
 		{int(42), "42"},
-		{int64(1<<33), "8589934592"},
+		{int64(1 << 33), "8589934592"},
 		{float64(3), "3"},
 		{float64(3.14), "3.14"},
 	}

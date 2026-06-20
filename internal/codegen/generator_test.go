@@ -173,7 +173,18 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -290,7 +301,18 @@ func TestGenerateBootstrap_RESTDisabled_NoVanguard(t *testing.T) {
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -338,7 +360,18 @@ func TestGenerateBootstrap_RESTEnabled_WrapsMux(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	if err := GenerateAppGen(false, false, len(services) > 0, false, false, false, targetDir, nil); err != nil {
@@ -428,7 +461,18 @@ func TestGenerateBootstrap_AutoWiresWebhookRoutes(t *testing.T) {
 		"admin_server": true,
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, webhookServices, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: webhookServices,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -473,7 +517,18 @@ func TestGenerateBootstrap_WithPackages(t *testing.T) {
 		{Name: "notifications", Package: "notifications", ImportPath: "notifications", FieldName: "Notifications", VarName: "notifications"},
 	}
 
-	if err := GenerateBootstrap(services, packages, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        packages,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// app_gen.go owns the App struct definition (with Packages field
@@ -932,7 +987,18 @@ func New(deps Deps) Service { return nil }
 	if err != nil {
 		t.Fatalf("PackageDataFromNames() error = %v", err)
 	}
-	if err := GenerateBootstrap(nil, packages, nil, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        nil,
+		Packages:        packages,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -962,7 +1028,14 @@ func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, targetDir, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
 
@@ -1084,7 +1157,14 @@ func TestGenerateBootstrapTesting_WithPackages(t *testing.T) {
 		{Name: "cache", Package: "cache", ImportPath: "cache", FieldName: "Cache", VarName: "cache"},
 	}
 
-	if err := GenerateBootstrapTesting(services, packages, nil, nil, "example.com/proj", false, targetDir, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           packages,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
 
@@ -1156,7 +1236,14 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 	}
 
 	services := []ServiceDef{{Name: "APIService", ModulePath: "example.com/proj"}}
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectDir, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting() error = %v", err)
 	}
 
@@ -1667,7 +1754,18 @@ func TestGenerateBootstrap_IncludesSetupCall(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 
@@ -1802,7 +1900,18 @@ func TestGenerateBootstrap_WithDatabase(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "postgres", true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "postgres",
+		OrmEnabled:      true,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	// App struct (with DB field + database/sql import) now lives in
@@ -1838,7 +1947,18 @@ func TestGenerateBootstrap_ConstructsDatabaseAndORM(t *testing.T) {
 		{Name: "APIService", ModulePath: "example.com/proj"},
 	}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "postgres", true, targetDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: targetDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "postgres",
+		OrmEnabled:      true,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap() error = %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(targetDir, "pkg", "app", "bootstrap.go"))
@@ -1866,7 +1986,18 @@ func TestGenerateBootstrap_ConstructsDatabaseAndORM(t *testing.T) {
 
 	// No database → no construction machinery, Setup row stays bare.
 	noDBDir := t.TempDir()
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, noDBDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: noDBDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap(no db) error = %v", err)
 	}
 	data, err = os.ReadFile(filepath.Join(noDBDir, "pkg", "app", "bootstrap.go"))

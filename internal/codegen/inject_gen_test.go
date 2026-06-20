@@ -90,8 +90,9 @@ func TestGenerateInject_TypeTopoOrder(t *testing.T) {
 	if ui > bi {
 		t.Fatalf("User must be constructed before Billing:\n%s", out)
 	}
-	// Billing's Users field is filled by the producer var, not infra.
-	if !strings.Contains(out, "Users: user,") {
+	// Billing's Users field is filled by the producer's local var (suffixed
+	// "Inst" so it never shadows the package import alias), not infra.
+	if !strings.Contains(out, "Users: userInst,") {
 		t.Fatalf("Billing.Users should be wired to the user producer var:\n%s", out)
 	}
 }

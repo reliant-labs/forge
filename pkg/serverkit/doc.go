@@ -27,19 +27,24 @@
 //	if metricsHandler != nil { mux.Handle("/metrics", metricsHandler) }
 //	// run migrations (the cmd opens the DB it needs)
 //	opts := connectHandlerOptions(logger) // observe.DefaultMiddlewares + project interceptors
-//	a, _ := app.BootstrapOnly(mux, logger, cfg, names, opts...) // or app.Bootstrap
-//	_ = app.PostBootstrap(a)
+//	// FORGE_SHAPE_REDESIGN §2 hybrid DI: owned infra → generated injector →
+//	// owned two-phase wiring, then per-subcommand mount selection over the
+//	// data-only inventory.
+//	infra, _ := app.OpenInfra(ctx, cfg, logger)
+//	services, _ := app.Build(infra)
+//	_ = app.PostBuild(services)
+//	mounted := mountServices(services, mux, cfg, logger, names, opts...) // app.Inventory rows
 //	var handler http.Handler = mux
-//	if rest := a.RESTHandler(); rest != nil { handler = rest }
+//	if rest := restHandler(mux, mounted); rest != nil { handler = rest }
 //	return serverkit.Run(ctx, projectConfig(cfg), serverkit.Server{
 //	    Handler:    handler,
 //	    Logger:     logger,
-//	    Workers:    selected(a.WorkerList(), names),
-//	    Operators:  selected(a.OperatorList(), names),
-//	    RunOperators: a.RunOperators,
-//	    OnShutdown: func(ctx context.Context) error {
-//	        return errors.Join(a.Shutdown(ctx), shutdownOTel(ctx))
+//	    Workers:    selected(app.WorkerList(services), names),
+//	    Operators:  selected(app.OperatorList(services), names),
+//	    RunOperators: func(ctx context.Context, l *slog.Logger, addr string) error {
+//	        return app.RunOperators(services, ctx, l, addr)
 //	    },
+//	    OnShutdown: func(ctx context.Context) error { return shutdownOTel(ctx) },
 //	    CORSMiddleware:            fmw.CORSMiddleware,
 //	    SecurityHeadersMiddleware: securityHeaders,
 //	    RequestIDMiddleware:       fmw.RequestIDMiddleware,

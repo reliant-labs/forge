@@ -3,10 +3,18 @@
 //
 // # Pattern
 //
+// NOTE (FORGE_SHAPE_REDESIGN §2): appkit is the LEGACY DI engine. The
+// live composition path is the generated cmd/server.go over the
+// internal/app layer (OpenInfra → Build → PostBuild → Inventory). appkit
+// still owns the worker/operator supervised-component contracts
+// (WorkerInstance / ContextWorkerInstance / WrapWorker) that the new
+// internal/app/lifecycle_gen.go re-uses; the string-keyed selection
+// (Options.Only / LazyConstruct) has been retired.
+//
 // Forge's bootstrap generator used to emit a ~650-line program: package
 // construction, per-service wiring, Connect/HTTP mounting, REST
-// transcoding, diagnostics boot, and the filtered BootstrapOnly variant
-// were all open-coded in the generated file. Anyone who needed custom
+// transcoding, and diagnostics boot were all open-coded in the generated
+// file. Anyone who needed custom
 // worker construction or an extra HTTP mount had to fork bootstrap.go —
 // and a forked generated file never regenerates again.
 //
@@ -45,30 +53,27 @@
 // [Run] executes the table in a fixed order that mirrors the historical
 // generated bootstrap exactly:
 //
-//  1. Warn about unknown names in [Options].Only.
-//  2. def.Setup — the user-owned Setup(app, cfg) that builds
+//  1. def.Setup — the user-owned Setup(app, cfg) that builds
 //     infrastructure (DB pool, NATS, audit sink) and assigns it onto
 //     *App fields read back by the wireXxxDeps functions.
-//  3. Diagnostics boot ([DiagnosticsLog] / [DiagnosticsStrict]) — emits
+//  2. Diagnostics boot ([DiagnosticsLog] / [DiagnosticsStrict]) — emits
 //     unwired-scaffold warnings recorded by the codegen pipeline.
-//  4. Internal packages, in table order (services may depend on them).
-//  5. Service construction, in table order. Each Construct returns the
+//  3. Internal packages, in table order (services may depend on them).
+//  4. Service construction, in table order. Each Construct returns the
 //     [Mounter] for that service so construction and mounting stay
-//     separable — BootstrapOnly's name filter applies to MOUNTING only
-//     (services are cheap structs; constructing all of them prevents
-//     nil-pointer surprises when cross-service code reads
-//     app.Services.<X> of an unmounted service).
-//  6. Hooks.BeforeMount.
-//  7. Service mounts for the selected names, in table order.
-//  8. Hooks.ExtraMounts — plain pattern/handler pairs for hand-rolled
+//     separable. Every registered row is constructed and mounted —
+//     string-keyed selection is retired.
+//  5. Hooks.BeforeMount.
+//  6. Service mounts, in table order.
+//  7. Hooks.ExtraMounts — plain pattern/handler pairs for hand-rolled
 //     HTTP endpoints (LLM proxies, registry adapters, debug routes)
 //     that previously forced a bootstrap fork.
-//  9. Hooks.AfterMount.
-//  10. Workers, in table order — each construction passes through
+//  8. Hooks.AfterMount.
+//  9. Workers, in table order — each construction passes through
 //     Hooks.ConstructWorker when set, so a project can substitute its
 //     own constructor for any worker without forking the table.
-//  11. Operators, in table order.
-//  12. REST transcoding (when [Def].REST is non-nil): a vanguard
+//  10. Operators, in table order.
+//  11. REST transcoding (when [Def].REST is non-nil): a vanguard
 //     transcoder is built over the mux from every service row's
 //     ConnectName and handed to REST.Assign, which the generated table
 //     points at app.RESTHandler.
@@ -103,21 +108,6 @@
 //	    }
 //	    return nil
 //	}
-//
-// # Filtering (BootstrapOnly semantics)
-//
-// [Options].Only carries the names passed to the generated
-// BootstrapOnly. Empty means "mount everything" — the canonical
-// `./<bin> server` behavior, and what the generated Bootstrap delegates
-// to. Unknown names log a warning and are otherwise ignored. Workers
-// and operators are always constructed regardless of the filter; the
-// caller (cmd/server.go) decides which of them to START using the same
-// name set.
-//
-// [Options].LazyConstruct additionally skips CONSTRUCTION of filtered-
-// out services — the `binary: shared` mode where per-service cobra
-// subcommands genuinely scope down their dependency graph at process
-// boot. Default false, matching the historical generated behavior.
 //
 // # Behavioural fingerprint
 //

@@ -151,15 +151,15 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("bootstrap.go BootstrapOnly should pass names to appkit.Run as Options.Only, got:\n%s", bootstrapContents)
 	}
 
-	// cmd/server.go should wire app.Bootstrap through the serverkit shim
-	// (the shim dispatches to app.Bootstrap / app.BootstrapOnly via
-	// Hooks.Bootstrap; the registry pattern is gone).
+	// cmd/server.go is the composition site: it calls app.Bootstrap /
+	// app.BootstrapOnly ITSELF (serverkit no longer receives names); the
+	// registry pattern is gone.
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
 	if strings.Contains(serverContents, "registry") {
 		t.Fatalf("cmd/server.go should not reference registry, got:\n%s", serverContents)
 	}
 	if !strings.Contains(serverContents, "app.Bootstrap(") {
-		t.Fatalf("cmd/server.go should wire app.Bootstrap() into serverkit.Hooks.Bootstrap, got:\n%s", serverContents)
+		t.Fatalf("cmd/server.go should call app.Bootstrap() to mount services, got:\n%s", serverContents)
 	}
 	// A2: Server should hand off to serverkit.Run — application.Shutdown
 	// is invoked inside serverkit's graceful-shutdown sequence, not by the
@@ -190,7 +190,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	// A7: Server should wire the CORS middleware factory when frontend exists.
 	// Serverkit drives the actual wrap based on Config.CORSOrigins.
 	if !strings.Contains(serverContents, "CORSMiddleware") {
-		t.Fatalf("cmd/server.go should wire middleware.CORSMiddleware into serverkit.Hooks.CORSMiddleware when frontend exists, got:\n%s", serverContents)
+		t.Fatalf("cmd/server.go should wire middleware.CORSMiddleware into serverkit.Server.CORSMiddleware when frontend exists, got:\n%s", serverContents)
 	}
 
 	// services/all should NOT exist
@@ -1047,17 +1047,19 @@ func TestFeatureFlag_MigrationsDisabled(t *testing.T) {
 	assertPathNotExists(t, filepath.Join(root, "pkg", "app", "migrate.go"))
 
 	// cmd/server.go should exist (codegen is still enabled) but must NOT
-	// wire the AutoMigrate hook or call app.AutoMigrate. The string
+	// run the migration ceremony or call app.AutoMigrate. The string
 	// "AutoMigrate" still appears in the package-level docstring as a
-	// reference to the optional hook surface — gate on the actual call
-	// sites instead of a substring match.
+	// reference to the optional surface — gate on the actual call sites
+	// instead of a substring match.
 	assertPathExists(t, filepath.Join(root, "cmd", "server.go"))
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
 	if strings.Contains(serverContents, "app.AutoMigrate(") {
 		t.Fatalf("cmd/server.go should NOT call app.AutoMigrate() when migrations disabled, got:\n%s", serverContents)
 	}
-	if strings.Contains(serverContents, "AutoMigrate:") {
-		t.Fatalf("cmd/server.go should NOT wire serverkit.Hooks.AutoMigrate when migrations disabled, got:\n%s", serverContents)
+	// The migration DB ceremony (open + pool-tune + close) the cmd now
+	// owns is gated on the same flag — it must be absent when disabled.
+	if strings.Contains(serverContents, "auto-migration failed") {
+		t.Fatalf("cmd/server.go should NOT run the migration ceremony when migrations disabled, got:\n%s", serverContents)
 	}
 }
 

@@ -89,6 +89,8 @@ type linterStep struct {
 // comments are the historical labels (gaps — 3, 6, 12 — are intentional;
 // they tracked removed linters and are preserved for diffability against
 // git history).
+//
+//nolint:funlen // declarative 14-entry linter registry, not branching complexity
 func lintPipeline() []linterStep {
 	return []linterStep{
 		// 1. Standard Go linters (golangci-lint).

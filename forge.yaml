@@ -23,7 +23,6 @@ environments:
 database:
     driver: ""
     migrations_dir: ""
-    sqlc_enabled: false
 ci:
     provider: github
     lint:

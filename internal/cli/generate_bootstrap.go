@@ -138,6 +138,34 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		fmt.Println("  ✅ Generated pkg/app/diagnostics_gen.go")
 	}
 
+	// Interface-satisfaction assertions (FORGE_SHAPE_REDESIGN §6c): emit
+	// pkg/app/interface_assertions_gen.go so every concrete→narrow-interface
+	// pair the wire graph proves is greppable as a `var _ Iface = (*T)(nil)`
+	// line. Best-effort — a fresh matcher (the wire_gen one is local to that
+	// call) re-loads each component's universe once; failures yield no
+	// assertions, never a generate abort.
+	assertComponents := make([]codegen.InterfaceAssertionComponent, 0, len(services)+len(workers)+len(operators))
+	for _, svc := range services {
+		res, rerr := codegen.ResolveServiceComponent(projectDir, svc.Name)
+		if rerr != nil || !res.FromDisk {
+			continue
+		}
+		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "handlers", PkgDir: res.ImportLeaf})
+	}
+	for _, w := range workers {
+		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "workers", PkgDir: w.ImportPath})
+	}
+	for _, op := range operators {
+		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "operators", PkgDir: op.ImportPath})
+	}
+	assertMatcher := codegen.NewDepsAssignabilityMatcher(projectDir)
+	if err := codegen.GenerateInterfaceAssertions(assertComponents, modulePath, projectDir, assertMatcher, cs); err != nil {
+		return fmt.Errorf("failed to generate interface_assertions_gen.go: %w", err)
+	}
+	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
+		fmt.Println("  ✅ Generated pkg/app/interface_assertions_gen.go")
+	}
+
 	return nil
 }
 

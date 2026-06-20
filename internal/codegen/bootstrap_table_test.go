@@ -144,7 +144,6 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 	// not regress them.
 	for _, sig := range []string{
 		"func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts ...connect.HandlerOption) (*App, error)",
-		"func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, names []string, opts ...connect.HandlerOption) (*App, error)",
 		"func (a *App) WorkerList() []serverkit.Worker",
 		"func (a *App) OperatorList() []serverkit.Operator",
 		"func (a *App) HasOperators() bool",
@@ -171,13 +170,17 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 		}
 	}
 
-	// Bootstrap is a one-line delegate (empty-filter identity).
-	if !strings.Contains(content, "return BootstrapOnly(mux, logger, cfg, nil, opts...)") {
-		t.Error("Bootstrap should delegate to BootstrapOnly with a nil filter")
+	// String-keyed selection retired (FORGE_SHAPE_REDESIGN §2): no
+	// BootstrapOnly / name filter / appkit.Options.
+	if strings.Contains(content, "BootstrapOnly") {
+		t.Error("BootstrapOnly should be retired — string-keyed selection moved to the cmd layer over internal/app.Inventory")
 	}
-	// Exactly one orchestration entry point.
-	if got := strings.Count(content, "appkit.Run(def, mux, logger, appkit.Options{Only: names})"); got != 1 {
-		t.Errorf("expected exactly one appkit.Run call, got %d", got)
+	if strings.Contains(content, "appkit.Options") {
+		t.Error("appkit.Options (the string filter) should be retired")
+	}
+	// Exactly one orchestration entry point, now filter-free.
+	if got := strings.Count(content, "appkit.Run(def, mux, logger)"); got != 1 {
+		t.Errorf("expected exactly one appkit.Run(def, mux, logger) call, got %d", got)
 	}
 	// Hooks plumbed through so setup.go can customize orchestration.
 	if !strings.Contains(content, "Hooks: func() *appkit.Hooks { return &app.Hooks }") {

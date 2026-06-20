@@ -211,12 +211,13 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 		t.Error("bootstrap.go should import orders service package")
 	}
 
-	// Must contain Bootstrap and BootstrapOnly functions
+	// Must contain the Bootstrap function. BootstrapOnly (the string name
+	// filter) is retired — selection moved to the cmd layer (§2).
 	if !strings.Contains(content, `func Bootstrap(`) {
 		t.Error("bootstrap.go should contain Bootstrap function")
 	}
-	if !strings.Contains(content, `func BootstrapOnly(`) {
-		t.Error("bootstrap.go should contain BootstrapOnly function")
+	if strings.Contains(content, `func BootstrapOnly(`) {
+		t.Error("bootstrap.go should NOT contain BootstrapOnly — string-keyed selection retired")
 	}
 
 	// Must contain constructor calls. wire_gen owns the Deps literal;

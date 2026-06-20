@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
 
 	"connectrpc.com/vanguard"
 
@@ -127,15 +126,13 @@ const (
 
 // Mounter registers a constructed service's handlers on the mux. The
 // generated [ServiceDef].Construct closures return one so construction
-// and mounting stay separable: BootstrapOnly's name filter applies to
-// mounting only.
+// and mounting stay separable.
 type Mounter func(mux *http.ServeMux)
 
 // ServiceDef is one generated service row.
 type ServiceDef struct {
-	// Name is the runtime (kebab-case) service name — the filter key
-	// matched against [Options].Only and the value cobra subcommands
-	// pass through cmd/server.go.
+	// Name is the runtime (kebab-case) service name — display / diagnostics
+	// only (string-keyed selection is retired).
 	Name string
 	// ConnectName is the Connect service path constant from the
 	// connect-generated package (e.g. apiv1connect.APIServiceName).
@@ -241,77 +238,19 @@ type Def struct {
 	REST *RESTDef
 }
 
-// Options carries per-invocation knobs (the generated Bootstrap /
-// BootstrapOnly pass these through).
-type Options struct {
-	// Only filters which services get MOUNTED on the mux. Empty mounts
-	// everything (the generated Bootstrap delegates with nil). Unknown
-	// names are warned about and ignored. Workers and operators are
-	// always constructed; the caller gates their start-up separately.
-	Only []string
-	// LazyConstruct additionally skips CONSTRUCTION of services
-	// filtered out by Only (`binary: shared` semantics). Default false:
-	// construct everything, filter at mount time.
-	LazyConstruct bool
-}
-
 // Run executes the def table against the mux. See the package
 // documentation for the exact orchestration order. The first error
 // aborts and is returned as-is (row closures pre-wrap their errors).
-func Run(def Def, mux *http.ServeMux, logger *slog.Logger, opts Options) error {
+//
+// String-keyed service SELECTION has been retired (FORGE_SHAPE_REDESIGN
+// §2): Run constructs and mounts every row. WHICH services a binary serves
+// is now expressed by which rows the user-owned registration table lists,
+// and per-subcommand mount selection lives in the cmd layer over the
+// data-only internal/app.Inventory — never as a string filter inside the
+// DI machinery.
+func Run(def Def, mux *http.ServeMux, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
-	}
-
-	// Filter bookkeeping + unknown-name warning. runAll preserves the
-	// "Bootstrap == BootstrapOnly with empty filter" identity.
-	runAll := len(opts.Only) == 0
-	selected := make(map[string]bool, len(opts.Only))
-	for _, n := range opts.Only {
-		selected[n] = true
-	}
-	if !runAll {
-		known := make(map[string]bool)
-		for _, s := range def.Services {
-			known[s.Name] = true
-		}
-		for _, w := range def.Workers {
-			known[w.Name] = true
-		}
-		for _, o := range def.Operators {
-			known[o.Name] = true
-		}
-		var knownNames []string
-		for n := range known {
-			knownNames = append(knownNames, n)
-		}
-		sort.Strings(knownNames)
-		for _, n := range opts.Only {
-			if !known[n] {
-				logger.Warn("unknown service/worker/operator name, ignoring", "name", n, "known", knownNames)
-			}
-		}
-
-		// Loud filter banner: name BOTH the registered AND excluded
-		// services/workers/operators. Silently 404-ing on excluded RPCs
-		// was a real debug-time-sink — naming the excluded set up front
-		// catches "the server doesn't even register this RPC" in seconds
-		// instead of after a CORS/proxy/auth rabbit hole. The unfiltered
-		// case is silent by design.
-		var registered, excluded []string
-		for n := range known {
-			if selected[n] {
-				registered = append(registered, n)
-			} else {
-				excluded = append(excluded, n)
-			}
-		}
-		sort.Strings(registered)
-		sort.Strings(excluded)
-		logger.Warn("server filter active — RPCs for excluded names will return 404",
-			"registered", registered,
-			"excluded", excluded,
-		)
 	}
 
 	// 1. User-owned Setup — infrastructure construction + App field
@@ -346,38 +285,29 @@ func Run(def Def, mux *http.ServeMux, logger *slog.Logger, opts Options) error {
 		}
 	}
 
-	// 4. Construct services. Mounting is deferred so the Only filter
-	// applies to registration, not construction (unless LazyConstruct).
-	type mountRow struct {
-		name  string
-		mount Mounter
-	}
-	var mounts []mountRow
+	// 4. Construct services. Every row is constructed and mounted —
+	// string-keyed selection is retired (see Run's doc).
+	var mounts []Mounter
 	for _, s := range def.Services {
-		if opts.LazyConstruct && !runAll && !selected[s.Name] {
-			continue
-		}
 		m, err := s.Construct()
 		if err != nil {
 			return err
 		}
-		mounts = append(mounts, mountRow{name: s.Name, mount: m})
+		mounts = append(mounts, m)
 	}
 
-	// 5. Mount phase: BeforeMount -> generated mounts (filtered) ->
-	// ExtraMounts -> AfterMount.
+	// 5. Mount phase: BeforeMount -> generated mounts -> ExtraMounts ->
+	// AfterMount.
 	if hooks.BeforeMount != nil {
 		if err := hooks.BeforeMount(mux); err != nil {
 			return err
 		}
 	}
 	for _, m := range mounts {
-		if m.mount == nil {
+		if m == nil {
 			continue
 		}
-		if runAll || selected[m.name] {
-			m.mount(mux)
-		}
+		m(mux)
 	}
 	for _, em := range hooks.ExtraMounts {
 		mux.Handle(em.Pattern, em.Handler)

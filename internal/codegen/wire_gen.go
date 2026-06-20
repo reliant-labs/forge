@@ -107,8 +107,8 @@ type WireGenServiceData struct {
 	UnresolvedFields []WireUnresolved
 
 	// ImportPath is the project-relative path used in the wire_gen
-	// import line (e.g. "handlers/billing", "workers/idle_detector",
-	// "operators/workspace_controller"). Lets one template render
+	// import line (e.g. "internal/handlers/billing", "internal/workers/idle_detector",
+	// "internal/operators/workspace_controller"). Lets one template render
 	// services, workers, and operators without role-specific blocks.
 	ImportPath string
 
@@ -388,7 +388,7 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 			Package:       pkg,
 			Alias:         alias,
 			Name:          runtimeName,
-			ImportPath:    "handlers/" + res.ImportLeaf,
+			ImportPath:    "internal/handlers/" + res.ImportLeaf,
 			LoggerAttrKey: "service",
 		}
 
@@ -405,7 +405,7 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 
 		// pkgDir is the on-disk directory leaf (res.ImportLeaf), not the
 		// package clause — the matcher loads the package by path.
-		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "handlers", pkgDir: res.ImportLeaf}
+		svcTC := &appFieldTypeChecker{matcher: matcher, roleRoot: "internal/handlers", pkgDir: res.ImportLeaf}
 		for _, df := range depsFields {
 			expr, comment, unresolved, provenMismatch := wireExpressionForApp(df, appFieldByName, ormEnabled, runtimeName, resolverNeeds, svcTC)
 			// Config-block resolution by TYPE: a fallthrough field whose
@@ -461,11 +461,11 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 	// WireGenServiceData carrier — the template treats them identically
 	// other than the import-path prefix and the per-component logger
 	// attribute key ("worker" / "operator" instead of "service").
-	wireWorkers, err := buildWireComponentData(workers, "wkr", "workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher, configBlocks)
+	wireWorkers, err := buildWireComponentData(workers, "wkr", "internal/workers", "worker", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher, configBlocks)
 	if err != nil {
 		return WireGenData{}, fmt.Errorf("build worker wire data: %w", err)
 	}
-	wireOperators, err := buildWireComponentData(operators, "op", "operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher, configBlocks)
+	wireOperators, err := buildWireComponentData(operators, "op", "internal/operators", "operator", projectDir, appFieldByName, ormEnabled, counts, resolverNeeds, matcher, configBlocks)
 	if err != nil {
 		return WireGenData{}, fmt.Errorf("build operator wire data: %w", err)
 	}

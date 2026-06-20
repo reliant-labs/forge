@@ -54,9 +54,9 @@ import (
 // helpers. Returns findings in deterministic order.
 //
 // The walk recognises any directory whose path component is exactly
-// "handlers" as the canonical handler tree (matches both the
-// project-template `handlers/<svc>/` shape and the rare `handlers/`
-// flat layout). Test files (_test.go) are skipped — fixtures and table
+// "handlers" as the canonical handler tree (matches the
+// project-template `internal/handlers/<svc>/` shape). Test files
+// (_test.go) are skipped — fixtures and table
 // tests sometimes legitimately construct connect errors for assertions.
 func LintHandlerErrorMapping(rootDir string) (Result, error) {
 	var goFiles []string

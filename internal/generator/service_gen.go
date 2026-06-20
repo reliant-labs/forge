@@ -59,7 +59,7 @@ func GenerateServiceFiles(root, modulePath, serviceName, projectName string, por
 // notices without re-implementing the existence check.
 func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName string, port int, mode ScaffoldMode, progress io.Writer) error {
 	servicePackage := naming.ServicePackage(serviceName)
-	svcDir := filepath.Join(root, "handlers", servicePackage)
+	svcDir := filepath.Join(root, "internal", "handlers", servicePackage)
 
 	// Create directories
 	dirs := []string{

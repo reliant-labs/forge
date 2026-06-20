@@ -187,7 +187,7 @@ func runGoimportsOnGenerated(projectDir, modulePath string) error {
 		return nil
 	}
 
-	dirs := []string{"cmd", "pkg", "gen", "handlers"}
+	dirs := []string{"cmd", "pkg", "gen", "internal"}
 	var targets []string
 	for _, d := range dirs {
 		if dirExists(filepath.Join(projectDir, d)) {

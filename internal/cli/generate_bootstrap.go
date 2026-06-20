@@ -150,13 +150,13 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		if rerr != nil || !res.FromDisk {
 			continue
 		}
-		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "handlers", PkgDir: res.ImportLeaf})
+		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "internal/handlers", PkgDir: res.ImportLeaf})
 	}
 	for _, w := range workers {
-		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "workers", PkgDir: w.ImportPath})
+		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "internal/workers", PkgDir: w.ImportPath})
 	}
 	for _, op := range operators {
-		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "operators", PkgDir: op.ImportPath})
+		assertComponents = append(assertComponents, codegen.InterfaceAssertionComponent{RoleRoot: "internal/operators", PkgDir: op.ImportPath})
 	}
 	assertMatcher := codegen.NewDepsAssignabilityMatcher(projectDir)
 	if err := codegen.GenerateInterfaceAssertions(assertComponents, modulePath, projectDir, assertMatcher, cs); err != nil {

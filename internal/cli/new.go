@@ -726,7 +726,7 @@ func shouldRunRootGoModTidy(path string) (bool, error) {
 		return false, err
 	}
 
-	serviceRoot := filepath.Join(path, "handlers")
+	serviceRoot := filepath.Join(path, "internal", "handlers")
 	if _, err := os.Stat(serviceRoot); os.IsNotExist(err) {
 		return true, nil
 	} else if err != nil {

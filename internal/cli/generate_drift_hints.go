@@ -36,13 +36,13 @@ func tier1ExtensionPointHint(relPath string) string {
 		}
 	}
 
-	// handlers/<svc>/: per-service generated files each have a
+	// internal/handlers/<svc>/: per-service generated files each have a
 	// user-owned counterpart or an upstream source of truth.
-	if strings.HasPrefix(dir, "handlers/") {
+	if strings.HasPrefix(dir, "internal/handlers/") {
 		switch {
 		case base == "authorizer_gen.go":
 			svc := path.Base(dir)
-			return "override in handlers/" + svc + "/authorizer.go (user-owned), which wire_gen already calls via NewAuthorizer()"
+			return "override in internal/handlers/" + svc + "/authorizer.go (user-owned), which wire_gen already calls via NewAuthorizer()"
 		case base == "handlers_gen.go" || base == "mock_gen.go":
 			return "regenerate from contract.go / proto instead of editing — this file is derived output"
 		}

@@ -148,7 +148,7 @@ func (g *ProjectGenerator) Generate() error {
 		// would just leave a dangling .gitkeep or an untracked empty dir.
 	}
 	if g.isService() {
-		dirs = append(dirs, "handlers", "handlers/mocks", "pkg/app", "pkg/middleware")
+		dirs = append(dirs, "internal/handlers", "internal/handlers/mocks", "pkg/app", "pkg/middleware")
 	}
 	if g.hasCmd() {
 		dirs = append(dirs, "cmd")
@@ -190,7 +190,7 @@ func (g *ProjectGenerator) Generate() error {
 	// Go code (hyphens in CLI names become underscores on disk).
 	if g.ServiceName != "" {
 		svcPkg := naming.ServicePackage(g.ServiceName)
-		dirs = append(dirs, fmt.Sprintf("handlers/%s", svcPkg))
+		dirs = append(dirs, fmt.Sprintf("internal/handlers/%s", svcPkg))
 		dirs = append(dirs, fmt.Sprintf("proto/services/%s/v1", svcPkg))
 	}
 

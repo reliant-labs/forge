@@ -5,7 +5,7 @@
 //
 // NOTE: there is NO required_roles proto annotation — role policy is
 // code, not proto. To grant roles or customize access control, edit
-// handlers/{{.Package}}/authorizer.go (the user-owned sibling); do not
+// internal/handlers/{{.Package}}/authorizer.go (the user-owned sibling); do not
 // add role options to the proto, they don't exist. The shim below is
 // regenerated on every `forge generate`. All matching logic lives in
 // forge/pkg/authz; this file carries only the per-method data derived

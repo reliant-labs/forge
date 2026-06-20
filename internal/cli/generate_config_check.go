@@ -142,13 +142,13 @@ func checkDeclaredServices(projectDir string, cfg *config.ProjectConfig) []strin
 func defaultServicePath(c config.ComponentConfig) string {
 	switch c.EffectiveKind() {
 	case config.ComponentKindWorker, config.ComponentKindCron:
-		return "workers/" + c.Name
+		return "internal/workers/" + c.Name
 	case config.ComponentKindOperator:
-		return "operators/" + c.Name
+		return "internal/operators/" + c.Name
 	case config.ComponentKindBinary:
 		return "cmd/" + naming.ServicePackage(c.Name) + ".go"
 	default:
-		return "handlers/" + c.Name
+		return "internal/handlers/" + c.Name
 	}
 }
 

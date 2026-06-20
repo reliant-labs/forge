@@ -47,7 +47,7 @@ func LintHandlerFileSize(rootDir string, threshold int) (Result, error) {
 		return Result{}, nil
 	}
 
-	handlersDir := filepath.Join(rootDir, "handlers")
+	handlersDir := filepath.Join(rootDir, "internal", "handlers")
 	if _, err := os.Stat(handlersDir); os.IsNotExist(err) {
 		return Result{}, nil
 	}

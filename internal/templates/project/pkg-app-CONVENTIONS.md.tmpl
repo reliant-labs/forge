@@ -41,7 +41,7 @@ instead:
 ## How wire_gen resolves Deps fields
 
 `pkg/app/wire_gen.go` is regenerated on every `forge generate`. For
-each service it parses `handlers/<svc>/service.go` to extract the
+each service it parses `internal/handlers/<svc>/service.go` to extract the
 `Deps` struct's field names + types, then emits a per-service
 `wireXxxDeps(app, cfg, logger) Deps` function. Resolution
 rules (consulted in order):
@@ -99,7 +99,7 @@ message AppConfig {
 ```
 
 ```go
-// workers/trader/worker.go
+// internal/workers/trader/worker.go
 type Deps struct {
     Logger *slog.Logger
     Cfg    config.TraderConfig // wired to cfg.Trader by TYPE

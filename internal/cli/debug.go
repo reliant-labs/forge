@@ -899,11 +899,11 @@ func readModulePath(dir string) string {
 	return ""
 }
 
-// resolveShortFuncName searches handlers/ subdirectories for a Go file that
+// resolveShortFuncName searches internal/handlers/ subdirectories for a Go file that
 // defines a method matching shortName on a *Service receiver, and returns the
 // fully-qualified Delve function name.
 func resolveShortFuncName(modulePath, shortName string) string {
-	entries, err := os.ReadDir("handlers")
+	entries, err := os.ReadDir(filepath.Join("internal", "handlers"))
 	if err != nil {
 		return ""
 	}
@@ -911,7 +911,7 @@ func resolveShortFuncName(modulePath, shortName string) string {
 		if !entry.IsDir() {
 			continue
 		}
-		files, _ := filepath.Glob(filepath.Join("handlers", entry.Name(), "*.go"))
+		files, _ := filepath.Glob(filepath.Join("internal", "handlers", entry.Name(), "*.go"))
 		for _, f := range files {
 			content, err := os.ReadFile(f)
 			if err != nil {

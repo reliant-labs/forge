@@ -126,7 +126,7 @@ func collectBootstrapCoverageFindings(projectDir string) (findings []bootstrapCo
 	// the same wire_gen / bootstrap path and reproduce the same silent-
 	// drop / nil-panic shape when AppExtras.<F> and roleRoot.Deps.<F>
 	// agree on name but not type.
-	roleRoots := []string{"internal", "handlers", "workers", "operators"}
+	roleRoots := []string{"internal", "internal/handlers", "internal/workers", "internal/operators"}
 
 	for _, role := range roleRoots {
 		roleFindings, scanErr := scanRoleRootForDepsMismatch(projectDir, role, appByName, setupWired)

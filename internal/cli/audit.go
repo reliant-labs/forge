@@ -31,6 +31,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -103,6 +106,8 @@ var auditCategoryOrder = []string{
 	"config_deps",
 	"scaffold_markers",
 	"crud_stubs",
+	"file_sizes",
+	"orphan_stubs",
 	"diagnostics",
 	"deps",
 	"friction",
@@ -194,6 +199,8 @@ func buildAuditReport(projectDir string) (*AuditReport, error) {
 	report.Categories["config_deps"] = auditConfigDeps(abs)
 	report.Categories["scaffold_markers"] = auditScaffoldMarkers(abs)
 	report.Categories["crud_stubs"] = auditCRUDStubs(abs)
+	report.Categories["file_sizes"] = auditFileSizes(abs)
+	report.Categories["orphan_stubs"] = auditOrphanStubs(cfg, abs)
 	report.Categories["diagnostics"] = auditDiagnostics(cfg, abs)
 	report.Categories["deps"] = auditDeps(abs)
 	report.Categories["friction"] = auditFriction(abs)
@@ -1837,6 +1844,335 @@ func auditDeps(projectDir string) AuditCategory {
 		summary = "deps need attention"
 	}
 	return AuditCategory{Status: status, Summary: summary, Details: details}
+}
+
+// File / method-count thresholds. Chosen to flag the genuine monster
+// files (FORGE_SHAPE_REDESIGN §6d: internal/db/postgres.go ~5,354 LOC /
+// 166 methods) without nagging on normal large files. Warn-level only —
+// splitting is app work, the audit's job is to make the navigation
+// hazard visible to an LLM/operator, not to gate the build.
+const (
+	auditFileLineWarn   = 1500 // a .go file past this is hard to navigate
+	auditTypeMethodWarn = 40   // a receiver type with this many methods is a god-object
+)
+
+// auditFileSizeWalkSkip are directory names the size walk skips — generated
+// output, vendored deps, VCS, node_modules. Generated files (gen/) are
+// excluded because their size is forge's concern, not the user's, and they
+// are not hand-navigated.
+var auditFileSizeWalkSkip = map[string]struct{}{
+	"vendor": {}, ".git": {}, "node_modules": {}, "gen": {}, ".forge": {}, "testdata": {},
+}
+
+// auditFileSizes flags oversized Go files and god-object types (receiver
+// types with a high method count) — the LLM-navigation hazard from
+// FORGE_SHAPE_REDESIGN §6d. App-specific to fix (splitting is the user's
+// call), so warn-level and informational; the value is surfacing the
+// hazard in one place an agent can branch on
+// (`.file_sizes.status == "warn"`).
+//
+// Counts physical lines per file and methods per receiver type (via a
+// cheap AST parse). _test.go and _gen.go files are scanned for line count
+// but excluded from the method-count god-object check (generated method
+// tables and table-driven tests legitimately carry many funcs).
+func auditFileSizes(projectDir string) AuditCategory {
+	type bigFile struct {
+		Path  string `json:"path"`
+		Lines int    `json:"lines"`
+	}
+	type bigType struct {
+		Path    string `json:"path"`
+		Type    string `json:"type"`
+		Methods int    `json:"methods"`
+	}
+	var bigFiles []bigFile
+	var bigTypes []bigType
+
+	_ = filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ok := auditFileSizeWalkSkip[d.Name()]; ok {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(projectDir, path)
+		rel = filepath.ToSlash(rel)
+
+		lines := 1 + strings.Count(string(data), "\n")
+		if lines >= auditFileLineWarn {
+			bigFiles = append(bigFiles, bigFile{Path: rel, Lines: lines})
+		}
+
+		// Method-count god-object check skips generated + test files.
+		if strings.HasSuffix(d.Name(), "_gen.go") || strings.HasSuffix(d.Name(), "_test.go") {
+			return nil
+		}
+		for typeName, count := range methodCountsByReceiver(data) {
+			if count >= auditTypeMethodWarn {
+				bigTypes = append(bigTypes, bigType{Path: rel, Type: typeName, Methods: count})
+			}
+		}
+		return nil
+	})
+
+	sort.Slice(bigFiles, func(i, j int) bool { return bigFiles[i].Lines > bigFiles[j].Lines })
+	sort.Slice(bigTypes, func(i, j int) bool { return bigTypes[i].Methods > bigTypes[j].Methods })
+
+	status := AuditStatusOK
+	summary := fmt.Sprintf("no files over %d lines or types over %d methods", auditFileLineWarn, auditTypeMethodWarn)
+	if len(bigFiles) > 0 || len(bigTypes) > 0 {
+		status = AuditStatusWarn
+		summary = fmt.Sprintf("%d oversized file(s) (>%d lines), %d god-object type(s) (>%d methods) — splitting aids LLM navigation",
+			len(bigFiles), auditFileLineWarn, len(bigTypes), auditTypeMethodWarn)
+	}
+	return AuditCategory{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{
+			"line_threshold":   auditFileLineWarn,
+			"method_threshold": auditTypeMethodWarn,
+			"oversized_files":  bigFiles,
+			"god_object_types": bigTypes,
+		},
+	}
+}
+
+// methodCountsByReceiver parses Go source and returns receiver-type name →
+// method count (methods declared with a receiver `(r *T)` / `(r T)`).
+// Parse failures yield an empty map — the size audit is best-effort and
+// never fails the run on a mid-edit file.
+func methodCountsByReceiver(src []byte) map[string]int {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, 0)
+	if err != nil {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+			continue
+		}
+		name := receiverTypeName(fn.Recv.List[0].Type)
+		if name != "" {
+			counts[name]++
+		}
+	}
+	return counts
+}
+
+// receiverTypeName extracts the base type name from a receiver expr,
+// unwrapping a leading pointer (`*T` → "T") and ignoring generic type
+// parameters (`T[K]` → "T").
+func receiverTypeName(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.StarExpr:
+		return receiverTypeName(t.X)
+	case *ast.Ident:
+		return t.Name
+	case *ast.IndexExpr: // generic receiver T[K]
+		return receiverTypeName(t.X)
+	case *ast.IndexListExpr: // generic receiver T[K, V]
+		return receiverTypeName(t.X)
+	}
+	return ""
+}
+
+// unwiredStubMarkerRE matches the handler-template line
+// `// forge:gen unwired-stub symbol=<pkg>.<Method>` — the per-RPC marker
+// emitted for an un-implemented Connect handler that returns
+// CodeUnimplemented. The symbol capture lets us attribute the stub to its
+// method.
+var unwiredStubMarkerRE = regexp.MustCompile(`//\s*forge:gen unwired-stub symbol=(\S+)`)
+
+// auditOrphanStubs flags services whose handler methods are ALL still
+// un-implemented stubs (every RPC returns CodeUnimplemented, carrying the
+// `// forge:gen unwired-stub` marker the handler template emits). These are
+// the zero-implementation orphans from FORGE_SHAPE_REDESIGN §7f: a
+// `forge add service` scaffold nobody ever filled in, shipping 501s if
+// served. A service with at least one real (marker-free) handler method is
+// NOT flagged — partial implementation is normal mid-development.
+//
+// Retirement path: `forge delete service <name>` (which tombstones it
+// types-only), or implement the handler bodies. Warn-level — an orphan
+// stub is a smell, not a build break.
+func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategory {
+	handlersDir := filepath.Join(projectDir, "handlers")
+	entries, err := os.ReadDir(handlersDir)
+	if err != nil {
+		// No handlers dir (library/CLI project or pre-scaffold) — n/a.
+		return AuditCategory{Status: AuditStatusOK, Summary: "no handlers/ directory (n/a)"}
+	}
+
+	type orphan struct {
+		Service     string   `json:"service"`
+		Dir         string   `json:"dir"`
+		StubMethods []string `json:"stub_methods"`
+		Served      bool     `json:"served"`
+	}
+	var orphans []orphan
+
+	reg, _ := loadServiceRegistry(projectDir)
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(handlersDir, e.Name())
+		stubMethods, realMethods := scanHandlerStubs(dir)
+		// Orphan = at least one stub method AND zero real (implemented)
+		// handler methods. A service with no handler methods at all (no
+		// RPCs yet) is not an orphan stub — there's nothing un-implemented.
+		if len(stubMethods) == 0 || realMethods > 0 {
+			continue
+		}
+		served := true
+		if reg != nil {
+			served = reg.registered(e.Name())
+		}
+		sort.Strings(stubMethods)
+		orphans = append(orphans, orphan{
+			Service:     e.Name(),
+			Dir:         "handlers/" + e.Name(),
+			StubMethods: stubMethods,
+			Served:      served,
+		})
+	}
+	sort.Slice(orphans, func(i, j int) bool { return orphans[i].Service < orphans[j].Service })
+
+	status := AuditStatusOK
+	summary := "no zero-implementation orphan-stub services"
+	if len(orphans) > 0 {
+		status = AuditStatusWarn
+		summary = fmt.Sprintf("%d service(s) with ALL handlers un-implemented (CodeUnimplemented) — implement them or run `%s delete service <name>` to retire", len(orphans), Name())
+	}
+	return AuditCategory{
+		Status:  status,
+		Summary: summary,
+		Details: map[string]any{
+			"orphan_services": orphans,
+			"hint":            fmt.Sprintf("a zero-impl service serves 501s if registered; implement the handler bodies or `%s delete service <name>`", Name()),
+		},
+	}
+}
+
+// scanHandlerStubs walks a handler directory's non-test .go files and
+// returns (stub method names, count of real handler methods). A stub is a
+// method preceded by the `// forge:gen unwired-stub` marker; a "real"
+// handler method is a func with a receiver whose body is NOT a forge stub.
+// We approximate "real handler method" as: a method declared in
+// handlers.go / handlers_crud.go (the user-owned handler files) whose
+// immediately-preceding line is NOT the unwired-stub marker. This keeps the
+// scan a cheap line+AST pass without resolving the Connect interface.
+func scanHandlerStubs(dir string) (stubMethods []string, realMethods int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0
+	}
+	stubSet := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		// Only the hand-written handler files carry real-vs-stub method
+		// bodies; _gen.go files are forge-owned wiring, not impl.
+		if strings.HasSuffix(e.Name(), "_gen.go") {
+			// Still mine _gen files for stub markers? No: the marker lives
+			// in the Tier-2 handlers.go scaffold. Skip generated files.
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			continue
+		}
+		// Collect stub symbols from markers (symbol=<pkg>.<Method>).
+		for _, m := range unwiredStubMarkerRE.FindAllStringSubmatch(string(data), -1) {
+			sym := m[1]
+			method := sym
+			if i := strings.LastIndex(sym, "."); i >= 0 {
+				method = sym[i+1:]
+			}
+			stubSet[method] = true
+		}
+		// Count receiver methods that are NOT preceded by a stub marker —
+		// those are implemented handler bodies (or helpers). We use the
+		// AST for method decls and the marker set for stub classification.
+		for typeName, names := range handlerMethodNames(data) {
+			_ = typeName
+			for _, n := range names {
+				if !markerPrecedesMethod(data, n) {
+					realMethods++
+				}
+			}
+		}
+	}
+	for m := range stubSet {
+		stubMethods = append(stubMethods, m)
+	}
+	// A method counted as "real" only because its marker lives in a
+	// different file would be a false negative; in practice the marker and
+	// the method body are co-located in handlers.go, so this is sound for
+	// the orphan (ALL-stub) determination.
+	return stubMethods, realMethods
+}
+
+// handlerMethodNames returns receiver-type → method names for exported
+// methods (handler RPC methods are exported). Parse failure → empty.
+func handlerMethodNames(src []byte) map[string][]string {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, 0)
+	if err != nil {
+		return nil
+	}
+	out := map[string][]string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || !fn.Name.IsExported() {
+			continue
+		}
+		recv := receiverTypeName(fn.Recv.List[0].Type)
+		out[recv] = append(out[recv], fn.Name.Name)
+	}
+	return out
+}
+
+// markerPrecedesMethod reports whether method `name`'s declaration is
+// immediately preceded (within its doc-comment block) by the
+// unwired-stub marker — i.e. this method is a forge stub. Approximated by
+// finding the `func (... ) <name>(` line and checking the few lines above
+// it for the marker. Cheap and robust enough for the ALL-stub orphan
+// determination.
+func markerPrecedesMethod(src []byte, name string) bool {
+	lines := strings.Split(string(src), "\n")
+	funcRE := regexp.MustCompile(`^func\s*\([^)]*\)\s*` + regexp.QuoteMeta(name) + `\s*\(`)
+	for i, line := range lines {
+		if !funcRE.MatchString(strings.TrimLeft(line, " \t")) {
+			continue
+		}
+		// Look back up to 4 lines (doc comment) for the marker.
+		for j := i - 1; j >= 0 && j >= i-4; j-- {
+			if unwiredStubMarkerRE.MatchString(lines[j]) {
+				return true
+			}
+			// Stop at a blank line or non-comment (end of doc block).
+			t := strings.TrimSpace(lines[j])
+			if t == "" || !strings.HasPrefix(t, "//") {
+				break
+			}
+		}
+		return false
+	}
+	return false
 }
 
 // printAuditReport renders the human-readable audit. Layout: one line

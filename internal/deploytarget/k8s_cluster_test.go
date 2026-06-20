@@ -1,15 +1,19 @@
 package deploytarget
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
-// TestRollbackContext_DeclaredIsDefault confirms the K8sCluster
-// rollback derives its kubectl context from the group's DECLARED cluster
-// (KCL forge.K8sCluster.cluster) when no explicit override is set on the
-// provider — the same declarative binding the deploy path uses, so a
-// `forge deploy <env> --rollback` can't `kubectl rollout undo` against
-// the wrong cluster by relying on the active context.
-func TestRollbackContext_DeclaredIsDefault(t *testing.T) {
-	p := K8sClusterProvider{} // no override
+// TestRollbackContext_DeclaredIsTheOnlySource confirms the K8sCluster
+// rollback derives its kubectl context SOLELY from the group's declared
+// cluster (KCL forge.K8sCluster.cluster) — the same declarative binding
+// the deploy path uses, with no CLI override. A `forge deploy <env>
+// --rollback` therefore can't `kubectl rollout undo` against the wrong
+// cluster by relying on the active context.
+func TestRollbackContext_DeclaredIsTheOnlySource(t *testing.T) {
+	p := K8sClusterProvider{}
 	g := ServiceGroup{
 		ProviderID: "k8s-cluster",
 		Cluster:    "gke_reliant-labs-475814_us-central1_prod",
@@ -20,22 +24,36 @@ func TestRollbackContext_DeclaredIsDefault(t *testing.T) {
 	}
 }
 
-// TestRollbackContext_OverrideWins confirms the explicit provider-level
-// override (the deploy `--context` flag) replaces the declared cluster.
-func TestRollbackContext_OverrideWins(t *testing.T) {
-	p := K8sClusterProvider{Context: "override-ctx"}
-	g := ServiceGroup{ProviderID: "k8s-cluster", Cluster: "gke_declared", Namespace: "ns"}
-	if got := p.rollbackContext(g); got != "override-ctx" {
-		t.Errorf("override should win: want %q, got %q", "override-ctx", got)
-	}
-}
-
 // TestRollbackContext_NoClusterEmpty confirms a group with no declared
-// cluster yields an empty context (= kubectl's current context).
+// cluster yields an empty context. Empty is NOT a silent fall-back to the
+// active context — Rollback refuses an empty context (see
+// TestRollback_RefusesEmptyContext).
 func TestRollbackContext_NoClusterEmpty(t *testing.T) {
 	p := K8sClusterProvider{}
 	g := ServiceGroup{ProviderID: "k8s-cluster", Namespace: "ns"}
 	if got := p.rollbackContext(g); got != "" {
 		t.Errorf("no declared cluster should yield empty context, got %q", got)
+	}
+}
+
+// TestRollback_RefusesEmptyContext is the footgun guard on the rollback
+// WRITE path, mirroring cluster.KubectlApply: `kubectl rollout undo` is a
+// cluster mutation, so a group that carries no declared cluster must
+// refuse BEFORE shelling kubectl rather than rolling back against
+// whatever context is currently active. The guard returns before exec, so
+// this needs no cluster.
+func TestRollback_RefusesEmptyContext(t *testing.T) {
+	p := K8sClusterProvider{}
+	g := ServiceGroup{
+		ProviderID: "k8s-cluster",
+		Namespace:  "ns",
+		Services:   []ResolvedService{{Name: "api"}},
+	}
+	err := p.Rollback(context.Background(), g, "")
+	if err == nil {
+		t.Fatal("Rollback with empty context = nil, want error (must not fall back to current-context)")
+	}
+	if !strings.Contains(err.Error(), "without an explicit kubectl context") {
+		t.Errorf("Rollback error = %v, want the declarative-context refusal", err)
 	}
 }

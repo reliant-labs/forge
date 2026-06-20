@@ -480,6 +480,17 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		}
 	}
 	deployContext := declaredEnvContext(groups, contextOverride)
+	// declaredEnvContext only sees SERVICE-derived groups, so an operator- or
+	// cronjob-only --target (no service groups) leaves it empty. The apply
+	// chokepoint (cluster.KubectlApply) now HARD-REJECTS an empty context
+	// instead of silently using kubectl's current one — the footgun where a
+	// flipped current-context lands a deploy in the wrong cluster. A declared
+	// cluster is a property of the ENV (forge.K8sCluster.cluster), not of any
+	// one service, so resolve it directly here — the same source --explain
+	// uses. (contextOverride already won inside declaredEnvContext when set.)
+	if deployContext == "" {
+		deployContext = expectedClusterForEnv(ctx, cfg, envName)
+	}
 
 	// k8s Secret projection: for a dotenv secret_provider, render the
 	// declared cluster secret refs into plaintext Secret manifests and

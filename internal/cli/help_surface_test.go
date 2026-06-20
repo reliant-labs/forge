@@ -58,6 +58,7 @@ func TestLintHelpSurface(t *testing.T) {
 		"help-dev",
 		"json",
 		"migration-safety",
+		"strict",
 		"tests",
 	})
 

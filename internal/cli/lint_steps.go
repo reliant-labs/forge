@@ -42,6 +42,7 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
 // lintRunCtx carries the shared inputs every step needs. cwd is resolved
@@ -49,11 +50,15 @@ import (
 // step and skipped that step on error; resolving once and treating an
 // empty cwd as "skip" preserves that behavior without the repetition).
 type lintRunCtx struct {
-	ctx   context.Context
-	fix   bool
-	paths []string
-	cfg   *config.ProjectConfig
-	cwd   string
+	ctx context.Context
+	fix bool
+	// strict escalates advisory security findings to errors in the steps
+	// that honor it (today: the forge-convention proto step's
+	// method-auth-annotation rule). Plumbed from `forge lint --strict`.
+	strict bool
+	paths  []string
+	cfg    *config.ProjectConfig
+	cwd    string
 }
 
 // linterStep is one entry in the ordered `forge lint` pipeline. See the
@@ -203,11 +208,11 @@ func lintPipeline() []linterStep {
 				return false, ""
 			},
 			runText: func(rc *lintRunCtx) error {
-				return runConventionLint()
+				return runConventionLint(forgeconv.LintOptions{Strict: rc.strict})
 			},
 			errFormat: "❌ Forge convention lint failed: %v\n",
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectConventionsJSON()
+				return collectConventionsJSON(forgeconv.LintOptions{Strict: rc.strict})
 			},
 		},
 

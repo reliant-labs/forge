@@ -216,7 +216,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		}
 		return buildLintJSONReport(fs, gated), nil
 	case flags.conventions:
-		fs, gated, err := collectConventionsJSON()
+		fs, gated, err := collectConventionsJSON(forgeconv.LintOptions{Strict: flags.strict})
 		if err != nil {
 			return nil, err
 		}
@@ -283,7 +283,7 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 		return buildLintJSONReport(fs, false), nil
 	}
 
-	return collectAllLintersJSON(ctx, paths, cfg, cwd)
+	return collectAllLintersJSON(ctx, flags.strict, paths, cfg, cwd)
 }
 
 // collectAllLintersJSON mirrors runAllLinters step-for-step. Each step
@@ -293,8 +293,8 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 // — matching text mode, which prints the failure and keeps walking
 // only for the advisory linters but hard-fails the run for the gating
 // ones via hasFailed.
-func collectAllLintersJSON(ctx context.Context, paths []string, cfg *config.ProjectConfig, cwd string) (*lintJSONReport, error) {
-	rc := &lintRunCtx{ctx: ctx, fix: false, paths: paths, cfg: cfg, cwd: cwd}
+func collectAllLintersJSON(ctx context.Context, strict bool, paths []string, cfg *config.ProjectConfig, cwd string) (*lintJSONReport, error) {
+	rc := &lintRunCtx{ctx: ctx, fix: false, strict: strict, paths: paths, cfg: cfg, cwd: cwd}
 
 	var findings []lintJSONFinding
 	gated := false
@@ -376,8 +376,8 @@ func findingsToJSON(fs []finding.Finding) []lintJSONFinding {
 	return out
 }
 
-func collectConventionsJSON() ([]lintJSONFinding, bool, error) {
-	combined, notes, _, err := collectConventionFindings()
+func collectConventionsJSON(opts forgeconv.LintOptions) ([]lintJSONFinding, bool, error) {
+	combined, notes, _, err := collectConventionFindings(opts)
 	if err != nil {
 		return nil, false, err
 	}

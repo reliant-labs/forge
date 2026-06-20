@@ -10,6 +10,18 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
+// guardTemplateMode maps a ConfigGuardConfig to the TypedAccessGuard string
+// the golangci.yml template branches on: "" when the guardrail is OFF (so
+// the template's {{if .TypedAccessGuard}} blocks render nothing), else the
+// effective "warn"/"error" mode. Collapsing "off" to "" keeps the template
+// conditionals simple truthiness checks.
+func guardTemplateMode(g config.ConfigGuardConfig) string {
+	if !g.TypedAccessGuardEnabled() {
+		return ""
+	}
+	return g.EffectiveEnforceTypedAccess()
+}
+
 // projectTemplateData is the single render payload for every frozen
 // project-level template. It used to be modeled twice: an anonymous
 // ~18-field struct built inline in ProjectGenerator.Generate() (the
@@ -79,6 +91,19 @@ type projectTemplateData struct {
 	// empty (the default) renders nothing, preserving main.version-only
 	// stamping for projects that don't set it.
 	VersionVar string
+	// TypedAccessGuard is the env-access guardrail strictness the
+	// golangci.yml.tmpl branches on. It is "" when the guardrail is OFF (the
+	// template's {{if .TypedAccessGuard}} then emits nothing), "warn" when
+	// advisory, or "error" when gating — i.e. it carries the EFFECTIVE mode
+	// EXCEPT that "off" is collapsed to "". The scaffold lane writes "error"
+	// (greenfield); the upgrade lane reads the live forge.yaml
+	// config.enforce_typed_access (absent → "warn"). See
+	// config.ConfigGuardConfig and guardTemplateMode below.
+	TypedAccessGuard string
+	// LoaderPackage is the allowlisted package path the guardrail excludes
+	// from forbidigo (forge's generated config loader). Defaults to
+	// config.DefaultLoaderPackage ("pkg/config").
+	LoaderPackage string
 }
 
 // ForScaffold builds the render payload for the `forge new` scaffold lane
@@ -126,6 +151,14 @@ func (g *ProjectGenerator) ForScaffold() projectTemplateData {
 		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
 		RESTEnabled: false,
 		VersionVar:  g.BuildVersionVar,
+		// Greenfield projects carry no legacy env-reading debt, so the
+		// typed-access guardrail scaffolds in its strict, gating form. The
+		// matching `config.enforce_typed_access: error` is written into the
+		// scaffolded forge.yaml (project_config.go). The schema default for
+		// an ABSENT key is "warn" — these two defaults are intentionally
+		// different (greenfield strict; existing-project upgrade soft).
+		TypedAccessGuard: guardTemplateMode(config.ConfigGuardConfig{EnforceTypedAccess: config.EnforceTypedAccessError}),
+		LoaderPackage:    config.DefaultLoaderPackage,
 	}
 	data.ForgePkgVersion, data.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
 	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is
@@ -251,5 +284,11 @@ func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		AuthProvider:           authProvider,
 		AuthProviderExternal:   authExternal,
 		VersionVar:             cfg.Build.VersionVar,
+		// Resolve the typed-access guardrail from the live forge.yaml. An
+		// absent config: block resolves to "warn" (advisory) so existing
+		// projects gain the guardrail without a flag-day; an explicit
+		// off/error is honored.
+		TypedAccessGuard: guardTemplateMode(cfg.Config),
+		LoaderPackage:    cfg.Config.EffectiveLoaderPackage(),
 	}
 }

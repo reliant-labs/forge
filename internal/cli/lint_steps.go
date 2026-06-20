@@ -118,6 +118,34 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 1b. Typed-config guardrail (forbidigo) — ADVISORY arm of
+		// config.enforce_typed_access. Only runs in `warn` mode: there the
+		// generated .golangci.yml deliberately omits forbidigo from its
+		// gating `linters.enable` list, so this non-gating step surfaces the
+		// os.Getenv / os.LookupEnv / os.Environ findings as warnings. In
+		// `error` mode forbidigo is enabled in the main gating golangci run
+		// (step 1) and this step is skipped; `off` skips it too.
+		{
+			name:  "typed-config guardrail",
+			gates: false,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg == nil || rc.cfg.Config.EffectiveEnforceTypedAccess() != config.EnforceTypedAccessWarn {
+					return false, ""
+				}
+				if _, err := exec.LookPath("golangci-lint"); err != nil {
+					return false, "golangci-lint not found on PATH — skipping typed-config guardrail"
+				}
+				return true, ""
+			},
+			runText: func(rc *lintRunCtx) error {
+				return runTypedAccessGuardAdvisory(rc.ctx, rc.paths)
+			},
+			errFormat: "⚠️  typed-config guardrail: %v\n",
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectTypedAccessGuardJSON(rc.ctx, rc.paths)
+			},
+		},
+
 		// 2. Contract interface enforcement.
 		{
 			name:  "contract linter",

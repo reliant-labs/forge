@@ -130,10 +130,16 @@ type ProjectConfig struct {
 	K8s       K8sConfig       `yaml:"k8s,omitempty"`
 	Lint      LintConfig      `yaml:"lint,omitempty"`
 	Contracts ContractsConfig `yaml:"contracts,omitempty"`
-	Auth      AuthConfig      `yaml:"auth,omitempty"`
-	Docs      DocsConfig      `yaml:"docs,omitempty"`
-	Features  FeaturesConfig  `yaml:"features,omitempty"`
-	Stack     StackConfig     `yaml:"stack,omitempty"`
+	// Config steers humans and LLMs away from reading the environment
+	// directly (os.Getenv / os.LookupEnv / os.Environ) and toward forge's
+	// generated, dependency-injected typed config object. See
+	// [ConfigGuardConfig] for the enforce_typed_access / loader_package
+	// semantics and the absent-key default (warn).
+	Config   ConfigGuardConfig `yaml:"config,omitempty"`
+	Auth     AuthConfig        `yaml:"auth,omitempty"`
+	Docs     DocsConfig        `yaml:"docs,omitempty"`
+	Features FeaturesConfig    `yaml:"features,omitempty"`
+	Stack    StackConfig       `yaml:"stack,omitempty"`
 	// API toggles project-level API protocol skins layered on top of the
 	// Connect mux. Default zero-value leaves both REST and OpenAPI off so
 	// existing projects regenerate identically. See [APIConfig] for the
@@ -761,6 +767,89 @@ type DockerConfig struct {
 	// `COPY --from=<name>`. Empty when not set; existing projects with no
 	// contexts see no change in build behaviour or output.
 	BuildContexts map[string]string `yaml:"build_contexts,omitempty"`
+}
+
+// Typed-access enforcement levels for [ConfigGuardConfig.EnforceTypedAccess].
+//
+//   - off   — emit no env-reading guardrail at all.
+//   - warn  — emit the forbidigo guardrail as an ADVISORY check: violations
+//     are reported (during `forge lint` and in the generated .golangci.yml)
+//     but never fail the build. This is the default for an ABSENT `config:`
+//     block, so existing projects upgrade without a flag-day.
+//   - error — emit the forbidigo guardrail as a GATING check: violations
+//     fail `forge lint` / CI. `forge new` scaffolds this for greenfield
+//     projects, which carry no legacy env-reading debt.
+const (
+	EnforceTypedAccessOff   = "off"
+	EnforceTypedAccessWarn  = "warn"
+	EnforceTypedAccessError = "error"
+)
+
+// DefaultLoaderPackage is the package path forge's config-loader codegen
+// emits into a consuming project (generated from
+// proto/config/v1/config.proto via the (forge.v1.config) annotation). It is
+// the ONE package allowed to read the environment directly; the typed-access
+// guardrail allowlists it so the generated loader can legitimately call
+// os.Getenv / os.LookupEnv.
+const DefaultLoaderPackage = "pkg/config"
+
+// ConfigGuardConfig is the `config:` section of forge.yaml. It steers
+// humans and LLMs away from reading the environment directly and toward
+// forge's generated, dependency-injected typed config object.
+//
+// The block is OPTIONAL. When absent, EnforceTypedAccess resolves to "warn"
+// (see [EnforceTypedAccessWarn]) so existing projects gain the advisory
+// guardrail without a flag-day; `forge new` writes an explicit
+// `enforce_typed_access: error` for greenfield projects.
+type ConfigGuardConfig struct {
+	// EnforceTypedAccess selects the env-access guardrail strictness:
+	// "off" | "warn" | "error". Empty resolves to "warn" — use
+	// [ConfigGuardConfig.EffectiveEnforceTypedAccess], don't read the raw
+	// string. Unknown values are rejected at load time (validate.go).
+	EnforceTypedAccess string `yaml:"enforce_typed_access,omitempty"`
+	// LoaderPackage is the allowlisted package path that may read the
+	// environment directly — the home of forge's generated config loader.
+	// Empty resolves to [DefaultLoaderPackage] ("pkg/config"); use
+	// [ConfigGuardConfig.EffectiveLoaderPackage].
+	LoaderPackage string `yaml:"loader_package,omitempty"`
+}
+
+// EffectiveEnforceTypedAccess returns the resolved guardrail strictness,
+// defaulting an absent/empty value to "warn" (advisory). It normalizes case
+// and the "warning" alias. Validation (validate.go) has already rejected
+// any other non-empty value, so this never silently swallows a typo.
+func (c ConfigGuardConfig) EffectiveEnforceTypedAccess() string {
+	switch strings.ToLower(strings.TrimSpace(c.EnforceTypedAccess)) {
+	case EnforceTypedAccessOff:
+		return EnforceTypedAccessOff
+	case EnforceTypedAccessError:
+		return EnforceTypedAccessError
+	case EnforceTypedAccessWarn, "warning":
+		return EnforceTypedAccessWarn
+	default:
+		return EnforceTypedAccessWarn
+	}
+}
+
+// EffectiveLoaderPackage returns the allowlisted loader package path,
+// defaulting an absent/empty value to [DefaultLoaderPackage].
+func (c ConfigGuardConfig) EffectiveLoaderPackage() string {
+	if p := strings.TrimSpace(c.LoaderPackage); p != "" {
+		return p
+	}
+	return DefaultLoaderPackage
+}
+
+// TypedAccessGuardEnabled reports whether the env-access guardrail should be
+// emitted at all (true unless the strictness is "off").
+func (c ConfigGuardConfig) TypedAccessGuardEnabled() bool {
+	return c.EffectiveEnforceTypedAccess() != EnforceTypedAccessOff
+}
+
+// TypedAccessGuardGates reports whether the guardrail FAILS the build (true
+// only in "error" mode; "warn" is advisory, "off" emits nothing).
+func (c ConfigGuardConfig) TypedAccessGuardGates() bool {
+	return c.EffectiveEnforceTypedAccess() == EnforceTypedAccessError
 }
 
 // LintConfig holds lint-related settings.

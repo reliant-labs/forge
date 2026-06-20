@@ -74,6 +74,7 @@ func (s *yamlStore) Docker() config.DockerConfig                   { return s.cf
 func (s *yamlStore) K8s() config.K8sConfig                         { return s.cfg.K8s }
 func (s *yamlStore) Lint() config.LintConfig                       { return s.cfg.Lint }
 func (s *yamlStore) Contracts() config.ContractsConfig             { return s.cfg.Contracts }
+func (s *yamlStore) ConfigGuard() config.ConfigGuardConfig         { return s.cfg.Config }
 func (s *yamlStore) Auth() config.AuthConfig                       { return s.cfg.Auth }
 func (s *yamlStore) Docs() config.DocsConfig                       { return s.cfg.Docs }
 func (s *yamlStore) Stack() config.StackConfig                     { return s.cfg.Stack }

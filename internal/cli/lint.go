@@ -882,6 +882,37 @@ func runGolangciLint(ctx context.Context, fix bool, paths []string) error {
 	return nil
 }
 
+// runTypedAccessGuardAdvisory runs the env-access guardrail (forbidigo) as a
+// non-failing, advisory pass. It is the `warn` arm of
+// config.enforce_typed_access: the gating `.golangci.yml` run deliberately
+// leaves forbidigo OUT of its `linters.enable` list (so it never fails the
+// build), and this step surfaces the same findings with --issues-exit-code=0
+// so violations are visible but never gate. `error` mode skips this step —
+// there forbidigo is enabled in the main gating run instead.
+//
+// Findings print verbatim; a non-zero exit (only on a golangci-lint
+// invocation error, never on findings) returns nil so the advisory step can
+// never break the build.
+func runTypedAccessGuardAdvisory(ctx context.Context, paths []string) error {
+	fmt.Println("Checking typed-config guardrail (advisory)...")
+
+	args := []string{"run", "--enable-only=forbidigo", "--issues-exit-code=0"}
+	args = append(args, paths...)
+
+	cmd := exec.CommandContext(ctx, "golangci-lint", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// Advisory: a golangci-lint launch/config error is reported but
+		// never gates. (--issues-exit-code=0 already neutralizes the
+		// findings exit code, so this only fires on a genuine tool error.)
+		fmt.Printf("⚠️  typed-config guardrail check could not run: %v\n", err)
+		return nil
+	}
+	fmt.Println("✓ typed-config guardrail check complete (advisory — see config.enforce_typed_access)")
+	return nil
+}
+
 func runBufLint(ctx context.Context) error {
 	if _, err := os.Stat("buf.yaml"); os.IsNotExist(err) {
 		return nil

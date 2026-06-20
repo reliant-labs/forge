@@ -126,7 +126,12 @@ func (g *ProjectGenerator) generateGolangciLint() error {
 	// erase that work silently. The v2 cp-forge migration repro'd the
 	// pain — users learned to keep a separate .golangci.user.yml just
 	// to survive `forge generate`.
-	data := struct{ Module string }{Module: g.ModulePath}
+	// Render from the full scaffold payload so the template can branch on
+	// the typed-access guardrail (config.enforce_typed_access). ForScaffold
+	// supplies the greenfield default (TypedAccessGuard="error") and the
+	// allowlisted loader package; the only other field the template reads is
+	// Module (goimports local-prefixes).
+	data := g.ForScaffold()
 	return writeIfAbsent(filepath.Join(g.Path, ".golangci.yml"), "golangci.yml.tmpl", data)
 }
 

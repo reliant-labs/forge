@@ -100,7 +100,7 @@ func BuildServer(infra Infra) (*serverkit.Server, error) {
 
 This is just ordinary Go in the root you own — no `PostBootstrap`, no `*App` field read by name, no parallel hook system. Near-diamonds and post-construction setters (`bill.WithReliantAPIKeyIssuer(llm)`) are the same pattern: construct, then inject. Any model based on pure constructor topo-ordering deadlocks on the real graph; the composition root supports construct-then-inject explicitly.
 
-For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, see `forge:placeholder` in the `api` skill — that's a generate-time mechanism for cross-lane parallel work, distinct from the runtime construct-then-inject case above.
+For the related case where a typed Deps field can't reference its target yet because the owning lane hasn't merged, the interface seam handles it — the consumer depends only on the collaborator's *interface*, so the fill in `Build` is a one-line swap once the concrete type lands (real in-process instance, a Connect client, or a mock). There is no placeholder marker; see the "Deferred / cross-lane typing is handled by the seam" section of the `api` skill. That is distinct from the runtime construct-then-inject case above.
 
 ## How to test
 

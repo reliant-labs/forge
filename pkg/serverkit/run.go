@@ -343,9 +343,15 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	return runErr
 }
 
-// newLogger builds the slog.Logger Run dispatches on. LOG_FORMAT picks
-// between structured JSON (for log aggregators) and human-friendly text
-// (for local dev tails); anything other than "text" emits JSON.
+// NewLogger builds the slog.Logger serverkit would use from Config:
+// LOG_FORMAT picks between structured JSON (for log aggregators) and
+// human-friendly text (for local dev tails); anything other than "text"
+// emits JSON. Exported so the cmd layer — which now composes the server
+// and bootstraps BEFORE calling Run — can build the SAME logger and pass
+// it as Server.Logger, keeping mount-time and run-time logs consistent.
+func NewLogger(cfg Config) *slog.Logger { return newLogger(cfg) }
+
+// newLogger builds the slog.Logger Run dispatches on.
 func newLogger(cfg Config) *slog.Logger {
 	var handler slog.Handler
 	switch cfg.LogFormat {

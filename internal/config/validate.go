@@ -719,7 +719,30 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateComponents(cfg, root)...)
 	out = append(out, validateFrontends(cfg, root)...)
 	out = append(out, validateORMDriver(cfg, root)...)
+	out = append(out, validateConfigGuard(cfg, root)...)
 	return out
+}
+
+// validateConfigGuard checks the `config:` section's enumerated
+// enforce_typed_access value. Empty is valid (resolves to "warn"); any
+// non-empty value outside {off, warn, error} (case/alias-normalized) is a
+// fatal, clearly-explained error rather than a silently-ignored typo.
+func validateConfigGuard(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	raw := strings.TrimSpace(cfg.Config.EnforceTypedAccess)
+	if raw == "" {
+		return nil
+	}
+	switch strings.ToLower(raw) {
+	case EnforceTypedAccessOff, EnforceTypedAccessWarn, EnforceTypedAccessError, "warning":
+		return nil
+	}
+	line, col := findNodePos(root, []string{"config", "enforce_typed_access"})
+	return []validationIssue{{
+		line:   line,
+		column: col,
+		msg:    fmt.Sprintf("config.enforce_typed_access value %q is invalid", cfg.Config.EnforceTypedAccess),
+		fix:    "use one of: off, warn, error (absent defaults to warn).",
+	}}
 }
 
 // validateProjectFields checks the top-level project identity fields

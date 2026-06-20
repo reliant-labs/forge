@@ -42,6 +42,15 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		Binary:       binaryYAML,
 		ForgeVersion: buildinfo.Version(),
 		Features:     g.Features,
+		// Greenfield projects have no legacy env-reading debt, so scaffold
+		// the typed-access guardrail in its strict, gating form. NOTE: this
+		// is DIFFERENT from the schema default for an ABSENT key, which is
+		// "warn" (so existing projects upgrade without a flag-day). The
+		// explicit "error" survives NormalizeForWrite (it is not a section
+		// default) and renders the `config:` block into forge.yaml.
+		Config: config.ConfigGuardConfig{
+			EnforceTypedAccess: config.EnforceTypedAccessError,
+		},
 	}
 
 	// Build the components, then write them to components.json. Kind sync:

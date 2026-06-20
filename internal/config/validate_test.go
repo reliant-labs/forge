@@ -87,6 +87,37 @@ func TestLoadStrict_MultipleUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestLoadStrict_ConfigGuard_InvalidEnforceValue(t *testing.T) {
+	in := validBaseYAML + "config:\n  enforce_typed_access: nonsense\n"
+	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
+	ve := requireValidationError(t, err)
+	if !containsAll(ve.Error(), "config.enforce_typed_access", "nonsense", "off", "warn", "error") {
+		t.Errorf("expected enum-rejection error listing valid values, got:\n%s", ve.Error())
+	}
+}
+
+func TestLoadStrict_ConfigGuard_ValidValues(t *testing.T) {
+	for _, v := range []string{"off", "warn", "error", "warning", "Error"} {
+		in := validBaseYAML + "config:\n  enforce_typed_access: " + v + "\n"
+		if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
+			t.Errorf("value %q should load clean, got: %v", v, err)
+		}
+	}
+}
+
+func TestLoadStrict_ConfigGuard_AbsentDefaultsToWarn(t *testing.T) {
+	cfg, err := LoadStrict([]byte(validBaseYAML), "forge.yaml", baseComponents()...)
+	if err != nil {
+		t.Fatalf("clean load: %v", err)
+	}
+	if got := cfg.Config.EffectiveEnforceTypedAccess(); got != EnforceTypedAccessWarn {
+		t.Errorf("absent config: block → %q, want warn", got)
+	}
+	if got := cfg.Config.EffectiveLoaderPackage(); got != DefaultLoaderPackage {
+		t.Errorf("absent loader_package → %q, want %q", got, DefaultLoaderPackage)
+	}
+}
+
 func TestLoadStrict_MissingRequired_ModulePath(t *testing.T) {
 	in := strings.Replace(validBaseYAML, "module_path: github.com/example/demo\n", "", 1)
 	_, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
@@ -470,8 +501,8 @@ func TestLoadStrict_RemovedSchemaKey_ServicesBlock(t *testing.T) {
 // the unknown-key outcomes:
 //
 //  1. removed key  → non-fatal WARNING with migration hint, NO Levenshtein
-//                    suggestion, load SUCCEEDS (a key forge itself wrote
-//                    must not strand the project — fr-57edf33aca)
+//     suggestion, load SUCCEEDS (a key forge itself wrote
+//     must not strand the project — fr-57edf33aca)
 //  2. typo'd key   → fatal error, "did you mean" suggestion
 //  3. distant key  → fatal error, plain unknown-key, no suggestion/hint
 //

@@ -21,6 +21,7 @@ type fakeRunner struct {
 }
 
 type fakeCall struct {
+	dir  string
 	env  map[string]string
 	name string
 	args []string
@@ -30,10 +31,14 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) error {
 	return f.RunWithEnv(nil, nil, name, args...)
 }
 
-func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, name string, args ...string) error {
+func (f *fakeRunner) RunWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
+	return f.RunInDir(ctx, "", env, name, args...)
+}
+
+func (f *fakeRunner) RunInDir(_ context.Context, dir string, env map[string]string, name string, args ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fakeCall{env: env, name: name, args: append([]string(nil), args...)})
+	f.calls = append(f.calls, fakeCall{dir: dir, env: env, name: name, args: append([]string(nil), args...)})
 	return f.err
 }
 
@@ -301,13 +306,18 @@ func TestBuild_ExpandsAndExecs(t *testing.T) {
 	if len(call.args) != 2 || call.args[0] != "-c" {
 		t.Fatalf("runner args: got %v, want [-c <cmd>]", call.args)
 	}
-	wantSuffix := "docker build -t localhost:5051/reliant-daemon-gateway:v1.2.3 ."
-	if !strings.HasSuffix(call.args[1], wantSuffix) {
-		t.Errorf("expanded suffix: got %q, want suffix %q", call.args[1], wantSuffix)
+	// The working directory is carried as cmd.Dir (call.dir), NOT a
+	// shell `cd <cwd> && …` prefix — so a path with spaces or shell
+	// metacharacters can never break the script.
+	wantCmd := "docker build -t localhost:5051/reliant-daemon-gateway:v1.2.3 ."
+	if call.args[1] != wantCmd {
+		t.Errorf("expanded cmd: got %q, want %q", call.args[1], wantCmd)
 	}
-	wantPrefix := "cd " + cwd + " && "
-	if !strings.HasPrefix(call.args[1], wantPrefix) {
-		t.Errorf("expanded prefix: got %q, want prefix %q", call.args[1], wantPrefix)
+	if call.dir != cwd {
+		t.Errorf("runner dir: got %q, want %q", call.dir, cwd)
+	}
+	if strings.Contains(call.args[1], "cd ") {
+		t.Errorf("expanded cmd should not carry a `cd …` shell prefix; got %q", call.args[1])
 	}
 	if call.env["REGION"] != "us-east-1" {
 		t.Errorf("env REGION: got %q, want us-east-1", call.env["REGION"])
@@ -364,6 +374,9 @@ func TestBuild_NoCwd(t *testing.T) {
 		t.Fatalf("Build: unexpected err: %v", res.Err)
 	}
 	call, _ := fake.last()
+	if call.dir != "" {
+		t.Errorf("no BuildCwd should leave runner dir empty; got %q", call.dir)
+	}
 	if strings.HasPrefix(call.args[1], "cd ") {
 		t.Errorf("no BuildCwd should not produce a `cd …` prefix; got %q", call.args[1])
 	}

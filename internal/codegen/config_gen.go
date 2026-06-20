@@ -326,6 +326,12 @@ type CmdServerTemplateData struct {
 	// (api_key/both): the generated header-aware interceptor joins the
 	// project chain and the authn layer runs in passthrough.
 	AuthProviderExternal bool
+
+	// RESTEnabled mirrors forge.yaml `api.rest: true`. When set the cmd
+	// composition site builds a vanguard transcoder over the mounted
+	// services' Connect paths and serves it in place of the bare mux.
+	// Filled by generateCmdServerData from projectAPIRESTEnabled.
+	RESTEnabled bool
 }
 
 // NormalizeAuthProvider canonicalizes a forge.yaml auth.provider value
@@ -379,6 +385,7 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 		return fmt.Errorf("read module path: %w", err)
 	}
 	data.Module = modulePath
+	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 
 	content, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", data)
 	if err != nil {

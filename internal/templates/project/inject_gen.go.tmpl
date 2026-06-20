@@ -46,7 +46,7 @@ func Build(infra *Infra) (*Services, error) {
 	}
 {{- end}}
 {{- if .Fallible}}
-	{{.VarName}}, err := {{.Alias}}.New({{.Alias}}.Deps{
+	{{.LocalVar}}, err := {{.Alias}}.New({{.Alias}}.Deps{
 {{- range .Assignments}}
 		{{.Field}}: {{.Expr}},{{if .Comment}} // {{.Comment}}{{end}}
 {{- end}}
@@ -54,14 +54,14 @@ func Build(infra *Infra) (*Services, error) {
 	if err != nil {
 		return nil, fmt.Errorf("{{.FieldName}}: %w", err)
 	}
-	s.{{.FieldName}} = {{.VarName}}
+	s.{{.FieldName}} = {{.LocalVar}}
 {{- else}}
-	{{.VarName}} := {{.Alias}}.New({{.Alias}}.Deps{
+	{{.LocalVar}} := {{.Alias}}.New({{.Alias}}.Deps{
 {{- range .Assignments}}
 		{{.Field}}: {{.Expr}},{{if .Comment}} // {{.Comment}}{{end}}
 {{- end}}
 	})
-	s.{{.FieldName}} = {{.VarName}}
+	s.{{.FieldName}} = {{.LocalVar}}
 {{- end}}
 {{- end}}
 	return s, nil

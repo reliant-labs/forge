@@ -431,6 +431,63 @@ func GeneratePostBuild(projectDir string) error {
 	return writeUserScaffold(path, content)
 }
 
+// GenerateLifecycle emits internal/app/lifecycle_gen.go: the supervised-
+// component surface (WorkerList / OperatorList / HasOperators / RunOperators)
+// over the constructed *Services. Where the Mount inventory is the HTTP
+// surface, this is the worker/operator surface the cmd layer packs into
+// serverkit.Server. Returns nil with no file written when there are no
+// components.
+func GenerateLifecycle(in InjectGenInput) error {
+	comps, err := assembleBuildComponents(in)
+	if err != nil {
+		return err
+	}
+	if len(comps) == 0 {
+		return nil
+	}
+
+	type lifeComp struct {
+		Name       string
+		FieldName  string
+		Alias      string
+		ImportPath string
+		FieldType  string
+	}
+	var workers, operators []lifeComp
+	for _, c := range comps {
+		lc := lifeComp{Name: c.Name, FieldName: c.FieldName, Alias: c.Alias, ImportPath: c.ImportPath, FieldType: c.compFieldType}
+		switch c.compRoleRoot {
+		case "internal/workers":
+			workers = append(workers, lc)
+		case "internal/operators":
+			operators = append(operators, lc)
+		}
+	}
+	sort.Slice(workers, func(i, j int) bool { return workers[i].FieldName < workers[j].FieldName })
+	sort.Slice(operators, func(i, j int) bool { return operators[i].FieldName < operators[j].FieldName })
+
+	data := struct {
+		Module           string
+		LeaderElectionID string
+		Workers          []lifeComp
+		Operators        []lifeComp
+	}{
+		Module:           in.ModulePath,
+		LeaderElectionID: leaderElectionID(in.ModulePath),
+		Workers:          workers,
+		Operators:        operators,
+	}
+
+	content, err := templates.ProjectTemplates().Render("lifecycle_gen.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render lifecycle_gen.go.tmpl: %w", err)
+	}
+	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "lifecycle_gen.go"), content, in.Checksums); err != nil {
+		return fmt.Errorf("write internal/app/lifecycle_gen.go: %w", err)
+	}
+	return nil
+}
+
 // ── BuildComponent assembly ──────────────────────────────────────────
 
 // InjectGenInput carries everything GenerateInject needs to assemble the

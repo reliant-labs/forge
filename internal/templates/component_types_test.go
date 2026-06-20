@@ -391,15 +391,18 @@ func TestBootstrapTemplate_WithAllComponentTypes(t *testing.T) {
 
 	rendered := string(content)
 
-	// All component type structs should be present
+	// All component type structs should be present. BootstrapOnly (the
+	// string name filter) is retired (§2).
 	for _, expected := range []string{
 		"func Bootstrap(",
-		"func BootstrapOnly(",
 		"func (a *App) Shutdown(",
 	} {
 		if !strings.Contains(rendered, expected) {
 			t.Errorf("bootstrap with all types missing: %s", expected)
 		}
+	}
+	if strings.Contains(rendered, "func BootstrapOnly(") {
+		t.Errorf("bootstrap must NOT contain BootstrapOnly — string-keyed selection retired")
 	}
 
 	// Verify it parses as valid Go

@@ -51,21 +51,28 @@ func mkBootstrapGuardData(services []bootstrapGuardSvc, allNames []string) any {
 func TestBootstrapTemplate_RegistrationGuard(t *testing.T) {
 	apiSvc := bootstrapGuardSvc{Name: "api", Package: "api", ImportPath: "api", FieldName: "API", Alias: "apihandler"}
 
-	t.Run("guard-renders-with-inventory", func(t *testing.T) {
+	t.Run("services-render-without-name-guard", func(t *testing.T) {
 		content, err := ProjectTemplates().Render("bootstrap.go.tmpl",
 			mkBootstrapGuardData([]bootstrapGuardSvc{apiSvc}, []string{"api", "project"}))
 		if err != nil {
 			t.Fatalf("Render bootstrap.go.tmpl: %v", err)
 		}
 		rendered := string(content)
-		for _, want := range []string{
+		// The user-owned RegisteredServices row list is still consumed.
+		if !strings.Contains(rendered, "RegisteredServices(app, cfg, logger, opts...)") {
+			t.Errorf("rendered bootstrap missing RegisteredServices call")
+		}
+		// The string-keyed registration guard is RETIRED (§2): no `names`
+		// loop, no AllServiceNames slice, no "not registered" error — mount
+		// selection moved to the cmd layer over internal/app.Inventory.
+		for _, gone := range []string{
 			`[]string{"api", "project"}`,
 			"not registered in pkg/app/services.go",
-			"RegisteredServices(app, cfg, logger, opts...)",
 			"range def.Services",
+			"appkit.Options",
 		} {
-			if !strings.Contains(rendered, want) {
-				t.Errorf("rendered bootstrap missing %q", want)
+			if strings.Contains(rendered, gone) {
+				t.Errorf("rendered bootstrap must NOT contain retired guard fragment %q", gone)
 			}
 		}
 		// The table must NOT inline per-service rows anymore — rows live

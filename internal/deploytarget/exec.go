@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // ExpandVars substitutes ${KEY} (and $KEY) tokens in a command-string
@@ -75,7 +77,7 @@ func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name st
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if len(env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), env)
+		cmd.Env = envutil.MergeExtraWins(os.Environ(), env)
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
@@ -92,75 +94,6 @@ func (execRunner) Output(ctx context.Context, name string, args ...string) ([]by
 		return buf.Bytes(), fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return buf.Bytes(), nil
-}
-
-// mergeEnv layers extra KEY=VALUE pairs onto a base os.Environ() slice.
-// Extra wins on key conflict — the env_file is meant to be authoritative
-// for the variables it declares, and the parent process's env is
-// background context. Returns a fresh slice safe to assign to cmd.Env.
-func mergeEnv(base []string, extra map[string]string) []string {
-	if len(extra) == 0 {
-		return append([]string(nil), base...)
-	}
-	out := make([]string, 0, len(base)+len(extra))
-	seen := map[string]struct{}{}
-	for k, v := range extra {
-		seen[k] = struct{}{}
-		out = append(out, k+"="+v)
-	}
-	for _, kv := range base {
-		eq := strings.IndexByte(kv, '=')
-		if eq <= 0 {
-			out = append(out, kv)
-			continue
-		}
-		if _, dup := seen[kv[:eq]]; dup {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// readDotEnvFile parses a .env-style file into a map. Intentionally
-// duplicates the small parser in internal/hostlaunch.ReadDotEnvFile —
-// importing internal/hostlaunch from internal/deploytarget would invert
-// the current dependency direction (hostlaunch is consumed by the CLI
-// run path; deploytarget is consumed by the CLI deploy path; pulling
-// hostlaunch in here would couple the two for a single helper). The
-// dotenv shape is fixed and well-understood; the 20-line parser is
-// cheaper than a new shared package would be.
-//
-// Supports: KEY=VALUE per line, # comments, blank lines, optional
-// leading "export ", and a single layer of matching quotes around the
-// value. Returns os.ErrNotExist (wrapped) when the file is missing so
-// callers can warn-and-continue.
-func readDotEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "export ")
-		i := strings.IndexByte(line, '=')
-		if i <= 0 {
-			continue
-		}
-		k := strings.TrimSpace(line[:i])
-		v := strings.TrimSpace(line[i+1:])
-		if len(v) >= 2 {
-			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
-				v = v[1 : len(v)-1]
-			}
-		}
-		out[k] = v
-	}
-	return out, nil
 }
 
 // defaultRunner is the package-level commandRunner used by the

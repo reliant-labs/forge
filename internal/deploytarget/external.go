@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // ExternalProvider deploys each service in a group by exec'ing a
@@ -258,7 +260,7 @@ func loadExternalEnvFile(path string) (map[string]string, error) {
 		return nil, nil
 	}
 	path = expandHomePath(path)
-	m, err := readDotEnvFile(path)
+	m, err := envutil.ParseDotEnv(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("  Warning: env_file %s not found — skipping (no env overlay applied).\n", path)

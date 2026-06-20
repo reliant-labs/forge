@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // Spec is the per-service build-target shape consumed by the runner.
@@ -143,45 +144,12 @@ func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]strin
 	// cwd — which equals ProjectDir for forge build invocations.
 	cmd.Dir = dir
 	if len(env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), env)
+		cmd.Env = envutil.MergeExtraWins(os.Environ(), env)
 	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return nil
-}
-
-// mergeEnv layers extra KEY=VALUE pairs onto a base os.Environ()
-// slice. Extra wins on key conflict — the BuildEnv map is meant to be
-// authoritative for the variables it declares. Returns a fresh slice
-// safe to assign to cmd.Env.
-//
-// Internal duplicate of deploytarget's mergeEnv. The two packages
-// don't share an exec-helper module today; the function is 15 lines
-// and importing one from the other would couple build and deploy
-// concerns the dispatcher tables deliberately keep separate.
-func mergeEnv(base []string, extra map[string]string) []string {
-	if len(extra) == 0 {
-		return append([]string(nil), base...)
-	}
-	out := make([]string, 0, len(base)+len(extra))
-	seen := map[string]struct{}{}
-	for k, v := range extra {
-		seen[k] = struct{}{}
-		out = append(out, k+"="+v)
-	}
-	for _, kv := range base {
-		eq := strings.IndexByte(kv, '=')
-		if eq <= 0 {
-			out = append(out, kv)
-			continue
-		}
-		if _, dup := seen[kv[:eq]]; dup {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
 }
 
 // Vars returns the substitution map for a Spec's ${X} tokens. The

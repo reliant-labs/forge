@@ -172,7 +172,7 @@ rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
 }
 ```
 
-`forge generate` produces `internal/<svc>/authorizer_gen.go` with the per-method policy table (auth-required flags and declared error codes). Customize access control — including role checks — in `internal/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default). The generated and owned files co-locate in the one `internal/<svc>/` directory.
+`forge generate` produces `internal/handlers/<svc>/authorizer_gen.go` with the per-method policy table (auth-required flags and declared error codes). Customize access control — including role checks — in `internal/handlers/<svc>/authorizer.go` (yours to edit; delegates to the generated authorizer by default). The generated and owned files co-locate in the one `internal/handlers/<svc>/` directory.
 
 **No auth-by-omission.** An RPC with no `(forge.v1.method)` annotation has no declared auth posture. `forge lint` flags this and the policy table defaults the method to **deny** until you annotate it — a missing annotation must never silently generate an unauthenticated endpoint.
 

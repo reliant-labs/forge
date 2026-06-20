@@ -63,7 +63,7 @@ forge new --in-place --mod github.com/acme/my-app
 
 ## What Gets Scaffolded
 
-Top-level is reserved for `cmd/` (entrypoints) and `api/` (CRD types — the only genuinely-external code). **Everything else lives under `internal/`** — services, workers, operators, app wiring, config, middleware. There is no top-level `handlers/`, `workers/`, `operators/`, or `pkg/app`; a top-level dir would falsely imply public API. `pkg/` is reserved for code with real external importers (today there are none).
+Top-level is reserved for `cmd/` (entrypoints) and `api/` (CRD types — the only genuinely-external code). **Everything else lives under `internal/`** — services, workers, operators, app wiring, config, middleware. Components nest under a role subtree of `internal/` (`internal/handlers/<svc>/`, `internal/workers/<name>/`, `internal/operators/<name>/`); there is no top-level `handlers/`, `workers/`, `operators/`, or `pkg/app`, since a top-level dir would falsely imply public API. `pkg/` is reserved for code with real external importers (today there are none).
 
 ```
 my-app/
@@ -71,7 +71,9 @@ my-app/
 ├── api/v1alpha1/              # CRD types (if any) — kubebuilder convention, importable by clients
 ├── proto/services/<svc>/v1/   # Proto definitions (if --service given)
 ├── internal/                  # default home for everything not imported outside the module
-│   ├── <svc>/                 #   a service: contract.go + impl + handlers_gen.go in ONE dir
+│   ├── handlers/<svc>/        #   a service: contract.go + impl + handlers_gen.go in ONE dir
+│   ├── workers/<name>/        #   background workers (one dir per worker)
+│   ├── operators/<name>/      #   k8s operators (one dir per operator)
 │   ├── app/                   #   composition roots (build.go) — the wiring you own
 │   ├── config/                #   typed config (proto-driven)
 │   ├── middleware/            #   thin auth/logging/tenant policy
@@ -99,7 +101,7 @@ forge new my-app --mod github.com/acme/my-app --service users --frontend web
 cd my-app
 ```
 
-Forge scaffolds the shell — an `internal/<svc>/` package, an empty service proto, middleware, the `internal/app` composition root, and frontend. There are no tables (and no entity code) until you add an entity.
+Forge scaffolds the shell — an `internal/handlers/<svc>/` package, an empty service proto, middleware, the `internal/app` composition root, and frontend. There are no tables (and no entity code) until you add an entity.
 
 ### Phase 2: Add your first entity
 
@@ -114,7 +116,7 @@ For non-CRUD RPCs, edit the proto directly and re-run `forge generate`. It rebui
 
 ### Phase 3: Implement business logic
 
-Write your business logic in `internal/<svc>/` — `contract.go` declares the `Service` interface + `Deps`, and the implementation lives behind it. The handler (`handlers_gen.go`, co-located in the same dir) is thin translation that calls into the service. Use the generated types and the `internal/db/` ORM functions.
+Write your business logic in `internal/handlers/<svc>/` — `contract.go` declares the `Service` interface + `Deps`, and the implementation lives behind it. The handler (`handlers_gen.go`, co-located in the same dir) is thin translation that calls into the service. Use the generated types and the `internal/db/` ORM functions.
 
 Each binary's dependency graph is wired in `internal/app/build.go` — a typed `Build(...)` composition root you own. Collaborators are interface-typed fields resolved by type, so swapping a real in-process service for a Connect client (when you split it into its own Deployment) is a one-line change there, with consumers untouched.
 
@@ -210,6 +212,6 @@ the exact `POSTGRES_PORT=<free> forge up --env=dev` rerun command.
 - Never hand-edit `gen/` or any `*_gen.go` file — they are regenerated. The per-binary composition root in `internal/app/build.go` is **owned code you wire** (not generated, not off-limits).
 - Use `forge add` to scaffold — never copy-paste existing directories.
 - Use `forge test`, not raw `go test` — the CLI sets the right build tags.
-- One service per proto package. A service's owned and generated files co-locate in one `internal/<svc>/` directory.
+- One service per proto package. A service's owned and generated files co-locate in one `internal/handlers/<svc>/` directory.
 - DB schema changes go through migrations, not proto edits — the SQL in `db/migrations/` is the schema truth; the ORM follows it.
 - `forge generate` is always safe — it only touches infrastructure (including the generated `internal/db/<entity>_orm.go`), never your business logic or migrations.

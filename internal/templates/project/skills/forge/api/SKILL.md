@@ -1,6 +1,6 @@
 ---
 name: api
-description: Write Connect RPC handlers — proto-driven codegen, the thin-translation handler pattern (validate, extract auth, convert proto↔internal, call service, wrap errors via `svcerr.Wrap`), middleware, and testing. Business logic lives in `internal/<svc>/contract.go`, never in handlers.
+description: Write Connect RPC handlers — proto-driven codegen, the thin-translation handler pattern (validate, extract auth, convert proto↔internal, call service, wrap errors via `svcerr.Wrap`), middleware, and testing. Business logic lives in `internal/handlers/<svc>/contract.go`, never in handlers.
 ---
 
 # Connect RPC API Handlers
@@ -14,11 +14,11 @@ A Connect RPC handler is **wire-format glue**, not business logic. Every handler
 5. Convert internal result → proto.
 6. Wrap errors with `svcerr.Wrap`.
 
-If a handler grows past those six steps, the extra logic belongs behind the service interface in `internal/<svc>/contract.go`. See `service-layer` for the other half.
+If a handler grows past those six steps, the extra logic belongs behind the service interface in `internal/handlers/<svc>/contract.go`. See `service-layer` for the other half.
 
 ## Where handlers live, and what codegen gives you for free
 
-Handlers live in `internal/<svc>/` — the same directory as that service's `contract.go` and its impl. There is no separate top-level `handlers/` tree; the generated handler files (`handlers_gen.go`, `handlers_crud_ops_gen.go`) and the owned ones (`handlers_crud.go`, `validators.go`, `authorizer.go`) sit beside the service they belong to. Each service struct embeds the generated `Unimplemented*Handler` and implements RPC methods:
+Handlers live in `internal/handlers/<svc>/` — the same directory as that service's `contract.go` and its impl. The `handlers/` role subtree is under `internal/`, not top-level; the generated handler files (`handlers_gen.go`, `handlers_crud_ops_gen.go`) and the owned ones (`handlers_crud.go`, `validators.go`, `authorizer.go`) sit beside the service they belong to. Each service struct embeds the generated `Unimplemented*Handler` and implements RPC methods:
 
 ```go
 type UserService struct {
@@ -114,12 +114,12 @@ Pre-1.7 forge prescribed a per-service `mapServiceError` / `toConnectError` help
 
 ## Domain sentinels live in the service layer
 
-Define your domain failure categories in `internal/<svc>/` using `svcerr` sentinels, not bespoke ones. Two equivalent shapes:
+Define your domain failure categories in `internal/handlers/<svc>/` using `svcerr` sentinels, not bespoke ones. Two equivalent shapes:
 
 **(a)** Return the package-level sentinel directly (use when there's no helpful detail to attach):
 
 ```go
-// internal/things/contract.go
+// internal/handlers/things/contract.go
 import "github.com/reliant-labs/forge/pkg/svcerr"
 
 func (s *svc) GetThing(ctx context.Context, id string) (*Thing, error) {
@@ -187,7 +187,7 @@ return nil, svcerr.WithDetail(
 Wire-format validation (required fields, bounds, format) goes in a per-service `validators.go`:
 
 ```go
-// internal/things/validators.go
+// internal/handlers/things/validators.go
 func validateDoThingRequest(req *apiv1.DoThingRequest) error {
     if req.Name == "" {
         return errors.New("name is required")
@@ -232,7 +232,7 @@ For unauthenticated RPCs (health checks, public reads), skip step 2.
 
 With this shape, handler unit tests are nearly mechanical:
 
-- Construct a `MockService` from `internal/things/mock_gen.go`.
+- Construct a `MockService` from the generated `internal/handlers/mocks/things_mock.go` (package `mocks`).
 - Set up `mockSvc.On("DoThing", mock.Anything, expectedInput).Return(result, nil)`.
 - Call the handler via the test helper from `internal/app/testing.go`.
 - Assert the response or `connect.CodeOf(err)`.
@@ -249,9 +249,9 @@ forge test --service users
 ## Rules
 
 - Six steps. No business logic in the handler.
-- Validators are pure, testable functions in `internal/<svc>/validators.go`.
+- Validators are pure, testable functions in `internal/handlers/<svc>/validators.go`.
 - Error mapping is `svcerr.Wrap(err)` — always, in every handler. Do not write a per-service helper.
-- Define domain failures with `svcerr` sentinels (`svcerr.ErrNotFound` etc.) or constructors (`svcerr.NotFound("user")`) in `internal/<svc>/`.
+- Define domain failures with `svcerr` sentinels (`svcerr.ErrNotFound` etc.) or constructors (`svcerr.NotFound("user")`) in `internal/handlers/<svc>/`.
 - Never pass `req.Msg` directly into a service. Always convert to an internal input type.
 - Never expose internal error details (SQL, stack traces) to clients. The unknown-error fall-through lands at `CodeInternal` with a generic message.
 - Never reach into the DB or other services from a handler.
@@ -315,12 +315,12 @@ Two things change when the marker is present:
 
 `Repository` is the canonical name for a service's storage interface. The greenfield convention is "one Repository per service, extend as needed" — a Get<Entity>/Create<Entity>/List<Entity> method per RPC, all on the same interface. That works for a single agent owning the whole package.
 
-In a parallel-migration round it does *not* work. Adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes in `internal/<svc>/handlers_test.go`, in-memory fakes in `e2e/`, the generated mock in `internal/<svc>/mock_gen.go`). Agent A adds `GetModelPerformance`; agent B's fakes — or worse, an in-flight rebase carrying stale Repository methods — instantly fail to compile.
+In a parallel-migration round it does *not* work. Adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes in `internal/handlers/<svc>/handlers_test.go`, in-memory fakes in `e2e/`, the generated mock in `internal/handlers/mocks/<svc>_mock.go`). Agent A adds `GetModelPerformance`; agent B's fakes — or worse, an in-flight rebase carrying stale Repository methods — instantly fail to compile.
 
 **The recommended shape** when adding a new method to an existing Repository in a parallel-migration round is the **opt-in role interface**: declare a small, narrow interface in the file that consumes it, and have the handler type-assert `s.deps.Repo` to that interface at call time.
 
 ```go
-// internal/api/handlers.go
+// internal/handlers/api/handlers.go
 
 // ModelPerformanceLister is the narrow read surface for GetModelPerformance.
 // It's declared alongside the consuming method so sibling fakes that don't
@@ -367,4 +367,4 @@ See `forge lint --conventions` for the matching check that flags a role interfac
 - **Proto-level concerns** (annotations, CRUD naming, pagination shape) — see `proto`.
 - **Auth wiring and provider choice** — see `auth` and `packs`.
 - **Test patterns** beyond the unit handler test — see `testing/patterns`.
-- **Naming conventions** across Go (`PascalCase` types, `camelCase` locals), proto (`snake_case` fields, `PascalCase` messages), and on-disk paths (`snake_case` service directories under `internal/`) — see `architecture` → **Naming conventions**.
+- **Naming conventions** across Go (`PascalCase` types, `camelCase` locals), proto (`snake_case` fields, `PascalCase` messages), and on-disk paths (`snake_case` service directories under `internal/handlers/`) — see `architecture` → **Naming conventions**.

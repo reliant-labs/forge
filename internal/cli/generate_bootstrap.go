@@ -166,6 +166,72 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		fmt.Println("  ✅ Generated pkg/app/interface_assertions_gen.go")
 	}
 
+	// HYBRID DI (FORGE_SHAPE_REDESIGN §2), PASS 1 — ADDITIVE. Emit the
+	// new internal/app composition layer alongside the existing pkg/app
+	// machinery so the tree always builds:
+	//
+	//   - internal/app/providers.go  (owned Infra + OpenInfra, scaffold-once)
+	//   - internal/app/post_build.go (owned PostBuild two-phase, scaffold-once)
+	//   - internal/app/app_services_gen.go (typed Services registry)
+	//   - internal/app/inject_gen.go (GENERATED Build injector, by-type DI)
+	//   - internal/app/inventory_gen.go (data-only mount inventory)
+	//
+	// wire_gen + appkit.Run stay present but UNUSED until PASS 2 flips
+	// cmd-server to Build/PostBuild; PASS 3 retires them. The injector is
+	// GENERATED (regenerated every run), per the redesign's key
+	// distinction from the prior scaffold-once attempt.
+	if err := generateHybridComposition(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, webhookServices, cs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// generateHybridComposition emits the internal/app composition layer
+// (PASS 1, additive). Scaffold-once owned files (providers.go, post_build.go)
+// are written before the generated injector so its Infra-field resolution
+// sees the Infra struct on the first pass too.
+func generateHybridComposition(services []codegen.ServiceDef, packages []codegen.BootstrapPackageData, workers []codegen.BootstrapWorkerData, operators []codegen.BootstrapOperatorData, modulePath, databaseDriver string, ormEnabled bool, projectDir string, webhookServices map[string]bool, cs *checksums.FileChecksums) error {
+	if len(services) == 0 && len(workers) == 0 && len(operators) == 0 {
+		return nil
+	}
+
+	// Owned, scaffold-once (never overwritten after first emit).
+	if err := codegen.GenerateProviders(modulePath, databaseDriver, ormEnabled, projectDir); err != nil {
+		return fmt.Errorf("failed to scaffold internal/app/providers.go: %w", err)
+	}
+	if err := codegen.GeneratePostBuild(projectDir); err != nil {
+		return fmt.Errorf("failed to scaffold internal/app/post_build.go: %w", err)
+	}
+
+	// Generated injector + Services registry (regenerated every run). A
+	// MissingProvider here is a LOUD generate-time error naming the type +
+	// component + field the user must add to Infra.
+	if err := codegen.GenerateInject(codegen.InjectGenInput{
+		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
+		Services:   services,
+		Packages:   packages,
+		Workers:    workers,
+		Operators:  operators,
+	}); err != nil {
+		return fmt.Errorf("failed to generate internal/app/inject_gen.go: %w", err)
+	}
+
+	// Data-only mount inventory (services only).
+	if err := codegen.GenerateInventory(codegen.InventoryGenInput{
+		GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
+		Services:        services,
+		Packages:        packages,
+		Workers:         workers,
+		Operators:       operators,
+		WebhookServices: webhookServices,
+	}); err != nil {
+		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
+	}
+
+	if len(services) > 0 || len(workers) > 0 || len(operators) > 0 {
+		fmt.Println("  ✅ Generated internal/app composition layer (Build + Inventory + Infra)")
+	}
 	return nil
 }
 

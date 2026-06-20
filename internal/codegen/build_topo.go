@@ -57,6 +57,24 @@ type BuildComponent struct {
 	ServiceTypeKey string
 	// Deps are the parsed Deps fields, in declaration order.
 	Deps []DepsField
+
+	// The following unexported fields carry the disk-resolved render
+	// metadata the inject_gen pass needs (package clause, fallible
+	// constructor, role root, on-disk import leaf). They are unexported
+	// because the topo core itself never reads them — only GenerateInject
+	// (same package) populates and consumes them. Keeping them off the
+	// exported surface means the build_topo unit tests (which construct
+	// BuildComponent literals) are unaffected.
+	compPackage    string // Go package clause (constructor selector)
+	compFallible   bool   // New returns (T, error)
+	compRoleRoot   string // "internal/handlers" / "internal" / "internal/workers" / "internal/operators"
+	compImportLeaf string // on-disk dir leaf under the role root (matcher load key)
+	// compFieldType is the alias-qualified type the component's New
+	// produces (e.g. "*item.Service" for a handler struct, "user.Service"
+	// for a contract interface). It is the Services-registry field type AND
+	// the inject_gen local-var type, so both match the constructor exactly.
+	// Empty falls back to "*<alias>.Service" (the bootstrap default).
+	compFieldType string
 }
 
 // BuildEdge records a resolved consumer -> producer dependency: the

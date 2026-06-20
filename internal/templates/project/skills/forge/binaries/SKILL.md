@@ -5,7 +5,9 @@ description: Non-server long-running binaries — when to use `forge add binary`
 
 # Binaries
 
-A "binary" is a non-server long-running process that ships its own Deployment. Examples: a reverse proxy, a sidecar, an off-service NATS consumer, an authentication gateway. Forge scaffolds binaries via `forge add binary <name>`.
+A "binary" is a non-server long-running process that ships its own Deployment. Examples: a reverse proxy, a workspace gateway, an off-service NATS consumer, an authentication sidecar. Forge scaffolds binaries via `forge add binary <name>`.
+
+A binary is **not** a forked `main()`. It is a real, owned cobra subcommand with its own typed composition root, running under the *same* serverkit lifecycle as the server — so it never hand-rolls OTel, signal handling, healthz/readyz, metrics, or graceful shutdown. serverkit owns the genuinely-uniform lifecycle; the binary owns *which* handler/workers it composes.
 
 Binaries sit alongside services, workers, and operators as the four long-running shapes forge knows how to scaffold. The decision tree below shows when to pick which.
 
@@ -13,33 +15,24 @@ Binaries sit alongside services, workers, and operators as the four long-running
 
 | Shape | What it is | Picks this when |
 |---|---|---|
-| **service** | Connect-RPC server registered with `pkg/app/bootstrap.go`. | You're exposing typed RPCs to clients (frontend, other services, daemons). |
-| **worker** | In-process goroutine running under the canonical server lifecycle. Gets the same Deps as services and starts when the server boots. | You need background work that *belongs to* the server's lifecycle (queue consumer, periodic sweep, cron). One process, no separate Deployment. |
-| **binary** | Standalone process with its own cobra subcommand and (optional) Deployment. Does not register Connect handlers. | You need a process with its own deploy lifecycle: a reverse proxy, a sidecar, a webhook receiver isolated from the API server, a tools daemon. Also covers **one-off operational binaries** — backfills, data migrations, ad-hoc scripts. |
+| **service** | Connect-RPC server mounted via its `MountX` into a composition root. | You're exposing typed RPCs to clients (frontend, other services, daemons). |
+| **worker** | In-process goroutine supervised by serverkit. Constructed in the same `Build` as services, starts when the server boots. | You need background work that *belongs to* the server's lifecycle (queue consumer, periodic sweep, cron). One process, no separate Deployment. |
+| **binary** | Standalone process with its **own** cobra subcommand and composition root, run under serverkit, with its own Deployment. | You need a process with its own deploy lifecycle: a reverse proxy, a workspace gateway, a webhook receiver isolated from the API server. Also covers **one-off operational binaries** — backfills, data migrations, ad-hoc scripts. |
 | **operator** | Kubernetes controller-runtime manager with CRD reconcilers. | You're reconciling Kubernetes resources (CRDs). Operators are a specialised flavour of binary; pick this only when CRDs are involved. |
 
 The litmus test for binary vs worker is: **does this need its own Deployment, OR is it a run-once operational tool?** If either — it's a binary. If neither — it's a worker.
 
-Resist the temptation to drop a `cmd/<name>/main.go` straight into the tree. A hand-rolled `package main` outside the shared cobra root is invisible to `forge generate`, `forge build`, and `forge deploy` — the binary doesn't get the canonical Deps shape, doesn't share `serverCmd.Flags()`, and doesn't get an image tag. `forge add binary` solves all of that with one command.
+Resist the temptation to drop a `cmd/<name>/main.go` with its own `package main` into the tree. A forked `main()` outside the shared cobra root re-implements ~200 lines serverkit already owns (OTel, signals, shutdown, healthz/readyz, metrics), is invisible to `forge generate`/`build`/`deploy`, doesn't get a typed composition root, and doesn't get an image tag. `forge add binary` folds it in as a peer subcommand instead.
 
-## The cmd/ surface (what registers where)
+## The cmd/ surface (real, owned subcommands)
 
-What a binary's subcommand surface is, is code:
+The cobra surface is real, owned Go — one symbol per command you can jump to — not a string-projection of a registry.
 
-- **`cmd/services_gen.go`** (forge-owned, regenerated) — one subcommand
-  per service listed in `RegisteredServices` (`pkg/app/services.go`).
-  Never hand-edit; register/tombstone rows in services.go instead.
-- **`cmd/<package>.go`** (yours, from `forge add binary`) — one file
-  per declared binary; registers itself on the shared root in `init()`.
-- **`cmd/commands.go`** (yours, scaffolded once) — `userCommands()`,
-  the catch-all extension point `cmd/main.go` consumes. Use it for
-  commands that don't warrant a `binaries:` entry + Deployment story —
-  ad-hoc admin verbs, dev-only tooling, or a command you're porting by
-  hand before deciding its final shape. Opt into the pieces you need:
-  `config.RegisterFlags(cmd)` + `config.Load(cmd)` for the typed
-  config, `setupOTel(ctx)` (cmd/otel.go) for traces/metrics,
-  `signal.NotifyContext` for shutdown. If the command grows a deploy
-  lifecycle, graduate it to `forge add binary`.
+- **`cmd/main.go`** (yours) — the cobra root.
+- **`cmd/<svc>.go`** (one per server/service) — a real subcommand, typically a one-liner via the `serverCmd` helper: `serverCmd("billing", app.MountBilling)`. The multi-mount `server` subcommand composes every `MountX`.
+- **`cmd/<binary>.go`** (yours, from `forge add binary`) — a real subcommand for the binary, also `serverCmd("<name>", buildFn)`, where `buildFn` is the binary's own composition root.
+
+There is **no** `cmd/services_gen.go` string-projection, **no** `RegisteredServices` constructor table, and **no** `userCommands()` catch-all. Each command is `serverCmd(name, mountFn)` over a real composition root. A data-only registry (`{Name, ConnectPath, Mount}`) survives for introspection (`forge map`/`audit`, CLI listing) — names there are for display, never a construction lookup key.
 
 ## Adding a binary
 
@@ -48,16 +41,16 @@ forge add binary workspace-proxy
 forge add binary auth-sidecar
 ```
 
-This creates four files:
+This creates:
 
 ```
-cmd/<package>.go                    # cobra subcommand (registered against the shared root)
-internal/<package>/contract.go       # Deps, Service, New(deps) (*Runner, error)
-internal/<package>/<package>.go      # Runner.Run(ctx) lifecycle body
-internal/<package>/<package>_test.go # lifecycle + validateDeps tests
+cmd/<package>.go                     # serverCmd("<name>", BuildWorkspaceProxy) — real subcommand
+internal/<package>/build.go          # BuildWorkspaceProxy(infra) (http.Handler, error) — composition root
+internal/<package>/<package>.go      # the handler/runner body
+internal/<package>/<package>_test.go # composition + lifecycle tests
 ```
 
-Plus an entry under `binaries:` in `forge.yaml` so deploy emits a Deployment for the binary:
+Plus an entry under `binaries:` in `forge.yaml` so deploy emits a Deployment:
 
 ```yaml
 binaries:
@@ -68,58 +61,66 @@ binaries:
 
 The hyphenated CLI name (e.g. `workspace-proxy`) becomes the Go package name with hyphens replaced by underscores (`workspace_proxy`), so `cmd/workspace_proxy.go` and `internal/workspace_proxy/` line up with `package workspace_proxy`.
 
-## Binary lifecycle
+## Binary composition root
 
-Every binary follows the same Deps + validateDeps + New shape forge uses for services and packages:
+A binary participates in the composition model exactly like the server: it has its **own typed `Build`** that constructs its dependency closure in topological order, filling each component's `Deps` as interface-typed fields **resolved by type, never by string name**. It shares the same `buildShared(infra)` factory the server uses for infra and in-process services.
 
 ```go
-// internal/workspace_proxy/contract.go
-type Deps struct {
-    Logger *slog.Logger
-    Config *config.Config
-    // Add binary-specific deps here.
-}
-
-func (d Deps) validateDeps() error { /* check required fields */ }
-
-type Service interface {
-    Run(ctx context.Context) error
-    Name() string
-}
-
-func New(deps Deps) (*Runner, error) {
-    if err := deps.validateDeps(); err != nil { return nil, err }
-    return &Runner{deps: deps}, nil
+// internal/workspace_proxy/build.go
+func BuildWorkspaceProxy(infra Infra) (http.Handler, error) {
+    shared := buildShared(infra)            // same infra/services the server root reuses
+    enf := enforcement.New(shared.Cfg.Enforcement)  // per-binary singleton — one var per Build
+    return newProxyHandler(proxyDeps{
+        Enforcement: enf,                   // interface seam: real in-proc here,
+        Users:       shared.Users,          // a Connect client if split out later
+        Cfg:         shared.Cfg.Proxy,      // scalar config is a typed Cfg field
+    })
 }
 ```
 
-The `cmd/<package>.go` cobra subcommand is the thin adapter: it loads config, builds Deps, calls `New(deps).Run(ctx)`. SIGINT/SIGTERM is wired into ctx so `Run` can drain in-flight work.
+Notes:
+- **In-process is the default.** A cross-binary collaborator is the one-line swap: fill its interface with a Connect client instead of the in-proc instance; the consumer is untouched.
+- **Per-binary singletons are natural.** A collaborator that must be one instance within *each* process (e.g. `enforcement` in both the server and the workspace-proxy) is just one `var` per `Build`. `buildShared` factors what both roots reuse.
+- **Two-phase wiring is first-class.** Construct, then inject via setters (`x.WithY(z)`) for near-diamonds — plain method calls after both ends exist.
+- **Scalars are config, not collaborators.** A `string`/`int`/`bool`/`Duration` lives in a `<Component>Config` proto block consumed as one typed `Cfg config.<Component>Config` Deps field — never a naked scalar Deps field.
 
-`Runner.Run(ctx)` is where you put the actual loop — `http.Server.ListenAndServe`, NATS consumer, ticker. The scaffolded body blocks on `<-ctx.Done()` so the freshly-generated binary builds and exits cleanly on Ctrl-C; replace it.
+## Lifecycle — same serverkit as the server
+
+The `serverCmd` helper runs the binary's composed handler under `serverkit.Run`, which owns OTel, signal handling, healthz/readyz, metrics, worker supervision, and graceful shutdown ordering. The binary supplies a composed `serverkit.Server`; it never re-rolls any of that.
+
+```go
+type Server struct {
+    Handler    http.Handler   // mux with everything already mounted
+    Workers    []Worker
+    Operators  []Operator
+    OnShutdown func(context.Context) error
+}
+func Run(ctx context.Context, cfg Config, srv Server) error   // NO args, NO names
+```
+
+For a binary that is purely a handler (proxy, gateway), `Build` returns the `http.Handler` and `serverCmd` wraps it as `Server{Handler: h}`. For one that runs loops, return workers in `Server.Workers` and let serverkit supervise them — don't hand-roll the goroutine/`<-ctx.Done()` dance.
+
+### Interceptor ordering
+
+If your binary mounts Connect handlers, the interceptor chain (otel-outermost → rate-limit → auth → audit) is composed **explicitly** in the handler assembly inside `Build` — never implied by registration order. Preserve it.
 
 ### One-off scripts (backfills, migrations, ad-hoc tools)
 
-`Run(ctx)` is allowed to return when its work is done — it doesn't have to block forever. For a backfill or migration: do the work, log the summary, return `nil`. The cobra adapter exits with success and Kubernetes won't restart the pod if you deploy it as a `Job` instead of a `Deployment`. The same scaffold works for both shapes; the only difference is the KCL block (`forge.Service` vs `forge.Job`) in `deploy/kcl/<env>/main.k`.
+A one-off binary's work-loop is allowed to finish: do the work, log the summary, return `nil`. Deploy it as a `forge.Job` instead of a `forge.Service` so Kubernetes won't restart it. Same scaffold, same composition root; the only difference is the KCL block (`forge.Job` vs `forge.Service`) in `deploy/kcl/<env>/main.k`.
 
-## Sharing the canonical server's flag set
+## Config — the cmdkit paved path
 
-The scaffolded `cmd/<package>.go` reuses the canonical `serverCmd.Flags()` so the same env-driven `pkg/config.Config` (DATABASE_URL, NATS, log level, OTel endpoint) is available without re-implementing flag parsing:
+Binaries do **not** hand-roll `os.Getenv`, ad-hoc `slog.Logger`s, hardcoded timeouts, or hand-rolled shutdown. The single typed `internal/config` — generated from the proto config blocks (`AppConfig` + `<Component>Config` with `(forge.v1.config)` annotations) — serves server, CLI, and standalone-binary kinds alike via the **cmdkit paved path**: DB open, logger, flag/env binding, and report envelope, with the logger injected through `observe.WithLogger`/`FromContext`.
 
-```go
-func init() {
-    {{`{{.Package}}`}}Cmd.Flags().AddFlagSet(serverCmd.Flags())
-    rootCmd.AddCommand({{`{{.Package}}`}}Cmd)
-}
-```
+Per-env config (logging, env vars) lives directly in `deploy/kcl/<env>/` — not in a redundant second YAML. `forge.yaml` stays strictly top-level (project identity, features, deploy provider, the `binaries:` list).
 
-Drop this line if your binary needs a strict subset of flags. Add binary-specific flags below it.
+## Errors
+
+If your binary mounts handlers, every handler maps errors with `svcerr.Wrap(err)` from `forge/pkg/svcerr` — never a raw `connect.NewError(connect.CodeInternal, err)` (it flattens NotFound/InvalidArgument/PermissionDenied) and never a hand-rolled per-binary `mapServiceError`/`toConnectError`. Domain failures use `svcerr` sentinels (`svcerr.NotFound("workspace")`). Skip per-RPC `if deps.X == nil` checks for non-optional deps — `validateDeps()` gates them at construction.
 
 ## Deploy
 
-The `binaries:` block in forge.yaml seeds `deploy/kcl/<env>/main.k`
-with a `forge.Service { name = "<bin>", command = ["./<bin>", "<name>"], ... }`
-entry — the same `forge.Service` schema services use, just with a
-different `command`. Attach whichever deploy target fits per env:
+The `binaries:` block seeds `deploy/kcl/<env>/main.k` with a `forge.Service { name = "<bin>", command = ["./<bin>", "<name>"], ... }` — the same `forge.Service` schema services use, just a different `command`:
 
 ```kcl
 # deploy/kcl/prod/main.k
@@ -143,37 +144,23 @@ _bundle = forge.Bundle {
 }
 ```
 
-Binaries can target any deploy provider (K8sCluster / External /
-Compose / HostDeploy / BuildOnly) — same dispatch as services. If a
-binary needs an Ingress, extra env vars, or per-binary resources, set
-them on the `forge.Service` block directly (`ingress`, `env_vars`,
-`resources` fields on `K8sCluster`).
+Binaries can target any deploy provider (K8sCluster / External / Compose / HostDeploy / BuildOnly) — same dispatch as services. For an Ingress, extra env vars, or per-binary resources, set them on the `forge.Service` block (`ingress`, `env_vars`, `resources` on `K8sCluster`).
 
 ## Common patterns
 
-### Reverse proxy
+A binary's body is a composed `http.Handler` or a `serverkit.Worker` — not a hand-rolled server loop. serverkit runs `ListenAndServe`/shutdown for handlers and supervises workers. The shapes you compose:
 
-```go
-func (r *Runner) Run(ctx context.Context) error {
-    srv := &http.Server{Addr: ":" + r.deps.Config.Port, Handler: r.proxyHandler}
-    errCh := make(chan error, 1)
-    go func() { errCh <- srv.ListenAndServe() }()
-    select {
-    case <-ctx.Done():
-        shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel()
-        return srv.Shutdown(shutdownCtx)
-    case err := <-errCh:
-        return err
-    }
-}
-```
+### Reverse proxy / gateway
+
+`Build` returns the proxy `http.Handler`; `serverCmd` mounts it under serverkit (which owns listen + graceful shutdown). You write the handler, not the lifecycle.
 
 ### Off-service NATS consumer
 
+Implement `serverkit.Worker` and return it in `Server.Workers`; serverkit starts it on boot and cancels its ctx on shutdown.
+
 ```go
-func (r *Runner) Run(ctx context.Context) error {
-    sub, err := r.deps.NATS.Subscribe("events.>", r.handle)
+func (w *consumer) Start(ctx context.Context) error {
+    sub, err := w.nats.Subscribe("events.>", w.handle)
     if err != nil { return err }
     defer sub.Unsubscribe()
     <-ctx.Done()
@@ -183,43 +170,31 @@ func (r *Runner) Run(ctx context.Context) error {
 
 ### Periodic ticker
 
-```go
-func (r *Runner) Run(ctx context.Context) error {
-    t := time.NewTicker(r.interval)
-    defer t.Stop()
-    for {
-        select {
-        case <-ctx.Done():
-            return nil
-        case <-t.C:
-            r.tick(ctx)
-        }
-    }
-}
-```
+Same — a `serverkit.Worker` with a `time.Ticker`, returned in `Server.Workers`. No separate goroutine supervision in your code.
 
 ## Testing
 
-`internal/<binary>/<binary>_test.go` ships two tests by default:
+`internal/<binary>/<binary>_test.go` ships:
 
-1. **TestRunnerStartStop** — ctx-cancel lifecycle. Covers the "binary blocks until ctx cancellation, then exits cleanly" guarantee. Keep this case when you replace `Run`'s body so shutdown regressions stay caught.
-2. **TestNewValidatesDeps** — table-driven validateDeps. Add cases here as you grow Deps with required fields.
+1. **Composition test** — calls `BuildX` against an infra fixture (with collaborators mocked through their interface seams) and asserts it returns a usable handler/server. Because every dep is an interface filled in one place, "spin up this binary with X mocked" is a few-line, one-call operation against `Build`.
+2. **Lifecycle test** — ctx-cancel of the composed worker(s); keep it so shutdown regressions stay caught.
 
-Binaries don't have RPCs, so `tdd.RunRPCCases` doesn't apply. Use plain table-driven tests or hand-rolled fakes for the dependencies your `Run` body consumes.
+Binaries that don't mount RPCs don't use `tdd.RunRPCCases`; ones that do mount handlers test those the same way services do.
 
 ## Lint
 
-`forge lint` checks that:
+`forge lint` / `forge map` check that:
 
-- Every `binaries:` entry has a matching `cmd/<package>.go` and `internal/<package>/contract.go`.
-- The `Path` field in forge.yaml matches the directory the scaffolder produces (`cmd/<package>.go`).
+- Every `binaries:` entry has a matching `cmd/<package>.go` and `internal/<package>/build.go`.
+- The `Path` in forge.yaml matches the scaffolded `cmd/<package>.go`.
 - Names don't collide with reserved cobra subcommands (`server`, `version`, `db`).
+- The composition graph is acyclic and has no narrow-interface silent drops or unresolved non-optional deps.
 
-Run `forge generate` after editing `binaries:` in forge.yaml to keep the scaffold and config in lockstep.
+Run `forge generate` after editing `binaries:` to keep the scaffold and config in lockstep.
 
 ## See also
 
-- `forge skill load services` — Connect-RPC service shape, when to pick this instead.
-- `forge skill load workers` — in-process background loops sharing the server lifecycle.
+- `forge skill load services` — Connect-RPC service shape, `MountX`, when to pick this instead.
+- `forge skill load workers` — in-process workers supervised by serverkit.
 - `forge skill load deploy` — KCL deploy story, including how binaries become Deployments.
-- `forge skill load architecture` — pkg/app/bootstrap.go, wire_gen, AppExtras — the wiring binaries don't participate in (they have their own thin entry point).
+- `forge skill load architecture` — composition roots (`Build`), `buildShared`, serverkit lifecycle, the interface seam — the wiring every binary participates in via its own `Build`.

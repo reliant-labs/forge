@@ -92,13 +92,13 @@ func GenerateDeployConfig(in DeployConfigGenInput) error {
 	if in.Checksums != nil && in.ProjectDir != "" {
 		rel, relErr := filepath.Rel(in.ProjectDir, outPath)
 		if relErr == nil {
-			if _, err := checksums.WriteGeneratedFile(in.ProjectDir, rel, []byte(body), in.Checksums, true); err != nil {
+			if err := writeForgeOwned(in.ProjectDir, rel, []byte(body), in.Checksums); err != nil {
 				return fmt.Errorf("write %s: %w", outPath, err)
 			}
 			return nil
 		}
 	}
-	return os.WriteFile(outPath, []byte(body), 0o644)
+	return writeUserScaffold(outPath, []byte(body))
 }
 
 // renderDeployConfigKCL builds the KCL body for a single env.

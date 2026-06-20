@@ -157,5 +157,5 @@ func GenerateComponentsJSON(projectDir, projectName string, components []config.
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dest, content, 0o644)
+	return writeUserScaffold(dest, content)
 }

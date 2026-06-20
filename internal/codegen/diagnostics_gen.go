@@ -153,7 +153,7 @@ func GenerateDiagnostics(services []ServiceDef, workers []BootstrapWorkerData, o
 	content := renderDiagnosticsFile(allEntries)
 
 	relPath := filepath.Join("pkg", "app", "diagnostics_gen.go")
-	if _, err := checksums.WriteGeneratedFile(projectDir, relPath, []byte(content), cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, relPath, []byte(content), cs); err != nil {
 		return fmt.Errorf("write pkg/app/diagnostics_gen.go: %w", err)
 	}
 	return nil

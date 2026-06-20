@@ -36,7 +36,7 @@ func GenerateServicesRegistry(modulePath string, services []BootstrapServiceData
 	if err != nil {
 		return fmt.Errorf("render services.go.tmpl: %w", err)
 	}
-	return os.WriteFile(registryPath, content, 0644)
+	return writeUserScaffold(registryPath, content)
 }
 
 // GenerateAppGen writes pkg/app/app_gen.go — the forge-owned canonical
@@ -83,7 +83,7 @@ func GenerateAppGen(hasDatabase bool, ormEnabled bool, hasServices bool, hasWork
 		return fmt.Errorf("render app_gen.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "app_gen.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "app_gen.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/app/app_gen.go: %w", err)
 	}
 	return nil
@@ -111,7 +111,7 @@ func GenerateAppExtras(projectDir string) error {
 		return fmt.Errorf("render app_extras.go.tmpl: %w", err)
 	}
 
-	return os.WriteFile(extrasPath, content, 0644)
+	return writeUserScaffold(extrasPath, content)
 }
 
 // GenerateMigrate writes pkg/app/migrate.go with embedded migration support.
@@ -136,7 +136,7 @@ func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs
 		return fmt.Errorf("render migrate.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "app", "migrate.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "app", "migrate.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/app/migrate.go: %w", err)
 	}
 
@@ -151,7 +151,7 @@ import "embed"
 //go:embed migrations/*.sql
 var MigrationsFS embed.FS
 `)
-		if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("db", "embed.go"), embedContent, cs, true); err != nil {
+		if err := writeForgeOwned(targetDir, filepath.Join("db", "embed.go"), embedContent, cs); err != nil {
 			return fmt.Errorf("write db/embed.go: %w", err)
 		}
 	}
@@ -191,7 +191,7 @@ func GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, ta
 		return fmt.Errorf("render setup.go.tmpl: %w", err)
 	}
 
-	return os.WriteFile(setupPath, content, 0644)
+	return writeUserScaffold(setupPath, content)
 }
 
 // GeneratePostBootstrap writes pkg/app/post_bootstrap.go ONCE — it's a
@@ -225,5 +225,5 @@ func GeneratePostBootstrap(targetDir string) error {
 		return fmt.Errorf("render post_bootstrap.go.tmpl: %w", err)
 	}
 
-	return os.WriteFile(hookPath, content, 0644)
+	return writeUserScaffold(hookPath, content)
 }

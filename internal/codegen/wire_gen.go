@@ -501,7 +501,7 @@ func GenerateWireGenData(services []ServiceDef, packages []BootstrapPackageData,
 		return WireGenData{}, fmt.Errorf("render wire_gen.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "wire_gen.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "wire_gen.go"), content, cs); err != nil {
 		return WireGenData{}, fmt.Errorf("write pkg/app/wire_gen.go: %w", err)
 	}
 	return WireGenData{

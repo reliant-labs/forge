@@ -32,7 +32,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 	if err != nil {
 		return fmt.Errorf("render service.go.tmpl: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "service.go"), serviceContent, 0644); err != nil {
+	if err := writeUserScaffold(filepath.Join(targetDir, "service.go"), serviceContent); err != nil {
 		return err
 	}
 
@@ -61,7 +61,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 		if err != nil {
 			return fmt.Errorf("render handlers.go.tmpl: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(targetDir, "handlers.go"), handlersContent, 0644); err != nil {
+		if err := writeUserScaffold(filepath.Join(targetDir, "handlers.go"), handlersContent); err != nil {
 			return err
 		}
 	}
@@ -73,7 +73,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 	if err != nil {
 		return fmt.Errorf("render unit_test.go.tmpl: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "handlers_scaffold_test.go"), unitTestContent, 0644); err != nil {
+	if err := writeUserScaffold(filepath.Join(targetDir, "handlers_scaffold_test.go"), unitTestContent); err != nil {
 		return err
 	}
 
@@ -95,7 +95,7 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 	if err != nil {
 		return fmt.Errorf("render authorizer.go.tmpl: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "authorizer.go"), authzContent, 0644); err != nil {
+	if err := writeUserScaffold(filepath.Join(targetDir, "authorizer.go"), authzContent); err != nil {
 		return err
 	}
 
@@ -112,7 +112,7 @@ func RegenerateServiceFile(svc ServiceDef, targetDir string) error {
 	if err != nil {
 		return fmt.Errorf("render service.go.tmpl: %w", err)
 	}
-	return os.WriteFile(filepath.Join(targetDir, "service.go"), serviceContent, 0644)
+	return writeUserScaffold(filepath.Join(targetDir, "service.go"), serviceContent)
 }
 
 // MissingHandlerResult holds the result of scanning for missing handler stubs.
@@ -205,7 +205,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	if err != nil {
 		return nil, fmt.Errorf("compute relative path for handlers_gen.go: %w", err)
 	}
-	if _, err := checksums.WriteGeneratedFile(projectDir, relHandlersGen, content, cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, relHandlersGen, content, cs); err != nil {
 		return nil, err
 	}
 
@@ -244,7 +244,7 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 		if err != nil {
 			return nil, fmt.Errorf("render unit_test.go.tmpl: %w", err)
 		}
-		if err := os.WriteFile(handlersTestPath, testContent, 0644); err != nil {
+		if err := writeUserScaffold(handlersTestPath, testContent); err != nil {
 			return nil, fmt.Errorf("write handlers_scaffold_test.go: %w", err)
 		}
 	}

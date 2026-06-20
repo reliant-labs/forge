@@ -232,41 +232,46 @@ Fast revert with `kubectl rollout undo deployment/<name>`, then fix forward via 
 - KCL schema changes are forever in production overlays — deprecate, don't delete.
 - Don't `kubectl apply` hand-edited manifests — everything through `deploy/kcl/`.
 
-## Per-env config rendering (`config_gen.k`)
+## Per-env config — KCL is the surface
 
-`forge generate` emits `deploy/kcl/<env>/config_gen.k` from
-`proto/config/v1/config.proto` + the sibling `config.<env>.yaml` file
-next to forge.yaml. (Per-env config used to live in
-`forge.yaml -> environments[].config`; that block was removed — see
-the `environments-to-kcl` migration skill.) A few things are
-surprising on first read:
+Per-env config (logging, env vars) lives **directly in
+`deploy/kcl/<env>/`**, where the rest of the env already lives. Set
+env vars on the `Service` and let the binary apply proto defaults at
+startup via `internal/config` — don't project a second redundant YAML
+into KCL.
 
-- **Default-only fields don't appear.** If a proto field has a
-  `default_value:` and no per-env override in `config.<env>.yaml`, the
-  generated KCL skips the env-var entirely. The binary applies the
-  default at startup via `pkg/config/config.go::Load()`. The rendered
-  Deployment will NOT show the default as a literal env var, and that
-  is intentional — defaults are the binary's contract, not the
-  manifest's. To make a default visible in the rendered manifest, add
-  the value (or a `${secret-ref}`) to `config.<env>.yaml`.
-- **Empty categories are elided.** A category that ends up with no
-  emitted entries (e.g. all of its fields are non-sensitive defaults)
-  is skipped from the generated file rather than emitting an empty
-  `<CATEGORY>_ENV: [schema.EnvVar] = []`. If your `main.k` references
-  `cfg.<CATEGORY>_ENV` and KCL errors with "no attribute", regenerate
-  and concatenate only the categories that actually produced entries.
-- **Sensitive fields always emit.** Every `(forge.v1.config) = {
-  sensitive: true }` field projects to a `secret_ref` EnvVar
-  regardless of whether `config.<env>.yaml` provides a `${...}`
-  override — the project-level default secret name + lowercased
-  env-var key apply unconditionally.
-- **Component config-block leaves use flat keys.** Fields of a
+```kcl
+MAIN = forge.Service {
+    name = "trader"
+    port = 8090
+    env  = {
+        LOG_LEVEL    = "info"
+        MAX_PER_TICK = "50"
+    }
+}
+```
+
+A few things to keep straight:
+
+- **Defaults are the binary's contract, not the manifest's.** A proto
+  field with a `default_value:` and no KCL override emits no env var;
+  `internal/config` applies the default at startup. The rendered
+  Deployment won't carry the default as a literal env var, and that's
+  intentional. To make a default visible in the manifest, set it
+  explicitly in the env's KCL.
+- **Sensitive fields use secret refs, never literals.** A `(forge.v1.config)
+  = { sensitive: true }` field is bound via a `${secret-ref}` per the
+  `secrets` skill — its value never lands in rendered KCL.
+- **The generate-time `config.*.yaml` files are gutted.** They only
+  shaped generated KCL projection; that projection is removed. Don't
+  reach for a sibling `config.<env>.yaml` — edit the env's KCL.
+- **Component config-block leaves are flat env keys.** Fields of a
   component config block (`message TraderConfig { int32 max_per_tick
   ... }` composed on `AppConfig` — see the `architecture` skill,
-  "Component config blocks") participate in `config.<env>.yaml` under
-  their own snake_case leaf name (`max_per_tick: 50`), the same flat
-  namespace as root fields, and project to the ConfigMap/env vars
-  identically. Keep leaf names unique across blocks.
+  "Component config blocks") are consumed as one typed
+  `Cfg config.TraderConfig` Deps field and bound from the matching
+  snake_case env var (`MAX_PER_TICK`). Keep leaf names unique across
+  blocks.
 
 ## Cross-references between schemas — declare once, denormalize at render
 
@@ -276,7 +281,7 @@ When two fields must agree — a service's bind port and the HTTPRoute that targ
 ADMIN = forge.Service {
     name = "admin-server"
     port = 8090
-    source = forge.GoSource { path = "handlers/admin_server" }
+    source = forge.GoSource { path = "internal/admin_server" }
 }
 
 ADMIN_ROUTE = forge.HTTPRoute {

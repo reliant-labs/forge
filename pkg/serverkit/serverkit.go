@@ -2,63 +2,75 @@ package serverkit
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
 	"net/http"
 	"time"
-
-	"connectrpc.com/connect"
 )
 
-// Application is the runtime shape serverkit needs from the project's
-// generated *app.App. The codegen pkg/app/app_gen.go implements this
-// interface; serverkit never imports pkg/app directly.
-//
-// A nil RESTHandler() return disables the REST transcoder swap — the
-// raw mux is served instead. HasOperators() lets serverkit skip the
-// controller-manager goroutine entirely on projects that declared no
-// operator services, avoiding a misleading "not running in-cluster"
-// warning on every startup.
-type Application interface {
-	// WorkerList returns every Worker the project declared. serverkit
-	// fans them out in goroutines and supervises their Start/Stop.
-	WorkerList() []Worker
+// Server carries the already-composed inputs serverkit runs. Service
+// SELECTION — which handlers/workers/operators this process serves — has
+// happened ABOVE serverkit: the caller (the generated cmd-server shim)
+// builds the mux, mounts the selected services on it, constructs the
+// selected workers/operators, and hands the result here. serverkit owns
+// only the uniform lifecycle (listener bind, the HTTP edge, health
+// probes, worker supervision, operator gating, graceful shutdown) and
+// knows nothing about names.
+type Server struct {
+	// Handler is the fully-composed HTTP handler: the mux with all
+	// services already mounted (their Connect interceptors already
+	// applied via connect.HandlerOption at mount time), plus any
+	// REST-transcoder swap already resolved by the caller, plus any
+	// /metrics handle the caller mounted. serverkit wraps it with its
+	// OWN edge (CORS/security/request-id/h2c from Config + the factory
+	// fields below) and routes /healthz + /readyz to its own probes
+	// IN FRONT of that edge, but never re-mounts services. Required.
+	Handler http.Handler
 
-	// OperatorList returns every Operator the project declared.
-	// serverkit consults it for gating (see shouldRunOperators) but
-	// hands off the actual manager wiring to RunOperators.
-	OperatorList() []Operator
+	// Logger is the root logger the caller already built (the same one
+	// it passed into bootstrap so mount-time logs and run-time logs
+	// agree). When nil, serverkit builds one from Config (newLogger) and
+	// SetDefaults it. Optional.
+	Logger *slog.Logger
 
-	// HasOperators is true when OperatorList is non-empty. Exposed as
-	// a method (rather than computed from len(OperatorList())) so the
-	// codegen App can answer it without allocating the list.
-	HasOperators() bool
+	// Workers / Operators are the already-constructed, already-selected
+	// supervised components. Selection (the old names filter) happened
+	// ABOVE serverkit: the caller passes exactly the workers/operators
+	// this process should run. serverkit no longer filters by name.
+	Workers   []Worker
+	Operators []Operator
+
+	// OnShutdown runs during graceful shutdown after workers stop and
+	// before the http.Server shuts down — the old Application.Shutdown
+	// plus (folded in by the caller) the OTel flush. Optional; nil is a
+	// no-op.
+	OnShutdown func(context.Context) error
 
 	// RunOperators starts the controller-runtime manager and blocks
-	// until ctx is done. The healthProbeAddr argument carries the
-	// Config.OperatorHealthProbeAddr value through — projects that
-	// don't bind a probe listener can ignore it.
-	RunOperators(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error
+	// until ctx is done. serverkit calls it in a goroutine when
+	// len(Operators) > 0 AND the RUN_OPERATORS env gate allows. The old
+	// per-name operator gating is gone: the caller already decided
+	// whether to populate Operators, so serverkit only honours the
+	// process-wide RUN_OPERATORS opt-out. Nil + non-empty Operators is a
+	// config error. Optional when Operators is empty.
+	RunOperators func(ctx context.Context, logger *slog.Logger, healthProbeAddr string) error
 
-	// RESTHandler returns the vanguard REST transcoder wrapped around
-	// the Connect mux when api.rest is enabled in forge.yaml, or nil
-	// when REST is disabled. serverkit substitutes the return value
-	// for the raw mux in the handler chain so REST/gRPC/Connect share
-	// the same CORS, security-headers, and request-id middleware.
-	RESTHandler() http.Handler
-
-	// Shutdown is invoked during the graceful-shutdown sequence after
-	// workers have stopped and before the HTTP server's own Shutdown.
-	// Projects that hold external resources (db pools, queue conns)
-	// close them here.
-	Shutdown(ctx context.Context) error
+	// Edge factories: kept as fields (not pure Config) because the
+	// concrete middleware still lives in the project's generated
+	// pkg/middleware tree and serverkit must not import the project.
+	// serverkit owns the GATING (driven by Config: CORSOrigins,
+	// SecurityHeaders, Environment); these only supply the wrapper. All
+	// optional — nil skips that edge layer.
+	CORSMiddleware            func(origins []string, allowCredentials bool) func(http.Handler) http.Handler
+	SecurityHeadersMiddleware func(production bool) func(http.Handler) http.Handler
+	RequestIDMiddleware       func() func(http.Handler) http.Handler
+	HTTPMiddleware            func(http.Handler) http.Handler
 }
 
 // Worker is the runtime contract for a long-running background task.
 // The generated WorkerInstance in pkg/app satisfies it directly.
 type Worker interface {
-	// Name is the worker's stable identifier — used in log lines, the
-	// `server [names...]` filter, and the WorkerList iteration order.
+	// Name is the worker's stable identifier — used in log lines and
+	// the Server.Workers iteration order.
 	Name() string
 
 	// Start runs the worker's main loop. It must return when ctx is
@@ -74,7 +86,7 @@ type Worker interface {
 }
 
 // ContextWorker is an OPTIONAL extension of Worker for context-aware
-// run loops. When a worker returned by Application.WorkerList also
+// run loops. When a worker in Server.Workers also
 // implements ContextWorker, the supervisor calls RunContext instead of
 // Start, passing a per-worker context derived from the run lifecycle.
 // Workers that don't implement it keep the legacy Start path unchanged
@@ -115,7 +127,7 @@ type ContextWorker interface {
 
 // FailurePolicy governs what Run does when a supervised background
 // component fails: a worker's Start/RunContext returning a
-// non-cancellation error, or Application.RunOperators returning an
+// non-cancellation error, or Server.RunOperators returning an
 // error. The zero value is [FailProcess] — fail loud. A pod that
 // restarts with a clear error in its termination log is operable; a pod
 // that keeps serving HTTP while its workers are silently dead is a
@@ -135,18 +147,18 @@ const (
 	Ignore FailurePolicy = 1
 )
 
-// Operator is the minimal contract serverkit needs to gate the
-// controller-manager goroutine. The actual controller wiring happens
-// inside Application.RunOperators — this interface only carries Name
-// so the `server [names...]` filter can match.
+// Operator is the minimal contract serverkit needs to count the
+// supervised operators. The actual controller wiring happens inside
+// Server.RunOperators — this interface only carries Name for log lines.
 type Operator interface {
 	Name() string
 }
 
-// DBPoolTuning groups the four sql.DB pool knobs serverkit applies to
-// the AutoMigrate connection. Values come from the project config so
-// operators can tune them per environment without recompiling. A
-// zero/empty field leaves the corresponding setting at Go's default.
+// DBPoolTuning groups the four sql.DB pool knobs the caller applies to
+// its migration connection via ApplyDBPoolTuning. Values come from the
+// project config so operators can tune them per environment without
+// recompiling. A zero/empty field leaves the corresponding setting at
+// Go's default.
 type DBPoolTuning struct {
 	// MaxOpenConns caps total open connections. 0 = unlimited.
 	MaxOpenConns int
@@ -198,20 +210,24 @@ type Config struct {
 	// "development" Run emits a loud warning about permissive defaults.
 	Environment string
 
-	// AutoMigrate triggers the Hooks.AutoMigrate callback when true.
-	// The project supplies the actual migration body.
+	// AutoMigrate signals the caller-owned migration step should run.
+	// serverkit no longer runs migration itself — the cmd layer reads
+	// this flag (plus DatabaseURL/DBDriver/DBPoolTuning below) and runs
+	// the migration before calling Run. The fields remain on Config so
+	// the projection from the project's typed config stays in one place.
 	AutoMigrate bool
 
-	// DatabaseURL is the DSN passed to sql.Open for the AutoMigrate
-	// connection. Required when AutoMigrate is true.
+	// DatabaseURL is the DSN the caller passes to sql.Open for its
+	// migration connection. Required (caller-side) when AutoMigrate is
+	// true.
 	DatabaseURL string
 
 	// DBDriver is the sql.Open driver name (e.g. "pgx"). Empty
 	// defaults to "pgx".
 	DBDriver string
 
-	// DBPoolTuning is applied to the AutoMigrate connection before the
-	// migration runs.
+	// DBPoolTuning is applied (via ApplyDBPoolTuning) by the caller to
+	// its migration connection before the migration runs.
 	DBPoolTuning DBPoolTuning
 
 	// CORSOrigins is the allow-list applied to inbound requests when
@@ -234,7 +250,7 @@ type Config struct {
 	PreStopDelay time.Duration
 
 	// ShutdownTimeout bounds the post-readiness-flip shutdown window
-	// (worker Stop, Application.Shutdown, http.Server.Shutdown all
+	// (worker Stop, Server.OnShutdown, http.Server.Shutdown all
 	// share this budget). Zero falls back to 30s.
 	ShutdownTimeout time.Duration
 
@@ -246,7 +262,7 @@ type Config struct {
 	// Zero falls back to 4 MiB.
 	SendMaxBytes int
 
-	// OperatorHealthProbeAddr is forwarded to Application.RunOperators
+	// OperatorHealthProbeAddr is forwarded to Server.RunOperators
 	// for projects (like cp-forge) that bind a /healthz + /readyz
 	// listener inside the controller manager. Empty string leaves the
 	// project's RunOperators to fall back to its own default.
@@ -257,83 +273,6 @@ type Config struct {
 	// failure terminates the process loudly); set Ignore to restore
 	// log-and-continue. See the FailurePolicy doc.
 	FailurePolicy FailurePolicy
-}
-
-// Hooks are the project-typed callbacks Run dispatches to. Everything
-// else in the lifecycle is uniform and owned by serverkit.
-//
-// Bootstrap is required; all other fields are optional. A nil hook is
-// treated as a no-op (the corresponding lifecycle step is skipped).
-type Hooks struct {
-	// Bootstrap constructs the project's Application and mounts its
-	// Connect handlers on mux. When names is non-empty, only services
-	// in that set should be registered — the generated shim typically
-	// dispatches to app.BootstrapOnly vs app.Bootstrap based on the
-	// length. Bootstrap must return a non-nil Application on success.
-	Bootstrap func(
-		ctx context.Context,
-		mux *http.ServeMux,
-		logger *slog.Logger,
-		names []string,
-		opts ...connect.HandlerOption,
-	) (Application, error)
-
-	// PostBootstrap is the single forge-blessed chokepoint for wiring
-	// that depends on a constructed component (e.g. assigning a worker
-	// collaborator after both have been built). Runs after Bootstrap,
-	// before the listener binds. An error here aborts startup. The
-	// generated shim typically delegates to app.PostBootstrap with a
-	// type assertion back to *app.App.
-	PostBootstrap func(app Application) error
-
-	// AutoMigrate is invoked when Config.AutoMigrate is true. serverkit
-	// dials the database, applies Config.DBPoolTuning, calls the hook,
-	// and closes the connection. The hook receives the open *sql.DB so
-	// it can run whatever migration tool the project chose.
-	AutoMigrate func(ctx context.Context, db *sql.DB, logger *slog.Logger) error
-
-	// SetupOTel initializes the project's OpenTelemetry pipeline and
-	// returns a shutdown function plus the /metrics handler. A nil
-	// hook leaves OTel disabled and serves no /metrics endpoint. A
-	// non-nil error is logged but does not abort startup — projects
-	// that depend on OTel for production are expected to fail Validate
-	// on missing config before Run is called.
-	SetupOTel func(ctx context.Context) (shutdown func(context.Context) error, metricsHandler http.Handler, err error)
-
-	// ProjectInterceptors returns the project-specific Connect
-	// interceptors appended to observe.DefaultMiddlewares. The
-	// canonical chain (recovery → request-id → logging → tracing →
-	// metrics) runs first; the returned slice runs in supplied order
-	// AFTER it, in front of the handler. Use this for auth, audit,
-	// rate-limit, otelconnect, and similar project-owned layers.
-	ProjectInterceptors func(logger *slog.Logger) []connect.Interceptor
-
-	// HTTPMiddleware wraps the final http.Handler after serverkit has
-	// applied its own stack (RESTHandler swap, CORS, security headers,
-	// request-id, h2c). Use this for project-specific outer wrappers
-	// the canonical chain doesn't know about. A nil hook leaves the
-	// handler unwrapped.
-	HTTPMiddleware func(http.Handler) http.Handler
-
-	// CORSMiddleware is OPTIONAL. When non-nil and Config.CORSOrigins
-	// is non-empty, serverkit calls it with the origins + creds flag to
-	// build the CORS wrapper. nil leaves the handler unchanged — CORS
-	// is project-owned because the existing middleware lives in the
-	// generated pkg/middleware tree.
-	CORSMiddleware func(origins []string, allowCredentials bool) func(http.Handler) http.Handler
-
-	// SecurityHeadersMiddleware is OPTIONAL. When non-nil and
-	// Config.SecurityHeaders is true, serverkit calls it with the
-	// "production" flag (computed from Config.Environment) to build
-	// the security-headers wrapper. nil leaves the handler unchanged.
-	SecurityHeadersMiddleware func(production bool) func(http.Handler) http.Handler
-
-	// RequestIDMiddleware is OPTIONAL. When non-nil, serverkit wraps
-	// the handler with it just inside the h2c layer so every inner
-	// middleware sees the correlation header. nil falls back to a
-	// passthrough — most projects supply the scaffolded
-	// middleware.RequestIDMiddleware here.
-	RequestIDMiddleware func() func(http.Handler) http.Handler
 }
 
 // defaults projects unset Config fields onto their fallback values.

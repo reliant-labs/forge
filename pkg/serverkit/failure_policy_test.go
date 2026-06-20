@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"testing"
 	"time"
-
-	"connectrpc.com/connect"
 
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
@@ -32,17 +29,6 @@ type failingCtxWorker struct {
 
 func (w *failingCtxWorker) RunContext(context.Context) error { return w.err }
 
-// failingOperatorApp is a stubApp whose RunOperators returns an error
-// immediately instead of blocking on ctx.
-type failingOperatorApp struct {
-	stubApp
-	opErr error
-}
-
-func (a *failingOperatorApp) RunOperators(context.Context, *slog.Logger, string) error {
-	return a.opErr
-}
-
 // TestRun_WorkerStartErrorKillsProcessByDefault pins the default
 // failure policy: a worker whose Start returns an error must take the
 // process down (Run returns the worker error) instead of logging and
@@ -51,13 +37,11 @@ func TestRun_WorkerStartErrorKillsProcessByDefault(t *testing.T) {
 	// Not parallel — exercises the shared signal/shutdown path.
 	addr := freeAddr(t)
 	boom := errors.New("queue connection refused")
-	app := &stubApp{workers: []serverkit.Worker{&failingWorker{name: "dead-on-arrival", err: boom}}}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
+	srv := serverkit.Server{
+		Handler: emptyHandler(),
+		Workers: []serverkit.Worker{&failingWorker{name: "dead-on-arrival", err: boom}},
 	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	select {
 	case err := <-errCh:
 		if err == nil || !contains(err.Error(), "queue connection refused") {
@@ -74,13 +58,8 @@ func TestRun_ContextWorkerErrorKillsProcessByDefault(t *testing.T) {
 	addr := freeAddr(t)
 	boom := errors.New("ctx worker exploded")
 	w := &failingCtxWorker{failingWorker{name: "ctx-dead", err: boom}}
-	app := &stubApp{workers: []serverkit.Worker{w}}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
-	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	srv := serverkit.Server{Handler: emptyHandler(), Workers: []serverkit.Worker{w}}
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	select {
 	case err := <-errCh:
 		if err == nil || !contains(err.Error(), "ctx worker exploded") {
@@ -95,16 +74,15 @@ func TestRun_ContextWorkerErrorKillsProcessByDefault(t *testing.T) {
 // the same policy.
 func TestRun_OperatorErrorKillsProcessByDefault(t *testing.T) {
 	addr := freeAddr(t)
-	app := &failingOperatorApp{
-		stubApp: stubApp{operators: []serverkit.Operator{&stubOperator{name: "op"}}},
-		opErr:   errors.New("not running in-cluster"),
-	}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
+	opErr := errors.New("not running in-cluster")
+	srv := serverkit.Server{
+		Handler:   emptyHandler(),
+		Operators: []serverkit.Operator{&stubOperator{name: "op"}},
+		RunOperators: func(context.Context, *slog.Logger, string) error {
+			return opErr
 		},
 	}
-	errCh, _ := runInBackground(t, baseConfig(addr), hooks, nil)
+	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	select {
 	case err := <-errCh:
 		if err == nil || !contains(err.Error(), "not running in-cluster") {
@@ -125,15 +103,13 @@ func (o *stubOperator) Name() string { return o.name }
 func TestRun_WorkerErrorIgnorePolicyKeepsServing(t *testing.T) {
 	// Not parallel — sends SIGTERM.
 	addr := freeAddr(t)
-	app := &stubApp{workers: []serverkit.Worker{&failingWorker{name: "best-effort", err: errors.New("optional dep down")}}}
-	hooks := serverkit.Hooks{
-		Bootstrap: func(context.Context, *http.ServeMux, *slog.Logger, []string, ...connect.HandlerOption) (serverkit.Application, error) {
-			return app, nil
-		},
+	srv := serverkit.Server{
+		Handler: emptyHandler(),
+		Workers: []serverkit.Worker{&failingWorker{name: "best-effort", err: errors.New("optional dep down")}},
 	}
 	cfg := baseConfig(addr)
 	cfg.FailurePolicy = serverkit.Ignore
-	errCh, _ := runInBackground(t, cfg, hooks, nil)
+	errCh, _ := runInBackground(t, cfg, srv)
 	waitReady(t, addr, 2*time.Second)
 
 	// The worker has already failed; the server must still be serving.

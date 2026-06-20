@@ -485,7 +485,22 @@ func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
 // ownership of those fields overrides the stale manager and keeps the
 // deploy idempotent. (--force-conflicts is an SSA-only flag — it has no
 // effect without --server-side, which we always pass.)
+//
+// An empty kctx is a HARD ERROR, never a fall-through to kubectl's
+// current/default context. The target cluster is declarative —
+// forge.K8sCluster.cluster in the env's KCL IS the context — so an empty
+// value here means some group failed to carry its declared cluster. Applying
+// to whatever context happens to be active is the footgun where an unrelated
+// tool (e.g. `k3d cluster create`, which silently flips current-context) makes
+// a deploy land in the WRONG cluster. Writes must fail LOUDLY instead. (Reads
+// /waits via KubectlArgs may still default; only the destructive apply is
+// gated here.)
 func KubectlApply(ctx context.Context, kctx, manifests string) error {
+	if strings.TrimSpace(kctx) == "" {
+		return fmt.Errorf("refusing to apply manifests without an explicit kubectl context: " +
+			"the target cluster is declarative (forge.K8sCluster.cluster in the env's KCL) — " +
+			"forge never falls back to the current context for a write")
+	}
 	cmd := kubectlCmd(ctx, kctx, "apply", "--server-side", "--force-conflicts", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifests)
 	cmd.Stdout = os.Stdout

@@ -27,29 +27,29 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
-// Severity classifies a finding. Errors fail `forge lint`; warnings are
-// printed but don't gate the build.
-type Severity string
+// Severity and Finding now live in the shared internal/linter/finding
+// package — these aliases keep the historical forgeconv.* spellings
+// working for callers and tests while the underlying vocabulary is
+// single-sourced. forgeconv findings populate
+// Rule/Severity/File/Line/Message/Remediation.
+type (
+	Severity = finding.Severity
+	Finding  = finding.Finding
+)
 
-// Severity enum values.
+// Severity enum values (aliases onto the canonical single-spelling set).
 const (
-	SeverityError   Severity = "error"
-	SeverityWarning Severity = "warning"
+	SeverityError   = finding.SeverityError
+	SeverityWarning = finding.SeverityWarning
 )
 
-// Finding is a single lint diagnostic against a proto file.
-type Finding struct {
-	Rule        string   `json:"rule"`
-	Severity    Severity `json:"severity"`
-	File        string   `json:"file"`
-	Line        int      `json:"line"` // 1-indexed; 0 if file-level
-	Message     string   `json:"message"`
-	Remediation string   `json:"remediation,omitempty"`
-}
-
-// Result aggregates findings from a single lint run.
+// Result aggregates findings from a single lint run. It is a distinct
+// type (not an alias) so forgeconv can hang its own FormatText rendering
+// on it; the finding vocabulary inside is the shared one.
 type Result struct {
 	Findings []Finding `json:"findings"`
 }

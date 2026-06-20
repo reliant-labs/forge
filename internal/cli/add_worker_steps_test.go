@@ -153,22 +153,35 @@ func TestAddWorkerNoNewFeaturesFrontendWriteSite(t *testing.T) {
 // future refactor that accidentally drops the Steps field (or switches
 // it back to the unpreset runGeneratePipeline) trips the test before
 // the regression ships.
+//
+// The worker post-scaffold generate step was extracted into the shared
+// helper runPostScaffoldGenerate (the worker is the only component kind
+// with a --no-generate flag, so the no-generate / bootstrap-only /
+// partial-failure tail lives there); this test now scans that helper, and
+// separately asserts runAddWorker actually routes through it.
 func TestAddWorkerUsesBootstrapOnlyStepPreset(t *testing.T) {
 	data, err := os.ReadFile("add.go")
 	if err != nil {
 		t.Fatalf("read add.go: %v", err)
 	}
 	src := string(data)
-	// Find the runAddWorker body. The function name is unique; the
-	// generate-pipeline invocation we care about sits between the
-	// definition and the closing brace at indent 0.
-	idx := strings.Index(src, "func runAddWorker(")
-	if idx < 0 {
-		t.Fatal("runAddWorker not found in add.go")
+	// runAddWorker must delegate its post-scaffold generate to the shared
+	// helper — otherwise the preset assertion below would pass vacuously
+	// against an unused helper.
+	if !strings.Contains(src, "runPostScaffoldGenerate(p.root, p.name, noGenerate)") {
+		t.Errorf("runAddWorker must delegate its post-scaffold generate to " +
+			"runPostScaffoldGenerate(p.root, p.name, noGenerate) via spec.postScaffold.")
 	}
-	// Look for the closing of runAddWorker — scan to the next "\nfunc "
-	// at top level. This is a coarse boundary but the function isn't long
-	// enough to need an AST-grade approach.
+	// Find the runPostScaffoldGenerate body. The function name is unique; the
+	// generate-pipeline invocation we care about sits between the definition
+	// and the next top-level "\nfunc ".
+	idx := strings.Index(src, "func runPostScaffoldGenerate(")
+	if idx < 0 {
+		t.Fatal("runPostScaffoldGenerate not found in add.go (the worker post-scaffold generate helper)")
+	}
+	// Look for the closing of runPostScaffoldGenerate — scan to the next
+	// "\nfunc " at top level. This is a coarse boundary but the function
+	// isn't long enough to need an AST-grade approach.
 	tail := src[idx:]
 	end := strings.Index(tail, "\nfunc ")
 	if end < 0 {

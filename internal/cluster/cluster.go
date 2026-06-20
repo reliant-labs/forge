@@ -649,6 +649,48 @@ func ListManagedDeployments(ctx context.Context, kctx, namespace string) ([]stri
 	return names, nil
 }
 
+// docDelimiter is the separator between documents in a `---`-separated
+// multi-doc YAML stream. It is the single source of truth for both
+// splitting (splitDocs) and re-joining manifest streams in this file.
+const docDelimiter = "\n---\n"
+
+// splitDocs splits a `---`-separated multi-doc YAML stream into its
+// individual documents, trimming surrounding whitespace and dropping
+// empty / whitespace-only docs. It is the single source of the
+// delimiter for the manifest-scanning helpers below.
+func splitDocs(manifests string) []string {
+	raw := strings.Split(manifests, docDelimiter)
+	docs := make([]string, 0, len(raw))
+	for _, doc := range raw {
+		if trimmed := strings.TrimSpace(doc); trimmed != "" {
+			docs = append(docs, trimmed)
+		}
+	}
+	return docs
+}
+
+// parsedDoc is the minimal view of a Kubernetes manifest the scanning
+// helpers below need: the document's kind, its metadata.name, and its
+// metadata.labels.
+type parsedDoc struct {
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name   string            `yaml:"name"`
+		Labels map[string]string `yaml:"labels"`
+	} `yaml:"metadata"`
+}
+
+// parseDoc unmarshals a single YAML manifest document into a parsedDoc.
+// A doc that doesn't parse returns ok=false so callers can apply their
+// own conservative fallback (keep, or place in rest).
+func parseDoc(doc string) (parsedDoc, bool) {
+	var m parsedDoc
+	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+		return parsedDoc{}, false
+	}
+	return m, true
+}
+
 // FilterManifestsByApp filters a `---`-separated multi-doc YAML stream
 // down to the manifests belonging to the named apps, PLUS every shared
 // manifest. The rule, doc by doc:
@@ -675,25 +717,20 @@ func FilterManifestsByApp(manifests string, targets []string) (string, error) {
 		want[t] = struct{}{}
 	}
 
-	docs := strings.Split(manifests, "\n---\n")
 	var kept []string
 	present := map[string]struct{}{} // every app name seen on a labelled doc
 	matchedAny := false              // did any doc carry a targeted app label?
 
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
-			continue
-		}
-		app := manifestAppLabel(trimmed)
+	for _, doc := range splitDocs(manifests) {
+		app := manifestAppLabel(doc)
 		if app == "" {
 			// Shared / infra resource — always keep.
-			kept = append(kept, trimmed)
+			kept = append(kept, doc)
 			continue
 		}
 		present[app] = struct{}{}
 		if _, ok := want[app]; ok {
-			kept = append(kept, trimmed)
+			kept = append(kept, doc)
 			matchedAny = true
 		}
 	}
@@ -709,7 +746,7 @@ func FilterManifestsByApp(manifests string, targets []string) (string, error) {
 			strings.Join(targets, ", "), strings.Join(avail, ", "))
 	}
 
-	return strings.Join(kept, "\n---\n"), nil
+	return strings.Join(kept, docDelimiter), nil
 }
 
 // manifestAppLabel reads metadata.labels["app.kubernetes.io/name"] from
@@ -717,12 +754,8 @@ func FilterManifestsByApp(manifests string, targets []string) (string, error) {
 // label (shared/infra resource) or doesn't parse — callers treat "" as
 // "shared, keep".
 func manifestAppLabel(doc string) string {
-	var m struct {
-		Metadata struct {
-			Labels map[string]string `yaml:"labels"`
-		} `yaml:"metadata"`
-	}
-	if err := yaml.Unmarshal([]byte(doc), &m); err != nil {
+	m, ok := parseDoc(doc)
+	if !ok {
 		return ""
 	}
 	return m.Metadata.Labels[appNameLabel]
@@ -735,23 +768,22 @@ func manifestAppLabel(doc string) string {
 //
 // Malformed documents are skipped (callers get a best-effort list).
 func RenderedDeploymentNames(manifests string) []string {
-	docs := strings.Split(manifests, "\n---\n")
+	return renderedNamesByKind(manifests, "Deployment")
+}
+
+// renderedNamesByKind extracts the `metadata.name` of every document
+// whose `kind` matches kind in a `---`-separated YAML stream. Malformed
+// documents are skipped (callers get a best-effort list). It backs both
+// RenderedDeploymentNames and RenderedJobNames, which differ only by the
+// kind they select.
+func renderedNamesByKind(manifests, kind string) []string {
 	var out []string
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if !ok {
 			continue
 		}
-		var m struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
-			continue
-		}
-		if m.Kind == "Deployment" && m.Metadata.Name != "" {
+		if m.Kind == kind && m.Metadata.Name != "" {
 			out = append(out, m.Metadata.Name)
 		}
 	}
@@ -785,27 +817,21 @@ var configFirstKinds = map[string]struct{}{
 // is applied (and kubectl returns) before rest, so a workload in rest
 // never schedules ahead of the ConfigMap/Secret it references.
 func PartitionConfigManifests(manifests string) (config, rest string) {
-	docs := strings.Split(manifests, "\n---\n")
 	var cfg, other []string
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
-			continue
-		}
-		var m struct {
-			Kind string `yaml:"kind"`
-		}
-		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
-			other = append(other, trimmed)
+	for _, doc := range splitDocs(manifests) {
+		m, ok := parseDoc(doc)
+		if !ok {
+			// Can't be confirmed config — rest is the pass that always runs.
+			other = append(other, doc)
 			continue
 		}
 		if _, ok := configFirstKinds[m.Kind]; ok {
-			cfg = append(cfg, trimmed)
+			cfg = append(cfg, doc)
 		} else {
-			other = append(other, trimmed)
+			other = append(other, doc)
 		}
 	}
-	return strings.Join(cfg, "\n---\n"), strings.Join(other, "\n---\n")
+	return strings.Join(cfg, docDelimiter), strings.Join(other, docDelimiter)
 }
 
 // RenderedJobNames extracts the `metadata.name` of every `kind: Job`
@@ -827,27 +853,7 @@ func PartitionConfigManifests(manifests string) (config, rest string) {
 //
 // Malformed documents are skipped (callers get a best-effort list).
 func RenderedJobNames(manifests string) []string {
-	docs := strings.Split(manifests, "\n---\n")
-	var out []string
-	for _, doc := range docs {
-		trimmed := strings.TrimSpace(doc)
-		if trimmed == "" {
-			continue
-		}
-		var m struct {
-			Kind     string `yaml:"kind"`
-			Metadata struct {
-				Name string `yaml:"name"`
-			} `yaml:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(trimmed), &m); err != nil {
-			continue
-		}
-		if m.Kind == "Job" && m.Metadata.Name != "" {
-			out = append(out, m.Metadata.Name)
-		}
-	}
-	return out
+	return renderedNamesByKind(manifests, "Job")
 }
 
 // Prune deletes every forge-managed Deployment in namespace that is

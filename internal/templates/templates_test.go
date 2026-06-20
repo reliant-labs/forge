@@ -689,16 +689,14 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 	}
 }
 
-// TestCmdServerTemplate_WiresPostBootstrapHook verifies the generated
-// cmd/server.go wires the user-owned PostBootstrap hook into
-// serverkit.Hooks.PostBootstrap. This is the chokepoint the user code
-// relies on; if the wiring disappears from the template, projects that
-// register post-construct collaborators will silently no-op.
-//
-// The error-propagation contract ("post-bootstrap hook failed: ...")
-// now lives in serverkit.Run (see pkg/serverkit/run.go); the shim only
-// needs to forward the typed *app.App to the hook.
-func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
+// TestCmdServerTemplate_ComposesServer verifies the generated
+// cmd/server.go is the COMPOSITION SITE: it mounts services via the
+// appkit Bootstrap mechanism, runs the user-owned PostBootstrap with the
+// concrete *app.App (no serverkit.Hooks indirection / type assertion),
+// resolves the REST swap, selects workers/operators, and packs the
+// finished pieces into serverkit.Server before serverkit.Run. If any of
+// these wirings disappear, generated projects regress.
+func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 	data := struct {
 		Module               string
 		HasDatabase          bool
@@ -718,11 +716,41 @@ func TestCmdServerTemplate_WiresPostBootstrapHook(t *testing.T) {
 	}
 	rendered := string(content)
 
-	if !strings.Contains(rendered, "PostBootstrap:") {
-		t.Errorf("cmd-server.go.tmpl must set serverkit.Hooks.PostBootstrap; rendered output:\n%s", rendered)
+	// PostBootstrap runs with the concrete *app.App, NOT via a
+	// serverkit.Hooks type assertion.
+	if !strings.Contains(rendered, "app.PostBootstrap(theApp)") {
+		t.Errorf("cmd-server.go.tmpl must call app.PostBootstrap(theApp) directly; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "app.PostBootstrap(a.(*app.App))") {
-		t.Errorf("cmd-server.go.tmpl must forward the Application to app.PostBootstrap via type assertion; rendered output:\n%s", rendered)
+	if strings.Contains(rendered, "serverkit.Hooks") {
+		t.Errorf("cmd-server.go.tmpl must not reference the removed serverkit.Hooks; rendered output:\n%s", rendered)
+	}
+	// The cmd owns the mount call now (selection lives here).
+	if !strings.Contains(rendered, "app.BootstrapOnly(mux, logger, cfg, args, opts...)") {
+		t.Errorf("cmd-server.go.tmpl must call app.BootstrapOnly itself with the cmd-built mux+opts; rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "app.Bootstrap(mux, logger, cfg, opts...)") {
+		t.Errorf("cmd-server.go.tmpl must call app.Bootstrap for the unfiltered path; rendered output:\n%s", rendered)
+	}
+	// REST swap resolved by the caller into the composed handler.
+	if !strings.Contains(rendered, "theApp.RESTHandler()") {
+		t.Errorf("cmd-server.go.tmpl must resolve the REST swap before building Server.Handler; rendered output:\n%s", rendered)
+	}
+	// Selected workers/operators packed into Server.
+	if !strings.Contains(rendered, "selectWorkers(theApp.WorkerList(), args)") {
+		t.Errorf("cmd-server.go.tmpl must select workers by name before packing Server.Workers; rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "selectOperators(theApp.OperatorList(), args)") {
+		t.Errorf("cmd-server.go.tmpl must select operators by name before packing Server.Operators; rendered output:\n%s", rendered)
+	}
+	// Composed Server + RunOperators + OnShutdown.
+	if !strings.Contains(rendered, "serverkit.Run(ctx, skCfg, serverkit.Server{") {
+		t.Errorf("cmd-server.go.tmpl must call serverkit.Run with a composed serverkit.Server; rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "RunOperators: theApp.RunOperators") {
+		t.Errorf("cmd-server.go.tmpl must pass theApp.RunOperators into Server; rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "OnShutdown:") {
+		t.Errorf("cmd-server.go.tmpl must compose Server.OnShutdown (app.Shutdown + otel flush); rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.

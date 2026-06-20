@@ -139,8 +139,9 @@ func TestBootstrapTable_DelegatesToAppkit(t *testing.T) {
 
 	// Public surface preserved verbatim. WorkerList/OperatorList return
 	// the serverkit interface types and RunOperators carries the
-	// healthProbeAddr parameter — the serverkit.Application contract
-	// (A6) that the table migration must not regress.
+	// healthProbeAddr parameter — the methods the cmd-server shim reads
+	// off *app.App to compose serverkit.Server; the table migration must
+	// not regress them.
 	for _, sig := range []string{
 		"func Bootstrap(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, opts ...connect.HandlerOption) (*App, error)",
 		"func BootstrapOnly(mux *http.ServeMux, logger *slog.Logger, cfg *config.Config, names []string, opts ...connect.HandlerOption) (*App, error)",

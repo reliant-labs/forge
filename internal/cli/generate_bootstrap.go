@@ -217,6 +217,17 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("failed to generate internal/app/inject_gen.go: %w", err)
 	}
 
+	// Supervised-component surface (workers/operators) over *Services.
+	if err := codegen.GenerateLifecycle(codegen.InjectGenInput{
+		GenContext: codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
+		Services:   services,
+		Packages:   packages,
+		Workers:    workers,
+		Operators:  operators,
+	}); err != nil {
+		return fmt.Errorf("failed to generate internal/app/lifecycle_gen.go: %w", err)
+	}
+
 	// Data-only mount inventory (services only).
 	if err := codegen.GenerateInventory(codegen.InventoryGenInput{
 		GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},

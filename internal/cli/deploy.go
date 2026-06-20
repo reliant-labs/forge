@@ -583,7 +583,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 		if hasFirebaseFrontend(entities) {
 			fmt.Println("\nSkipping frontend deploy (--skip-frontend).")
 		}
-	} else if err := dispatchFrontendDeploys(ctx, entities, projectDir, envCfgKV, dryRun); err != nil {
+	} else if err := dispatchFrontendDeploys(ctx, entities, projectDir, envName, envCfgKV, dryRun); err != nil {
 		return err
 	}
 
@@ -608,7 +608,7 @@ func runDeploy(ctx context.Context, envName string, opts deployOptions) error {
 // UNDER the frontend's KCL env_vars so an explicit env_var wins, and is
 // only injected when the env var name was actually declared on the
 // frontend (we don't leak the whole env config into the JS build).
-func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir string, envCfgKV map[string]string, dryRun bool) error {
+func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, projectDir, envName string, envCfgKV map[string]string, dryRun bool) error {
 	if entities == nil {
 		return nil
 	}
@@ -624,8 +624,21 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 	}
 
 	fmt.Printf("\nDeploying %d frontend(s) to Firebase Hosting...\n", len(fes))
-	prov := deploytarget.FirebaseProvider{ProjectDir: projectDir}
-	return prov.Deploy(ctx, fes, dryRun)
+	// Dispatch the Firebase frontends through the registry like every
+	// other deploy target: build a frontend-bearing group and route it
+	// via the provider's Name(). The registry re-registers a
+	// ProjectDir-configured FirebaseProvider (the K8sClusterProvider
+	// ApplyOptsBuilder pattern) so the provider resolves frontend paths
+	// against the project root.
+	registry := deploytarget.NewRegistry()
+	registry.Register(deploytarget.FirebaseProvider{ProjectDir: projectDir})
+	group := deploytarget.ServiceGroup{
+		Env:        envName,
+		ProviderID: deploytarget.FirebaseProvider{}.Name(),
+		Frontends:  fes,
+		DryRun:     dryRun,
+	}
+	return dispatchDeployGroups(ctx, registry, []deploytarget.ServiceGroup{group}, "")
 }
 
 // hasFirebaseFrontend reports whether any rendered frontend declares a

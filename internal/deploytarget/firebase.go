@@ -126,10 +126,29 @@ func (s FirebaseHostingSpec) resolvedTarget() string {
 	return s.Site
 }
 
-// Deploy builds, assembles, configures, and ships each frontend to its
-// Firebase Hosting site. dryRun prints the plan and skips every side
-// effect.
-func (p FirebaseProvider) Deploy(ctx context.Context, fes []FirebaseFrontend, dryRun bool) error {
+// Deploy ships every frontend in the group to its Firebase Hosting
+// site. It reads the frontends off group.Frontends and the dry-run knob
+// off group.DryRun so the Firebase provider satisfies the same Provider
+// interface as k8s-cluster / external / compose and dispatches through
+// the registry — no bespoke hand-dispatch in forge deploy.
+func (p FirebaseProvider) Deploy(ctx context.Context, group ServiceGroup) error {
+	return p.deployFrontends(ctx, group.Frontends, group.DryRun)
+}
+
+// Rollback is unsupported for Firebase Hosting: a hosting deploy ships a
+// fully-assembled static tree with no forge-tracked previous-tag state,
+// and Firebase's own `hosting:rollback` (release history) is the right
+// recovery surface. We return ErrProviderNotImplemented so the
+// dispatcher records "rollback not supported" rather than silently
+// claiming success.
+func (FirebaseProvider) Rollback(_ context.Context, _ ServiceGroup, _ string) error {
+	return fmt.Errorf("firebase: rollback not supported (use `firebase hosting:rollback`): %w", ErrProviderNotImplemented)
+}
+
+// deployFrontends builds, assembles, configures, and ships each frontend
+// to its Firebase Hosting site. dryRun prints the plan and skips every
+// side effect.
+func (p FirebaseProvider) deployFrontends(ctx context.Context, fes []FirebaseFrontend, dryRun bool) error {
 	for _, fe := range fes {
 		if err := p.deployOne(ctx, fe, dryRun); err != nil {
 			return err

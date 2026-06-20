@@ -251,6 +251,219 @@ func requireServiceKind(root, action string) error {
 	return nil
 }
 
+// componentAddSpec captures the kind-specific knobs of a single
+// `forge add <kind> <name>` invocation. addComponent owns the spine every
+// component-appending path repeats — validate-name, projectRoot,
+// requireServiceKind, ReadProjectConfig, conflict check, scaffold files,
+// projectstore.AppendComponent + WriteComponentsFile, then the post-scaffold
+// generate step — and calls back into the spec at the points where the paths
+// genuinely differ. service/worker/operator/binary each build a spec and call
+// addComponent; their per-kind preamble (resume/force, feature gate, reserved
+// cobra names) and tail (pipeline vs none, success print) ride the hooks.
+//
+// The spine is stateful and behavior-preserving: the scaffold e2e tests are
+// the guardrail. The hooks fire in the same order the inline code used to run,
+// so on-disk + stdout effects are unchanged.
+type componentAddSpec struct {
+	// name is the component name as the user typed it.
+	name string
+	// ctxLabel is the "forge add <kind> <name>" error boundary label.
+	ctxLabel string
+
+	// validate checks name validity and returns a UserErr-wrapped error.
+	// Each kind owns its validator + invalid-name hint (service rejects
+	// reserved worker/scheduler names; webhook/frontend use looser rules).
+	validate func(name string) error
+
+	// preflight runs after ReadProjectConfig but before the conflict check.
+	// It is the hook for kind-specific gates that need cfg: the operator
+	// feature check, the binary reserved-cobra-name check, the service
+	// resume/force port resolution. cfg is the freshly-read config; root is
+	// the project root. May print. A nil preflight is a no-op.
+	preflight func(cfg *config.ProjectConfig, root string) error
+
+	// checkConflict enforces name uniqueness. Most kinds delegate to
+	// requireNoComponentNamed; service overrides this to tolerate an
+	// existing entry under --resume/--force. A nil checkConflict falls back
+	// to requireNoComponentNamed.
+	checkConflict func(cfg *config.ProjectConfig, name, ctxLabel string) error
+
+	// announce prints the "Adding <kind> '<name>'..." line. Each kind owns
+	// its exact wording (cron schedule, operator group/version, …).
+	announce func(cfg *config.ProjectConfig)
+
+	// scaffold writes the kind's scaffold files (service.go, worker.go,
+	// operator skeleton, binary glue). root + cfg give it everything it
+	// needs; it returns the generator error verbatim so callers keep their
+	// "generate <kind> files: %w" wrapping.
+	scaffold func(cfg *config.ProjectConfig, root string) error
+
+	// component builds the config.ComponentConfig to append. When it returns
+	// (_, false) the append+write is skipped (service --resume/--force, where
+	// the entry already exists). port-bearing kinds read the resolved port
+	// off the spec via the preflight hook's closure.
+	component func(cfg *config.ProjectConfig) (config.ComponentConfig, bool)
+
+	// postScaffold runs after the component is appended and written. It owns
+	// the post-scaffold generate step and the success print, which diverge
+	// the most across kinds (full pipeline + rollback + E2E for service;
+	// no-generate branch + bootstrap-only for worker; no pipeline for
+	// binary). componentsPath/originalComponentsBytes/hadComponentsFile carry
+	// the rollback snapshot taken before the append. appended reports whether
+	// component appended this invocation (false under service resume/force).
+	postScaffold func(p postScaffoldParams) error
+}
+
+// postScaffoldParams bundles the state addComponent threads into the
+// postScaffold hook so each kind can run its own generate-and-print tail.
+type postScaffoldParams struct {
+	cfg                     *config.ProjectConfig
+	root                    string
+	name                    string
+	componentsPath          string
+	originalComponentsBytes []byte
+	hadComponentsFile       bool
+	appended                bool
+}
+
+// addComponent owns the spine shared by every component-appending
+// `forge add <kind>` path. Each runAdd* builds a componentAddSpec and calls
+// here; the spec's hooks fill in the kind-specific behavior. The ordering and
+// side effects are byte-for-byte the same as the inline implementations the
+// hooks were lifted from.
+func addComponent(spec componentAddSpec) error {
+	if err := spec.validate(spec.name); err != nil {
+		return err
+	}
+
+	root, err := projectRoot()
+	if err != nil {
+		return err
+	}
+	// requireServiceKind's action label is the verb between "forge add " and
+	// " <name>" in ctxLabel.
+	action := strings.TrimSuffix(strings.TrimPrefix(spec.ctxLabel, "forge add "), " "+spec.name)
+	if err := requireServiceKind(root, action); err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(root, "forge.yaml")
+	cfg, err := generator.ReadProjectConfig(configPath)
+	if err != nil {
+		return cliutil.WrapUserErr(spec.ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
+	}
+
+	if spec.preflight != nil {
+		if err := spec.preflight(cfg, root); err != nil {
+			return err
+		}
+	}
+
+	checkConflict := spec.checkConflict
+	if checkConflict == nil {
+		checkConflict = requireNoComponentNamed
+	}
+	if err := checkConflict(cfg, spec.name, spec.ctxLabel); err != nil {
+		return err
+	}
+
+	if spec.announce != nil {
+		spec.announce(cfg)
+	}
+
+	if err := spec.scaffold(cfg, root); err != nil {
+		return err
+	}
+
+	// Snapshot components.json before mutating it so postScaffold can roll
+	// back to the pre-add state if a generation pipeline fails — otherwise
+	// the on-disk source would claim a component with no generated wiring.
+	componentsPath := filepath.Join(root, config.ComponentsFileName)
+	originalComponentsBytes, hadComponentsFile, err := snapshotComponentsFile(componentsPath)
+	if err != nil {
+		return fmt.Errorf("read components.json for rollback snapshot: %w", err)
+	}
+
+	appended := false
+	if comp, ok := spec.component(cfg); ok {
+		projectstore.New(cfg).AppendComponent(comp)
+		if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
+			return fmt.Errorf("update components.json: %w", err)
+		}
+		appended = true
+	}
+
+	return spec.postScaffold(postScaffoldParams{
+		cfg:                     cfg,
+		root:                    root,
+		name:                    spec.name,
+		componentsPath:          componentsPath,
+		originalComponentsBytes: originalComponentsBytes,
+		hadComponentsFile:       hadComponentsFile,
+		appended:                appended,
+	})
+}
+
+// runPostScaffoldGenerate runs the worker-style post-scaffold generate step:
+// a --no-generate short-circuit, then the bootstrap-only pipeline preset with
+// the partial-failure messaging. It is the shared tail for component kinds that
+// expose a --no-generate flag (currently worker). The exact stdout/stderr
+// wording matches the inline runAddWorker code it was lifted from — friction
+// fixes (the "files written, generate failed" partial-success line) live here.
+func runPostScaffoldGenerate(root, name string, noGenerate bool) error {
+	// --no-generate: scaffold-only mode. Skip the post-scaffold generate
+	// pipeline so parallel-agent rounds can stage worker scaffolding
+	// without triggering project-wide codegen churn (which races sibling
+	// agents holding the api-service / mock_gen / wire_gen lanes). The
+	// operator is responsible for running `forge generate` at a
+	// coordination point. See friction
+	// forge-add-worker-runs-full-pipeline (kalshi-trader migration
+	// round, filed-not-fixed entry: "no --no-generate / --steps=worker
+	// flag, so the worker-add path always runs the full codegen
+	// pipeline").
+	if noGenerate {
+		fmt.Printf("\n⏩ --no-generate: skipping post-scaffold `forge generate` run.\n")
+		fmt.Printf("    Worker '%s' scaffolded. Run `forge generate` at a coordination point\n", name)
+		fmt.Printf("    to update pkg/app/{bootstrap,wire_gen,testing}.go for the new worker.\n")
+		fmt.Printf("\n✅ Worker '%s' scaffold-only mode complete!\n", name)
+		return nil
+	}
+
+	// Run the generation pipeline, narrowed to the bootstrap-only step
+	// preset, so adding a worker regenerates
+	// pkg/app/{bootstrap,testing,migrate}.go and nothing else. The full
+	// pipeline would also rewrite every Tier-1 file in its catalog
+	// (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
+	// pkg/config/config.go) — friction reported by the cp-forge
+	// port-workers round where `forge add worker` × 7 rewrote 5
+	// unrelated Tier-1 files per invocation. The step preset's allowed
+	// step set lives in stepPresetAllowlist["bootstrap-only"]
+	// (generate_pipeline.go).
+	fmt.Println("\n🔧 Running generation pipeline (bootstrap-only step preset)...")
+	generateMu.Lock()
+	err := runGeneratePipelineFlags(root, pipelineFlags{Steps: "bootstrap-only"})
+	generateMu.Unlock()
+	if err != nil {
+		// Non-fatal: the worker files were created successfully, but the
+		// pipeline failure usually means the project doesn't compile (a
+		// sibling-package issue or a stale generated file). Print a
+		// distinct partial-success line so a user skimming the output
+		// doesn't see the unconditional ✅ below and assume the build is
+		// healthy. Friction reported by the kalshi-trader migration round:
+		// the prior code printed the green check directly after the
+		// "warning: generation pipeline failed" line, hiding the failure
+		// in the visual noise.
+		fmt.Fprintf(os.Stderr, "\nwarning: generation pipeline failed: %v\n", err)
+		fmt.Printf("\n⚠️  Worker '%s' files written, but `forge generate` failed — fix the build before running it again.\n", name)
+		fmt.Printf("    Tip: pass --no-generate to `forge add worker` to suppress the post-scaffold pipeline run.\n")
+		return nil
+	}
+
+	fmt.Printf("\n✅ Worker '%s' added successfully!\n", name)
+	return nil
+}
+
 // --- add service ---
 
 func newAddServiceCmd() *cobra.Command {
@@ -309,167 +522,164 @@ func runAddService(name string, port int, resume, force bool) error {
 			"use --resume to recover from a partial failure (skips existing files), or --force to re-stamp every output file")
 	}
 
-	if err := validateServiceName(name); err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "invalid service name", "",
-			"use a name starting with a letter, containing letters/digits/_/-; not a Go keyword or reserved (worker/scheduler/cron/job)",
-			err)
-	}
-
-	root, err := projectRoot()
-	if err != nil {
-		return err
-	}
-	if err := requireServiceKind(root, "service"); err != nil {
-		return err
-	}
-
-	configPath := filepath.Join(root, "forge.yaml")
-	cfg, err := generator.ReadProjectConfig(configPath)
-	if err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
-			"verify forge.yaml is valid YAML", err)
-	}
-
-	// Check for name conflict in the existing config. Under --resume or
-	// --force we treat a matching name as "this is the partial scaffold I
-	// am recovering / re-stamping", not as a hard error. We still skip
-	// the forge.yaml append step in that case so we don't duplicate the
-	// services: entry.
+	// existingIdx tracks whether the service already exists in
+	// components.json (the --resume/--force partial-scaffold case). It is
+	// resolved in checkConflict and read by the component/postScaffold hooks
+	// so they can skip the append and the rollback-on-failure restore.
 	existingIdx := -1
-	for i, svc := range cfg.Components {
-		if svc.Name == name {
-			existingIdx = i
-			break
-		}
-	}
-	if existingIdx >= 0 && !resume && !force {
-		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("service %q already exists in the project", name),
-			"",
-			"pass --resume to skip files that already exist, --force to overwrite them, or pick a different name")
-	}
 
-	// Port selection. If the service already exists in forge.yaml (resume
-	// or force path) and the user did not pass --port, reuse the existing
-	// port so the regenerated scaffold matches the recorded config.
-	if port == 0 {
-		if existingIdx >= 0 {
-			port = cfg.Components[existingIdx].PrimaryPort()
-		} else {
-			port = 8080
-			for _, svc := range cfg.Components {
-				if p := svc.PrimaryPort(); p >= port {
-					port = p + 1
+	return addComponent(componentAddSpec{
+		name:     name,
+		ctxLabel: ctxLabel,
+		validate: func(name string) error {
+			if err := validateServiceName(name); err != nil {
+				return cliutil.WrapUserErr(ctxLabel, "invalid service name", "",
+					"use a name starting with a letter, containing letters/digits/_/-; not a Go keyword or reserved (worker/scheduler/cron/job)",
+					err)
+			}
+			return nil
+		},
+		preflight: func(cfg *config.ProjectConfig, root string) error {
+			// Port selection. If the service already exists in forge.yaml
+			// (resume or force path) and the user did not pass --port, reuse
+			// the existing port so the regenerated scaffold matches the
+			// recorded config. existingIdx is resolved in checkConflict, which
+			// runs after preflight; so re-derive it here. (checkConflict still
+			// owns the hard-error path; this is the same scan, used only to
+			// pick the port.)
+			//
+			// NOTE: preflight runs before checkConflict in addComponent, so we
+			// resolve existingIdx here once and reuse it everywhere.
+			for i, svc := range cfg.Components {
+				if svc.Name == name {
+					existingIdx = i
+					break
 				}
 			}
-		}
-	}
-
-	switch {
-	case resume:
-		fmt.Printf("Resuming service '%s' (port %d)...\n", name, port)
-	case force:
-		fmt.Printf("Force-stamping service '%s' (port %d)...\n", name, port)
-	default:
-		fmt.Printf("Adding service '%s' (port %d)...\n", name, port)
-	}
-
-	// Generate service files (service.go, handlers.go, proto). The mode
-	// drives per-file overwrite/skip behavior; progress writes "✓ skipped"
-	// and "⚠ overwriting" lines to stdout as it goes.
-	mode := generator.ScaffoldFail
-	switch {
-	case resume:
-		mode = generator.ScaffoldResume
-	case force:
-		mode = generator.ScaffoldForce
-	}
-	if err := generator.GenerateServiceFilesWithMode(root, cfg.ModulePath, name, cfg.Name, port, mode, os.Stdout); err != nil {
-		return fmt.Errorf("generate service files: %w", err)
-	}
-
-	// Snapshot the existing components.json so we can roll back to it if the
-	// generation pipeline fails — otherwise the on-disk source would claim a
-	// service that has no generated stubs, proto, or wiring. Components live
-	// in components.json now (forge.yaml is global-only); restoreComponents
-	// captures its bytes (or absence).
-	componentsPath := filepath.Join(root, config.ComponentsFileName)
-	originalComponentsBytes, hadComponentsFile, err := snapshotComponentsFile(componentsPath)
-	if err != nil {
-		return fmt.Errorf("read components.json for rollback snapshot: %w", err)
-	}
-
-	// Update components.json (must happen before the generation pipeline so
-	// the pipeline sees the new service). The Path uses the snake_case
-	// Go-package form so it matches the directory the scaffolder actually
-	// creates ("admin-server" -> handlers/admin_server).
-	//
-	// Under --resume / --force the service entry may already exist; only
-	// append when this is a fresh add.
-	if existingIdx < 0 {
-		projectstore.New(cfg).AppendComponent(config.ComponentConfig{
-			Name:  name,
-			Kind:  config.ComponentKindServer,
-			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
-			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
-		})
-		if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-			return fmt.Errorf("update components.json: %w", err)
-		}
-	}
-
-	// Run the full generation pipeline: buf generate, service stubs, mocks,
-	// bootstrap.go, testing.go, go mod tidy, etc.
-	fmt.Println("\n🔧 Running generation pipeline...")
-	generateMu.Lock()
-	err = runGeneratePipeline(root, false, false)
-	generateMu.Unlock()
-	if err != nil {
-		// Only restore the source when we actually appended to it this
-		// invocation; otherwise --resume would clobber a valid config
-		// after a transient pipeline failure.
-		if existingIdx < 0 {
-			if restoreErr := restoreComponentsFile(componentsPath, originalComponentsBytes, hadComponentsFile); restoreErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to restore original components.json after pipeline failure: %v\n", restoreErr)
+			if port == 0 {
+				if existingIdx >= 0 {
+					port = cfg.Components[existingIdx].PrimaryPort()
+				} else {
+					port = 8080
+					for _, svc := range cfg.Components {
+						if p := svc.PrimaryPort(); p >= port {
+							port = p + 1
+						}
+					}
+				}
 			}
-			return fmt.Errorf("generation pipeline failed for service %q (components.json restored): %w", name, err)
-		}
-		return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
-	}
+			return nil
+		},
+		checkConflict: func(cfg *config.ProjectConfig, name, ctxLabel string) error {
+			// Under --resume or --force we treat a matching name as "this is
+			// the partial scaffold I am recovering / re-stamping", not as a
+			// hard error. existingIdx was resolved in preflight.
+			if existingIdx >= 0 && !resume && !force {
+				return cliutil.UserErr(ctxLabel,
+					fmt.Sprintf("service %q already exists in the project", name),
+					"",
+					"pass --resume to skip files that already exist, --force to overwrite them, or pick a different name")
+			}
+			return nil
+		},
+		announce: func(cfg *config.ProjectConfig) {
+			switch {
+			case resume:
+				fmt.Printf("Resuming service '%s' (port %d)...\n", name, port)
+			case force:
+				fmt.Printf("Force-stamping service '%s' (port %d)...\n", name, port)
+			default:
+				fmt.Printf("Adding service '%s' (port %d)...\n", name, port)
+			}
+		},
+		scaffold: func(cfg *config.ProjectConfig, root string) error {
+			// Generate service files (service.go, handlers.go, proto). The
+			// mode drives per-file overwrite/skip behavior; progress writes
+			// "✓ skipped" and "⚠ overwriting" lines to stdout as it goes.
+			mode := generator.ScaffoldFail
+			switch {
+			case resume:
+				mode = generator.ScaffoldResume
+			case force:
+				mode = generator.ScaffoldForce
+			}
+			if err := generator.GenerateServiceFilesWithMode(root, cfg.ModulePath, name, cfg.Name, port, mode, os.Stdout); err != nil {
+				return fmt.Errorf("generate service files: %w", err)
+			}
+			return nil
+		},
+		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
+			// The Path uses the snake_case Go-package form so it matches the
+			// directory the scaffolder actually creates ("admin-server" ->
+			// handlers/admin_server). Under --resume / --force the service
+			// entry may already exist; only append when this is a fresh add.
+			if existingIdx >= 0 {
+				return config.ComponentConfig{}, false
+			}
+			return config.ComponentConfig{
+				Name:  name,
+				Kind:  config.ComponentKindServer,
+				Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
+				Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
+			}, true
+		},
+		postScaffold: func(p postScaffoldParams) error {
+			// Run the full generation pipeline: buf generate, service stubs,
+			// mocks, bootstrap.go, testing.go, go mod tidy, etc.
+			fmt.Println("\n🔧 Running generation pipeline...")
+			generateMu.Lock()
+			err := runGeneratePipeline(p.root, false, false)
+			generateMu.Unlock()
+			if err != nil {
+				// Only restore the source when we actually appended to it this
+				// invocation; otherwise --resume would clobber a valid config
+				// after a transient pipeline failure.
+				if existingIdx < 0 {
+					if restoreErr := restoreComponentsFile(p.componentsPath, p.originalComponentsBytes, p.hadComponentsFile); restoreErr != nil {
+						fmt.Fprintf(os.Stderr, "warning: failed to restore original components.json after pipeline failure: %v\n", restoreErr)
+					}
+					return fmt.Errorf("generation pipeline failed for service %q (components.json restored): %w", name, err)
+				}
+				return fmt.Errorf("generation pipeline failed for service %q: %w", name, err)
+			}
 
-	// Generate E2E test harness. GenerateE2ETests already skips existing
-	// files unconditionally, which gives the right behavior for both
-	// --resume and default. --force is not threaded through here because
-	// the E2E harness is the user's tests and clobbering them is rarely
-	// what someone re-stamping a scaffold actually wants.
-	fmt.Println("Generating E2E test harness...")
-	e2eMethods := generator.MethodsFromProtoStub(name)
-	if err := generator.GenerateE2ETests(root, name, cfg.ModulePath, cfg.Name, e2eMethods); err != nil {
-		fmt.Printf("  warning: failed to generate E2E tests: %v\n", err)
-		// Non-fatal: the service was created successfully
-	}
+			// Generate E2E test harness. GenerateE2ETests already skips
+			// existing files unconditionally, which gives the right behavior
+			// for both --resume and default. --force is not threaded through
+			// here because the E2E harness is the user's tests and clobbering
+			// them is rarely what someone re-stamping a scaffold actually
+			// wants.
+			fmt.Println("Generating E2E test harness...")
+			e2eMethods := generator.MethodsFromProtoStub(name)
+			if err := generator.GenerateE2ETests(p.root, name, p.cfg.ModulePath, p.cfg.Name, e2eMethods); err != nil {
+				fmt.Printf("  warning: failed to generate E2E tests: %v\n", err)
+				// Non-fatal: the service was created successfully
+			}
 
-	fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
+			fmt.Printf("\n✅ Service '%s' added successfully!\n", name)
 
-	// Registration: pkg/app/services.go is user-owned — forge never
-	// edits it. When the file predates this service (the usual add-flow:
-	// the registry was scaffolded with the project's earlier services),
-	// the new row constructor is generated but unreferenced, so the
-	// binary won't serve the service until the user adds the line. Print
-	// the exact line; `forge audit` keeps the gap visible
-	// (codegen.unregistered_services) until it's resolved. This is
-	// deliberate: the registration line is the one decision the user (or
-	// their agent) writes — forge generates the guardrails around it.
-	if reg, regErr := loadServiceRegistry(root); regErr == nil && reg.Exists && !reg.registered(name) {
-		fmt.Println()
-		fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", serviceRegistryRelPath)
-		fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
-		fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
-		fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
-		fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
-	}
+			// Registration: pkg/app/services.go is user-owned — forge never
+			// edits it. When the file predates this service (the usual
+			// add-flow: the registry was scaffolded with the project's earlier
+			// services), the new row constructor is generated but
+			// unreferenced, so the binary won't serve the service until the
+			// user adds the line. Print the exact line; `forge audit` keeps
+			// the gap visible (codegen.unregistered_services) until it's
+			// resolved. This is deliberate: the registration line is the one
+			// decision the user (or their agent) writes — forge generates the
+			// guardrails around it.
+			if reg, regErr := loadServiceRegistry(p.root); regErr == nil && reg.Exists && !reg.registered(name) {
+				fmt.Println()
+				fmt.Printf("⚠️  %s is user-owned — forge does not edit it.\n", serviceRegistryRelPath)
+				fmt.Printf("   To serve %q from this binary, add this row to RegisteredServices:\n\n", name)
+				fmt.Printf("       %s(app, cfg, logger, opts...),\n\n", codegen.ServiceRowFuncName(name))
+				fmt.Println("   Until then the service is generated but not served (forge audit: codegen.unregistered_services).")
+				fmt.Println("   After registering, `forge generate` also emits its cobra subcommand into cmd/services_gen.go.")
+			}
 
-	return nil
+			return nil
+		},
+	})
 }
 
 // --- add package (alias for package new) ---
@@ -583,107 +793,45 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 			"either drop --schedule (long-running worker) or add --kind cron")
 	}
 
-	root, err := projectRoot()
-	if err != nil {
-		return err
-	}
-	if err := requireServiceKind(root, "worker"); err != nil {
-		return err
-	}
-
-	configPath := filepath.Join(root, "forge.yaml")
-	cfg, err := generator.ReadProjectConfig(configPath)
-	if err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
-			"verify forge.yaml is valid YAML", err)
-	}
-
-	// Check for name conflict (workers/crons are components).
-	if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
-		return err
-	}
-
-	if kind == "cron" {
-		fmt.Printf("Adding cron worker '%s' (schedule %q)...\n", name, schedule)
-	} else {
-		fmt.Printf("Adding worker '%s'...\n", name)
-	}
-
-	// Generate worker files (worker.go, worker_test.go)
-	if err := generator.GenerateWorkerFiles(root, cfg.ModulePath, name, kind, schedule); err != nil {
-		return fmt.Errorf("generate worker files: %w", err)
-	}
-
-	// Update forge.yaml. Path uses the Go-package form so it matches the
-	// directory the scaffolder creates ("email-sender" -> workers/email_sender).
-	// kind=cron is first-class now; a plain worker has kind=worker. The
-	// scaffolded worker.go body (worker vs worker-cron template) still
-	// encodes the schedule loop; the component just records the kind.
-	componentKind := config.ComponentKindWorker
-	if kind == "cron" {
-		componentKind = config.ComponentKindCron
-	}
-	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
-		Name:     name,
-		Kind:     componentKind,
-		Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
-		Schedule: schedule,
+	return addComponent(componentAddSpec{
+		name:     name,
+		ctxLabel: ctxLabel,
+		validate: func(string) error { return nil }, // name already validated above (cron flag rules need to run first)
+		announce: func(cfg *config.ProjectConfig) {
+			if kind == "cron" {
+				fmt.Printf("Adding cron worker '%s' (schedule %q)...\n", name, schedule)
+			} else {
+				fmt.Printf("Adding worker '%s'...\n", name)
+			}
+		},
+		scaffold: func(cfg *config.ProjectConfig, root string) error {
+			// Generate worker files (worker.go, worker_test.go)
+			if err := generator.GenerateWorkerFiles(root, cfg.ModulePath, name, kind, schedule); err != nil {
+				return fmt.Errorf("generate worker files: %w", err)
+			}
+			return nil
+		},
+		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
+			// Path uses the Go-package form so it matches the directory the
+			// scaffolder creates ("email-sender" -> workers/email_sender).
+			// kind=cron is first-class now; a plain worker has kind=worker. The
+			// scaffolded worker.go body (worker vs worker-cron template) still
+			// encodes the schedule loop; the component just records the kind.
+			componentKind := config.ComponentKindWorker
+			if kind == "cron" {
+				componentKind = config.ComponentKindCron
+			}
+			return config.ComponentConfig{
+				Name:     name,
+				Kind:     componentKind,
+				Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
+				Schedule: schedule,
+			}, true
+		},
+		postScaffold: func(p postScaffoldParams) error {
+			return runPostScaffoldGenerate(p.root, p.name, noGenerate)
+		},
 	})
-	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-		return fmt.Errorf("update components.json: %w", err)
-	}
-
-	// --no-generate: scaffold-only mode. Skip the post-scaffold generate
-	// pipeline so parallel-agent rounds can stage worker scaffolding
-	// without triggering project-wide codegen churn (which races sibling
-	// agents holding the api-service / mock_gen / wire_gen lanes). The
-	// operator is responsible for running `forge generate` at a
-	// coordination point. See friction
-	// forge-add-worker-runs-full-pipeline (kalshi-trader migration
-	// round, filed-not-fixed entry: "no --no-generate / --steps=worker
-	// flag, so the worker-add path always runs the full codegen
-	// pipeline").
-	if noGenerate {
-		fmt.Printf("\n⏩ --no-generate: skipping post-scaffold `forge generate` run.\n")
-		fmt.Printf("    Worker '%s' scaffolded. Run `forge generate` at a coordination point\n", name)
-		fmt.Printf("    to update pkg/app/{bootstrap,wire_gen,testing}.go for the new worker.\n")
-		fmt.Printf("\n✅ Worker '%s' scaffold-only mode complete!\n", name)
-		return nil
-	}
-
-	// Run the generation pipeline, narrowed to the bootstrap-only step
-	// preset, so adding a worker regenerates
-	// pkg/app/{bootstrap,testing,migrate}.go and nothing else. The full
-	// pipeline would also rewrite every Tier-1 file in its catalog
-	// (.github/workflows/ci.yml, cmd/server.go, frontend mocks,
-	// pkg/config/config.go) — friction reported by the cp-forge
-	// port-workers round where `forge add worker` × 7 rewrote 5
-	// unrelated Tier-1 files per invocation. The step preset's allowed
-	// step set lives in stepPresetAllowlist["bootstrap-only"]
-	// (generate_pipeline.go).
-	fmt.Println("\n🔧 Running generation pipeline (bootstrap-only step preset)...")
-	generateMu.Lock()
-	err = runGeneratePipelineFlags(root, pipelineFlags{Steps: "bootstrap-only"})
-	generateMu.Unlock()
-	if err != nil {
-		// Non-fatal: the worker files were created successfully, but the
-		// pipeline failure usually means the project doesn't compile (a
-		// sibling-package issue or a stale generated file). Print a
-		// distinct partial-success line so a user skimming the output
-		// doesn't see the unconditional ✅ below and assume the build is
-		// healthy. Friction reported by the kalshi-trader migration round:
-		// the prior code printed the green check directly after the
-		// "warning: generation pipeline failed" line, hiding the failure
-		// in the visual noise.
-		fmt.Fprintf(os.Stderr, "\nwarning: generation pipeline failed: %v\n", err)
-		fmt.Printf("\n⚠️  Worker '%s' files written, but `forge generate` failed — fix the build before running it again.\n", name)
-		fmt.Printf("    Tip: pass --no-generate to `forge add worker` to suppress the post-scaffold pipeline run.\n")
-		return nil
-	}
-
-	fmt.Printf("\n✅ Worker '%s' added successfully!\n", name)
-
-	return nil
 }
 
 // --- add operator ---
@@ -734,87 +882,83 @@ Example:
 
 func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceholderCRD bool) error {
 	ctxLabel := fmt.Sprintf("forge add operator %s", name)
-	if err := validateIdentifier(name); err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "invalid operator name", "",
-			"use a name starting with a letter, containing letters/digits/_/-", err)
-	}
 
-	root, err := projectRoot()
-	if err != nil {
-		return err
-	}
-	if err := requireServiceKind(root, "operator"); err != nil {
-		return err
-	}
-
-	configPath := filepath.Join(root, "forge.yaml")
-	cfg, err := generator.ReadProjectConfig(configPath)
-	if err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
-			"verify forge.yaml is valid YAML", err)
-	}
-	if !cfg.Features.OperatorsEnabled() {
-		return config.DisabledFeatureError(config.FeatureOperators)
-	}
-
-	// Check for name conflict (operators are kind=operator components).
-	if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
-		return err
-	}
-
-	// Default group from project name
-	if group == "" {
-		group = cfg.Name + ".io"
-	}
-
+	// Pure flag-combination guard, independent of cfg: --api-package /
+	// --crd-type only mean anything with --with-placeholder-crd. Reject
+	// up-front before any filesystem touch.
 	if !withPlaceholderCRD && (apiPackage != "" || crdType != "") {
 		return fmt.Errorf("--api-package and --crd-type only apply with --with-placeholder-crd; for the new shape use 'forge add crd <Name>' after the operator is created")
 	}
 
-	fmt.Printf("Adding operator '%s' (group=%s, version=%s)...\n", name, group, version)
+	return addComponent(componentAddSpec{
+		name:     name,
+		ctxLabel: ctxLabel,
+		validate: func(name string) error {
+			if err := validateIdentifier(name); err != nil {
+				return cliutil.WrapUserErr(ctxLabel, "invalid operator name", "",
+					"use a name starting with a letter, containing letters/digits/_/-", err)
+			}
+			return nil
+		},
+		preflight: func(cfg *config.ProjectConfig, root string) error {
+			if !cfg.Features.OperatorsEnabled() {
+				return config.DisabledFeatureError(config.FeatureOperators)
+			}
+			// Default group from project name. Runs before announce/scaffold
+			// so both see the resolved value.
+			if group == "" {
+				group = cfg.Name + ".io"
+			}
+			return nil
+		},
+		announce: func(cfg *config.ProjectConfig) {
+			fmt.Printf("Adding operator '%s' (group=%s, version=%s)...\n", name, group, version)
+		},
+		scaffold: func(cfg *config.ProjectConfig, root string) error {
+			if withPlaceholderCRD {
+				// Legacy path: emit the combined scaffold.
+				if err := generator.GenerateOperatorFilesWithAPI(root, cfg.ModulePath, name, group, version, apiPackage, crdType); err != nil {
+					return fmt.Errorf("generate operator files: %w", err)
+				}
+			} else {
+				// New default: only the operator package skeleton.
+				if err := generator.GenerateOperatorBinaryOnly(root, cfg.ModulePath, name, group, version); err != nil {
+					return fmt.Errorf("generate operator scaffold: %w", err)
+				}
+			}
+			return nil
+		},
+		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
+			// Path uses the Go-package form so it matches the directory the
+			// scaffolder creates. Group/Version are persisted so
+			// `forge add crd` can default from them.
+			return config.ComponentConfig{
+				Name:    name,
+				Kind:    config.ComponentKindOperator,
+				Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
+				Group:   group,
+				Version: version,
+			}, true
+		},
+		postScaffold: func(p postScaffoldParams) error {
+			// Run the generation pipeline to update bootstrap.go and cmd-server.go
+			fmt.Println("\n🔧 Running generation pipeline...")
+			generateMu.Lock()
+			err := runGeneratePipeline(p.root, false, false)
+			generateMu.Unlock()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: generation pipeline failed: %v\n", err)
+				// Non-fatal: the operator files were created successfully
+			}
 
-	if withPlaceholderCRD {
-		// Legacy path: emit the combined scaffold.
-		if err := generator.GenerateOperatorFilesWithAPI(root, cfg.ModulePath, name, group, version, apiPackage, crdType); err != nil {
-			return fmt.Errorf("generate operator files: %w", err)
-		}
-	} else {
-		// New default: only the operator package skeleton.
-		if err := generator.GenerateOperatorBinaryOnly(root, cfg.ModulePath, name, group, version); err != nil {
-			return fmt.Errorf("generate operator scaffold: %w", err)
-		}
-	}
+			fmt.Printf("\n✅ Operator '%s' added successfully!\n", name)
+			if !withPlaceholderCRD {
+				fmt.Printf("Next: 'forge add crd <Name> --operator %s' to scaffold a CRD.\n", name)
+			}
 
-	// Update forge.yaml. Path uses the Go-package form so it matches the
-	// directory the scaffolder creates. Group/Version are persisted so
-	// `forge add crd` can default from them.
-	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
-		Name:    name,
-		Kind:    config.ComponentKindOperator,
-		Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
-		Group:   group,
-		Version: version,
+			return nil
+		},
 	})
-	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-		return fmt.Errorf("update components.json: %w", err)
-	}
-
-	// Run the generation pipeline to update bootstrap.go and cmd-server.go
-	fmt.Println("\n🔧 Running generation pipeline...")
-	generateMu.Lock()
-	err = runGeneratePipeline(root, false, false)
-	generateMu.Unlock()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: generation pipeline failed: %v\n", err)
-		// Non-fatal: the operator files were created successfully
-	}
-
-	fmt.Printf("\n✅ Operator '%s' added successfully!\n", name)
-	if !withPlaceholderCRD {
-		fmt.Printf("Next: 'forge add crd <Name> --operator %s' to scaffold a CRD.\n", name)
-	}
-
-	return nil
 }
 
 // --- add crd ---
@@ -1435,73 +1579,69 @@ Example:
 
 func runAddBinary(name string) error {
 	ctxLabel := fmt.Sprintf("forge add binary %s", name)
-	if err := validateIdentifier(name); err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "invalid binary name", "",
-			"use a name starting with a letter, containing letters/digits/_/-", err)
-	}
 
-	root, err := projectRoot()
-	if err != nil {
-		return err
-	}
-	if err := requireServiceKind(root, "binary"); err != nil {
-		return err
-	}
-
-	configPath := filepath.Join(root, "forge.yaml")
-	cfg, err := generator.ReadProjectConfig(configPath)
-	if err != nil {
-		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
-			"verify forge.yaml is valid YAML", err)
-	}
-
-	// Conflict checks. Binaries share the cmd/ directory with the
-	// canonical `cmd/server.go` and any per-service shared subcommands,
-	// so we check every component (server/worker/cron/operator/binary).
-	if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
-		return err
-	}
-	// Reserved cobra subcommand names that would shadow the binary.
-	switch naming.ServicePackage(name) {
-	case "server", "version", "db":
-		return cliutil.UserErr(ctxLabel,
-			fmt.Sprintf("%q conflicts with a reserved cobra subcommand", name),
-			"",
-			"pick a different name (server/version/db are reserved)")
-	}
-
-	fmt.Printf("Adding binary '%s'...\n", name)
-
-	// Generate the four scaffold files (cmd-binary.go, contract.go,
-	// binary.go, binary_test.go).
-	if err := generator.GenerateBinaryFiles(root, cfg.ModulePath, name); err != nil {
-		return fmt.Errorf("generate binary files: %w", err)
-	}
-
-	// Update forge.yaml. Path uses the Go-package form so it matches
-	// the directory the scaffolder creates ("workspace-proxy" ->
-	// cmd/workspace_proxy.go).
-	pkg := naming.ServicePackage(name)
-	projectstore.New(cfg).AppendComponent(config.ComponentConfig{
-		Name: name,
-		Kind: config.ComponentKindBinary,
-		Path: fmt.Sprintf("cmd/%s.go", pkg),
+	return addComponent(componentAddSpec{
+		name:     name,
+		ctxLabel: ctxLabel,
+		validate: func(name string) error {
+			if err := validateIdentifier(name); err != nil {
+				return cliutil.WrapUserErr(ctxLabel, "invalid binary name", "",
+					"use a name starting with a letter, containing letters/digits/_/-", err)
+			}
+			return nil
+		},
+		checkConflict: func(cfg *config.ProjectConfig, name, ctxLabel string) error {
+			// Conflict checks. Binaries share the cmd/ directory with the
+			// canonical `cmd/server.go` and any per-service shared subcommands,
+			// so we check every component (server/worker/cron/operator/binary).
+			if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
+				return err
+			}
+			// Reserved cobra subcommand names that would shadow the binary.
+			switch naming.ServicePackage(name) {
+			case "server", "version", "db":
+				return cliutil.UserErr(ctxLabel,
+					fmt.Sprintf("%q conflicts with a reserved cobra subcommand", name),
+					"",
+					"pick a different name (server/version/db are reserved)")
+			}
+			return nil
+		},
+		announce: func(cfg *config.ProjectConfig) {
+			fmt.Printf("Adding binary '%s'...\n", name)
+		},
+		scaffold: func(cfg *config.ProjectConfig, root string) error {
+			// Generate the four scaffold files (cmd-binary.go, contract.go,
+			// binary.go, binary_test.go).
+			if err := generator.GenerateBinaryFiles(root, cfg.ModulePath, name); err != nil {
+				return fmt.Errorf("generate binary files: %w", err)
+			}
+			return nil
+		},
+		component: func(cfg *config.ProjectConfig) (config.ComponentConfig, bool) {
+			// Path uses the Go-package form so it matches the directory the
+			// scaffolder creates ("workspace-proxy" -> cmd/workspace_proxy.go).
+			return config.ComponentConfig{
+				Name: name,
+				Kind: config.ComponentKindBinary,
+				Path: fmt.Sprintf("cmd/%s.go", naming.ServicePackage(name)),
+			}, true
+		},
+		postScaffold: func(p postScaffoldParams) error {
+			pkg := naming.ServicePackage(name)
+			fmt.Printf("\n✅ Binary '%s' added successfully!\n", name)
+			fmt.Printf("   - cmd/%s.go\n", pkg)
+			fmt.Printf("   - internal/%s/contract.go\n", pkg)
+			fmt.Printf("   - internal/%s/%s.go\n", pkg, pkg)
+			fmt.Printf("   - internal/%s/%s_test.go\n", pkg, pkg)
+			fmt.Printf("   - forge.yaml (binaries: entry)\n\n")
+			fmt.Printf("Next steps:\n")
+			fmt.Printf("  1. Edit internal/%s/%s.go to implement the runtime loop.\n", pkg, pkg)
+			fmt.Printf("  2. Run `forge generate` — the binary flows into\n")
+			fmt.Printf("     deploy/kcl/components_gen.json automatically; the per-env\n")
+			fmt.Printf("     main.k expands it into a Deployment via the forge.components\n")
+			fmt.Printf("     KCL schema hierarchy. No main.k hand-edit needed.\n")
+			return nil
+		},
 	})
-	if err := generator.WriteComponentsFile(root, cfg.Components); err != nil {
-		return fmt.Errorf("update components.json: %w", err)
-	}
-
-	fmt.Printf("\n✅ Binary '%s' added successfully!\n", name)
-	fmt.Printf("   - cmd/%s.go\n", pkg)
-	fmt.Printf("   - internal/%s/contract.go\n", pkg)
-	fmt.Printf("   - internal/%s/%s.go\n", pkg, pkg)
-	fmt.Printf("   - internal/%s/%s_test.go\n", pkg, pkg)
-	fmt.Printf("   - forge.yaml (binaries: entry)\n\n")
-	fmt.Printf("Next steps:\n")
-	fmt.Printf("  1. Edit internal/%s/%s.go to implement the runtime loop.\n", pkg, pkg)
-	fmt.Printf("  2. Run `forge generate` — the binary flows into\n")
-	fmt.Printf("     deploy/kcl/components_gen.json automatically; the per-env\n")
-	fmt.Printf("     main.k expands it into a Deployment via the forge.components\n")
-	fmt.Printf("     KCL schema hierarchy. No main.k hand-edit needed.\n")
-	return nil
 }

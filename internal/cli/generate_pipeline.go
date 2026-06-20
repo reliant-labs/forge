@@ -324,10 +324,15 @@ func generateSteps() []GenStep {
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto"},
-		{Name: "frontend workspaces scaffold", Gate: gateFrontendEnabled, GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
-		{Name: "TypeScript stubs (frontends)", Gate: gateFrontendEnabled, GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
-		{Name: "config loader (proto/config)", Gate: gateCodegenHasConfig, GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
-		{Name: "parse services + module path", Gate: gateNeedsServices, GateReason: "no services/workers/operators or features.codegen=false", Run: stepParseServicesAndModule, Tag: "codegen"},
+		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
+		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
+		{Name: "config loader (proto/config)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasConfig), GateReason: "no proto/config/ directory or features.codegen=false", Run: stepConfigLoader, Tag: "codegen"},
+		// parse services: needed when the project has proto/services/
+		// (handlers, mocks, CRUD, auth, bootstrap all read ctx.Services) OR
+		// workers/operators (bootstrap still needs ModulePath, even if
+		// Services is empty). Codegen-disabled projects skip it: the
+		// consumers of ctx.Services are all themselves codegen-gated.
+		{Name: "parse services + module path", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasAnyEntrypoint), GateReason: "no services/workers/operators or features.codegen=false", Run: stepParseServicesAndModule, Tag: "codegen"},
 		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "ensure frontend components", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendComponents, Tag: "frontend"},
 		{Name: "frontend CRUD pages", Gate: gateFrontendHasServices, GateReason: "no services in forge.yaml or features.frontend=false", Run: stepFrontendPages, Tag: "frontend"},
@@ -338,9 +343,11 @@ func generateSteps() []GenStep {
 		{Name: "authorizer", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepAuthorizer, Tag: "codegen"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: gateContractsEnabled, GateReason: "features.contracts=false", Run: stepInternalContracts, Tag: "codegen"},
-		{Name: "auth middleware", Gate: gateAuthProviderConfigured, GateReason: "auth.provider unset or 'none'", Run: stepAuthMiddleware, Tag: "codegen"},
-		{Name: "tenant middleware (auto-enable + emit)", Gate: gateCodegenHasServicesCfg, GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
-		{Name: "webhook routes", Gate: gateCodegenHasCfg, GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
+		{Name: "auth middleware", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, func(c *pipelineContext) bool {
+			return c.Cfg.Auth.Provider != "" && c.Cfg.Auth.Provider != "none"
+		}), GateReason: "auth.provider unset or 'none'", Run: stepAuthMiddleware, Tag: "codegen"},
+		{Name: "tenant middleware (auto-enable + emit)", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML, hasServices), GateReason: "no services or no forge.yaml or features.codegen=false", Run: stepTenantMiddleware, Tag: "codegen"},
+		{Name: "webhook routes", Gate: and(feature(config.FeaturesConfig.CodegenEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.codegen=false", Run: stepWebhookRoutes, Tag: "codegen"},
 		{Name: "MCP manifest", Gate: gateCodegenHasServices, GateReason: "no proto/services/ directory or features.codegen=false", Run: stepMCPManifest, Tag: "codegen"},
 		{Name: "go mod tidy (pre-wiring)", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepGoModTidyPreWiring, Tag: "tools"},
 		{Name: "pkg/app/bootstrap.go", Gate: gateCodegenHasAnyEntrypoint, GateReason: "no services/workers/operators or features.codegen=false", Run: stepBootstrap, Tag: "codegen"},
@@ -349,14 +356,26 @@ func generateSteps() []GenStep {
 		{Name: "pkg/app/migrate.go", Gate: gateMigrateHasDriver, GateReason: "database.driver unset or features.migrations=false", Run: stepBootstrapMigrate, Tag: "codegen"},
 		{Name: "sqlc generate", Gate: always, Run: stepSqlcGenerate, Tag: "tools"},
 		{Name: "go mod tidy (gen/)", Gate: always, Run: stepGoModTidyGen, Tag: "tools"},
-		{Name: "CI workflows", Gate: gateCIWorkflows, GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
-		{Name: "pack generate hooks", Gate: gateHasPacks, GateReason: "no packs installed or features.packs=false", Run: stepPackGenerateHooks, Tag: "codegen"},
+		{Name: "CI workflows", Gate: and(feature(config.FeaturesConfig.CIEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.ci=false", Run: stepCIWorkflows, Tag: "deploy"},
+		// Pack generate hooks only fire when the project has packs installed
+		// AND the packs feature is on. Disabling the feature with packs
+		// already installed skips the regenerate-on-generate step silently —
+		// the user opted out of the subsystem, codegen respects it. The
+		// installed packs themselves stay on disk; flipping `features.packs:
+		// true` later resumes the generate hooks without losing state.
+		{Name: "pack generate hooks", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.PacksEnabled), func(c *pipelineContext) bool {
+			return len(c.Cfg.Packs) > 0
+		}), GateReason: "no packs installed or features.packs=false", Run: stepPackGenerateHooks, Tag: "codegen"},
 		{Name: "regenerate infra files", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepRegenerateInfra, Tag: "deploy"},
 		{Name: "components_gen.json", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepComponentsGenJSON, Tag: "deploy"},
-		{Name: "per-env deploy config", Gate: gateDeployHasConfig, GateReason: "no proto/config/ directory or features.deploy=false", Run: stepPerEnvDeployConfig, Tag: "deploy"},
-		{Name: "ingress k3d ports fragment", Gate: gateIngressEnabled, GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
-		{Name: "Grafana dashboards", Gate: gateObservabilityHasCfg, GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
-		{Name: "entity-aware seed data", Gate: gateMigrationsHasDBOrServices, GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
+		{Name: "per-env deploy config", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), hasConfig), GateReason: "no proto/config/ directory or features.deploy=false", Run: stepPerEnvDeployConfig, Tag: "deploy"},
+		// Ingress (Gateway API codegen — the k3d-ports fragment and, in
+		// later phases, other ingress-derived artifacts) is off when
+		// features.ingress is explicitly false OR features.deploy is off
+		// (no cluster, no k3d, no ingress to wire up).
+		{Name: "ingress k3d ports fragment", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), feature(config.FeaturesConfig.IngressEnabled)), GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
+		{Name: "Grafana dashboards", Gate: and(feature(config.FeaturesConfig.ObservabilityEnabled), hasForgeYAML), GateReason: "no forge.yaml or features.observability=false", Run: stepGrafanaDashboards, Tag: "deploy"},
+		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasDBOrServices), GateReason: "no proto/db or proto/services or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends in forge.yaml or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "agent skills (.claude/skills)", Gate: always, Run: stepAgentSkills, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: always, Run: stepGoModTidyRoot, Tag: "tools"},
@@ -593,11 +612,67 @@ func gatePreChecksNotSkipped(ctx *pipelineContext) bool {
 	return !ctx.SkipPreChecks
 }
 
-// Gate helpers. Pure predicates over ctx — no I/O. Tests assert these
-// don't mutate ctx by calling them twice and comparing field-wise.
+// Gate combinators. Gates are pure predicates over ctx — no I/O. Tests
+// assert they don't mutate ctx by calling them twice and comparing
+// field-wise. Most gates are a mechanical AND of "the feature is on" and
+// one or two preconditions on what's present on disk; the combinators
+// below let those gates be spelled out inline in the GenStep table
+// instead of each getting a one-off named func.
+
+// feature returns the canonical "nil-cfg-or-enabled" feature check: a gate
+// that is true when there is no forge.yaml (directory-scan fallback — the
+// feature is implicitly on) OR the named feature flag is enabled. f is a
+// method expression over config.FeaturesConfig (e.g.
+// config.FeaturesConfig.CodegenEnabled).
+func feature(f func(config.FeaturesConfig) bool) func(*pipelineContext) bool {
+	return func(ctx *pipelineContext) bool {
+		return ctx.Cfg == nil || f(ctx.Cfg.Features)
+	}
+}
+
+// and combines predicates with short-circuiting logical AND. An empty
+// list is vacuously true.
+func and(preds ...func(*pipelineContext) bool) func(*pipelineContext) bool {
+	return func(ctx *pipelineContext) bool {
+		for _, p := range preds {
+			if !p(ctx) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// Context preconditions — the on-disk / config-presence facts that gates
+// AND against a feature check.
+func hasServices(ctx *pipelineContext) bool { return ctx.HasServices }
+func hasDB(ctx *pipelineContext) bool       { return ctx.HasDB }
+func hasConfig(ctx *pipelineContext) bool   { return ctx.HasConfig }
+
+// hasForgeYAML is true when a forge.yaml was loaded (Cfg != nil). Gates
+// that emit forge.yaml-derived artifacts AND it in so the directory-scan
+// fallback (Cfg == nil) skips them rather than panicking on a nil Cfg.
+func hasForgeYAML(ctx *pipelineContext) bool { return ctx.Cfg != nil }
+
+// hasAnyEntrypoint is true when the project has any service, worker, or
+// operator — the precondition for the bootstrap/wiring family of steps.
+func hasAnyEntrypoint(ctx *pipelineContext) bool {
+	return ctx.HasServices || ctx.HasWorkers || ctx.HasOperators
+}
+
+// hasDBOrServices is the entity-source precondition: either proto/db
+// (migrations) or proto/services (entity structs) can produce entities.
+func hasDBOrServices(ctx *pipelineContext) bool {
+	return ctx.HasDB || ctx.HasServices
+}
+
+// The gates below are referenced from other files (generate_tier1_scope.go,
+// generate_retire_disowns.go) or directly from tests, so they keep their
+// named definitions; their bodies are expressed via the combinators for
+// consistency with the inline gates in the table.
 
 func gateCodegenEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()
+	return feature(config.FeaturesConfig.CodegenEnabled)(ctx)
 }
 
 // gateOpenAPIEnabled fires the OpenAPI spec step. Off by default — the
@@ -607,130 +682,51 @@ func gateCodegenEnabled(ctx *pipelineContext) bool {
 // same proto inputs as the Go-stub buf step and there's no value in
 // emitting a spec if we're not also emitting the handlers it documents.
 func gateOpenAPIEnabled(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	if !ctx.Cfg.Features.CodegenEnabled() {
-		return false
-	}
-	return ctx.Cfg.API.OpenAPI
-}
-
-func gateORMHasDB(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.ORMEnabled()) && ctx.HasDB
+	return and(
+		feature(config.FeaturesConfig.CodegenEnabled),
+		hasForgeYAML,
+		func(c *pipelineContext) bool { return c.Cfg.API.OpenAPI },
+	)(ctx)
 }
 
 func gateORMHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.ORMEnabled()) && ctx.HasServices
-}
-
-func gateCIWorkflows(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CIEnabled()) && ctx.Cfg != nil
-}
-
-func gateHasPacks(ctx *pipelineContext) bool {
-	// Pack generate hooks only fire when the project has packs installed
-	// AND the packs feature is on. Disabling the feature with packs
-	// already installed skips the regenerate-on-generate step silently —
-	// the user opted out of the subsystem, codegen respects it. The
-	// installed packs themselves stay on disk; flipping `features.packs:
-	// true` later resumes the generate hooks without losing state.
-	return ctx.Cfg != nil &&
-		ctx.Cfg.Features.PacksEnabled() &&
-		len(ctx.Cfg.Packs) > 0
+	return and(feature(config.FeaturesConfig.ORMEnabled), hasServices)(ctx)
 }
 
 func gateDeployEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg == nil || ctx.Cfg.Features.DeployEnabled()
-}
-
-// gateIngressEnabled controls Gateway API codegen — the k3d-ports
-// fragment and (in later phases) other ingress-derived artifacts.
-// Off when features.ingress is explicitly false OR features.deploy
-// is off (no cluster, no k3d, no ingress to wire up).
-func gateIngressEnabled(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	return ctx.Cfg.Features.DeployEnabled() && ctx.Cfg.Features.IngressEnabled()
-}
-
-func gateDeployHasConfig(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && ctx.Cfg.Features.DeployEnabled() && ctx.HasConfig
-}
-
-func gateObservabilityHasCfg(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.ObservabilityEnabled()) && ctx.Cfg != nil
-}
-
-func gateMigrationsHasDBOrServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.MigrationsEnabled()) && (ctx.HasDB || ctx.HasServices)
-}
-
-func gateFrontendEnabled(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.FrontendEnabled()) && ctx.Cfg != nil
+	return feature(config.FeaturesConfig.DeployEnabled)(ctx)
 }
 
 func gateFrontendHasFrontends(ctx *pipelineContext) bool {
-	return ctx.Cfg != nil && ctx.Cfg.Features.FrontendEnabled() && len(ctx.Cfg.Frontends) > 0
+	return and(
+		hasForgeYAML,
+		feature(config.FeaturesConfig.FrontendEnabled),
+		func(c *pipelineContext) bool { return len(c.Cfg.Frontends) > 0 },
+	)(ctx)
 }
 
 func gateFrontendHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.FrontendEnabled()) && ctx.Cfg != nil && ctx.HasServices
-}
-
-func gateCodegenHasConfig(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.HasConfig
+	return and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML, hasServices)(ctx)
 }
 
 func gateCodegenHasServices(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.HasServices
-}
-
-func gateCodegenHasServicesCfg(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.Cfg != nil && ctx.HasServices
-}
-
-func gateCodegenHasCfg(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && ctx.Cfg != nil
+	return and(feature(config.FeaturesConfig.CodegenEnabled), hasServices)(ctx)
 }
 
 func gateContractsEnabled(ctx *pipelineContext) bool {
-	return ctx.Cfg == nil || ctx.Cfg.Features.ContractsEnabled()
-}
-
-func gateAuthProviderConfigured(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	if !ctx.Cfg.Features.CodegenEnabled() {
-		return false
-	}
-	return ctx.Cfg.Auth.Provider != "" && ctx.Cfg.Auth.Provider != "none"
+	return feature(config.FeaturesConfig.ContractsEnabled)(ctx)
 }
 
 func gateCodegenHasAnyEntrypoint(ctx *pipelineContext) bool {
-	return (ctx.Cfg == nil || ctx.Cfg.Features.CodegenEnabled()) && (ctx.HasServices || ctx.HasWorkers || ctx.HasOperators)
+	return and(feature(config.FeaturesConfig.CodegenEnabled), hasAnyEntrypoint)(ctx)
 }
 
 func gateMigrateHasDriver(ctx *pipelineContext) bool {
-	if ctx.Cfg == nil {
-		return false
-	}
-	return ctx.Cfg.Features.MigrationsEnabled() && ctx.Cfg.Database.Driver != ""
-}
-
-// gateNeedsServices triggers the parse-services step. We need to parse
-// when the project has either proto/services/ (handlers, mocks, CRUD,
-// auth, bootstrap all read ctx.Services) OR workers/operators (bootstrap
-// still needs ModulePath, even if Services is empty). Codegen-disabled
-// projects skip it: the consumers of ctx.Services are all themselves
-// codegen-gated.
-func gateNeedsServices(ctx *pipelineContext) bool {
-	if ctx.Cfg != nil && !ctx.Cfg.Features.CodegenEnabled() {
-		return false
-	}
-	return ctx.HasServices || ctx.HasWorkers || ctx.HasOperators
+	return and(
+		hasForgeYAML,
+		feature(config.FeaturesConfig.MigrationsEnabled),
+		func(c *pipelineContext) bool { return c.Cfg.Database.Driver != "" },
+	)(ctx)
 }
 
 // ──────────────────────────────────────────────────────────────────────

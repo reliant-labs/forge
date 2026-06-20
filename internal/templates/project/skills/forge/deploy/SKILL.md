@@ -102,6 +102,92 @@ providers (K8sCluster, External, Compose, HostDeploy). For External,
 `rollback_cmd`; deploys with no `rollback_cmd` declared error loudly
 rather than guessing.
 
+## External / host-VM targets (Fly, Cloud Run, scp-to-a-VM, systemd)
+
+`forge.External` is the CLI-driven escape hatch — anything not in a k8s
+cluster you control. Declared per-env in `deploy/kcl/<env>/main.k`:
+
+```kcl
+MAIN = forge.Service {
+    name   = "trader"
+    image  = "registry.fly.io/trader"     # ${IMAGE} is hoisted from here
+    deploy = forge.External {
+        deploy_cmd   = "flyctl deploy -i ${IMAGE}:${TAG} -a trader"
+        rollback_cmd = "flyctl deploy -i ${IMAGE}:${LAST_TAG} -a trader"  # optional
+        health_cmd   = "curl -fsS https://trader.fly.dev/healthz"          # optional
+        env_file     = "~/.config/trader/.env"                            # optional
+        env          = { REGION = "iad" }                                  # optional map
+    }
+}
+```
+
+Only `deploy_cmd` is required. (Source: `kcl/schema.k` schema `External`;
+`internal/deploytarget/external.go`.)
+
+**Substitution tokens.** forge expands these into `deploy_cmd` /
+`rollback_cmd` / `health_cmd` via `os.Expand` (`${X}` and `$X`; unknown
+keys → empty string), built from `externalVars`:
+
+| Token | Value |
+|---|---|
+| `${IMAGE}` | forge-built image name, hoisted from the surrounding `Service.image` |
+| `${TAG}` | resolved tag (build-state or `--tag`) |
+| `${CODE_VERSION}` | == `${TAG}` — pass to `docker run -e CODE_VERSION=…` / a label so the binary's reported `code_version` matches the image |
+| `${PIPELINE}` | `"forge"` — label the container with it to distinguish forge deploys from manual ones |
+| `${LAST_TAG}` | prior deployed tag (rollback target on rollback; empty on first deploy) |
+| `${SERVICE}` | `Service.name` |
+| `${ENV}` | env name (dev/staging/prod) |
+| `${ENV_FILE}` | the `env_file` path (if any) |
+| `${PROJECT_DIR}` | project root |
+| any key in `env` | its declared value (built-ins win on conflict) |
+
+(Source: `externalVars` in `external.go`; token list mirrored in the
+`External` schema doc-comment.)
+
+**Build → deploy value flow.** A `forge build` writes a `BuildState`
+(`image`, `tag`, `pushed`, …) to `.forge/state/build-<env>.json`;
+`forge deploy <env>` (no `--tag`) reads it and resolves `${TAG}` /
+`${IMAGE}` from there, so the deploy reuses the exact tag the build
+produced instead of recomputing it. (Source: `internal/cli/build_state.go`
+`BuildState` + `WriteBuildState`; `internal/cli/deploy.go` build-state read.)
+
+### Recommended pattern: single-image host-VM deploy (scp-to-VM)
+
+For the common case — one project image shipped to a VM — use forge's
+**NATIVE build, not `-t external`**:
+
+```bash
+forge build --docker --tag v42          # local <registry>/<name>:v42, NOT pushed
+```
+
+`forge build --docker` builds the project's root `Dockerfile` into a
+LOCAL `<registry>/<name>:<tag>` image (registry from
+`cfg.Docker.Registry`, falling back to the project name) and
+AUTO-injects `--build-arg FORGE_VERSION/COMMIT/DATE`, so `code_version`
+stamps correctly. It does NOT push unless you pass `--push <registry>`.
+(Source: `dockerBuildProject` in `internal/cli/build.go` — version-arg
+injection + push-only-when-`pushRegistry` set.)
+
+Then a custom `deploy_cmd` ships that local image — no `build_cmd`:
+
+```kcl
+deploy = forge.External {
+    deploy_cmd = "docker save ${IMAGE}:${TAG} | ssh vm 'docker load && docker run -d --rm -e CODE_VERSION=${CODE_VERSION} ${IMAGE}:${TAG}'"
+}
+```
+
+**When you DO need `build_cmd`:** only for genuine external/sibling-repo
+builds (the "cp-forge" pattern, where a sibling binary is built by a
+custom command). A custom `build_cmd` does NOT get forge's auto
+version-injection — it must forward `${CODE_VERSION}` itself as a
+build-arg, or `code_version` stamps `dev`. (Source: `External` schema
+doc-comment — `build_cmd` "owns BOTH the build AND any push.")
+
+**Decision note.** k3d / k8s (default) → `forge deploy dev/staging/prod`
+builds + pushes to a registry and applies manifests. External / host-VM
+→ native `forge build --docker` (local image) + a custom `deploy_cmd`
+that ships it.
+
 ## forge up — full local-dev orchestrator
 
 ```

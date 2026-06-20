@@ -41,6 +41,7 @@ type lintFlags struct {
 	checkWorkarounds  bool
 	optionalDepsGuard bool
 	configDeps        bool
+	strict            bool
 	jsonOut           bool
 }
 
@@ -106,6 +107,7 @@ audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`,
 	cmd.Flags().BoolVar(&flags.checkWorkarounds, "check-workarounds", false, "Flag cross-lane workarounds (cast<X>Repo helpers, testing_extras.go, undeclared cmd/<name>.go) — warnings only")
 	cmd.Flags().BoolVar(&flags.optionalDepsGuard, "optional-deps-guard", false, "Flag unguarded derefs of `// forge:optional-dep` Deps fields (warnings only; suppress with `// forge:optional-checked` on the deref line)")
 	cmd.Flags().BoolVar(&flags.configDeps, "config-deps", false, "Flag scalar Deps fields — scalars are configuration; declare a <Component>Config block in proto/config and take it as a typed field (warnings only)")
+	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory security findings to errors (e.g. RPCs missing a (forge.v1.method) auth-posture annotation) so they fail the build / CI")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Automatically fix issues where possible")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 
@@ -189,7 +191,7 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 		return runMigrationSafetyLint(cfg)
 	}
 	if flags.conventions {
-		return runConventionLint()
+		return runConventionLint(forgeconv.LintOptions{Strict: flags.strict})
 	}
 	if flags.frontendPacks {
 		return runFrontendPackLint()
@@ -255,7 +257,7 @@ func runLint(ctx context.Context, flags lintFlags, paths []string) error {
 	}
 
 	// No flags set — run ALL linters, each skipping gracefully if tool not available.
-	return runAllLinters(ctx, flags.fix, paths, cfg)
+	return runAllLinters(ctx, flags.fix, flags.strict, paths, cfg)
 }
 
 // contractExcludesFromConfig returns the contracts.exclude list from the
@@ -382,10 +384,10 @@ func resolveContractLintBinary(ctx context.Context) (string, error) {
 // (Sender/Config/NewSender) that produce broken bootstrap codegen.
 // Findings with severity=error fail `forge lint`; warnings are printed
 // but do not gate the build.
-func runConventionLint() error {
+func runConventionLint(opts forgeconv.LintOptions) error {
 	fmt.Println("Running forge convention rules...")
 
-	combined, notes, hasAny, err := collectConventionFindings()
+	combined, notes, hasAny, err := collectConventionFindings(opts)
 	if err != nil {
 		return err
 	}
@@ -418,14 +420,14 @@ func runConventionLint() error {
 // informational skip notes ("No proto/ directory found — …"), and
 // hasAny=false when none of the lintable trees (proto/, internal/,
 // handlers/, workers/, operators/) exist at all.
-func collectConventionFindings() (forgeconv.Result, []string, bool, error) {
+func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []string, bool, error) {
 	combined := forgeconv.Result{}
 	var notes []string
 	hasProto := false
 
 	if _, err := os.Stat("proto"); err == nil {
 		hasProto = true
-		res, err := forgeconv.LintProtoTree("proto")
+		res, err := forgeconv.LintProtoTreeOpts("proto", opts)
 		if err != nil {
 			return combined, notes, false, fmt.Errorf("forge convention lint (proto) failed: %w", err)
 		}
@@ -821,11 +823,11 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 // the JSON aggregator (collectAllLintersJSON) renders. The ordering,
 // feature gates, dir checks, and gating verdict are declared ONCE in the
 // table; this driver only translates each step into human output.
-func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.ProjectConfig) error {
+func runAllLinters(ctx context.Context, fix, strict bool, paths []string, cfg *config.ProjectConfig) error {
 	fmt.Println("🔍 Running all linters...")
 	fmt.Println()
 
-	rc := &lintRunCtx{ctx: ctx, fix: fix, paths: paths, cfg: cfg, cwd: lintCwd()}
+	rc := &lintRunCtx{ctx: ctx, fix: fix, strict: strict, paths: paths, cfg: cfg, cwd: lintCwd()}
 	hasFailed := false
 
 	for _, step := range lintPipeline() {

@@ -89,7 +89,7 @@ Examples:
 	cmd.Flags().StringVar(&tag, "tag", "", "Image tag to associate with this smoke run (informational; render is tag-agnostic)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON instead of the table")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", 10, "Per-probe timeout in seconds")
-	cmd.Flags().StringVar(&contextOverride, "context", "", "kubectl context to read Gateway status from (overrides the env's declared K8sCluster.cluster; same escape hatch as `forge deploy --context`)")
+	cmd.Flags().StringVar(&contextOverride, "context", "", "kubectl context to read Gateway status from (overrides the env's declared K8sCluster.cluster). Read-only override: smoke only queries status, so it never risks a wrong-cluster write the way deploy would.")
 	cmd.Flags().StringVar(&namespaceOverride, "namespace", "", "namespace the Gateways live in (overrides the env's declared K8sCluster.namespace)")
 	return cmd
 }
@@ -141,8 +141,10 @@ func runSmokeWith(ctx context.Context, env string, opts smokeOptions, resolve ga
 
 	// Declared-context resolution, same source of truth as deploy: the
 	// env's K8sCluster.cluster IS the kubectl context, and
-	// K8sCluster.namespace is where the Gateways live. The --context
-	// override wins (same escape hatch as `forge deploy --context`), which
+	// K8sCluster.namespace is where the Gateways live. smoke's --context
+	// override wins — and unlike deploy (which dropped its --context for a
+	// declarative-only write path), smoke keeps the override because it
+	// only READS Gateway status, so a wrong-cluster query is harmless. It
 	// also covers envs where the render doesn't surface a cluster-typed
 	// service's K8sCluster.cluster to firstK8sClusterField (the same blind
 	// spot `forge deploy <env> --explain` reports as "not declared").

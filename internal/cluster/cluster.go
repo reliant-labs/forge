@@ -442,7 +442,7 @@ func extractManifests(kclOutput []byte) (string, error) {
 	return sb.String(), nil
 }
 
-// kubectlArgs prepends `--context <kctx>` to a kubectl argument list
+// KubectlArgs prepends `--context <kctx>` to a kubectl argument list
 // when kctx is non-empty, and returns the args unchanged otherwise.
 // Threading the context PER COMMAND (rather than mutating the global
 // active context via `kubectl config use-context`) is what makes
@@ -453,7 +453,7 @@ func extractManifests(kclOutput []byte) (string, error) {
 //
 // `--context` is a global kubectl flag, so it's valid as the leading
 // argument before any subcommand (apply / wait / rollout / get / …).
-func kubectlArgs(kctx string, args ...string) []string {
+func KubectlArgs(kctx string, args ...string) []string {
 	if kctx == "" {
 		return args
 	}
@@ -463,10 +463,10 @@ func kubectlArgs(kctx string, args ...string) []string {
 }
 
 // kubectlCmd builds an *exec.Cmd for `kubectl <args>` with the context
-// flag threaded in via kubectlArgs. The single construction point keeps
+// flag threaded in via KubectlArgs. The single construction point keeps
 // the per-command `--context` invariant in one place (and testable).
 func kubectlCmd(ctx context.Context, kctx string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "kubectl", kubectlArgs(kctx, args...)...)
+	return exec.CommandContext(ctx, "kubectl", KubectlArgs(kctx, args...)...)
 }
 
 // KubectlApply pipes the rendered YAML document stream into

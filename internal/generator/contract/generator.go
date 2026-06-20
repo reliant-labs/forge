@@ -544,21 +544,6 @@ func writeMock(cf *ContractFile, dir string, opts Options) error {
 	return os.WriteFile(mockPath, formatted, 0644)
 }
 
-// hasAnyMethod reports whether any interface in the set has at least one method.
-//
-// Retained even after the middleware/tracing/metrics wrappers were
-// removed — generator_test.go uses it as a helper, and the mock
-// template's "import contractkit only when at least one interface"
-// gate would be re-added if we ever bring back the recorder embed.
-func hasAnyMethod(ifaces []InterfaceDef) bool {
-	for _, iface := range ifaces {
-		if len(iface.Methods) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 // addImport adds an import path if not already present.
 func addImport(imports *[]string, path string) {
 	for _, p := range *imports {

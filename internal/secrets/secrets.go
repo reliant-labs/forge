@@ -39,7 +39,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // Provider resolves declared secret references to values for one env.
@@ -75,7 +75,7 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 	case "external":
 		return externalProvider{}, nil
 	case "dotenv":
-		values, err := hostlaunch.ReadDotEnvFile(cfg.Path)
+		values, err := envutil.ParseDotEnv(cfg.Path)
 		if err != nil {
 			// A missing file is non-fatal: an empty dotenv provider so
 			// ValidateDeclaredRefs (not load) reports the missing keys

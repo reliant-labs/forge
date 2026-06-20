@@ -204,57 +204,6 @@ func TestExpand_UserEnvAvailable(t *testing.T) {
 	}
 }
 
-// TestMergeEnv_ExtraWins pins the env-overlay precedence the runner
-// uses: extra (BuildEnv) wins on key conflict over the inherited
-// os.Environ. Mirrors deploytarget.mergeEnv, kept as a duplicate
-// because the two packages run in different dispatcher tables and
-// importing one from the other would couple build/deploy concerns
-// the codebase deliberately keeps separate.
-func TestMergeEnv_ExtraWins(t *testing.T) {
-	base := []string{"PATH=/usr/bin", "FOO=base-foo", "BAR=base-bar"}
-	extra := map[string]string{
-		"FOO":     "extra-foo",
-		"NEW_KEY": "extra-new",
-	}
-	merged := mergeEnv(base, extra)
-	got := map[string]string{}
-	for _, kv := range merged {
-		eq := strings.IndexByte(kv, '=')
-		if eq <= 0 {
-			continue
-		}
-		got[kv[:eq]] = kv[eq+1:]
-	}
-	if got["FOO"] != "extra-foo" {
-		t.Errorf("FOO: want extra-foo (overlay wins), got %q", got["FOO"])
-	}
-	if got["BAR"] != "base-bar" {
-		t.Errorf("BAR: want base-bar (unchanged), got %q", got["BAR"])
-	}
-	if got["NEW_KEY"] != "extra-new" {
-		t.Errorf("NEW_KEY: want extra-new, got %q", got["NEW_KEY"])
-	}
-	if got["PATH"] != "/usr/bin" {
-		t.Errorf("PATH: want /usr/bin (unchanged), got %q", got["PATH"])
-	}
-}
-
-// TestMergeEnv_EmptyExtra confirms the no-overlay path returns a
-// fresh slice (not the base aliased) so callers can mutate the result
-// without surprising other code holding the base slice.
-func TestMergeEnv_EmptyExtra(t *testing.T) {
-	base := []string{"PATH=/usr/bin", "FOO=bar"}
-	merged := mergeEnv(base, nil)
-	if len(merged) != 2 {
-		t.Fatalf("len: want 2, got %d", len(merged))
-	}
-	// Mutating the result must not touch the base.
-	merged[0] = "PATH=/tmp"
-	if base[0] != "PATH=/usr/bin" {
-		t.Errorf("base was aliased: %s", base[0])
-	}
-}
-
 // TestBuild_ExpandsAndExecs pins the happy path: tokens substitute,
 // BuildEnv flows through to the runner env overlay, the final command
 // is wrapped with `cd <abs> && <expanded>` when BuildCwd is set, and

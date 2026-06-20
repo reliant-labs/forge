@@ -35,6 +35,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/envutil"
 )
 
 // Defaults pinned by the runner dispatch. Exported so tests and CLI
@@ -54,7 +56,7 @@ const (
 // RunnerSpec is the dispatch input. The Runner/AirConfig/DelvePort
 // fields mirror the KCL HostDeploy block; env composition (env_vars
 // from KCL + an optional gitignored secrets dotenv) is layered by the
-// caller via [LoadSecretsFile] and [MergeEnv] so this package stays
+// caller via [LoadSecretsFile] and [LayerHostEnv] so this package stays
 // vendor-neutral about how config gets sourced.
 //
 // An empty Runner falls through to the legacy go-run shape so projects
@@ -195,7 +197,7 @@ func LoadSecretsFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil
 	}
-	out, err := ReadDotEnvFile(path)
+	out, err := envutil.ParseDotEnv(path)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +243,7 @@ func LayerHostEnv(base []string, projectConfig, secrets, envVars map[string]stri
 	for k, v := range envVars {
 		extra[k] = v
 	}
-	return MergeEnv(extra, base)
+	return envutil.MergeBaseWins(base, extra)
 }
 
 // PIDPath returns the canonical per-service PID file path:
@@ -260,64 +262,4 @@ func PIDPath(name string) (string, error) {
 		return "", fmt.Errorf("resolve home dir: %w", err)
 	}
 	return filepath.Join(home, ".cache", "forge", "run", name+".pid"), nil
-}
-
-// ReadDotEnvFile parses a .env file (KEY=VALUE per line, # comments,
-// trailing whitespace trimmed) into a map. Quoted values
-// ("VALUE", 'VALUE') have their outer quotes stripped. Missing file
-// returns os.ErrNotExist so callers can treat absence as non-fatal.
-//
-// Intentionally minimal — we don't expand $VARS or `${VAR:-default}`
-// shell features. Projects needing those should use direnv or a wrapper
-// script; this helper is just enough for the common
-// "DATABASE_URL=postgres://..." case the host-mode loop needs.
-func ReadDotEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// strip an optional leading "export ".
-		line = strings.TrimPrefix(line, "export ")
-		i := strings.IndexByte(line, '=')
-		if i <= 0 {
-			continue
-		}
-		k := strings.TrimSpace(line[:i])
-		v := strings.TrimSpace(line[i+1:])
-		// Strip a single layer of matching quotes, if present.
-		if len(v) >= 2 {
-			if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
-				v = v[1 : len(v)-1]
-			}
-		}
-		out[k] = v
-	}
-	return out, nil
-}
-
-// MergeEnv layers per-env config onto a base os.Environ() slice. Keys
-// already present in base are kept (so a developer's shell override
-// always wins). Returns a fresh slice safe to assign to cmd.Env.
-func MergeEnv(extra map[string]string, base []string) []string {
-	have := map[string]struct{}{}
-	for _, kv := range base {
-		if i := strings.IndexByte(kv, '='); i > 0 {
-			have[kv[:i]] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(base)+len(extra))
-	out = append(out, base...)
-	for k, v := range extra {
-		if _, exists := have[k]; exists {
-			continue
-		}
-		out = append(out, k+"="+v)
-	}
-	return out
 }

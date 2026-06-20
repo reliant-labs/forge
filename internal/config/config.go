@@ -926,12 +926,36 @@ type FeaturesConfig struct {
 	// deployments to earn a backwards-compatibility promise.
 	Experimental ExperimentalConfig `yaml:"experimental,omitempty"`
 
-	// derived carries the shape-derived default per stable feature,
-	// resolved by the loader (ApplyDerivedDefaults) from kind / database /
-	// frontends. nil (zero-value FeaturesConfig, hand-constructed in
-	// tests) falls back to the historical "absent = enabled" semantics.
-	// Unexported + yaml-invisible: never serialized, never user-set.
-	derived *derivedFeatureDefaults `yaml:"-"`
+	// derived carries the shape-derived default for every stable feature,
+	// resolved by the loader (ApplyDerivedDefaults via DeriveFeatureDefaults)
+	// from kind / database / frontends. nil (zero-value FeaturesConfig,
+	// hand-constructed in tests) falls back to the historical "absent =
+	// enabled" semantics. Unexported + yaml-invisible: never serialized,
+	// never user-set.
+	derived map[FeatureName]bool `yaml:"-"`
+}
+
+// stablePtrs is the single feature registry: it maps every stable
+// FeatureName to the address of its explicit *bool override field. The
+// resolver, the write-side normalizer, and EffectiveFeatures all drive
+// off this one map, so adding a stable feature is a single edit here (plus
+// the field, the FeatureName constant, and its DeriveFeatureDefaults rule)
+// instead of a transcription scattered across parallel switch arms.
+func (f *FeaturesConfig) stablePtrs() map[FeatureName]**bool {
+	return map[FeatureName]**bool{
+		FeatureORM:           &f.ORM,
+		FeatureCodegen:       &f.Codegen,
+		FeatureMigrations:    &f.Migrations,
+		FeatureCI:            &f.CI,
+		FeatureBuild:         &f.Build,
+		FeatureContracts:     &f.Contracts,
+		FeatureDocs:          &f.Docs,
+		FeatureFrontend:      &f.Frontend,
+		FeatureObservability: &f.Observability,
+		FeatureHotReload:     &f.HotReload,
+		FeaturePacks:         &f.Packs,
+		FeatureDeploy:        &f.Deploy,
+	}
 }
 
 // IsZero reports whether the features block carries no explicit user
@@ -982,18 +1006,19 @@ type ExperimentalConfig struct {
 	StrictWiring   bool `yaml:"strict_wiring,omitempty"`
 }
 
-// featureEnabled resolves a stable feature flag: an explicit value wins;
+// resolve resolves a stable feature flag by name: an explicit value wins;
 // absent (nil) resolves to the shape-derived default when the loader
 // attached one, else to the historical "absent = enabled" default (zero
 // value FeaturesConfig, hand-constructed in tests, no forge.yaml context).
-func (f FeaturesConfig) featureEnabled(b *bool, pick func(*derivedFeatureDefaults) bool) bool {
-	if b != nil {
-		return *b
+// All public XxxEnabled() accessors are thin wrappers over this.
+func (f FeaturesConfig) resolve(name FeatureName) bool {
+	if ptr := *f.stablePtrs()[name]; ptr != nil {
+		return *ptr
 	}
 	if f.derived == nil {
 		return true
 	}
-	return pick(f.derived)
+	return f.derived[name]
 }
 
 // EffectiveKind returns the project kind, defaulting to "service".
@@ -1036,72 +1061,48 @@ func (c ProjectConfig) IsLibraryKind() bool { return c.EffectiveKind() == Projec
 func (c ProjectConfig) IsServiceKind() bool { return c.EffectiveKind() == ProjectKindService }
 
 // ORMEnabled reports whether the ORM feature is on (default: on).
-func (f FeaturesConfig) ORMEnabled() bool {
-	return f.featureEnabled(f.ORM, func(d *derivedFeatureDefaults) bool { return d.orm })
-}
+func (f FeaturesConfig) ORMEnabled() bool { return f.resolve(FeatureORM) }
 
 // CodegenEnabled reports whether codegen is on (default: on).
-func (f FeaturesConfig) CodegenEnabled() bool {
-	return f.featureEnabled(f.Codegen, func(d *derivedFeatureDefaults) bool { return d.codegen })
-}
+func (f FeaturesConfig) CodegenEnabled() bool { return f.resolve(FeatureCodegen) }
 
 // MigrationsEnabled reports whether the migrations feature is on (default: on).
-func (f FeaturesConfig) MigrationsEnabled() bool {
-	return f.featureEnabled(f.Migrations, func(d *derivedFeatureDefaults) bool { return d.migrations })
-}
+func (f FeaturesConfig) MigrationsEnabled() bool { return f.resolve(FeatureMigrations) }
 
 // CIEnabled reports whether the CI feature is on (default: on).
-func (f FeaturesConfig) CIEnabled() bool {
-	return f.featureEnabled(f.CI, func(d *derivedFeatureDefaults) bool { return d.ci })
-}
+func (f FeaturesConfig) CIEnabled() bool { return f.resolve(FeatureCI) }
 
 // DeployEnabled reports whether the deploy feature is on. Stable flag:
 // absent derives from project shape (deploy ⇔ kind == service — see
 // DeriveFeatureDefaults), explicit `features.deploy: true|false` wins.
 // Service scaffolds ship a deploy/kcl tree, so deploy is ON for the
 // canonical service shape; cli/library kinds derive OFF.
-func (f FeaturesConfig) DeployEnabled() bool {
-	return f.featureEnabled(f.Deploy, func(d *derivedFeatureDefaults) bool { return d.deploy })
-}
+func (f FeaturesConfig) DeployEnabled() bool { return f.resolve(FeatureDeploy) }
 
 // ContractsEnabled reports whether contract enforcement is on (default: on).
-func (f FeaturesConfig) ContractsEnabled() bool {
-	return f.featureEnabled(f.Contracts, func(d *derivedFeatureDefaults) bool { return d.contracts })
-}
+func (f FeaturesConfig) ContractsEnabled() bool { return f.resolve(FeatureContracts) }
 
 // DocsEnabled reports whether the docs feature is on (default: on).
-func (f FeaturesConfig) DocsEnabled() bool {
-	return f.featureEnabled(f.Docs, func(d *derivedFeatureDefaults) bool { return d.docs })
-}
+func (f FeaturesConfig) DocsEnabled() bool { return f.resolve(FeatureDocs) }
 
 // FrontendEnabled reports whether the frontend feature is on (default: on).
-func (f FeaturesConfig) FrontendEnabled() bool {
-	return f.featureEnabled(f.Frontend, func(d *derivedFeatureDefaults) bool { return d.frontend })
-}
+func (f FeaturesConfig) FrontendEnabled() bool { return f.resolve(FeatureFrontend) }
 
 // ObservabilityEnabled reports whether the observability feature is on (default: on).
-func (f FeaturesConfig) ObservabilityEnabled() bool {
-	return f.featureEnabled(f.Observability, func(d *derivedFeatureDefaults) bool { return d.observability })
-}
+func (f FeaturesConfig) ObservabilityEnabled() bool { return f.resolve(FeatureObservability) }
 
 // HotReloadEnabled reports whether the hot-reload feature is on (default: on).
-func (f FeaturesConfig) HotReloadEnabled() bool {
-	return f.featureEnabled(f.HotReload, func(d *derivedFeatureDefaults) bool { return d.hotReload })
-}
+func (f FeaturesConfig) HotReloadEnabled() bool { return f.resolve(FeatureHotReload) }
 
 // BuildEnabled reports whether `forge build` is enabled (default: on).
 // Direct `forge build` invocations error when off; orchestrators like
 // `forge up` log a skip line and continue.
-func (f FeaturesConfig) BuildEnabled() bool {
-	return f.featureEnabled(f.Build, func(d *derivedFeatureDefaults) bool { return d.build })
-}
+func (f FeaturesConfig) BuildEnabled() bool { return f.resolve(FeatureBuild) }
 
 // PacksEnabled reports whether the pack subsystem is enabled (default: on).
 // Disables `forge pack list/info/install/remove` and skips the pack
 // generate-hooks step in the codegen pipeline.
-func (f FeaturesConfig) PacksEnabled() bool {
-	return f.featureEnabled(f.Packs, func(d *derivedFeatureDefaults) bool { return d.packs })
-}
+func (f FeaturesConfig) PacksEnabled() bool { return f.resolve(FeaturePacks) }
 
 // IngressEnabled reports whether Gateway API ingress is wired
 // (default: OFF — opt-in under `features.experimental.ingress: true`).

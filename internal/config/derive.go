@@ -25,25 +25,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// derivedFeatureDefaults carries the resolved shape-derived default for
-// every stable feature. Computed once at load time by the config loader
-// and attached to FeaturesConfig (unexported field); consulted by the
-// *Enabled() accessors when the corresponding flag is absent.
-type derivedFeatureDefaults struct {
-	orm           bool
-	codegen       bool
-	migrations    bool
-	ci            bool
-	build         bool
-	contracts     bool
-	docs          bool
-	frontend      bool
-	observability bool
-	hotReload     bool
-	packs         bool
-	deploy        bool
-}
-
 // DeriveFeatureDefaults computes the default enabled/disabled state of
 // every stable feature from the project shape. The rules:
 //
@@ -81,24 +62,6 @@ type derivedFeatureDefaults struct {
 // strict_wiring) and diagnostics are NOT derived — they stay default-off
 // opt-ins regardless of shape.
 func DeriveFeatureDefaults(c *ProjectConfig) map[FeatureName]bool {
-	d := deriveFeatureDefaults(c)
-	return map[FeatureName]bool{
-		FeatureORM:           d.orm,
-		FeatureCodegen:       d.codegen,
-		FeatureMigrations:    d.migrations,
-		FeatureCI:            d.ci,
-		FeatureBuild:         d.build,
-		FeatureContracts:     d.contracts,
-		FeatureDocs:          d.docs,
-		FeatureFrontend:      d.frontend,
-		FeatureObservability: d.observability,
-		FeatureHotReload:     d.hotReload,
-		FeaturePacks:         d.packs,
-		FeatureDeploy:        d.deploy,
-	}
-}
-
-func deriveFeatureDefaults(c *ProjectConfig) *derivedFeatureDefaults {
 	isService := c.IsServiceKind()
 	isLibrary := c.IsLibraryKind()
 	hasDB := isService && c.Database.Driver != "" && c.Database.Driver != "none"
@@ -117,19 +80,19 @@ func deriveFeatureDefaults(c *ProjectConfig) *derivedFeatureDefaults {
 		codegenEffective = *c.Features.Codegen
 	}
 	frontend := len(c.Frontends) > 0 && codegenEffective
-	return &derivedFeatureDefaults{
-		orm:           hasDB && codegenEffective,
-		codegen:       codegen,
-		migrations:    hasDB && codegenEffective,
-		ci:            !isLibrary,
-		build:         !isLibrary,
-		contracts:     true,
-		docs:          true,
-		frontend:      frontend,
-		observability: isService,
-		hotReload:     isService,
-		packs:         isService,
-		deploy:        isService,
+	return map[FeatureName]bool{
+		FeatureORM:           hasDB && codegenEffective,
+		FeatureCodegen:       codegen,
+		FeatureMigrations:    hasDB && codegenEffective,
+		FeatureCI:            !isLibrary,
+		FeatureBuild:         !isLibrary,
+		FeatureContracts:     true,
+		FeatureDocs:          true,
+		FeatureFrontend:      frontend,
+		FeatureObservability: isService,
+		FeatureHotReload:     isService,
+		FeaturePacks:         isService,
+		FeatureDeploy:        isService,
 	}
 }
 
@@ -257,7 +220,7 @@ func ApplyDerivedDefaults(c *ProjectConfig) {
 	}
 	// Features derivation runs AFTER the database fill — the orm /
 	// migrations rules read the effective driver.
-	c.Features.derived = deriveFeatureDefaults(c)
+	c.Features.derived = DeriveFeatureDefaults(c)
 }
 
 // NormalizeForWrite returns a copy of c with every derivable value that
@@ -313,25 +276,20 @@ func NormalizeForWrite(c *ProjectConfig) *ProjectConfig {
 	return &out
 }
 
-func normalizeFeatures(f FeaturesConfig, d *derivedFeatureDefaults) FeaturesConfig {
+func normalizeFeatures(f FeaturesConfig, d map[FeatureName]bool) FeaturesConfig {
 	drop := func(b *bool, derived bool) *bool {
 		if b != nil && *b == derived {
 			return nil
 		}
 		return b
 	}
-	f.ORM = drop(f.ORM, d.orm)
-	f.Codegen = drop(f.Codegen, d.codegen)
-	f.Migrations = drop(f.Migrations, d.migrations)
-	f.CI = drop(f.CI, d.ci)
-	f.Build = drop(f.Build, d.build)
-	f.Contracts = drop(f.Contracts, d.contracts)
-	f.Docs = drop(f.Docs, d.docs)
-	f.Frontend = drop(f.Frontend, d.frontend)
-	f.Observability = drop(f.Observability, d.observability)
-	f.HotReload = drop(f.HotReload, d.hotReload)
-	f.Packs = drop(f.Packs, d.packs)
-	f.Deploy = drop(f.Deploy, d.deploy)
+	// Drop every explicit stable flag that equals its derived default by
+	// rewriting through the FeatureName→*bool field map — same single
+	// registry the resolver reads, so adding a feature never needs a
+	// matching line here.
+	for name, ptr := range f.stablePtrs() {
+		*ptr = drop(*ptr, d[name])
+	}
 	// Diagnostics derives to off; drop an explicit false.
 	f.Diagnostics = drop(f.Diagnostics, false)
 	f.derived = d

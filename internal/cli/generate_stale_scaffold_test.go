@@ -19,7 +19,7 @@ func writeStaleScaffoldProject(t *testing.T, scaffoldTest, pbGo string) string {
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "go.mod"), "module example.com/myapp\n\ngo 1.22\n")
 	if scaffoldTest != "" {
-		mustWriteFile(t, filepath.Join(dir, "handlers", "item", "handlers_scaffold_test.go"), scaffoldTest)
+		mustWriteFile(t, filepath.Join(dir, "internal", "handlers", "item", "handlers_scaffold_test.go"), scaffoldTest)
 	}
 	if pbGo != "" {
 		mustWriteFile(t, filepath.Join(dir, "gen", "services", "item", "v1", "item.pb.go"), pbGo)
@@ -63,7 +63,7 @@ type CreateBookmarkResponse struct{}
 		t.Fatalf("detectStaleScaffoldTests = %d findings, want 1: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	wantPath := filepath.Join("handlers", "item", "handlers_scaffold_test.go")
+	wantPath := filepath.Join("internal", "handlers", "item", "handlers_scaffold_test.go")
 	if f.RelPath != wantPath {
 		t.Errorf("RelPath = %q, want %q", f.RelPath, wantPath)
 	}

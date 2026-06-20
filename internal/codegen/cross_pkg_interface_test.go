@@ -21,7 +21,7 @@ import (
 //
 //	<root>/go.mod                     (module example.com/proj)
 //	<root>/internal/repo/repo.go      (interface declaration the handler imports)
-//	<root>/handlers/billing/service.go (Deps struct referencing repo.Repository)
+//	<root>/internal/handlers/billing/service.go (Deps struct referencing repo.Repository)
 //
 // Returns the handler dir so callers can pass it straight to the
 // auto-stub helpers.
@@ -54,7 +54,7 @@ type User struct {
 	Name string
 }
 `,
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import (
 	"log/slog"
@@ -83,7 +83,7 @@ type Deps struct {
 		}
 	}
 
-	return filepath.Join(root, "handlers/billing")
+	return filepath.Join(root, "internal", "handlers", "billing")
 }
 
 // TestResolveCrossPkgInterface_HappyPath verifies that a Deps field
@@ -208,7 +208,7 @@ type User struct {
 	ID string
 }
 `,
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import "example.com/proj/internal/repo"
 
@@ -238,7 +238,7 @@ func TestResolveCrossPkgInterface_UnknownAlias(t *testing.T) {
 // in the module), the resolver returns ok=false rather than crashing.
 func TestResolveCrossPkgInterface_UnloadablePackage(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import broken "example.com/proj/internal/does_not_exist"
 
@@ -303,7 +303,7 @@ func TestComputeAutoStubs_CrossPackage(t *testing.T) {
 func TestComputeAutoStubs_LocalInterfacePreserved(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "", // not used in this variant
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import "log/slog"
 
@@ -341,7 +341,7 @@ type Deps struct {
 }
 
 // TestGenerateBootstrapTesting_CrossPackageStub is the end-to-end
-// validation: lay down a tiny module with handlers/billing/service.go
+// validation: lay down a tiny module with internal/handlers/billing/service.go
 // pointing at an interface in internal/repo, run GenerateBootstrapTesting
 // against that project root, and inspect the resulting pkg/app/testing.go.
 //
@@ -351,7 +351,7 @@ type Deps struct {
 //   - the stub struct itself + at least one method are emitted
 func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 	handlerDir := writeTestModule(t, nil)
-	projectRoot := filepath.Dir(filepath.Dir(handlerDir)) // <root>/handlers/billing -> <root>
+	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(handlerDir))) // <root>/internal/handlers/billing -> <root>
 
 	services := []ServiceDef{
 		{Name: "BillingService", ModulePath: "example.com/proj"},
@@ -426,7 +426,7 @@ func TestGenerateBootstrapTesting_CrossPackageStub(t *testing.T) {
 func TestGenerateBootstrapTesting_UnresolvedSelectorTODO(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "",
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import broken "example.com/proj/internal/does_not_exist"
 
@@ -435,7 +435,7 @@ type Deps struct {
 }
 `,
 	})
-	projectRoot := filepath.Dir(filepath.Dir(handlerDir))
+	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(handlerDir)))
 
 	services := []ServiceDef{
 		{Name: "BillingService", ModulePath: "example.com/proj"},
@@ -465,7 +465,7 @@ type Deps struct {
 func TestComputeAutoStubs_UnresolvedSelector(t *testing.T) {
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "", // remove the would-be target package
-		"handlers/billing/service.go": `package billing
+		"internal/handlers/billing/service.go": `package billing
 
 import broken "example.com/proj/internal/does_not_exist"
 

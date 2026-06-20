@@ -31,8 +31,8 @@ func TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir(t *testing.T) 
 
 	// Snake_case handler dir + proto path.
 	for _, want := range []string{
-		"handlers/admin_server/service.go",
-		"handlers/admin_server/authorizer.go",
+		"internal/handlers/admin_server/service.go",
+		"internal/handlers/admin_server/authorizer.go",
 		"proto/services/admin_server/v1/admin_server.proto",
 	} {
 		if _, err := os.Stat(filepath.Join(root, want)); err != nil {
@@ -41,12 +41,12 @@ func TestGenerateServiceFilesMultiWordKebabName_ScaffoldsSnakeDir(t *testing.T) 
 	}
 
 	// NOT the legacy compact dir.
-	if _, err := os.Stat(filepath.Join(root, "handlers", "adminserver")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "adminserver")); !os.IsNotExist(err) {
 		t.Errorf("legacy compact dir handlers/adminserver/ must NOT be created (got err=%v)", err)
 	}
 
 	// service.go's `package` decl must match the snake dir leaf.
-	svc, err := os.ReadFile(filepath.Join(root, "handlers", "admin_server", "service.go"))
+	svc, err := os.ReadFile(filepath.Join(root, "internal", "handlers", "admin_server", "service.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +64,8 @@ func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 
 	// Verify all expected files exist
 	expectedFiles := []string{
-		"handlers/orders/service.go",
-		"handlers/orders/authorizer.go",
+		"internal/handlers/orders/service.go",
+		"internal/handlers/orders/authorizer.go",
 		"proto/services/orders/v1/orders.proto",
 	}
 	for _, f := range expectedFiles {
@@ -76,7 +76,7 @@ func TestGenerateServiceFilesCreatesExpectedFiles(t *testing.T) {
 	}
 
 	// handlers.go should NOT exist at scaffold (zero RPC methods).
-	if _, err := os.Stat(filepath.Join(root, "handlers", "orders", "handlers.go")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "orders", "handlers.go")); !os.IsNotExist(err) {
 		t.Errorf("handlers.go should not be emitted at scaffold with zero RPC methods (got err=%v)", err)
 	}
 }
@@ -88,7 +88,7 @@ func TestGenerateServiceFilesServiceGoUsesTemplates(t *testing.T) {
 		t.Fatalf("GenerateServiceFiles() error = %v", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(root, "handlers", "orders", "service.go"))
+	content, err := os.ReadFile(filepath.Join(root, "internal", "handlers", "orders", "service.go"))
 	if err != nil {
 		t.Fatalf("ReadFile error = %v", err)
 	}
@@ -147,9 +147,9 @@ func TestGenerateServiceFilesResumeSkipsExisting(t *testing.T) {
 	// would never produce. If --resume erroneously rewrites them, this
 	// content disappears.
 	preExisting := map[string]string{
-		"handlers/orders/service.go":               "// user edits to service.go\npackage orders\n",
-		"handlers/orders/authorizer.go":            "// user edits to authorizer.go\npackage orders\n",
-		"handlers/orders/handlers_scaffold_test.go": "// user edits to scaffold tests\npackage orders\n",
+		"internal/handlers/orders/service.go":               "// user edits to service.go\npackage orders\n",
+		"internal/handlers/orders/authorizer.go":            "// user edits to authorizer.go\npackage orders\n",
+		"internal/handlers/orders/handlers_scaffold_test.go": "// user edits to scaffold tests\npackage orders\n",
 		"proto/services/orders/v1/orders.proto":    "syntax = \"proto3\";\n// user-edited proto\n",
 	}
 	for rel, content := range preExisting {
@@ -193,9 +193,9 @@ func TestGenerateServiceFilesForceOverwrites(t *testing.T) {
 
 	// Pre-seed with sentinel content so we can detect overwrites.
 	preExisting := []string{
-		"handlers/orders/service.go",
-		"handlers/orders/authorizer.go",
-		"handlers/orders/handlers_scaffold_test.go",
+		"internal/handlers/orders/service.go",
+		"internal/handlers/orders/authorizer.go",
+		"internal/handlers/orders/handlers_scaffold_test.go",
 		"proto/services/orders/v1/orders.proto",
 	}
 	for _, rel := range preExisting {

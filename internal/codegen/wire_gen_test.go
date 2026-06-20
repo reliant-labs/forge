@@ -222,7 +222,7 @@ func TestWireExpressionFor_AppFieldByName(t *testing.T) {
 // test pins the structural pieces that bootstrap.go depends on.
 func TestGenerateWireGen_EmitsPerServiceFn(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ type AuditSink interface{}
 // trigger both — the marker is opt-in and silence is its only effect.
 func TestGenerateWireGen_OptionalDepSilent(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ type AppExtras struct {
 		t.Fatal(err)
 	}
 
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -599,7 +599,7 @@ type AppExtras struct {
 	if err := os.WriteFile(filepath.Join(appDir, "app_extras.go"), []byte(appExtras), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +712,7 @@ func TestSnakeCanonicalNoCompactDupes(t *testing.T) {
 		// Scaffold the canonical snake handler dir with a minimal
 		// service.go that declares the bare Deps trio — wire_gen.go
 		// needs this to emit a wireXxxDeps entry for the service.
-		handlerDir := filepath.Join(projectDir, "handlers", c.wantSnakeDir)
+		handlerDir := filepath.Join(projectDir, "internal", "handlers", c.wantSnakeDir)
 		if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -757,7 +757,7 @@ type Authorizer interface{ Check() }
 	// canonical snake form. This is the on-disk footprint of the bug
 	// class — `handlers/adminserver/` next to `handlers/admin_server/`.
 	for _, c := range cases {
-		compactPath := filepath.Join(projectDir, "handlers", c.bannedCompactDir)
+		compactPath := filepath.Join(projectDir, "internal", "handlers", c.bannedCompactDir)
 		if _, err := os.Stat(compactPath); err == nil {
 			t.Errorf("compact-form handler dir leaked: %s exists alongside %s — snake-canonical contract broken",
 				compactPath, c.wantSnakeDir)
@@ -802,7 +802,7 @@ type Authorizer interface{ Check() }
 	// the cp-forge bug also broke (compact-form authorizer.go alongside
 	// snake-form handlers.go → two packages, one dir → won't compile).
 	for _, c := range cases {
-		authPath := filepath.Join(projectDir, "handlers", c.wantSnakeDir, "authorizer_gen.go")
+		authPath := filepath.Join(projectDir, "internal", "handlers", c.wantSnakeDir, "authorizer_gen.go")
 		authData, err := os.ReadFile(authPath)
 		if err != nil {
 			t.Errorf("authorizer_gen.go not emitted at %s: %v", authPath, err)
@@ -825,7 +825,7 @@ type Authorizer interface{ Check() }
 	// sibling compact dir AND left the snake dir's user file orphaned;
 	// the dangling file would compile-error against a missing package.
 	for _, c := range cases {
-		userFile := filepath.Join(projectDir, "handlers", c.wantSnakeDir, "authorizer.go")
+		userFile := filepath.Join(projectDir, "internal", "handlers", c.wantSnakeDir, "authorizer.go")
 		if _, err := os.Stat(userFile); err != nil {
 			t.Errorf("user-owned authorizer.go in snake dir was lost: %v", err)
 		}

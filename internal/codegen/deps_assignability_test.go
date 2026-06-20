@@ -278,10 +278,10 @@ func TestDepsAssignability_WorkerLocalInterfaceSharedUniverse(t *testing.T) {
 
 go 1.23
 `)
-	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
+	mustWrite(t, filepath.Join(dir, "internal", "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
 	mustWrite(t, filepath.Join(dir, "pkg", "app", "app.go"), `package app
 
-import "example.com/proj/workers/settlement_processor"
+import "example.com/proj/internal/workers/settlement_processor"
 
 type AppExtras struct {
 	Unsettled settlement_processor.UnsettledSource
@@ -293,7 +293,7 @@ type App struct {
 `)
 
 	m := NewDepsAssignabilityMatcher(dir)
-	kind := m.Match("workers", "settlement_processor", "Unsettled",
+	kind := m.Match("internal/workers", "settlement_processor", "Unsettled",
 		"UnsettledSource", "settlement_processor.UnsettledSource", true)
 	if kind != MatchAssignable {
 		t.Fatalf("Match = %v, want MatchAssignable (same named type, one universe)", kind)
@@ -311,7 +311,7 @@ func TestDepsAssignability_CrossPackageAdapterImplementsWorkerInterface(t *testi
 
 go 1.23
 `)
-	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
+	mustWrite(t, filepath.Join(dir, "internal", "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
 	mustWrite(t, filepath.Join(dir, "internal", "unsettledadapter", "adapter.go"), `package unsettledadapter
 
 import "context"
@@ -335,7 +335,7 @@ type App struct {
 `)
 
 	m := NewDepsAssignabilityMatcher(dir)
-	kind := m.Match("workers", "settlement_processor", "Unsettled",
+	kind := m.Match("internal/workers", "settlement_processor", "Unsettled",
 		"UnsettledSource", "*unsettledadapter.Adapter", true)
 	if kind != MatchAssignable {
 		t.Fatalf("Match = %v, want MatchAssignable (adapter implements worker-local interface)", kind)
@@ -355,7 +355,7 @@ func TestGenerateWireGen_WorkerLocalInterfaceWiresAndIsDeterministic(t *testing.
 
 go 1.23
 `)
-	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
+	mustWrite(t, filepath.Join(dir, "internal", "workers", "settlement_processor", "contract.go"), settlementWorkerSrc)
 	mustWrite(t, filepath.Join(dir, "internal", "unsettledadapter", "adapter.go"), `package unsettledadapter
 
 import "context"
@@ -446,7 +446,7 @@ func TestGenerateWireGen_OptionalProvenMismatchStaysLoud(t *testing.T) {
 
 go 1.23
 `)
-	mustWrite(t, filepath.Join(dir, "workers", "settlement_processor", "contract.go"), `package settlement_processor
+	mustWrite(t, filepath.Join(dir, "internal", "workers", "settlement_processor", "contract.go"), `package settlement_processor
 
 type UnsettledSource interface {
 	Pending() []string

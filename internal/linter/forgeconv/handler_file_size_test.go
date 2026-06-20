@@ -122,7 +122,7 @@ func TestLintHandlerFileSize_NoHandlersDir(t *testing.T) {
 // non-comment lines.
 func TestCountGoSourceLOC_StripsCommentsAndBlanks(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join("testdata", "handler_file_size", "mostly_comments", "handlers", "billing", "handlers.go")
+	path := filepath.Join("testdata", "handler_file_size", "mostly_comments", "internal", "handlers", "billing", "handlers.go")
 	loc, err := countGoSourceLOC(path)
 	if err != nil {
 		t.Fatalf("countGoSourceLOC: %v", err)

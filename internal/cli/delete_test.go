@@ -27,7 +27,7 @@ func withDeleteProjectRoot(t *testing.T, svc string) string {
 		t.Fatal(err)
 	}
 	// Handler scaffold dir with a file inside.
-	hdir := filepath.Join(root, "handlers", svc)
+	hdir := filepath.Join(root, "internal", "handlers", svc)
 	if err := os.MkdirAll(hdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestDeleteService_RemovesDirAndTombstones(t *testing.T) {
 	}
 
 	// handler dir removed.
-	if _, err := os.Stat(filepath.Join(root, "handlers", "reporting")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "reporting")); !os.IsNotExist(err) {
 		t.Errorf("handlers/reporting should be removed")
 	}
 
@@ -111,7 +111,7 @@ func TestDeleteService_DryRunChangesNothing(t *testing.T) {
 		t.Fatalf("runDeleteService dry-run: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(root, "handlers", "reporting")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "reporting")); err != nil {
 		t.Errorf("dry-run must NOT remove handlers/reporting: %v", err)
 	}
 	data, _ := os.ReadFile(filepath.Join(root, config.ComponentsFileName))
@@ -160,7 +160,7 @@ func TestDeleteService_ConfirmAbort(t *testing.T) {
 	if err := runDeleteService("reporting", false, false, true, strings.NewReader("n\n")); err != nil {
 		t.Fatalf("runDeleteService: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "handlers", "reporting")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "reporting")); err != nil {
 		t.Errorf("abort must NOT remove handlers/reporting: %v", err)
 	}
 }

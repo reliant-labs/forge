@@ -248,8 +248,8 @@ module_path: github.com/example/demo
 		t.Fatalf("write forge.yaml: %v", err)
 	}
 	writeComponentsJSON(t, dir,
-		config.ComponentConfig{Name: "api", Kind: "server", Path: "handlers/api"},
-		config.ComponentConfig{Name: "project", Kind: "server", Path: "handlers/project"},
+		config.ComponentConfig{Name: "api", Kind: "server", Path: "internal/handlers/api"},
+		config.ComponentConfig{Name: "project", Kind: "server", Path: "internal/handlers/project"},
 	)
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
 		t.Fatalf("mkdir proto/services: %v", err)
@@ -341,13 +341,13 @@ module_path: github.com/example/demo
 		t.Fatalf("write forge.yaml: %v", err)
 	}
 	writeComponentsJSON(t, dir,
-		config.ComponentConfig{Name: "project", Kind: "server", Path: "handlers/project"},
-		config.ComponentConfig{Name: "ledger", Kind: "server", Path: "handlers/ledger"},
+		config.ComponentConfig{Name: "project", Kind: "server", Path: "internal/handlers/project"},
+		config.ComponentConfig{Name: "ledger", Kind: "server", Path: "internal/handlers/ledger"},
 	)
 	// Pre-existing scaffolds: the dirs need a parsable package clause
 	// for the disk-first resolver to report FromDisk.
 	for _, svc := range []string{"project", "ledger"} {
-		handlerDir := filepath.Join(dir, "handlers", svc)
+		handlerDir := filepath.Join(dir, "internal", "handlers", svc)
 		if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 			t.Fatalf("mkdir handlers/%s: %v", svc, err)
 		}
@@ -372,7 +372,7 @@ module_path: github.com/example/demo
 	}
 
 	tomb := byService["project"]
-	if tomb.State != "tombstoned" || tomb.Dir != "handlers/project" {
+	if tomb.State != "tombstoned" || tomb.Dir != "internal/handlers/project" {
 		t.Errorf("project finding = %+v", tomb)
 	}
 	if !strings.Contains(tomb.Message, "--force-cleanup") || !strings.Contains(tomb.Message, serviceRegistryRelPath) {
@@ -401,7 +401,7 @@ module_path: github.com/example/demo
 	}
 
 	// Retired steady state: tombstoned dir gone → its finding clears.
-	if err := os.RemoveAll(filepath.Join(dir, "handlers", "project")); err != nil {
+	if err := os.RemoveAll(filepath.Join(dir, "internal", "handlers", "project")); err != nil {
 		t.Fatalf("remove handler dir: %v", err)
 	}
 	after := unregisteredServiceFindings(cfg, dir)
@@ -431,7 +431,7 @@ func TestCleanupStale_TombstonedHandlerFilesBecomeCandidates(t *testing.T) {
 	defer checksums.ResetSkipWrite()
 
 	dir := t.TempDir()
-	handlerDir := filepath.Join(dir, "handlers", "project")
+	handlerDir := filepath.Join(dir, "internal", "handlers", "project")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestCleanupStale_TombstonedHandlerFilesBecomeCandidates(t *testing.T) {
 	if len(handEdited) != 0 {
 		t.Errorf("handEdited = %v, want none", handEdited)
 	}
-	if len(candidates) != 1 || !strings.HasSuffix(candidates[0], filepath.Join("handlers", "project", "handlers_gen.go")) {
+	if len(candidates) != 1 || !strings.HasSuffix(candidates[0], filepath.Join("internal", "handlers", "project", "handlers_gen.go")) {
 		t.Fatalf("candidates = %v, want exactly the Tier-1 handlers_gen.go", candidates)
 	}
 	// Report-only by default: the file survives.

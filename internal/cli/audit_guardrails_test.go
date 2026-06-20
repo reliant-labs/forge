@@ -100,7 +100,7 @@ func writeHandlerFile(t *testing.T, dir, pkg string, stubs, real []string) {
 // handler is an un-implemented stub is flagged.
 func TestAuditOrphanStubs_FlagsAllStubService(t *testing.T) {
 	dir := t.TempDir()
-	writeHandlerFile(t, filepath.Join(dir, "handlers", "reporting"), "reporting",
+	writeHandlerFile(t, filepath.Join(dir, "internal", "handlers", "reporting"), "reporting",
 		[]string{"GetReport", "ListReports"}, nil)
 
 	cat := auditOrphanStubs(nil, dir)
@@ -116,7 +116,7 @@ func TestAuditOrphanStubs_FlagsAllStubService(t *testing.T) {
 // least one real handler is NOT flagged.
 func TestAuditOrphanStubs_PartialImplNotFlagged(t *testing.T) {
 	dir := t.TempDir()
-	writeHandlerFile(t, filepath.Join(dir, "handlers", "billing"), "billing",
+	writeHandlerFile(t, filepath.Join(dir, "internal", "handlers", "billing"), "billing",
 		[]string{"Refund"}, []string{"Charge"})
 
 	cat := auditOrphanStubs(nil, dir)

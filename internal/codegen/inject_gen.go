@@ -118,6 +118,11 @@ type InjectGenData struct {
 	Module            string
 	NeedsAuthorizer   bool
 	NeedsConfigImport bool
+	// NeedsFmt gates the `fmt` import: it is only referenced in the fallible
+	// (New returns error) construction branch, so a project with no fallible
+	// component (incl. the zero-component case) must not import it or the
+	// generated file fails to compile on an unused import.
+	NeedsFmt bool
 	// Order is the topo-sorted construction sequence (producers first).
 	Order []InjectComponentData
 	// HasCycle / CycleEdges drive the two-phase setter stub block.
@@ -140,9 +145,10 @@ func GenerateInject(in InjectGenInput) error {
 	if err != nil {
 		return err
 	}
-	if len(comps) == 0 {
-		return nil
-	}
+	// No len(comps)==0 early-return: cmd/server.go imports internal/app
+	// unconditionally, so the package must exist and compile even with zero
+	// components. The template renders a valid empty Build over an empty
+	// Services in that case.
 
 	appDir := filepath.Join(in.ProjectDir, "internal", "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
@@ -186,6 +192,7 @@ func GenerateInject(in InjectGenInput) error {
 		missing         []MissingProvider
 		needsAuthorizer bool
 		needsConfig     bool
+		needsFmt        bool
 	)
 
 	for _, c := range plan.Order {
@@ -197,6 +204,9 @@ func GenerateInject(in InjectGenInput) error {
 			ImportPath: c.ImportPath,
 			Package:    c.compPackage,
 			Fallible:   c.compFallible,
+		}
+		if c.compFallible {
+			needsFmt = true
 		}
 		for _, df := range c.Deps {
 			needsConfig = needsConfig || df.Name == "Config"
@@ -225,6 +235,7 @@ func GenerateInject(in InjectGenInput) error {
 		Module:            in.ModulePath,
 		NeedsAuthorizer:   needsAuthorizer,
 		NeedsConfigImport: needsConfig,
+		NeedsFmt:          needsFmt,
 		Order:             rendered,
 		HasCycle:          plan.HasCycle(),
 		CycleEdges:        plan.CycleEdges,
@@ -442,9 +453,10 @@ func GenerateLifecycle(in InjectGenInput) error {
 	if err != nil {
 		return err
 	}
-	if len(comps) == 0 {
-		return nil
-	}
+	// No len(comps)==0 early-return: cmd/server.go reads app.WorkerList /
+	// app.OperatorList / app.RunOperators over *Services, so lifecycle_gen.go
+	// must exist even with zero supervised components (the template emits
+	// valid no-op WorkerList/OperatorList/RunOperators in that case).
 
 	type lifeComp struct {
 		Name       string

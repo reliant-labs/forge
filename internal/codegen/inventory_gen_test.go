@@ -59,14 +59,29 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	}
 }
 
-func TestGenerateInventory_NoServicesNoFile(t *testing.T) {
+// TestGenerateInventory_NoServicesEmptyInventory: with no services, the
+// inventory file is STILL emitted as a valid empty []ComponentInfo. The
+// generated cmd/server.go imports internal/app and references app.Inventory
+// unconditionally, so the symbol must exist even on a service-less tree —
+// otherwise the package would be empty and `go mod tidy` would 404 trying to
+// resolve the local import remotely (the §2 regression this guards against).
+func TestGenerateInventory_NoServicesEmptyInventory(t *testing.T) {
 	dir := newInjectProject(t)
 	if err := GenerateInventory(InventoryGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 	}); err != nil {
 		t.Fatalf("GenerateInventory: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "internal", "app", "inventory_gen.go")); !os.IsNotExist(err) {
-		t.Fatalf("no services should emit no inventory file")
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "inventory_gen.go"))
+	if err != nil {
+		t.Fatalf("no-services run should still emit inventory_gen.go: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, `var Inventory = []ComponentInfo{`) {
+		t.Fatalf("empty inventory should still declare Inventory:\n%s", out)
+	}
+	// No service rows in the empty case.
+	if strings.Contains(out, `Kind:        "service"`) {
+		t.Fatalf("no-services inventory should have no rows:\n%s", out)
 	}
 }

@@ -21,10 +21,10 @@ func GenerateServiceStub(svc ServiceDef, targetDir string, crudMethodNames ...ma
 		return err
 	}
 
-	// Derive projectDir from targetDir's <projectDir>/handlers/<svc> shape so
-	// the test-helper-name collision check can probe internal/<pkg>. Day-0,
-	// no caller passes a non-conventional targetDir.
-	projectDir := filepath.Dir(filepath.Dir(targetDir))
+	// Derive projectDir from targetDir's <projectDir>/internal/handlers/<svc>
+	// shape so the test-helper-name collision check can probe internal/<pkg>.
+	// Day-0, no caller passes a non-conventional targetDir.
+	projectDir := filepath.Dir(filepath.Dir(filepath.Dir(targetDir)))
 	data := mapServiceDefToTemplateData(svc, projectDir)
 
 	// Render service.go from embedded template

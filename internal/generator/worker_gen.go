@@ -9,13 +9,13 @@ import (
 )
 
 // GenerateWorkerFiles generates all files for a single worker:
-//   - workers/<package>/worker.go       (from worker/worker.go.tmpl or worker-cron/worker.go.tmpl)
-//   - workers/<package>/worker_test.go   (from worker/worker_test.go.tmpl or worker-cron/worker_test.go.tmpl)
+//   - internal/workers/<package>/worker.go       (from worker/worker.go.tmpl or worker-cron/worker.go.tmpl)
+//   - internal/workers/<package>/worker_test.go   (from worker/worker_test.go.tmpl or worker-cron/worker_test.go.tmpl)
 //
 // The CLI/display name (which may contain hyphens) is translated to a
 // Go-package-safe form for the directory and `package` declaration so
 // hyphenated worker names like "email-sender" produce a buildable
-// workers/email_sender/ package.
+// internal/workers/email_sender/ package.
 //
 // When kind is "cron", the cron-specific templates are used and the schedule
 // is embedded as a constant in the generated code.
@@ -24,7 +24,7 @@ import (
 // generated output is always identical.
 func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) error {
 	workerPackage := naming.ServicePackage(workerName)
-	workerDir := filepath.Join(root, "workers", workerPackage)
+	workerDir := filepath.Join(root, "internal", "workers", workerPackage)
 
 	if err := os.MkdirAll(workerDir, 0755); err != nil {
 		return fmt.Errorf("create directory %s: %w", workerDir, err)

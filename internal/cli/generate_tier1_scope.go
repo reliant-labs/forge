@@ -115,12 +115,12 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	// stepBootstrap. Same gate — no entrypoints means no wire shape.
 	{exact: "pkg/app/wire_gen.go", gate: gateCodegenHasAnyEntrypoint},
 
-	// handlers/<svc>/handlers_crud_ops_gen.go is emitted by
+	// internal/handlers/<svc>/handlers_crud_ops_gen.go is emitted by
 	// stepCRUDHandlers (the Tier-1 projection half of the CRUD split; the
 	// RPC implementations live in user-owned handlers_crud.go). Gated on
 	// codegen-enabled AND ctx.HasServices. A no-services project (e.g.
 	// lib/CLI kind) shouldn't see stale CRUD-handler drift block its run.
-	{glob: "handlers/*/handlers_crud_ops_gen.go", gate: gateCodegenHasServices},
+	{glob: "internal/handlers/*/handlers_crud_ops_gen.go", gate: gateCodegenHasServices},
 
 	// internal/db/orm_shared.go + internal/db/*_orm.go are emitted by
 	// stepInternalDBORM (M3: the ORM emitter records its outputs in the

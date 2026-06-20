@@ -24,8 +24,8 @@ type MethodTemplateData struct {
 type ServiceTemplateData struct {
 	ServiceName    string // e.g. "EchoService" (or hyphenated CLI form)
 	ServicePackage string // Go package CLAUSE, e.g. "echo" (disk-resolved for existing dirs)
-	// ServiceImportPath is the handlers/ directory leaf used in scaffolded
-	// test imports (`{{.Module}}/handlers/{{.ServiceImportPath}}`). Equals
+	// ServiceImportPath is the internal/handlers/ directory leaf used in scaffolded
+	// test imports (`{{.Module}}/internal/handlers/{{.ServiceImportPath}}`). Equals
 	// ServicePackage for fresh scaffolds; for EXISTING dirs it is the real
 	// directory name, which may legally differ from the package clause.
 	ServiceImportPath   string

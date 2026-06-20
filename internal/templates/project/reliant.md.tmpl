@@ -33,7 +33,7 @@ proto/services/<svc>/v1/<svc>.proto    ← API contract (annotated)
                 ↓ forge generate
 gen/services/<svc>/v1/...               ← generated stubs (never edit)
 
-handlers/<svc>/                         ← THIN translation layer
+internal/handlers/<svc>/                         ← THIN translation layer
   service.go      validate, extract auth, proto↔internal, call service, map errors
   validators.go   pure request validators
   errors.go       domain error → connect.Code
@@ -51,7 +51,7 @@ Load `architecture` for the deep version.
 
 | Concern | Lives in | See skill |
 |---------|----------|-----------|
-| Wire-format validation, auth extraction, proto↔internal conversion, error code mapping | `handlers/<svc>/` | `api/handlers` |
+| Wire-format validation, auth extraction, proto↔internal conversion, error code mapping | `internal/handlers/<svc>/` | `api/handlers` |
 | Business decisions, DB calls, cross-service orchestration, transactions | `internal/<svc>/contract.go` (interface) + `service.go` (impl) | `service-layer` |
 | Wiring (constructing services, middleware chains, dep injection) | `pkg/app/setup.go` (yours) — never `bootstrap.go` (generated) | `services` |
 | DB schema | migrations under `migrations/` (the source of truth — proto drives the ORM, NOT the DB) | `db` |

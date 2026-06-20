@@ -290,7 +290,7 @@ type scaffoldWireService struct {
 	// codegen.WireGenServiceData fields. The shared template uses
 	// {{.ImportPath}} in the import line so workers/operators can reuse
 	// the same template; scaffold-time projects only emit services so
-	// ImportPath is always "handlers/<pkg>".
+	// ImportPath is always "internal/handlers/<pkg>".
 	ImportPath       string
 	LoggerAttrKey    string
 	NeedsAuthzVar    bool
@@ -324,7 +324,7 @@ func (g *ProjectGenerator) generateWireGen(services []scaffoldServiceInfo) error
 			Package:       s.Package,
 			Alias:         s.Alias,
 			Name:          s.Name,
-			ImportPath:    "handlers/" + s.Package,
+			ImportPath:    "internal/handlers/" + s.Package,
 			LoggerAttrKey: "service",
 			NeedsAuthzVar: true,
 			Assignments: []scaffoldWireAssignment{

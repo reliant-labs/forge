@@ -478,7 +478,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	// for project-specific sentinels), and the build should not gate on a
 	// hand-rolled helper that hasn't been migrated yet.
 	hasHandlers := false
-	if _, err := os.Stat("handlers"); err == nil {
+	if _, err := os.Stat("internal/handlers"); err == nil {
 		hasHandlers = true
 		res, err := forgeconv.LintHandlerErrorMapping(".")
 		if err != nil {
@@ -514,7 +514,7 @@ func collectConventionFindings(opts forgeconv.LintOptions) (forgeconv.Result, []
 	// effect when it's not on a Deps field, and silent failure is
 	// exactly the kind of bug a lint rule earns its keep on.
 	hasComponentTree := hasHandlers
-	for _, sub := range []string{"workers", "operators"} {
+	for _, sub := range []string{"internal/workers", "internal/operators"} {
 		if _, err := os.Stat(sub); err == nil {
 			hasComponentTree = true
 		}

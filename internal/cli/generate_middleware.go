@@ -120,7 +120,7 @@ func generateWebhookRoutes(cfg *config.ProjectConfig, reg *serviceRegistry, proj
 			return fmt.Errorf("render webhook routes for %s: %w", svc.Name, err)
 		}
 
-		relPath := filepath.Join("handlers", svcDirLeaf, "webhook_routes_gen.go")
+		relPath := filepath.Join("internal", "handlers", svcDirLeaf, "webhook_routes_gen.go")
 		if _, err := generator.WriteGeneratedFile(projectDir, relPath, content, cs, true); err != nil {
 			return fmt.Errorf("write webhook routes for %s: %w", svc.Name, err)
 		}

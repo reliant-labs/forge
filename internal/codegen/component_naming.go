@@ -78,7 +78,7 @@ type OperatorSpec struct {
 func WorkerDataFromSpecs(specs []WorkerSpec, projectDir string) ([]BootstrapWorkerData, error) {
 	var workers []BootstrapWorkerData
 	for _, spec := range specs {
-		comp, err := componentDataFromSpec(spec.Name, spec.Path, projectDir, "workers")
+		comp, err := componentDataFromSpec(spec.Name, spec.Path, projectDir, "internal/workers")
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +114,7 @@ type BootstrapOperatorData = BootstrapComponentData
 func OperatorDataFromSpecs(specs []OperatorSpec, projectDir string) ([]BootstrapOperatorData, error) {
 	var operators []BootstrapOperatorData
 	for _, spec := range specs {
-		comp, err := componentDataFromSpec(spec.Name, spec.Path, projectDir, "operators")
+		comp, err := componentDataFromSpec(spec.Name, spec.Path, projectDir, "internal/operators")
 		if err != nil {
 			return nil, err
 		}

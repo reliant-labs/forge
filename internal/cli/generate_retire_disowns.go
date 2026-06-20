@@ -104,7 +104,7 @@ func hasAnyPrefix(relPath string, prefixes []string) bool {
 // serviceDrivenCodegenPrefixes are the trees whose Tier-1 output is
 // produced by the codegen emitters that gate on HasServices.
 var serviceDrivenCodegenPrefixes = []string{
-	"handlers/",
+	"internal/handlers/",
 	"internal/db/",
 	"pkg/app/",
 	"pkg/middleware/",

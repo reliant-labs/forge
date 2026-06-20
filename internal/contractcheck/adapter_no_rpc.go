@@ -179,7 +179,7 @@ func lintAdapterPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
 			Message: fmt.Sprintf(
 				"package marked `// forge:adapter` registers Connect RPC handler %q; adapters are outbound-only — RPC handlers belong in a service package",
 				hit.calleeName),
-			Remediation: "either drop the `// forge:adapter` marker (this is actually a service) or move the RPC handler to handlers/<svc>/ and have it depend on this adapter's Service. Skill: forge skill load adapter",
+			Remediation: "either drop the `// forge:adapter` marker (this is actually a service) or move the RPC handler to internal/handlers/<svc>/ and have it depend on this adapter's Service. Skill: forge skill load adapter",
 		})
 	}
 	return findings, nil

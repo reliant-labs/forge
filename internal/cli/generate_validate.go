@@ -25,7 +25,7 @@ func validateGeneratedProject(projectDir string) []string {
 
 	// Check: if any authorizer.go references GeneratedAuthorizer, the
 	// corresponding authorizer_gen.go must exist.
-	handlersDir := filepath.Join(projectDir, "handlers")
+	handlersDir := filepath.Join(projectDir, "internal", "handlers")
 	entries, err := os.ReadDir(handlersDir)
 	if err == nil {
 		for _, entry := range entries {
@@ -36,7 +36,7 @@ func validateGeneratedProject(projectDir string) []string {
 			genPath := filepath.Join(handlersDir, entry.Name(), "authorizer_gen.go")
 			if fileContains(authPath, "GeneratedAuthorizer") && !fileExists(genPath) {
 				warnings = append(warnings,
-					"handlers/"+entry.Name()+"/authorizer.go references GeneratedAuthorizer "+
+					"internal/handlers/"+entry.Name()+"/authorizer.go references GeneratedAuthorizer "+
 						"but authorizer_gen.go was not generated.")
 			}
 		}

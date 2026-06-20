@@ -181,7 +181,7 @@ func collectOptionalDepsGuardFindings(projectDir string) ([]optionalDepsGuardFin
 	// Same role roots as bootstrap-deps-coverage: every tree that hosts
 	// the conventional <pkg>/Deps shape. Missing roots are fine — many
 	// projects ship no operators/ or workers/.
-	roleRoots := []string{"internal", "handlers", "workers", "operators"}
+	roleRoots := []string{"internal", "internal/handlers", "internal/workers", "internal/operators"}
 	for _, role := range roleRoots {
 		rootDir := filepath.Join(projectDir, role)
 		entries, err := os.ReadDir(rootDir)

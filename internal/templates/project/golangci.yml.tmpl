@@ -5,7 +5,7 @@
 #
 # Adjust thresholds for your project:
 #   Stricter (CRUD APIs):    cyclop 12, funlen 60, gocognit 15
-#   Looser (operators/billing): cyclop 20, funlen 120, gocognit 30
+#   Looser (internal/operators/billing): cyclop 20, funlen 120, gocognit 30
 # Use path-based exclusions for complex subsystems rather than raising
 # global thresholds.
 
@@ -125,7 +125,7 @@ linters:
           - cyclop
           - gocognit
           - funlen
-      - path: operators/
+      - path: internal/operators/
         linters:
           - funlen
           - gocognit

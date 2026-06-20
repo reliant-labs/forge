@@ -988,7 +988,7 @@ func unregisteredServiceFindings(cfg *config.ProjectConfig, projectDir string) [
 		if resErr != nil || !res.FromDisk {
 			continue
 		}
-		dir := "handlers/" + res.ImportLeaf
+		dir := "internal/handlers/" + res.ImportLeaf
 		f := auditUnregisteredService{Service: s.Name, Dir: dir}
 		switch state {
 		case registrationTombstoned:
@@ -2007,11 +2007,11 @@ var unwiredStubMarkerRE = regexp.MustCompile(`//\s*forge:gen unwired-stub symbol
 // types-only), or implement the handler bodies. Warn-level — an orphan
 // stub is a smell, not a build break.
 func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategory {
-	handlersDir := filepath.Join(projectDir, "handlers")
+	handlersDir := filepath.Join(projectDir, "internal", "handlers")
 	entries, err := os.ReadDir(handlersDir)
 	if err != nil {
 		// No handlers dir (library/CLI project or pre-scaffold) — n/a.
-		return AuditCategory{Status: AuditStatusOK, Summary: "no handlers/ directory (n/a)"}
+		return AuditCategory{Status: AuditStatusOK, Summary: "no internal/handlers/ directory (n/a)"}
 	}
 
 	type orphan struct {
@@ -2043,7 +2043,7 @@ func auditOrphanStubs(cfg *config.ProjectConfig, projectDir string) AuditCategor
 		sort.Strings(stubMethods)
 		orphans = append(orphans, orphan{
 			Service:     e.Name(),
-			Dir:         "handlers/" + e.Name(),
+			Dir:         "internal/handlers/" + e.Name(),
 			StubMethods: stubMethods,
 			Served:      served,
 		})

@@ -901,9 +901,15 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		pkgCount[p.Package]++
 	}
 	for i := range testSvcs {
+		// Route the collision-prefix rule through the single source of
+		// truth so testing.go's svc-aliases/field names can never drift
+		// from bootstrap.go's (see ResolveCollisionNaming). Only override
+		// FieldName/VarName on collision — the no-collision branch keeps
+		// the caller's ToPascalCase FieldName and the default Package alias.
+		alias, fieldName := ResolveCollisionNaming(testSvcs[i].Package, testSvcs[i].FieldName, "svc", pkgCount)
+		testSvcs[i].Alias = alias
 		if pkgCount[testSvcs[i].Package] > 1 {
-			testSvcs[i].Alias = "svc" + upperFirst(testSvcs[i].Package)
-			testSvcs[i].FieldName = "Svc" + upperFirst(testSvcs[i].Package)
+			testSvcs[i].FieldName = fieldName
 			testSvcs[i].VarName = lowerFirst(testSvcs[i].FieldName)
 		}
 		// Rewrite the AutoStubs' qualified interface refs to use the
@@ -916,7 +922,8 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		// this service's alias. Their InterfaceQualified is already
 		// the resolved "<pkg>.<TypeName>" form from
 		// ResolveCrossPkgInterface.
-		alias := testSvcs[i].Alias
+		//
+		// alias here is the post-collision Alias resolved above.
 		for j, stub := range testSvcs[i].AutoStubs {
 			if stub.CrossPackage {
 				continue
@@ -934,8 +941,12 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 	pkgsCopy := append([]BootstrapPackageData(nil), packages...)
 	for i := range pkgsCopy {
 		if pkgCount[pkgsCopy[i].Package] > 1 {
-			pkgsCopy[i].Alias = "pkg" + upperFirst(pkgsCopy[i].Package)
-			pkgsCopy[i].FieldName = "Pkg" + upperFirst(pkgsCopy[i].Package)
+			// Same single-source-of-truth rule as the services loop above,
+			// so a colliding internal package's testing.go alias/field name
+			// matches bootstrap.go's exactly (see ResolveCollisionNaming).
+			alias, fieldName := ResolveCollisionNaming(pkgsCopy[i].Package, pkgsCopy[i].FieldName, "pkg", pkgCount)
+			pkgsCopy[i].Alias = alias
+			pkgsCopy[i].FieldName = fieldName
 			pkgsCopy[i].VarName = lowerFirst(pkgsCopy[i].FieldName)
 		} else if pkgsCopy[i].Alias == "" {
 			pkgsCopy[i].Alias = pkgsCopy[i].Package

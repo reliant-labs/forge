@@ -89,7 +89,7 @@ grep -rq "serverkit.Server{" cmd/ && echo "already on composed Server"
 
 ```bash
 # 1. Bump forge_version in forge.yaml to the composed-server release.
-# 2. Regenerate. forge emits real per-service cmd/<svc>.go (or the serverCmd
+# 2. Regenerate. The generator emits real per-service cmd/<svc>.go (or the serverCmd
 #    helper + MountX hooks), the composed cmd/server.go, and deletes
 #    cmd/services_gen.go.
 forge generate

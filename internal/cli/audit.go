@@ -1625,6 +1625,64 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) AuditCat
 	return AuditCategory{Status: status, Summary: summary, Details: details}
 }
 
+// scanCategory captures the shape every lint-backed audit collector
+// shares: run a scan, fold a scan error into a warn, report an empty
+// result as ok, and otherwise hand the findings to a rollup. Only the
+// scanErrPrefix (the text before ": <err>") and okMsg vary across
+// collectors; the warn/ok category shells are byte-identical so they
+// live here once. onFindings owns the non-empty case — it never sees a
+// nil/empty slice.
+func scanCategory[F any](scan func() ([]F, error), scanErrPrefix, okMsg string, onFindings func([]F) AuditCategory) AuditCategory {
+	findings, err := scan()
+	if err != nil {
+		return AuditCategory{
+			Status:  AuditStatusWarn,
+			Summary: fmt.Sprintf("%s: %v", scanErrPrefix, err),
+		}
+	}
+	if len(findings) == 0 {
+		return AuditCategory{
+			Status:  AuditStatusOK,
+			Summary: okMsg,
+		}
+	}
+	return onFindings(findings)
+}
+
+// rollupByPackage aggregates findings into the <role>/<pkg>-keyed
+// breakdown shared (byte-for-byte) by the optional-deps-guard and
+// config-deps collectors: bucket each finding under keyFn(f), render its
+// per-line detail via lineFn(f), sort the package keys, and emit the
+// warn category with the canonical {finding_count, affected_packages,
+// by_package, hint} details. keyFn typically returns `f.Role + "/" +
+// f.Package`; summaryFn renders the one-line summary from the finding /
+// package counts. (auditWireCoverage keeps its own rollup — it keys by
+// component and uses distinct detail-key names, so sharing this would
+// change its output.)
+func rollupByPackage[F any](findings []F, keyFn func(F) string, lineFn func(F) string, summaryFn func(findingCount, pkgCount int) string, hint string) AuditCategory {
+	byPackage := map[string][]string{}
+	for _, f := range findings {
+		key := keyFn(f)
+		byPackage[key] = append(byPackage[key], lineFn(f))
+	}
+	pkgs := make([]string, 0, len(byPackage))
+	for k := range byPackage {
+		pkgs = append(pkgs, k)
+	}
+	sort.Strings(pkgs)
+
+	return AuditCategory{
+		Status:  AuditStatusWarn,
+		Summary: summaryFn(len(findings), len(pkgs)),
+		Details: map[string]any{
+			"finding_count":     len(findings),
+			"affected_packages": pkgs,
+			"by_package":        byPackage,
+			"hint":              hint,
+		},
+	}
+}
+
 // auditWireCoverage rolls up unresolved Deps fields in pkg/app/wire_gen.go
 // — the same surface as `forge lint --wire-coverage`, but as a count and
 // per-component breakdown rather than per-finding output. Useful for an
@@ -1647,47 +1705,42 @@ func auditWireCoverage(projectDir string) AuditCategory {
 	}
 	defer func() { _ = f.Close() }()
 
-	findings, err := scanWireGen(f, path, projectDir)
-	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("scan failed: %v", err),
-		}
-	}
+	// Distinct rollup: wire coverage keys by component (the wire*Deps
+	// function) and uses component-specific detail keys, so it builds its
+	// own category rather than going through rollupByPackage — only the
+	// scan→error-warn→empty-ok shell is shared (scanCategory).
+	return scanCategory(
+		func() ([]wireCoverageFinding, error) { return scanWireGen(f, path, projectDir) },
+		"scan failed",
+		"wire coverage clean — no unresolved Deps fields",
+		func(findings []wireCoverageFinding) AuditCategory {
+			byComponent := map[string][]string{}
+			for _, f := range findings {
+				comp := f.Function
+				if comp == "" {
+					comp = "(unattributed)"
+				}
+				byComponent[comp] = append(byComponent[comp], f.Field)
+			}
+			components := make([]string, 0, len(byComponent))
+			for k := range byComponent {
+				components = append(components, k)
+			}
+			sort.Strings(components)
 
-	if len(findings) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
-			Summary: "wire coverage clean — no unresolved Deps fields",
-		}
-	}
-
-	// Aggregate by component (wire*Deps function) for the breakdown.
-	byComponent := map[string][]string{}
-	for _, f := range findings {
-		comp := f.Function
-		if comp == "" {
-			comp = "(unattributed)"
-		}
-		byComponent[comp] = append(byComponent[comp], f.Field)
-	}
-	components := make([]string, 0, len(byComponent))
-	for k := range byComponent {
-		components = append(components, k)
-	}
-	sort.Strings(components)
-
-	details := map[string]any{
-		"unresolved_count":    len(findings),
-		"affected_components": components,
-		"by_component":        byComponent,
-		"hint":                fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", Name()),
-	}
-	return AuditCategory{
-		Status:  AuditStatusWarn,
-		Summary: fmt.Sprintf("%d unresolved Deps field(s) across %d component(s)", len(findings), len(components)),
-		Details: details,
-	}
+			details := map[string]any{
+				"unresolved_count":    len(findings),
+				"affected_components": components,
+				"by_component":        byComponent,
+				"hint":                fmt.Sprintf("run `%s lint --wire-coverage` for the full per-line report", Name()),
+			}
+			return AuditCategory{
+				Status:  AuditStatusWarn,
+				Summary: fmt.Sprintf("%d unresolved Deps field(s) across %d component(s)", len(findings), len(components)),
+				Details: details,
+			}
+		},
+	)
 }
 
 // auditOptionalDepsGuard rolls up unguarded derefs of
@@ -1699,45 +1752,26 @@ func auditWireCoverage(projectDir string) AuditCategory {
 // additive per the audit-json contract (consumers iterate
 // `.categories | keys[]` and tolerate new entries).
 func auditOptionalDepsGuard(projectDir string) AuditCategory {
-	findings, err := collectOptionalDepsGuardFindings(projectDir)
-	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("optional-deps-guard scan failed: %v", err),
-		}
-	}
-	if len(findings) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
-			Summary: "optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)",
-		}
-	}
-
 	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
 	// offending component; per-finding detail lives in
 	// `forge lint --optional-deps-guard --json`.
-	byPackage := map[string][]string{}
-	for _, f := range findings {
-		key := f.Role + "/" + f.Package
-		byPackage[key] = append(byPackage[key],
-			fmt.Sprintf("%s:%d %s in %s", f.File, f.Line, f.Expr, f.Method))
-	}
-	pkgs := make([]string, 0, len(byPackage))
-	for k := range byPackage {
-		pkgs = append(pkgs, k)
-	}
-	sort.Strings(pkgs)
-
-	return AuditCategory{
-		Status:  AuditStatusWarn,
-		Summary: fmt.Sprintf("%d unguarded optional-dep deref(s) across %d package(s)", len(findings), len(pkgs)),
-		Details: map[string]any{
-			"finding_count":     len(findings),
-			"affected_packages": pkgs,
-			"by_package":        byPackage,
-			"hint":              fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", Name()),
+	return scanCategory(
+		func() ([]optionalDepsGuardFinding, error) { return collectOptionalDepsGuardFindings(projectDir) },
+		"optional-deps-guard scan failed",
+		"optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)",
+		func(findings []optionalDepsGuardFinding) AuditCategory {
+			return rollupByPackage(findings,
+				func(f optionalDepsGuardFinding) string { return f.Role + "/" + f.Package },
+				func(f optionalDepsGuardFinding) string {
+					return fmt.Sprintf("%s:%d %s in %s", f.File, f.Line, f.Expr, f.Method)
+				},
+				func(findingCount, pkgCount int) string {
+					return fmt.Sprintf("%d unguarded optional-dep deref(s) across %d package(s)", findingCount, pkgCount)
+				},
+				fmt.Sprintf("run `%s lint --optional-deps-guard` for the full per-line report; suppress confirmed-safe sites with `// forge:optional-checked` on the deref line", Name()),
+			)
 		},
-	}
+	)
 }
 
 // auditConfigDeps rolls up scalar Deps fields (the config-deps lint).
@@ -1750,45 +1784,26 @@ func auditOptionalDepsGuard(projectDir string) AuditCategory {
 // audit-json contract (consumers iterate `.categories | keys[]` and
 // tolerate new entries).
 func auditConfigDeps(projectDir string) AuditCategory {
-	findings, err := collectConfigDepsFindings(projectDir)
-	if err != nil {
-		return AuditCategory{
-			Status:  AuditStatusWarn,
-			Summary: fmt.Sprintf("config-deps scan failed: %v", err),
-		}
-	}
-	if len(findings) == 0 {
-		return AuditCategory{
-			Status:  AuditStatusOK,
-			Summary: "config-deps clean — no scalar Deps fields (configuration flows through config blocks)",
-		}
-	}
-
 	// Aggregate by <role>/<pkg> so a sub-agent can jump straight to the
 	// offending component; per-finding detail lives in
 	// `forge lint --config-deps --json`.
-	byPackage := map[string][]string{}
-	for _, f := range findings {
-		key := f.Role + "/" + f.Package
-		byPackage[key] = append(byPackage[key],
-			fmt.Sprintf("%s:%d Deps.%s %s", f.File, f.Line, f.Field, f.Type))
-	}
-	pkgs := make([]string, 0, len(byPackage))
-	for k := range byPackage {
-		pkgs = append(pkgs, k)
-	}
-	sort.Strings(pkgs)
-
-	return AuditCategory{
-		Status:  AuditStatusWarn,
-		Summary: fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", len(findings), len(pkgs)),
-		Details: map[string]any{
-			"finding_count":     len(findings),
-			"affected_packages": pkgs,
-			"by_package":        byPackage,
-			"hint":              fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", Name()),
+	return scanCategory(
+		func() ([]configDepsFinding, error) { return collectConfigDepsFindings(projectDir) },
+		"config-deps scan failed",
+		"config-deps clean — no scalar Deps fields (configuration flows through config blocks)",
+		func(findings []configDepsFinding) AuditCategory {
+			return rollupByPackage(findings,
+				func(f configDepsFinding) string { return f.Role + "/" + f.Package },
+				func(f configDepsFinding) string {
+					return fmt.Sprintf("%s:%d Deps.%s %s", f.File, f.Line, f.Field, f.Type)
+				},
+				func(findingCount, pkgCount int) string {
+					return fmt.Sprintf("%d scalar Deps field(s) across %d package(s) — scalars are configuration; declare component config blocks in proto/config", findingCount, pkgCount)
+				},
+				fmt.Sprintf("run `%s lint --config-deps` for per-field remediation snippets (declare a <Component>Config message in proto/config/v1/config.proto and take it as `Cfg config.<Component>Config`)", Name()),
+			)
 		},
-	}
+	)
 }
 
 // auditDeps surfaces dep-shaped risks: missing go.sum, gen/ unstable

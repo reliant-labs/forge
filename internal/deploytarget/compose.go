@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/statefile"
 )
 
 // ComposeProvider deploys each service in a group via docker-compose
@@ -296,11 +298,11 @@ func (p ComposeProvider) rollbackOne(ctx context.Context, runner commandRunner, 
 // fixed, well-understood, and the output is short enough that string
 // formatting is more legible than yaml.Marshal.
 func writeComposeOverride(projectDir, env, svc, composeService, image, tag string) (string, error) {
-	dir := filepath.Join(projectDir, stateDirRel)
+	dir := filepath.Join(projectDir, statefile.DirRel)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("compose-%s-%s-rollback.override.yml", safeStateSegment(env), safeStateSegment(svc))
+	name := fmt.Sprintf("compose-%s-%s-rollback.override.yml", statefile.SafeSegment(env), statefile.SafeSegment(svc))
 	path := filepath.Join(dir, name)
 	body := fmt.Sprintf("services:\n  %s:\n    image: %s:%s\n", composeService, image, tag)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

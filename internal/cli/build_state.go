@@ -2,20 +2,12 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
-)
 
-// buildStateDir is the per-project on-disk location for forge runtime
-// state that needs to survive across `forge build` / `forge deploy`
-// invocations. Sits under .forge/ alongside the ownership state so a single
-// .gitignore rule (`.forge/`) covers both.
-const buildStateDir = ".forge/state"
+	"github.com/reliant-labs/forge/internal/statefile"
+)
 
 // BuildState records what `forge build --push` actually pushed to a
 // registry, so a subsequent `forge deploy <env>` can reference the
@@ -85,7 +77,7 @@ func buildStatePath(projectDir, env string) string {
 	if env == "" {
 		env = "default"
 	}
-	return filepath.Join(projectDir, buildStateDir, "build-"+env+".json")
+	return statefile.Path(projectDir, "build-"+env+".json")
 }
 
 // WriteBuildState persists a successful `forge build --push` to disk.
@@ -97,18 +89,7 @@ func buildStatePath(projectDir, env string) string {
 // never grow a .forge/state/ tree. File is 0o644 (world-readable) to
 // match the other .forge state files' mode; nothing in here is secret.
 func WriteBuildState(projectDir, env string, state BuildState) error {
-	path := buildStatePath(projectDir, env)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create build-state dir: %w", err)
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal build state: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write build state: %w", err)
-	}
-	return nil
+	return statefile.Write(buildStatePath(projectDir, env), "build state", state)
 }
 
 // ReadBuildState loads the per-env build-state file. Returns
@@ -119,19 +100,7 @@ func WriteBuildState(projectDir, env string, state BuildState) error {
 // JSON or unreadable files; callers should not silently swallow these
 // because they mean the state file exists but can't be trusted.
 func ReadBuildState(projectDir, env string) (*BuildState, error) {
-	path := buildStatePath(projectDir, env)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read build state %s: %w", path, err)
-	}
-	var st BuildState
-	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, fmt.Errorf("parse build state %s: %w", path, err)
-	}
-	return &st, nil
+	return statefile.Read[BuildState](buildStatePath(projectDir, env), "build state")
 }
 
 // nowRFC3339 returns the current wall-clock time formatted as

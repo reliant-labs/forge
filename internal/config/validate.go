@@ -675,18 +675,11 @@ func levenshtein(a, b string) int {
 			if ar[i-1] == br[j-1] {
 				cost = 0
 			}
-			curr[j] = minInt(curr[j-1]+1, minInt(prev[j]+1, prev[j-1]+cost))
+			curr[j] = min(curr[j-1]+1, min(prev[j]+1, prev[j-1]+cost))
 		}
 		prev, curr = curr, prev
 	}
 	return prev[len(br)]
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // splitYAMLErrorLines turns a yaml decoding error into one issue per
@@ -721,6 +714,17 @@ func splitYAMLErrorLines(err error) []string {
 // required field here corresponds to a real downstream breakage when
 // absent (broken go.mod, empty deploy, ambiguous codegen target).
 func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
+	out = append(out, validateProjectFields(cfg, root)...)
+	out = append(out, validateComponents(cfg, root)...)
+	out = append(out, validateFrontends(cfg, root)...)
+	out = append(out, validateORMDriver(cfg, root)...)
+	return out
+}
+
+// validateProjectFields checks the top-level project identity fields
+// (name, module_path) that the project cannot meaningfully be missing.
+func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 
 	// rootPos is the fallback location for "this required field is
@@ -760,6 +764,14 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	// kind is no longer a forge.yaml field — it is DERIVED from the
 	// components (DeriveProjectKind) before validateRequired runs, so it is
 	// always one of the valid values and needs no validation here.
+
+	return out
+}
+
+// validateComponents checks per-component required fields and the
+// enumerated values (name, kind, schedule-for-cron).
+func validateComponents(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
 
 	for i, comp := range cfg.Components {
 		prefix := fmt.Sprintf("components[%d]", i)
@@ -805,6 +817,14 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 		// components[].path is intentionally not required: the cli loader
 		// applies a kind-derived default when the user omits it.
 	}
+
+	return out
+}
+
+// validateFrontends checks per-frontend required fields and the
+// enumerated values (name, type, output, base_path).
+func validateFrontends(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
 
 	for i, fe := range cfg.Frontends {
 		prefix := fmt.Sprintf("frontends[%d]", i)
@@ -866,6 +886,20 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 				})
 			}
 		}
+	}
+
+	return out
+}
+
+// validateORMDriver requires database.driver when the ORM feature has
+// been explicitly enabled.
+func validateORMDriver(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
+	var out []validationIssue
+
+	// rootPos is the fallback when the `database:` block is absent.
+	var rootLine, rootCol int
+	if root != nil {
+		rootLine, rootCol = root.Line, root.Column
 	}
 
 	// Only require database.driver when ORM has been *explicitly* enabled.

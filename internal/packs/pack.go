@@ -732,14 +732,6 @@ func (p *Pack) renderFile(f PackFile, projectDir string, data map[string]any) er
 	return nil
 }
 
-// renderPathTemplate is a thin alias for installkit.RenderPathTemplate,
-// retained for the in-package test that locks the plain-string short-circuit
-// behaviour. Production callers should use installkit.RenderPathTemplate
-// directly.
-func renderPathTemplate(in string, data map[string]any) (string, error) {
-	return installkit.RenderPathTemplate(in, data)
-}
-
 // overwritePolicyFor maps PackFile.Overwrite to an installkit policy. The
 // pack manifest values are "always" / "once" / "never"; anything else
 // (including empty) is treated as "once" to preserve the historical
@@ -1082,8 +1074,10 @@ func ResolveInstallOrder(requested []string, existingInstalled []string) ([]stri
 	// Walk the dep graph from each requested pack. We use iterative DFS
 	// with three colors so we can both topo-sort and detect cycles in
 	// one pass.
+	// The DFS colors: gray = on the current stack (cycle marker), black =
+	// fully visited. Unvisited nodes are the map's zero value (0), so no
+	// "white" constant is needed.
 	const (
-		white = 0 // unvisited
 		gray  = 1 // on current DFS stack
 		black = 2 // done
 	)
@@ -1155,8 +1149,9 @@ func ResolveInstallOrder(requested []string, existingInstalled []string) ([]stri
 // "warn-and-continue" semantics — a pack removed from forge but still
 // listed in cfg.Packs is a known soft failure mode).
 func SortInstalledByDependencies(installed []string) ([]string, error) {
+	// Unvisited nodes are the map zero value (0); only gray (on-stack) and
+	// black (done) need named constants.
 	const (
-		white = 0
 		gray  = 1
 		black = 2
 	)

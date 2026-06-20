@@ -96,9 +96,9 @@ var featureDeps = map[FeatureName][]featureRequirement{
 	FeatureIngress: {
 		{Feature: FeatureDeploy, fix: "enable deploy, or disable experimental.ingress"},
 	},
-	FeatureExternalBuilds: {
-		{Feature: FeatureBuild, fix: "enable build, or disable experimental.external_builds"},
-	},
+	// FeatureExternalBuilds is a RETIRED, inert gate (see config.go's
+	// ExperimentalConfig docs): the build path no longer consults it, so it
+	// carries no dependency edge. Listing one here would gate a no-op flag.
 }
 
 // hasDatabaseDriver reports whether a concrete database driver is

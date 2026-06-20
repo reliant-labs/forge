@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/installkit"
 )
 
 func TestLoadPack(t *testing.T) {
@@ -375,8 +376,9 @@ files: []
 	}
 }
 
-// TestRenderPathTemplate confirms the path-templating helper is a no-op
-// for plain strings and substitutes Go-template fields when present.
+// TestRenderPathTemplate confirms installkit.RenderPathTemplate is a
+// no-op for plain strings and substitutes Go-template fields when
+// present — the path-templating behaviour packs rely on.
 func TestRenderPathTemplate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -391,9 +393,9 @@ func TestRenderPathTemplate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := renderPathTemplate(tc.in, tc.data)
+			got, err := installkit.RenderPathTemplate(tc.in, tc.data)
 			if err != nil {
-				t.Fatalf("renderPathTemplate: %v", err)
+				t.Fatalf("RenderPathTemplate: %v", err)
 			}
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)

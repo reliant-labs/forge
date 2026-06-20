@@ -84,7 +84,7 @@ func TestRenderDArgs_QuotesStringArgs(t *testing.T) {
 // (current/default context — unchanged single-cluster behaviour).
 func TestKubectlArgs_ThreadsContext(t *testing.T) {
 	// With a context: --context <ctx> is prepended before the subcommand.
-	got := kubectlArgs("prod-cluster", "apply", "--server-side", "-f", "-")
+	got := KubectlArgs("prod-cluster", "apply", "--server-side", "-f", "-")
 	want := []string{"--context", "prod-cluster", "apply", "--server-side", "-f", "-"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -101,7 +101,7 @@ func TestKubectlArgs_ThreadsContext(t *testing.T) {
 	}
 
 	// Empty context: args pass through verbatim (no --context injected).
-	got = kubectlArgs("", "rollout", "status", "deployment/x")
+	got = KubectlArgs("", "rollout", "status", "deployment/x")
 	if contains(got, "--context") {
 		t.Errorf("expected no --context for empty context, got %v", got)
 	}

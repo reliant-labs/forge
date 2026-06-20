@@ -102,15 +102,13 @@ func (p K8sClusterProvider) Rollback(ctx context.Context, group ServiceGroup, la
 	kctx := p.rollbackContext(group)
 	var failures []string
 	for _, svc := range group.Services {
-		args := []string{"rollout", "undo", "deployment/" + svc.Name, "-n", group.Namespace}
 		// Thread the `--context <ctx>` per command (not via a global
 		// `kubectl config use-context`) so a concurrent rollback to a
 		// different cluster can't be clobbered by another deploy's context
 		// switch. kctx is the declared cluster (or the override). Empty =
-		// current/default context.
-		if kctx != "" {
-			args = append([]string{"--context", kctx}, args...)
-		}
+		// current/default context. cluster.KubectlArgs is the single point
+		// that owns the per-command `--context` invariant.
+		args := cluster.KubectlArgs(kctx, "rollout", "undo", "deployment/"+svc.Name, "-n", group.Namespace)
 		// The annotated revision lets users see which tag we rolled
 		// back from. Best-effort — failures are logged below.
 		cmd := exec.CommandContext(ctx, "kubectl", args...)

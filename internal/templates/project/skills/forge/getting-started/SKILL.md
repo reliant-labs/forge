@@ -12,7 +12,7 @@ forge new <project-name> --mod <go-module-path>
 ```
 
 A bare `forge new` scaffolds **zero services**: binary shell (`cmd/`),
-`pkg/app` wiring, buf/proto scaffolding, Taskfile/CI/deploy — and
+`internal/app` composition root, buf/proto scaffolding, Taskfile/CI/deploy — and
 `services: []` in forge.yaml. The binary is a deployment unit that
 mounts services; it is **not** a domain entity, so forge never invents
 a `<project>Service` from the binary name. The first step after a bare
@@ -63,20 +63,26 @@ forge new --in-place --mod github.com/acme/my-app
 
 ## What Gets Scaffolded
 
+Top-level is reserved for `cmd/` (entrypoints) and `api/` (CRD types — the only genuinely-external code). **Everything else lives under `internal/`** — services, workers, operators, app wiring, config, middleware. There is no top-level `handlers/`, `workers/`, `operators/`, or `pkg/app`; a top-level dir would falsely imply public API. `pkg/` is reserved for code with real external importers (today there are none).
+
 ```
 my-app/
+├── cmd/                       # entrypoints ONLY: cobra root + one subcommand per binary
+├── api/v1alpha1/              # CRD types (if any) — kubebuilder convention, importable by clients
 ├── proto/services/<svc>/v1/   # Proto definitions (if --service given)
-├── handlers/<svc>/            # Go handler skeleton (if --service given)
+├── internal/                  # default home for everything not imported outside the module
+│   ├── <svc>/                 #   a service: contract.go + impl + handlers_gen.go in ONE dir
+│   ├── app/                   #   composition roots (build.go) — the wiring you own
+│   ├── config/                #   typed config (proto-driven)
+│   ├── middleware/            #   thin auth/logging/tenant policy
+│   └── db/                    #   entity ORM (appears once you have entities)
+├── gen/                       # generated stubs, TS clients, mocks (never hand-edit)
 ├── frontends/<name>/          # Next.js app (if --frontend given)
-├── internal/db/               # Generated entity ORM (appears once you have entities)
-├── pkg/app/                   # bootstrap.go (generated) + setup.go (yours)
-├── pkg/middleware/             # Auth, logging, tenant middleware
-├── pkg/config/                # Config struct + loader
 ├── db/migrations/             # SQL migrations — THE schema source of truth (empty until you add entities)
 ├── db/queries/                # SQL query directory
 ├── deploy/                    # Docker, KCL, observability configs
 ├── e2e/                       # E2E test directory
-├── forge.yaml                 # Project config
+├── forge.yaml                 # Project config (strictly top-level: identity, features, deploy)
 ├── docker-compose.yml         # Dev infra (Postgres, LGTM, etc.)
 ├── Taskfile.yml               # Task runner aliases
 └── .reliant/skills/forge/     # These skills
@@ -93,7 +99,7 @@ forge new my-app --mod github.com/acme/my-app --service users --frontend web
 cd my-app
 ```
 
-Forge scaffolds the shell — handler skeleton, an empty service proto, middleware, wiring, and frontend. There are no tables (and no entity code) until you add an entity.
+Forge scaffolds the shell — an `internal/<svc>/` package, an empty service proto, middleware, the `internal/app` composition root, and frontend. There are no tables (and no entity code) until you add an entity.
 
 ### Phase 2: Add your first entity
 
@@ -108,7 +114,9 @@ For non-CRUD RPCs, edit the proto directly and re-run `forge generate`. It rebui
 
 ### Phase 3: Implement business logic
 
-Write your handler logic in `handlers/<svc>/service.go`. Use the generated types and the `internal/db/` ORM functions.
+Write your business logic in `internal/<svc>/` — `contract.go` declares the `Service` interface + `Deps`, and the implementation lives behind it. The handler (`handlers_gen.go`, co-located in the same dir) is thin translation that calls into the service. Use the generated types and the `internal/db/` ORM functions.
+
+Each binary's dependency graph is wired in `internal/app/build.go` — a typed `Build(...)` composition root you own. Collaborators are interface-typed fields resolved by type, so swapping a real in-process service for a Connect client (when you split it into its own Deployment) is a one-line change there, with consumers untouched.
 
 ### Phase 4: Evolve the DB schema (migrations lead, projections follow)
 
@@ -154,7 +162,7 @@ All `forge add` commands update `forge.yaml` and run the generation pipeline aut
 | Command | What it does |
 |---------|-------------|
 | `forge generate` | Regenerates infrastructure from protos + applied migrations (safe to re-run anytime) |
-| `forge up --env=dev` | Full stack: Docker infra + Go services (hot reload) + frontends. Defaults `ENVIRONMENT=development` and dev CORS origins when unset, and dev mode attaches a synthetic dev user (`devClaims()` in `pkg/middleware/middleware.go`) — so the API and generated CRUD are callable with zero auth config |
+| `forge up --env=dev` | Full stack: Docker infra + Go services (hot reload) + frontends. Defaults `ENVIRONMENT=development` and dev CORS origins when unset, and dev mode attaches a synthetic dev user (`devClaims()` in `internal/middleware/middleware.go`) — so the API and generated CRUD are callable with zero auth config |
 | `forge up --env=<env>` | Build + deploy + host launch + frontend dev — one command, reads `deploy/kcl/<env>/` |
 | `forge test` | Unit + integration tests |
 | `forge test e2e` | E2E tests (requires stack running via `forge up --env=dev`) |
@@ -199,9 +207,9 @@ the exact `POSTGRES_PORT=<free> forge up --env=dev` rerun command.
 ## Rules
 
 - Always run `forge generate` after any proto or migration change.
-- Never hand-edit `gen/` or `bootstrap.go` — they are regenerated.
+- Never hand-edit `gen/` or any `*_gen.go` file — they are regenerated. The per-binary composition root in `internal/app/build.go` is **owned code you wire** (not generated, not off-limits).
 - Use `forge add` to scaffold — never copy-paste existing directories.
 - Use `forge test`, not raw `go test` — the CLI sets the right build tags.
-- One service per proto package. One handler directory per service.
+- One service per proto package. A service's owned and generated files co-locate in one `internal/<svc>/` directory.
 - DB schema changes go through migrations, not proto edits — the SQL in `db/migrations/` is the schema truth; the ORM follows it.
 - `forge generate` is always safe — it only touches infrastructure (including the generated `internal/db/<entity>_orm.go`), never your business logic or migrations.

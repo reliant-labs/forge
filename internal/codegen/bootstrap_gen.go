@@ -667,7 +667,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 		return fmt.Errorf("render bootstrap.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "bootstrap.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "bootstrap.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/app/bootstrap.go: %w", err)
 	}
 
@@ -690,7 +690,7 @@ func GenerateBootstrap(services []ServiceDef, packages []BootstrapPackageData, w
 	if err != nil {
 		return fmt.Errorf("render services_gen.go.tmpl: %w", err)
 	}
-	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "services_gen.go"), rowsContent, cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "services_gen.go"), rowsContent, cs); err != nil {
 		return fmt.Errorf("write pkg/app/services_gen.go: %w", err)
 	}
 
@@ -1033,7 +1033,7 @@ func GenerateBootstrapTesting(services []ServiceDef, packages []BootstrapPackage
 		return fmt.Errorf("render bootstrap_testing.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(projectDir, filepath.Join("pkg", "app", "testing.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(projectDir, filepath.Join("pkg", "app", "testing.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/app/testing.go: %w", err)
 	}
 	return nil

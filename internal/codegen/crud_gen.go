@@ -302,7 +302,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		if rerr != nil {
 			return fmt.Errorf("render handlers_crud_ops_gen.go.tmpl: %w", rerr)
 		}
-		if _, werr := checksums.WriteGeneratedFile(projectDir, opsRel, content, cs, true); werr != nil {
+		if werr := writeForgeOwned(projectDir, opsRel, content, cs); werr != nil {
 			return fmt.Errorf("write handlers_crud_ops_gen.go: %w", werr)
 		}
 	} else {
@@ -449,7 +449,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 			return err
 		}
 		content := []byte(b.String())
-		if err := os.WriteFile(fullPath, content, 0o644); err != nil {
+		if err := writeUserScaffold(fullPath, content); err != nil {
 			return fmt.Errorf("write %s: %w", shimRel, err)
 		}
 		recordTier2(cs, shimRel, content)
@@ -480,7 +480,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, cs *ch
 		content = ensureImportLine(content, imp)
 	}
 	content = strings.TrimRight(content, "\n") + "\n" + blocks
-	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+	if err := writeUserScaffold(fullPath, []byte(content)); err != nil {
 		return fmt.Errorf("append CRUD shims to %s: %w", shimRel, err)
 	}
 	recordTier2(cs, shimRel, []byte(content))
@@ -1102,7 +1102,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(lifecyclePath, content, 0o644); err != nil {
+	if err := writeUserScaffold(lifecyclePath, content); err != nil {
 		return fmt.Errorf("write handlers_crud_test.go: %w", err)
 	}
 	recordTier2(cs, lifecycleRel, content)
@@ -1661,7 +1661,7 @@ func ensureDepsDBField(serviceDir string) error {
 	if content == original {
 		return nil
 	}
-	return os.WriteFile(servicePath, []byte(content), 0644)
+	return writeUserScaffold(servicePath, []byte(content))
 }
 
 // injectValidateDepsDBCheck inserts `if d.DB == nil { ... }` into the

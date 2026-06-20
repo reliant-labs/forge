@@ -87,7 +87,7 @@ func GenerateCmdServices(serviceNames []string, targetDir string, cs *checksums.
 		return fmt.Errorf("render cmd-services-gen.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("cmd", "services_gen.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("cmd", "services_gen.go"), content, cs); err != nil {
 		return fmt.Errorf("write cmd/services_gen.go: %w", err)
 	}
 	return nil
@@ -116,5 +116,5 @@ func GenerateCmdCommands(targetDir string) error {
 		return fmt.Errorf("render cmd-commands.go.tmpl: %w", err)
 	}
 
-	return os.WriteFile(dest, content, 0644)
+	return writeUserScaffold(dest, content)
 }

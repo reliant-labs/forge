@@ -385,7 +385,7 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 		return fmt.Errorf("render cmd-server.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("cmd", "server.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("cmd", "server.go"), content, cs); err != nil {
 		return fmt.Errorf("write cmd/server.go: %w", err)
 	}
 	return nil
@@ -412,7 +412,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 		return fmt.Errorf("render config.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "config", "config.go"), content, cs); err != nil {
 		return fmt.Errorf("write pkg/config/config.go: %w", err)
 	}
 
@@ -421,7 +421,7 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	if err != nil {
 		return fmt.Errorf("render env.example.tmpl: %w", err)
 	}
-	if _, err := checksums.WriteGeneratedFile(targetDir, ".env.example", envContent, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, ".env.example", envContent, cs); err != nil {
 		return fmt.Errorf("write .env.example: %w", err)
 	}
 	return nil

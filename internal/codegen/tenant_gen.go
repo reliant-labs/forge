@@ -47,7 +47,7 @@ func GenerateTenantMiddleware(mt *config.MultiTenantConfig, targetDir string, cs
 		return fmt.Errorf("render tenant_gen.go.tmpl: %w", err)
 	}
 
-	if _, err := checksums.WriteGeneratedFile(targetDir, filepath.Join("pkg", "middleware", "tenant_gen.go"), content, cs, true); err != nil {
+	if err := writeForgeOwned(targetDir, filepath.Join("pkg", "middleware", "tenant_gen.go"), content, cs); err != nil {
 		return fmt.Errorf("write tenant_gen.go: %w", err)
 	}
 

@@ -815,188 +815,34 @@ func ensureEnvDefault(env []string, key, defaultValue string) []string {
 	return append(env, prefix+defaultValue)
 }
 
-// runAllLinters runs every linter, each skipping gracefully if the required tool isn't installed.
+// runAllLinters runs every linter, each skipping gracefully if the
+// required tool isn't installed. It is a thin TEXT renderer over the
+// shared linter table (lintPipeline, in lint_steps.go) — the same table
+// the JSON aggregator (collectAllLintersJSON) renders. The ordering,
+// feature gates, dir checks, and gating verdict are declared ONCE in the
+// table; this driver only translates each step into human output.
 func runAllLinters(ctx context.Context, fix bool, paths []string, cfg *config.ProjectConfig) error {
 	fmt.Println("🔍 Running all linters...")
 	fmt.Println()
 
+	rc := &lintRunCtx{ctx: ctx, fix: fix, paths: paths, cfg: cfg, cwd: lintCwd()}
 	hasFailed := false
 
-	// 1. Standard Go linters (golangci-lint)
-	if _, err := exec.LookPath("golangci-lint"); err != nil {
-		fmt.Println("⚠️  golangci-lint not found on PATH — skipping")
-	} else if err := runGolangciLint(ctx, fix, paths); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ golangci-lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 2. Contract interface enforcement
-	if cfg != nil && !cfg.Features.ContractsEnabled() {
-		fmt.Println("⚠️  contracts feature disabled — skipping contract linter")
-	} else if _, err := resolveContractLintBinary(ctx); err != nil {
-		fmt.Println("⚠️  contractlint not available — skipping")
-	} else if err := runContractLinter(ctx, paths, contractExcludesFromConfig(cfg)); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ contract linter failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 4. Buf lint
-	if _, err := exec.LookPath("buf"); err != nil {
-		fmt.Println("⚠️  buf not found on PATH — skipping buf lint")
-	} else if err := runBufLint(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ buf lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 5. Frontend linters (tsc + eslint)
-	if err := runFrontendLinters(ctx, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Frontend lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 7. SQL migration safety lint
-	if cfg != nil && !cfg.Features.MigrationsEnabled() {
-		fmt.Println("⚠️  migrations feature disabled — skipping migration safety lint")
-	} else if err := runMigrationSafetyLint(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Migration safety lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 8. Forge convention rules (proto + internal-package contracts).
-	// Errors gate the build (a missing pk: true would silently produce
-	// broken codegen; a non-canonical contract.go would produce a
-	// bootstrap that references types that don't exist); warnings are
-	// surfaced but tolerated.
-	if dirExists("proto") || dirExists("internal") {
-		if err := runConventionLint(); err != nil {
-			fmt.Fprintf(os.Stderr, "❌ Forge convention lint failed: %v\n", err)
-			hasFailed = true
+	for _, step := range lintPipeline() {
+		run, skipMsg := step.shouldRun(rc)
+		if !run {
+			// A skip message prints a ⚠️ line; a silent skip (directory
+			// absent / cwd unavailable) prints nothing — both preserve the
+			// pre-refactor text output exactly.
+			if skipMsg != "" {
+				fmt.Println("⚠️  " + skipMsg)
+			}
+			continue
 		}
-	}
-
-	// 9. Frontend pack convention rules — only meaningful when running
-	// inside the forge repo itself (where pack sources live). Warnings
-	// only; never gates the build.
-	if dirExists(filepath.Join("internal", "packs")) {
-		if err := runFrontendPackLint(); err != nil {
-			// Soft rule, but report unexpected failures (I/O errors, etc).
-			fmt.Fprintf(os.Stderr, "⚠️  Frontend pack lint: %v\n", err)
-		}
-	}
-
-	// 10. Scaffold ownership lint — flags committed FORGE_SCAFFOLD markers
-	// and _gen files without the canonical forge header. Errors gate the
-	// build; warnings (missing "Source:" line) print but tolerate.
-	if err := runScaffoldsLint(); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Scaffold ownership lint failed: %v\n", err)
-		hasFailed = true
-	}
-
-	// 11. Handler-test convention lint — warns on hand-rolled
-	// `tests := []struct{name, call}` table tests under handlers/*/.
-	// Warnings only; never gates the build (legacy projects pre-date the
-	// scaffolded `tdd.RunRPCCases` shape and may not have migrated yet).
-	if dirExists("handlers") {
-		if err := runTestsLint(); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Handler-test lint: %v\n", err)
-		}
-	}
-
-	// 11b. Lifecycle-banner lint — only meaningful inside the forge
-	// repo itself (where template sources live). Warnings only; the
-	// helper short-circuits to a no-op when no template tree is present.
-	if dirExists(filepath.Join("internal", "templates")) ||
-		dirExists(filepath.Join("internal", "packs")) {
-		if err := runBannersLint(); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠️  Banner lint: %v\n", err)
-		}
-	}
-
-	// 13. Wire-coverage — surfaces unresolved Deps fields in
-	// pkg/app/wire_gen.go and unresolved `forge:placeholder` markers
-	// in pkg/app/app_extras.go. TODO findings are warnings (active
-	// development), placeholder findings are errors (the user
-	// explicitly promised tightening). The lint runs even when
-	// wire_gen.go is missing — placeholder errors fire purely off
-	// app_extras.go so a forge generate refused-to-write state still
-	// gets diagnosed.
-	if fileExists(filepath.Join("pkg", "app", "wire_gen.go")) ||
-		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
-		cwd, err := os.Getwd()
-		if err == nil {
-			if err := runWireCoverageLint(cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "❌ wire-coverage lint: %v\n", err)
+		if err := step.runText(rc); err != nil {
+			fmt.Fprintf(os.Stderr, step.errFormat, err)
+			if step.gates {
 				hasFailed = true
-			}
-		}
-	}
-
-	// 13b. Bootstrap-deps-coverage — sibling check to wire-coverage that
-	// catches the audit-no-op silent-drop bug class. When AppExtras has
-	// a same-name field as pkg.Deps but types diverge,
-	// inspectComponentDepsShape silently skips the wire and the package
-	// constructs with nil. Empirically reproduced in the cp-forge v2
-	// migration (audit.Deps.Repo = audit.Repository vs
-	// AppExtras.Repo = *db.PostgresRepository). Failures contribute to
-	// hasFailed.
-	if fileExists(filepath.Join("pkg", "app", "bootstrap.go")) &&
-		fileExists(filepath.Join("pkg", "app", "app_extras.go")) {
-		cwd, err := os.Getwd()
-		if err == nil {
-			if err := runBootstrapDepsCoverageLint(cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "bootstrap-deps-coverage lint failed: %v\n", err)
-				hasFailed = true
-			}
-		}
-	}
-
-	// 13c. Optional-deps-guard — flags derefs of `// forge:optional-dep`
-	// Deps fields not dominated by a nil-guard in the same function.
-	// Optional fields skip validateDeps by design, so an unguarded
-	// `s.deps.X.Method(...)` is a latent nil-panic no startup gate
-	// catches (cp-forge FRICTION #23/#33/#69; kalshi optional-many
-	// workers). Warnings only — the walker is intentionally not full
-	// dataflow; confirmed-safe sites suppress with
-	// `// forge:optional-checked` on the deref line.
-	if dirExists("internal") || dirExists("handlers") ||
-		dirExists("workers") || dirExists("operators") {
-		cwd, err := os.Getwd()
-		if err == nil {
-			if err := runOptionalDepsGuardLint(cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  optional-deps-guard lint: %v\n", err)
-			}
-		}
-	}
-
-	// 13d. Config-deps — flags scalar Deps fields (the naked-scalar
-	// antipattern). Scalars are configuration, not collaborators:
-	// wire_gen can never resolve them from App/AppExtras, so they
-	// regenerate as typed zeros + TODOs forever (kalshi-trader
-	// WTIPersistMaxPerTick, fr-ad24278452) or force the AppExtras +
-	// setup.go hand-projection workaround. The supported shape is a
-	// component config block in proto/config taken as ONE typed field
-	// (`Cfg config.<Component>Config`). Warnings only.
-	if dirExists("internal") || dirExists("handlers") ||
-		dirExists("workers") || dirExists("operators") {
-		cwd, err := os.Getwd()
-		if err == nil {
-			if err := runConfigDepsLint(cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  config-deps lint: %v\n", err)
-			}
-		}
-	}
-
-	// 14. Check-workarounds — flags the canonical cross-lane workarounds
-	// (FORGE_REVIEW_PROCESS.md §2): cast<X>Repo helpers in wire_gen.go,
-	// pkg/app/testing_extras.go hand-rolled stubs, cmd/<name>.go files
-	// not declared in forge.yaml's binaries: block. Warnings only —
-	// these can be legitimate in some projects, but each has a canonical
-	// forge-primitive replacement either already-landed or in flight.
-	{
-		cwd, err := os.Getwd()
-		if err == nil {
-			if err := runCheckWorkaroundsLint(cwd); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠️  check-workarounds lint: %v\n", err)
 			}
 		}
 	}

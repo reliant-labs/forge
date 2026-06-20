@@ -163,18 +163,8 @@ func (p ExternalProvider) deployOne(ctx context.Context, runner commandRunner, g
 
 	// Merge resolved secrets (from a dotenv secret_provider) as the BASE
 	// layer, then let env_file entries override on conflict — the explicit
-	// file wins. No-op when svc.Secrets is nil/empty (the common case for
-	// external/none providers), preserving the pre-secrets behaviour.
-	if len(svc.Secrets) > 0 {
-		merged := make(map[string]string, len(svc.Secrets)+len(envOverlay))
-		for k, v := range svc.Secrets {
-			merged[k] = v
-		}
-		for k, v := range envOverlay {
-			merged[k] = v // env_file wins
-		}
-		envOverlay = merged
-	}
+	// file wins.
+	envOverlay = mergeSecretsUnderEnvFile(svc.Secrets, envOverlay)
 
 	if err := runner.RunWithEnv(ctx, envOverlay, "sh", "-c", expanded); err != nil {
 		return fmt.Errorf("external %s: deploy_cmd: %w", svc.Name, err)
@@ -255,6 +245,25 @@ func (p ExternalProvider) rollbackOne(ctx context.Context, runner commandRunner,
 // silently dropping a misconfigured file would let the deploy proceed
 // with the wrong env, which is exactly the failure mode env_file is
 // meant to prevent.
+// mergeSecretsUnderEnvFile layers resolved secrets (from a dotenv
+// secret_provider) as the BASE env map, then lets envFile entries
+// override on conflict — the explicit file wins. It is a no-op (returns
+// envFile unchanged) when secrets is nil/empty (the common case for
+// external/none providers), preserving the pre-secrets behaviour.
+func mergeSecretsUnderEnvFile(secrets, envFile map[string]string) map[string]string {
+	if len(secrets) == 0 {
+		return envFile
+	}
+	merged := make(map[string]string, len(secrets)+len(envFile))
+	for k, v := range secrets {
+		merged[k] = v
+	}
+	for k, v := range envFile {
+		merged[k] = v // env_file wins
+	}
+	return merged
+}
+
 func loadExternalEnvFile(path string) (map[string]string, error) {
 	if path == "" {
 		return nil, nil

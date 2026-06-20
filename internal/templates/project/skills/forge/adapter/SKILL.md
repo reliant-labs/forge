@@ -97,9 +97,19 @@ Your adapter wraps whatever client you choose — raw HTTP, the vendor SDK, an R
 - **Test against a stub server.** Never against the live downstream.
 - **Adapters are leaf nodes.** No other adapters / services in the dep struct.
 
-## When an adapter needs a value from another constructed component
+## When a consumer must register onto the adapter (two-phase wiring)
 
-Adapters are leaf nodes at construction time, but occasionally a downstream consumer wants to register a callback / sink / handler onto the adapter after both it and the consumer exist (e.g. an event bus adapter receiving subscribers from services constructed later). Don't add the consumer to the adapter's `Deps` — that inverts the leaf rule. Use `PostBootstrap` in `pkg/app/post_bootstrap.go` to do the registration after `Bootstrap` returns. See the `interactor` skill's "Late-bound dependencies" section for the canonical shape.
+Adapters are leaf nodes at construction, but occasionally a downstream consumer registers a callback / sink / subscriber onto the adapter after both exist (e.g. an event-bus adapter receiving subscribers from services built later). Don't add the consumer to the adapter's `Deps` — that inverts the leaf rule, and constructor topo-ordering alone deadlocks on this shape.
+
+Use **construct-then-register** inside `Build`: build the adapter, build the consumer, then call the register/subscribe setter. It's an ordinary method call after both ends exist — not a framework seam.
+
+```go
+bus := eventbus.New(eventbus.Deps{Logger: log})
+svc := orders.New(orders.Deps{Bus: bus})  // consumer holds the adapter interface
+bus.Subscribe("order.created", svc.OnOrderCreated)  // phase two
+```
+
+There is no `PostBootstrap` / `post_bootstrap.go` seam — late registration is plain Go in the composition root. See the `interactor` skill for the canonical two-phase shape.
 
 <!-- @forge-only:start -->
 ## Forge scaffolding
@@ -127,20 +137,20 @@ Every adapter package's `contract.go` carries a `// forge:adapter` marker commen
 
 - `forgeconv-adapter-no-rpc` — adapter packages must not register Connect RPC handlers. Adapters are outbound-only; an RPC means it's actually a service.
 
-## Wiring in `pkg/app/setup.go`
+## Wiring: construct in the composition root
+
+An adapter is a leaf built in your binary's typed composition root (`Build`) and passed to consumers as an **interface**. No `Setup(app *App)`, no name-matched `App` fields — just construct it and hand it down.
 
 ```go
-func Setup(app *App) error {
-    app.Stripe = stripe_adapter.New(stripe_adapter.Deps{
-        Logger:     app.Logger,
-        HTTPClient: &http.Client{Timeout: 30 * time.Second},
-        BaseURL:    app.Config.StripeBaseURL,
-    })
-    return nil
-}
+// internal/app/build.go
+stripe := stripeadapter.New(stripeadapter.Deps{
+    HTTPClient: &http.Client{Timeout: 30 * time.Second},
+    Cfg:        infra.Config.Stripe,  // scalars travel as one typed Config block
+})
+bill := billing.New(billing.Deps{Charges: stripe})  // consumer sees stripeadapter.Service, not the concrete type
 ```
 
-The bootstrap template emits the wiring slot; you fill it.
+Because the consumer depends on the interface, swapping the real adapter for a mock (tests) or a different backend is a one-line change here — the consumer is untouched.
 
 ## When this skill is not enough (forge sub-skills)
 

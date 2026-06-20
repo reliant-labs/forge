@@ -18,7 +18,7 @@ If a handler grows past those six steps, the extra logic belongs behind the serv
 
 ## Where handlers live, and what codegen gives you for free
 
-Handlers live in `handlers/<svc>/`. Each service struct embeds the generated `Unimplemented*Handler` and implements RPC methods:
+Handlers live in `internal/<svc>/` — the same directory as that service's `contract.go` and its impl. There is no separate top-level `handlers/` tree; the generated handler files (`handlers_gen.go`, `handlers_crud_ops_gen.go`) and the owned ones (`handlers_crud.go`, `validators.go`, `authorizer.go`) sit beside the service they belong to. Each service struct embeds the generated `Unimplemented*Handler` and implements RPC methods:
 
 ```go
 type UserService struct {
@@ -37,7 +37,7 @@ RPCs are defined in `proto/services/<svc>/v1/<svc>.proto`. Naming conventions ma
 
 **Hand-written handler methods always take priority** — the generator skips any method you've already implemented. After any proto change, run `forge generate`; never hand-edit `gen/` or `*_gen.go` files (fix the proto source instead).
 
-Cross-cutting concerns (auth, logging, recovery, request IDs) live in the forge middleware libraries (`forge/pkg/{authn,authz,middleware,observe}`) plus the thin policy file `pkg/middleware/middleware.go`, wired in `cmd/server.go` — not in handlers.
+Cross-cutting concerns (auth, logging, recovery, request IDs) live in the forge middleware libraries (`forge/pkg/{authn,authz,middleware,observe}`) plus the thin policy file `internal/middleware/middleware.go`, composed in the binary's `Build` and mounted by its cobra subcommand — not in handlers.
 
 ## The canonical handler
 
@@ -108,9 +108,9 @@ Picking the right code matters to clients: `NotFound` vs `InvalidArgument` vs `I
 
 ### Why no per-service helper
 
-Pre-1.7 forge prescribed a per-service `mapServiceError` / `toConnectError` helper. Across the cpnext dogfood pass that produced **four byte-identical copies** of the same switch statement in `handlers/{billing,daemon,llm_gateway,org}/handlers.go` — each one mapping the same sentinels to the same Connect codes. The skill earned the duplication. The fix is to ship one mapping, in one library, and have every handler call into it.
+Pre-1.7 forge prescribed a per-service `mapServiceError` / `toConnectError` helper. Across the cpnext dogfood pass that produced **four byte-identical copies** of the same switch statement in `internal/{billing,daemon,llm_gateway,org}/handlers.go` — each one mapping the same sentinels to the same Connect codes. The skill earned the duplication. The fix is to ship one mapping, in one library, and have every handler call into it.
 
-`forge lint --conventions` ships a warning (`forgeconv-no-handler-error-mapping`) that flags any handler-tree file declaring a function whose name and body shape match the old per-service mapper pattern. If you see that warning, replace the helper with `svcerr.Wrap`.
+`forge lint --conventions` ships a warning (`forgeconv-no-handler-error-mapping`) that flags any service-package file declaring a function whose name and body shape match the old per-service mapper pattern. If you see that warning, replace the helper with `svcerr.Wrap`.
 
 ## Domain sentinels live in the service layer
 
@@ -187,7 +187,7 @@ return nil, svcerr.WithDetail(
 Wire-format validation (required fields, bounds, format) goes in a per-service `validators.go`:
 
 ```go
-// handlers/things/validators.go
+// internal/things/validators.go
 func validateDoThingRequest(req *apiv1.DoThingRequest) error {
     if req.Name == "" {
         return errors.New("name is required")
@@ -234,7 +234,7 @@ With this shape, handler unit tests are nearly mechanical:
 
 - Construct a `MockService` from `internal/things/mock_gen.go`.
 - Set up `mockSvc.On("DoThing", mock.Anything, expectedInput).Return(result, nil)`.
-- Call the handler via the test helper from `pkg/app/testing.go`.
+- Call the handler via the test helper from `internal/app/testing.go`.
 - Assert the response or `connect.CodeOf(err)`.
 
 For error-path tests, return a `svcerr.Err*` sentinel (or constructor) from the mock and assert `connect.CodeOf(err)` matches the expected code — the wrap is library-tested, you don't have to re-cover it per service.
@@ -249,7 +249,7 @@ forge test --service users
 ## Rules
 
 - Six steps. No business logic in the handler.
-- Validators are pure, testable functions in `handlers/<svc>/validators.go`.
+- Validators are pure, testable functions in `internal/<svc>/validators.go`.
 - Error mapping is `svcerr.Wrap(err)` — always, in every handler. Do not write a per-service helper.
 - Define domain failures with `svcerr` sentinels (`svcerr.ErrNotFound` etc.) or constructors (`svcerr.NotFound("user")`) in `internal/<svc>/`.
 - Never pass `req.Msg` directly into a service. Always convert to an internal input type.
@@ -258,40 +258,36 @@ forge test --service users
 - Hand-written handler methods take priority over generated CRUD — the generator skips any method you implement. The primary customization path for a CRUD RPC is replacing its delegation in the user-owned `handlers_crud.go`.
 - Run `forge generate` after any proto change; never hand-edit `gen/`, `handlers_crud_ops_gen.go`, or `authorizer_gen.go` (custom authorization goes in `authorizer.go`; CRUD customization goes in `handlers_crud.go`).
 
-## Cross-lane type placeholders (`forge:placeholder`)
+## Where a handler's collaborators come from (the composition root)
 
-Parallel agent lanes often need to declare an `AppExtras` field whose typed `Repository` / `Client` / `Provider` lives in a sibling lane that has not yet landed. The historical workaround was to type the field as `any` and add an inline cast in `wire_gen.go` (the `castUserRepo` shim that shipped to cpnext was the canonical example). That bridge typed the field at the wrong layer and silently masked the case where the sibling lane *never* landed — the worker registered with `Repo == nil` and quietly no-op'd in production.
+A handler never resolves its own dependencies. Each binary owns a typed composition root — `Build(infra) (*Server, error)` in `internal/app/` — that constructs every service in topological order and hands each one its `Deps` as **interface-typed fields, resolved by type**. A handler's `Deps.Things` is a `things.Service` interface; the handler cannot tell whether `Build` filled it with the real in-process service, a Connect client to another binary, or a mock.
 
-`forge:placeholder` makes the deferred-typing intent explicit. Declare the AppExtras field as `any` AND tag it with the target type the marker promises will land:
+There is no `AppExtras` struct, no string-keyed registry, and no name-matched `wire_gen.go`. The Deps fields are filled in exactly one place — `Build` — so the wiring is plain, compile-checked Go:
 
 ```go
-// pkg/app/app_extras.go
-type AppExtras struct {
-    // UserRepo is owned by the user-handler lane; type lands when that
-    // lane merges. Tighten this declaration to user.Repository at merge
-    // time — the marker becomes a no-op once the field type matches.
-    // forge:placeholder: user.Repository
-    UserRepo any
-}
+// internal/app/build.go
+things := things.New(things.Deps{Repo: repo, Logger: log})
+srv.MountThings(thingsHandler.New(thingsHandler.Deps{Things: things}))
 ```
 
-Both the comment shape (matches `// forge:optional-dep`) and the struct-tag shape (`UserRepo any \`forge:placeholder:"user.Repository"\``) are accepted.
+If `repo` does not satisfy `things.Repository`, it does not compile — there is no name-match layer to silently drop a narrow-interface mismatch.
 
-Three things change when the marker is present:
+**Deferred / cross-lane typing is handled by the seam, not by a placeholder marker.** When a collaborator's concrete type lands in a sibling lane that hasn't merged, the handler still depends only on the *interface* (`Things things.Service`). The collaborator interface is the seam: the default fill is the real in-process instance, and splitting the service out later — or swapping in a client or a mock — is a one-line change in `Build`, with the handler untouched:
 
-1. **wire_gen** emits a typed `resolveUserRepo(app) user.Repository` accessor at file scope. Each consuming `wireXxxDeps` calls the accessor instead of `app.UserRepo`, so the typed Deps field receives a typed value. The accessor compiles whether the AppExtras field is still `any` (during the cross-lane port) or already typed `user.Repository` (after tightening) — `any(app.UserRepo).(user.Repository)` is a no-op in the latter case.
-2. **`forge generate` ERRORS** when an AppExtras field carries the marker but is still typed `any`. The build halts with a message naming the field, the current type, and the target type — the user knows exactly which declaration to tighten.
-3. **`forge lint --wire-coverage` ERRORS** on the same condition, even when `wire_gen.go` is missing (the placeholder error fires off `app_extras.go` directly so a `forge generate`-refused-to-write state still gets diagnosed).
+```go
+// in-process default:
+Things: things.New(things.Deps{Repo: repo}),
+// split to its own Deployment later — handler unchanged:
+Things: thingsclient.New(conn),
+// mock in a test — handler unchanged:
+Things: mockThings,
+```
 
-Once you tighten the AppExtras declaration from `UserRepo any` to `UserRepo user.Repository`, the marker becomes a no-op — the build-time gate stops firing, the runtime accessor is still emitted, and the type assertion in `resolveUserRepo` becomes a degenerate `any(typed).(typed)` that always succeeds.
-
-If `app.UserRepo` is nil at runtime (e.g. the `setup.go` wiring forgot to assign it), the accessor panics with a clear message. That's deliberate — silent nil passthrough is the bug class the marker exists to surface.
-
-Use `forge:placeholder` only when the typed value originates from a sibling parallel-agent lane. For genuinely optional fields, use `forge:optional-dep` instead — see the next section.
+Because every dep is an interface filled in one place, "run the app with Things mocked" is a few-line call against `Build` — no framework, no `any`-typed placeholder, no runtime nil hazard. A missing collaborator is a compile error or a loud `validateDeps()` failure at construction, never a typed-zero that quietly no-ops in production.
 
 ## Marking optional Deps fields
 
-Most `Deps` fields are required for production traffic — wire_gen sources them from `*App` at startup, `validateDeps()` rejects nil, and per-RPC `if s.deps.X == nil` checks become dead code. The upgrade codemod will strip those checks because they're boilerplate.
+Most `Deps` fields are required for production traffic — `Build` fills them at construction, `validateDeps()` rejects nil, and per-RPC `if s.deps.X == nil` checks become dead code. The upgrade codemod will strip those checks because they're boilerplate.
 
 A small set of fields are **legitimately optional** — a NATS publisher used only on the rollback path, an audit fallback, an optional gateway feature. For these, tag the field with the `// forge:optional-dep` marker on the line directly above (or as the inline trailing comment after) the declaration:
 
@@ -308,24 +304,23 @@ type Deps struct {
 }
 ```
 
-Three things change when the marker is present:
+Two things change when the marker is present:
 
-1. **wire_gen** emits the typed-zero assignment silently — no inline `// TODO: wire NATSPublisher`, no contribution to the `UNRESOLVED FIELDS` header. The user explicitly opted in to "may be nil"; warning every regenerate is noise.
-2. **validateDeps()** must NOT include a check for the field. The marker says "nil is OK"; gating it would defeat the design.
-3. **Per-RPC nil-checks** like `if s.deps.NATSPublisher != nil { s.deps.NATSPublisher.Publish(...) }` are idiomatic Go and the upgrade codemod leaves them alone.
+1. **validateDeps()** must NOT include a check for the field. The marker says "nil is OK"; gating it would defeat the design.
+2. **Per-RPC nil-checks** like `if s.deps.NATSPublisher != nil { s.deps.NATSPublisher.Publish(...) }` are idiomatic Go for an optional dep and stay. (For *non*-optional deps, drop these checks — `validateDeps()` already gates non-nil at construction.)
 
-`forge lint --conventions` catches misplaced markers (`forgeconv-optional-dep-marker-position`) — the marker only takes effect when attached to a `Deps` struct field, so a typo on the struct or a function docstring fails loudly. `forge lint --wire-coverage` reports any non-optional unresolved Deps fields so they don't accumulate silently.
+`forge lint --conventions` catches misplaced markers (`forgeconv-optional-dep-marker-position`) — the marker only takes effect when attached to a `Deps` struct field, so a typo on the struct or a function docstring fails loudly.
 
 ## Extending Repository without breaking sibling fakes (role-interface pattern)
 
 `Repository` is the canonical name for a service's storage interface. The greenfield convention is "one Repository per service, extend as needed" — a Get<Entity>/Create<Entity>/List<Entity> method per RPC, all on the same interface. That works for a single agent owning the whole package.
 
-In a parallel-migration round it does *not* work. Adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes in `handlers/<svc>/handlers_test.go`, in-memory fakes in `e2e/`, the generated mock under `handlers/mocks/`). Agent A adds `GetModelPerformance`; agent B's fakes — or worse, an in-flight rebase carrying stale Repository methods — instantly fail to compile.
+In a parallel-migration round it does *not* work. Adding a single method to `Repository` atomically breaks every fake Repository in sibling files (test fakes in `internal/<svc>/handlers_test.go`, in-memory fakes in `e2e/`, the generated mock in `internal/<svc>/mock_gen.go`). Agent A adds `GetModelPerformance`; agent B's fakes — or worse, an in-flight rebase carrying stale Repository methods — instantly fail to compile.
 
 **The recommended shape** when adding a new method to an existing Repository in a parallel-migration round is the **opt-in role interface**: declare a small, narrow interface in the file that consumes it, and have the handler type-assert `s.deps.Repo` to that interface at call time.
 
 ```go
-// handlers/api/handlers.go
+// internal/api/handlers.go
 
 // ModelPerformanceLister is the narrow read surface for GetModelPerformance.
 // It's declared alongside the consuming method so sibling fakes that don't
@@ -372,4 +367,4 @@ See `forge lint --conventions` for the matching check that flags a role interfac
 - **Proto-level concerns** (annotations, CRUD naming, pagination shape) — see `proto`.
 - **Auth wiring and provider choice** — see `auth` and `packs`.
 - **Test patterns** beyond the unit handler test — see `testing/patterns`.
-- **Naming conventions** across Go (`PascalCase` types, `camelCase` locals), proto (`snake_case` fields, `PascalCase` messages), and on-disk paths (`snake_case` directories under `handlers/`) — see `architecture` → **Naming conventions**.
+- **Naming conventions** across Go (`PascalCase` types, `camelCase` locals), proto (`snake_case` fields, `PascalCase` messages), and on-disk paths (`snake_case` service directories under `internal/`) — see `architecture` → **Naming conventions**.

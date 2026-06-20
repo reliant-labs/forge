@@ -9,28 +9,27 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
-// Severity tags a Finding as either a build-blocking error or an
-// advisory warning.
-type Severity string
+// Severity and Finding now live in the shared internal/linter/finding
+// package. SeverityWarn is kept as a package-local alias for source
+// compatibility, but it now resolves to the canonical "warning"
+// spelling (previously this package spelled it "warn" — the only
+// migration-visible change is that FormatText now renders "warning").
+type (
+	Severity = finding.Severity
+	Finding  = finding.Finding
+)
 
-// Severity enum values.
+// Severity enum values (aliases onto the canonical single-spelling set).
 const (
-	SeverityError Severity = "error"
-	SeverityWarn  Severity = "warn"
+	SeverityError = finding.SeverityError
+	SeverityWarn  = finding.SeverityWarning
 )
-
-// Finding is one violation surfaced by the migration linter.
-type Finding struct {
-	File     string
-	Line     int
-	Rule     string
-	Severity Severity
-	Message  string
-}
 
 // Result aggregates every Finding from a migration-dir lint pass.
+// Distinct type (not an alias) so migrationlint keeps its own FormatText.
 type Result struct {
 	Findings []Finding
 }
@@ -271,14 +270,11 @@ func updatedColumns(statement string) []string {
 }
 
 func severityFor(value string) Severity {
-	switch strings.ToLower(value) {
-	case "error":
-		return SeverityError
-	case "warn", "warning":
-		return SeverityWarn
-	default:
-		return ""
-	}
+	// Empty Severity ("") means "rule disabled" — ParseSeverity returns
+	// ("", false) for unrecognized values, which collapses to the same
+	// disabled sentinel the callers already check for.
+	sev, _ := finding.ParseSeverity(value)
+	return sev
 }
 
 // allowDestructivePragmaRe matches either of the supported in-file opt-out

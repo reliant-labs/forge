@@ -69,6 +69,25 @@ func validateServiceName(name string) error {
 	return nil
 }
 
+// requireNoComponentNamed enforces that no component in the project already
+// claims `name`, returning a user-facing UserErr (with a Fix clause) when one
+// does. Components share a single name namespace — server/worker/cron/operator/
+// binary all live in cfg.Components and collide on name — so every
+// `forge add <component>` path funnels its conflict check through here to get a
+// uniform message that also names the existing component's kind. `ctxLabel` is
+// the caller's "forge add <kind> <name>" boundary label.
+func requireNoComponentNamed(cfg *config.ProjectConfig, name, ctxLabel string) error {
+	for _, comp := range cfg.Components {
+		if comp.Name == name {
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("%q already exists in the project as a %s", name, comp.EffectiveKind()),
+				"",
+				"pick a different name, or remove the existing component first")
+		}
+	}
+	return nil
+}
+
 // validateIdentifier checks that a name is valid for use as a service, worker,
 // or operator name. Hyphens and underscores are allowed in the display name;
 // templates use snakeCase/pascalCase helpers to convert when a Go identifier
@@ -575,14 +594,13 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 
 	// Check for name conflict (workers/crons are components).
-	for _, svc := range cfg.Components {
-		if svc.Name == name {
-			return fmt.Errorf("%q already exists in the project", name)
-		}
+	if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
+		return err
 	}
 
 	if kind == "cron" {
@@ -715,8 +733,10 @@ Example:
 }
 
 func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceholderCRD bool) error {
+	ctxLabel := fmt.Sprintf("forge add operator %s", name)
 	if err := validateIdentifier(name); err != nil {
-		return fmt.Errorf("invalid operator name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid operator name", "",
+			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
 	root, err := projectRoot()
@@ -730,17 +750,16 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 	if !cfg.Features.OperatorsEnabled() {
 		return config.DisabledFeatureError(config.FeatureOperators)
 	}
 
 	// Check for name conflict (operators are kind=operator components).
-	for _, svc := range cfg.Components {
-		if svc.Name == name {
-			return fmt.Errorf("%q already exists in the project", name)
-		}
+	if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
+		return err
 	}
 
 	// Default group from project name
@@ -848,8 +867,10 @@ Example:
 }
 
 func runAddCRD(name, group, version, shape, operator string) error {
+	ctxLabel := fmt.Sprintf("forge add crd %s", name)
 	if err := validateIdentifier(name); err != nil {
-		return fmt.Errorf("invalid CRD name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid CRD name", "",
+			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
 	root, err := projectRoot()
@@ -863,7 +884,8 @@ func runAddCRD(name, group, version, shape, operator string) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 
 	// Resolve target operator: explicit flag > only-operator > error.
@@ -876,7 +898,9 @@ func runAddCRD(name, group, version, shape, operator string) error {
 			}
 		}
 		if operatorIdx == -1 {
-			return fmt.Errorf("operator %q not found in forge.yaml; run `forge add operator %s` first", operator, operator)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("operator %q not found in forge.yaml", operator), "",
+				fmt.Sprintf("run `forge add operator %s` first", operator))
 		}
 	} else {
 		operatorCount := 0
@@ -888,11 +912,13 @@ func runAddCRD(name, group, version, shape, operator string) error {
 		}
 		switch operatorCount {
 		case 0:
-			return fmt.Errorf("no operators in this project; run `forge add operator <name>` first")
+			return cliutil.UserErr(ctxLabel, "no operators in this project", "",
+				"run `forge add operator <name>` first")
 		case 1:
 			operator = cfg.Components[operatorIdx].Name
 		default:
-			return fmt.Errorf("multiple operators in this project; pass --operator <name> to disambiguate")
+			return cliutil.UserErr(ctxLabel, "multiple operators in this project", "",
+				"pass --operator <name> to disambiguate")
 		}
 	}
 
@@ -912,12 +938,16 @@ func runAddCRD(name, group, version, shape, operator string) error {
 
 	crdShape := generator.CRDShape(shape)
 	if !crdShape.IsValid() {
-		return fmt.Errorf("invalid --shape %q (valid: state-machine, config, composite)", shape)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid --shape %q", shape), "",
+			"pass --shape state-machine, config, or composite")
 	}
 
 	for _, c := range op.CRDs {
 		if c.Name == name {
-			return fmt.Errorf("CRD %q already exists in operator %q", name, operator)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("CRD %q already exists in operator %q", name, operator), "",
+				"pick a different CRD name, or remove the existing one first")
 		}
 	}
 
@@ -1020,15 +1050,19 @@ func validateFrontendName(name string) error {
 }
 
 func runAddFrontend(ctx context.Context, name string, port int, kind, output, basePath string) error {
+	ctxLabel := fmt.Sprintf("forge add frontend %s", name)
 	if err := validateFrontendName(name); err != nil {
-		return fmt.Errorf("invalid frontend name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid frontend name", "",
+			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	switch kind {
 	case "", "web", "mobile", "vite-spa":
 	default:
-		return fmt.Errorf("invalid frontend kind %q: valid kinds are web, mobile, vite-spa", kind)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid frontend kind %q", kind), "",
+			"pass --kind web, mobile, or vite-spa")
 	}
 
 	// --output applies only to Next.js (kind=web / kind=""). Reject
@@ -1038,10 +1072,14 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 	switch output {
 	case "", "static", "standalone", "server":
 	default:
-		return fmt.Errorf("invalid --output %q: valid values are standalone (default), static, server", output)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("invalid --output %q", output), "",
+			"pass --output standalone (default), static, or server")
 	}
 	if output != "" && kind != "" && kind != "web" {
-		return fmt.Errorf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("--output only applies to Next.js frontends (--kind web); got --kind %q", kind), "",
+			"drop --output for non-web frontends, or use --kind web")
 	}
 
 	// --base-path follows the same Next.js-only rule, plus the strict
@@ -1051,10 +1089,14 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 	basePath = strings.TrimSpace(basePath)
 	if basePath != "" {
 		if msg, ok := config.ValidateBasePath(basePath); !ok {
-			return fmt.Errorf("invalid --base-path %q: %s", basePath, msg)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("invalid --base-path %q: %s", basePath, msg), "",
+				"use a leading \"/\", no trailing \"/\", and [A-Za-z0-9._-] segments")
 		}
 		if kind != "" && kind != "web" {
-			return fmt.Errorf("--base-path only applies to Next.js frontends (--kind web); got --kind %q", kind)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("--base-path only applies to Next.js frontends (--kind web); got --kind %q", kind), "",
+				"drop --base-path for non-web frontends, or use --kind web")
 		}
 	}
 
@@ -1069,13 +1111,17 @@ func runAddFrontend(ctx context.Context, name string, port int, kind, output, ba
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 
 	// Check for name conflict
 	for _, frontend := range cfg.Frontends {
 		if frontend.Name == name {
-			return fmt.Errorf("frontend %q already exists in the project", name)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("frontend %q already exists in the project", name),
+				"",
+				"pick a different name, or remove the existing frontend first")
 		}
 	}
 
@@ -1260,8 +1306,10 @@ Example:
 }
 
 func runAddWebhook(name, serviceName string) error {
+	ctxLabel := fmt.Sprintf("forge add webhook %s", name)
 	if err := validateProjectName(name); err != nil {
-		return fmt.Errorf("invalid webhook name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid webhook name", "",
+			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
 	root, err := projectRoot()
@@ -1275,7 +1323,8 @@ func runAddWebhook(name, serviceName string) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 
 	// Find the target service.
@@ -1287,7 +1336,9 @@ func runAddWebhook(name, serviceName string) error {
 		}
 	}
 	if svcIdx == -1 {
-		return fmt.Errorf("service %q not found in forge.yaml", serviceName)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("service %q not found in forge.yaml", serviceName), "",
+			fmt.Sprintf("run `forge add service %s` first, or pass --service with an existing service name", serviceName))
 	}
 	// Webhooks require a serving binary; declaring one on a service this
 	// binary does not register (no serviceRow in pkg/app/services.go)
@@ -1296,14 +1347,18 @@ func runAddWebhook(name, serviceName string) error {
 	// the generate-time check is the hard gate.
 	if reg, regErr := loadServiceRegistry(root); regErr == nil &&
 		isConnectServiceConfig(cfg.Components[svcIdx]) && !reg.registered(serviceName) {
-		return fmt.Errorf("service %q is not registered in %s — webhooks require a serving binary; add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it",
-			serviceName, serviceRegistryRelPath, codegen.ServiceRowFuncName(serviceName))
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("service %q is not registered in %s — webhooks require a serving binary", serviceName, serviceRegistryRelPath),
+			"",
+			fmt.Sprintf("add `%s(app, cfg, logger, opts...),` to RegisteredServices there first, or add the webhook to the binary that serves it", codegen.ServiceRowFuncName(serviceName)))
 	}
 
 	// Check for duplicate webhook.
 	for _, wh := range cfg.Components[svcIdx].Webhooks {
 		if wh.Name == name {
-			return fmt.Errorf("webhook %q already exists in service %q", name, serviceName)
+			return cliutil.UserErr(ctxLabel,
+				fmt.Sprintf("webhook %q already exists in service %q", name, serviceName), "",
+				"pick a different webhook name, or remove the existing one first")
 		}
 	}
 
@@ -1379,8 +1434,10 @@ Example:
 }
 
 func runAddBinary(name string) error {
+	ctxLabel := fmt.Sprintf("forge add binary %s", name)
 	if err := validateIdentifier(name); err != nil {
-		return fmt.Errorf("invalid binary name: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "invalid binary name", "",
+			"use a name starting with a letter, containing letters/digits/_/-", err)
 	}
 
 	root, err := projectRoot()
@@ -1394,21 +1451,23 @@ func runAddBinary(name string) error {
 	configPath := filepath.Join(root, "forge.yaml")
 	cfg, err := generator.ReadProjectConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
+		return cliutil.WrapUserErr(ctxLabel, "read project config", configPath,
+			"verify forge.yaml is valid YAML", err)
 	}
 
 	// Conflict checks. Binaries share the cmd/ directory with the
 	// canonical `cmd/server.go` and any per-service shared subcommands,
 	// so we check every component (server/worker/cron/operator/binary).
-	for _, comp := range cfg.Components {
-		if comp.Name == name {
-			return fmt.Errorf("%q already exists in the project as a %s", name, comp.EffectiveKind())
-		}
+	if err := requireNoComponentNamed(cfg, name, ctxLabel); err != nil {
+		return err
 	}
 	// Reserved cobra subcommand names that would shadow the binary.
 	switch naming.ServicePackage(name) {
 	case "server", "version", "db":
-		return fmt.Errorf("%q conflicts with a reserved cobra subcommand; pick a different name", name)
+		return cliutil.UserErr(ctxLabel,
+			fmt.Sprintf("%q conflicts with a reserved cobra subcommand", name),
+			"",
+			"pick a different name (server/version/db are reserved)")
 	}
 
 	fmt.Printf("Adding binary '%s'...\n", name)

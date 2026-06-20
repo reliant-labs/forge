@@ -66,7 +66,7 @@ Same shape for both `service` and `cli` targets:
      exclude: []
    ```
    See the `contracts` skill. Enabling this upfront prevents a 5-hour backfill at the end.
-5. Port app code into `internal/`. Everything not imported outside the module lives there — services (`internal/<svc>/`, contract + impl + `handlers_gen.go` co-located in ONE dir), workers, operators. Order: utility code and domain types first, then the service impls and handlers, then wiring. The wiring is the owned composition root `internal/app/build.go` — a typed `Build(infra) (*Server, error)` you own and edit by hand. There is NO generated `bootstrap.go` re-emitted under you, so porting wiring is just editing your own `Build`. (`pkg/` is reserved for code you'll support as public API; absent real external importers, port into `internal/`, not `pkg/`.)
+5. Port app code into `internal/`. Everything not imported outside the module lives there — services (`internal/handlers/<svc>/`, contract + impl + `handlers_gen.go` co-located in ONE dir), workers (`internal/workers/<name>/`), operators (`internal/operators/<name>/`). Order: utility code and domain types first, then the service impls and handlers, then wiring. The wiring is the owned composition root `internal/app/build.go` — a typed `Build(infra) (*Server, error)` you own and edit by hand. There is NO generated `bootstrap.go` re-emitted under you, so porting wiring is just editing your own `Build`. (`pkg/` is reserved for code you'll support as public API; absent real external importers, port into `internal/`, not `pkg/`.)
 6. Add `forge lint --contract` to the gate after every port phase. If a port leaves a package without `contract.go`, lint fails — fix before moving on.
 
 ## Pack interactions

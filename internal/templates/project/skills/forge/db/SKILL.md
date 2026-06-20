@@ -33,7 +33,7 @@ Not every table needs an API exposure. Internal bookkeeping tables, junction tab
 In forge, `db/migrations/*.up.sql` is the **single source of truth** — there is no schema DSL and no proto annotation. `forge generate` applies every up-migration (in lexical order) to a real ephemeral postgres shadow database, introspects the resulting tables (columns, types, nullability, PKs, indexes), and projects:
 
 - **Entity structs + ORM** — `internal/db/<entity>_orm.go`. The struct is a projection of the applied schema: `time.Time` for timestamp columns (never `timestamppb`), pointer fields for nullable columns, native slices for array columns.
-- **CRUD wiring** — `internal/<svc>/handlers_crud_ops_gen.go` (co-located with the service's `contract.go` + handlers), including generated `<entity>ToProto` / `<entity>FromProto` conversions between the entity struct and the service-proto wire message.
+- **CRUD wiring** — `internal/handlers/<svc>/handlers_crud_ops_gen.go` (co-located with the service's `contract.go` + handlers), including generated `<entity>ToProto` / `<entity>FromProto` conversions between the entity struct and the service-proto wire message.
 - **Frontend pages, nav, and mocks** for each entity.
 
 ```

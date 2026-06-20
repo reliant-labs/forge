@@ -25,7 +25,7 @@ Follow this sequence every time you scaffold a new component:
 1. **Scaffold** — run the appropriate `forge add` or `forge package new` command.
 2. **Define the contract** — edit the `.proto` file (services) or the interface (packages).
 3. **Generate** — run `forge generate` to produce Go code from protos and contracts (handler stubs, mocks, Connect clients).
-4. **Implement** — write the business logic behind the `Service` interface in `internal/<svc>/contract.go`.
+4. **Implement** — write the business logic behind the `Service` interface in `internal/handlers/<svc>/contract.go`.
 5. **Compose it into a binary** — a binary serves a service because its `Build` constructs and mounts it. Add the constructor call to the composition root (see below); selection is code, not a string table.
 
 ## Port Assignment
@@ -37,8 +37,8 @@ Ports are assigned automatically via `forge.yaml`. Do not hard-code port numbers
 - **Always use `forge add` or `forge package new`** — never copy-paste an existing service or package directory.
 - **One service per proto package** — keep proto definitions focused on a single domain.
 - **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
-- **Service names canonicalize** the same way worker names do: lowercase snake_case (hyphens → underscores, PascalCase boundaries split). `forge add service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk directory, Go package decl, and `forge.yaml` `path:` are all `admin_server` (`internal/admin_server/`, `package admin_server`, `path: internal/admin_server`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
-- **Service code lives under `internal/<svc>/`** — contract.go, impl, and generated handlers co-located in ONE directory. There is no top-level `handlers/<svc>/`; a service is app-internal, imported by nobody external.
+- **Service names canonicalize** the same way worker names do: lowercase snake_case (hyphens → underscores, PascalCase boundaries split). `forge add service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk leaf, Go package decl, and `forge.yaml` `path:` leaf are all `admin_server` (`internal/handlers/admin_server/`, `package admin_server`, `path: internal/handlers/admin_server`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
+- **Service code lives under `internal/handlers/<svc>/`** — contract.go, impl, and generated handlers co-located in ONE directory. The `handlers/` role subtree is under `internal/`, not top-level; a service is app-internal, imported by nobody external.
 
 ## Serving a service = composing it (the composition root)
 

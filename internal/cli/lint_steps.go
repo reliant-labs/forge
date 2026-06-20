@@ -258,7 +258,7 @@ func lintPipeline() []linterStep {
 			name:  "test convention lint",
 			gates: false,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if dirExists("handlers") {
+				if dirExists("internal/handlers") {
 					return true, ""
 				}
 				return false, ""
@@ -342,8 +342,10 @@ func lintPipeline() []linterStep {
 			name:  "optional-deps-guard lint",
 			gates: false,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if dirExists("internal") || dirExists("handlers") ||
-					dirExists("workers") || dirExists("operators") {
+				// All component trees (handlers/workers/operators + internal
+				// packages) now live under internal/, so a single check covers
+				// every project that has any wireable component.
+				if dirExists("internal") {
 					return rc.cwd != "", ""
 				}
 				return false, ""
@@ -364,8 +366,10 @@ func lintPipeline() []linterStep {
 			name:  "config-deps lint",
 			gates: false,
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if dirExists("internal") || dirExists("handlers") ||
-					dirExists("workers") || dirExists("operators") {
+				// All component trees (handlers/workers/operators + internal
+				// packages) now live under internal/, so a single check covers
+				// every project that has any wireable component.
+				if dirExists("internal") {
 					return rc.cwd != "", ""
 				}
 				return false, ""

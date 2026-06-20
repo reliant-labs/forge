@@ -28,7 +28,7 @@ import (
 // tracer is the OTel tracer for this worker. Named after the package so
 // spans group cleanly in the trace UI (matches the per-package tracer
 // convention forge uses elsewhere).
-var tracer = otel.Tracer("workers/{{.Name}}")
+var tracer = otel.Tracer("internal/workers/{{.Name}}")
 
 // Schedule is the cron expression that controls how often Run executes.
 const Schedule = "{{.Schedule}}"

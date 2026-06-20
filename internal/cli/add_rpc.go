@@ -148,7 +148,7 @@ func runAddRPC(svc, rpcName string, mode rpcStreamMode) error {
 	}
 
 	pkg := naming.ServicePackage(svc)
-	handlerDir := filepath.Join(root, "handlers", pkg)
+	handlerDir := filepath.Join(root, "internal", "handlers", pkg)
 	if _, err := os.Stat(handlerDir); os.IsNotExist(err) {
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("service %q has no handler directory at %s", svc, handlerDir),

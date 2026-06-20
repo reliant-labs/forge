@@ -153,7 +153,7 @@ func generateServiceStubs(cfg *config.ProjectConfig, services []codegen.ServiceD
 		if err != nil {
 			return err
 		}
-		relServiceDir := "handlers/" + res.ImportLeaf
+		relServiceDir := "internal/handlers/" + res.ImportLeaf
 		absServiceDir := res.Dir
 
 		// Build the per-service skip set: anything CRUD-shaped that
@@ -258,15 +258,15 @@ func generateServiceMocks(services []codegen.ServiceDef, projectDir string) erro
 	}
 
 	for _, svc := range services {
-		written, err := codegen.GenerateMock(svc, filepath.Join(projectDir, "handlers/mocks"))
+		written, err := codegen.GenerateMock(svc, filepath.Join(projectDir, "internal", "handlers", "mocks"))
 		if err != nil {
 			return fmt.Errorf("failed to generate mock for %s: %w", svc.Name, err)
 		}
 		mockName := naming.ServicePackage(svc.Name)
 		if written {
-			fmt.Printf("  ✅ Updated handlers/mocks/%s_mock.go\n", mockName)
+			fmt.Printf("  ✅ Updated internal/handlers/mocks/%s_mock.go\n", mockName)
 		} else {
-			fmt.Printf("  ⏭️  Skipped handlers/mocks/%s_mock.go (no RPCs)\n", mockName)
+			fmt.Printf("  ⏭️  Skipped internal/handlers/mocks/%s_mock.go (no RPCs)\n", mockName)
 		}
 	}
 

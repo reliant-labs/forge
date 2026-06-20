@@ -53,7 +53,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		components = append(components, config.ComponentConfig{
 			Name:  g.ServiceName,
 			Kind:  config.ComponentKindServer,
-			Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(g.ServiceName)),
+			Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(g.ServiceName)),
 			Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort}},
 		})
 		// In binary=shared, write ALL server components at scaffold time so
@@ -65,7 +65,7 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 				components = append(components, config.ComponentConfig{
 					Name:  svcName,
 					Kind:  config.ComponentKindServer,
-					Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(svcName)),
+					Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(svcName)),
 					Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: g.ServicePort + i + 1}},
 				})
 			}
@@ -228,7 +228,7 @@ func AppendServiceToConfig(projectRoot, serviceName string, port int) error {
 	return AppendComponentToFile(projectRoot, config.ComponentConfig{
 		Name:  serviceName,
 		Kind:  config.ComponentKindServer,
-		Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(serviceName)),
+		Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(serviceName)),
 		Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 	})
 }

@@ -84,10 +84,10 @@ func runTestMigrateTDD(flags testMigrateTDDFlags) error {
 		}
 	}
 
-	handlersDir := filepath.Join(root, "handlers")
+	handlersDir := filepath.Join(root, "internal", "handlers")
 	if !dirExists(handlersDir) {
 		// Fall back to walking root itself; lets the codemod work from
-		// inside a single service dir or any layout that lacks handlers/.
+		// inside a single service dir or any layout that lacks internal/handlers/.
 		handlersDir = root
 	}
 

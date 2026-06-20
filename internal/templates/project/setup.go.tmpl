@@ -30,14 +30,14 @@ import (
 //      onto user-extendable fields of App.
 //   3. wire_gen reads those fields back when building each service's
 //      Deps struct (see pkg/app/wire_gen.go).
-//   4. validateDeps() in handlers/<svc>/service.go gates the COMPLETE
+//   4. validateDeps() in internal/handlers/<svc>/service.go gates the COMPLETE
 //      dep set at New() time — per-RPC nil-checks are unnecessary.
 //
 // To add a new dependency:
 //   - Add a field to *App (in a sibling file like pkg/app/app_extras.go).
 //   - Construct it here in Setup and assign `app.MyDep = ...`.
 //   - Add a matching field to the consuming service's `Deps` struct in
-//     handlers/<svc>/service.go. wire_gen will resolve it by name on
+//     internal/handlers/<svc>/service.go. wire_gen will resolve it by name on
 //     the next `forge generate`.
 //
 // yours: scaffolded once, never touched again — forge will not overwrite this file

@@ -497,12 +497,12 @@ func effectivePackageType(p config.PackageConfig) string {
 
 // servicePackageDir returns the on-disk package dir for a component —
 // either the explicit Path (set by loadProjectConfig's default-fill)
-// or the canonical "handlers/<name>" fallback for safety.
+// or the canonical "internal/handlers/<name>" fallback for safety.
 func servicePackageDir(s config.ComponentConfig) string {
 	if s.Path != "" {
 		return s.Path
 	}
-	return "handlers/" + s.Name
+	return "internal/handlers/" + s.Name
 }
 
 // matchRPCs returns the rpcs for a forge.yaml service name. The

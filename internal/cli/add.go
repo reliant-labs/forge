@@ -619,7 +619,7 @@ func runAddService(name string, port int, resume, force bool) error {
 			return config.ComponentConfig{
 				Name:  name,
 				Kind:  config.ComponentKindServer,
-				Path:  fmt.Sprintf("handlers/%s", naming.ServicePackage(name)),
+				Path:  fmt.Sprintf("internal/handlers/%s", naming.ServicePackage(name)),
 				Ports: map[string]config.PortSpec{config.HTTPPortName: {Port: port}},
 			}, true
 		},
@@ -824,7 +824,7 @@ func runAddWorker(name, kind, schedule string, noGenerate bool) error {
 			return config.ComponentConfig{
 				Name:     name,
 				Kind:     componentKind,
-				Path:     fmt.Sprintf("workers/%s", naming.ServicePackage(name)),
+				Path:     fmt.Sprintf("internal/workers/%s", naming.ServicePackage(name)),
 				Schedule: schedule,
 			}, true
 		},
@@ -935,7 +935,7 @@ func runAddOperator(name, group, version, apiPackage, crdType string, withPlaceh
 			return config.ComponentConfig{
 				Name:    name,
 				Kind:    config.ComponentKindOperator,
-				Path:    fmt.Sprintf("operators/%s", naming.ServicePackage(name)),
+				Path:    fmt.Sprintf("internal/operators/%s", naming.ServicePackage(name)),
 				Group:   group,
 				Version: version,
 			}, true

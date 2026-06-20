@@ -257,7 +257,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		filteredMethods = append(filteredMethods, cm)
 	}
 
-	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
+	relDir := filepath.Join("internal", "handlers", filepath.FromSlash(res.ImportLeaf))
 	opsRel := filepath.Join(relDir, "handlers_crud_ops_gen.go")
 
 	// The pre-split Tier-1 implementation file is dead: forge no longer
@@ -1070,7 +1070,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	}
 	pkg := res.PackageName
 	targetDir := res.Dir
-	relDir := filepath.Join("handlers", filepath.FromSlash(res.ImportLeaf))
+	relDir := filepath.Join("internal", "handlers", filepath.FromSlash(res.ImportLeaf))
 
 	// Retire the marker-scaffold test pair this generator used to emit
 	// (per-RPC AnyOutcome frames + a build-tag-gated integration suite).

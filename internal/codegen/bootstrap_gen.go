@@ -638,8 +638,8 @@ func GenerateBootstrap(in BootstrapGenInput) error {
 	// when audit.Deps.Repo and AppExtras.Repo both exist but bootstrap
 	// emits only Logger.
 	inspectComponentDepsShape(packages, projectDir, "internal")
-	inspectComponentDepsShape(workers, projectDir, "workers")
-	inspectComponentDepsShape(operators, projectDir, "operators")
+	inspectComponentDepsShape(workers, projectDir, "internal/workers")
+	inspectComponentDepsShape(operators, projectDir, "internal/operators")
 
 	hasFallible := hasFallibleConstructor(bootstrapSvcs, packages, workers, operators)
 

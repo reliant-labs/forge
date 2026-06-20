@@ -142,7 +142,7 @@ func runDeleteService(name string, dryRun, assumeYes, keepTypes bool, in io.Read
 	res, resErr := codegen.ResolveServiceComponent(root, name)
 	handlerDirRel := ""
 	if resErr == nil && res.FromDisk {
-		handlerDirRel = "handlers/" + res.ImportLeaf
+		handlerDirRel = "internal/handlers/" + res.ImportLeaf
 	}
 
 	// Registry state, so we know whether there's a serviceRow line to

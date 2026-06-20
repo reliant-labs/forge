@@ -38,10 +38,10 @@ import (
 {{- if and .AnyServiceHasDB .HasMigrationsFS}}
 	forgedb "{{$.Module}}/db"
 {{- end}}
-{{/* .ImportPath is the on-disk handlers/ dir leaf (disk-first resolved);
+{{/* .ImportPath is the on-disk internal/handlers/ dir leaf (disk-first resolved);
      .Package is the package CLAUSE and may differ — see bootstrap.go.tmpl. */}}
 {{- range .Services}}
-	{{.Alias}} "{{$.Module}}/handlers/{{.ImportPath}}"
+	{{.Alias}} "{{$.Module}}/internal/handlers/{{.ImportPath}}"
 {{- end}}
 {{range .ConnectImports}}
 	"{{.}}"

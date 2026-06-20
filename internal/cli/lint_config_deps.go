@@ -140,7 +140,7 @@ func collectConfigDepsFindings(projectDir string) ([]configDepsFinding, error) {
 
 	// Same role roots as the sibling Deps-shape lints. Missing roots are
 	// fine — many projects ship no operators/ or workers/.
-	roleRoots := []string{"internal", "handlers", "workers", "operators"}
+	roleRoots := []string{"internal", "internal/handlers", "internal/workers", "internal/operators"}
 	for _, role := range roleRoots {
 		rootDir := filepath.Join(projectDir, role)
 		entries, err := os.ReadDir(rootDir)

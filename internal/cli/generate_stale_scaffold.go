@@ -78,7 +78,7 @@ var pbRefPattern = regexp.MustCompile(`\bpb\.([A-Z][A-Za-z0-9_]*)`)
 //   - a gen file that doesn't parse → its declarations are simply not
 //     counted (downstream `go build` owns reporting broken gen files)
 func detectStaleScaffoldTests(projectDir string) []staleScaffoldFinding {
-	handlersDir := filepath.Join(projectDir, "handlers")
+	handlersDir := filepath.Join(projectDir, "internal", "handlers")
 	var scaffoldFiles []string
 	_ = filepath.WalkDir(handlersDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

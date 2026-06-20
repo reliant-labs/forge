@@ -98,7 +98,7 @@ func runAddHandlerFile(svc, name string) error {
 	// matches the convention `forge add service` uses to derive a Go
 	// package name from the proto-shaped service name (hyphens → underscores).
 	pkg := naming.ServicePackage(svc)
-	handlerDir := filepath.Join(root, "handlers", pkg)
+	handlerDir := filepath.Join(root, "internal", "handlers", pkg)
 	if _, err := os.Stat(handlerDir); os.IsNotExist(err) {
 		return cliutil.UserErr(ctxLabel,
 			fmt.Sprintf("service %q has no handler directory at %s", svc, handlerDir),

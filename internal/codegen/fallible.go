@@ -69,6 +69,52 @@ func DetectDepsDBField(dir string) (bool, error) {
 	return false, nil
 }
 
+// DetectConstructorType returns the pretty-printed FIRST return type of the
+// exported `func New(...)` in dir — the type the constructor produces. For a
+// handler service whose New returns (*Service, error) it is "*Service"; for
+// an internal package whose New returns Service (the contract interface) it
+// is "Service". The qualifier prefix (the package selector) is added by the
+// caller from the component's import alias.
+//
+// Returns "" when the directory has no parseable New or the result list is
+// empty — the caller falls back to the bootstrap default (*Service).
+//
+// This is what makes the generated Services registry field type AND the
+// inject_gen local-var assignment match the constructor exactly, regardless
+// of whether the component exposes a concrete *Service struct (handlers) or
+// a Service interface (internal packages) — closing the
+// `*item.Service` vs `item.Service` assignability mismatch.
+func DetectConstructorType(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name == nil || fn.Name.Name != "New" {
+				continue
+			}
+			if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+				return "", nil
+			}
+			return printType(fset, fn.Type.Results.List[0].Type), nil
+		}
+	}
+	return "", nil
+}
+
 // DetectFallibleConstructor checks whether the exported New function in the
 // given directory returns an error as its last result (i.e. returns (T, error)).
 // It parses all non-test .go files and looks for a top-level func New(...).

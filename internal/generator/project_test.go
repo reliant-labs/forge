@@ -136,30 +136,33 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	if !strings.Contains(bootstrapContents, "func Bootstrap(") {
 		t.Fatalf("bootstrap.go should contain Bootstrap function, got:\n%s", bootstrapContents)
 	}
-	if !strings.Contains(bootstrapContents, "func BootstrapOnly(") {
-		t.Fatalf("bootstrap.go should contain BootstrapOnly function, got:\n%s", bootstrapContents)
+	// BootstrapOnly + appkit.Options.Only (the string name filter) are
+	// retired (FORGE_SHAPE_REDESIGN §2): selection moved to the cmd layer
+	// over internal/app.Inventory.
+	if strings.Contains(bootstrapContents, "func BootstrapOnly(") {
+		t.Fatalf("bootstrap.go should NOT contain BootstrapOnly — string-keyed selection retired, got:\n%s", bootstrapContents)
+	}
+	if strings.Contains(bootstrapContents, "appkit.Options") {
+		t.Fatalf("bootstrap.go should NOT reference appkit.Options — the string filter is retired, got:\n%s", bootstrapContents)
 	}
 	// A2: Shutdown method should exist on App
 	if !strings.Contains(bootstrapContents, "func (a *App) Shutdown(ctx context.Context) error") {
 		t.Fatalf("bootstrap.go should contain Shutdown method, got:\n%s", bootstrapContents)
 	}
-	// A3: BootstrapOnly name filtering (including the unknown-name
-	// warning) is delegated to appkit.Run — the generated file only
-	// passes the names through as appkit.Options.Only (2026-06 appkit
-	// table migration; the warn string itself lives in pkg/appkit).
-	if !strings.Contains(bootstrapContents, "appkit.Options{Only: names}") {
-		t.Fatalf("bootstrap.go BootstrapOnly should pass names to appkit.Run as Options.Only, got:\n%s", bootstrapContents)
-	}
 
-	// cmd/server.go is the composition site: it calls app.Bootstrap /
-	// app.BootstrapOnly ITSELF (serverkit no longer receives names); the
-	// registry pattern is gone.
+	// cmd/server.go is the composition site (§2 hybrid DI): it runs the
+	// generated injector (app.Build) over the owned infra and mounts via
+	// the data-only inventory — the old appkit Bootstrap / registry path
+	// is gone.
 	serverContents := readFile(t, filepath.Join(root, "cmd", "server.go"))
 	if strings.Contains(serverContents, "registry") {
 		t.Fatalf("cmd/server.go should not reference registry, got:\n%s", serverContents)
 	}
-	if !strings.Contains(serverContents, "app.Bootstrap(") {
-		t.Fatalf("cmd/server.go should call app.Bootstrap() to mount services, got:\n%s", serverContents)
+	if !strings.Contains(serverContents, "app.Build(") {
+		t.Fatalf("cmd/server.go should call app.Build() to construct services, got:\n%s", serverContents)
+	}
+	if !strings.Contains(serverContents, "app.OpenInfra(") {
+		t.Fatalf("cmd/server.go should call app.OpenInfra() for the owned provider set, got:\n%s", serverContents)
 	}
 	// A2: Server should hand off to serverkit.Run — application.Shutdown
 	// is invoked inside serverkit's graceful-shutdown sequence, not by the
@@ -300,13 +303,14 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 		t.Fatal("expected no service handler directory, but it exists")
 	}
 
-	// bootstrap.go should have Bootstrap and BootstrapOnly functions
+	// bootstrap.go should have the Bootstrap function. BootstrapOnly (the
+	// string name filter) is retired — selection moved to the cmd layer (§2).
 	bootstrapContents := readFile(t, filepath.Join(root, "pkg", "app", "bootstrap.go"))
 	if !strings.Contains(bootstrapContents, "func Bootstrap(") {
 		t.Fatal("bootstrap.go missing Bootstrap function")
 	}
-	if !strings.Contains(bootstrapContents, "func BootstrapOnly(") {
-		t.Fatal("bootstrap.go missing BootstrapOnly function")
+	if strings.Contains(bootstrapContents, "func BootstrapOnly(") {
+		t.Fatal("bootstrap.go should NOT contain BootstrapOnly — string-keyed selection retired")
 	}
 
 	// bootstrap.go should NOT import service-specific packages

@@ -61,7 +61,7 @@ func TestRun_OrchestrationOrder(t *testing.T) {
 	def.Hooks = func() *Hooks { return &hooks }
 
 	mux := http.NewServeMux()
-	if err := Run(def, mux, slog.New(slog.DiscardHandler), Options{}); err != nil {
+	if err := Run(def, mux, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -86,66 +86,26 @@ func TestRun_OrchestrationOrder(t *testing.T) {
 	}
 }
 
-func TestRun_OnlyFiltersMountingNotConstruction(t *testing.T) {
+// TestRun_ConstructsAndMountsEverything pins the post-§2 contract:
+// string-keyed selection is retired, so Run constructs AND mounts every
+// registered row (no name filter). Per-subcommand mount selection now lives
+// in the cmd layer over internal/app.Inventory, not in appkit.
+func TestRun_ConstructsAndMountsEverything(t *testing.T) {
 	var events []string
 	def := recordingDef(&events)
 
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{Only: []string{"orders"}}); err != nil {
+	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
 	joined := strings.Join(events, ",")
-	// All services constructed (per-service binary mode: cheap structs,
-	// prevents nil derefs on cross-service reads).
-	for _, want := range []string{"construct:api", "construct:orders"} {
+	for _, want := range []string{
+		"construct:api", "construct:orders",
+		"mount:api", "mount:orders",
+		"worker:emailer", "operator:scaler",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("events missing %q: %s", want, joined)
-		}
-	}
-	// Only the named service is mounted.
-	if strings.Contains(joined, "mount:api") {
-		t.Errorf("api should NOT be mounted with Only=[orders]: %s", joined)
-	}
-	if !strings.Contains(joined, "mount:orders") {
-		t.Errorf("orders should be mounted with Only=[orders]: %s", joined)
-	}
-	// Workers/operators are constructed regardless of the filter — the
-	// caller gates which ones START.
-	for _, want := range []string{"worker:emailer", "operator:scaler"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("events missing %q (filter must not skip construction): %s", want, joined)
-		}
-	}
-}
-
-func TestRun_LazyConstructSkipsFilteredServices(t *testing.T) {
-	var events []string
-	def := recordingDef(&events)
-
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{Only: []string{"orders"}, LazyConstruct: true}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	joined := strings.Join(events, ",")
-	if strings.Contains(joined, "construct:api") {
-		t.Errorf("LazyConstruct must skip construction of filtered-out services: %s", joined)
-	}
-	if !strings.Contains(joined, "construct:orders") || !strings.Contains(joined, "mount:orders") {
-		t.Errorf("selected service must still construct + mount: %s", joined)
-	}
-}
-
-func TestRun_EmptyOnlyMountsEverything(t *testing.T) {
-	var events []string
-	def := recordingDef(&events)
-
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{Only: nil}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	joined := strings.Join(events, ",")
-	for _, want := range []string{"mount:api", "mount:orders"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("empty Only must mount everything; missing %q: %s", want, joined)
 		}
 	}
 }
@@ -153,7 +113,7 @@ func TestRun_EmptyOnlyMountsEverything(t *testing.T) {
 func TestRun_SetupErrorIsWrapped(t *testing.T) {
 	sentinel := errors.New("boom")
 	def := Def{Setup: func() error { return sentinel }}
-	err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{})
+	err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("Run() should fail when Setup fails")
 	}
@@ -176,7 +136,7 @@ func TestRun_ConstructErrorsAbort(t *testing.T) {
 		},
 	}}, def.Services...)
 
-	err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{})
+	err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("Run() = %v, want the construct error returned as-is", err)
 	}
@@ -204,7 +164,7 @@ func TestRun_ConstructWorkerHookIntercepts(t *testing.T) {
 		return nil
 	}})
 
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{}); err != nil {
+	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	has := func(event string) bool {
@@ -242,29 +202,11 @@ func TestRun_HooksReadAfterSetup(t *testing.T) {
 	}
 	def.Hooks = func() *Hooks { return &hooks }
 
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{}); err != nil {
+	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if !strings.Contains(strings.Join(events, ","), "beforeMount-from-setup") {
 		t.Error("hooks assigned inside Setup were not observed — Hooks must be read after Setup returns")
-	}
-}
-
-func TestRun_UnknownNameWarns(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	var events []string
-	def := recordingDef(&events)
-
-	if err := Run(def, http.NewServeMux(), logger, Options{Only: []string{"nope"}}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "unknown service/worker/operator name, ignoring") {
-		t.Errorf("expected the historical unknown-name warning, got logs:\n%s", out)
-	}
-	if !strings.Contains(out, "nope") {
-		t.Errorf("warning should carry the offending name, got logs:\n%s", out)
 	}
 }
 
@@ -276,7 +218,7 @@ func TestRun_RESTSkippedWithoutConnectNames(t *testing.T) {
 	assigned := false
 	def.REST = &RESTDef{Assign: func(http.Handler) { assigned = true }}
 
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{}); err != nil {
+	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if assigned {
@@ -292,7 +234,7 @@ func TestRun_RESTUnknownServiceErrorIsWrapped(t *testing.T) {
 	def.Services[0].ConnectName = "not.a.registered/Service"
 	def.REST = &RESTDef{Assign: func(http.Handler) {}}
 
-	err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{})
+	err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("Run() should fail when vanguard cannot resolve the service")
 	}
@@ -306,51 +248,7 @@ func TestRun_NilHooksAndNilSetupAreFine(t *testing.T) {
 	def := recordingDef(&events)
 	def.Setup = nil
 	def.Hooks = func() *Hooks { return nil }
-	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler), Options{}); err != nil {
+	if err := Run(def, http.NewServeMux(), slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-}
-
-// TestRun_FilterBannerNamesRegisteredAndExcluded pins the loud-filter
-// contract (moved here from the generated BootstrapOnly in the appkit
-// table migration): when a name filter is active, the banner names BOTH
-// the registered AND the excluded components — silently 404-ing on
-// excluded RPCs was the original foot-gun.
-func TestRun_FilterBannerNamesRegisteredAndExcluded(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	var events []string
-	def := recordingDef(&events)
-
-	if err := Run(def, http.NewServeMux(), logger, Options{Only: []string{"api"}}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "server filter active — RPCs for excluded names will return 404") {
-		t.Errorf("expected the loud filter banner, got logs:\n%s", out)
-	}
-	// Registered list carries the selected name; excluded list carries
-	// every other known component kind (service, worker, operator).
-	if !strings.Contains(out, "registered=[api]") {
-		t.Errorf("banner should report registered=[api], got logs:\n%s", out)
-	}
-	if !strings.Contains(out, "excluded=") || !strings.Contains(out, "emailer") || !strings.Contains(out, "scaler") || !strings.Contains(out, "orders") {
-		t.Errorf("banner should report excluded workers/operators/services, got logs:\n%s", out)
-	}
-}
-
-// TestRun_NoFilterIsSilent guards the other half of the banner
-// contract: the unfiltered (run-everything) case must not warn.
-func TestRun_NoFilterIsSilent(t *testing.T) {
-	var buf strings.Builder
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	var events []string
-	def := recordingDef(&events)
-
-	if err := Run(def, http.NewServeMux(), logger, Options{}); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if strings.Contains(buf.String(), "server filter active") {
-		t.Errorf("unfiltered Run must not emit the filter banner, got logs:\n%s", buf.String())
 	}
 }

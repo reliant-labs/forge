@@ -242,114 +242,12 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	goVersion := g.resolveGoVersion()
-
-	// Sanitize name for proto files (no hyphens allowed). Use underscores
-	// rather than stripping so that "my-cool-app" becomes "my_cool_app"
-	// (a valid proto package identifier) instead of "mycoolapp" — which
-	// silently loses the word boundaries and breaks grep.
-	protoName := strings.ReplaceAll(g.Name, "-", "_")
-
-	// ServicePackage is the Go-package-safe form of ServiceName: hyphens
-	// become underscores so the value is valid in `package` declarations
-	// and proto package segments. Templates that emit Go/proto identifiers
-	// must use ServicePackage; ServiceName is retained for display strings.
-	servicePackage := ""
-	if g.ServiceName != "" {
-		servicePackage = naming.ServicePackage(g.ServiceName)
-	}
-
-	templateData := struct {
-		Name                   string
-		ProtoName              string
-		Module                 string
-		ServiceName            string
-		ServicePackage         string
-		ServicePort            int
-		ProjectName            string
-		FrontendName           string
-		FrontendPort           int
-		GoVersion              string
-		GoVersionMinor         string
-		DockerBuilderGoVersion string
-		ConfigFields           map[string]bool
-		// LocalForgePkgVendored indicates whether <projectDir>/.forge-pkg/
-		// holds a vendored copy of forge/pkg (sibling-checkout dev mode).
-		// At scaffold time this is always false; `forge generate` flips it
-		// on if the project's go.mod has a host-absolute replace pointing
-		// at forge/pkg. The Dockerfile template uses this to gate the
-		// COPY .forge-pkg/ ./.forge-pkg/ line.
-		LocalForgePkgVendored bool
-		// RESTEnabled mirrors the `api.rest` toggle in forge.yaml. At
-		// scaffold time this is always false (REST is opt-in via post-
-		// scaffold edit), but the field is declared here so buf.yaml's
-		// dep gate has a known input shape; `forge upgrade` regenerates
-		// buf.yaml from the live forge.yaml's api.rest value.
-		RESTEnabled bool
-		// ForgePkgVersion / ForgePkgDevReplace drive the forge/pkg
-		// dependency block in go.mod.tmpl. Exactly one (or neither) is
-		// non-empty — see resolveForgePkgDep in project_pkgdep.go and
-		// docs/pkg-versioning.md for the dev-vs-release model.
-		ForgePkgVersion    string
-		ForgePkgDevReplace string
-		// AuthProvider / AuthProviderExternal gate cmd-server.go.tmpl's
-		// generated-auth call site. Always zero at scaffold time (forge
-		// new never configures an auth provider); `forge generate`
-		// re-renders cmd/server.go from the live forge.yaml value.
-		AuthProvider         string
-		AuthProviderExternal bool
-		// VersionVar mirrors forge.yaml build.version_var. The Dockerfile
-		// template stamps an extra `-X <VersionVar>=${FORGE_VERSION}` when
-		// set; empty (the scaffold default) renders nothing. See
-		// ProjectGenerator.BuildVersionVar.
-		VersionVar string
-	}{
-		Name:                   g.Name,
-		ProtoName:              protoName,
-		Module:                 g.ModulePath,
-		ServiceName:            g.ServiceName,
-		ServicePackage:         servicePackage,
-		ServicePort:            g.ServicePort,
-		ProjectName:            g.Name,
-		FrontendName:           g.FrontendName,
-		FrontendPort:           g.FrontendPort,
-		GoVersion:              goVersion,
-		GoVersionMinor:         goVersionMinor(goVersion),
-		DockerBuilderGoVersion: dockerBuilderGoVersion(goVersion),
-		ConfigFields:           codegen.DefaultConfigFieldNames(),
-		// false by default — only flipped by RegenerateInfraFiles after
-		// dev-mode vendoring has run.
-		LocalForgePkgVendored: false,
-		// REST is off at scaffold time; users opt-in post-scaffold by
-		// editing forge.yaml's `api.rest:` and re-running `forge generate`
-		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
-		RESTEnabled: false,
-		VersionVar:  g.BuildVersionVar,
-	}
-	templateData.ForgePkgVersion, templateData.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
-	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is
-	// on, the `forge generate` run that `forge new` performs immediately
-	// after will vendor the target into ./.forge-pkg/ — so the Dockerfile
-	// (Tier 2: never auto-regenerated later) must carry the COPY line
-	// from the start or docker builds diverge from host builds. Without
-	// codegen there is no generate run to create the vendor dir, so the
-	// COPY line would reference a missing path; keep it off.
-	if templateData.ForgePkgDevReplace != "" && g.Features.CodegenEnabled() {
-		templateData.LocalForgePkgVendored = true
-	}
-
-	// Strip migration-related config fields when migrations are disabled.
-	// The server template conditionally includes migration code based on
-	// ConfigFields["AutoMigrate"], so removing the field here prevents
-	// the template from emitting app.AutoMigrate() calls.
-	if !g.Features.MigrationsEnabled() {
-		delete(templateData.ConfigFields, "AutoMigrate")
-		delete(templateData.ConfigFields, "DatabaseUrl")
-		delete(templateData.ConfigFields, "MaxOpenConns")
-		delete(templateData.ConfigFields, "MaxIdleConns")
-		delete(templateData.ConfigFields, "ConnMaxIdleTime")
-		delete(templateData.ConfigFields, "ConnMaxLifetime")
-	}
+	// All per-field derivations (protoName, servicePackage, the goVersion
+	// family, the forge/pkg dep + its LocalForgePkgVendored gate, the
+	// migrations-off ConfigFields pruning) live in ForScaffold so the
+	// scaffold and upgrade lanes share one named render type. See
+	// project_template_data.go.
+	templateData := g.ForScaffold()
 
 	if g.Features.CodegenEnabled() {
 		if err := g.copyForgeV1Proto(); err != nil {

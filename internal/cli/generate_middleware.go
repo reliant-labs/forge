@@ -441,13 +441,12 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 			envCfg = map[string]any{}
 		}
 		if err := codegen.GenerateDeployConfig(codegen.DeployConfigGenInput{
+			GenContext:  codegen.GenContext{ProjectDir: projectDir, Checksums: cs},
 			ProjectName: cfg.Name,
 			EnvName:     envName,
 			KCLDir:      kclDirAbs,
-			ProjectDir:  projectDir,
 			Fields:      fields,
 			EnvConfig:   envCfg,
-			Checksums:   cs,
 		}); err != nil {
 			return fmt.Errorf("emit %s config_gen.k: %w", envName, err)
 		}

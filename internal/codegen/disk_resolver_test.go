@@ -296,7 +296,18 @@ func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkerDataFromNames: %v", err)
 	}
-	if err := GenerateBootstrap(nil, nil, workers, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        nil,
+		Packages:        nil,
+		Workers:         workers,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap: %v", err)
 	}
 
@@ -333,7 +344,18 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
 
-	if err := GenerateBootstrap(services, nil, nil, nil, "example.com/proj", "", false, projectDir, nil, nil, BootstrapFeatures{}, nil); err != nil {
+	if err := GenerateBootstrap(BootstrapGenInput{
+		GenContext:      GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:        services,
+		Packages:        nil,
+		Workers:         nil,
+		Operators:       nil,
+		DatabaseDriver:  "",
+		OrmEnabled:      false,
+		ConfigFields:    nil,
+		WebhookServices: nil,
+		Features:        BootstrapFeatures{},
+	}); err != nil {
 		t.Fatalf("GenerateBootstrap: %v", err)
 	}
 	if err := GenerateWireGen(services, nil, nil, nil, "example.com/proj", projectDir, false, nil); err != nil {
@@ -393,7 +415,14 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
-	if err := GenerateBootstrapTesting(services, nil, nil, nil, "example.com/proj", false, projectDir, nil); err != nil {
+	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
+		GenContext:         GenContext{ProjectDir: projectDir, ModulePath: "example.com/proj", Checksums: nil},
+		Services:           services,
+		Packages:           nil,
+		Workers:            nil,
+		Operators:          nil,
+		MultiTenantEnabled: false,
+	}); err != nil {
 		t.Fatalf("GenerateBootstrapTesting: %v", err)
 	}
 

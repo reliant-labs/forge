@@ -61,7 +61,22 @@ func generateBootstrap(services []codegen.ServiceDef, modulePath string, databas
 		return fmt.Errorf("failed to generate app_extras.go: %w", err)
 	}
 
-	if err := codegen.GenerateBootstrap(services, packages, workers, operators, modulePath, databaseDriver, ormEnabled, projectDir, configFields, webhookServices, bootstrapFeatures, cs); err != nil {
+	if err := codegen.GenerateBootstrap(codegen.BootstrapGenInput{
+		GenContext: codegen.GenContext{
+			ProjectDir: projectDir,
+			ModulePath: modulePath,
+			Checksums:  cs,
+		},
+		Services:        services,
+		Packages:        packages,
+		Workers:         workers,
+		Operators:       operators,
+		DatabaseDriver:  databaseDriver,
+		OrmEnabled:      ormEnabled,
+		ConfigFields:    configFields,
+		WebhookServices: webhookServices,
+		Features:        bootstrapFeatures,
+	}); err != nil {
 		return fmt.Errorf("failed to generate bootstrap: %w", err)
 	}
 
@@ -148,7 +163,18 @@ func generateBootstrapTesting(services []codegen.ServiceDef, modulePath string, 
 		return fmt.Errorf("discover internal packages: %w", err)
 	}
 
-	if err := codegen.GenerateBootstrapTesting(services, packages, workers, operators, modulePath, multiTenantEnabled, projectDir, cs); err != nil {
+	if err := codegen.GenerateBootstrapTesting(codegen.BootstrapTestingGenInput{
+		GenContext: codegen.GenContext{
+			ProjectDir: projectDir,
+			ModulePath: modulePath,
+			Checksums:  cs,
+		},
+		Services:           services,
+		Packages:           packages,
+		Workers:            workers,
+		Operators:          operators,
+		MultiTenantEnabled: multiTenantEnabled,
+	}); err != nil {
 		return fmt.Errorf("failed to generate bootstrap testing: %w", err)
 	}
 

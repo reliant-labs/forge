@@ -9,38 +9,67 @@
 // cmd/services_gen.go (a projection of the RegisteredServices rows);
 // never list services here.
 //
-// Use this file for SECOND BINARIES: long-running processes that ship
-// in the same image as the main server but are not Connect services —
-// a reverse proxy, a queue drainer, a one-shot admin job. Instead of a
-// parallel main() with hand-rolled config/observability/shutdown,
-// register a subcommand here and opt into exactly the pieces you need:
+// Use this file for NON-SERVER SHAPES: CLI tools (reports, backfills,
+// one-shot admin jobs) and second binaries (a reverse proxy, a queue
+// drainer) that ship in the same image as the server but are not Connect
+// services. Don't hand-roll a parallel main() with its own timeouts,
+// os.Getenv reads, logger, and stdout formatting — that's how cmd/ rots
+// into N inconsistent copies. Compose the paved-path pieces instead:
 //
 //   - Typed config: config.RegisterFlags(cmd) at construction, then
 //     `cfg, err := config.Load(cmd)` in RunE — the same env-var + flag
-//     surface as the server subcommands, including cfg.Mode() (the
-//     single dev-mode gate).
+//     surface (flag > env > default) as the server, including cfg.Mode()
+//     when you have a config proto (the single dev-mode gate). Source
+//     per-command defaults from cfg; reach for forge/pkg/cmdkit.Resolve
+//     only for ad-hoc inputs that don't live in the config proto.
+//   - forge/pkg/cmdkit for everything a CLI re-invents:
+//       cmdkit.Logger / ParseLevel  — a stderr logger fed from cfg
+//                                      (stdout stays clean for piped data)
+//       cmdkit.OpenDB               — sql.Open + pool tuning + bounded ping
+//       cmdkit.ContextWithTimeout   — one bounded context, no literal soup
+//       cmdkit.PrintJSON            — indented JSON to stdout (pipe to jq)
+//     and observe.WithLogger / FromContext to carry the logger on ctx
+//     instead of threading it through every signature.
 //   - OTel: `shutdown, metricsHandler, err := setupOTel(ctx)`
 //     (cmd/otel.go) wires trace/metric export; `defer shutdown(ctx)`.
-//   - Lifecycle: an HTTP-serving sidecar can reuse serverkit.Run for
-//     the full listener + graceful-shutdown sequence (cmd/server.go is
-//     the canonical projection to copy from); a non-HTTP loop should
-//     derive a signal context via signal.NotifyContext(context.
-//     Background(), os.Interrupt, syscall.SIGTERM) and block on it.
+//   - Lifecycle: an HTTP-serving sidecar reuses serverkit for the full
+//     listener + graceful-shutdown sequence (cmd/server.go is the
+//     canonical projection to copy from); a non-HTTP loop derives a
+//     signal context via signal.NotifyContext(context.Background(),
+//     os.Interrupt, syscall.SIGTERM) and blocks on it.
 //
-// Example:
+// Example — a one-shot report command on the paved path:
 //
-//	func proxyCmd() *cobra.Command {
+//	func reportCmd() *cobra.Command {
 //		cmd := &cobra.Command{
-//			Use:   "proxy",
-//			Short: "Run the workspace proxy",
-//			RunE: func(cmd *cobra.Command, args []string) error {
+//			Use:   "report",
+//			Short: "Print a JSON report from the database",
+//			RunE: func(cmd *cobra.Command, _ []string) error {
 //				cfg, err := config.Load(cmd)
 //				if err != nil {
 //					return err
 //				}
-//				ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-//				defer stop()
-//				return runProxy(ctx, cfg)
+//				ctx, log := cmdkit.ContextWithLogger(cmd.Context(), cmdkit.LoggerOptions{
+//					Name:   "report",
+//					Format: cfg.LogFormat,
+//					Level:  cmdkit.ParseLevel(cfg.LogLevel),
+//				})
+//
+//				db, err := cmdkit.OpenDB(ctx, cmdkit.DBOptions{DSN: cfg.DatabaseUrl})
+//				if err != nil {
+//					return err
+//				}
+//				defer func() { _ = db.Close() }()
+//
+//				ctx, cancel := cmdkit.ContextWithTimeout(ctx, 0, 60*time.Second)
+//				defer cancel()
+//
+//				report, err := buildReport(ctx, db)
+//				if err != nil {
+//					return err
+//				}
+//				log.Info("report complete", "rows", len(report.Rows))
+//				return cmdkit.PrintJSON(cmd.OutOrStdout(), report) // stdout: data
 //			},
 //		}
 //		config.RegisterFlags(cmd)
@@ -48,7 +77,7 @@
 //	}
 //
 //	func userCommands() []*cobra.Command {
-//		return []*cobra.Command{proxyCmd()}
+//		return []*cobra.Command{reportCmd()}
 //	}
 package main
 

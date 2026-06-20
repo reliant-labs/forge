@@ -15,9 +15,9 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 		{"pkg/app/bootstrap.go", []string{"setup.go", "post_bootstrap.go", "app_extras.go", "user-owned"}},
 		{"pkg/app/app_gen.go", []string{"setup.go", "post_bootstrap.go", "app_extras.go"}},
 		{"pkg/app/wire_gen.go", []string{"setup.go", "post_bootstrap.go", "app_extras.go"}},
-		{"handlers/echo/authorizer_gen.go", []string{"handlers/echo/authorizer.go", "user-owned", "NewAuthorizer()"}},
-		{"handlers/orders/handlers_gen.go", []string{"contract.go", "proto"}},
-		{"handlers/orders/mock_gen.go", []string{"contract.go", "proto"}},
+		{"internal/handlers/echo/authorizer_gen.go", []string{"internal/handlers/echo/authorizer.go", "user-owned", "NewAuthorizer()"}},
+		{"internal/handlers/orders/handlers_gen.go", []string{"contract.go", "proto"}},
+		{"internal/handlers/orders/mock_gen.go", []string{"contract.go", "proto"}},
 		// No designated extension point — no hint.
 		{"pkg/app/testing.go", nil},
 		{"pkg/config/config.go", nil},

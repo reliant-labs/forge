@@ -132,7 +132,7 @@ func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
 
 	// Webhook on billing (cheap: scaffold-only, registered in forge.yaml).
 	runCmd(t, projectDir, forgeBin, "add", "webhook", "stripe", "--service", "billing")
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "billing", "webhook_stripe.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "billing", "webhook_stripe.go"))
 
 	// ── Internal packages ─────────────────────────────────────────────
 	// ledger: classic Service/Deps/New package whose Deps references a
@@ -252,7 +252,7 @@ func (s *Store) Notify(ctx context.Context, event string) error {
 	// reporting handler: a HANDLER-LOCAL interface satisfied by the
 	// cross-package concrete adapter on AppExtras — the wire_gen-side
 	// matcher case (Matcher B).
-	writeCorpusFile(t, filepath.Join(projectDir, "handlers", "reporting", "source.go"), `package reporting
+	writeCorpusFile(t, filepath.Join(projectDir, "internal", "handlers", "reporting", "source.go"), `package reporting
 
 import "context"
 
@@ -262,7 +262,7 @@ type ReportSource interface {
 	ListEntries(ctx context.Context) ([]string, error)
 }
 `)
-	mustReplaceInFile(t, filepath.Join(projectDir, "handlers", "reporting", "service.go"),
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "reporting", "service.go"),
 		"\tAuthorizer middleware.Authorizer\n\t// Add your dependencies here.",
 		`	Authorizer middleware.Authorizer
 	// Store is satisfied by *pgstore.Store via the assignability
@@ -271,13 +271,13 @@ type ReportSource interface {
 
 	// api handler: exact-type match against an AppExtras field that
 	// setup.go constructs (ledger.Service on both sides).
-	mustReplaceInFile(t, filepath.Join(projectDir, "handlers", "api", "service.go"),
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"),
 		"\tAuthorizer middleware.Authorizer\n\t// Add your dependencies here.",
 		`	Authorizer middleware.Authorizer
 	// Ledger is the ledger package's contract interface, constructed
 	// in pkg/app/setup.go and exact-type-matched by wire_gen.
 	Ledger ledger.Service`)
-	mustReplaceInFile(t, filepath.Join(projectDir, "handlers", "api", "service.go"),
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"),
 		"\t\"example.com/cpforge/pkg/config\"",
 		"\t\"example.com/cpforge/internal/ledger\"\n\t\"example.com/cpforge/pkg/config\"")
 
@@ -384,14 +384,14 @@ func TestE2EFixtureCorpusKalshiShaped(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "add", "worker", "book_snapshotter",
 		"--kind", "cron", "--schedule", "0 3 * * *", "--no-generate")
 	for _, w := range []string{"engine_shadow", "settlement_processor", "book_snapshotter"} {
-		assertPathExistsE2E(t, filepath.Join(projectDir, "workers", w, "worker.go"))
+		assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "workers", w, "worker.go"))
 	}
 
 	// settlement_processor: worker-local interface dep (ctx in the
 	// method signature — the cross-package named type that defeated the
 	// two-universe matcher), satisfied by a concrete adapter on
 	// AppExtras, marked forge:optional-dep. The literal kalshi shape.
-	mustReplaceInFile(t, filepath.Join(projectDir, "workers", "settlement_processor", "worker.go"),
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "workers", "settlement_processor", "worker.go"),
 		"type Deps struct {\n\tLogger *slog.Logger\n\tConfig *config.Config\n}",
 		`// UnsettledSource feeds the settlement loop. Worker-local
 // interface, satisfied by *marketfeed.Adapter on AppExtras.
@@ -409,7 +409,7 @@ type Deps struct {
 	// forge:optional-dep
 	Unsettled UnsettledSource
 }`)
-	mustReplaceInFile(t, filepath.Join(projectDir, "workers", "settlement_processor", "worker.go"),
+	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "workers", "settlement_processor", "worker.go"),
 		"\t// TODO: implement your per-cycle work here.",
 		`	if w.deps.Unsettled != nil {
 		pending, err := w.deps.Unsettled.Pending(ctx)
@@ -421,7 +421,7 @@ type Deps struct {
 
 	// engine_shadow: ctx-aware run loop. Adding RunContext needs no
 	// regenerate — appkit's wrapper detects it at boot.
-	appendCorpusFile(t, filepath.Join(projectDir, "workers", "engine_shadow", "worker.go"), `
+	appendCorpusFile(t, filepath.Join(projectDir, "internal", "workers", "engine_shadow", "worker.go"), `
 // RunContext is the ctx-aware run loop (serverkit.ContextWorker). The
 // appkit wrapper prefers it over Start when present.
 func (w *Worker) RunContext(ctx context.Context) error {
@@ -487,7 +487,7 @@ type AppExtras struct {
 		}
 	}
 	// Cron worker scaffold must carry its schedule.
-	cronWorker := readFileE2E(t, filepath.Join(projectDir, "workers", "book_snapshotter", "worker.go"))
+	cronWorker := readFileE2E(t, filepath.Join(projectDir, "internal", "workers", "book_snapshotter", "worker.go"))
 	if !strings.Contains(cronWorker, "0 3 * * *") {
 		t.Errorf("book_snapshotter worker.go does not carry the cron schedule")
 	}
@@ -910,7 +910,7 @@ func TestE2EFixtureCorpusZeroService(t *testing.T) {
 	// explicit generate after it pins that a follow-up run is clean.)
 	runCmd(t, projectDir, forgeBin, "add", "service", "item")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "item", "service.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "item", "service.go"))
 	out := runCorpusCmdOK(t, projectDir, forgeBin, "generate")
 	assertNoForkNoise(t, "post-add generate", out)
 	runCmd(t, projectDir, "go", "build", "./...")
@@ -926,7 +926,7 @@ func assertZeroServiceShape(t *testing.T, projectDir, name string) {
 	t.Helper()
 	for _, p := range []string{
 		filepath.Join("proto", "services", name),
-		filepath.Join("handlers", name),
+		filepath.Join("internal", "handlers", name),
 		filepath.Join("gen", "services", name),
 		"frontends", // bare scaffold has no frontend → no nav route can exist
 	} {
@@ -1803,7 +1803,7 @@ func itemSeamProbe() string { return "user-owned" }
 		t.Errorf("pristine generate did not emit deploy/kcl/dev/config_gen.k — the scaffold's own deploy/kcl/dev/main.k import is unresolvable (features.deploy catch-22): %v", err)
 	}
 
-	handlerDir := filepath.Join(projectDir, "handlers", "item")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "item")
 
 	// ── 2. projection vs implementation split ────────────────────────
 	// (Non-fatal: a missing file here must not hide the executed-
@@ -1875,7 +1875,7 @@ func itemSeamProbe() string { return "user-owned" }
 
 	// ── 5. the executed lifecycle ─────────────────────────────────────
 	writeCorpusFile(t, filepath.Join(handlerDir, "crud_lifecycle_corpus_test.go"), crudLifecycleProbeSrc)
-	out, err := runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusCRUDLifecycle", "-v", "./handlers/item/")
+	out, err := runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusCRUDLifecycle", "-v", "./internal/handlers/item/")
 	if err != nil {
 		t.Errorf("EXECUTED CRUD lifecycle failed:\n%s", out)
 	} else {
@@ -1917,7 +1917,7 @@ func itemSeamProbe() string { return "user-owned" }
 	runCmd(t, projectDir, "go", "build", "./...")
 
 	writeCorpusFile(t, filepath.Join(handlerDir, "bookmark_lifecycle_corpus_test.go"), bookmarkLifecycleProbeSrc)
-	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusBookmarkLifecycle", "-v", "./handlers/item/")
+	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusBookmarkLifecycle", "-v", "./internal/handlers/item/")
 	if err != nil {
 		t.Errorf("EXECUTED bookmark (repeated-field + soft-delete) lifecycle failed:\n%s", out)
 	} else {
@@ -1945,7 +1945,7 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 	writeCorpusFile(t, filepath.Join(handlerDir, "bookmark_evolve_corpus_test.go"), bookmarkEvolveProbeSrc)
-	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusBookmarkEvolved", "-v", "./handlers/item/")
+	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusBookmarkEvolved", "-v", "./internal/handlers/item/")
 	if err != nil {
 		t.Errorf("EXECUTED schema-evolution lifecycle failed:\n%s", out)
 	} else {
@@ -1983,7 +1983,7 @@ UPDATE bookmarks SET domain = substr(url, position('//' in url) + 2);
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 	writeCorpusFile(t, filepath.Join(handlerDir, "trade_text_timestamps_corpus_test.go"), tradeTextTimestampsProbeSrc)
-	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusTradeTextTimestamps", "-v", "./handlers/item/")
+	out, err = runCorpusCmd(projectDir, "go", "test", "-count=1", "-run", "TestCorpusTradeTextTimestamps", "-v", "./internal/handlers/item/")
 	if err != nil {
 		t.Errorf("EXECUTED legacy-TEXT-timestamps lifecycle failed:\n%s", out)
 	} else {

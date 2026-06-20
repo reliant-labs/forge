@@ -38,9 +38,9 @@ func TestGenerateOperatorFilesWithAPISplitsTypesIntoAPIPackage(t *testing.T) {
 	// to "workspace_controller", aligning the on-disk layout with the
 	// universal snake convention proto buf emits for multi-word proto
 	// packages and that every existing forge project uses).
-	controllerPath := filepath.Join(root, "operators", "workspace_controller", "controller.go")
+	controllerPath := filepath.Join(root, "internal", "operators", "workspace_controller", "controller.go")
 	if _, err := os.Stat(controllerPath); err != nil {
-		t.Fatalf("expected operators/workspace_controller/controller.go: %v", err)
+		t.Fatalf("expected internal/operators/workspace_controller/controller.go: %v", err)
 	}
 	controller := readFile(t, controllerPath)
 	if !strings.Contains(controller, `apipkg "example.com/myapp/api/v1alpha1/workspace"`) {
@@ -51,7 +51,7 @@ func TestGenerateOperatorFilesWithAPISplitsTypesIntoAPIPackage(t *testing.T) {
 	}
 
 	// types.go must NOT live alongside the controller in the split layout.
-	siblingTypes := filepath.Join(root, "operators", "workspace_controller", "types.go")
+	siblingTypes := filepath.Join(root, "internal", "operators", "workspace_controller", "types.go")
 	if _, err := os.Stat(siblingTypes); err == nil {
 		t.Error("types.go should NOT exist alongside controller.go in split layout")
 	}
@@ -66,8 +66,8 @@ func TestGenerateOperatorFilesCreatesExpectedFiles(t *testing.T) {
 
 	// Post-2026-06-08: ServicePackage normalises hyphens/PascalCase to
 	// snake_case (matching the universal proto / handler / KCL dir
-	// convention), so "deployment-scaler" becomes operators/deployment_scaler.
-	opDir := filepath.Join(root, "operators", "deployment_scaler")
+	// convention), so "deployment-scaler" becomes internal/operators/deployment_scaler.
+	opDir := filepath.Join(root, "internal", "operators", "deployment_scaler")
 
 	// All three files must exist
 	for _, f := range []string{"types.go", "controller.go", "controller_test.go"} {
@@ -106,7 +106,7 @@ func TestGenerateOperatorFilesCreatesExpectedFiles(t *testing.T) {
 // the scaffold's operator.go is suppressed instead of duplicating symbols.
 func TestGenerateOperatorBinaryOnly_SkipsOnPortedShape(t *testing.T) {
 	root := t.TempDir()
-	operatorDir := filepath.Join(root, "operators", "workspace_controller")
+	operatorDir := filepath.Join(root, "internal", "operators", "workspace_controller")
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestGenerateOperatorBinaryOnly_EmitsWhenDirEmpty(t *testing.T) {
 		"workspace-controller", "reliant.dev", "v1alpha1"); err != nil {
 		t.Fatalf("GenerateOperatorBinaryOnly: %v", err)
 	}
-	operatorDir := filepath.Join(root, "operators", "workspace_controller")
+	operatorDir := filepath.Join(root, "internal", "operators", "workspace_controller")
 	if _, err := os.Stat(filepath.Join(operatorDir, "operator.go")); err != nil {
 		t.Errorf("operator.go expected on empty-dir path: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestGenerateOperatorBinaryOnly_EmitsWhenDirEmpty(t *testing.T) {
 // reconciler types.
 func TestGenerateOperatorBinaryOnly_EmitsAlongsidePerCRDFiles(t *testing.T) {
 	root := t.TempDir()
-	operatorDir := filepath.Join(root, "operators", "workspace_controller")
+	operatorDir := filepath.Join(root, "internal", "operators", "workspace_controller")
 	if err := os.MkdirAll(operatorDir, 0755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

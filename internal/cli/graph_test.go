@@ -53,7 +53,7 @@ docs: {}
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "handlers/tasks"})
+	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "internal/handlers/tasks"})
 }
 
 // writeTasksContract writes a contract.go for the tasks service whose
@@ -62,7 +62,7 @@ docs: {}
 // against the forge.yaml-declared package.
 func writeTasksContract(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, "handlers", "tasks"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "handlers", "tasks"), 0o755); err != nil {
 		t.Fatalf("mkdir handlers/tasks: %v", err)
 	}
 	src := `package tasks
@@ -78,7 +78,7 @@ type Deps struct {
 
 func New(d Deps) Service { return nil }
 `
-	if err := os.WriteFile(filepath.Join(dir, "handlers", "tasks", "service.go"), []byte(src), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "internal", "handlers", "tasks", "service.go"), []byte(src), 0o644); err != nil {
 		t.Fatalf("write contract: %v", err)
 	}
 }

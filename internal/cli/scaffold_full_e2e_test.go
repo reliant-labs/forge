@@ -107,7 +107,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 		"pkg/middleware/middleware_test.go",
 
 		// Service + proto — the scaffold's raison d'être.
-		"handlers/api/service.go",
+		"internal/handlers/api/service.go",
 		"proto/services/api/v1/api.proto",
 
 		// Frontend — go.mod boundary marker plus real frontend files.
@@ -159,7 +159,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 	// proto with RPCs. The scaffold's default api.proto has RPCs, so this
 	// should be present. If a future template change stops emitting it,
 	// this fails loudly here rather than silently downstream.
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "api", "handlers_gen.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "handlers_gen.go"))
 
 	// ── Byte-level anti-regression content guards ─────────────────────
 	// Each guard below is paired with the bug that produced it. If you
@@ -237,7 +237,7 @@ func TestE2EScaffoldFullSpecProject(t *testing.T) {
 			gitignore)
 	}
 
-	handlersGen := readFileE2E(t, filepath.Join(projectDir, "handlers", "api", "handlers_gen.go"))
+	handlersGen := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "handlers_gen.go"))
 	// Past bug: generated error strings were ALL-CAPS ("HANDLER FOR %s
 	// NOT YET IMPLEMENTED") which violates Go's error-string convention
 	// (lowercase, no trailing punctuation) and lint-fails on any

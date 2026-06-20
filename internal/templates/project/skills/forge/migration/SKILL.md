@@ -34,8 +34,8 @@ forge new <name>-next --kind <service|cli|library> --mod <module-path>
 | Kind | Use when |
 |------|----------|
 | `service` (default) | Network-facing app: Connect-RPC server, middleware stack, observability, k8s deploy. See `migration-service`. |
-| `cli` | Cobra-based CLI binary. No `pkg/middleware/`, no `cmd/server.go`, no `deploy/`, no service protos. See `migration-cli`. |
-| `library` | Pure Go module with `internal/` and `pkg/` skeletons; no `cmd/` at all. For shared libraries. |
+| `cli` | Cobra-based CLI binary. No `internal/middleware/`, no `cmd/server.go`, no `deploy/`, no service protos. See `migration-cli`. |
+| `library` | Pure Go module with an `internal/` skeleton (and `pkg/` only if you have real external importers); no `cmd/` at all. For shared libraries. |
 
 **Pick this at scaffold time.** `--disable` flags only toggle `forge.yaml` features; they do NOT prevent server-shaped files from being emitted. If you scaffold with the wrong kind, wipe and start over rather than pruning by hand.
 
@@ -45,7 +45,7 @@ Use a `-next` suffix (e.g. `github.com/owner/project-next`) during the migration
 
 ## Service / package naming
 
-- Hyphens are OK in service / worker / operator names (`forge add service admin-server`). Forge stores the kebab-case form as the display name in `forge.yaml` and snake-cases the form used for the on-disk directory path (`handlers/admin_server/`), with a single-token lowercase Go package decl (`package admin`).
+- Hyphens are OK in service / worker / operator names (`forge add service admin-server`). Forge stores the kebab-case form as the display name in `forge.yaml` and snake-cases the form used for the on-disk directory path (`internal/admin_server/`), with a single-token lowercase Go package decl (`package admin`).
 - `forge.yaml` `path:` is always the snake form. Don't hand-edit it to use hyphens.
 - The proto package generated for a pack like `stripe` is `db.v1` (not `<project>.db.v1`) — package names align with directory layout under the buf module root, not the project name.
 - For the full kebab / snake / Pascal / camel mapping across Go, proto, TS, and `forge.yaml`, see the **Naming conventions** table in `architecture`.
@@ -66,13 +66,13 @@ Same shape for both `service` and `cli` targets:
      exclude: []
    ```
    See the `contracts` skill. Enabling this upfront prevents a 5-hour backfill at the end.
-5. Port internal packages first (utility code, domain types). Then handlers. Then wiring (`pkg/app/setup.go` is yours; `bootstrap.go` is generated and re-emitted on every `forge generate`).
+5. Port app code into `internal/`. Everything not imported outside the module lives there — services (`internal/<svc>/`, contract + impl + `handlers_gen.go` co-located in ONE dir), workers, operators. Order: utility code and domain types first, then the service impls and handlers, then wiring. The wiring is the owned composition root `internal/app/build.go` — a typed `Build(infra) (*Server, error)` you own and edit by hand. There is NO generated `bootstrap.go` re-emitted under you, so porting wiring is just editing your own `Build`. (`pkg/` is reserved for code you'll support as public API; absent real external importers, port into `internal/`, not `pkg/`.)
 6. Add `forge lint --contract` to the gate after every port phase. If a port leaves a package without `contract.go`, lint fails — fix before moving on.
 
 ## Pack interactions
 
 - Install packs **after** the components they extend. Stripe webhook handler? Add the service first, then `forge pack install stripe`.
-- Each pack installs its code into a nested per-pack subpackage chosen by the pack's `subpath:` field. Auth providers nest under `pkg/middleware/auth/<provider>/` (e.g. `pkg/middleware/auth/jwtauth/`, `pkg/middleware/auth/clerk/`, `pkg/middleware/auth/apikey/`); the audit pack lives at `pkg/middleware/audit/auditlog/`; external-service clients (e.g. `stripe`, `twilio`) live at `pkg/clients/<service>/`. `forge pack list` shows the SUBPATH column. Compose interceptors in `pkg/app/setup.go` with `connect.WithInterceptors(jwtauth.Interceptor(), clerkauth.Interceptor(), ...)` — Forge ships no chain helper.
+- Each pack installs its code into a nested per-pack subpackage chosen by the pack's `subpath:` field. Auth providers nest under `internal/middleware/auth/<provider>/` (e.g. `internal/middleware/auth/jwtauth/`, `internal/middleware/auth/clerk/`, `internal/middleware/auth/apikey/`); the audit pack lives at `internal/middleware/audit/auditlog/`; external-service clients (e.g. `stripe`, `twilio`) live at `internal/clients/<service>/`. `forge pack list` shows the SUBPATH column. Compose interceptors explicitly in the handler assembly inside `internal/app/build.go` — `connect.WithInterceptors(otel, ratelimit, jwtauth.Interceptor(), audit, ...)`. The ordering is load-bearing (otel-outermost → rate-limit → auth → audit) and must be written out explicitly in `Build`; it is never implied by registration order, and Forge ships no chain helper.
 - `forge generate` after every `forge pack install` to wire pack contributions through the codegen pipeline.
 
 ## Per-package porting recipe (source-copy approach)

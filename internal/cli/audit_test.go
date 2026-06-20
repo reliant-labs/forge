@@ -221,7 +221,7 @@ func TestAuditCRUDStubs_NoStubs(t *testing.T) {
 // finding, not a buried comment in a generated file.
 func TestAuditCRUDStubs_DetectsLegacyMarker(t *testing.T) {
 	dir := t.TempDir()
-	pkgDir := filepath.Join(dir, "handlers", "api")
+	pkgDir := filepath.Join(dir, "internal", "handlers", "api")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -279,7 +279,7 @@ func (s *Service) ListSettlements(
 // carries for consumers migrating off the old string.
 func TestAuditCRUDStubs_DetectsCurrentMarker(t *testing.T) {
 	dir := t.TempDir()
-	pkgDir := filepath.Join(dir, "handlers", "api")
+	pkgDir := filepath.Join(dir, "internal", "handlers", "api")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

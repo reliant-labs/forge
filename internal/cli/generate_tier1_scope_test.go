@@ -33,8 +33,8 @@ func TestTier1OwnerGateRegistry(t *testing.T) {
 		{"pkg/app/testing.go", true, "testing.go is gated on any entrypoint"},
 		{"pkg/app/wire_gen.go", true, "wire_gen.go is gated on any entrypoint"},
 		// glob entries — exercise the path/filepath.Match wiring.
-		{"handlers/billing/handlers_crud_ops_gen.go", true, "handlers/<svc>/handlers_crud_ops_gen.go is gated on codegen+services"},
-		{"handlers/users/handlers_crud_ops_gen.go", true, "second svc still matches the same glob"},
+		{"internal/handlers/billing/handlers_crud_ops_gen.go", true, "internal/handlers/<svc>/handlers_crud_ops_gen.go is gated on codegen+services"},
+		{"internal/handlers/users/handlers_crud_ops_gen.go", true, "second svc still matches the same glob"},
 		{"pkg/middleware/auth_gen.go", true, "pkg/middleware/*_gen.go is gated on codegen+services"},
 		{"pkg/middleware/tenant_gen.go", true, "second middleware still matches the same prefix"},
 		{"frontends/admin/src/hooks/users-hooks.ts", true, "frontend hook glob is gated on frontend+services"},
@@ -42,7 +42,7 @@ func TestTier1OwnerGateRegistry(t *testing.T) {
 		// This preserves loud-fail behavior for new emitters until they
 		// get a registry entry.
 		{"cmd/server.go", false, "server.go has no entry — fail-closed by design"},
-		{"handlers/billing/something_else.go", false, "non-_crud_gen handler files don't match the glob"},
+		{"internal/handlers/billing/something_else.go", false, "non-_crud_gen handler files don't match the glob"},
 		{"frontends/admin/src/pages/users.tsx", false, "frontend pages aren't in the hooks glob"},
 	}
 	for _, tc := range cases {

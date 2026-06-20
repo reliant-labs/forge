@@ -15,7 +15,7 @@ import (
 // holding `deps Deps`, methods dereferencing through `s.deps.<Field>`.
 func writeOptionalGuardPkg(t *testing.T, projectDir, pkg, methods string) {
 	t.Helper()
-	dir := filepath.Join(projectDir, "handlers", pkg)
+	dir := filepath.Join(projectDir, "internal", "handlers", pkg)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func (s *Service) Call() error {
 				if got[i].Line == 0 || got[i].Col == 0 {
 					t.Errorf("finding[%d] missing position: %+v", i, got[i])
 				}
-				if got[i].Package != "fixture" || got[i].Role != "handlers" {
+				if got[i].Package != "fixture" || got[i].Role != "internal/handlers" {
 					t.Errorf("finding[%d] wrong package attribution: %+v", i, got[i])
 				}
 			}
@@ -387,7 +387,7 @@ func (s *Service) Clean() error {
 	return s.deps.Svc.Do()
 }
 `)
-	dir := filepath.Join(projectDir, "handlers", "fixture")
+	dir := filepath.Join(projectDir, "internal", "handlers", "fixture")
 	genSrc := `package fixture
 
 func (s *Service) generated() error {
@@ -492,15 +492,15 @@ func TestOptionalDepsGuard_TextFormat(t *testing.T) {
 
 	var full strings.Builder
 	formatOptionalDepsGuard(&full, []optionalDepsGuardFinding{{
-		File: "handlers/billing/handlers.go", Line: 42, Col: 9,
-		Role: "handlers", Package: "billing",
+		File: "internal/handlers/billing/handlers.go", Line: 42, Col: 9,
+		Role: "internal/handlers", Package: "billing",
 		Field: "SvcBillingHandler", Method: "ListPlans",
 		Expr: "s.deps.SvcBillingHandler",
 	}})
 	out := full.String()
 	for _, needle := range []string{
 		"forge-optional-deps-guard",
-		"handlers/billing/handlers.go:42:9",
+		"internal/handlers/billing/handlers.go:42:9",
 		"Deps.SvcBillingHandler",
 		"ListPlans",
 		"forge:optional-checked",
@@ -544,8 +544,8 @@ func (s *Service) Call() error {
 		t.Errorf("finding_count = %v, want 1", cat.Details["finding_count"])
 	}
 	byPkg, ok := cat.Details["by_package"].(map[string][]string)
-	if !ok || len(byPkg["handlers/fixture"]) != 1 {
-		t.Errorf("by_package = %#v, want one entry under handlers/fixture", cat.Details["by_package"])
+	if !ok || len(byPkg["internal/handlers/fixture"]) != 1 {
+		t.Errorf("by_package = %#v, want one entry under internal/handlers/fixture", cat.Details["by_package"])
 	}
 	if !strings.Contains(fmt.Sprint(cat.Details["hint"]), "--optional-deps-guard") {
 		t.Errorf("hint missing targeted flag: %v", cat.Details["hint"])

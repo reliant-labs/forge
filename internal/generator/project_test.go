@@ -86,7 +86,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 		t.Fatalf("expected scaffolded frontend type to be normalized to nextjs, got:\n%s", configContents)
 	}
 
-	serviceContents := readFile(t, filepath.Join(root, "handlers", "api", "service.go"))
+	serviceContents := readFile(t, filepath.Join(root, "internal", "handlers", "api", "service.go"))
 	if !strings.Contains(serviceContents, "gen/services/api/v1/apiv1connect") {
 		t.Fatalf("expected service template to import the generated Connect package path, got:\n%s", serviceContents)
 	}
@@ -194,7 +194,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	}
 
 	// services/all should NOT exist
-	if _, err := os.Stat(filepath.Join(root, "handlers", "all")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "all")); !os.IsNotExist(err) {
 		t.Fatalf("expected handlers/all/ directory to not exist")
 	}
 	// pkg/registry should NOT exist
@@ -206,7 +206,7 @@ func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *tes
 	// in the generated proto stub). The service package is provided by
 	// service.go + authorizer.go until a real RPC is added and forge
 	// generate produces handlers_gen.go.
-	if _, err := os.Stat(filepath.Join(root, "handlers", "api", "handlers.go")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "api", "handlers.go")); !os.IsNotExist(err) {
 		t.Fatalf("expected handlers/api/handlers.go to not exist at scaffold, got err=%v", err)
 	}
 	if !strings.HasPrefix(serviceContents, "package api") {
@@ -296,7 +296,7 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 	assertPathExists(t, filepath.Join(root, "forge.yaml"))
 
 	// Service-specific directories should NOT exist
-	if _, err := os.Stat(filepath.Join(root, "handlers", "api")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "internal", "handlers", "api")); !os.IsNotExist(err) {
 		t.Fatal("expected no service handler directory, but it exists")
 	}
 
@@ -368,7 +368,7 @@ func TestProjectGeneratorKindCLIScaffold(t *testing.T) {
 		filepath.Join(root, "cmd", "main.go"), // service-shaped main.go at cmd/ root
 		filepath.Join(root, "pkg", "middleware"),
 		filepath.Join(root, "pkg", "app", "bootstrap.go"),
-		filepath.Join(root, "handlers"),
+		filepath.Join(root, "internal", "handlers"),
 		filepath.Join(root, "deploy"),
 		filepath.Join(root, "Dockerfile"),
 		filepath.Join(root, "docker-compose.yml"),
@@ -438,7 +438,7 @@ func TestProjectGeneratorKindLibraryScaffold(t *testing.T) {
 		filepath.Join(root, "cmd"),
 		filepath.Join(root, "pkg", "middleware"),
 		filepath.Join(root, "pkg", "app"),
-		filepath.Join(root, "handlers"),
+		filepath.Join(root, "internal", "handlers"),
 		filepath.Join(root, "deploy"),
 		filepath.Join(root, "Dockerfile"),
 		filepath.Join(root, "docker-compose.yml"),
@@ -610,7 +610,7 @@ func TestAppendServiceToConfigWritesComponentsJSON(t *testing.T) {
 	// A pre-existing components.json with one server component.
 	existing := `{
   "components": [
-    {"name": "api", "kind": "server", "path": "handlers/api", "ports": {"http": 8080}}
+    {"name": "api", "kind": "server", "path": "internal/handlers/api", "ports": {"http": 8080}}
   ]
 }
 `

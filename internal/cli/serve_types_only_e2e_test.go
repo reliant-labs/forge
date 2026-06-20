@@ -121,7 +121,7 @@ message GetProjectResponse {
 
 	// The handlers scaffold + row constructor DO generate for a newly
 	// added service — implement-then-register is the supported flow.
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "project"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project"))
 	rows := readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
 	if !strings.Contains(rows, "func serviceRowProject(") {
 		t.Errorf("services_gen.go must carry the row constructor for the unregistered project service:\n%s", rows)
@@ -159,10 +159,10 @@ message GetProjectResponse {
 	}
 	// The tracked Tier-1 file under the retired dir is a report-only
 	// stale candidate (the dir itself survives).
-	if !strings.Contains(out, "stale generated file") || !strings.Contains(out, "handlers/project/authorizer_gen.go") {
+	if !strings.Contains(out, "stale generated file") || !strings.Contains(out, "internal/handlers/project/authorizer_gen.go") {
 		t.Errorf("generate must report the retired tracked files as stale candidates:\n%s", out)
 	}
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "project", "authorizer_gen.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "project", "authorizer_gen.go"))
 	rows = readFileE2E(t, filepath.Join(projectDir, "pkg", "app", "services_gen.go"))
 	if strings.Contains(rows, "serviceRowProject") {
 		t.Errorf("tombstoned service must drop out of services_gen.go")
@@ -175,17 +175,17 @@ message GetProjectResponse {
 	// generated authorizer until the user moves or deletes their code —
 	// exactly what the audit finding instructs.
 	runCmd(t, projectDir, forgeBin, "generate", "--force-cleanup", "--skip-validate")
-	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "project", "authorizer_gen.go")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", "authorizer_gen.go")); !os.IsNotExist(err) {
 		t.Errorf("--force-cleanup must delete the tracked authorizer_gen.go, stat err = %v", err)
 	}
 	for _, userFile := range []string{"service.go", "handlers.go"} {
-		if _, err := os.Stat(filepath.Join(projectDir, "handlers", "project", userFile)); err != nil {
+		if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project", userFile)); err != nil {
 			t.Errorf("user-written %s must survive --force-cleanup: %v", userFile, err)
 		}
 	}
 
 	// User completes the retirement by removing their scaffold files.
-	if err := os.RemoveAll(filepath.Join(projectDir, "handlers", "project")); err != nil {
+	if err := os.RemoveAll(filepath.Join(projectDir, "internal", "handlers", "project")); err != nil {
 		t.Fatalf("remove retired dir: %v", err)
 	}
 
@@ -196,7 +196,7 @@ message GetProjectResponse {
 	}
 	// The tombstone comment keeps the scaffold retired — generate must
 	// NOT re-scaffold handlers/project for a comment-mentioned service.
-	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "project")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "project")); !os.IsNotExist(err) {
 		t.Fatalf("tombstoned service must stay retired (no handlers re-scaffold), stat err = %v", err)
 	}
 	assertAuditRegistration(t, projectDir, forgeBin, false, "")
@@ -246,7 +246,7 @@ func addProjectServiceEntry(t *testing.T, projectDir string) {
 	if err := generator.AppendComponentToFile(projectDir, config.ComponentConfig{
 		Name: "project",
 		Kind: config.ComponentKindServer,
-		Path: "handlers/project",
+		Path: "internal/handlers/project",
 	}); err != nil {
 		t.Fatalf("append project component to components.json: %v", err)
 	}

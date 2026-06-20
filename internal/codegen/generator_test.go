@@ -204,10 +204,10 @@ func TestGenerateBootstrap_MultipleServices(t *testing.T) {
 	}
 
 	// Must import both service packages
-	if !strings.Contains(content, `"example.com/proj/handlers/api"`) {
+	if !strings.Contains(content, `"example.com/proj/internal/handlers/api"`) {
 		t.Error("bootstrap.go should import api service package")
 	}
-	if !strings.Contains(content, `"example.com/proj/handlers/orders"`) {
+	if !strings.Contains(content, `"example.com/proj/internal/handlers/orders"`) {
 		t.Error("bootstrap.go should import orders service package")
 	}
 
@@ -1109,10 +1109,10 @@ func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 	}
 
 	// Must import service packages
-	if !strings.Contains(content, `"example.com/proj/handlers/api"`) {
+	if !strings.Contains(content, `"example.com/proj/internal/handlers/api"`) {
 		t.Error("testing.go should import api service package")
 	}
-	if !strings.Contains(content, `"example.com/proj/handlers/orders"`) {
+	if !strings.Contains(content, `"example.com/proj/internal/handlers/orders"`) {
 		t.Error("testing.go should import orders service package")
 	}
 
@@ -1201,7 +1201,7 @@ func TestGenerateBootstrapTesting_MigratedDBOptIn(t *testing.T) {
 	projectDir := t.TempDir()
 
 	// A service whose Deps carry a DB field (AnyServiceHasDB → true).
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2024,7 +2024,7 @@ func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testin
 	if err := os.MkdirAll(filepath.Join(projectDir, "internal", "billing"), 0755); err != nil {
 		t.Fatalf("setup internal/billing: %v", err)
 	}
-	targetDir := filepath.Join(projectDir, "handlers", "billing")
+	targetDir := filepath.Join(projectDir, "internal", "handlers", "billing")
 
 	svc := ServiceDef{
 		Name:      "BillingService",
@@ -2057,7 +2057,7 @@ func TestGenerateServiceStub_HandlersTestMatchesBootstrapTestingHelper(t *testin
 
 	// And the no-collision case: another service without an internal dir
 	// keeps the simple form.
-	noCollisionDir := filepath.Join(projectDir, "handlers", "echo")
+	noCollisionDir := filepath.Join(projectDir, "internal", "handlers", "echo")
 	echoSvc := ServiceDef{
 		Name:      "EchoService",
 		Package:   "echo.v1",
@@ -2191,7 +2191,7 @@ func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 	projectDir := t.TempDir()
 	// Seed an on-disk worker dir with the snake_case package declaration
 	// so the ground-truth alias detection has something to read.
-	workerDir := filepath.Join(projectDir, "workers", "climatology_refresh")
+	workerDir := filepath.Join(projectDir, "internal", "workers", "climatology_refresh")
 	if err := os.MkdirAll(workerDir, 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2202,7 +2202,7 @@ func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 
 	// Mismatched on-disk dir for the "ground truth overrides path leaf" case:
 	// path says workers/widget_v2 but the actual `package X` is `widgetv2`.
-	mismatchDir := filepath.Join(projectDir, "workers", "widget_v2")
+	mismatchDir := filepath.Join(projectDir, "internal", "workers", "widget_v2")
 	if err := os.MkdirAll(mismatchDir, 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2278,7 +2278,7 @@ func TestWorkerDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 // the path-honoring rule applies equally to operators.
 func TestOperatorDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 	projectDir := t.TempDir()
-	opDir := filepath.Join(projectDir, "operators", "cert_rotator")
+	opDir := filepath.Join(projectDir, "internal", "operators", "cert_rotator")
 	if err := os.MkdirAll(opDir, 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -2321,7 +2321,7 @@ func TestOperatorDataFromSpecs_HonorsExplicitPath(t *testing.T) {
 // pins against.
 func TestGenerateMissingHandlerStubs_UnitTestSkipsCRUDMethods(t *testing.T) {
 	projectDir := t.TempDir()
-	targetDir := filepath.Join(projectDir, "handlers", "patients")
+	targetDir := filepath.Join(projectDir, "internal", "handlers", "patients")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -190,7 +190,7 @@ func TestGenerateWireGen_ConfigBlockByType(t *testing.T) {
 	projectDir := t.TempDir()
 	writeConfigDescriptor(t, projectDir, traderConfigMessages())
 
-	workerDir := filepath.Join(projectDir, "workers", "trader")
+	workerDir := filepath.Join(projectDir, "internal", "workers", "trader")
 	if err := os.MkdirAll(workerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestGenerateWireGen_ConfigBlockPointer(t *testing.T) {
 	projectDir := t.TempDir()
 	writeConfigDescriptor(t, projectDir, traderConfigMessages())
 
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestGenerateWireGen_ConfigBlockAmbiguous(t *testing.T) {
 	})
 	writeConfigDescriptor(t, projectDir, messages)
 
-	workerDir := filepath.Join(projectDir, "workers", "trader")
+	workerDir := filepath.Join(projectDir, "internal", "workers", "trader")
 	if err := os.MkdirAll(workerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestConfigBlock_RegenerateIdempotent(t *testing.T) {
 	projectDir := t.TempDir()
 	writeConfigDescriptor(t, projectDir, traderConfigMessages())
 
-	workerDir := filepath.Join(projectDir, "workers", "trader")
+	workerDir := filepath.Join(projectDir, "internal", "workers", "trader")
 	if err := os.MkdirAll(workerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

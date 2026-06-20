@@ -9,7 +9,7 @@ package codegen
 // produced, on every `forge generate`:
 //
 //   - bootstrap.go + wire_gen.go importing
-//     `engineshadow "example.com/proj/workers/engineshadow"` — a
+//     `engineshadow "example.com/proj/internal/workers/engineshadow"` — a
 //     directory that does NOT exist (the synthesis compacted the
 //     separators), breaking the build;
 //   - an EMPTY `engineshadow.Deps{}` literal in wireWorkerEngineShadowDeps
@@ -215,7 +215,7 @@ func TestParsePackageClause_Diagnostics(t *testing.T) {
 // and parse as valid Go.
 func TestGenerateWireGen_SnakeCaseWorkerDir(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/workers", "engine_shadow", "worker.go", "engine_shadow")
 
 	workers, err := WorkerDataFromNames([]string{"engine_shadow"}, projectDir)
 	if err != nil {
@@ -234,7 +234,7 @@ func TestGenerateWireGen_SnakeCaseWorkerDir(t *testing.T) {
 
 	for _, want := range []string{
 		// Import path matches the real dir; alias is the real clause.
-		`engine_shadow "example.com/proj/workers/engine_shadow"`,
+		`engine_shadow "example.com/proj/internal/workers/engine_shadow"`,
 		// Function name from the separator-aware FieldName.
 		"func wireWorkerEngineShadowDeps",
 		// Deps were parsed from the REAL dir (pre-fix: empty literal).
@@ -247,7 +247,7 @@ func TestGenerateWireGen_SnakeCaseWorkerDir(t *testing.T) {
 		}
 	}
 	// The pre-fix synthesized (nonexistent) dir must never appear.
-	if strings.Contains(content, "workers/engineshadow") {
+	if strings.Contains(content, "internal/workers/engineshadow") {
 		t.Errorf("wire_gen.go still references synthesized workers/engineshadow:\n%s", content)
 	}
 }
@@ -257,7 +257,7 @@ func TestGenerateWireGen_SnakeCaseWorkerDir(t *testing.T) {
 // dir, alias/selector follow the clause.
 func TestGenerateWireGen_WorkerDirWithCompactClause(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engineshadow")
+	scaffoldComponentDir(t, projectDir, "internal/workers", "engine_shadow", "worker.go", "engineshadow")
 
 	workers, err := WorkerDataFromNames([]string{"engine_shadow"}, projectDir)
 	if err != nil {
@@ -275,7 +275,7 @@ func TestGenerateWireGen_WorkerDirWithCompactClause(t *testing.T) {
 	mustParseGo(t, "wire_gen.go", data)
 
 	for _, want := range []string{
-		`engineshadow "example.com/proj/workers/engine_shadow"`,
+		`engineshadow "example.com/proj/internal/workers/engine_shadow"`,
 		"engineshadow.Deps{",
 		"func wireWorkerEngineShadowDeps",
 	} {
@@ -290,7 +290,7 @@ func TestGenerateWireGen_WorkerDirWithCompactClause(t *testing.T) {
 // alias, and (pre-fix regression) NO reference to the synthesized dir.
 func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/workers", "engine_shadow", "worker.go", "engine_shadow")
 
 	workers, err := WorkerDataFromNames([]string{"engine_shadow"}, projectDir)
 	if err != nil {
@@ -319,7 +319,7 @@ func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
 	mustParseGo(t, "bootstrap.go", data)
 
 	for _, want := range []string{
-		`engine_shadow "example.com/proj/workers/engine_shadow"`,
+		`engine_shadow "example.com/proj/internal/workers/engine_shadow"`,
 		"app.Workers.EngineShadow",
 		"wireWorkerEngineShadowDeps",
 	} {
@@ -327,7 +327,7 @@ func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
 			t.Errorf("bootstrap.go missing %q\n--- content ---\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "workers/engineshadow") {
+	if strings.Contains(content, "internal/workers/engineshadow") {
 		t.Errorf("bootstrap.go still references synthesized workers/engineshadow:\n%s", content)
 	}
 }
@@ -340,7 +340,7 @@ func TestGenerateBootstrap_SnakeCaseWorkerDir(t *testing.T) {
 // wireEngineshadowDeps in wire_gen vs wireEngineShadowDeps in bootstrap).
 func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/handlers", "engine_shadow", "service.go", "engine_shadow")
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
 
@@ -381,11 +381,11 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 	mustParseGo(t, "services_gen.go", rows)
 	mustParseGo(t, "wire_gen.go", wg)
 
-	if !strings.Contains(string(bs), `engine_shadow "example.com/proj/handlers/engine_shadow"`) {
+	if !strings.Contains(string(bs), `engine_shadow "example.com/proj/internal/handlers/engine_shadow"`) {
 		t.Errorf("bootstrap.go missing real-dir import\n--- content ---\n%s", bs)
 	}
 	for _, want := range []string{
-		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
+		`engine_shadow "example.com/proj/internal/handlers/engine_shadow"`,
 		"wireEngineShadowDeps(app, cfg, logger)",
 	} {
 		if !strings.Contains(string(rows), want) {
@@ -393,7 +393,7 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
+		`engine_shadow "example.com/proj/internal/handlers/engine_shadow"`,
 		"func wireEngineShadowDeps(app *App, cfg *config.Config, logger *slog.Logger) engine_shadow.Deps",
 		`Logger: logger.With("service", "engine-shadow")`,
 	} {
@@ -402,7 +402,7 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 		}
 	}
 
-	if strings.Contains(string(bs), "handlers/engineshadow") || strings.Contains(string(wg), "handlers/engineshadow") {
+	if strings.Contains(string(bs), "internal/handlers/engineshadow") || strings.Contains(string(wg), "internal/handlers/engineshadow") {
 		t.Error("generated output still references synthesized handlers/engineshadow")
 	}
 }
@@ -412,7 +412,7 @@ func TestGenerateBootstrapAndWireGen_SnakeCaseHandlerDir(t *testing.T) {
 // data through a separate template path).
 func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/handlers", "engine_shadow", "service.go", "engine_shadow")
 
 	services := []ServiceDef{{Name: "EngineShadowService", ModulePath: "example.com/proj"}}
 	if err := GenerateBootstrapTesting(BootstrapTestingGenInput{
@@ -434,14 +434,14 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 	mustParseGo(t, "testing.go", data)
 
 	for _, want := range []string{
-		`engine_shadow "example.com/proj/handlers/engine_shadow"`,
+		`engine_shadow "example.com/proj/internal/handlers/engine_shadow"`,
 		"func NewTestEngineShadow(",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("testing.go missing %q\n--- content ---\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "handlers/engineshadow") {
+	if strings.Contains(content, "internal/handlers/engineshadow") {
 		t.Errorf("testing.go still references synthesized handlers/engineshadow:\n%s", content)
 	}
 }
@@ -452,8 +452,8 @@ func TestGenerateBootstrapTesting_SnakeCaseHandlerDir(t *testing.T) {
 // to a guessed identity.
 func TestWorkerDataFromNames_ConflictingClausesError(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "workers", "engine_shadow", "worker.go", "engine_shadow")
-	stray := filepath.Join(projectDir, "workers", "engine_shadow", "stray.go")
+	scaffoldComponentDir(t, projectDir, "internal/workers", "engine_shadow", "worker.go", "engine_shadow")
+	stray := filepath.Join(projectDir, "internal", "workers", "engine_shadow", "stray.go")
 	if err := os.WriteFile(stray, []byte("package engineshadow\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -476,8 +476,8 @@ func TestWorkerDataFromNames_ConflictingClausesError(t *testing.T) {
 // `package engine_shadow`, breaking the build with a mixed-package dir.
 func TestGenerateMissingHandlerStubs_DiskFirstPackageClause(t *testing.T) {
 	projectDir := t.TempDir()
-	scaffoldComponentDir(t, projectDir, "handlers", "engine_shadow", "service.go", "engine_shadow")
-	targetDir := filepath.Join(projectDir, "handlers", "engine_shadow")
+	scaffoldComponentDir(t, projectDir, "internal/handlers", "engine_shadow", "service.go", "engine_shadow")
+	targetDir := filepath.Join(projectDir, "internal", "handlers", "engine_shadow")
 
 	svc := ServiceDef{
 		Name:       "EngineShadowService",
@@ -518,7 +518,7 @@ func TestGenerateMissingHandlerStubs_DiskFirstPackageClause(t *testing.T) {
 // real package clause.
 func TestGenerateCRUDHandlers_DiskFirstTargetDir(t *testing.T) {
 	projectDir := t.TempDir()
-	dir := filepath.Join(projectDir, "handlers", "engine_shadow")
+	dir := filepath.Join(projectDir, "internal", "handlers", "engine_shadow")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ type Service struct{ deps Deps }
 			t.Errorf("%s must declare the dir's real clause:\n%.300s", name, data)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, "handlers", "engineshadow")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(projectDir, "internal", "handlers", "engineshadow")); !os.IsNotExist(err) {
 		t.Error("synthesized duplicate dir handlers/engineshadow was created")
 	}
 }

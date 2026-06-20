@@ -33,7 +33,7 @@ func TestE2EScaffoldBasicProject(t *testing.T) {
 	projectDir := filepath.Join(dir, "basicapp")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "go.mod"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "api"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "api", "v1", "api.proto"))
 
 	// Generate code
@@ -91,7 +91,7 @@ func TestE2EScaffoldMultiServiceProject(t *testing.T) {
 
 	// Verify all services exist
 	for _, svc := range []string{"api", "users", "orders"} {
-		assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", svc, "service.go"))
+		assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", svc, "service.go"))
 		assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", svc, "v1", svc+".proto"))
 	}
 
@@ -149,8 +149,8 @@ func TestE2EScaffoldAddService(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "add", "service", "billing")
 
 	// Verify both services exist
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "api", "service.go"))
-	assertPathExistsE2E(t, filepath.Join(projectDir, "handlers", "billing", "service.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "api", "service.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "internal", "handlers", "billing", "service.go"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "proto", "services", "billing", "v1", "billing.proto"))
 
 	// Regenerate

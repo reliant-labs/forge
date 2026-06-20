@@ -14,7 +14,7 @@ import (
 func writeConfigDepsFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	workerDir := filepath.Join(dir, "workers", "trader")
+	workerDir := filepath.Join(dir, "internal", "workers", "trader")
 	if err := os.MkdirAll(workerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -71,13 +71,13 @@ func TestCollectConfigDepsFindings_FlagsScalarsOnly(t *testing.T) {
 	got := map[string]string{}
 	for _, f := range findings {
 		got[f.Field] = f.Type
-		if f.Role != "workers" || f.Package != "trader" {
-			t.Errorf("finding %s: role/package = %s/%s, want workers/trader", f.Field, f.Role, f.Package)
+		if f.Role != "internal/workers" || f.Package != "trader" {
+			t.Errorf("finding %s: role/package = %s/%s, want internal/workers/trader", f.Field, f.Role, f.Package)
 		}
 		if f.Line == 0 || f.Col == 0 {
 			t.Errorf("finding %s: missing position (%d:%d)", f.Field, f.Line, f.Col)
 		}
-		if !strings.HasPrefix(f.File, "workers"+string(filepath.Separator)+"trader") {
+		if !strings.HasPrefix(f.File, filepath.Join("internal", "workers", "trader")) {
 			t.Errorf("finding %s: file %q not project-relative", f.Field, f.File)
 		}
 	}
@@ -105,7 +105,7 @@ func TestCollectConfigDepsFindings_FlagsScalarsOnly(t *testing.T) {
 
 func TestConfigDepsFixHint_CarriesSnippet(t *testing.T) {
 	f := configDepsFinding{
-		Role: "workers", Package: "trader",
+		Role: "internal/workers", Package: "trader",
 		Field: "WTIPersistMaxPerTick", Type: "int",
 	}
 	hint := configDepsFixHint(f)
@@ -132,13 +132,13 @@ func TestFormatConfigDeps_CleanAndDirty(t *testing.T) {
 
 	buf.Reset()
 	formatConfigDeps(&buf, []configDepsFinding{{
-		File: "workers/trader/worker.go", Line: 12, Col: 2,
-		Role: "workers", Package: "trader",
+		File: "internal/workers/trader/worker.go", Line: 12, Col: 2,
+		Role: "internal/workers", Package: "trader",
 		Field: "WTIPersistMaxPerTick", Type: "int",
 	}})
 	out := buf.String()
 	for _, want := range []string{
-		"[forge-config-deps] workers/trader/worker.go:12:2",
+		"[forge-config-deps] internal/workers/trader/worker.go:12:2",
 		"Deps.WTIPersistMaxPerTick is a naked scalar (int)",
 		"scalars are configuration",
 		"warnings only",

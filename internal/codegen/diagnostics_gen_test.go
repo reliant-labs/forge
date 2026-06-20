@@ -102,7 +102,7 @@ func TestGenerateDiagnostics_NilDepEmitsRegisterCall(t *testing.T) {
 // from handlers/<pkg>/*.go and emits a RegisterStub call.
 func TestGenerateDiagnostics_StubMarkerScan(t *testing.T) {
 	projectDir := t.TempDir()
-	handlerDir := filepath.Join(projectDir, "handlers", "api")
+	handlerDir := filepath.Join(projectDir, "internal", "handlers", "api")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

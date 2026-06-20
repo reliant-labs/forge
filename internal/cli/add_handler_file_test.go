@@ -30,7 +30,7 @@ version: 0.1.0
 func TestRunAddHandlerFile_HappyPath(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
 	writeComponentsJSON(t, dir)
-	handlerDir := filepath.Join(dir, "handlers", "billing")
+	handlerDir := filepath.Join(dir, "internal", "handlers", "billing")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/billing: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestRunAddHandlerFile_MissingHandlerDir(t *testing.T) {
 func TestRunAddHandlerFile_FileAlreadyExists(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
 	writeComponentsJSON(t, dir)
-	handlerDir := filepath.Join(dir, "handlers", "billing")
+	handlerDir := filepath.Join(dir, "internal", "handlers", "billing")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/billing: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestRunAddHandlerFile_FileAlreadyExists(t *testing.T) {
 func TestRunAddHandlerFile_TolerateGoSuffix(t *testing.T) {
 	dir := withTempProject(t, minimalServiceForgeYAML)
 	writeComponentsJSON(t, dir)
-	handlerDir := filepath.Join(dir, "handlers", "billing")
+	handlerDir := filepath.Join(dir, "internal", "handlers", "billing")
 	if err := os.MkdirAll(handlerDir, 0o755); err != nil {
 		t.Fatalf("mkdir handlers/billing: %v", err)
 	}

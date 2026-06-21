@@ -134,11 +134,6 @@ func ToProtoPascalCase(s string) string {
 	return b.String()
 }
 
-// IsGoInitialism reports whether word (case-insensitive) is a known Go initialism.
-func IsGoInitialism(word string) bool {
-	return GoInitialismsMap[strings.ToLower(word)]
-}
-
 // ToKebabCase converts a name to kebab-case, treating known initialisms
 // (LLM, API, URL, JSON, etc. — see GoInitialisms) as a single segment so
 // that "LLMGateway" → "llm-gateway" rather than "l-l-m-gateway".

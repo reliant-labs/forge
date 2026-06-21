@@ -393,13 +393,13 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, aut
 		delete(configFields, "ConnMaxLifetime")
 	}
 
-	// Re-render cmd/server.go so it stays in sync with the config fields
-	// and the forge.yaml auth provider.
+	// Re-render internal/cli/serve.go so it stays in sync with the config
+	// fields and the forge.yaml auth provider.
 	if err := codegen.GenerateCmdServerWithFields(configFields, authProvider, projectDir, cs); err != nil {
-		return nil, fmt.Errorf("failed to regenerate cmd/server.go: %w", err)
+		return nil, fmt.Errorf("failed to regenerate internal/cli/serve.go: %w", err)
 	}
 
-	fmt.Println("  ✅ Regenerated cmd/server.go")
+	fmt.Println("  ✅ Regenerated internal/cli/serve.go")
 	return configFields, nil
 }
 

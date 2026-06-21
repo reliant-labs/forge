@@ -2,13 +2,22 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: proto/services + each service's Deps struct.
 //
-// The DATA-ONLY inventory (FORGE_SHAPE_REDESIGN §2). Inventory is a pure
-// descriptor of the project's mountable Connect services — names,
-// connect-paths, kind, and a typed Mount closure over the assembled
-// *Services. It is what `forge map` / `forge audit` and the cmd layer read
-// to LIST and to SELECT which subset to mount per subcommand. Names here
-// are for DISPLAY and SELECTION only — never a construction key.
-// Construction lives entirely in Build (inject_gen.go).
+// TWO surfaces, ONE source (FORGE_SHAPE_REDESIGN §1/§2):
+//
+//   - TYPED MOUNTS — the run path. Each service has a typed method
+//     `(*Services).Mount<Svc>(mux, opts...) string` that mounts EXACTLY
+//     that service over the constructed *Services and returns its Connect
+//     path. `MountAll` calls each typed Mount<Svc> explicitly. The cli
+//     layer hands one of these METHOD VALUES to serve() — selection is
+//     compile-time typed, never a string lookup over the inventory.
+//
+//   - DATA-ONLY INVENTORY — introspection ONLY. `Inventory` is a pure
+//     descriptor (names, connect-paths, kind, version) that `forge map` /
+//     `forge audit` and the `services` listing read. It carries NO mount
+//     closure and is NEVER on the run path. Names here are for DISPLAY.
+//
+// Construction lives entirely in Build (inject_gen.go). Names are never a
+// construction key.
 package app
 
 import (
@@ -35,9 +44,73 @@ var (
 	_ = fmw.HTTPStack
 )
 
-// ComponentInfo is one mountable service's descriptor + typed mount closure.
+// MountFunc is the TYPED mount signature every per-service Mount<Svc> and
+// MountAll satisfy as a METHOD EXPRESSION ((*Services).Mount<Svc>). The cli
+// layer's serve() takes one of these directly — selection is compile-time
+// typed, never a string→inventory lookup on the run path. Returns the
+// Connect paths mounted (for the REST transcoder).
+type MountFunc func(s *Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string
+
+{{range .Services}}
+// Mount{{.FieldName}} registers the {{.Name}} service's Connect + HTTP routes
+// on mux, reading the constructed instance off s. Returns its Connect path
+// in a one-element slice so the method expression (*Services).Mount{{.FieldName}}
+// satisfies MountFunc and serve can take it DIRECTLY — no string lookup.
+func (s *Services) Mount{{.FieldName}}(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
+{{- if .HasAuthorizer}}
+	var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
+	if cfg.DevAuthBypass() {
+		authz = middleware.DevAuthorizer{}
+	}
+	svcOpts := append(append([]connect.HandlerOption{}, opts...), connect.WithInterceptors(
+		middleware.AuthzInterceptor(authz),
+	))
+	s.{{.FieldName}}.Register(mux, svcOpts...)
+{{- else}}
+	s.{{.FieldName}}.Register(mux, opts...)
+{{- end}}
+	s.{{.FieldName}}.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))
+{{- if .HasWebhooks}}
+	s.{{.FieldName}}.RegisterWebhookRoutes(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))
+{{- end}}
+	return []string{ {{.ConnectPkg}}.{{.ProtoServiceName}}Name }
+}
+{{end -}}
+
+// MountAll mounts every service on mux via the typed per-service Mount
+// methods — explicit, compile-time calls, NOT a loop over the data-only
+// Inventory. Returns the Connect paths of all mounted services (for the
+// REST transcoder). This is the run path for the `server` command. The
+// method expression (*Services).MountAll satisfies MountFunc.
+func (s *Services) MountAll(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
+{{- if .Services}}
+	var mounted []string
+{{- range .Services}}
+	mounted = append(mounted, s.Mount{{.FieldName}}(mux, cfg, logger, opts...)...)
+{{- end}}
+	return mounted
+{{- else}}
+	_, _, _, _ = mux, cfg, logger, opts
+	return nil
+{{- end}}
+}
+
+// MountByName maps a service's runtime name to its TYPED mount func (the
+// method expression (*Services).Mount<Svc>), used ONLY by the optional
+// `server [names...]` convenience selector. Each entry is a TYPED FUNCTION
+// VALUE, not a string lookup over data. Prefer the dedicated
+// `<bin> <service>` subcommands; this exists for `server a b c`.
+var MountByName = map[string]MountFunc{
+{{- range .Services}}
+	"{{.Name}}": (*Services).Mount{{.FieldName}},
+{{- end}}
+}
+
+// ComponentInfo is one mountable service's DATA-ONLY descriptor. It carries
+// NO mount closure — mounting is the typed Mount<Svc> methods above. This
+// is the introspection surface (`forge map` / `audit` / `services`).
 type ComponentInfo struct {
-	// Name is the runtime kebab name — DISPLAY + selection only.
+	// Name is the runtime kebab name — DISPLAY only.
 	Name string
 	// ConnectPath is the fully-qualified Connect service path
 	// (e.g. "acme.billing.v1.BillingService") — for introspection.
@@ -50,28 +123,17 @@ type ComponentInfo struct {
 	// VERSION-AWARE SEAM: ConnectPath fuses the version (it embeds e.g.
 	// ".v1."), so historically version rode inside service identity — a
 	// future "billing.v2" would look like a brand-new service. Recording
-	// Version as explicit METADATA here (a field, not part of the mount
-	// key) makes a second version an ADDITIVE change: same BaseService,
-	// new Version. It does NOT change mounting today — ConnectPath and the
-	// route are unchanged for v1 projects.
-	//
-	// DEFERRED (not implemented): per-version handler generation / mount
-	// adapters. When that lands, the cmd layer will group Inventory by
-	// BaseService and mount each Version on its own route via this Mount
-	// closure; until then there is at most one Version per BaseService.
+	// Version as explicit METADATA here makes a second version an ADDITIVE
+	// change: same BaseService, new Version.
 	BaseService string
 	Version     string
-	// Kind is the component kind ("service"). Workers/operators are
-	// supervised by serverkit, not mounted here.
+	// Kind is the component kind ("service").
 	Kind string
-	// Mount registers this service's Connect + HTTP routes on mux, reading
-	// the constructed instance from s. The cmd layer selects which Mount
-	// funcs to call per subcommand and composes them (preserving the
-	// interceptor ordering threaded via opts).
-	Mount func(s *Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption)
 }
 
-// Inventory is the project's mountable service inventory. Data-only.
+// Inventory is the project's mountable service inventory. DATA-ONLY:
+// introspection (`forge map` / `audit` / `services` listing) reads it; the
+// run path never does. Mounting is the typed Mount<Svc> methods above.
 var Inventory = []ComponentInfo{
 {{- range .Services}}
 	{
@@ -80,24 +142,6 @@ var Inventory = []ComponentInfo{
 		BaseService: "{{.BaseService}}",
 		Version:     "{{.Version}}",
 		Kind:        "service",
-		Mount: func(s *Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) {
-{{- if .HasAuthorizer}}
-			var authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-			if cfg.DevAuthBypass() {
-				authz = middleware.DevAuthorizer{}
-			}
-			svcOpts := append(append([]connect.HandlerOption{}, opts...), connect.WithInterceptors(
-				middleware.AuthzInterceptor(authz),
-			))
-			s.{{.FieldName}}.Register(mux, svcOpts...)
-{{- else}}
-			s.{{.FieldName}}.Register(mux, opts...)
-{{- end}}
-			s.{{.FieldName}}.RegisterHTTP(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))
-{{- if .HasWebhooks}}
-			s.{{.FieldName}}.RegisterWebhookRoutes(mux, fmw.HTTPStack(logger, middleware.ClaimsFromContext))
-{{- end}}
-		},
 	},
 {{- end}}
 }

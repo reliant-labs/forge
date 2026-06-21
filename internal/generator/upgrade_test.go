@@ -88,14 +88,15 @@ func TestManagedFiles(t *testing.T) {
 
 	// Check that expected files are in the list
 	expected := map[string]bool{
-		"cmd/server.go":      true,
-		"cmd/main.go":        true,
-		"cmd/version.go":     true,
-		"cmd/otel.go":        true,
-		"Taskfile.yml":       true,
-		"Dockerfile":         true,
-		"docker-compose.yml": true,
-		".golangci.yml":      true,
+		"internal/cli/serve.go":   true,
+		"internal/cli/server.go":  true,
+		"internal/cli/root.go":    true,
+		"cmd/main.go":             true,
+		"internal/cli/version.go": true,
+		"Taskfile.yml":            true,
+		"Dockerfile":              true,
+		"docker-compose.yml":      true,
+		".golangci.yml":           true,
 		// The thin auth-policy pair is the ONLY middleware the project
 		// keeps; the mechanism files (cors/auth/claims/…) moved to
 		// forge/pkg/{authn,authz,middleware} and must NOT be managed.
@@ -351,10 +352,10 @@ func TestUpgradeDetectsModified(t *testing.T) {
 
 	// Verify a Tier 1 file would still be overwritten even if modified
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" {
+		if r.Path == "internal/cli/version.go" {
 			// Tier 1 files report as up-to-date (since we didn't modify it) or updated
 			if r.Status == UpgradeUserModified {
-				t.Errorf("cmd/otel.go: Tier 1 file should never be user-modified, got %q", r.Status)
+				t.Errorf("internal/cli/version.go: Tier 1 file should never be user-modified, got %q", r.Status)
 			}
 		}
 	}
@@ -376,7 +377,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
-	modifiedPath := filepath.Join(dir, "cmd/otel.go")
+	modifiedPath := filepath.Join(dir, "internal/cli/version.go")
 	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +393,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" || r.Path == "Dockerfile" {
+		if r.Path == "internal/cli/version.go" || r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
 				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
@@ -405,7 +406,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == "// user modified\n" {
-		t.Error("cmd/otel.go was not overwritten by --force")
+		t.Error("internal/cli/version.go was not overwritten by --force")
 	}
 	content, err = os.ReadFile(modifiedTier2)
 	if err != nil {
@@ -426,12 +427,12 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	// forge render of an older vintage (the marker is the "checksum
 	// matches disk" state).
 	oldContent := []byte("// old template content\npackage main\n")
-	writeManagedRender(t, dir, "cmd/otel.go", oldContent, true)
-	otelPath := filepath.Join(dir, "cmd", "otel.go")
+	writeManagedRender(t, dir, "internal/cli/version.go", oldContent, true)
+	otelPath := filepath.Join(dir, "internal", "cli", "version.go")
 
 	// Write other files from current templates so they're up-to-date
 	for _, f := range managedFiles() {
-		if f.destPath == "cmd/otel.go" {
+		if f.destPath == "internal/cli/version.go" {
 			continue
 		}
 		content, err := renderManagedFile(f, data)
@@ -448,9 +449,9 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "cmd/otel.go" {
+		if r.Path == "internal/cli/version.go" {
 			if r.Status != UpgradeUpdated {
-				t.Errorf("cmd/otel.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
+				t.Errorf("internal/cli/version.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
 			}
 		}
 	}
@@ -461,7 +462,7 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == string(oldContent) {
-		t.Error("cmd/otel.go was not updated")
+		t.Error("internal/cli/version.go was not updated")
 	}
 }
 

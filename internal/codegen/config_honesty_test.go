@@ -111,11 +111,11 @@ func TestGenerateConfigLoader_EmitsTypedMode(t *testing.T) {
 }
 
 // TestCmdServer_NoSilentDurationReparse pins the deletion of the silent
-// `if err == nil` duration re-parses in cmd/server.go: the typed config
+// `if err == nil` duration re-parses in internal/cli/serve.go: the typed config
 // now carries time.Duration values, so the shim assigns them directly.
 func TestCmdServer_NoSilentDurationReparse(t *testing.T) {
 	fields := ConfigFieldNamesFromMessages(durationMessages())
-	out, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", CmdServerTemplateData{
+	out, err := templates.ProjectTemplates().Render("cli-serve.go.tmpl", CmdServerTemplateData{
 		Module:       "example.com/proj",
 		ConfigFields: fields,
 	})
@@ -124,23 +124,23 @@ func TestCmdServer_NoSilentDurationReparse(t *testing.T) {
 	}
 	got := string(out)
 	if strings.Contains(got, "time.ParseDuration") {
-		t.Errorf("cmd/server.go must not re-parse durations (Load owns parsing)\n%s", got)
+		t.Errorf("internal/cli/serve.go must not re-parse durations (Load owns parsing)\n%s", got)
 	}
 	if strings.Contains(got, "perr == nil") {
 		t.Errorf("the silent `if err == nil` duration swallows must be deleted\n%s", got)
 	}
 	if !strings.Contains(got, "skCfg.PreStopDelay = cfg.PreStopDelay") {
-		t.Errorf("cmd/server.go should assign the typed duration directly\n%s", got)
+		t.Errorf("internal/cli/serve.go should assign the typed duration directly\n%s", got)
 	}
 
 	// The rendered shim must stay syntactically valid Go.
 	fset := token.NewFileSet()
 	if _, perr := parser.ParseFile(fset, "server.go", out, parser.AllErrors); perr != nil {
-		t.Fatalf("rendered cmd/server.go does not parse: %v\n%s", perr, got)
+		t.Fatalf("rendered internal/cli/serve.go does not parse: %v\n%s", perr, got)
 	}
 
 	// Same with the full default scaffold field set.
-	full, err := templates.ProjectTemplates().Render("cmd-server.go.tmpl", CmdServerTemplateData{
+	full, err := templates.ProjectTemplates().Render("cli-serve.go.tmpl", CmdServerTemplateData{
 		Module:       "example.com/proj",
 		ConfigFields: DefaultConfigFieldNames(),
 	})
@@ -148,6 +148,6 @@ func TestCmdServer_NoSilentDurationReparse(t *testing.T) {
 		t.Fatalf("render (default fields): %v", err)
 	}
 	if _, perr := parser.ParseFile(fset, "server.go", full, parser.AllErrors); perr != nil {
-		t.Fatalf("rendered cmd/server.go (default fields) does not parse: %v\n%s", perr, string(full))
+		t.Fatalf("rendered internal/cli/serve.go (default fields) does not parse: %v\n%s", perr, string(full))
 	}
 }

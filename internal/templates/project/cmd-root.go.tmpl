@@ -2,39 +2,15 @@
 // forge-owned: regenerated every run — do not edit (forge disown to take ownership)
 // Source: internal/templates/project/cmd-root.go.tmpl.
 //
-// Subcommand surface:
-//   - cmd/server.go      — `{{.Name}} server [services...]` (generated)
-//   - cmd/services_gen.go — one subcommand per RegisteredServices row
-//     (generated; the cobra projection of pkg/app/services.go)
-//   - cmd/commands.go    — userCommands(), YOUR extension point for
-//     second binaries / custom tooling (user-owned, scaffolded once)
+// Thin entrypoint (gh / cobra-cli idiom): all command logic lives in the
+// internal/cli package (root.go assembles the tree; one file per command).
+// This main is a thin cli.Execute().
 package main
 
 import (
-	"fmt"
-	"os"
-
-	"github.com/spf13/cobra"
+	"{{.Module}}/internal/cli"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "{{.Name}}",
-	Short: "{{.Name}} service",
-}
-
-func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}
-
 func main() {
-	// userCommands (cmd/commands.go, user-owned): second binaries and
-	// custom tooling register as code — same posture as the service
-	// registration rows in pkg/app/services.go.
-	for _, c := range userCommands() {
-		rootCmd.AddCommand(c)
-	}
-	Execute()
+	cli.Execute()
 }

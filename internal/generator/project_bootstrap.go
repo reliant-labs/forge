@@ -57,8 +57,14 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		ProtoConnectPkg        string
 		Fallible               bool
 		HasDB                  bool
-		Alias                  string
-		VarName                string
+		// HasAuthorizer mirrors codegen.BootstrapTestServiceData: a freshly
+		// scaffolded service's Deps declares an Authorizer (see
+		// templates/service/service.go.tmpl), so the authz-aware test harness
+		// wires it. The post-codegen GenerateBootstrapTesting pass re-derives
+		// this from the on-disk Deps once the service has grown/shrunk fields.
+		HasAuthorizer bool
+		Alias         string
+		VarName       string
 		// AutoStubs is always empty at the project-scaffold step; the
 		// service has no Deps fields beyond the bare-Deps trio at this
 		// point. The post-codegen GenerateBootstrapTesting pass populates
@@ -99,8 +105,10 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				ProtoServiceName:       protoServiceName,
 				ProtoConnectImportPath: connectImport,
 				ProtoConnectPkg:        connectPkg,
-				Alias:                  pkg,
-				VarName:                lowerFirstRune(fieldName),
+				// A scaffolded service includes an Authorizer dep by default.
+				HasAuthorizer: true,
+				Alias:         pkg,
+				VarName:       lowerFirstRune(fieldName),
 			},
 		}
 		connectImports = []string{connectImport}

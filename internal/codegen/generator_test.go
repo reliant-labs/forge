@@ -536,6 +536,30 @@ func New(deps Deps) Service { return nil }
 func TestGenerateBootstrapTesting_MultipleServices(t *testing.T) {
 	targetDir := t.TempDir()
 
+	// Scaffold real handler dirs whose Deps declare an Authorizer — the normal
+	// forge service shape. The authz-aware test harness only emits the
+	// AuthzInterceptor / permissive-default wiring for services that carry that
+	// dep, so the assertions below need a service that actually has one.
+	authedSvc := func(pkg string) string {
+		return `package ` + pkg + `
+
+import "log/slog"
+
+type Authorizer interface{ Can(string) bool }
+
+type Deps struct {
+	Logger     *slog.Logger
+	Authorizer Authorizer
+}
+
+type Service struct{ deps Deps }
+
+func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
+`
+	}
+	writeFileT(t, filepath.Join(targetDir, "internal", "handlers", "api", "service.go"), authedSvc("api"))
+	writeFileT(t, filepath.Join(targetDir, "internal", "handlers", "orders", "service.go"), authedSvc("orders"))
+
 	services := []ServiceDef{
 		{Name: "APIService", ModulePath: "example.com/proj"},
 		{Name: "OrdersService", ModulePath: "example.com/proj"},
@@ -1531,8 +1555,8 @@ func TestComputeTestHelperName(t *testing.T) {
 		{"billing", projectDir, "SvcBilling"}, // plain internal/billing dir -> collision
 		{"users", projectDir, "Users"},
 		{"admin_server", projectDir, "AdminServer"},
-		{"billing", "", "Billing"},    // no project context -> no-collision form
-		{"user", projectDir, "User"},  // external-component domain dir -> NOT a collision
+		{"billing", "", "Billing"},   // no project context -> no-collision form
+		{"user", projectDir, "User"}, // external-component domain dir -> NOT a collision
 	}
 	for _, c := range cases {
 		if got := ComputeTestHelperName(c.pkg, c.project); got != c.want {

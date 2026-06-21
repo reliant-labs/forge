@@ -90,6 +90,12 @@ func WithConfig(cfg *config.Config) TestOption {
 
 // WithAuthorizer overrides the default permissive test authorizer.
 // Use this when a test needs to exercise real authorization logic.
+//
+// Every service's test server mounts an authz interceptor (the same chain
+// shape production uses): a service that declares an Authorizer dep threads
+// deps.Authorizer; a carve-out / external-component / descriptor-authz service
+// (no Authorizer dep) threads this cross-cutting test authorizer directly. So
+// WithAuthorizer exercises real denials end-to-end for BOTH kinds.
 func WithAuthorizer(a middleware.Authorizer) TestOption {
 	return func(c *testConfig) { c.authz = a }
 }
@@ -187,9 +193,11 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) {{.Alias}}.Deps {
 	if deps.Config == nil {
 		deps.Config = cfg.cfg
 	}
+{{- if .HasAuthorizer}}
 	if deps.Authorizer == nil {
 		deps.Authorizer = cfg.authz
 	}
+{{- end}}
 {{- if .HasDB}}
 	if deps.DB == nil {
 		deps.DB = cfg.db
@@ -232,11 +240,15 @@ func ({{$stub}}) {{.Name}}({{.Params}}){{if .Results}} {{.Results}}{{end}} { {{i
 // Returns the server and a typed Connect client.
 //
 // The server mounts the SAME interceptor chain shape production uses
-// (internal/app/inventory_gen.go): middleware.AuthzInterceptor wired with the service's
-// effective authorizer. By default that authorizer is the permissive test
-// one — the only delta from production is the policy, never the chain —
-// so a test that swaps in a real authorizer via WithAuthorizer exercises
-// genuine authz denials end-to-end.
+// (internal/app/inventory_gen.go): middleware.AuthzInterceptor wired with the
+// service's effective authorizer. {{if .HasAuthorizer}}That authorizer is the service's
+// deps.Authorizer (default: the permissive test one).{{else}}This service declares no
+// Authorizer dep (carve-out / external-component / descriptor-authz) — its
+// production authz is external to the service — so the test seam threads the
+// cross-cutting test authorizer (cfg.authz) directly instead of a non-existent
+// deps.Authorizer field.{{end}} The only delta from production is the policy,
+// never the chain — so a test that swaps in a real authorizer via
+// WithAuthorizer exercises genuine authz denials end-to-end.
 func NewTest{{.FieldName}}Server(t *testing.T, opts ...{{.FieldName}}TestOption) (*httptest.Server, {{.ProtoConnectPkg}}.{{.ProtoServiceName}}Client) {
 	t.Helper()
 	cfg := defaultTestConfig(t)
@@ -250,7 +262,11 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...{{.FieldName}}TestOption)
 	}
 	srv := testkit.NewTestServer(t, func(mux *http.ServeMux) {
 		svc.Register(mux, connect.WithInterceptors(
+{{- if .HasAuthorizer}}
 			middleware.AuthzInterceptor(deps.Authorizer),
+{{- else}}
+			middleware.AuthzInterceptor(cfg.authz),
+{{- end}}
 		))
 	})
 	client := {{.ProtoConnectPkg}}.New{{.ProtoServiceName}}Client(

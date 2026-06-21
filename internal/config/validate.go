@@ -419,6 +419,33 @@ var removedSchemaKeys = map[string]removedKeyHint{
 			"deleted serviceRow line in pkg/app/services.go; see the `services` skill " +
 			"(Types-Only Services).",
 	},
+	// stack.{backend,database,proto,deploy,ci} were "forward-looking
+	// declarations" that no codegen path ever read — they DUPLICATED the
+	// canonical sources. Removed in the forge.yaml schema cleanup
+	// (FORGE_SHAPE_REDESIGN §4). Only `stack.frontend` survives. Each old
+	// sub-block points the user at the real source of truth.
+	"stack.backend": {
+		removedIn: "the forge.yaml schema cleanup (stack was forward-looking, never consumed)",
+		replacement: "delete the key — backend language/framework is not a codegen input; " +
+			"forge projects are Go + Connect RPC.",
+	},
+	"stack.database": {
+		removedIn: "the forge.yaml schema cleanup (stack duplicated database.driver)",
+		replacement: "delete the key and set the driver under `database.driver` (postgres | none).",
+	},
+	"stack.proto": {
+		removedIn: "the forge.yaml schema cleanup (stack.proto was never consumed)",
+		replacement: "delete the key — the proto toolchain is buf; there is no per-project toggle.",
+	},
+	"stack.deploy": {
+		removedIn: "the forge.yaml schema cleanup (stack.deploy duplicated docker.registry + per-env KCL)",
+		replacement: "delete the key — the image registry lives in `docker.registry`, and the " +
+			"deploy target/cluster is declared per-env in `deploy/kcl/<env>/main.k` (forge.K8sCluster).",
+	},
+	"stack.ci": {
+		removedIn: "the forge.yaml schema cleanup (stack.ci duplicated ci.provider)",
+		replacement: "delete the key and set the CI provider under `ci.provider` (github is the default).",
+	},
 	// deploy graduated from experimental to a stable kind-derived flag in
 	// the front-door rework; projects scaffolded in the experimental
 	// window still carry the old nesting.

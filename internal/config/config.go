@@ -1421,57 +1421,25 @@ func (f FeaturesConfig) StrictWiringEnabled() bool {
 }
 
 // StackConfig declares the technology choices for the project.
-// These are forward-looking declarations — forge may not support all
-// values yet, but they document intent and guide future codegen.
+//
+// Historically this block carried six sub-sections (backend, frontend,
+// database, proto, deploy, ci) of "forward-looking declarations". Five of
+// those (backend/database/proto/deploy/ci) were never consumed by any
+// codegen path and merely DUPLICATED the canonical sources — `database.driver`,
+// `ci.provider`, `docker.registry` + per-env KCL — so they were removed in
+// the forge.yaml schema cleanup (FORGE_SHAPE_REDESIGN §4). Old keys parse
+// with a migration warning (see removedSchemaKeys: stack.backend etc.).
+//
+// Only `stack.frontend.framework` remains: it is genuinely load-bearing
+// (read by `forge add frontend` and the frontend-build skip in build.go to
+// know whether the project ships a frontend framework at all).
 type StackConfig struct {
-	Backend  StackBackend  `yaml:"backend,omitempty"`
 	Frontend StackFrontend `yaml:"frontend,omitempty"`
-	Database StackDatabase `yaml:"database,omitempty"`
-	Proto    StackProto    `yaml:"proto,omitempty"`
-	Deploy   StackDeploy   `yaml:"deploy,omitempty"`
-	CI       StackCI       `yaml:"ci,omitempty"`
-}
-
-// StackBackend declares the backend language and framework.
-type StackBackend struct {
-	Language  string `yaml:"language,omitempty"`  // "go" (default), "python", "rust", "typescript"
-	Framework string `yaml:"framework,omitempty"` // future: "gin", "fiber", etc.
 }
 
 // StackFrontend declares the frontend framework.
 type StackFrontend struct {
 	Framework string `yaml:"framework,omitempty"` // "nextjs" (default), "react-native", "svelte", "none"
-}
-
-// StackDatabase declares the database technology.
-type StackDatabase struct {
-	Driver string `yaml:"driver,omitempty"` // "postgres" (default) or "none"
-}
-
-// StackProto declares the proto toolchain.
-type StackProto struct {
-	Enabled  *bool  `yaml:"enabled,omitempty"`  // nil = true
-	Provider string `yaml:"provider,omitempty"` // "buf" (default), "protoc"
-}
-
-// StackDeploy declares the deployment target.
-type StackDeploy struct {
-	Target   string `yaml:"target,omitempty"`   // "k8s" (default), "docker-compose", "fly", "cloudrun", "lambda", "none"
-	Provider string `yaml:"provider,omitempty"` // "k3d", "gke", "eks"
-	Registry string `yaml:"registry,omitempty"` // "ghcr.io", "gcr.io", etc.
-}
-
-// StackCI declares the CI/CD provider.
-type StackCI struct {
-	Provider string `yaml:"provider,omitempty"` // "github" (default), "gitlab", "circleci", "none"
-}
-
-// EffectiveBackendLanguage returns the backend language, defaulting to "go".
-func (s StackConfig) EffectiveBackendLanguage() string {
-	if s.Backend.Language != "" {
-		return s.Backend.Language
-	}
-	return "go"
 }
 
 // EffectiveFrontendFramework returns the frontend framework, defaulting to "nextjs".
@@ -1480,45 +1448,6 @@ func (s StackConfig) EffectiveFrontendFramework() string {
 		return s.Frontend.Framework
 	}
 	return "nextjs"
-}
-
-// EffectiveDatabaseDriver returns the database driver. The driver is
-// pinned to postgres: the only off-ramp is "none" (no database). Any
-// other value (including the empty default) resolves to "postgres".
-func (s StackConfig) EffectiveDatabaseDriver() string {
-	if s.Database.Driver == "none" {
-		return "none"
-	}
-	return "postgres"
-}
-
-// IsProtoEnabled returns whether the proto toolchain is enabled (default: true).
-func (s StackConfig) IsProtoEnabled() bool {
-	return s.Proto.Enabled == nil || *s.Proto.Enabled
-}
-
-// EffectiveProtoProvider returns the proto provider, defaulting to "buf".
-func (s StackConfig) EffectiveProtoProvider() string {
-	if s.Proto.Provider != "" {
-		return s.Proto.Provider
-	}
-	return "buf"
-}
-
-// EffectiveDeployTarget returns the deploy target, defaulting to "k8s".
-func (s StackConfig) EffectiveDeployTarget() string {
-	if s.Deploy.Target != "" {
-		return s.Deploy.Target
-	}
-	return "k8s"
-}
-
-// EffectiveCIProvider returns the CI provider, defaulting to "github".
-func (s StackConfig) EffectiveCIProvider() string {
-	if s.CI.Provider != "" {
-		return s.CI.Provider
-	}
-	return "github"
 }
 
 // AuthConfig holds authentication provider settings.

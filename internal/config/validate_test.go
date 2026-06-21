@@ -447,31 +447,31 @@ func TestLoadStrict_RemovedSchemaKey_K8sProvider(t *testing.T) {
 	}
 }
 
-// TestLoadStrict_StackDeployProvider_NotFalsePositive guards against
-// regressions where the `provider` key inside `stack.deploy:` could
-// accidentally trip the removedSchemaKeys lookup for the old
-// `k8s.provider` location. The validator stores the qualified path as
-// `stack.deploy.provider` (not `k8s.provider`), so the lookup must
-// match exact paths only — never an unqualified suffix.
-//
-// This is the cp-forge dogfood shape: `stack.deploy.target: k8s` plus
-// a sibling `provider: k3d`. Pre-2026-06-08 there was a report (since
-// proven phantom) that the validator misread this as `k8s.provider`;
-// pinning the clean-load behavior here keeps any future path-construction
-// refactor from regressing the case.
-func TestLoadStrict_StackDeployProvider_NotFalsePositive(t *testing.T) {
+// TestLoadStrict_StackDeploy_RemovedKeyWarns covers the forge.yaml schema
+// cleanup: the `stack.deploy:` sub-block (target/provider/registry) was an
+// unconsumed duplicate of docker.registry + per-env KCL and was removed.
+// An old forge.yaml carrying it must still LOAD (removed keys are non-fatal
+// migration WARNINGS, not errors), so mid-migration projects aren't
+// stranded — the next forge.yaml rewrite drops the dead block.
+func TestLoadStrict_StackDeploy_RemovedKeyWarns(t *testing.T) {
+	var sink strings.Builder
+	prev := SetConfigWarningSink(&sink)
+	defer SetConfigWarningSink(prev)
+
 	in := validBaseYAML + `stack:
   deploy:
     target: k8s
     provider: k3d
     registry: ghcr.io
 `
-	cfg, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...)
-	if err != nil {
-		t.Fatalf("clean load expected — `stack.deploy.provider` must not be confused with removed `k8s.provider` key. err=%v", err)
+	// LoadStrict returns nil error for warning-only keys (they don't gate),
+	// so a clean load is the expected outcome for a removed-but-tolerated key.
+	if _, err := LoadStrict([]byte(in), "forge.yaml", baseComponents()...); err != nil {
+		t.Fatalf("removed `stack.deploy` must load (warn, not fail) so mid-migration projects aren't stranded. err=%v", err)
 	}
-	if cfg.Stack.Deploy.Provider != "k3d" {
-		t.Errorf("stack.deploy.provider = %q, want %q", cfg.Stack.Deploy.Provider, "k3d")
+	got := sink.String()
+	if !containsAll(got, `"stack.deploy" was removed in`, "docker.registry") {
+		t.Errorf("expected stack.deploy→docker.registry migration warning, got:\n%s", got)
 	}
 }
 

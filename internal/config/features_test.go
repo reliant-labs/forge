@@ -403,80 +403,25 @@ version: "1.0"
 	}
 }
 
-func TestStackConfig_Defaults(t *testing.T) {
+// StackConfig was slimmed in the forge.yaml schema cleanup to a single
+// live field (stack.frontend.framework); the backend/database/proto/
+// deploy/ci sub-blocks were unconsumed duplicates and were removed.
+func TestStackConfig_FrontendFrameworkDefault(t *testing.T) {
 	var s StackConfig
-
-	tests := []struct {
-		name string
-		fn   func() string
-		want string
-	}{
-		{"EffectiveBackendLanguage", s.EffectiveBackendLanguage, "go"},
-		{"EffectiveFrontendFramework", s.EffectiveFrontendFramework, "nextjs"},
-		{"EffectiveDatabaseDriver", s.EffectiveDatabaseDriver, "postgres"},
-		{"EffectiveProtoProvider", s.EffectiveProtoProvider, "buf"},
-		{"EffectiveDeployTarget", s.EffectiveDeployTarget, "k8s"},
-		{"EffectiveCIProvider", s.EffectiveCIProvider, "github"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.fn(); got != tt.want {
-				t.Errorf("%s() on zero-value = %q, want %q", tt.name, got, tt.want)
-			}
-		})
-	}
-
-	// IsProtoEnabled defaults to true when nil.
-	if got := s.IsProtoEnabled(); !got {
-		t.Errorf("IsProtoEnabled() on zero-value = %v, want true", got)
+	if got := s.EffectiveFrontendFramework(); got != "nextjs" {
+		t.Errorf("EffectiveFrontendFramework() on zero-value = %q, want %q", got, "nextjs")
 	}
 }
 
-func TestStackConfig_WithValues(t *testing.T) {
-	s := StackConfig{
-		Backend:  StackBackend{Language: "rust", Framework: "axum"},
-		Frontend: StackFrontend{Framework: "svelte"},
-		Database: StackDatabase{Driver: "none"},
-		Proto:    StackProto{Enabled: boolPtr(false), Provider: "protoc"},
-		Deploy:   StackDeploy{Target: "cloudrun", Provider: "gke", Registry: "gcr.io"},
-		CI:       StackCI{Provider: "gitlab"},
-	}
-
-	stringTests := []struct {
-		name string
-		fn   func() string
-		want string
-	}{
-		{"EffectiveBackendLanguage", s.EffectiveBackendLanguage, "rust"},
-		{"EffectiveFrontendFramework", s.EffectiveFrontendFramework, "svelte"},
-		{"EffectiveDatabaseDriver", s.EffectiveDatabaseDriver, "none"},
-		{"EffectiveProtoProvider", s.EffectiveProtoProvider, "protoc"},
-		{"EffectiveDeployTarget", s.EffectiveDeployTarget, "cloudrun"},
-		{"EffectiveCIProvider", s.EffectiveCIProvider, "gitlab"},
-	}
-	for _, tt := range stringTests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.fn(); got != tt.want {
-				t.Errorf("%s() = %q, want %q", tt.name, got, tt.want)
-			}
-		})
-	}
-
-	// Proto explicitly disabled.
-	if got := s.IsProtoEnabled(); got {
-		t.Errorf("IsProtoEnabled() with explicit false = %v, want false", got)
+func TestStackConfig_FrontendFrameworkExplicit(t *testing.T) {
+	s := StackConfig{Frontend: StackFrontend{Framework: "svelte"}}
+	if got := s.EffectiveFrontendFramework(); got != "svelte" {
+		t.Errorf("EffectiveFrontendFramework() = %q, want %q", got, "svelte")
 	}
 }
 
 func TestStackConfig_YAMLRoundTrip(t *testing.T) {
-	orig := StackConfig{
-		Backend:  StackBackend{Language: "python", Framework: "fastapi"},
-		Frontend: StackFrontend{Framework: "react-native"},
-		Database: StackDatabase{Driver: "postgres"},
-		Proto:    StackProto{Enabled: boolPtr(true), Provider: "buf"},
-		Deploy:   StackDeploy{Target: "fly", Provider: "fly", Registry: "registry.fly.io"},
-		CI:       StackCI{Provider: "circleci"},
-	}
+	orig := StackConfig{Frontend: StackFrontend{Framework: "react-native"}}
 
 	data, err := yaml.Marshal(&orig)
 	if err != nil {
@@ -488,25 +433,7 @@ func TestStackConfig_YAMLRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if got.EffectiveBackendLanguage() != "python" {
-		t.Errorf("round-trip BackendLanguage = %q, want %q", got.EffectiveBackendLanguage(), "python")
-	}
 	if got.EffectiveFrontendFramework() != "react-native" {
 		t.Errorf("round-trip FrontendFramework = %q, want %q", got.EffectiveFrontendFramework(), "react-native")
-	}
-	if got.EffectiveDatabaseDriver() != "postgres" {
-		t.Errorf("round-trip DatabaseDriver = %q, want %q", got.EffectiveDatabaseDriver(), "postgres")
-	}
-	if !got.IsProtoEnabled() {
-		t.Errorf("round-trip IsProtoEnabled = false, want true")
-	}
-	if got.EffectiveProtoProvider() != "buf" {
-		t.Errorf("round-trip ProtoProvider = %q, want %q", got.EffectiveProtoProvider(), "buf")
-	}
-	if got.EffectiveDeployTarget() != "fly" {
-		t.Errorf("round-trip DeployTarget = %q, want %q", got.EffectiveDeployTarget(), "fly")
-	}
-	if got.EffectiveCIProvider() != "circleci" {
-		t.Errorf("round-trip CIProvider = %q, want %q", got.EffectiveCIProvider(), "circleci")
 	}
 }

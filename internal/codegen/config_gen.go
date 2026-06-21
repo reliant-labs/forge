@@ -60,6 +60,11 @@ type ConfigTemplateField struct {
 	// for none). Codegen selects semantic fields (e.g. the MODE field) by
 	// THIS, never by the field's name.
 	Role string
+
+	// Sensitive mirrors (forge.v1.config).sensitive. Sensitive fields get NO
+	// CLI flag (defense against shell-history / `ps` leaks) and are resolved
+	// from env / Secret mount only — never a flag or an inline default.
+	Sensitive bool
 }
 
 // ConfigTemplateBlockType is one component config-block struct type the
@@ -294,6 +299,7 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 		ParseFn:       parseFnFor(f, isDur),
 		AllowEmptyEnv: f.GoType == "string" && !isDur,
 		Role:          f.Role,
+		Sensitive:     f.Sensitive,
 	}
 
 	if f.DefaultValue != "" {

@@ -1,15 +1,18 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-// Binary cobra subcommand; canonical pattern in `forge skill load binaries`.
-// {{.Name}} cobra subcommand. Forge-scaffolded entry point for the
-// {{.Name}} binary; the runtime body lives in
-// internal/{{.Package}}/{{.Package}}.go where it can be unit-tested
-// without a cobra fixture.
+// Binary entry point; canonical pattern in `forge skill load binaries`.
 //
-// Hand-edit this file to add binary-specific flags or environment
-// variables. The wiring is intentionally thin: load config, build
-// dependencies, hand off to {{.Package}}.New(deps).Run(ctx). If your
-// binary grows past 50 LOC of glue here, prefer pushing it into the
-// internal/{{.Package}}/ package and keep this file as the cobra adapter.
+// Thin standalone main for the {{.Name}} binary, in its OWN cmd/{{.Package}}/
+// tree (devspace idiom — each binary gets its own cmd/<bin>/). The primary
+// server binary lives under cmd/<server>/ with the full command tree; this
+// secondary binary is a single-purpose process and keeps a thin main: load
+// config, build deps, hand off to {{.Package}}.New(deps).Run(ctx).
+//
+// At deploy time KCL emits one Deployment per binary; this one runs the
+// {{.Name}} image's own entry point (./{{.Package}}), not a server subcommand.
+//
+// Hand-edit this file to add binary-specific flags or environment variables.
+// The wiring is intentionally thin: if your binary grows past ~50 LOC of glue
+// here, push it into internal/{{.Package}}/ and keep this file as the adapter.
 //
 // See the binaries skill (`forge skill load binaries`) for when to use
 // `forge add binary` vs `forge add worker` vs `forge add service`.
@@ -29,31 +32,34 @@ import (
 	"{{.Module}}/pkg/config"
 )
 
-// {{.Package}}Cmd is the cobra subcommand for the {{.Name}} binary.
-//
-// It is intentionally registered against the same rootCmd as
-// `cmd/server.go`'s `serverCmd` so a single binary build serves every
-// process shape (server, operator, this binary). At deploy time KCL
-// emits one Deployment per binary that invokes the matching subcommand.
-var {{.Package}}Cmd = &cobra.Command{
-	Use:   "{{.Name}}",
-	Short: "Run the {{.Name}} binary",
-	Long: `Run the {{.Name}} binary.
+func main() {
+	if err := newRootCmd().ExecuteContext(context.Background()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the {{.Name}} binary's cobra root. A single command (the
+// binary IS the process), kept as cobra so it reuses the same env-var driven
+// config flag set as the server binary.
+func newRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "{{.Name}}",
+		Short: "Run the {{.Name}} binary",
+		Long: `Run the {{.Name}} binary.
 
 Long-running process scaffolded via 'forge add binary {{.Name}}'. The
 runtime loop lives in internal/{{.Package}}/. Hand-edit
 internal/{{.Package}}/{{.Package}}.go to implement the actual logic;
-this file is the thin cobra wrapper.`,
-	RunE: run{{.Package | pascalCase}},
-}
-
-func init() {
-	// Reuse the server's flag set so the same env-var driven Config
-	// (DATABASE_URL, NATS, log level, OTel, etc.) is available to the
-	// binary without re-loading. Drop this line if your binary takes
-	// a strict subset; add binary-specific flags below.
-	{{.Package}}Cmd.Flags().AddFlagSet(serverCmd.Flags())
-	rootCmd.AddCommand({{.Package}}Cmd)
+this file is the thin entry point.`,
+		RunE: run{{.Package | pascalCase}},
+	}
+	// Register the standard env-var driven config flag set (DATABASE_URL,
+	// NATS, log level, OTel, etc.) so this binary loads the same Config as
+	// the server. Drop this if your binary takes a strict subset; add
+	// binary-specific flags below.
+	config.RegisterFlags(root)
+	return root
 }
 
 func run{{.Package | pascalCase}}(cmd *cobra.Command, _ []string) error {
@@ -68,7 +74,7 @@ func run{{.Package | pascalCase}}(cmd *cobra.Command, _ []string) error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	logger = logger.With("binary", "{{.Name}}")
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	svc, err := {{.Package}}.New({{.Package}}.Deps{

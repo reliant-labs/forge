@@ -9,23 +9,27 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// GenerateBinaryFiles emits the four files that make up a non-server
+// GenerateBinaryFiles emits the files that make up a non-server
 // long-running binary scaffold:
 //
-//   - cmd/<package>.go               cobra subcommand + Run wiring
+//   - cmd/<package>/main.go           thin standalone main (own cmd/<bin>/ tree)
 //   - internal/<package>/<package>.go main loop with Start/Stop/Run lifecycle
 //   - internal/<package>/contract.go  Deps, Service interface, New(deps)
 //   - internal/<package>/<package>_test.go basic lifecycle test
 //
 // The shape is deliberately opinionated: the scaffold solves the
-// boilerplate (signal handling, graceful shutdown, metrics-server-on-
-// separate-port) so the user can hand-write only the binary's actual
-// business logic.
+// boilerplate (signal handling, graceful shutdown, config loading) so the
+// user can hand-write only the binary's actual business logic.
+//
+// Each binary gets its OWN cmd/<bin>/ tree (devspace idiom): the primary
+// server binary lives under cmd/<server>/ with the full command tree, and
+// each secondary binary added here gets cmd/<package>/main.go — a thin,
+// self-contained main rather than a subcommand of the server. At deploy
+// time KCL emits one Deployment per binary, each running its own image.
 //
 // CLI/display name (which may contain hyphens) is translated to a Go-
 // package-safe form for the directory and `package` declaration; the
-// hyphenated form is preserved on the cobra `Use:` field so users can
-// invoke `./<bin> workspace-proxy`.
+// hyphenated form is preserved on the cobra `Use:` field.
 func GenerateBinaryFiles(root, modulePath, binaryName string) error {
 	binaryPackage := naming.ServicePackage(binaryName)
 
@@ -35,10 +39,8 @@ func GenerateBinaryFiles(root, modulePath, binaryName string) error {
 		return fmt.Errorf("create directory %s: %w", binaryDir, err)
 	}
 
-	// cmd/<package>.go — cobra subcommand registered against the shared
-	// rootCmd. We don't pre-create cmd/ because every service-shaped
-	// project already has it.
-	cmdDir := filepath.Join(root, "cmd")
+	// cmd/<package>/ — the secondary binary's own thin main, in its own tree.
+	cmdDir := filepath.Join(root, "cmd", binaryPackage)
 	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
 		return fmt.Errorf("create directory %s: %w", cmdDir, err)
 	}
@@ -57,7 +59,7 @@ func GenerateBinaryFiles(root, modulePath, binaryName string) error {
 		template string
 		dest     string
 	}{
-		{"binary/cmd-binary.go.tmpl", filepath.Join(cmdDir, binaryPackage+".go")},
+		{"binary/cmd-binary.go.tmpl", filepath.Join(cmdDir, "main.go")},
 		{"binary/binary.go.tmpl", filepath.Join(binaryDir, binaryPackage+".go")},
 		{"binary/contract.go.tmpl", filepath.Join(binaryDir, "contract.go")},
 		{"binary/binary_test.go.tmpl", filepath.Join(binaryDir, binaryPackage+"_test.go")},

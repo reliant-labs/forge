@@ -249,7 +249,7 @@ tasks:
       # TODO: if your project does not use the generated `db migrate up`
       # subcommand (e.g. you run migrations from infra), replace this with
       # the equivalent command for your stack.
-      - go run ./cmd db migrate up
+      - go run ./cmd/demo db migrate up
 
   db-seed:
     # Loads every file in db/seeds/ in lexicographic order via psql. Seeds

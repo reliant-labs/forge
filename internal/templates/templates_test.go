@@ -302,9 +302,9 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		ConfigFields: map[string]bool{"OtlpEndpoint": true},
 	}
 
-	content, err := ProjectTemplates().Render("cli-serve.go.tmpl", data)
+	content, err := ProjectTemplates().Render("cmd-tree-serve.go.tmpl", data)
 	if err != nil {
-		t.Fatalf("render cli-serve.go.tmpl: %v", err)
+		t.Fatalf("render cmd-tree-serve.go.tmpl: %v", err)
 	}
 	rendered := string(content)
 
@@ -315,7 +315,7 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		"app.PostBuild(services)",
 	} {
 		if !strings.Contains(rendered, want) {
-			t.Errorf("cli-serve.go.tmpl must call %q (§2 hybrid DI); rendered output:\n%s", want, rendered)
+			t.Errorf("cmd-tree-serve.go.tmpl must call %q (§2 hybrid DI); rendered output:\n%s", want, rendered)
 		}
 	}
 	// The old appkit Bootstrap path AND the string-selection mount path are
@@ -326,30 +326,30 @@ func TestCmdServerTemplate_ComposesServer(t *testing.T) {
 		`runServer(cmd, []string{`,
 	} {
 		if strings.Contains(rendered, gone) {
-			t.Errorf("cli-serve.go.tmpl must NOT reference the retired %q; rendered output:\n%s", gone, rendered)
+			t.Errorf("cmd-tree-serve.go.tmpl must NOT reference the retired %q; rendered output:\n%s", gone, rendered)
 		}
 	}
 	// TYPED mount: serve takes a typed mount FUNCTION (method expression),
 	// not a string. The function value is applied to the constructed graph.
 	if !strings.Contains(rendered, "mount(services, mux, cfg, logger, opts...)") {
-		t.Errorf("cli-serve.go.tmpl must apply the typed mount func to the constructed *Services; rendered output:\n%s", rendered)
+		t.Errorf("cmd-tree-serve.go.tmpl must apply the typed mount func to the constructed *Services; rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "mount mountFunc") {
-		t.Errorf("cli-serve.go.tmpl serve() must take a typed mountFunc; rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "mount MountFunc") {
+		t.Errorf("cmd-tree-serve.go.tmpl serve() must take a typed mountFunc; rendered output:\n%s", rendered)
 	}
 	// serverkit owns OTel — serve projects OTLPEndpoint + ServiceName.
 	if !strings.Contains(rendered, "ServiceName: ServiceName") {
-		t.Errorf("cli-serve.go.tmpl must project the app-identity ServiceName onto skCfg; rendered output:\n%s", rendered)
+		t.Errorf("cmd-tree-serve.go.tmpl must project the app-identity ServiceName onto skCfg; rendered output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "OTLPEndpoint: cfg.OtlpEndpoint") {
-		t.Errorf("cli-serve.go.tmpl must project cfg.OtlpEndpoint onto skCfg; rendered output:\n%s", rendered)
+		t.Errorf("cmd-tree-serve.go.tmpl must project cfg.OtlpEndpoint onto skCfg; rendered output:\n%s", rendered)
 	}
 	// Composed Server + RunOperators (over services).
 	if !strings.Contains(rendered, "serverkit.Run(ctx, skCfg, serverkit.Server{") {
-		t.Errorf("cli-serve.go.tmpl must call serverkit.Run with a composed serverkit.Server; rendered output:\n%s", rendered)
+		t.Errorf("cmd-tree-serve.go.tmpl must call serverkit.Run with a composed serverkit.Server; rendered output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "app.RunOperators(services, ctx, logger, healthProbeAddr)") {
-		t.Errorf("cli-serve.go.tmpl must pass app.RunOperators(services, ...) into Server; rendered output:\n%s", rendered)
+		t.Errorf("cmd-tree-serve.go.tmpl must pass app.RunOperators(services, ...) into Server; rendered output:\n%s", rendered)
 	}
 
 	// Verify it still parses as valid Go.

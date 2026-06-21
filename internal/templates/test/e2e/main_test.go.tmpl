@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 
 	// 1. Build the project binary
 	fmt.Println("==> Building {{.ProjectName}} binary...")
-	build := exec.CommandContext(ctx, "go", "build", "-o", "./bin/{{.ProjectName}}", "./cmd")
+	build := exec.CommandContext(ctx, "go", "build", "-o", "./bin/{{.ProjectName}}", "./cmd/{{.ProjectName}}")
 	build.Dir = findProjectRoot()
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr

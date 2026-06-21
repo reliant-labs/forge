@@ -1,6 +1,6 @@
 ---
 name: v0.x-to-serverkit-composed
-description: Migrate serverkit from Run(ctx, cfg, hooks, args) — where args were service NAMES matched through a string registry — to Run(ctx, cfg, serverkit.Server{...}) with FULLY TYPED service selection. The Application interface, Hooks, string-keyed BootstrapOnly selection, the string→inventory mount lookup, AND the generated cmd/otel.go shim are all gone. The cmd layer becomes a real cobra package (internal/cli, one file per command); each service gets a typed (*app.Services).Mount<Svc> method and its own internal/cli/svc_<name>.go subcommand that passes that method EXPRESSION to a shared serve() helper. serverkit OWNS OTel. Use when bumping across the typed-composed-server release.
+description: Migrate serverkit from Run(ctx, cfg, hooks, args) — where args were service NAMES matched through a string registry — to Run(ctx, cfg, serverkit.Server{...}) with FULLY TYPED service selection. The Application interface, Hooks, string-keyed BootstrapOnly selection, the string→inventory mount lookup, AND the generated cmd/otel.go shim are all gone. The cmd layer becomes a real cobra command tree under cmd/<bin>/cmd (devspace idiom), dir-nested by category; each service gets a typed (*app.Services).Mount<Svc> method and its own cmd/<bin>/cmd/services/<name>.go subcommand that passes that method EXPRESSION to a shared cmd.Serve() helper. serverkit OWNS OTel. Use when bumping across the typed-composed-server release.
 relevance: migration
 ---
 
@@ -68,9 +68,14 @@ Gone entirely:
   internally from `Config.OTLPEndpoint` + `Config.ServiceName`, mounts
   `/metrics` on its own edge, and flushes the providers at shutdown. The cmd
   just projects `cfg.OtlpEndpoint` + the generated `ServiceName` constant.
-- The whole `cmd/*.go` layout. The command tree moves to a real cobra
-  **`internal/cli` package** (gh / cobra-cli idiom: one file per command);
-  `cmd/<bin>/main.go` becomes a thin `cli.Execute()`.
+- The whole flat `cmd/*.go` layout. The command tree moves under
+  **`cmd/<bin>/cmd`** as a real cobra package, dir-nested by category
+  (devspace idiom): `root.go`/`serve.go`/`server.go`/`version.go`/`db.go`/
+  `commands.go` in `package cmd`, plus `services/`, `workers/`, `operators/`
+  SUBPACKAGES with one file per item. `cmd/<bin>/main.go` becomes a thin
+  `cmd.Execute()` that blank-imports the group subpackages so each item
+  self-registers via `init()`. (An earlier vintage put this tree in a flat
+  `internal/cli` package — if you're on that, the regen moves it for you.)
 
 **TYPED selection.** `internal/app/inventory_gen.go` now emits a typed method
 per service plus an explicit `MountAll`:
@@ -84,43 +89,68 @@ func (s *Services) MountAll(mux, cfg, logger, opts...) []string { /* explicit ty
 for `forge map` / `audit` / `services` listing only. It is NEVER on the run
 path.
 
-The generated cmd layout:
+The generated cmd layout (devspace idiom — dir-nested by category):
 
-- `internal/cli/root.go` — `newRootCmd(deps)` assembles the tree; defines the
-  `ServiceName` constant (app identity) + a `Deps` struct (config/io, threaded
-  for testability).
-- `internal/cli/serve.go` — the shared `serve(ctx, deps, mount mountFunc, ...)`
-  helper: OpenInfra → Build → PostBuild → interceptor chain → apply the TYPED
-  mount FUNCTION → `serverkit.Run`. Takes a typed mount **function value**,
-  never a string.
-- `internal/cli/server.go` — the all-services command → `serve(ctx, deps,
+```
+cmd/<bin>/
+  main.go            # thin: package main → cmd.Execute() + blank group imports
+  cmd/               # package cmd (the command tree)
+    root.go          # newRootCmd(deps); ServiceName const; Deps struct; the
+                     # Register{Service,Worker,Operator}Cmd registry
+    serve.go         # the shared Serve(ctx, deps, mount MountFunc, ...) helper
+    server.go        # all-services → Serve(deps, (*app.Services).MountAll)
+    version.go, db.go, commands.go
+    services/<svc>.go    # ONE FILE PER SERVICE (package services)
+    workers/<w>.go       # one file per worker (package workers)
+    operators/<o>.go     # one file per operator (package operators)
+```
+
+- `cmd/<bin>/cmd/root.go` — `newRootCmd(deps)` ranges the registry the group
+  subpackages populated at `init()`; defines the `ServiceName` constant (app
+  identity) + a `Deps` struct (config/io, threaded for testability) + the
+  `Register{Service,Worker,Operator}Cmd` registry.
+- `cmd/<bin>/cmd/serve.go` — the shared, EXPORTED `Serve(ctx, deps, mount
+  MountFunc, ...)` helper: OpenInfra → Build → PostBuild → interceptor chain →
+  apply the TYPED mount FUNCTION → `serverkit.Run`. Takes a typed mount
+  **function value**, never a string. Also exports `ServeOptions`,
+  `SelectWorkers`, `SelectOperators`, and `MountNone`.
+- `cmd/<bin>/cmd/server.go` — the all-services command → `Serve(ctx, deps,
   (*app.Services).MountAll, ...)`. The optional `server [names...]` subset uses
   a generated `app.MountByName` map of **typed method expressions** (not a
   string→data lookup).
-- `internal/cli/svc_<name>.go` — **ONE FILE PER SERVICE**: `new<Svc>Cmd(deps)`
-  whose `RunE` calls `serve(ctx, deps, (*app.Services).Mount<Svc>)` — a method
-  EXPRESSION, fully typed, no string. `<bin> <service>` is a first-class
-  command with its own `-h`. A service whose kebab name collides with a
-  built-in (`server`/`version`/`db`/`help`/`completion`) is skipped with a NOTE
-  in `svc_register_gen.go` and remains reachable via `server <name>`.
+- `cmd/<bin>/cmd/services/<name>.go` — **ONE FILE PER SERVICE** (package
+  `services`): `New<Svc>Cmd(cmd.Deps)` whose `RunE` calls `cmd.Serve(ctx, deps,
+  (*app.Services).Mount<Svc>)` — a method EXPRESSION, fully typed, no string.
+  It self-registers via `init()` (`cmd.RegisterServiceCmd`). `<bin> <service>`
+  is a first-class command with its own `-h`. A service whose kebab name
+  collides with a built-in (`server`/`version`/`db`/`help`/`completion`) is
+  skipped with a NOTE in `services/register_gen.go` and remains reachable via
+  `server <name>`. Workers/operators get parallel `workers/<w>.go` /
+  `operators/<o>.go` files (cmd.MountNone + a named supervised subset).
 
 ```go
-// internal/cli/svc_billing.go (GENERATED) — typed per-service subcommand.
-func newBillingCmd(deps Deps) *cobra.Command {
-	return &cobra.Command{
+// cmd/<bin>/cmd/services/billing.go (GENERATED) — typed per-service subcommand.
+package services
+
+func init() { cmd.RegisterServiceCmd(NewBillingCmd) }
+
+func NewBillingCmd(deps cmd.Deps) *cobra.Command {
+	c := &cobra.Command{
 		Use: "billing",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			deps.Cmd = cmd
-			return serve(cmd.Context(), deps, (*app.Services).MountBilling, serveOptions{})
+		RunE: func(c *cobra.Command, args []string) error {
+			deps.Cmd = c
+			return cmd.Serve(c.Context(), deps, (*app.Services).MountBilling, cmd.ServeOptions{})
 		},
 	}
+	config.RegisterFlags(c)
+	return c
 }
 ```
 
-The forked `cmd/workspace-proxy/main.go` outlier folds away too: with a
-handler-shaped serverkit it builds its own handler and passes a
-`serverkit.Server` like everyone else (~200 lines of duplicated lifecycle
-deleted).
+Each binary gets its OWN `cmd/<bin>/` tree: the forked
+`cmd/workspace-proxy/main.go` outlier folds away — `forge add binary` now
+scaffolds a self-contained `cmd/<bin>/main.go`, and the primary server binary's
+per-service commands live under the server's tree.
 
 ## 2. Detection
 
@@ -132,21 +162,24 @@ grep -rq "runServer(cmd, \[\]string{" cmd/ && echo "OLD SHAPE — string-project
 grep -rq "for _, row := range app.Inventory" cmd/ && echo "OLD SHAPE — string→inventory mount lookup"
 test -f cmd/otel.go && echo "OLD SHAPE — generated cmd/otel.go shim"
 
-# New shape — typed mounts + internal/cli package + serverkit-owned OTel.
-test -d internal/cli && echo "internal/cli command package present"
-grep -rq "(\*app.Services).Mount" internal/cli/ && echo "typed mount method expressions in use"
+# New shape — typed mounts + cmd/<bin>/cmd command tree + serverkit-owned OTel.
+ls -d cmd/*/cmd && echo "cmd/<bin>/cmd command tree present"
+grep -rq "(\*app.Services).Mount" cmd/*/cmd/ && echo "typed mount method expressions in use"
 grep -rq "func (s \*Services) MountAll" internal/app/inventory_gen.go && echo "typed MountAll present"
+ls cmd/*/cmd/services/*.go && echo "one file per service (services/ group)"
 ```
 
 ## 3. Migration (deterministic part)
 
 ```bash
 # 1. Bump forge_version in forge.yaml to the typed-composed-server release.
-# 2. Regenerate. The generator: emits the internal/cli command tree (root.go,
-#    serve.go, server.go, version.go, db.go, one svc_<name>.go per service);
-#    emits typed (*app.Services).Mount<Svc> + MountAll in inventory_gen.go;
-#    rewrites app.Inventory as data-only; thins cmd/<bin>/main.go to a
-#    cli.Execute(); and DELETES cmd/server.go + cmd/otel.go + cmd/services_gen.go.
+# 2. Regenerate. The generator: emits the cmd/<bin>/cmd command tree (root.go,
+#    serve.go, server.go, version.go, db.go, commands.go) + the services/,
+#    workers/, operators/ group subpackages (one file per item); emits typed
+#    (*app.Services).Mount<Svc> + MountAll in inventory_gen.go; rewrites
+#    app.Inventory as data-only; thins cmd/<bin>/main.go to a cmd.Execute()
+#    that blank-imports the groups; and DELETES the old flat internal/cli
+#    tree + cmd/server.go + cmd/otel.go + cmd/services_gen.go.
 forge generate
 
 # 3. Build.
@@ -154,15 +187,15 @@ go build ./...
 ```
 
 For stock projects (un-forked `cmd/`) the regen is the whole migration — the
-new `internal/cli` package composes `serverkit.Server` for you and serverkit
-owns OTel.
+new `cmd/<bin>/cmd` command tree composes `serverkit.Server` for you and
+serverkit owns OTel.
 
 ## 4. Migration (manual part — forked cmd/server.go)
 
 The painful case is a **disowned `cmd/server.go`** (control-plane is the
 canonical example — a forked composition root plus the hand-rolled
 `cmd/workspace-proxy/main.go`). `forge generate` leaves disowned files alone;
-apply the shape change by hand, mirroring the generated `internal/cli/serve.go`:
+apply the shape change by hand, mirroring the generated `cmd/<bin>/cmd/serve.go`:
 
 1. **Build the mux yourself, then pass it as `Server.Handler`.** Whatever
    `Hooks.Bootstrap` used to do — build the mux, mount services, attach
@@ -217,12 +250,13 @@ apply the shape change by hand, mirroring the generated `internal/cli/serve.go`:
    interceptor chain and threading it as `HandlerOption`s into the mount — keep
    it identical. This is the easiest thing to silently regress.
 
-5. **Fold `cmd/workspace-proxy/main.go` into a subcommand.** Replace the
-   forked `main()` (OTel setup, signal handling, healthz/readyz, metrics
-   server, shutdown — all of which serverkit owns) with a cobra subcommand in
-   `internal/cli` that builds the proxy's own mux/deps and hands serverkit a
+5. **Thin `cmd/workspace-proxy/main.go`.** Each binary gets its own
+   `cmd/<bin>/` tree. Replace the forked `main()` (OTel setup, signal handling,
+   healthz/readyz, metrics server, shutdown — all of which serverkit owns) with
+   a thin main that builds the proxy's own mux/deps and hands serverkit a
    `serverkit.Server`. The only thing that stays is the proxy's own
-   handler-building composition root; everything else deletes.
+   handler-building composition root; everything else deletes. (`forge add
+   binary` scaffolds exactly this self-contained shape.)
 
 ## 5. Verification
 
@@ -233,12 +267,13 @@ go build ./... && go test ./... && forge lint
 Shape checks:
 
 ```bash
-grep -rq "serverkit.Server{" internal/cli/ && echo "composed Server in use"
-! test -f cmd/services_gen.go && ! test -f cmd/server.go && echo "old cmd/ server files gone"
+grep -rq "serverkit.Server{" cmd/*/cmd/ && echo "composed Server in use"
+! test -f cmd/services_gen.go && ! test -f cmd/server.go && echo "old flat cmd/ server files gone"
+! test -d internal/cli && echo "old flat internal/cli tree gone"
 ! test -f cmd/otel.go && echo "otel shim gone (serverkit owns OTel)"
-! grep -rq "for _, row := range app.Inventory" internal/cli/ && echo "no string→inventory mount lookup on run path"
-grep -rq "(\*app.Services).Mount" internal/cli/ && echo "typed mount method expressions in use"
-ls internal/cli/svc_*.go && echo "one file per service"
+! grep -rq "for _, row := range app.Inventory" cmd/*/cmd/ && echo "no string→inventory mount lookup on run path"
+grep -rq "(\*app.Services).Mount" cmd/*/cmd/ && echo "typed mount method expressions in use"
+ls cmd/*/cmd/services/*.go && echo "one file per service"
 
 # Typed per-service subcommands + the all-services command.
 go run ./cmd/<bin> billing        # boots ONLY billing via the typed mount

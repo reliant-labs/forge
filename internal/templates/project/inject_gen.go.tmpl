@@ -22,6 +22,7 @@ import (
 	"log/slog"
 {{- if .NeedsAuthorizer}}
 
+	"{{.Module}}/pkg/config"
 	"{{.Module}}/pkg/middleware"
 {{- end}}
 {{range .Order}}
@@ -43,7 +44,7 @@ func Build(infra *Infra) (*Services, error) {
 {{- range .Order}}
 {{- if .NeedsAuthzVar}}
 	var {{.VarName}}Authz middleware.Authorizer = {{.Alias}}.NewAuthorizer()
-	if infra.Cfg.DevAuthBypass() {
+	if config.DevAuthBypass(infra.Cfg) {
 		{{.VarName}}Authz = middleware.DevAuthorizer{}
 	}
 {{- end}}

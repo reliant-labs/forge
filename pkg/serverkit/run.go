@@ -19,6 +19,8 @@ import (
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Run starts the server and blocks until SIGINT/SIGTERM or a fatal
@@ -63,6 +65,25 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// by the caller (at mount time) based on cfg.Environment.
 	if cfg.Environment == "development" {
 		logger.Warn("running in development mode — permissive authz defaults are enabled. NEVER set ENVIRONMENT=development in production.")
+	}
+
+	// OTel: serverkit OWNS OpenTelemetry setup (the generated cmd/otel.go
+	// shim is gone). observe.Setup installs the global trace/metric
+	// providers from cfg.OTLPEndpoint + cfg.ServiceName, always wires the
+	// Prometheus reader, and returns the /metrics handler (mounted on the
+	// top mux below, IN FRONT of the edge so scrapers bypass CORS/auth) and
+	// a shutdown fn (flushed in the graceful-shutdown sequence). A setup
+	// error is logged, not fatal — projects depending on OTLP fail config
+	// validation before Run.
+	instanceID, _ := os.Hostname()
+	otelShutdown, metricsHandler, otelErr := observe.Setup(ctx, observe.Config{
+		ServiceName:    cfg.ServiceName,
+		ServiceVersion: cfg.ServiceVersion,
+		OTLPEndpoint:   cfg.OTLPEndpoint,
+		InstanceID:     instanceID,
+	})
+	if otelErr != nil {
+		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}
 
 	// Readiness flips AFTER the listener successfully binds (see ln/Serve
@@ -120,6 +141,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	})
+	// /metrics is mounted on the top mux (in front of the edge) so Prometheus
+	// scrapers reach it without CORS/auth/security-headers. serverkit owns it
+	// now that it owns OTel setup.
+	if metricsHandler != nil {
+		top.Handle("/metrics", metricsHandler)
+	}
 	top.Handle("/", handler)
 
 	finalHandler := h2c.NewHandler(top, &http2.Server{})
@@ -315,12 +342,19 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		}
 	}
 
-	// OnShutdown is the caller-composed teardown: the old
-	// Application.Shutdown plus (folded in by the cmd shim) the OTel
-	// flush. Runs after workers stop, before the http.Server shuts down.
+	// OnShutdown is the caller-composed teardown (the old
+	// Application.Shutdown). Runs after workers stop, before the OTel flush
+	// and the http.Server shutdown.
 	if srv.OnShutdown != nil {
 		if shutErr := srv.OnShutdown(shutdownCtx); shutErr != nil {
 			logger.Error("shutdown error", "error", shutErr)
+		}
+	}
+
+	// OTel flush — serverkit owns it now (folded out of the cmd shim).
+	if otelShutdown != nil {
+		if shutErr := otelShutdown(shutdownCtx); shutErr != nil {
+			logger.Error("otel shutdown error", "error", shutErr)
 		}
 	}
 	if shutErr := httpSrv.Shutdown(shutdownCtx); shutErr != nil {

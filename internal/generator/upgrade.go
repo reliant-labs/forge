@@ -173,15 +173,16 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 	return []managedFile{
 		// ── Tier 1: Always overwritten by forge generate, gitignored ──
 
-		// Templated cmd files — service-shape (CLI/library don't ship the
-		// Connect-server stack), gated via enabledForService.
-		{templateName: "cmd-server.go.tmpl", destPath: "cmd/server.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		// Thin cmd/main.go + the internal/cli command tree (gh / cobra-cli
+		// idiom: one file per command). Service-shape (CLI/library don't ship
+		// the Connect-server stack), gated via enabledForService. OTel is
+		// owned by serverkit now — there is no generated cmd/otel.go shim.
 		{templateName: mainTmpl, destPath: "cmd/main.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cmd-db.go.tmpl", destPath: "cmd/db.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cmd-version.go.tmpl", destPath: "cmd/version.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-
-		// Static cmd files
-		{templateName: "otel.go.tmpl", destPath: "cmd/otel.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cli-serve.go.tmpl", destPath: "internal/cli/serve.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cli-server.go.tmpl", destPath: "internal/cli/server.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cli-root.go.tmpl", destPath: "internal/cli/root.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cli-db.go.tmpl", destPath: "internal/cli/db.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cli-version.go.tmpl", destPath: "internal/cli/version.go", templated: true, tier: Tier1, enabledFor: enabledForService},
 
 		// buf.yaml is templated against `api.rest` so the googleapis BSR
 		// dep is added/removed in lockstep with the runtime vanguard wrap.
@@ -213,12 +214,11 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
-		// cmd/commands.go — the user-owned cobra extension point the
-		// Tier-1 cmd/main.go consumes (userCommands()). Scaffolded once,
-		// then owned by the user; listed here so `forge upgrade` CREATES
-		// it on pre-M6 trees (whose regenerated cmd/main.go now
-		// references userCommands) and never stomps an edited copy.
-		{templateName: "cmd-commands.go.tmpl", destPath: "cmd/commands.go", templated: true, tier: Tier2, enabledFor: enabledForService},
+		// internal/cli/commands.go — the user-owned cobra extension point the
+		// Tier-1 internal/cli/root.go consumes (userCommands(deps)).
+		// Scaffolded once, then owned by the user; listed here so `forge
+		// upgrade` CREATES it and never stomps an edited copy.
+		{templateName: "cli-commands.go.tmpl", destPath: "internal/cli/commands.go", templated: true, tier: Tier2, enabledFor: enabledForService},
 
 		// Alloy config — Tier 1 since it's fully derived from forge.yaml
 		// services. Gated on service-kind AND observability being enabled.

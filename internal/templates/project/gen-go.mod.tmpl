@@ -14,3 +14,16 @@ require (
 	// proxy-resolved version (release) — same wiring as the root module.
 	github.com/reliant-labs/forge/pkg{{if .ForgePkgVersion}} {{.ForgePkgVersion}}{{else}} v0.0.0{{end}}
 )
+{{- if and .ForgePkgGenReplace (not .ForgePkgVersion)}}
+
+// Dev-mode forge/pkg wiring for the gen/ submodule. The root module
+// resolves forge/pkg via a `replace` in its own go.mod, but that replace
+// does NOT cascade into this separate gen/ submodule — so `go mod tidy`
+// here would try (and fail) to resolve the unpublished `v0.0.0` from the
+// proxy. We therefore mirror the root replace, rebased to gen/'s extra
+// directory depth (root `./.forge-pkg` → `../.forge-pkg`; root
+// `../forge/pkg` → `../../forge/pkg`; an absolute host path is used
+// verbatim). When you move to a released forge, drop this replace and
+// pin a real version alongside the root module. See docs/pkg-versioning.md.
+replace github.com/reliant-labs/forge/pkg => {{.ForgePkgGenReplace}}
+{{- end}}

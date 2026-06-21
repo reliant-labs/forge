@@ -80,6 +80,18 @@ type projectTemplateData struct {
 	// is not an upgrade-managed file).
 	ForgePkgVersion    string
 	ForgePkgDevReplace string
+	// ForgePkgGenReplace is the forge/pkg replace target the gen/ submodule's
+	// go.mod must carry in dev mode. The root replace (ForgePkgDevReplace)
+	// lives in the ROOT module and does not cascade into the separate gen/
+	// submodule, so gen/go.mod needs its own depth-corrected replace or
+	// `go mod tidy` in gen/ can't resolve the unpublished forge/pkg. At
+	// scaffold time ForgePkgDevReplace is a host-absolute sibling path, which
+	// is depth-independent — so this is the same absolute path (or empty in
+	// release / no-sibling mode). The generate pipeline's ensure-gen-module
+	// step later reconciles this against the root replace's final form (e.g.
+	// after vendoring rewrites the root to ./.forge-pkg). Populated by
+	// ForScaffold only — gen/go.mod is not an upgrade-managed file.
+	ForgePkgGenReplace string
 	// AuthProvider / AuthProviderExternal gate cmd-server.go.tmpl's
 	// generated-auth call site. Always zero at scaffold time (forge new
 	// never configures an auth provider); the upgrade lane derives them
@@ -161,6 +173,15 @@ func (g *ProjectGenerator) ForScaffold() projectTemplateData {
 		LoaderPackage:    config.DefaultLoaderPackage,
 	}
 	data.ForgePkgVersion, data.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
+	// The scaffold's forge/pkg dev replace is a host-absolute sibling path,
+	// which resolves identically from any directory depth — so the gen/
+	// submodule's replace is the same absolute path. Empty in release /
+	// no-sibling mode, where gen/ resolves forge/pkg from the proxy like the
+	// root. The first `forge generate` (run by `forge new`) reconciles this
+	// to the root replace's post-vendoring form via reconcileGenForgePkgReplace.
+	if data.ForgePkgVersion == "" {
+		data.ForgePkgGenReplace = data.ForgePkgDevReplace
+	}
 	// When the scaffold emits a dev-mode forge/pkg replace AND codegen is
 	// on, the `forge generate` run that `forge new` performs immediately
 	// after will vendor the target into ./.forge-pkg/ — so the Dockerfile

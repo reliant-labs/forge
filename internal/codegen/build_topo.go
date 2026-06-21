@@ -28,7 +28,10 @@
 
 package codegen
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // BuildComponent is one node in the construction graph: a registered
 // service / worker / operator, its parsed Deps fields, and the metadata
@@ -51,9 +54,19 @@ type BuildComponent struct {
 	ImportPath string
 	// ServiceTypeKey is the type-identity key this component PRODUCES —
 	// the thing a consumer's Deps field type is matched against to draw an
-	// edge. Conventionally the package-qualified Service interface
-	// (e.g. "user.Service"). Empty for components that expose no
-	// collaborator interface (pure leaf workers).
+	// edge. It is the FULL IMPORT-PATH-qualified Service interface
+	// (e.g. "example.com/proj/internal/billing.Service"), NOT the bare
+	// package clause: two packages may share a clause name (a domain
+	// `internal/billing` and a handler `internal/handlers/billing` both
+	// `package billing`), and keying by clause would collide them, mis-
+	// wiring a consumer's domain dep to the handler instance. Import paths
+	// are unique, so import-path keying gives each package a distinct
+	// identity. Empty for components that expose no collaborator interface
+	// (pure leaf workers).
+	//
+	// The clause-qualified form is retained as a FALLBACK lookup
+	// (compPackageKey) for the unambiguous single-clause case + mid-edit
+	// projects where the consumer's import block can't be parsed.
 	ServiceTypeKey string
 	// Deps are the parsed Deps fields, in declaration order.
 	Deps []DepsField
@@ -69,6 +82,16 @@ type BuildComponent struct {
 	compFallible   bool   // New returns (T, error)
 	compRoleRoot   string // "internal/handlers" / "internal" / "internal/workers" / "internal/operators"
 	compImportLeaf string // on-disk dir leaf under the role root (matcher load key)
+	// compPackageKey is the bare package-clause-qualified Service key
+	// (e.g. "billing.Service"). Retained alongside the import-path-keyed
+	// ServiceTypeKey as the resolver's unambiguous-clause fallback.
+	compPackageKey string
+	// compImports is the consumer's import block (alias -> full import
+	// path), parsed once from the component's package dir. The resolver
+	// uses it to turn a Deps field type "<alias>.Service" into the
+	// producer's full import-path key, so same-clause packages resolve to
+	// the correct distinct producer. Empty when the dir can't be parsed.
+	compImports map[string]string
 	// compFieldType is the alias-qualified type the component's New
 	// produces (e.g. "*item.Service" for a handler struct, "user.Service"
 	// for a contract interface). It is the Services-registry field type AND
@@ -147,8 +170,12 @@ func reachesSelf(start string, producers map[string]map[string]bool, within map[
 // in-memory variants.
 type TypeResolver interface {
 	// Resolve returns the producing component's FieldName for a Deps
-	// field of the given declared type, or "" if none.
-	Resolve(depsType string) string
+	// field of the given declared type, or "" if none. consumer is the
+	// component that DECLARED the field — its import block disambiguates
+	// the field's package-clause prefix to a full import path, so two
+	// producers sharing a package clause resolve to the correct distinct
+	// producer (import-path identity, not bare clause).
+	Resolve(consumer BuildComponent, depsType string) string
 }
 
 // ServiceKeyResolver is the default TypeResolver: it resolves a Deps
@@ -167,29 +194,84 @@ type TypeResolver interface {
 // is surfaced as an unresolved dep + TODO in build.go rather than guessed
 // — matching the fail-loud stance of the wire matcher.
 type ServiceKeyResolver struct {
-	byKey map[string]string // ServiceTypeKey -> producer FieldName
+	// byPath maps the FULL import-path-qualified Service key
+	// (e.g. "example.com/proj/internal/billing.Service") -> producer
+	// FieldName. Import paths are unique, so this index never collides —
+	// it is the primary, collision-proof resolution path.
+	byPath map[string]string
+	// byClause maps the bare package-clause-qualified key
+	// (e.g. "billing.Service") -> producer FieldName, used ONLY as a
+	// fallback when the consumer's import block can't disambiguate the
+	// clause to a path. clauseAmbiguous marks every clause shared by >1
+	// producer: an ambiguous clause is NOT resolvable by clause alone
+	// (that is exactly the collision this fix closes), so it resolves to
+	// "" rather than guessing — the field then falls to the Infra /
+	// loud-missing path, matching the rest of the fail-loud stance.
+	byClause        map[string]string
+	clauseAmbiguous map[string]bool
 }
 
-// NewServiceKeyResolver indexes comps by their ServiceTypeKey. Components
+// NewServiceKeyResolver indexes comps by their import-path key (primary)
+// and their package-clause key (ambiguity-tracked fallback). Components
 // with an empty ServiceTypeKey produce nothing and are skipped.
 func NewServiceKeyResolver(comps []BuildComponent) *ServiceKeyResolver {
-	byKey := make(map[string]string, len(comps))
+	byPath := make(map[string]string, len(comps))
+	byClause := make(map[string]string, len(comps))
+	clauseAmbiguous := make(map[string]bool)
 	for _, c := range comps {
 		if c.ServiceTypeKey == "" {
 			continue
 		}
-		byKey[c.ServiceTypeKey] = c.FieldName
+		byPath[c.ServiceTypeKey] = c.FieldName
+		if c.compPackageKey != "" {
+			if _, seen := byClause[c.compPackageKey]; seen {
+				clauseAmbiguous[c.compPackageKey] = true
+			} else {
+				byClause[c.compPackageKey] = c.FieldName
+			}
+		}
 	}
-	return &ServiceKeyResolver{byKey: byKey}
+	return &ServiceKeyResolver{byPath: byPath, byClause: byClause, clauseAmbiguous: clauseAmbiguous}
 }
 
-// Resolve matches a Deps field type to a producing component FieldName.
-func (r *ServiceKeyResolver) Resolve(depsType string) string {
+// Resolve matches a Deps field type to a producing component FieldName,
+// disambiguating the field's package-clause prefix through the consumer's
+// import block to a full import path (import-path identity). Falls back to
+// the bare clause only when it is unambiguous and the import block didn't
+// resolve it.
+func (r *ServiceKeyResolver) Resolve(consumer BuildComponent, depsType string) string {
 	t := depsType
 	for len(t) > 0 && t[0] == '*' {
 		t = t[1:]
 	}
-	if f, ok := r.byKey[t]; ok {
+	// Split "<prefix>.<TypeName>" into the clause/alias and the trailing
+	// type identifier. A type with no selector (e.g. a local "Repository")
+	// is never a cross-package Service producer key.
+	dot := strings.LastIndex(t, ".")
+	if dot < 0 {
+		return ""
+	}
+	alias, typeName := t[:dot], t[dot+1:]
+
+	// PRIMARY: resolve the alias to a full import path via the consumer's
+	// import block, then look up the import-path key. Unique by path.
+	if consumer.compImports != nil {
+		if path, ok := consumer.compImports[alias]; ok {
+			if f, ok := r.byPath[path+"."+typeName]; ok {
+				return f
+			}
+		}
+	}
+
+	// FALLBACK: the alias wasn't in the import block (same-package ref,
+	// unparseable dir, or a synthetic test component with no imports).
+	// Resolve by bare clause ONLY when it is unambiguous — an ambiguous
+	// clause is the collision this fix refuses to guess at.
+	clauseKey := alias + "." + typeName
+	if r.clauseAmbiguous[clauseKey] {
+		return ""
+	}
+	if f, ok := r.byClause[clauseKey]; ok {
 		return f
 	}
 	return ""
@@ -227,7 +309,7 @@ func ComputeBuildPlan(comps []BuildComponent, resolver TypeResolver) BuildPlan {
 
 	for _, c := range sorted {
 		for _, df := range c.Deps {
-			prod := resolver.Resolve(df.Type)
+			prod := resolver.Resolve(c, df.Type)
 			if prod == "" || prod == c.FieldName {
 				// No registered producer (conventional/external dep) or a
 				// self-reference (degenerate) — not an ordering edge.

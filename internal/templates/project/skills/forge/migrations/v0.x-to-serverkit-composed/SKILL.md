@@ -56,13 +56,14 @@ Gone entirely:
 - `serverkit.Application` interface and the `Hooks` struct (Bootstrap /
   BootstrapOnly dispatch by name).
 - The `args []string` / `names` parameter on `Run`.
-- `cmd/services_gen.go` string-projection wrappers and the `appkit`
-  `Options.Only` string filter. (The `appkit` package still exists for
-  worker-wrapping — `appkit.WrapWorker` — but its selection filter is gone.)
+- The old `appkit` `Options.Only` string filter and the string-projection
+  `cmd/services_gen.go` *wrappers* that fed it. (The `appkit` package still
+  exists for worker-wrapping — `appkit.WrapWorker` — but its selection filter
+  is gone.) `cmd/services_gen.go` itself is **reborn** — see below — as REAL
+  per-service cobra subcommands, not string-projection wrappers.
 
-Selection moves **up into the cmd layer** — but it stays a *single* `server`
-command, not one composition-root subcommand per service. The generated
-`cmd/server.go` now owns the whole composition:
+Selection moves **up into the cmd layer**. The generated `cmd/server.go` now
+owns the whole composition:
 
 - builds the mux, mounts `/metrics`, runs migrations, and constructs the
   Connect interceptor chain itself (the work `Hooks.Bootstrap` used to do);
@@ -81,10 +82,35 @@ command, not one composition-root subcommand per service. The generated
   `serverkit.Server`.
 
 ```go
-// cmd/server.go (GENERATED) — one command; selection is positional args.
+// cmd/server.go (GENERATED) — the run-all / arbitrary-subset command.
 //   server                  → mount all services + run all workers/operators
 //   server billing audit    → mount only those; others constructed, not mounted
 var serverCmd = &cobra.Command{Use: "server [services...]", RunE: runServer}
+```
+
+On top of `server`, forge also generates **one REAL cobra subcommand per
+service** in `cmd/services_gen.go` — `<bin> <service>` is its own first-class
+command with its own `-h`, Short/Long help, and identity. Each subcommand's
+`RunE` delegates to the same `runServer` with its OWN name pre-filled as the
+single selection key (a compile-time constant baked into the generated code —
+**not** a runtime positional arg). So `<bin> billing` is equivalent to
+`<bin> server billing` but discoverable in `<bin> --help`, with real
+service-specific help. Sibling services are still *constructed* (cross-service
+reads stay nil-safe); only their routes/workers/operators are unselected. A
+service whose kebab name collides with a built-in (`server` / `version` / `db`
+/ `help` / `completion`) is skipped with a NOTE and remains reachable via
+`server <name>`.
+
+```go
+// cmd/services_gen.go (GENERATED) — one first-class subcommand per service.
+//   <bin> billing            → boots only billing (real subcommand, own -h)
+//   <bin> billing -h         → service-specific help
+var serviceCmdBilling = &cobra.Command{
+	Use:  "billing",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runServer(cmd, []string{"billing"}) // baked-in identity, not args
+	},
+}
 ```
 
 The forked `cmd/workspace-proxy/main.go` outlier folds away too: with a
@@ -98,7 +124,9 @@ deleted).
 # Old shape — name/hooks-driven Run.
 grep -q "serverkit.Run(ctx, cfg, hooks" cmd/server.go && echo "OLD SHAPE — hooks+args Run"
 grep -rq "BootstrapOnly" pkg/app/ cmd/ && echo "OLD SHAPE — string selection"
-test -f cmd/services_gen.go && echo "OLD SHAPE — string-projection subcommands"
+# Old cmd/services_gen.go was a string-projection of the RegisteredServices
+# table; the NEW one is real subcommands sourced from the data-only Inventory.
+grep -q "RegisteredServices rows" cmd/services_gen.go 2>/dev/null && echo "OLD SHAPE — string-projection subcommands"
 
 # New shape — composed Server + data-only inventory.
 grep -rq "serverkit.Server{" cmd/ && echo "already on composed Server"

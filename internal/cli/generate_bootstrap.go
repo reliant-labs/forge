@@ -123,6 +123,23 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
 	}
 
+	// REAL per-service subcommands (cmd/services_gen.go): one cobra
+	// subcommand per service whose RunE delegates to runServer with its
+	// own name pre-filled as the single mount-selection key. Driven by the
+	// SAME `services` rows the Inventory is, so each subcommand name lines
+	// up with an inventory row. Emitted only when cmd/server.go exists (it
+	// references runServer) — CLI/library kinds and codegen-less trees have
+	// no server pipeline to delegate to.
+	if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", "server.go")); statErr == nil {
+		names := make([]string, 0, len(services))
+		for _, svc := range services {
+			names = append(names, svc.Name)
+		}
+		if err := codegen.GenerateCmdServices(names, projectDir, cs); err != nil {
+			return fmt.Errorf("failed to generate cmd/services_gen.go: %w", err)
+		}
+	}
+
 	fmt.Println("  ✅ Generated internal/app composition layer (Build + Inventory + Infra)")
 	return nil
 }

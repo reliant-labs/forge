@@ -1,4 +1,4 @@
-package cli
+package audit
 
 import (
 	"fmt"
@@ -6,15 +6,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 )
 
 // These two tests exercise the AUDIT roll-up categories auditConfigDeps /
-// auditOptionalDepsGuard (audit.go), which consume the exported lint
-// collectors (lint.CollectConfigDepsFindings /
-// lint.CollectOptionalDepsGuardFindings). They moved out of the lint test
-// files when `forge lint` migrated to internal/cli/lint — an audit
-// roll-up test belongs with audit, not lint. The fixtures are local copies
-// of the lint-package fixtures (the lint tests keep their own).
+// auditOptionalDepsGuard, which consume the exported lint collectors
+// (lint.CollectConfigDepsFindings / lint.CollectOptionalDepsGuardFindings).
+// They moved here with `forge audit` into internal/cli/audit. The fixtures
+// are local copies of the lint-package fixtures (the lint tests keep their
+// own).
 
 // writeConfigDepsFixtureAudit lays out a minimal project with one worker
 // whose Deps mixes scalars (flagged) and collaborators (not flagged).
@@ -58,7 +59,7 @@ type Repository interface{}
 func TestAuditConfigDeps_Category(t *testing.T) {
 	dir := writeConfigDepsFixtureAudit(t)
 	cat := auditConfigDeps(dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Errorf("status = %q, want warn", cat.Status)
 	}
 	if !strings.Contains(cat.Summary, "scalar Deps field(s)") {
@@ -69,7 +70,7 @@ func TestAuditConfigDeps_Category(t *testing.T) {
 	}
 
 	clean := auditConfigDeps(t.TempDir())
-	if clean.Status != AuditStatusOK {
+	if clean.Status != audittype.StatusOK {
 		t.Errorf("clean project status = %q, want ok", clean.Status)
 	}
 }
@@ -123,7 +124,7 @@ func (s *Service) Call() error {
 	return s.deps.Svc.Do()
 }
 `)
-	if cat := auditOptionalDepsGuard(clean); cat.Status != AuditStatusOK {
+	if cat := auditOptionalDepsGuard(clean); cat.Status != audittype.StatusOK {
 		t.Errorf("clean project status = %s, want ok (%s)", cat.Status, cat.Summary)
 	}
 
@@ -134,7 +135,7 @@ func (s *Service) Call() error {
 }
 `)
 	cat := auditOptionalDepsGuard(dirty)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("dirty project status = %s, want warn (%s)", cat.Status, cat.Summary)
 	}
 	if cat.Details["finding_count"] != 1 {

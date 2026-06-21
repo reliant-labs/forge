@@ -1,4 +1,4 @@
-package cli
+package audit
 
 import (
 	"os"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 )
 
 // TestAuditCodegen_DisownedFiles pins the machine-readable disown
@@ -62,8 +63,8 @@ func TestAuditCodegen_DisownedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cat := auditCodegen(nil, dir)
-	if cat.Status != AuditStatusOK {
+	cat := auditCodegen(testFactory(auditAPIConfig{}), nil, dir)
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %s, want ok — disowned files are a legitimate end state (summary: %s)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "2 disowned") {
@@ -117,8 +118,8 @@ func TestAuditCodegen_DisownedFiles(t *testing.T) {
 func TestAuditCodegen_NoDisowned(t *testing.T) {
 	dir := t.TempDir()
 
-	cat := auditCodegen(nil, dir)
-	if cat.Status != AuditStatusOK {
+	cat := auditCodegen(testFactory(auditAPIConfig{}), nil, dir)
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %s, want ok", cat.Status)
 	}
 	legacy, ok := cat.Details["forked_files"].([]auditDisownedFile)
@@ -127,5 +128,61 @@ func TestAuditCodegen_NoDisowned(t *testing.T) {
 	}
 	if _, ok := cat.Details["disowned_files"]; ok {
 		t.Errorf("disowned_files should be omitted when nothing is disowned")
+	}
+}
+
+// TestAuditCodegen_DisownedFilesCarriesReason pins the audit-side backfill:
+// disowned_files rows whose disowned.json entry has no reason of its own
+// inherit the reason resolved by AuditAPI.DisownFrictionReasons (the
+// friction-log join, tested in package cli where it lives), while rows
+// without any resolved reason stay reason-less.
+func TestAuditCodegen_DisownedFilesCarriesReason(t *testing.T) {
+	dir := t.TempDir()
+	content := "package app // user-owned\n"
+	for _, rel := range []string{"pkg/app/wire_gen.go", "pkg/app/bootstrap.go", "pkg/app/migrate.go"} {
+		writeFileTest(t, dir, rel, content)
+	}
+	// Disowned state carries NO reason of its own so audit falls back to the
+	// AuditAPI-resolved reasons (records that predate reason capture).
+	csState := &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{
+		"pkg/app/wire_gen.go":  {DisownedAt: "2026-06-01T00:00:00Z"},
+		"pkg/app/bootstrap.go": {DisownedAt: "2026-06-01T00:00:00Z"},
+		"pkg/app/migrate.go":   {DisownedAt: "2026-06-01T00:00:00Z"},
+	}}
+	if err := checksums.Save(dir, csState); err != nil {
+		t.Fatal(err)
+	}
+
+	// The friction-log join logic (newest-disown-wins, legacy fork joins,
+	// non-disown areas ignored) is exercised in package cli's
+	// disownFrictionReasons tests; here we supply its resolved output.
+	f := testFactory(auditAPIConfig{
+		disownFrictionReasons: map[string]string{
+			"pkg/app/wire_gen.go":  "newest reason wins",
+			"pkg/app/bootstrap.go": "legacy fork-era reason",
+			// migrate.go: no resolved reason.
+		},
+	})
+
+	cat := auditCodegen(f, nil, dir)
+	disowned, ok := cat.Details["disowned_files"].([]auditDisownedFile)
+	if !ok {
+		t.Fatalf("disowned_files detail missing or wrong shape: %#v", cat.Details["disowned_files"])
+	}
+	if len(disowned) != 3 {
+		t.Fatalf("disowned_files = %+v, want all three disowned entries", disowned)
+	}
+	byPath := map[string]auditDisownedFile{}
+	for _, fnd := range disowned {
+		byPath[fnd.Path] = fnd
+	}
+	if got := byPath["pkg/app/wire_gen.go"].Reason; got != "newest reason wins" {
+		t.Errorf("wire_gen.go reason = %q, want the resolved area=disown entry text", got)
+	}
+	if got := byPath["pkg/app/bootstrap.go"].Reason; got != "legacy fork-era reason" {
+		t.Errorf("bootstrap.go reason = %q, want the legacy area=fork text to survive the migration", got)
+	}
+	if got := byPath["pkg/app/migrate.go"].Reason; got != "" {
+		t.Errorf("migrate.go reason = %q, want empty (no resolved reason)", got)
 	}
 }

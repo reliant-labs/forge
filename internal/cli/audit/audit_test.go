@@ -1,4 +1,4 @@
-package cli
+package audit
 
 import (
 	"encoding/json"
@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/audittype"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 )
 
 // TestAuditVersion_RealComparison pins fr-82b717f521: audit must do a
@@ -22,7 +24,7 @@ func TestAuditVersion_RealComparison(t *testing.T) {
 		buildinfo.Set("v0.0.0-20260612070344-a3e3b883c97c", "unknown", "unknown")
 		cfg := &config.ProjectConfig{ForgeVersion: "v0.0.0-20260530233501-ec0254f463b3"}
 		cat := auditVersion(cfg, t.TempDir())
-		if cat.Status != AuditStatusWarn {
+		if cat.Status != audittype.StatusWarn {
 			t.Errorf("stale pin must WARN, got %q (summary=%q)", cat.Status, cat.Summary)
 		}
 		if strings.Contains(cat.Summary, "matches binary") {
@@ -37,7 +39,7 @@ func TestAuditVersion_RealComparison(t *testing.T) {
 		buildinfo.Set("v0.0.0-20260612070344-a3e3b883c97c", "unknown", "unknown")
 		cfg := &config.ProjectConfig{ForgeVersion: "v0.0.0-20260612070344-a3e3b883c97c"}
 		cat := auditVersion(cfg, t.TempDir())
-		if cat.Status != AuditStatusOK {
+		if cat.Status != audittype.StatusOK {
 			t.Errorf("exact match must be OK, got %q (summary=%q)", cat.Status, cat.Summary)
 		}
 		if !strings.Contains(cat.Summary, "matches binary") {
@@ -49,7 +51,7 @@ func TestAuditVersion_RealComparison(t *testing.T) {
 		buildinfo.Set("v1.0.0", "unknown", "unknown")
 		cfg := &config.ProjectConfig{ForgeVersion: ""}
 		cat := auditVersion(cfg, t.TempDir())
-		if cat.Status != AuditStatusWarn {
+		if cat.Status != audittype.StatusWarn {
 			t.Errorf("missing pin must WARN, got %q", cat.Status)
 		}
 	})
@@ -76,7 +78,7 @@ func TestAuditVersion_DivergentPins(t *testing.T) {
 
 	cfg := &config.ProjectConfig{ForgeVersion: "v0.0.0-20260530233501-ec0254f463b3"}
 	cat := auditVersion(cfg, dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("divergent pins must WARN, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "divergent forge version pins") {
@@ -114,14 +116,14 @@ docs: {}
 		t.Fatalf("write forge.yaml: %v", err)
 	}
 	// Empty components.json → service kind (the empty-service shell).
-	writeComponentsJSON(t, dir)
+	writeComponentsJSONTest(t, dir)
 
 	// No .forge state files at all — the steady state in the
 	// self-certifying era (the manifest-era empty checksums.json would
 	// now read as a pending legacy migration). The codegen audit reads
 	// ownership from the files themselves.
 
-	report, err := buildAuditReport(dir)
+	report, err := buildAuditReport(testFactory(auditAPIConfig{}), dir)
 	if err != nil {
 		t.Fatalf("buildAuditReport: %v", err)
 	}
@@ -155,7 +157,7 @@ docs: {}
 
 	// Overall status must be one of the canonical strings.
 	switch decoded.OverallStatus {
-	case AuditStatusOK, AuditStatusWarn, AuditStatusError:
+	case audittype.StatusOK, audittype.StatusWarn, audittype.StatusError:
 	default:
 		t.Errorf("invalid overall status %q", decoded.OverallStatus)
 	}
@@ -165,18 +167,9 @@ docs: {}
 // deploy/kcl/<env>/main.k to enumerate envs and emits one entry per
 // declared env.
 func TestAuditEnvironments_ListsFilesystem(t *testing.T) {
-	dir := t.TempDir()
-	for _, env := range []string{"dev", "prod"} {
-		envDir := filepath.Join(dir, "deploy", "kcl", env)
-		if err := os.MkdirAll(envDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte(""), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cat := auditEnvironments(dir)
-	if cat.Status != AuditStatusOK {
+	f := testFactory(auditAPIConfig{listEnvs: []string{"dev", "prod"}})
+	cat := auditEnvironments(f, t.TempDir())
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "2 environment(s)") {
@@ -187,8 +180,8 @@ func TestAuditEnvironments_ListsFilesystem(t *testing.T) {
 // TestAuditEnvironments_NoEnvs returns ok (n/a) when no deploy/kcl/<env>
 // directories are present.
 func TestAuditEnvironments_NoEnvs(t *testing.T) {
-	cat := auditEnvironments(t.TempDir())
-	if cat.Status != AuditStatusOK {
+	cat := auditEnvironments(testFactory(auditAPIConfig{}), t.TempDir())
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status: want ok, got %q", cat.Status)
 	}
 }
@@ -200,7 +193,7 @@ func TestAuditEnvironments_NoEnvs(t *testing.T) {
 func TestAuditCRUDStubs_NoStubs(t *testing.T) {
 	dir := t.TempDir()
 	cat := auditCRUDStubs(dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "0 custom-read-shape CRUD stubs") {
@@ -251,7 +244,7 @@ func (s *Service) ListSettlements(
 	}
 
 	cat := auditCRUDStubs(dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Errorf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	if total, _ := cat.Details["total_stubs"].(int); total != 1 {
@@ -308,7 +301,7 @@ func (s *Service) ListTrades(
 	}
 
 	cat := auditCRUDStubs(dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Errorf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	stubs, ok := cat.Details["stubs"].([]map[string]string)
@@ -352,7 +345,7 @@ func (s *Service) Noisy(ctx context.Context, req any) (any, error) { return nil,
 		}
 	}
 	cat := auditCRUDStubs(dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status: want ok (template + testdata skipped), got %q", cat.Status)
 	}
 }
@@ -362,7 +355,7 @@ func (s *Service) Noisy(ctx context.Context, req any) (any, error) { return nil,
 // error.
 func TestAuditReport_NoForgeYaml(t *testing.T) {
 	dir := t.TempDir()
-	report, err := buildAuditReport(dir)
+	report, err := buildAuditReport(testFactory(auditAPIConfig{}), dir)
 	if err != nil {
 		t.Fatalf("buildAuditReport: %v", err)
 	}
@@ -370,7 +363,7 @@ func TestAuditReport_NoForgeYaml(t *testing.T) {
 	if !ok {
 		t.Fatal("missing version category")
 	}
-	if v.Status != AuditStatusError {
+	if v.Status != audittype.StatusError {
 		t.Errorf("expected error status for missing forge.yaml, got %q", v.Status)
 	}
 	if !strings.Contains(strings.ToLower(v.Summary), "forge.yaml") {
@@ -385,7 +378,7 @@ func TestAuditReport_NoForgeYaml(t *testing.T) {
 func TestAuditDiagnostics_NoFileOK(t *testing.T) {
 	dir := t.TempDir()
 	cat := auditDiagnostics(nil, dir)
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status: want ok, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	// Additive contract: the diagnostics key must always exist, even
@@ -421,7 +414,7 @@ func init() {
 		t.Fatal(err)
 	}
 	cat := auditDiagnostics(nil, dir)
-	if cat.Status != AuditStatusWarn {
+	if cat.Status != audittype.StatusWarn {
 		t.Fatalf("status: want warn, got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	if !strings.Contains(cat.Summary, "2 unwired") {
@@ -473,7 +466,7 @@ func init() {
 		},
 	}
 	cat := auditDiagnostics(cfg, dir)
-	if cat.Status != AuditStatusError {
+	if cat.Status != audittype.StatusError {
 		t.Errorf("strict_wiring + 1 entry should be error; got %q (summary=%q)", cat.Status, cat.Summary)
 	}
 	if got, ok := cat.Details["strict_wiring_enabled"].(bool); !ok || !got {
@@ -492,7 +485,7 @@ func init() {
 // than failing on a null.
 func TestAuditFeatures_ZeroConfig(t *testing.T) {
 	cat := auditFeatures(&config.ProjectConfig{Name: "t"})
-	if cat.Status != AuditStatusOK {
+	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %q, want ok", cat.Status)
 	}
 	resolved, ok := cat.Details["resolved"].(map[string]bool)
@@ -602,7 +595,7 @@ func TestAuditFeatures_ExperimentalBuckets(t *testing.T) {
 // a false-ok on a non-forge project.
 func TestAuditFeatures_NilConfig(t *testing.T) {
 	cat := auditFeatures(nil)
-	if cat.Status != AuditStatusError {
+	if cat.Status != audittype.StatusError {
 		t.Errorf("nil cfg status = %q, want error", cat.Status)
 	}
 }
@@ -624,7 +617,7 @@ forge_version: dev
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
-	writeComponentsJSON(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "internal/tasks"})
+	writeComponentsJSONTest(t, dir, config.ComponentConfig{Name: "tasks", Kind: "server", Path: "internal/tasks"})
 	// proto/services must exist for auditShape to attempt the parse.
 	if err := os.MkdirAll(filepath.Join(dir, "proto", "services"), 0o755); err != nil {
 		t.Fatalf("mkdir proto/services: %v", err)
@@ -653,11 +646,17 @@ forge_version: dev
 		t.Fatalf("write go.mod: %v", err)
 	}
 
-	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
+	cfg, err := generator.ReadProjectConfig(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	cat := auditShape(cfg, dir)
+	// The "tasks" service is a Connect service and is registered (served).
+	f := testFactory(auditAPIConfig{
+		projectDefinesConnectServices: true,
+		isConnectService:              func(config.ComponentConfig) bool { return true },
+		registry:                      stubRegistry{exists: true, registered: map[string]bool{"tasks": true}},
+	})
+	cat := auditShape(f, cfg, dir)
 
 	// Round-trip through JSON — that's the shape sub-agents consume.
 	data, err := json.Marshal(cat.Details)

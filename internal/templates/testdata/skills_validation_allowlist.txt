@@ -10,4 +10,6 @@
 # no longer appears in the named skill fail TestSkillsAllowlistEntriesStillNeeded.
 
 forge/migrations/v0.x-to-testkit/SKILL.md|pkg/app/bootstrap_testing.go|Historical reference: this migration skill documents the OLD pre-testkit file name being migrated FROM. Current forge emits pkg/app/testing.go; the old name must stay in the skill so upgraders can find their file.
+forge/migrations/v0.x-to-binary-shared/SKILL.md|pkg/app/services.go|Historical reference: the name-matched pkg/app DI unit (services.go registration table) was retired in FORGE_SHAPE_REDESIGN §2 (live DI now lives in internal/app). This older migration skill narrates the pre-§2 shape; the reference stays so upgraders mid-migration recognize their tree.
+forge/migrations/v0.x-to-middleware-lib/SKILL.md|pkg/app/services_gen.go|Historical reference: pkg/app/services_gen.go (the serviceRow constructor table) was retired in FORGE_SHAPE_REDESIGN §2. This older migration skill names it as a call site to update; the reference stays so upgraders mid-migration recognize their tree.
 *|forge will not overwrite this file|canonical "yours" ownership banner text quoted in code blocks — prose, not a forge subcommand

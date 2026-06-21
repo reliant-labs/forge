@@ -47,7 +47,6 @@ type Service interface {
 	GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checksums.FileChecksums) error
 
 	// pkg/app bootstrap files.
-	GenerateBootstrap(in BootstrapGenInput) error
 	GenerateBootstrapTesting(in BootstrapTestingGenInput) error
 	GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs *checksums.FileChecksums) error
 	GenerateSetup(modulePath string, databaseDriver string, ormEnabled bool, targetDir string) error

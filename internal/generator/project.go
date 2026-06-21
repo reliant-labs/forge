@@ -418,15 +418,13 @@ func (g *ProjectGenerator) Generate() error {
 
 	if g.isService() && g.Features.CodegenEnabled() {
 		if err := g.generateBootstrap(); err != nil {
-			return fmt.Errorf("failed to generate pkg/app/bootstrap.go: %w", err)
+			return fmt.Errorf("failed to scaffold pkg/app substrate: %w", err)
 		}
-		// Generate setup.go (user-owned, never overwritten) so bootstrap.go compiles
-		// even with zero services.
-		// Initial scaffold: no database driver wired and no ORM. Because
-		// setup.go is NEVER rewritten, DB/ORM construction does not live
-		// here — the Tier-1 bootstrap.go's ensureDatabase backfills
-		// app.DB/app.ORM from cfg.DatabaseUrl as the project grows
-		// entities (setup.go-constructed values always win).
+		// Generate setup.go (user-owned, never overwritten) so the pkg/app
+		// substrate compiles even with zero services. Initial scaffold has
+		// no database driver wired and no ORM; the LIVE infra construction
+		// lives in internal/app/providers.go (OpenInfra), emitted by the
+		// post-scaffold `forge generate`.
 		if err := codegen.GenerateSetup(g.ModulePath, "", false, g.Path); err != nil {
 			return fmt.Errorf("failed to generate pkg/app/setup.go: %w", err)
 		}

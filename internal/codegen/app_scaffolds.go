@@ -9,51 +9,16 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// GenerateServicesRegistry writes pkg/app/services.go if it does not
-// already exist. The file is user-owned and never overwritten — it IS
-// the project's serving decision (one serviceRow line per service this
-// binary serves), so forge only ever scaffolds the starting point.
-func GenerateServicesRegistry(modulePath string, services []BootstrapServiceData, projectDir string) error {
-	appDir := filepath.Join(projectDir, "pkg", "app")
-	registryPath := filepath.Join(appDir, "services.go")
-
-	// Never overwrite — this is user-owned code.
-	if _, err := os.Stat(registryPath); err == nil {
-		return nil
-	}
-
-	if err := os.MkdirAll(appDir, 0755); err != nil {
-		return err
-	}
-
-	content, err := templates.ProjectTemplates().Render("services.go.tmpl", struct {
-		Module   string
-		Services []BootstrapServiceData
-	}{
-		Module:   modulePath,
-		Services: services,
-	})
-	if err != nil {
-		return fmt.Errorf("render services.go.tmpl: %w", err)
-	}
-	return writeUserScaffold(registryPath, content)
-}
-
-// GenerateAppGen writes pkg/app/app_gen.go — the forge-owned canonical
-// *App struct shape (Services, Workers, Operators, Packages, DB, ORM)
-// with `*AppExtras` embedded so the user can extend App by appending
-// fields to AppExtras in the user-owned pkg/app/app_extras.go file.
+// GenerateAppGen writes pkg/app/app_gen.go — the forge-owned minimal
+// *App carrier (DB / ORM) with `*AppExtras` embedded so the user can
+// extend App by appending fields to AppExtras in the user-owned
+// pkg/app/app_extras.go file.
 //
-// Splitting the App struct out of bootstrap.go is what made the
-// user-extension story tractable: bootstrap.go is regenerated every
-// run, so users couldn't append fields there. With the struct hoisted
-// here + embedded extras, the user-side workflow is a clean two-step:
+// FORGE_SHAPE_REDESIGN §2: the LIVE runtime DI lives in internal/app;
+// app_gen.go now exists only so the user-owned setup.go compiles. The
+// user-side extension workflow is a clean two-step:
 //  1. Add field to AppExtras in pkg/app/app_extras.go (Tier-2).
 //  2. Assign `app.<Field> = ...` in pkg/app/setup.go (Tier-2).
-//
-// app_gen.go itself is regenerated as forge.yaml's component list
-// changes (services/workers/operators/packages added or removed); the
-// AppExtras embedding stays stable across regenerates.
 func GenerateAppGen(hasDatabase bool, ormEnabled bool, hasServices bool, hasWorkers bool, hasOperators bool, hasPackages bool, projectDir string, cs *checksums.FileChecksums) error {
 	appDir := filepath.Join(projectDir, "pkg", "app")
 	if err := os.MkdirAll(appDir, 0755); err != nil {

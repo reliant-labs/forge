@@ -232,7 +232,7 @@ func ({{$stub}}) {{.Name}}({{.Params}}){{if .Results}} {{.Results}}{{end}} { {{i
 // Returns the server and a typed Connect client.
 //
 // The server mounts the SAME interceptor chain shape production uses
-// (services_gen.go): middleware.AuthzInterceptor wired with the service's
+// (internal/app/inventory_gen.go): middleware.AuthzInterceptor wired with the service's
 // effective authorizer. By default that authorizer is the permissive test
 // one — the only delta from production is the policy, never the chain —
 // so a test that swaps in a real authorizer via WithAuthorizer exercises

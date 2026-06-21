@@ -31,7 +31,9 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	// Data-only descriptor rows: Name (display) + ConnectPath + version-aware
 	// BaseService/Version metadata + Kind. NO Mount closure on the row.
 	for _, want := range []string{
-		`var Inventory = []ComponentInfo{`,
+		// Descriptor TYPE lives in forge/pkg/mountkit/inventory now.
+		`"github.com/reliant-labs/forge/pkg/mountkit/inventory"`,
+		`var Inventory = []inventory.ComponentInfo{`,
 		`Name:        "billing",`,
 		`Name:        "user",`,
 		`BaseService: "billing",`,
@@ -117,7 +119,7 @@ func TestGenerateInventory_VersionMetadata(t *testing.T) {
 }
 
 // TestGenerateInventory_NoServicesEmptyInventory: with no services, the
-// inventory file is STILL emitted as a valid empty []ComponentInfo. The
+// inventory file is STILL emitted as a valid empty []inventory.ComponentInfo. The
 // generated cmd/server.go imports internal/app and references app.Inventory
 // unconditionally, so the symbol must exist even on a service-less tree —
 // otherwise the package would be empty and `go mod tidy` would 404 trying to
@@ -134,7 +136,7 @@ func TestGenerateInventory_NoServicesEmptyInventory(t *testing.T) {
 		t.Fatalf("no-services run should still emit inventory_gen.go: %v", err)
 	}
 	out := string(data)
-	if !strings.Contains(out, `var Inventory = []ComponentInfo{`) {
+	if !strings.Contains(out, `var Inventory = []inventory.ComponentInfo{`) {
 		t.Fatalf("empty inventory should still declare Inventory:\n%s", out)
 	}
 	// No service rows in the empty case.

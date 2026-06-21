@@ -55,6 +55,11 @@ type ConfigTemplateField struct {
 	// fields treat an empty env var as unset (parsing "" would always
 	// error).
 	AllowEmptyEnv bool
+
+	// Role is the (forge.v1.config).role annotation (bare enum spelling, ""
+	// for none). Codegen selects semantic fields (e.g. the MODE field) by
+	// THIS, never by the field's name.
+	Role string
 }
 
 // ConfigTemplateBlockType is one component config-block struct type the
@@ -86,11 +91,14 @@ type ConfigTemplateData struct {
 	// the struct type declarations and the Config fields holding them.
 	BlockTypes  []ConfigTemplateBlockType
 	BlockFields []ConfigTemplateBlockField
-	// FieldNames indexes ROOT GoNames only — used by templates to gate
-	// cross-field validation (CorsOrigins/TlsCertPath/...) that references
-	// c.<Name> at the root level.
-	FieldNames   map[string]bool
-	NeedsStrconv bool
+	// RoleModeField is the Go field name of the field tagged
+	// role=CONFIG_FIELD_ROLE_MODE, or "" when no field carries it. The
+	// generated Mode()/DevAuthBypass() read THIS field — selected by
+	// annotation, never by the name "Environment". Renaming the role field
+	// is a behavior no-op; naming an unannotated field "environment" never
+	// enables dev mode.
+	RoleModeField string
+	NeedsStrconv  bool
 }
 
 // ConfigBlockRef names one component config block as composed on the
@@ -153,7 +161,7 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 		}
 	}
 
-	data := ConfigTemplateData{FieldNames: map[string]bool{}}
+	data := ConfigTemplateData{}
 	seenBlockType := map[string]bool{}
 	for _, m := range messages {
 		if isBlock[m.Name] {
@@ -192,7 +200,14 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 			tf := configTemplateField(f, f.GoName)
 			data.RootFields = append(data.RootFields, tf)
 			data.Fields = append(data.Fields, tf)
-			data.FieldNames[f.GoName] = true
+
+			// Select the MODE field by ANNOTATION, never by name. The first
+			// root field tagged role=MODE wins; a project should declare at
+			// most one. This is the substitute for the deleted
+			// `index .FieldNames "Environment"` name-magic.
+			if data.RoleModeField == "" && f.Role == "CONFIG_FIELD_ROLE_MODE" {
+				data.RoleModeField = tf.GoName
+			}
 		}
 	}
 
@@ -278,6 +293,7 @@ func configTemplateField(f ConfigField, goPath string) ConfigTemplateField {
 		StructGoType:  structType,
 		ParseFn:       parseFnFor(f, isDur),
 		AllowEmptyEnv: f.GoType == "string" && !isDur,
+		Role:          f.Role,
 	}
 
 	if f.DefaultValue != "" {
@@ -601,6 +617,7 @@ func DefaultConfigMessages() []ConfigMessage {
 					EnvVar:       "ENVIRONMENT",
 					Flag:         "environment",
 					DefaultValue: "production",
+					Role:         "CONFIG_FIELD_ROLE_MODE",
 					Description:  "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production.",
 				},
 				{

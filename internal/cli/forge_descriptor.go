@@ -467,6 +467,17 @@ func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
 		file.Desc.Path(), msg.Desc.Name())
 }
 
+// configFieldRoleString maps the ConfigFieldRole enum to the bare enum
+// spelling stored on codegen.ConfigField.Role ("" for UNSPECIFIED so old
+// descriptors and unannotated fields serialize identically). Config codegen
+// keys semantic behavior on this string, never on the field name.
+func configFieldRoleString(r forgev1.ConfigFieldRole) string {
+	if r == forgev1.ConfigFieldRole_CONFIG_FIELD_ROLE_UNSPECIFIED {
+		return ""
+	}
+	return r.String()
+}
+
 // appendConfigMessages extracts msg (and, recursively, its nested
 // message declarations) into out. Nested declarations matter for
 // component config blocks: `message AppConfig { message TraderConfig
@@ -540,6 +551,7 @@ func extractConfigMessage(msg *protogen.Message) (codegen.ConfigMessage, bool) {
 			Description:  cf.GetDescription(),
 			Sensitive:    cf.GetSensitive(),
 			Category:     cf.GetCategory(),
+			Role:         configFieldRoleString(cf.GetRole()),
 		})
 	}
 

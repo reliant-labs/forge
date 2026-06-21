@@ -106,14 +106,10 @@ func TestBuildConfigTemplateData_PartitionsBlocks(t *testing.T) {
 	if len(data.BlockFields) != 1 || data.BlockFields[0].GoName != "Trader" || data.BlockFields[0].TypeName != "TraderConfig" {
 		t.Fatalf("BlockFields = %+v, want [Trader TraderConfig]", data.BlockFields)
 	}
-	// FieldNames gates root-level Validate clauses — block leaves must
-	// not leak in (a block leaf named LogFormat would otherwise emit a
-	// Validate referencing c.LogFormat that doesn't exist at root).
-	if data.FieldNames["MaxPerTick"] {
-		t.Error("FieldNames must index ROOT fields only; found block leaf MaxPerTick")
-	}
-	if !data.FieldNames["Port"] {
-		t.Error("FieldNames missing root field Port")
+	// No field carries role=MODE here, so no dev-mode field is selected.
+	// (Semantic role selection replaced the old name-keyed FieldNames map.)
+	if data.RoleModeField != "" {
+		t.Errorf("RoleModeField = %q, want empty (no role=MODE field declared)", data.RoleModeField)
 	}
 
 	refs := ConfigBlocksFromMessages(traderConfigMessages())

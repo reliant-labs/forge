@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-{{- if or (index .FieldNames "CorsAllowCredentials") (index .FieldNames "Environment")}}
+{{- if ne .RoleModeField ""}}
 	"strings"
 {{- end}}
 	"time"
@@ -41,15 +41,20 @@ const (
 // dev DB defaults). It MUST NOT gate auth — see DevAuthBypass.
 func (m Mode) IsDev() bool { return m == ModeDevelopment }
 
-{{- if index .FieldNames "Environment"}}
+{{- if ne .RoleModeField ""}}
 
-// Mode returns the typed runtime mode, derived deterministically from
-// the Environment field ("development" or "dev" → ModeDevelopment,
-// anything else → ModeProduction). Deriving — rather than caching at
-// Load time — means a hand-built Config in tests can never disagree
-// with its own Environment string.
+// Mode returns the typed runtime mode, derived deterministically from the
+// field tagged role=CONFIG_FIELD_ROLE_MODE in proto/config/v1/config.proto
+// (here: {{.RoleModeField}}). "development"/"dev" → ModeDevelopment,
+// anything else → ModeProduction.
+//
+// Behavior follows the ANNOTATION, not the field name: this field could be
+// renamed and Mode would still track it; a different field named
+// "Environment" without the annotation would NOT drive Mode. Deriving —
+// rather than caching at Load time — means a hand-built Config in tests can
+// never disagree with its own mode value.
 func (c *Config) Mode() Mode {
-	switch strings.ToLower(c.Environment) {
+	switch strings.ToLower(c.{{.RoleModeField}}) {
 	case "development", "dev":
 		return ModeDevelopment
 	}
@@ -59,11 +64,11 @@ func (c *Config) Mode() Mode {
 // DevAuthBypass reports whether this server runs with NO real auth:
 // authn passthrough + authz allow-all + synthetic dev claims.
 //
-// This is an EXPLICIT, two-factor opt-in. It is NEVER implied by
-// ENVIRONMENT alone: ENVIRONMENT=development (e.g. from `forge up --env=dev`)
-// gives you dev ergonomics but KEEPS authentication and authorization
-// enforced. To actually bypass auth you must ALSO set AUTH_DEV_MODE=true.
-// In production the bypass is impossible — Mode() is never dev there.
+// This is an EXPLICIT, two-factor opt-in. It is NEVER implied by the mode
+// field alone: development mode (e.g. from `forge up --env=dev`) gives you
+// dev ergonomics but KEEPS authentication and authorization enforced. To
+// actually bypass auth you must ALSO set AUTH_DEV_MODE=true. In production
+// the bypass is impossible — Mode() is never dev there.
 //
 // Rationale: a server with real auth configured must not have it silently
 // disabled just because it booted in development. Disabling auth is a
@@ -77,13 +82,14 @@ func (c *Config) DevAuthBypass() bool {
 }
 {{- else}}
 
-// Mode returns the typed runtime mode. This project's config proto has
-// no `environment` field, so the mode is always ModeProduction; add the
-// field to opt into dev-mode ergonomics.
+// Mode returns the typed runtime mode. This project's config proto has no
+// field tagged role=CONFIG_FIELD_ROLE_MODE, so the mode is always
+// ModeProduction; tag a field with that role to opt into dev-mode
+// ergonomics.
 func (c *Config) Mode() Mode { return ModeProduction }
 
-// DevAuthBypass is always false without an `environment` field — auth is
-// never bypassed. See the development-mode variant for the contract.
+// DevAuthBypass is always false without a role=MODE field — auth is never
+// bypassed. See the development-mode variant for the contract.
 func (c *Config) DevAuthBypass() bool { return false }
 {{- end}}
 
@@ -232,43 +238,17 @@ func Load(cmd *cobra.Command) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks cross-field invariants on the loaded configuration.
-// It is called by the server entrypoint after Load and surfaces
-// misconfigurations early, before the listener binds. Keep validation
-// limited to combinations that cannot be expressed as per-field
-// defaults; per-field parsing (ints, bools, durations) already happens
-// in Load.
+// Validate is the project's hook for cross-field configuration invariants
+// that cannot be expressed as per-field defaults (per-field parsing — ints,
+// bools, durations — already happens in Load). It is called by the server
+// entrypoint after Load, before the listener binds, so misconfigurations
+// surface early.
+//
+// Forge no longer generates bespoke validators keyed on specific field
+// NAMES (the old CORS-wildcard / TLS-pair / log-format checks). Matching on
+// names meant renaming a field silently dropped its guard — the same
+// anti-pattern this config redesign removes from Mode/DevAuthBypass. Add
+// any cross-field checks your project needs here; you own this method body.
 func (c *Config) Validate() error {
-{{- if and (index .FieldNames "CorsAllowCredentials") (index .FieldNames "CorsOrigins")}}
-	// CORS: a wildcard origin with credentials is spec-invalid. Browsers
-	// refuse to use the response, and servers that emit it silently are
-	// almost always a misconfiguration. Reject eagerly.
-	if c.CorsAllowCredentials {
-		for _, o := range strings.Split(c.CorsOrigins, ",") {
-			if strings.TrimSpace(o) == "*" {
-				return fmt.Errorf("invalid CORS configuration: CORS_ALLOW_CREDENTIALS=true is incompatible with a wildcard origin ('*') — list specific origins explicitly or set CORS_ALLOW_CREDENTIALS=false")
-			}
-		}
-	}
-{{- end}}
-{{- if and (index .FieldNames "TlsCertPath") (index .FieldNames "TlsKeyPath")}}
-
-	// TLS: both paths or neither. A single-sided setting is always a bug
-	// (typo, stale secret, half-migrated config) — fail fast.
-	if (c.TlsCertPath == "") != (c.TlsKeyPath == "") {
-		return fmt.Errorf("invalid TLS configuration: TLS_CERT_PATH and TLS_KEY_PATH must both be set or both be empty (got cert=%q key=%q)", c.TlsCertPath, c.TlsKeyPath)
-	}
-{{- end}}
-{{- if index .FieldNames "LogFormat"}}
-
-	// Log format: only two supported values; any other value means the
-	// handler would silently fall back and confuse operators.
-	switch c.LogFormat {
-	case "json", "text":
-	default:
-		return fmt.Errorf("invalid LOG_FORMAT %q: must be 'json' or 'text'", c.LogFormat)
-	}
-{{- end}}
-
 	return nil
 }

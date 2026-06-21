@@ -36,8 +36,11 @@ linters:
     - interfacebloat # cap interface method count
 {{- if eq .TypedAccessGuard "error"}}
     # Typed-config guardrail (config.enforce_typed_access: error) — GATING:
-    # os.Getenv / os.LookupEnv / os.Environ fail the build. In `warn` mode
-    # forbidigo is intentionally absent here and runs as an advisory step.
+    # os.Getenv / os.LookupEnv / os.Environ fail the build. Enabling forbidigo
+    # HERE is what gates it: a plain `golangci-lint run` (the command CI runs
+    # directly) fails on these findings. In `warn` mode forbidigo is
+    # intentionally absent from this list and `forge lint` runs it as a
+    # separate advisory (non-failing) step instead.
     - forbidigo
 {{- end}}
   settings:
@@ -118,35 +121,44 @@ linters:
       # The allowlisted loader package ({{.LoaderPackage}}) is excluded under
       # `exclusions.rules` below.
 {{- if eq .TypedAccessGuard "warn"}}
-      # ADVISORY mode: forbidigo is NOT in `linters.enable`, so the gating
-      # golangci-lint run ignores it. `forge lint` runs it as a separate
-      # non-failing step (golangci-lint run --enable-only=forbidigo
-      # --issues-exit-code=0). Set config.enforce_typed_access: error in
-      # forge.yaml to make these findings fail the build.
+      # ADVISORY mode. forbidigo is deliberately ABSENT from `linters.enable`
+      # above, so a plain `golangci-lint run` — the command CI invokes
+      # directly via golangci-lint-action — never fails on these findings.
+      # `linters.enable` membership IS the gate, and CI is the consumer, which
+      # is why the warn/error switch lives here (in this file) rather than in
+      # `forge lint`. `forge lint` re-runs forbidigo as a separate non-failing
+      # step (--enable-only=forbidigo --issues-exit-code=0) so the findings are
+      # still visible locally. To make them GATE the build, set
+      # `config.enforce_typed_access: error` in forge.yaml, then re-render this
+      # file (it is scaffold-once / user-owned — `rm .golangci.yml && forge
+      # upgrade`, or `forge upgrade --force` if you have no local edits).
 {{- end}}
       forbid:
         - pattern: 'os\.Getenv'
           msg: >-
             Read configuration from the injected forge config object, not the
-            environment directly. Declare new settings in config.proto with the
-            (forge.v1.config) annotation — forge generates a typed loader, fails
-            fast when a required value is missing, and wires secrets
+            environment directly. Declare new settings in
+            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            run `forge generate` — forge produces a typed loader (pkg/config),
+            fails fast when a required value is missing, and wires secrets
             automatically. To opt out: add //nolint:forbidigo on this line, or
             set config.enforce_typed_access to warn/off in forge.yaml.
         - pattern: 'os\.LookupEnv'
           msg: >-
             Read configuration from the injected forge config object, not the
-            environment directly. Declare new settings in config.proto with the
-            (forge.v1.config) annotation — forge generates a typed loader, fails
-            fast when a required value is missing, and wires secrets
+            environment directly. Declare new settings in
+            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            run `forge generate` — forge produces a typed loader (pkg/config),
+            fails fast when a required value is missing, and wires secrets
             automatically. To opt out: add //nolint:forbidigo on this line, or
             set config.enforce_typed_access to warn/off in forge.yaml.
         - pattern: 'os\.Environ'
           msg: >-
             Read configuration from the injected forge config object, not the
-            environment directly. Declare new settings in config.proto with the
-            (forge.v1.config) annotation — forge generates a typed loader, fails
-            fast when a required value is missing, and wires secrets
+            environment directly. Declare new settings in
+            proto/config/v1/*.proto with the (forge.v1.config) annotation, then
+            run `forge generate` — forge produces a typed loader (pkg/config),
+            fails fast when a required value is missing, and wires secrets
             automatically. To opt out: add //nolint:forbidigo on this line, or
             set config.enforce_typed_access to warn/off in forge.yaml.
 {{- end}}

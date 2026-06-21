@@ -909,7 +909,8 @@ func runTypedAccessGuardAdvisory(ctx context.Context, paths []string) error {
 		fmt.Printf("⚠️  typed-config guardrail check could not run: %v\n", err)
 		return nil
 	}
-	fmt.Println("✓ typed-config guardrail check complete (advisory — see config.enforce_typed_access)")
+	fmt.Println("✓ typed-config guardrail check complete (advisory). To gate the build on these findings, set " +
+		"config.enforce_typed_access: error in forge.yaml and re-render .golangci.yml (forge upgrade).")
 	return nil
 }
 

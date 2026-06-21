@@ -14,6 +14,19 @@ version: v2
 # invoke protoc-gen-connect-openapi via a synthesized template; you
 # do NOT need to add it here. Install with:
 #   go install github.com/sudorandom/protoc-gen-connect-openapi@latest
+# forge/v1/forge.proto is a COMPILE input only — its annotations are imported
+# by the project's other protos, but its Go is NOT generated here. Forge ships
+# the generated descriptor as the shared `github.com/reliant-labs/forge/pkg/forgepb`
+# package, and proto/forge/v1/forge.proto declares
+# `option go_package = ".../forgepb;forgepb"`. Generating a project-local
+# gen/forge/v1 copy too would register the descriptor file
+# "forge/v1/forge.proto" twice at init and panic every binary with
+# "proto: file ... is already registered". Excluding it at the input level
+# suppresses output for every plugin while keeping it available as an import.
+inputs:
+  - directory: proto
+    exclude_paths:
+      - proto/forge/v1
 plugins:
   - local: protoc-gen-go
     out: gen

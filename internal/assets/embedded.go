@@ -53,26 +53,37 @@ func GetForgeV1Proto() ([]byte, error) {
 // project with an unresolvable import.
 var goPackageOptionRE = regexp.MustCompile(`(?m)^option go_package = "[^"]*";$`)
 
-// WriteForgeV1Proto writes the unified forge.proto into destDir/forge.proto,
-// rewriting the go_package option to `<modulePath>/gen/forge/v1`.
+// forgePBGoPackage is the FIXED go_package that scaffolded projects' vendored
+// forge.proto must declare. It points at forge's shared, pre-generated
+// forgepb package rather than a project-local gen/forge/v1 copy.
 //
-// Rationale: scaffolded projects vendor forge.proto into proto/forge/v1/
-// and run buf generate over it with `paths=source_relative`, so the
-// generated forge.pb.go lands at gen/forge/v1/ inside the project's own
-// `<module>/gen` submodule. Pointing go_package at the project module
-// makes every other generated *.pb.go import the project-local copy —
-// no external "forge/gen" module is required (none is published).
-func WriteForgeV1Proto(destDir, modulePath string) error {
+// "Path A" proto unification: forge.proto registers the descriptor file
+// "forge/v1/forge.proto" at init. If a project generated its OWN copy into
+// gen/forge/v1 AND linked forge/pkg/forgepb (which generates the identical
+// descriptor), both copies register the same file and every binary panics:
+//   proto: file "forge/v1/forge.proto" is already registered
+// Pointing go_package at forgepb means the project's buf pipeline emits no
+// local copy (the path is excluded from Go output in buf.gen.yaml) and every
+// other generated *.pb.go blank-imports the shared forgepb — single
+// registration, both binaries boot.
+const forgePBGoPackage = `option go_package = "github.com/reliant-labs/forge/pkg/forgepb;forgepb";`
+
+// WriteForgeV1Proto writes the unified forge.proto into destDir/forge.proto,
+// rewriting the go_package option to point at forge's shared forgepb package.
+//
+// Rationale: scaffolded projects vendor forge.proto into proto/forge/v1/ as a
+// buf COMPILE input (other protos import its annotations), but they do NOT
+// generate a local Go copy — buf.gen.yaml excludes forge/v1 from output and
+// the project links forge/pkg/forgepb instead. The fixed go_package below is
+// what makes the cross-file blank-imports in the generated *.pb.go resolve to
+// that shared package.
+func WriteForgeV1Proto(destDir string) error {
 	content, err := GetForgeV1Proto()
 	if err != nil {
 		return err
 	}
 
-	adjusted := string(content)
-	if modulePath != "" {
-		newPkg := `option go_package = "` + modulePath + `/gen/forge/v1;forgev1";`
-		adjusted = goPackageOptionRE.ReplaceAllString(adjusted, newPkg)
-	}
+	adjusted := goPackageOptionRE.ReplaceAllString(string(content), forgePBGoPackage)
 
 	destPath := filepath.Join(destDir, "forge.proto")
 	return writeFile(destPath, []byte(adjusted))

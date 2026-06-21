@@ -15,18 +15,18 @@ import (
 	"time"
 )
 
-// TestE2ECmdAsCodeSubcommands drives the M6 cmd-as-code surface end to
-// end on a real scaffold:
+// TestE2ECmdAsCodeSubcommands drives the cmd-as-code surface end to end
+// on a real scaffold:
 //
-//  1. The generated per-service subcommand file (cmd/services_gen.go)
-//     is a projection of the RegisteredServices rows — present after
-//     scaffold + generate, byte-stable, and `./<bin> <svc>` boots only
-//     that service through the canonical server pipeline.
+//  1. `./<bin> server <svc>` boots only that service through the
+//     canonical server pipeline (mount selection lives in the cmd layer
+//     over the data-only internal/app Inventory — the old string-projected
+//     per-service subcommand file cmd/services_gen.go is retired,
+//     FORGE_SHAPE_REDESIGN §1/§2).
 //  2. The user-owned cmd/commands.go extension point: a second binary
 //     registered AS CODE (userCommands()) shows up on the root command,
 //     runs, and SURVIVES regeneration (Tier-2: forge never overwrites).
-//  3. `forge audit --json` reports no phantom service: everything the
-//     binary's cmd surface advertises is backed by a registration row.
+//  3. `forge audit --json` reports no phantom service.
 func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -42,14 +42,9 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 
 	runCmd(t, projectDir, forgeBin, "generate")
 
-	// (1) The subcommand projection + extension point both exist.
-	subcmds := readFileE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
-	if !strings.Contains(subcmds, "var serviceCmdAPI = &cobra.Command{") {
-		t.Fatalf("cmd/services_gen.go must project the api registration row into a subcommand:\n%s", subcmds)
-	}
-	if !strings.Contains(subcmds, `return runServer(cmd, []string{"api"})`) {
-		t.Fatalf("the api subcommand must delegate to runServer with the single-name filter:\n%s", subcmds)
-	}
+	// (1) The string-projected per-service subcommand file is retired —
+	// it must NOT be emitted. The user-owned extension point exists.
+	assertPathNotExistsE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "cmd", "commands.go"))
 
 	// (2) Register a second binary AS CODE: replace the scaffolded
@@ -85,23 +80,20 @@ func userCommands() []*cobra.Command {
 		t.Fatal(err)
 	}
 
-	// Regenerate: the user-owned extension point must survive verbatim
-	// and the projection must be byte-stable.
+	// Regenerate: the user-owned extension point must survive verbatim.
 	runCmd(t, projectDir, forgeBin, "generate")
 	if got := readFileE2E(t, commandsPath); got != customCommands {
 		t.Fatalf("forge generate overwrote the user-owned cmd/commands.go:\n%s", got)
 	}
-	if again := readFileE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go")); again != subcmds {
-		t.Errorf("cmd/services_gen.go must be byte-stable across generates with an unchanged row list")
-	}
+	assertPathNotExistsE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
 
 	bin := filepath.Join(projectDir, "cmdcode-bin")
 	runCmd(t, projectDir, "go", "build", "-o", bin, "./cmd/...")
 
-	// Root help advertises both the projected service subcommand and the
+	// Root help advertises the canonical server command and the
 	// code-registered second binary.
 	helpOut := runCmdOutput(t, projectDir, bin, "--help")
-	for _, want := range []string{"api", "proxy-tool", "server"} {
+	for _, want := range []string{"proxy-tool", "server"} {
 		if !strings.Contains(helpOut, want) {
 			t.Errorf("root --help missing subcommand %q:\n%s", want, helpOut)
 		}
@@ -113,11 +105,12 @@ func userCommands() []*cobra.Command {
 		t.Errorf("proxy-tool subcommand did not run its body:\n%s", toolOut)
 	}
 
-	// The per-service subcommand boots the canonical server pipeline.
+	// `server <svc>` boots the canonical server pipeline mounting only
+	// the named subset.
 	port := freePortE2E(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	srv := exec.CommandContext(ctx, bin, "api")
+	srv := exec.CommandContext(ctx, bin, "server", "api")
 	srv.Dir = projectDir
 	srv.Env = append(os.Environ(),
 		fmt.Sprintf("PORT=%d", port),
@@ -133,7 +126,7 @@ func userCommands() []*cobra.Command {
 	srv.Stdout = &srvOut
 	srv.Stderr = &srvOut
 	if err := srv.Start(); err != nil {
-		t.Fatalf("failed to start `cmdcode-bin api`: %v", err)
+		t.Fatalf("failed to start `cmdcode-bin server api`: %v", err)
 	}
 	defer func() {
 		_ = srv.Process.Kill()
@@ -141,7 +134,7 @@ func userCommands() []*cobra.Command {
 	}()
 	addr := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if !waitForServer(t, addr+"/healthz", 10*time.Second) {
-		t.Fatalf("`cmdcode-bin api` did not become ready\noutput:\n%s", srvOut.String())
+		t.Fatalf("`cmdcode-bin server api` did not become ready\noutput:\n%s", srvOut.String())
 	}
 	resp, err := http.Get(addr + "/healthz")
 	if err != nil {

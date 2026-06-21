@@ -552,6 +552,14 @@ func assertPathExistsE2E(t *testing.T, path string) {
 	}
 }
 
+// assertPathNotExistsE2E fails the test if the path exists.
+func assertPathNotExistsE2E(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected path %s to NOT exist", path)
+	}
+}
+
 // readFileE2E reads a file and fails the test on error.
 func readFileE2E(t *testing.T, path string) string {
 	t.Helper()

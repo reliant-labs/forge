@@ -66,20 +66,6 @@ func (g *ProjectGenerator) isBinaryShared() bool {
 	return g.isService() && g.effectiveBinary() == config.ProjectBinaryShared
 }
 
-// allServices returns the full list of service names this generator
-// will emit at scaffold time (ServiceName first, then
-// AdditionalServices). Used by binary=shared paths that need to enumerate
-// every service before the post-scaffold AppendServiceToConfig loop runs.
-func (g *ProjectGenerator) allServices() []string {
-	if g.ServiceName == "" {
-		return nil
-	}
-	out := make([]string, 0, 1+len(g.AdditionalServices))
-	out = append(out, g.ServiceName)
-	out = append(out, g.AdditionalServices...)
-	return out
-}
-
 // effectiveKind returns the project kind, defaulting to service so a
 // zero-value ProjectGenerator preserves pre-existing behavior.
 func (g *ProjectGenerator) effectiveKind() string {
@@ -404,17 +390,15 @@ func (g *ProjectGenerator) Generate() error {
 		}
 	}
 
-	// cmd/services_gen.go — one cobra subcommand per registered service,
-	// the cmd-side projection of the pkg/app/services.go registration
-	// rows (every initial service is registered by the scaffold). Each
-	// subcommand delegates to the `runServer` pipeline (cmd/server.go)
-	// with a single-name filter so only that service is mounted; the
-	// canonical `./<bin> server [<svc>...]` form still works. Emitted for
-	// every service-kind codegen project (not just binary=shared — the
-	// subcommand surface is identical; binary mode only changes deploy).
+	// cmd/commands.go — the user-owned cobra extension point the
+	// generated cmd/main.go consumes (userCommands()). Scaffolded once so
+	// the initial build compiles; string-projected per-service
+	// subcommands (the old cmd/services_gen.go) are retired in favor of
+	// `./<bin> server [<svc>...]` and the data-only internal/app
+	// Inventory mount selection (FORGE_SHAPE_REDESIGN §1/§2).
 	if g.isService() && g.Features.CodegenEnabled() {
-		if err := g.generateServiceSubcommands(); err != nil {
-			return fmt.Errorf("failed to generate per-service subcommands: %w", err)
+		if err := codegen.GenerateCmdCommands(g.Path); err != nil {
+			return fmt.Errorf("failed to scaffold cmd/commands.go: %w", err)
 		}
 	}
 
@@ -767,26 +751,6 @@ func (g *ProjectGenerator) generatePkgAppConventions() error {
 		return fmt.Errorf("create pkg/app dir: %w", err)
 	}
 	return os.WriteFile(filepath.Join(appDir, "CONVENTIONS.md"), content, 0o644)
-}
-
-// generateServiceSubcommands writes cmd/services_gen.go: one cobra
-// subcommand per service this scaffold registers (every initial
-// service — pkg/app/services.go lists them all at scaffold time). Each
-// subcommand delegates to runServer (cmd/server.go) with a pre-filled
-// single-name service filter so only that service is mounted. Tier-1:
-// the post-scaffold `forge generate` re-emits the file as the
-// projection of the user-owned RegisteredServices rows.
-//
-// File naming follows the existing flat cmd/ layout (no per-binary
-// subdirectory) so the Dockerfile / Taskfile / VSCode launch configs
-// continue to point at `./cmd` without modification.
-func (g *ProjectGenerator) generateServiceSubcommands() error {
-	data := codegen.CmdServiceSubcommandsFromNames(g.allServices())
-	dest := filepath.Join(g.Path, "cmd", "services_gen.go")
-	if err := assets.WriteTemplateWithData("cmd-services-gen.go.tmpl", dest, data); err != nil {
-		return fmt.Errorf("write cmd/services_gen.go: %w", err)
-	}
-	return nil
 }
 
 func (g *ProjectGenerator) generateFrontendFiles() error {

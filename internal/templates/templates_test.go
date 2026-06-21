@@ -180,11 +180,19 @@ func TestDockerfile_LocalForgePkgVendoredCopyLine(t *testing.T) {
 				DockerBuilderGoVersion string
 				LocalForgePkgVendored  bool
 				VersionVar             string
+				Binaries               []struct {
+					Dir     string
+					Primary bool
+				}
 			}{
 				Name: "demo", ProtoName: "demo", Module: "github.com/example/demo",
 				ServiceName: "api", ServicePort: 8080, ProjectName: "demo",
 				GoVersion: "1.26", GoVersionMinor: "26", DockerBuilderGoVersion: "1.26",
 				LocalForgePkgVendored: c.vendored,
+				Binaries: []struct {
+					Dir     string
+					Primary bool
+				}{{Dir: "demo", Primary: true}},
 			}
 			out, err := ProjectTemplates().Render("Dockerfile.tmpl", data)
 			if err != nil {
@@ -242,11 +250,19 @@ func TestDockerfile_VersionVarLdflags(t *testing.T) {
 				DockerBuilderGoVersion string
 				LocalForgePkgVendored  bool
 				VersionVar             string
+				Binaries               []struct {
+					Dir     string
+					Primary bool
+				}
 			}{
 				Name: "demo", ProtoName: "demo", Module: "github.com/example/demo",
 				ServiceName: "api", ServicePort: 8080, ProjectName: "demo",
 				GoVersion: "1.26", GoVersionMinor: "26", DockerBuilderGoVersion: "1.26",
 				VersionVar: c.versionVar,
+				Binaries: []struct {
+					Dir     string
+					Primary bool
+				}{{Dir: "demo", Primary: true}},
 			}
 			out, err := ProjectTemplates().Render("Dockerfile.tmpl", data)
 			if err != nil {

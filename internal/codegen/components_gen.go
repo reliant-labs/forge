@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/naming"
 )
 
 // ComponentsJSONRelPath is the project-relative path of the generated
@@ -100,14 +101,18 @@ func ComponentsToJSON(projectName string, components []config.ComponentConfig) (
 			})
 		}
 
-		// Binary components run a cobra subcommand off the shared image:
-		// `["/app/<project>", "<name>"]`. This is the one denormalized
-		// command forge knows at config time; everything else is the
-		// image's default entrypoint and KCL fills it per kind.
+		// Binary components are their OWN entrypoint in the shared image —
+		// each lives at cmd/<binpkg>/main.go (devspace idiom) and the
+		// Dockerfile builds it to /app/<binpkg>. So the deploy command is
+		// `["/app/<binpkg>"]`, NOT a `<project> <name>` cobra subcommand of
+		// the server binary (that subcommand does not exist; the binary is a
+		// standalone main). <binpkg> is the Go-package-safe form of the
+		// component name (hyphens → underscores), matching the cmd/<binpkg>/
+		// dir the binary scaffold writes and the /app/<binpkg> the Dockerfile
+		// `go build -o /app/<binpkg> ./cmd/<binpkg>` emits.
 		if cj.Kind == config.ComponentKindBinary {
 			cj.Command = []string{
-				fmt.Sprintf("/app/%s", projectName),
-				c.Name,
+				fmt.Sprintf("/app/%s", naming.ServicePackage(c.Name)),
 			}
 		}
 

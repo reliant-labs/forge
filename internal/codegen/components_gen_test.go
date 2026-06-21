@@ -77,13 +77,16 @@ func TestComponentsToJSON_Shape(t *testing.T) {
 		t.Errorf("http protocol = %q, want tcp", api.Ports[1].Protocol)
 	}
 
-	// Binary carries the denormalized cobra subcommand command.
+	// Binary carries its OWN entrypoint command: it lives at
+	// cmd/<binpkg>/main.go and the image builds it to /app/<binpkg>, so the
+	// deploy command is ["/app/<binpkg>"] — NOT a `<project> <name>` cobra
+	// subcommand of the server binary.
 	proxy := doc.Components[3]
 	if proxy.Kind != "binary" {
 		t.Fatalf("component[3] kind = %q", proxy.Kind)
 	}
-	if len(proxy.Command) != 2 || proxy.Command[0] != "/app/demo" || proxy.Command[1] != "proxy" {
-		t.Errorf("binary command = %v, want [/app/demo proxy]", proxy.Command)
+	if len(proxy.Command) != 1 || proxy.Command[0] != "/app/proxy" {
+		t.Errorf("binary command = %v, want [/app/proxy]", proxy.Command)
 	}
 
 	// Non-binary components carry no command (KCL fills the entrypoint).

@@ -106,7 +106,8 @@ message AppConfig {
     env_var: "ENVIRONMENT",
     flag: "environment",
     default_value: "production",
-    description: "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production."
+    role: CONFIG_FIELD_ROLE_MODE,
+    description: "Runtime environment (production, development). In development, some defaults are permissive (e.g. authz allow-all) for local ergonomics — never use development in production. The CONFIG_FIELD_ROLE_MODE annotation — NOT this field's name — is what makes config.Mode()/DevAuthBypass() read it; rename freely, the behavior follows the annotation."
   }];
 
   int32 rate_limit_rps = 7 [(forge.v1.config) = {

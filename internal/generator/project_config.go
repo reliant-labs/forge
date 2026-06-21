@@ -155,6 +155,18 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	return nil
 }
 
+// resolveBinaryName returns the primary binary name (the cmd/<bin>/ leaf the
+// command tree lives under) for the project at projectDir. It is the
+// forge.yaml project name; falls back to the project directory's base name
+// when the config is unreadable, mirroring ProjectGenerator.binaryName().
+func resolveBinaryName(projectDir string) string {
+	cfg, err := ReadProjectConfig(filepath.Join(projectDir, "forge.yaml"))
+	if err == nil && cfg != nil && cfg.Name != "" {
+		return cfg.Name
+	}
+	return filepath.Base(projectDir)
+}
+
 // ReadProjectConfig reads a forge.yaml from the given path with strict
 // validation: unknown keys, missing required fields, and type mismatches
 // are surfaced together via config.ValidationError rather than failing

@@ -110,14 +110,37 @@ func filterManagedFiles(files []managedFile, cfg *config.ProjectConfig) []manage
 
 // managedFiles returns the list of frozen files that upgrade manages.
 //
-// `binary: shared` projects swap cmd/main.go's source template from
-// cmd-root.go.tmpl to cmd-shared-main.go.tmpl. The per-service cobra
-// subcommand file (cmd/services_gen.go) is intentionally NOT in this
-// list: it is a projection of the pkg/app/services.go registration
-// rows, owned by the generate pipeline (stepCmdSubcommands), which has
-// the registry parse that upgrade lacks.
+// The thin cmd/<bin>/main.go is the same for per-service and binary=shared
+// modes (the mode only changes the deploy story). The per-component cobra
+// subcommand files (cmd/<bin>/cmd/{services,workers,operators}/<name>.go) are
+// intentionally NOT in this list: they are projections of the discovered
+// component rows, owned by the generate pipeline (GenerateCmdGroups), which
+// has the registry parse that upgrade lacks.
 func managedFiles() []managedFile {
 	return managedFilesFor(config.ProjectBinaryPerService)
+}
+
+// cmdTreePath joins the binary-scoped command-tree segments under
+// cmd/<bin>/. The command tree moved out of the flat internal/cli package
+// into cmd/<bin>/cmd (devspace idiom), so these destPaths are binary-name
+// dependent. binName is the forge.yaml project name; when empty (legacy
+// name-less callers) the path falls back to a bare cmd/<seg> form which is
+// only used by the path-union backstop, never to write files.
+func cmdTreePath(binName string, segs ...string) string {
+	parts := []string{"cmd"}
+	if binName != "" {
+		parts = append(parts, binName)
+	}
+	parts = append(parts, "cmd")
+	parts = append(parts, segs...)
+	return filepath.Join(parts...)
+}
+
+func cmdMainPath(binName string) string {
+	if binName == "" {
+		return filepath.Join("cmd", "main.go")
+	}
+	return filepath.Join("cmd", binName, "main.go")
 }
 
 // managedFilesForCfg is like managedFiles but consults the project
@@ -134,16 +157,18 @@ func managedFiles() []managedFile {
 // "user-modified" from upgrade's perspective) but the dry-run output
 // was unparseable.
 //
-// Binary sensitivity: `binary: shared` projects swap cmd/main.go's
-// source from cmd-root.go.tmpl to cmd-shared-main.go.tmpl.
+// Binary-name sensitivity: the command tree lives under cmd/<bin>/, so the
+// project name selects the cmd-tree destPaths (cmdMainPath / cmdTreePath).
 func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 	binary := config.ProjectBinaryPerService
 	kind := config.ProjectKindService
+	binName := ""
 	if cfg != nil {
 		binary = cfg.EffectiveBinary()
 		kind = cfg.EffectiveKind()
+		binName = cfg.Name
 	}
-	return managedFilesForKindBinary(kind, binary)
+	return managedFilesForKindBinary(kind, binary, binName)
 }
 
 // managedFilesFor returns the file plan for an explicit binary mode at
@@ -152,17 +177,18 @@ func managedFilesForCfg(cfg *config.ProjectConfig) []managedFile {
 // list. New callers should prefer managedFilesForKindBinary so kind
 // branches (Taskfile.{cli,library}.yml.tmpl, etc.) are honored.
 func managedFilesFor(binary string) []managedFile {
-	return managedFilesForKindBinary(config.ProjectKindService, binary)
+	return managedFilesForKindBinary(config.ProjectKindService, binary, "")
 }
 
 // managedFilesForKindBinary returns the file plan for an explicit kind
 // + binary mode. The kind selects the correct Taskfile template
 // (service / CLI / library); the binary selects cmd/main.go's source.
-func managedFilesForKindBinary(kind, binary string) []managedFile {
-	mainTmpl := "cmd-root.go.tmpl"
-	if binary == config.ProjectBinaryShared {
-		mainTmpl = "cmd-shared-main.go.tmpl"
-	}
+func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
+	// The command tree lives under cmd/<bin>/cmd as a real cobra package
+	// (devspace idiom); cmd/<bin>/main.go is a thin cmd.Execute() that
+	// blank-imports the group subpackages. binary=shared and per-service use
+	// the same thin main — the mode only changes the deploy story.
+	mainTmpl := "cmd-main.go.tmpl"
 	taskfileTmpl := "Taskfile.yml.tmpl"
 	switch kind {
 	case config.ProjectKindCLI:
@@ -173,16 +199,17 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 	return []managedFile{
 		// ── Tier 1: Always overwritten by forge generate, gitignored ──
 
-		// Thin cmd/main.go + the internal/cli command tree (gh / cobra-cli
-		// idiom: one file per command). Service-shape (CLI/library don't ship
-		// the Connect-server stack), gated via enabledForService. OTel is
-		// owned by serverkit now — there is no generated cmd/otel.go shim.
-		{templateName: mainTmpl, destPath: "cmd/main.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cli-serve.go.tmpl", destPath: "internal/cli/serve.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cli-server.go.tmpl", destPath: "internal/cli/server.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cli-root.go.tmpl", destPath: "internal/cli/root.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cli-db.go.tmpl", destPath: "internal/cli/db.go", templated: true, tier: Tier1, enabledFor: enabledForService},
-		{templateName: "cli-version.go.tmpl", destPath: "internal/cli/version.go", templated: true, tier: Tier1, enabledFor: enabledForService},
+		// Thin cmd/<bin>/main.go + the cmd/<bin>/cmd command tree (devspace
+		// idiom: dir-nested by category, one file per command). Service-shape
+		// (CLI/library don't ship the Connect-server stack), gated via
+		// enabledForService. OTel is owned by serverkit now — there is no
+		// generated cmd/otel.go shim.
+		{templateName: mainTmpl, destPath: cmdMainPath(binName), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-serve.go.tmpl", destPath: cmdTreePath(binName, "serve.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-server.go.tmpl", destPath: cmdTreePath(binName, "server.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-root.go.tmpl", destPath: cmdTreePath(binName, "root.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-db.go.tmpl", destPath: cmdTreePath(binName, "db.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "cmd-tree-version.go.tmpl", destPath: cmdTreePath(binName, "version.go"), templated: true, tier: Tier1, enabledFor: enabledForService},
 
 		// buf.yaml is templated against `api.rest` so the googleapis BSR
 		// dep is added/removed in lockstep with the runtime vanguard wrap.
@@ -214,11 +241,11 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		{templateName: "middleware.go", destPath: "pkg/middleware/middleware.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 		{templateName: "middleware_test.go", destPath: "pkg/middleware/middleware_test.go", templated: false, tier: Tier2, enabledFor: enabledForService},
 
-		// internal/cli/commands.go — the user-owned cobra extension point the
-		// Tier-1 internal/cli/root.go consumes (userCommands(deps)).
+		// cmd/<bin>/cmd/commands.go — the user-owned cobra extension point the
+		// Tier-1 cmd/<bin>/cmd/root.go consumes (userCommands(deps)).
 		// Scaffolded once, then owned by the user; listed here so `forge
 		// upgrade` CREATES it and never stomps an edited copy.
-		{templateName: "cli-commands.go.tmpl", destPath: "internal/cli/commands.go", templated: true, tier: Tier2, enabledFor: enabledForService},
+		{templateName: "cmd-tree-commands.go.tmpl", destPath: cmdTreePath(binName, "commands.go"), templated: true, tier: Tier2, enabledFor: enabledForService},
 
 		// Alloy config — Tier 1 since it's fully derived from forge.yaml
 		// services. Gated on service-kind AND observability being enabled.
@@ -260,7 +287,7 @@ func UpgradeManagedPaths() map[string]bool {
 			config.ProjectBinaryPerService,
 			config.ProjectBinaryShared,
 		} {
-			for _, f := range managedFilesForKindBinary(kind, binary) {
+			for _, f := range managedFilesForKindBinary(kind, binary, "") {
 				out[f.destPath] = true
 			}
 		}
@@ -323,7 +350,7 @@ func Tier2ManagedPaths() map[string]bool {
 			config.ProjectBinaryPerService,
 			config.ProjectBinaryShared,
 		} {
-			for _, f := range managedFilesForKindBinary(kind, binary) {
+			for _, f := range managedFilesForKindBinary(kind, binary, "") {
 				if f.tier == Tier2 {
 					out[f.destPath] = true
 				}
@@ -537,9 +564,9 @@ func simpleDiff(path string, old, new []byte) string {
 // RegenerateInfraFiles regenerates all Tier 1 (always-overwrite) infrastructure
 // files. Called by forge generate to keep infrastructure in sync with templates.
 //
-// In `binary: shared` projects this picks cmd-shared-main.go.tmpl as the
-// source for cmd/main.go (instead of the canonical cmd-root.go.tmpl) so the
-// shared-binary scaffold survives generate cycles.
+// The thin cmd/<bin>/main.go and the cmd/<bin>/cmd command tree are part of
+// this Tier-1 set, keyed off the project name so the per-binary destPaths
+// resolve; both binary modes use the same thin main.
 func RegenerateInfraFiles(projectDir string, cfg *config.ProjectConfig) error {
 	return RegenerateInfraFilesTracked(projectDir, cfg, nil)
 }
@@ -575,16 +602,21 @@ func RegenerateInfraFilesTracked(projectDir string, cfg *config.ProjectConfig, c
 			return fmt.Errorf("write %s: %w", f.destPath, err)
 		}
 	}
-	// The Tier-1 cmd/main.go just (re)rendered above references the
-	// user-owned userCommands() extension point. Ensure cmd/commands.go
-	// exists (write-once; never overwrites) so a pre-M6 tree whose
-	// main.go gained the reference this run still compiles — the
-	// codegen pipeline's stepCmdSubcommands does the same, but this
-	// path also runs for service projects with features.codegen=false.
+	// The Tier-1 cmd/<bin>/main.go just (re)rendered above references the
+	// user-owned userCommands() extension point. Ensure cmd/<bin>/cmd/commands.go
+	// exists (write-once; never overwrites) so a tree whose main.go gained
+	// the reference this run still compiles — the codegen pipeline's
+	// stepCmdSubcommands does the same, but this path also runs for service
+	// projects with features.codegen=false.
+	binName := ""
+	if cfg != nil {
+		binName = cfg.Name
+	}
+	wantMain := cmdMainPath(binName)
 	for _, f := range filtered {
-		if f.destPath == "cmd/main.go" {
-			if err := codegen.GenerateCmdCommands(projectDir); err != nil {
-				return fmt.Errorf("scaffold cmd/commands.go: %w", err)
+		if f.destPath == wantMain {
+			if err := codegen.GenerateCmdCommands(projectDir, binName); err != nil {
+				return fmt.Errorf("scaffold cmd/%s/cmd/commands.go: %w", binName, err)
 			}
 			break
 		}

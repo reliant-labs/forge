@@ -205,7 +205,7 @@ func (g *ProjectGenerator) recordFrozenChecksums() error {
 // guard / `forge upgrade --dry-run` would flag every formatted file as
 // user-modified.
 func RecordFrozenChecksums(projectDir, binary, kind string) error {
-	for _, f := range managedFilesForKindBinary(kind, binary) {
+	for _, f := range managedFilesForKindBinary(kind, binary, resolveBinaryName(projectDir)) {
 		fullPath := filepath.Join(projectDir, f.destPath)
 		content, err := os.ReadFile(fullPath)
 		if err != nil {

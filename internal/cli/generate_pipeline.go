@@ -1833,21 +1833,22 @@ func stepAppSubstrate(ctx *pipelineContext) error {
 // internal/app (providers.go / post_build.go / app_services_gen.go /
 // inject_gen.go / inventory_gen.go / lifecycle_gen.go).
 //
-// It is gated on cmd/server.go EXISTING — not on len(services|workers|
-// operators) — because the generated cmd/server.go imports internal/app
-// unconditionally (OpenInfra → Build → PostBuild → mount via Inventory →
-// serverkit.Run). If internal/app were only emitted on the entrypoint-bearing
-// path, a degenerate tree (no proto service parses / no forge_descriptor.json,
-// so ctx.Services is empty) would leave internal/app EMPTY while cmd/server.go
-// still imports it — and `go mod tidy` would 404 trying to fetch the local
-// package remotely. The generators + templates render valid empty
-// Build/Inventory/Services/lifecycle so the package always compiles.
+// It is gated on the primary binary's cmd/<bin>/cmd/serve.go EXISTING — not
+// on len(services|workers|operators) — because that shared serve pipeline
+// imports internal/app unconditionally (OpenInfra → Build → PostBuild → typed
+// mount → serverkit.Run). If internal/app were only emitted on the
+// entrypoint-bearing path, a degenerate tree (no proto service parses / no
+// forge_descriptor.json, so ctx.Services is empty) would leave internal/app
+// EMPTY while serve.go still imports it — and `go mod tidy` would 404 trying
+// to fetch the local package remotely. The generators + templates render
+// valid empty Build/Inventory/Services/lifecycle so the package always compiles.
 //
 // Runs BEFORE the go-mod-tidy steps so the local package is resolvable.
-// Skipped silently when cmd/server.go doesn't exist (CLI/library kinds and
-// codegen-less trees have no runServer that imports internal/app).
+// Skipped silently when serve.go doesn't exist (CLI/library kinds and
+// codegen-less trees have no serve pipeline that imports internal/app).
 func stepInternalAppComposition(ctx *pipelineContext) error {
-	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "internal", "cli", "serve.go")); err != nil {
+	bin := bootstrapBinaryName(ctx.ProjectDir)
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", bin, "cmd", "serve.go")); err != nil {
 		return nil
 	}
 
@@ -1895,23 +1896,25 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 	return nil
 }
 
-// stepCmdCommands ensures the user-owned cmd/commands.go extension point
-// exists (the generated cmd/main.go calls userCommands(), so a missing
-// file would break the build on first regenerate).
+// stepCmdCommands ensures the user-owned cmd/<bin>/cmd/commands.go extension
+// point exists (the generated cmd/<bin>/cmd/root.go calls userCommands(), so
+// a missing file would break the build on first regenerate).
 //
 // String-projected per-service subcommands (the old cmd/services_gen.go)
 // are retired (FORGE_SHAPE_REDESIGN §1/§2): per-subcommand mount
 // selection lives in the cmd layer over the data-only internal/app
 // Inventory, and `server [services...]` handles the subset surface.
 //
-// Skipped silently when cmd/server.go doesn't exist: CLI/library kinds
-// and codegen-less trees have no runServer to delegate to.
+// Skipped silently when the primary binary's cmd/<bin>/cmd/serve.go doesn't
+// exist: CLI/library kinds and codegen-less trees have no serve pipeline to
+// delegate to.
 func stepCmdCommands(ctx *pipelineContext) error {
-	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "internal", "cli", "serve.go")); err != nil {
+	bin := bootstrapBinaryName(ctx.ProjectDir)
+	if _, err := os.Stat(filepath.Join(ctx.ProjectDir, "cmd", bin, "cmd", "serve.go")); err != nil {
 		return nil
 	}
-	if err := codegen.GenerateCmdCommands(ctx.ProjectDir); err != nil {
-		return fmt.Errorf("scaffold cmd/commands.go: %w", err)
+	if err := codegen.GenerateCmdCommands(ctx.ProjectDir, bin); err != nil {
+		return fmt.Errorf("scaffold cmd/%s/cmd/commands.go: %w", bin, err)
 	}
 	return nil
 }

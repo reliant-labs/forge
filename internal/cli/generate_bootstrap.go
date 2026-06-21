@@ -123,20 +123,29 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
 	}
 
-	// REAL per-service subcommands: one internal/cli/svc_<name>.go file per
-	// service whose RunE calls serve() with the TYPED mount method
-	// expression (*app.Services).Mount<Svc> (no string selection), plus the
-	// internal/cli/svc_register_gen.go roster. Driven by the SAME `services`
-	// rows the Inventory is, so each subcommand name lines up with a typed
-	// mount. Emitted only when internal/cli/serve.go exists — CLI/library
-	// kinds and codegen-less trees have no serve pipeline to delegate to.
-	if _, statErr := os.Stat(filepath.Join(projectDir, "internal", "cli", "serve.go")); statErr == nil {
+	// REAL per-component subcommands, dir-nested under cmd/<bin>/cmd by
+	// category (devspace idiom): one services/<name>.go per service whose
+	// RunE calls cmd.Serve() with the TYPED mount method expression
+	// (*app.Services).Mount<Svc> (no string selection); one workers/<name>.go
+	// and operators/<name>.go per worker/operator (cmd.MountNone + a named
+	// supervised subset). Driven by the SAME `services`/`workers`/`operators`
+	// rows the composition layer is, so each subcommand lines up with a typed
+	// mount / WorkerList / OperatorList entry. Emitted only when the primary
+	// binary's cmd/<bin>/cmd/serve.go exists — CLI/library kinds and
+	// codegen-less trees have no serve pipeline to delegate to.
+	bin := bootstrapBinaryName(projectDir)
+	if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")); statErr == nil {
 		names := make([]string, 0, len(services))
 		for _, svc := range services {
 			names = append(names, svc.Name)
 		}
-		if err := codegen.GenerateCmdServices(names, projectDir, cs); err != nil {
-			return fmt.Errorf("failed to generate internal/cli per-service subcommands: %w", err)
+		if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
+			Bin:       bin,
+			Services:  names,
+			Workers:   workers,
+			Operators: operators,
+		}, projectDir, cs); err != nil {
+			return fmt.Errorf("failed to generate cmd/%s command-group subcommands: %w", bin, err)
 		}
 	}
 
@@ -213,6 +222,21 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 // A walk error is returned so the caller can fail the pipeline rather
 // than silently emit a partial bootstrap (which would surface later as
 // a mysterious "undefined: pkg" go build error in pkg/app/bootstrap.go).
+// bootstrapBinaryName resolves the primary binary name — the cmd/<bin>/
+// directory leaf the command tree lives under. It is the forge.yaml project
+// name; falls back to the project directory's base name when the config is
+// unreadable (degenerate/standalone trees), mirroring the generator's
+// binaryName().
+func bootstrapBinaryName(projectDir string) string {
+	cfgPath := filepath.Join(projectDir, defaultProjectConfigFile)
+	if store, err := loadProjectStoreFrom(cfgPath); err == nil && store != nil {
+		if name := store.Config().Name; name != "" {
+			return name
+		}
+	}
+	return filepath.Base(projectDir)
+}
+
 func discoverPackages(projectDir string) ([]codegen.BootstrapPackageData, error) {
 	internalDir := filepath.Join(projectDir, "internal")
 	if !dirExists(internalDir) {

@@ -115,7 +115,7 @@ func TestGenerateConfigLoader_EmitsTypedMode(t *testing.T) {
 // now carries time.Duration values, so the shim assigns them directly.
 func TestCmdServer_NoSilentDurationReparse(t *testing.T) {
 	fields := ConfigFieldNamesFromMessages(durationMessages())
-	out, err := templates.ProjectTemplates().Render("cli-serve.go.tmpl", CmdServerTemplateData{
+	out, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", CmdServerTemplateData{
 		Module:       "example.com/proj",
 		ConfigFields: fields,
 	})
@@ -140,7 +140,7 @@ func TestCmdServer_NoSilentDurationReparse(t *testing.T) {
 	}
 
 	// Same with the full default scaffold field set.
-	full, err := templates.ProjectTemplates().Render("cli-serve.go.tmpl", CmdServerTemplateData{
+	full, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", CmdServerTemplateData{
 		Module:       "example.com/proj",
 		ConfigFields: DefaultConfigFieldNames(),
 	})

@@ -43,6 +43,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
@@ -106,6 +107,19 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 		}
 		contractPath := filepath.Join(path, "contract.go")
 		if _, statErr := os.Stat(contractPath); statErr == nil {
+			// Per-package opt-out: `//forge:exclude-contract` in the
+			// package's source is the local-header equivalent of a
+			// forge.yaml contracts.exclude entry. Union with the central
+			// excludes above: either source opts the package out of the
+			// strict contract-shape rule. This MUST agree with the
+			// generate-time walks (generate_middleware.go's mock walk and
+			// generate_bootstrap.go's discoverPackages) so a header-only
+			// exclude is honored consistently across lint AND codegen —
+			// otherwise a package excluded for codegen would still fail
+			// the pre-codegen shape check.
+			if codegen.HasExcludeContractDirective(path) {
+				return nil
+			}
 			pkgDirs = append(pkgDirs, path)
 		}
 		return nil

@@ -14,10 +14,14 @@
 //
 //   - (forge.v1.method).required_roles = [...]  — an any-of role allow-list, OR
 //   - (forge.v1.method).authz_public = true     — explicit any-authenticated, OR
+//   - (forge.v1.method).authz_custom = true     — a hand-written per-service
+//     authorizer owns the decision (a subject/identity/resource-scoped or
+//     out-of-band rule not expressible as a role allow-list), OR
 //   - it inherits a non-empty (forge.v1.service).default_roles from its service.
 //
-// Anything else is a finding. Setting BOTH required_roles and authz_public on
-// one method is a contradiction and is also a finding.
+// Anything else is a finding. Setting MORE THAN ONE of required_roles /
+// authz_public / authz_custom on a single method is a contradiction and is
+// also a finding.
 //
 // The lint operates on proto DESCRIPTORS (protoreflect), the same source the
 // runtime policy builder reads, so the two can never disagree about what
@@ -43,8 +47,9 @@ const (
 	// RuleMissingPolicy fires when a method is neither annotated with an authz
 	// decision nor covered by a service default_roles.
 	RuleMissingPolicy = "authz-missing-policy"
-	// RuleContradiction fires when a method sets both required_roles and
-	// authz_public — an ambiguous decision the build must reject.
+	// RuleContradiction fires when a method sets more than one of
+	// required_roles / authz_public / authz_custom — an ambiguous decision
+	// the build must reject.
 	RuleContradiction = "authz-contradictory-policy"
 )
 
@@ -90,20 +95,33 @@ func Lint(files FileSource) Result {
 // authorized.
 func checkMethod(fd protoreflect.FileDescriptor, svc protoreflect.ServiceDescriptor, m protoreflect.MethodDescriptor, hasServiceDefault bool) *finding.Finding {
 	procedure := "/" + string(svc.FullName()) + "/" + string(m.Name())
-	public, roleCount := methodAuthz(m)
+	public, custom, roleCount := methodAuthz(m)
 
-	if public && roleCount > 0 {
+	// At most ONE of the three explicit decisions may be set. Count them and
+	// reject any combination — they express contradictory intents (open vs
+	// role-gated vs delegated-to-code).
+	set := 0
+	if public {
+		set++
+	}
+	if custom {
+		set++
+	}
+	if roleCount > 0 {
+		set++
+	}
+	if set > 1 {
 		return &finding.Finding{
 			Rule:     RuleContradiction,
 			Severity: finding.SeverityError,
 			File:     fd.Path(),
 			Message: fmt.Sprintf(
-				"method %s sets both (forge.v1.method).authz_public and .required_roles — pick exactly one",
+				"method %s sets more than one of (forge.v1.method).authz_public / .required_roles / .authz_custom — pick exactly one",
 				procedure),
-			Remediation: "Remove authz_public to keep the role restriction, or remove required_roles to make the method public.",
+			Remediation: "Keep exactly one: required_roles for a role gate, authz_public for an open method, or authz_custom to delegate the decision to a hand-written authorizer.",
 		}
 	}
-	if public || roleCount > 0 || hasServiceDefault {
+	if public || custom || roleCount > 0 || hasServiceDefault {
 		return nil // explicitly authorized
 	}
 	return &finding.Finding{
@@ -111,25 +129,26 @@ func checkMethod(fd protoreflect.FileDescriptor, svc protoreflect.ServiceDescrip
 		Severity: finding.SeverityError,
 		File:     fd.Path(),
 		Message: fmt.Sprintf(
-			"method %s has no authorization policy — declare (forge.v1.method).required_roles, set authz_public = true, or give the service a (forge.v1.service).default_roles",
+			"method %s has no authorization policy — declare (forge.v1.method).required_roles, set authz_public = true, set authz_custom = true, or give the service a (forge.v1.service).default_roles",
 			procedure),
-		Remediation: "Add `option (forge.v1.method).required_roles = [\"<role>\"];` (or `authz_public = true` for a public method) to the rpc, or set service-wide default_roles.",
+		Remediation: "Add `option (forge.v1.method).required_roles = [\"<role>\"];` (or `authz_public = true` for a public method, or `authz_custom = true` to delegate to a hand-written authorizer) to the rpc, or set service-wide default_roles.",
 	}
 }
 
 // methodAuthz reads the per-method authz annotation and reports whether the
-// method is marked public and how many required roles it declares.
-func methodAuthz(m protoreflect.MethodDescriptor) (public bool, roleCount int) {
+// method is marked public, marked custom, and how many required roles it
+// declares.
+func methodAuthz(m protoreflect.MethodDescriptor) (public, custom bool, roleCount int) {
 	opts := m.Options()
 	if opts == nil {
-		return false, 0
+		return false, false, 0
 	}
 	ext := proto.GetExtension(opts, forgev1.E_Method)
 	mo, ok := ext.(*forgev1.MethodOptions)
 	if !ok || mo == nil {
-		return false, 0
+		return false, false, 0
 	}
-	return mo.GetAuthzPublic(), len(mo.GetRequiredRoles())
+	return mo.GetAuthzPublic(), mo.GetAuthzCustom(), len(mo.GetRequiredRoles())
 }
 
 // serviceHasDefaultRoles reports whether the service declares a non-empty

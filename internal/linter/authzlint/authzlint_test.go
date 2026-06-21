@@ -18,6 +18,7 @@ type methodSpec struct {
 	name     string
 	roles    []string // required_roles
 	public   bool     // authz_public
+	custom   bool     // authz_custom
 	annotate bool     // attach a (forge.v1.method) extension at all
 }
 
@@ -46,6 +47,7 @@ func buildFiles(t *testing.T, pkg string, serviceDefaults []string, methods ...m
 			proto.SetExtension(opts, forgev1.E_Method, &forgev1.MethodOptions{
 				RequiredRoles: ms.roles,
 				AuthzPublic:   ms.public,
+				AuthzCustom:   ms.custom,
 			})
 			md.Options = opts
 		}
@@ -148,5 +150,50 @@ func TestLint_Contradiction_Fails(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a %s finding; got %+v", RuleContradiction, res.Findings)
+	}
+}
+
+func TestLint_AuthzCustom_Passes(t *testing.T) {
+	// authz_custom is an explicit authorization decision: the method's policy
+	// is owned by a hand-written authorizer, so the completeness lint accepts
+	// it (it grants nothing — the runtime leaves it out of the shared policy).
+	files := buildFiles(t, "authzlint.custom.v1", nil,
+		methodSpec{name: "InternalOnly", custom: true, annotate: true},
+	)
+	res := Lint(files)
+	if res.HasErrors() {
+		t.Fatalf("authz_custom must satisfy the completeness lint; got %+v", res.Findings)
+	}
+}
+
+func TestLint_AuthzCustom_ContradictsRoles(t *testing.T) {
+	files := buildFiles(t, "authzlint.customroles.v1", nil,
+		methodSpec{name: "Bad", roles: []string{"admin"}, custom: true, annotate: true},
+	)
+	res := Lint(files)
+	var found bool
+	for _, f := range res.Findings {
+		if f.Rule == RuleContradiction {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("authz_custom+required_roles must be a contradiction; got %+v", res.Findings)
+	}
+}
+
+func TestLint_AuthzCustom_ContradictsPublic(t *testing.T) {
+	files := buildFiles(t, "authzlint.custompublic.v1", nil,
+		methodSpec{name: "Bad", public: true, custom: true, annotate: true},
+	)
+	res := Lint(files)
+	var found bool
+	for _, f := range res.Findings {
+		if f.Rule == RuleContradiction {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("authz_custom+authz_public must be a contradiction; got %+v", res.Findings)
 	}
 }

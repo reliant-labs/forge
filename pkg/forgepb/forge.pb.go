@@ -837,7 +837,27 @@ type MethodOptions struct {
 	// completeness lint without granting it by accident: a method is "open"
 	// only when an author typed `authz_public = true`, never by omission.
 	// Mutually exclusive with required_roles (setting both fails the lint).
-	AuthzPublic   bool `protobuf:"varint,8,opt,name=authz_public,json=authzPublic,proto3" json:"authz_public,omitempty"`
+	AuthzPublic bool `protobuf:"varint,8,opt,name=authz_public,json=authzPublic,proto3" json:"authz_public,omitempty"`
+	// Marks a method whose authorization is performed by a HAND-WRITTEN
+	// per-service authorizer (middleware.Authorizer), not by the shared
+	// descriptor RoleInterceptor. Use this ONLY when the decision is genuinely
+	// not expressible as a role allow-list — e.g. it gates on a specific
+	// subject/identity, a per-request resource scope, or an out-of-band
+	// (client-only / reverse-proxied) RPC the local server never serves.
+	//
+	// It is the explicit, greppable escape that satisfies the authz
+	// completeness lint for such methods: the build accepts the method as
+	// "intentionally custom-authorized" instead of forcing a role annotation
+	// that would mis-state the real policy. It grants NOTHING — pkg/authz's
+	// descriptor policy builder still leaves the method OUT of the shared
+	// RolePolicy, so if such a method is ever routed through the shared
+	// RoleInterceptor it fail-closes (denied). The service must keep its own
+	// authorizer (and, when served, route through it) — this marker only
+	// records that the proto deliberately delegates the decision to code.
+	//
+	// Mutually exclusive with required_roles and authz_public (setting more
+	// than one fails the lint).
+	AuthzCustom   bool `protobuf:"varint,9,opt,name=authz_custom,json=authzCustom,proto3" json:"authz_custom,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -917,6 +937,13 @@ func (x *MethodOptions) GetRequiredRoles() []string {
 func (x *MethodOptions) GetAuthzPublic() bool {
 	if x != nil {
 		return x.AuthzPublic
+	}
+	return false
+}
+
+func (x *MethodOptions) GetAuthzCustom() bool {
+	if x != nil {
+		return x.AuthzCustom
 	}
 	return false
 }
@@ -1203,7 +1230,7 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\n" +
 	"AuthConfig\x12#\n" +
 	"\rauth_required\x18\x01 \x01(\bR\fauthRequired\x12#\n" +
-	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xab\x02\n" +
+	"\rauth_provider\x18\x02 \x01(\tR\fauthProvider\"\xce\x02\n" +
 	"\rMethodOptions\x12(\n" +
 	"\rauth_required\x18\x01 \x01(\bH\x00R\fauthRequired\x88\x01\x01\x12\x1e\n" +
 	"\n" +
@@ -1213,7 +1240,8 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x05 \x01(\bR\x0eidempotencyKey\x12\x16\n" +
 	"\x06errors\x18\x06 \x03(\tR\x06errors\x12%\n" +
 	"\x0erequired_roles\x18\a \x03(\tR\rrequiredRoles\x12!\n" +
-	"\fauthz_public\x18\b \x01(\bR\vauthzPublicB\x10\n" +
+	"\fauthz_public\x18\b \x01(\bR\vauthzPublic\x12!\n" +
+	"\fauthz_custom\x18\t \x01(\bR\vauthzCustomB\x10\n" +
 	"\x0e_auth_required\"\xb4\x02\n" +
 	"\x12ConfigFieldOptions\x12\x17\n" +
 	"\aenv_var\x18\x01 \x01(\tR\x06envVar\x12\x12\n" +

@@ -296,6 +296,27 @@ message MethodOptions {
   // only when an author typed `authz_public = true`, never by omission.
   // Mutually exclusive with required_roles (setting both fails the lint).
   bool authz_public = 8;
+
+  // Marks a method whose authorization is performed by a HAND-WRITTEN
+  // per-service authorizer (middleware.Authorizer), not by the shared
+  // descriptor RoleInterceptor. Use this ONLY when the decision is genuinely
+  // not expressible as a role allow-list — e.g. it gates on a specific
+  // subject/identity, a per-request resource scope, or an out-of-band
+  // (client-only / reverse-proxied) RPC the local server never serves.
+  //
+  // It is the explicit, greppable escape that satisfies the authz
+  // completeness lint for such methods: the build accepts the method as
+  // "intentionally custom-authorized" instead of forcing a role annotation
+  // that would mis-state the real policy. It grants NOTHING — pkg/authz's
+  // descriptor policy builder still leaves the method OUT of the shared
+  // RolePolicy, so if such a method is ever routed through the shared
+  // RoleInterceptor it fail-closes (denied). The service must keep its own
+  // authorizer (and, when served, route through it) — this marker only
+  // records that the proto deliberately delegates the decision to code.
+  //
+  // Mutually exclusive with required_roles and authz_public (setting more
+  // than one fails the lint).
+  bool authz_custom = 9;
 }
 
 // =============================================================================

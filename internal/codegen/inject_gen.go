@@ -136,10 +136,10 @@ type InjectGenData struct {
 // producer and the matcher PROVES the Infra struct has no assignable
 // field.
 //
-// This is ADDITIVE in PASS 1: it writes alongside the existing
-// pkg/app/wire_gen.go without retiring it. cmd-server adopts Build behind
-// the feature gate; wire_gen + appkit.Run stay present but unused so the
-// tree always builds. PASS 3 retires wire_gen once Build is proven.
+// This is the live DI path: cmd-server composes OpenInfra → Build →
+// PostBuild → Inventory. The old name-matched wire_gen + appkit.Run have
+// been retired; the generated injector emitted here is the sole wiring
+// mechanism.
 func GenerateInject(in InjectGenInput) error {
 	comps, err := assembleBuildComponents(in)
 	if err != nil {

@@ -351,6 +351,15 @@ var removedSchemaKeys = map[string]removedKeyHint{
 		replacement: "remove the key — per-environment cluster choice now lives in KCL " +
 			"`forge.K8sCluster` blocks under deploy/kcl/; see `forge skill load migrations/environments-to-kcl`.",
 	},
+	// deploy.provider was never read: the CI provider lives in `ci.provider`
+	// (generate_ci.go reads cfg.CI.Provider). Removed in the forge.yaml
+	// schema cleanup (FORGE_SHAPE_REDESIGN §4 — deploy is pipeline-control
+	// only; provider belongs to ci).
+	"deploy.provider": {
+		removedIn: "the forge.yaml schema cleanup (deploy is pipeline-control only)",
+		replacement: "delete the key — the CI provider is set via `ci.provider` (github is the " +
+			"default); `deploy.provider` was never read.",
+	},
 	// kind: moved off forge.yaml in the ProjectStore per-service data move.
 	// Project kind now DERIVES from the components in components.json (a
 	// server-shaped component → service, binary-only → cli, none → library).

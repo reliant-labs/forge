@@ -174,7 +174,11 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 				VolatileDefault:   "warn",
 			},
 		}
-		d.Deploy = DeployConfig{Provider: "github"}
+		// Deploy carries only pipeline-control knobs now; its zero value is
+		// the canonical default (the dead `provider` field was removed — the
+		// CI provider derives to "github" via cfg.CI). Registry lives on
+		// Docker.
+		d.Deploy = DeployConfig{}
 		d.Docker = DockerConfig{Registry: "ghcr.io"}
 		d.K8s = K8sConfig{KCLDir: "deploy/kcl"}
 	}

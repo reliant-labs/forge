@@ -181,7 +181,7 @@ func managedFilesForKindBinary(kind, binary string) []managedFile {
 		{templateName: "cmd-version.go.tmpl", destPath: "cmd/version.go", templated: true, tier: Tier1, enabledFor: enabledForService},
 
 		// Static cmd files
-		{templateName: "otel.go", destPath: "cmd/otel.go", templated: false, tier: Tier1, enabledFor: enabledForService},
+		{templateName: "otel.go.tmpl", destPath: "cmd/otel.go", templated: true, tier: Tier1, enabledFor: enabledForService},
 
 		// buf.yaml is templated against `api.rest` so the googleapis BSR
 		// dep is added/removed in lockstep with the runtime vanguard wrap.

@@ -141,7 +141,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// OTel: setupOTel (cmd/otel.go) wires trace/metric export and returns
 	// the /metrics handler + an otel-shutdown fn. A non-nil error is
 	// logged, not fatal — projects depending on OTel fail Validate first.
-	otelShutdown, metricsHandler, otelErr := setupOTel(ctx)
+	otelShutdown, metricsHandler, otelErr := setupOTel(ctx, cfg)
 	if otelErr != nil {
 		logger.Error("failed to initialize OpenTelemetry", "error", otelErr)
 	}

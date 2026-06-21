@@ -362,7 +362,7 @@ func (g *ProjectGenerator) Generate() error {
 		// the Go-level tracing wiring.
 		files = append(files,
 			struct{ template, dest string }{"cmd-server.go.tmpl", "cmd/server.go"},
-			struct{ template, dest string }{"otel.go", "cmd/otel.go"},
+			struct{ template, dest string }{"otel.go.tmpl", "cmd/otel.go"},
 		)
 		// cmd/db.go (migrate CLI) depends on both pkg/config and
 		// golang-migrate; skip when migrations are also disabled.

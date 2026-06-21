@@ -296,6 +296,18 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 			// compiler arbitrate (never a silent typed-zero for a required
 			// field). Same deterministic fail-loud policy as wire_gen.
 			return "infra." + field, "compile-time backstop (assignability unproven)", nil
+		case MatchUnprovenBackstop:
+			// GENERATE-ORDERING backstop: no Infra field name-matches AND none
+			// could be PROVEN assignable because internal/app is mid-write
+			// this run (e.g. it references the not-yet-regenerated Build). An
+			// Infra field named differently from this Deps field may well be
+			// assignable on the next clean load. Emitting infra.<DepsField>
+			// (the matcher returns the Deps field name here) defers the
+			// decision to the Go compiler: loud if genuinely absent, silently
+			// correct once a clean generate proves the assignable match —
+			// instead of a spurious generate-time MissingProvider. Crucially
+			// this NEVER emits a silent typed-zero for a required field.
+			return "infra." + field, "compile-time backstop (generate-ordering: Infra surface mid-write)", nil
 		}
 	}
 

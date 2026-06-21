@@ -2,11 +2,11 @@
 //
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 //
-// internal/cli/commands.go is the user-owned cobra extension point — the
-// twin of pkg/app/services.go. newRootCmd (internal/cli/root.go) calls
-// userCommands(deps) and registers every returned command. Generated
-// per-service subcommands live in their own svc_<name>.go files (a
-// projection of the proto services); never list services here.
+// cmd/{{.Name}}/cmd/commands.go is the user-owned cobra extension point —
+// the twin of pkg/app/services.go. newRootCmd (cmd/{{.Name}}/cmd/root.go)
+// calls userCommands(deps) and registers every returned command. Generated
+// per-service subcommands live in the cmd/{{.Name}}/cmd/services/ subpackage
+// (a projection of the proto services); never list services here.
 //
 // Use this file for NON-SERVER SHAPES: CLI tools (reports, backfills,
 // one-shot admin jobs) and second binaries that ship in the same image as
@@ -17,9 +17,9 @@
 //     `cfg, err := config.Load(cmd)` in RunE.
 //   - forge/pkg/cmdkit for everything a CLI re-invents (Logger, OpenDB,
 //     ContextWithTimeout, PrintJSON).
-//   - OTel + lifecycle: a server-shaped sidecar reuses the serve() pipeline
-//     (internal/cli/serve.go); a non-HTTP loop derives a signal context via
-//     signal.NotifyContext and blocks on it.
+//   - OTel + lifecycle: a server-shaped sidecar reuses the Serve() pipeline
+//     (cmd/{{.Name}}/cmd/serve.go); a non-HTTP loop derives a signal context
+//     via signal.NotifyContext and blocks on it.
 //
 // Example — a one-shot report command:
 //
@@ -57,15 +57,15 @@
 //	func userCommands(deps Deps) []*cobra.Command {
 //		return []*cobra.Command{reportCmd(deps)}
 //	}
-package cli
+package cmd
 
 import (
 	"github.com/spf13/cobra"
 )
 
 // userCommands returns additional top-level subcommands for this binary.
-// internal/cli/root.go consumes it; forge never edits this file. Return nil
-// (the default) for no extra commands.
+// cmd/{{.Name}}/cmd/root.go consumes it; forge never edits this file. Return
+// nil (the default) for no extra commands.
 func userCommands(deps Deps) []*cobra.Command {
 	_ = deps
 	return nil

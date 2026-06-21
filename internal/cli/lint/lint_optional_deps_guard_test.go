@@ -1,7 +1,6 @@
-package cli
+package lint
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -512,42 +511,7 @@ func TestOptionalDepsGuard_TextFormat(t *testing.T) {
 	}
 }
 
-// TestOptionalDepsGuard_AuditCategory asserts the audit roll-up: ok on
-// clean, warn with counts + by_package on findings.
-func TestOptionalDepsGuard_AuditCategory(t *testing.T) {
-	t.Parallel()
-
-	clean := t.TempDir()
-	writeOptionalGuardPkg(t, clean, "fixture", `
-func (s *Service) Call() error {
-	if s.deps.Svc == nil {
-		return nil
-	}
-	return s.deps.Svc.Do()
-}
-`)
-	if cat := auditOptionalDepsGuard(clean); cat.Status != AuditStatusOK {
-		t.Errorf("clean project status = %s, want ok (%s)", cat.Status, cat.Summary)
-	}
-
-	dirty := t.TempDir()
-	writeOptionalGuardPkg(t, dirty, "fixture", `
-func (s *Service) Call() error {
-	return s.deps.Svc.Do()
-}
-`)
-	cat := auditOptionalDepsGuard(dirty)
-	if cat.Status != AuditStatusWarn {
-		t.Fatalf("dirty project status = %s, want warn (%s)", cat.Status, cat.Summary)
-	}
-	if cat.Details["finding_count"] != 1 {
-		t.Errorf("finding_count = %v, want 1", cat.Details["finding_count"])
-	}
-	byPkg, ok := cat.Details["by_package"].(map[string][]string)
-	if !ok || len(byPkg["internal/handlers/fixture"]) != 1 {
-		t.Errorf("by_package = %#v, want one entry under internal/handlers/fixture", cat.Details["by_package"])
-	}
-	if !strings.Contains(fmt.Sprint(cat.Details["hint"]), "--optional-deps-guard") {
-		t.Errorf("hint missing targeted flag: %v", cat.Details["hint"])
-	}
-}
+// TestOptionalDepsGuard_AuditCategory moved to
+// internal/cli/audit_deps_category_test.go with the audit roll-up it
+// exercises (auditOptionalDepsGuard consumes this package's
+// CollectOptionalDepsGuardFindings).

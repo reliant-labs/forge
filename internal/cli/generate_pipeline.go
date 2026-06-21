@@ -39,6 +39,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -323,6 +324,7 @@ func generateSteps() []GenStep {
 		{Name: "ensure gen/go.mod", Gate: always, Run: stepEnsureGenModule, Tag: "config"},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto"},
 		{Name: "descriptor extraction", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepDescriptorGenerate, Tag: "proto"},
+		{Name: "authz completeness gate", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepAuthzCompleteness, Tag: "proto"},
 		{Name: "OpenAPI specs (protoc-gen-connect-openapi)", Gate: gateOpenAPIEnabled, GateReason: "api.openapi=false or features.codegen=false", Run: stepOpenAPIGenerate, Tag: "proto"},
 		{Name: "frontend workspaces scaffold", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendWorkspaces, Tag: "frontend"},
 		{Name: "TypeScript stubs (frontends)", Gate: and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML), GateReason: "features.frontend=false or no forge.yaml", Run: stepFrontendBufTS, Tag: "frontend"},
@@ -1287,6 +1289,19 @@ func stepBufGenerateGo(ctx *pipelineContext) error {
 // rest of the pipeline can still emit code.
 func stepDescriptorGenerate(ctx *pipelineContext) error {
 	return ctx.warnOrFail("descriptor generation", runDescriptorGenerate(ctx.ProjectDir))
+}
+
+// stepAuthzCompleteness fails the build when any RPC lacks an explicit
+// authorization decision (required_roles / authz_public / a service
+// default_roles), naming the offending methods. It is the generate-time
+// first line of defense for descriptor-driven authorization — the runtime
+// fail-closed deny in forge/pkg/authz is the backstop. The check lives in
+// the internal/cli/lint group (it is the same gate `forge lint` runs); cli
+// imports that group, which only depends on factory/cmdutil, so there is no
+// cycle. It HARD-gates (not warnOrFail): an un-annotated RPC is exactly the
+// silent-open-method bug this gate exists to stop.
+func stepAuthzCompleteness(ctx *pipelineContext) error {
+	return lint.CheckAuthzCompleteness(context.Background(), ctx.ProjectDir)
 }
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs

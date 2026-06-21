@@ -170,10 +170,11 @@ message AppConfig {
     description: "OTLP/gRPC collector endpoint for traces and metrics (e.g. http://localhost:4317). Empty disables OTLP export; the always-on Prometheus /metrics endpoint is unaffected."
   }];
 
-  string service_name = 22 [(forge.v1.config) = {
-    env_var: "OTEL_SERVICE_NAME",
-    flag: "service-name",
-    default_value: "unknown",
-    description: "Logical service name reported on OpenTelemetry traces and metrics (semconv service.name)."
-  }];
+  // NOTE: there is intentionally NO `service_name` config field. The OTel
+  // service.name is the binary's APP IDENTITY, emitted as the generated
+  // `ServiceName` constant in internal/cli/root.go and passed to serverkit
+  // directly — it is not an operator-tunable runtime knob. Field tag 22 is
+  // reserved so it is never reused for a different meaning.
+  reserved 22;
+  reserved "service_name";
 }

@@ -110,6 +110,12 @@ func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
 		if opt == nil || opt.GetFlag() == "" {
 			continue
 		}
+		// Sensitive fields are NEVER exposed as flags — their value must come
+		// from an env var / Secret mount, never from shell history or `ps`.
+		// This holds even if the field carries a flag annotation by mistake.
+		if opt.GetSensitive() {
+			continue
+		}
 		name := opt.GetFlag()
 		def := opt.GetDefaultValue()
 		desc := opt.GetDescription()
@@ -237,6 +243,15 @@ func resolveRaw(cmd *cobra.Command, fd protoreflect.FieldDescriptor, opt *forgep
 	envVar := opt.GetEnvVar()
 	def := opt.GetDefaultValue()
 	hasDefault := def != ""
+
+	// Sensitive fields resolve from env / Secret mount ONLY: never from a
+	// CLI flag (no flag is registered for them) and never from an inline
+	// proto default (a literal secret default would be a leak). They fall
+	// straight through to the env lookup below, then required-or-zero.
+	if opt.GetSensitive() {
+		flagName = ""
+		hasDefault = false
+	}
 
 	// Flag wins when explicitly changed on THIS invocation.
 	if cmd != nil && flagName != "" && cmd.Flags().Changed(flagName) {

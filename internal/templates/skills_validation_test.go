@@ -15,7 +15,7 @@
 //  3. `(forge.v1.<ext>) = { ... }` annotation literals (and dotted
 //     `(forge.v1.<ext>).<field>` references) must use field names that
 //     exist on the real annotation payload messages. Truth source: the
-//     protoreflect descriptors of internal/gen/forge/v1 (generated from
+//     protoreflect descriptors of pkg/forgepb (generated from
 //     internal/assets/proto/forge/v1/forge.proto), so a schema change
 //     that strands the skills fails here. Enum-valued fields (e.g.
 //     `store:`) must use enum value names, bool fields must get
@@ -43,7 +43,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/reliant-labs/forge/internal/cli"
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -414,7 +414,7 @@ func TestSkillsPathReferencesExist(t *testing.T) {
 // annotationDescriptors maps the extension names skills use —
 // (forge.v1.entity) etc. — to the protoreflect descriptors of their real
 // payload messages. These descriptors come from the generated package
-// internal/gen/forge/v1, itself generated from
+// pkg/forgepb, itself generated from
 // internal/assets/proto/forge/v1/forge.proto, so the schema is the truth:
 // renaming/removing a proto field makes any skill that still documents
 // the old name fail here.

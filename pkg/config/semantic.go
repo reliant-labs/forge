@@ -30,7 +30,20 @@ import (
 // and description. Sensitive fields are skipped (env/Secret only). It is the
 // cobra-facing form of RegisterFlagsFor and is generic over ANY config
 // message — no per-field codegen.
+//
+// It ALSO registers a persistent --config <path> flag (ConfigFlag) — always,
+// for every config message. This is the first-class config-FILE layer's entry
+// point: it is on, not dormant. Load resolves the file from this flag (or the
+// FORGE_CONFIG env var) and unmarshals it as the layer between defaults and
+// env. Registering it persistent means it is also visible to subcommands. The
+// flag is registered idempotently so re-registering on the same command (or a
+// parent that already has it) is safe.
 func RegisterFlags(cmd *cobra.Command, msg proto.Message) error {
+	if cmd.PersistentFlags().Lookup(ConfigFlag) == nil && cmd.Flags().Lookup(ConfigFlag) == nil {
+		cmd.PersistentFlags().String(ConfigFlag, "",
+			fmt.Sprintf("path to a config file (.json/.yaml/.yml); also settable via %s. "+
+				"Precedence: defaults < file < env < flags", ConfigPathEnv))
+	}
 	return RegisterFlagsFor(cmd.Flags(), msg)
 }
 

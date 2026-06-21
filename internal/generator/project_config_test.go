@@ -53,6 +53,47 @@ func TestWriteProjectConfig_StampsForgeVersion(t *testing.T) {
 	}
 }
 
+// TestWriteProjectConfig_ScaffoldsTypedAccessError verifies the scaffold
+// lane writes an explicit `config.enforce_typed_access: error` into a
+// freshly-generated forge.yaml. Greenfield projects carry no legacy
+// env-reading debt, so the guardrail scaffolds in its strict gating form —
+// deliberately DIFFERENT from the schema default for an ABSENT key (which is
+// "warn", so existing projects upgrade without a flag-day). The explicit
+// "error" must survive write-time normalization and round-trip on load.
+func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
+	tmp := t.TempDir()
+	g := NewProjectGenerator("guard-scaffold", tmp, "example.com/guard-scaffold")
+	g.ServiceName = "api"
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatalf("writeProjectConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("read forge.yaml: %v", err)
+	}
+	if !strings.Contains(string(data), "enforce_typed_access: error") {
+		t.Errorf("scaffolded forge.yaml missing `enforce_typed_access: error`:\n%s", data)
+	}
+
+	cfg, err := ReadProjectConfig(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if got := cfg.Config.EffectiveEnforceTypedAccess(); got != config.EnforceTypedAccessError {
+		t.Errorf("loaded EffectiveEnforceTypedAccess() = %q, want %q", got, config.EnforceTypedAccessError)
+	}
+	if !cfg.Config.TypedAccessGuardGates() {
+		t.Error("scaffolded config must gate the build (TypedAccessGuardGates() = false)")
+	}
+
+	// The scaffold render lane must agree: ForScaffold projects the strict
+	// gating mode into the .golangci.yml payload.
+	if got := g.ForScaffold().TypedAccessGuard; got != config.EnforceTypedAccessError {
+		t.Errorf("ForScaffold().TypedAccessGuard = %q, want %q", got, config.EnforceTypedAccessError)
+	}
+}
+
 // TestApplyKindFeatureDefaults_Service is a no-op assertion: the
 // default scaffold (`forge new --kind service` or no flag) must leave
 // every STABLE feature enabled. Experimental features are default-off

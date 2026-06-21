@@ -125,6 +125,16 @@ func lintPipeline() []linterStep {
 		// os.Getenv / os.LookupEnv / os.Environ findings as warnings. In
 		// `error` mode forbidigo is enabled in the main gating golangci run
 		// (step 1) and this step is skipped; `off` skips it too.
+		//
+		// Why the warn/error switch lives in .golangci.yml's linters.enable
+		// (not here, by having forge own the gating decision): the PRIMARY
+		// consumer of the guardrail is CI, which runs `golangci-lint run`
+		// DIRECTLY via golangci-lint-action — it never routes through
+		// `forge lint`. So `linters.enable` membership is the only thing that
+		// can make CI fail. Centralizing the decision in `forge lint` would
+		// silently stop gating CI in error mode. This step exists purely to
+		// give warn-mode users LOCAL visibility of findings golangci is
+		// configured to ignore.
 		{
 			name:  "typed-config guardrail",
 			gates: false,

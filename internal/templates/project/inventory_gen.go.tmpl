@@ -42,6 +42,25 @@ type ComponentInfo struct {
 	// ConnectPath is the fully-qualified Connect service path
 	// (e.g. "acme.billing.v1.BillingService") — for introspection.
 	ConnectPath string
+	// BaseService is the version-INDEPENDENT logical service name (the
+	// proto identity with its version segment stripped). Version is the
+	// proto API version (e.g. "v1", "v2beta1"), or "" when the service's
+	// proto package carries no version segment.
+	//
+	// VERSION-AWARE SEAM: ConnectPath fuses the version (it embeds e.g.
+	// ".v1."), so historically version rode inside service identity — a
+	// future "billing.v2" would look like a brand-new service. Recording
+	// Version as explicit METADATA here (a field, not part of the mount
+	// key) makes a second version an ADDITIVE change: same BaseService,
+	// new Version. It does NOT change mounting today — ConnectPath and the
+	// route are unchanged for v1 projects.
+	//
+	// DEFERRED (not implemented): per-version handler generation / mount
+	// adapters. When that lands, the cmd layer will group Inventory by
+	// BaseService and mount each Version on its own route via this Mount
+	// closure; until then there is at most one Version per BaseService.
+	BaseService string
+	Version     string
 	// Kind is the component kind ("service"). Workers/operators are
 	// supervised by serverkit, not mounted here.
 	Kind string
@@ -58,6 +77,8 @@ var Inventory = []ComponentInfo{
 	{
 		Name:        "{{.Name}}",
 		ConnectPath: {{.ConnectPkg}}.{{.ProtoServiceName}}Name,
+		BaseService: "{{.BaseService}}",
+		Version:     "{{.Version}}",
 		Kind:        "service",
 		Mount: func(s *Services, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) {
 {{- if .HasAuthorizer}}

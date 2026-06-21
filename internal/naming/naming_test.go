@@ -212,3 +212,40 @@ func TestApplyGoInitialisms_LongerFirst(t *testing.T) {
 		t.Errorf("applyGoInitialisms(%q) = %q, want %q", "Xsrf", got, "XSRF")
 	}
 }
+
+func TestProtoPackageVersion(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"billing.v1", "v1"},
+		{"acme.billing.v1", "v1"},
+		{"shop.v2beta1", "v2beta1"},
+		{"users.v1alpha1", "v1alpha1"},
+		{"billing", ""},
+		{"", ""},
+		{"v1", "v1"},
+		{"acme.beta", ""},     // "beta" is not a version segment
+		{"acme.v", ""},        // bare "v" is not a version
+		{"acme.v1alpha", ""},  // channel without a number is malformed
+		{"acme.version", ""},  // "version" must not match
+	}
+	for _, tt := range tests {
+		if got := ProtoPackageVersion(tt.in); got != tt.want {
+			t.Errorf("ProtoPackageVersion(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestProtoPackageBase(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"billing.v1", "billing"},
+		{"acme.billing.v1", "acme.billing"},
+		{"billing", "billing"},
+		{"shop.v2beta1", "shop"},
+		{"acme.version", "acme.version"}, // not a version, unchanged
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := ProtoPackageBase(tt.in); got != tt.want {
+			t.Errorf("ProtoPackageBase(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

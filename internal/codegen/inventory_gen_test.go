@@ -15,8 +15,8 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	err := GenerateInventory(InventoryGenInput{
 		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
 		Services: []ServiceDef{
-			{Name: "BillingService", ModulePath: "example.com/proj"},
-			{Name: "UserService", ModulePath: "example.com/proj"},
+			{Name: "BillingService", Package: "billing.v1", ModulePath: "example.com/proj"},
+			{Name: "UserService", Package: "user.v1", ModulePath: "example.com/proj"},
 		},
 	})
 	if err != nil {
@@ -29,11 +29,15 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	out := string(data)
 
 	// Data-only descriptor rows: Name (display/selection) + ConnectPath +
-	// Kind, and a typed Mount closure over *Services.
+	// version-aware BaseService/Version metadata + Kind, and a typed Mount
+	// closure over *Services.
 	for _, want := range []string{
 		`var Inventory = []ComponentInfo{`,
 		`Name:        "billing",`,
 		`Name:        "user",`,
+		`BaseService: "billing",`,
+		`BaseService: "user",`,
+		`Version:     "v1",`,
 		`Kind:        "service",`,
 		`Mount: func(s *Services, mux *http.ServeMux`,
 		`s.Billing.Register(`,
@@ -56,6 +60,44 @@ func TestGenerateInventory_DataOnlyRowsAndMount(t *testing.T) {
 	}
 	if !strings.Contains(billingMount, "AuthzInterceptor(authz)") {
 		t.Fatalf("billing mount should thread authz interceptor:\n%s", billingMount)
+	}
+}
+
+// TestGenerateInventory_VersionMetadata: the version-aware seam records the
+// proto API version as EXPLICIT metadata derived from the descriptor's proto
+// package, while leaving today's v1 mount path/keying untouched. A
+// higher-version package (v2beta1) flows through as Version metadata without
+// any change to identity — the precondition for additive multi-version
+// support. An unversioned package records an empty Version.
+func TestGenerateInventory_VersionMetadata(t *testing.T) {
+	dir := newInjectProject(t)
+	writeComponentDeps(t, dir, "internal/handlers", "shop", "shop", "\tLogger *slog.Logger")
+	writeComponentDeps(t, dir, "internal/handlers", "legacy", "legacy", "\tLogger *slog.Logger")
+
+	err := GenerateInventory(InventoryGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services: []ServiceDef{
+			{Name: "ShopService", Package: "acme.shop.v2beta1", ModulePath: "example.com/proj"},
+			{Name: "LegacyService", Package: "legacy", ModulePath: "example.com/proj"}, // unversioned
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateInventory: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "app", "inventory_gen.go"))
+	if err != nil {
+		t.Fatalf("read inventory: %v", err)
+	}
+	out := string(data)
+	for _, want := range []string{
+		`BaseService: "shop",`,
+		`Version:     "v2beta1",`,
+		`BaseService: "legacy",`,
+		`Version:     "",`, // unversioned proto package
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("inventory missing version metadata %q:\n%s", want, out)
+		}
 	}
 }
 

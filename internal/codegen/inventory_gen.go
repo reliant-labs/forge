@@ -58,6 +58,27 @@ type InventoryServiceData struct {
 	// when REST is on, the connect import. Mirrors the bootstrap fields.
 	ConnectPkg       string
 	ProtoServiceName string
+	// BaseService and Version carry the proto identity SPLIT into its
+	// version-independent logical name and its proto API version (e.g.
+	// proto package "billing.v1" -> BaseService "billing", Version "v1").
+	// VERSION-AWARE SEAM (FORGE_SHAPE_REDESIGN — version-aware registry):
+	// today identity fuses the version (the v1 rides in ConnectPath/ConnectPkg
+	// and the import path), so a future `billing.v2` would register as a
+	// SEPARATE service. Recording the version as EXPLICIT METADATA here — a
+	// field, not an opaque part of identity — makes v2 an ADDITIVE change
+	// later (a second Version on the same BaseService) rather than a breaking
+	// redesign. It does NOT change today's behavior: ConnectPath, the mount
+	// path, and the field keying are byte-identical for v1 projects; this is
+	// pure additive metadata. Version is "" for an unversioned proto package.
+	//
+	// DEFERRED (NOT in this seam): per-version handler generation /
+	// per-version mount adapters. When multi-version lands, the cmd layer
+	// will group Inventory rows by BaseService and mount each Version's
+	// ConnectPath on its own route; the Mount closure and a per-version
+	// Services field are the extension points. Until then a project has at
+	// most one Version per BaseService and the grouping is a no-op.
+	BaseService string
+	Version     string
 	// HasWebhooks gates the webhook-route registration in the Mount body.
 	HasWebhooks bool
 	// HasAuthorizer is true when the service Deps declares an Authorizer —
@@ -136,6 +157,14 @@ func GenerateInventory(in InventoryGenInput) error {
 		protoServiceName := fallbackField + "Service"
 		connectImports[connectImport] = true
 
+		// Version-aware seam: split the proto identity into its
+		// version-independent base + the proto API version. The version flows
+		// from the descriptor's proto package (svc.Package, e.g. "billing.v1").
+		// runtimeName is already the version-INDEPENDENT kebab service name, so
+		// it is the BaseService; Version is purely additive metadata (see the
+		// InventoryServiceData doc). Empty Version for an unversioned package.
+		protoVersion := naming.ProtoPackageVersion(svc.Package)
+
 		deps, _ := ParseServiceDeps(res.Dir)
 		hasAuthz := false
 		for _, df := range deps {
@@ -153,6 +182,8 @@ func GenerateInventory(in InventoryGenInput) error {
 			Package:          pkg,
 			ConnectPkg:       connectPkg,
 			ProtoServiceName: protoServiceName,
+			BaseService:      runtimeName,
+			Version:          protoVersion,
 			HasWebhooks:      in.WebhookServices[naming.ServicePackage(svc.Name)],
 			HasAuthorizer:    hasAuthz,
 		})

@@ -384,3 +384,96 @@ func ServicePackage(name string) string {
 func ServiceHookFile(name string) string {
 	return ToKebabCase(name) + "-hooks.ts"
 }
+
+// ProtoPackageVersion extracts the proto API version from a fully-qualified
+// proto package name — the LAST dotted segment when it has the protobuf
+// version shape `v<major>` optionally suffixed with a stability channel
+// (`v1`, `v2`, `v1alpha1`, `v2beta3`). Returns "" when the package carries
+// no version segment.
+//
+//	"billing.v1"        -> "v1"
+//	"acme.billing.v1"   -> "v1"
+//	"shop.v2beta1"      -> "v2beta1"
+//	"billing"           -> ""   (unversioned)
+//	""                  -> ""
+//
+// This is the single source of truth for the version metadata the generated
+// service inventory records (FORGE_SHAPE_REDESIGN — version-aware registry
+// seam). It deliberately reads ONLY the package's own last segment, never
+// the service name, so the inventory's Version field is exactly the proto
+// API version and additive: a future `billing.v2` records Version "v2" as a
+// second version of the same logical service rather than colliding identity.
+func ProtoPackageVersion(protoPackage string) string {
+	if protoPackage == "" {
+		return ""
+	}
+	last := protoPackage
+	if i := strings.LastIndex(protoPackage, "."); i >= 0 {
+		last = protoPackage[i+1:]
+	}
+	if isProtoVersionSegment(last) {
+		return last
+	}
+	return ""
+}
+
+// ProtoPackageBase returns the proto package with any trailing version
+// segment stripped — the version-INDEPENDENT logical package identity.
+//
+//	"billing.v1"        -> "billing"
+//	"acme.billing.v1"   -> "acme.billing"
+//	"billing"           -> "billing"   (already unversioned)
+//
+// Pairing ProtoPackageBase + ProtoPackageVersion splits a fused
+// `billing.v1` identity into ("billing", "v1") so the inventory can record
+// the two distinctly. v2 then differs ONLY in Version, sharing the base —
+// the data-model precondition for additive multi-version support.
+func ProtoPackageBase(protoPackage string) string {
+	i := strings.LastIndex(protoPackage, ".")
+	if i < 0 {
+		return protoPackage
+	}
+	if isProtoVersionSegment(protoPackage[i+1:]) {
+		return protoPackage[:i]
+	}
+	return protoPackage
+}
+
+// isProtoVersionSegment reports whether seg is a protobuf version segment:
+// 'v', then one or more digits (the major), optionally followed by a
+// stability channel ("alpha"/"beta") and its own digits — matching the
+// buf/protobuf convention (v1, v2, v1alpha1, v2beta3). Anything else
+// (e.g. a domain segment like "billing" or "v" alone) is not a version.
+func isProtoVersionSegment(seg string) bool {
+	if len(seg) < 2 || seg[0] != 'v' {
+		return false
+	}
+	r := seg[1:]
+	// major digits
+	n := 0
+	for n < len(r) && r[n] >= '0' && r[n] <= '9' {
+		n++
+	}
+	if n == 0 {
+		return false
+	}
+	r = r[n:]
+	if r == "" {
+		return true // plain vN
+	}
+	// optional stability channel + its digits
+	for _, ch := range []string{"alpha", "beta"} {
+		if rest, ok := strings.CutPrefix(r, ch); ok {
+			if rest == "" {
+				return false // "v1alpha" with no channel number is malformed
+			}
+			for i := 0; i < len(rest); i++ {
+				if rest[i] < '0' || rest[i] > '9' {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}

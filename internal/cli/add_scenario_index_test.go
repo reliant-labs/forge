@@ -7,32 +7,11 @@ import (
 	"testing"
 )
 
-func TestValidateScenarioName(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   string
-		wantErr bool
-	}{
-		{"empty", "", true},
-		{"leading-digit", "1scenario", true},
-		{"uppercase", "GitHub", true},
-		{"trailing-hyphen", "scenario-", true},
-		{"consecutive-hyphens", "a--b", true},
-		{"underscore", "github_connected", true},
-		{"dot", "x.y", true},
-		{"ok-simple", "default", false},
-		{"ok-kebab", "github-connected", false},
-		{"ok-with-digits", "a1b2-c3", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateScenarioName(tc.input)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("validateScenarioName(%q): got err=%v, wantErr=%v", tc.input, err, tc.wantErr)
-			}
-		})
-	}
-}
+// TestValidateScenarioName moved with `forge add scenario` to the
+// internal/cli/add group (add/add_scenario_test.go). The tests that remain
+// here exercise the scenario-index emitters that stay in internal/cli
+// (writeScenariosIndex / emitScenarioScaffolding / scenarioImportIdent in
+// generate_frontend_mocks.go).
 
 func TestScenarioImportIdent(t *testing.T) {
 	cases := map[string]string{

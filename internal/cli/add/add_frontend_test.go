@@ -19,7 +19,7 @@
 // is an impossible state in practice and confuses every downstream
 // reader. See FORGE_BACKLOG.md / forge-add-frontend-leaves-stack-framework-none.
 
-package cli
+package add
 
 import (
 	"context"

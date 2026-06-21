@@ -8,7 +8,7 @@
 //   - .go suffix on <name> is tolerated (stripped)
 //   - subcommand is registered on `forge add`
 
-package cli
+package add
 
 import (
 	"os"
@@ -124,7 +124,7 @@ func TestRunAddHandlerFile_TolerateGoSuffix(t *testing.T) {
 // actually wired into `forge add`. Without this the runAdd function
 // could exist but never be reachable from the CLI.
 func TestAddHandlerFileSubcommandRegistered(t *testing.T) {
-	root := newAddCmd()
+	root := newCmd(testFactory())
 	var found bool
 	for _, sub := range root.Commands() {
 		if sub.Name() == "handler-file" {

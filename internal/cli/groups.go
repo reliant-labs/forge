@@ -13,6 +13,7 @@ package cli
 import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 
+	_ "github.com/reliant-labs/forge/internal/cli/add"
 	_ "github.com/reliant-labs/forge/internal/cli/backlog"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
 	_ "github.com/reliant-labs/forge/internal/cli/debug"

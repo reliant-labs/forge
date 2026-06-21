@@ -18,11 +18,12 @@ import (
 // TestE2ECmdAsCodeSubcommands drives the cmd-as-code surface end to end
 // on a real scaffold:
 //
-//  1. `./<bin> server <svc>` boots only that service through the
-//     canonical server pipeline (mount selection lives in the cmd layer
-//     over the data-only internal/app Inventory — the old string-projected
-//     per-service subcommand file cmd/services_gen.go is retired,
-//     FORGE_SHAPE_REDESIGN §1/§2).
+//  1. `./<bin> <svc>` is a REAL cobra subcommand (its own `-h`, its own
+//     identity) that boots only that service through the canonical server
+//     pipeline. Mount selection lives in the cmd layer over the data-only
+//     internal/app Inventory; the subcommand bakes its own name in as the
+//     sole selection key. The multi-service `./<bin> server [svc...]`
+//     form keeps working for run-all / arbitrary subsets.
 //  2. The user-owned cmd/commands.go extension point: a second binary
 //     registered AS CODE (userCommands()) shows up on the root command,
 //     runs, and SURVIVES regeneration (Tier-2: forge never overwrites).
@@ -42,9 +43,9 @@ func TestE2ECmdAsCodeSubcommands(t *testing.T) {
 
 	runCmd(t, projectDir, forgeBin, "generate")
 
-	// (1) The string-projected per-service subcommand file is retired —
-	// it must NOT be emitted. The user-owned extension point exists.
-	assertPathNotExistsE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
+	// (1) The REAL per-service subcommand file IS emitted, and the
+	// user-owned extension point exists.
+	assertPathExistsE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
 	assertPathExistsE2E(t, filepath.Join(projectDir, "cmd", "commands.go"))
 
 	// (2) Register a second binary AS CODE: replace the scaffolded
@@ -85,18 +86,25 @@ func userCommands() []*cobra.Command {
 	if got := readFileE2E(t, commandsPath); got != customCommands {
 		t.Fatalf("forge generate overwrote the user-owned cmd/commands.go:\n%s", got)
 	}
-	assertPathNotExistsE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
+	assertPathExistsE2E(t, filepath.Join(projectDir, "cmd", "services_gen.go"))
 
 	bin := filepath.Join(projectDir, "cmdcode-bin")
 	runCmd(t, projectDir, "go", "build", "-o", bin, "./cmd/...")
 
-	// Root help advertises the canonical server command and the
-	// code-registered second binary.
+	// Root help advertises the canonical server command, the REAL
+	// per-service subcommand (api), and the code-registered second binary.
 	helpOut := runCmdOutput(t, projectDir, bin, "--help")
-	for _, want := range []string{"proxy-tool", "server"} {
+	for _, want := range []string{"proxy-tool", "server", "api"} {
 		if !strings.Contains(helpOut, want) {
 			t.Errorf("root --help missing subcommand %q:\n%s", want, helpOut)
 		}
+	}
+
+	// `<bin> api -h` is a FIRST-CLASS subcommand with its own,
+	// service-specific help — not a positional arg to `server`.
+	svcHelpOut := runCmdOutput(t, projectDir, bin, "api", "-h")
+	if !strings.Contains(svcHelpOut, "Run only the api service") {
+		t.Errorf("`api -h` missing service-specific help:\n%s", svcHelpOut)
 	}
 
 	// The second binary runs through the shared root.
@@ -105,45 +113,53 @@ func userCommands() []*cobra.Command {
 		t.Errorf("proxy-tool subcommand did not run its body:\n%s", toolOut)
 	}
 
-	// `server <svc>` boots the canonical server pipeline mounting only
-	// the named subset.
-	port := freePortE2E(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	srv := exec.CommandContext(ctx, bin, "server", "api")
-	srv.Dir = projectDir
-	srv.Env = append(os.Environ(),
-		fmt.Sprintf("PORT=%d", port),
-		"DATABASE_URL=",
-		// Dev posture: production refuses to start without an auth
-		// provider (the refusal contract has its own tests). Auth bypass
-		// is now EXPLICIT — ENVIRONMENT=development alone keeps auth on, so
-		// a providerless scaffold needs AUTH_DEV_MODE=true to boot in dev.
-		"ENVIRONMENT=development",
-		"AUTH_DEV_MODE=true",
-	)
-	var srvOut strings.Builder
-	srv.Stdout = &srvOut
-	srv.Stderr = &srvOut
-	if err := srv.Start(); err != nil {
-		t.Fatalf("failed to start `cmdcode-bin server api`: %v", err)
+	// bootService starts `bin <args...>` (a real per-service subcommand or
+	// the `server [svc...]` form), waits for /healthz, and asserts 200.
+	bootService := func(label string, args ...string) {
+		t.Helper()
+		port := freePortE2E(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		srv := exec.CommandContext(ctx, bin, args...)
+		srv.Dir = projectDir
+		srv.Env = append(os.Environ(),
+			fmt.Sprintf("PORT=%d", port),
+			"DATABASE_URL=",
+			// Dev posture: production refuses to start without an auth
+			// provider (the refusal contract has its own tests). Auth bypass
+			// is now EXPLICIT — ENVIRONMENT=development alone keeps auth on,
+			// so a providerless scaffold needs AUTH_DEV_MODE=true to boot.
+			"ENVIRONMENT=development",
+			"AUTH_DEV_MODE=true",
+		)
+		var srvOut strings.Builder
+		srv.Stdout = &srvOut
+		srv.Stderr = &srvOut
+		if err := srv.Start(); err != nil {
+			t.Fatalf("failed to start `cmdcode-bin %s`: %v", label, err)
+		}
+		defer func() {
+			_ = srv.Process.Kill()
+			_ = srv.Wait()
+		}()
+		addr := fmt.Sprintf("http://127.0.0.1:%d", port)
+		if !waitForServer(t, addr+"/healthz", 10*time.Second) {
+			t.Fatalf("`cmdcode-bin %s` did not become ready\noutput:\n%s", label, srvOut.String())
+		}
+		resp, err := http.Get(addr + "/healthz")
+		if err != nil {
+			t.Fatalf("health check failed (%s): %v", label, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 from /healthz (%s), got %d", label, resp.StatusCode)
+		}
 	}
-	defer func() {
-		_ = srv.Process.Kill()
-		_ = srv.Wait()
-	}()
-	addr := fmt.Sprintf("http://127.0.0.1:%d", port)
-	if !waitForServer(t, addr+"/healthz", 10*time.Second) {
-		t.Fatalf("`cmdcode-bin server api` did not become ready\noutput:\n%s", srvOut.String())
-	}
-	resp, err := http.Get(addr + "/healthz")
-	if err != nil {
-		t.Fatalf("health check failed: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 from /healthz, got %d", resp.StatusCode)
-	}
+
+	// The REAL per-service subcommand boots only that service.
+	bootService("api", "api")
+	// The multi-service `server [svc...]` form still works.
+	bootService("server api", "server", "api")
 
 	// (3) No phantom service: audit's codegen category must not carry an
 	// unregistered_services finding — every subcommand the binary

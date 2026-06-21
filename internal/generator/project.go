@@ -325,7 +325,7 @@ func (g *ProjectGenerator) Generate() error {
 		// to cmd-root for top-level routing — both consume the user-owned
 		// userCommands() extension point (cmd/commands.go) and the
 		// generated per-service subcommands (cmd/services_gen.go, emitted
-		// below) register themselves via init().
+		// by the generate pipeline) register themselves via init().
 		if g.isBinaryShared() {
 			files = append(files,
 				struct{ template, dest string }{"cmd-shared-main.go.tmpl", "cmd/main.go"},
@@ -392,10 +392,12 @@ func (g *ProjectGenerator) Generate() error {
 
 	// cmd/commands.go — the user-owned cobra extension point the
 	// generated cmd/main.go consumes (userCommands()). Scaffolded once so
-	// the initial build compiles; string-projected per-service
-	// subcommands (the old cmd/services_gen.go) are retired in favor of
-	// `./<bin> server [<svc>...]` and the data-only internal/app
-	// Inventory mount selection (FORGE_SHAPE_REDESIGN §1/§2).
+	// the initial build compiles. The REAL per-service subcommands
+	// (cmd/services_gen.go — one first-class cobra command per service,
+	// each delegating to runServer with its own name pre-selected over the
+	// data-only internal/app Inventory) are emitted by the generate
+	// pipeline's internal/app composition step, which the service-kind
+	// scaffold runs immediately via bootstrapGeneratedCode.
 	if g.isService() && g.Features.CodegenEnabled() {
 		if err := codegen.GenerateCmdCommands(g.Path); err != nil {
 			return fmt.Errorf("failed to scaffold cmd/commands.go: %w", err)

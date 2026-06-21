@@ -311,4 +311,27 @@ message ConfigFieldOptions {
   // category: "stripe" → STRIPE_ENV bundle). Empty category lands the
   // field in the default APP_ENV bundle.
   string category = 7;
+
+  // Role tags a field with a SEMANTIC meaning that drives behavior, so
+  // forge/pkg/config can offer annotation-driven helpers without matching
+  // on the field's NAME. Renaming a field never changes behavior — the
+  // behavior follows the annotation. Naming a field "environment" without
+  // the annotation does NOT make it the mode field.
+  ConfigFieldRole role = 8;
+}
+
+// ConfigFieldRole enumerates the semantic roles a config field can carry.
+// Today the only role is MODE (the runtime production/development switch
+// that gates dev ergonomics and the explicit auth bypass). Additional
+// roles can be added here as new annotation-driven semantics appear.
+enum ConfigFieldRole {
+  // CONFIG_FIELD_ROLE_UNSPECIFIED is the default: an ordinary config
+  // field with no special semantics.
+  CONFIG_FIELD_ROLE_UNSPECIFIED = 0;
+
+  // CONFIG_FIELD_ROLE_MODE marks the field whose string value selects the
+  // runtime mode: "development"/"dev" → development, anything else →
+  // production. config.Mode(msg) and config.DevAuthBypass(msg) key off
+  // THIS field, regardless of its name.
+  CONFIG_FIELD_ROLE_MODE = 1;
 }

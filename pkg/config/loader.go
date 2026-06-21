@@ -2,33 +2,28 @@ package config
 
 // Descriptor-driven config loader.
 //
-// This is the library form of the loader forge GENERATES into a project's
-// pkg/config/config.go. Instead of emitting per-field Go code from the
-// config proto, it reads the (forge.v1.config) field options off a
-// proto.Message's descriptor at RUNTIME and resolves each field with the
-// canonical forge precedence: explicit CLI flag > environment variable >
-// proto default. A project can hold a *configv1.AppConfig (or any proto
-// message whose fields carry the option) and call LoadInto/RegisterFlags
-// rather than carrying ~300 lines of generated loader.
+// This is THE config loader: forge no longer emits a per-field loader into a
+// project. Instead of generating Go code from the config proto, it reads the
+// (forge.v1.config) field options off a proto.Message's descriptor at RUNTIME
+// and resolves each field with the canonical forge precedence: explicit CLI
+// flag > environment variable > proto default. A project holds a
+// *configv1.AppConfig (the config object IS the proto type) and calls
+// LoadInto/RegisterFlags — the generated pkg/config/config.go is a thin shim
+// that aliases Config to the proto type and wraps these entrypoints.
 //
-// The semantics here MIRROR internal/templates/project/config.go.tmpl +
-// internal/codegen/config_gen.go exactly where they translate cleanly:
+// The resolution semantics:
 //
 //   - Precedence: flag (only if cmd.Flags().Changed) > env (LookupEnv) >
 //     default > required-error > leave-zero. See resolveRaw.
 //   - Empty-env handling: a string field treats an explicitly-empty env
-//     var ("") as SET (the generated AllowEmptyEnv=true for non-duration
-//     strings); every non-string scalar treats "" as unset, because
+//     var ("") as SET; every non-string scalar treats "" as unset, because
 //     parsing "" would always error. See allowEmptyEnv.
 //   - A malformed value is an error that aborts loading — never a silent
 //     fallback to the default.
-//
-// The one behavior that does NOT translate: the generated loader detects
-// "duration" string fields by Go-name / default-value heuristic
-// (isDurationField) and stores them as time.Duration. A descriptor has no
-// such heuristic, so here a Go duration is ONLY recognized when the proto
-// field is genuinely a google.protobuf.Duration message. String fields
-// stay strings. See the package doc on LoadInto for the migration note.
+//   - Durations: a Go duration is recognized ONLY when the proto field is a
+//     google.protobuf.Duration message (no name heuristic — declare the
+//     field as Duration to get typed-duration behavior). String fields stay
+//     strings.
 
 import (
 	"fmt"
@@ -121,14 +116,12 @@ func allowEmptyEnv(fd protoreflect.FieldDescriptor) bool {
 // duration messages register as a string flag — LoadInto parses "5s" →
 // Duration), and its default is the proto option's DefaultValue.
 //
-// It is named RegisterFlagsFor (not RegisterFlags) because the package
-// already exports a stub RegisterFlags(*cobra.Command) for the field-less
-// baseline Config; the two coexist. This is the descriptor-driven form a
-// project adopts once it has a config proto message.
+// It is the pflag-level primitive; the cobra-facing RegisterFlags(cmd, msg)
+// in semantic.go wraps it. It recurses into nested config blocks.
 //
 // Fields without a flag (typically secrets sourced only from env / Secret
-// mounts) are intentionally skipped — the same defense-in-depth the
-// generated RegisterFlags applies.
+// mounts) are intentionally skipped — defense-in-depth against shell-history
+// / `ps` exposure of credentials.
 func RegisterFlagsFor(flags *pflag.FlagSet, msg proto.Message) error {
 	return registerFlagsForDesc(flags, msg.ProtoReflect().Descriptor())
 }
@@ -233,15 +226,15 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // parsing all match config.go.tmpl. cmd may be nil (env + defaults only),
 // so LoadInto works from non-cobra entrypoints too.
 //
-// Migration note for consumers replacing the generated loader: the
-// generated Config exposes time.Duration fields for several STRING proto
-// fields (pre_stop_delay, shutdown_timeout, db_conn_max_idle_time,
-// db_conn_max_lifetime) via a Go-name heuristic the descriptor cannot
-// reproduce. To get the same typed-duration behavior from this library,
-// those fields must be declared as google.protobuf.Duration in the config
-// proto. The generated Validate (CORS/TLS/log-format cross-field checks)
-// and the Mode()/DevAuthBypass() helpers are NOT part of this library —
-// they remain the consumer's responsibility.
+// Durations: declare a duration-shaped field as google.protobuf.Duration in
+// the config proto — LoadInto parses the resolved Go-duration string ("5s")
+// into the message, and consumers read it with .AsDuration(). (A plain
+// string field stays a string; the descriptor has no name heuristic.)
+//
+// The companion semantics — Mode/DevAuthBypass (role=MODE) and Validate
+// (TLS/CORS roles + allowed_values) — live in this package too (semantic.go),
+// as FREE FUNCTIONS over the message. There is no parallel generated struct:
+// a project holds the proto config type and calls these directly.
 func LoadInto(cmd *cobra.Command, msg proto.Message) error {
 	return loadIntoMessage(cmd, msg.ProtoReflect())
 }

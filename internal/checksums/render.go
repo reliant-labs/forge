@@ -44,12 +44,6 @@ func SideRenderRelPath(relPath string) string {
 	return path.Join(RenderDir, relPath)
 }
 
-// SideRenderBaseRelPath returns the project-relative location of the
-// merge-base side render for relPath (`.forge/render-base/<relpath>`).
-func SideRenderBaseRelPath(relPath string) string {
-	return path.Join(RenderBaseDir, relPath)
-}
-
 // WriteSideRenderNoBase writes `.forge/render/<relpath>` — the
 // transient render parked by the `--explain-drift` redirect so the
 // post-pipeline diff has a "fresh render" side without touching the

@@ -765,21 +765,6 @@ func IsInstalled(name string, cfg *config.ProjectConfig) bool {
 	return false
 }
 
-// InstalledPacks returns the list of Pack structs for all installed packs.
-func InstalledPacks(cfg *config.ProjectConfig) ([]*Pack, error) {
-	var result []*Pack
-	for _, name := range cfg.Packs {
-		pack, err := LoadPack(name)
-		if err != nil {
-			// Pack was removed from Forge but still referenced in config
-			fmt.Fprintf(os.Stderr, "  Warning: installed pack %q not found: %v\n", name, err)
-			continue
-		}
-		result = append(result, pack)
-	}
-	return result, nil
-}
-
 // renderMigration renders a single pack migration template pair (up + down)
 // using the supplied numeric ID. The output filename is built from the ID and
 // the migration's Name (e.g. id=2, name="api_keys" → "00002_api_keys.up.sql").

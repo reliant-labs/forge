@@ -62,19 +62,6 @@ func SetVersion(v, date, commit string) {
 	gitCommit = commit
 }
 
-// GetVersion returns the forge binary's version string. Callers can use this
-// to stamp the current forge version into generated artifacts (e.g. the
-// forge.yaml pin), which enables pinned installs in CI.
-func GetVersion() string {
-	return version
-}
-
-// GetGitCommit returns the git commit SHA the forge binary was built from.
-// Returns "unknown" if the binary was not built with ldflags.
-func GetGitCommit() string {
-	return gitCommit
-}
-
 // NewRootCmd builds and returns the fully assembled root command.
 func NewRootCmd() *cobra.Command {
 	var verbose bool
@@ -190,4 +177,3 @@ func newVersionCmd() *cobra.Command {
 		},
 	}
 }
-

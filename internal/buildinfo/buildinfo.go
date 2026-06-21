@@ -126,13 +126,6 @@ func InstallableVersion() string {
 	return v
 }
 
-// BuildDate returns the build date recorded via Set (or "unknown").
-func BuildDate() string {
-	mu.RLock()
-	defer mu.RUnlock()
-	return buildDate
-}
-
 // GitCommit returns the git commit SHA recorded via Set. Falls back to the
 // VCS revision from runtime build info when available.
 func GitCommit() string {

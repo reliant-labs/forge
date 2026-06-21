@@ -102,11 +102,6 @@ var Tier1TargetSet = map[string]bool{}
 // transfers.
 func markTier1Target(relPath string) { Tier1TargetSet[relPath] = true }
 
-// MarkTier1Target is the exported shim for tests that bypass the
-// WriteGeneratedFile chokepoint but still need to simulate the Tier-1
-// target set the retirement logic consults.
-func MarkTier1Target(relPath string) { markTier1Target(relPath) }
-
 // WrittenThisRun is a per-pipeline-run set of relative paths that the
 // current `forge generate` invocation has successfully written via the
 // `WriteGeneratedFile*` family. The marker-driven stale-artifact sweep

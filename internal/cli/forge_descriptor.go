@@ -611,13 +611,3 @@ func protoKindToString(k protoreflect.Kind) string {
 		return "string"
 	}
 }
-
-// splitRef splits a "table.column" reference string.
-func splitRef(ref string) []string {
-	for i := len(ref) - 1; i >= 0; i-- {
-		if ref[i] == '.' {
-			return []string{ref[:i], ref[i+1:]}
-		}
-	}
-	return []string{ref}
-}

@@ -81,7 +81,7 @@ grep -rl "\"$MOD/handlers"   --include=*.go . | xargs sed -i '' "s#\"$MOD/handle
 grep -rl "\"$MOD/workers"    --include=*.go . | xargs sed -i '' "s#\"$MOD/workers#\"$MOD/internal/workers#g"
 grep -rl "\"$MOD/operators"  --include=*.go . | xargs sed -i '' "s#\"$MOD/operators#\"$MOD/internal/operators#g"
 
-# 3. Regenerate so any forge-owned wiring (bootstrap, wire_gen, registries)
+# 3. Regenerate so forge-owned wiring (the injector / inventory / registries)
 #    points at the new paths.
 forge generate
 
@@ -99,9 +99,10 @@ What the rewrite can't fully cover:
   (`svcbilling "<module>/handlers/billing"`) keeps its alias — only the path
   string changes. The grep/sed in step 2 handles the path; confirm the alias
   still reads sensibly.
-- **Forged `bootstrap.go` / registries.** A disowned `pkg/app/bootstrap.go`
-  won't be touched by `forge generate`. Update its component imports by hand
-  with the same `<module>/handlers` → `<module>/internal/handlers` rewrite.
+- **Disowned wiring / registries.** Any disowned file `forge generate` won't
+  touch (a forked composition root, a hand-edited registry) needs its component
+  imports rewritten by hand with the same `<module>/handlers` →
+  `<module>/internal/handlers` rewrite.
 - **`.air.*.toml`, Taskfile, Dockerfile, CI globs.** Any path glob that
   referenced `handlers/`, `workers/`, or `operators/` (build watch lists,
   lint excludes, codecov paths) needs the `internal/` prefix added.

@@ -47,6 +47,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -1721,10 +1722,10 @@ func auditWireCoverage(projectDir string) AuditCategory {
 	// own category rather than going through rollupByPackage — only the
 	// scan→error-warn→empty-ok shell is shared (scanCategory).
 	return scanCategory(
-		func() ([]wireCoverageFinding, error) { return scanWireGen(f, path, projectDir) },
+		func() ([]lint.WireCoverageFinding, error) { return lint.ScanWireGen(f, path, projectDir) },
 		"scan failed",
 		"wire coverage clean — no unresolved Deps fields",
-		func(findings []wireCoverageFinding) AuditCategory {
+		func(findings []lint.WireCoverageFinding) AuditCategory {
 			byComponent := map[string][]string{}
 			for _, f := range findings {
 				comp := f.Function
@@ -1767,13 +1768,13 @@ func auditOptionalDepsGuard(projectDir string) AuditCategory {
 	// offending component; per-finding detail lives in
 	// `forge lint --optional-deps-guard --json`.
 	return scanCategory(
-		func() ([]optionalDepsGuardFinding, error) { return collectOptionalDepsGuardFindings(projectDir) },
+		func() ([]lint.OptionalDepsGuardFinding, error) { return lint.CollectOptionalDepsGuardFindings(projectDir) },
 		"optional-deps-guard scan failed",
 		"optional-deps-guard clean — every optional-dep deref is nil-guarded (or suppressed)",
-		func(findings []optionalDepsGuardFinding) AuditCategory {
+		func(findings []lint.OptionalDepsGuardFinding) AuditCategory {
 			return rollupByPackage(findings,
-				func(f optionalDepsGuardFinding) string { return f.Role + "/" + f.Package },
-				func(f optionalDepsGuardFinding) string {
+				func(f lint.OptionalDepsGuardFinding) string { return f.Role + "/" + f.Package },
+				func(f lint.OptionalDepsGuardFinding) string {
 					return fmt.Sprintf("%s:%d %s in %s", f.File, f.Line, f.Expr, f.Method)
 				},
 				func(findingCount, pkgCount int) string {
@@ -1799,13 +1800,13 @@ func auditConfigDeps(projectDir string) AuditCategory {
 	// offending component; per-finding detail lives in
 	// `forge lint --config-deps --json`.
 	return scanCategory(
-		func() ([]configDepsFinding, error) { return collectConfigDepsFindings(projectDir) },
+		func() ([]lint.ConfigDepsFinding, error) { return lint.CollectConfigDepsFindings(projectDir) },
 		"config-deps scan failed",
 		"config-deps clean — no scalar Deps fields (configuration flows through config blocks)",
-		func(findings []configDepsFinding) AuditCategory {
+		func(findings []lint.ConfigDepsFinding) AuditCategory {
 			return rollupByPackage(findings,
-				func(f configDepsFinding) string { return f.Role + "/" + f.Package },
-				func(f configDepsFinding) string {
+				func(f lint.ConfigDepsFinding) string { return f.Role + "/" + f.Package },
+				func(f lint.ConfigDepsFinding) string {
 					return fmt.Sprintf("%s:%d Deps.%s %s", f.File, f.Line, f.Field, f.Type)
 				},
 				func(findingCount, pkgCount int) string {

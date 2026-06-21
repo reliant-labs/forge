@@ -94,7 +94,7 @@
 // collect/format split so `forge lint --json` and `forge audit --json`
 // reuse the same engine.
 
-package cli
+package lint
 
 import (
 	"fmt"
@@ -109,6 +109,20 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 )
+
+// OptionalDepsGuardFinding is the exported alias for the optional-deps-guard
+// finding, consumed by the internal/cli/audit group's auditOptionalDepsGuard
+// roll-up. A type alias (not a new type) so audit's field access
+// (.Role/.Package/.File/.Line/.Expr/.Method) is unchanged from when both
+// commands lived in package cli.
+type OptionalDepsGuardFinding = optionalDepsGuardFinding
+
+// CollectOptionalDepsGuardFindings is the exported entry the audit group
+// calls. It forwards to the package-internal collector; the audit roll-up
+// is the only cross-package consumer.
+func CollectOptionalDepsGuardFindings(projectDir string) ([]OptionalDepsGuardFinding, error) {
+	return collectOptionalDepsGuardFindings(projectDir)
+}
 
 // optionalCheckedDirective is the per-line suppression marker. Same
 // recognition discipline as `forge:optional-dep`: the directive must be

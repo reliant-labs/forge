@@ -142,6 +142,16 @@ func SetProjectStoreLoader(load func() (projectstore.ProjectStore, error)) {
 	projectStoreLoader = load
 }
 
+// LoadProjectStore invokes the registered project-store loader directly.
+// Most group commands take the loader off their *Factory (the testable
+// path), but the lint group has ~80 free helper functions that read project
+// config without a Factory in scope; this package-level entry lets them
+// reach the one registered loader without threading a Factory through every
+// signature. It is the same loader SetProjectStoreLoader installs.
+func LoadProjectStore() (projectstore.ProjectStore, error) {
+	return projectStoreLoader()
+}
+
 // New returns a Factory wired to the real process streams and the registered
 // project-store loader. Tests construct a Factory literal with bytes.Buffer
 // fields (and their own loader) instead.

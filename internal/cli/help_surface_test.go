@@ -1,8 +1,9 @@
-// Tests for the user-vs-maintainer CLI surface split (help_dev.go).
+// Tests for the user-vs-maintainer CLI surface split (cmdutil.HideDevFlags).
 //
-// The visible flag set of `forge lint` and `forge generate` is pinned
-// here on purpose: a new flag must consciously pick a side (visible
-// user surface vs hidden --help-dev surface) or these tests fail.
+// The visible flag set of `forge generate` is pinned here on purpose: a new
+// flag must consciously pick a side (visible user surface vs hidden
+// --help-dev surface) or these tests fail. The `forge lint` half of the
+// split moved with the command to internal/cli/lint/help_surface_test.go.
 
 package cli
 
@@ -45,48 +46,6 @@ func assertStringSlicesEqual(t *testing.T, what string, got, want []string) {
 	t.Helper()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("%s mismatch:\n  got:  %v\n  want: %v\n(new flags must consciously pick a side — see help_dev.go)", what, got, want)
-	}
-}
-
-func TestLintHelpSurface(t *testing.T) {
-	cmd := newLintCmd()
-
-	assertStringSlicesEqual(t, "lint visible flags", visibleFlagNames(cmd), []string{
-		"contract",
-		"conventions",
-		"fix",
-		"help-dev",
-		"json",
-		"migration-safety",
-		"strict",
-		"tests",
-	})
-
-	assertStringSlicesEqual(t, "lint hidden flags", hiddenFlagNames(cmd), []string{
-		"banners",
-		"bootstrap-deps-coverage",
-		"check-workarounds",
-		"config-deps",
-		"exported-vars",
-		"frontend-packs",
-		"frontend-stores",
-		"optional-deps-guard",
-		"scaffolds",
-		"suggest-buf-excepts",
-		"suggest-excludes",
-		"wire-coverage",
-	})
-
-	// Hidden flags must not leak into the rendered help.
-	usage := cmd.UsageString()
-	for _, name := range hiddenFlagNames(cmd) {
-		if strings.Contains(usage, "--"+name) {
-			t.Errorf("hidden lint flag --%s leaked into --help usage output", name)
-		}
-	}
-	// The Long text must point at the discoverability mechanism.
-	if !strings.Contains(cmd.Long, "--help-dev") {
-		t.Error("lint Long help must mention --help-dev so hidden flags stay discoverable")
 	}
 }
 
@@ -141,12 +100,6 @@ func TestHiddenFlagsStillParse(t *testing.T) {
 		want map[string]string // flag name -> expected parsed value
 	}{
 		{
-			name: "lint hidden bools",
-			cmd:  newLintCmd(),
-			args: []string{"--banners", "--wire-coverage", "--config-deps"},
-			want: map[string]string{"banners": "true", "wire-coverage": "true", "config-deps": "true"},
-		},
-		{
 			name: "generate hidden bool and string",
 			cmd:  newGenerateCmd(),
 			args: []string{"--skip-validate", "--steps=mocks", "--plan"},
@@ -175,7 +128,7 @@ func TestHiddenFlagsStillParse(t *testing.T) {
 // asserts it exits cleanly, lists every hidden flag, and does NOT run
 // the underlying command.
 func TestHelpDevListsHiddenFlags(t *testing.T) {
-	for _, newCmd := range []func() *cobra.Command{newLintCmd, newGenerateCmd} {
+	for _, newCmd := range []func() *cobra.Command{newGenerateCmd} {
 		cmd := newCmd()
 		hidden := hiddenFlagNames(cmd)
 

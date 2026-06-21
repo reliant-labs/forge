@@ -48,6 +48,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"ensure gen/go.mod",
 		"buf generate (Go stubs)",
 		"descriptor extraction",
+		"authz completeness gate",
 		"OpenAPI specs (protoc-gen-connect-openapi)",
 		"frontend workspaces scaffold",
 		"TypeScript stubs (frontends)",

@@ -1,4 +1,4 @@
-package cli
+package lint
 
 import (
 	"bufio"
@@ -56,6 +56,19 @@ var reWireTODO = regexp.MustCompile(`//\s*TODO:\s*wire\s+(\S+)`)
 // own thing — the user reads "1 unresolved field on service X" and
 // goes to fix it; they don't need the full forgeconv-style remediation
 // sentence.
+// WireCoverageFinding is the exported alias consumed by the
+// internal/cli/audit group's auditWireCoverage roll-up. A type alias (not a
+// new type) so audit's field access (.Function/.Field) is unchanged from
+// when both commands lived in package cli.
+type WireCoverageFinding = wireCoverageFinding
+
+// ScanWireGen is the exported entry the audit group calls to build the
+// wire-coverage roll-up without shelling to `forge lint`. It forwards to the
+// package-internal scanner.
+func ScanWireGen(r io.Reader, path, projectDir string) ([]WireCoverageFinding, error) {
+	return scanWireGen(r, path, projectDir)
+}
+
 type wireCoverageFinding struct {
 	File  string
 	Line  int

@@ -1,4 +1,4 @@
-package cli
+package lint
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
@@ -45,7 +46,7 @@ type lintFlags struct {
 	jsonOut           bool
 }
 
-func newLintCmd() *cobra.Command {
+func newCmd(_ *factory.Factory) *cobra.Command {
 	var flags lintFlags
 
 	cmd := &cobra.Command{

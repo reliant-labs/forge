@@ -51,7 +51,7 @@ func requireNoFrictionFile(t *testing.T, root string) {
 func TestGenerateAccept_RecordsDisownFriction(t *testing.T) {
 	const (
 		relWire = "pkg/app/wire_gen.go"
-		relCmd  = "cmd/server.go"
+		relCmd  = "internal/cli/serve.go"
 	)
 	tests := []struct {
 		name   string

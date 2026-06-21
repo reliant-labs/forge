@@ -81,20 +81,17 @@ Run `forge generate`. The pipeline rewrites:
   cheap structs (cross-service reads stay nil-safe) but their handlers
   never land on the mux, and cmd/server.go gates which workers and
   operators START using the same name set.
-- **`cmd/main.go`** — replaced with the shared-binary cobra root
-  (cmd-shared-main.go.tmpl). Functionally identical to the canonical
-  cmd-root for top-level routing; the difference is the help text and
-  documentation comments.
-- **`cmd/services_gen.go`** — already present in BOTH binary modes:
-  one cobra subcommand per service listed in `RegisteredServices`
-  (`pkg/app/services.go` — what the binary serves is code, not
-  config). Each delegates to `runServer(cmd, []string{"<svc>"})`; the
-  canonical `./<bin> server [<svc>...]` form continues to work. This
-  file is a Tier-1 projection of the registration rows — shared mode
-  does not change the subcommand surface, only the deploy story.
-  (Pre-M6 shared-mode projects had one scaffold-time `cmd/<svc>.go`
-  per service instead — delete those by hand after regenerating;
-  leaving them produces duplicate help entries.)
+- **`cmd/<bin>/main.go`** — a thin `cli.Execute()` in both binary
+  modes (shared mode only changes the help/doc text via
+  cmd-shared-main.go.tmpl). The command tree lives in the
+  `internal/cli` package.
+- **`internal/cli/svc_<name>.go`** — already present in BOTH binary
+  modes: one cobra subcommand per service (one FILE per service), each
+  calling the shared `serve()` with the TYPED mount method expression
+  `(*app.Services).Mount<Svc>` — selection is compile-time typed, not a
+  string. The canonical `./<bin> server [<svc>...]` form continues to
+  work via the typed `app.MountByName` map. Shared mode does not change
+  the subcommand surface, only the deploy story.
 - **`deploy/kcl/<env>/main.k`** — replaced with the
   `MultiServiceApplication` shape (one `image:`, N
   `SubCommandService` entries via `render.multi_service_apps(multi)`).
@@ -102,7 +99,7 @@ Run `forge generate`. The pipeline rewrites:
 `forge upgrade` is the safer command for established projects: it
 shows a dry-run diff first and prompts before overwriting any
 checksum-protected file. `forge generate` always rewrites the Tier-1
-files (cmd/main.go, cmd/server.go, etc.) and leaves Tier-2 alone.
+files (cmd/main.go, internal/cli/*.go, etc.) and leaves Tier-2 alone.
 
 ### 3. Verify the image build
 
@@ -152,9 +149,9 @@ To go back to `binary: per-service`:
 
 1. Set `binary: per-service` (or remove the field) in `forge.yaml`.
 2. Run `forge generate`. The bootstrap reverts to all-services
-   construction and cmd/main.go reverts to the canonical cmd-root.
-   `cmd/services_gen.go` is mode-independent (it projects the
-   RegisteredServices rows) and stays as-is.
+   construction and cmd/main.go reverts to the canonical thin
+   entrypoint. The `internal/cli/svc_<name>.go` per-service subcommands
+   are mode-independent (they project the proto services) and stay as-is.
 3. KCL `deploy/kcl/<env>/main.k` reverts to N `Application` blocks.
 
 ## Related skills
@@ -162,10 +159,13 @@ To go back to `binary: per-service`:
 - `architecture` — binary modes overview.
 - `deploy` — `MultiServiceApplication` for KCL.
 - `services` — adding a new service post-migration (works the same
-  way in either mode: implement, add its `serviceRow` line to
-  `pkg/app/services.go`, and `forge generate` emits its subcommand
-  into `cmd/services_gen.go`).
+  way in either mode: implement, add its proto service, and `forge
+  generate` emits its typed `internal/cli/svc_<name>.go` subcommand +
+  `(*app.Services).Mount<Svc>` method). (Pre-§2 trees registered
+  services in a now-retired `pkg/app/services.go` table; live DI now
+  lives in `internal/app` — upgraders mid-migration may still see the
+  old file.)
 - `binaries` — second binaries (non-Connect long-running processes)
-  ride the same shared root: `forge add binary <name>` scaffolds a
-  user-owned `cmd/<name>.go`, or register a hand-rolled command via
-  `userCommands()` in `cmd/commands.go`.
+  ride the same shared root: `forge add binary <name>`, or register a
+  hand-rolled command via `userCommands(deps)` in
+  `internal/cli/commands.go`.

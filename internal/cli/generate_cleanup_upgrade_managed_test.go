@@ -39,8 +39,8 @@ func TestCleanupStaleArtifacts_SkipsUpgradeManagedPaths(t *testing.T) {
 
 	managed := []string{
 		"cmd/main.go",
-		"cmd/db.go",
-		"cmd/version.go",
+		"internal/cli/db.go",
+		"internal/cli/version.go",
 		".golangci.yml",
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
@@ -82,15 +82,16 @@ func TestUpgradeManagedPaths_CoversReportedFiles(t *testing.T) {
 	got := generator.UpgradeManagedPaths()
 	want := []string{
 		"cmd/main.go",
-		"cmd/db.go",
-		"cmd/version.go",
+		"internal/cli/db.go",
+		"internal/cli/version.go",
 		".golangci.yml",
 		".github/CODEOWNERS",
 		".github/pull_request_template.md",
 		".github/workflows/e2e.yml",
-		// Tier-1 cmd files that also live under upgrade ownership.
-		"cmd/server.go",
-		"cmd/otel.go",
+		// Tier-1 internal/cli command-tree files under upgrade ownership.
+		"internal/cli/serve.go",
+		"internal/cli/server.go",
+		"internal/cli/root.go",
 		"buf.yaml",
 		// Tier-2 scaffolds also upgrade-managed.
 		"Taskfile.yml",

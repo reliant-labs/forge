@@ -368,6 +368,19 @@ func generateSteps() []GenStep {
 			return len(c.Cfg.Packs) > 0
 		}), GateReason: "no packs installed or features.packs=false", Run: stepPackGenerateHooks, Tag: "codegen"},
 		{Name: "regenerate infra files", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepRegenerateInfra, Tag: "deploy"},
+		// MUST follow "regenerate infra files": that step (re)creates
+		// cmd/<bin>/cmd/serve.go + cmd/<bin>/main.go (which blank-imports the
+		// three group subpackages). Anchoring the cmd-group subpackages here —
+		// after serve.go exists but before "go mod tidy (root)" / "go build
+		// (validate generated code)" — is what lets a flat→nested migration
+		// reach a buildable state without manual dir pre-creation or skip-flags.
+		// See stepCmdGroups for the full ordering rationale.
+		// Gate mirrors stepInternalAppComposition (features.codegen only, NOT
+		// hasAnyEntrypoint): a degenerate tree with serve.go but zero parsed
+		// services still needs the three group register_gen.go anchors (with
+		// zero items) so main.go's blank imports resolve. The step itself
+		// no-ops when serve.go is absent (CLI/library/codegen-less trees).
+		{Name: "cmd command groups (services/workers/operators)", Gate: feature(config.FeaturesConfig.CodegenEnabled), GateReason: "features.codegen=false", Run: stepCmdGroups, Tag: "codegen"},
 		{Name: "components_gen.json", Gate: gateDeployEnabled, GateReason: "features.deploy=false", Run: stepComponentsGenJSON, Tag: "deploy"},
 		{Name: "per-env deploy config", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), hasConfig), GateReason: "no proto/config/ directory or features.deploy=false", Run: stepPerEnvDeployConfig, Tag: "deploy"},
 		// Ingress (Gateway API codegen — the k3d-ports fragment and, in
@@ -441,7 +454,14 @@ var stepPresetAllowlist = map[string]map[string]bool{
 		"ensure gen/go.mod":                      true,
 		"parse services + module path":           true,
 		"internal/app composition (hybrid DI)":   true,
-		"go mod tidy (pre-wiring)":               true,
+		// cmd-group anchors moved out of the composition step into their own
+		// step (so a flat→nested migration anchors them AFTER infra creates
+		// serve.go). `forge add worker` runs on an already-nested project
+		// where serve.go exists, so this step anchors the new worker's
+		// cmd/<bin>/cmd/workers/<name>.go subcommand — the behavior the
+		// preset previously got for free from the composition step.
+		"cmd command groups (services/workers/operators)": true,
+		"go mod tidy (pre-wiring)":                        true,
 		"pkg/app substrate (app_gen/setup)":      true,
 		"cmd/commands.go (user extension point)": true,
 		"pkg/app/testing.go":                     true,
@@ -573,7 +593,12 @@ var templatesOnlyStepAllow = map[string]bool{
 	"CI workflows":                           true,
 	"pack generate hooks":                    true,
 	"regenerate infra files":                 true,
-	"per-env deploy config":                  true,
+	// cmd-group anchors are template-driven (cmd-svc/worker/operator-group +
+	// register_gen anchors) and MUST stay after "regenerate infra files" in
+	// the allowlist's logical group — the step itself no-ops until serve.go
+	// exists, which infra regen provides.
+	"cmd command groups (services/workers/operators)": true,
+	"per-env deploy config":                           true,
 	"Grafana dashboards":                     true,
 	"frontend mocks + transport":             true,
 }
@@ -1894,6 +1919,45 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
 	return nil
+}
+
+// stepCmdGroups anchors the dir-nested per-component command-group subpackages
+// under cmd/<bin>/cmd/{services,workers,operators} (one file per service /
+// worker / operator + a register_gen.go anchor per group so the subpackage
+// compiles with zero items).
+//
+// Ordering is load-bearing: this MUST run AFTER stepRegenerateInfra, which is
+// what (re)creates cmd/<bin>/cmd/serve.go + cmd/<bin>/main.go. On a flat→nested
+// migration (an old project with a flat cmd/*.go layout running `forge generate`
+// for the first time on the nested layout) serve.go does NOT exist when
+// stepInternalAppComposition runs upstream, so the group subpackages cannot be
+// anchored there. The freshly-regenerated main.go blank-imports the three group
+// subpackages, so if they stayed Go-file-less the subsequent `go mod tidy
+// (root)` / `go build (validate)` steps would 404 the empty local import and
+// abort the pipeline — exactly the kalshi migration friction (the mid-run
+// `go mod tidy` failed on the not-yet-created group subpackages before they
+// could be anchored). Anchoring here, after serve.go exists but before those
+// tidy/build steps, lets a flat→nested project reach a buildable state with no
+// manual dir pre-creation and no skip-flags.
+//
+// Idempotent: GenerateCmdGroups writes byte-identical content on re-run, so a
+// normal already-nested project (where the anchors already exist) is a no-op.
+// Skipped silently when serve.go doesn't exist (CLI/library kinds and
+// codegen-less trees have no serve pipeline to delegate to).
+func stepCmdGroups(ctx *pipelineContext) error {
+	rows, err := ctx.rowServiceDefs()
+	if err != nil {
+		return err
+	}
+	workers, err := discoverWorkers(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+	operators, err := discoverOperators(ctx.ProjectDir)
+	if err != nil {
+		return err
+	}
+	return generateCmdGroups(rows, workers, operators, ctx.ProjectDir, ctx.Checksums)
 }
 
 // stepCmdCommands ensures the user-owned cmd/<bin>/cmd/commands.go extension

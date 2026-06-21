@@ -149,7 +149,8 @@ interface pattern throughout the entire stack.`,
 	rootCmd.AddCommand(newUpgradeCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
-	rootCmd.AddCommand(newComponentCmd())
+	// `component` migrated to the internal/cli/component group (registered
+	// via the factory registry below).
 	rootCmd.AddCommand(newSkillCmd())
 	rootCmd.AddCommand(newCICmd())
 	rootCmd.AddCommand(newToolsCmd())

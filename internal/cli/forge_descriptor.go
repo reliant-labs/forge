@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
 
 // descriptorStageDir is the per-invocation staging directory under the

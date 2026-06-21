@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	forgev1 "github.com/reliant-labs/forge/internal/gen/forge/v1"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 )
 
 // TestDescriptorParsesErrors verifies that a (forge.v1.method).errors list

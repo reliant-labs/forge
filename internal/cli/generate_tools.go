@@ -98,8 +98,9 @@ func ensureGenGoMod(projectDir string) error {
 		return fmt.Errorf("create gen/: %w", err)
 	}
 	data := struct {
-		Module    string
-		GoVersion string
+		Module          string
+		GoVersion       string
+		ForgePkgVersion string // empty in the bootstrap path → template emits `forge/pkg v0.0.0`, resolved by go.work / the root replace (same wiring as the root module). A real pin is supplied on the forge-new render path.
 	}{
 		Module:    modulePath,
 		GoVersion: goVersion,

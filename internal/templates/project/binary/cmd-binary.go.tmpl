@@ -67,7 +67,7 @@ func run{{.Package | pascalCase}}(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if verr := cfg.Validate(); verr != nil {
+	if verr := config.Validate(cfg); verr != nil {
 		return fmt.Errorf("invalid configuration: %w", verr)
 	}
 

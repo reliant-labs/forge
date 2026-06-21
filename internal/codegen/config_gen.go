@@ -104,6 +104,12 @@ type ConfigTemplateData struct {
 	// enables dev mode.
 	RoleModeField string
 	NeedsStrconv  bool
+
+	// Module is the project's Go module path, used by config.go.tmpl to
+	// import the generated proto config package (gen/config/v1). Set by
+	// GenerateConfigLoader; left empty by callers that only need the
+	// field partition (e.g. ConfigBlocksFromMessages, .env.example).
+	Module string
 }
 
 // ConfigBlockRef names one component config block as composed on the
@@ -175,7 +181,22 @@ func BuildConfigTemplateData(messages []ConfigMessage) ConfigTemplateData {
 		for _, f := range m.Fields {
 			if f.ProtoType == "message" {
 				if f.MessageType == "" || !isBlock[f.MessageType] {
-					continue // not a config-block reference — nothing to generate
+					// A message-typed config field that is NOT a component
+					// config block is a well-known wrapper carrying its own
+					// (forge.v1.config) annotation — in practice a
+					// google.protobuf.Duration leaf (pre_stop_delay,
+					// shutdown_timeout, db_conn_max_*). It binds to a single
+					// env var / flag like any scalar, so it MUST flow into
+					// .env.example and the per-env KCL projection. Emit it as
+					// a leaf (NOT a struct field — the config object is the
+					// proto type now, so there is no generated struct). Skip
+					// only un-annotated message fields (genuinely nothing to
+					// bind).
+					if f.EnvVar != "" || f.Flag != "" {
+						tf := configTemplateField(f, f.GoName)
+						data.Fields = append(data.Fields, tf)
+					}
+					continue
 				}
 				bm := byName[f.MessageType]
 				data.BlockFields = append(data.BlockFields, ConfigTemplateBlockField{
@@ -461,6 +482,15 @@ func GenerateConfigLoader(messages []ConfigMessage, targetDir string, cs *checks
 	if len(data.Fields) == 0 {
 		return nil
 	}
+
+	// config.go.tmpl is a thin shim that aliases Config to the generated
+	// proto type (gen/config/v1.AppConfig) and wraps the descriptor-driven
+	// loader — it needs the module path for that import.
+	modulePath, err := GetModulePath(targetDir)
+	if err != nil {
+		return fmt.Errorf("read module path: %w", err)
+	}
+	data.Module = modulePath
 
 	content, err := templates.ProjectTemplates().Render("config.go.tmpl", data)
 	if err != nil {

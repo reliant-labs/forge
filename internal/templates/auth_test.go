@@ -214,8 +214,8 @@ func TestCmdServerTemplate_CallsInstallGeneratedAuth(t *testing.T) {
 		if !strings.Contains(s, "middleware.InstallGeneratedAuth()") {
 			t.Error("runServer must call middleware.InstallGeneratedAuth() when auth.provider is set")
 		}
-		if !strings.Contains(s, "if !cfg.DevAuthBypass() {") {
-			t.Error("the generated-auth install must be gated on the EXPLICIT auth bypass (cfg.DevAuthBypass), not ENVIRONMENT/IsDev — a dev boot without AUTH_DEV_MODE must keep real auth")
+		if !strings.Contains(s, "if !config.DevAuthBypass(cfg) {") {
+			t.Error("the generated-auth install must be gated on the EXPLICIT auth bypass (config.DevAuthBypass), not ENVIRONMENT/IsDev — a dev boot without AUTH_DEV_MODE must keep real auth")
 		}
 		if strings.Contains(s, "GeneratedAuthInterceptor()") {
 			t.Error("jwt providers wire through SetTokenValidator — no parallel interceptor in the chain")

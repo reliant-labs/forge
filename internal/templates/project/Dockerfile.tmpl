@@ -54,9 +54,20 @@ RUN go mod download
 COPY . .
 
 # Build with optimizations.
+#
+# ONE image, EVERY binary. Each `cmd/<bin>/` entrypoint (the primary
+# server plus any `forge add binary` siblings — proxy / ctl / worker-style
+# processes) builds into /app/bin/<bin>. The production stage runs the
+# primary by default; secondary binaries are launched by overriding the
+# container command to /app/<bin> per-workload (KCL emits one Deployment
+# per binary, each with its own command). Building them all into a single
+# image keeps one build + one push + one registry tag for the whole
+# project; the per-binary entrypoints differ only at run time.
+{{- range .Binaries }}
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}{{if .VersionVar}} -X {{.VersionVar}}=${FORGE_VERSION}{{end}}" -o /app/bin/{{.Name}} ./cmd/{{.Name}}
+    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}{{if $.VersionVar}} -X {{$.VersionVar}}=${FORGE_VERSION}{{end}}" -o /app/bin/{{.Dir}} ./cmd/{{.Dir}}
+{{- end }}
 
 # ── Debug builder (only used by the `debug` stage) ──
 # Split out so the default production build doesn't pay the debug-build
@@ -119,7 +130,13 @@ RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/bin/{{.Name}} .
+# Copy EVERY built binary into the image. The default entrypoint runs the
+# primary server (CMD below); secondary binaries are run by overriding the
+# container command to ./<bin> per-workload at deploy time (KCL emits one
+# Deployment per binary with command = ["/app/<bin>"]).
+{{- range .Binaries }}
+COPY --from=builder /app/bin/{{.Dir}} ./{{.Dir}}
+{{- end }}
 
 USER 65532:65532
 

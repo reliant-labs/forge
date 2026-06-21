@@ -15,7 +15,7 @@ The inheritance hierarchy:
       ├── Worker(Component)   → Deployment (no Service)
       ├── Cron(Component)     → CronJob (uses schedule)
       ├── Operator(Component) → manager Deployment + cluster RBAC
-      └── Binary(Component)   → Deployment running ["/app/<proj>", "<name>"]
+      └── Binary(Component)   → Deployment running ["/app/<bin>"]
 
 `kind` selects the subtype. forge JSON and these schemas are
 deliberately NOT 1:1 — the JSON is the minimal denormalized base, and
@@ -153,12 +153,14 @@ schema Operator(Component):
         len(crds) > 0, "Operator.crds must list at least one CRD kind"
 
 schema Binary(Component):
-    """A standalone cobra subcommand off the shared image. Expands to a
-    Deployment whose container runs `command` (["/app/<proj>", "<name>"]
-    as emitted by forge). No Service — binaries are not Connect surfaces.
+    """A standalone binary entrypoint built into the shared image. Each
+    binary has its OWN cmd/<bin>/main.go (devspace idiom), built to
+    /app/<bin>; the image bundles every binary and this Deployment's
+    container runs `command` (["/app/<bin>"] as emitted by forge) to
+    select this one. No Service — binaries are not Connect surfaces.
     """
     kind: str = "binary"
 
     check:
         kind == "binary", "Binary.kind must be 'binary'"
-        len(command) > 0, "Binary.command must be set (forge emits ['/app/<proj>', '<name>'])"
+        len(command) > 0, "Binary.command must be set (forge emits ['/app/<bin>'])"

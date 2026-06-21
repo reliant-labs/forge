@@ -120,6 +120,19 @@ const (
 	// match": the compiler arbitrates a wrong wire loudly, whereas
 	// emitting nil would silently un-wire a live collaborator.
 	MatchUnavailable
+	// MatchUnprovenBackstop — the Infra-field matcher (infra_assignability.go)
+	// found NO assignable Infra field AND could not PROVE one is absent because
+	// the universe is mid-write (some relevant field type did not type-check —
+	// e.g. internal/app references the not-yet-regenerated Build, or the
+	// new component package is a fresh stub). This is the generate-ORDERING
+	// fragility class: raising a generate-time MissingProvider here is a
+	// FALSE NEGATIVE (the user's Infra field, named differently from the Deps
+	// field, would prove assignable on a clean load). The injector emits the
+	// compile-time backstop `infra.<DepsField>` and lets the Go compiler
+	// arbitrate — loud if genuinely missing, silently correct once the next
+	// clean generate proves the assignable match. It is ONLY used by the
+	// Infra matcher; the Deps/AppExtras matcher never returns it.
+	MatchUnprovenBackstop
 )
 
 // DepsAssignabilityMatcher answers "is AppExtras.<FieldName> assignable

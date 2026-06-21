@@ -217,6 +217,20 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return statErr
 		}
 
+		// Per-package opt-out: `//forge:exclude-contract` in this package's
+		// source is an alternative to listing it in forge.yaml
+		// contracts.exclude — same effect (no mock/observability scaffold),
+		// expressed locally next to the code. Union with the central list:
+		// either source excludes. The directive lives ON a contract-shaped
+		// package, so it is only consulted once a contract.go is present (a
+		// package with no contract.go is skipped above regardless). We do NOT
+		// SkipDir here — descendants may still want codegen and carry their
+		// own directive; only THIS package opts out.
+		if codegen.HasExcludeContractDirective(path) {
+			fmt.Printf("  ⏭️  Skipped contract codegen for %s/ (//forge:exclude-contract)\n", rel)
+			return nil
+		}
+
 		if genErr := contract.GenerateWithOptions(contractPath, contractOpts); genErr != nil {
 			return fmt.Errorf("generate contract for %s: %w", rel, genErr)
 		}

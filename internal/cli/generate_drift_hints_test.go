@@ -21,7 +21,7 @@ func TestTier1ExtensionPointHint(t *testing.T) {
 		// No designated extension point — no hint.
 		{"pkg/app/testing.go", nil},
 		{"pkg/config/config.go", nil},
-		{"cmd/server.go", nil},
+		{"internal/cli/serve.go", nil},
 		// Leading ./ normalized.
 		{"./pkg/app/bootstrap.go", []string{"setup.go"}},
 	}

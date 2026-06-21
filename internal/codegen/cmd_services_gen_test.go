@@ -61,10 +61,10 @@ func TestGenerateCmdServices(t *testing.T) {
 
 	// One file per service.
 	for _, tc := range []struct {
-		file        string
-		ctor        string
-		mountExpr   string
-		use         string
+		file      string
+		ctor      string
+		mountExpr string
+		use       string
 	}{
 		{"svc_admin-server.go", "func newAdminServerCmd(deps Deps)", "(*app.Services).MountAdminServer", `Use:   "admin-server",`},
 		{"svc_billing.go", "func newBillingCmd(deps Deps)", "(*app.Services).MountBilling", `Use:   "billing",`},

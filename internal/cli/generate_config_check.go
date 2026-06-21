@@ -93,12 +93,20 @@ func checkDeclaredServices(projectDir string, cfg *config.ProjectConfig) []strin
 		}
 		fullPath := filepath.Join(projectDir, path)
 
-		// Binary cobra sources are a single file, not a dir.
+		// Each binary gets its own cmd/<bin>/ tree (devspace idiom); the
+		// entry point is cmd/<pkg>/main.go. Accept either the canonical
+		// cmd/<pkg>/main.go (current layout) OR the recorded Path (which may
+		// be a pre-move flat cmd/<pkg>.go on older trees) so the check passes
+		// across the layout transition.
 		if c.IsBinary() {
+			canonicalMain := filepath.Join(projectDir, "cmd", naming.ServicePackage(c.Name), "main.go")
+			if _, err := os.Stat(canonicalMain); err == nil {
+				continue
+			}
 			if _, err := os.Stat(fullPath); err != nil {
 				out = append(out, fmt.Sprintf(
 					"components[name=%s] (kind=binary) declared in forge.yaml but cobra source missing (expected at %s) — run 'forge add binary %s' to scaffold it",
-					c.Name, fullPath, c.Name))
+					c.Name, canonicalMain, c.Name))
 			}
 			continue
 		}
@@ -146,7 +154,8 @@ func defaultServicePath(c config.ComponentConfig) string {
 	case config.ComponentKindOperator:
 		return "internal/operators/" + c.Name
 	case config.ComponentKindBinary:
-		return "cmd/" + naming.ServicePackage(c.Name) + ".go"
+		// Each binary gets its own cmd/<bin>/ tree (devspace idiom).
+		return filepath.Join("cmd", naming.ServicePackage(c.Name), "main.go")
 	default:
 		return "internal/handlers/" + c.Name
 	}

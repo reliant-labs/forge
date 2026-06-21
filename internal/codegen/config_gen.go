@@ -387,15 +387,41 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	data.Module = modulePath
 	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 
-	content, err := templates.ProjectTemplates().Render("cli-serve.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render cli-serve.go.tmpl: %w", err)
+	// The shared serve pipeline lives under cmd/<bin>/cmd/serve.go (package
+	// cmd, devspace idiom). This config-driven re-render only fires once the
+	// tree already exists, so locate the primary binary's cmd tree by globbing
+	// for the existing serve.go; skip when there isn't one (CLI/library kinds,
+	// or a tree that predates the cmd-layer move and has nothing to re-render).
+	serveDest := primaryCmdServePath(targetDir)
+	if serveDest == "" {
+		return nil
 	}
 
-	if err := writeForgeOwned(targetDir, filepath.Join("internal", "cli", "serve.go"), content, cs); err != nil {
-		return fmt.Errorf("write internal/cli/serve.go: %w", err)
+	content, err := templates.ProjectTemplates().Render("cmd-tree-serve.go.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render cmd-tree-serve.go.tmpl: %w", err)
+	}
+
+	if err := writeForgeOwned(targetDir, serveDest, content, cs); err != nil {
+		return fmt.Errorf("write %s: %w", serveDest, err)
 	}
 	return nil
+}
+
+// primaryCmdServePath returns the project-relative path of the primary
+// binary's shared serve pipeline (cmd/<bin>/cmd/serve.go), discovered by
+// glob so the config-regen path doesn't need to re-read forge.yaml for the
+// binary name. Returns "" when no such file exists yet.
+func primaryCmdServePath(targetDir string) string {
+	matches, _ := filepath.Glob(filepath.Join(targetDir, "cmd", "*", "cmd", "serve.go"))
+	if len(matches) == 0 {
+		return ""
+	}
+	rel, err := filepath.Rel(targetDir, matches[0])
+	if err != nil {
+		return ""
+	}
+	return rel
 }
 
 // GenerateConfigLoader generates pkg/config/config.go from parsed config messages.

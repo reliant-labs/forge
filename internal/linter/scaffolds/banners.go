@@ -287,8 +287,15 @@ func isKnownTier1(rel, noTmpl string) bool {
 	// Project-level cmd/ scaffolds: regenerated; they carry the canonical header.
 	switch noTmpl {
 	case "cmd-cli-main.go", "cmd-cli-version.go",
-		"cmd-shared-main.go", "cmd-services-gen.go",
-		"cmd-server.go", "cmd-version.go", "cmd-db.go", "cmd-root.go":
+		// The cmd/<bin>/ command tree (devspace idiom): thin main + the
+		// package-cmd tree files + the per-group item/anchor files. All
+		// Tier-1 (regenerated every run) and carry the canonical header.
+		"cmd-main.go",
+		"cmd-tree-root.go", "cmd-tree-serve.go", "cmd-tree-server.go",
+		"cmd-tree-version.go", "cmd-tree-db.go",
+		"cmd-svc-group.go", "cmd-svc-register.go",
+		"cmd-worker-group.go", "cmd-worker-register.go",
+		"cmd-operator-group.go", "cmd-operator-register.go":
 		return true
 	case "bootstrap.go", "bootstrap_testing.go",
 		"config.go", "migrate.go",

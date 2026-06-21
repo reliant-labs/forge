@@ -88,12 +88,12 @@ func TestManagedFiles(t *testing.T) {
 
 	// Check that expected files are in the list
 	expected := map[string]bool{
-		"internal/cli/serve.go":   true,
-		"internal/cli/server.go":  true,
-		"internal/cli/root.go":    true,
-		"cmd/main.go":             true,
-		"internal/cli/version.go": true,
-		"Taskfile.yml":            true,
+		"cmd/cmd/serve.go":   true,
+		"cmd/cmd/server.go":  true,
+		"cmd/cmd/root.go":    true,
+		"cmd/main.go":        true,
+		"cmd/cmd/version.go": true,
+		"Taskfile.yml":       true,
 		"Dockerfile":              true,
 		"docker-compose.yml":      true,
 		".golangci.yml":           true,
@@ -281,8 +281,10 @@ func TestUpgradeUpToDate(t *testing.T) {
 	// Create temp project with files matching templates
 	dir := t.TempDir()
 
-	// Write all managed files from templates
-	for _, f := range managedFiles() {
+	// Write all managed files from templates. Use managedFilesForCfg so the
+	// destPaths match the binary-scoped cmd/<bin>/ layout that Upgrade
+	// (which also consults the cfg) expects.
+	for _, f := range managedFilesForCfg(cfg) {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
@@ -315,7 +317,7 @@ func TestUpgradeDetectsModified(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write files from templates, stamped (forge-certified renders).
-	for _, f := range managedFiles() {
+	for _, f := range managedFilesForCfg(cfg) {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
@@ -352,10 +354,10 @@ func TestUpgradeDetectsModified(t *testing.T) {
 
 	// Verify a Tier 1 file would still be overwritten even if modified
 	for _, r := range results {
-		if r.Path == "internal/cli/version.go" {
+		if r.Path == "cmd/test-project/cmd/version.go" {
 			// Tier 1 files report as up-to-date (since we didn't modify it) or updated
 			if r.Status == UpgradeUserModified {
-				t.Errorf("internal/cli/version.go: Tier 1 file should never be user-modified, got %q", r.Status)
+				t.Errorf("cmd/test-project/cmd/version.go: Tier 1 file should never be user-modified, got %q", r.Status)
 			}
 		}
 	}
@@ -368,7 +370,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write files stamped (forge-certified renders).
-	for _, f := range managedFiles() {
+	for _, f := range managedFilesForCfg(cfg) {
 		content, err := renderManagedFile(f, data)
 		if err != nil {
 			t.Fatalf("render %s: %v", f.templateName, err)
@@ -377,7 +379,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	// Modify a Tier-1 file and a Tier-2 file (user edits: markers gone).
-	modifiedPath := filepath.Join(dir, "internal/cli/version.go")
+	modifiedPath := filepath.Join(dir, "cmd/test-project/cmd/version.go")
 	if err := os.WriteFile(modifiedPath, []byte("// user modified\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +395,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "internal/cli/version.go" || r.Path == "Dockerfile" {
+		if r.Path == "cmd/test-project/cmd/version.go" || r.Path == "Dockerfile" {
 			if r.Status != UpgradeUpdated {
 				t.Errorf("%s: status = %q, want %q with --force", r.Path, r.Status, UpgradeUpdated)
 			}
@@ -406,7 +408,7 @@ func TestUpgradeForceOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == "// user modified\n" {
-		t.Error("internal/cli/version.go was not overwritten by --force")
+		t.Error("cmd/test-project/cmd/version.go was not overwritten by --force")
 	}
 	content, err = os.ReadFile(modifiedTier2)
 	if err != nil {
@@ -427,12 +429,12 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	// forge render of an older vintage (the marker is the "checksum
 	// matches disk" state).
 	oldContent := []byte("// old template content\npackage main\n")
-	writeManagedRender(t, dir, "internal/cli/version.go", oldContent, true)
-	otelPath := filepath.Join(dir, "internal", "cli", "version.go")
+	writeManagedRender(t, dir, "cmd/test-project/cmd/version.go", oldContent, true)
+	otelPath := filepath.Join(dir, "cmd", "test-project", "cmd", "version.go")
 
 	// Write other files from current templates so they're up-to-date
-	for _, f := range managedFiles() {
-		if f.destPath == "internal/cli/version.go" {
+	for _, f := range managedFilesForCfg(cfg) {
+		if f.destPath == "cmd/test-project/cmd/version.go" {
 			continue
 		}
 		content, err := renderManagedFile(f, data)
@@ -449,9 +451,9 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 	}
 
 	for _, r := range results {
-		if r.Path == "internal/cli/version.go" {
+		if r.Path == "cmd/test-project/cmd/version.go" {
 			if r.Status != UpgradeUpdated {
-				t.Errorf("internal/cli/version.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
+				t.Errorf("cmd/test-project/cmd/version.go: status = %q, want %q (unmodified file should auto-update)", r.Status, UpgradeUpdated)
 			}
 		}
 	}
@@ -462,7 +464,7 @@ func TestUpgradeAutoUpdatesUnmodified(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(content) == string(oldContent) {
-		t.Error("internal/cli/version.go was not updated")
+		t.Error("cmd/test-project/cmd/version.go was not updated")
 	}
 }
 
@@ -484,7 +486,7 @@ func TestUpgradeAutoUpdatesStaleCodegen(t *testing.T) {
 	// the Dockerfile, which we materialize as a STAMPED stale prior
 	// render — the "template updated, upgrade never ran" state.
 	staleDockerfile := []byte("# stale prior-render Dockerfile\nFROM golang:1.18\n")
-	for _, f := range managedFiles() {
+	for _, f := range managedFilesForCfg(cfg) {
 		if f.destPath == "Dockerfile" {
 			writeManagedRender(t, dir, f.destPath, staleDockerfile, true)
 			continue
@@ -542,7 +544,7 @@ func TestUpgradeSkipsDisownedFiles(t *testing.T) {
 
 	// Materialize every managed file pristine, then disown the first one
 	// with hand-edited content.
-	files := managedFiles()
+	files := managedFilesForCfg(cfg)
 	for _, f := range files {
 		content, err := renderManagedFile(f, data)
 		if err != nil {

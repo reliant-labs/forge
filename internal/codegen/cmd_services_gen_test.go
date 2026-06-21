@@ -30,11 +30,11 @@ func TestCmdServiceItemsFromNames(t *testing.T) {
 		"billing",            // forge.yaml spelling
 		"db",                 // reserved: collides with the db command
 		"VersionService",     // reserved after trimming: "version"
-	})
+	}, nil)
 
 	wantItems := []CmdGroupItem{
-		{Module: module, Bin: "proj", Name: "admin-server", FieldName: "AdminServer"},
-		{Module: module, Bin: "proj", Name: "billing", FieldName: "Billing"},
+		{Module: module, Bin: "proj", Name: "admin-server", FieldName: "AdminServer", MountFieldName: "AdminServer"},
+		{Module: module, Bin: "proj", Name: "billing", FieldName: "Billing", MountFieldName: "Billing"},
 	}
 	if !reflect.DeepEqual(items, wantItems) {
 		t.Errorf("items = %+v, want %+v", items, wantItems)
@@ -194,6 +194,87 @@ func TestGenerateCmdGroups_ZeroComponents(t *testing.T) {
 		}
 		assertParses(t, anchor, string(raw))
 	}
+}
+
+// TestGenerateCmdGroups_MountNameCollision is the regression for the
+// control-plane disown: when a handler service's package collides cross-role
+// with an internal package (handler internal/handlers/billing `package
+// billing` + domain internal/billing `package billing`), inventory_gen
+// renames the typed mount method to MountSvcBilling. The cmd-group service
+// command MUST call that exact name — not MountBilling — or the generated
+// cmd/<bin>/cmd/services/billing.go fails to compile. Both halves now derive
+// the FieldName from the same ResolveCollisionNaming source, so they agree.
+func TestGenerateCmdGroups_MountNameCollision(t *testing.T) {
+	dir := t.TempDir()
+	writeTestGoMod(t, dir, "github.com/example/proj")
+
+	// Handler service: internal/handlers/billing, package billing.
+	mustWriteFile(t, filepath.Join(dir, "internal", "handlers", "billing", "service.go"),
+		"package billing\n\ntype Service struct{}\n")
+	// Cross-role collider: domain pkg internal/billing, also package billing.
+	mustWriteFile(t, filepath.Join(dir, "internal", "billing", "billing.go"),
+		"package billing\n\ntype Service interface{}\n")
+	// A non-colliding service for contrast: internal/handlers/user, package user
+	// (no internal/user domain pkg) — must stay MountUser.
+	mustWriteFile(t, filepath.Join(dir, "internal", "handlers", "user", "service.go"),
+		"package user\n\ntype Service struct{}\n")
+
+	if err := GenerateCmdGroups(CmdServiceGroupInput{
+		Bin:      "proj",
+		Services: []string{"BillingService", "UserService"},
+		Packages: []BootstrapPackageData{{Package: "billing"}},
+	}, dir, nil); err != nil {
+		t.Fatalf("GenerateCmdGroups: %v", err)
+	}
+
+	base := filepath.Join(dir, "cmd", "proj", "cmd", "services")
+
+	// Colliding service: cmd-group must call the collision-aware mount METHOD,
+	// matching the Svc-prefixed name inventory_gen emits.
+	billing := mustReadFile(t, filepath.Join(base, "billing.go"))
+	if !strings.Contains(billing, "(*app.Services).MountSvcBilling") {
+		t.Errorf("billing.go must call collision-aware (*app.Services).MountSvcBilling:\n%s", billing)
+	}
+	if strings.Contains(billing, "(*app.Services).MountBilling,") {
+		t.Errorf("billing.go must NOT call the plain MountBilling (mismatch with inventory_gen):\n%s", billing)
+	}
+	// The constructor name stays PLAIN (NewBillingCmd) + Use "billing" — it is a
+	// local group-package symbol, not subject to the cross-role rename. Only the
+	// mount method reference is collision-aware. This matches the control-plane
+	// hand-fix exactly (NewBillingCmd + MountSvcBilling).
+	if !strings.Contains(billing, "func NewBillingCmd(deps cmd.Deps)") {
+		t.Errorf("billing.go constructor must stay NewBillingCmd:\n%s", billing)
+	}
+	if !strings.Contains(billing, `Use:   "billing",`) {
+		t.Errorf("billing.go Use must stay \"billing\":\n%s", billing)
+	}
+	assertParses(t, "billing.go", billing)
+
+	// Non-colliding service is unchanged — plain MountUser.
+	user := mustReadFile(t, filepath.Join(base, "user.go"))
+	if !strings.Contains(user, "(*app.Services).MountUser") {
+		t.Errorf("user.go must call plain (*app.Services).MountUser:\n%s", user)
+	}
+	assertParses(t, "user.go", user)
+}
+
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(raw)
 }
 
 func assertParses(t *testing.T, name, content string) {

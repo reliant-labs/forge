@@ -409,7 +409,6 @@ func matchedAppField(m *DepsAssignabilityMatcher, roleRoot, pkgDir, depsName, de
 	}
 }
 
-
 // leaderElectionID derives a Kubernetes-valid leader-election lease name
 // from the project's module path. Lease names are k8s resource names and
 // must satisfy DNS-1123 label rules (lowercase alphanumerics and '-');
@@ -461,6 +460,17 @@ type BootstrapTestServiceData struct {
 	ProtoConnectPkg        string // e.g. "apiv1connect" (Go identifier used at call sites)
 	Fallible               bool   // true if New() returns (T, error)
 	HasDB                  bool   // true if Deps struct has a DB orm.Context field
+	// HasAuthorizer is true when the service's Deps struct declares an
+	// `Authorizer` field. The test harness only wires the permissive test
+	// authorizer (deps.Authorizer = cfg.authz + the AuthzInterceptor in
+	// NewTest<Svc>Server) for services that actually carry that dep. A
+	// carve-out / `//forge:external-component` / shared-descriptor-authz
+	// service has no Authorizer dep, so emitting deps.Authorizer for it is a
+	// compile error — this gate omits it (mirrors inventory_gen's HasAuthorizer
+	// and the run-path Mount<Svc>, which only thread the authz interceptor
+	// when the service declares the dep). Same signal both halves read: the
+	// presence of a Deps field named "Authorizer".
+	HasAuthorizer bool
 	// Alias mirrors BootstrapComponentData.Alias — when an internal package
 	// shares its leaf-name with this service's package, both get role-prefixed
 	// aliases ("svcBilling" vs "pkgBilling") so the generated testing.go imports
@@ -596,6 +606,23 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		if hasDB {
 			anyServiceHasDB = true
 		}
+		// Authz-aware test harness: only wire the test authorizer for a
+		// service that actually declares the Authorizer Deps field. Carve-out
+		// / external-component / descriptor-authz services don't, so emitting
+		// deps.Authorizer for them is a compile error (control-plane disowned
+		// pkg/app/testing.go for exactly this). Same signal inventory_gen reads
+		// (a Deps field named "Authorizer") so the test harness and the run
+		// path stay in lockstep. ParseServiceDeps failures degrade to "no
+		// authorizer" — the conservative choice (omit rather than miscompile).
+		hasAuthorizer := false
+		if deps, depErr := ParseServiceDeps(handlerDir); depErr == nil {
+			for _, df := range deps {
+				if df.Name == "Authorizer" {
+					hasAuthorizer = true
+					break
+				}
+			}
+		}
 		// Auto-stub: walk the service's Deps fields, find any interface-
 		// typed required fields and queue a synthesized stub. Handles
 		// both locally-declared interfaces AND cross-package selector
@@ -640,6 +667,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			ProtoConnectPkg:        connectPkg,
 			Fallible:               fallible,
 			HasDB:                  hasDB,
+			HasAuthorizer:          hasAuthorizer,
 			Alias:                  pkg, // overwritten below if there's a cross-role collision
 			VarName:                pkg, // overwritten below if there's a cross-role collision
 			AutoStubs:              autoStubs,
@@ -789,8 +817,8 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		// helper (testkit.NewMigratedPostgresDB over forgedb.MigrationsFS)
 		// so generated CRUD/handler tests can start with the real schema
 		// instead of the bare default database.
-		HasMigrationsFS:    projectHasSQLMigrations(projectDir),
-		ExtraImports:       nil, // filled below after duplicate-filtering
+		HasMigrationsFS: projectHasSQLMigrations(projectDir),
+		ExtraImports:    nil, // filled below after duplicate-filtering
 	}
 
 	// Filter ExtraImports against everything the template ALREADY

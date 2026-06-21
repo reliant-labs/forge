@@ -38,6 +38,7 @@ func TestBootstrapTestingTemplate_ZeroServices(t *testing.T) {
 			ProtoConnectImportPath, ProtoConnectPkg    string
 			Fallible                                   bool
 			HasDB                                      bool
+			HasAuthorizer                              bool
 		}
 		ConnectImports []string
 		Packages       []struct {

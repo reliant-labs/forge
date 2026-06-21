@@ -97,18 +97,101 @@ func ensureGenGoMod(projectDir string) error {
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return fmt.Errorf("create gen/: %w", err)
 	}
+	// Mirror the root module's forge/pkg replace into gen/, rebased for
+	// gen/'s extra directory depth. Without this the gen/ submodule has no
+	// way to resolve the unpublished forge/pkg the root replace points at
+	// (the root replace does not cascade into a separate submodule), so
+	// `go mod tidy` in gen/ fails on the placeholder v0.0.0. Best-effort:
+	// a read error degrades to no gen replace (same as release flow); the
+	// downstream tidy surfaces the canonical resolution error if one remains.
+	genReplace, err := forgePkgGenReplaceTarget(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not derive gen/ forge/pkg replace from root go.mod: %v\n", err)
+		genReplace = ""
+	}
 	data := struct {
 		Module          string
 		GoVersion       string
-		ForgePkgVersion string // empty in the bootstrap path → template emits `forge/pkg v0.0.0`, resolved by go.work / the root replace (same wiring as the root module). A real pin is supplied on the forge-new render path.
+		ForgePkgVersion string // empty in the bootstrap path → template emits `forge/pkg v0.0.0`, resolved by the gen-local replace below (mirrors the root replace). A real pin is supplied on the forge-new render path.
+		// ForgePkgGenReplace is the gen-relative forge/pkg replace target
+		// (root replace rebased one dir deeper). Empty in release/no-sibling
+		// mode → template emits no replace and tidy resolves from the proxy.
+		ForgePkgGenReplace string
 	}{
-		Module:    modulePath,
-		GoVersion: goVersion,
+		Module:             modulePath,
+		GoVersion:          goVersion,
+		ForgePkgGenReplace: genReplace,
 	}
 	if err := assets.WriteTemplateWithData("gen-go.mod.tmpl", goMod, data); err != nil {
 		return fmt.Errorf("render gen/go.mod: %w", err)
 	}
 	fmt.Println("🔧 Bootstrapped missing gen/go.mod (fresh worktree).")
+	return nil
+}
+
+// reconcileGenForgePkgReplace keeps an EXISTING gen/go.mod's forge/pkg
+// replace in sync with the root module's. ensureGenGoMod only bootstraps a
+// MISSING file (and intentionally never touches an existing one — a
+// hand-edited gen/go.mod must survive). But the generate pipeline rewrites
+// the ROOT forge/pkg replace earlier in the run (stepSyncDevForgePkg
+// vendors an absolute sibling path → ./.forge-pkg), and a project scaffolded
+// without a sibling checkout starts with NO gen replace at all. In both
+// cases the on-disk gen/go.mod can carry a stale or absent forge/pkg
+// replace by the time `go mod tidy (gen/)` runs — which then fails to
+// resolve the unpublished forge/pkg. This reconciler rewrites (or inserts)
+// exactly the forge/pkg replace line in gen/go.mod to the rebased root
+// target, leaving every other byte alone so it composes with hand edits.
+//
+// Best-effort and idempotent: no gen/go.mod → no-op (bootstrap handles
+// that); no root replace (release/no-sibling) → leave gen as-is so tidy
+// resolves a published version like the root; an already-correct line →
+// no write.
+func reconcileGenForgePkgReplace(projectDir string) error {
+	genGoMod := filepath.Join(projectDir, "gen", "go.mod")
+	data, err := os.ReadFile(genGoMod)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // missing → ensureGenGoMod's job, not ours
+		}
+		return fmt.Errorf("read gen/go.mod: %w", err)
+	}
+
+	want, err := forgePkgGenReplaceTarget(projectDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not derive gen/ forge/pkg replace from root go.mod: %v\n", err)
+		return nil
+	}
+	if want == "" {
+		// Release / no-sibling flow: the root resolves forge/pkg from the
+		// proxy, so gen/ should too. Don't strip an existing replace — a
+		// user may have added one deliberately — just leave things alone.
+		return nil
+	}
+
+	content := string(data)
+	desired := "replace " + forgePkgModulePath + " => " + want
+	if forgePkgReplaceLineRE.MatchString(content) {
+		updated := forgePkgReplaceLineRE.ReplaceAllString(content, desired)
+		if updated == content {
+			return nil // already correct
+		}
+		if err := os.WriteFile(genGoMod, []byte(updated), 0o644); err != nil {
+			return fmt.Errorf("rewrite gen/go.mod forge/pkg replace: %w", err)
+		}
+		fmt.Printf("  🔧 Synced gen/go.mod forge/pkg replace → %s\n", want)
+		return nil
+	}
+
+	// No existing replace line → append one (with a trailing newline if the
+	// file doesn't end in one).
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += desired + "\n"
+	if err := os.WriteFile(genGoMod, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("insert gen/go.mod forge/pkg replace: %w", err)
+	}
+	fmt.Printf("  🔧 Added gen/go.mod forge/pkg replace → %s\n", want)
 	return nil
 }
 

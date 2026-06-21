@@ -1233,7 +1233,15 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 // concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
 // conditions.
 func stepEnsureGenModule(ctx *pipelineContext) error {
-	return ensureGenGoMod(ctx.ProjectDir)
+	if err := ensureGenGoMod(ctx.ProjectDir); err != nil {
+		return err
+	}
+	// Keep an EXISTING gen/go.mod's forge/pkg replace in lockstep with the
+	// root module's (which stepSyncDevForgePkg may have rewritten earlier
+	// this run). Bootstrap covers the missing-file case; this covers the
+	// scaffolded-without-sibling and root-replace-changed cases so the
+	// downstream `go mod tidy (gen/)` can resolve the unpublished forge/pkg.
+	return reconcileGenForgePkgReplace(ctx.ProjectDir)
 }
 
 // stepBufGenerateGo — was Step 1.

@@ -204,6 +204,62 @@ func syncDevForgePkgReplace(projectDir string) (vendored bool, err error) {
 	return true, nil
 }
 
+// forgePkgGenReplaceTarget derives the forge/pkg replace target that the
+// gen/ submodule's go.mod must carry, by reading the ROOT module's
+// existing forge/pkg replace and rebasing it for gen/'s extra directory
+// depth.
+//
+// Why this is needed: the apps resolve forge/pkg via a `replace` in their
+// ROOT go.mod (dev mode — the unpublished forge/pkg is consumed from a
+// sibling checkout or a vendored ./.forge-pkg copy). That replace lives in
+// the root module and does NOT cascade into the separate `gen/` submodule.
+// Without its own replace, `go mod tidy` in gen/ tries to resolve the
+// placeholder `v0.0.0` (or any pseudo-version) from the module proxy and
+// fails offline / for an unpublished revision. Emitting a parallel,
+// depth-corrected replace in gen/go.mod makes the gen/ tidy succeed with
+// the same source the root uses.
+//
+// Translation rules (gen/ is exactly one directory below the root):
+//   - absolute host path        → used verbatim (depth-independent)
+//   - "./.forge-pkg" (vendored) → "../.forge-pkg"
+//   - "../forge/pkg" (sibling)  → "../../forge/pkg"
+//   - any other relative path   → prefixed with "../"
+//
+// Returns "" when the root has no forge/pkg replace (release flow / no
+// sibling) — the caller then emits no gen replace and `go mod tidy`
+// resolves a published version from the proxy, matching the root.
+func forgePkgGenReplaceTarget(projectDir string) (string, error) {
+	st, err := inspectDevPkgReplace(projectDir)
+	if err != nil {
+		return "", err
+	}
+	if !st.HasReplace || st.Target == "" {
+		return "", nil
+	}
+	return rebaseForgePkgReplaceForGen(st.Target), nil
+}
+
+// rebaseForgePkgReplaceForGen translates a root-module forge/pkg replace
+// target into the equivalent target for the gen/ submodule (one dir
+// deeper). Absolute paths pass through unchanged; relative paths gain one
+// "../" level so they resolve to the same on-disk location from gen/.
+func rebaseForgePkgReplaceForGen(rootTarget string) string {
+	rootTarget = strings.TrimSpace(rootTarget)
+	if rootTarget == "" {
+		return ""
+	}
+	if filepath.IsAbs(rootTarget) {
+		return rootTarget
+	}
+	// Normalize a leading "./" so "./.forge-pkg" and ".forge-pkg" both map
+	// to "../.forge-pkg" rather than "..//.forge-pkg".
+	trimmed := strings.TrimPrefix(rootTarget, "./")
+	// Use forward slashes — go.mod replace targets are always slash-pathed,
+	// even on Windows, and gen/go.mod is consumed by the go toolchain which
+	// expects POSIX-style relative module paths.
+	return "../" + trimmed
+}
+
 // localVendorPresent reports whether <projectDir>/.forge-pkg/go.mod
 // exists. Used to gate the Dockerfile COPY emission.
 func localVendorPresent(projectDir string) bool {

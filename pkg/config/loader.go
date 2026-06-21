@@ -5,16 +5,19 @@ package config
 // This is THE config loader: forge no longer emits a per-field loader into a
 // project. Instead of generating Go code from the config proto, it reads the
 // (forge.v1.config) field options off a proto.Message's descriptor at RUNTIME
-// and resolves each field with the canonical forge precedence: explicit CLI
-// flag > environment variable > proto default. A project holds a
-// *configv1.AppConfig (the config object IS the proto type) and calls
-// LoadInto/RegisterFlags — the generated pkg/config/config.go is a thin shim
-// that aliases Config to the proto type and wraps these entrypoints.
+// and resolves each field with the canonical forge precedence (later layers
+// override earlier ones): proto default < config FILE < environment variable <
+// explicit CLI flag. A project holds a *configv1.AppConfig (the config object
+// IS the proto type) and calls LoadInto/RegisterFlags — the generated
+// pkg/config/config.go is a thin shim that aliases Config to the proto type and
+// wraps these entrypoints.
 //
 // The resolution semantics:
 //
-//   - Precedence: flag (only if cmd.Flags().Changed) > env (LookupEnv) >
-//     default > required-error > leave-zero. See resolveRaw.
+//   - Precedence: defaults → config file → env (LookupEnv) → flag (only if
+//     cmd.Flags().Changed), then a required-field check. The file layer
+//     (filelayer.go) loads only when a path is EXPLICITLY given and fails
+//     loudly on a missing/invalid explicit path. See LoadInto.
 //   - Empty-env handling: a string field treats an explicitly-empty env
 //     var ("") as SET; every non-string scalar treats "" as unset, because
 //     parsing "" would always error. See allowEmptyEnv.
@@ -219,15 +222,29 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 	return nil
 }
 
-// LoadInto populates msg in place from cobra flags > environment variables
-// > proto defaults, for every field carrying a (forge.v1.config) option.
-// It is the runtime, descriptor-driven equivalent of the generated Load:
-// the precedence, empty-env handling, required-field errors, and per-kind
-// parsing all match config.go.tmpl. cmd may be nil (env + defaults only),
-// so LoadInto works from non-cobra entrypoints too.
+// LoadInto populates msg in place using the full forge config precedence —
+// later layers OVERRIDE earlier ones:
+//
+//		defaults  →  config file  →  environment  →  flags
+//		(earliest)                                   (wins)
+//
+//	  - defaults: every annotated field's proto default (sensitive fields get
+//	    none — an inline secret default would be a leak).
+//	  - config file: when a path is EXPLICITLY given via the --config flag or
+//	    the FORGE_CONFIG env var, the file is proto-native unmarshaled INTO msg,
+//	    overlaying the defaults (see filelayer.go). A missing/invalid explicit
+//	    file is a LOUD error — never a silent fallback. With no path given this
+//	    layer is simply skipped (normal precedence, not a fallback).
+//	  - environment: each field's env var overrides the file/default value.
+//	  - flags: a flag changed on THIS invocation overrides everything.
+//
+// It is the runtime, descriptor-driven loader: empty-env handling, required-
+// field errors, and per-kind parsing all key off the (forge.v1.config) field
+// options. cmd may be nil (file via FORGE_CONFIG + env + defaults only), so
+// LoadInto works from non-cobra entrypoints too.
 //
 // Durations: declare a duration-shaped field as google.protobuf.Duration in
-// the config proto — LoadInto parses the resolved Go-duration string ("5s")
+// the config proto — env/flag layers parse the Go-duration string ("5s")
 // into the message, and consumers read it with .AsDuration(). (A plain
 // string field stays a string; the descriptor has no name heuristic.)
 //
@@ -236,20 +253,69 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 // as FREE FUNCTIONS over the message. There is no parallel generated struct:
 // a project holds the proto config type and calls these directly.
 func LoadInto(cmd *cobra.Command, msg proto.Message) error {
-	return loadIntoMessage(cmd, msg.ProtoReflect())
+	m := msg.ProtoReflect()
+
+	// Layer 1: defaults (the base every later layer overlays).
+	if err := applyDefaults(m); err != nil {
+		return err
+	}
+
+	// Layer 2: config file, ONLY when an explicit path is given (--config
+	// flag or FORGE_CONFIG env). A missing/invalid explicit file aborts
+	// LOUDLY here; no path given means this layer is skipped (not a fallback).
+	if path, ok := resolveConfigPath(cmd); ok {
+		if err := applyConfigFile(msg, path); err != nil {
+			return err
+		}
+	}
+
+	// Layers 3 + 4: env then flags overlay onto whatever defaults/file set.
+	if err := applyEnvAndFlags(cmd, m); err != nil {
+		return err
+	}
+
+	// Required fields must be satisfied by SOME layer (default/file/env/flag).
+	return checkRequired(m)
 }
 
-// loadIntoMessage resolves every config-bound leaf of m, recursing into
-// nested config blocks. A block field is allocated with m.Mutable (so the
-// sub-message exists even when no leaf is set) and then loaded the same way
-// — its leaves carry their own annotations, so block leaves get the exact
-// flag>env>default treatment root leaves do.
-func loadIntoMessage(cmd *cobra.Command, m protoreflect.Message) error {
+// applyDefaults sets every annotated field to its proto default, recursing
+// into nested config blocks. Sensitive fields are skipped — a literal secret
+// default would be a leak (their value must come from file/env). A field with
+// no default annotation is left at its proto zero value.
+func applyDefaults(m protoreflect.Message) error {
 	fields := m.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
 		if isConfigBlock(fd) {
-			if err := loadIntoMessage(cmd, m.Mutable(fd).Message()); err != nil {
+			if err := applyDefaults(m.Mutable(fd).Message()); err != nil {
+				return err
+			}
+			continue
+		}
+		opt := fieldOptions(fd)
+		if opt == nil || opt.GetSensitive() || opt.GetDefaultValue() == "" {
+			continue
+		}
+		val, err := parseValue(fd, opt.GetDefaultValue())
+		if err != nil {
+			return fmt.Errorf("invalid default %q for config field %s: %w", opt.GetDefaultValue(), fd.Name(), err)
+		}
+		m.Set(fd, val)
+	}
+	return nil
+}
+
+// applyEnvAndFlags overlays the env layer then the flag layer onto m,
+// recursing into nested config blocks. For each field the env var (if set,
+// honoring the empty-string rule for the field's kind) overrides the current
+// value, then a flag changed on THIS invocation overrides that. A field that
+// neither env nor flag touches keeps whatever defaults/file set.
+func applyEnvAndFlags(cmd *cobra.Command, m protoreflect.Message) error {
+	fields := m.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if isConfigBlock(fd) {
+			if err := applyEnvAndFlags(cmd, m.Mutable(fd).Message()); err != nil {
 				return err
 			}
 			continue
@@ -258,82 +324,101 @@ func loadIntoMessage(cmd *cobra.Command, m protoreflect.Message) error {
 		if opt == nil {
 			continue
 		}
-		if err := loadField(cmd, m, fd, opt); err != nil {
+		if err := overlayField(cmd, m, fd, opt); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// loadField resolves and sets a single config field. It first applies the
-// flag > env > default precedence to obtain a raw string (resolveRaw),
-// then parses+sets it onto the message via protoreflect. An unset,
-// non-required field is left at its proto zero value (matching the
-// generated loadField, which returns the type zero in that case).
-func loadField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
-	raw, source, ok, err := resolveRaw(cmd, fd, opt)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // unset & not required: leave proto zero value
+// overlayField applies the env layer then the flag layer to a single field.
+// Each present source parses+sets onto the message; an absent source is a
+// no-op that preserves the earlier layer (default/file). Sensitive fields
+// take env (Secret mount) but NEVER a flag — no flag is ever registered for
+// them, and we defensively skip the flag branch even if one were.
+func overlayField(cmd *cobra.Command, m protoreflect.Message, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) error {
+	// Env layer.
+	if envVar := opt.GetEnvVar(); envVar != "" {
+		if v, present := os.LookupEnv(envVar); present && (allowEmptyEnv(fd) || v != "") {
+			val, err := parseValue(fd, v)
+			if err != nil {
+				return fmt.Errorf("invalid value %q for config field %s (from env %s): %w", v, fd.Name(), envVar, err)
+			}
+			m.Set(fd, val)
+		}
 	}
 
-	val, err := parseValue(fd, raw)
-	if err != nil {
-		return fmt.Errorf("invalid value %q for config field %s (from %s): %w", raw, opt.GetEnvVar(), source, err)
+	// Flag layer (wins). Never for sensitive fields.
+	flagName := opt.GetFlag()
+	if opt.GetSensitive() {
+		flagName = ""
 	}
-	m.Set(fd, val)
+	if cmd != nil && flagName != "" && cmd.Flags().Changed(flagName) {
+		if f := cmd.Flags().Lookup(flagName); f != nil {
+			val, err := parseValue(fd, f.Value.String())
+			if err != nil {
+				return fmt.Errorf("invalid value %q for config field %s (from flag --%s): %w", f.Value.String(), fd.Name(), flagName, err)
+			}
+			m.Set(fd, val)
+		}
+	}
 	return nil
 }
 
-// resolveRaw applies the documented precedence and returns the raw string
-// to parse. ok=false means "leave the field at its zero value" (an unset,
-// non-required field with no default). A required field that resolves to
-// nothing is an error. This mirrors the switch in the generated loadField.
-func resolveRaw(cmd *cobra.Command, fd protoreflect.FieldDescriptor, opt *forgepb.ConfigFieldOptions) (raw, source string, ok bool, err error) {
-	flagName := opt.GetFlag()
-	envVar := opt.GetEnvVar()
-	def := opt.GetDefaultValue()
-	hasDefault := def != ""
-
-	// Sensitive fields resolve from env / Secret mount ONLY: never from a
-	// CLI flag (no flag is registered for them) and never from an inline
-	// proto default (a literal secret default would be a leak). They fall
-	// straight through to the env lookup below, then required-or-zero.
-	if opt.GetSensitive() {
-		flagName = ""
-		hasDefault = false
-	}
-
-	// Flag wins when explicitly changed on THIS invocation.
-	if cmd != nil && flagName != "" && cmd.Flags().Changed(flagName) {
-		f := cmd.Flags().Lookup(flagName)
-		if f != nil {
-			return f.Value.String(), "flag --" + flagName, true, nil
+// checkRequired errors if any required field is still unset after all layers
+// have been applied, recursing into nested config blocks. A required field
+// that no layer populated fails fast — the same loud guarantee the single-pass
+// loader gave.
+func checkRequired(m protoreflect.Message) error {
+	fields := m.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if isConfigBlock(fd) {
+			if err := checkRequired(m.Get(fd).Message()); err != nil {
+				return err
+			}
+			continue
+		}
+		opt := fieldOptions(fd)
+		if opt == nil || !opt.GetRequired() {
+			continue
+		}
+		if fieldIsEmpty(m, fd) {
+			if flag := opt.GetFlag(); flag != "" && !opt.GetSensitive() {
+				return fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)", fd.Name(), opt.GetEnvVar(), flag)
+			}
+			return fmt.Errorf("required config field %s is not set (env: %s)", fd.Name(), opt.GetEnvVar())
 		}
 	}
+	return nil
+}
 
-	// Then env, honoring the empty-string rule for the field's kind.
-	if envVar != "" {
-		if v, present := os.LookupEnv(envVar); present && (allowEmptyEnv(fd) || v != "") {
-			return v, "env " + envVar, true, nil
-		}
+// fieldIsEmpty reports whether a scalar/duration field still holds its zero
+// value after loading. For a Duration message, an unpopulated message is
+// empty; for scalars, the kind's zero is empty. This is the post-load required
+// check — a required field must be non-zero from SOME layer.
+func fieldIsEmpty(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool {
+	if isDurationField(fd) {
+		return !m.Has(fd)
 	}
-
-	// Then default.
-	if hasDefault {
-		return def, "default", true, nil
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		return m.Get(fd).String() == ""
+	case protoreflect.BytesKind:
+		return len(m.Get(fd).Bytes()) == 0
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return m.Get(fd).Int() == 0
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return m.Get(fd).Uint() == 0
+	case protoreflect.BoolKind:
+		return !m.Get(fd).Bool()
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		return m.Get(fd).Float() == 0
+	default:
+		return !m.Has(fd)
 	}
-
-	// Nothing set: error if required, otherwise leave the zero value.
-	if opt.GetRequired() {
-		if flagName != "" {
-			return "", "", false, fmt.Errorf("required config field %s is not set (env: %s, flag: --%s)", fd.Name(), envVar, flagName)
-		}
-		return "", "", false, fmt.Errorf("required config field %s is not set (env: %s)", fd.Name(), envVar)
-	}
-	return "", "", false, nil
 }
 
 // parseValue converts a raw string to the protoreflect.Value for fd's

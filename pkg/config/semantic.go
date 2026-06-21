@@ -14,6 +14,7 @@ package config
 // annotation, not the identifier.
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -143,4 +144,122 @@ func DevAuthBypass(msg proto.Message) bool {
 		return false
 	}
 	return strings.EqualFold(os.Getenv("AUTH_DEV_MODE"), "true")
+}
+
+// Validate runs the cross-field and closed-set config invariants that
+// cannot be expressed as per-field defaults, failing fast (before the
+// listener binds) on the known misconfiguration classes. It is the
+// annotation/TYPE-driven replacement for the deleted name-matched
+// validators (CORS-wildcard / TLS-pair / log-format):
+//
+//   - allowed_values: a string field carrying a closed value set is a
+//     string ENUM; a resolved value outside the set is rejected. (True
+//     proto enum fields need no check — protoreflect enforces their
+//     domain. The empty value is always allowed: an unset, non-required
+//     field.)
+//   - TLS keypair: the fields tagged role=TLS_CERT and role=TLS_KEY are
+//     both-or-neither. Exactly one set is an error (the server would
+//     silently serve plaintext).
+//   - CORS: a wildcard origin ("*") in the role=CORS_ORIGINS field combined
+//     with role=CORS_ALLOW_CREDENTIALS=true is spec-invalid and rejected.
+//
+// Every check keys off the ANNOTATION, never the field name — renaming a
+// field never silently drops its guard. Validate recurses into nested
+// config blocks so a block can carry its own allowed_values fields. The
+// cross-field TLS/CORS checks operate per message level (the role fields of
+// the same message), which is where those pairs naturally live.
+func Validate(msg proto.Message) error {
+	return validateMessage(msg.ProtoReflect())
+}
+
+func validateMessage(m protoreflect.Message) error {
+	fields := m.Descriptor().Fields()
+
+	var (
+		tlsCert, tlsKey               string
+		haveTLSCert, haveTLSKey       bool
+		corsOrigins                   string
+		corsAllowCreds                bool
+		haveCORSOrigins, haveCORSCred bool
+	)
+
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+
+		// Recurse into nested config blocks first.
+		if isConfigBlock(fd) {
+			if err := validateMessage(m.Get(fd).Message()); err != nil {
+				return err
+			}
+			continue
+		}
+
+		opt := roleOptions(fd)
+		if opt == nil {
+			continue
+		}
+
+		// allowed_values closed-set check (string fields only).
+		if vals := opt.GetAllowedValues(); len(vals) > 0 && fd.Kind() == protoreflect.StringKind {
+			got := m.Get(fd).String()
+			if got != "" && !containsStr(vals, got) {
+				return fmt.Errorf("config field %s: value %q is not one of the allowed values %v", fd.Name(), got, vals)
+			}
+		}
+
+		switch opt.GetRole() {
+		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_TLS_CERT:
+			if fd.Kind() == protoreflect.StringKind {
+				tlsCert, haveTLSCert = m.Get(fd).String(), true
+			}
+		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_TLS_KEY:
+			if fd.Kind() == protoreflect.StringKind {
+				tlsKey, haveTLSKey = m.Get(fd).String(), true
+			}
+		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_CORS_ORIGINS:
+			if fd.Kind() == protoreflect.StringKind {
+				corsOrigins, haveCORSOrigins = m.Get(fd).String(), true
+			}
+		case forgepb.ConfigFieldRole_CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS:
+			if fd.Kind() == protoreflect.BoolKind {
+				corsAllowCreds, haveCORSCred = m.Get(fd).Bool(), true
+			}
+		}
+	}
+
+	// TLS keypair: both-or-neither.
+	if haveTLSCert && haveTLSKey {
+		certSet := tlsCert != ""
+		keySet := tlsKey != ""
+		if certSet != keySet {
+			return fmt.Errorf("TLS is half-configured: set BOTH the TLS cert and key (role=TLS_CERT/TLS_KEY) or NEITHER — exactly one was provided")
+		}
+	}
+
+	// CORS: wildcard origin + credentials is spec-invalid.
+	if haveCORSOrigins && haveCORSCred && corsAllowCreds && hasWildcardOrigin(corsOrigins) {
+		return fmt.Errorf("CORS misconfiguration: a wildcard origin (\"*\") MUST NOT be combined with credentials (role=CORS_ALLOW_CREDENTIALS=true); name explicit origins instead")
+	}
+
+	return nil
+}
+
+func containsStr(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWildcardOrigin reports whether the comma-separated origins list
+// contains a bare "*" entry.
+func hasWildcardOrigin(origins string) bool {
+	for _, o := range strings.Split(origins, ",") {
+		if strings.TrimSpace(o) == "*" {
+			return true
+		}
+	}
+	return false
 }

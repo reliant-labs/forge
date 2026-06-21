@@ -76,20 +76,8 @@ hot_reload: true
 features:
   frontend: false
 stack:
-  backend:
-    language: go
   frontend:
     framework: none
-  database:
-    driver: postgres
-  proto:
-    provider: buf
-  deploy:
-    target: k8s
-    provider: k3d
-    registry: ghcr.io
-  ci:
-    provider: github
 database:
   driver: postgres
   migrations_dir: db/migrations

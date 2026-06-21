@@ -16,6 +16,7 @@ import (
 	_ "github.com/reliant-labs/forge/internal/cli/backlog"
 	_ "github.com/reliant-labs/forge/internal/cli/component"
 	_ "github.com/reliant-labs/forge/internal/cli/debug"
+	_ "github.com/reliant-labs/forge/internal/cli/pack"
 )
 
 // init wires internal/cli's heavy shared loaders into the factory so the

@@ -14,6 +14,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
@@ -187,21 +188,12 @@ Subcommands:
 	return cmd
 }
 
-// projectRoot finds the project root by looking for forge.yaml.
-func projectRoot() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	configPath := filepath.Join(cwd, "forge.yaml")
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return "", cliutil.UserErr("forge",
-			"forge.yaml not found in current directory",
-			"",
-			"cd into your project root, or run 'forge new <name>' to scaffold a new project")
-	}
-	return cwd, nil
-}
+// projectRoot forwards to cmdutil.ProjectRoot — the shared home so the
+// dir-nested command groups (pack, ...) reach it without importing
+// internal/cli. The forwarder keeps the unexported name working for the many
+// flat command files in this package that call it, without rewriting their
+// call sites.
+func projectRoot() (string, error) { return cmdutil.ProjectRoot() }
 
 // snapshotComponentsFile reads the components.json at path for rollback.
 // It returns the bytes, whether the file existed (a fresh service shell may

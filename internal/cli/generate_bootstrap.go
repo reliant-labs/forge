@@ -123,33 +123,58 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 		return fmt.Errorf("failed to generate internal/app/inventory_gen.go: %w", err)
 	}
 
-	// REAL per-component subcommands, dir-nested under cmd/<bin>/cmd by
-	// category (devspace idiom): one services/<name>.go per service whose
-	// RunE calls cmd.Serve() with the TYPED mount method expression
-	// (*app.Services).Mount<Svc> (no string selection); one workers/<name>.go
-	// and operators/<name>.go per worker/operator (cmd.MountNone + a named
-	// supervised subset). Driven by the SAME `services`/`workers`/`operators`
-	// rows the composition layer is, so each subcommand lines up with a typed
-	// mount / WorkerList / OperatorList entry. Emitted only when the primary
-	// binary's cmd/<bin>/cmd/serve.go exists — CLI/library kinds and
-	// codegen-less trees have no serve pipeline to delegate to.
-	bin := bootstrapBinaryName(projectDir)
-	if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")); statErr == nil {
-		names := make([]string, 0, len(services))
-		for _, svc := range services {
-			names = append(names, svc.Name)
-		}
-		if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
-			Bin:       bin,
-			Services:  names,
-			Workers:   workers,
-			Operators: operators,
-		}, projectDir, cs); err != nil {
-			return fmt.Errorf("failed to generate cmd/%s command-group subcommands: %w", bin, err)
-		}
-	}
+	// NOTE: the REAL per-component cmd-group subcommands (dir-nested under
+	// cmd/<bin>/cmd/{services,workers,operators}) are NOT emitted here. They
+	// are anchored by the dedicated stepCmdGroups pipeline step, which runs
+	// AFTER stepRegenerateInfra has (re)created cmd/<bin>/cmd/serve.go +
+	// cmd/<bin>/main.go. Doing it here would silently no-op on a flat→nested
+	// migration: serve.go doesn't exist yet at composition time, so the group
+	// subpackages would never get anchored — yet the freshly-regenerated
+	// main.go blank-imports them, and the next `go mod tidy` / `go build`
+	// would 404 the empty (Go-file-less) local group dirs. See
+	// generateCmdGroups + stepCmdGroups.
 
 	fmt.Println("  ✅ Generated internal/app composition layer (Build + Inventory + Infra)")
+	return nil
+}
+
+// generateCmdGroups anchors the dir-nested per-component command-group
+// subpackages under cmd/<bin>/cmd/{services,workers,operators}: one
+// services/<name>.go per service whose RunE calls cmd.Serve() with the TYPED
+// mount method expression (*app.Services).Mount<Svc> (no string selection);
+// one workers/<name>.go and operators/<name>.go per worker/operator
+// (cmd.MountNone + a named supervised subset). Each group also gets a
+// register_gen.go anchor so the subpackage compiles (and main.go's blank
+// import resolves) even with ZERO items.
+//
+// Driven by the SAME `services`/`workers`/`operators` rows the composition
+// layer is, so each subcommand lines up with a typed mount / WorkerList /
+// OperatorList entry.
+//
+// Emitted only when the primary binary's cmd/<bin>/cmd/serve.go exists —
+// CLI/library kinds and codegen-less trees have no serve pipeline to delegate
+// to. The caller (stepCmdGroups) sequences this AFTER stepRegenerateInfra so
+// that on a flat→nested migration — where serve.go does not exist until infra
+// regen creates it — the group subpackages still get anchored before any
+// `go mod tidy` / build-validate that imports them. Idempotent: re-running on
+// an already-nested project rewrites byte-identical content.
+func generateCmdGroups(services []codegen.ServiceDef, workers []codegen.BootstrapWorkerData, operators []codegen.BootstrapOperatorData, projectDir string, cs *checksums.FileChecksums) error {
+	bin := bootstrapBinaryName(projectDir)
+	if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", bin, "cmd", "serve.go")); statErr != nil {
+		return nil
+	}
+	names := make([]string, 0, len(services))
+	for _, svc := range services {
+		names = append(names, svc.Name)
+	}
+	if err := codegen.GenerateCmdGroups(codegen.CmdServiceGroupInput{
+		Bin:       bin,
+		Services:  names,
+		Workers:   workers,
+		Operators: operators,
+	}, projectDir, cs); err != nil {
+		return fmt.Errorf("failed to generate cmd/%s command-group subcommands: %w", bin, err)
+	}
 	return nil
 }
 

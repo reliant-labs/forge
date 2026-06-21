@@ -78,6 +78,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"CI workflows",
 		"pack generate hooks",
 		"regenerate infra files",
+		"cmd command groups (services/workers/operators)",
 		"components_gen.json",
 		"per-env deploy config",
 		"ingress k3d ports fragment",

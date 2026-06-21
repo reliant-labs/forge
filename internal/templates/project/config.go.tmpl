@@ -126,7 +126,7 @@ type Config struct {
 // in depth against shell-history / `ps` exposure of credentials.
 func RegisterFlags(cmd *cobra.Command) {
 {{- range .Fields}}
-{{- if ne .Flag ""}}
+{{- if and (ne .Flag "") (not .Sensitive)}}
 {{- if eq .GoType "string"}}
 	cmd.Flags().String("{{.Flag}}", "{{.DefaultValue}}", "{{.Description}}")
 {{- else if eq .GoType "int32"}}
@@ -227,13 +227,24 @@ func parseGoDuration(s string) (time.Duration, error) { return time.ParseDuratio
 // Load populates a Config from CLI flags, environment variables, and
 // proto defaults. Precedence: explicit flag > env var > default — see
 // loadField for the rationale. Malformed values abort startup.
+//
+// Sensitive fields resolve from env / Secret mount ONLY: they get no flag
+// (the flag name passed to loadField is empty) and no inline default (a
+// literal secret default would be a leak), so they fall straight through to
+// the env lookup, then required-or-zero.
 func Load(cmd *cobra.Command) (*Config, error) {
 	cfg := &Config{}
 	var err error
 {{- range .Fields}}
+{{- if .Sensitive}}
+	if cfg.{{.GoPath}}, err = loadField(cmd, "", "{{.EnvVar}}", "", false, {{.Required}}, {{.AllowEmptyEnv}}, "{{.GoPath}}", {{.ParseFn}}); err != nil {
+		return nil, err
+	}
+{{- else}}
 	if cfg.{{.GoPath}}, err = loadField(cmd, "{{.Flag}}", "{{.EnvVar}}", {{printf "%q" .DefaultValue}}, {{.HasDefault}}, {{.Required}}, {{.AllowEmptyEnv}}, "{{.GoPath}}", {{.ParseFn}}); err != nil {
 		return nil, err
 	}
+{{- end}}
 {{- end}}
 	return cfg, nil
 }

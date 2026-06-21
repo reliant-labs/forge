@@ -12,7 +12,7 @@ Per kind:
   * Worker   → Deployment
   * Cron     → CronJob (or one-shot Job when schedule == "")
   * Operator → manager Deployment + cluster-scoped RBAC
-  * Binary   → Deployment running command (["/app/<proj>", "<name>"])
+  * Binary   → Deployment running command (["/app/<bin>"])
 
 Lambdas take `any` for the component arg by convention — see the
 package-identity note in `lib/services.k` for why KCL forces dynamic
@@ -178,7 +178,7 @@ render_worker = lambda c: any, namespace: str, env_registry: str, image_tag: str
         + rbac_lib.render_namespaced_rbac(c.name, namespace)
 }
 
-# Binary → Deployment running `command` (["/app/<proj>", "<name>"]).
+# Binary → Deployment running `command` (["/app/<bin>"]).
 # Same shape as a worker; the distinct entrypoint comes from `command`.
 render_binary = lambda c: any, namespace: str, env_registry: str, image_tag: str -> [any] {
     _image = _resolved_image(c, env_registry, image_tag)

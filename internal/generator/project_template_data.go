@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -116,6 +117,86 @@ type projectTemplateData struct {
 	// from forbidigo (forge's generated config loader). Defaults to
 	// config.DefaultLoaderPackage ("pkg/config").
 	LoaderPackage string
+	// Binaries enumerates every buildable entrypoint the project ships —
+	// one per `cmd/<bin>/` directory on disk (devspace idiom: each binary
+	// gets its own cmd/<bin>/main.go). The Dockerfile template ranges over
+	// this to `go build -o /app/<bin> ./cmd/<bin>` for EACH binary into a
+	// single image. Primary is the server entrypoint (cmd/<projectName>/),
+	// the one the production stage runs by default; secondary binaries
+	// (proxy / ctl / worker-style) are run by overriding the container
+	// command to /app/<bin> per-workload at deploy time.
+	//
+	// Enumerated from disk (not the component list) so it captures every
+	// real cmd/<bin>/ — including binaries that predate the component
+	// registry or were added by hand. At scaffold time only the primary
+	// exists; ForUpgrade re-scans so a project that ran `forge add binary`
+	// gets every entrypoint built. Falls back to just the primary when the
+	// cmd/ tree can't be read.
+	Binaries []BinaryBuild
+}
+
+// BinaryBuild is one buildable entrypoint: the cmd/<Dir>/ leaf, which is
+// also the output binary name (/app/<Dir>).
+type BinaryBuild struct {
+	// Dir is the cmd/<Dir>/ leaf — the `go build ./cmd/<Dir>` package path
+	// segment AND the output binary basename (/app/<Dir>).
+	Dir string
+	// Primary marks the server entrypoint (cmd/<projectName>/) that the
+	// production image runs by default (ENTRYPOINT/CMD). Exactly one binary
+	// is primary; the rest are run via a per-workload command override.
+	Primary bool
+}
+
+// discoverBinaries enumerates the project's buildable entrypoints from the
+// cmd/ tree on disk. Every cmd/<dir>/ that contains a main.go is one
+// binary, output to /app/<dir>. primary (the cmd/<projectName>/ server
+// leaf) is marked Primary and sorted first; the rest follow in name order
+// for a deterministic Dockerfile.
+//
+// Disk enumeration — not the component registry — is the source of truth:
+// it captures hand-added binaries and binaries the registry doesn't model,
+// and it matches exactly what `go build` can compile. When the cmd/ tree
+// can't be read (fresh scaffold mid-write, missing dir), it falls back to
+// the primary alone so the Dockerfile always builds at least the server.
+func discoverBinaries(projectDir, primary string) []BinaryBuild {
+	fallback := []BinaryBuild{{Dir: primary, Primary: true}}
+	if projectDir == "" || primary == "" {
+		return fallback
+	}
+	entries, err := os.ReadDir(filepath.Join(projectDir, "cmd"))
+	if err != nil {
+		return fallback
+	}
+	var others []string
+	sawPrimary := false
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := e.Name()
+		// Only count a dir that actually holds a main.go — `go build
+		// ./cmd/<dir>` needs a `package main` entrypoint there. Skips
+		// support dirs (e.g. cmd/<bin>/cmd command-tree subpackages are
+		// nested, not siblings, so they never show up here).
+		if _, statErr := os.Stat(filepath.Join(projectDir, "cmd", dir, "main.go")); statErr != nil {
+			continue
+		}
+		if dir == primary {
+			sawPrimary = true
+			continue
+		}
+		others = append(others, dir)
+	}
+	if !sawPrimary && len(others) == 0 {
+		return fallback
+	}
+	sort.Strings(others)
+	bins := make([]BinaryBuild, 0, len(others)+1)
+	bins = append(bins, BinaryBuild{Dir: primary, Primary: true})
+	for _, d := range others {
+		bins = append(bins, BinaryBuild{Dir: d})
+	}
+	return bins
 }
 
 // ForScaffold builds the render payload for the `forge new` scaffold lane
@@ -171,6 +252,11 @@ func (g *ProjectGenerator) ForScaffold() projectTemplateData {
 		// different (greenfield strict; existing-project upgrade soft).
 		TypedAccessGuard: guardTemplateMode(config.ConfigGuardConfig{EnforceTypedAccess: config.EnforceTypedAccessError}),
 		LoaderPackage:    config.DefaultLoaderPackage,
+		// At scaffold time the cmd/ tree isn't written yet, so this resolves
+		// to the primary alone — exactly right for a fresh `forge new`. Once
+		// the user runs `forge add binary`, the upgrade/regenerate lane
+		// (ForUpgrade) re-scans cmd/ and the Dockerfile picks up every binary.
+		Binaries: discoverBinaries(g.Path, g.binaryName()),
 	}
 	data.ForgePkgVersion, data.ForgePkgDevReplace = resolveForgePkgDep(g.Path)
 	// The scaffold's forge/pkg dev replace is a host-absolute sibling path,
@@ -311,5 +397,9 @@ func ForUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		// off/error is honored.
 		TypedAccessGuard: guardTemplateMode(cfg.Config),
 		LoaderPackage:    cfg.Config.EffectiveLoaderPackage(),
+		// Re-scan the cmd/ tree so the Dockerfile builds EVERY entrypoint
+		// the project has grown (server + every `forge add binary`), each
+		// into /app/<bin> in the single image.
+		Binaries: discoverBinaries(projectDir, cfg.Name),
 	}
 }

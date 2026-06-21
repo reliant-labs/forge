@@ -801,6 +801,20 @@ const DefaultLoaderPackage = "pkg/config"
 // (see [EnforceTypedAccessWarn]) so existing projects gain the advisory
 // guardrail without a flag-day; `forge new` writes an explicit
 // `enforce_typed_access: error` for greenfield projects.
+//
+// ADOPTION / re-render: the strictness is projected into the generated
+// .golangci.yml (forbidigo in `linters.enable` for error, settings-only for
+// warn, absent for off). That file is a SCAFFOLD-ONCE, user-owned Tier-2
+// artifact — `forge generate` never re-renders it, and `forge upgrade` only
+// auto-updates it when the on-disk copy is an unedited forge render (a
+// verifying forge:hash marker). A freshly-scaffolded .golangci.yml carries no
+// marker and is "user-owned from birth", so after changing
+// enforce_typed_access in forge.yaml the user must explicitly re-render:
+// `rm .golangci.yml && forge upgrade` (re-scaffold), or `forge upgrade
+// --force` when they have no local .golangci.yml edits. This is the
+// deliberate Tier-2 contract — forge will not silently stomp a hand-tuned
+// linter config — not a bug. The forbidigo `msg`, the template's warn-mode
+// comment, and `forge lint`'s advisory line all teach this path.
 type ConfigGuardConfig struct {
 	// EnforceTypedAccess selects the env-access guardrail strictness:
 	// "off" | "warn" | "error". Empty resolves to "warn" — use

@@ -216,6 +216,33 @@ func TestGolangciTypedAccessGuard_CustomLoaderPackage(t *testing.T) {
 	}
 }
 
+// TestGolangciTypedAccessGuard_TeachingMessage pins the forbidigo `msg`
+// content so the actionable teaching path can't silently regress. The
+// message is the primary DX surface for both humans and LLMs hitting the
+// guardrail, so it must name the concrete proto path, the regenerate step,
+// and both opt-out levers (per-line nolint and the forge.yaml dial).
+func TestGolangciTypedAccessGuard_TeachingMessage(t *testing.T) {
+	f := golangciManagedFile(t)
+	cfg := testProjectConfig()
+	cfg.Config.EnforceTypedAccess = config.EnforceTypedAccessError
+	out, err := renderManagedFile(f, buildTemplateData(cfg, ""))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	got := string(out)
+	for _, want := range []string{
+		"proto/config/v1/*.proto",                               // the concrete path to declare settings
+		"forge generate",                                        // the regenerate step that produces the loader
+		"(forge.v1.config) annotation",                          // the annotation that drives codegen
+		"//nolint:forbidigo on this line",                       // per-line opt-out
+		"config.enforce_typed_access to warn/off in forge.yaml", // project-wide dial
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("forbidigo teaching msg missing %q in:\n%s", want, got)
+		}
+	}
+}
+
 func TestSimpleDiff(t *testing.T) {
 	old := []byte("line1\nline2\nline3\n")
 	new := []byte("line1\nmodified\nline3\n")

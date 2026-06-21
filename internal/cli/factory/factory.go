@@ -25,6 +25,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // Factory is the shared dependency set carried into command constructors so
@@ -40,12 +42,38 @@ type Factory struct {
 	Err io.Writer
 	// In is the reader for interactive prompts.
 	In io.Reader
+
+	// LoadProjectStore loads forge.yaml (walking up from cwd) into a
+	// ProjectStore — the single read+mutate surface. The heavy config-parsing
+	// logic lives in internal/cli (config.go); the factory carries it as a
+	// function value so group subpackages can read project config without
+	// importing internal/cli (which would cycle: internal/cli blank-imports
+	// the groups). internal/cli wires this in factory.New's caller via
+	// SetProjectStoreLoader.
+	LoadProjectStore func() (projectstore.ProjectStore, error)
 }
 
-// New returns a Factory wired to the real process streams. Tests construct a
-// Factory literal with bytes.Buffer fields instead.
+// projectStoreLoader is the loader internal/cli registers so New can populate
+// every Factory it builds. Injected (rather than imported) to keep the
+// factory package a leaf that the command groups can depend on.
+var projectStoreLoader func() (projectstore.ProjectStore, error)
+
+// SetProjectStoreLoader registers the project-store loader. internal/cli calls
+// this from an init() so the loader is set before any Factory is built.
+func SetProjectStoreLoader(load func() (projectstore.ProjectStore, error)) {
+	projectStoreLoader = load
+}
+
+// New returns a Factory wired to the real process streams and the registered
+// project-store loader. Tests construct a Factory literal with bytes.Buffer
+// fields (and their own loader) instead.
 func New() *Factory {
-	return &Factory{Out: os.Stdout, Err: os.Stderr, In: os.Stdin}
+	return &Factory{
+		Out:              os.Stdout,
+		Err:              os.Stderr,
+		In:               os.Stdin,
+		LoadProjectStore: projectStoreLoader,
+	}
 }
 
 // CmdFactory builds one top-level command from the shared factory. Group

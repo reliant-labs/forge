@@ -1,7 +1,45 @@
 # Registry / DI Redesign — Execution Plan
 
-Status: draft (Phase 0 discovery in flight — phases below refine after findings land)
 Date: 2026-06-21
+
+## OVERNIGHT EXECUTION LOG (2026-06-21, autonomous)
+
+NOTE: branches `feat/up-generate-and-logs` (forge) and `chore/bump-forge-93067142`
+(control-plane) have CONCURRENT work from others (otel/observe typed-config rework,
+frontend mock-transport). My commits interleaved cleanly; theirs left untouched. Nothing
+deployed — all branch work, every committed step passed build + boot + parity gates.
+
+LANDED & VERIFIED (I re-ran build/boot/parity myself, not trusting agent reports):
+- forge `b6abf86` — forgepb relocated to public `pkg/forgepb`.
+- forge `ef7732c` — `pkg/mountkit.RegisterService`.
+- forge `3d32fb5` — `pkg/authz.FromDescriptors` (descriptor-driven authz).
+- forge `a956bad` — generator: Path A scaffolds forge.proto at shared forgepb.
+- forge `6baf327` — `pkg/config` descriptor-driven loader LIBRARY (consumer migration NOT done).
+- cp `699eb95` — keystone: daemon on descriptor-auth.
+- cp `2a0bf81` — Path A proto unification: cp consumes forgepb, local gen/forge/v1 deleted,
+  boot panic fixed. VERIFIED: `go run ./cmd version` boots clean.
+- cp `b7efd50` — 9 services migrated to descriptor-auth + mountkit, ~965 lines of per-service
+  authz deleted. VERIFIED: build clean, boots, escalation parity green (17 admin procedures
+  reject non-admin authenticated callers).
+
+DEFERRED (need your judgment / review — bailed per the agreed rule):
+- audit_log, daemon_token auth migration — their protos LACK `auth_required` annotations;
+  descriptor-auth would fail-closed DENY them. Need proto annotation + regen first;
+  daemon_token also has internal-service-only Managed RPCs to review.
+- proxy_authz — subject-identity gate (`sub == "internal-service"`), not a role; stays
+  hand-mounted (already separate). Left as-is.
+- config-loader CONSUMER migration — library is built, but swapping it into control-plane
+  needs proto changes (string duration fields → google.protobuf.Duration) + carrying Port
+  validation, cross-field Validate(), Mode()/DevAuthBypass(). Correctness-sensitive across
+  envs — left for review.
+- tenant_gen / audit interceptor_gen library-ization — generic shims, but audit-log shape is
+  compliance-sensitive and verification is weaker than auth had (no clean parity test);
+  deferred rather than edited blind, esp. with concurrent otel/observe work on the branch.
+- Design-heavy (always needed you): command-owned wiring + delete the injector (E),
+  scenario interceptor + --mock/provider + config chaining (F), kalshi migration incl.
+  MarketAPI seam (G), generator deletions of inject/inventory/build_topo (H).
+
+Original status: draft (Phase 0 → keystone+rollout executed; see log above)
 Owner: Sean
 Companion to: FORGE_SHAPE_REDESIGN.md (this is the execution of its registry/DI half)
 
@@ -124,7 +162,24 @@ components/repos comes after the keystone slice validates the library APIs.
   (authz, observe, middleware, appkit, crud, testkit) to extend rather than duplicate.
 
 ### Phase 1 — Keystone slice (GATE) — forge F1+F2 + control-plane/daemon
-- **Step 0 (GATING):** relocate `forge/internal/gen/forge/v1` → public path
+
+**GATE FINDING (2026-06-21): proto double-registration boot panic.** Publicizing `forgepb`
+(Step 0) + `pkg/authz` importing it means consumer binaries link forge's copy of
+`forge/v1/forge.proto` AND the project's own generated `gen/forge/v1` → `proto: file
+"forge/v1/forge.proto" is already registered` panic at init (confirmed on control-plane's
+server binary; `go build` + isolated tests do NOT catch it). The daemon parity LOGIC is
+proven (isolated test `699eb95`) but the integrated binary can't boot until this is fixed.
+
+**Decision: Path A (durable) — forge.proto becomes the shared `forgepb` library; projects
+stop generating their own `gen/forge/v1`.** Mechanism (per discovery, buf option (i)):
+point `forge/v1/forge.proto`'s `go_package` at `forge/pkg/forgepb`, exclude `forge/v1` from
+Go generation, delete the local copy; no hand-written importers exist so regeneration
+re-points the blank-imports. Lands in (a) forge generator (embedded.go + buf.gen.yaml
+template — all future projects) and (b) control-plane/kalshi one-time migration. This is the
+TRUE Phase-1 gate. (Path B, dynamic extension read with no forgepb import, was the smaller
+tactical fix but was rejected in favor of the principled single-shared-schema end-state.)
+
+- **Step 0 (done):** relocate `forge/internal/gen/forge/v1` → public path
   (`forge/pkg/forgepb`). Update go_package (proto + rawDesc), importer
   `internal/cli/forge_descriptor.go`, `internal/assets/embedded.go` rewrite target. Verify
   `go build ./...` + descriptor tests. Nothing descriptor-driven proceeds until this lands.
